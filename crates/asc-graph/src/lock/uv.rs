@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, HashSet};
 use serde::Deserialize;
 
 use crate::canon::Value;
+use crate::lock::MAX_LOCKFILE_EDGES;
 use crate::model::{Fingerprint, MAX_LOCKFILE_BYTES, MAX_LOCKFILE_PACKAGES, Parsed};
 
 /// Map key that marks a lockfile that could not be used, with the reason.
@@ -103,6 +104,14 @@ pub fn parse(bytes: &[u8]) -> Parsed {
     };
     if raw.package.len() > MAX_LOCKFILE_PACKAGES {
         return unusable("lockfile has more than 200000 packages");
+    }
+    let entries = raw.package.iter().fold(0usize, |n, p| {
+        let extra = p.optional.values().chain(p.dev.values()).map(Vec::len);
+        n.saturating_add(p.dependencies.len())
+            .saturating_add(extra.fold(0, usize::saturating_add))
+    });
+    if entries > MAX_LOCKFILE_EDGES {
+        return unusable("lockfile has too many dependency entries");
     }
     let s = Value::Str;
     let packages = raw
@@ -240,19 +249,33 @@ impl Lock {
             deps: Vec::new(),
             by_name,
         };
-        lock.deps = refs
-            .into_iter()
-            .map(|deps| {
-                let mut out = Vec::new();
-                for d in deps {
-                    out.extend(lock.resolve(dep_ref(d)?));
+        // Running work counter: dependency entries and the candidates scanned
+        // for each, checked before resolving so a wildcard cannot fan out.
+        let mut work = 0usize;
+        let mut all = Vec::with_capacity(refs.len());
+        for deps in refs {
+            let mut out = Vec::new();
+            for d in deps {
+                let r = dep_ref(d)?;
+                work = work.saturating_add(1 + lock.candidates(r.0));
+                if work > MAX_LOCKFILE_EDGES {
+                    return Err(LockError::Unusable(format!(
+                        "lockfile resolves more than {MAX_LOCKFILE_EDGES} dependency edges"
+                    )));
                 }
-                out.sort_unstable();
-                out.dedup();
-                Ok(out)
-            })
-            .collect::<Result<_, LockError>>()?;
+                out.extend(lock.resolve(r));
+            }
+            out.sort_unstable();
+            out.dedup();
+            all.push(out);
+        }
+        lock.deps = all;
         Ok(lock)
+    }
+
+    /// How many packages share a dependency's name.
+    fn candidates(&self, name: &str) -> usize {
+        self.by_name.get(name).map_or(0, Vec::len)
     }
 
     /// Resolves a dependency reference; an empty version or source matches any.
@@ -469,5 +492,42 @@ dependencies = [{ name = "numpy", version = "1.26.0", source = { registry = "htt
             matches!(&e, LockError::Unusable(m) if m.contains("200000")),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn wildcard_dependencies_over_the_edge_budget_are_unusable() {
+        // Every package shares one name and every dependency is a wildcard.
+        let n = 2_000;
+        let mut big = String::from(
+            "version = 1
+",
+        );
+        for _ in 0..n {
+            big.push_str(
+                "[[package]]
+name = \"x\"
+dependencies = [{ name = \"x\" }]
+",
+            );
+        }
+        let e = Lock::from_parsed(&parse(big.as_bytes())).unwrap_err();
+        assert!(matches!(e, LockError::Unusable(_)), "{e:?}");
+        // Too many dependency entries is rejected while parsing.
+        let m = MAX_LOCKFILE_EDGES / n + 1;
+        let mut big = String::from(
+            "version = 1
+",
+        );
+        for _ in 0..n {
+            big.push_str(&format!(
+                "[[package]]
+name = \"x\"
+dependencies = [{}]
+",
+                vec!["{ name = \"x\" }"; m.min(1500)].join(",")
+            ));
+        }
+        let e = Lock::from_parsed(&parse(big.as_bytes())).unwrap_err();
+        assert!(matches!(e, LockError::Unusable(_)), "{e:?}");
     }
 }
