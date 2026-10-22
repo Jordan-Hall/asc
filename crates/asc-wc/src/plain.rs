@@ -331,8 +331,11 @@ fn collect_dirty<O: Objects, R: Refs>(
             (Some(e), Probe::File { oid, .. }) if !e.flags.skip_worktree && oid != e.oid => {
                 dirty.modified.insert(path.clone());
             }
-            (None, Probe::File { .. }) if !matches!(change, Change::Delete) => {
+            (None, Probe::File { .. } | Probe::Other) if !matches!(change, Change::Delete) => {
                 dirty.untracked.insert(path.clone());
+            }
+            (Some(e), Probe::Other) if !e.flags.skip_worktree => {
+                dirty.modified.insert(path.clone());
             }
             _ => {}
         }
@@ -345,6 +348,8 @@ fn collect_dirty<O: Objects, R: Refs>(
                 break;
             }
             if !cache.contains_key(dir.as_bytes())
+                && status::ancestors_are_dirs(wc.root, &dir)
+                    .map_err(io_at(&fs_path(wc.root, &dir)))?
                 && fs::symlink_metadata(fs_path(wc.root, &dir)).is_ok_and(|m| !m.is_dir())
             {
                 dirty.untracked.insert(dir.clone());
@@ -942,6 +947,83 @@ mod tests {
         let r = checkout(&fx.wc(), fx.empty(), to, Mode::Safe).await;
         assert!(r.is_err());
         outside_untouched(&outside);
+    }
+
+    #[tokio::test]
+    async fn safe_switch_does_not_probe_through_a_symlink_replaced_by_a_directory() {
+        let fx = Fixture::new();
+        let outside = fx.root.parent().unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("zero"), b"keep").unwrap();
+        let t1 = fx.tree(&[("a", Kind::Symlink, b"../outside")]).await;
+        checkout(&fx.wc(), fx.empty(), t1, Mode::Safe)
+            .await
+            .unwrap();
+        if !fs::symlink_metadata(fx.root.join("a")).is_ok_and(|m| is_link(&m)) {
+            return;
+        }
+        // `outside/zero` exists, so a probe following the link reports a collision.
+        let t2 = fx.tree(&[("a/zero", F, b"new")]).await;
+        checkout(&fx.wc(), t1, t2, Mode::Safe).await.unwrap();
+        assert_eq!(fs::read(outside.join("zero")).unwrap(), b"keep");
+        assert_eq!(fx.read("a/zero"), b"new");
+    }
+
+    #[test]
+    fn probe_under_a_symlinked_ancestor_is_missing() {
+        let fx = Fixture::new();
+        let Some(_) = outside_link(&fx, "a") else {
+            return;
+        };
+        fs::write(fx.root.parent().unwrap().join("outside/zero"), b"x").unwrap();
+        let got = status::probe(&fx.root, &crate::status::NoEol, &p("a/zero"), None, None).unwrap();
+        assert_eq!(got, Probe::Missing);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_never_reads_a_non_regular_file() {
+        let fx = Fixture::new();
+        let fifo = fx.root.join("pipe");
+        if !std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            return;
+        }
+        let got = status::probe(&fx.root, &crate::status::NoEol, &p("pipe"), None, None).unwrap();
+        assert_eq!(got, Probe::Other);
+    }
+
+    #[tokio::test]
+    async fn checkout_refuses_asc_info_paths() {
+        let fx = Fixture::new();
+        let to = fx
+            .tree(&[
+                (
+                    ".asc/info/exclude",
+                    F,
+                    b"*
+",
+                ),
+                (
+                    ".ASC/INFO/exclude",
+                    F,
+                    b"*
+",
+                ),
+                ("ok", F, b"1"),
+            ])
+            .await;
+        let r = checkout(&fx.wc(), fx.empty(), to, Mode::Safe)
+            .await
+            .unwrap();
+        let mut skipped: Vec<_> = r.skipped.iter().map(|p| p.to_string()).collect();
+        skipped.sort();
+        assert_eq!(skipped, [".ASC/INFO/exclude", ".asc/info/exclude"]);
+        assert!(!fx.root.join(".asc/info/exclude").exists());
+        assert_eq!(fx.read("ok"), b"1");
     }
 
     #[tokio::test]

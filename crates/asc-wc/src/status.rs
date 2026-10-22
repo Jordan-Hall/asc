@@ -22,6 +22,7 @@ use futures::TryStreamExt;
 
 use crate::ignore::IgnoreStack;
 use crate::plain::{Error, Result, Wc, fs_path};
+use crate::safe_path::is_link;
 
 /// Bytes checked for NUL by git's binary heuristic.
 const BINARY_PROBE: usize = 8000;
@@ -110,6 +111,8 @@ pub struct Status {
 pub(crate) enum Probe {
     Missing,
     Dir,
+    /// Neither a regular file, a symlink nor a directory (FIFO, device, socket): never read.
+    Other,
     File {
         oid: GitOid,
         symlink: bool,
@@ -158,6 +161,9 @@ pub(crate) fn probe(
     index_mtime: Option<SystemTime>,
 ) -> io::Result<Probe> {
     let abs = fs_path(root, path);
+    if !ancestors_are_dirs(root, path)? {
+        return Ok(Probe::Missing);
+    }
     let meta = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
@@ -167,6 +173,9 @@ pub(crate) fn probe(
         return Ok(Probe::Dir);
     }
     let symlink = meta.file_type().is_symlink();
+    if !symlink && !meta.is_file() {
+        return Ok(Probe::Other);
+    }
     let exec = exec_bit(&meta);
     if let Some(e) = cached.filter(|e| stat_matches(e, &meta, index_mtime)) {
         return Ok(Probe::File {
@@ -181,6 +190,22 @@ pub(crate) fn probe(
         hash_file(&abs, eol.eol(path))?
     };
     Ok(Probe::File { oid, symlink, exec })
+}
+
+/// Whether every ancestor of `path` below `root` is a real directory, examined without
+/// following links: a path under a symlink or reparse point is not in the work tree.
+pub(crate) fn ancestors_are_dirs(root: &Path, path: &RepoPath) -> io::Result<bool> {
+    let mut cur = path.parent();
+    while let Some(dir) = cur {
+        match fs::symlink_metadata(fs_path(root, &dir)) {
+            Ok(m) if !is_link(&m) && m.is_dir() => {}
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
+            Err(_) => return Ok(false),
+        }
+        cur = dir.parent();
+    }
+    Ok(true)
 }
 
 fn link_target(abs: &Path) -> io::Result<Vec<u8>> {
@@ -205,16 +230,18 @@ fn hash_bytes(data: &[u8]) -> io::Result<GitOid> {
 /// Streams a file through the blob hasher after the ingest normalisation `eol`.
 pub(crate) fn hash_file(path: &Path, eol: Eol) -> io::Result<GitOid> {
     let mut buf = vec![0u8; 64 * 1024];
+    // Reads stop at the length seen now, so an endless source cannot hang the hash.
+    let len = fs::metadata(path)?.len();
     let (convert, size) = match eol {
-        Eol::Keep => (false, fs::metadata(path)?.len()),
+        Eol::Keep => (false, len),
         Eol::Text | Eol::Auto => {
-            let s = scan(path, &mut buf)?;
+            let s = scan(path, &mut buf, len)?;
             let convert = eol == Eol::Text || (!s.nul && !s.lone_cr);
             (convert, s.total - if convert { s.crlf } else { 0 })
         }
     };
     let mut hasher = BlobOidHasher::new(size);
-    let mut file = fs::File::open(path)?;
+    let mut file = fs::File::open(path)?.take(len);
     let mut pending_cr = false;
     let mut out = Vec::with_capacity(buf.len());
     loop {
@@ -255,8 +282,8 @@ struct Scan {
     nul: bool,
 }
 
-fn scan(path: &Path, buf: &mut [u8]) -> io::Result<Scan> {
-    let mut file = fs::File::open(path)?;
+fn scan(path: &Path, buf: &mut [u8], len: u64) -> io::Result<Scan> {
+    let mut file = fs::File::open(path)?.take(len);
     let mut s = Scan {
         total: 0,
         crlf: 0,
@@ -464,6 +491,7 @@ fn unstaged<O: Objects, R: Refs>(
             source,
         })? {
             Probe::Missing | Probe::Dir => Some(ChangeKind::Deleted),
+            Probe::Other => Some(ChangeKind::TypeChanged),
             Probe::File { oid, symlink, exec } => {
                 let want_link = eff.kind == Kind::Symlink;
                 // Without symlink support a link is a regular file holding its target.
