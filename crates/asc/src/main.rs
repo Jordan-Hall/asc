@@ -9,30 +9,22 @@ mod cli;
 mod dispatch;
 mod env;
 mod ext;
+mod hooks_runner;
 mod msg;
 mod native;
 mod refs_guard;
+mod shim;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
 use dispatch::Program;
 
-/// The git shim (SPEC §11.4). U20a replaces this module with `shim.rs`; until then an
-/// invocation as `git` is handed straight to `dispatch`, as the shim does inside a workspace.
-mod shim {
-    use std::ffi::OsString;
-    use std::process::ExitCode;
-
-    pub(crate) async fn run(args: Vec<OsString>) -> ExitCode {
-        crate::dispatch::run(crate::dispatch::Program::Git, args).await
-    }
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let argv0 = args.first().cloned().unwrap_or_default();
+    let _ = ext::set_ref_txn_hook(Box::new(hooks_runner::RefTxnRunner::new()));
     match Program::from_argv0(&argv0) {
         Program::Git => shim::run(args).await,
         Program::Asc => dispatch::run(Program::Asc, args).await,

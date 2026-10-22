@@ -58,6 +58,7 @@ tonic-prost-build = "0.14.6"   # build-dependency of asc-proto
 protox          = "0.10.0"   # build-dependency of asc-rpc: in-process .proto compiler
 axum           = "0.8.9"
 tower          = "0.5.3"
+http-body      = "1.0.1"
 tower-http     = "0.7.1"
 hyper          = "1.12.0"
 hyper-util     = "0.1.21"
@@ -87,6 +88,7 @@ memmap2        = "0.9.12"
 # git interop (gix family moves in lock-step: pin exactly)
 gix            = { version = "=0.89.0", default-features = false, features = ["max-performance-safe", "revision", "blob-diff"] }
 gix-config     = "=0.62.1"
+gix-date       = "=0.18.1"     # gix 0.89 family; git date parsing for commit --date (U22)
 gix-sec        = "=0.16.0"     # gix 0.89 family; names the Trust type of gix-config (U20 security)
 windows-sys    = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 # diff / merge
@@ -131,6 +133,7 @@ regex          = "1.13.1"
 filetime       = "0.2.29"
 sha2           = "0.11.1"
 url            = "2.5.4"       # asc-store (U07)
+reqwest        = { version = "0.13.5", default-features = false, features = ["rustls"] }   # asc-serve (U44)
 # additions (U01b)
 gix-attributes = "=0.37.1"     # gix 0.89 family
 gix-imara-diff = "=0.3.2"      # gix 0.89 family; names gix-merge's InternedInput (U26)
