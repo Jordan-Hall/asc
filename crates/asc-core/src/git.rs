@@ -444,11 +444,23 @@ pub fn canonicalise_commit(
     }
     let mut extra = Vec::new();
     if let Some(asc) = &p.asc {
-        for (path, from) in asc.copies.as_slice() {
-            if let Some((_, Change::Write { copy_from, .. })) =
-                changes.iter_mut().find(|(q, _)| q == path)
-            {
-                *copy_from = Some(from.clone());
+        if asc.copies.as_slice().len() > changes.len() {
+            return Err(GitError::Commit("more asc copies than changes"));
+        }
+        let index: std::collections::HashMap<&RepoPath, usize> = changes
+            .iter()
+            .enumerate()
+            .map(|(i, (q, _))| (q, i))
+            .collect();
+        let hits: Vec<(usize, RepoPath)> = asc
+            .copies
+            .as_slice()
+            .iter()
+            .filter_map(|(path, from)| index.get(path).map(|i| (*i, from.clone())))
+            .collect();
+        for (i, from) in hits {
+            if let Change::Write { copy_from, .. } = &mut changes[i].1 {
+                *copy_from = Some(from);
             }
         }
         if asc.snapshot {
@@ -803,6 +815,58 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn commit_with_copies(n: usize) -> (Vec<u8>, Vec<(RepoPath, Change)>) {
+        let w = Change::Write {
+            kind: Kind::File,
+            file: crate::id::FileId::of(b"x"),
+            size: 1,
+            git: blob_oid(b"x"),
+            copy_from: None,
+        };
+        let changes: Vec<_> = (0..n)
+            .map(|i| (RepoPath::new(format!("f{i:07}")).unwrap(), w.clone()))
+            .collect();
+        let copies: Vec<_> = changes
+            .iter()
+            .map(|(p, _)| (p.clone(), RepoPath::new("src").unwrap()))
+            .collect();
+        let asc = BASE64.encode(
+            &AscGitExtra {
+                copies: SortedMap::new(copies).unwrap(),
+                snapshot: false,
+            }
+            .encode(),
+        );
+        let t = "tree 1111111111111111111111111111111111111111
+";
+        (
+            format!(
+                "{t}{A}{C}asc {asc}
+
+m"
+            )
+            .into_bytes(),
+            changes,
+        )
+    }
+
+    #[test]
+    fn many_copies_apply_in_linear_time() {
+        let n = 100_000;
+        let (raw, changes) = commit_with_copies(n);
+        let t = std::time::Instant::now();
+        let cs = canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), vec![], changes).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(cs.changes.as_slice().len(), n);
+    }
+
+    #[test]
+    fn more_copies_than_changes_rejected() {
+        let (raw, mut changes) = commit_with_copies(50);
+        changes.truncate(10);
+        assert!(canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), vec![], changes).is_err());
     }
 
     #[test]
