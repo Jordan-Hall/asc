@@ -3367,7 +3367,7 @@ Fixed rules this section obeys:
 - the daemon's idle RSS stays ≤ 64 MiB, so heavy indexes live on the server (or a cache-tier replica), and the daemon serves only a bounded local subset;
 - local-only mode works with a degraded local index;
 - the embedding model runs locally by default, so no code leaves ASC infrastructure;
-- `master`, not `main`. There is no IDE-specific surface: ASC's IDE plugins use the same RPC/IPC.
+- `master`, not `main`. Code intelligence adds no IDE-specific surface; plugins reach it through the §24 bridge.
 
 ### 23.1 Decisions: vector search as the third tool [audit: codeintel-folded]
 
