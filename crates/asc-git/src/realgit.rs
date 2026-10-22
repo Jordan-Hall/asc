@@ -14,7 +14,10 @@ pub const ENV_SHIM_DEPTH: &str = "ASC_SHIM_DEPTH";
 /// Highest `ASC_SHIM_DEPTH` a process may start with before it refuses to spawn git.
 pub const MAX_SHIM_DEPTH: u32 = 4;
 /// Oldest supported real git.
-pub const MIN_VERSION: GitVersion = GitVersion { major: 2, minor: 40 };
+pub const MIN_VERSION: GitVersion = GitVersion {
+    major: 2,
+    minor: 40,
+};
 
 const GIT_FILE: &str = if cfg!(windows) { "git.exe" } else { "git" };
 
@@ -41,7 +44,10 @@ pub enum RealGitError {
     JoinPaths(#[from] std::env::JoinPathsError),
     /// Running `git --version` failed.
     #[error("fatal: asc: cannot run '{}': {source}", path.display())]
-    Spawn { path: PathBuf, source: std::io::Error },
+    Spawn {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 impl RealGitError {
@@ -101,7 +107,9 @@ impl Resolver {
             current_exe: std::env::current_exe().unwrap_or_default(),
             program_files: var("ProgramFiles").map(PathBuf::from),
             run_dir: asc_home.map(|h| h.join("run")),
-            depth: var(ENV_SHIM_DEPTH).and_then(|v| v.to_str().and_then(|s| s.parse().ok())).unwrap_or(0),
+            depth: var(ENV_SHIM_DEPTH)
+                .and_then(|v| v.to_str().and_then(|s| s.parse().ok()))
+                .unwrap_or(0),
             verify_version: true,
         }
     }
@@ -120,7 +128,10 @@ impl Resolver {
         if let Some(p) = self.read_cache() {
             return Ok(self.finish(p));
         }
-        let found = self.search_path().or_else(|| self.windows_default()).ok_or(RealGitError::NotFound)?;
+        let found = self
+            .search_path()
+            .or_else(|| self.windows_default())
+            .ok_or(RealGitError::NotFound)?;
         if self.verify_version {
             check_version(&found)?;
         }
@@ -129,7 +140,10 @@ impl Resolver {
     }
 
     fn finish(&self, path: PathBuf) -> RealGit {
-        RealGit { path, depth: self.depth }
+        RealGit {
+            path,
+            depth: self.depth,
+        }
     }
 
     fn is_self(&self, candidate: &Path) -> bool {
@@ -149,7 +163,12 @@ impl Resolver {
         if !cfg!(windows) {
             return None;
         }
-        let c = self.program_files.as_ref()?.join("Git").join("cmd").join(GIT_FILE);
+        let c = self
+            .program_files
+            .as_ref()?
+            .join("Git")
+            .join("cmd")
+            .join(GIT_FILE);
         (c.is_file() && !self.is_self(&c)).then_some(c)
     }
 
@@ -162,12 +181,15 @@ impl Resolver {
         let text = fs::read_to_string(self.cache_file()?).ok()?;
         let (path, stamp) = text.split_once('\n')?;
         let path = PathBuf::from(path);
-        (path.is_absolute() && stamp.trim() == mtime_stamp(&path)? && !self.is_self(&path)).then_some(path)
+        (path.is_absolute() && stamp.trim() == mtime_stamp(&path)? && !self.is_self(&path))
+            .then_some(path)
     }
 
     /// Best effort: a cache that cannot be written only costs a re-resolve.
     fn write_cache(&self, path: &Path) {
-        let (Some(file), Some(stamp), Some(path_str)) = (self.cache_file(), mtime_stamp(path), path.to_str()) else {
+        let (Some(file), Some(stamp), Some(path_str)) =
+            (self.cache_file(), mtime_stamp(path), path.to_str())
+        else {
             return;
         };
         let tmp = file.with_extension(format!("tmp{}", std::process::id()));
@@ -181,7 +203,12 @@ impl Resolver {
 }
 
 fn mtime_stamp(path: &Path) -> Option<String> {
-    let d = fs::metadata(path).ok()?.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    let d = fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?;
     Some(format!("{}.{:09}", d.as_secs(), d.subsec_nanos()))
 }
 
@@ -189,11 +216,17 @@ fn check_version(path: &Path) -> Result<(), RealGitError> {
     let out = Command::new(path)
         .arg("--version")
         .output()
-        .map_err(|source| RealGitError::Spawn { path: path.to_owned(), source })?;
+        .map_err(|source| RealGitError::Spawn {
+            path: path.to_owned(),
+            source,
+        })?;
     let text = String::from_utf8_lossy(&out.stdout);
     match GitVersion::parse(&text) {
         Some(v) if v >= MIN_VERSION => Ok(()),
-        _ => Err(RealGitError::TooOld { path: path.to_owned(), found: text.trim().to_owned() }),
+        _ => Err(RealGitError::TooOld {
+            path: path.to_owned(),
+            found: text.trim().to_owned(),
+        }),
     }
 }
 
@@ -242,7 +275,8 @@ impl RealGit {
     /// `/bin/sh` elsewhere. `None` on Windows without Git for Windows.
     pub fn sh(&self) -> Option<PathBuf> {
         if cfg!(windows) {
-            self.git_for_windows_root().map(|r| r.join("usr").join("bin").join("sh.exe"))
+            self.git_for_windows_root()
+                .map(|r| r.join("usr").join("bin").join("sh.exe"))
         } else {
             Some(PathBuf::from("/bin/sh"))
         }
@@ -256,7 +290,11 @@ impl RealGit {
 }
 
 /// `<shim>[;<GfW>\mingw64\bin;<GfW>\usr\bin];<inherited>`.
-fn child_path_from(shim_dir: &Path, gfw: Option<&Path>, inherited: &OsStr) -> Result<OsString, RealGitError> {
+fn child_path_from(
+    shim_dir: &Path,
+    gfw: Option<&Path>,
+    inherited: &OsStr,
+) -> Result<OsString, RealGitError> {
     let mut dirs = vec![shim_dir.to_owned()];
     if let Some(root) = gfw {
         dirs.push(root.join("mingw64").join("bin"));
@@ -306,7 +344,9 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let (exe, shim) = shim_fixture(t.path());
         let real = touch(&t.path().join("real"), GIT_FILE);
-        let r = resolver(vec![shim, t.path().join("real")], exe, None).resolve().unwrap();
+        let r = resolver(vec![shim, t.path().join("real")], exe, None)
+            .resolve()
+            .unwrap();
         assert_eq!(r.path(), real);
     }
 
@@ -317,7 +357,12 @@ mod tests {
         let rel = PathBuf::from(format!("asc-realgit-test-{}", std::process::id()));
         touch(&cwd.join(&rel), GIT_FILE);
         let real = touch(&t.path().join("real"), GIT_FILE);
-        let r = resolver(vec![PathBuf::new(), rel.clone(), t.path().join("real")], PathBuf::new(), None).resolve();
+        let r = resolver(
+            vec![PathBuf::new(), rel.clone(), t.path().join("real")],
+            PathBuf::new(),
+            None,
+        )
+        .resolve();
         fs::remove_dir_all(cwd.join(&rel)).unwrap();
         assert_eq!(r.unwrap().path(), real);
     }
@@ -326,7 +371,10 @@ mod tests {
     fn relative_override_is_rejected() {
         let mut r = resolver(vec![], PathBuf::new(), None);
         r.env_override = Some(PathBuf::from("git"));
-        assert!(matches!(r.resolve().unwrap_err(), RealGitError::NotAbsolute(_)));
+        assert!(matches!(
+            r.resolve().unwrap_err(),
+            RealGitError::NotAbsolute(_)
+        ));
     }
 
     #[test]
@@ -335,7 +383,10 @@ mod tests {
         let (exe, shim) = shim_fixture(t.path());
         let err = resolver(vec![shim], exe, None).resolve().unwrap_err();
         assert!(matches!(err, RealGitError::NotFound));
-        assert_eq!(err.to_string(), "fatal: asc: real git not found; set asc.realGit");
+        assert_eq!(
+            err.to_string(),
+            "fatal: asc: real git not found; set asc.realGit"
+        );
         assert_eq!(err.exit_code(), 128);
     }
 
@@ -351,7 +402,10 @@ mod tests {
         r.env_override = None;
         assert_eq!(r.resolve().unwrap().path(), b);
         r.config = Some(t.path().join("missing"));
-        assert!(matches!(r.resolve().unwrap_err(), RealGitError::NotAFile(_)));
+        assert!(matches!(
+            r.resolve().unwrap_err(),
+            RealGitError::NotAFile(_)
+        ));
     }
 
     #[test]
@@ -361,14 +415,19 @@ mod tests {
         let a = touch(&t.path().join("a"), GIT_FILE);
         let b = touch(&t.path().join("b"), GIT_FILE);
         let run = t.path().join("home").join("run");
-        let first = resolver(vec![t.path().join("a")], exe.clone(), Some(run.clone())).resolve().unwrap();
+        let first = resolver(vec![t.path().join("a")], exe.clone(), Some(run.clone()))
+            .resolve()
+            .unwrap();
         assert_eq!(first.path(), a);
         assert!(run.join("real-git").is_file());
         let later = vec![t.path().join("b")];
-        let cached = resolver(later.clone(), exe.clone(), Some(run.clone())).resolve().unwrap();
+        let cached = resolver(later.clone(), exe.clone(), Some(run.clone()))
+            .resolve()
+            .unwrap();
         assert_eq!(cached.path(), a, "a valid cache wins over PATH");
         let f = File::options().write(true).open(&a).unwrap();
-        f.set_modified(SystemTime::now() + Duration::from_secs(60)).unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
         drop(f);
         let fresh = resolver(later, exe, Some(run)).resolve().unwrap();
         assert_eq!(fresh.path(), b);
@@ -376,11 +435,20 @@ mod tests {
 
     #[test]
     fn depth_guard() {
-        let g = RealGit { path: PathBuf::from("git"), depth: MAX_SHIM_DEPTH };
+        let g = RealGit {
+            path: PathBuf::from("git"),
+            depth: MAX_SHIM_DEPTH,
+        };
         let cmd = g.command().unwrap();
-        let depth = cmd.get_envs().find(|(k, _)| *k == OsStr::new(ENV_SHIM_DEPTH)).and_then(|(_, v)| v);
+        let depth = cmd
+            .get_envs()
+            .find(|(k, _)| *k == OsStr::new(ENV_SHIM_DEPTH))
+            .and_then(|(_, v)| v);
         assert_eq!(depth, Some(OsStr::new("5")));
-        let over = RealGit { path: PathBuf::from("git"), depth: MAX_SHIM_DEPTH + 1 };
+        let over = RealGit {
+            path: PathBuf::from("git"),
+            depth: MAX_SHIM_DEPTH + 1,
+        };
         let err = over.command().unwrap_err();
         assert!(matches!(err, RealGitError::DepthExceeded(5)));
         assert_eq!(err.exit_code(), 128);
@@ -388,7 +456,13 @@ mod tests {
 
     #[test]
     fn version_parsing() {
-        assert_eq!(GitVersion::parse("git version 2.43.0.windows.1\n"), Some(GitVersion { major: 2, minor: 43 }));
+        assert_eq!(
+            GitVersion::parse("git version 2.43.0.windows.1\n"),
+            Some(GitVersion {
+                major: 2,
+                minor: 43
+            })
+        );
         assert!(GitVersion::parse("git version 2.39.5").unwrap() < MIN_VERSION);
         assert!(GitVersion::parse("garbage").is_none());
     }
@@ -414,7 +488,13 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         touch(&t.path().join("usr").join("bin"), "sh.exe");
         let git = touch(&t.path().join("cmd"), "git.exe");
-        let g = RealGit { path: git, depth: 0 };
-        assert_eq!(g.sh().unwrap(), t.path().join("usr").join("bin").join("sh.exe"));
+        let g = RealGit {
+            path: git,
+            depth: 0,
+        };
+        assert_eq!(
+            g.sh().unwrap(),
+            t.path().join("usr").join("bin").join("sh.exe")
+        );
     }
 }
