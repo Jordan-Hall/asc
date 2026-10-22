@@ -2787,7 +2787,7 @@ The worker runs hourly in batches of 1,000 rows using the indexes `cloud_heads_h
 4. `UpdateWorkspace(base_version, add, remove)`. On `VERSION_CONFLICT`, repeat from step 2, at most 3 times, then report it in `asc cloud status`; the next tick retries.
 5. Pull the metadata of new remote heads (`Changes.Stack`, `LogEntry`s only, stopping at immutable changesets). Files stay lazy.
 
-Rules: sync never moves `HEAD`, a branch or the working copy. A checked-out change that became obsolete is shown by `asc sl`, and the user moves with `asc next` or `asc sync`. Labels are synced as display text only and never become `refs/heads/*` on another machine (git's branches are local). The daemon syncs every 5 minutes, on `Watch` events of kind `KIND_CLOUD` (sent to the workspace owner only), and when `git fetch` or `asc sl` asks it to. That ask is a non-blocking request to the daemon; with no daemon nothing happens (§21.4.2). `asc sl --cloud` and `asc cloud sync` run the sync in-process and report failures, because they are asc-only verbs.
+Rules: sync never moves `HEAD`, a branch or the working copy. A checked-out change that became obsolete is shown by `asc sl`, and the user moves with `asc next` or `asc sync`. Labels are synced as display text only and never become `refs/heads/*` on another machine (git's branches are local). The daemon syncs every 5 minutes, on `Watch` events of kind `KIND_CLOUD` (sent to the workspace owner only), and when `git fetch` or `asc sl` asks it to. That ask is a non-blocking request to the daemon; with no daemon nothing happens (§21.4.2). `asc sl --cloud` and `asc cloud sync` run the sync in-process and report failures, because they are asc-only verbs. This rule is the default. `asc.live.update=true` (§21.3.8) is its only explicit opt-in exception.
 
 #### 21.3.5 RPCs (`proto/asc/v1/cloud.proto`, same port)
 
@@ -2833,6 +2833,40 @@ Draft objects are readable by every repo reader, including CI tokens and cache t
 | Cache eviction | `Purge` writes `gc_purge` and, in the same transaction, `cache_evict(ids)` outbox rows. The outbox worker (U43c) sends the ids to every configured cache tier (CI host cache, `cacheproxy`, bucket/CDN cache) until each acknowledges; `asc cloud purge` reports the unacked tiers. Copies already fetched to client machines cannot be recalled; the command says so. |
 | Quota | `PutObjects` and `Ingest` charge bytes to the user's `cloud_usage` and to the Forgejo quota API, because user-ref pushes and cloud ingest skip pre-receive. User-ref updates through `UpdateRefs`/`ImportGitPush` run the same check. Workspaces per user and user refs per user are capped (§21.3.2). |
 | Untrusted fields | `CloudHead.change` is derived by the server from the `m/` object of `cs`. `labels` are validated (§21.3.5). Forgejo B23 and the MCP `drafts` tool render labels and messages as escaped text, and MCP marks them untrusted data (mcp.md "Untrusted content"). `Watch KIND_CLOUD` goes to the owner only. |
+
+#### 21.3.8 Live updates (opt-in; decision 2026-10-22)
+
+Live updates react to commits that land. They are not continuous typing sync. The daemon (U52 onward) fetches, optionally restacks the user's draft stacks and optionally moves the working copy when trunk or the user's own drafts change.
+
+**Trigger.** The daemon subscribes to a server ref-update stream (`repo.proto`, additive, ACL-filtered):
+
+```proto
+rpc WatchRefs(WatchRefsRequest) returns (stream RefEvent);   // long-lived; x-asc-op-id not used
+message WatchRefsRequest { RepoRef repo = 1; repeated string patterns = 2; /* globs, <= 8, each <= 128 bytes; default master and release/* */ bytes resume = 3; }
+message RefEvent { string name = 1; RefTarget old = 2; RefTarget new = 3; bytes resume = 4; /* opaque cursor */ }
+```
+
+The server sends only refs the caller may read (§15.1) and only names that match `patterns`. A user-ref pattern matches the caller's own refs only. The client reacts to updates of `master` and `release/*`, and to the user's own drafts changing on another device (`Watch KIND_CLOUD`, §21.3.4). It ignores every other event. Events are debounced and coalesced per repo and worktree (`asc.live.debounce`, default 2s): one run handles the newest state. If the stream is unavailable, the daemon polls `ListRefs` every `asc.live.pollInterval` (default 5m) with exponential backoff (x2, cap 1h, reset on success) and resubscribes with `resume`.
+
+**Config** (§21.6.1). All keys exist at global, local and worktree scope. Each key implies the ones above it.
+
+| Key | Default | Effect |
+|---|---|---|
+| `asc.live.fetch` | `true` | Background fetch only. Invisible. |
+| `asc.live.restack` | `false` | In-memory restack of the user's own draft stacks onto the new trunk (§20 D7). It runs only when every restack in the plan is conflict-free. Otherwise nothing is restacked and a notice is raised. |
+| `asc.live.update` | `false` | Also moves the working copy to the restacked or new-version commit of the checked-out change, or to the new trunk tip when the checkout is on trunk. |
+
+**Safety rules for `asc.live.update`.** The working copy is never moved when any of these holds: it is dirty (including untracked files that the move would overwrite); an operation is in progress (rebase, merge, cherry-pick, bisect); there are unresolved conflicts; the worktree holds the asc index lock. The check and the move run under that lock. Each automatic change is one op-log entry with op kind `live`, and `asc undo` reverts it (§20 D6). A conflict pauses live mode for that worktree. A notice appears in `asc status`, `asc sl` and the IDE plugins until `asc live resume`. The verbs are `asc live pause|resume|status`, and the IDE plugins have a toggle (§24.4).
+
+**Security and limits.**
+
+- Updates come only from `master`, `release/*` and the user's own drafts. Other users' drafts are never fetched, restacked onto or moved to.
+- Every fetched object passes the existing sync verification (§21.3.4, §14.4). Remote memos are not trusted.
+- No hooks or scripts run on a live update.
+- The stream and the fetch reuse the daemon's credential path. No new token is created.
+- At most one live update per worktree per debounce window. Restack and update work is capped (`asc.live.maxStack`, default 50 changes; `asc.live.maxFiles`, default 5000 changed paths). Above a cap, nothing is restacked and a notice is raised.
+
+**Default experience.** With `asc.live.restack` and `asc.live.update` off, the IDE plugins show "trunk moved N commits - Restack" (§24.4) and the user runs `asc restack`.
 
 ### 21.4 Git DX mapping
 
@@ -2953,6 +2987,8 @@ To https://forge.example.org/asc/monorepo.git
 | server `repos.cloud` | per repo | = `repos.branchless`; always off on public repos | whether the server accepts cloud upload (§21.3.7) |
 | `asc.draft.hiddenDays` | global | `90` | local retention of hidden drafts (§21.2.4) |
 | `asc.cloud.denyPaths` | global | §21.3.7 | paths the guard holds |
+| `asc.live.fetch`, `asc.live.restack`, `asc.live.update` | global, local, worktree | `true`, `false`, `false` | live updates (§21.3.8) |
+| `asc.live.debounce`, `asc.live.pollInterval`, `asc.live.maxStack`, `asc.live.maxFiles` | global | 2s, 5m, 50, 5000 | §21.3.8 |
 | `asc-serve.toml [cloud]` | server | `hidden_grace_days = 30`, `abandon_days = 180`, `landed_ref_days = 7`, `max_heads_per_workspace = 10000`, `max_workspaces_per_user = 16`, `max_user_refs = 1000`, `max_user_bytes`, `list_others = "write"` | §21.2.4, §21.2.5, §21.3.7 |
 
 Effective client mode = `asc.branchless` AND the repo's `branchless` (from `RepoConfig`). Cloud upload needs the client key (`asc.cloud` not `off`), the server's `repos.branchless` and `repos.cloud`, and a non-public repo. A branchless client on a branch-mode repo therefore keeps local draft heads only and uploads nothing; push follows the server (shared branch). A branch-mode client on a branchless repo pushes user refs without submitting PRs.
@@ -3940,6 +3976,7 @@ Source layout (`plugins/vscode/src`), each module ≤ 400 lines:
 - **Quick diff:** `quickDiffProvider.provideOriginalResource(uri)` returns `asc:` at `HEAD`. "Diff against stack parent" opens `vscode.diff(asc:parent, file)`, since a second quick-diff provider would be a proposed API.
 - **Stage selected ranges or a hunk:** compute the hunks of `asc:HEAD` against the buffer in the host (the `diff` package, file-local), build a `git apply --cached` patch, then call `Workspace.Stage{patch}`.
 - **Decorations:** one `FileDecorationProvider`. `onDidChangeFileDecorations` fires only with the URIs from the last `Status(paths)` delta. Colours use the `gitDecoration.*` theme colours so themes keep working.
+- **Live updates (§21.3.8, P59):** default off. The status bar shows "trunk moved N commits - Restack" (runs `restack`). A toggle runs `live pause|resume`, and a live-conflict notice shows until `asc live resume`.
 - **Status bar:** `$(git-commit) kxyzq… · 2/5 · ↓3` (change, stack position, behind `master`), a cloud indicator (P47b), and "needs restack" as a warning item. Clicking it opens the smartlog. `↓3` is the number of `master` (trunk) commits that are not in the stack's base. It comes from the `Stacks` snapshot (`WsStack.behind`, API addition A1), not from `WsStatusResponse.behind`, which compares the HEAD ref with its upstream and is empty in branchless mode. It is hidden at 0, and clicking it offers "Restack onto `master`".
 - **Refresh:** `KIND_PATHS`/`KIND_STAGE` → `Status(paths)` for those paths only. `KIND_HEAD`/`KIND_REF`/`KIND_SWITCH_DONE`/`KIND_RESYNC` → full `Status`. At most one `Status` call per 100 ms per root. The resource list is capped at 10,000 entries, with a "N more, open in terminal" node (the built-in git `statusLimit` default).
 

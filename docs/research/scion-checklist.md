@@ -223,3 +223,8 @@ asc has no LFS support.
   - MCP wiring for agents.
 - Everything goes through a single generated TypeScript client package (from proto), which the VS Code extension and the Forgejo UI share. The plugins never shell out to parse human output.
 - Plugin performance follows the same budgets: lazy loading, no whole-repo scans, and data served from daemon and server derived data.
+
+## Decision: live updates on commit, opt-in (2026-10-22)
+
+- Event-driven auto-update when commits land: the daemon subscribes to `WatchRefs` (`master`, `release/*`) and the user's own drafts (commit cloud), with a poll fallback. It is not continuous typing sync. SPEC §21.3.8; units U76, B29, B30, B31, P59.
+- `asc.live.fetch` is on by default. `asc.live.restack` and `asc.live.update` are off by default. "Sync never moves HEAD or the working copy" stays the default; `asc.live.update=true` is the only explicit exception, and it never moves a dirty tree or a tree with an operation in progress. Each change is one op-log entry (`live`) that `asc undo` reverts.
