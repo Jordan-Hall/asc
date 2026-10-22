@@ -42,6 +42,7 @@ pub mod json;
 pub mod output;
 pub mod pager;
 pub mod safe_dir;
+pub mod seed_opts;
 
 pub mod add;
 pub mod affected;

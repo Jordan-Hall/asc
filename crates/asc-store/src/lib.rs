@@ -13,6 +13,7 @@ pub mod objects;
 pub mod probe;
 pub mod refs;
 pub mod s3;
+pub mod seed;
 pub mod sqlrefs;
 pub mod storeset;
 pub mod tiered;
