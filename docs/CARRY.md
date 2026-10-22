@@ -9,3 +9,9 @@ These are requirements that fixes in earlier units created for later units. Ever
 - **Paths:** `checkout_safe` rejects any backslash. `windows_valid` matches git's `is_valid_win32_path`.
 - **`FileMeta` is dropped.** Envelope kind 5 is reserved.
 - **No LFS anywhere:** no LFS fields, alias keys, pointer parsing, LFS API or LFS copy jobs. Pointer files are plain blobs.
+- **asc-store reconcile, after U08/U09:**
+  - `CacheDir` and `Tiered` `put` must verify on write and repair corrupt values, so they pass the extended conformance suite.
+  - Migrate the callers to `decode_stored_capped(stored, max)` with per-class caps, then delete the 256 MiB `decode_stored` wrapper.
+- **`GitTreeOverride` value** is the git tree object body without the `tree <len>\0` header, verified by `object_oid(Tree, body) == oid`. SPEC §3.3 must say so.
+- **`canonicalise_tag`** must reject `type` other than `commit` at import, not only at export.
+- **`parse_tag` rejects unknown headers.** This is stricter than git. If an imported history tag has extra headers, keep it raw instead of failing the import.
