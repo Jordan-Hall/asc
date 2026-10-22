@@ -1,0 +1,10 @@
+[project]
+name = "ASC_Soma"
+requires-python = ">=3.11"
+dependencies = ["soma[onnx]>=1", "shared", "numpy"]
+
+[dependency-groups]
+dev = ["shared"]
+
+[tool.uv.sources]
+soma = { git = "https://example.com/soma.git", rev = "aaa" }

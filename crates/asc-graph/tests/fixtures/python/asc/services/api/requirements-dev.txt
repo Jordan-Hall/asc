@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest
+-e ../../packages/asc-soma
+shared @ file:../../packages/shared

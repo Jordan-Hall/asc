@@ -1,0 +1,3 @@
+-r ../common.txt
+-e ../../packages/shared
+requests==2.0

@@ -1,0 +1,45 @@
+version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "asc-soma"
+version = "0.1.0"
+source = { editable = "packages/asc-soma" }
+dependencies = [
+    { name = "numpy" },
+    { name = "shared" },
+    { name = "soma", source = { git = "https://example.com/soma.git?rev=aaa#aaa" } },
+]
+
+[package.dev-dependencies]
+dev = [{ name = "shared" }]
+
+[[package]]
+name = "shared"
+version = "0.1.0"
+source = { editable = "packages/shared" }
+dependencies = [{ name = "numpy" }]
+
+[[package]]
+name = "soma"
+version = "0.1.0"
+source = { editable = "packages/soma" }
+dependencies = [{ name = "tqdm" }]
+
+[[package]]
+name = "numpy"
+version = "1.26.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.example/numpy.tar.gz", hash = "sha256:np1" }
+
+[[package]]
+name = "tqdm"
+version = "4.66.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.example/tqdm.tar.gz", hash = "sha256:tq1" }
+
+[[package]]
+name = "soma"
+version = "0.2.0"
+source = { git = "https://example.com/soma.git?rev=aaa#aaa" }
+dependencies = [{ name = "numpy" }]

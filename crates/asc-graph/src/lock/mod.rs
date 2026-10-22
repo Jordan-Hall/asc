@@ -2,6 +2,7 @@
 
 pub mod bun;
 pub mod cargo;
+pub mod uv;
 pub mod nuget;
 
 /// Most dependency edges one lockfile may resolve: a small multiple of
