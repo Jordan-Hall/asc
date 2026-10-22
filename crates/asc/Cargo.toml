@@ -31,6 +31,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
+gix-attributes = { workspace = true }
 gix-config = { workspace = true }
 prost-reflect = { workspace = true }
 regex = { workspace = true }
