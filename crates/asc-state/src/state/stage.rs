@@ -122,7 +122,19 @@ fn kind_from_i64(v: i64) -> Result<Kind> {
     })
 }
 
-const COLS: &str = "path, stage, kind, file, size, git, intent_to_add";
+/// The v1 tree format has no size limit (SPEC §0 decision 3), so a hostile tree can hold a size
+/// above `i64::MAX`, and SQLite integers are signed. The column stores the 64-bit pattern of the
+/// size, so every `u64` round-trips exactly. Rejecting such a size would leave the workspace
+/// unable to rebase onto that HEAD, and truncating it would make a changed file look unchanged.
+fn size_to_db(size: u64) -> i64 {
+    i64::from_ne_bytes(size.to_ne_bytes())
+}
+
+fn size_from_db(size: i64) -> u64 {
+    u64::from_ne_bytes(size.to_ne_bytes())
+}
+
+const COLS: &str ="path, stage, kind, file, size, git, intent_to_add";
 
 fn decode(row: &AnyRow) -> Result<StageRow> {
     let file: Option<Vec<u8>> = row.try_get("file")?;
@@ -137,7 +149,7 @@ fn decode(row: &AnyRow) -> Result<StageRow> {
         file: file
             .map(|b| fixed(b, "stage.file").map(FileId::from_bytes))
             .transpose()?,
-        size: u64::try_from(size).map_err(|_| Error::Corrupt("stage.size"))?,
+        size: size_from_db(size),
         git: git
             .map(|b| fixed(b, "stage.git").map(GitOid::from_bytes))
             .transpose()?,
@@ -146,8 +158,7 @@ fn decode(row: &AnyRow) -> Result<StageRow> {
 }
 
 async fn upsert_tx(tx: &mut Tx, ws: &str, set: i64, r: &StageRow) -> Result<()> {
-    // A size above i64::MAX would be stored negative and make every later read fail.
-    let size = i64::try_from(r.size).map_err(|_| Error::Corrupt("stage.size"))?;
+    let size = size_to_db(r.size);
     sqlx::query(
         "INSERT INTO stage (ws_id, set_id, path, stage, kind, file, size, git, intent_to_add) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
