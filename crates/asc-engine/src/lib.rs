@@ -11,6 +11,7 @@ pub mod commit;
 pub mod derive;
 pub mod diff;
 pub mod graph;
+pub mod revspec;
 pub mod tree;
 
 /// Number of decoded trees kept in memory per engine.
