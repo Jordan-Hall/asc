@@ -54,6 +54,7 @@ tonic-prost    = "0.14.6"
 prost          = "0.14.4"
 tonic-health   = "0.14.6"
 tonic-prost-build = "0.14.6"   # build-dependency of asc-proto
+protox          = "0.10.0"   # build-dependency of asc-rpc: in-process .proto compiler
 axum           = "0.8.9"
 tower          = "0.5.3"
 tower-http     = "0.7.1"

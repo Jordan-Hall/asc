@@ -12,3 +12,13 @@ workspace = true
 [dependencies]
 asc-core = { workspace = true }
 asc-engine = { workspace = true }
+asc-store = { workspace = true }
+bytes = { workspace = true }
+prost = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+protox = { workspace = true }
+tonic-prost-build = { workspace = true }

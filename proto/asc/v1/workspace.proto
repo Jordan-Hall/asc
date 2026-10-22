@@ -1,0 +1,76 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+import "asc/v1/repo.proto";
+import "asc/v1/projects.proto";
+
+// workspace.proto — daemon IPC only (named pipe / Unix socket, current user only)
+// The plugin RPCs (Status … Watch) are the stable, documented API for ASC's IDE plugins [audit: user decision No-IDE].
+service Workspace {
+  rpc Status(WsStatusRequest) returns (WsStatusResponse);       // ws_id → staged, unstaged, untracked, conflicts, ahead/behind, in-progress op
+  rpc Diff(WsDiffRequest) returns (stream DiffResponse);        // worktree/index/rev pairs, same formats as Repo.Diff
+  rpc Log(WsLogRequest) returns (stream LogResponse);           // local engine, or the server per asc.serverHistory
+  rpc Blame(WsBlameRequest) returns (stream BlameResponse);     // includes uncommitted lines
+  rpc Affected(WsAffectedRequest) returns (WsAffectedResponse); // §12A.7, including --uncommitted
+  rpc Watch(WatchRequest) returns (stream WatchEvent);          // path changed, HEAD/ref moved, staging changed, op started/finished, switch done
+  rpc Stage(WsStageRequest) returns (WsStageResponse);          // add/remove paths or hunks; the plugin's "git add"
+  rpc Ping(PingRequest) returns (PingResponse);                 // version, pid, uptime
+  rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
+  rpc Unmount(UnmountRequest) returns (UnmountResponse);
+  rpc Switch(SwitchRequest) returns (SwitchResponse);           // ws_id, from_root, to_root, mode {SAFE|MERGE|FORCE}
+  rpc Journal(JournalRequest) returns (JournalResponse);        // since token → paths + new token + fresh flag
+  rpc ClearJournal(ClearJournalRequest) returns (ClearJournalResponse);
+  rpc Dehydrate(DehydrateRequest) returns (DehydrateResponse);  // ws_id, pathspec
+  rpc Prefetch(PrefetchRequest) returns (PrefetchResponse);     // ws_id, pathspec
+  rpc Stats(StatsRequest) returns (StatsResponse);              // hydrations by path/process, bytes, journal size
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+// Plugin messages [audit: plugin-api-undefined]. Ids are 20-byte git SHA-1s (§11.1). workspace.proto imports
+// asc/v1/repo.proto (DiffFormat, LogRequest, DiffResponse, LogResponse, BlameResponse) and asc/v1/projects.proto
+// (AffectedRequest, AffectedResponse, §12A.8).
+message WsStatusRequest { string ws_id = 1; repeated bytes paths = 2; bool untracked = 3; bool ignored = 4; }
+message WsFileStatus { bytes path = 1; string xy = 2; /* git porcelain v2 XY */ bytes orig_path = 3; uint32 mode_head = 4;
+  uint32 mode_index = 5; uint32 mode_worktree = 6; bytes git_head = 7; bytes git_index = 8; }
+message WsStatusResponse { string head_ref = 1; bytes head = 2; string upstream = 3; uint32 ahead = 4; uint32 behind = 5;
+  repeated WsFileStatus files = 6; string in_progress = 7; /* merge|rebase|cherry-pick|revert|bisect|empty */ string token = 8; }
+message WsDiffRequest { string ws_id = 1; string from = 2; string to = 3; /* "index" | "worktree" | revspec */
+  repeated bytes paths = 4; DiffFormat format = 5; uint32 context = 6; }
+message WsLogRequest { string ws_id = 1; LogRequest query = 2; }
+message WsBlameRequest { string ws_id = 1; string rev = 2; /* empty = working copy */ bytes path = 3; uint32 start_line = 4;
+  uint32 end_line = 5; }
+message WsAffectedRequest { string ws_id = 1; AffectedRequest query = 2; bool uncommitted = 3; }
+message WsAffectedResponse { AffectedResponse result = 1; }
+message WatchRequest { string ws_id = 1; string since_token = 2; }
+message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KIND_STAGE = 3; KIND_OP_STARTED = 4;
+  KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7; } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
+  string token = 7; }
+message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
+message WsStageResponse { WsStatusResponse status = 1; }
+// The internal RPCs (Ping … Shutdown) carry the fields named in their comments; their messages are defined in U41
+// and are not part of the stable plugin API.
+
+// Internal daemon RPC messages (not part of the stable plugin API).
+message PingRequest {}
+message PingResponse { string version = 1; uint32 pid = 2; uint64 uptime_ms = 3; }
+message MountRequest { string ws_id = 1; }
+message MountResponse {}
+message UnmountRequest { string ws_id = 1; }
+message UnmountResponse {}
+enum SwitchMode { SWITCH_MODE_SAFE = 0; SWITCH_MODE_MERGE = 1; SWITCH_MODE_FORCE = 2; }
+message SwitchRequest { string ws_id = 1; bytes from_root = 2; bytes to_root = 3; SwitchMode mode = 4; }
+message SwitchResponse { repeated bytes conflicts = 1; }
+message JournalRequest { string ws_id = 1; string since_token = 2; }
+message JournalResponse { repeated bytes paths = 1; string token = 2; bool fresh = 3; }
+message ClearJournalRequest { string ws_id = 1; string token = 2; }
+message ClearJournalResponse {}
+message DehydrateRequest { string ws_id = 1; repeated bytes pathspec = 2; }
+message DehydrateResponse { uint64 files = 1; uint64 bytes_freed = 2; }
+message PrefetchRequest { string ws_id = 1; repeated bytes pathspec = 2; }
+message PrefetchResponse { uint64 files = 1; uint64 bytes_fetched = 2; }
+message StatsRequest { string ws_id = 1; }
+message HydrationCount { string key = 1; uint64 count = 2; uint64 bytes = 3; }
+message StatsResponse { repeated HydrationCount by_path = 1; repeated HydrationCount by_process = 2;
+  uint64 bytes_hydrated = 3; uint64 journal_size = 4; }
+message ShutdownRequest {}
+message ShutdownResponse {}

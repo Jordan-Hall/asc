@@ -1,0 +1,185 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+enum IdMode { ID_MODE_ASC = 0; ID_MODE_GIT = 1; }   // GIT: changeset/tree/file ids are git oids (20 bytes) in and out
+message RepoRef { string name = 1; IdMode id_mode = 2; }   // name = "owner/repo"
+
+enum ObjKind { OBJ_KIND_UNSPECIFIED = 0; OBJ_KIND_FILE = 1; OBJ_KIND_CHUNK_LIST = 2; OBJ_KIND_CHUNK = 3;
+               OBJ_KIND_TREE = 4; OBJ_KIND_CHANGESET = 5; OBJ_KIND_TAG = 6; OBJ_KIND_GIT_TREE_OVERRIDE = 7;
+               reserved 8; OBJ_KIND_CHANGE_META = 9; }   // 8 was SHA256_ALIAS (removed with LFS); 9 = ChangeMeta (§20.2)
+message ObjKey { ObjKind kind = 1; bytes id = 2; }          // 32 bytes (20 for GIT_TREE_OVERRIDE)
+message Object { ObjKey key = 1; bytes data = 2; }          // stored bytes: codec ‖ data
+
+message RefTarget { oneof t { bytes changeset = 1; bytes tag = 2; } }
+message Ref { string name = 1; RefTarget target = 2; uint64 version = 3; int64 expires_at = 4; }
+message Signature { bytes name = 1; bytes email = 2; int64 time = 3; int32 tz_min = 4; }
+
+service Repo {
+  rpc Version(VersionRequest) returns (VersionResponse);
+  rpc HasObjects(HasObjectsRequest) returns (HasObjectsResponse);
+  rpc GetObjects(stream GetObjectsRequest) returns (stream GetObjectsResponse);
+  rpc PutObjects(stream PutObjectsRequest) returns (PutObjectsResponse);
+  rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
+  rpc UpdateRefs(UpdateRefsRequest) returns (UpdateRefsResponse);
+  rpc Resolve(ResolveRequest) returns (ResolveResponse);
+  rpc GitMap(GitMapRequest) returns (GitMapResponse);
+  rpc Log(LogRequest) returns (stream LogResponse);
+  rpc MergeBase(MergeBaseRequest) returns (MergeBaseResponse);
+  rpc IsAncestor(IsAncestorRequest) returns (IsAncestorResponse);
+  rpc Diff(DiffRequest) returns (stream DiffResponse);
+  rpc Blame(BlameRequest) returns (stream BlameResponse);
+  rpc LastCommits(LastCommitsRequest) returns (LastCommitsResponse);
+  rpc ReadChangeset(ReadChangesetRequest) returns (ReadChangesetResponse);
+  rpc ReadTree(ReadTreeRequest) returns (stream ReadTreeResponse);
+  rpc ReadFile(ReadFileRequest) returns (stream ReadFileResponse);
+  rpc Stat(StatRequest) returns (StatResponse);
+  rpc CheckAttr(CheckAttrRequest) returns (CheckAttrResponse);
+  rpc Grep(GrepRequest) returns (stream GrepResponse);
+  rpc Archive(ArchiveRequest) returns (stream ArchiveResponse);
+  rpc Commit(CommitRequest) returns (CommitResponse);
+  rpc Merge(MergeRequest) returns (MergeResponse);
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+  rpc CopyClosure(CopyClosureRequest) returns (CopyClosureResponse);
+  rpc RepoAdmin(RepoAdminRequest) returns (RepoAdminResponse);
+  rpc ImportGitPush(ImportGitPushRequest) returns (ImportGitPushResponse);   // Forgejo internal token only
+  rpc Ingest(IngestRequest) returns (IngestResponse);                        // §8.7
+  rpc FindLanding(FindLandingRequest) returns (FindLandingResponse);         // §8.9
+  rpc Classify(ClassifyRequest) returns (ClassifyResponse);                  // §8.10
+  rpc Rebase(RebaseRequest) returns (RebaseResponse);                        // §8.11
+}
+// service Projects (ProjectGraph, Affected, ProjectHashes) is in proto/asc/v1/projects.proto (§12A.8), on the same port.
+
+message VersionRequest {}
+message VersionResponse { string server_version = 1; string min_client = 2; repeated string features = 3; }
+
+message HasObjectsRequest { RepoRef repo = 1; repeated ObjKey keys = 2; }           // ≤ 4096 keys
+message HasObjectsResponse { bytes present = 1; }                                   // bitmap, LSB-first per byte
+message GetObjectsRequest { RepoRef repo = 1; repeated ObjKey keys = 2; }           // ≤ 256 keys per message
+message GetObjectsResponse { repeated Object objects = 1; repeated ObjKey missing = 2; } // ≤ 16 MiB per message
+message PutObjectsRequest { RepoRef repo = 1; repeated Object objects = 2; }
+message PutObjectsResponse { uint64 stored = 1; uint64 already_present = 2; }
+
+message ListRefsRequest { RepoRef repo = 1; string prefix = 2; bytes contains = 3; string after = 4; uint32 limit = 5; }
+message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = symbolic HEAD
+message RefUpdate { string name = 1;
+  oneof expect { bool any = 2; bool absent = 3; RefTarget value = 4; }
+  RefTarget new = 5;  bool delete = 6; }
+enum UpdateMode { UPDATE_MODE_FAST_FORWARD = 0; UPDATE_MODE_FORCE = 1; UPDATE_MODE_LAND = 2; }
+enum HookMode { HOOK_MODE_RUN = 0; HOOK_MODE_SKIP_PRE = 1; }                        // SKIP_PRE: internal token only
+message UpdateRefsRequest { RepoRef repo = 1; repeated RefUpdate updates = 2; UpdateMode mode = 3;
+  repeated string push_options = 4; HookMode hooks = 5; int64 ttl_seconds = 6; }
+message Rewrite { bytes old = 1; bytes new = 2; }
+message RefResult { string name = 1; RefTarget old = 2; RefTarget new = 3; }
+message UpdateRefsResponse { repeated RefResult results = 1; repeated Rewrite rewritten = 2; string message = 3; }
+
+message ResolveRequest { RepoRef repo = 1; repeated string revspecs = 2; }
+message ResolveResponse { repeated bytes ids = 1; }                                  // empty bytes = not found
+message GitMapRequest { RepoRef repo = 1; repeated bytes asc = 2; repeated bytes git = 3; }
+message GitMapResponse { repeated bytes asc_to_git = 1; repeated bytes git_to_asc = 2; }
+
+message LogRequest { RepoRef repo = 1; repeated string include = 2; repeated string exclude = 3;
+  repeated string paths = 4; bool first_parent = 5; bool follow = 6; uint32 skip = 7; uint32 limit = 8;
+  string author = 9; string grep = 10; int64 since = 11; int64 until = 12; bool count_only = 13; string page_token = 14; }
+message LogEntry { bytes id = 1; bytes git = 2; repeated bytes parents = 3; Signature author = 4;
+  Signature committer = 5; bytes message = 6; uint32 gen = 7; }
+message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; string next_page_token = 3; }
+message MergeBaseRequest { RepoRef repo = 1; bytes a = 2; repeated bytes b = 3; bool all = 4; }
+message MergeBaseResponse { repeated bytes bases = 1; }
+message IsAncestorRequest { RepoRef repo = 1; bytes ancestor = 2; bytes descendant = 3; }
+message IsAncestorResponse { bool result = 1; }
+
+enum DiffFormat { DIFF_FORMAT_NAMES = 0; DIFF_FORMAT_STATUS = 1; DIFF_FORMAT_STAT = 2; DIFF_FORMAT_NUMSTAT = 3;
+                  DIFF_FORMAT_PATCH = 4; DIFF_FORMAT_RAW = 5; }
+message DiffRequest { RepoRef repo = 1; string base = 2; string head = 3; bool merge_base = 4;
+  repeated string paths = 5; DiffFormat format = 6; bool renames = 7; uint32 context = 8; bool binary = 9;
+  bool null_terminated = 10; uint32 max_files = 11; }
+message PathChange { bytes path = 1; string status = 2; bytes old_path = 3; uint32 old_mode = 4; uint32 new_mode = 5;
+  bytes old_git = 6; bytes new_git = 7; bytes old_id = 8; bytes new_id = 9; uint64 old_size = 10; uint64 new_size = 11;
+  uint32 similarity = 12; }
+message DiffResponse { repeated PathChange changes = 1; bytes text = 2; bool truncated = 3; }  // text = git-format output
+
+message BlameRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; uint32 start_line = 4; uint32 end_line = 5;
+  bool reverse = 6; }
+message BlameHunk { bytes origin = 1; bytes orig_path = 2; uint32 orig_start = 3; uint32 start = 4; uint32 len = 5; }
+message BlameResponse { repeated BlameHunk hunks = 1; repeated LogEntry commits = 2; }
+message LastCommitsRequest { RepoRef repo = 1; string rev = 2; bytes dir = 3; repeated bytes names = 4; }
+message LastCommitsResponse { map<string, LogEntry> by_name = 1; }
+
+message ReadChangesetRequest { RepoRef repo = 1; string rev = 2; }
+message ReadChangesetResponse { LogEntry header = 1; bytes root_tree = 2; bytes root_git = 3; repeated PathChange changes = 4;
+  map<string, bytes> extra = 5; bytes raw_git_commit = 6; }
+message ReadTreeRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; bool recursive = 4; uint32 limit = 5;
+  bytes after = 6; }
+message TreeEntryInfo { bytes name = 1; bytes path = 2; uint32 mode = 3; bytes id = 4; bytes git = 5; uint64 size = 6;
+  reserved 7, 8; }   // were lfs, lfs_size
+message ReadTreeResponse { repeated TreeEntryInfo entries = 1; bytes tree_id = 2; bytes tree_git = 3; }
+message ReadFileRequest { RepoRef repo = 1; oneof at { string rev_path = 2; bytes file_id = 3; } uint64 offset = 4;
+  uint64 length = 5; reserved 6; }   // was resolve_lfs
+message ReadFileResponse { bytes data = 1; uint64 total_size = 2; }
+message StatRequest { RepoRef repo = 1; string rev = 2; repeated bytes paths = 3; repeated ObjKey objects = 4; }
+message StatResponse { repeated TreeEntryInfo entries = 1; repeated bool exists = 2; }
+message CheckAttrRequest { RepoRef repo = 1; string rev = 2; repeated bytes paths = 3; repeated string names = 4; }
+message AttrValues { map<string, string> values = 1; }
+message CheckAttrResponse { repeated AttrValues per_path = 1; }
+message GrepRequest { RepoRef repo = 1; string rev = 2; string pattern = 3; bool fixed = 4; bool ignore_case = 5;
+  repeated string paths = 6; uint32 max_results = 7; }
+message GrepMatch { bytes path = 1; uint32 line = 2; bytes text = 3; }
+message GrepResponse { repeated GrepMatch matches = 1; }
+message ArchiveRequest { RepoRef repo = 1; string rev = 2; string format = 3; string prefix = 4; repeated string paths = 5; }
+message ArchiveResponse { bytes data = 1; }
+
+message FileOp { bytes path = 1;
+  oneof op { bytes put_content = 2; bytes put_file_id = 3; bool delete = 4; bytes move_from = 5; }
+  uint32 mode = 6; }
+message CommitRequest { RepoRef repo = 1; string parent = 2; repeated FileOp ops = 3; bytes message = 4;
+  Signature author = 5; Signature committer = 6; string update_ref = 7; RefTarget expect = 8; bool sign = 9; }
+message CommitResponse { bytes id = 1; bytes git = 2; }
+enum MergeStyle { MERGE_STYLE_MERGE = 0; MERGE_STYLE_SQUASH = 1; MERGE_STYLE_REBASE = 2; MERGE_STYLE_REBASE_MERGE = 3;
+  MERGE_STYLE_FAST_FORWARD_ONLY = 4; }
+message MergeRequest { RepoRef repo = 1; string base = 2; string head = 3; RepoRef head_repo = 4; MergeStyle style = 5;
+  bytes message = 6; Signature author = 7; Signature committer = 8; bool dry_run = 9; string update_ref = 10;
+  repeated string protected_globs = 11; bool sign = 12; }
+enum ConflictKind { CONFLICT_KIND_CONTENT = 0; CONFLICT_KIND_ADD_ADD = 1; CONFLICT_KIND_MODIFY_DELETE = 2;
+  CONFLICT_KIND_FILE_DIR = 3; CONFLICT_KIND_CASE_FOLD = 4; CONFLICT_KIND_BINARY = 5; }
+message Conflict { bytes changeset = 1; bytes path = 2; ConflictKind kind = 3; bytes base_id = 4; bytes ours_id = 5;
+  bytes theirs_id = 6; bytes marked_id = 7; }                 // marked_id: FileId of the diff3-style marked result (§8.11)
+message MergeResponse { bytes result = 1; repeated bytes conflicts = 2; repeated bytes changed_protected = 3;
+  bool is_empty = 4; repeated Rewrite rewritten = 5; repeated Conflict conflict_details = 6; }
+enum ApplyMode { APPLY_MODE_CHERRY_PICK = 0; APPLY_MODE_REVERT = 1; APPLY_MODE_PATCH = 2; }
+message ApplyRequest { RepoRef repo = 1; string onto = 2; string changeset = 3; bytes patch = 4; ApplyMode mode = 5;
+  bytes message = 6; Signature author = 7; Signature committer = 8; string update_ref = 9; }
+message ApplyResponse { bytes result = 1; repeated bytes conflicts = 2; repeated Conflict conflict_details = 3; }
+message CopyClosureRequest { RepoRef from = 1; RepoRef to = 2; repeated bytes changesets = 3; }
+message CopyClosureResponse { uint64 copied = 1; }
+
+message RepoAdminRequest { RepoRef repo = 1;
+  oneof op { InitOp init = 2; ForkOp fork = 3; bool delete = 4; string rename_to = 5; bool size = 6; bool verify = 7; } }
+message InitOp { string default_branch = 1; bool windows_safe = 2; string mode = 3; /* "primary"|"mirror" */
+  string mirror_url = 4; repeated string land_branches = 5; }
+message ForkOp { RepoRef from = 1; }
+message RepoAdminResponse { uint64 logical_size = 1; uint64 unique_size = 2; string report = 3; }
+
+message GitRefUpdate { string name = 1; bytes old_git = 2; bytes new_git = 3; }
+message ImportGitPushRequest { RepoRef repo = 1; string git_dir = 2; string object_dir = 3;
+  repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; }
+message ImportGitPushResponse { repeated RefResult results = 1; }
+
+message IngestRequest { RepoRef repo = 1; repeated bytes changesets = 2; }
+message IngestResponse { repeated bytes ingested = 1; }
+message FindLandingRequest { RepoRef repo = 1; bytes changeset = 2; string ref = 3; }       // asc or git id
+message FindLandingResponse { bool found = 1; bytes landed_as = 2; uint64 ref_log_seq = 3; int64 at = 4;
+  string actor = 5; string via = 6; }
+enum ChangeClass { CHANGE_CLASS_RENAME_ONLY = 0; CHANGE_CLASS_MODE_ONLY = 1; CHANGE_CLASS_WHITESPACE_ONLY = 2;
+  CHANGE_CLASS_COMMENT_ONLY = 3; CHANGE_CLASS_DOCS = 4; CHANGE_CLASS_GENERATED = 5; CHANGE_CLASS_LOCKFILE = 6;
+  CHANGE_CLASS_TEST = 7; CHANGE_CLASS_LOGIC = 8; }
+message ClassifyRequest { RepoRef repo = 1; string base = 2; string head = 3; bool merge_base = 4; }
+message FileClass { bytes path = 1; ChangeClass class = 2; }
+message ClassifyResponse { repeated FileClass files = 1; ChangeClass overall = 2; }
+message Resolution { bytes changeset = 1; bytes path = 2; FileOp op = 3; }
+message RebaseRequest { RepoRef repo = 1; RepoRef head_repo = 2; string base = 3; string head = 4; string onto = 5;
+  repeated Resolution resolutions = 6; bool dry_run = 7; string update_ref = 8; RefTarget expect = 9; UpdateMode mode = 10; }
+message RebaseResponse { bytes result = 1; repeated Rewrite rewritten = 2; repeated Conflict conflicts = 3; }
+
+// Detail attached to a failed call's gRPC status (§7). `code` is one of the documented code strings.
+message ErrorDetail { string code = 1; repeated string paths = 2; bytes actual = 3; repeated Conflict conflicts = 4; }
