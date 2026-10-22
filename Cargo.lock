@@ -432,6 +432,7 @@ dependencies = [
  "asc-core",
  "globset",
  "postcard",
+ "proptest",
  "quick-xml 0.42.0",
  "serde",
  "serde_json",
