@@ -1,8 +1,8 @@
 //! S3 conformance against MinIO and Garage (`docker compose -f docker-compose.it.yml up -d minio garage`).
 //!
 //! MinIO uses the compose credentials and the pre-created bucket `asc-it` (override with
-//! `ASC_IT_MINIO_{ENDPOINT,BUCKET,USER,PASSWORD}`). Garage needs `ASC_IT_GARAGE_KEY` and
-//! `ASC_IT_GARAGE_SECRET` (plus optional `ASC_IT_GARAGE_{ENDPOINT,BUCKET,REGION}`) and is skipped without them.
+//! `ASC_IT_MINIO_{ENDPOINT,BUCKET,USER,PASSWORD}`). Garage defaults to the fixed key made by deploy/garage-init.sh; override with `ASC_IT_GARAGE_KEY` and
+//! `ASC_IT_GARAGE_SECRET` (plus optional `ASC_IT_GARAGE_{ENDPOINT,BUCKET,REGION}`).
 #![cfg(feature = "it-s3")]
 
 use std::sync::Arc;
@@ -47,8 +47,11 @@ impl Target {
             endpoint: env("ASC_IT_GARAGE_ENDPOINT", "http://127.0.0.1:3900"),
             bucket: env("ASC_IT_GARAGE_BUCKET", "asc-it"),
             region: env("ASC_IT_GARAGE_REGION", "garage"),
-            user: std::env::var("ASC_IT_GARAGE_KEY").ok()?,
-            pass: std::env::var("ASC_IT_GARAGE_SECRET").ok()?,
+            user: env("ASC_IT_GARAGE_KEY", "GK0123456789abcdef01234567"),
+            pass: env(
+                "ASC_IT_GARAGE_SECRET",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
         })
     }
 

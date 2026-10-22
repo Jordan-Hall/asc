@@ -11,11 +11,27 @@ services:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       retries: 10
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c", "mc alias set l http://minio:9000 asctest asctest-secret && mc mb --ignore-existing l/asc-it"]
   garage:
     image: dxflrs/garage:v1.0.1
-    ports: ["3900:3900", "3902:3902"]
+    ports: ["3900:3900", "3903:3903"]
     volumes:
       - ./deploy/garage.toml:/etc/garage.toml:ro
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 3s
+      retries: 20
+  garage-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      garage: {condition: service_healthy}
+    volumes:
+      - ./deploy/garage-init.sh:/init.sh:ro
+    entrypoint: ["/bin/sh", "/init.sh"]
   postgres:
     image: postgres:17
     environment:
