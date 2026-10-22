@@ -1,7 +1,7 @@
 //! Linking (SPEC §12A.1, §12A.3): detectors' projects become one graph with
 //! Contains and opaque Implicit edges, declared projects and the config applied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use asc_core::path::RepoPath;
 
@@ -14,7 +14,9 @@ use crate::own::in_node_modules;
 use crate::pattern::{IgnoreSet, PatternError};
 use crate::select::{SelectError, Selector, Term, resolve_one, select};
 
-/// Most edges that opaque projects may add to one graph.
+/// Most edges that opaque projects and configured `implicit_dependencies`
+/// together (additions and removals counted per entry, after deduplication)
+/// may add to one graph.
 pub const MAX_IMPLICIT_EDGES: usize = 10_000_000;
 
 /// Why a graph could not be linked; the server reports these as `PROJECTS_CONFIG`.
@@ -30,7 +32,7 @@ pub enum LinkError {
     DuplicateRoot { line: u32, root: RepoPath },
     #[error("more than {MAX_PROJECTS} projects")]
     TooManyProjects,
-    #[error("opaque projects would add more than {MAX_IMPLICIT_EDGES} edges")]
+    #[error("opaque projects and implicit dependencies would add more than {MAX_IMPLICIT_EDGES} edges")]
     TooManyEdges,
 }
 
@@ -109,8 +111,8 @@ pub fn link_graph(
     }
     prune_edges(&mut projects);
     add_contains(&mut projects);
-    add_opaque_edges(&mut projects)?;
-    apply_config(&config, &mut projects, &mut issues)?;
+    let used = add_opaque_edges(&mut projects)?;
+    apply_config(&config, &mut projects, &mut issues, used)?;
     for p in &mut projects {
         p.deps.sort();
         p.deps.dedup();
@@ -227,7 +229,8 @@ fn add_contains(projects: &mut [Project]) {
 }
 
 /// An opaque project depends on every other project of its ecosystem.
-fn add_opaque_edges(projects: &mut [Project]) -> Result<(), LinkError> {
+/// Returns the number of edges added, for the shared budget.
+fn add_opaque_edges(projects: &mut [Project]) -> Result<usize, LinkError> {
     let mut per_eco: BTreeMap<Ecosystem, Vec<usize>> = BTreeMap::new();
     for (i, p) in projects.iter().enumerate() {
         per_eco.entry(p.key.eco).or_default().push(i);
@@ -253,7 +256,7 @@ fn add_opaque_edges(projects: &mut [Project]) -> Result<(), LinkError> {
         let key = projects[q].key.clone();
         projects[i].deps.push((key, DepKind::Implicit));
     }
-    Ok(())
+    Ok(total)
 }
 
 fn index_of(projects: &[Project], key: &ProjectKey) -> Option<usize> {
@@ -264,11 +267,13 @@ fn index_of(projects: &[Project], key: &ProjectKey) -> Option<usize> {
 ///
 /// Every `select` is resolved against the detected projects first, so one
 /// entry's tags never change what another selects. Additions run before
-/// removals, as exclusions do everywhere else.
+/// removals, as exclusions do everywhere else. Matches count against
+/// [`MAX_IMPLICIT_EDGES`] together with the `used` opaque edges.
 fn apply_config(
     config: &crate::config::ResolvedConfig,
     projects: &mut [Project],
     issues: &mut Vec<Issue>,
+    used: usize,
 ) -> Result<(), LinkError> {
     let mut targets = Vec::with_capacity(config.projects.len());
     for e in &config.projects {
@@ -286,18 +291,30 @@ fn apply_config(
         };
         targets.push(index_of(projects, &key).expect("resolved project exists"));
     }
-    let mut adds: Vec<(usize, ProjectKey)> = Vec::new();
-    let mut removes: Vec<(usize, ProjectKey)> = Vec::new();
+    let mut budget = used;
+    let mut adds: Vec<(usize, usize)> = Vec::new();
+    let mut removes: HashMap<usize, HashSet<usize>> = HashMap::new();
     for (e, &i) in config.projects.iter().zip(&targets) {
+        // Hits are deduplicated per entry, so repeated selectors cost once.
+        let mut add_set = BTreeSet::new();
+        let mut remove_set = BTreeSet::new();
         for hits_for in &e.implicit_dependencies {
             let positive = Selector {
                 exclude: false,
                 term: hits_for.term.clone(),
             };
-            let hits = select(projects, &[positive]).map_err(|source| LinkError::Select {
-                line: e.line,
-                source,
-            })?;
+            // `select` builds every display id per call; only a bare name can
+            // be ambiguous and need them, so other terms match directly.
+            let hits = if matches!(hits_for.term, Term::Name(_)) {
+                select(projects, &[positive]).map_err(|source| LinkError::Select {
+                    line: e.line,
+                    source,
+                })?
+            } else {
+                (0..projects.len())
+                    .filter(|&q| positive.matches(&projects[q]))
+                    .collect()
+            };
             let hits = || hits.iter().copied().filter(|&q| q != i);
             if hits().next().is_none() && !matches!(hits_for.term, Term::Tag(_)) {
                 issues.push(Issue {
@@ -306,22 +323,34 @@ fn apply_config(
                         .into_bytes(),
                 });
             }
-            let list = if hits_for.exclude {
-                &mut removes
+            let set = if hits_for.exclude {
+                &mut remove_set
             } else {
-                &mut adds
+                &mut add_set
             };
-            list.extend(hits().map(|q| (i, projects[q].key.clone())));
+            set.extend(hits());
+            if budget.saturating_add(add_set.len() + remove_set.len()) > MAX_IMPLICIT_EDGES {
+                return Err(LinkError::TooManyEdges);
+            }
         }
+        budget += add_set.len() + remove_set.len();
+        adds.extend(add_set.into_iter().map(|q| (i, q)));
+        removes.entry(i).or_default().extend(remove_set);
         projects[i]
             .tags
             .extend(e.tags.iter().map(|t| t.as_bytes().to_vec()));
     }
-    for (i, key) in adds {
+    for (i, q) in adds {
+        let key = projects[q].key.clone();
         projects[i].deps.push((key, DepKind::Implicit));
     }
-    for (i, key) in removes {
-        projects[i].deps.retain(|(k, _)| *k != key);
+    if !removes.is_empty() {
+        let keys: Vec<ProjectKey> = projects.iter().map(|p| p.key.clone()).collect();
+        for (i, gone) in removes {
+            projects[i]
+                .deps
+                .retain(|(k, _)| keys.binary_search(k).map_or(true, |q| !gone.contains(&q)));
+        }
     }
     Ok(())
 }
@@ -518,5 +547,76 @@ implicit_dependencies = ["rust:a"]
     fn dangling_and_self_edges_are_dropped() {
         let t = Tree::new(&[("a/rust.fake", "name=a\ndep=a\ndep=zzz")]);
         assert!(graph(&t, "").projects[0].deps.is_empty());
+    }
+
+    fn many(n: usize) -> Tree {
+        let files: Vec<(String, String)> = (0..n)
+            .map(|i| (format!("p{i}/rust.fake"), format!("name=p{i}")))
+            .collect();
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        Tree::new(&refs)
+    }
+
+    #[test]
+    fn implicit_edges_share_the_edge_budget() {
+        let n = 5_000;
+        let mut cfg = String::from("version = 1
+");
+        for i in 0..n {
+            cfg.push_str(&format!(
+                "[[project]]
+select = \"rust:p{i}\"
+implicit_dependencies = [\"eco:rust\"]
+"
+            ));
+        }
+        let start = std::time::Instant::now();
+        let e = try_build(&many(n), &[], config::parse(&cfg).unwrap()).unwrap_err();
+        assert_eq!(e, LinkError::TooManyEdges);
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn repeated_selectors_are_deduplicated_and_removals_apply() {
+        let t = Tree::new(&[
+            ("a/rust.fake", "name=a"),
+            ("b/rust.fake", "name=b"),
+            ("c/rust.fake", "name=c"),
+        ]);
+        let g = graph(
+            &t,
+            "version = 1
+[[project]]
+select = \"rust:a\"
+implicit_dependencies = [\"eco:rust\", \"rust:b\", \"!rust:c\"]
+",
+        );
+        assert_eq!(
+            edges(&g, "rust:a"),
+            [("rust:b".to_owned(), DepKind::Implicit)]
+        );
+    }
+
+    #[test]
+    fn removing_many_keys_is_linear() {
+        let n = 2_000;
+        let mut cfg = String::from(
+            "version = 1
+[[project]]
+select = \"rust:p0\"
+implicit_dependencies = [\"eco:rust\", \"!eco:rust\"",
+        );
+        for i in 1..n {
+            cfg.push_str(&format!(", \"!rust:p{i}\""));
+        }
+        cfg.push_str("]
+");
+        let start = std::time::Instant::now();
+        let g = graph(&many(n), &cfg);
+        assert!(edges(&g, "rust:p0").is_empty());
+        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
     }
 }
