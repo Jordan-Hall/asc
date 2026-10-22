@@ -435,14 +435,19 @@ mod safe_root_tests {
 
     #[test]
     fn resolve_refuses_a_linked_ancestor_and_allows_real_ones() {
-        let Some((_keep, root, _)) = linked() else { return };
+        let Some((_keep, root, _)) = linked() else {
+            return;
+        };
         fs::create_dir_all(root.join("real/sub")).unwrap();
         let gate = SafeRoot::new(&root);
         assert_eq!(gate.resolve(&p("a/b")), None);
         assert_eq!(gate.resolve(&p("a/e/x")), None);
         // The link itself is a tracked entry, so it resolves.
         assert_eq!(gate.resolve(&p("a")), Some(root.join("a")));
-        assert_eq!(gate.resolve(&p("real/sub/f")), Some(root.join("real").join("sub").join("f")));
+        assert_eq!(
+            gate.resolve(&p("real/sub/f")),
+            Some(root.join("real").join("sub").join("f"))
+        );
         // A missing ancestor is not a refusal.
         assert!(gate.resolve(&p("none/f")).is_some());
         // A file in the way is not a directory.
@@ -452,7 +457,9 @@ mod safe_root_tests {
 
     #[test]
     fn resolve_notices_a_directory_swapped_for_a_link_only_after_forget() {
-        let Some((_keep, root, outside)) = linked() else { return };
+        let Some((_keep, root, outside)) = linked() else {
+            return;
+        };
         let gate = SafeRoot::new(&root);
         fs::create_dir(root.join("d")).unwrap();
         assert!(gate.resolve(&p("d/x")).is_some());
@@ -466,7 +473,9 @@ mod safe_root_tests {
 
     #[test]
     fn remove_file_never_goes_through_a_link() {
-        let Some((_keep, root, outside)) = linked() else { return };
+        let Some((_keep, root, outside)) = linked() else {
+            return;
+        };
         let gate = SafeRoot::new(&root);
         assert!(!gate.remove_file(&p("a/b")).unwrap());
         assert!(outside.join("b").exists());
@@ -477,7 +486,9 @@ mod safe_root_tests {
 
     #[test]
     fn remove_empty_parents_stops_at_a_link_and_at_a_non_empty_dir() {
-        let Some((_keep, root, outside)) = linked() else { return };
+        let Some((_keep, root, outside)) = linked() else {
+            return;
+        };
         let gate = SafeRoot::new(&root);
         assert_eq!(gate.resolve(&p("a/e/x")), None);
         gate.remove_empty_parents(&p("a/e/x"));

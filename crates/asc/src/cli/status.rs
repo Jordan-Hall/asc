@@ -26,6 +26,7 @@ use asc_store::refs::Refs;
 use asc_store::storeset::StoreSet;
 use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
 use asc_wc::plain::{Sparse, Wc};
+use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::status::{ChangeKind, NoEol, Untracked, compute};
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
@@ -486,8 +487,11 @@ fn selected(spec: &Option<Pathspec>, path: &[u8], dir: bool) -> bool {
 }
 
 /// The mode of the work tree entry at `path`, 0 when absent.
-fn work_mode(root: &Path, path: &RepoPath, index: Option<Side>, symlinks: bool) -> u32 {
-    let abs = asc_wc::plain::fs_path(root, path);
+fn work_mode(gate: &SafeRoot, path: &RepoPath, index: Option<Side>, symlinks: bool) -> u32 {
+    // Behind a symlinked or reparse-point ancestor the path is outside the work tree: absent.
+    let Some(abs) = gate.resolve(path) else {
+        return 0;
+    };
     let Ok(meta) = std::fs::symlink_metadata(&abs) else {
         return 0;
     };
@@ -580,6 +584,7 @@ fn unmerged_xy(stages: &[Option<Side>; 3]) -> [u8; 2] {
 
 async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
     let root = ws.projection.toplevel().to_owned();
+    let gate = SafeRoot::new(&root);
     let index_path = ws.projection.git_dir().join("index");
     let redirections = Redirections::load(&root).map_err(wc_err)?;
     let sparse = ws.workspace.ws.sparse.as_deref().map(Sparse::parse);
@@ -670,7 +675,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
             }
         };
         row.y = change_letter(c.kind);
-        row.work = work_mode(&root, &c.path, row.index, symlinks);
+        row.work = work_mode(&gate, &c.path, row.index, symlinks);
     }
 
     // Unmerged paths.
@@ -690,7 +695,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         let [x, y] = unmerged_xy(&stages);
         let mut row = Row::new(path.as_bytes().to_vec());
         (row.x, row.y) = (x, y);
-        row.work = work_mode(&root, path, stages[1].or(stages[0]), symlinks);
+        row.work = work_mode(&gate, path, stages[1].or(stages[0]), symlinks);
         row.stages = Some(stages);
         out.insert(row.path.clone(), row);
     }
@@ -834,7 +839,9 @@ fn expand_dir(
         out: &mut Vec<Vec<u8>>,
     ) -> std::io::Result<()> {
         stack.push_dir(abs)?;
-        let mut names: Vec<_> = std::fs::read_dir(abs)?.collect::<std::io::Result<_>>()?;
+        // The walk lists real directories only: `file_type` does not follow a link.
+        let mut names: Vec<_> = std::fs::read_dir(abs)? // lint:allow-worktree-fs
+            .collect::<std::io::Result<_>>()?;
         names.sort_by_key(|e| name_bytes(&e.file_name()));
         for entry in names {
             let name = name_bytes(&entry.file_name());
@@ -887,7 +894,9 @@ impl IgnoredWalk<'_> {
     }
 
     fn entries(&mut self, rel: Option<&RepoPath>, abs: &Path) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(abs)? {
+        // Real directories only, as above: `file_type` does not follow a link.
+        let listing = std::fs::read_dir(abs)?; // lint:allow-worktree-fs
+        for entry in listing {
             let entry = entry?;
             let name = name_bytes(&entry.file_name());
             if name == b".git" || self.redirections.is_redirected_name(&name) {
