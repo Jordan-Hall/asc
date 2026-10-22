@@ -11,6 +11,7 @@ pub mod http;
 pub mod idmode;
 pub mod ingest;
 pub mod limits;
+pub mod limits;
 pub mod mainline;
 pub mod migrate;
 pub mod outbox;
@@ -229,6 +230,12 @@ pub async fn serve(
     );
     turbo::register(&ext, turbo.clone());
     let routes = build_routes(&ext, authorizer, ServerInfo::default());
+    let admission = Arc::new(limits::Admission::new(&cfg.limits));
+    let routes = Routes::from(
+        routes
+            .into_axum_router()
+            .layer(limits::AdmissionLayer::new(admission)),
+    );
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
     let routes = Routes::from(
         routes
