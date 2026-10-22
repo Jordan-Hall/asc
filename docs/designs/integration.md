@@ -1,5 +1,7 @@
 # asc architecture: integration-first design
 
+> Note (SPEC v1.1): branch names `main` in this document are superseded by SPEC §6.5 (`master`). This document is background only; `docs/SPEC.md` is authoritative.
+
 Status: design proposal, 2026-10-22. Angle: **integration-first**. The Forgejo storage replacement, Turborepo, Forgejo Actions, git-compatible UX and migration from the existing git history (LFS and submodule included) must be smooth, reversible and low risk. Every phase ships something usable and can be rolled back.
 
 Inputs: `docs/research/{forgejo,prior-art,rust-stack,turbo-ci,asc-profile}.md`. Fixed user decisions (Bonsai-style changesets, full storage replacement in a Forgejo fork, Rust, git-shaped `asc` CLI, S3-compatible and local storage, local-only and client/server modes, lazy materialisation, cheap worktrees, faster Turborepo CI) are not reopened here.

@@ -12,7 +12,11 @@ These are requirements that fixes in earlier units created for later units. Ever
 - **asc-store reconcile, after U08/U09:**
   - `CacheDir` and `Tiered` `put` must verify on write and repair corrupt values, so they pass the extended conformance suite.
   - Migrate the callers to `decode_stored_capped(stored, max)` with per-class caps, then delete the 256 MiB `decode_stored` wrapper.
-- **`GitTreeOverride` value** is the git tree object body without the `tree <len>\0` header, verified by `object_oid(Tree, body) == oid`. SPEC §3.3 must say so.
 - **`canonicalise_tag`** must reject `type` other than `commit` at import, not only at export.
 - **`parse_tag` rejects unknown headers.** This is stricter than git. If an imported history tag has extra headers, keep it raw instead of failing the import.
 - **Import round-trip invariant (asc-git import, U33):** after building each changeset from a raw git commit or tag, call `export_commit`/`export_tag`. Store it only if the result equals the original raw bytes (same SHA-1). Otherwise fail the import of that object. An `asc` header whose copies do not map to `Change::Write` entries is rejected this way, so nothing unexportable is ever stored.
+- **`ObjKey::ChangeMeta` (`m/`) and envelope kind 6 are reserved (SPEC §2.2, §3.1, §20.2).** `OBJ_KIND_CHANGE_META = 9` is reserved in `repo.proto` (U41). C01 adds them to the built `asc-core`/`asc-store` enums; no other unit may use kind 6, key prefix `m/` or ObjKind 9.
+- **Graph boundary (U31):** the built `GraphSource::get` has no `Boundary` result. U31 owns adding `GraphSource::get -> Result<NodeOrBoundary>` (a `Boundary` variant for ids recorded in `history_boundary`) to `crates/asc-engine/src/graph.rs`. `Graph::merge_base`/`is_ancestor`/`log` hand a boundary to an optional `RemoteHistory` hook, which calls `MergeBase`/`IsAncestor`/`Log` with the boundary ids.
+- **Skip pointers (U14b):** `JumpIndex::jump` is synchronous, so `graph_skip.rs` loads `skip.v1` for each node when `GraphSource` loads it (a wrapping `GraphSource`) and answers `jump` from memory.
+- **Raw git in tests (U01b, U15):** the test-only `Command::new("git")` lines in asc-engine carry `// lint:allow-raw-git` (SPEC §11.4); asc-engine cannot use `RealGit` (crate cycle).
+- **Local ref moves (every CLI unit):** go through `Ctx::update_local_refs` only (SPEC §9.4.1); the synthetic index follows set 0, not only HEAD (SPEC §9.4).
