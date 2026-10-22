@@ -1,0 +1,37 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/repo.proto";
+
+// Commit cloud (SPEC §21.3.5): per-user workspaces of draft heads on the server. Same port as Repo.
+service Cloud {
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);          // cheap
+  rpc UpdateWorkspace(UpdateWorkspaceRequest) returns (UpdateWorkspaceResponse); // background, x-asc-op-id
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);    // cheap, paged
+  rpc Purge(PurgeRequest) returns (PurgeResponse);                               // owner (own unsubmitted drafts) or admin
+}
+
+// `change` is response only: the server derives it from the `m/` object of `cs` and ignores the client value.
+// `labels` are at most 8, each at most 64 bytes of [A-Za-z0-9._/-], else INVALID_ARGUMENT. Untrusted text.
+message CloudHead { bytes cs = 1; bytes change = 2; repeated string labels = 3; int64 added = 4; int64 hidden_at = 5; }
+
+// `owner` empty means the caller; reading another user's workspace needs repo write (§21.2.5).
+message GetWorkspaceRequest { RepoRef repo = 1; string owner = 2; string name = 3;
+  uint64 since_version = 4; int64 max_age_s = 5; bool include_hidden = 6; string page_token = 7; }
+message GetWorkspaceResponse { uint64 version = 1; repeated CloudHead heads = 2; repeated bytes removed = 3;
+  uint32 omitted = 4; string next_page_token = 5; }
+
+message UpdateWorkspaceRequest { RepoRef repo = 1; string name = 2; uint64 base_version = 3;
+  repeated CloudHead add = 4; repeated bytes remove = 5; repeated bytes hide = 6; repeated bytes unhide = 7; }
+// On ErrorDetail.code VERSION_CONFLICT, ErrorDetail.actual carries the current version as 8 big-endian bytes.
+message UpdateWorkspaceResponse { uint64 version = 1; }
+
+message WorkspaceInfo { string owner = 1; string name = 2; uint64 version = 3; uint32 heads = 4; int64 updated = 5; }
+message ListWorkspacesRequest { RepoRef repo = 1; string owner = 2; uint32 limit = 3; string page_token = 4; }
+message ListWorkspacesResponse { repeated WorkspaceInfo workspaces = 1; string next_page_token = 2; }
+
+// Purge drafts (SPEC §21.3.7): writes gc_purge and cache_evict outbox rows in one transaction.
+// `unacked_tiers` names cache tiers that have not yet acknowledged the eviction.
+message PurgeRequest { RepoRef repo = 1; repeated bytes cs = 2; }
+message PurgeResponse { uint32 purged = 1; repeated bytes refused = 2; repeated string unacked_tiers = 3; }

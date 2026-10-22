@@ -69,6 +69,12 @@ rpc_errors! {
     ChangeFrozen => "CHANGE_FROZEN",
     ChangeNotAllowed => "CHANGE_NOT_ALLOWED",
     LandNeedsContentMerge => "LAND_NEEDS_CONTENT_MERGE",
+    VersionConflict => "VERSION_CONFLICT",
+    CloudHeadsLimit => "CLOUD_HEADS_LIMIT",
+    CloudWorkspacesLimit => "CLOUD_WORKSPACES_LIMIT",
+    UserRefsLimit => "USER_REFS_LIMIT",
+    QuotaExceeded => "QUOTA_EXCEEDED",
+    RefNotShared => "REF_NOT_SHARED",
 }
 
 impl std::fmt::Display for RpcError {
@@ -152,6 +158,12 @@ mod tests {
             "CHANGE_FROZEN",
             "CHANGE_NOT_ALLOWED",
             "LAND_NEEDS_CONTENT_MERGE",
+            "VERSION_CONFLICT",
+            "CLOUD_HEADS_LIMIT",
+            "CLOUD_WORKSPACES_LIMIT",
+            "USER_REFS_LIMIT",
+            "QUOTA_EXCEEDED",
+            "REF_NOT_SHARED",
         ];
         for code in codes {
             let d = pb::ErrorDetail {
