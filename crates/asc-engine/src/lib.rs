@@ -11,6 +11,7 @@ pub mod commit;
 pub mod derive;
 pub mod diff;
 pub mod graph;
+pub mod graph_skip;
 pub mod revspec;
 pub mod tree;
 
