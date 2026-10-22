@@ -1,0 +1,4 @@
+{
+  "name": "pipeline-svc-api",
+  "dependencies": { "@asc/nova": "workspace:*", "compromise": "14.14.5" }
+}

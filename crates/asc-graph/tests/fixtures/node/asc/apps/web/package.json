@@ -1,0 +1,5 @@
+{
+  "name": "web",
+  "dependencies": { "@asc/ui": "workspace:*", "react": "^19.0.0" },
+  "devDependencies": { "@asc/dsl-compiler": "link:../../packages/dsl/core/rust" }
+}

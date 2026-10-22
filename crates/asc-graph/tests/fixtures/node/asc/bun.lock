@@ -1,0 +1,38 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "@asc/private", "devDependencies": { "typescript": "7.0.2" } },
+    "apps/analysis/pipeline/api": {
+      "name": "pipeline-svc-api",
+      "dependencies": { "@asc/nova": "workspace:*", "compromise": "14.14.5" },
+    },
+    "apps/web": {
+      "name": "web",
+      "dependencies": { "@asc/ui": "workspace:*", "react": "^19.0.0" },
+    },
+    "packages/dsl/core/rust": { "name": "@asc/dsl-compiler" },
+    "packages/nova": {
+      "name": "@asc/nova",
+      "dependencies": { "@nova/budgets": "workspace:*", "zod": "^4.4.1" },
+    },
+    "packages/nova/sdk": { "name": "nova-workspace", "devDependencies": { "typescript": "7.0.2" } },
+    "packages/nova/sdk/ts/budgets": { "name": "@nova/budgets", "version": "0.1.0" },
+    "packages/nova/sdk/ts/inference": {
+      "name": "@nova/inference",
+      "dependencies": { "@nova/budgets": "workspace:*", "zod": "^4.4.1" },
+    },
+    "packages/ui": { "name": "@asc/ui", "dependencies": { "left-pad": "^1.3.0" } },
+  },
+  "packages": {
+    "@asc/nova": ["@asc/nova@workspace:packages/nova"],
+    "@asc/ui": ["@asc/ui@workspace:packages/ui"],
+    "@nova/budgets": ["@nova/budgets@workspace:packages/nova/sdk/ts/budgets"],
+    "@nova/inference": ["@nova/inference@workspace:packages/nova/sdk/ts/inference"],
+    "compromise": ["compromise@14.14.5", "https://registry/compromise.tgz", { "dependencies": { "efrt": "2.7.0" } }, "sha512-compromise"],
+    "efrt": ["efrt@2.7.0", "https://registry/efrt.tgz", {}, "sha512-efrt"],
+    "left-pad": ["left-pad@1.3.0", "https://registry/left-pad.tgz", {}, "sha512-leftpad130"],
+    "react": ["react@19.0.0", "https://registry/react.tgz", {}, "sha512-react19"],
+    "typescript": ["typescript@7.0.2", "https://registry/typescript.tgz", {}, "sha512-ts7"],
+    "zod": ["zod@4.4.1", "https://registry/zod.tgz", {}, "sha512-zod441"],
+  }
+}

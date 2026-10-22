@@ -1,0 +1,1 @@
+{ "name": "nova-workspace", "workspaces": ["ts/*"], "devDependencies": { "typescript": "7.0.2" } }

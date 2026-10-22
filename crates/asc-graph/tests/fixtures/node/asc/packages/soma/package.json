@@ -1,0 +1,1 @@
+{ "name": "@asc/nova", "dependencies": { "@nova/budgets": "workspace:*", "zod": "^4.4.1" } }
