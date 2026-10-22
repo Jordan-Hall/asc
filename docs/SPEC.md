@@ -1,6 +1,6 @@
 # asc: final specification
 
-Status: **authoritative**, v1.3 (audit round 3; stacks folded in), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.4 (audit round 4; contract gaps closed: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
 Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
@@ -484,7 +484,7 @@ log/daemon.log
 - **LRU** uses file mtime. A read touches mtime when it is older than 24 h. The daemon (or `asc gc`) evicts `cache/` files with the oldest mtime once the cache exceeds `asc.cache.maxSize` (default 20 GiB), down to 80% of that.
 - **Demotion:** after a successful push, pushed objects are renamed from `store/` to `cache/`.
 - **Store set:** `StoreSet` reads `store/` then `cache/`, and writes new local objects to `store/`.
-- **Cache keys [audit: ci-tier-stack-config-undefined-unowned]:** `asc.cache.dir` replaces `$ASC_HOME/cache` as the evictable cache. `asc.cache.readOnly` (multi-valued) adds read-only `CacheDir` tiers in front of it, verified on read and never written. Every asc process builds `Tiered<readOnly…, StoreSet{store, cache}, remote>` from these keys.
+- **Cache keys [audit: ci-tier-stack-config-undefined-unowned]:** `asc.cache.dir` replaces `$ASC_HOME/cache` as the evictable cache. `asc.cache.readOnly` (multi-valued) adds read-only `CacheDir` tiers in front of it, verified on read and never written. Every asc process builds `Tiered<readOnly…, StoreSet{store, cache}, remote>` from these keys; `Ctx` builds this stack itself in every process, with no per-mode override **[audit: object-stack-selector-single-owner-blocks-remote-tier]**. The remote tier is the default remote's object source: `BucketObjects` for a bucket remote, `RemoteObjects` (honouring the §7 `objects` tier list) for a server remote, and none for local-only and git-remote modes, whose objects come from import. An `asc.cache.readOnly` tier never writes and never deletes; a corrupt file there is reported as a miss.
 - **Storage budgets [audit: user decision efficiency]:** each object is stored once per machine and shared by all workspaces, worktrees and repos; `cache/` is LRU-bounded; hydrated files are released by dehydration (§10.2.9); there are no packfiles and no cruft. `asc debug stats` reports bytes per workspace, which is about 0 before hydration (only the synthetic `.git` index and rows).
 
 ### 3.6 Garbage collection (server and bucket; unit O01, not needed for ASC v1)
@@ -1214,6 +1214,8 @@ Native commands MUST run the same hooks at the same points as git 2.55, with git
 - `am`: `applypatch-msg`, `pre-applypatch` and `post-applypatch`.
 - every local ref update (commit, branch, tag, reset, update-ref, rebase, merge): `reference-transaction prepared|committed|aborted` with stdin lines `<old> <new> <ref>` (git SHA-1s) **[audit: hooks-must-vs-list]**.
 - **One chokepoint [audit: local-ref-update-chokepoint]:** asc moves local refs through one function, which writes the ref CAS, the reflog, the `reference-transaction` hook calls and, when HEAD's commit changes, the synthetic-index update (§9.4). No command moves a local ref any other way. Fetch and push remote-tracking updates go through it too, as in git.
+  - **Engine code never moves a local ref [audit: engine-local-ref-moves-bypass-chokepoint].** An engine function whose effect includes local ref moves (fetch, clone, push's remote-tracking update, restack execution) returns the planned `RefTxn`, and the CLI applies it through the chokepoint.
+  - CLI code receives the engine over `ReadOnlyRefs<SqlRefs>`, whose `update` returns `Error::ReadOnly`, so a bypass fails in tests instead of silently skipping hooks, the reflog `op_id` and the op log (§20.3).
 - `gc`: `pre-auto-gc` is never run (asc has no auto-gc).
 
 Never run, because asc has no such mechanism: `post-index-change`, `fsmonitor-watchman`, `push-to-checkout`, `sendemail-validate`, `p4-*`, and the receive-pack hooks (`pre-receive`, `update`, `proc-receive`, `post-receive`, `post-update`; server policy is Forgejo's, §8.3). They are listed in `tests/compat/allowed.toml`.
@@ -1224,6 +1226,10 @@ Env as git sets it: `GIT_INDEX_FILE` (absolute) is always set for commit hooks: 
 
 - Staging lives in `state.db.stage` (§9.2): one row per path whose staged state differs from HEAD, plus conflict stages 1–3 and intent-to-add entries. A path without a row is staged as in HEAD. git's index file is not the staging area (§9.4).
 - `asc add` ingests the content into `store/` (FileId, chunks; normalisation per §2.4.1), computes the git blob SHA-1, and writes the `stage` row plus a `git_map` row. `add -p` stages a hunk-filtered blob the same way. Nothing is read from the working file again at commit time **[fix J1/J2/J3: `git add -p`]**.
+- **HEAD moves keep the staging [audit: staging-overlay-breaks-on-head-moves].** Set 0 is an overlay on HEAD, so a HEAD move must keep the staging that git's index would have (git keeps its index on `reset --soft`, on `update-ref` of the checked-out branch and on `symbolic-ref HEAD`).
+  - When HEAD's commit changes from `a` to `b`, the chokepoint (§9.4.1) by default rewrites set 0 so that `b ⊕ rows' == a ⊕ rows`: for each path in `leafdiff(a, b)` without a row it adds a row with `a`'s entry (or a staged delete), and it drops rows that now equal `b`. Cost O(leafdiff).
+  - Commands that define a new index state (`commit`, `checkout`/`switch`, `reset --mixed|--hard`, `merge`, `rebase`, `cherry-pick`, `revert`, `stash`, `pull`, `bisect`, stack verbs) instead pass the rows they want.
+  - The synthetic index (§9.4) is therefore unchanged in content for `reset --soft`, `update-ref` and `symbolic-ref`: after `git reset --soft HEAD~1` the commit's changes are staged, and the next `asc commit` is not empty.
 - `ls-files -s`, `diff --cached`, `status`, `write-tree` and the other index plumbing read the HEAD tree overlaid with `stage` rows and print git SHA-1s, exactly as git would print its index.
 - **`GIT_INDEX_FILE` → stage set (normative) [audit: git-index-file-stage-sets]:** if `GIT_INDEX_FILE` is unset, or equals (after normalisation) the workspace's own `<gitdir>/index`, asc uses the default stage set (set 0, the `stage` rows). asc never parses that file as staging. Any other path names a temporary stage set, keyed by its absolute path in `stage_sets`:
   - a registered path uses its set; a missing file starts an empty set (git semantics); an existing unregistered file is imported once (git oids → FileIds through `git_map`; an unknown oid fails with git's `fatal: unable to read <sha>`);
@@ -2243,6 +2249,20 @@ A revset subset exists only under `-r/--revset`: `stack()`, `draft()`, `trunk()`
 - **`asc undo`** applies the inverse of the op's `ref_log` deltas, with a CAS against each ref's recorded new value, and restores `HEAD` and, if present, the snapshot. It refuses when a ref has moved since the op, or when it would move a branch that another workspace has checked out, unless `-f`. Undo is itself an op, so `asc redo` undoes the undo. Remote effects (push, submit, land) are never undone; undo prints a `hint:` naming them.
 - **Bounds.** Ops older than `asc.opLog.maxDays` (90) or beyond `asc.opLog.maxOps` (1,000) are pruned. `ref_log` rows follow git's `gc.reflogExpire`. A snapshot referenced only by pruned ops is removed from `store/` by `asc gc`. `asc.opLog=false` disables recording.
 
+**Sink contract [audit: rewrite-sink-contract-insufficient-and-double-owned].** The commands that write changesets call the sinks themselves; C04 only supplies the implementations.
+- `RewriteSink::record(&self, new: ChangesetId, preds: &[ChangesetId], kind: RewriteOp, op: OpId)` is called once for every changeset a command writes, except stash snapshots. `OpId(Uuid)` is the newtype of `RefTxn.op_id`.
+
+  | Command | `preds` | `kind` |
+  |---|---|---|
+  | `commit`, `cherry-pick`, `revert`, merge commit | `[]` | New |
+  | `commit --amend` | `[old]` | Amend |
+  | `rebase`, `rebase -i` pick, reword and edit, `pull --rebase` | `[old]` | Rebase |
+  | squash, fixup, fold | all folded changesets | Squash (Fold for `asc fold`) |
+  | each split piece | `[old]` | Split |
+
+- C02's rules table (§20.2) maps `(kind, preds)` to keep or mint a change id. Stack verbs pass their own `RewriteOp` (Absorb, Restack, …).
+- `OpSink::snapshot_wc` runs before every command listed in "Working-copy snapshot" above, including `merge --abort` and `rebase --abort`.
+
 **Local state (`state.db`, §9.2).**
 
 ```sql
@@ -2268,6 +2288,7 @@ mergeable(ns BLOB, head BLOB, trunk_tip BLOB, state SMALLINT, conflicts BLOB, co
 ```
 
 - `changes` is written in `UpdateRefs` step 4 (§8.3) and in `Ingest` (§8.7) for every new changeset whose closure carries a valid `m/` object (§20.2). Land, `Merge(REBASE|SQUASH)` and `RestackChanges` write rows for the rewritten changesets in the same transaction as `land_map` (§8.9).
+- **The server writes meta for every changeset it creates [audit: stack-server-and-sync-hooks-unowned].** It writes a `ChangeMeta` object and a `changes` row for each: `Commit` New; land, `Rebase`, `Merge(REBASE)` and `RestackChanges` Rebase or Restack with `[old]`; `Merge(SQUASH)` the PR's change with the sources as `preds`. The write happens in the transaction that writes `land_map` (§8.9), or in step 4 for `Commit` and `Ingest`, through the `IngestObserver` hook of the ingest pipeline. The §8.4 closure check (`meta.cs` is in the push closure) runs in the same hook. `Log` and `Blame` fill `LogEntry.change`, `meta` and `stats` through a `LogEntryEnricher` hook.
 - `landed_as(change)` is a lookup in `changes_by_change`, filtered to changesets on a land branch's `mainline` (§5.1): one indexed join, never a scan of messages (Scion lesson 23).
 - `open_paths` is maintained when a version is published or a PR closes, from the head changeset's own `changes` keys (relative to its parent), so no diff is needed. `Overlaps` costs O(paths × matches) and skips changes of the same stack (through the `parent_change` chain).
 - `mergeable` is a plain SQL table (§5): one row per head, overwritten when the head or the trunk tip changes, deleted when the PR closes. It uses the path-disjointness check (§4.5) first and reads content only for intersecting paths, recomputed lazily on request. Forgejo asks only for open PRs whose `open_paths` intersect the new trunk changes.
@@ -2292,7 +2313,7 @@ mergeable(ns BLOB, head BLOB, trunk_tip BLOB, state SMALLINT, conflicts BLOB, co
 2. **Review.** The PR shows the stack panel, "version N of M", interdiff against any earlier version, and "changes since your last review" (the version of the reviewer's last review `commit_id`). Comments outdate through Forgejo's existing line mapping.
 3. **Land prefix 1..N.** Forgejo checks that every PR in the prefix is approved and green against the trunk's branch protection, then calls `UpdateRefs(master ← head(N), LAND, expect = the approved heads)`. The whole prefix lands atomically (§8.5); `rewritten` gives each PR's landed changeset, and the PRs are marked merged. Stacks always land rebase-style, one commit per change.
 4. **Restack after land.** Forgejo calls `RestackChanges(onto = new trunk tip, items = the open children bottom to top, with update_ref = refs/pull/<m>/head, atomic)`. Each child gets a new version. The rewritten changesets use the **actor** of the call as committer and one **timestamp per call**, both carried in the request, so a retry with the same request yields the same ids. Author and message are kept. `patch_unchanged` keeps approvals even with dismiss-stale enabled. On conflict the child is marked "needs restack", and the author runs `asc sync && asc submit`.
-5. **Queue.** "Merge when ready" on PR N enables it for 1..N. A per-target-branch worker processes entries in enqueue order, one land in flight per branch, and always lands the largest ready prefix. Admins can pause a branch. With `asc_stack_queue.revalidate = on_content_merge` (default) the worker lands with the `LAND_NO_CONTENT_MERGE` flag; the server fails the land with `LAND_NEEDS_CONTENT_MERGE` when §8.5 step 3 would need a content merge, and the worker restacks the stack as new versions and waits for checks again. Path-disjoint lands succeed straight away, and post-merge CI with `green/*` refs covers them (§12.6). `revalidate = off` omits the flag.
+5. **Queue.** "Merge when ready" on PR N enables it for 1..N. A per-target-branch worker processes entries in enqueue order, one land in flight per branch, and always lands the largest ready prefix. Admins can pause a branch. With `asc_stack_queue.revalidate = on_content_merge` (default) the worker lands with `UpdateRefsRequest.no_content_merge` set; the server fails the land with `LAND_NEEDS_CONTENT_MERGE` when §8.5 step 3 would need a content merge, and the worker restacks the stack as new versions and waits for checks again. Path-disjoint lands succeed straight away, and post-merge CI with `green/*` refs covers them (§12.6). `revalidate = off` omits the flag.
 6. **Branch-chain PRs** (plain `git push` of branches with base = another PR's head branch; C46) are recognised as stacked. When the parent merges, the base is retargeted to the parent's base, as GitHub does. They are not rebased on the server unless the author ticked "allow server restack".
 
 **RPCs (new `proto/asc/v1/changes.proto`, same port; additive `repo.proto` fields).**
@@ -2309,8 +2330,7 @@ service Changes {
   rpc SetReviewState(SetReviewStateRequest) returns (SetReviewStateResponse);  // internal token only
   rpc RequestMerge(RequestMergeRequest) returns (RequestMergeResponse);        // mutating; proxies to the forge's queue
 }
-message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
-  uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
+// ReviewState is defined in repo.proto (below), so repo.proto's graph rows and blame reviews do not import changes.proto.
 message ChangeInfo { bytes change = 1; bytes head = 2; bytes git = 3; uint32 version = 4; bytes parent_change = 5;
   bool parent_current = 6; bytes landed_as = 7; ReviewState review = 8; repeated bytes visible = 9; /* >1 = divergent */ }
 message ResolveChangesRequest { RepoRef repo = 1; repeated bytes changes = 2; repeated string revs = 3; }
@@ -2340,16 +2360,66 @@ message RequestMergeResponse { enum State { STATE_QUEUED = 0; STATE_LANDED = 1; 
 // The server forwards RequestMerge to the forge through the internal channel that carries proc-receive (§13.5), in the
 // other direction, so the CLI never calls a forge API (D9). Forgejo answers from its queue (C39); with no forge attached,
 // now=true lands directly and now=false is STATE_REFUSED.
+```
 
-// repo.proto, additive (amendment to U41, made by C17):
-//   ObjKind OBJ_KIND_CHANGE_META = 9;  LogEntry.change = 8;  LogEntry.stats = 9 (DiffStat);  LogEntry.meta = 10;
-//   LogRequest.pickaxe = 15, pickaxe_regex = 16, with_stats = 17, scan_budget = 18 (candidates, default 10000);
-//   LogResponse.truncated, resume_token (set when the scan budget ran out);
-//   UpdateRefs flag LAND_NO_CONTENT_MERGE; ErrorDetail.code += CHANGE_DIVERGED, CHANGE_FROZEN, LAND_NEEDS_CONTENT_MERGE, CHANGE_NOT_ALLOWED;
-//   rpc CommitGraph(CommitGraphRequest) returns (stream CommitGraphResponse);  // §20.6; not the project graph of `asc graph`
-//   rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
-//   rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
-//   rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
+**repo.proto, additive (amendment to U41, made by C17) [audit: stack-proto-messages-undefined].** `ReviewState` moves here from `changes.proto`. `OBJ_KIND_CHANGE_META = 9` is already in §7's `ObjKind` (U41).
+
+```proto
+message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
+  uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
+message FileStat { bytes path = 1; uint32 added = 2; uint32 removed = 3; bool binary = 4; }
+message DiffStat { repeated FileStat files = 1; }
+// LogEntry += bytes change = 8; DiffStat stats = 9; bytes meta = 10;
+// LogRequest += bytes pickaxe = 15; bool pickaxe_regex = 16; bool with_stats = 17; uint32 scan_budget = 18 (candidates, default 10000); string resume_token = 19;
+// LogResponse += bool truncated = 4; string resume_token = 5;   // set when the scan budget ran out
+// UpdateRefsRequest += bool no_content_merge = 7;               // LAND only
+// BlameResponse += repeated ReviewState reviews = 3;            // parallel to commits
+// ErrorDetail.code += CHANGE_DIVERGED, CHANGE_FROZEN, LAND_NEEDS_CONTENT_MERGE, CHANGE_NOT_ALLOWED;
+enum GraphPreset { GRAPH_PRESET_ALL = 0; GRAPH_PRESET_CURRENT = 1; GRAPH_PRESET_SMART = 2; GRAPH_PRESET_STACK = 3; }
+message CommitGraphRequest { RepoRef repo = 1; repeated string include = 2; repeated string exclude = 3; GraphPreset preset = 4;
+  bool lanes = 5; bool stats = 6; uint32 limit = 7; string page_token = 8; }
+message GraphEdge { uint32 to_column = 1; bytes parent = 2; }
+message GraphRow { LogEntry entry = 1; repeated string refs = 2; uint32 column = 3; repeated GraphEdge edges = 4;
+  bool overflow = 5; ReviewState review = 6; bool wip = 7; string ws_id = 8; }
+message CommitGraphResponse { repeated GraphRow rows = 1; string next_page_token = 2; }
+message LineHistoryRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; uint32 start_line = 4; uint32 end_line = 5;
+  uint32 limit = 6; uint32 scan_budget = 7; string resume_token = 8; }
+message CompareRequest { RepoRef repo = 1; string a = 2; string b = 3; bool three_dot = 4; uint32 limit = 5;
+  string ahead_page_token = 6; string behind_page_token = 7; }
+message CompareResponse { bytes merge_base = 1; uint64 ahead = 2; uint64 behind = 3; repeated LogEntry ahead_entries = 4;
+  repeated LogEntry behind_entries = 5; string ahead_next = 6; string behind_next = 7; repeated PathChange files = 8; }
+message Autolink { string prefix = 1; string url = 2; }
+message RepoConfigRequest { RepoRef repo = 1; string rev = 2; }
+message RepoConfigResponse { repeated Autolink autolinks = 1; }
+// service Repo += rpc CommitGraph(CommitGraphRequest) returns (stream CommitGraphResponse);  // §20.6; not the project graph of `asc graph`
+//                 rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
+//                 rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
+//                 rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
+```
+
+**workspace.proto, additive (C31; `KIND_STACK = 8` and `WatchEvent.change = 8` too).**
+
+```proto
+rpc Stacks(WsStacksRequest) returns (WsStacksResponse);
+rpc Worktrees(WsWorktreesRequest) returns (WsWorktreesResponse);
+rpc Conflicts(WsConflictsRequest) returns (WsConflictsResponse);
+rpc CommitGraph(WsCommitGraphRequest) returns (stream CommitGraphResponse);
+// WsBlameRequest += bytes buffer = 6; bool ignore_whitespace = 7;
+message WsStacksRequest { string ws_id = 1; bool all = 2; bool remote = 3; string revset = 4; }
+message StackTrunk { string name = 1; bytes tip = 2; string remote = 3; }
+message StackEntry { bytes change = 1; bytes commit = 2; bytes asc = 3; bytes parent_change = 4; repeated string branches = 5;
+  bytes subject = 6; Signature author = 7; string state = 8; bool needs_restack = 9; bool frozen = 10; bool empty = 11;
+  bool current = 12; string worktree = 13; ReviewState review = 14; string short = 15; }
+message WsStack { string trunk = 1; bytes base = 2; uint32 behind = 3; repeated StackEntry changes = 4; }
+message WsStacksResponse { uint32 version = 1; repeated StackTrunk trunks = 2; repeated WsStack stacks = 3; }
+message WsWorktreesRequest {}
+message WsWorktree { string ws_id = 1; string path = 2; string mount = 3; string mode = 4; string head_ref = 5; bytes head = 6;
+  uint32 dirty = 7; uint32 staged = 8; uint32 ahead = 9; uint32 behind = 10; int64 ephemeral_until = 11; string locked = 12; string in_progress = 13; }
+message WsWorktreesResponse { repeated WsWorktree worktrees = 1; }
+message WsConflictsRequest { string ws_id = 1; }
+message WsConflict { bytes path = 1; ConflictKind kind = 2; bytes base = 3; bytes ours = 4; bytes theirs = 5; bytes marked = 6; }
+message WsConflictsResponse { repeated WsConflict conflicts = 1; }
+message WsCommitGraphRequest { string ws_id = 1; CommitGraphRequest query = 2; bool wip_rows = 3; }
 ```
 
 Rate classes are in §16.3. The `Changes` service follows the §7 lint exceptions.
@@ -2591,3 +2661,15 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
 | roadmap-and-stale-text | §18 (M-meta week ≈ 9 without `FindLanding`; phases 4 and 6), Appendix A crate count, §10.4/§10.5, §9.2 `display_ids` removed |
 | turbo-staged-file-contract | §17 turbo row |
 | index-renderer-ownership, u01-v11-delta-unowned, unowned-cli-commands | PLAN only (U16 index writer, U01b, U24f) |
+
+**Round-4 audit fixes (v1.4)** (changelog: v1.4 closes the major contract gaps of the round-4 audit; the blocker entries are folded in by a later pass)
+
+| Gap | Fix |
+|---|---|
+| rewrite-sink-contract-insufficient-and-double-owned | §20.3 sink contract (`RewriteSink::record`, `OpId`, the keep/mint input table, `snapshot_wc` before `merge --abort` and `rebase --abort`); the owning units make their own sink calls (PLAN) |
+| engine-local-ref-moves-bypass-chokepoint | §9.4.1 engine code never moves a local ref; CLI engine over `ReadOnlyRefs<SqlRefs>` |
+| staging-overlay-breaks-on-head-moves | §9.5 HEAD moves keep the staging (`StagingAfterMove`) |
+| module-registration-exception-too-narrow | PLAN only (general exception covers any `mod.rs` and parent module files) |
+| stack-server-and-sync-hooks-unowned | §20.4 server writes meta for every changeset it creates; hooks `IngestObserver`, `LogEntryEnricher`, `SyncExt`, `Insights` group (PLAN) |
+| stack-proto-messages-undefined | §20.5 full `repo.proto` and `workspace.proto` definitions; `ReviewState` moved to `repo.proto`; `UpdateRefsRequest.no_content_merge` |
+| object-stack-selector-single-owner-blocks-remote-tier | §3.5 `Ctx` builds the tier stack; remote tier by remote kind; read-only tiers never write or delete |
