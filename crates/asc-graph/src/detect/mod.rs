@@ -3,6 +3,7 @@
 //! A detector is one module that implements [`Detector`] plus one line in
 //! [`crate::registry::DETECTORS`]; there is no dynamic loading.
 
+pub mod dotnet;
 pub mod node;
 pub mod rust;
 

@@ -16,7 +16,10 @@ const UNUSABLE: &str = "unusable";
 const PACKAGES: &str = "packages";
 
 fn marker(reason: impl Into<String>) -> Parsed {
-    Parsed(Value::Map(vec![(UNUSABLE.into(), Value::Str(reason.into()))]))
+    Parsed(Value::Map(vec![(
+        UNUSABLE.into(),
+        Value::Str(reason.into()),
+    )]))
 }
 
 /// Parses a lockfile with the SPEC §12A.10 limits. Never fails.
@@ -40,7 +43,11 @@ pub fn parse_with(bytes: &[u8], max_bytes: usize, max_packages: usize) -> Parsed
     for pkgs in frameworks.values().filter_map(|f| f.as_object()) {
         for (name, p) in pkgs {
             let field = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default();
-            rows.insert((name.clone(), field("resolved").to_owned(), field("contentHash").to_owned()));
+            rows.insert((
+                name.clone(),
+                field("resolved").to_owned(),
+                field("contentHash").to_owned(),
+            ));
             if rows.len() > max_packages {
                 return marker(format!("lockfile has more than {max_packages} packages"));
             }
@@ -79,7 +86,9 @@ mod tests {
         let p = parse(LOCK.as_bytes());
         assert_eq!(unusable(&p), None);
         let Value::Map(m) = &p.0 else { panic!() };
-        let Value::Array(rows) = &m[0].1 else { panic!() };
+        let Value::Array(rows) = &m[0].1 else {
+            panic!()
+        };
         assert_eq!(rows.len(), 2);
         assert_eq!(
             rows[0],

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Lib\Lib.csproj;$(MSBuildThisFileDirectory)..\Core\Core.csproj" />
+    <ProjectReference Include="..\Missing\Missing.csproj" Condition="'$(Os)' == 'x'" />
+    <PackageReference Include="Newtonsoft.Json" />
+    <Compile Include="..\Shared\*.cs" />
+    <Compile Include="Generated\**\*.cs" />
+    <Import Project="..\..\build\app.targets" />
+  </ItemGroup>
+</Project>

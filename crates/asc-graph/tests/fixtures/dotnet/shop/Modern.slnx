@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Core/Core.csproj" />
+    <Folder Name="/src/fs/">
+      <Project Path="src\Fs\Fs.fsproj" />
+    </Folder>
+  </Folder>
+</Solution>
