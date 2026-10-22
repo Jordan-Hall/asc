@@ -3,7 +3,7 @@
 //! Artefacts live at `turbo/<owner>.<repo>/<scope>/<hash>` with a `<hash>.meta` JSON sibling
 //! (written last, so an upload without it is invisible). The `x-artifact-tag` signature is stored
 //! and returned opaquely: turbo verifies it, the server never does. A scope is `trusted`,
-//! `pr-<n>` or `dev-<user>`; reads try the caller's scope and then `trusted`, writes go only to
+//! `pr-<n>` or `dev-<user>` (anonymous callers never write, and no request header picks a scope); reads try the caller's scope and then `trusted`, writes go only to
 //! the caller's scope. Every request is authorised against the repository named by `slug`.
 
 use std::collections::HashSet;
@@ -370,13 +370,18 @@ impl TurboState {
                 .ok_or(TurboError::BadRequest("slug is required"))?,
         )?;
         let token = bearer(headers)?;
+        // An anonymous caller never writes: even where the authorizer admits one (a public
+        // repository, local no-auth mode), a write would poison what CI reads back.
+        if token.is_none() && access == Access::Write {
+            return Err(AuthError::Unauthenticated.into());
+        }
         let repo = slug.repo_name();
         let principal = self
             .authorizer
             .authorize(token.as_ref(), &repo, access)
             .await?;
         let scope = self
-            .caller_scope(token.as_ref(), &principal, &repo, headers)
+            .caller_scope(token.as_ref(), &principal, &repo)
             .await;
         Ok(Caller { slug, scope })
     }
@@ -386,7 +391,6 @@ impl TurboState {
         token: Option<&BearerToken>,
         principal: &Principal,
         repo: &str,
-        headers: &HeaderMap,
     ) -> Scope {
         if let Some(src) = self.scope_source.get() {
             return match token {
@@ -394,7 +398,8 @@ impl TurboState {
                     .scope(t, repo)
                     .await
                     .unwrap_or_else(|| Scope::dev(&principal.id)),
-                None => Scope::Trusted,
+                // Anonymous is never `Trusted`; reads still fall back to it in `find`.
+                None => Scope::Pr(0),
             };
         }
         if token.is_some_and(|t| {
@@ -403,13 +408,13 @@ impl TurboState {
         }) {
             return Scope::Trusted;
         }
-        // The header is untrusted and only keeps PRs from reading each other's entries.
-        let n = headers
-            .get("x-asc-pr")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        Scope::Pr(n)
+        // Stage 1 cannot tell an Actions task from a human, so no request header may pick the
+        // scope (any writer could poison another PR's cache). Each principal gets its own
+        // `dev-<id>`; an anonymous caller (read only) gets `pr-0`. Reads fall back to `trusted`.
+        match token {
+            Some(_) => Scope::dev(&principal.id),
+            None => Scope::Pr(0),
+        }
     }
 
     async fn read_meta(&self, p: &StorePath) -> Result<Option<Meta>, TurboError> {
@@ -955,6 +960,7 @@ mod tests {
         StaticTokens::new()
             .with_token("ci-secret", "ci", Access::Write)
             .with_token("dev-secret", "alice", Access::Write)
+            .with_token("dev2-secret", "carol", Access::Write)
             .with_token("ro-secret", "bob", Access::Read)
     }
 
@@ -1098,33 +1104,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scopes_isolate_prs_and_fall_back_to_trusted() {
+    async fn scopes_isolate_callers_and_fall_back_to_trusted() {
         let (s, _) = state();
         assert_eq!(
             put(&s, "ci-secret", "trustedhash", b"T", None).await,
             StatusCode::ACCEPTED
         );
-        // A non-trusted token writes to pr-7 only.
+        // A non-trusted token writes to its own dev scope only.
         assert_eq!(
-            put(&s, "dev-secret", "prhash", b"P", Some(7)).await,
+            put(&s, "dev-secret", "prhash", b"P", None).await,
             StatusCode::ACCEPTED
         );
-        let get = |token, hash: &'static str, pr: u32| {
+        let get = |token, hash: &'static str| {
             let s = s.clone();
-            async move {
-                call("GET", &art(hash), Some(token))
-                    .header("x-asc-pr", pr.to_string())
-                    .send(&s)
-                    .await
-                    .0
-            }
+            async move { call("GET", &art(hash), Some(token)).send(&s).await.0 }
         };
-        assert_eq!(get("dev-secret", "prhash", 7).await, StatusCode::OK);
-        assert_eq!(get("dev-secret", "prhash", 8).await, StatusCode::NOT_FOUND);
+        assert_eq!(get("dev-secret", "prhash").await, StatusCode::OK);
+        assert_eq!(get("dev2-secret", "prhash").await, StatusCode::NOT_FOUND);
         // Reads fall back to trusted.
-        assert_eq!(get("dev-secret", "trustedhash", 8).await, StatusCode::OK);
+        assert_eq!(get("dev2-secret", "trustedhash").await, StatusCode::OK);
         // The PR write did not reach trusted.
         let (st, _, _) = call("GET", &art("prhash"), Some("ci-secret"))
+            .send(&s)
+            .await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn x_asc_pr_header_cannot_pick_a_write_scope() {
+        let (s, mem) = state();
+        assert_eq!(
+            put(&s, "dev-secret", "h7", b"P", Some(7)).await,
+            StatusCode::ACCEPTED
+        );
+        let dev = StorePath::from("root/turbo/acme.web/dev-alice/h7");
+        assert!(mem.head(&dev).await.is_ok());
+        let pr = StorePath::from("root/turbo/acme.web/pr-7/h7");
+        assert!(mem.head(&pr).await.is_err());
+        // Another writer claiming PR 7 does not see it either.
+        let (st, _, _) = call("GET", &art("h7"), Some("dev2-secret"))
+            .header("x-asc-pr", "7")
             .send(&s)
             .await;
         assert_eq!(st, StatusCode::NOT_FOUND);
@@ -1231,7 +1250,7 @@ mod tests {
     async fn sweep_applies_per_scope_retention() {
         let (s, mem) = state();
         put(&s, "ci-secret", "old1", b"T", None).await;
-        put(&s, "dev-secret", "old2", b"P", Some(3)).await;
+        put(&s, "dev-secret", "old2", b"P", None).await;
         let day = Duration::from_secs(DAY_SECS);
         let now = SystemTime::now();
         // 20 days: the PR entry (14 days) goes, trusted (60 days) stays.
@@ -1246,7 +1265,7 @@ mod tests {
         let (st, _, _) = call("GET", &art("old1"), Some("ci-secret")).send(&s).await;
         assert_eq!(st, StatusCode::OK);
         assert!(
-            mem.head(&StorePath::from("root/turbo/acme.web/pr-3/old2"))
+            mem.head(&StorePath::from("root/turbo/acme.web/dev-alice/old2"))
                 .await
                 .is_err()
         );
@@ -1289,6 +1308,70 @@ mod tests {
         // The PAT cannot see pr-42.
         let (st, _, _) = call("GET", &art("h1"), Some("dev-secret")).send(&s).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    /// Admits every call, as a public repository or local no-auth mode does.
+    struct OpenAuth;
+
+    #[async_trait]
+    impl Authorizer for OpenAuth {
+        async fn authorize(
+            &self,
+            _token: Option<&BearerToken>,
+            _repo: &str,
+            _access: Access,
+        ) -> Result<Principal, AuthError> {
+            Ok(Principal {
+                id: "anon".to_owned(),
+            })
+        }
+    }
+
+    fn open_state() -> (Arc<TurboState>, Arc<InMemory>) {
+        let mem = Arc::new(InMemory::new());
+        let s = TurboState::new(
+            Arc::new(OpenAuth),
+            mem.clone(),
+            StorePath::from("root"),
+            TurboConfig::default(),
+            Arc::new(Metrics::new()),
+        );
+        (Arc::new(s), mem)
+    }
+
+    #[tokio::test]
+    async fn anonymous_put_is_refused_even_when_authorizer_admits() {
+        let (s, mem) = open_state();
+        s.set_scope_source(Arc::new(FixedScope(None))).ok().unwrap();
+        let (st, _, _) = call("PUT", &art("h1"), None)
+            .header("x-artifact-tag", "t")
+            .body(&b"poison"[..])
+            .send(&s)
+            .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        for scope in ["trusted", "pr-0"] {
+            let p = StorePath::from(format!("root/turbo/acme.web/{scope}/h1"));
+            assert!(mem.head(&p).await.is_err(), "{scope} was written");
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_scope_is_never_trusted_with_a_scope_source() {
+        let (s, _) = open_state();
+        s.set_scope_source(Arc::new(FixedScope(Some(Scope::Trusted))))
+            .ok()
+            .unwrap();
+        let q = RepoQuery {
+            slug: Some(SLUG.to_owned()),
+            size: None,
+            method: None,
+        };
+        let c = s
+            .gate(&HeaderMap::new(), &q, Access::Read)
+            .await
+            .unwrap();
+        assert_ne!(c.scope, Scope::Trusted);
+        assert_eq!(c.scope, Scope::Pr(0));
     }
 
     #[derive(Debug)]
