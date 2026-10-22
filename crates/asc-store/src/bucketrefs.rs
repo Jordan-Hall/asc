@@ -236,10 +236,13 @@ impl BucketRefs {
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(e) => return Err(store_err(e)),
         };
-        if got.meta.size > cap {
-            return Err(BucketRefsError::Corrupt(format!("{path} is too large")).into());
+        match crate::bucket::read_capped(got, cap)
+            .await
+            .map_err(store_err)?
+        {
+            Some(b) => Ok(Some(b)),
+            None => Err(BucketRefsError::Corrupt(format!("{path} is too large")).into()),
         }
-        Ok(Some(got.bytes().await.map_err(store_err)?))
     }
 
     async fn read_entry(&self, name: &str, v: u64) -> Result<Option<BucketRefEntry>> {
