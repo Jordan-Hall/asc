@@ -198,7 +198,7 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | C15 | `asc undo/redo/op` | asc | C03, C04, C07, U23 | – |
 | C16 | *(withdrawn: opt-in `restackOnRewrite`, SPEC §20.1 D4)* | – | – | – |
 | C17 | Proto: `changes.proto` and conversions, plus the `repo.proto` amendment | asc-rpc | C01, U41 | – |
-| C17x | `LogEntry` to `history::LogMeta` conversions (follow-up to C17 and U31) | C17, U31 | `crates/asc-rpc/src/log_meta.rs` | `cargo test -p asc-rpc log_meta::` | `From<&LogEntry> for history::LogMeta` and the reverse, in asc-rpc (which depends on asc-engine). The asc unit C24, C25 and C26 call it before `SyncExt::on_log_entries`. Test: a `LogEntry` with and without `change`/`meta` round-trips [audit: crate-edges-folded]. |
+| C17x | `LogEntry` to `history::LogMeta` conversions (follow-up to C17 and U31) | C17, U31 | `crates/asc-rpc/src/log_meta.rs` | `cargo test -p asc-rpc log_meta::` | `TryFrom<&LogEntry> for history::LogMeta` (fallible: wire id lengths are untrusted; `LogMeta` is `sync::changes::LogMeta`) and a helper that sets `change` and `meta` on an existing `LogEntry`, in asc-rpc (which depends on asc-engine). The asc unit C24, C25 and C26 call it before `SyncExt::on_log_entries`. Test: a `LogEntry` with and without `change`/`meta` round-trips [audit: crate-edges-folded]. |
 | C18 | Server change index, `m/` ingest and validation, versions, GC roots | asc-serve | C17, U43b, U66, O01 | – |
 | C19 | `ResolveChanges`, `Stack`, `Versions`, `SetReviewState` | asc-serve | C18, U47 | – |
 | C20 | `InterDiff` | asc-engine, asc-serve | C19, U26 | CD |
