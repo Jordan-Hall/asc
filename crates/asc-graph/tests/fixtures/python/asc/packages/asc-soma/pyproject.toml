@@ -1,0 +1,10 @@
+[project]
+name = "ASC_Nova"
+requires-python = ">=3.11"
+dependencies = ["nova[onnx]>=1", "shared", "numpy"]
+
+[dependency-groups]
+dev = ["shared"]
+
+[tool.uv.sources]
+nova = { git = "https://example.com/nova.git", rev = "aaa" }

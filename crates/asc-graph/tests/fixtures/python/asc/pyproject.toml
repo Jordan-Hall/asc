@@ -1,0 +1,9 @@
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+exclude = ["packages/skip"]
+
+[tool.uv.sources]
+shared = { workspace = true }

@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest
+-e ../../packages/asc-nova
+shared @ file:../../packages/shared

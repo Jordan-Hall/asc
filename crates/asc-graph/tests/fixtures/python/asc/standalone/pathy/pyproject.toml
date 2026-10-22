@@ -1,0 +1,6 @@
+[project]
+name = "pathy"
+dependencies = ["shared", "rich"]
+
+[tool.uv.sources]
+shared = { path = "../../packages/shared", editable = true }

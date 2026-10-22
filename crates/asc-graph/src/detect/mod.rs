@@ -5,6 +5,7 @@
 
 pub mod dotnet;
 pub mod node;
+pub mod python;
 pub mod rust;
 
 use std::cell::RefCell;
