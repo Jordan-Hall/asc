@@ -20,6 +20,7 @@ pub mod merge;
 pub mod projects;
 pub mod rebase;
 pub mod revspec;
+pub mod stack;
 pub mod sync;
 pub mod tree;
 
