@@ -187,3 +187,14 @@ asc has no LFS support.
   - The asc server: a remote Streamable HTTP endpoint.
   - The Forgejo fork: an MCP endpoint for PRs, reviews, issues and Actions.
 - All three use the same tool schemas as the `--json` and RPC shapes, are ACL-scoped, and default to read-only.
+
+## Decision: agentic code intelligence built in (2026-10-22)
+
+- Agents can query the codebase at any revision, draft or stack without a checkout. They get three indexes:
+  - exact and regex search (a trigram index);
+  - a symbol graph (definitions, references and call sites, built with tree-sitter for Rust, TypeScript, Python, C# and Go);
+  - semantic vector search with hybrid ranking.
+- Every index is server-side derived data keyed by content id (FileId). Unchanged content is never re-indexed, and each commit indexes only its own changes, so cost scales with the size of the change.
+- Results are filtered by the per-directory ACLs. They are exposed through MCP, RPC, IPC and `--json`, and rendered in the Forgejo fork's search.
+- The embedding model defaults to a local one running on the asc server, so code never leaves ASC infrastructure. External providers are opt-in through config.
+- The local daemon can serve the same queries offline for the active workspace, within the memory and storage budgets.
