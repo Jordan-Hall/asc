@@ -21,6 +21,7 @@ use asc_store::refs::RepoKey;
 
 use crate::child;
 use crate::cli::common::{self, CliError, Ctx};
+use crate::cli::config::{ConfigSnapshot, LocalConfig};
 use crate::cli::safe_dir::owned_by_current_user;
 use crate::env::GitEnv;
 use crate::ext::{HookRejected, RefChange, RefTxnHook, RefTxnView};
@@ -356,7 +357,11 @@ impl Runner {
         let ws = ctx.ws()?;
         let runner = Self {
             workdir: ws.projection.toplevel().to_owned(),
-            hooks_dir: ws.projection.hooks_dir()?,
+            hooks_dir: hooks_dir_of(
+                &ctx.config,
+                ws.projection.toplevel(),
+                ws.projection.common_dir(),
+            ),
             shell: ctx.shell(),
         };
         let _ = BOUND.set(Site {
@@ -549,19 +554,47 @@ async fn find_site() -> Option<Site> {
         home: &home_of,
         owned: &owned_by_current_user,
     };
-    let projection = common::discover(&env, &cwd, &gate).await.ok()??;
-    let home = AscHome::for_workspace(projection.git_dir()).ok()?;
-    let db = StateDb::open(&home).await.ok()?;
-    let configured = projection.config().ok().and_then(|c| c.path("asc.realGit"));
-    let real = RealGit::resolve(configured, Some(home.root())).ok();
+    // The home is the one the gate admitted against, not one derived from the gitdir's path.
+    let admitted = common::discover(&env, &cwd, &gate).await.ok()??;
+    let local = LocalConfig {
+        common_dir: admitted.projection.common_dir(),
+        toplevel: admitted.projection.toplevel(),
+    };
+    let config = ConfigSnapshot::load_with(&env, &get, Some(&local), &owned_by_current_user).ok()?;
+    let db = StateDb::open(&admitted.home).await.ok()?;
     Some(Site {
-        runner: Runner {
-            workdir: projection.toplevel().to_owned(),
-            hooks_dir: projection.hooks_dir().ok()?,
-            shell: child::shell(real.as_ref()),
-        },
+        runner: runner_for(&admitted, &config),
         db,
     })
+}
+
+/// The hooks directory: `core.hooksPath` from the trust-filtered `config` (against the
+/// workspace root, as git runs hooks), else `<common>/hooks`. A config file the current user
+/// does not own cannot set `core.hooksPath`; reading the raw file would let it name hooks.
+fn hooks_dir_of(config: &ConfigSnapshot, toplevel: &Path, common_dir: &Path) -> PathBuf {
+    match config.path("core.hooksPath") {
+        Some(path) => toplevel.join(path),
+        None => common_dir.join("hooks"),
+    }
+}
+
+/// Real git from `asc.realGit` of the trust-filtered `config`, for the hook shell.
+fn resolve_real_git(config: &ConfigSnapshot, home: &AscHome) -> Option<RealGit> {
+    RealGit::resolve(config.path("asc.realGit"), Some(home.root())).ok()
+}
+
+/// The runner of an admitted workspace, configured only through the filtered `config`.
+fn runner_for(admitted: &common::Admitted, config: &ConfigSnapshot) -> Runner {
+    let real = resolve_real_git(config, &admitted.home);
+    Runner {
+        workdir: admitted.projection.toplevel().to_owned(),
+        hooks_dir: hooks_dir_of(
+            config,
+            admitted.projection.toplevel(),
+            admitted.projection.common_dir(),
+        ),
+        shell: child::shell(real.as_ref()),
+    }
 }
 
 #[async_trait]
@@ -584,7 +617,59 @@ pub type SharedRunner = Arc<Runner>;
 
 #[cfg(test)]
 mod tests {
+    use asc_git::projection::Projection;
+    use asc_state::{RepoId, WorkspaceId};
+
     use super::*;
+
+    /// A workspace in a fresh home whose common config holds `extra`, loaded the way
+    /// `find_site` loads it, with `owned` as the ownership probe.
+    fn runner_with_config(extra: &str, owned: &dyn Fn(&Path) -> std::io::Result<bool>) -> (tempfile::TempDir, Runner, ConfigSnapshot) {
+        let dir = tempfile::tempdir().unwrap();
+        let home = AscHome::open(dir.path().join("home")).unwrap();
+        let root = dir.path().join("work");
+        let projection = Projection::create(&home, RepoId::new(), WorkspaceId::new(), &root).unwrap();
+        let path = projection.common_dir().join("config");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(extra);
+        std::fs::write(&path, text).unwrap();
+        let global = dir.path().join("gitconfig");
+        std::fs::write(&global, "").unwrap();
+        let get = move |k: &str| match k {
+            "GIT_CONFIG_NOSYSTEM" => Some("1".into()),
+            "GIT_CONFIG_GLOBAL" => Some(global.clone().into()),
+            _ => None,
+        };
+        let local = LocalConfig {
+            common_dir: projection.common_dir(),
+            toplevel: projection.toplevel(),
+        };
+        let config = ConfigSnapshot::load_with(&GitEnv::from_vars(&get), &get, Some(&local), owned).unwrap();
+        let admitted = common::Admitted { projection, home };
+        let runner = runner_for(&admitted, &config);
+        assert_eq!(runner.workdir, admitted.projection.toplevel());
+        (dir, runner, config)
+    }
+
+    #[test]
+    fn a_foreign_owned_local_config_cannot_redirect_hooks_or_real_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let evil_git = dir.path().join("evil-git");
+        std::fs::write(&evil_git, "").unwrap();
+        let git_path = evil_git.display().to_string().replace('\\', "/");
+        let extra = format!("[core]\n\thooksPath = evil-hooks\n[asc]\n\trealGit = {git_path}\n");
+        let (tmp, runner, foreign) = runner_with_config(&extra, &|_| Ok(false));
+        let common = std::fs::read_dir(tmp.path().join("home").join("repos")).unwrap().next().unwrap().unwrap().path().join(".git");
+        assert_eq!(runner.hooks_dir(), common.join("hooks"), "core.hooksPath from a foreign file is ignored");
+        let home = AscHome::open(tmp.path().join("home")).unwrap();
+        let used = resolve_real_git(&foreign, &home).map(|r| r.path().to_owned());
+        assert_ne!(used.as_deref(), Some(evil_git.as_path()), "asc.realGit from a foreign file is ignored");
+        let config = ConfigSnapshot::from_text(&extra);
+        let trusted = resolve_real_git(&config, &home).expect("a config the user owns is honoured");
+        assert_eq!(trusted.path(), evil_git, "control: the key works when the config is trusted");
+        let (_tmp, owned, _) = runner_with_config(&extra, &|_| Ok(true));
+        assert_eq!(owned.hooks_dir(), owned.workdir.join("evil-hooks"), "control: an owned config may set it");
+    }
 
     fn oid(n: u8) -> GitOid {
         GitOid::from_bytes([n; 20])
