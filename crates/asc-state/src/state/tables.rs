@@ -23,12 +23,13 @@ pub mod cs_gen {
         let mut tx = db.begin().await?;
         for r in rows {
             let parents: Vec<u8> = r.parents.iter().flat_map(|p| *p.as_bytes()).collect();
+            let gen_no = i64::try_from(r.gen_no).map_err(|_| Error::Corrupt("cs_gen.gen"))?;
             sqlx::query(
                 "INSERT OR IGNORE INTO cs_gen (repo_id, cs, gen, parents) VALUES (?, ?, ?, ?)",
             )
             .bind(repo.0)
             .bind(r.cs.as_bytes().to_vec())
-            .bind(r.gen_no as i64)
+            .bind(gen_no)
             .bind(parents)
             .execute(&mut *tx)
             .await?;

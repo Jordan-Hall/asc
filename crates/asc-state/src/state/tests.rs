@@ -655,3 +655,26 @@ async fn workspace_bookkeeping_tables() {
     inodes::remove(&db, ws, 7).await.unwrap();
     assert_eq!(inodes::path_of(&db, ws, 7).await.unwrap(), None);
 }
+
+#[tokio::test]
+async fn oversized_entry_size_is_rejected_and_leaves_stage_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(&dir).await;
+    let r = repo(&db, "r").await;
+    let ws = workspace(&db, r, "/a", "refs/heads/master").await;
+    stage::upsert(&db, ws, StageSet::Default, &[row("ok", Some(&leaf(1)))])
+        .await
+        .unwrap();
+    let mut big = leaf(2);
+    big.size = 1 << 63;
+    let err = stage::upsert(&db, ws, StageSet::Default, &[row("big", Some(&big))]).await;
+    assert!(matches!(err, Err(Error::Corrupt("stage.size"))));
+    let delta = LeafDelta {
+        path: b"big".to_vec(),
+        from: Some(big),
+        to: None,
+    };
+    assert!(stage::rebase(&db, ws, &[delta]).await.is_err());
+    let rows = stage::overlay(&db, ws, StageSet::Default).await.unwrap();
+    assert_eq!(rows.len(), 1);
+}
