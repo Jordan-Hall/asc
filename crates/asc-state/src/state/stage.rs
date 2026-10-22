@@ -146,6 +146,8 @@ fn decode(row: &AnyRow) -> Result<StageRow> {
 }
 
 async fn upsert_tx(tx: &mut Tx, ws: &str, set: i64, r: &StageRow) -> Result<()> {
+    // A size above i64::MAX would be stored negative and make every later read fail.
+    let size = i64::try_from(r.size).map_err(|_| Error::Corrupt("stage.size"))?;
     sqlx::query(
         "INSERT INTO stage (ws_id, set_id, path, stage, kind, file, size, git, intent_to_add) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
@@ -159,7 +161,7 @@ async fn upsert_tx(tx: &mut Tx, ws: &str, set: i64, r: &StageRow) -> Result<()> 
     .bind(i64::from(r.stage))
     .bind(r.kind as i64)
     .bind(r.file.map(|f| f.as_bytes().to_vec()))
-    .bind(r.size as i64)
+    .bind(size)
     .bind(r.git.map(|g| g.as_bytes().to_vec()))
     .bind(i64::from(r.intent_to_add))
     .execute(&mut **tx)
