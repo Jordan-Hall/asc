@@ -16,11 +16,15 @@
 //! imports files by property, out of sight, so a property that chooses one
 //! (`CustomAfterMicrosoftCommonTargets`, `DirectoryBuildTargetsPath`,
 //! `BaseIntermediateOutputPath`, ...) is also a gap. `Directory.Build.rsp` and
-//! `MSBuild.rsp` set properties with no XML, so they make every project at or
-//! below their directory opaque.
+//! `MSBuild.rsp` set properties with no XML. MSBuild reads one from beside or
+//! above the project or solution it is asked to build, and its `-p:` values
+//! become global properties of every project that entry references, wherever
+//! those are. So one anywhere in the repository makes every project and
+//! solution opaque.
 //! Build files are found by directory in any ASCII case. Where a file system
-//! could join a non-ASCII spelling of a directory or name with another, the
-//! project is opaque.
+//! could join a non-ASCII spelling of a directory or name with another (case
+//! folding, normalisation, ignored characters), the project is opaque; any
+//! non-ASCII character outside a few scripts that never fold counts.
 //! Anything the detector cannot resolve to a known project or a repository
 //! path makes the project opaque.
 
@@ -74,7 +78,7 @@ const REDIRECTED_IMPORT: &str =
     "a property chooses a file MSBuild imports, which the detector does not read";
 const LONG_VALUE: &str = "reference, Import or item path is longer than the limit";
 const RESPONSE_FILE: &str =
-    "an MSBuild response file above the project can set properties the detector does not read";
+    "an MSBuild response file in the repository can set properties the detector does not read";
 const NON_LITERAL_SDK: &str = "Import Sdk or its Project is not a plain literal";
 const NON_ASCII_DIR: &str =
     "a file that applies to the project may name its directory by another non-ASCII spelling";
@@ -209,20 +213,34 @@ fn is_response_file(name: &[u8]) -> bool {
 /// normalises or folds names (`ß` is `ss`, `ﬃ` is `ffi`, `İ` is `i` plus a mark).
 const MAX_FOLD_EXPANSION: usize = 3;
 
-/// A character of a script that has ASCII letters in its canonical or case
-/// folding: Latin letters and marks, the Latin letter-like block (the Kelvin
-/// sign is `K`), the Latin ligatures and the full-width forms.
-fn latin_like(c: char) -> bool {
+/// A character of a script that no file system folds to an ASCII letter and
+/// ignores in a name: Greek (not the question mark `;`), Cyrillic, Hebrew
+/// letters, Hiragana, Katakana, CJK ideographs and Hangul syllables. Every other
+/// non-ASCII character is unknown: it may fold to ASCII letters (Latin letters
+/// and marks, the Kelvin sign, ligatures, full-width forms) or be ignored when
+/// names are compared (HFS+ skips U+200C-200F, U+202A-202E, U+206A-206F and
+/// U+FEFF; other file systems skip more).
+fn known_script(c: char) -> bool {
     matches!(u32::from(c),
-        0x80..=0x24F | 0x300..=0x36F | 0x37E | 0x1E00..=0x1EFF | 0x1FEF
-        | 0x2100..=0x214F | 0xFB00..=0xFB06 | 0xFF00..=0xFFEF)
+        0x370..=0x37D | 0x37F..=0x3FF | 0x400..=0x52F | 0x5D0..=0x5EA
+        | 0x3041..=0x3096 | 0x30A1..=0x30FA | 0x4E00..=0x9FFF | 0xAC00..=0xD7A3)
+}
+
+/// Whether the non-ASCII name `wide` has a character that a file system may
+/// fold to ASCII or ignore, or is not UTF-8.
+fn may_fold_to_ascii(wide: &[u8]) -> bool {
+    match std::str::from_utf8(wide) {
+        Ok(w) => w.chars().any(|c| !c.is_ascii() && !known_script(c)),
+        Err(_) => true,
+    }
 }
 
 /// Whether the non-ASCII name `wide` may name the same file as the ASCII name
-/// `plain` on a file system that folds case or normalises Unicode. The ASCII
-/// letters of `wide` must be among those of `plain`, and the rest must be few
-/// enough for its non-ASCII characters to stand for. A name that is not UTF-8
-/// or has a Latin-like character is judged this way; others cannot become ASCII.
+/// `plain` on a file system that folds case, normalises Unicode or ignores
+/// some characters. The ASCII letters of `wide` must be among those of `plain`,
+/// and the rest must be few enough for its non-ASCII characters to stand for.
+/// A name that is not UTF-8 or has a character [`may_fold_to_ascii`] is judged
+/// this way; others cannot become ASCII.
 fn ascii_reachable(wide: &[u8], plain: &[u8]) -> bool {
     let Ok(wide) = std::str::from_utf8(wide) else {
         return true;
@@ -232,12 +250,12 @@ fn ascii_reachable(wide: &[u8], plain: &[u8]) -> bool {
         .filter(u8::is_ascii)
         .map(|b| b.to_ascii_lowercase())
         .collect();
-    let (count, latin) = wide
-        .chars()
-        .filter(|c| !c.is_ascii())
-        .fold((0, false), |(n, l), c| (n + 1, l || latin_like(c)));
+    let count = wide.chars().filter(|c| !c.is_ascii()).count();
     let plain = plain.to_ascii_lowercase();
-    if !latin || plain.len() < kept.len() || plain.len() - kept.len() > MAX_FOLD_EXPANSION * count {
+    if !may_fold_to_ascii(wide.as_bytes())
+        || plain.len() < kept.len()
+        || plain.len() - kept.len() > MAX_FOLD_EXPANSION * count
+    {
         return false;
     }
     let mut rest = plain.iter();
@@ -328,10 +346,30 @@ fn is_auto_import_of(name: &[u8], proj_file: &[u8], in_obj: bool) -> bool {
     }
 }
 
+/// Whether a non-ASCII file name may fold to an auto-import name. A file
+/// system may change the non-ASCII characters (see [`may_fold_to_ascii`]), so
+/// the name is judged by its end alone: the ASCII text after its last non-ASCII
+/// byte must be the end of `.user`, `.props` or `.targets`, or contain it.
+/// Which project and directory it belongs to is left to [`Linker::ambiguous`].
+fn wide_auto_name(name: &[u8]) -> bool {
+    let from = name
+        .iter()
+        .rposition(|b| !b.is_ascii())
+        .map_or(0, |i| i + 1);
+    let tail = &name[from..];
+    may_fold_to_ascii(name)
+        && [b"user".as_slice(), b"props", b"targets"]
+            .iter()
+            .any(|s| ends_with_ci(tail, s) || ends_with_ci(s, tail))
+}
+
 /// True for a path that may be an auto-imported file of some project.
 fn is_auto_import(path: &RepoPath) -> bool {
     let name = path.file_name();
     let name = name.as_bytes();
+    if !name.is_ascii() {
+        return wide_auto_name(name);
+    }
     if ends_with_ci(name, b".user") {
         return split_ext(&name[..name.len() - 5])
             .is_some_and(|(_, e)| PROJECT_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)));
@@ -339,7 +377,7 @@ fn is_auto_import(path: &RepoPath) -> bool {
     (ends_with_ci(name, b".props") || ends_with_ci(name, b".targets"))
         && path
             .parent()
-            .is_some_and(|p| p.file_name().as_bytes().eq_ignore_ascii_case(b"obj"))
+            .is_some_and(|p| name_may_be(p.file_name().as_bytes(), b"obj"))
         && PROJECT_EXTS.iter().any(|e| {
             let mut pat = vec![b'.'];
             pat.extend_from_slice(e);
@@ -687,6 +725,8 @@ struct Linker<'c, 'a> {
     /// The `Directory.Build.props`/`.targets` files.
     builds: Vec<Man<'a>>,
     builds_ix: ByDir,
+    /// The first `Directory.Build.rsp`/`MSBuild.rsp` in the repository, if any.
+    response: Option<&'a RepoPath>,
     /// Per `builds` entry: its path items; empty when it is not an element.
     build_items: Vec<Vec<&'a Value>>,
     /// `<project>.user` and `obj/<project>.*.props`/`.targets` files.
@@ -843,6 +883,10 @@ impl<'c, 'a> Linker<'c, 'a> {
                 .collect()
         };
         let builds = eco_global(|p| is_build_file(p.file_name().as_bytes()));
+        let response = builds
+            .iter()
+            .map(|m| m.path)
+            .find(|p| is_response_file(p.file_name().as_bytes()));
         let autos = eco_global(|p| !is_build_file(p.file_name().as_bytes()) && is_auto_import(p));
         let mut autos_by_dir: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
         for (j, m) in autos.iter().enumerate() {
@@ -895,6 +939,7 @@ impl<'c, 'a> Linker<'c, 'a> {
             failed_props_ix: ByDir::new(failed_dirs.iter().map(Vec::as_slice)),
             versions,
             builds_ix: ByDir::new(builds.iter().map(|m| m.dir.as_slice())),
+            response,
             build_items: builds.iter().map(|m| path_items(m.v)).collect(),
             builds,
             auto_items: autos.iter().map(|m| path_items(m.v)).collect(),
@@ -977,9 +1022,9 @@ impl<'c, 'a> Linker<'c, 'a> {
             .chain(autos.iter().map(|&a| (&self.autos[a], &self.auto_items[a])));
         for (f, items) in files {
             if is_response_file(f.path.file_name().as_bytes()) {
-                self.cx.report(f.path.clone(), RESPONSE_FILE);
-                scan.gaps.insert(RESPONSE_FILE);
-            } else if is_element(f.v) {
+                continue; // Makes every project opaque, below.
+            }
+            if is_element(f.v) {
                 self.scan(i, &f.dir, items, true, &applied, &mut scan);
             } else {
                 self.cx.report(f.path.clone(), UNREADABLE_BUILD_FILE);
@@ -997,6 +1042,10 @@ impl<'c, 'a> Linker<'c, 'a> {
         }
         if self.ambiguous(i) {
             scan.gaps.insert(NON_ASCII_DIR);
+        }
+        if let Some(f) = self.response {
+            self.cx.report(f.clone(), RESPONSE_FILE);
+            scan.gaps.insert(RESPONSE_FILE);
         }
         scan.refs.sort_unstable();
         scan.refs.dedup();
@@ -1262,6 +1311,13 @@ impl<'c, 'a> Linker<'c, 'a> {
             .into_iter()
             .map(|j| (self.key_of(j), DepKind::Member))
             .collect();
+        // A response file beside or above the solution sets global properties
+        // for every member, and it is read only when the solution is the entry.
+        if let Some(f) = self.response {
+            self.cx.report(f.clone(), RESPONSE_FILE);
+            self.cx.report(m.path.clone(), RESPONSE_FILE);
+            p.opaque = true;
+        }
         p
     }
 
@@ -2538,8 +2594,11 @@ mod tests {
     const REFS: &str = "<ItemGroup><ProjectReference Include=\"$(MSBuildThisFileDirectory)../tools/Gen/Gen.csproj\" /></ItemGroup>";
 
     #[test]
-    fn a_response_file_makes_the_projects_below_it_opaque() {
+    fn a_response_file_makes_every_project_opaque() {
         // `-p:` sets a property with no XML, and MSBuild reads the file by itself.
+        // It reads the file from beside or above the entry project or solution,
+        // and its properties reach every project that entry references, so a file
+        // anywhere in the repository can apply to any project.
         let rsp = [
             "-p:CustomAfterMicrosoftCommonTargets=$(MSBuildProjectDirectory)/../../eng/refs.targets\n",
             "-p:CustomAfterMicrosoftCommonTargets=eng/refs.targets",
@@ -2547,21 +2606,24 @@ mod tests {
             "",
             "<Project />",
         ];
-        let cases: [(&str, &[&str]); 5] = [
-            ("Directory.Build.rsp", &["A", "B", "Gen"]),
-            ("src/Directory.Build.rsp", &["A", "B"]),
-            ("src/A/Directory.Build.rsp", &["A"]),
-            ("src/A/directory.build.RSP", &["A"]),
-            ("src/A/MSBuild.rsp", &["A"]),
+        let cases = [
+            "Directory.Build.rsp",
+            "src/Directory.Build.rsp",
+            "src/A/Directory.Build.rsp",
+            "src/A/directory.build.RSP",
+            "src/A/MSBuild.rsp",
+            "src/B/MSBuild.rsp",
+            "tools/Gen/Directory.Build.rsp",
+            "docs/elsewhere/Directory.Build.rsp",
         ];
-        for (path, below) in cases {
+        for path in cases {
             assert_eq!(Dotnet.claim(&rp(path)), Some(Claim::EcoGlobal), "{path}");
             for content in rsp {
                 let mut t = with_build_file(path, content);
                 t.insert("eng/refs.targets".into(), props(REFS));
                 let (g, _) = build(&t);
                 for n in ["A", "B", "Gen"] {
-                    assert_eq!(project(&g, n).opaque, below.contains(&n), "{path} {n}");
+                    assert!(project(&g, n).opaque, "{path} {n}");
                 }
                 let manifest = "src/A/A.csproj";
                 assert!(
@@ -2573,7 +2635,40 @@ mod tests {
         // The opaque project is affected by a change to the project it would reference.
         let mut t = with_build_file("src/A/Directory.Build.rsp", "-p:X=eng/refs.targets");
         t.insert("eng/refs.targets".into(), props(REFS));
-        assert_eq!(affected_ids(&t, GEN), ["dotnet:A", "dotnet:Gen"]);
+        assert_eq!(
+            affected_ids(&t, GEN),
+            ["dotnet:A", "dotnet:B", "dotnet:Gen"]
+        );
+    }
+
+    const SLN: &str = "\nMicrosoft Visual Studio Solution File, Format Version 12.00\nProject(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"A\", \"..\\src\\A\\A.csproj\", \"{11111111-1111-1111-1111-111111111111}\"\nEndProject\n";
+
+    #[test]
+    fn a_response_file_beside_a_solution_cannot_hide_a_reference_from_its_members() {
+        // `build/Directory.Build.rsp` applies when `build/All.sln` is built; its
+        // `-p:` becomes a global property of A, which is outside `build/`, so
+        // the SDK imports `eng/obj/A.csproj.x.props` into A. Verified with
+        // `dotnet msbuild build/All.sln -t:Restore`: the switch is applied to
+        // the solution, and a relative `BaseIntermediateOutputPath` resolves
+        // against each project's directory.
+        let mut t = with_build_file(
+            "build/Directory.Build.rsp",
+            "-p:BaseIntermediateOutputPath=../../eng/obj/\n",
+        );
+        t.insert("build/All.sln".into(), SLN.into());
+        t.insert("eng/obj/A.csproj.x.props".into(), props(REFS));
+        let (g, _) = build(&t);
+        for n in ["A", "B", "Gen", "All.sln"] {
+            assert!(project(&g, n).opaque, "{n}");
+        }
+        assert!(
+            g.issues.iter().any(|i| {
+                i.path == rp("build/All.sln") && i.message == RESPONSE_FILE.as_bytes()
+            })
+        );
+        let ids = affected_ids(&t, GEN);
+        assert!(ids.iter().any(|i| i == "dotnet:A"), "{ids:?}");
+        assert!(ids.iter().any(|i| i.contains("All.sln")), "{ids:?}");
     }
 
     #[test]
@@ -2773,5 +2868,72 @@ mod tests {
         );
         let (g, _) = build(&t);
         assert!(project(&g, "A").opaque);
+    }
+
+    #[test]
+    fn auto_imports_with_a_look_alike_non_ascii_letter_make_the_project_opaque() {
+        // On a case-insensitive file system `ſ` folds to `s`, so MSBuild's
+        // existence check for `A.csproj.user` finds these.
+        for (dir, name) in [
+            ("src/A", "A.csproj.u\u{17f}er"),
+            ("src/A", "A.c\u{17f}proj.user"),
+            ("src/A", "A.csproj.user\u{200c}"),
+            ("src/A/obj", "A.csproj.nuget.g.prop\u{17f}"),
+            ("src/A/obj", "A.csproj.nuget.g.targets\u{200c}"),
+            ("src/A/obj", "A.c\u{17f}proj.nuget.g.props"),
+            ("src/A/\u{ff4f}bj", "A.csproj.nuget.g.props"),
+            ("src/A/o\u{200c}bj", "A.csproj.nuget.g.props"),
+        ] {
+            let what = format!("{dir}/{name}");
+            assert_eq!(Dotnet.claim(&rp(&what)), Some(Claim::EcoGlobal), "{what}");
+            let t = alias_tree(dir, name, &props(GEN_UP), "src");
+            assert_alias_opaque(&t, "src", &what);
+        }
+        // Names that cannot become an auto-import are left alone.
+        for name in [
+            "caf\u{e9}.md",
+            "\u{65e5}\u{672c}.user",
+            "A.csproj.\u{65e5}.props",
+        ] {
+            let t = alias_tree("src/A", name, &props(GEN_UP), "src");
+            let (g, _) = build(&t);
+            assert!(g.projects.iter().all(|p| !p.opaque), "{name}");
+        }
+    }
+
+    #[test]
+    fn hfs_ignorable_characters_in_a_name_or_directory_may_alias() {
+        // HFS+ ignores U+200C-200F, U+202A-202E, U+206A-206F and U+FEFF when it
+        // compares names, so these name the same directory and file.
+        for ignored in ["\u{200c}", "\u{200f}", "\u{202e}", "\u{206a}", "\u{feff}"] {
+            let dir = format!("src{ignored}");
+            let t = alias_tree(&dir, "Directory.Build.props", &props(GEN_UP), "src");
+            assert_alias_opaque(&t, "src", &format!("dir {ignored:?}"));
+            let t = alias_tree(
+                "src",
+                "Directory.Packages.props",
+                "not xml",
+                &format!("s{ignored}rc"),
+            );
+            assert_alias_opaque(
+                &t,
+                &format!("s{ignored}rc"),
+                &format!("project dir {ignored:?}"),
+            );
+            for file in ["Directory.Build.props", "Directory.Build.targets"] {
+                let name = format!("{file}{ignored}");
+                assert_eq!(
+                    Dotnet.claim(&rp(&format!("src/{name}"))),
+                    Some(Claim::EcoGlobal)
+                );
+                let t = with_build_file(&format!("src/{name}"), &props(GEN_UP));
+                let (g, _) = build(&t);
+                assert_eq!(deps(&g, "A"), ["Normal:Gen"], "{name:?}");
+            }
+            let name = format!("Directory.Build.rsp{ignored}");
+            let t = with_build_file(&format!("src/{name}"), "-p:X=1");
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{name:?}");
+        }
     }
 }
