@@ -8,6 +8,7 @@ use asc_store::objects::Objects;
 use asc_store::refs::{Refs, RepoKey};
 
 pub mod commit;
+pub mod derive;
 pub mod tree;
 
 /// Number of decoded trees kept in memory per engine.
