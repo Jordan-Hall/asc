@@ -102,7 +102,7 @@ pub mod context {
     pub const TAG: &str = "asc v1 tag";
 }
 
-fn derive(ctx: &str, bytes: &[u8]) -> [u8; 32] {
+pub(crate) fn derive(ctx: &str, bytes: &[u8]) -> [u8; 32] {
     *blake3::Hasher::new_derive_key(ctx)
         .update(bytes)
         .finalize()

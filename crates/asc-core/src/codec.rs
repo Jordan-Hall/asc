@@ -8,7 +8,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 const MAGIC: [u8; 2] = *b"as";
 
-/// Envelope kinds. Kind 5 is reserved (was `FileMeta`); 16-63 are derived values.
+/// Envelope kinds. Kind 5 is reserved (was `FileMeta`); 6 is `ChangeMeta`; 16-63 are derived values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum EnvelopeKind {
@@ -16,6 +16,7 @@ pub enum EnvelopeKind {
     Changeset = 2,
     TagRecord = 3,
     ChunkList = 4,
+    ChangeMeta = 6,
 }
 
 impl EnvelopeKind {
@@ -25,6 +26,7 @@ impl EnvelopeKind {
             2 => Self::Changeset,
             3 => Self::TagRecord,
             4 => Self::ChunkList,
+            6 => Self::ChangeMeta,
             _ => return None,
         })
     }

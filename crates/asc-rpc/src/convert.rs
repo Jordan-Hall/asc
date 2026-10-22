@@ -251,6 +251,11 @@ impl TryFrom<&ObjKey> for pb::ObjKey {
             ObjKey::Changeset(i) => (pb::ObjKind::Changeset, i.as_slice()),
             ObjKey::Tag(i) => (pb::ObjKind::Tag, i.as_slice()),
             ObjKey::GitTreeOverride(i) => (pb::ObjKind::GitTreeOverride, i.as_slice()),
+            ObjKey::ChangeMeta(_) => {
+                return Err(ConvertError::Unsupported(
+                    "change meta ObjKey (OBJ_KIND_CHANGE_META, U41)",
+                ));
+            }
             ObjKey::Derived { .. } => return Err(ConvertError::Unsupported("derived ObjKey")),
         };
         Ok(Self {
