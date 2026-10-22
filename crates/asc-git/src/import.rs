@@ -6,9 +6,7 @@
 //! (I3), so a crash re-imports the commit and produces identical bytes.
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::io::Cursor;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -337,6 +335,18 @@ enum Plan {
     Dir(Box<DirPlan>),
 }
 
+impl Drop for DirPlan {
+    /// Drops the plan iteratively; the default glue recurses once per level.
+    fn drop(&mut self) {
+        let mut work = std::mem::take(&mut self.entries);
+        while let Some((_, plan)) = work.pop() {
+            if let Plan::Dir(mut sub) = plan {
+                work.append(&mut sub.entries);
+            }
+        }
+    }
+}
+
 /// One directory being planned: its entries so far and the next one to look at.
 struct PlanFrame {
     oid: GitOid,
@@ -517,8 +527,6 @@ fn par_map<T: Sync, R: Send>(
 }
 
 // ------------------------------------------------------------------- importer
-
-type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Rows and counters gathered while one changeset is built.
 #[derive(Default)]
@@ -770,80 +778,131 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
     }
 
     /// Builds the asc tree for `plan` on top of `base`, bottom-up, and stores it.
-    fn build_dir<'b>(
-        &'b self,
-        plan: &'b DirPlan,
+    ///
+    /// Iterative, with one frame per directory, so stack use does not depend on tree depth.
+    async fn build_dir(
+        &self,
+        plan: &DirPlan,
         base: Option<Arc<Tree>>,
         is_root: bool,
-        hashed: &'b HashMap<GitOid, (FileId, u64)>,
-        built: &'b mut Built,
-    ) -> BoxFut<'b, Result<(TreeId, u64)>> {
-        Box::pin(async move {
-            let mut entries = Vec::with_capacity(plan.entries.len());
-            for (name, step) in &plan.entries {
-                let entry = match step {
-                    Plan::Same => base
-                        .as_ref()
-                        .and_then(|b| b.get(name))
-                        .cloned()
-                        .ok_or(ImportError::Inconsistent(plan.git))?,
-                    Plan::Blob(kind, git) => {
-                        let &(file, size) =
-                            hashed.get(git).ok_or(ImportError::Inconsistent(plan.git))?;
-                        Entry {
-                            name: name.clone(),
-                            kind: *kind,
-                            id: *file.as_bytes(),
-                            size,
-                            git: *git,
-                        }
-                    }
-                    Plan::Gitlink(git) => Entry {
-                        name: name.clone(),
-                        kind: Kind::Gitlink,
-                        id: [0; 32],
-                        size: 0,
-                        git: *git,
-                    },
-                    Plan::Dir(sub) => {
-                        let under = match base.as_ref().and_then(|b| b.get(name)) {
-                            Some(e) if e.kind == Kind::Dir => {
-                                Some(self.engine.get_tree(TreeId::from_bytes(e.id)).await?)
-                            }
-                            _ => None,
-                        };
-                        let (id, size) = self.build_dir(sub, under, false, hashed, built).await?;
-                        Entry {
-                            name: name.clone(),
-                            kind: Kind::Dir,
-                            id: *id.as_bytes(),
-                            size,
-                            git: sub.git,
-                        }
-                    }
+        hashed: &HashMap<GitOid, (FileId, u64)>,
+        built: &mut Built,
+    ) -> Result<(TreeId, u64)> {
+        struct Frame<'p> {
+            plan: &'p DirPlan,
+            base: Option<Arc<Tree>>,
+            is_root: bool,
+            next: usize,
+            entries: Vec<Entry>,
+        }
+        let frame = |plan, base, is_root| Frame {
+            plan,
+            base,
+            is_root,
+            next: 0,
+            entries: Vec::with_capacity(plan.entries.len()),
+        };
+        let mut stack = vec![frame(plan, base, is_root)];
+        loop {
+            let Some(top) = stack.last_mut() else {
+                return Err(ImportError::Inconsistent(plan.git));
+            };
+            let cur = top.plan;
+            let Some((name, step)) = cur.entries.get(top.next) else {
+                let Some(done) = stack.pop() else {
+                    return Err(ImportError::Inconsistent(plan.git));
                 };
-                entries.push(entry);
-            }
-            let size = entries.iter().fold(0u64, |s, e| s.saturating_add(e.size));
-            let tree = Tree::new(entries, is_root)?;
-            if let Some(raw) = &plan.raw_override {
-                check_override(plan.git, raw, &tree)?;
-            }
-            let id = self.engine.put_tree(tree).await?;
-            if let Some(raw) = &plan.raw_override {
-                self.objects
-                    .put(&ObjKey::GitTreeOverride(plan.git), encode_stored(raw))
+                let (id, size) = self
+                    .finish_dir(done.plan, done.entries, done.is_root, built)
                     .await?;
-                built.overrides += 1;
-            }
-            built.trees += 1;
-            built.rows.push(GitMapRow {
-                git: plan.git,
-                kind: ObjectKind::Tree,
-                asc: *id.as_bytes(),
-            });
-            Ok((id, size))
-        })
+                let Some(parent) = stack.last_mut() else {
+                    return Ok((id, size));
+                };
+                let (name, step) = &parent.plan.entries[parent.next - 1];
+                let Plan::Dir(sub) = step else {
+                    return Err(ImportError::Inconsistent(parent.plan.git));
+                };
+                parent.entries.push(Entry {
+                    name: name.clone(),
+                    kind: Kind::Dir,
+                    id: *id.as_bytes(),
+                    size,
+                    git: sub.git,
+                });
+                continue;
+            };
+            top.next += 1;
+            let git = cur.git;
+            let entry = match step {
+                Plan::Same => top
+                    .base
+                    .as_ref()
+                    .and_then(|b| b.get(name))
+                    .cloned()
+                    .ok_or(ImportError::Inconsistent(git))?,
+                Plan::Blob(kind, oid) => {
+                    let &(file, size) = hashed.get(oid).ok_or(ImportError::Inconsistent(git))?;
+                    Entry {
+                        name: name.clone(),
+                        kind: *kind,
+                        id: *file.as_bytes(),
+                        size,
+                        git: *oid,
+                    }
+                }
+                Plan::Gitlink(oid) => Entry {
+                    name: name.clone(),
+                    kind: Kind::Gitlink,
+                    id: [0; 32],
+                    size: 0,
+                    git: *oid,
+                },
+                Plan::Dir(sub) => {
+                    let top_base = top.base.clone();
+                    if stack.len() > MAX_TREE_DEPTH {
+                        return Err(ImportError::TreeTooDeep(sub.git));
+                    }
+                    let under = match top_base.as_ref().and_then(|b| b.get(name)) {
+                        Some(e) if e.kind == Kind::Dir => {
+                            Some(self.engine.get_tree(TreeId::from_bytes(e.id)).await?)
+                        }
+                        _ => None,
+                    };
+                    stack.push(frame(sub, under, false));
+                    continue;
+                }
+            };
+            top.entries.push(entry);
+        }
+    }
+
+    /// Stores one built directory: its tree, its override (verified) and its git map row.
+    async fn finish_dir(
+        &self,
+        plan: &DirPlan,
+        entries: Vec<Entry>,
+        is_root: bool,
+        built: &mut Built,
+    ) -> Result<(TreeId, u64)> {
+        let size = entries.iter().fold(0u64, |s, e| s.saturating_add(e.size));
+        let tree = Tree::new(entries, is_root)?;
+        if let Some(raw) = &plan.raw_override {
+            check_override(plan.git, raw, &tree)?;
+        }
+        let id = self.engine.put_tree(tree).await?;
+        if let Some(raw) = &plan.raw_override {
+            self.objects
+                .put(&ObjKey::GitTreeOverride(plan.git), encode_stored(raw))
+                .await?;
+            built.overrides += 1;
+        }
+        built.trees += 1;
+        built.rows.push(GitMapRow {
+            git: plan.git,
+            kind: ObjectKind::Tree,
+            asc: *id.as_bytes(),
+        });
+        Ok((id, size))
     }
 
     /// Builds, validates and stores one changeset; the commit row is written last (I3).

@@ -40,9 +40,7 @@ fn mode_ok(kind: Kind, mode: &[u8]) -> bool {
         Kind::Dir => (b"40000", &[]),
         Kind::Gitlink => (b"160000", &[]),
     };
-    mode == canon
-        || legacy.contains(&mode)
-        || (mode.first() == Some(&b'0') && &mode[1..] == canon)
+    mode == canon || legacy.contains(&mode) || (mode.first() == Some(&b'0') && &mode[1..] == canon)
 }
 
 /// Checks that `body` (a git tree body without header) lists exactly the entries of `tree`:

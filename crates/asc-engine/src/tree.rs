@@ -16,15 +16,11 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
-use futures::future::BoxFuture;
-use futures::stream::{BoxStream, StreamExt, TryStreamExt};
+use futures::stream::{BoxStream, StreamExt};
 
 use crate::Engine;
 
 pub use pathspec::{Pathspec, PathspecError};
-
-/// Concurrent directory rebuilds per level in [`Engine::apply`].
-const APPLY_FANOUT: usize = 16;
 
 /// Tree operation failures.
 #[derive(Debug, thiserror::Error)]
@@ -60,6 +56,16 @@ struct Node {
     path: RepoPath,
     leaf: Option<Change>,
     children: BTreeMap<Name, Node>,
+}
+
+impl Drop for Node {
+    /// Drops the trie iteratively; the default glue recurses once per level.
+    fn drop(&mut self) {
+        let mut work: Vec<Node> = std::mem::take(&mut self.children).into_values().collect();
+        while let Some(mut n) = work.pop() {
+            work.extend(std::mem::take(&mut n.children).into_values());
+        }
+    }
 }
 
 impl Node {
@@ -205,62 +211,105 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         self.put_tree(Tree::new(entries, true)?).await
     }
 
-    /// New entries of a directory after applying the trie level `nodes` to `base`.
-    fn apply_dir<'a>(
-        &'a self,
-        base: Option<Arc<Tree>>,
-        nodes: &'a BTreeMap<Name, Node>,
-    ) -> BoxFuture<'a, Result<Vec<Entry>>> {
-        Box::pin(async move {
-            let old: &[Entry] = base.as_deref().map_or(&[], Tree::entries);
-            let mut jobs = Vec::with_capacity(nodes.len());
-            let mut spans = Vec::with_capacity(nodes.len());
-            let mut i = 0;
-            for (name, node) in nodes {
-                let pos = i + old[i..].partition_point(|e| e.name < *name);
-                let existing = old.get(pos).filter(|e| e.name == *name);
-                spans.push(i..pos);
-                i = pos + usize::from(existing.is_some());
-                jobs.push(self.apply_entry(name, existing, node));
-            }
-            let results: Vec<Option<Entry>> = futures::stream::iter(jobs)
-                .buffered(APPLY_FANOUT)
-                .try_collect()
-                .await?;
-            let mut out = Vec::with_capacity(old.len() + nodes.len());
-            for (span, entry) in spans.into_iter().zip(results) {
-                out.extend_from_slice(&old[span]);
-                out.extend(entry);
-            }
-            out.extend_from_slice(&old[i..]);
-            Ok(out)
-        })
-    }
-
-    /// The entry that replaces `existing` at `name`, or `None` when the name disappears.
-    async fn apply_entry(
+    /// New entries of the root directory after applying the trie level `nodes` to `base`.
+    ///
+    /// Iterative: one frame per directory on the spine, so stack use does not depend on depth.
+    async fn apply_dir(
         &self,
-        name: &Name,
-        existing: Option<&Entry>,
-        node: &Node,
-    ) -> Result<Option<Entry>> {
-        let existing_dir = existing.filter(|e| e.kind == Kind::Dir);
-        let deleting = matches!(node.leaf, Some(Change::Delete));
-        if deleting && existing_dir.is_some() {
-            return Err(Error::DeleteDir(node.path.clone()));
+        base: Option<Arc<Tree>>,
+        nodes: &BTreeMap<Name, Node>,
+    ) -> Result<Vec<Entry>> {
+        struct Frame<'a> {
+            base: Option<Arc<Tree>>,
+            nodes: Vec<(&'a Name, &'a Node)>,
+            k: usize,
+            /// Position in the base entries already copied to `out`.
+            i: usize,
+            out: Vec<Entry>,
+            /// The child being built: its name, node and existing entry.
+            pending: Option<(&'a Name, &'a Node, Option<Entry>)>,
         }
-        let below = if node.children.is_empty() {
-            None
-        } else {
-            let base = match (existing, existing_dir) {
+        fn frame<'a>(base: Option<Arc<Tree>>, nodes: &'a BTreeMap<Name, Node>) -> Frame<'a> {
+            Frame {
+                base,
+                nodes: nodes.iter().collect(),
+                k: 0,
+                i: 0,
+                out: Vec::new(),
+                pending: None,
+            }
+        }
+        let mut stack = vec![frame(base, nodes)];
+        loop {
+            let Some(top) = stack.last_mut() else {
+                return Ok(Vec::new());
+            };
+            let base = top.base.clone();
+            let old: &[Entry] = base.as_deref().map_or(&[], Tree::entries);
+            let Some(&(name, node)) = top.nodes.get(top.k) else {
+                let Some(done) = stack.pop() else {
+                    return Ok(Vec::new());
+                };
+                let mut out = done.out;
+                out.extend_from_slice(&old[done.i..]);
+                let Some(parent) = stack.last_mut() else {
+                    return Ok(out);
+                };
+                let Some((name, node, existing)) = parent.pending.take() else {
+                    return Err(Error::TooDeep);
+                };
+                let entry = self
+                    .finish_entry(name, existing.as_ref(), node, Some(out))
+                    .await?;
+                parent.out.extend(entry);
+                continue;
+            };
+            top.k += 1;
+            let pos = top.i + old[top.i..].partition_point(|e| e.name < *name);
+            let existing = old.get(pos).filter(|e| e.name == *name).cloned();
+            top.out.extend_from_slice(&old[top.i..pos]);
+            top.i = pos + usize::from(existing.is_some());
+
+            let existing_dir = existing.as_ref().filter(|e| e.kind == Kind::Dir);
+            let deleting = matches!(node.leaf, Some(Change::Delete));
+            if deleting && existing_dir.is_some() {
+                return Err(Error::DeleteDir(node.path.clone()));
+            }
+            if node.children.is_empty() {
+                let entry = self
+                    .finish_entry(name, existing.as_ref(), node, None)
+                    .await?;
+                top.out.extend(entry);
+                continue;
+            }
+            let below_base = match (&existing, existing_dir) {
                 (_, Some(d)) => Some(self.get_tree(TreeId::from_bytes(d.id)).await?),
                 (Some(_), None) if !deleting => {
                     return Err(Error::PathThroughFile(node.path.clone()));
                 }
                 _ => None,
             };
-            Some(self.apply_dir(base, &node.children).await?)
-        };
+            if stack.len() > MAX_TREE_DEPTH {
+                return Err(Error::TooDeep);
+            }
+            if let Some(top) = stack.last_mut() {
+                top.pending = Some((name, node, existing));
+            }
+            stack.push(frame(below_base, &node.children));
+        }
+    }
+
+    /// The entry that replaces `existing` at `name`, or `None` when the name disappears.
+    /// `below` is the rebuilt content of the directory when the node has children.
+    async fn finish_entry(
+        &self,
+        name: &Name,
+        existing: Option<&Entry>,
+        node: &Node,
+        below: Option<Vec<Entry>>,
+    ) -> Result<Option<Entry>> {
+        let existing_dir = existing.filter(|e| e.kind == Kind::Dir);
+        let deleting = matches!(node.leaf, Some(Change::Delete));
         let below_nonempty = below.as_ref().is_some_and(|b| !b.is_empty());
         match &node.leaf {
             Some(change @ (Change::Write { .. } | Change::Gitlink { .. })) => {
@@ -328,115 +377,156 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     ) -> Result<Vec<(RepoPath, Change)>> {
         let mut out = Vec::new();
         if a != b {
-            self.diff_dir(a, b, None, 0, spec, &mut out).await?;
+            self.diff_dir(a, b, spec, &mut out).await?;
         }
         out.sort_by(|x, y| x.0.cmp(&y.0));
         Ok(out)
     }
 
-    fn diff_dir<'a>(
-        &'a self,
+    /// Iterative: an explicit stack of directory frames, so stack use does not depend on depth.
+    async fn diff_dir(
+        &self,
         a: TreeId,
         b: TreeId,
-        prefix: Option<RepoPath>,
-        depth: usize,
-        spec: Option<&'a Pathspec>,
-        out: &'a mut Vec<(RepoPath, Change)>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let (ta, tb) = futures::try_join!(self.get_tree(a), self.get_tree(b))?;
-            let (ea, eb) = (ta.entries(), tb.entries());
-            let (mut i, mut j) = (0, 0);
-            while i < ea.len() || j < eb.len() {
-                let order = match (ea.get(i), eb.get(j)) {
-                    (Some(x), Some(y)) => x.name.cmp(&y.name),
-                    (Some(_), None) => Ordering::Less,
-                    _ => Ordering::Greater,
-                };
-                match order {
-                    Ordering::Less => {
-                        self.emit(&ea[i], prefix.as_ref(), depth, spec, false, out)
-                            .await?;
-                        i += 1;
+        spec: Option<&Pathspec>,
+        out: &mut Vec<(RepoPath, Change)>,
+    ) -> Result<()> {
+        enum Frame {
+            Diff {
+                ta: Arc<Tree>,
+                tb: Arc<Tree>,
+                i: usize,
+                j: usize,
+                prefix: Option<RepoPath>,
+            },
+            /// All of a one-sided directory's entries, reported as added or deleted.
+            Emit {
+                tree: Arc<Tree>,
+                next: usize,
+                prefix: RepoPath,
+                added: bool,
+            },
+        }
+        let (ta, tb) = futures::try_join!(self.get_tree(a), self.get_tree(b))?;
+        let mut stack = vec![Frame::Diff {
+            ta,
+            tb,
+            i: 0,
+            j: 0,
+            prefix: None,
+        }];
+        while let Some(top) = stack.last_mut() {
+            // Entries to report as one-sided: (entry, directory prefix, added).
+            let one_sided: Vec<(Entry, Option<RepoPath>, bool)>;
+            match top {
+                Frame::Emit {
+                    tree,
+                    next,
+                    prefix,
+                    added,
+                } => {
+                    let Some(child) = tree.entries().get(*next).cloned() else {
+                        stack.pop();
+                        continue;
+                    };
+                    *next += 1;
+                    one_sided = vec![(child, Some(prefix.clone()), *added)];
+                }
+                Frame::Diff {
+                    ta,
+                    tb,
+                    i,
+                    j,
+                    prefix,
+                } => {
+                    let (ea, eb) = (ta.entries(), tb.entries());
+                    if *i >= ea.len() && *j >= eb.len() {
+                        stack.pop();
+                        continue;
                     }
-                    Ordering::Greater => {
-                        self.emit(&eb[j], prefix.as_ref(), depth, spec, true, out)
-                            .await?;
-                        j += 1;
-                    }
-                    Ordering::Equal => {
-                        let (x, y) = (&ea[i], &eb[j]);
-                        i += 1;
-                        j += 1;
-                        let both_dirs = x.kind == Kind::Dir && y.kind == Kind::Dir;
-                        if x == y || (both_dirs && x.id == y.id) {
-                            continue;
+                    let order = match (ea.get(*i), eb.get(*j)) {
+                        (Some(x), Some(y)) => x.name.cmp(&y.name),
+                        (Some(_), None) => Ordering::Less,
+                        _ => Ordering::Greater,
+                    };
+                    match order {
+                        Ordering::Less => {
+                            one_sided = vec![(ea[*i].clone(), prefix.clone(), false)];
+                            *i += 1;
                         }
-                        if both_dirs {
-                            let path = child_path(prefix.as_ref(), &x.name);
-                            if spec.is_none_or(|s| s.may_contain_dir(&path)) {
-                                if depth + 1 > MAX_TREE_DEPTH {
-                                    return Err(Error::TooDeep);
-                                }
-                                let ids = (TreeId::from_bytes(x.id), TreeId::from_bytes(y.id));
-                                self.diff_dir(ids.0, ids.1, Some(path), depth + 1, spec, out)
-                                    .await?;
+                        Ordering::Greater => {
+                            one_sided = vec![(eb[*j].clone(), prefix.clone(), true)];
+                            *j += 1;
+                        }
+                        Ordering::Equal => {
+                            let (x, y) = (ea[*i].clone(), eb[*j].clone());
+                            *i += 1;
+                            *j += 1;
+                            let both_dirs = x.kind == Kind::Dir && y.kind == Kind::Dir;
+                            if x == y || (both_dirs && x.id == y.id) {
+                                continue;
                             }
-                        } else {
+                            let prefix = prefix.clone();
+                            if both_dirs {
+                                let path = child_path(prefix.as_ref(), &x.name);
+                                if spec.is_none_or(|s| s.may_contain_dir(&path)) {
+                                    if stack.len() > MAX_TREE_DEPTH {
+                                        return Err(Error::TooDeep);
+                                    }
+                                    let (ta, tb) = futures::try_join!(
+                                        self.get_tree(TreeId::from_bytes(x.id)),
+                                        self.get_tree(TreeId::from_bytes(y.id))
+                                    )?;
+                                    stack.push(Frame::Diff {
+                                        ta,
+                                        tb,
+                                        i: 0,
+                                        j: 0,
+                                        prefix: Some(path),
+                                    });
+                                }
+                                continue;
+                            }
                             // A leaf replaced by a leaf is one `Write`; a directory on either
                             // side is expanded to leaves.
+                            let mut v = Vec::new();
                             if x.kind == Kind::Dir || y.kind == Kind::Dir {
-                                self.emit(x, prefix.as_ref(), depth, spec, false, out)
-                                    .await?;
+                                v.push((x, prefix.clone(), false));
                             }
-                            self.emit(y, prefix.as_ref(), depth, spec, true, out)
-                                .await?;
+                            v.push((y, prefix, true));
+                            one_sided = v;
                         }
                     }
                 }
             }
-            Ok(())
-        })
-    }
-
-    /// Reports an entry that exists on one side only: `added` writes it, otherwise deletes it.
-    fn emit<'a>(
-        &'a self,
-        e: &'a Entry,
-        prefix: Option<&'a RepoPath>,
-        depth: usize,
-        spec: Option<&'a Pathspec>,
-        added: bool,
-        out: &'a mut Vec<(RepoPath, Change)>,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let path = child_path(prefix, &e.name);
-            if e.kind != Kind::Dir {
-                if spec.is_none_or(|s| s.matches(&path)) {
-                    out.push((
-                        path,
-                        if added {
-                            entry_change(e)
-                        } else {
-                            Change::Delete
-                        },
-                    ));
+            for (e, prefix, added) in one_sided {
+                let path = child_path(prefix.as_ref(), &e.name);
+                if e.kind != Kind::Dir {
+                    if spec.is_none_or(|s| s.matches(&path)) {
+                        out.push((
+                            path,
+                            if added {
+                                entry_change(&e)
+                            } else {
+                                Change::Delete
+                            },
+                        ));
+                    }
+                } else if spec.is_none_or(|s| s.may_contain_dir(&path)) {
+                    if stack.len() > MAX_TREE_DEPTH {
+                        return Err(Error::TooDeep);
+                    }
+                    let tree = self.get_tree(TreeId::from_bytes(e.id)).await?;
+                    stack.push(Frame::Emit {
+                        tree,
+                        next: 0,
+                        prefix: path,
+                        added,
+                    });
                 }
-                return Ok(());
             }
-            if spec.is_some_and(|s| !s.may_contain_dir(&path)) {
-                return Ok(());
-            }
-            if depth + 1 > MAX_TREE_DEPTH {
-                return Err(Error::TooDeep);
-            }
-            let tree = self.get_tree(TreeId::from_bytes(e.id)).await?;
-            for child in tree.entries() {
-                self.emit(child, Some(&path), depth + 1, spec, added, out)
-                    .await?;
-            }
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     /// Streams the leaf entries (files, symlinks, gitlinks) under `root` that match `spec`.
@@ -668,6 +758,7 @@ mod pathspec {
 
 #[cfg(test)]
 mod tests {
+    use futures::stream::TryStreamExt;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
@@ -1037,10 +1128,10 @@ mod tests {
         RepoPath::new(s).unwrap()
     }
 
-    /// Runs `f` on a 4 MiB stack, where unbounded recursion would overflow.
+    /// Runs `f` on a 256 KiB stack, where unbounded recursion would overflow.
     fn on_small_stack(f: impl FnOnce() + Send + 'static) {
         std::thread::Builder::new()
-            .stack_size(4 * 1024 * 1024)
+            .stack_size(256 * 1024)
             .spawn(f)
             .unwrap()
             .join()
@@ -1048,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn too_deep_apply_is_rejected_and_depth_100_works() {
+    fn too_deep_apply_is_rejected_and_2000_levels_work_on_a_small_stack() {
         on_small_stack(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
@@ -1061,11 +1152,14 @@ mod tests {
                     e.apply(empty, &too_deep).await,
                     Err(Error::TooDeep)
                 ));
-                let ok = [(deep_path(100), file(1))];
-                let root = e.apply(empty, &ok).await.unwrap();
-                let leaves = all_leaves(&e, root, None).await;
-                assert_eq!(leaves.len(), 1);
-                assert_eq!(e.leafdiff(empty, root, None).await.unwrap().len(), 1);
+                let first = e.apply(empty, &[(deep_path(2000), file(1))]).await.unwrap();
+                let mut other = "d/".repeat(1999);
+                other.push('g');
+                let second = e.apply(first, &[(p(&other), file(2))]).await.unwrap();
+                assert_eq!(all_leaves(&e, second, None).await.len(), 2);
+                assert_eq!(e.leafdiff(empty, first, None).await.unwrap().len(), 1);
+                assert_eq!(e.leafdiff(first, second, None).await.unwrap().len(), 1);
+                assert_eq!(e.leafdiff(second, empty, None).await.unwrap().len(), 2);
             });
         });
     }
