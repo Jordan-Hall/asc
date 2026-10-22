@@ -705,8 +705,7 @@ mod tests {
     use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        // lint:allow-raw-git
-        let out = Command::new("git")
+        let out = Command::new("git") // lint:allow-raw-git
             .args(args)
             .current_dir(dir)
             .output()
