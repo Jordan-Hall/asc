@@ -4,12 +4,15 @@
 //! Generated prost messages stay inside this crate (`pb`). The public surface is the domain
 //! conversions in [`convert`], [`errors`], and the generated tonic services in [`services`].
 
+pub mod auth;
 pub mod changes;
+pub mod client;
 pub mod cloud;
 pub mod codeintel;
 pub mod convert;
 pub mod errors;
 pub mod json;
+pub mod server;
 
 /// Generated prost messages and tonic services for package `asc.v1`.
 #[allow(
