@@ -265,9 +265,10 @@ pub struct WsCtx {
 }
 
 impl WsCtx {
-    /// Opens the state of the workspace `projection` belongs to.
-    pub async fn open(projection: Projection, config: &ConfigSnapshot) -> Result<Self> {
-        let home = AscHome::for_workspace(projection.git_dir())?;
+    /// Opens the state of the admitted workspace.
+    pub async fn open(admitted: Admitted, config: &ConfigSnapshot) -> Result<Self> {
+        // The home `admit` checked against, never one derived from the gitdir's path.
+        let Admitted { projection, home } = admitted;
         let db = StateDb::open(&home).await?;
         let workspace = workspaces::get(&db, projection.workspace())
             .await?
@@ -384,8 +385,28 @@ pub struct Gate<'a> {
     pub owned: OwnerProbe<'a>,
 }
 
+/// The canonical path, without the verbatim prefix Windows adds to a drive path (hook scripts
+/// and config readers get these paths, and not every one of them takes the verbatim form).
 fn canonical(path: &Path) -> Option<PathBuf> {
-    std::fs::canonicalize(path).ok()
+    let real = std::fs::canonicalize(path).ok()?;
+    if cfg!(windows) {
+        let text = real.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            let drive = rest.as_bytes();
+            if drive.len() >= 2 && drive[0].is_ascii_alphabetic() && drive[1] == b':' {
+                return Some(PathBuf::from(rest));
+            }
+        }
+    }
+    Some(real)
+}
+
+/// A workspace that passed [`admit`]: its projection holds the canonical gitdir and common dir
+/// that were checked, and `home` is the user's home they were checked against.
+#[derive(Debug)]
+pub struct Admitted {
+    pub projection: Projection,
+    pub home: AscHome,
 }
 
 /// Admits a discovered workspace or treats it as "not an asc repository" (`Ok(None)`), in the
@@ -394,7 +415,7 @@ fn canonical(path: &Path) -> Option<PathBuf> {
 /// (2) the root, gitfile, gitdir and common dir are owned by the current user or listed in
 /// `safe.directory`, else git's "dubious ownership" error (exit 128); (3) the workspace id
 /// is registered in the home's `state.db` and the common dir is its repository's.
-async fn admit(p: Projection, gate: &Gate<'_>) -> Result<Option<Projection>> {
+async fn admit(p: Projection, gate: &Gate<'_>) -> Result<Option<Admitted>> {
     let home = (gate.home)()?;
     let (Some(git_dir), Some(common), Some(home_root)) = (
         canonical(p.git_dir()),
@@ -426,14 +447,17 @@ async fn admit(p: Projection, gate: &Gate<'_>) -> Result<Option<Projection>> {
     if canonical(&home.common_dir(repo.repo.id)).as_deref() != Some(common.as_path()) {
         return Ok(None);
     }
-    Ok(Some(p))
+    Ok(Some(Admitted {
+        projection: p.with_dirs(git_dir, common),
+        home,
+    }))
 }
 
 /// Finds the workspace of `cwd` the way the shim does (SPEC §11.4): `GIT_DIR`, else the first
 /// `.git` entry walking up, stopping below `GIT_CEILING_DIRECTORIES`. A directory `.git` or a
 /// gitfile that is not an asc synthetic `.git` ends the walk: it is not an asc workspace. A
 /// candidate must then pass [`admit`]; one that does not is not an asc workspace either.
-pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Option<Projection>> {
+pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Option<Admitted>> {
     let candidate = if let Some(git_dir) = &env.git_dir {
         let git_dir = if git_dir.is_absolute() { git_dir.clone() } else { cwd.join(git_dir) };
         let Ok(marker) = std::fs::read_to_string(git_dir.join("asc-workspace")) else {
@@ -494,14 +518,14 @@ impl Ctx {
     /// [`Ctx::open`] with the user's home, `safe.directory` list and ownership probe supplied
     /// (tests; every other caller goes through [`Ctx::open`]).
     pub async fn open_with(prog: Program, env: GitEnv, cwd: PathBuf, gate: &Gate<'_>) -> Result<Self> {
-        let projection = discover(&env, &cwd, gate).await?;
+        let admitted = discover(&env, &cwd, gate).await?;
         let get = |k: &str| std::env::var_os(k);
-        let local = projection.as_ref().map(|p| LocalConfig {
-            common_dir: p.common_dir(),
-            toplevel: p.toplevel(),
+        let local = admitted.as_ref().map(|a| LocalConfig {
+            common_dir: a.projection.common_dir(),
+            toplevel: a.projection.toplevel(),
         });
         let config = ConfigSnapshot::load_with(&env, &get, local.as_ref(), gate.owned)?;
-        let ws = match projection {
+        let ws = match admitted {
             Some(p) => Some(WsCtx::open(p, &config).await?),
             None => None,
         };
@@ -865,7 +889,7 @@ mod gate_tests {
     use super::*;
     use crate::env::ConfigParam;
 
-    fn is_dubious(r: &Result<Option<Projection>>) -> bool {
+    fn is_dubious(r: &Result<Option<Admitted>>) -> bool {
         matches!(r, Err(CliError::Raw(t, 128))
             if t.starts_with("fatal: detected dubious ownership in repository at '")
                 && t.contains("git config --global --add safe.directory "))
@@ -886,7 +910,7 @@ mod gate_tests {
         cwd: &Path,
         safe: &SafeDirectory,
         owned: OwnerProbe<'_>,
-    ) -> Result<Option<Projection>> {
+    ) -> Result<Option<Admitted>> {
         let home = || Ok(f.home.clone());
         let gate = Gate { safe, home: &home, owned };
         discover(&GitEnv::from_vars(&|_| None), cwd, &gate).await
@@ -903,7 +927,7 @@ mod gate_tests {
         std::fs::create_dir_all(&sub).unwrap();
         for dir in [&f.root, &sub] {
             let p = discover_in(&f, dir, &none, &owned_by_current_user).await.unwrap();
-            assert_eq!(p.expect("workspace").workspace(), f.ws);
+            assert_eq!(p.expect("workspace").projection.workspace(), f.ws);
         }
     }
 
@@ -933,6 +957,57 @@ mod gate_tests {
         assert!(ctx.ws_opt().is_none());
         assert_eq!(ctx.config.get("asc.realGit"), None);
         assert_eq!(ctx.config.get("alias.x"), None);
+    }
+
+    /// Makes `link` a directory link to `target`; `false` when the platform refuses.
+    fn link_dir(link: &Path, target: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_linked_gitdir_never_moves_the_home_to_the_links_lexical_grandparent() {
+        let f = Fixture::new().await;
+        let real = Projection::open(&f.root).unwrap();
+        let (real_git, real_common) = (real.git_dir().to_owned(), real.common_dir().to_owned());
+        // `<evil>/wc/<id>/git` and `<evil>/repos` both lead into the user's home.
+        let evil = f.sandbox.dir("evil");
+        let wc = evil.join("wc").join(f.ws.to_string());
+        std::fs::create_dir_all(&wc).unwrap();
+        let linked = link_dir(&wc.join("git"), &real_git) && link_dir(&evil.join("repos"), &f.home.root().join("repos"));
+        if !linked {
+            eprintln!("skipped: cannot create directory links here");
+            return;
+        }
+        std::fs::write(f.root.join(".git"), format!("gitdir: {}\n", wc.join("git").display())).unwrap();
+        let lexical = Projection::open(&f.root).unwrap();
+        assert!(lexical.git_dir().starts_with(&evil), "the projection is lexical before admission");
+
+        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES).await.unwrap().expect("admitted");
+        assert_eq!(got.home, f.home, "the gate's home, not the link's grandparent");
+        assert_eq!(got.projection.git_dir(), canonical(&real_git).unwrap());
+        assert_eq!(got.projection.common_dir(), canonical(&real_common).unwrap());
+
+        // The whole context opens the user's state, and `evil` gets no state.db.
+        let home = || Ok(f.home.clone());
+        let none = SafeDirectory::default();
+        let gate = Gate { safe: &none, home: &home, owned: YES };
+        let env = GitEnv::from_vars(&|k| (k == "GIT_CONFIG_NOSYSTEM").then(|| "1".into()));
+        let ctx = Ctx::open_with(Program::Asc, env, f.root.clone(), &gate).await.unwrap();
+        assert_eq!(ctx.ws().unwrap().home, f.home);
+        assert_eq!(ctx.ws().unwrap().projection.common_dir(), canonical(&real_common).unwrap());
+        assert!(!evil.join("state.db").exists(), "no state was created under the link's parent");
     }
 
     #[tokio::test]

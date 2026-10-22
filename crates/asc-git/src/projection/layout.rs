@@ -160,6 +160,15 @@ impl Projection {
         })
     }
 
+    /// The same workspace with its gitdir and common dir replaced by `git_dir` and `common_dir`
+    /// (the canonical paths a caller checked).
+    #[must_use]
+    pub fn with_dirs(mut self, git_dir: PathBuf, common_dir: PathBuf) -> Self {
+        self.git_dir = git_dir;
+        self.common_dir = common_dir;
+        self
+    }
+
     /// The workspace root holding the `.git` gitfile.
     pub fn toplevel(&self) -> &Path {
         &self.toplevel
