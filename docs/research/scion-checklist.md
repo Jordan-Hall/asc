@@ -125,3 +125,20 @@ Scion's efficiency model is the core of asc, not an optional later step. The fol
 - **Transparent adoption.** Point the Forgejo fork's `[actions] DEFAULT_ACTIONS_URL` at the mirror, and add a runner-fork alias table: `actions/checkout@*` maps to `asc/actions/checkout`. Existing workflows then switch with no YAML edits.
 - **Runner-native fast path.** The runner fork recognises the checkout action and runs the asc checkout provider on the host, which shares the daemon cache, instead of running a node action in the container.
 - **Same inputs and outputs as upstream** (`ref`, `fetch-depth`, `path`, `submodules`, `lfs`, `sparse-checkout`), mapped to asc semantics. Upstream workflows keep working.
+
+## Benchmark against git: asc must be faster (user requirement, 2026-10-22)
+- **A head-to-head benchmark harness** (`bench/`, hyperfine-driven plus a Rust criterion suite for internals). It runs the same scenarios on git and asc against the monorepo workload, imported, and a synthetic scaled repo at 10x and 100x files and history. Scenarios:
+  - clone (full, blobless and shallow for git, against asc virtual and plain);
+  - `worktree add`;
+  - `status` clean and dirty;
+  - `switch` between tips;
+  - `diff` (HEAD, merge-base, `--stat`);
+  - `log` (path-limited);
+  - `blame`;
+  - `merge-base` / `is-ancestor`;
+  - `commit` / `push` / `fetch`;
+  - CI checkout plus affected;
+  - turbo `--dry` hashing.
+- **Metrics:** wall time p50/p95, bytes transferred, bytes on disk, peak RSS, files hydrated and server CPU.
+- **Gate:** asc must beat git on every scenario where Scion's model applies: clone, worktree, switch, CI checkout, merge-base, blame, log, disk and transfer. It must be within 10% elsewhere, such as hot local `diff` or `status`. CI fails on regression against the stored baseline.
+- **Results are published** to `docs/BENCHMARKS.md`: a table for each release with the git version, machine spec and reproduction commands.
