@@ -4,6 +4,7 @@
 //! looked up in `git_map`; outbound oids need no lookup: a tree entry carries its git oid, a tree
 //! hashes to its own, and a changeset's commit oid is a memoised derived value.
 
+use std::collections::{HashMap, hash_map};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -11,6 +12,7 @@ use asc_core::git::{ObjectKind, tree_oid};
 use asc_core::id::{ChangesetId, FileId, GitOid, TreeId};
 use asc_core::object::Entry;
 use asc_engine::Engine;
+use asc_engine::revspec::{Peel, RevExpr};
 use asc_rpc::IdMode;
 use asc_rpc::convert::WireId;
 use asc_store::bucket::BucketObjects;
@@ -58,6 +60,128 @@ fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
 
 fn is_hex(s: &[u8]) -> bool {
     !s.is_empty() && s.iter().all(u8::is_ascii_hexdigit)
+}
+
+/// A name inside a parsed revision. `rev` names a commit (hex ids and `HEAD` are meaningful);
+/// otherwise it is a ref name only (`name@{u}`, `name@{n}`).
+struct Leaf {
+    name: String,
+    rev: bool,
+}
+
+/// Collects every name of `e`; refuses `:/regex` message searches.
+fn collect_leaves(e: &RevExpr, out: &mut Vec<Leaf>) -> Result<(), Status> {
+    match e {
+        RevExpr::Name(n) => out.push(Leaf {
+            name: n.clone(),
+            rev: true,
+        }),
+        RevExpr::Upstream(Some(n)) | RevExpr::Reflog(Some(n), _) => out.push(Leaf {
+            name: n.clone(),
+            rev: false,
+        }),
+        RevExpr::Upstream(None) | RevExpr::Reflog(None, _) => {}
+        RevExpr::Message(_) => {
+            return Err(Status::invalid_argument(
+                "message searches are not supported",
+            ));
+        }
+        RevExpr::Parent(x, _)
+        | RevExpr::Ancestor(x, _)
+        | RevExpr::Peel(x, _)
+        | RevExpr::Path(x, _)
+        | RevExpr::Not(x)
+        | RevExpr::Parents(x)
+        | RevExpr::Only(x) => collect_leaves(x, out)?,
+        RevExpr::DotDot(a, b) | RevExpr::TriDot(a, b) => {
+            collect_leaves(a, out)?;
+            collect_leaves(b, out)?;
+        }
+        RevExpr::List(xs) => {
+            for x in xs {
+                collect_leaves(x, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes `e` as a spec, with each name replaced by its entry in `names`.
+fn render(e: &RevExpr, names: &HashMap<(String, bool), String>, out: &mut String) {
+    use std::fmt::Write as _;
+    let name = |n: &String, rev: bool| names.get(&(n.clone(), rev)).unwrap_or(n).clone();
+    match e {
+        RevExpr::Name(n) => out.push_str(&name(n, true)),
+        RevExpr::Parent(x, n) => {
+            render(x, names, out);
+            out.push('^');
+            if *n != 1 {
+                let _ = write!(out, "{n}");
+            }
+        }
+        RevExpr::Ancestor(x, n) => {
+            render(x, names, out);
+            let _ = write!(out, "~{n}");
+        }
+        RevExpr::Peel(x, p) => {
+            render(x, names, out);
+            out.push_str(match p {
+                Peel::Tree => "^{tree}",
+                Peel::Commit => "^{commit}",
+            });
+        }
+        RevExpr::Upstream(n) => {
+            if let Some(n) = n {
+                out.push_str(&name(n, false));
+            }
+            out.push_str("@{u}");
+        }
+        RevExpr::Reflog(n, k) => {
+            if let Some(n) = n {
+                out.push_str(&name(n, false));
+            }
+            let _ = write!(out, "@{{{k}}}");
+        }
+        // Refused by `collect_leaves` before rendering.
+        RevExpr::Message(re) => {
+            out.push_str(":/");
+            out.push_str(re);
+        }
+        RevExpr::Path(x, p) => {
+            render(x, names, out);
+            let _ = write!(out, ":{p}");
+        }
+        RevExpr::DotDot(a, b) => {
+            render(a, names, out);
+            out.push_str("..");
+            render(b, names, out);
+        }
+        RevExpr::TriDot(a, b) => {
+            render(a, names, out);
+            out.push_str("...");
+            render(b, names, out);
+        }
+        RevExpr::Not(x) => {
+            out.push('^');
+            render(x, names, out);
+        }
+        RevExpr::Parents(x) => {
+            render(x, names, out);
+            out.push_str("^@");
+        }
+        RevExpr::Only(x) => {
+            render(x, names, out);
+            out.push_str("^!");
+        }
+        RevExpr::List(xs) => {
+            for (i, x) in xs.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                render(x, names, out);
+            }
+        }
+    }
 }
 
 impl IdCodec {
@@ -163,30 +287,47 @@ impl IdCodec {
 
     /// Rewrites the revision `spec` into the asc id space.
     ///
-    /// A leading 40-digit hex name is a git commit oid in git mode and becomes the asc id it maps
-    /// to, so `<oid>~2` and `<oid>^{tree}` work. `HEAD` and `@` name the default branch. Other
-    /// hex-only names of 4 to 63 digits are refused unless a ref has that name (an abbreviation
-    /// lookup would scan the whole repository).
+    /// The spec is parsed with the engine's parser and every name in it is checked, so the
+    /// policy holds for `A..B`, `A...B`, `rev:path`, `name@{n}` and the like, not only for a
+    /// leading token. A 40-digit hex name is a git commit oid in git mode and becomes the asc id
+    /// it maps to, so `<oid>~2` and `<oid>^{tree}` work. `HEAD` and `@` name the default branch.
+    /// Other hex-only names of 4 to 63 digits are refused unless a ref has that name (an
+    /// abbreviation lookup would scan the whole repository). `:/regex` message searches walk
+    /// the whole history and are refused. What the engine resolves is the re-rendered parse
+    /// tree, so it cannot differ from what was checked.
     pub async fn rev_in(&self, spec: &str, default_branch: &str) -> Result<String, Status> {
-        if spec == "@" {
+        let expr = asc_engine::revspec::parse(spec)
+            .map_err(|e| Status::invalid_argument(format!("bad revision: {e}")))?;
+        let mut leaves = Vec::new();
+        collect_leaves(&expr, &mut leaves)?;
+        let mut names = HashMap::new();
+        for leaf in leaves {
+            let key = (leaf.name.clone(), leaf.rev);
+            if let hash_map::Entry::Vacant(slot) = names.entry(key) {
+                slot.insert(self.name_in(&leaf, default_branch).await?);
+            }
+        }
+        let mut out = String::with_capacity(spec.len() + 8);
+        render(&expr, &names, &mut out);
+        Ok(out)
+    }
+
+    /// The asc-space spelling of one name of a revision.
+    async fn name_in(&self, leaf: &Leaf, default_branch: &str) -> Result<String, Status> {
+        let head = leaf.name.as_str();
+        if head == "HEAD" || head == "@" {
             return Ok(format!("refs/heads/{default_branch}"));
         }
-        let end = spec.find(['^', '~', ':', '@', '{', '.']).unwrap_or(spec.len());
-        let (head, rest) = spec.split_at(end);
-        if head == "HEAD" {
-            return Ok(format!("refs/heads/{default_branch}{rest}"));
+        if !is_hex(head.as_bytes()) || head.len() < 4 || (head.len() == 64 && leaf.rev) {
+            return Ok(head.to_owned());
         }
-        if !is_hex(head.as_bytes()) || head.len() < 4 || head.len() == 64 {
-            return Ok(spec.to_owned());
-        }
-        if head.len() == 40 && self.mode == IdMode::Git {
+        if leaf.rev && head.len() == 40 && self.mode == IdMode::Git {
             let mut raw = [0u8; 20];
             for (i, b) in raw.iter_mut().enumerate() {
                 *b = u8::from_str_radix(&head[2 * i..2 * i + 2], 16)
                     .map_err(|_| Status::invalid_argument("bad revision"))?;
             }
-            let asc = self.changeset_in(&raw).await?;
-            return Ok(format!("{asc}{rest}"));
+            return Ok(self.changeset_in(&raw).await?.to_string());
         }
         // A hex-looking name: only an existing ref may use it.
         for cand in asc_engine::revspec::dwim_candidates(head) {
@@ -199,7 +340,7 @@ impl IdCodec {
                 .await
                 .map_err(|e| internal("refs", &e))?;
             if found.is_some() {
-                return Ok(spec.to_owned());
+                return Ok(head.to_owned());
             }
         }
         Err(Status::invalid_argument(
@@ -355,6 +496,60 @@ mod tests {
         assert_eq!(
             git.rev_in("abcdef1", "master").await.unwrap_err().code(),
             tonic::Code::InvalidArgument
+        );
+    }
+
+    #[tokio::test]
+    async fn abbreviations_and_searches_are_refused_anywhere_in_a_spec() {
+        let (r, e, c) = setup().await;
+        let g = IdCodec::new(IdMode::Git, &r, &e).git_of(c).await.unwrap();
+        for mode in [IdMode::Git, IdMode::Asc] {
+            let codec = IdCodec::new(mode, &r, &e);
+            for spec in [
+                "master..abcd1234",
+                "abcd1234..master",
+                "HEAD~1...beef",
+                "abcd1234:a.txt",
+                "abcd1234@{1}",
+                "abcd1234@{u}",
+                "abcd1234^{tree}",
+                "abcd1234^@",
+                "^abcd1234",
+                "abcd^{/regex}",
+                "master^{/regex}",
+                ":/regex",
+                "HEAD~1^{/x}",
+                "x@{...}",
+                "master..:/regex",
+            ] {
+                let err = codec
+                    .rev_in(spec, "master")
+                    .await
+                    .expect_err(&format!("{mode:?} {spec} must be refused"));
+                assert_eq!(err.code(), tonic::Code::InvalidArgument, "{spec}");
+            }
+        }
+        // A full oid is still translated wherever it stands, and ordinary specs pass.
+        let git = IdCodec::new(IdMode::Git, &r, &e);
+        assert_eq!(
+            git.rev_in(&format!("{g}~2"), "master").await.unwrap(),
+            format!("{c}~2")
+        );
+        assert_eq!(
+            git.rev_in(&format!("master..{g}"), "master").await.unwrap(),
+            format!("master..{c}")
+        );
+        assert_eq!(
+            git.rev_in(&format!("{g}^{{tree}}"), "master").await.unwrap(),
+            format!("{c}^{{tree}}")
+        );
+        assert_eq!(
+            git.rev_in("HEAD...topic", "trunk").await.unwrap(),
+            "refs/heads/trunk...topic"
+        );
+        assert_eq!(
+            git.rev_in(&format!("{g}:a.txt"), "master").await.unwrap(),
+            format!("{c}:a.txt")
         );
     }
 
