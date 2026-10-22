@@ -488,12 +488,38 @@ fn prepare(odb: &Odb, oid: GitOid) -> Result<Prepared> {
 }
 
 fn hash_blob(odb: &Odb, oid: GitOid) -> Result<(GitOid, Ingested)> {
-    let bytes = odb.read_blob_verified(oid)?;
-    let got = ingest(Cursor::new(&bytes[..]))?;
+    let got = odb.with_blob_verified(oid, |bytes| ingest(Cursor::new(bytes)))??;
     debug_assert_eq!(got.git, oid);
     Ok((oid, got))
 }
 
+}
+
+/// Blob bytes buffered at once while hashing (each blob costs about twice its size in flight).
+const BATCH_BYTES: u64 = 32 << 20;
+/// Threads that read and chunk blobs at once. A packed blob can sit at the end of a delta chain
+/// whose bases are far larger than the blob, and each thread decodes its own chain.
+const HASH_WORKERS: usize = 3;
+
+/// Splits `want` into batches of at most `count` blobs and about [`BATCH_BYTES`] of content;
+/// a blob larger than the budget is a batch of its own.
+fn byte_batches(odb: &Odb, want: &[GitOid], count: usize) -> Vec<Vec<GitOid>> {
+    let mut out = Vec::new();
+    let mut cur: Vec<GitOid> = Vec::new();
+    let mut bytes = 0u64;
+    for &oid in want {
+        let size = odb.blob_size(oid).unwrap_or(BATCH_BYTES);
+        if !cur.is_empty() && (cur.len() >= count || bytes + size > BATCH_BYTES) {
+            out.push(std::mem::take(&mut cur));
+            bytes = 0;
+        }
+        cur.push(oid);
+        bytes += size;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// Runs `f` over `items` on one thread per fork; results keep the input order.
@@ -770,8 +796,9 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
                 None => want.push(oid),
             }
         }
-        for batch in want.chunks(self.policy.batch.max(1)) {
-            let done = par_map(&mut self.forks, batch, |odb, &oid| hash_blob(odb, oid))
+        for batch in byte_batches(self.odb, &want, self.policy.batch.max(1)) {
+            let n = HASH_WORKERS.min(self.forks.len());
+            let done = par_map(&mut self.forks[..n], &batch, |odb, &oid| hash_blob(odb, oid))
                 .into_iter()
                 .collect::<Result<Vec<_>>>()?;
             let mut rows = Vec::with_capacity(done.len());

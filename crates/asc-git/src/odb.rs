@@ -109,6 +109,47 @@ impl Odb {
         Ok(Bytes::copy_from_slice(data.data))
     }
 
+    /// A blob's size from its header, without reading the content.
+    pub fn blob_size(&self, oid: GitOid) -> Option<u64> {
+        use gix::odb::Header as _;
+        self.handle
+            .try_header(&to_gix(oid))
+            .ok()
+            .flatten()
+            .map(|h| h.size())
+    }
+
+    /// Runs `f` over a blob's verified content without copying it out of the read buffer.
+    pub fn with_blob_verified<T>(
+        &self,
+        oid: GitOid,
+        f: impl FnOnce(&[u8]) -> T,
+    ) -> Result<T, OdbError> {
+        let mut buf = Vec::new();
+        let data = self
+            .handle
+            .try_find(&to_gix(oid), &mut buf)
+            .map_err(|e| OdbError::Read {
+                oid,
+                message: e.to_string(),
+            })?
+            .ok_or(OdbError::NotFound(oid))?;
+        if data.kind != gix::objs::Kind::Blob {
+            return Err(OdbError::NotBlob {
+                oid,
+                found: kind_name(data.kind),
+            });
+        }
+        let actual = blob_oid(data.data);
+        if actual != oid {
+            return Err(OdbError::Corrupt {
+                expected: oid,
+                actual,
+            });
+        }
+        Ok(f(data.data))
+    }
+
     /// An independent handle onto the same database, for another thread.
     pub fn fork(&self) -> Self {
         Self {
