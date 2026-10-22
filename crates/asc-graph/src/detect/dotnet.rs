@@ -21,6 +21,12 @@
 //! become global properties of every project that entry references, wherever
 //! those are. So one anywhere in the repository makes every project and
 //! solution opaque.
+//! A solution also reads files only when it is the entry: `Directory.Solution.props`
+//! and `.targets` and `before.`/`after.<solution file>.targets`. Their targets
+//! and properties can build any project with any property, so one beside or
+//! above a solution makes that solution opaque. So does a member that is not a
+//! known project (a `.proj` file, another language, an unresolved path); solution
+//! folders are skipped.
 //! Build files are found by directory in any ASCII case. Where a file system
 //! could join a non-ASCII spelling of a directory or name with another (case
 //! folding, normalisation, ignored characters), the project is opaque; any
@@ -42,6 +48,9 @@ use crate::model::{
 
 /// Map key of the project paths in a parsed `.sln`.
 const SOLUTION: &str = "solution";
+/// Map key of the members of a parsed `.sln` that are not projects the detector
+/// knows, and not solution folders.
+const OTHER_MEMBERS: &str = "other";
 const PROJECT_EXTS: [&[u8]; 3] = [b"csproj", b"fsproj", b"vbproj"];
 const THIS_DIR: &str = "$(MSBuildThisFileDirectory)";
 const PROJECT_DIR: &str = "$(MSBuildProjectDirectory)";
@@ -82,6 +91,9 @@ const RESPONSE_FILE: &str =
 const NON_LITERAL_SDK: &str = "Import Sdk or its Project is not a plain literal";
 const NON_ASCII_DIR: &str =
     "a file that applies to the project may name its directory by another non-ASCII spelling";
+const SOLUTION_HOOK: &str = "a file beside or above the solution can add targets or properties to it, which the detector does not read";
+const SOLUTION_MEMBER: &str =
+    "the solution lists a member that is not a known project, which MSBuild may still build";
 
 /// The .NET detector.
 pub struct Dotnet;
@@ -129,7 +141,9 @@ impl Detector for Dotnet {
         }
         match name {
             b"packages.lock.json" => Some(Claim::Lockfile),
-            n if is_build_file(n) || is_auto_import(path) => Some(Claim::EcoGlobal),
+            n if is_build_file(n) || is_auto_import(path) || is_solution_hook(n) => {
+                Some(Claim::EcoGlobal)
+            }
             b"global.json" => Some(Claim::EcoGlobal),
             b"dotnet-tools.json"
                 if path
@@ -363,6 +377,25 @@ fn wide_auto_name(name: &[u8]) -> bool {
             .any(|s| ends_with_ci(tail, s) || ends_with_ci(s, tail))
 }
 
+/// A file MSBuild reads only when a solution is the entry, to add targets or
+/// properties to the solution's generated project: `Directory.Solution.props`
+/// and `.targets` (found by walking up from the solution's directory) and
+/// `before.<solution file>.targets` and `after.<solution file>.targets` (beside
+/// it, e.g. `after.All.sln.targets`; the middle must have `.sln`, which also
+/// covers `.slnx` and `.slnf`). A non-ASCII name counts under the rule of
+/// [`wide_auto_name`], which is wider than needed: the ASCII tail decides.
+fn is_solution_hook(name: &[u8]) -> bool {
+    if !name.is_ascii() {
+        return wide_auto_name(name);
+    }
+    let marked = (starts_with_ci(name, b"before.") || starts_with_ci(name, b"after."))
+        && ends_with_ci(name, b".targets")
+        && name.windows(4).any(|w| w.eq_ignore_ascii_case(b".sln"));
+    marked
+        || name_may_be(name, b"Directory.Solution.props")
+        || name_may_be(name, b"Directory.Solution.targets")
+}
+
 /// True for a path that may be an auto-imported file of some project.
 fn is_auto_import(path: &RepoPath) -> bool {
     let name = path.file_name();
@@ -387,24 +420,46 @@ fn is_auto_import(path: &RepoPath) -> bool {
         })
 }
 
-/// The project paths of a `.sln`: the `Project("{type}") = "name", "path", "{guid}"` lines
-/// whose path has a project extension, so solution folders are skipped.
+/// The project type of a solution folder, which MSBuild does not build.
+const SOLUTION_FOLDER: &str = "{2150E333-8FDC-42A3-9474-1A3956D46DE8}";
+
+/// The members of a `.sln`: the `Project("{type}") = "name", "path", "{guid}"`
+/// lines. A path with a project extension goes under [`SOLUTION`]. A solution
+/// folder (its type, and a path that is a bare name) is skipped. Any other
+/// member (a `.proj` file, a project of another language, a line that does not
+/// parse) goes under [`OTHER_MEMBERS`], because MSBuild may build it.
 fn parse_sln(text: &str) -> Result<Value, ParseFailure> {
     if !text.contains("Microsoft Visual Studio Solution File") {
         return Err(ParseFailure::new("neither XML nor a solution file"));
     }
-    let paths: BTreeSet<&str> = text
-        .lines()
-        .filter(|l| l.trim_start().starts_with("Project("))
-        .filter_map(|l| l.split('"').nth(5))
-        .filter(|p| is_project_path(p))
-        .collect();
-    let list = paths
-        .into_iter()
-        .map(|p| Value::Str(p.to_owned()))
-        .collect();
-    Value::map([(SOLUTION.to_owned(), Value::Array(list))])
-        .map_err(|e| ParseFailure::new(e.to_string()))
+    let (mut paths, mut other) = (BTreeSet::new(), BTreeSet::new());
+    for l in text.lines().map(str::trim_start) {
+        if !l
+            .get(..8)
+            .is_some_and(|s| s.eq_ignore_ascii_case("Project("))
+        {
+            continue;
+        }
+        let mut fields = l.split('"');
+        let (kind, path) = (fields.nth(1), fields.nth(3));
+        match (kind, path) {
+            (_, Some(p)) if is_project_path(p) => {
+                paths.insert(p);
+            }
+            (Some(k), Some(p))
+                if k.trim().eq_ignore_ascii_case(SOLUTION_FOLDER) && !p.contains(['/', '\\']) => {}
+            (_, p) => {
+                other.insert(p.unwrap_or_default());
+            }
+        }
+    }
+    let list =
+        |s: BTreeSet<&str>| Value::Array(s.into_iter().map(|p| Value::Str(p.to_owned())).collect());
+    Value::map([
+        (SOLUTION.to_owned(), list(paths)),
+        (OTHER_MEMBERS.to_owned(), list(other)),
+    ])
+    .map_err(|e| ParseFailure::new(e.to_string()))
 }
 
 fn is_project_path(p: &str) -> bool {
@@ -746,6 +801,8 @@ struct Linker<'c, 'a> {
     wide_ancestor_dirs: Vec<Vec<u8>>,
     /// The `autos` whose directory or file name is not ASCII.
     wide_autos: Vec<usize>,
+    /// The solution hook files (see [`is_solution_hook`]) with their directories.
+    hooks: Vec<(&'a RepoPath, Vec<u8>)>,
     /// Directory and name comparisons made by [`Self::ambiguous`], against
     /// [`MAX_ALIAS_CHECKS`].
     alias_checks: Cell<usize>,
@@ -924,8 +981,17 @@ impl<'c, 'a> Linker<'c, 'a> {
             .filter(|(_, m)| !m.dir.is_ascii() || !m.path.file_name().as_bytes().is_ascii())
             .map(|(j, _)| j)
             .collect();
+        let hooks = cx
+            .files_of(Claim::EcoGlobal)
+            .filter(|f| is_solution_hook(f.path.file_name().as_bytes()))
+            .map(|f| {
+                let dir = f.path.parent().map(|d| d.as_bytes().to_vec());
+                (f.path, dir.unwrap_or_default())
+            })
+            .collect();
         Self {
             cx,
+            hooks,
             ancestor_dirs,
             wide_ancestor_dirs,
             wide_autos,
@@ -1066,6 +1132,13 @@ impl<'c, 'a> Linker<'c, 'a> {
         p
     }
 
+    /// Counts one directory or name comparison; false once [`MAX_ALIAS_CHECKS`] is spent.
+    fn spend_alias_check(&self) -> bool {
+        let n = self.alias_checks.get().saturating_add(1);
+        self.alias_checks.set(n);
+        n <= MAX_ALIAS_CHECKS
+    }
+
     /// Whether a file that applies to project `i` may be missed because a file
     /// system could join a non-ASCII spelling of a directory or name with
     /// another by case folding or normalisation, which byte keys do not decide.
@@ -1080,11 +1153,7 @@ impl<'c, 'a> Linker<'c, 'a> {
         let file = m.path.file_name();
         let file = file.as_bytes();
         let (wide_dir, wide_file) = (!m.dir.is_ascii(), !file.is_ascii());
-        let spend = || {
-            let n = self.alias_checks.get().saturating_add(1);
-            self.alias_checks.set(n);
-            n <= MAX_ALIAS_CHECKS
-        };
+        let spend = || self.spend_alias_check();
         // A pure-ASCII project can only meet a non-ASCII directory.
         let dirs = if wide_dir {
             &self.ancestor_dirs
@@ -1275,18 +1344,49 @@ impl<'c, 'a> Linker<'c, 'a> {
         }
     }
 
+    /// The members of solution `m`. Its projects that resolve to exactly one
+    /// known project become `Member` dependencies. The solution is opaque when
+    /// MSBuild may build anything the detector cannot follow:
+    /// - a member that is not a known project (a dropped `.proj` file or other
+    ///   language, a path that is unevaluated, outside the repository, missing
+    ///   or ambiguous, or a file that is not a readable solution);
+    /// - a response file anywhere, which is read only when the solution is the
+    ///   entry and sets global properties for every member;
+    /// - a solution hook file beside or above it (see [`is_solution_hook`]),
+    ///   which adds targets or properties to the solution and so can build any
+    ///   project with any property.
     fn solution(&self, m: &Man<'a>, kind: FileKind) -> Project {
+        // Members the file lists that are not projects; `true` when unreadable.
+        let (mut unknown, mut dropped) = (false, 0usize);
         let paths: Vec<&str> = if kind == FileKind::Sln {
+            if let Some(Value::Array(o)) = get(m.v, OTHER_MEMBERS) {
+                dropped = o.len();
+            } else {
+                unknown = true;
+            }
             match get(m.v, SOLUTION) {
                 Some(Value::Array(a)) => a.iter().filter_map(|x| text(Some(x))).collect(),
-                _ => Vec::new(),
+                _ => {
+                    unknown = true;
+                    Vec::new()
+                }
             }
         } else {
             let mut all = Vec::new();
             elements(m.v, &mut all);
-            all.into_iter()
-                .filter(|e| el_name(e) == "Project")
-                .filter_map(|e| attr(e, "Path"))
+            unknown = !is_element(m.v);
+            let listed: Vec<Option<&str>> = all
+                .into_iter()
+                .filter(|e| el_name(e).eq_ignore_ascii_case("Project"))
+                .map(|e| attr_ci(e, "Path"))
+                .collect();
+            dropped = listed
+                .iter()
+                .filter(|p| !p.is_some_and(is_project_path))
+                .count();
+            listed
+                .into_iter()
+                .flatten()
                 .filter(|p| is_project_path(p))
                 .collect()
         };
@@ -1295,28 +1395,40 @@ impl<'c, 'a> Linker<'c, 'a> {
             manifest: m.path.clone(),
         };
         let mut p = Project::new(key, m.path.file_name().as_bytes(), ProjectKind::Solution);
-        let mut members: Vec<usize> = paths
-            .into_iter()
-            .filter_map(|r| match resolve_one(&m.dir, r) {
+        let (mut members, mut unresolved) = (Vec::new(), 0usize);
+        for r in paths {
+            match resolve_one(&m.dir, r) {
                 Resolved::Path(t) => match self.lookup(&t) {
-                    Lookup::One(i) => Some(i),
-                    _ => None,
+                    Lookup::One(i) => members.push(i),
+                    _ => unresolved += 1,
                 },
-                _ => None,
-            })
-            .collect();
+                _ => unresolved += 1,
+            }
+        }
         members.sort_unstable();
         members.dedup();
         p.deps = members
             .into_iter()
             .map(|j| (self.key_of(j), DepKind::Member))
             .collect();
+        if unknown || dropped > 0 || unresolved > 0 {
+            self.cx.report(m.path.clone(), SOLUTION_MEMBER);
+            p.opaque = true;
+        }
         // A response file beside or above the solution sets global properties
         // for every member, and it is read only when the solution is the entry.
         if let Some(f) = self.response {
             self.cx.report(f.clone(), RESPONSE_FILE);
             self.cx.report(m.path.clone(), RESPONSE_FILE);
             p.opaque = true;
+        }
+        // Past the comparison budget, every hook is assumed to apply.
+        for (f, dir) in &self.hooks {
+            if !self.spend_alias_check() || dir_rel(dir, &m.dir, false) != Rel::Apart {
+                self.cx.report((*f).clone(), SOLUTION_HOOK);
+                self.cx.report(m.path.clone(), SOLUTION_HOOK);
+                p.opaque = true;
+            }
         }
         p
     }
@@ -2669,6 +2781,185 @@ mod tests {
         let ids = affected_ids(&t, GEN);
         assert!(ids.iter().any(|i| i == "dotnet:A"), "{ids:?}");
         assert!(ids.iter().any(|i| i.contains("All.sln")), "{ids:?}");
+    }
+
+    fn solution_tree(hook: &str) -> Tree {
+        // `eng/obj/A.csproj.x.props` is read by A only when something sets
+        // `BaseIntermediateOutputPath=../../eng/obj/` for it, as the hook can.
+        let mut t = with_build_file(hook, "<Project />");
+        t.insert("build/All.sln".into(), SLN.into());
+        t.insert("eng/obj/A.csproj.x.props".into(), props(REFS));
+        t
+    }
+
+    fn solution_hook_makes_it_opaque(t: &Tree, why: &str) {
+        let (g, _) = build(t);
+        let sln = project(&g, "All.sln");
+        assert!(sln.opaque, "{why}");
+        assert!(
+            g.issues
+                .iter()
+                .any(|i| i.path == rp("build/All.sln") && i.message == SOLUTION_HOOK.as_bytes()),
+            "{why}"
+        );
+        // A change to the project the injected reference names selects the solution.
+        let ids = affected_ids(t, GEN);
+        assert!(ids.iter().any(|i| i.contains("All.sln")), "{why}: {ids:?}");
+    }
+
+    #[test]
+    fn a_solution_hook_file_makes_the_solution_opaque() {
+        // Verified with `dotnet build build/All.sln -v:diag` (SDK 9.0.319): MSBuild
+        // imports `after.All.sln.targets` and `Directory.Solution.props` into the
+        // solution only when it is the entry. An `AfterTargets="Build"` target in
+        // the first runs an `MSBuild` task on A with a relative
+        // `BaseIntermediateOutputPath`, which pulls `eng/obj/A.csproj.x.props`,
+        // and so a `ProjectReference` to Gen, into A. A `.proj` member
+        // (`..\eng\Inject.proj`) runs the same task.
+        let hooks = [
+            "build/after.All.sln.targets",
+            "build/before.All.sln.targets",
+            "build/AFTER.all.SLN.TARGETS",
+            "build/After.All.slnx.targets",
+            "build/Directory.Solution.props",
+            "build/directory.solution.TARGETS",
+            "Directory.Solution.props",
+            "Directory.Solution.targets",
+        ];
+        for hook in hooks {
+            assert_eq!(Dotnet.claim(&rp(hook)), Some(Claim::EcoGlobal), "{hook}");
+            solution_hook_makes_it_opaque(&solution_tree(hook), hook);
+        }
+        // Not read for this solution: beside or above it only.
+        for hook in [
+            "src/Directory.Solution.props",
+            "other/after.All.sln.targets",
+        ] {
+            let (g, _) = build(&solution_tree(hook));
+            assert!(!project(&g, "All.sln").opaque, "{hook}");
+        }
+    }
+
+    #[test]
+    fn a_solution_hook_file_with_an_aliased_name_or_directory_makes_it_opaque() {
+        // The ASCII tail alone decides a non-ASCII name; a file system may fold
+        // or ignore the rest.
+        for name in [
+            "after.All.sln.target\u{17f}",
+            "after.All.sln.targets\u{200c}",
+            "after.All.sln.\u{fb06}",
+            "Directory.Solution.pro\u{ff50}s",
+            "\u{fb01}ter.All.sln.targets",
+        ] {
+            let hook = format!("build/{name}");
+            assert_eq!(Dotnet.claim(&rp(&hook)), Some(Claim::EcoGlobal), "{name}");
+            solution_hook_makes_it_opaque(&solution_tree(&hook), name);
+        }
+        // The hook's directory may be the solution's under another spelling.
+        let mut t = solution_tree("bui\u{200c}ld/after.All.sln.targets");
+        let (g, _) = build(&t);
+        assert!(project(&g, "All.sln").opaque);
+        t.remove("bui\u{200c}ld/after.All.sln.targets");
+        t.insert(
+            "\u{4e2d}/after.All.sln.targets".into(),
+            "<Project />".into(),
+        );
+        let (g, _) = build(&t);
+        assert!(!project(&g, "All.sln").opaque);
+    }
+
+    /// The solution at `manifest` is opaque and has an issue `why`.
+    fn solution_opaque_with_issue(g: &ProjectGraph, manifest: &str, why: &str) -> bool {
+        let path = rp(manifest);
+        project(g, &String::from_utf8_lossy(path.file_name().as_bytes())).opaque
+            && g.issues
+                .iter()
+                .any(|i| i.path == path && i.message == why.as_bytes())
+    }
+
+    #[test]
+    fn a_solution_member_that_is_not_a_known_project_makes_it_opaque() {
+        let head = "\nMicrosoft Visual Studio Solution File, Format Version 12.00\n";
+        let proj = |guid: &str, path: &str| {
+            format!(
+                "Project(\"{guid}\") = \"M\", \"{path}\", \"{{33333333-3333-3333-3333-333333333333}}\"\nEndProject\n"
+            )
+        };
+        let known = proj(
+            "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+            "..\\src\\A\\A.csproj",
+        );
+        let folder = proj("{2150E333-8FDC-42A3-9474-1A3956D46DE8}", "Items");
+        let bad = [
+            proj(
+                "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+                "..\\eng\\Inject.proj",
+            ),
+            proj(
+                "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+                "..\\eng\\Inject.targets",
+            ),
+            proj(
+                "{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}",
+                "..\\native\\N.vcxproj",
+            ),
+            // Not the folder type, so the path is built.
+            proj("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}", "Items"),
+            // A folder entry that names a path.
+            proj(
+                "{2150E333-8FDC-42A3-9474-1A3956D46DE8}",
+                "..\\eng\\Inject.proj",
+            ),
+            // Names no project, and one that cannot be read.
+            proj(
+                "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+                "..\\src\\Gone\\Gone.csproj",
+            ),
+            proj("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}", "$(Dir)\\X.csproj"),
+            proj(
+                "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}",
+                "..\\..\\..\\X.csproj",
+            ),
+            "Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"M\"\nEndProject\n".into(),
+        ];
+        for member in bad {
+            let mut t = with_build_file("global.json", "{}");
+            t.insert("build/All.sln".into(), format!("{head}{known}{member}"));
+            let (g, _) = build(&t);
+            assert!(
+                solution_opaque_with_issue(&g, "build/All.sln", SOLUTION_MEMBER),
+                "{member}"
+            );
+            let ids = affected_ids(&t, GEN);
+            assert!(
+                ids.iter().any(|i| i.contains("All.sln")),
+                "{member}: {ids:?}"
+            );
+        }
+        // Solution folders and known projects leave it transparent.
+        let mut t = with_build_file("global.json", "{}");
+        t.insert("build/All.sln".into(), format!("{head}{known}{folder}"));
+        let (g, _) = build(&t);
+        assert!(!project(&g, "All.sln").opaque);
+        assert_eq!(deps(&g, "All.sln"), ["Member:A"]);
+        // The same in the XML format.
+        for member in [
+            "<Project Path=\"../eng/Inject.proj\" />",
+            "<Project Path=\"../src/Gone/Gone.csproj\" />",
+            "<Project />",
+            "<project path=\"../eng/Inject.proj\" />",
+            "<Folder Name=\"/f/\"><Project Path=\"../eng/Inject.proj\" /></Folder>",
+        ] {
+            let mut t = with_build_file("global.json", "{}");
+            let sln =
+                format!("<Solution><Project Path=\"../src/A/A.csproj\" />{member}</Solution>");
+            t.insert("build/All.slnx".into(), sln);
+            let (g, _) = build(&t);
+            assert!(
+                solution_opaque_with_issue(&g, "build/All.slnx", SOLUTION_MEMBER),
+                "{member}"
+            );
+        }
     }
 
     #[test]
