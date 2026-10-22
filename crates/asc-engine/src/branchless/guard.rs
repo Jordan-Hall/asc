@@ -9,7 +9,7 @@
 //! Every bound is explicit: files per check, scanned bytes per check and holds reported.
 
 use asc_core::path::RepoPath;
-use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::bytes::Regex;
 
 /// Largest blob the secret scan reads (SPEC §21.3.7); bigger blobs are skipped.
@@ -108,6 +108,7 @@ impl DenyList {
     }
 
     /// A pattern without `/` matches any path component; one with `/` matches the whole path.
+    /// Matching ignores case, so `.ENV` is held on any file system.
     pub fn new<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Result<Self> {
         let mut set = GlobSetBuilder::new();
         for (n, p) in patterns.into_iter().enumerate() {
@@ -125,11 +126,17 @@ impl DenyList {
                 set.add(
                     GlobBuilder::new(p.trim_start_matches('/'))
                         .literal_separator(true)
+                        .case_insensitive(true)
                         .build()
                         .map_err(bad)?,
                 );
             } else {
-                set.add(Glob::new(p).map_err(bad)?);
+                set.add(
+                    GlobBuilder::new(p)
+                        .case_insensitive(true)
+                        .build()
+                        .map_err(bad)?,
+                );
             }
         }
         Ok(Self(set.build().map_err(|e| Error::Pattern {
@@ -138,20 +145,17 @@ impl DenyList {
         })?))
     }
 
-    /// True when the path, or any of its components, is denied.
+    /// True when the path, or any of its components, is denied. Bytes that are not UTF-8 are
+    /// matched lossily rather than skipped, so an invalid byte cannot hide a denied name.
     pub fn denies(&self, path: &RepoPath) -> bool {
         if self.0.is_empty() {
             return false;
         }
-        let Ok(whole) = std::str::from_utf8(path.as_bytes()) else {
-            return false;
-        };
-        if self.0.is_match(whole) {
+        if self.0.is_match(&*String::from_utf8_lossy(path.as_bytes())) {
             return true;
         }
         path.components()
-            .filter_map(|c| std::str::from_utf8(c).ok())
-            .any(|c| self.0.is_match(c))
+            .any(|c| self.0.is_match(&*String::from_utf8_lossy(c)))
     }
 }
 
@@ -333,6 +337,24 @@ mod tests {
         }
         for n in ["src/main.rs", "environment.md", "identity.rs"] {
             assert!(!d.denies(&p(n)), "{n}");
+        }
+    }
+
+    #[test]
+    fn deny_ignores_case() {
+        let d = DenyList::default_list().unwrap();
+        for n in ["app/.ENV", "KEY.PEM", "x/ID_RSA", "AWS-Credentials.json"] {
+            assert!(d.denies(&p(n)), "{n}");
+        }
+        assert!(DenyList::new(["secrets/*.txt"]).unwrap().denies(&p("SECRETS/a.TXT")));
+    }
+
+    #[test]
+    fn non_utf8_path_is_still_denied() {
+        let d = DenyList::default_list().unwrap();
+        for raw in [&b"app/.env\xff"[..], b"\xfe/server.pem", b"k\xff/id_rsa"] {
+            let path = RepoPath::new(raw.to_vec()).unwrap();
+            assert!(d.denies(&path), "{raw:?}");
         }
     }
 
