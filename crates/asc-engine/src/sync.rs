@@ -18,7 +18,7 @@ use asc_store::objects::{self, Objects, decode_verified};
 use asc_store::refs::{Actor, Expect, RefEntry, RefError, RefTxn, RefUpdate, Refs, RepoKey};
 use futures::stream::{self, BoxStream, StreamExt, TryStreamExt};
 
-use crate::derive::{self, Derived, Gen, GitCommit, Skip};
+use crate::derive::{self, Derived, Gen};
 use crate::graph::{self, Graph, LogQuery, RemoteHistory};
 use crate::history::{
     BoundaryStore, DEFAULT_WINDOW, HistoryApi, HistorySource, LogEntry, OfflineHistory,
@@ -272,25 +272,40 @@ pub struct SyncOptions<'a> {
     pub boundaries: &'a dyn BoundaryStore,
     /// Generations of history kept below each fetched tip; `None` fetches everything.
     pub window: Option<u32>,
-    /// Write the fetched remote-tracking refs to the engine's ref store.
-    pub update_refs: bool,
     /// After a fetch, warm the trees (then files) of the fetched tips under this pathspec.
     pub prefetch: Option<&'a Pathspec>,
     /// Pushed objects are demoted through this after the ref update.
     pub demote: Option<&'a dyn Demote>,
     /// Seed to unpack before `clone_minimal` fetches.
     pub seed: Option<&'a dyn SeedUnpack>,
+    /// Extension hook (C23); a no-op by default.
+    pub ext: &'a dyn SyncExt,
 }
+
+/// Extension point for sync (a no-op by default; C23 implements it).
+pub trait SyncExt: Send + Sync {
+    /// Extra objects to upload with a push whose closure holds the `new` changesets.
+    fn extra_closure(&self, _new: &[ChangesetId]) -> Vec<ObjKey> {
+        Vec::new()
+    }
+    /// Called with the verified `Log` entries a fetch receives.
+    fn on_log_entries(&self, _entries: &[LogEntry]) {}
+}
+
+/// The default [`SyncExt`]: does nothing.
+pub struct NoSyncExt;
+
+impl SyncExt for NoSyncExt {}
 
 impl<'a> SyncOptions<'a> {
     pub fn new(boundaries: &'a dyn BoundaryStore) -> Self {
         Self {
             boundaries,
             window: Some(DEFAULT_WINDOW),
-            update_refs: true,
             prefetch: None,
             demote: None,
             seed: None,
+            ext: &NoSyncExt,
         }
     }
 }
@@ -303,9 +318,25 @@ pub struct RefChange {
     pub new: RefTarget,
 }
 
+/// An empty transaction for the remote-tracking refs a sync would move.
+fn empty_txn(via: &str, reason: String) -> RefTxn {
+    RefTxn {
+        updates: Vec::new(),
+        actor: Actor {
+            id: "asc".into(),
+            via: via.into(),
+        },
+        reason,
+        op_id: uuid::Uuid::now_v7(),
+    }
+}
+
 /// Result of a fetch.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct FetchReport {
+    /// The remote-tracking moves, for the caller to apply through `Ctx::update_local_refs`
+    /// (SPEC §9.4.1). The engine never writes a local ref.
+    pub local_updates: RefTxn,
     pub updated: Vec<RefChange>,
     /// Refs left alone because the update was not a fast-forward and the refspec had no `+`.
     pub rejected: Vec<RefName>,
@@ -313,6 +344,18 @@ pub struct FetchReport {
     pub changesets: usize,
     /// Trees and files downloaded by `prefetch`.
     pub prefetched: usize,
+}
+
+impl Default for FetchReport {
+    fn default() -> Self {
+        Self {
+            local_updates: empty_txn("fetch", "fetch".into()),
+            updated: Vec::new(),
+            rejected: Vec::new(),
+            changesets: 0,
+            prefetched: 0,
+        }
+    }
 }
 
 /// How a push treats the remote's current ref values.
@@ -340,8 +383,10 @@ pub struct PushUpdate {
 }
 
 /// Result of a push.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct PushReport {
+    /// The remote-tracking moves the push implies, for the caller to apply (SPEC §9.4.1).
+    pub local_updates: RefTxn,
     /// Changesets that were not on the remote.
     pub changesets: usize,
     pub files: usize,
@@ -353,11 +398,37 @@ pub struct PushReport {
     pub refs: Vec<RefName>,
 }
 
+impl Default for PushReport {
+    fn default() -> Self {
+        Self {
+            local_updates: empty_txn("push", "push".into()),
+            changesets: 0,
+            files: 0,
+            trees: 0,
+            objects: 0,
+            bytes: 0,
+            refs: Vec::new(),
+        }
+    }
+}
+
 /// Result of `clone_minimal`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct CloneReport {
     pub head: Option<ChangesetId>,
+    /// The fetch's remote-tracking moves (a copy of `fetch.local_updates`).
+    pub local_updates: RefTxn,
     pub fetch: FetchReport,
+}
+
+impl Default for CloneReport {
+    fn default() -> Self {
+        Self {
+            head: None,
+            local_updates: empty_txn("clone", "clone".into()),
+            fetch: FetchReport::default(),
+        }
+    }
 }
 
 // ---- Helpers ---------------------------------------------------------------------------
@@ -431,53 +502,177 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         Ok(crate::history::windowed_graph(self, boundaries, hook).await?)
     }
 
-    /// Downloads changeset bodies (and any derived values the remote stores beside them),
-    /// storing each after verifying it against its key.
+    /// Downloads changeset bodies, storing each after verifying it against its key.
+    ///
+    /// Only requested keys are accepted; anything else the remote sends is ignored, and a
+    /// requested body that never arrives is an error. With `with_gen` the remote's `gen.v1`
+    /// values are also requested and returned as unverified claims: they are never stored
+    /// here (see [`Engine::store_verified_gens`]).
     async fn fetch_bodies(
         &self,
         remote: &dyn Remote,
         ids: &[ChangesetId],
-        with_derived: bool,
-    ) -> Result<Vec<(ChangesetId, Changeset)>> {
+        with_gen: bool,
+    ) -> Result<(Vec<(ChangesetId, Changeset)>, HashMap<ChangesetId, u32>)> {
+        let mut requested: HashSet<ObjKey> = HashSet::new();
         let mut keys = Vec::with_capacity(ids.len());
-        let mut derived = HashSet::new();
         for &id in ids {
-            keys.push(ObjKey::Changeset(id));
-            if with_derived {
-                for k in [
-                    derived_key::<Gen>(id),
-                    derived_key::<Skip>(id),
-                    derived_key::<GitCommit>(id),
-                ] {
-                    derived.insert(k);
+            if requested.insert(ObjKey::Changeset(id)) {
+                keys.push(ObjKey::Changeset(id));
+                if with_gen {
+                    let k = derived_key::<Gen>(id);
+                    requested.insert(k);
                     keys.push(k);
                 }
             }
         }
         let mut out = Vec::with_capacity(ids.len());
+        let mut received: HashSet<ChangesetId> = HashSet::new();
+        let mut claims: HashMap<ChangesetId, u32> = HashMap::new();
         let mut batches = std::pin::pin!(get_batches(remote, keys));
         while let Some(batch) = batches.try_next().await? {
             for (key, stored) in batch {
+                if !requested.contains(&key) {
+                    continue;
+                }
                 match key {
                     ObjKey::Changeset(id) => {
+                        if !received.insert(id) {
+                            continue;
+                        }
                         let data = decode_verified(&key, &stored)?;
                         out.push((id, decode_envelope::<Changeset>(&data)?));
                         self.objects.put(&key, stored).await?;
                     }
-                    k if derived.contains(&k) => self.objects.put(&k, stored).await?,
+                    ObjKey::Derived { id, .. } => {
+                        let id = ChangesetId::from_bytes(id);
+                        let claim = asc_store::codec::decode_stored_capped(&stored, 16)
+                            .ok()
+                            .and_then(|b| Gen::decode(&b).ok());
+                        if let Some(g) = claim {
+                            claims.insert(id, g.generation);
+                        }
+                    }
                     _ => {}
                 }
             }
         }
-        if out.len() != ids.len() {
-            let got: HashSet<ChangesetId> = out.iter().map(|(i, _)| *i).collect();
-            let gone = ids
-                .iter()
-                .find(|i| !got.contains(i))
-                .expect("counts differ");
+        if let Some(gone) = ids.iter().find(|i| !received.contains(i)) {
             return Err(Error::RemoteMissing(ObjKey::Changeset(*gone)));
         }
+        Ok((out, claims))
+    }
+
+    /// The `gen.v1` memos already stored for `ids`.
+    async fn local_gens(&self, ids: &[ChangesetId]) -> Result<HashMap<ChangesetId, u32>> {
+        let mut out = HashMap::new();
+        for &id in ids {
+            if let Some(b) =
+                crate::derive::read_memo(&*self.objects, &derived_key::<Gen>(id)).await?
+                && let Ok(g) = Gen::decode(&b)
+            {
+                out.insert(id, g.generation);
+            }
+        }
         Ok(out)
+    }
+
+    /// Checks remote generation claims against locally verified bodies and stores the ones
+    /// that hold (`generation == 1 + max(parent generations)`). Claims that cannot be checked
+    /// are dropped (a later `get_derived` computes them from the bodies); claims that
+    /// contradict a verified parent are `Error::Inconsistent` when `strict`, else dropped.
+    ///
+    /// With `trust_window_edge`, an entry whose parents are outside the local store (the
+    /// oldest entries of a history window) is accepted as claimed when it exceeds every
+    /// parent known locally: nothing local can check it. Such a value only positions the
+    /// window edge; ref moves never rely on it because ancestry for them is computed from
+    /// bodies (see [`Engine::local_ancestor`]).
+    async fn store_verified_gens(
+        &self,
+        claims: &[(ChangesetId, u32, Vec<ChangesetId>)],
+        strict: bool,
+        trust_window_edge: bool,
+    ) -> Result<()> {
+        let in_set: HashMap<ChangesetId, usize> =
+            claims.iter().enumerate().map(|(i, c)| (c.0, i)).collect();
+        let mut external: Vec<ChangesetId> = claims
+            .iter()
+            .flat_map(|c| c.2.iter().copied())
+            .filter(|p| !in_set.contains_key(p))
+            .collect();
+        dedup(&mut external);
+        let local = self.local_gens(&external).await?;
+        // Kahn's algorithm over the in-set edges: parents are checked before children.
+        let mut waiting: Vec<usize> = vec![0; claims.len()];
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); claims.len()];
+        for (i, c) in claims.iter().enumerate() {
+            let mut ps = c.2.clone();
+            dedup(&mut ps);
+            for p in ps {
+                if let Some(&j) = in_set.get(&p) {
+                    waiting[i] += 1;
+                    children[j].push(i);
+                }
+            }
+        }
+        let mut queue: Vec<usize> = (0..claims.len()).filter(|&i| waiting[i] == 0).collect();
+        let mut value: Vec<Option<u32>> = vec![None; claims.len()];
+        let mut done = 0;
+        while let Some(i) = queue.pop() {
+            done += 1;
+            let (id, claim, parents) = &claims[i];
+            let mut max = 0u32;
+            let mut unknown = false;
+            let mut bad = false;
+            for p in parents {
+                let g = match in_set.get(p) {
+                    Some(&j) => {
+                        bad |= value[j].is_none();
+                        value[j]
+                    }
+                    None => local.get(p).copied(),
+                };
+                match g {
+                    Some(g) => max = max.max(g),
+                    None => unknown = true,
+                }
+            }
+            let outside = parents
+                .iter()
+                .any(|p| !in_set.contains_key(p) && !local.contains_key(p));
+            if !unknown {
+                if *claim == max.saturating_add(1) {
+                    value[i] = Some(*claim);
+                } else if strict {
+                    return Err(Error::Inconsistent(*id));
+                }
+            } else if trust_window_edge && outside && !bad && *claim > max {
+                value[i] = Some(*claim);
+            }
+            for &c in &children[i] {
+                waiting[c] -= 1;
+                if waiting[c] == 0 {
+                    queue.push(c);
+                }
+            }
+        }
+        if done != claims.len() {
+            // A cycle: no honest history has one.
+            let stuck = (0..claims.len()).find(|&i| waiting[i] > 0).unwrap_or(0);
+            return Err(Error::Inconsistent(claims[stuck].0));
+        }
+        for (i, v) in value.iter().enumerate() {
+            if let Some(g) = v {
+                let memo = Gen { generation: *g };
+                self.objects
+                    .put(
+                        &derived_key::<Gen>(claims[i].0),
+                        asc_store::codec::encode_stored(&memo.encode()),
+                    )
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     /// Downloads `keys` that are not local, verifying and storing each.
@@ -494,10 +689,14 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .map(|(k, _)| *k)
             .collect();
         let wanted = want.len();
+        let asked: HashSet<ObjKey> = want.iter().copied().collect();
         let mut got = HashSet::new();
         let mut batches = std::pin::pin!(get_batches(remote, want.clone()));
         while let Some(batch) = batches.try_next().await? {
             for (key, stored) in batch {
+                if !asked.contains(&key) || got.contains(&key) {
+                    continue;
+                }
                 decode_verified(&key, &stored)?;
                 self.objects.put(&key, stored).await?;
                 got.insert(key);
@@ -570,7 +769,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         };
         report.changesets = match remote.history() {
             Some(h) => {
-                self.pull_history(remote, &*h, &tips, &exclude, opts.window, opts.boundaries)
+                self.pull_history(remote, &*h, &tips, &exclude, opts.window, opts)
                     .await?
             }
             None => self.pull_walk(remote, &tips).await?,
@@ -578,7 +777,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let graph = self.sync_graph(remote, opts.boundaries).await?;
         let mut txn = Vec::new();
         for (dst, old, new, force) in changed {
-            if !force && old.is_some() && !self.fast_forward(&graph, old, new).await {
+            if !force && old.is_some() && !self.fast_forward(remote, &graph, old, new).await {
                 report.rejected.push(dst);
                 continue;
             }
@@ -594,18 +793,11 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 new,
             });
         }
-        if opts.update_refs && !txn.is_empty() {
-            let txn = RefTxn {
-                updates: txn,
-                actor: Actor {
-                    id: "asc".into(),
-                    via: "fetch".into(),
-                },
-                reason: format!("fetch {}", remote.name()),
-                op_id: uuid::Uuid::now_v7(),
-            };
-            self.refs.update(self.repo, &txn).await?;
-        }
+        // The engine never moves a local ref (SPEC 9.4.1): the caller applies this.
+        report.local_updates = RefTxn {
+            updates: txn,
+            ..empty_txn("fetch", format!("fetch {}", remote.name()))
+        };
         if let Some(spec) = opts.prefetch {
             let mut roots = Vec::new();
             for c in &report.updated {
@@ -622,17 +814,43 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 
     /// True when `old -> new` moves a changeset forward (a tag never fast-forwards).
+    /// Decided from locally verified bodies, never from the remote's answer.
     async fn fast_forward<S: graph::GraphSource>(
         &self,
+        remote: &dyn Remote,
         graph: &Graph<S>,
         old: Option<RefTarget>,
         new: RefTarget,
     ) -> bool {
         match (old, new) {
-            (Some(RefTarget::Changeset(o)), RefTarget::Changeset(n)) => {
-                graph.is_ancestor(o, n).await.unwrap_or(false)
-            }
+            (Some(RefTarget::Changeset(o)), RefTarget::Changeset(n)) => self
+                .local_ancestor(remote, graph, o, n)
+                .await
+                .unwrap_or(false),
             _ => false,
+        }
+    }
+
+    /// True when `a` is `b` or an ancestor of `b`, computed from verified changeset bodies.
+    ///
+    /// Walks parents from `b`, pruned by generation. Bodies past the local history window are
+    /// fetched from `remote` (each verified against its id) and the walk resumes; the
+    /// remote's `IsAncestor` is never consulted, because this answer can move a ref.
+    async fn local_ancestor<S: graph::GraphSource>(
+        &self,
+        remote: &dyn Remote,
+        graph: &Graph<S>,
+        a: ChangesetId,
+        b: ChangesetId,
+    ) -> Result<bool> {
+        loop {
+            match graph.ancestry_from_bodies(a, b).await? {
+                graph::Ancestry::Yes => return Ok(true),
+                graph::Ancestry::No => return Ok(false),
+                graph::Ancestry::NeedBodies(ids) => {
+                    self.fetch_bodies(remote, &ids, false).await?;
+                }
+            }
         }
     }
 
@@ -663,7 +881,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         tips: &[ChangesetId],
         exclude: &[ChangesetId],
         window: Option<u32>,
-        boundaries: &dyn BoundaryStore,
+        opts: &SyncOptions<'_>,
     ) -> Result<usize> {
         let mut seen: HashSet<ChangesetId> = HashSet::new();
         let mut entries: Vec<LogEntry> = Vec::new();
@@ -691,45 +909,34 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 }
             }
         }
-        let keys: Vec<ObjKey> = entries.iter().map(|e| ObjKey::Changeset(e.id)).collect();
-        let has = self.local_has(&keys).await?;
+        // A body without its `gen` memo (a fetch that stopped between the two) is fetched again.
+        let ids: Vec<ChangesetId> = entries.iter().map(|e| e.id).collect();
+        let complete = self.complete_changesets(&ids).await?;
         let fresh: Vec<&LogEntry> = entries
             .iter()
-            .zip(&has)
-            .filter(|(_, h)| !**h)
-            .map(|(e, _)| e)
+            .filter(|e| !complete.contains(&e.id))
             .collect();
-        // Memos first: a memo without its body is harmless, a body without its memo is not
-        // recoverable once the parents are outside the window.
-        for e in &fresh {
-            let g = Gen {
-                generation: e.generation,
-            };
-            self.objects
-                .put(
-                    &derived_key::<Gen>(e.id),
-                    asc_store::codec::encode_stored(&g.encode()),
-                )
-                .await?;
-            if let Some(git) = e.git {
-                let c = GitCommit { commit: git };
-                self.objects
-                    .put(
-                        &derived_key::<GitCommit>(e.id),
-                        asc_store::codec::encode_stored(&c.encode()),
-                    )
-                    .await?;
-            }
-        }
+        // Bodies first, verified against their ids; then the log's claims are checked against
+        // them. A git id from the log is a hint only: it is never stored as a memo (the
+        // `GitCommit` derivation computes it from the body).
         let want: Vec<ChangesetId> = fresh.iter().map(|e| e.id).collect();
-        let bodies = self.fetch_bodies(remote, &want, false).await?;
+        let (bodies, _) = self.fetch_bodies(remote, &want, false).await?;
         let by_id: HashMap<ChangesetId, &LogEntry> = entries.iter().map(|e| (e.id, e)).collect();
         for (id, cs) in &bodies {
-            if by_id[id].parents != cs.parents {
-                return Err(Error::Inconsistent(*id));
+            match by_id.get(id) {
+                Some(e) if e.parents == cs.parents => {}
+                _ => return Err(Error::Inconsistent(*id)),
             }
         }
-        self.update_boundaries(&entries, boundaries).await?;
+        // `gen` memos: checked against the verified bodies' parents (local memos or the
+        // entries themselves); a contradicting claim fails the fetch before any memo is stored.
+        let claims: Vec<(ChangesetId, u32, Vec<ChangesetId>)> = bodies
+            .iter()
+            .map(|(id, cs)| (*id, by_id[id].generation, cs.parents.clone()))
+            .collect();
+        self.store_verified_gens(&claims, true, true).await?;
+        opts.ext.on_log_entries(&entries);
+        self.update_boundaries(&entries, opts.boundaries).await?;
         Ok(bodies.len())
     }
 
@@ -790,10 +997,11 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 
     /// Bucket fetch: request every unknown parent of the frontier in one batch per level,
-    /// reading `gen`, `skip` and `gitcommit` values beside the bodies when the bucket has them.
+    /// reading `gen` values beside the bodies when the bucket has them (verified before use).
     async fn pull_walk(&self, remote: &dyn Remote, tips: &[ChangesetId]) -> Result<usize> {
         let mut frontier: Vec<ChangesetId> = tips.to_vec();
         let mut fetched = 0;
+        let mut claims: Vec<(ChangesetId, u32, Vec<ChangesetId>)> = Vec::new();
         while !frontier.is_empty() {
             dedup(&mut frontier);
             let keys: Vec<ObjKey> = frontier.iter().map(|&i| ObjKey::Changeset(i)).collect();
@@ -804,10 +1012,19 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 .filter(|(_, h)| !**h)
                 .map(|(i, _)| *i)
                 .collect();
-            let bodies = self.fetch_bodies(remote, &missing, true).await?;
+            let (bodies, gens) = self.fetch_bodies(remote, &missing, true).await?;
             fetched += bodies.len();
+            for (id, cs) in &bodies {
+                if let Some(&g) = gens.get(id) {
+                    claims.push((*id, g, cs.parents.clone()));
+                }
+            }
             frontier = bodies.into_iter().flat_map(|(_, cs)| cs.parents).collect();
         }
+        // The bucket's `gen` values save derivation, but only those that check out against
+        // the verified bodies are kept; skip and git-commit memos are never taken from a
+        // bucket (they are derived locally on demand).
+        self.store_verified_gens(&claims, false, false).await?;
         for &tip in tips {
             self.get_derived::<Gen>(tip).await?;
         }
@@ -838,7 +1055,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .filter(|(_, h)| !h)
             .map(|(t, _)| t)
             .collect();
-        self.pull_history(remote, &*history, &tips, &[], n, opts.boundaries)
+        self.pull_history(remote, &*history, &tips, &[], n, opts)
             .await
     }
 
@@ -934,7 +1151,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             "+refs/heads/{branch}:refs/remotes/{}/{branch}",
             remote.name()
         ))?;
-        let fetch = self.fetch(remote, &[spec], opts).await?;
+        let mut fetch = self.fetch(remote, &[spec], opts).await?;
         let head = match fetch.updated.first() {
             Some(c) => self.peel_to_changeset(c.new).await?,
             None => None,
@@ -943,7 +1160,14 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             let root = self.get_changeset(h).await?.root;
             self.fetch_objects(remote, vec![ObjKey::Tree(root)]).await?;
         }
-        Ok(CloneReport { head, fetch })
+        let local_updates =
+            std::mem::replace(&mut fetch.local_updates, empty_txn("clone", "clone".into()));
+        fetch.local_updates = local_updates.clone();
+        Ok(CloneReport {
+            head,
+            local_updates,
+            fetch,
+        })
     }
 
     // ---- push --------------------------------------------------------------------------
@@ -975,7 +1199,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 if let (Expect::Value(RefTarget::Changeset(old)), Some(RefTarget::Changeset(new))) =
                     (u.expect, u.new)
                 {
-                    let ff = graph.is_ancestor(old, new).await;
+                    // From verified bodies: the remote's answer never decides a ref move.
+                    let ff = self.local_ancestor(remote, &graph, old, new).await;
                     if !ff.unwrap_or(false) {
                         return Err(Error::Rejected {
                             name: u.dst.clone(),
@@ -1101,6 +1326,10 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let tag_keys: Vec<ObjKey> = tags.iter().map(|&t| ObjKey::Tag(t)).collect();
         let tag_keys = self.missing_on_remote(remote, tag_keys).await?;
         sent.extend(self.upload(remote, tag_keys, &mut report).await?);
+        let mut extra = opts.ext.extra_closure(&new_cs);
+        dedup_keys(&mut extra);
+        let extra = self.missing_on_remote(remote, extra).await?;
+        sent.extend(self.upload(remote, extra, &mut report).await?);
 
         if mode == PushMode::NoRef {
             remote.ingest(&tips).await?;
@@ -1120,6 +1349,29 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 .collect();
             remote.update_refs(&refs).await?;
             report.refs = updates.iter().map(|u| u.dst.clone()).collect();
+            // The remote-tracking refs the push implies; the caller applies them (SPEC 9.4.1).
+            let prefix = b"refs/heads/";
+            let tracking: Vec<RefUpdate> = updates
+                .iter()
+                .filter_map(|u| {
+                    let short = u.dst.as_bytes().strip_prefix(prefix.as_slice())?;
+                    let name = format!(
+                        "refs/remotes/{}/{}",
+                        remote.name(),
+                        String::from_utf8_lossy(short)
+                    );
+                    Some(RefUpdate {
+                        name: RefName::new_onelevel(name).ok()?,
+                        expect: Expect::Any,
+                        new: u.new,
+                        expires_at: None,
+                    })
+                })
+                .collect();
+            report.local_updates = RefTxn {
+                updates: tracking,
+                ..empty_txn("push", format!("push {}", remote.name()))
+            };
         }
         if let Some(d) = opts.demote {
             d.demote(&sent).await?;
@@ -1294,6 +1546,13 @@ mod tests {
             .map(|r| r.target)
     }
 
+    /// What the CLI does with a report: apply its remote-tracking moves.
+    async fn apply(e: &Eng, txn: &RefTxn) {
+        if !txn.updates.is_empty() {
+            e.refs.update(e.repo, txn).await.unwrap();
+        }
+    }
+
     fn create(id: ChangesetId) -> PushUpdate {
         PushUpdate {
             dst: master(),
@@ -1359,6 +1618,8 @@ mod tests {
                 .unwrap();
             assert_eq!(report.changesets, 10_000);
             assert_eq!(count_changesets(&client).await, 10_000);
+            assert_eq!(tracked(&client).await, None, "fetch writes no ref");
+            apply(&client, &report.local_updates).await;
             assert_eq!(
                 tracked(&client).await,
                 Some(RefTarget::Changeset(ids[N - 1]))
@@ -1474,6 +1735,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.changesets, 1000);
+        apply(&client, &report.local_updates).await;
         let gets = remote.trips.gets.load(Ordering::SeqCst);
         assert!(gets <= 1000 / 256 + 1000, "{gets} batches");
         assert!(
@@ -1494,11 +1756,12 @@ mod tests {
             .fetch(&remote, &Refspec::defaults("origin"), &opts)
             .await
             .unwrap();
-        assert_eq!(again, FetchReport::default());
+        assert!(again.updated.is_empty() && again.local_updates.updates.is_empty());
+        assert_eq!(again.changesets, 0);
     }
 
     #[tokio::test]
-    async fn bucket_fetch_reads_derived_values_beside_the_bodies() {
+    async fn bucket_fetch_keeps_verified_gens_and_never_stores_remote_skip_or_git_memos() {
         let dir = tempfile::tempdir().unwrap();
         let refs = sqlite(dir.path(), "bucket.db").await;
         let bucket = engine(&refs, 99);
@@ -1506,7 +1769,7 @@ mod tests {
         let ids = chain.line(&bucket, first, 40).await;
         set_ref(&bucket, "refs/heads/master", ids[39]).await;
         bucket.get_derived::<Gen>(ids[39]).await.unwrap();
-        bucket.get_derived::<Skip>(ids[39]).await.unwrap();
+        bucket.get_derived::<derive::Skip>(ids[39]).await.unwrap();
         let client = engine(&sqlite(dir.path(), "client.db").await, 2);
         let remote = MockRemote::bucket(bucket.objects.clone(), refs.clone(), 99);
         let bounds = MemBoundaries::default();
@@ -1518,18 +1781,29 @@ mod tests {
             )
             .await
             .unwrap();
-        let keys: Vec<ObjKey> = ids
-            .iter()
-            .flat_map(|&i| [derived_key::<Gen>(i), derived_key::<Skip>(i)])
-            .collect();
+        let gens: Vec<ObjKey> = ids.iter().map(|&i| derived_key::<Gen>(i)).collect();
         assert!(
             client
                 .objects
-                .has_many(&keys)
+                .has_many(&gens)
                 .await
                 .unwrap()
                 .iter()
                 .all(|h| *h)
+        );
+        let skips: Vec<ObjKey> = ids
+            .iter()
+            .map(|&i| derived_key::<derive::Skip>(i))
+            .collect();
+        assert!(
+            client
+                .objects
+                .has_many(&skips)
+                .await
+                .unwrap()
+                .iter()
+                .all(|h| !*h),
+            "a bucket's skip memos are not trusted"
         );
     }
 
@@ -1576,7 +1850,8 @@ mod tests {
         let bounds = MemBoundaries::default();
         let opts = SyncOptions::new(&bounds);
         let plain = [Refspec::parse("refs/heads/*:refs/remotes/origin/*").unwrap()];
-        client.fetch(&remote, &plain, &opts).await.unwrap();
+        let first = client.fetch(&remote, &plain, &opts).await.unwrap();
+        apply(&client, &first.local_updates).await;
         assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(a)));
         set_ref(&server, "refs/heads/master", b).await;
         let report = client.fetch(&remote, &plain, &opts).await.unwrap();
@@ -1585,6 +1860,7 @@ mod tests {
         let forced = Refspec::defaults("origin");
         let report = client.fetch(&remote, &forced, &opts).await.unwrap();
         assert_eq!(report.updated.len(), 1);
+        apply(&client, &report.local_updates).await;
         assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(b)));
     }
 
@@ -1614,6 +1890,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.changesets, 2);
+        assert_eq!(tracked(&b).await, None);
+        apply(&b, &report.local_updates).await;
         assert_eq!(tracked(&b).await, Some(RefTarget::Changeset(c2)));
         let root = b.get_changeset(c2).await.unwrap().root;
         assert!(
@@ -1638,9 +1916,11 @@ mod tests {
             ),
             (1, 1, 1, 3)
         );
-        a.fetch(&remote, &Refspec::defaults("origin"), &opts)
+        let report = a
+            .fetch(&remote, &Refspec::defaults("origin"), &opts)
             .await
             .unwrap();
+        apply(&a, &report.local_updates).await;
         assert_eq!(tracked(&a).await, Some(RefTarget::Changeset(c3)));
         // A's refs and B's refs are separate rows of the one SqlRefs.
         assert_eq!(tracked(&b).await, Some(RefTarget::Changeset(c2)));
@@ -1992,6 +2272,365 @@ mod tests {
         let keys = rec.0.lock().unwrap();
         assert_eq!(keys.len(), report.objects);
         assert!(keys.contains(&ObjKey::Changeset(c1)));
+    }
+
+    /// A remote that lies: wrong generations and git ids in its log, a forged `IsAncestor`,
+    /// objects nobody asked for, and a body it claims not to have.
+    mod untrusted {
+        use asc_core::id::GitOid;
+
+        use super::*;
+        use crate::derive::GitCommit;
+        use crate::history::{GitMapping, LogEntries, PageToken};
+
+        struct Liar {
+            inner: Arc<dyn HistoryApi>,
+            skew: u32,
+        }
+
+        #[async_trait]
+        impl HistoryApi for Liar {
+            async fn log(
+                &self,
+                q: &LogQuery,
+                page: Option<&PageToken>,
+            ) -> graph::Result<LogEntries> {
+                let mut out = self.inner.log(q, page).await?;
+                for e in &mut out.entries {
+                    e.generation += self.skew;
+                    e.git = Some(GitOid::from_bytes([7; 20]));
+                }
+                Ok(out)
+            }
+            async fn merge_base(
+                &self,
+                a: ChangesetId,
+                others: &[ChangesetId],
+                all: bool,
+            ) -> graph::Result<Vec<ChangesetId>> {
+                self.inner.merge_base(a, others, all).await
+            }
+            async fn is_ancestor(&self, _: ChangesetId, _: ChangesetId) -> graph::Result<bool> {
+                Ok(true)
+            }
+            async fn diff(
+                &self,
+                a: ChangesetId,
+                b: ChangesetId,
+                paths: &[String],
+            ) -> graph::Result<Vec<(RepoPath, Change)>> {
+                self.inner.diff(a, b, paths).await
+            }
+            async fn resolve(&self, specs: &[String]) -> graph::Result<Vec<Option<ChangesetId>>> {
+                self.inner.resolve(specs).await
+            }
+            async fn git_map(
+                &self,
+                asc: &[ChangesetId],
+                git: &[GitOid],
+            ) -> graph::Result<GitMapping> {
+                self.inner.git_map(asc, git).await
+            }
+        }
+
+        struct Evil {
+            inner: MockRemote,
+            history: Option<Arc<dyn HistoryApi>>,
+            /// Sent with every `get_many` answer although nobody asked.
+            extra: Vec<(ObjKey, Bytes)>,
+            /// Never sent, though asked for.
+            withhold: Option<ObjKey>,
+        }
+
+        impl Evil {
+            fn new(inner: MockRemote) -> Self {
+                Self {
+                    inner,
+                    history: None,
+                    extra: Vec::new(),
+                    withhold: None,
+                }
+            }
+        }
+
+        #[async_trait]
+        impl Remote for Evil {
+            fn name(&self) -> &str {
+                "origin"
+            }
+            async fn list_refs(&self) -> Result<Vec<RefEntry>> {
+                self.inner.list_refs().await
+            }
+            async fn has_many(&self, keys: &[ObjKey]) -> Result<Vec<bool>> {
+                self.inner.has_many(keys).await
+            }
+            fn get_many(&self, keys: Vec<ObjKey>) -> BoxStream<'_, Result<(ObjKey, Bytes)>> {
+                let withhold = self.withhold;
+                let real = self
+                    .inner
+                    .get_many(keys)
+                    .try_filter(move |(k, _)| futures::future::ready(Some(*k) != withhold));
+                real.chain(stream::iter(self.extra.clone().into_iter().map(Ok)))
+                    .boxed()
+            }
+            async fn put_many(&self, objects: Vec<(ObjKey, Bytes)>) -> Result<()> {
+                self.inner.put_many(objects).await
+            }
+            async fn update_refs(&self, updates: &[RefUpdate]) -> Result<()> {
+                self.inner.update_refs(updates).await
+            }
+            fn history(&self) -> Option<Arc<dyn HistoryApi>> {
+                self.history.clone()
+            }
+        }
+
+        fn lying(honest: &MockRemote, skew: u32) -> Option<Arc<dyn HistoryApi>> {
+            Some(Arc::new(Liar {
+                inner: honest.history().unwrap(),
+                skew,
+            }))
+        }
+
+        async fn server_chain(dir: &std::path::Path, n: usize) -> (Arc<Eng>, Vec<ChangesetId>) {
+            let server = engine(&sqlite(dir, "server.db").await, 1);
+            let (chain, first) = Chain::new(&server).await;
+            let ids = chain.line(&server, first, n).await;
+            set_ref(&server, "refs/heads/master", ids[n - 1]).await;
+            (server, ids)
+        }
+
+        async fn has_memos<D: Derived>(e: &Eng, ids: &[ChangesetId]) -> Vec<bool> {
+            let keys: Vec<ObjKey> = ids.iter().map(|&i| derived_key::<D>(i)).collect();
+            e.objects.has_many(&keys).await.unwrap()
+        }
+
+        #[tokio::test]
+        async fn wrong_generations_from_a_server_log_fail_the_fetch_and_store_no_memo() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 20).await;
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let mut remote = Evil::new(MockRemote::server(&server));
+            remote.history = lying(&remote.inner, 5);
+            let bounds = MemBoundaries::default();
+            let err = client
+                .fetch(
+                    &remote,
+                    &Refspec::defaults("origin"),
+                    &SyncOptions::new(&bounds),
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::Inconsistent(_)), "{err}");
+            assert!(has_memos::<Gen>(&client, &ids).await.iter().all(|h| !*h));
+            assert!(
+                has_memos::<GitCommit>(&client, &ids)
+                    .await
+                    .iter()
+                    .all(|h| !*h)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_forged_git_id_in_an_honest_log_is_never_stored() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 20).await;
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let mut remote = Evil::new(MockRemote::server(&server));
+            remote.history = lying(&remote.inner, 0);
+            let bounds = MemBoundaries::default();
+            client
+                .fetch(
+                    &remote,
+                    &Refspec::defaults("origin"),
+                    &SyncOptions::new(&bounds),
+                )
+                .await
+                .unwrap();
+            assert!(has_memos::<Gen>(&client, &ids).await.iter().all(|h| *h));
+            assert!(
+                has_memos::<GitCommit>(&client, &ids)
+                    .await
+                    .iter()
+                    .all(|h| !*h)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_bucket_with_wrong_generations_is_recomputed_not_trusted() {
+            let dir = tempfile::tempdir().unwrap();
+            let refs = sqlite(dir.path(), "bucket.db").await;
+            let bucket = engine(&refs, 99);
+            let (chain, first) = Chain::new(&bucket).await;
+            let ids = chain.line(&bucket, first, 10).await;
+            set_ref(&bucket, "refs/heads/master", ids[9]).await;
+            for &i in &ids {
+                bucket
+                    .objects
+                    .put(
+                        &derived_key::<Gen>(i),
+                        asc_store::codec::encode_stored(&Gen { generation: 777 }.encode()),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let remote = MockRemote::bucket(bucket.objects.clone(), refs.clone(), 99);
+            let bounds = MemBoundaries::default();
+            client
+                .fetch(
+                    &remote,
+                    &Refspec::defaults("origin"),
+                    &SyncOptions::new(&bounds),
+                )
+                .await
+                .unwrap();
+            for (i, &id) in ids.iter().enumerate() {
+                let g = client.get_derived::<Gen>(id).await.unwrap().generation;
+                assert_eq!(g, i as u32 + 1);
+            }
+        }
+
+        #[tokio::test]
+        async fn unrequested_objects_are_ignored_and_a_withheld_body_is_an_error() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 5).await;
+            let (chain, first) = Chain::new(&server).await;
+            let other = chain.add(&server, &[first], 99).await;
+            let other_stored = server
+                .objects
+                .get_stored(&ObjKey::Changeset(other))
+                .await
+                .unwrap()
+                .unwrap();
+            let garbage = ObjKey::Changeset(ChangesetId::of(b"nobody asked"));
+            let extra = vec![
+                (ObjKey::Changeset(other), other_stored),
+                (garbage, Bytes::from_static(b"\0junk")),
+            ];
+            let bounds = MemBoundaries::default();
+            for (n, with_history) in [true, false].into_iter().enumerate() {
+                let client = engine(&sqlite(dir.path(), &format!("c{n}.db")).await, 2);
+                let mut remote = Evil::new(MockRemote::server(&server));
+                if !with_history {
+                    remote.inner = MockRemote::bucket(
+                        server.objects.clone(),
+                        server.refs.clone(),
+                        server.repo.0,
+                    );
+                }
+                remote.history = with_history.then(|| remote.inner.history().unwrap());
+                remote.extra = extra.clone();
+                client
+                    .fetch(
+                        &remote,
+                        &Refspec::defaults("origin"),
+                        &SyncOptions::new(&bounds),
+                    )
+                    .await
+                    .unwrap();
+                let present = client
+                    .objects
+                    .has_many(&[ObjKey::Changeset(other), garbage])
+                    .await
+                    .unwrap();
+                assert_eq!(present, vec![false, false], "history={with_history}");
+
+                // The same remote now withholds a body it was asked for.
+                let client = engine(&sqlite(dir.path(), &format!("w{n}.db")).await, 3);
+                remote.withhold = Some(ObjKey::Changeset(ids[2]));
+                let err = client
+                    .fetch(
+                        &remote,
+                        &Refspec::defaults("origin"),
+                        &SyncOptions::new(&bounds),
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(matches!(err, Error::RemoteMissing(_)), "{err}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_forged_is_ancestor_answer_cannot_fast_forward_a_ref_past_the_window() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 200).await;
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let bounds = MemBoundaries::default();
+            let mut opts = SyncOptions::new(&bounds);
+            opts.window = Some(50);
+            let plain = [Refspec::parse("refs/heads/*:refs/remotes/origin/*").unwrap()];
+            let first = client
+                .fetch(&MockRemote::server(&server), &plain, &opts)
+                .await
+                .unwrap();
+            apply(&client, &first.local_updates).await;
+            assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(ids[199])));
+            // The server rewrites master onto a side branch forked far below the window.
+            let (chain, _) = Chain::new(&server).await;
+            let side = chain.add(&server, &[ids[10]], 4242).await;
+            set_ref(&server, "refs/heads/master", side).await;
+            let mut remote = Evil::new(MockRemote::server(&server));
+            remote.history = lying(&remote.inner, 0);
+            let report = client.fetch(&remote, &plain, &opts).await.unwrap();
+            assert_eq!(report.rejected, vec![tracking()]);
+            assert!(report.local_updates.updates.is_empty());
+            assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(ids[199])));
+            // The body-only walk gives the same answer on its own.
+            let hist = Arc::new(ServerHistory(remote.history().unwrap()));
+            let g = windowed_graph(&client, &bounds, hist).await.unwrap();
+            assert_eq!(
+                g.ancestry_from_bodies(ids[199], side).await.unwrap(),
+                graph::Ancestry::No
+            );
+        }
+
+        #[tokio::test]
+        async fn a_real_fast_forward_past_the_window_is_still_accepted() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 120).await;
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            let bounds = MemBoundaries::default();
+            let mut opts = SyncOptions::new(&bounds);
+            opts.window = Some(20);
+            let plain = [Refspec::parse("refs/heads/*:refs/remotes/origin/*").unwrap()];
+            let remote = MockRemote::server(&server);
+            set_ref(&server, "refs/heads/master", ids[30]).await;
+            let first = client.fetch(&remote, &plain, &opts).await.unwrap();
+            apply(&client, &first.local_updates).await;
+            set_ref(&server, "refs/heads/master", ids[119]).await;
+            let report = client.fetch(&remote, &plain, &opts).await.unwrap();
+            assert!(report.rejected.is_empty());
+            apply(&client, &report.local_updates).await;
+            assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(ids[119])));
+        }
+
+        #[tokio::test]
+        async fn push_returns_tracking_updates_and_calls_the_ext_hook() {
+            struct Ext(std::sync::Mutex<Vec<usize>>);
+            impl SyncExt for Ext {
+                fn extra_closure(&self, new: &[ChangesetId]) -> Vec<ObjKey> {
+                    self.0.lock().unwrap().push(new.len());
+                    Vec::new()
+                }
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let refs = sqlite(dir.path(), "machine.db").await;
+            let a = engine(&refs, 1);
+            let remote = MockRemote::bucket(Arc::new(BucketObjects::memory()), refs.clone(), 99);
+            let bounds = MemBoundaries::default();
+            let ext = Ext(Default::default());
+            let mut opts = SyncOptions::new(&bounds);
+            opts.ext = &ext;
+            let c1 = commit(&a, &[], b"one").await;
+            let report = a
+                .push(&remote, &[create(c1)], PushMode::FastForward, &opts)
+                .await
+                .unwrap();
+            assert_eq!(*ext.0.lock().unwrap(), vec![1]);
+            assert_eq!(report.local_updates.updates.len(), 1);
+            assert_eq!(report.local_updates.updates[0].name, tracking());
+            assert_eq!(tracked(&a).await, None, "push writes no local ref");
+        }
     }
 
     #[allow(dead_code)]

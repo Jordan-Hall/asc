@@ -71,6 +71,15 @@ pub struct Node {
     pub parents: Vec<ChangesetId>,
 }
 
+/// Result of [`Graph::ancestry_from_bodies`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ancestry {
+    Yes,
+    No,
+    /// Bodies the walk needs before it can answer.
+    NeedBodies(Vec<ChangesetId>),
+}
+
 /// A node, or a node whose parents lie beyond the local history window (SPEC §6.3).
 ///
 /// A boundary's `generation` and `parents` are known (its body is local); its parents are not.
@@ -427,6 +436,12 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
     }
 
     /// True when `a` is `b` or an ancestor of `b`.
+    ///
+    /// Past a history boundary this asks the remote's `IsAncestor` and trusts the answer, so
+    /// it is **advisory**: use it for display and log paths only. A decision that moves a
+    /// local ref (a fast-forward check) must use
+    /// [`ancestry_from_bodies`](Self::ancestry_from_bodies), which trusts nothing the remote
+    /// says about ancestry.
     pub async fn is_ancestor(&self, a: ChangesetId, b: ChangesetId) -> Result<bool> {
         if a == b {
             return Ok(true);
@@ -465,6 +480,66 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
             }
         }
         Ok(false)
+    }
+
+    /// Ancestry of `a` in `b` computed only from changeset bodies in the local store, never
+    /// from the remote: the safe basis for moving a ref.
+    ///
+    /// The walk goes from `b` through parents and is bounded by generation: a changeset whose
+    /// generation is at most that of `a` is not searched below. When a parent's body is not
+    /// local the walk cannot tell, and the answer is [`Ancestry::NeedBodies`] with the ids to
+    /// fetch (the caller verifies them against their ids and asks again). An `a` that is not
+    /// local is never found.
+    pub async fn ancestry_from_bodies(&self, a: ChangesetId, b: ChangesetId) -> Result<Ancestry> {
+        if a == b {
+            return Ok(Ancestry::Yes);
+        }
+        let ga = match self.body_walk_info(a).await? {
+            Some((g, _)) => g.unwrap_or(0),
+            None => return Ok(Ancestry::No),
+        };
+        let mut seen = HashSet::from([b]);
+        let mut stack = vec![b];
+        let mut need = Vec::new();
+        while let Some(id) = stack.pop() {
+            let Some((gen_id, parents)) = self.body_walk_info(id).await? else {
+                need.push(id);
+                continue;
+            };
+            if gen_id.is_some_and(|g| g <= ga) {
+                continue;
+            }
+            for p in parents {
+                if p == a {
+                    return Ok(Ancestry::Yes);
+                }
+                if seen.insert(p) {
+                    stack.push(p);
+                }
+            }
+        }
+        Ok(if need.is_empty() {
+            Ancestry::No
+        } else {
+            Ancestry::NeedBodies(need)
+        })
+    }
+
+    /// Generation (when derivable locally) and parents of `id` from its local body; `None`
+    /// when the body is not local.
+    async fn body_walk_info(
+        &self,
+        id: ChangesetId,
+    ) -> Result<Option<(Option<u32>, Vec<ChangesetId>)>> {
+        match self.node(id).await {
+            Ok(n) => Ok(Some((Some(n.generation), n.parents.clone()))),
+            Err(e) if e.is_missing() => match self.source.changeset(id).await {
+                Ok(cs) => Ok(Some((None, cs.parents.clone()))),
+                Err(e) if e.is_missing() => Ok(None),
+                Err(e) => Err(e),
+            },
+            Err(e) => Err(e),
+        }
     }
 
     /// The node for `id`, or `None` when it is not local and a remote can answer for it.
