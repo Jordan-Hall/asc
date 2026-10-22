@@ -9,7 +9,7 @@ use sha1::{Digest, Sha1};
 use crate::id::{ChangesetId, GitOid, TreeId};
 use crate::object::{AscGitExtra, Change, Changeset, Kind, LfsRef, ObjectError, SortedMap, TagRecord, Tree};
 use crate::path::RepoPath;
-use crate::sig::Signature;
+use crate::sig::{SigError, Signature};
 
 /// Extra key holding the raw bytes of a non-canonical git commit.
 pub const EXTRA_GIT_COMMIT: &[u8] = b"git.commit";
@@ -33,6 +33,10 @@ pub enum GitError {
     BlobSize { declared: u64, hashed: u64 },
     #[error(transparent)]
     Object(#[from] ObjectError),
+    #[error(transparent)]
+    Signature(#[from] SigError),
+    #[error("raw git bytes do not match the changeset: {0}")]
+    RawMismatch(&'static str),
 }
 
 /// Git object type, for hashing.
@@ -165,10 +169,10 @@ pub fn parse_tz(s: &[u8]) -> Option<i16> {
 }
 
 fn render_signature(out: &mut Vec<u8>, s: &Signature) {
-    out.extend_from_slice(&s.name);
+    out.extend_from_slice(s.name());
     out.extend_from_slice(b" <");
-    out.extend_from_slice(&s.email);
-    out.extend_from_slice(format!("> {} {}", s.time, tz_to_string(s.tz_min)).as_bytes());
+    out.extend_from_slice(s.email());
+    out.extend_from_slice(format!("> {} {}", s.time(), tz_to_string(s.tz_min())).as_bytes());
 }
 
 fn parse_signature(b: &[u8], what: &'static str) -> Result<Signature, &'static str> {
@@ -180,7 +184,7 @@ fn parse_signature(b: &[u8], what: &'static str) -> Result<Signature, &'static s
     let sp = rest.iter().position(|&c| c == b' ').ok_or(what)?;
     let time = std::str::from_utf8(&rest[..sp]).ok().and_then(|t| t.parse().ok()).ok_or(what)?;
     let tz_min = parse_tz(&rest[sp + 1..]).ok_or(what)?;
-    Ok(Signature { name: name.to_vec(), email: b[lt + 1..gt].to_vec(), time, tz_min })
+    Signature::new(name.to_vec(), b[lt + 1..gt].to_vec(), time, tz_min).map_err(|_| what)
 }
 
 // -------------------------------------------------------------- headers
@@ -279,11 +283,42 @@ pub fn render_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -
     out
 }
 
-/// The bytes git has for this commit: `git.commit` if present, else the canonical render.
-pub fn export_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Vec<u8> {
+/// Checks that `raw` describes the same commit as `cs`: tree, parents (in order),
+/// author, committer and message must all match.
+pub fn verify_raw_commit(raw: &[u8], cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Result<(), GitError> {
+    let p = parse_commit(raw)?;
+    let bad = GitError::RawMismatch;
+    if p.tree != root_git {
+        return Err(bad("tree"));
+    }
+    if p.parents != parent_gits {
+        return Err(bad("parents"));
+    }
+    if p.author != cs.author {
+        return Err(bad("author"));
+    }
+    if p.committer != cs.committer {
+        return Err(bad("committer"));
+    }
+    if p.message != cs.message {
+        return Err(bad("message"));
+    }
+    Ok(())
+}
+
+/// The bytes git has for this commit: `git.commit` if present (after
+/// [`verify_raw_commit`]), else the canonical render.
+///
+/// The `git.commit` and `git.tag` extras are only accepted on the import path
+/// ([`canonicalise_commit`], [`canonicalise_tag`]); rejecting them on native
+/// ingest is asc-engine's job, not enforced here.
+pub fn export_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Result<Vec<u8>, GitError> {
     match cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()) {
-        Some(raw) => raw.clone(),
-        None => render_commit(cs, root_git, parent_gits),
+        Some(raw) => {
+            verify_raw_commit(raw, cs, root_git, parent_gits)?;
+            Ok(raw.clone())
+        }
+        None => Ok(render_commit(cs, root_git, parent_gits)),
     }
 }
 
@@ -406,11 +441,34 @@ pub fn render_tag(tag: &TagRecord, target_git: GitOid) -> Vec<u8> {
     out
 }
 
-/// The bytes git has for this tag: `git.tag` if present, else the canonical render.
-pub fn export_tag(tag: &TagRecord, target_git: GitOid) -> Vec<u8> {
+/// Checks that `raw` describes the same tag as `tag`: target, name, tagger and message.
+pub fn verify_raw_tag(raw: &[u8], tag: &TagRecord, target_git: GitOid) -> Result<(), GitError> {
+    let p = parse_tag(raw)?;
+    let bad = GitError::RawMismatch;
+    if p.object != target_git {
+        return Err(bad("target"));
+    }
+    if p.name != tag.name {
+        return Err(bad("name"));
+    }
+    if p.tagger != tag.tagger {
+        return Err(bad("tagger"));
+    }
+    if p.message != tag.message {
+        return Err(bad("message"));
+    }
+    Ok(())
+}
+
+/// The bytes git has for this tag: `git.tag` if present (after [`verify_raw_tag`]),
+/// else the canonical render. As for [`export_commit`], `git.tag` is import-only.
+pub fn export_tag(tag: &TagRecord, target_git: GitOid) -> Result<Vec<u8>, GitError> {
     match tag.extra.get(&EXTRA_GIT_TAG.to_vec()) {
-        Some(raw) => raw.clone(),
-        None => render_tag(tag, target_git),
+        Some(raw) => {
+            verify_raw_tag(raw, tag, target_git)?;
+            Ok(raw.clone())
+        }
+        None => Ok(render_tag(tag, target_git)),
     }
 }
 
@@ -609,7 +667,7 @@ mod tests {
             let parents: Vec<_> = (1..).map(cid).take(p.parents.len()).collect();
             let cs = canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), parents, write_a()).unwrap();
             assert_eq!(cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()).is_some(), flag == "raw", "{file}");
-            let exported = export_commit(&cs, p.tree, &p.parents);
+            let exported = export_commit(&cs, p.tree, &p.parents).unwrap();
             assert_eq!(exported, raw, "{file}");
             assert_eq!(object_oid(ObjectKind::Commit, &exported), sha, "{file}");
         }
@@ -618,12 +676,12 @@ mod tests {
     #[test]
     fn golden_commit_details() {
         let tz = parse_commit(&golden("commit_tz_0530.bin")).unwrap();
-        assert_eq!(tz.author.tz_min, 330);
+        assert_eq!(tz.author.tz_min(), 330);
         let neg = parse_commit(&golden("commit_tz_neg.bin")).unwrap();
-        assert_eq!(neg.author.tz_min, -(8 * 60 + 45));
+        assert_eq!(neg.author.tz_min(), -(8 * 60 + 45));
         assert_eq!(parse_commit(&golden("commit_merge.bin")).unwrap().parents.len(), 2);
         let latin = parse_commit(&golden("commit_non_utf8.bin")).unwrap();
-        assert_eq!(latin.author.name, b"Jos\xe9");
+        assert_eq!(latin.author.name(), b"Jos\xe9");
         let signed = parse_commit(&golden("commit_signed.bin")).unwrap();
         let sig = signed.gpgsig.unwrap();
         assert!(sig.starts_with(b"-----BEGIN SSH SIGNATURE-----\n") && sig.ends_with(b"-----END SSH SIGNATURE-----"));
@@ -642,7 +700,7 @@ mod tests {
             let p = parse_tag(&raw).unwrap();
             let tag = canonicalise_tag(&raw, cid(1)).unwrap();
             assert_eq!(tag.extra.get(&EXTRA_GIT_TAG.to_vec()).is_some(), flag == "raw", "{file}");
-            assert_eq!(export_tag(&tag, p.object), raw, "{file}");
+            assert_eq!(export_tag(&tag, p.object).unwrap(), raw, "{file}");
         }
         let signed = parse_tag(&golden("tag_signed.bin")).unwrap();
         assert_eq!(signed.message, b"v2 signed\n");
@@ -654,6 +712,65 @@ mod tests {
         let raw = b"object 1111111111111111111111111111111111111111\ntype tree\ntag t\n\nmsg\n";
         let tag = canonicalise_tag(raw, cid(1)).unwrap();
         assert_eq!(tag.extra.get(&EXTRA_GIT_TAG.to_vec()).map(Vec::as_slice), Some(&raw[..]));
+    }
+
+    fn sample_commit() -> (Vec<u8>, GitOid, Vec<GitOid>, Changeset) {
+        let (t, p1, p2) = (GitOid::from_bytes([1; 20]), GitOid::from_bytes([2; 20]), GitOid::from_bytes([3; 20]));
+        let raw = format!(
+            "tree {t}\nparent {p1}\nparent {p2}\nauthor A <a@x> 10 +0000\ncommitter C <c@x> 20 +0100\nencoding ISO-8859-1\n\nmsg\n"
+        )
+        .into_bytes();
+        let cs = canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), vec![cid(1), cid(2)], write_a()).unwrap();
+        (raw, t, vec![p1, p2], cs)
+    }
+
+    #[test]
+    fn rejects_header_injection() {
+        let inj = b"A\ntree 0000000000000000000000000000000000000000";
+        assert!(Signature::new(inj.to_vec(), b"a@x".to_vec(), 0, 0).is_err());
+        assert!(Signature::new(b"A".to_vec(), b"a>\nparent x".to_vec(), 0, 0).is_err());
+        assert!(Signature::new(b"A <x".to_vec(), b"a@x".to_vec(), 0, 0).is_err());
+        // An imported ident carrying such bytes (via a continuation line) is refused, not rendered.
+        let raw = b"tree 1111111111111111111111111111111111111111\nauthor A\n tree x <a@x> 1 +0000\ncommitter C <c@x> 1 +0000\n\nm";
+        assert!(parse_commit(raw).is_err());
+    }
+
+    #[test]
+    fn non_canonical_import_round_trips() {
+        let (raw, t, parents, cs) = sample_commit();
+        assert!(cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()).is_some());
+        assert_eq!(export_commit(&cs, t, &parents).unwrap(), raw);
+    }
+
+    #[test]
+    fn mismatched_raw_commit_rejected() {
+        let (raw, t, parents, cs) = sample_commit();
+        assert!(verify_raw_commit(&raw, &cs, t, &parents).is_ok());
+        let other = GitOid::from_bytes([7; 20]);
+        assert!(matches!(export_commit(&cs, other, &parents), Err(GitError::RawMismatch("tree"))));
+        let swapped = [parents[1], parents[0]];
+        assert!(matches!(export_commit(&cs, t, &swapped), Err(GitError::RawMismatch("parents"))));
+        let mut edited = cs.clone();
+        edited.message = b"other\n".to_vec();
+        assert!(matches!(export_commit(&edited, t, &parents), Err(GitError::RawMismatch("message"))));
+        let mut who = cs;
+        who.author = Signature::new(b"Eve".to_vec(), b"e@x".to_vec(), 10, 0).unwrap();
+        assert!(matches!(export_commit(&who, t, &parents), Err(GitError::RawMismatch("author"))));
+    }
+
+    #[test]
+    fn mismatched_raw_tag_rejected() {
+        let target = GitOid::from_bytes([1; 20]);
+        let raw = format!("object {target}\ntype tree\ntag t\n\nmsg\n");
+        let tag = canonicalise_tag(raw.as_bytes(), cid(1)).unwrap();
+        assert_eq!(export_tag(&tag, target).unwrap(), raw.as_bytes());
+        assert!(export_tag(&tag, GitOid::from_bytes([2; 20])).is_err());
+        let mut renamed = tag.clone();
+        renamed.name = b"u".to_vec();
+        assert!(export_tag(&renamed, target).is_err());
+        let mut edited = tag;
+        edited.message = b"changed\n".to_vec();
+        assert!(export_tag(&edited, target).is_err());
     }
 
     #[test]
@@ -694,10 +811,10 @@ mod tests {
     }
 
     fn arb_sig() -> impl Strategy<Value = Signature> {
-        let name = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"\n".contains(c)).collect::<Vec<_>>()), 0..12);
+        let name = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
         let email = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
         (name, email, any::<i64>(), -5999i16..=5999)
-            .prop_map(|(name, email, time, tz_min)| Signature { name, email, time, tz_min })
+            .prop_map(|(name, email, time, tz_min)| Signature::new(name, email, time, tz_min).unwrap())
     }
 
     fn arb_path() -> impl Strategy<Value = RepoPath> {

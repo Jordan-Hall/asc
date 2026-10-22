@@ -420,7 +420,7 @@ mod tests {
     }
 
     fn sig(t: i64) -> Signature {
-        Signature { name: b"Ann".to_vec(), email: b"ann@example.com".to_vec(), time: t, tz_min: -330 }
+        Signature::new(b"Ann".to_vec(), b"ann@example.com".to_vec(), t, -330).unwrap()
     }
 
     fn entry(n: &str, kind: Kind) -> Entry {
@@ -693,8 +693,9 @@ mod tests {
     }
 
     fn arb_sig() -> impl Strategy<Value = Signature> {
-        (any::<Vec<u8>>(), any::<Vec<u8>>(), any::<i64>(), any::<i16>())
-            .prop_map(|(name, email, time, tz_min)| Signature { name, email, time, tz_min })
+        let text = || prop::collection::vec(any::<u8>().prop_filter("ident byte", |c| !matches!(c, b'\n' | b'<' | b'>' | 0)), 0..12);
+        (text(), text(), any::<i64>(), any::<i16>())
+            .prop_map(|(name, email, time, tz_min)| Signature::new(name, email, time, tz_min).unwrap())
     }
 
     fn arb_extra() -> impl Strategy<Value = SortedMap<Vec<u8>, Vec<u8>>> {
