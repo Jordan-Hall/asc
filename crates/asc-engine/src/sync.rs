@@ -27,6 +27,8 @@ use crate::history::{
 use crate::tree::{self, Pathspec};
 use crate::{Engine, commit};
 
+pub mod changes;
+
 /// Changeset ids per fetch request (SPEC §6.3).
 pub const GET_BATCH: usize = 256;
 /// Concurrent fetch streams.
