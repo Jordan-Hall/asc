@@ -316,8 +316,162 @@ impl fmt::Debug for SetId {
 }
 
 /// One file's parsed form (SPEC §12A.5 `parsed.v1`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Parsed(pub Value);
+
+impl<'de> Deserialize<'de> for Parsed {
+    /// Decodes with the nesting bound enforced during decode, so hostile
+    /// payloads cannot overflow the stack before `validate` runs.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        serde::de::DeserializeSeed::deserialize(DepthSeed(1), d).map(Parsed)
+    }
+}
+
+/// Decodes a [`Value`] at a nesting depth, failing past [`MAX_DEPTH`].
+/// Mirrors the derived postcard layout of `Value` (variant index, then fields).
+#[derive(Clone, Copy)]
+struct DepthSeed(usize);
+
+impl<'de> serde::de::DeserializeSeed<'de> for DepthSeed {
+    type Value = Value;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+        if self.0 > MAX_DEPTH {
+            return Err(serde::de::Error::custom(format!(
+                "nesting deeper than {MAX_DEPTH}"
+            )));
+        }
+        d.deserialize_enum(
+            "Value",
+            &[
+                "Null", "Bool", "Int", "Uint", "Float", "Str", "Array", "Map",
+            ],
+            ValueVisitor(self.0),
+        )
+    }
+}
+
+struct ValueVisitor(usize);
+
+impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a Value")
+    }
+
+    fn visit_enum<A: serde::de::EnumAccess<'de>>(self, data: A) -> Result<Value, A::Error> {
+        use serde::de::{Error, VariantAccess};
+        let (idx, v) = data.variant::<u32>()?;
+        let next = DepthSeed(self.0 + 1);
+        Ok(match idx {
+            0 => {
+                v.unit_variant()?;
+                Value::Null
+            }
+            1 => Value::Bool(v.newtype_variant()?),
+            2 => Value::Int(v.newtype_variant()?),
+            3 => Value::Uint(v.newtype_variant()?),
+            4 => Value::Float(v.newtype_variant()?),
+            5 => Value::Str(v.newtype_variant()?),
+            6 => Value::Array(v.newtype_variant_seed(SeqSeed(next))?),
+            7 => Value::Map(v.newtype_variant_seed(PairsSeed(next))?),
+            _ => return Err(A::Error::custom("unknown Value variant")),
+        })
+    }
+}
+
+/// Cap on speculative preallocation from an untrusted length prefix.
+fn capped(hint: Option<usize>) -> usize {
+    hint.unwrap_or(0).min(1024)
+}
+
+struct SeqSeed(DepthSeed);
+
+impl<'de> serde::de::DeserializeSeed<'de> for SeqSeed {
+    type Value = Vec<Value>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for SeqSeed {
+    type Value = Vec<Value>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a sequence of values")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<Value>, A::Error> {
+        let mut out = Vec::with_capacity(capped(seq.size_hint()));
+        while let Some(v) = seq.next_element_seed(self.0)? {
+            out.push(v);
+        }
+        Ok(out)
+    }
+}
+
+struct PairsSeed(DepthSeed);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PairsSeed {
+    type Value = Vec<(String, Value)>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for PairsSeed {
+    type Value = Vec<(String, Value)>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a sequence of key/value pairs")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> Result<Vec<(String, Value)>, A::Error> {
+        let mut out = Vec::with_capacity(capped(seq.size_hint()));
+        while let Some(pair) = seq.next_element_seed(PairSeed(self.0))? {
+            out.push(pair);
+        }
+        Ok(out)
+    }
+}
+
+struct PairSeed(DepthSeed);
+
+impl<'de> serde::de::DeserializeSeed<'de> for PairSeed {
+    type Value = (String, Value);
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_tuple(2, self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for PairSeed {
+    type Value = (String, Value);
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a key/value pair")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> Result<(String, Value), A::Error> {
+        use serde::de::Error;
+        let k = seq
+            .next_element::<String>()?
+            .ok_or_else(|| A::Error::invalid_length(0, &self))?;
+        let v = seq
+            .next_element_seed(self.0)?
+            .ok_or_else(|| A::Error::invalid_length(1, &self))?;
+        Ok((k, v))
+    }
+}
 
 /// `blake3(eco || claim || FileId)`: the key of a [`Parsed`] value.
 pub fn parsed_key(eco: Ecosystem, claim: &str, file: &FileId) -> [u8; 32] {
@@ -606,6 +760,40 @@ mod tests {
             ManifestSet::from_envelope(&ManifestSet(raw).to_envelope()),
             Err(ModelError::Invalid("manifest set order"))
         );
+    }
+
+    /// Envelope of `depth` levels: `depth - 1` single-element arrays around `Null`.
+    fn nested_parsed(depth: usize) -> Vec<u8> {
+        let mut b = vec![b'c', b'g', KIND_PARSED, 1];
+        for _ in 1..depth {
+            b.extend_from_slice(&[6, 1]);
+        }
+        b.push(0);
+        b
+    }
+
+    #[test]
+    fn decode_bounds_nesting_during_decode() {
+        assert!(Parsed::from_envelope(&nested_parsed(MAX_DEPTH)).is_ok());
+        for depth in [MAX_DEPTH + 1, 100_000, 5_000_000] {
+            assert!(
+                matches!(
+                    Parsed::from_envelope(&nested_parsed(depth)),
+                    Err(ModelError::Payload(_))
+                ),
+                "depth {depth}"
+            );
+        }
+        // Maps count too.
+        let mut b = vec![b'c', b'g', KIND_PARSED, 1];
+        for _ in 0..200 {
+            b.extend_from_slice(&[7, 1, 1, b'k']);
+        }
+        b.push(0);
+        assert!(matches!(
+            Parsed::from_envelope(&b),
+            Err(ModelError::Payload(_))
+        ));
     }
 
     #[test]

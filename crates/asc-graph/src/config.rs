@@ -1,7 +1,7 @@
 //! `.asc/projects.toml` (SPEC §12A.3): parser with line-numbered errors and
 //! named-input resolution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use asc_core::path::RepoPath;
@@ -28,7 +28,12 @@ pub enum ResolveError {
     Unknown(String),
     #[error("named inputs form a cycle: {}", .0.join(" -> "))]
     Cycle(Vec<String>),
+    #[error("named inputs expand to more than {MAX_EXPANDED_ITEMS} items")]
+    TooLarge,
 }
+
+/// Most input items visited while resolving one list.
+pub const MAX_EXPANDED_ITEMS: usize = 100_000;
 
 /// What a changed path with no owner does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +126,14 @@ pub struct ResolvedInputs {
     pub deps: Vec<String>,
 }
 
+/// Expansion state of one `resolve` call.
+struct Expand<'a> {
+    stack: Vec<&'a str>,
+    /// Names fully expanded already.
+    done: BTreeSet<&'a str>,
+    budget: usize,
+}
+
 const DEFAULT_INPUT: &str = "default";
 const DEFAULT_GLOB: &str = "{projectRoot}/**";
 
@@ -160,14 +173,19 @@ impl ResolvedConfig {
     /// Expands named items recursively into globs; `^name` items are collected.
     pub fn resolve(&self, items: &[InputItem]) -> Result<ResolvedInputs, ResolveError> {
         let mut out = ResolvedInputs::default();
-        self.expand(items, &mut Vec::new(), &mut out)?;
+        let mut st = Expand {
+            stack: Vec::new(),
+            done: BTreeSet::new(),
+            budget: MAX_EXPANDED_ITEMS,
+        };
+        self.expand(items, &mut st, &mut out)?;
         Ok(out)
     }
 
     fn expand<'a>(
         &'a self,
         items: &'a [InputItem],
-        stack: &mut Vec<&'a str>,
+        st: &mut Expand<'a>,
         out: &mut ResolvedInputs,
     ) -> Result<(), ResolveError> {
         fn push(v: &mut Vec<String>, s: &str) {
@@ -176,6 +194,7 @@ impl ResolvedConfig {
             }
         }
         for item in items {
+            st.budget = st.budget.checked_sub(1).ok_or(ResolveError::TooLarge)?;
             match item {
                 InputItem::Include(g) => push(&mut out.includes, g),
                 InputItem::Exclude(g) => push(&mut out.excludes, g),
@@ -184,19 +203,24 @@ impl ResolvedConfig {
                     push(&mut out.deps, n);
                 }
                 InputItem::Named(n) => {
-                    if let Some(i) = stack.iter().position(|s| s == n) {
+                    if let Some(i) = st.stack.iter().position(|s| s == n) {
                         let mut cycle: Vec<String> =
-                            stack[i..].iter().map(|s| (*s).to_owned()).collect();
+                            st.stack[i..].iter().map(|s| (*s).to_owned()).collect();
                         cycle.push(n.clone());
                         return Err(ResolveError::Cycle(cycle));
                     }
-                    stack.push(n);
+                    // The output is deduplicated, so a finished name adds nothing.
+                    if st.done.contains(n.as_str()) {
+                        continue;
+                    }
+                    st.stack.push(n);
                     match self.named_inputs.get(n) {
-                        Some(inner) => self.expand(inner, stack, out)?,
+                        Some(inner) => self.expand(inner, st, out)?,
                         None if n == DEFAULT_INPUT => push(&mut out.includes, DEFAULT_GLOB),
                         None => return Err(ResolveError::Unknown(n.clone())),
                     }
-                    stack.pop();
+                    st.stack.pop();
+                    st.done.insert(n);
                 }
             }
         }
@@ -691,6 +715,47 @@ tags = ["db"]
         assert_eq!(
             fail("[[project]]\nselect = \"a\"\nimplicit_dependencies = [\"eco:go\"]\n").line,
             3
+        );
+    }
+
+    #[test]
+    fn diamond_chain_is_linear() {
+        let mut c = ResolvedConfig::default();
+        for i in 0..64 {
+            let next = InputItem::Named(format!("n{}", i + 1));
+            c.named_inputs
+                .insert(format!("n{i}"), vec![next.clone(), next]);
+        }
+        c.named_inputs
+            .insert("n64".into(), vec![InputItem::Include("a/**".into())]);
+        let r = c.resolve(&[InputItem::Named("n0".into())]).unwrap();
+        assert_eq!(r.includes, ["a/**"]);
+        // Order of first occurrence is kept for ordinary lists.
+        c.named_inputs.insert(
+            "x".into(),
+            vec![InputItem::Include("1".into()), InputItem::Named("y".into())],
+        );
+        c.named_inputs.insert(
+            "y".into(),
+            vec![
+                InputItem::Include("2".into()),
+                InputItem::Include("1".into()),
+            ],
+        );
+        let r = c
+            .resolve(&[InputItem::Named("x".into()), InputItem::Named("y".into())])
+            .unwrap();
+        assert_eq!(r.includes, ["1", "2"]);
+    }
+
+    #[test]
+    fn expansion_is_capped() {
+        let mut c = ResolvedConfig::default();
+        let big = vec![InputItem::Include("g".into()); MAX_EXPANDED_ITEMS + 1];
+        c.named_inputs.insert("big".into(), big);
+        assert_eq!(
+            c.resolve(&[InputItem::Named("big".into())]),
+            Err(ResolveError::TooLarge)
         );
     }
 

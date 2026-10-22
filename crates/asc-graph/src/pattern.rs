@@ -160,6 +160,12 @@ fn is_prefix<A: AsRef<[u8]>, B: AsRef<[u8]>>(a: &[A], b: &[B]) -> bool {
     a.len() <= b.len() && a.iter().zip(b).all(|(x, y)| x.as_ref() == y.as_ref())
 }
 
+fn utf8_path(path: &RepoPath) -> Option<&std::path::Path> {
+    std::str::from_utf8(path.as_bytes())
+        .ok()
+        .map(std::path::Path::new)
+}
+
 fn components(dir: Option<&RepoPath>) -> Vec<&[u8]> {
     dir.map(|d| d.components().collect()).unwrap_or_default()
 }
@@ -204,7 +210,10 @@ impl PatternSet {
 
     /// True when a file path is selected: some include matches and no exclude does.
     pub fn matches(&self, path: &RepoPath) -> bool {
-        let p = std::path::Path::new(std::str::from_utf8(path.as_bytes()).unwrap_or(""));
+        let Some(p) = utf8_path(path) else {
+            // Undecodable: globs cannot be evaluated, so assume affected.
+            return !self.includes.is_empty();
+        };
         let hit = |ps: &[Pat]| ps.iter().any(|x| x.matcher.is_match(p));
         hit(&self.includes) && !hit(&self.excludes)
     }
@@ -220,6 +229,14 @@ impl PatternSet {
         ignore: &IgnoreSet,
     ) -> Decision {
         let d = components(dir);
+        if d.iter().any(|c| std::str::from_utf8(c).is_err()) {
+            // Entries below cannot be matched by glob; look at each file.
+            return if self.includes.is_empty() {
+                Decision::None
+            } else {
+                Decision::Partial
+            };
+        }
         if !self.includes.iter().any(|p| p.may_match_under(&d)) {
             return Decision::None;
         }
@@ -253,8 +270,8 @@ impl IgnoreSet {
 
     /// True when `path` matches an ignore glob.
     pub fn is_ignored(&self, path: &RepoPath) -> bool {
-        let p = std::path::Path::new(std::str::from_utf8(path.as_bytes()).unwrap_or(""));
-        self.0.iter().any(|x| x.matcher.is_match(p))
+        // An undecodable path is never ignored.
+        utf8_path(path).is_some_and(|p| self.0.iter().any(|x| x.matcher.is_match(p)))
     }
 }
 
@@ -453,5 +470,25 @@ mod tests {
         let all = set(&["**"], &[], None);
         assert_eq!(all.decide(None, &[], &none), Decision::All);
         assert_eq!(all.decide(Some(&rp("x/y")), &[], &none), Decision::All);
+    }
+
+    #[test]
+    fn non_utf8_paths_are_conservative() {
+        let Some(bad) = RepoPath::new(&b"pkg/\xff.rs"[..]).ok() else {
+            return;
+        };
+        let s = set(
+            &["{projectRoot}/**"],
+            &["{projectRoot}/**/*.rs"],
+            Some("pkg"),
+        );
+        assert!(s.matches(&bad));
+        let narrow = set(&["other/**"], &[], None);
+        assert!(narrow.matches(&bad));
+        assert!(!set(&[], &[], None).matches(&bad));
+        let ig = IgnoreSet::new(["**"]).unwrap();
+        assert!(!ig.is_ignored(&bad));
+        let dir = RepoPath::new(&b"pkg/\xff"[..]).unwrap();
+        assert_eq!(s.decide(Some(&dir), &[], &ig), Decision::Partial);
     }
 }
