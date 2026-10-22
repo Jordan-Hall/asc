@@ -427,19 +427,29 @@ const SOLUTION_FOLDER: &str = "{2150E333-8FDC-42A3-9474-1A3956D46DE8}";
 /// lines. A path with a project extension goes under [`SOLUTION`]. A solution
 /// folder (its type, and a path that is a bare name) is skipped. Any other
 /// member (a `.proj` file, a project of another language, a line that does not
-/// parse) goes under [`OTHER_MEMBERS`], because MSBuild may build it.
+/// parse) goes under [`OTHER_MEMBERS`], because MSBuild may build it. Lines end
+/// at `\r`, `\n` or `\r\n`, as in MSBuild. If the file holds more `Project(`
+/// than the scan read, or one line holds two, the solution lists an empty
+/// member, which makes it opaque.
 fn parse_sln(text: &str) -> Result<Value, ParseFailure> {
     if !text.contains("Microsoft Visual Studio Solution File") {
         return Err(ParseFailure::new("neither XML nor a solution file"));
     }
     let (mut paths, mut other) = (BTreeSet::new(), BTreeSet::new());
-    for l in text.lines().map(str::trim_start) {
+    let (mut entries, mut doubled) = (0usize, false);
+    // MSBuild reads lines with `StreamReader.ReadLine`, which ends a line at
+    // `\r`, `\n` or `\r\n` and nowhere else.
+    for l in text.split(['\r', '\n']).map(str::trim_start) {
         if !l
             .get(..8)
             .is_some_and(|s| s.eq_ignore_ascii_case("Project("))
         {
             continue;
         }
+        entries += 1;
+        doubled |= l
+            .get(8..)
+            .is_some_and(|r| r.to_ascii_lowercase().contains("project("));
         let mut fields = l.split('"');
         let (kind, path) = (fields.nth(1), fields.nth(3));
         match (kind, path) {
@@ -452,6 +462,16 @@ fn parse_sln(text: &str) -> Result<Value, ParseFailure> {
                 other.insert(p.unwrap_or_default());
             }
         }
+    }
+    // Fail closed: an entry the line scan did not see leaves a member the
+    // detector cannot name, so record one that no project path matches.
+    let seen = text
+        .as_bytes()
+        .windows(8)
+        .filter(|w| w.eq_ignore_ascii_case(b"Project("))
+        .count();
+    if doubled || seen != entries {
+        other.insert("");
     }
     let list =
         |s: BTreeSet<&str>| Value::Array(s.into_iter().map(|p| Value::Str(p.to_owned())).collect());
@@ -2875,6 +2895,57 @@ mod tests {
             && g.issues
                 .iter()
                 .any(|i| i.path == path && i.message == why.as_bytes())
+    }
+
+    fn sln_entry(path: &str) -> String {
+        format!(
+            "Project(\"{{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}}\") = \"M\", \"{path}\", \"{{33333333-3333-3333-3333-333333333333}}\"\r\nEndProject"
+        )
+    }
+
+    fn sln_with(text: String) -> ProjectGraph {
+        let mut t = with_build_file("global.json", "{}");
+        t.insert("build/All.sln".into(), text);
+        build(&t).0
+    }
+
+    const SLN_HEAD: &str = "Microsoft Visual Studio Solution File, Format Version 12.00";
+
+    #[test]
+    fn a_bare_cr_cannot_hide_a_solution_member() {
+        let a = sln_entry("..\\src\\A\\A.csproj");
+        let hidden = sln_entry("..\\eng\\Inject.proj");
+        // (a) a known member, a bare CR, then a `.proj` member.
+        let g = sln_with(format!("{SLN_HEAD}\r\n{a}\r{hidden}\r\n"));
+        assert!(solution_opaque_with_issue(
+            &g,
+            "build/All.sln",
+            SOLUTION_MEMBER
+        ));
+        // (b) the header joined to the first entry by a bare CR.
+        let g = sln_with(format!("{SLN_HEAD}\r{a}\r\n"));
+        assert_eq!(deps(&g, "All.sln"), ["Member:A"]);
+        let g = sln_with(format!("{SLN_HEAD}\r{hidden}\r\n"));
+        assert!(solution_opaque_with_issue(
+            &g,
+            "build/All.sln",
+            SOLUTION_MEMBER
+        ));
+        // Two entries on one line, joined by a character that is no line end.
+        let g = sln_with(format!("{SLN_HEAD}\r\n{a}\u{85}{hidden}\r\n"));
+        assert!(solution_opaque_with_issue(
+            &g,
+            "build/All.sln",
+            SOLUTION_MEMBER
+        ));
+    }
+
+    #[test]
+    fn a_crlf_solution_parses_unchanged() {
+        let a = sln_entry("..\\src\\A\\A.csproj");
+        let g = sln_with(format!("{SLN_HEAD}\r\n{a}\r\nGlobal\r\nEndGlobal\r\n"));
+        assert!(!project(&g, "All.sln").opaque);
+        assert_eq!(deps(&g, "All.sln"), ["Member:A"]);
     }
 
     #[test]
