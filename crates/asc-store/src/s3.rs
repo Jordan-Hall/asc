@@ -58,6 +58,26 @@ pub fn open_with(
     url: &url::Url,
     credentials: Option<S3Credentials>,
 ) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    open_inner(url, credentials, true)
+}
+
+/// Like [`open_with`], but the store never downgrades `PutMode::Create` to an overwrite.
+///
+/// A store without conditional writes then fails with `NotImplemented` instead of silently
+/// losing exclusivity. `BucketRefs` requires this (SPEC §3): the downgrade is harmless for
+/// content-addressed objects but loses ref updates.
+pub fn open_strict(
+    url: &url::Url,
+    credentials: Option<S3Credentials>,
+) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    open_inner(url, credentials, false)
+}
+
+fn open_inner(
+    url: &url::Url,
+    credentials: Option<S3Credentials>,
+    create_fallback: bool,
+) -> Result<(Arc<dyn ObjectStore>, Path)> {
     let bucket = url
         .host_str()
         .filter(|h| !h.is_empty())
@@ -103,7 +123,11 @@ pub fn open_with(
     }
     let store = builder.build()?;
     let root = Path::from(url.path().trim_matches('/'));
-    Ok((Arc::new(Resilient::new(store)), root))
+    let mut store = Resilient::new(store);
+    if !create_fallback {
+        store = store.without_create_fallback();
+    }
+    Ok((Arc::new(store), root))
 }
 
 fn parse_bool(v: &str) -> Result<bool> {
@@ -168,6 +192,8 @@ pub fn is_create_unsupported(e: &object_store::Error) -> bool {
 pub struct Resilient<T> {
     inner: T,
     create_unsupported: AtomicBool,
+    /// Whether `Create` may be downgraded to `Overwrite` when unsupported.
+    create_fallback: bool,
     min_delay: Duration,
     retryable: fn(&object_store::Error) -> bool,
 }
@@ -177,9 +203,16 @@ impl<T: ObjectStore> Resilient<T> {
         Self {
             inner,
             create_unsupported: AtomicBool::new(false),
+            create_fallback: true,
             min_delay: Duration::from_millis(200),
             retryable: is_transient,
         }
+    }
+
+    /// Disables the `Create` to `Overwrite` downgrade: an unsupported `Create` stays an error.
+    pub fn without_create_fallback(mut self) -> Self {
+        self.create_fallback = false;
+        self
     }
 
     /// Replaces the first backoff delay and the retry predicate (tests).
@@ -273,11 +306,18 @@ impl<T: ObjectStore> ObjectStore for Resilient<T> {
         payload: PutPayload,
         mut opts: PutOptions,
     ) -> object_store::Result<PutResult> {
-        if matches!(opts.mode, PutMode::Create) && self.create_unsupported() {
+        if self.create_fallback
+            && matches!(opts.mode, PutMode::Create)
+            && self.create_unsupported()
+        {
             opts.mode = PutMode::Overwrite;
         }
         match self.put_once(location, payload.clone(), opts.clone()).await {
-            Err(e) if matches!(opts.mode, PutMode::Create) && is_create_unsupported(&e) => {
+            Err(e)
+                if self.create_fallback
+                    && matches!(opts.mode, PutMode::Create)
+                    && is_create_unsupported(&e) =>
+            {
                 self.create_unsupported.store(true, Ordering::Relaxed);
                 opts.mode = PutMode::Overwrite;
                 self.put_once(location, payload, opts).await
@@ -505,6 +545,25 @@ mod tests {
         // One failed Create probe, then only overwrites.
         assert_eq!(store.inner.creates.load(Ordering::Relaxed), 1);
         assert_eq!(store.inner.overwrites.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn strict_store_never_downgrades_create() {
+        let store = quick(Scripted::new(not_implemented)).without_create_fallback();
+        let opts = || PutOptions {
+            mode: PutMode::Create,
+            ..Default::default()
+        };
+        let p = Path::from("k");
+        for _ in 0..2 {
+            let err = store
+                .put_opts(&p, PutPayload::from_static(b"x"), opts())
+                .await
+                .unwrap_err();
+            assert!(is_create_unsupported(&err), "{err}");
+        }
+        assert!(!store.create_unsupported());
+        assert_eq!(store.inner.overwrites.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
