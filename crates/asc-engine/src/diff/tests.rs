@@ -657,6 +657,27 @@ async fn chunked_files_are_read_back_whole() {
 }
 
 #[tokio::test]
+async fn a_forged_huge_size_is_refused_before_any_read() {
+    let e = engine();
+    let file = asc_core::id::FileId::of(b"claimed");
+    // Nothing is stored for `file`: the bound alone decides, so no buffer is reserved and
+    // no object is fetched for a size past the limit.
+    let err = e
+        .read_file(file, MAX_READ_FILE_BYTES + 1)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::FileTooLarge(f, _) if f == file),
+        "{err}"
+    );
+    let err = e.read_file(file, u64::MAX).await.unwrap_err();
+    assert!(matches!(err, Error::FileTooLarge(..)), "{err}");
+    // At the bound the read proceeds (and finds nothing stored).
+    let err = e.read_file(file, MAX_READ_FILE_BYTES).await.unwrap_err();
+    assert!(matches!(err, Error::MissingFile(_)), "{err}");
+}
+
+#[tokio::test]
 async fn forged_chunk_list_is_rejected() {
     let e = engine();
     let pattern = |m: u32| -> Vec<u8> {

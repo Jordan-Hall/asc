@@ -29,6 +29,19 @@ pub const LOAD_WINDOW: usize = 16;
 /// an unbounded number of leaves; past this the diff fails instead of exhausting memory.
 pub const MAX_DIFF_VISITS: usize = 4 << 20;
 
+/// Longest path, in bytes, that `leafdiff` and `walk` build. A tree DAG repeats one long prefix
+/// for every leaf below it, so path length multiplies output size; names and nesting alone are
+/// otherwise bounded only by the 256 MiB tree cap and [`MAX_TREE_DEPTH`]. Matches Linux
+/// `PATH_MAX`; a longer path is refused, not truncated.
+pub const MAX_WALK_PATH_BYTES: usize = 4096;
+
+/// Path bytes (plus a fixed charge per entry) one `leafdiff` may collect. The visit budget
+/// bounds entries; this bounds what each entry costs.
+pub const MAX_DIFF_OUT_BYTES: usize = 64 << 20;
+
+/// Bytes charged against [`MAX_DIFF_OUT_BYTES`] per reported leaf, on top of its path.
+const OUT_ENTRY_CHARGE: usize = 128;
+
 /// Tree operation failures.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,6 +57,10 @@ pub enum Error {
     TooDeep,
     #[error("tree diff visits more than {0} entries")]
     TooLarge(usize),
+    #[error("tree diff output exceeds {0} bytes")]
+    OutputTooLarge(usize),
+    #[error("path below {0} is longer than {MAX_WALK_PATH_BYTES} bytes")]
+    PathTooLong(String),
     #[error("tree {0} is missing")]
     MissingTree(TreeId),
     #[error("{0} is changed twice in one apply")]
@@ -162,6 +179,20 @@ fn child_path(prefix: Option<&RepoPath>, name: &Name) -> RepoPath {
         Some(p) => p.join(name),
         None => RepoPath::from(name.clone()),
     }
+}
+
+/// [`child_path`] that refuses a result longer than [`MAX_WALK_PATH_BYTES`] before allocating it.
+fn bounded_child_path(prefix: Option<&RepoPath>, name: &Name) -> Result<RepoPath> {
+    let len = prefix.map_or(0, |p| p.as_bytes().len() + 1) + name.as_bytes().len();
+    if len > MAX_WALK_PATH_BYTES {
+        // Only the prefix is named: the offending component may be hundreds of megabytes.
+        let at = prefix.map_or_else(String::new, |p| {
+            let b = p.as_bytes();
+            String::from_utf8_lossy(&b[..b.len().min(64)]).into_owned()
+        });
+        return Err(Error::PathTooLong(at));
+    }
+    Ok(child_path(prefix, name))
 }
 
 fn empty_tree() -> Tree {
@@ -457,6 +488,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         budget: usize,
     ) -> Result<()> {
         let mut visits = 0usize;
+        let mut out_bytes = 0usize;
         enum Frame {
             Diff {
                 ta: Arc<Tree>,
@@ -543,7 +575,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                             let prefix = prefix.clone();
                             let ahead = (ta.clone(), tb.clone(), *i, *j);
                             if both_dirs {
-                                let path = child_path(prefix.as_ref(), &x.name);
+                                let path = bounded_child_path(prefix.as_ref(), &x.name)?;
                                 if spec.is_none_or(|s| s.may_contain_dir(&path)) {
                                     if stack.len() > MAX_TREE_DEPTH {
                                         return Err(Error::TooDeep);
@@ -578,11 +610,14 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                                                         if p.kind == Kind::Dir
                                                             && q.kind == Kind::Dir
                                                             && p.id != q.id
+                                                            // An over-long path is a read-ahead miss
+                                                            // here; the pair's own turn refuses it.
                                                             && spec.is_none_or(|s| {
-                                                                s.may_contain_dir(&child_path(
+                                                                bounded_child_path(
                                                                     prefix.as_ref(),
                                                                     &p.name,
-                                                                ))
+                                                                )
+                                                                .is_ok_and(|c| s.may_contain_dir(&c))
                                                             })
                                                         {
                                                             ids.push(TreeId::from_bytes(p.id));
@@ -626,9 +661,13 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 }
             }
             for (e, prefix, added) in one_sided {
-                let path = child_path(prefix.as_ref(), &e.name);
+                let path = bounded_child_path(prefix.as_ref(), &e.name)?;
                 if e.kind != Kind::Dir {
                     if spec.is_none_or(|s| s.matches(&path)) {
+                        out_bytes += path.as_bytes().len() + OUT_ENTRY_CHARGE;
+                        if out_bytes > MAX_DIFF_OUT_BYTES {
+                            return Err(Error::OutputTooLarge(MAX_DIFF_OUT_BYTES));
+                        }
                         out.push((
                             path,
                             if added {
@@ -689,7 +728,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                     continue;
                 };
                 top.next += 1;
-                let path = child_path(top.prefix.as_ref(), &entry.name);
+                let path = bounded_child_path(top.prefix.as_ref(), &entry.name)?;
                 if entry.kind == Kind::Dir {
                     if spec.is_none_or(|s| s.may_contain_dir(&path)) {
                         if stack.len() > MAX_TREE_DEPTH {
@@ -1222,12 +1261,108 @@ mod tests {
         }
         let empty = Engine::<Counting, NoRefs>::empty_tree_id();
         let err = e.leafdiff(empty, child, None).await.unwrap_err();
-        assert!(matches!(err, Error::TooLarge(_)));
+        // Short paths: the collected-bytes bound trips well before the 4M visits do.
+        assert!(
+            matches!(err, Error::OutputTooLarge(MAX_DIFF_OUT_BYTES)),
+            "{err}"
+        );
         let err = e
             .leafdiff_bounded(empty, child, None, 1000)
             .await
             .unwrap_err();
         assert!(matches!(err, Error::TooLarge(1000)));
+    }
+
+    /// A tree of `n` entries named `{stem}{index:03}`, each of `kind` pointing at `id`.
+    async fn fan(
+        e: &Engine<Counting, NoRefs>,
+        stem: &str,
+        n: usize,
+        kind: Kind,
+        id: [u8; 32],
+    ) -> TreeId {
+        let entries = (0..n)
+            .map(|i| Entry {
+                name: Name::new(format!("{stem}{i:03}")).unwrap(),
+                kind,
+                id,
+                size: u64::from(kind == Kind::File),
+                git: blob_oid(b""),
+            })
+            .collect();
+        e.put_tree(Tree::new(entries, false).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// A tree holding one directory entry `name` that points at `child`.
+    async fn dir_with(
+        e: &Engine<Counting, NoRefs>,
+        name: &str,
+        child: TreeId,
+        is_root: bool,
+    ) -> TreeId {
+        let entry = Entry {
+            name: Name::new(name).unwrap(),
+            kind: Kind::Dir,
+            id: *child.as_bytes(),
+            size: 0,
+            git: blob_oid(b""),
+        };
+        e.put_tree(Tree::new(vec![entry], is_root).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn long_name_dag_diff_is_refused_not_expanded() {
+        let e = engine();
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        // A few visits, but every leaf would repeat a prefix far past the path bound.
+        let files = fan(&e, "f", 64, Kind::File, *FileId::of(&[1]).as_bytes()).await;
+        let dirs = fan(&e, "d", 64, Kind::Dir, *files.as_bytes()).await;
+        let long = "n".repeat(MAX_WALK_PATH_BYTES + 1);
+        let root = dir_with(&e, &long, dirs, true).await;
+        let err = e.leafdiff(empty, root, None).await.unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(_)), "{err}");
+        // The same through a chain of names that are each short but add up.
+        let half = "m".repeat(MAX_WALK_PATH_BYTES / 2);
+        let inner = dir_with(&e, &half, dirs, false).await;
+        let root = dir_with(&e, &half, inner, true).await;
+        let err = e.leafdiff(empty, root, None).await.unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(_)), "{err}");
+        // The walker builds the same paths and refuses them too.
+        let walked: Vec<_> = e.walk(root, None).collect().await;
+        assert!(matches!(walked.last(), Some(Err(Error::PathTooLong(_)))));
+    }
+
+    #[tokio::test]
+    async fn paths_within_the_bound_still_diff() {
+        let e = engine();
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        let files = fan(&e, "f", 2, Kind::File, *FileId::of(&[1]).as_bytes()).await;
+        let name = "n".repeat(MAX_WALK_PATH_BYTES - 5);
+        let root = dir_with(&e, &name, files, true).await;
+        let diff = e.leafdiff(empty, root, None).await.unwrap();
+        assert_eq!(diff.len(), 2);
+        assert_eq!(diff[0].0.as_bytes().len(), MAX_WALK_PATH_BYTES);
+    }
+
+    #[tokio::test]
+    async fn long_prefix_fan_out_hits_the_output_byte_budget() {
+        let e = engine();
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        // 256 x 256 leaves from three small trees, each path near the bound: a few hundred
+        // thousand visits would pass, but the collected bytes cannot.
+        let files = fan(&e, "f", 256, Kind::File, *FileId::of(&[1]).as_bytes()).await;
+        let dirs = fan(&e, "d", 256, Kind::Dir, *files.as_bytes()).await;
+        let name = "n".repeat(MAX_WALK_PATH_BYTES - 20);
+        let root = dir_with(&e, &name, dirs, true).await;
+        let err = e.leafdiff(empty, root, None).await.unwrap_err();
+        assert!(
+            matches!(err, Error::OutputTooLarge(MAX_DIFF_OUT_BYTES)),
+            "{err}"
+        );
     }
 
     #[tokio::test]

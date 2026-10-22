@@ -33,7 +33,7 @@ pub use line::Algorithm;
 pub use options::{ConfigError, DiffOptions, SideKind};
 pub use patch::{DiffCtx, write_patch, write_word_diff};
 pub use rename::RenameOptions;
-pub use source::{Attributes, ContentSource, DiffAttr, NoAttributes};
+pub use source::{Attributes, ContentSource, DiffAttr, MAX_READ_FILE_BYTES, NoAttributes};
 pub use stat::{write_numstat, write_shortstat, write_stat};
 
 /// Concurrent old-side lookups in [`Engine::tree_changes`].
@@ -50,6 +50,8 @@ pub enum Error {
     Codec(#[from] CodecError),
     #[error("content of file {0} is missing or incomplete")]
     MissingFile(FileId),
+    #[error("file {0} is {1} bytes, over the read limit")]
+    FileTooLarge(FileId, u64),
     #[error("write failed: {0}")]
     Io(#[from] io::Error),
     #[error("textconv for '{driver}' failed: {message}")]
