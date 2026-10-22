@@ -4,6 +4,8 @@
 //! values, solutions to their project paths. `link` reads only the manifest
 //! set. `Condition` attributes are ignored, so every item counts. The items of
 //! every `Directory.Build.props`/`.targets` above a project count as its own.
+//! Item and attribute names match in any case, `%` escapes are not evaluated,
+//! and an `Import` of a file the detector does not read is a gap.
 //! Anything the detector cannot resolve to a known project or a repository
 //! path makes the project opaque.
 
@@ -27,8 +29,17 @@ const PROJECT_DIR: &str = "$(MSBuildProjectDirectory)";
 const CENTRAL: &[u8] = b"Directory.Packages.props";
 const LOCKFILE: &str = "packages.lock.json";
 /// Most `;`-separated values the `Directory.Build.*` items may resolve in one
-/// link, summed over all projects. Past it the remaining projects are opaque.
+/// link, summed over all projects, plus the `Directory.Build.*` path elements
+/// each project walks (an element with no value counts as one). Past it the
+/// remaining projects are opaque.
 const MAX_BUILD_SCAN_VALUES: usize = 1 << 20;
+/// Most bytes of `Include`/`Project` attribute text the `Directory.Build.*`
+/// items may walk in one link, summed over all projects. This bounds the
+/// `extra_inputs` copied into the projects. Past it the remaining projects are
+/// opaque.
+const MAX_BUILD_SCAN_BYTES: usize = 1 << 26;
+/// Longest single path value; a longer one makes the project opaque.
+const MAX_PATH_VALUE_BYTES: usize = 4096;
 
 /// Why a project is opaque; each is also reported once per project.
 const UNEVALUATED_REFERENCE: &str =
@@ -40,6 +51,8 @@ const OUTSIDE_PATH: &str = "reference, Import or item is absolute or leaves the 
 const UNREADABLE_BUILD_FILE: &str =
     "Directory.Build file above the project is not a readable MSBuild file";
 const BUILD_SCAN_BUDGET: &str = "Directory.Build files above the project exceed the scan budget";
+const UNSCANNED_IMPORT: &str = "Import names a file the detector does not read";
+const LONG_VALUE: &str = "reference, Import or item path is longer than the limit";
 
 /// The .NET detector.
 pub struct Dotnet;
@@ -86,9 +99,8 @@ impl Detector for Dotnet {
         }
         match name {
             b"packages.lock.json" => Some(Claim::Lockfile),
-            b"Directory.Build.props" | b"Directory.Build.targets" | b"global.json" => {
-                Some(Claim::EcoGlobal)
-            }
+            n if is_build_file(n) => Some(Claim::EcoGlobal),
+            b"global.json" => Some(Claim::EcoGlobal),
             b"dotnet-tools.json"
                 if path
                     .parent()
@@ -147,8 +159,12 @@ fn parse_global(bytes: &[u8]) -> Parsed {
     canon::from_xml(bytes).map_or(null, Parsed)
 }
 
+/// `Directory.Build.props`/`.targets` in any case: MSBuild finds them by a
+/// case-insensitive file system lookup on Windows and macOS, so a file in any
+/// case may apply.
 fn is_build_file(name: &[u8]) -> bool {
-    name == b"Directory.Build.props" || name == b"Directory.Build.targets"
+    name.eq_ignore_ascii_case(b"Directory.Build.props")
+        || name.eq_ignore_ascii_case(b"Directory.Build.targets")
 }
 
 /// The project paths of a `.sln`: the `Project("{type}") = "name", "path", "{guid}"` lines
@@ -199,6 +215,18 @@ fn el_name(e: &Value) -> &str {
 
 fn attr<'a>(e: &'a Value, key: &str) -> Option<&'a str> {
     text(get(get(e, "attrs")?, key))
+}
+
+/// [`attr`] with the attribute name matched in any case, so a spelling MSBuild
+/// might accept is never skipped.
+fn attr_ci<'a>(e: &'a Value, key: &str) -> Option<&'a str> {
+    match get(e, "attrs")? {
+        Value::Map(m) => m
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .and_then(|(_, v)| text(Some(v))),
+        _ => None,
+    }
 }
 
 fn kids(e: &Value) -> &[Value] {
@@ -312,7 +340,11 @@ fn resolve_one(dir: &[u8], raw: &str) -> Resolved {
         .replace('\\', "/")
         .replace(THIS_DIR, "./")
         .replace(PROJECT_DIR, "./");
-    if ["$(", "@(", "%("].iter().any(|m| s.contains(m)) {
+    // `%XX` is an MSBuild escape (`%2E` is `.`); any `%` is not evaluated.
+    // A path built from both directory properties has no single base.
+    if ["$(", "@(", "%"].iter().any(|m| s.contains(m))
+        || (raw.contains(THIS_DIR) && raw.contains(PROJECT_DIR))
+    {
         return Resolved::Unknown;
     }
     join_dir(dir, &s).map_or(Resolved::Outside, Resolved::Path)
@@ -330,12 +362,27 @@ fn has_wildcard(path: &[u8]) -> bool {
     path.iter().any(|b| matches!(b, b'*' | b'?'))
 }
 
-/// Elements whose paths the detector follows.
-fn is_path_item(name: &str) -> bool {
-    matches!(
-        name,
-        "ProjectReference" | "Import" | "Compile" | "Content" | "None" | "EmbeddedResource"
-    )
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PathItem {
+    Reference,
+    Import,
+    /// `Compile`, `Content`, `None` or `EmbeddedResource`.
+    Other,
+}
+
+/// The kind of an element whose paths the detector follows. Names match in any
+/// case, because MSBuild item types do.
+fn path_item(name: &str) -> Option<PathItem> {
+    let is = |n: &str| name.eq_ignore_ascii_case(n);
+    if is("ProjectReference") {
+        Some(PathItem::Reference)
+    } else if is("Import") {
+        Some(PathItem::Import)
+    } else if is("Compile") || is("Content") || is("None") || is("EmbeddedResource") {
+        Some(PathItem::Other)
+    } else {
+        None
+    }
 }
 
 // --- linking ---------------------------------------------------------------
@@ -360,6 +407,8 @@ struct Linker<'c, 'a> {
     build_items: Vec<Vec<&'a Value>>,
     /// Build-file values resolved so far, against [`MAX_BUILD_SCAN_VALUES`].
     scanned: Cell<usize>,
+    /// Build-file attribute bytes walked so far, against [`MAX_BUILD_SCAN_BYTES`].
+    scanned_bytes: Cell<usize>,
     exact: BTreeMap<Vec<u8>, usize>,
     folded: BTreeMap<Vec<u8>, Vec<usize>>,
 }
@@ -371,6 +420,14 @@ struct Scan {
     extra: BTreeSet<Vec<u8>>,
     /// Reasons the project is opaque.
     gaps: BTreeSet<&'static str>,
+}
+
+/// What a project path names.
+enum Lookup {
+    One(usize),
+    /// Several projects differ from the path only by case.
+    Ambiguous,
+    Missing,
 }
 
 /// Indices of the `mans` at or above `dir`, outermost first.
@@ -441,7 +498,7 @@ impl<'c, 'a> Linker<'c, 'a> {
                 if is_element(m.v) {
                     elements(m.v, &mut all);
                 }
-                all.retain(|e| is_path_item(el_name(e)));
+                all.retain(|e| path_item(el_name(e)).is_some());
                 all
             })
             .collect();
@@ -454,6 +511,7 @@ impl<'c, 'a> Linker<'c, 'a> {
             builds,
             build_items,
             scanned: Cell::new(0),
+            scanned_bytes: Cell::new(0),
             exact,
             folded,
         }
@@ -466,17 +524,19 @@ impl<'c, 'a> Linker<'c, 'a> {
     }
 
     /// The project at `path`: exact match first, then a unique ASCII case-insensitive one.
-    fn lookup(&self, path: &[u8]) -> Option<usize> {
-        self.exact.get(path).copied().or_else(|| {
-            match self
-                .folded
-                .get(&path.to_ascii_lowercase())
-                .map(Vec::as_slice)
-            {
-                Some(&[i]) => Some(i),
-                _ => None,
-            }
-        })
+    fn lookup(&self, path: &[u8]) -> Lookup {
+        if let Some(&i) = self.exact.get(path) {
+            return Lookup::One(i);
+        }
+        match self
+            .folded
+            .get(&path.to_ascii_lowercase())
+            .map(Vec::as_slice)
+        {
+            Some(&[i]) => Lookup::One(i),
+            Some([_, _, ..]) => Lookup::Ambiguous,
+            _ => Lookup::Missing,
+        }
     }
 
     fn key_of(&self, i: usize) -> ProjectKey {
@@ -535,18 +595,22 @@ impl<'c, 'a> Linker<'c, 'a> {
         p
     }
 
-    /// Counts one build-file value; false once [`MAX_BUILD_SCAN_VALUES`] is spent.
-    fn charge(&self) -> bool {
+    /// Counts one build-file element or value of `bytes` attribute bytes; false
+    /// once [`MAX_BUILD_SCAN_VALUES`] or [`MAX_BUILD_SCAN_BYTES`] is spent.
+    fn charge(&self, bytes: usize) -> bool {
         let n = self.scanned.get().saturating_add(1);
         self.scanned.set(n);
-        n <= MAX_BUILD_SCAN_VALUES
+        let b = self.scanned_bytes.get().saturating_add(bytes);
+        self.scanned_bytes.set(b);
+        n <= MAX_BUILD_SCAN_VALUES && b <= MAX_BUILD_SCAN_BYTES
     }
 
     /// Follows the path items `elems` of the file in directory `origin` for
     /// project `i`. An item of a `Directory.Build.*` file is resolved against
     /// both the file and the project directory, because MSBuild resolves item
     /// paths against either depending on the item; `Import` is relative to the
-    /// file. `counted` charges the build-file scan budget.
+    /// file. `counted` charges the build-file scan budget for every element
+    /// and value, including those with no value.
     fn scan(&self, i: usize, origin: &[u8], elems: &[&Value], counted: bool, acc: &mut Scan) {
         let proj_dir = self.projects[i].dir.as_slice();
         let both = [origin, proj_dir];
@@ -556,23 +620,35 @@ impl<'c, 'a> Linker<'c, 'a> {
             &both[..]
         };
         for e in elems {
-            let name = el_name(e);
-            let (raw, bases) = match name {
-                "ProjectReference" => (attr(e, "Include"), bases),
-                "Import" => (attr(e, "Project"), &bases[..1]),
-                _ if is_path_item(name) => (attr(e, "Include"), bases),
-                _ => continue,
+            let Some(kind) = path_item(el_name(e)) else {
+                continue;
             };
+            let (raw, bases) = match kind {
+                PathItem::Import => (attr_ci(e, "Project"), &bases[..1]),
+                _ => (attr_ci(e, "Include"), bases),
+            };
+            if counted && !self.charge(raw.map_or(0, str::len)) {
+                acc.gaps.insert(BUILD_SCAN_BUDGET);
+                return;
+            }
+            // An SDK import is found by the SDK resolver, not by path.
+            if kind == PathItem::Import && attr_ci(e, "Sdk").is_some() {
+                continue;
+            }
             for value in values(raw) {
-                if counted && !self.charge() {
+                if counted && !self.charge(0) {
                     acc.gaps.insert(BUILD_SCAN_BUDGET);
                     return;
                 }
+                if value.len() > MAX_PATH_VALUE_BYTES {
+                    acc.gaps.insert(LONG_VALUE);
+                    continue;
+                }
                 let rs: Vec<Resolved> = bases.iter().map(|b| resolve_one(b, value)).collect();
-                match name {
-                    "ProjectReference" => self.reference(i, &rs, acc),
-                    "Import" => import(proj_dir, &rs[0], acc),
-                    _ => item(proj_dir, &rs, acc),
+                match kind {
+                    PathItem::Reference => self.reference(i, &rs, acc),
+                    PathItem::Import => self.import(i, &rs[0], acc),
+                    PathItem::Other => item(proj_dir, &rs, acc),
                 }
             }
         }
@@ -580,19 +656,27 @@ impl<'c, 'a> Linker<'c, 'a> {
 
     /// One `ProjectReference` value, resolved against each base. It must name a
     /// known project: unevaluated, wildcard, absolute, outside, missing and
-    /// ambiguous values all make the project opaque.
+    /// ambiguous values all make the project opaque. A base that is ambiguous
+    /// is a gap even when another base finds a project, or the real target
+    /// would be dropped.
     fn reference(&self, i: usize, rs: &[Resolved], acc: &mut Scan) {
-        let (mut found, mut unevaluated) = (Vec::new(), false);
+        let (mut found, mut unevaluated, mut ambiguous) = (Vec::new(), false, false);
         for r in rs {
             match r {
                 Resolved::Unknown => unevaluated = true,
                 Resolved::Path(t) if has_wildcard(t) => unevaluated = true,
-                Resolved::Path(t) => found.extend(self.lookup(t)),
+                Resolved::Path(t) => match self.lookup(t) {
+                    Lookup::One(j) => found.push(j),
+                    Lookup::Ambiguous => ambiguous = true,
+                    Lookup::Missing => {}
+                },
                 Resolved::Outside => {}
             }
         }
         if unevaluated {
             acc.gaps.insert(UNEVALUATED_REFERENCE);
+        } else if ambiguous {
+            acc.gaps.insert(UNRESOLVED_REFERENCE);
         } else if found.is_empty() {
             acc.gaps
                 .insert(if rs.iter().all(|r| matches!(r, Resolved::Outside)) {
@@ -602,6 +686,38 @@ impl<'c, 'a> Linker<'c, 'a> {
                 });
         }
         acc.refs.extend(found.into_iter().filter(|&j| j != i));
+    }
+
+    /// An `Import` project. A literal path is read only when it is a
+    /// `Directory.Build.*` file that applies to project `i`; any other file is
+    /// never parsed, so what it references would be missed, and the project is
+    /// opaque. A path that leaves the project directory is also an extra
+    /// input. A wildcard, an unevaluated property, an absolute path or one that
+    /// leaves the repository makes the project opaque.
+    fn import(&self, i: usize, r: &Resolved, acc: &mut Scan) {
+        let proj_dir = self.projects[i].dir.as_slice();
+        match r {
+            Resolved::Unknown => {
+                acc.gaps.insert(UNEVALUATED_ITEM);
+            }
+            Resolved::Outside => {
+                acc.gaps.insert(OUTSIDE_PATH);
+            }
+            Resolved::Path(p) if has_wildcard(p) => {
+                acc.gaps.insert(WILDCARD_IMPORT);
+            }
+            Resolved::Path(p) => {
+                let scanned = at_or_above(&self.builds, proj_dir)
+                    .into_iter()
+                    .any(|b| self.builds[b].path.as_bytes() == p.as_slice());
+                if !scanned {
+                    acc.gaps.insert(UNSCANNED_IMPORT);
+                }
+                if !inside(proj_dir, p) {
+                    acc.extra.insert(escape_glob(p));
+                }
+            }
+        }
     }
 
     fn solution(&self, m: &Man<'a>, kind: FileKind) -> Project {
@@ -627,7 +743,10 @@ impl<'c, 'a> Linker<'c, 'a> {
         let mut members: Vec<usize> = paths
             .into_iter()
             .filter_map(|r| match resolve_one(&m.dir, r) {
-                Resolved::Path(t) => self.lookup(&t),
+                Resolved::Path(t) => match self.lookup(&t) {
+                    Lookup::One(i) => Some(i),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect();
@@ -726,27 +845,6 @@ fn package_versions(root: &Value) -> BTreeMap<&str, &Value> {
         .filter(|e| el_name(e) == "PackageVersion")
         .filter_map(|e| Some((attr(e, "Include").or(attr(e, "Update"))?, e)))
         .collect()
-}
-
-/// An `Import` project: a literal path that leaves the project directory is an
-/// extra input. A wildcard, an unevaluated property, an absolute path or one
-/// that leaves the repository makes the project opaque.
-fn import(proj_dir: &[u8], r: &Resolved, acc: &mut Scan) {
-    match r {
-        Resolved::Unknown => {
-            acc.gaps.insert(UNEVALUATED_ITEM);
-        }
-        Resolved::Outside => {
-            acc.gaps.insert(OUTSIDE_PATH);
-        }
-        Resolved::Path(p) if has_wildcard(p) => {
-            acc.gaps.insert(WILDCARD_IMPORT);
-        }
-        Resolved::Path(p) if !inside(proj_dir, p) => {
-            acc.extra.insert(escape_glob(p));
-        }
-        Resolved::Path(_) => {}
-    }
 }
 
 /// A `Compile`/`Content`/`None`/`EmbeddedResource` value resolved against each
@@ -915,8 +1013,9 @@ mod tests {
     #[test]
     fn project_references_resolve_backslashes_variables_and_case() {
         let (g, _) = build(&shop());
-        // Weird (unevaluated property) and App (conditional, missing target).
-        assert_eq!(g.issues.len(), 2, "{:?}", g.issues);
+        // Weird (unevaluated property) and App (conditional, missing target; and an
+        // Import of a file the detector does not read).
+        assert_eq!(g.issues.len(), 3, "{:?}", g.issues);
         assert_eq!(deps(&g, "App"), ["Normal:Core", "Normal:Lib"]);
         assert_eq!(deps(&g, "Lib"), ["Normal:Core"]);
         assert!(deps(&g, "Core").is_empty());
@@ -1232,6 +1331,211 @@ mod tests {
         assert_eq!(deps(&g, "P00000"), ["Normal:Gen"]);
         assert!(!project(&g, "P00000").opaque);
         assert!(project(&g, "Gen").opaque);
+    }
+
+    /// Every project of a tree with one build file is opaque.
+    fn all_opaque(t: &Tree, what: &str) {
+        let (g, _) = build(t);
+        for n in ["A", "B", "Gen"] {
+            assert!(project(&g, n).opaque, "{n}: {what}");
+        }
+    }
+
+    #[test]
+    fn an_import_of_a_file_the_detector_does_not_read_makes_the_project_opaque() {
+        // The imported file holds a reference that would be a dependency.
+        let mut t = with_build_file(
+            "Directory.Build.props",
+            &props("<Import Project=\"build/refs.props\" />"),
+        );
+        t.insert(
+            "build/refs.props".into(),
+            props(
+                "<ItemGroup><ProjectReference Include=\"$(MSBuildThisFileDirectory)../tools/Gen/Gen.csproj\" /></ItemGroup>",
+            ),
+        );
+        all_opaque(&t, "import in a build file");
+        // The same in a project, for a file beside the project and one above it.
+        for imp in ["common.props", "../shared/common.targets"] {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(
+                "src/A/A.csproj".into(),
+                csproj(&format!("<Import Project=\"{imp}\" />")),
+            );
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{imp}");
+            assert!(!project(&g, "B").opaque, "{imp}");
+        }
+        // A build file that already applies, and an SDK import, are read or external.
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        t.insert(
+            "src/A/A.csproj".into(),
+            csproj(
+                "<Import Project=\"../../Directory.Build.props\" /><Import Project=\"Sdk.props\" Sdk=\"Microsoft.NET.Sdk\" />",
+            ),
+        );
+        let (g, _) = build(&t);
+        assert!(!project(&g, "A").opaque, "{:?}", g.issues);
+    }
+
+    #[test]
+    fn item_and_attribute_names_are_case_insensitive() {
+        let t = with_build_file(
+            "Directory.Build.props",
+            &props("<ItemGroup><projectreference include=\"tools/Gen/Gen.csproj\" /></ItemGroup>"),
+        );
+        let (g, _) = build(&t);
+        assert_eq!(deps(&g, "A"), ["Normal:Gen"]);
+        for body in [
+            "<ItemGroup><COMPILE Include=\"/abs/x.cs\" /></ItemGroup>",
+            "<ItemGroup><none include=\"C:\\x.txt\" /></ItemGroup>",
+            "<ItemGroup><PROJECTREFERENCE Include=\"tools/Nope/Nope.csproj\" /></ItemGroup>",
+            "<IMPORT PROJECT=\"build/*.props\" />",
+        ] {
+            all_opaque(
+                &with_build_file("Directory.Build.props", &props(body)),
+                body,
+            );
+        }
+        // The same in a project file.
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        t.insert(
+            "src/A/A.csproj".into(),
+            csproj("<ItemGroup><projectreference Include=\"../Gone/Gone.csproj\" /></ItemGroup>"),
+        );
+        t.insert(
+            "src/B/B.csproj".into(),
+            csproj("<ItemGroup><COMPILE Include=\"../../../x.cs\" /></ItemGroup>"),
+        );
+        let (g, _) = build(&t);
+        assert!(project(&g, "A").opaque);
+        assert!(project(&g, "B").opaque);
+    }
+
+    #[test]
+    fn build_file_names_apply_in_any_case() {
+        for name in [
+            "directory.build.props",
+            "DIRECTORY.BUILD.TARGETS",
+            "Directory.build.Props",
+        ] {
+            assert_eq!(Dotnet.claim(&rp(name)), Some(Claim::EcoGlobal), "{name}");
+            let t = with_build_file(
+                &format!("src/{name}"),
+                &props("<ItemGroup><ProjectReference Include=\"$(Lib)\" /></ItemGroup>"),
+            );
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{name}");
+            assert!(!project(&g, "Gen").opaque, "{name}");
+        }
+    }
+
+    #[test]
+    fn percent_escapes_make_the_path_unevaluated() {
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        let cases = [
+            (
+                "Imp",
+                "<Import Project=\"%2E%2E/%2E%2E/shared/common.props\" />",
+            ),
+            (
+                "Item",
+                "<ItemGroup><Compile Include=\"%2E%2E/shared/*.cs\" /></ItemGroup>",
+            ),
+            (
+                "Ref",
+                "<ItemGroup><ProjectReference Include=\"%2E%2E/Gen/Gen.csproj\" /></ItemGroup>",
+            ),
+        ];
+        for (n, body) in cases {
+            t.insert(format!("src/{n}/{n}.csproj"), csproj(body));
+        }
+        let (g, _) = build(&t);
+        for (n, _) in cases {
+            assert!(project(&g, n).opaque, "{n}");
+        }
+        assert!(!project(&g, "A").opaque);
+    }
+
+    #[test]
+    fn an_ambiguous_project_directory_match_is_not_hidden_by_the_file_directory() {
+        // From src/A the reference is src/tools/Gen/Gen.csproj, which two
+        // case variants match; from the build file's directory it is the real Gen.
+        let mut t = with_build_file(
+            "src/Directory.Build.props",
+            &props(
+                "<ItemGroup><ProjectReference Include=\"../tools/Gen/Gen.csproj\" /></ItemGroup>",
+            ),
+        );
+        t.insert("src/tools/gen/Gen.csproj".into(), csproj(""));
+        t.insert("src/tools/GEN/Gen.csproj".into(), csproj(""));
+        let (g, _) = build(&t);
+        assert!(project(&g, "A").opaque);
+        assert!(project(&g, "B").opaque);
+    }
+
+    #[test]
+    fn oversized_and_unbudgeted_build_file_content_fails_closed() {
+        // One value past the per-value cap.
+        let long = "a".repeat(MAX_PATH_VALUE_BYTES + 1);
+        let t = with_build_file(
+            "Directory.Build.props",
+            &props(&format!(
+                "<ItemGroup><None Include=\"shared/{long}\" /></ItemGroup>"
+            )),
+        );
+        let (g, _) = build(&t);
+        for n in ["A", "B", "Gen"] {
+            assert!(project(&g, n).opaque, "{n}");
+            assert!(
+                project(&g, n)
+                    .extra_inputs
+                    .iter()
+                    .all(|e| e.len() <= MAX_PATH_VALUE_BYTES),
+                "{n}"
+            );
+        }
+        // Elements without a value are charged.
+        let empty = "<None />".repeat(MAX_BUILD_SCAN_VALUES / 100);
+        let mut t = with_build_file(
+            "Directory.Build.props",
+            &props(&format!("<ItemGroup>{empty}</ItemGroup>")),
+        );
+        for i in 0..200 {
+            t.insert(format!("p/P{i:03}/P{i:03}.csproj"), csproj(""));
+        }
+        let (g, _) = build(&t);
+        let opaque = g.projects.iter().filter(|p| p.opaque).count();
+        assert!(opaque > 0 && opaque < g.projects.len(), "{opaque}");
+        // Empty values in one attribute are charged by their bytes.
+        let filler = ";".repeat(MAX_BUILD_SCAN_BYTES / 32);
+        let mut t = with_build_file(
+            "Directory.Build.props",
+            &props(&format!(
+                "<ItemGroup><None Include=\"{filler}\" /></ItemGroup>"
+            )),
+        );
+        for i in 0..60 {
+            t.insert(format!("p/P{i:03}/P{i:03}.csproj"), csproj(""));
+        }
+        let (g, _) = build(&t);
+        let opaque = g.projects.iter().filter(|p| p.opaque).count();
+        assert!(opaque > 0 && opaque < g.projects.len(), "{opaque}");
+        // Many maximal values are charged by their bytes.
+        let v = format!("shared/{}", "a".repeat(MAX_PATH_VALUE_BYTES - 7));
+        let list = vec![v; 256].join(";");
+        let mut t = with_build_file(
+            "Directory.Build.props",
+            &props(&format!(
+                "<ItemGroup><None Include=\"{list}\" /></ItemGroup>"
+            )),
+        );
+        for i in 0..(MAX_BUILD_SCAN_BYTES / (256 * MAX_PATH_VALUE_BYTES) + 8) {
+            t.insert(format!("p/P{i:03}/P{i:03}.csproj"), csproj(""));
+        }
+        let (g, _) = build(&t);
+        let opaque = g.projects.iter().filter(|p| p.opaque).count();
+        assert!(opaque > 0 && opaque < g.projects.len(), "{opaque}");
     }
 
     #[test]
