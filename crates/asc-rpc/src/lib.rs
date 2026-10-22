@@ -13,6 +13,7 @@ pub mod convert;
 pub mod errors;
 pub mod ipc;
 pub mod json;
+pub mod log_meta;
 pub mod server;
 
 /// Generated prost messages and tonic services for package `asc.v1`.
