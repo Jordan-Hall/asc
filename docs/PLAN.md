@@ -94,7 +94,7 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | U26 | Merge, rebase, cherry-pick, land check | asc-engine | U15, U13 | F |
 | U35 | ASC round-trip milestone | asc-git | U33, U34 | – |
 | U20 | CLI frame, init, config, native table, messages, env | asc | U13, U18, U19, U16a, C01 | – |
-| U42 | gRPC server/client, auth interceptor | asc-rpc | U41, U31, U26, U28a | – |
+| U42 | gRPC server/client, auth interceptor | asc-rpc | U41, U31, U26, U28a, C17 | – |
 | U20a | git shim | asc | U20 | E |
 | U21a | CLI status | asc | U20, U15 | E |
 | U21b | CLI add/rm/mv | asc | U20 | E |
@@ -633,7 +633,7 @@ Critical path to **stacked PRs**: C17 → C18 (needs U43b, U66) → C19 (needs U
 
 ### U42 gRPC server/client, auth interceptor (`asc-rpc::{server,client,auth}`)
 - **Owns:** `crates/asc-rpc/src/{server.rs,client.rs,auth.rs}`
-- **Depends:** U41, U31, U26, U28a. **Accept:** `cargo test -p asc-rpc server:: client::`
+- **Depends:** U41, U31, U26, U28a, C17. **Accept:** `cargo test -p asc-rpc server:: client::`
 - **Brief:** `RpcClient` implements `asc_engine::history::HistoryApi` (defined in U31), `asc_engine::blame::BlameApi` (U28a) and U31's `Remote` [audit: historyapi-cycle, historyapi-impl-split]; `ProjectsApi` is added by G09. `RepoService`: a tonic server over `RepoHandlers`: one `Arc<dyn …>` per RPC group (`Objects`, `Refs`, `History`, `Reads`, `Mutations`, `Admin`, `ImportPush`, `Landing`, `Classify`, `Rebase`, `Insights`). `Insights` (`CommitGraph`, `LineHistory`, `Compare`, `RepoConfig`) defaults to `UNIMPLEMENTED`, and C29, C30a, C30b and C30d each register one line [audit: stack-server-and-sync-hooks-unowned]. Each defaults to `UNIMPLEMENTED`, and each is set once through a registry of `OnceLock` setters. `EngineBackend` fills the object, ref and history groups for tests and local use [audit: asc-serve-no-handler-or-route-extension-points]. `GetObjects` serves `get_stored` bytes without decoding (SPEC §3.2). The client: 8 pipelined `GetObjects` streams, batching, resumable `PutObjects`, `x-asc-op-id`, version header, TLS via rustls, and routing of `HasObjects`/`GetObjects` to a configured `objects` tier list (SPEC §7). `AuthInterceptor` extracts the bearer token into request extensions; an `Authorizer` trait is supplied by the server. Tests: the U07/U09 conformance suites run through an in-process server and client; a history equality check (engine vs RPC) on fixture repos; serving 1,000 objects performs 0 zstd decodes (codec counter).
 
 ### U43a Server config, schema, registry (`asc-serve::{config,registry}`) [audit: oversized-units]
@@ -880,7 +880,7 @@ Source: `docs/research/stacks.md` §6, with its unit ids S01–S52 renamed to **
 | `asc-core`/`asc-store` key enums (built, U04/U07) | `ObjKey::ChangeMeta` (`m/`), envelope kind 6 (CARRY.md) | C01 |
 | U33 `crates/asc-git/src/import.rs` | Call `import_change::write_meta` for each imported commit | C45 |
 | U41 `proto/asc/v1/repo.proto` | The additive `repo.proto` hunks of SPEC §20.5 | C17 |
-| U73 `proto/asc/v1/workspace.proto`, `docs/plugin-api.md` | The additive `workspace.proto` hunks of SPEC §20.6, and a link to `docs/plugin-api-stack.md` | C31 |
+| U73 `proto/asc/v1/workspace.proto`, `docs/plugin-api.md` | The additive `workspace.proto` hunks of SPEC §20.5, and a link to `docs/plugin-api-stack.md` | C31 |
 | U46 / U48b / U68 (`UpdateRefs(LAND)`, merge styles, land content merge) | The `UpdateRefsRequest.no_content_merge` flag and `LAND_NEEDS_CONTENT_MERGE` error | C52 |
 | U47 `crates/asc-serve/src/read.rs` | The pickaxe and `scan_budget` path of `Log` (SPEC §20.5) [audit: stack-server-and-sync-hooks-unowned] | C30c |
 
@@ -921,7 +921,7 @@ Each unit is done under the general rules (acceptance passes, clippy green, only
 | C30b | `Compare` RPC | U47, U65 | `crates/asc-engine/src/history/compare.rs`, `crates/asc-serve/src/history/compare_rpc.rs` | `cargo test -p asc-engine history::compare && cargo test -p asc-serve history::compare_rpc` | – |
 | C30c | Pickaxe `Log` (path required, scan budget) | U47, U65 | `crates/asc-engine/src/history/pickaxe.rs`, `crates/asc-serve/src/history/pickaxe_rpc.rs` | `cargo test -p asc-engine history::pickaxe && cargo test -p asc-serve history::pickaxe_rpc` | Tests: budget exhaustion returns `truncated`; pickaxe without a path is rejected. |
 | C30d | `RepoConfig` RPC (autolinks, `review.toml` at a rev) | U47 | `crates/asc-serve/src/history/repo_config.rs` | `cargo test -p asc-serve history::repo_config` | – |
-| C31 | Workspace plugin additions (SPEC §20.6) | U73, C08, C29, C30a, C30b, C30c, C30d | `crates/asc/src/daemon/plugin_api_stack.rs`, `docs/plugin-api-stack.md`, `crates/asc/tests/plugin_api_stack.rs`; amendment: the full `workspace.proto` block of SPEC §20.6 (including `KIND_STACK = 8`, so C49 needs only C31), i.e. the additive `workspace.proto` hunks and a link in `docs/plugin-api.md` (U73's files) | `cargo test -p asc --test plugin_api_stack` | `Stacks`, `Worktrees`, `Conflicts`, `CommitGraph` (WIP rows), blame `buffer`. |
+| C31 | Workspace plugin additions (SPEC §20.6) | U73, C08, C29, C30a, C30b, C30c, C30d | `crates/asc/src/daemon/plugin_api_stack.rs`, `docs/plugin-api-stack.md`, `crates/asc/tests/plugin_api_stack.rs`; amendment: the full `workspace.proto` block of SPEC §20.5 (including `KIND_STACK = 8`, so C49 needs only C31), i.e. the additive `workspace.proto` hunks and a link in `docs/plugin-api.md` (U73's files) | `cargo test -p asc --test plugin_api_stack` | `Stacks`, `Worktrees`, `Conflicts`, `CommitGraph` (WIP rows), blame `buffer`. |
 | C32 | `asc share` (rooted by `refs/snapshots/<id>` with expiry) | C23, U48a | `crates/asc/src/stack/cli/share.rs`, `crates/asc/tests/stack_share.rs` | `cargo test -p asc --test stack_share` | – |
 | C33 | `asc stack exec` (v1.x) | C06, U54w | `crates/asc/src/stack/cli/exec.rs`, `crates/asc/tests/stack_exec.rs` | `cargo test -p asc --test stack_exec` | v1.x, not on the v1 path. |
 | C34 | PR ↔ change, `stack_parent_id`, the `merge_base` rule and its recomputation patch, AGit lookup by change, update authorisation | K09, K12, K17, C19 | `models/issues/pull_asc_stack.go`, `models/forgejo_migrations/v*_asc_stack.go`, `services/agit/agit_asc.go`, `services/pull/asc_stack_base.go` | `go test ./services/pull/... ./services/agit/... -run TestAscStack` | SPEC §20.5 seams. Tests: a user without write access, or a non-author without "allow edits", cannot update a PR by forging `preds`; a push does not change a stacked PR's `merge_base`; the commits tab lists only the change. |
