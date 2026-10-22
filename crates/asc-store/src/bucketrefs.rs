@@ -51,6 +51,8 @@ pub enum BucketRefsError {
     Unsupported(&'static str),
     #[error("bucket refs: {0}")]
     TooLong(&'static str),
+    #[error("bucket refs need conditional writes (exclusive create); use SQL refs: {0}")]
+    NoExclusiveCreate(String),
     #[error("bucket refs: gave up after {MAX_ATTEMPTS} attempts")]
     Exhausted,
 }
@@ -136,16 +138,55 @@ fn now() -> i64 {
 }
 
 /// Refs stored in a bucket namespace.
+///
+/// # Requirement (SPEC §3)
+///
+/// The store must support exclusive create (conditional writes): a second `PutMode::Create` of
+/// one key must fail with `AlreadyExists`. Without it two writers both succeed and a ref update
+/// is lost. The `Create` to overwrite fallback that is safe for content-addressed objects
+/// (SPEC §3, the U29 put fallback) must therefore never apply here; [`Self::from_url_with`]
+/// builds the store without it. [`Self::connect`] runs [`crate::probe::probe`] and refuses a
+/// store that is not exclusive; [`Self::new`] defers the same probe to the first `cas`, which
+/// fails closed. A `NotImplemented` store error at CAS time is a hard error. Stores without
+/// conditional writes need SQL refs instead.
 #[derive(Clone)]
 pub struct BucketRefs {
     store: Arc<dyn ObjectStore>,
     root: Path,
+    /// Set once the probe has shown the store is exclusive; failures are not cached.
+    verified: Arc<tokio::sync::OnceCell<()>>,
 }
 
 impl BucketRefs {
     /// `root` is the namespace root (the bucket URL prefix).
     pub fn new(store: Arc<dyn ObjectStore>, root: Path) -> Self {
-        Self { store, root }
+        Self {
+            store,
+            root,
+            verified: Arc::default(),
+        }
+    }
+
+    /// Like [`Self::new`], but probes the store now and refuses unless create is exclusive.
+    pub async fn connect(store: Arc<dyn ObjectStore>, root: Path) -> Result<Self> {
+        let this = Self::new(store, root);
+        this.require_exclusive().await?;
+        Ok(this)
+    }
+
+    /// Fails closed unless the store passed the probe with `create_exclusive`.
+    async fn require_exclusive(&self) -> Result<()> {
+        self.verified
+            .get_or_try_init(|| async {
+                let r = crate::probe::probe(&*self.store, &self.root).await;
+                if r.create_exclusive {
+                    Ok(())
+                } else {
+                    Err(RefError::from(BucketRefsError::NoExclusiveCreate(r.detail)))
+                }
+            })
+            .await
+            .map(|_| ())
     }
 
     /// Opens a bucket URL the way [`crate::bucket::BucketObjects::from_url_with`] does.
@@ -155,7 +196,7 @@ impl BucketRefs {
     ) -> Result<Self, crate::objects::Error> {
         let url = url::Url::parse(url).map_err(|e| crate::objects::Error::Url(e.to_string()))?;
         if url.scheme() == "s3" {
-            let (store, root) = crate::s3::open_with(&url, credentials)?;
+            let (store, root) = crate::s3::open_strict(&url, credentials)?;
             return Ok(Self::new(store, root));
         }
         let (store, root) = object_store::parse_url(&url)?;
@@ -290,6 +331,7 @@ impl BucketRefs {
             .map_err(|_| RefError::NonUtf8Name(name.clone()))?;
         let mine = *op_id.as_bytes();
         let actor = encode_actor(actor);
+        self.require_exclusive().await?;
         for _ in 0..MAX_ATTEMPTS {
             let (v, latest) = self.latest(text).await?;
             let current = latest.as_ref().and_then(|e| e.new);
@@ -621,6 +663,125 @@ pub(crate) mod tests {
 
     fn name(s: &str) -> RefName {
         RefName::new(s).unwrap()
+    }
+
+    /// A store whose `Create` puts fail with `NotImplemented`.
+    struct NoCreate(Wrap);
+
+    impl fmt::Debug for NoCreate {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NoCreate")
+        }
+    }
+    impl fmt::Display for NoCreate {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("NoCreate")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for NoCreate {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            if matches!(opts.mode, PutMode::Create) {
+                return Err(object_store::Error::NotImplemented {
+                    operation: "put_opts".into(),
+                    implementer: "NoCreate".into(),
+                });
+            }
+            self.0.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.0.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            self.0.get_opts(location, options).await
+        }
+        async fn get_ranges(
+            &self,
+            location: &Path,
+            ranges: &[Range<u64>],
+        ) -> object_store::Result<Vec<Bytes>> {
+            self.0.get_ranges(location, ranges).await
+        }
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<Path>>,
+        ) -> BoxStream<'static, object_store::Result<Path>> {
+            self.0.delete_stream(locations)
+        }
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.0.list(prefix)
+        }
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<ListResult> {
+            self.0.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.0.copy_opts(from, to, options).await
+        }
+        async fn rename_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: RenameOptions,
+        ) -> object_store::Result<()> {
+            self.0.rename_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_refuses_store_without_exclusive_create() {
+        let s: Arc<dyn ObjectStore> = Arc::new(NoCreate(Wrap::new()));
+        let err = BucketRefs::connect(s, Path::from("ns/x")).await.err().unwrap();
+        assert!(err.to_string().contains("conditional writes"), "{err}");
+        let ignoring = Wrap::new();
+        ignoring.ignore_create();
+        assert!(
+            BucketRefs::connect(Arc::new(ignoring), Path::from("ns/x"))
+                .await
+                .is_err()
+        );
+        assert!(
+            BucketRefs::connect(Arc::new(Wrap::new()), Path::from("ns/x"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_against_store_without_create_errors_and_writes_nothing() {
+        let w = Arc::new(NoCreate(Wrap::new()));
+        let r = BucketRefs::new(w, Path::from("ns/x"));
+        let a = name("refs/heads/a");
+        let err = r
+            .cas(&a, Expect::Absent, Some(tgt("1")), &actor(), Uuid::now_v7())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("conditional writes"), "{err}");
+        assert!(r.get(REPO, &a).await.unwrap().is_none());
     }
 
     fn refs() -> (Arc<Wrap>, BucketRefs) {
