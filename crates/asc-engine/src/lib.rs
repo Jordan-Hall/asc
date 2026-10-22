@@ -7,6 +7,7 @@ use asc_core::object::{Changeset, Tree};
 use asc_store::objects::Objects;
 use asc_store::refs::{Refs, RepoKey};
 
+pub mod blame;
 pub mod commit;
 pub mod derive;
 pub mod diff;
