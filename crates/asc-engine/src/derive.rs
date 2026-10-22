@@ -22,13 +22,15 @@ pub mod generation;
 pub mod gitcommit;
 pub mod keyed;
 pub mod sink;
+pub mod skip;
 #[cfg(test)]
-mod testutil;
+pub(crate) mod testutil;
 
 pub use generation::Gen;
 pub use gitcommit::{GitCommit, index_commit_git};
 pub use keyed::DerivedKeyed;
 pub use sink::{GitMapRow, GitMapSink, index_tree_git};
+pub use skip::Skip;
 
 /// Derivation failures.
 #[derive(Debug, thiserror::Error)]
