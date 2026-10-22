@@ -224,17 +224,21 @@ struct FailBody {
 
 fn failure_message(what: &str, status: StatusCode, body: &[u8]) -> String {
     let parsed: FailBody = serde_json::from_slice(body).unwrap_or_default();
-    let text = if parsed.user_msg.is_empty() {
-        parsed.err
-    } else {
-        parsed.user_msg
-    };
-    let text = clean_message(&text);
-    if text.is_empty() {
-        format!("{what} failed with status {}", status.as_u16())
-    } else {
-        text
+    // Only `user_msg` is meant for the pushing client. `err` is Forgejo's internal error and may
+    // hold paths, SQL or stack text, so it goes to the log and never to the client.
+    let text = clean_message(&parsed.user_msg);
+    if !text.is_empty() {
+        return text;
     }
+    if !parsed.err.is_empty() {
+        tracing::warn!(
+            what,
+            status = status.as_u16(),
+            err = %clean_message(&parsed.err),
+            "forgejo failure carried no user message"
+        );
+    }
+    format!("{what} failed with status {}", status.as_u16())
 }
 
 // ------------------------------------------------------------------------------ identity
@@ -604,7 +608,7 @@ impl PublicApiAuthz {
         }
         let repo: ApiRepo = decode(&body).map_err(|e| unavailable(&e))?;
         let p = repo.permissions;
-        let perm = if p.admin {
+        let mut perm = if p.admin {
             Perm::Admin
         } else if p.push {
             Perm::Write
@@ -614,11 +618,59 @@ impl PublicApiAuthz {
         } else {
             Perm::None
         };
+        // `permissions` describe the user, not the token. A `read:repository` token of a user with
+        // push rights must not write, so Write and Admin stand only when the token's scope is
+        // proven to allow a write; any other answer caps the token at Read.
+        if perm > Perm::Read {
+            let proven = match token {
+                Some(t) if access != Access::Read => self.token_may_write(t, owner, name).await?,
+                _ => false,
+            };
+            if !proven {
+                perm = Perm::Read;
+            }
+        }
         if perm.allows(access) {
             Ok(Decision::for_identity(identity, perm))
         } else {
             Err(Fetch::Denied(denied_for(token)))
         }
+    }
+
+    /// Whether the token passes Forgejo's own `write:repository` scope check. The probe is
+    /// `POST /api/v1/repos/{o}/{r}/markdown`: it only renders the posted text and changes nothing.
+    /// Forgejo checks the token scope for the `/repos` group before any other middleware or handler
+    /// (`routers/api/v1/api.go`, `tokenRequiresScopes(repository)` at the end of the group, run
+    /// first by `modules/web/route.go` `wrapMiddlewareAndHandler`), and a POST needs the write level.
+    /// A token without the scope gets 403 there. Tokens without scopes (Actions task tokens) skip the
+    /// check; their write power is already in `permissions` (`permissions/repo_access.go`). Only
+    /// a 200 counts as proof, so a missing route, a 5xx or any other answer fails closed.
+    async fn token_may_write(
+        &self,
+        token: &BearerToken,
+        owner: &str,
+        name: &str,
+    ) -> Result<bool, Fetch> {
+        let req = self
+            .client
+            .http
+            .post(
+                self.client
+                    .url(&["api", "v1", "repos", owner, name, "markdown"]),
+            )
+            .bearer_auth(token.expose())
+            .header("content-type", "application/json")
+            .body(r#"{"Text":"x","Mode":"markdown"}"#);
+        let (status, _) = ForgejoClient::send(req)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        if status != StatusCode::OK {
+            tracing::debug!(
+                status = status.as_u16(),
+                "token lacks write:repository; capped at read"
+            );
+        }
+        Ok(status == StatusCode::OK)
     }
 }
 
@@ -1300,6 +1352,31 @@ mod tests {
         assert_eq!(
             clean_message(&"x".repeat(MAX_MESSAGE * 2)).len(),
             MAX_MESSAGE
+        );
+    }
+
+    #[test]
+    fn failure_messages_never_show_forgejo_internal_errors() {
+        let st = StatusCode::INTERNAL_SERVER_ERROR;
+        let body = br#"{"err":"pq: /var/lib/forgejo/data: SELECT secret","user_msg":""}"#;
+        assert_eq!(
+            failure_message("pre-receive", st, body),
+            "pre-receive failed with status 500"
+        );
+        // `err` alone, and a body that is not JSON, give the same generic text.
+        assert_eq!(
+            failure_message("pre-receive", st, br#"{"err":"stack at /srv/x.go:1"}"#),
+            "pre-receive failed with status 500"
+        );
+        assert_eq!(
+            failure_message("pre-receive", st, b"<html>"),
+            "pre-receive failed with status 500"
+        );
+        // `user_msg` is shown, cleaned, even when `err` is present.
+        let ok = br#"{"err":"internal","user_msg":"branch is protected\u001b[0m"}"#;
+        assert_eq!(
+            failure_message("pre-receive", StatusCode::FORBIDDEN, ok),
+            "branch is protected [0m"
         );
     }
 
