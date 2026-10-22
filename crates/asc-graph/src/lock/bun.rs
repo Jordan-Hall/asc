@@ -119,11 +119,27 @@ fn string_map(v: &serde_json::Value) -> Result<Vec<(String, Value)>, String> {
         .collect()
 }
 
+/// Most `/`-separated segments in a workspace or package key. A lock with a
+/// deeper key is unusable: resolving a name tries one candidate per segment.
+const MAX_KEY_SEGMENTS: usize = 64;
+/// Most bytes in a workspace or package key.
+const MAX_KEY_BYTES: usize = 1024;
+
+fn check_key(key: &str) -> Result<(), String> {
+    if key.len() > MAX_KEY_BYTES || segments(key).len() > MAX_KEY_SEGMENTS {
+        return Err(format!(
+            "key longer than {MAX_KEY_BYTES} bytes or deeper than {MAX_KEY_SEGMENTS} segments"
+        ));
+    }
+    Ok(())
+}
+
 fn reduce(doc: &serde_json::Value, max_packages: usize) -> Result<Value, String> {
     let obj = doc.as_object().ok_or("not a JSON object")?;
     let mut workspaces = Vec::new();
     if let Some(w) = obj.get("workspaces") {
         for (key, e) in w.as_object().ok_or("workspaces is not an object")? {
+            check_key(key)?;
             let e = e.as_object().ok_or("workspace entry is not an object")?;
             let mut pairs = Vec::new();
             if let Some(serde_json::Value::String(n)) = e.get("name") {
@@ -163,6 +179,7 @@ fn reduce(doc: &serde_json::Value, max_packages: usize) -> Result<Value, String>
             return Err(format!("more than {max_packages} packages"));
         }
         for (key, e) in p {
+            check_key(key)?;
             let entry = package_entry(e)?;
             if let Value::Array(a) = &entry
                 && let Some(Value::Array(names)) = a.get(2)
@@ -291,10 +308,34 @@ impl<'a> Lock<'a> {
         Some((k, v))
     }
 
-    fn resolve(&self, requester: &str, name: &str) -> Option<(&'a str, &'a Value)> {
-        candidates(requester, name)
-            .iter()
-            .find_map(|c| self.package(c))
+    /// Same lookup order as [`candidates`], reusing one buffer, and charging
+    /// the candidates tried to `work`.
+    fn resolve(
+        &self,
+        requester: &str,
+        name: &str,
+        work: &mut usize,
+    ) -> Option<(&'a str, &'a Value)> {
+        let segs = segments(requester);
+        *work = work.saturating_add(segs.len() + 1);
+        let mut buf = String::with_capacity(requester.len() + name.len() + 1);
+        let mut ends = Vec::with_capacity(segs.len());
+        let mut end = 0;
+        for s in &segs {
+            end += s.len();
+            ends.push(end);
+            end += 1;
+        }
+        for &e in ends.iter().rev() {
+            buf.clear();
+            buf.push_str(&requester[..e]);
+            buf.push('/');
+            buf.push_str(name);
+            if let Some(hit) = self.package(&buf) {
+                return Some(hit);
+            }
+        }
+        self.package(name)
     }
 
     /// The resolved third-party closure of workspace entry `entry` as a
@@ -326,7 +367,7 @@ impl<'a> Lock<'a> {
         let mut stack: Vec<(&str, &Value)> = Vec::new();
         for d in tables(entry) {
             work += 1;
-            if let Some((k, e)) = self.resolve(requester, d.name)
+            if let Some((k, e)) = self.resolve(requester, d.name, &mut work)
                 && seen.insert(k)
             {
                 stack.push((k, e));
@@ -351,7 +392,7 @@ impl<'a> Lock<'a> {
             work += names.len() + 1;
             for n in names {
                 let Value::Str(n) = n else { continue };
-                if let Some((k, e)) = self.resolve(key, n)
+                if let Some((k, e)) = self.resolve(key, n, &mut work)
                     && seen.insert(k)
                 {
                     stack.push((k, e));
@@ -546,5 +587,26 @@ mod tests {
             "{{\"workspaces\": {{}}, \"packages\": {{\"a\": [\"a@1\", \"\", {{\"dependencies\": {{{deps}}}}}, \"x\"]}}}}"
         );
         assert!(Lock::view(&parse_with(text.as_bytes(), 1 << 20, 1)).is_err());
+    }
+
+    #[test]
+    fn deep_or_long_keys_make_the_lock_unusable() {
+        let deep = vec!["a"; MAX_KEY_SEGMENTS + 1].join("/");
+        let text = format!("{{\"workspaces\": {{}}, \"packages\": {{\"{deep}\": [\"x@1\"]}}}}");
+        let start = std::time::Instant::now();
+        let p = parse(text.as_bytes());
+        assert!(Lock::view(&p).is_err());
+        let long = "a".repeat(MAX_KEY_BYTES + 1);
+        let text = format!("{{\"workspaces\": {{\"{long}\": {{}}}}, \"packages\": {{}}}}");
+        assert!(Lock::view(&parse(text.as_bytes())).is_err());
+        // At the cap it is accepted, and resolving charges per segment.
+        let ok = vec!["a"; MAX_KEY_SEGMENTS].join("/");
+        let text = format!("{{\"workspaces\": {{}}, \"packages\": {{\"{ok}\": [\"x@1\"]}}}}");
+        let p = parse(text.as_bytes());
+        let l = Lock::view(&p).unwrap();
+        let mut work = 0;
+        assert!(l.resolve(&ok, "zz", &mut work).is_none());
+        assert_eq!(work, MAX_KEY_SEGMENTS + 1);
+        assert!(start.elapsed().as_secs() < 5);
     }
 }
