@@ -73,6 +73,9 @@ const MAX_ATTR_NAMES: usize = 64;
 const ATTR_MAX_FILE: u64 = 1 << 20;
 /// Largest file an `export-subst` expansion buffers.
 const SUBST_MAX_FILE: u64 = 1 << 20;
+/// Largest expanded `export-subst` file. A placeholder such as `%B` can expand to far more than
+/// it spells, so the output is capped; past the cap the archive fails with `resource_exhausted`.
+const SUBST_MAX_OUT: u64 = 4 * SUBST_MAX_FILE;
 /// Largest symlink target an archive reads.
 const SYMLINK_MAX: u64 = 4096;
 /// Directory entries a `LastCommits` walk tracks, and commits it visits.
@@ -847,92 +850,136 @@ struct Subst {
     parents: Vec<GitOid>,
     author: asc_core::sig::Signature,
     committer: asc_core::sig::Signature,
-    message: Vec<u8>,
+    /// The commit message, decoded once.
+    message: String,
+    subject: String,
+    body: String,
 }
 
 fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
+/// A capped output buffer: a push that would pass `limit` fails and leaves the buffer as it was.
+struct CappedOut {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+/// The expansion passed [`SUBST_MAX_OUT`].
+struct SubstOverflow;
+
+impl CappedOut {
+    fn push(&mut self, b: &[u8]) -> Result<(), SubstOverflow> {
+        if b.len() > self.limit - self.buf.len() {
+            return Err(SubstOverflow);
+        }
+        self.buf.extend_from_slice(b);
+        Ok(())
+    }
+}
+
 impl Subst {
-    fn expand(&self, fmt: &str) -> String {
+    fn new(
+        git: GitOid,
+        tree: GitOid,
+        parents: Vec<GitOid>,
+        author: asc_core::sig::Signature,
+        committer: asc_core::sig::Signature,
+        message: &[u8],
+    ) -> Self {
+        let message = lossy(message);
         let (subject, body) = {
-            let msg = lossy(&self.message);
-            let trimmed = msg.trim_start_matches('\n');
+            let trimmed = message.trim_start_matches('\n');
             match trimmed.split_once("\n\n") {
                 Some((s, b)) => (s.replace('\n', " "), b.to_owned()),
                 None => (trimmed.trim_end().replace('\n', " "), String::new()),
             }
         };
+        Self { git, tree, parents, author, committer, message, subject, body }
+    }
+
+    fn expand(&self, fmt: &str, out: &mut CappedOut) -> Result<(), SubstOverflow> {
         let hex = |g: &GitOid| g.to_string();
-        let mut out = String::new();
         let mut chars = fmt.chars().peekable();
         while let Some(c) = chars.next() {
             if c != '%' {
-                out.push(c);
+                out.push(c.encode_utf8(&mut [0; 4]).as_bytes())?;
                 continue;
             }
             let Some(&n) = chars.peek() else {
-                out.push('%');
+                out.push(b"%")?;
                 break;
             };
             let two: String = chars.clone().take(2).collect();
-            let (text, used) = match (n, two.as_str()) {
-                ('%', _) => ("%".to_owned(), 1),
-                ('n', _) => ("\n".to_owned(), 1),
-                ('H', _) => (hex(&self.git), 1),
-                ('h', _) => (hex(&self.git)[..7].to_owned(), 1),
-                ('T', _) => (hex(&self.tree), 1),
-                ('t', _) => (hex(&self.tree)[..7].to_owned(), 1),
-                ('P', _) => (self.parents.iter().map(hex).collect::<Vec<_>>().join(" "), 1),
+            let (text, used): (std::borrow::Cow<'_, str>, usize) = match (n, two.as_str()) {
+                ('%', _) => ("%".into(), 1),
+                ('n', _) => ("\n".into(), 1),
+                ('H', _) => (hex(&self.git).into(), 1),
+                ('h', _) => (hex(&self.git)[..7].to_owned().into(), 1),
+                ('T', _) => (hex(&self.tree).into(), 1),
+                ('t', _) => (hex(&self.tree)[..7].to_owned().into(), 1),
+                ('P', _) => (self.parents.iter().map(hex).collect::<Vec<_>>().join(" ").into(), 1),
                 ('p', _) => (
-                    self.parents.iter().map(|p| hex(p)[..7].to_owned()).collect::<Vec<_>>().join(" "),
+                    self.parents.iter().map(|p| hex(p)[..7].to_owned()).collect::<Vec<_>>().join(" ").into(),
                     1,
                 ),
-                ('s', _) => (subject.clone(), 1),
-                ('b', _) => (body.clone(), 1),
-                ('B', _) => (lossy(&self.message), 1),
-                (_, "an") => (lossy(self.author.name()), 2),
-                (_, "ae") => (lossy(self.author.email()), 2),
-                (_, "at") => (self.author.time().to_string(), 2),
-                (_, "cn") => (lossy(self.committer.name()), 2),
-                (_, "ce") => (lossy(self.committer.email()), 2),
-                (_, "ct") => (self.committer.time().to_string(), 2),
+                ('s', _) => (self.subject.as_str().into(), 1),
+                ('b', _) => (self.body.as_str().into(), 1),
+                ('B', _) => (self.message.as_str().into(), 1),
+                (_, "an") => (lossy(self.author.name()).into(), 2),
+                (_, "ae") => (lossy(self.author.email()).into(), 2),
+                (_, "at") => (self.author.time().to_string().into(), 2),
+                (_, "cn") => (lossy(self.committer.name()).into(), 2),
+                (_, "ce") => (lossy(self.committer.email()).into(), 2),
+                (_, "ct") => (self.committer.time().to_string().into(), 2),
                 _ => {
-                    out.push('%');
+                    out.push(b"%")?;
                     continue;
                 }
             };
-            out.push_str(&text);
+            out.push(text.as_bytes())?;
             for _ in 0..used {
                 chars.next();
             }
         }
-        out
+        Ok(())
     }
 
     /// Replaces each `$Format:<fmt>$` on one line, as `git archive` does with `export-subst`.
-    fn apply(&self, data: &[u8]) -> Vec<u8> {
+    ///
+    /// Fails with `resource_exhausted` once the output would pass [`SUBST_MAX_OUT`].
+    fn apply(&self, data: &[u8]) -> Result<Vec<u8>, Status> {
         const OPEN: &[u8] = b"$Format:";
-        let mut out = Vec::with_capacity(data.len());
+        let overflow = |_: SubstOverflow| {
+            Status::resource_exhausted("export-subst expansion is too large")
+        };
+        let mut out = CappedOut {
+            buf: Vec::with_capacity(data.len()),
+            limit: usize::try_from(SUBST_MAX_OUT).unwrap_or(usize::MAX),
+        };
         let mut rest = data;
         while let Some(i) = rest.windows(OPEN.len()).position(|w| w == OPEN) {
             let after = &rest[i + OPEN.len()..];
-            let line_end = after.iter().position(|&c| c == b'\n').unwrap_or(after.len());
-            match after[..line_end].iter().position(|&c| c == b'$') {
-                Some(j) => {
-                    out.extend_from_slice(&rest[..i]);
-                    out.extend_from_slice(self.expand(&lossy(&after[..j])).as_bytes());
+            // One scan finds the closing `$` or the end of the line, whichever comes first, and
+            // everything it passes is consumed, so the whole pass is linear.
+            let stop = after.iter().position(|&c| c == b'$' || c == b'\n');
+            match stop {
+                Some(j) if after[j] == b'$' => {
+                    out.push(&rest[..i]).map_err(overflow)?;
+                    self.expand(&lossy(&after[..j]), &mut out).map_err(overflow)?;
                     rest = &after[j + 1..];
                 }
-                None => {
-                    out.extend_from_slice(&rest[..i + OPEN.len()]);
-                    rest = after;
+                _ => {
+                    // No closing `$` on this line (so no later opener on it): copy through its end.
+                    let upto = i + OPEN.len() + stop.map_or(after.len(), |j| j + 1);
+                    out.push(&rest[..upto]).map_err(overflow)?;
+                    rest = &rest[upto..];
                 }
             }
         }
-        out.extend_from_slice(rest);
-        out
+        out.push(rest).map_err(overflow)?;
+        Ok(out.buf)
     }
 }
 
@@ -1781,14 +1828,14 @@ impl ReadsHandler for ServerReads {
         for p in &cs.parents {
             parents.push(call.ids.git_of(*p).await?);
         }
-        let subst = Subst {
-            git: call.ids.git_of(id).await?,
-            tree: call.ids.tree_git(cs.root).await?,
+        let subst = Subst::new(
+            call.ids.git_of(id).await?,
+            call.ids.tree_git(cs.root).await?,
             parents,
-            author: cs.author.clone(),
-            committer: cs.committer.clone(),
-            message: cs.message.clone(),
-        };
+            cs.author.clone(),
+            cs.committer.clone(),
+            &cs.message,
+        );
         let mtime = u64::try_from(cs.committer.time()).unwrap_or(0);
         let root = cs.root;
         let (tx, rx) = mpsc::channel(STREAM_DEPTH);
@@ -1839,7 +1886,9 @@ impl ReadsHandler for ServerReads {
                     if e.size <= SUBST_MAX_FILE
                         && handle.block_on(attrs.is_set(path.as_bytes(), false, "export-subst"))?
                     {
-                        let data = subst.apply(&read_all()?);
+                        // Both the file and its expansion are held at once.
+                        let _guard = handle.block_on(call.budget(e.size + SUBST_MAX_OUT))?;
+                        let data = subst.apply(&read_all()?)?;
                         sink.file(&name, exec, data.len() as u64, &mut data.as_slice()).map_err(io)?;
                     } else {
                         let (stream, _) = handle.block_on(open())?;
@@ -3076,6 +3125,79 @@ mod tests {
             let err = archive(&f, c, fmt, prefix, &[]).await.err().unwrap();
             assert_eq!(err.code(), tonic::Code::InvalidArgument, "{fmt} {prefix}");
         }
+    }
+
+    fn test_subst(message: &[u8]) -> Subst {
+        let sig = || asc_core::sig::Signature::new(b"A".to_vec(), b"a@x".to_vec(), 0, 0).unwrap();
+        let oid = GitOid::from_bytes([7; 20]);
+        Subst::new(oid, oid, Vec::new(), sig(), sig(), message)
+    }
+
+    #[test]
+    fn subst_expansion_is_capped() {
+        // 1 MiB of `%B` placeholders over a 2 KiB message would expand to ~175 MB uncapped.
+        let subst = test_subst(&vec![b'm'; 2048]);
+        let line = b"$Format:%B$\n";
+        let data = line.repeat((SUBST_MAX_FILE as usize) / line.len());
+        let err = subst.apply(&data).expect_err("the cap must stop the expansion");
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        // One placeholder repeated within a format is capped the same way.
+        let fmt = format!("$Format:{}$", "%B".repeat(100_000));
+        let err = subst.apply(fmt.as_bytes()).expect_err("a repeated format is capped");
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        // Expansions under the cap still work.
+        let ok = subst.apply(b"x $Format:%s$ y").unwrap();
+        assert_eq!(ok.len(), "x ".len() + 2048 + " y".len());
+    }
+
+    #[test]
+    fn subst_scan_is_linear_on_openers_without_a_closing_dollar() {
+        let subst = test_subst(b"m\n");
+        // One 1 MiB line of openers, and lines whose only opener never closes.
+        let one_line = b"$Format:".repeat((SUBST_MAX_FILE as usize) / 8);
+        let lines = b"$Format:abc\n".repeat((SUBST_MAX_FILE as usize) / 12);
+        let start = std::time::Instant::now();
+        assert!(subst.apply(&one_line).unwrap().len() <= one_line.len());
+        assert_eq!(subst.apply(&lines).unwrap(), lines);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+    }
+
+    #[tokio::test]
+    async fn archive_export_subst_is_capped_and_charged_to_the_text_budget() {
+        let f = fx().await;
+        let line = b"$Format:%B$\n";
+        let big = line.repeat((SUBST_MAX_FILE as usize) / line.len());
+        let c = mk(
+            &f.entry,
+            &[],
+            &[w(".gitattributes", b"v.txt export-subst\n"), w("v.txt", &big)],
+            &"m".repeat(1024),
+            1,
+        )
+        .await;
+        let err = archive(&f, c, "tar", "", &[]).await.err().unwrap();
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        // The expansion buffers are charged to the call's text budget.
+        let f = fx().await;
+        let c = mk(
+            &f.entry,
+            &[],
+            &[w(".gitattributes", b"v.txt export-subst\n"), w("v.txt", b"$Format:%H$\n")],
+            "m\n",
+            1,
+        )
+        .await;
+        assert_eq!(untar(archive(&f, c, "tar", "", &[]).await.unwrap()).len(), 2);
+        struct Never;
+        #[async_trait]
+        impl crate::TextBudget for Never {
+            async fn acquire(&self, _: u64) -> Result<TextGuard, crate::TextBudgetExhausted> {
+                Err(crate::TextBudgetExhausted)
+            }
+        }
+        assert!(f.hooks.text_budget.set(Arc::new(Never)).is_ok());
+        let err = archive(&f, c, "tar", "", &[]).await.err().unwrap();
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
     }
 
     #[tokio::test]
