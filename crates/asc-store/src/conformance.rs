@@ -6,9 +6,9 @@ use bytes::Bytes;
 use asc_core::git::{ObjectKind, object_oid};
 use asc_core::id::{ChunkId, FileId};
 
-use crate::codec::{decode_stored, encode_stored};
+use crate::codec::{decode_stored_capped, encode_stored};
 use crate::key::{KeyPrefix, ObjKey};
-use crate::objects::{Error, Objects};
+use crate::objects::{Error, Objects, max_decoded};
 
 /// Exercises any [`Objects`] implementation.
 ///
@@ -37,7 +37,10 @@ where
     objs.put(&file, stored.clone()).await.unwrap();
     assert_eq!(objs.get(&file).await.unwrap().unwrap(), text.as_slice());
     assert_eq!(objs.get_stored(&file).await.unwrap().unwrap(), stored);
-    assert_eq!(decode_stored(&stored).unwrap(), text.as_slice());
+    assert_eq!(
+        decode_stored_capped(&stored, max_decoded(file.class())).unwrap(),
+        text.as_slice()
+    );
     assert_eq!(
         objs.has_many(&[missing, file, file]).await.unwrap(),
         [false, true, true]

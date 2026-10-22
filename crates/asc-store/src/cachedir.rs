@@ -403,7 +403,8 @@ impl<O: Objects> Objects for Canonical<O> {
         let Some(stored) = self.0.get_stored(key).await? else {
             return Ok(None);
         };
-        let data = crate::codec::decode_stored(&stored).map_err(|e| Error::Codec(*key, e))?;
+        let data = crate::codec::decode_stored_capped(&stored, max_decoded(key.class()))
+            .map_err(|e| Error::Codec(*key, e))?;
         Ok(Some(crate::codec::encode_stored(&data)))
     }
     async fn get_range(&self, key: &ObjKey, r: Range<u64>) -> Result<Option<Bytes>> {
@@ -429,7 +430,7 @@ pub(crate) mod tests {
     use futures::TryStreamExt;
 
     use super::*;
-    use crate::codec::{decode_stored, encode_stored};
+    use crate::codec::{decode_stored_capped, encode_stored};
     use crate::conformance::run_objects_suite;
 
     pub(crate) fn open_in(dir: &Path, name: &str) -> CacheDir {
@@ -438,7 +439,7 @@ pub(crate) mod tests {
 
     /// Overwrites the backing file with decoded data, bypassing `put`.
     pub(crate) fn tamper(c: &CacheDir, key: ObjKey, stored: Bytes) {
-        let data = decode_stored(&stored).unwrap_or(stored);
+        let data = decode_stored_capped(&stored, 256 * 1024 * 1024).unwrap_or(stored);
         let path = c.inner.path(&key);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, data).unwrap();

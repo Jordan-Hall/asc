@@ -44,11 +44,6 @@ pub fn check_codec(stored: &[u8]) -> Result<(), CodecError> {
     }
 }
 
-/// Decodes with the loosest cap (256 MiB). Prefer [`decode_stored_capped`] with the class cap.
-pub fn decode_stored(stored: &Bytes) -> Result<Bytes, CodecError> {
-    decode_stored_capped(stored, 256 * 1024 * 1024)
-}
-
 /// Decodes stored bytes to the original data, rejecting values larger than `max_decoded`.
 /// Raw values are sliced, not copied; zstd frames must declare a content size within the limit.
 pub fn decode_stored_capped(stored: &Bytes, max_decoded: u64) -> Result<Bytes, CodecError> {
