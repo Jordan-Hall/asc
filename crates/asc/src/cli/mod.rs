@@ -78,6 +78,7 @@ pub mod fsck;
 pub mod gc;
 pub mod graph;
 pub mod grep;
+pub mod install_shim;
 pub mod help_git;
 pub mod import;
 pub mod interpret_trailers;
@@ -256,6 +257,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("watch", watch),
     entry!("mcp", mcp),
     entry!("migrate", migrate_ignore),
+    entry!("install-shim", install_shim),
     entry!("upgrade", upgrade),
     entry!("internal", claude_hook),
 ];
