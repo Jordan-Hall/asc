@@ -13,9 +13,10 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
 
+use crate::codec::CodecError;
 use crate::codec::check_codec;
 use crate::key::{KeyClass, KeyPrefix, ObjKey};
-use crate::objects::{Error, Objects, Result, decode_verified, slice_range};
+use crate::objects::{Error, Objects, Result, decode_verified, max_decoded, slice_range};
 
 /// Concurrent `HEAD` requests per `has_many`.
 const HAS_CONCURRENCY: usize = 32;
@@ -74,6 +75,11 @@ impl BucketObjects {
     }
 }
 
+/// Largest stored size for a value decoding to `max`: codec byte plus zstd framing slack.
+fn stored_limit(max: u64) -> u64 {
+    max.saturating_add(max >> 8).saturating_add(4096)
+}
+
 #[async_trait]
 impl Objects for BucketObjects {
     async fn get(&self, key: &ObjKey) -> Result<Option<Bytes>> {
@@ -85,7 +91,14 @@ impl Objects for BucketObjects {
 
     async fn get_stored(&self, key: &ObjKey) -> Result<Option<Bytes>> {
         match self.store.get(&self.key_path(key)).await {
-            Ok(r) => Ok(Some(r.bytes().await?)),
+            Ok(r) => {
+                // The bucket is untrusted: refuse an oversized body before buffering it.
+                let max = max_decoded(key.class());
+                if r.meta.size > stored_limit(max) {
+                    return Err(Error::Codec(*key, CodecError::TooLarge(max)));
+                }
+                Ok(Some(r.bytes().await?))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -200,6 +213,19 @@ mod tests {
             .put(&b.key_path(&key), PutPayload::from_bytes(stored))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_remote_object_is_refused_unread() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let b = BucketObjects::new(store.clone(), Path::default());
+        let key = ObjKey::File(FileId::of(b"big"));
+        let mut raw = vec![0u8];
+        raw.resize(1 + 4 * 1024 * 1024 + 1024 * 1024, 7);
+        tamper(store, Path::default(), key, Bytes::from(raw)).await;
+        for r in [b.get_stored(&key).await, b.get(&key).await.map(|_| None)] {
+            assert!(matches!(r, Err(Error::Codec(_, CodecError::TooLarge(_)))));
+        }
     }
 
     #[tokio::test]
