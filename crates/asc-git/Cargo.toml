@@ -1,0 +1,15 @@
+[package]
+name = "asc-git"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+asc-core = { workspace = true }
+asc-store = { workspace = true }
+asc-engine = { workspace = true }
