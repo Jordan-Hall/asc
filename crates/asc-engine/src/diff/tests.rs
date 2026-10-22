@@ -655,3 +655,43 @@ async fn chunked_files_are_read_back_whole() {
         big.as_slice()
     );
 }
+
+#[tokio::test]
+async fn forged_chunk_list_is_rejected() {
+    let e = engine();
+    let pattern = |m: u32| -> Vec<u8> {
+        (0..5_000_000u32)
+            .flat_map(|i| (i.wrapping_mul(m) % 251).to_le_bytes())
+            .take(5_000_000)
+            .collect()
+    };
+    let honest = put_file(&e, Kind::File, &pattern(1)).await;
+    let evil = put_file(&e, Kind::File, &pattern(7)).await;
+    let (
+        Change::Write { file, size, .. },
+        Change::Write {
+            file: evil_file, ..
+        },
+    ) = (honest, evil)
+    else {
+        panic!()
+    };
+    // A remote swaps in a valid list of other chunks of the same length.
+    let forged = e
+        .objects
+        .get_stored(&ObjKey::ChunkList(evil_file))
+        .await
+        .unwrap()
+        .unwrap();
+    e.objects.delete(&ObjKey::ChunkList(file)).await.unwrap();
+    e.objects
+        .put(&ObjKey::ChunkList(file), forged)
+        .await
+        .unwrap();
+    assert!(matches!(
+        e.read_file(file, size).await,
+        Err(Error::MissingFile(f)) if f == file
+    ));
+    // A list whose size disagrees with the entry is refused too.
+    assert!(e.read_file(file, size - 1).await.is_err());
+}

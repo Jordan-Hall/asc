@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use asc_core::codec::decode_envelope;
+use asc_core::content::ChunkAssembler;
 use asc_core::id::FileId;
 use asc_core::object::{ChunkList, Entry};
 use asc_core::path::RepoPath;
@@ -44,8 +45,15 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .await?
             .ok_or(Error::MissingFile(file))?;
         let list = decode_envelope::<ChunkList>(&list)?;
-        let mut out = BytesMut::with_capacity(list.size as usize);
-        for (id, len) in &list.chunks {
+        // Chunk lists are not verified when fetched: bind the list to `file` and `size`.
+        if list.size != size {
+            return Err(Error::MissingFile(file));
+        }
+        let chunks = list.chunks.clone();
+        let mut assembler =
+            ChunkAssembler::new(list, file).map_err(|_| Error::MissingFile(file))?;
+        let mut out = BytesMut::with_capacity(size as usize);
+        for (id, len) in &chunks {
             let chunk = self
                 .objects
                 .get(&ObjKey::Chunk(*id))
@@ -54,8 +62,12 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             if chunk.len() != *len as usize {
                 return Err(Error::MissingFile(file));
             }
+            assembler
+                .push(&chunk)
+                .map_err(|_| Error::MissingFile(file))?;
             out.extend_from_slice(&chunk);
         }
+        assembler.finish().map_err(|_| Error::MissingFile(file))?;
         Ok(out.freeze())
     }
 }
