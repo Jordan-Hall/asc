@@ -60,10 +60,7 @@ pub fn verify(key: &ObjKey, data: &[u8]) -> Result<()> {
         ObjKey::Tree(id) => TreeId::of(data) == *id,
         ObjKey::Changeset(id) => ChangesetId::of(data) == *id,
         ObjKey::Tag(id) => TagId::of(data) == *id,
-        ObjKey::ChunkList(_)
-        | ObjKey::GitTreeOverride(_)
-        | ObjKey::Derived { .. }
-        | ObjKey::Sha256Alias(_) => true,
+        ObjKey::ChunkList(_) | ObjKey::GitTreeOverride(_) | ObjKey::Derived { .. } => true,
     };
     if ok {
         Ok(())
@@ -114,7 +111,6 @@ mod tests {
         let unchecked = [
             ObjKey::ChunkList(FileId::of(b"x")),
             ObjKey::GitTreeOverride(GitOid::from_bytes([1; 20])),
-            ObjKey::Sha256Alias([2; 32]),
         ];
         for k in unchecked {
             assert!(verify(&k, data).is_ok());
