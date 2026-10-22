@@ -29,6 +29,14 @@ impl<O: Objects, R: Refs> ContentSource for Engine<O, R> {
     }
 }
 
+/// Largest chunked file `read_file` assembles in memory. A tree entry's size is remote input;
+/// diff, blame, merge and derive all need the whole content at once, so a larger file is
+/// refused with [`Error::FileTooLarge`] instead of read.
+pub const MAX_READ_FILE_BYTES: u64 = 1 << 30;
+
+/// Buffer reserved up front for a chunked read; the rest grows as verified chunks arrive.
+const READ_FILE_PREALLOC: u64 = 64 << 20;
+
 impl<O: Objects, R: Refs> Engine<O, R> {
     /// Reads a whole file: one object when inline, else its chunks in order.
     pub async fn read_file(&self, file: FileId, size: u64) -> Result<Bytes> {
@@ -38,6 +46,11 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 .get(&ObjKey::File(file))
                 .await?
                 .ok_or(Error::MissingFile(file));
+        }
+        // The whole file is held in memory: refuse a claimed size past the bound before anything
+        // is fetched, and reserve only a bounded start so a forged size costs nothing.
+        if size > MAX_READ_FILE_BYTES {
+            return Err(Error::FileTooLarge(file, size));
         }
         let list = self
             .objects
@@ -52,7 +65,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let chunks = list.chunks.clone();
         let mut assembler =
             ChunkAssembler::new(list, file).map_err(|_| Error::MissingFile(file))?;
-        let mut out = BytesMut::with_capacity(size as usize);
+        let mut out = BytesMut::with_capacity(size.min(READ_FILE_PREALLOC) as usize);
         for (id, len) in &chunks {
             let chunk = self
                 .objects

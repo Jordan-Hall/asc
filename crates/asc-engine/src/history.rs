@@ -36,6 +36,11 @@ pub const LOG_PAGE: usize = 4096;
 /// Default `asc.fetch.historyWindow`: generations of history kept below each fetched tip.
 pub const DEFAULT_WINDOW: u32 = 10_000;
 
+/// Tree entries one client-requested diff may visit. The diff RPC reads one tree per changed
+/// directory for a caller that sets both changesets, so it gets a quarter of the budget local
+/// callers have ([`crate::tree::MAX_DIFF_VISITS`]); past it the request fails.
+pub const MAX_RPC_DIFF_VISITS: usize = 1 << 20;
+
 /// One changeset of a log, as the wire `LogEntry` carries it for a fetch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogEntry {
@@ -320,6 +325,22 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 }
 
+impl<O: Objects, R: Refs> Engine<O, R> {
+    /// The server-side diff of two changesets, failing after `budget` visited tree entries.
+    async fn diff_bounded(
+        &self,
+        a: ChangesetId,
+        b: ChangesetId,
+        spec: Option<&Pathspec>,
+        budget: usize,
+    ) -> Result<Vec<(RepoPath, Change)>> {
+        let (ca, cb) = (self.get_changeset(a).await?, self.get_changeset(b).await?);
+        self.leafdiff_bounded(ca.root, cb.root, spec, budget)
+            .await
+            .map_err(|e| Error::Engine(commit::Error::Tree(e)))
+    }
+}
+
 #[async_trait]
 impl<O: Objects, R: Refs> HistoryApi for Engine<O, R> {
     async fn log(&self, q: &LogQuery, page: Option<&PageToken>) -> Result<LogEntries> {
@@ -389,10 +410,8 @@ impl<O: Objects, R: Refs> HistoryApi for Engine<O, R> {
             .then(|| Pathspec::parse(paths))
             .transpose()
             .map_err(|e| Error::Remote(e.to_string()))?;
-        let (ca, cb) = (self.get_changeset(a).await?, self.get_changeset(b).await?);
-        self.leafdiff(ca.root, cb.root, spec.as_ref())
+        self.diff_bounded(a, b, spec.as_ref(), MAX_RPC_DIFF_VISITS)
             .await
-            .map_err(|e| Error::Engine(commit::Error::Tree(e)))
     }
 
     async fn resolve(&self, specs: &[String]) -> Result<Vec<Option<ChangesetId>>> {
@@ -1158,5 +1177,31 @@ mod tests {
             .await
             .unwrap();
         assert!(d.is_empty(), "same tree, no change");
+    }
+
+    #[tokio::test]
+    async fn the_diff_rpc_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = sqlite(dir.path(), "server.db").await;
+        let e = engine(&refs, 1);
+        let policy = crate::commit::PathPolicy::Native { windows_safe: true };
+        let a = commit_files(&e, &[], &[("a", b"1")], policy, Vec::new()).await;
+        let files: Vec<(String, Vec<u8>)> = (0..32).map(|i| (format!("d/f{i}"), vec![i])).collect();
+        let files: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(p, c)| (p.as_str(), c.as_slice()))
+            .collect();
+        let b = commit_files(&e, &[a], &files, policy, Vec::new()).await;
+        // The wire entry point uses the RPC budget and the changes fit under it.
+        assert_eq!(HistoryApi::diff(&*e, a, b, &[]).await.unwrap().len(), 32);
+        // A budget below the number of entries the diff must visit is an error, not a partial list.
+        let err = e.diff_bounded(a, b, None, 8).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Engine(commit::Error::Tree(crate::tree::Error::TooLarge(8)))
+            ),
+            "{err}"
+        );
     }
 }
