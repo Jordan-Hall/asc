@@ -755,7 +755,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn connect_refuses_store_without_exclusive_create() {
         let s: Arc<dyn ObjectStore> = Arc::new(NoCreate(Wrap::new()));
-        let err = BucketRefs::connect(s, Path::from("ns/x")).await.err().unwrap();
+        let err = BucketRefs::connect(s, Path::from("ns/x"))
+            .await
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("conditional writes"), "{err}");
         let ignoring = Wrap::new();
         ignoring.ignore_create();
