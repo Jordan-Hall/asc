@@ -21,6 +21,10 @@ quick_cache = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 imara-diff.workspace = true
+gix-merge = { workspace = true }
+gix-imara-diff = { workspace = true }
+gix-hash = { workspace = true }
+bstr = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
