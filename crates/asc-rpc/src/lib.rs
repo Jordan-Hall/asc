@@ -4,8 +4,10 @@
 //! Generated prost messages stay inside this crate (`pb`). The public surface is the domain
 //! conversions in [`convert`], [`errors`], and the generated tonic services in [`services`].
 
+pub mod changes;
 pub mod convert;
 pub mod errors;
+pub mod json;
 
 /// Generated prost messages and tonic services for package `asc.v1`.
 #[allow(
@@ -21,6 +23,8 @@ pub(crate) mod pb {
 
 /// The generated tonic client and server modules; the only prost-typed public API.
 pub mod services {
+    pub use crate::pb::changes_client;
+    pub use crate::pb::changes_server;
     pub use crate::pb::projects_client;
     pub use crate::pb::projects_server;
     pub use crate::pb::repo_client;
@@ -31,3 +35,6 @@ pub mod services {
 
 pub use convert::{ConvertError, IdMode, ModeId, WireId};
 pub use errors::RpcError;
+
+/// The encoded `FileDescriptorSet` of every `asc.v1` proto (with imports and comments).
+pub const DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/asc_descriptor.bin"));
