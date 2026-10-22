@@ -219,16 +219,24 @@ pub fn is_asc_info(first: &[u8], second: &[u8]) -> bool {
     is_alias(first, ".asc", Some("asc~1")) && is_alias(second, "info", None)
 }
 
+/// True when a single component names `.asc` (or an alias of it) under the same folding as
+/// [`is_asc_info`].
+fn is_asc_dir_alias(comp: &[u8]) -> bool {
+    is_alias(comp, ".asc", Some("asc~1"))
+}
+
 /// Port of git's `verify_path` with `core.protectNTFS` and `core.protectHFS`.
 /// Backslash is treated as a separator, as NTFS does.
 pub fn checkout_safe(path: &RepoPath) -> bool {
     // git with core.protectNTFS rejects any backslash outright (CVE-2019-1353/1354); ':' and drive
     // letters are rejected on Windows by `windows_valid`, which materialisation also applies.
     let mut comps = path.components();
-    if let (Some(first), Some(second)) = (comps.next(), comps.next())
-        && is_asc_info(first, second)
-    {
-        return false;
+    match (comps.next(), comps.next()) {
+        (Some(first), Some(second)) if is_asc_info(first, second) => return false,
+        // A tracked entry that is itself `.asc` is a file or symlink, never the directory of
+        // local state; as a link it would redirect `.asc/info/exclude` and `.asc/redirections`.
+        (Some(only), None) if is_asc_dir_alias(only) => return false,
+        _ => {}
     }
     path.components()
         .all(|c| !c.contains(&b'\\') && !is_dotgit_alias(c) && c != b".." && c != b".")
@@ -399,6 +407,11 @@ mod tests {
             "ASC~1/info/exclude",
             ".asc::$DATA/info",
             ".c\u{200c}g/info/x",
+            ".asc",
+            ".ASC",
+            ".asc.",
+            "ASC~1",
+            ".asc::$DATA",
         ];
         for s in bad {
             let rp = RepoPath::new(s).unwrap();
@@ -415,7 +428,7 @@ mod tests {
             ".gi/t",
             ".asc/redirections",
             "a/.asc/info/x",
-            ".asc",
+            "a/.asc",
         ] {
             assert!(checkout_safe(&p(s)), "{s}");
         }
