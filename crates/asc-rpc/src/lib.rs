@@ -11,6 +11,7 @@ pub mod cloud;
 pub mod codeintel;
 pub mod convert;
 pub mod errors;
+pub mod ipc;
 pub mod json;
 pub mod server;
 
