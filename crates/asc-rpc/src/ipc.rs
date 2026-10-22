@@ -1,0 +1,478 @@
+//! Local IPC transport for the `asc.v1.Workspace` service (SPEC §14, "IPC").
+//!
+//! The daemon listens on a per-user local socket: the named pipe `\\.\pipe\asc-<user SID>` on
+//! Windows (DACL: that SID and SYSTEM only), `$XDG_RUNTIME_DIR/asc/asc.sock` or
+//! `$ASC_HOME/run/asc.sock` on Unix (directory 0700, socket 0600). [`IpcStream`] adapts a local
+//! socket connection to tonic ([`Connected`]); [`serve_incoming`] feeds a listener to
+//! `Server::serve_with_incoming`, and [`connect`] builds a [`Channel`] over the same endpoint.
+//! The generated `Workspace` service traits are re-exported here.
+
+use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use futures::stream::{self, BoxStream};
+use hyper_util::rt::TokioIo;
+use interprocess::local_socket::tokio::{Listener, Stream};
+use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
+use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tonic::transport::server::Connected;
+use tonic::transport::{Channel, Endpoint, Uri};
+use tower::service_fn;
+
+pub use crate::services::workspace_client::WorkspaceClient;
+pub use crate::services::workspace_server::{Workspace, WorkspaceServer};
+
+/// Why an IPC endpoint could not be set up.
+#[derive(Debug, thiserror::Error)]
+pub enum IpcError {
+    /// Neither `XDG_RUNTIME_DIR` nor `ASC_HOME` is usable, or the user SID is unavailable.
+    #[error("no per-user runtime location for the asc socket: {0}")]
+    NoRuntimeDir(String),
+    /// Another daemon already answers on the endpoint.
+    #[error("a daemon is already listening on {0}")]
+    InUse(String),
+    /// The runtime directory exists but is not private to this user.
+    #[error("runtime directory {0} is not private to this user")]
+    UnsafeDir(String),
+    /// An operating-system error.
+    #[error("ipc: {0}")]
+    Io(#[from] io::Error),
+}
+
+/// Where the daemon listens: a pipe name (Windows) or a socket path (Unix).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IpcEndpoint(String);
+
+impl IpcEndpoint {
+    /// The endpoint for the current user from the process environment.
+    pub fn for_current_user() -> Result<Self, IpcError> {
+        #[cfg(windows)]
+        {
+            Ok(Self::pipe(&win::user_sid()?))
+        }
+        #[cfg(unix)]
+        {
+            Self::unix(
+                std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                std::env::var_os("ASC_HOME").as_deref(),
+            )
+        }
+    }
+
+    /// The pipe endpoint for a user SID string (`asc-<sid>`).
+    pub fn pipe(sid: &str) -> Self {
+        Self(format!("asc-{sid}"))
+    }
+
+    /// The Unix endpoint from the two environment values; `XDG_RUNTIME_DIR` wins.
+    pub fn unix(
+        xdg_runtime_dir: Option<&std::ffi::OsStr>,
+        asc_home: Option<&std::ffi::OsStr>,
+    ) -> Result<Self, IpcError> {
+        let path = match (xdg_runtime_dir.filter(|v| !v.is_empty()), asc_home.filter(|v| !v.is_empty())) {
+            (Some(x), _) => std::path::Path::new(x).join("asc").join("asc.sock"),
+            (None, Some(h)) => std::path::Path::new(h).join("run").join("asc.sock"),
+            (None, None) => return Err(IpcError::NoRuntimeDir("XDG_RUNTIME_DIR and ASC_HOME unset".into())),
+        };
+        Ok(Self(path.to_string_lossy().into_owned()))
+    }
+
+    /// An endpoint at an explicit socket path (Unix) or pipe name (Windows); used by tests.
+    pub fn from_raw(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// The pipe name or socket path.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn name(&self) -> io::Result<Name<'_>> {
+        if cfg!(windows) {
+            self.0.as_str().to_ns_name::<GenericNamespaced>()
+        } else {
+            self.0.as_str().to_fs_name::<GenericFilePath>()
+        }
+    }
+}
+
+/// One accepted or dialled local connection; implements tonic's [`Connected`].
+pub struct IpcStream(Stream);
+
+impl Connected for IpcStream {
+    type ConnectInfo = ();
+    fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+impl AsyncRead for IpcStream {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for IpcStream {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+/// A bound listener. Dropping it removes the Unix socket file.
+pub struct IpcListener {
+    inner: Listener,
+    #[cfg(unix)]
+    own_uid: u32,
+}
+
+impl IpcListener {
+    /// Binds `endpoint` with owner-only access, clearing a stale socket on Unix.
+    pub fn bind(endpoint: &IpcEndpoint) -> Result<Self, IpcError> {
+        #[cfg(windows)]
+        {
+            use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+            let sd = win::owner_only_descriptor(&win::user_sid()?)?;
+            let inner = ListenerOptions::new().name(endpoint.name()?).security_descriptor(sd).create_tokio()?;
+            Ok(Self { inner })
+        }
+        #[cfg(unix)]
+        {
+            use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+            let own_uid = unix::prepare(endpoint)?;
+            let inner = ListenerOptions::new().name(endpoint.name()?).mode(0o600).create_tokio()?;
+            Ok(Self { inner, own_uid })
+        }
+    }
+
+    /// Accepts the next connection (on Unix, only from this user's uid).
+    pub async fn accept(&self) -> io::Result<IpcStream> {
+        #[cfg(unix)]
+        loop {
+            let stream = self.inner.accept().await?;
+            if stream.peer_creds().ok().and_then(|c| c.euid()) == Some(self.own_uid) {
+                return Ok(IpcStream(stream));
+            }
+        }
+        #[cfg(windows)]
+        Ok(IpcStream(self.inner.accept().await?))
+    }
+}
+
+/// Turns a listener into the incoming stream `Server::serve_with_incoming` takes.
+pub fn serve_incoming(listener: IpcListener) -> BoxStream<'static, io::Result<IpcStream>> {
+    Box::pin(stream::unfold(listener, |l| async move {
+        let item = l.accept().await;
+        Some((item, l))
+    }))
+}
+
+/// Dials the endpoint once; the raw connection (no gRPC).
+pub async fn connect_stream(endpoint: &IpcEndpoint) -> io::Result<IpcStream> {
+    Ok(IpcStream(Stream::connect(endpoint.name()?).await?))
+}
+
+/// A lazily connecting gRPC [`Channel`] over the endpoint.
+pub fn connect(endpoint: &IpcEndpoint) -> Channel {
+    let endpoint = endpoint.clone();
+    // The URI is a placeholder: the connector ignores it.
+    Endpoint::from_static("http://asc.ipc").connect_with_connector_lazy(service_fn(move |_: Uri| {
+        let endpoint = endpoint.clone();
+        async move { connect_stream(&endpoint).await.map(TokioIo::new) }
+    }))
+}
+
+#[cfg(unix)]
+mod unix {
+    use super::{IpcEndpoint, IpcError};
+    use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
+    use std::path::Path;
+
+    /// Creates the 0700 directory, refuses a foreign one, and removes a stale socket.
+    /// Returns this user's uid (the owner of the directory it just verified).
+    pub(super) fn prepare(endpoint: &IpcEndpoint) -> Result<u32, IpcError> {
+        let path = Path::new(endpoint.as_str());
+        let dir = path.parent().ok_or_else(|| IpcError::NoRuntimeDir(endpoint.as_str().into()))?;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() || meta.mode() & 0o077 != 0 {
+            // Tighten our own directory; refuse if that does not make it private.
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let meta = std::fs::symlink_metadata(dir)?;
+        if !meta.is_dir() || meta.mode() & 0o077 != 0 {
+            return Err(IpcError::UnsafeDir(dir.display().to_string()));
+        }
+        let uid = meta.uid();
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_socket() => {
+                match std::os::unix::net::UnixStream::connect(path) {
+                    Ok(_) => return Err(IpcError::InUse(endpoint.as_str().into())),
+                    Err(_) => std::fs::remove_file(path)?,
+                }
+            }
+            Ok(_) => return Err(IpcError::UnsafeDir(path.display().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(uid)
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod win {
+    use super::IpcError;
+    use interprocess::os::windows::security_descriptor::{BorrowedSecurityDescriptor, SecurityDescriptor};
+    use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt as _;
+    use std::ffi::c_void;
+    use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows::Win32::Security::{
+        GetTokenInformation, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::core::{PCWSTR, PWSTR};
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn os(e: windows::core::Error) -> IpcError {
+        IpcError::Io(std::io::Error::other(e))
+    }
+
+    /// The string SID of the process token's user.
+    pub(super) fn user_sid() -> Result<String, IpcError> {
+        // SAFETY: plain Win32 calls with correctly sized buffers; every allocation is freed.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(os)?;
+            let mut len = 0u32;
+            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast::<c_void>()), len, &mut len);
+            let _ = windows::Win32::Foundation::CloseHandle(token);
+            got.map_err(os)?;
+            let user = &*(buf.as_ptr().cast::<TOKEN_USER>());
+            let mut out = PWSTR::null();
+            ConvertSidToStringSidW(user.User.Sid, &mut out).map_err(os)?;
+            let s = out.to_string().map_err(|e| IpcError::NoRuntimeDir(e.to_string()));
+            let _ = LocalFree(Some(HLOCAL(out.0.cast())));
+            s
+        }
+    }
+
+    /// The SDDL granting full access to `sid` and SYSTEM only, with inheritance blocked.
+    pub(super) fn owner_only_sddl(sid: &str) -> String {
+        format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)")
+    }
+
+    /// The pipe security descriptor for `sid`.
+    pub(super) fn owner_only_descriptor(sid: &str) -> Result<SecurityDescriptor, IpcError> {
+        let sddl = wide(&owner_only_sddl(sid));
+        // SAFETY: the SDDL is NUL-terminated; the converted descriptor is cloned into an owned
+        // one and then freed.
+        unsafe {
+            let mut psd = PSECURITY_DESCRIPTOR::default();
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None)
+                .map_err(os)?;
+            let owned = BorrowedSecurityDescriptor::from_ptr(psd.0.cast_const()).to_owned_sd();
+            let _ = LocalFree(Some(HLOCAL(psd.0)));
+            Ok(owned?)
+        }
+    }
+
+    /// Reads the DACL of the pipe `name` back as an SDDL string.
+    #[cfg(test)]
+    pub(super) fn pipe_dacl_sddl(name: &str) -> Result<String, IpcError> {
+        use windows::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_KERNEL_OBJECT,
+        };
+        use windows::Win32::Security::DACL_SECURITY_INFORMATION;
+        use std::os::windows::io::AsRawHandle as _;
+        let pipe = std::fs::File::open(format!(r"\\.\pipe\{name}"))?;
+        // SAFETY: out-pointers are valid; the returned descriptor and string are freed.
+        unsafe {
+            let mut psd = PSECURITY_DESCRIPTOR::default();
+            let rc = GetSecurityInfo(
+                HANDLE(pipe.as_raw_handle()),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                Some(&mut psd),
+            );
+            if rc.0 != 0 {
+                return Err(IpcError::Io(std::io::Error::from_raw_os_error(rc.0 as i32)));
+            }
+            let mut out = PWSTR::null();
+            let r = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                psd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut out,
+                None,
+            );
+            let s = r.map(|()| out.to_string().unwrap_or_default());
+            let _ = LocalFree(Some(HLOCAL(out.0.cast())));
+            let _ = LocalFree(Some(HLOCAL(psd.0)));
+            s.map_err(os)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::convert::Infallible;
+    use std::task::{Context, Poll};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tonic::codegen::http::{Request, Response};
+    use tonic::server::NamedService;
+
+    fn unique() -> String {
+        format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple())
+    }
+
+    fn test_endpoint(dir: &std::path::Path) -> IpcEndpoint {
+        if cfg!(windows) {
+            IpcEndpoint::from_raw(format!("asc-test-{}", unique()))
+        } else {
+            IpcEndpoint::from_raw(dir.join("asc").join("asc.sock").to_string_lossy().into_owned())
+        }
+    }
+
+    #[test]
+    fn unix_paths_prefer_xdg_then_asc_home() {
+        use std::ffi::OsStr;
+        let x = IpcEndpoint::unix(Some(OsStr::new("/run/u")), Some(OsStr::new("/h"))).unwrap();
+        assert_eq!(x.as_str().replace('\\', "/"), "/run/u/asc/asc.sock");
+        let h = IpcEndpoint::unix(None, Some(OsStr::new("/h"))).unwrap();
+        assert_eq!(h.as_str().replace('\\', "/"), "/h/run/asc.sock");
+        let e = IpcEndpoint::unix(Some(OsStr::new("")), None);
+        assert!(matches!(e, Err(IpcError::NoRuntimeDir(_))));
+    }
+
+    #[test]
+    fn pipe_name_embeds_sid() {
+        assert_eq!(IpcEndpoint::pipe("S-1-5-21-1").as_str(), "asc-S-1-5-21-1");
+    }
+
+    #[tokio::test]
+    async fn same_user_connects_and_exchanges_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        let listener = IpcListener::bind(&ep).unwrap();
+        let server = tokio::spawn(async move {
+            let mut s = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4];
+            s.read_exact(&mut buf).await.unwrap();
+            s.write_all(&buf).await.unwrap();
+            s.flush().await.unwrap();
+            // Keep the listener alive until the client has read the echo.
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest).await;
+        });
+        let mut c = connect_stream(&ep).await.unwrap();
+        c.write_all(b"ping").await.unwrap();
+        let mut back = [0u8; 4];
+        c.read_exact(&mut back).await.unwrap();
+        assert_eq!(&back, b"ping");
+        drop(c);
+        server.await.unwrap();
+    }
+
+    /// A stand-in `asc.v1.Workspace` that answers every call with `UNIMPLEMENTED`.
+    #[derive(Clone)]
+    struct Stub;
+
+    impl NamedService for Stub {
+        const NAME: &'static str = "asc.v1.Workspace";
+    }
+
+    impl tower::Service<Request<tonic::body::Body>> for Stub {
+        type Response = Response<tonic::body::Body>;
+        type Error = Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Infallible>>;
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, _: Request<tonic::body::Body>) -> Self::Future {
+            std::future::ready(Ok(tonic::Status::unimplemented("stub").into_http()))
+        }
+    }
+
+    #[tokio::test]
+    async fn grpc_client_reaches_server_over_ipc() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        let incoming = serve_incoming(IpcListener::bind(&ep).unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(Stub)
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = rx.await;
+                })
+                .await
+        });
+        let mut client = WorkspaceClient::new(connect(&ep));
+        let err = client.ping(crate::pb::PingRequest::default()).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.message(), "stub");
+        let _ = tx.send(());
+        let _ = server.await;
+    }
+
+    #[test]
+    fn missing_endpoint_fails_to_connect() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ep = IpcEndpoint::from_raw(if cfg!(windows) { format!("asc-absent-{}", unique()) } else { "/nonexistent/asc.sock".into() });
+        assert!(rt.block_on(connect_stream(&ep)).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pipe_dacl_allows_only_user_and_system() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _guard = rt.enter();
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        let _listener = IpcListener::bind(&ep).unwrap();
+        let sddl = win::pipe_dacl_sddl(ep.as_str()).unwrap();
+        let sid = win::user_sid().unwrap();
+        assert!(sddl.starts_with("D:P"), "protected DACL expected: {sddl}");
+        assert_eq!(sddl.matches("(A;").count(), 2, "exactly two ACEs: {sddl}");
+        assert_eq!(sddl.matches("(D;").count(), 0, "{sddl}");
+        assert!(sddl.contains(&sid) || sddl.contains(";;;SY)"), "{sddl}");
+        assert!(sddl.contains(";;;SY)"), "SYSTEM ace: {sddl}");
+        assert!(sddl.contains(&format!(";;;{sid})")) || sddl.contains(";;;OW)"), "user ace: {sddl}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_is_private_and_stale_socket_is_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        {
+            let _l = IpcListener::bind(&ep).unwrap();
+            let p = std::path::Path::new(ep.as_str());
+            assert_eq!(std::fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+            assert!(matches!(IpcListener::bind(&ep), Err(IpcError::InUse(_)) | Err(IpcError::Io(_))));
+        }
+        // A leftover socket file with no listener is cleared by the next bind.
+        let _l = IpcListener::bind(&ep).unwrap();
+    }
+}
