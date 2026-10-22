@@ -1,6 +1,7 @@
 //! Node detector: `package.json` workspaces and `bun.lock` (SPEC §12A.2.4,
 //! §12A.2.6, node rows of §12A.2 and §12A.4).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
 use asc_core::path::RepoPath;
@@ -13,6 +14,10 @@ use crate::lock::bun::{self, DepRef, Lock, get, get_str};
 use crate::model::{
     DepKind, Ecosystem, Fingerprint, MAX_MANIFEST_BYTES, Parsed, Project, ProjectKey, ProjectKind,
 };
+
+/// Most lock closure work (packages and names visited, summed over members)
+/// per link. Past it, remaining members take the lockfile's content id.
+const MAX_CLOSURE_WORK: usize = 100_000_000;
 
 /// Fields of a `package.json` that the detector keeps.
 const KEPT: [&str; 9] = [
@@ -253,7 +258,8 @@ enum LockState<'a> {
     Absent,
     /// Over a limit or unreadable: every member takes the file's id.
     Unusable(Fingerprint),
-    Usable(Lock<'a>),
+    /// The lock and the file's id, used once the link's closure budget is spent.
+    Usable(Lock<'a>, Fingerprint),
 }
 
 struct Member<'a> {
@@ -283,6 +289,8 @@ struct Linker<'a> {
     groups: Vec<Group<'a>>,
     /// Member index by directory.
     by_dir: BTreeMap<String, usize>,
+    /// Lock closure work done so far in this link, against [`MAX_CLOSURE_WORK`].
+    work: Cell<usize>,
 }
 
 impl<'a> Linker<'a> {
@@ -308,6 +316,7 @@ impl<'a> Linker<'a> {
             members: Vec::new(),
             groups: Vec::new(),
             by_dir: BTreeMap::new(),
+            work: Cell::new(0),
         };
         for root in &chosen {
             me.workspace(cx, &pkgs, *root);
@@ -329,7 +338,7 @@ impl<'a> Linker<'a> {
         match cx.file(&path).copied() {
             Some(f) if f.eco == Ecosystem::Node && f.claim == Claim::Lockfile => {
                 match Lock::view(f.parsed) {
-                    Ok(l) => LockState::Usable(l),
+                    Ok(l) => LockState::Usable(l, Fingerprint::from(f.id)),
                     Err(why) => {
                         cx.report(f.path.clone(), format!("bun.lock is unusable: {why}"));
                         LockState::Unusable(Fingerprint::from(f.id))
@@ -396,7 +405,7 @@ impl<'a> Linker<'a> {
     fn gitlink_members(&mut self, cx: &LinkCx<'a>, g: usize, root: &LinkFile<'a>, pats: &Patterns) {
         let rd = self.groups[g].dir.clone();
         let mut found = Vec::new();
-        if let LockState::Usable(lock) = &self.groups[g].lock {
+        if let LockState::Usable(lock, _) = &self.groups[g].lock {
             for (key, entry) in lock.workspaces().iter().filter(|(k, _)| !k.is_empty()) {
                 let full = join(&rd, key);
                 let Some(gl) = cx
@@ -482,8 +491,14 @@ impl<'a> Linker<'a> {
         p.config_fp = g.config_fp;
         p.external_fp = match &g.lock {
             LockState::Unusable(fp) => *fp,
-            LockState::Usable(lock) => match lock.workspace(&m.rel) {
-                Some(entry) => lock.closure(entry, &m.name, &|ident| patch_id(cx, g, ident)),
+            LockState::Usable(lock, id) => match lock.workspace(&m.rel) {
+                Some(_) if self.work.get() > MAX_CLOSURE_WORK => *id,
+                Some(entry) => {
+                    let (fp, work) =
+                        lock.closure_counted(entry, &m.name, &|ident| patch_id(cx, g, ident));
+                    self.work.set(self.work.get().saturating_add(work));
+                    fp
+                }
                 None => declared(external),
             },
             LockState::Absent => declared(external),

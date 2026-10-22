@@ -137,6 +137,25 @@ fn reduce(doc: &serde_json::Value, max_packages: usize) -> Result<Value, String>
             workspaces.push((key.clone(), sorted(pairs)?));
         }
     }
+    // Workspace entries have their own cap, the same as packages; names and dependency specs count
+    // as edges, so one lock cannot exceed the caps in any dimension.
+    if workspaces.len() > max_packages {
+        return Err(format!("more than {max_packages} workspaces"));
+    }
+    let max_edges = max_packages.saturating_mul(8);
+    let mut edges: usize = workspaces
+        .iter()
+        .map(|(_, e): &(String, Value)| {
+            TABLES
+                .iter()
+                .filter_map(|(t, _)| get(e, t))
+                .map(|t| match t {
+                    Value::Map(m) => m.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        })
+        .sum();
     let mut packages = Vec::new();
     if let Some(p) = obj.get("packages") {
         let p = p.as_object().ok_or("packages is not an object")?;
@@ -144,7 +163,16 @@ fn reduce(doc: &serde_json::Value, max_packages: usize) -> Result<Value, String>
             return Err(format!("more than {max_packages} packages"));
         }
         for (key, e) in p {
-            packages.push((key.clone(), package_entry(e)?));
+            let entry = package_entry(e)?;
+            if let Value::Array(a) = &entry
+                && let Some(Value::Array(names)) = a.get(2)
+            {
+                edges = edges.saturating_add(names.len());
+            }
+            if edges > max_edges {
+                return Err(format!("more than {max_edges} dependency edges"));
+            }
+            packages.push((key.clone(), entry));
         }
     }
     sorted(vec![
@@ -274,16 +302,30 @@ impl<'a> Lock<'a> {
     ///
     /// `member` names the requester when the entry has no `name`; `patch`
     /// gives the content id of the patch file for a `name@version`.
+    #[cfg(test)]
     pub fn closure(
         &self,
         entry: &Value,
         member: &str,
         patch: &dyn Fn(&str) -> Option<[u8; 32]>,
     ) -> Fingerprint {
+        self.closure_counted(entry, member, patch).0
+    }
+
+    /// [`Lock::closure`] with the work it did (packages and names visited),
+    /// for callers that cap the total per link.
+    pub fn closure_counted(
+        &self,
+        entry: &Value,
+        member: &str,
+        patch: &dyn Fn(&str) -> Option<[u8; 32]>,
+    ) -> (Fingerprint, usize) {
+        let mut work = 0usize;
         let requester = get_str(entry, "name").unwrap_or(member);
         let mut seen: HashSet<&str> = HashSet::new();
         let mut stack: Vec<(&str, &Value)> = Vec::new();
         for d in tables(entry) {
+            work += 1;
             if let Some((k, e)) = self.resolve(requester, d.name)
                 && seen.insert(k)
             {
@@ -306,6 +348,7 @@ impl<'a> Lock<'a> {
             }
             let patch_id = patch(ident).map(hex).unwrap_or_default();
             out.insert([ident.clone(), integrity.clone(), patch_id]);
+            work += names.len() + 1;
             for n in names {
                 let Value::Str(n) = n else { continue };
                 if let Some((k, e)) = self.resolve(key, n)
@@ -315,12 +358,13 @@ impl<'a> Lock<'a> {
                 }
             }
         }
-        Value::Array(
+        let fp = Value::Array(
             out.into_iter()
                 .map(|t| Value::Array(t.into_iter().map(Value::Str).collect()))
                 .collect(),
         )
-        .fingerprint()
+        .fingerprint();
+        (fp, work)
     }
 }
 
@@ -481,5 +525,26 @@ mod tests {
         assert_eq!(p, parse(LOCK.as_bytes()));
         // Registry URLs are not kept.
         assert!(!format!("{p:?}").contains("https://"));
+    }
+
+    #[test]
+    fn workspaces_and_edges_count_against_the_caps() {
+        let ws = (0..4)
+            .map(|i| format!("\"w{i}\": {{}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let text = format!("{{\"workspaces\": {{{ws}}}, \"packages\": {{}}}}");
+        let p = parse_with(text.as_bytes(), 1 << 20, 3);
+        assert!(Lock::view(&p).is_err());
+        assert!(Lock::view(&parse_with(text.as_bytes(), 1 << 20, 4)).is_ok());
+        // 1 package naming 9 dependencies exceeds 8 edges per package of cap 1.
+        let deps = (0..9)
+            .map(|i| format!("\"d{i}\": \"1\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let text = format!(
+            "{{\"workspaces\": {{}}, \"packages\": {{\"a\": [\"a@1\", \"\", {{\"dependencies\": {{{deps}}}}}, \"x\"]}}}}"
+        );
+        assert!(Lock::view(&parse_with(text.as_bytes(), 1 << 20, 1)).is_err());
     }
 }
