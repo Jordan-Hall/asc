@@ -269,6 +269,10 @@ pub struct Limits {
     pub semantic_concurrency: u32,
     pub service_rps: u32,
     pub service_burst: u32,
+    /// CIDRs (or bare addresses) of reverse proxies in front of this server. Only a connection
+    /// from one of them may name the real client in `X-Forwarded-For`; any other peer's header is
+    /// ignored. Empty by default.
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for Limits {
@@ -289,6 +293,7 @@ impl Default for Limits {
             semantic_concurrency: 32,
             service_rps: 1000,
             service_burst: 2000,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -312,6 +317,13 @@ impl Limits {
         ];
         if let Some((name, _)) = counts.iter().find(|(_, v)| *v == 0) {
             return invalid(format!("limits.{name} must be greater than zero"));
+        }
+        if let Some(bad) = self
+            .trusted_proxies
+            .iter()
+            .find(|p| p.parse::<crate::limits::Cidr>().is_err())
+        {
+            return invalid(format!("limits.trusted_proxies: `{bad}` is not a CIDR"));
         }
         if self.text_memory.0 == 0 || self.objects_bytes_per_sec.0 == 0 {
             return invalid("limits.text_memory and limits.objects_bytes_per_sec must be positive");
@@ -559,12 +571,25 @@ child = "asc/soma"
     }
 
     #[test]
+    fn trusted_proxies_are_cidrs() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        let c = ServeConfig::parse(&format!(
+            "{base}[limits]\ntrusted_proxies = [\"10.0.0.0/8\", \"fd00::1\"]"
+        ))
+        .unwrap();
+        assert_eq!(c.limits.trusted_proxies.len(), 2);
+        let none = ServeConfig::parse(base).unwrap();
+        assert!(none.limits.trusted_proxies.is_empty());
+    }
+
+    #[test]
     fn rejects_bad_input() {
         let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
         for extra in [
             "bogus = 1",
             "[limits]\nmax_inflight = 0",
             "[limits]\ntext_memory = \"12 parsecs\"",
+            "[limits]\ntrusted_proxies = [\"not-a-cidr\"]",
             "[mcp]\nenabled = true",
             "[mcp]\nwrite = true",
             "[[composition_grants]]\nparent = \"a/b\"\nchild = \"a/b\"",
