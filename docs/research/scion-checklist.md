@@ -7,7 +7,7 @@ All defaults, docs, examples, `asc init`, import, the Forgejo default branch, CI
 Developers must be able to switch to asc without noticing the change. Where Scion and git UX conflict, git UX wins at the surface, and Scion's model stays underneath.
 - **Same commands, flags, arguments, revision syntax, output text and exit codes** as git porcelain. That covers `HEAD~2`, `master..feat`, `@{u}`, pathspecs and `-p/--stat/--oneline`. `--porcelain`, `-z` and `--format=` must be byte-compatible for tools.
 - **asc can be installed as `git`.** Use argv[0] detection or a shim, with fallthrough to real git for repos that are not asc. Scripts, editors and agents then keep working.
-- **No IDE support (user decision, 2026-10-22).** ASC builds its own IDE plugins against asc's API: the RPC, local IPC and `--json` output. Do NOT build:
+- **IDE support comes from ASC-built plugins, not from IDEs' built-in git (user decision, 2026-10-22; clarified the same day).** We build first-class IDE plugins that match GitKraken and Graphite combined, against asc's API: the RPC, local IPC, MCP and `--json` output. See the "IDE plugins" decision below. Do NOT build:
   - a full `.git` projection (git objects, refs mirror or rendered commits);
   - git's index as the staging area;
   - import of commits made by `git commit`;
@@ -160,7 +160,7 @@ asc has no LFS support.
 ## Decision: stacked commits and stacked PRs are core (2026-10-22)
 
 - Stacks are first-class in asc core, not a plugin. Model them on Graphite (gt create/submit/sync/restack, stacked PRs, merge queue for stacks), Sapling (smartlog, absorb, amend auto-restacks descendants, split/fold) and jj (stable change ids, auto-rebase of descendants, operation log/undo).
-- Bring the community-favourite features of GitLens and GitKraken into the core and the plugin API (blame/history/graph data, worktree management, and so on). There is still no IDE: asc exposes data through RPC, IPC and `--json`, and ASC's own plugins render it.
+- Bring the community-favourite features of GitLens and GitKraken into the core and the plugin API (blame/history/graph data, worktree management, and so on). asc exposes the data through RPC, IPC and `--json`, and the asc IDE plugins (see the "IDE plugins" decision below) and the Forgejo fork render it.
 - Git commands keep git semantics. Stack commands are additive (new verbs) and never change what an existing git command does.
 - The Forgejo fork supports stacked PRs natively. Users see each PR's base as its parent in the stack, and that base becomes the trunk automatically when the parent merges, with no retarget step. Under the hood the PR is stored against the trunk and diffs against its parent commit (stacks.md D8). The review UI is stack-aware, and the stack lands through the merge queue.
 - Design: docs/research/stacks.md (pending).
@@ -198,3 +198,28 @@ asc has no LFS support.
 - Results are filtered by the per-directory ACLs. They are exposed through MCP, RPC, IPC and `--json`, and rendered in the Forgejo fork's search.
 - The embedding model defaults to a local one running on the asc server, so code never leaves ASC infrastructure. External providers are opt-in through config.
 - The local daemon can serve the same queries offline for the active workspace, within the memory and storage budgets.
+
+## Decision: ASC-built IDE plugins (2026-10-22)
+
+- "No IDE support" means asc does not rely on the IDEs' built-in git, and there is still no full `.git` projection. It does NOT mean "no IDE integration". We build our own plugins, and they must be as good as GitKraken and Graphite combined, all in one.
+- Targets:
+  - First: VS Code, which also covers Cursor and VSCodium through Open VSX.
+  - Second: JetBrains, as one IntelliJ Platform plugin covering Rider, RustRover, PyCharm and WebStorm.
+- The plugins replace the built-in git SCM. The workspace sets `git.enabled: false` for VS Code and disables git VCS mapping for JetBrains.
+- Features:
+  - an SCM provider (status, stage, commit);
+  - a commit graph with lanes;
+  - a stack view and smartlog, with restack, absorb, split, fold, move and reorder by drag and drop;
+  - inline blame and CodeLens;
+  - file, line and visual history;
+  - compare;
+  - worktrees;
+  - undo and redo from the op log;
+  - a conflict resolver;
+  - stacked PR review inside the IDE, with a Launchpad-style inbox (Forgejo);
+  - Actions run status and logs;
+  - `asc affected`/project graph views;
+  - code search (trigram, symbol and semantic);
+  - MCP wiring for agents.
+- Everything goes through a single generated TypeScript client package (from proto), which the VS Code extension and the Forgejo UI share. The plugins never shell out to parse human output.
+- Plugin performance follows the same budgets: lazy loading, no whole-repo scans, and data served from daemon and server derived data.
