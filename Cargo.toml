@@ -2,6 +2,9 @@
 resolver = "3"
 members = [
     "crates/asc-core",
+    "crates/asc-graph",
+    "crates/asc-state",
+    "crates/asc-sim",
     "crates/asc-store",
     "crates/asc-engine",
     "crates/asc-git",
@@ -19,7 +22,7 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [workspace.dependencies]
 # internal crates
@@ -123,3 +126,24 @@ regex          = "1.13.1"
 filetime       = "0.2.29"
 sha2           = "0.11.1"
 url            = "2.5.4"       # asc-store (U07)
+# additions (U01b)
+gix-attributes = "=0.37.1"     # gix 0.89 family
+quick-xml      = "0.42.0"
+governor       = "0.10.4"
+prost-reflect  = "0.16.5"
+same-file      = "1.0.6"
+tar            = "0.4.46"
+zip            = { version = "9.0.5", default-features = false, features = ["deflate"] }
+minisign-verify = "0.3.0"
+prometheus-client = "0.25.1"
+opentelemetry  = "0.33.1"
+opentelemetry-otlp = "0.33.1"
+tracing-opentelemetry = "0.34.0"
+hmac           = "0.13.0"
+percent-encoding = "2.3.2"
+libfuzzer-sys  = "0.4.13"      # fuzz targets only
+turmoil        = "0.7.2"       # dev
+criterion      = "0.8.2"       # dev
+asc-graph = { path = "crates/asc-graph" }
+asc-state = { path = "crates/asc-state" }
+asc-sim = { path = "crates/asc-sim" }

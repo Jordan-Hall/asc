@@ -731,7 +731,7 @@ mod tests {
     // ---- git oracle -------------------------------------------------------------------
 
     fn git(dir: &std::path::Path, args: &[&str], date: Option<i64>) -> String {
-        let mut c = Command::new("git");
+        let mut c = Command::new("git"); // lint:allow-raw-git
         c.current_dir(dir).args(args);
         if let Some(d) = date {
             let d = format!("{} +0000", 1_000_000_000 + d);
@@ -854,7 +854,7 @@ mod tests {
                     assert!(one.len() == got.len().min(1) && got.contains_or_empty(&one));
                 }
                 // is_ancestor
-                let want = Command::new("git")
+                let want = Command::new("git") // lint:allow-raw-git
                     .current_dir(&sub)
                     .args(["merge-base", "--is-ancestor", &gids[i], &gids[j]])
                     .status()
@@ -910,7 +910,7 @@ mod tests {
 
     /// `git` that may exit 1 with no output (unrelated histories).
     fn git_try(dir: &std::path::Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = Command::new("git") // lint:allow-raw-git
             .current_dir(dir)
             .args(args)
             .output()

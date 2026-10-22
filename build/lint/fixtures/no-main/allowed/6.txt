@@ -1,0 +1,1 @@
+    ref: main # lint:allow-main
