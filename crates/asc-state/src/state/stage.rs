@@ -236,17 +236,23 @@ pub async fn replace(
     set: StageSet,
     rows: &[StageRow],
 ) -> Result<()> {
-    let ws = ws.to_string();
     let mut tx = db.begin().await?;
+    replace_tx(&mut tx, ws, set, rows).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// [`replace`] inside the caller's transaction, so it commits or rolls back with a ref move.
+pub async fn replace_tx(tx: &mut Tx, ws: WorkspaceId, set: StageSet, rows: &[StageRow]) -> Result<()> {
+    let ws = ws.to_string();
     sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = ?")
         .bind(&ws)
         .bind(set.raw())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     for r in rows {
-        upsert_tx(&mut tx, &ws, set.raw(), r).await?;
+        upsert_tx(tx, &ws, set.raw(), r).await?;
     }
-    tx.commit().await?;
     Ok(())
 }
 
@@ -327,33 +333,41 @@ pub async fn restore(db: &StateDb, ws: WorkspaceId, from: SetId) -> Result<()> {
 /// A path without a row gets a row holding the `from` leaf (or a staged delete); a path whose
 /// single normal row now equals the `to` leaf loses it. Conflict and intent-to-add rows stay.
 pub async fn rebase(db: &StateDb, ws: WorkspaceId, deltas: &[LeafDelta]) -> Result<()> {
-    let wsid = ws.to_string();
     let mut tx = db.begin().await?;
+    rebase_tx(&mut tx, ws, deltas).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// [`rebase`] inside the caller's transaction. A rebase is not idempotent (a row that equalled
+/// the `to` leaf is dropped), so the caller must commit it together with the move of the base
+/// it is relative to.
+pub async fn rebase_tx(tx: &mut Tx, ws: WorkspaceId, deltas: &[LeafDelta]) -> Result<()> {
+    let wsid = ws.to_string();
     for d in deltas {
         let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT {COLS} FROM stage WHERE ws_id = ? AND set_id = 0 AND path = ?"
         )))
         .bind(&wsid)
         .bind(&d.path)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         let rows = rows.iter().map(decode).collect::<Result<Vec<_>>>()?;
         match rows.as_slice() {
             [] => {
                 let row = StageRow::from_leaf(d.path.clone(), d.from.as_ref());
-                upsert_tx(&mut tx, &wsid, 0, &row).await?;
+                upsert_tx(tx, &wsid, 0, &row).await?;
             }
             [only] if only.equals(d.to.as_ref()) => {
                 sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = 0 AND path = ?")
                     .bind(&wsid)
                     .bind(&d.path)
-                    .execute(&mut *tx)
+                    .execute(&mut **tx)
                     .await?;
             }
             _ => {}
         }
     }
-    tx.commit().await?;
     Ok(())
 }
 

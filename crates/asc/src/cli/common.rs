@@ -26,7 +26,7 @@ use asc_store::cachedir::CacheDir;
 use asc_store::codec::encode_stored;
 use asc_store::key::{KeyPrefix, ObjKey};
 use asc_store::objects::{Objects, Result as ObjResult};
-use asc_store::refs::{Expect, RefError, RefTxn, Refs};
+use asc_store::refs::{Expect, RefError, RefTxn, RefUpdate, Refs};
 use asc_store::storeset::StoreSet;
 use asc_store::tiered::Tiered;
 use futures::stream::{BoxStream, StreamExt};
@@ -354,6 +354,85 @@ impl WsCtx {
         }
         Ok(out)
     }
+
+    /// Everything a ref move needs that can fail on untrusted input, computed before any state
+    /// changes: the HEAD commit the move produces, the stage deltas from the commit the stage is
+    /// relative to (`base_cs`) to it, and a detached target's git commit. A refusal here leaves
+    /// the ref, `head_base` and the stage untouched.
+    async fn plan_move(
+        &self,
+        updates: &[RefUpdate],
+        head_updates: &[RefUpdate],
+        old_head: Option<ChangesetId>,
+        keep: bool,
+    ) -> Result<MovePlan> {
+        let row = workspaces::get(&self.db, self.workspace.ws.id)
+            .await?
+            .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
+        let commit_of = |t: Option<RefTarget>| match t {
+            Some(RefTarget::Changeset(c)) => Some(c),
+            _ => None,
+        };
+        let (new_head, detached) = match self.projection.read_head()? {
+            Head::Branch(b) => {
+                if !head_updates.is_empty() {
+                    return Err(CliError::Fatal("asc: HEAD is a branch; update the branch instead".into()));
+                }
+                let name = RefName::new(format!("refs/heads/{b}").into_bytes())
+                    .map_err(|e| CliError::Fatal(format!("HEAD names a bad branch: {e}")))?;
+                let moved = updates.iter().rev().find(|u| u.name == name);
+                (moved.map_or(old_head, |u| commit_of(u.new)), None)
+            }
+            Head::Detached(_) => match head_updates {
+                [] => (old_head, None),
+                [u] => {
+                    let conflict = || CliError::Fatal("asc: HEAD changed concurrently".into());
+                    match (u.expect, old_head) {
+                        (Expect::Absent, Some(_)) => return Err(conflict()),
+                        (Expect::Value(RefTarget::Changeset(want)), cur) if cur != Some(want) => {
+                            return Err(conflict());
+                        }
+                        _ => {}
+                    }
+                    let Some(RefTarget::Changeset(cs)) = u.new else {
+                        return Err(CliError::Fatal("asc: HEAD cannot be deleted".into()));
+                    };
+                    let rows =
+                        asc_state::state::git_map::asc_to_git(&self.db, self.repo.key, cs.as_bytes()).await?;
+                    let oid: GitOid = rows
+                        .into_iter()
+                        .find(|(_, k)| *k == asc_core::git::ObjectKind::Commit)
+                        .map(|(o, _)| o)
+                        .ok_or_else(|| CliError::Fatal(format!("asc: no git commit for changeset {cs}")))?;
+                    (Some(cs), Some(oid))
+                }
+                _ => return Err(CliError::Fatal("asc: one transaction may update HEAD only once".into())),
+            },
+        };
+        let base = row.ws.base_cs;
+        let deltas = if keep && base != new_head {
+            self.leaf_deltas(base, new_head).await?
+        } else {
+            Vec::new()
+        };
+        // A detached move records no branch name; every other move keeps the recorded one.
+        let head = if detached.is_some() { String::new() } else { row.ws.head };
+        Ok(MovePlan { base, new_head, head, deltas, detached })
+    }
+}
+
+/// What [`WsCtx::plan_move`] decided; see there.
+struct MovePlan {
+    /// `workspaces.base_cs` when planned: the commit the stage rows are relative to.
+    base: Option<ChangesetId>,
+    /// The commit HEAD resolves to once the move is applied.
+    new_head: Option<ChangesetId>,
+    /// The `workspaces.head` to record with `new_head`.
+    head: String,
+    /// `leafdiff(base, new_head)` for `stage::rebase` (empty unless staging is kept).
+    deltas: Vec<LeafDelta>,
+    /// The git commit to write into a detached `HEAD` file after the state commits.
+    detached: Option<GitOid>,
 }
 
 /// The context of one invocation.
@@ -617,6 +696,14 @@ impl Ctx {
     /// applies the CAS (which appends the ref log), and, when HEAD's commit changes, fixes
     /// stage set 0 per `staging` and tells the synthetic index. No command moves a local ref
     /// any other way.
+    ///
+    /// Crash and error safety: everything that can fail on untrusted input (the leaf diff of an
+    /// over-long path or an over-large delta, a missing object, a bad detached target) runs
+    /// before the `prepared` hook and before any state changes. The ref move, the stage change
+    /// and the new head base then commit in ONE `state.db` transaction, so a failure or a crash
+    /// leaves the ref, `head_base` and the stage all on the old head or all on the new one. The
+    /// hook's `committed` event and the synthetic index follow the commit; the detached `HEAD`
+    /// file (a projection of `base_cs`) is written last.
     pub async fn update_local_refs(
         &self,
         mut txn: RefTxn,
@@ -633,6 +720,8 @@ impl Ctx {
         let (head_updates, updates): (Vec<_>, Vec<_>) = std::mem::take(&mut txn.updates)
             .into_iter()
             .partition(|u| u.name == head_name);
+        let keep = matches!(staging, StagingAfterMove::Keep);
+        let plan = ws.plan_move(&updates, &head_updates, old_head, keep).await?;
         let mut changes = Vec::new();
         for u in &updates {
             let old = ws.refs.get(repo, &u.name).await?.map(|e| e.target);
@@ -661,13 +750,26 @@ impl Ctx {
             return Err(CliError::Fatal(format!("ref updates aborted by hook: {rejected}")));
         }
         let applied = async {
+            let mut tx = ws.db.begin().await?;
+            // The stage rows are relative to `base_cs`; a concurrent writer moved it since the
+            // plan, so the planned deltas no longer fit. Roll back (dropping `tx`) and refuse.
+            if workspaces::base_cs_tx(&mut tx, ws_id).await? != plan.base {
+                return Err(CliError::Fatal("asc: HEAD changed concurrently".into()));
+            }
             if !updates.is_empty() {
                 txn.updates = updates;
-                ws.local.apply(repo, &txn).await?;
+                ws.local.apply_in_tx(&mut tx, repo, &txn).await?;
             }
-            for u in &head_updates {
-                self.move_detached_head(ws, u.expect, u.new, old_head).await?;
+            match staging {
+                StagingAfterMove::Set(rows) => {
+                    stage::replace_tx(&mut tx, ws_id, StageSet::Default, &rows).await?;
+                }
+                StagingAfterMove::Keep => stage::rebase_tx(&mut tx, ws_id, &plan.deltas).await?,
             }
+            if plan.base != plan.new_head {
+                workspaces::update_head_base_tx(&mut tx, ws_id, &plan.head, plan.new_head).await?;
+            }
+            tx.commit().await.map_err(asc_state::Error::from)?;
             Ok::<(), CliError>(())
         }
         .await;
@@ -677,60 +779,17 @@ impl Ctx {
         }
         hook.committed(&view).await;
 
-        let new_head = ws.head_commit().await?;
-        match staging {
-            StagingAfterMove::Set(rows) => {
-                stage::clear(&ws.db, ws_id, StageSet::Default).await?;
-                stage::upsert(&ws.db, ws_id, StageSet::Default, &rows).await?;
-            }
-            StagingAfterMove::Keep if old_head != new_head => {
-                let deltas = ws.leaf_deltas(old_head, new_head).await?;
-                stage::rebase(&ws.db, ws_id, &deltas).await?;
-            }
-            StagingAfterMove::Keep => {}
+        // The state is committed; the projection and the index follow it. A failure here is
+        // reported but leaves the ref, `head_base` and the stage consistent.
+        if let Some(oid) = plan.detached {
+            ws.projection.write_head(&Head::Detached(oid))?;
         }
-        if old_head != new_head {
-            workspaces::update_head_base(&ws.db, ws_id, &ws.workspace.ws.head, new_head).await?;
+        if old_head != plan.new_head {
             ext::index_sink()
-                .on_head_moved(ws_id, old_head, new_head)
+                .on_head_moved(ws_id, old_head, plan.new_head)
                 .await
                 .map_err(|e| CliError::Fatal(e.to_string()))?;
         }
-        Ok(())
-    }
-
-    /// Moves a detached HEAD: the `HEAD` file holds the git SHA, the row the changeset.
-    async fn move_detached_head(
-        &self,
-        ws: &WsCtx,
-        expect: Expect,
-        new: Option<RefTarget>,
-        current: Option<ChangesetId>,
-    ) -> Result<()> {
-        let conflict = || CliError::Fatal("asc: HEAD changed concurrently".into());
-        match (expect, current) {
-            (Expect::Absent, Some(_)) => return Err(conflict()),
-            (Expect::Value(RefTarget::Changeset(want)), cur) if cur != Some(want) => {
-                return Err(conflict());
-            }
-            _ => {}
-        }
-        if !matches!(ws.projection.read_head()?, Head::Detached(_)) {
-            return Err(CliError::Fatal(
-                "asc: HEAD is a branch; update the branch instead".into(),
-            ));
-        }
-        let Some(RefTarget::Changeset(cs)) = new else {
-            return Err(CliError::Fatal("asc: HEAD cannot be deleted".into()));
-        };
-        let rows = asc_state::state::git_map::asc_to_git(&ws.db, ws.repo.key, cs.as_bytes()).await?;
-        let oid: GitOid = rows
-            .into_iter()
-            .find(|(_, k)| *k == asc_core::git::ObjectKind::Commit)
-            .map(|(o, _)| o)
-            .ok_or_else(|| CliError::Fatal(format!("asc: no git commit for changeset {cs}")))?;
-        ws.projection.write_head(&Head::Detached(oid))?;
-        workspaces::update_head_base(&ws.db, ws.workspace.ws.id, "", Some(cs)).await?;
         Ok(())
     }
 }
@@ -831,6 +890,128 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CliError::Refs(RefError::Conflict(_))), "{err}");
         assert_eq!(ctx.ws().unwrap().head_commit().await.unwrap(), Some(a));
+    }
+
+    /// A changeset a hostile remote could push: its root tree holds an entry name of
+    /// `MAX_WALK_PATH_BYTES + 1` bytes. `put_tree` refuses it, so it is stored raw, as a fetch
+    /// would. Its `changes` are empty, so nothing validated them.
+    async fn hostile_long_name_changeset(f: &Fixture, parent: ChangesetId) -> ChangesetId {
+        use asc_core::codec::Enveloped;
+        use asc_core::object::{Changeset, Entry, SortedMap, Tree};
+        use asc_core::path::Name;
+        use asc_store::key::ObjKey;
+
+        let long = "n".repeat(asc_engine::tree::MAX_WALK_PATH_BYTES + 1);
+        let entry = Entry {
+            name: Name::new(long).unwrap(),
+            kind: Kind::File,
+            id: [1; 32],
+            size: 1,
+            git: asc_core::git::blob_oid(b""),
+        };
+        let tree = Tree::new(vec![entry], true).unwrap();
+        let tree_env = tree.to_envelope();
+        let root = asc_core::id::TreeId::of(&tree_env);
+        f.objects.put(&ObjKey::Tree(root), encode_stored(&tree_env)).await.unwrap();
+        let sig = asc_core::sig::Signature::new(b"T".to_vec(), b"t@example.com".to_vec(), 1_700_000_000, 0).unwrap();
+        let cs = Changeset {
+            parents: vec![parent],
+            root,
+            author: sig.clone(),
+            committer: sig,
+            message: b"hostile\n".to_vec(),
+            extra: SortedMap::new(Vec::new()).unwrap(),
+            changes: SortedMap::new(Vec::new()).unwrap(),
+        };
+        let env = cs.to_envelope();
+        let id = ChangesetId::of(&env);
+        f.objects.put(&ObjKey::Changeset(id), encode_stored(&env)).await.unwrap();
+        id
+    }
+
+    /// The state a ref move must keep consistent: the branch, `base_cs`, HEAD and the stage rows.
+    async fn snapshot(ctx: &Ctx) -> (Option<RefTarget>, Option<ChangesetId>, Option<ChangesetId>, Vec<StageRow>) {
+        let ws = ctx.ws().unwrap();
+        let master = RefName::new(b"refs/heads/master".to_vec()).unwrap();
+        let target = ws.refs.get(ws.repo.key, &master).await.unwrap().map(|e| e.target);
+        let base = workspaces::get(&ws.db, ws.workspace.ws.id).await.unwrap().unwrap().ws.base_cs;
+        let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await.unwrap();
+        (target, base, ws.head_commit().await.unwrap(), rows)
+    }
+
+    fn move_master(from: ChangesetId, to: ChangesetId) -> RefTxn {
+        txn(RefUpdate {
+            name: RefName::new(b"refs/heads/master".to_vec()).unwrap(),
+            expect: Expect::Value(RefTarget::Changeset(from)),
+            new: Some(RefTarget::Changeset(to)),
+            expires_at: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_head_whose_delta_cannot_be_computed_is_refused_before_the_ref_moves() {
+        let f = Fixture::new().await;
+        let a = f.commit(&[], &[("f.txt", b"one"), ("g.txt", b"keep")]).await;
+        f.set_branch("master", a).await;
+        f.checkout_branch("master", Some(a)).await;
+        let ctx = ctx_of(&f).await;
+        // A staged difference that a successful rebase would have to carry across the move.
+        let ws = ctx.ws().unwrap();
+        let edited = StageRow::from_leaf(b"f.txt".to_vec(), Some(&f.file_leaf(a, "f.txt").await));
+        stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &[StageRow { size: 99, ..edited }])
+            .await
+            .unwrap();
+        let before = snapshot(&ctx).await;
+
+        let hostile = hostile_long_name_changeset(&f, a).await;
+        // The same failing sink, reached through a target whose objects are absent.
+        let missing = ChangesetId::from_bytes([9; 32]);
+        for target in [hostile, missing] {
+            let err = ctx
+                .update_local_refs(move_master(a, target), "pull", StagingAfterMove::Keep)
+                .await
+                .unwrap_err();
+            assert!(!matches!(err, CliError::Refs(RefError::Conflict(_))), "{err}");
+            assert_eq!(snapshot(&ctx).await, before, "ref, head_base and stage stay on the old head: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stage_that_cannot_be_written_rolls_the_ref_move_back() {
+        let f = Fixture::new().await;
+        let a = f.commit(&[], &[("f", b"1")]).await;
+        f.set_branch("master", a).await;
+        f.checkout_branch("master", Some(a)).await;
+        let ctx = ctx_of(&f).await;
+        let ws = ctx.ws().unwrap();
+        let old = StageRow::from_leaf(b"old.txt".to_vec(), Some(&f.file_leaf(a, "f").await));
+        stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &[old]).await.unwrap();
+        let before = snapshot(&ctx).await;
+
+        // Stage 4 does not exist: storing the row fails after the old rows were deleted.
+        let bad = StageRow { stage: 4, ..StageRow::from_leaf(b"new.txt".to_vec(), Some(&f.file_leaf(a, "f").await)) };
+        let b = f.commit(&[a], &[("f", b"2")]).await;
+        let err = ctx
+            .update_local_refs(move_master(a, b), "commit", StagingAfterMove::Set(vec![bad]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CliError::State(_)), "{err}");
+        assert_eq!(snapshot(&ctx).await, before, "the old rows, ref and base all survive");
+    }
+
+    #[tokio::test]
+    async fn a_successful_move_commits_ref_base_and_stage_together() {
+        let f = Fixture::new().await;
+        let a = f.commit(&[], &[("f", b"1")]).await;
+        let b = f.commit(&[a], &[("f", b"2")]).await;
+        f.set_branch("master", a).await;
+        f.checkout_branch("master", Some(a)).await;
+        let ctx = ctx_of(&f).await;
+        ctx.update_local_refs(move_master(a, b), "ff", StagingAfterMove::Keep).await.unwrap();
+        let (target, base, head, rows) = snapshot(&ctx).await;
+        assert_eq!(target, Some(RefTarget::Changeset(b)));
+        assert_eq!((base, head), (Some(b), Some(b)));
+        assert_eq!(rows.len(), 1, "the move shows as a staged difference");
     }
 
     #[tokio::test]

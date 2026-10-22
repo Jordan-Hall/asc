@@ -5,7 +5,7 @@ use asc_store::refs::RepoKey;
 use sqlx::Row;
 use sqlx::any::AnyRow;
 
-use super::{Error, Result, StateDb, fixed, now};
+use super::{Error, Result, StateDb, Tx, fixed, now};
 use crate::home::WorkspaceId;
 
 /// How the working copy is realised.
@@ -138,16 +138,45 @@ pub async fn update_head_base(
     head: &str,
     base: Option<ChangesetId>,
 ) -> Result<()> {
+    let mut tx = db.begin().await?;
+    update_head_base_tx(&mut tx, id, head, base).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// [`update_head_base`] inside the caller's transaction, so a ref move, the stage rebase and the
+/// new base commit or roll back together.
+pub async fn update_head_base_tx(
+    tx: &mut Tx,
+    id: WorkspaceId,
+    head: &str,
+    base: Option<ChangesetId>,
+) -> Result<()> {
     let done = sqlx::query("UPDATE workspaces SET head = ?, base_cs = ? WHERE id = ?")
         .bind(head)
         .bind(base.map(|c| c.as_bytes().to_vec()))
         .bind(id.to_string())
-        .execute(db.pool())
+        .execute(&mut **tx)
         .await?;
     if done.rows_affected() == 0 {
         return Err(Error::NotFound("workspace"));
     }
     Ok(())
+}
+
+/// The base changeset of the workspace as the caller's transaction sees it: the commit the
+/// stage rows are relative to. `None` for an unborn HEAD.
+pub async fn base_cs_tx(tx: &mut Tx, id: WorkspaceId) -> Result<Option<ChangesetId>> {
+    let row: Option<Option<Vec<u8>>> =
+        sqlx::query_scalar("SELECT base_cs FROM workspaces WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(&mut **tx)
+            .await?;
+    let Some(base) = row else {
+        return Err(Error::NotFound("workspace"));
+    };
+    base.map(|b| fixed(b, "workspaces.base_cs").map(ChangesetId::from_bytes))
+        .transpose()
 }
 
 /// Increments the epoch and stamps its time; returns the new epoch.

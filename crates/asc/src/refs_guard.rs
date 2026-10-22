@@ -4,6 +4,7 @@
 
 use async_trait::async_trait;
 use asc_core::path::RefName;
+use asc_state::state::Tx;
 use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, Refs, RepoKey, Result};
 use asc_store::sqlrefs::SqlRefs;
 
@@ -50,9 +51,12 @@ impl LocalRefs {
         Self(refs)
     }
 
-    /// Applies `txn` atomically (CAS, ref log).
-    pub(crate) async fn apply(&self, repo: RepoKey, txn: &RefTxn) -> Result<()> {
-        self.0.update(repo, txn).await
+    /// Applies `txn` (CAS, ref log) inside `tx`, so the caller commits the ref move together with
+    /// the stage rebase and the new head base, or rolls all of them back. There is no
+    /// autocommitting variant: a ref that moved before its dependent state would leave that state
+    /// on the old head when a later step failed.
+    pub(crate) async fn apply_in_tx(&self, tx: &mut Tx, repo: RepoKey, txn: &RefTxn) -> Result<()> {
+        self.0.update_in_tx(tx, repo, txn).await
     }
 }
 
