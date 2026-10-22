@@ -108,3 +108,12 @@ Scion's efficiency model is the core of asc, not an optional later step. The fol
   - Dedup across a fork network where visibility allows.
 - **Derived data is lazy by default.** It is computed when first asked for and written back. Only master-critical types are eager (gen, skip lists, gitcommit, project graph).
 - **A benchmark suite in CI** tracks bytes fetched, bytes on disk, peak RSS and latency for clone, switch, status, diff, affected and CI checkout on the ASC workload. A regression fails the build.
+
+## Ignore files: `.ascignore` first, `.gitignore` as fallback (user decision, 2026-10-22)
+- **Per-directory precedence.** If a directory contains a `.ascignore`, asc uses it and does not read that directory's `.gitignore`. Otherwise asc reads `.gitignore`. Files are never merged, so the rule stays predictable.
+- **Syntax and semantics are identical to gitignore:** negation, `**`, anchoring, trailing `/`, escaping, and nested files scoped to their own directory. One parser serves both names.
+- **Repo-local excludes:** `.asc/info/exclude`, with `.git/info/exclude` as fallback.
+- **Global excludes:** `asc config core.excludesFile`, defaulting to `~/.config/asc/ignore`, with git's `core.excludesFile` as fallback.
+- **Commands:** `asc check-ignore -v` reports which file and line matched. `asc init` creates a `.ascignore`. `asc migrate ignore` renames or copies `.gitignore` to `.ascignore`.
+- **Git mirror export** carries both files as ordinary tracked content.
+- **Same pattern for attributes:** `.ascattributes` first, with `.gitattributes` as fallback.
