@@ -1,0 +1,180 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Code intelligence: search, symbols and semantic search (SPEC §23.4.1). Result text is untrusted file content.
+
+// Every query takes a scope. `workspace` is accepted only over the daemon IPC.
+message Scope {
+  RepoRef repo = 1;
+  oneof at {
+    string rev = 2;                                       // any revspec (SPEC §4.2)
+    bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE];   // resolved to its current head
+    bytes stack_top = 4 [(asc.v1.json) = JSON_KIND_CHANGE];
+    bool workspace = 5;
+  }
+  bool stack_diff_only = 6;
+  repeated string paths = 7;
+  repeated string exclude_paths = 8;
+  repeated string langs = 9;
+  bool include_excluded = 10;
+}
+
+// The immutable scope a response was computed against, so a follow-up call can pin it.
+message ResolvedScope {
+  bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes root = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  uint64 generation = 3;
+  float coverage = 4;
+}
+
+// Zero means the server default.
+message Budget {
+  uint32 max_results = 1;
+  uint32 max_bytes = 2;
+  uint32 max_tokens = 3;
+}
+
+enum SearchMode {
+  SEARCH_MODE_LITERAL = 0;
+  SEARCH_MODE_REGEX = 1;
+  SEARCH_MODE_WORD = 2;
+}
+
+message SearchRequest {
+  Scope scope = 1;
+  string pattern = 2;
+  SearchMode mode = 3;
+  bool case_sensitive = 4;
+  uint32 context_lines = 5;
+  Budget budget = 6;
+  string page_token = 7;
+}
+
+message LineMatch {
+  uint32 line = 1;
+  repeated uint32 cols = 2;
+  bytes text = 3 [(asc.v1.json) = JSON_KIND_TEXT];
+  repeated bytes before = 4 [(asc.v1.json) = JSON_KIND_TEXT];
+  repeated bytes after = 5 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+
+message FileHit {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  bytes file_id = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  string lang = 3;
+  repeated bytes also_at = 4 [(asc.v1.json) = JSON_KIND_PATH];   // up to 5 other paths of the same file
+  repeated LineMatch matches = 5;
+  bool redacted = 6;
+}
+
+message SearchResponse {
+  ResolvedScope scope = 1;
+  repeated FileHit files = 2;
+  bool truncated = 3;
+  string next_page_token = 4;
+  uint32 est_tokens = 5;
+}
+
+enum SymbolOp {
+  SYMBOL_OP_DEF = 0;
+  SYMBOL_OP_REFS = 1;
+  SYMBOL_OP_CALLERS = 2;
+  SYMBOL_OP_OUTLINE = 3;
+  SYMBOL_OP_FIND = 4;
+}
+
+message SymbolsRequest {
+  Scope scope = 1;
+  SymbolOp op = 2;
+  string name = 3;
+  bytes path = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  repeated string kinds = 5;
+  bytes def_path = 6 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 def_line = 7;
+  Budget budget = 8;
+  string page_token = 9;
+}
+
+message Symbol {
+  string name = 1;
+  string kind = 2;
+  bool is_def = 3;
+  bytes path = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 line = 5;
+  uint32 end_line = 6;
+  bytes signature = 7 [(asc.v1.json) = JSON_KIND_TEXT];
+  string container = 8;
+  bytes doc = 9 [(asc.v1.json) = JSON_KIND_TEXT];
+  string confidence = 10;   // import_match or name_match
+}
+
+message SymbolsResponse {
+  ResolvedScope scope = 1;
+  repeated Symbol symbols = 2;
+  bool truncated = 3;
+  string next_page_token = 4;
+  uint32 est_tokens = 5;
+}
+
+enum SemanticMode {
+  SEMANTIC_MODE_HYBRID = 0;
+  SEMANTIC_MODE_VECTOR = 1;
+}
+
+message SemanticRequest {
+  Scope scope = 1;
+  string query = 2;
+  SemanticMode mode = 3;
+  uint32 k = 4;
+  Budget budget = 5;
+  bool rerank = 6;
+}
+
+message Chunk {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  bytes file_id = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  string symbol = 5;
+  double score = 6;
+  repeated string sources = 7;
+  bytes text = 8 [(asc.v1.json) = JSON_KIND_TEXT];
+  bool redacted = 9;
+}
+
+message SemanticResponse {
+  ResolvedScope scope = 1;
+  repeated Chunk chunks = 2;
+  string model = 3;
+  uint32 est_tokens = 4;
+  bool ann_exhausted = 5;
+}
+
+message IndexStatusRequest {
+  Scope scope = 1;
+}
+
+message IndexStatus {
+  string index = 1;
+  float coverage = 2;
+  int64 lag_seconds = 3;
+  uint64 generation = 4;
+  string version = 5;
+}
+
+message IndexStatusResponse {
+  ResolvedScope scope = 1;
+  repeated IndexStatus indexes = 2;
+}
+
+// Read permission on every namespace searched. Rate class `codeintel` (SPEC §23.4.1).
+service CodeIntel {
+  rpc Search(SearchRequest) returns (stream SearchResponse);   // expensive without trigrams
+  rpc Symbols(SymbolsRequest) returns (SymbolsResponse);
+  rpc Semantic(SemanticRequest) returns (SemanticResponse);    // CPU: query embedding
+  rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);   // cheap
+}

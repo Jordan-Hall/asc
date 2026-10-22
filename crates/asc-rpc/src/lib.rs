@@ -6,6 +6,7 @@
 
 pub mod changes;
 pub mod cloud;
+pub mod codeintel;
 pub mod convert;
 pub mod errors;
 pub mod json;
@@ -28,6 +29,8 @@ pub mod services {
     pub use crate::pb::changes_server;
     pub use crate::pb::cloud_client;
     pub use crate::pb::cloud_server;
+    pub use crate::pb::code_intel_client;
+    pub use crate::pb::code_intel_server;
     pub use crate::pb::projects_client;
     pub use crate::pb::projects_server;
     pub use crate::pb::repo_client;
