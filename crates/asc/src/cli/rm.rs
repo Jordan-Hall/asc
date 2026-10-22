@@ -4,18 +4,17 @@
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::path::Path;
 use std::process::ExitCode;
 
 use asc_core::path::RepoPath;
-use asc_wc::plain::fs_path;
+use asc_wc::SafeRoot;
 use asc_wc::status::Eol;
 
 use super::add::attrs::Attrs;
 use super::add::spec::Spec;
 use super::add::target::{Edit, Staged, Target, Tracked};
 use super::add::{self, convert, cwd_prefix, workspace_attrs};
-use super::common::{CliError, Ctx, Result, WsCtx};
+use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
@@ -97,9 +96,9 @@ impl Refused {
 }
 
 /// Whether the work tree file at `path` differs from what is staged.
-fn locally_modified(ws: &WsCtx, attrs: &mut Attrs, path: &RepoPath, t: &Tracked) -> io::Result<bool> {
+fn locally_modified(gate: &SafeRoot, attrs: &mut Attrs, path: &RepoPath, t: &Tracked) -> io::Result<bool> {
     let Staged::Leaf { leaf, .. } = &t.staged else { return Ok(false) };
-    let abs = fs_path(ws.projection.toplevel(), path);
+    let Some(abs) = gate.resolve(path) else { return Ok(false) };
     let Ok(meta) = fs::symlink_metadata(&abs) else { return Ok(false) };
     if meta.is_dir() {
         return Ok(false);
@@ -112,20 +111,11 @@ fn locally_modified(ws: &WsCtx, attrs: &mut Attrs, path: &RepoPath, t: &Tracked)
     Ok(git != leaf.git)
 }
 
-/// Removes the file and then the directories it leaves empty, as git does.
-fn remove_from_work_tree(root: &Path, path: &RepoPath) -> io::Result<()> {
-    let abs = fs_path(root, path);
-    match fs::remove_file(&abs) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    }
-    let mut dir = path.parent();
-    while let Some(d) = dir {
-        if fs::remove_dir(fs_path(root, &d)).is_err() {
-            break;
-        }
-        dir = d.parent();
+/// Removes the file and then the directories it leaves empty, as git does. A path under a linked
+/// ancestor is outside the work tree: nothing is deleted there, and the cleanup stops at it.
+fn remove_from_work_tree(gate: &SafeRoot, path: &RepoPath) -> io::Result<()> {
+    if gate.remove_file(path)? {
+        gate.remove_empty_parents(path);
     }
     Ok(())
 }
@@ -137,6 +127,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     let spec = Spec::parse(&a.pathspec, &cwd_prefix(ctx, ws), ws.projection.toplevel())?;
     let mut target = Target::open(ctx).await?;
+    let gate = SafeRoot::new(ws.projection.toplevel());
     let mut seen = vec![false; spec.includes().len()];
     let mut hits: Vec<(RepoPath, Tracked)> = Vec::new();
     target
@@ -166,7 +157,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let mut refused = Refused::default();
         for (path, t) in &hits {
             let Staged::Leaf { leaf, ita: false } = &t.staged else { continue };
-            let local = locally_modified(ws, &mut attrs, path, t)
+            let local = locally_modified(&gate, &mut attrs, path, t)
                 .map_err(|e| CliError::Fatal(format!("{path}: {e}")))?;
             let staged = t.head.as_ref().is_none_or(|h| h.git != leaf.git || h.kind != leaf.kind);
             match (local, staged) {
@@ -191,9 +182,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if !a.cached {
-        let root = ws.projection.toplevel();
         for (path, _) in &hits {
-            remove_from_work_tree(root, path)
+            remove_from_work_tree(&gate, path)
                 .map_err(|e| CliError::Fatal(format!("git rm: '{path}': {e}")))?;
         }
     }

@@ -553,3 +553,79 @@ async fn ascignore_wins_and_shadowing_is_reported_once() {
     let staged: Vec<_> = r.asc_index().await.into_iter().map(|l| l.split('\t').nth(1).unwrap().to_owned()).collect();
     assert_eq!(staged, [".asc/redirections", ".ascignore", ".gitignore", "a.txt", "x.log"]);
 }
+
+// ---------------------------------------------------------------- symlinked ancestors
+//
+// git's has_symlink_leading_path: a tracked path under a symlinked (or, on Windows, junctioned)
+// ancestor is outside the work tree, so it is never read, written or deleted.
+
+/// Makes `link` a directory symlink (Unix) or a junction (Windows, where a symlink needs a
+/// privilege) to `target`; false when the OS refuses.
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(windows)]
+    let made = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    #[cfg(not(any(unix, windows)))]
+    let made = false;
+    made
+}
+
+/// A repository tracking `files`, with the first directory of `files[0]` swapped for a link to
+/// an outside directory holding the same files with `outside` content.
+async fn linked_rig(files: &[(&str, &[u8])], outside_body: &[u8]) -> (Rig, PathBuf) {
+    let r = Rig::new().await;
+    r.seed(files).await;
+    let dir = files[0].0.split('/').next().unwrap();
+    let out_dir = r.f.sandbox.dir("outside");
+    for (rel, _) in files {
+        let Some(inner) = rel.strip_prefix(&format!("{dir}/")) else { continue };
+        let p = out_dir.join(inner);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, outside_body).unwrap();
+    }
+    fs::remove_dir_all(r.f.root.join(dir)).unwrap();
+    assert!(link_dir(&out_dir, &r.f.root.join(dir)), "cannot make a directory link here");
+    (r, out_dir)
+}
+
+#[tokio::test]
+async fn rm_does_not_delete_through_a_linked_directory() {
+    let (r, outside) = linked_rig(&[("a/b", b"same\n"), ("keep", b"k\n")], b"same\n").await;
+    let out = r.asc(&["rm", "a/b"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(fs::read(outside.join("b")).unwrap(), b"same\n", "the outside file survives");
+    assert!(fs::symlink_metadata(r.f.root.join("a")).is_ok(), "the link itself is not removed");
+}
+
+#[tokio::test]
+async fn rm_cleanup_stops_at_a_linked_directory() {
+    let (r, outside) = linked_rig(&[("a/e/x", b"x\n")], b"x\n").await;
+    let out = r.asc(&["rm", "a/e/x"]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(outside.join("e/x").is_file(), "the outside file survives");
+    assert!(outside.join("e").is_dir(), "the outside directory is not removed");
+    assert!(outside.is_dir());
+    assert!(fs::symlink_metadata(r.f.root.join("a")).is_ok(), "the link itself is not removed");
+}
+
+#[tokio::test]
+async fn add_does_not_read_through_a_linked_directory() {
+    let (r, outside) = linked_rig(&[("a/b", b"orig\n"), ("keep", b"k\n")], b"SECRET\n").await;
+    // The blob id that staging the outside content would give.
+    fs::write(r.git.join("probe"), b"SECRET\n").unwrap();
+    let secret = r.git(&["hash-object", "probe"]).stdout.trim().to_owned();
+    assert_eq!(secret.len(), 40);
+    for args in [&["add", "a/b"][..], &["add", "-u"], &["add", "-A"], &["add", "."]] {
+        let out = r.asc(args);
+        assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
+        let index = r.asc_index().await.join("\n");
+        assert!(!index.contains(&secret), "{args:?} staged outside content:\n{index}");
+    }
+    assert_eq!(fs::read(outside.join("b")).unwrap(), b"SECRET\n");
+}

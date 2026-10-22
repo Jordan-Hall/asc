@@ -27,6 +27,7 @@ use asc_store::sqlrefs::SqlRefs;
 use asc_store::storeset::StoreSet;
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{self, Mode, Sparse, Wc};
+use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::status::NoEol;
 use futures::TryStreamExt;
@@ -436,8 +437,9 @@ pub(crate) async fn sync_worktree(
 }
 
 /// Whether the file at `path` differs from `entry` (size first, then the blob hash).
-fn differs(root: &Path, path: &RepoPath, entry: &Entry) -> bool {
-    let abs = plain::fs_path(root, path);
+fn differs(gate: &SafeRoot, path: &RepoPath, entry: &Entry) -> bool {
+    // Beyond a link the file is outside the work tree: it reads as missing, so it differs.
+    let Some(abs) = gate.resolve(path) else { return true };
     let Ok(meta) = fs::symlink_metadata(&abs) else { return true };
     match entry.kind {
         Kind::Gitlink | Kind::Dir => false,
@@ -476,9 +478,10 @@ pub(crate) async fn worktree_paths(
         .into_iter()
         .map(|(p, _)| p)
         .collect();
+    let gate = SafeRoot::new(ws.projection.toplevel());
     let mut walk = ws.engine.walk(target, Some(&spec.spec));
     while let Some((path, entry)) = walk.try_next().await? {
-        if !out.contains(&path) && differs(ws.projection.toplevel(), &path, &entry) {
+        if !out.contains(&path) && differs(&gate, &path, &entry) {
             out.insert(path);
         }
     }

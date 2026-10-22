@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::SystemTime;
 
 use asc_core::id::GitOid;
@@ -14,7 +14,7 @@ use asc_core::path::RepoPath;
 use asc_git::index::{IndexEntry, IndexFile, StatTime};
 use asc_state::state::stage::Leaf;
 use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
-use asc_wc::plain::fs_path;
+use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::status::Eol;
 
@@ -132,14 +132,15 @@ fn stat_matches(e: &IndexEntry, meta: &fs::Metadata, index_mtime: Option<SystemT
 /// Looks at `path` in the work tree, hashing the content only when the stat cache `cached`
 /// does not vouch for it. `eol` is asked only when a hash is needed.
 fn probe(
-    root: &Path,
+    gate: &SafeRoot,
     path: &RepoPath,
     cached: Option<&IndexEntry>,
     index_mtime: Option<SystemTime>,
     eol: impl FnOnce() -> Eol,
     filemode: bool,
 ) -> io::Result<Probe> {
-    let abs = fs_path(root, path);
+    // A path under a linked ancestor is outside the work tree: it reads as missing.
+    let Some(abs) = gate.resolve(path) else { return Ok(Probe::Missing) };
     let meta = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
@@ -187,6 +188,7 @@ pub async fn plan(
 ) -> Result<Plan> {
     let ws = ctx.ws()?;
     let root = ws.projection.toplevel();
+    let gate = SafeRoot::new(root);
     let index_path = ws.projection.git_dir().join("index");
     let index = IndexFile::read_or_empty(&index_path).unwrap_or_default();
     let cache: HashMap<&[u8], &IndexEntry> =
@@ -218,8 +220,8 @@ pub async fn plan(
                 return Ok(());
             }
             let eol = || attrs.lookup(path).map_or(Eol::Keep, |a| a.eol);
-            let found = probe(root, path, cached, index.mtime, eol, filemode)
-                .map_err(io_err(&fs_path(root, path)))?;
+            let found = probe(&gate, path, cached, index.mtime, eol, filemode)
+                .map_err(io_err(&gate.resolve(path).unwrap_or_else(|| root.to_owned())))?;
             let dirty = match (&found, leaf) {
                 (Probe::Missing | Probe::Dir, _) => {
                     plan.ops.push(Op::Remove(path.clone()));
@@ -273,7 +275,11 @@ pub async fn plan(
     for (item, hit) in spec.includes().iter().zip(&seen) {
         let literal = item.literal();
         let exists = literal.is_some_and(|p| {
-            p.is_empty() || fs::symlink_metadata(fs_path_raw(root, p)).is_ok()
+            p.is_empty()
+                || RepoPath::new(p.to_vec())
+                    .ok()
+                    .and_then(|rp| gate.resolve(&rp))
+                    .is_some_and(|abs| fs::symlink_metadata(abs).is_ok())
         });
         if !hit && !exists {
             return Err(CliError::Fatal(format!(
@@ -283,10 +289,6 @@ pub async fn plan(
         }
     }
     Ok(plan)
-}
-
-fn fs_path_raw(root: &Path, repo_path: &[u8]) -> PathBuf {
-    root.join(String::from_utf8_lossy(repo_path).as_ref())
 }
 
 #[cfg(unix)]
@@ -333,7 +335,8 @@ impl Walker<'_> {
     }
 
     fn entries(&mut self, rel: Option<&RepoPath>, abs: &Path) -> Result<()> {
-        let mut list = fs::read_dir(abs)
+        // The walk lists real directories only; a link is never descended.
+        let mut list = fs::read_dir(abs) // lint:allow-worktree-fs
             .and_then(|d| d.collect::<io::Result<Vec<_>>>())
             .map_err(io_err(abs))?;
         list.sort_by_key(fs::DirEntry::file_name);
