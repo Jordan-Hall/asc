@@ -17,6 +17,7 @@ pub mod graph_skip;
 pub mod history;
 pub mod land;
 pub mod merge;
+pub mod projects;
 pub mod rebase;
 pub mod revspec;
 pub mod sync;
@@ -36,6 +37,7 @@ pub struct Engine<O: Objects, R: Refs> {
     pub(crate) repo: RepoKey,
     pub(crate) trees: quick_cache::sync::Cache<TreeId, Arc<Tree>>,
     pub(crate) changesets: quick_cache::sync::Cache<ChangesetId, Arc<Changeset>>,
+    pub(crate) projects: projects::State,
 }
 
 impl<O: Objects, R: Refs> Engine<O, R> {
@@ -47,6 +49,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             repo,
             trees: quick_cache::sync::Cache::new(TREE_CACHE_ITEMS),
             changesets: quick_cache::sync::Cache::new(CHANGESET_CACHE_ITEMS),
+            projects: projects::State::new(),
         }
     }
 }

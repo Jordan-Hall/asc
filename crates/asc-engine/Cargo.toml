@@ -12,6 +12,8 @@ workspace = true
 [dependencies]
 asc-core = { workspace = true }
 asc-store = { workspace = true }
+asc-graph = { workspace = true }
+postcard = { workspace = true }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
