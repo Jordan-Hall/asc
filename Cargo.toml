@@ -87,6 +87,8 @@ memmap2        = "0.9.12"
 # git interop (gix family moves in lock-step: pin exactly)
 gix            = { version = "=0.89.0", default-features = false, features = ["max-performance-safe", "revision", "blob-diff"] }
 gix-config     = "=0.62.1"
+gix-sec        = "=0.16.0"     # gix 0.89 family; names the Trust type of gix-config (U20 security)
+windows-sys    = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 # diff / merge
 imara-diff     = "0.2.0"
 similar        = { version = "3.2.0", features = ["inline"] }
