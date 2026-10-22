@@ -45,6 +45,8 @@ pub enum ServeError {
     Sql(#[from] sqlx::Error),
     #[error("tls: {0}")]
     Tls(String),
+    #[error("admin listener: {0}")]
+    Admin(String),
     #[error("role {0:?} is not served by this build yet")]
     RoleUnavailable(Role),
     #[error("transport: {0}")]
@@ -146,7 +148,10 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
         .grpc
         .routes()
         .into_axum_router()
-        .merge(ext.http.router());
+        .merge(ext.http.router())
+        // tonic's own fallback answers an unknown path with `200` and a gRPC status; the public
+        // listener answers a plain 404 instead (`/metrics` lives on the admin listener only).
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND });
     Routes::from(router)
 }
 
@@ -160,6 +165,22 @@ fn read_pem(path: &FsPath) -> Result<Vec<u8>, ServeError> {
         return Err(ServeError::Tls(format!("{} is too large", path.display())));
     }
     Ok(buf)
+}
+
+/// Reads the admin bearer token: the first line of the file, trimmed, never empty.
+fn read_token(path: &FsPath) -> Result<Arc<str>, ServeError> {
+    let bytes =
+        read_pem(path).map_err(|_| ServeError::Admin(format!("{}: unreadable", path.display())))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ServeError::Admin(format!("{}: not UTF-8", path.display())))?;
+    let token = text.lines().next().unwrap_or("").trim();
+    if token.is_empty() {
+        return Err(ServeError::Admin(format!(
+            "{}: empty token",
+            path.display()
+        )));
+    }
+    Ok(Arc::from(token))
 }
 
 /// Runs the primary server until `shutdown` resolves. The schema must already be migrated.
@@ -190,11 +211,27 @@ pub async fn serve(
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
     };
-    http::register(
-        &ext,
-        http::HttpState::new(pool, outbox.clone(), metrics, well_known),
-    );
+    let http_state = http::HttpState::new(pool, outbox.clone(), metrics, well_known);
+    http::register(&ext, http_state.clone());
     let routes = build_routes(&ext, authorizer, ServerInfo::default());
+
+    // The admin listener is bound before the public one so a bad address fails startup.
+    let admin_token = match &cfg.admin.token_file {
+        Some(p) => Some(read_token(p)?),
+        None => None,
+    };
+    let admin_listener = tokio::net::TcpListener::bind(cfg.admin.listen)
+        .await
+        .map_err(|e| ServeError::Admin(format!("{}: {e}", cfg.admin.listen)))?;
+    let (admin_stop, admin_stopped) = tokio::sync::oneshot::channel::<()>();
+    let admin = tokio::spawn(async move {
+        axum::serve(admin_listener, http::admin_router(http_state, admin_token))
+            .with_graceful_shutdown(async {
+                let _ = admin_stopped.await;
+            })
+            .await
+    });
+    tracing::info!(listen = %cfg.admin.listen, "asc serve admin listening");
 
     let mut server = Server::builder().accept_http1(true);
     if let Some(tls) = &cfg.tls {
@@ -205,10 +242,14 @@ pub async fn serve(
     let worker = tokio::spawn(outbox.run());
     let served = server
         .add_routes(routes)
-        .serve_with_shutdown(cfg.listen, shutdown)
+        .serve_with_shutdown(cfg.listen, async move {
+            shutdown.await;
+            let _ = admin_stop.send(());
+        })
         .await;
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
+    admin.abort();
     served?;
     Ok(())
 }
@@ -308,5 +349,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status().as_u16(), 200);
+        let res = app
+            .oneshot(
+                axum::http::Request::get("/metrics")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status().as_u16(),
+            404,
+            "metrics are not on the public router"
+        );
+    }
+
+    #[test]
+    fn admin_token_file_is_trimmed_and_nonempty() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t");
+        std::fs::write(&p, "tok\n").unwrap();
+        assert_eq!(&*read_token(&p).unwrap(), "tok");
+        std::fs::write(&p, "\n").unwrap();
+        assert!(read_token(&p).is_err());
+        assert!(read_token(&dir.path().join("none")).is_err());
     }
 }

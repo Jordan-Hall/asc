@@ -979,7 +979,7 @@ message WsStagePath { uint32 stage = 1; /* 0..3 */ bytes path = 2; }
 
 The plugin RPCs are additive like `asc.v1` (§7 Compatibility), and every one also has an `asc … --json` CLI form (§11.2: `status|diff|log|blame --json`, `asc affected --json`, `asc watch --json`; `asc add` for `Stage`), so plugins can use either. ASC's IDE plugins reach all of them through `asc api --stdio` (§24.2), never through the pipe directly.
 
-**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/mcp` (MCP Streamable HTTP, primary role only, §22.2) and `/.well-known/oauth-protected-resource/mcp` (RFC 9728 metadata), `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz`, `/readyz`, `/metrics`.
+**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/mcp` (MCP Streamable HTTP, primary role only, §22.2) and `/.well-known/oauth-protected-resource/mcp` (RFC 9728 metadata), `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz` (a body-less 200) and `/readyz` (a bare 200 or 503, no body). `/metrics` is not served here (404): it and the detailed `/readyz` live on the separate admin listener (`[admin]`, §8.1), because metric labels name repos and tenants and the readiness checks reveal backend reachability.
 
 **Compatibility:** `asc.v1` evolves additively only (new fields, RPCs and enum values). A breaking change is `asc.v2`, served side by side. Envelope versions are independent: readers reject unknown versions with "upgrade asc".
 
@@ -1007,6 +1007,9 @@ repo_root = "/var/lib/forgejo/data/forgejo-repositories"   # needed from Stage 2
 trusted_tokens_file = "/etc/asc/turbo-trusted"   # Stage 1 only (§12.4)
 pr_retention_days = 14
 trusted_retention_days = 60
+[admin]                    # `/metrics` and the detailed `/readyz`; never on the public listener
+listen = "127.0.0.1:9464"  # default; a non-loopback address is refused unless token_file is set
+# token_file = "/etc/asc/admin-token"   # then every admin route needs `Authorization: Bearer <token>` (constant-time compare; 401 otherwise)
 [mcp]                      # §22.8; the /mcp endpoint
 enabled = false            # true by default once the auth layer exists (M13); true is refused before then
 write = false              # write tools also need the asc:write scope
@@ -2084,14 +2087,14 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 ### 16.1 Observability (per tier, agent-readable) [audit: 29-observability-superfans]
 
 - **Logs:** JSON lines via `tracing` with stable fields `ts, level, tier (cli|daemon|warmer|server|cache|forgejo), event, repo, op_id, rpc, duration_ms, outcome, trace_id`. `event` names are a stable catalogue (`land.conflict`, `land.retry`, `outbox.retry`, `outbox.dead`, `cache.corrupt`, `switch.pending`, `reconcile.orphan`, `import.mismatch`, `rate.limited`, `hydration.denied`, `daemon.restart`, `daemon.hung`). Daemon logs rotate at 50 MiB × 5. OTLP export when `ASC_OTLP_ENDPOINT` is set (any tier); `traceparent` is propagated from Forgejo through gRPC.
-- **Metrics:** Prometheus. Server and cache role: `/metrics`. The daemon serves `--metrics-listen 127.0.0.1:<port>` (off by default; on for CI runner and agent-fleet hosts). The warmer writes its counters to the node-exporter textfile directory. The catalogue (names fixed, in `docs/metrics.md`):
+- **Metrics:** Prometheus. Server and cache role: `/metrics` on the admin listener (`[admin] listen`, default `127.0.0.1:9464`; a bearer token is required off loopback, §8.1), never on the public port. The daemon serves `--metrics-listen 127.0.0.1:<port>` (off by default; on for CI runner and agent-fleet hosts). The warmer writes its counters to the node-exporter textfile directory. The catalogue (names fixed, in `docs/metrics.md`):
   - **server/cache:** `asc_rpc_duration_seconds{rpc,code}`, `asc_store_op_seconds{op,backend}`, `asc_ref_cas_conflicts_total`, `asc_land_total{outcome}`, `asc_hook_seconds{hook,outcome}`, `asc_outbox_lag_seconds`, `asc_outbox_failures_total`, `asc_mirror_import_lag_seconds`, `asc_derive_lag_changesets`, `asc_changeset_reads{rpc}` (histogram, §5.1), `asc_graph_walk_nodes`, `asc_cache_requests_total{tier,result}`, `asc_rate_limited_total{class}`, `asc_inflight_requests`, `asc_shed_total{reason}`, `asc_coalesced_total`, `asc_turbo_hit_ratio{scope}`, `asc_rss_bytes`;
   - **daemon:** `asc_daemon_hydrations_total{process}`, `asc_daemon_hydration_seconds`, `asc_daemon_fetch_bytes_total`, `asc_daemon_cache_bytes{dir}`, `asc_daemon_journal_entries`, `asc_daemon_pending_paths`, `asc_daemon_reconcile_paths_total`, `asc_daemon_provider_errors_total{op}`, `asc_daemon_uptime_seconds`, `asc_rss_bytes`;
   - **code intelligence [audit: codeintel-folded]:** `asc_ci_index_lag_seconds`, `asc_ci_jobs{kind,state}`, `asc_ci_query_seconds{rpc}`, `asc_ci_candidates_ratio`, `asc_ci_coverage` (I29, runbook `docs/runbooks/tier-codeintel.md`);
   - **client:** `asc_client_retries_total`;
   - **warmer:** `asc_warm_lag_seconds` (trunk tip age in the host cache), `asc_warm_objects_total`, `asc_warm_failures_total`;
   - **forgejo:** `forgejo_asc_rpc_seconds{method}`, `forgejo_asc_shadow_mismatch_total{method}`.
-- **Health:** `/healthz` (liveness) and `/readyz` (store, DB and Forgejo reachable; outbox lag < 5 min) on the server; `asc daemon status --json` for the daemon.
+- **Health:** `/healthz` (liveness) and `/readyz` (store, DB and Forgejo reachable; outbox lag < 5 min) on the server. The public listener returns only the status code (200 or 503, no body); the admin listener's `/readyz` adds a JSON body `{"ready":bool,"failed":[…]}` naming each failed check; `asc daemon status --json` for the daemon.
 - **Runbooks:** `docs/runbooks/tier-<name>.md` per tier: normal ranges for each metric, the alert rules (`deploy/alerts.yml`), and the first diagnostic commands. They are written for both humans and monitoring agents.
 - **Client diagnostics:** `asc debug stats [--json]` (cache size and hit ratio, bytes per workspace, hydrations per workspace, journal size, daemon uptime and RSS); `asc debug hydrations [--since] [--by-process]`; `ASC_TRACE=1` (per-command RPC timings); `asc doctor`.
 

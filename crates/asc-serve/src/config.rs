@@ -124,6 +124,25 @@ impl Default for CacheConfig {
     }
 }
 
+/// `[admin]`: the separate listener for `/metrics` and the detailed `/readyz` (SPEC §8.1).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AdminConfig {
+    pub listen: SocketAddr,
+    /// File holding the bearer token every admin route requires. Mandatory when `listen` is not
+    /// a loopback address.
+    pub token_file: Option<PathBuf>,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 9464)),
+            token_file: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForgejoConfig {
@@ -316,6 +335,7 @@ pub struct ServeConfig {
     pub listen: SocketAddr,
     pub public_url: Option<String>,
     pub tls: Option<Tls>,
+    pub admin: AdminConfig,
     pub role: Role,
     /// Bucket URL: `s3://…`, `file:///…` or `memory:///`.
     pub store: Option<String>,
@@ -339,6 +359,7 @@ impl Default for ServeConfig {
             listen: SocketAddr::from(([0, 0, 0, 0], 7890)),
             public_url: None,
             tls: None,
+            admin: AdminConfig::default(),
             role: Role::Primary,
             store: None,
             db: None,
@@ -411,6 +432,9 @@ impl ServeConfig {
             && !matches!(url_scheme(url), "http" | "https")
         {
             return invalid("public_url must be an http(s) URL");
+        }
+        if !self.admin.listen.ip().is_loopback() && self.admin.token_file.is_none() {
+            return invalid("a non-loopback admin.listen needs admin.token_file");
         }
         if self.mcp.enabled && !MCP_AUTH_LAYER {
             return invalid("mcp.enabled = true is refused until the auth layer exists");
@@ -523,6 +547,15 @@ child = "asc/soma"
         assert_eq!(c.limits.cheap_burst, 400);
         assert_eq!(c.bucket.max_concurrency, 256);
         assert_eq!(c.mcp.max_tokens, 6000);
+        assert_eq!(c.admin.listen, "127.0.0.1:9464".parse().unwrap());
+    }
+
+    #[test]
+    fn admin_listener_off_loopback_needs_a_token_file() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        let open = format!("{base}[admin]\nlisten = \"10.0.0.5:9464\"\ntoken_file = \"/etc/asc/a\"");
+        assert!(ServeConfig::parse(&open).is_ok());
+        assert!(ServeConfig::parse(&format!("{base}[admin]\nlisten = \"[::1]:1\"")).is_ok());
     }
 
     #[test]
@@ -537,6 +570,8 @@ child = "asc/soma"
             "[[composition_grants]]\nparent = \"a/b\"\nchild = \"a/b\"",
             "[[composition_grants]]\nparent = \"../x\"\nchild = \"a/b\"",
             "cache = { disk = \"1GiB\" }",
+            "[admin]\nlisten = \"0.0.0.0:9464\"",
+            "[admin]\nlisten = \"[::]:9464\"",
         ] {
             assert!(
                 ServeConfig::parse(&format!("{base}{extra}")).is_err(),
