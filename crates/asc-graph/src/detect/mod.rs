@@ -91,6 +91,7 @@ pub struct LinkFile<'a> {
 pub struct LinkCx<'a> {
     eco: Ecosystem,
     files: Vec<LinkFile<'a>>,
+    failed: Vec<&'a RepoPath>,
     by_dir: BTreeMap<Option<RepoPath>, Vec<usize>>,
     gitlinks: &'a [RepoPath],
     config: &'a ResolvedConfig,
@@ -113,6 +114,7 @@ impl<'a> LinkCx<'a> {
         Self {
             eco,
             files,
+            failed: Vec::new(),
             by_dir,
             gitlinks,
             config,
@@ -122,6 +124,18 @@ impl<'a> LinkCx<'a> {
 
     pub fn ecosystem(&self) -> Ecosystem {
         self.eco
+    }
+
+    /// Records the manifests of this ecosystem that failed to parse, so a
+    /// detector can tell an unreadable file from an absent one.
+    pub fn with_failed(mut self, failed: Vec<&'a RepoPath>) -> Self {
+        self.failed = failed;
+        self
+    }
+
+    /// Manifests of this ecosystem that failed to parse, in input order.
+    pub fn failed_manifests(&self) -> &[&'a RepoPath] {
+        &self.failed
     }
 
     /// The files claimed by this context's ecosystem, sorted by path.

@@ -97,7 +97,13 @@ pub fn link_graph(
         if !config.eco(eco).enabled {
             continue;
         }
-        let cx = LinkCx::new(eco, linked.clone(), gitlinks, &config);
+        let cx = LinkCx::new(eco, linked.clone(), gitlinks, &config).with_failed(
+            failed
+                .iter()
+                .filter(|(e, _)| *e == eco)
+                .map(|(_, p)| *p)
+                .collect(),
+        );
         projects.extend(d.link(&cx).into_iter().filter(|p| p.key.eco == eco));
         issues.extend(cx.take_issues());
     }
