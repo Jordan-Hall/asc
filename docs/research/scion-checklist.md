@@ -150,3 +150,9 @@ Scion's efficiency model is the core of asc, not an optional later step. The fol
   - **HUGE:** chromium-scale, at least 400k files and a 25+ GB working copy. Use a synthetic generator (`bench/gen`): a deterministic repo with configurable files, depth, size distribution, history length and churn, including 1M-file and 100 GB variants. Optionally also import a chromium snapshot.
 - **Measured:** time to first usable shell, time to first build, bytes transferred, bytes on disk, files hydrated and peak RSS, both cold (empty machine cache) and warm (seed snapshot or shared cache).
 - **Goal, following Scion:** HUGE-repo virtual checkout in seconds, independent of repo size. Cost must scale with the files read, not the files in the repo. The `worktree add` cost must not depend on repo size.
+
+## No LFS (user decision, 2026-10-22)
+asc has no LFS support.
+- Large files are native chunked content in the CAS, with no setup needed.
+- Git import keeps LFS pointer files as ordinary small blobs, byte-exact, so git SHAs and the mirror stay identical. LFS content is never fetched or migrated. The 25.6 GiB LFS store is archived once to a cold S3 bucket, outside asc.
+- Removed: `Entry.lfs`/`Change.lfs`, the `x/sha256` alias, the SHA-256 computed during ingest, pointer parsing, Forgejo LFS API serving and the LFS copy job.
