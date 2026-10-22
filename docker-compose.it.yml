@@ -1,0 +1,29 @@
+# Integration-test services: `docker compose -f docker-compose.it.yml up -d`.
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: asctest
+      MINIO_ROOT_PASSWORD: asctest-secret
+    ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      retries: 10
+  garage:
+    image: dxflrs/garage:v1.0.1
+    ports: ["3900:3900", "3902:3902"]
+    volumes:
+      - ./deploy/garage.toml:/etc/garage.toml:ro
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: asc
+      POSTGRES_PASSWORD: asc
+      POSTGRES_DB: asc
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asc"]
+      interval: 5s
+      retries: 10
