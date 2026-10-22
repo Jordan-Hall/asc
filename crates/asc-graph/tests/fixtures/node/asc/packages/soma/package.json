@@ -1,0 +1,1 @@
+{ "name": "@asc/soma", "dependencies": { "@soma/budgets": "workspace:*", "zod": "^4.4.1" } }

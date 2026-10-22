@@ -1,0 +1,4 @@
+{
+  "name": "@asc/dsl-compiler",
+  "optionalDependencies": { "@asc/dsl-compiler-linux-x64-gnu": "*" }
+}

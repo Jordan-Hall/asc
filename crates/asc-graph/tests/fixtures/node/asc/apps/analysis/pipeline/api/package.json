@@ -1,0 +1,4 @@
+{
+  "name": "analysis-pipeline-api",
+  "dependencies": { "@asc/soma": "workspace:*", "compromise": "14.14.5" }
+}

@@ -1,0 +1,1 @@
+{ "name": "soma-workspace", "workspaces": ["ts/*"], "devDependencies": { "typescript": "7.0.2" } }

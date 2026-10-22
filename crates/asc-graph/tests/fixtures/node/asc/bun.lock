@@ -1,0 +1,38 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": { "name": "@asc/private", "devDependencies": { "typescript": "7.0.2" } },
+    "apps/analysis/pipeline/api": {
+      "name": "analysis-pipeline-api",
+      "dependencies": { "@asc/soma": "workspace:*", "compromise": "14.14.5" },
+    },
+    "apps/web": {
+      "name": "web",
+      "dependencies": { "@asc/ui": "workspace:*", "react": "^19.0.0" },
+    },
+    "packages/dsl/core/rust": { "name": "@asc/dsl-compiler" },
+    "packages/soma": {
+      "name": "@asc/soma",
+      "dependencies": { "@soma/budgets": "workspace:*", "zod": "^4.4.1" },
+    },
+    "packages/soma/sdk": { "name": "soma-workspace", "devDependencies": { "typescript": "7.0.2" } },
+    "packages/soma/sdk/ts/budgets": { "name": "@soma/budgets", "version": "0.1.0" },
+    "packages/soma/sdk/ts/inference": {
+      "name": "@soma/inference",
+      "dependencies": { "@soma/budgets": "workspace:*", "zod": "^4.4.1" },
+    },
+    "packages/ui": { "name": "@asc/ui", "dependencies": { "left-pad": "^1.3.0" } },
+  },
+  "packages": {
+    "@asc/soma": ["@asc/soma@workspace:packages/soma"],
+    "@asc/ui": ["@asc/ui@workspace:packages/ui"],
+    "@soma/budgets": ["@soma/budgets@workspace:packages/soma/sdk/ts/budgets"],
+    "@soma/inference": ["@soma/inference@workspace:packages/soma/sdk/ts/inference"],
+    "compromise": ["compromise@14.14.5", "https://registry/compromise.tgz", { "dependencies": { "efrt": "2.7.0" } }, "sha512-compromise"],
+    "efrt": ["efrt@2.7.0", "https://registry/efrt.tgz", {}, "sha512-efrt"],
+    "left-pad": ["left-pad@1.3.0", "https://registry/left-pad.tgz", {}, "sha512-leftpad130"],
+    "react": ["react@19.0.0", "https://registry/react.tgz", {}, "sha512-react19"],
+    "typescript": ["typescript@7.0.2", "https://registry/typescript.tgz", {}, "sha512-ts7"],
+    "zod": ["zod@4.4.1", "https://registry/zod.tgz", {}, "sha512-zod441"],
+  }
+}

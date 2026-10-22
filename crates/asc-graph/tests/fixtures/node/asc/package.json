@@ -1,0 +1,19 @@
+{
+  "name": "@asc/private",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "packages/dsl/core/rust",
+    "packages/dsl/core/rust/npm/*",
+    "packages/soma/sdk/ts/*",
+    "!packages/soma/sdk/package.json",
+    "apps/*",
+    "apps/*/*/*"
+  ],
+  "packageManager": "bun@1.2.22",
+  "engines": { "bun": ">=1.2" },
+  "patchedDependencies": {
+    "compromise@14.14.5": "patches/compromise@14.14.5.patch"
+  },
+  "devDependencies": { "typescript": "7.0.2" }
+}
