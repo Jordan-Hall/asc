@@ -10,7 +10,7 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
 - No `unsafe` outside `asc-vfs::projfs::ffi` (which also wraps the `CreateFileW` that U57 uses), `asc-vfs::fuse::passthrough`, `asc-rpc::ipc` (Windows DACL only) and `asc::shim` (Windows console control handler only). Each starts with `#![allow(unsafe_code)]` or carries it on the specific item; the workspace lint is `unsafe_code = "deny"` (SPEC §15.2). U16a uses `same-file` for file identity, and U53c registers the logon task with `schtasks.exe /Create /XML` (no COM) [audit: unsafe-forbid-and-allowlist].
 - Tests live next to the code (`#[cfg(test)]`) or in the unit's owned `tests/` files. Integration tests needing Docker, ProjFS, FUSE, turbo or ASC's repo are `#[ignore]` and gated behind the features named in the acceptance command.
 - Pinned dependency versions are in SPEC §3/§4 and `docs/research/rust-stack.md` §10. Dependencies are pinned once in `[workspace.dependencies]` and units reference `workspace = true`. A unit that needs a crate not yet pinned may add exactly one exact-version line per crate to `[workspace.dependencies]`; this is allowed like the `mod` registration. The crate must pass `cargo deny` [audit: workspace-deps-rule-blocks-later-units].
-- **SPEC v1.1–v1.3 user decisions are fixed:** default branch `master` (never `main`); git-identical CLI and the `git` shim; **no IDE git plumbing** (no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`); the built-in project graph; Scion-core efficiency budgets; stacked changes and stacked PRs as additive verbs (SPEC §20; units C01–C52). Do not reintroduce removed mechanisms.
+- **SPEC v1.1–v1.3 user decisions are fixed:** default branch `master` (never `main`); git-identical CLI and the `git` shim; **no IDE git plumbing** (no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`); the built-in project graph; Scion-core efficiency budgets; stacked changes and stacked PRs as additive verbs (SPEC §20; units C01–C52); **branchless by default** with the opt-out commit cloud, user refs, the pre-upload secret hold and purge (SPEC §21; units B01–B28), which replaces the old "nothing uploaded before `asc push`" rule. Do not reintroduce removed mechanisms.
 - **Running git:** every git child process goes through `asc_git::realgit::RealGit::command()` (SPEC §11.4). `Command::new("git")` is forbidden outside test fixtures of crates below asc-git (marker `lint:allow-raw-git`); U01b's `no-raw-git.sh` fails on it [audit: no-raw-git-lint-fails-built-code].
 - **Acceptance before U25 [audit: cli-unit-acceptance-uses-sibling-commands]:** an acceptance test may run only CLI commands owned by the unit itself or by a declared dependency. Fixtures are built with `crates/asc/tests/support/mod.rs` (owned by U20: engine/state builders for repos, commits, branches and staging) or with real git through `RealGit`.
 - **Trust boundaries (SPEC §15.4) are fixed.** More validation of a trusted component needs a SPEC change, not a unit-level decision.
@@ -21,6 +21,7 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
   - **Local ref updates [audit: local-ref-update-chokepoint]:** `Ctx::update_local_refs(txn: RefTxn, reflog_msg, staging: StagingAfterMove)` (U20) is the only way CLI code moves a local ref (SPEC §9.4.1). It runs `ext::RefTxnHook` (prepared → CAS → committed | aborted), appends the reflog, calls `OpSink`/`RewriteSink` bookkeeping, and calls `ext::SyntheticIndexSink::on_head_moved` when HEAD's commit changes, and, unless the caller passes `StagingAfterMove::Set(rows)`, rebases the stage rows of set 0 across the HEAD move (default `Keep`; SPEC §9.5) [audit: staging-overlay-breaks-on-head-moves]. **Engine code never moves a local ref (SPEC §9.4.1):** an engine function whose effect includes local ref moves (`fetch`, `clone_minimal`, `push`'s remote-tracking update, restack execution) returns the planned `RefTxn`, and the CLI applies it through `Ctx::update_local_refs`. The CLI's `Engine` is built over `ReadOnlyRefs<SqlRefs>`, whose `update` returns `Error::ReadOnly` [audit: engine-local-ref-moves-bypass-chokepoint]. Every CLI unit that moves a ref (commit, branch, tag, reset, update-ref, merge, cherry-pick, revert, rebase, bisect, stash, fetch/push/pull remote-tracking updates, `worktree add -b`, stack verbs) calls it.
   - **Server extension points [audit: asc-serve-no-handler-or-route-extension-points]:** U42's `RepoHandlers` (one `Arc<dyn …>` per RPC group) and U43a's `HttpRoutes` and `GrpcServices` registries are filled by one registration line per unit in `crates/asc-serve/src/lib.rs` (U43b, U45, U47, U48a–U48d, U49, U66, U67, U68, U70, U72, U75, G09, C18–C22, C29, C30a–C30d, C50), which the general exception allows.
   - **Recorded amendments (stacks):** a few C units make one named hunk in a file another unit owns (table in §C). The hunk is listed in the C unit's brief and is allowed like the `mod` registration.
+  - **Recorded amendments (branchless) [audit: branchless-folded]:** the B units make a few named hunks in files other units own (table in §B). Each hunk is listed in the B unit's brief and is allowed like the `mod` registration. Built units (U41, U14b and the rest of U01–U16) change behaviour only through the follow-up unit named in the table, never by rewriting their briefs.
   - **Recorded amendments (non-stack) [audit: engine-local-ref-moves-bypass-chokepoint, object-stack-selector-single-owner-blocks-remote-tier]:** U20 makes two named hunks in built units' files: `build/lint/no-raw-git.sh` (U01b): `check_refs_update crates/asc/src/cli` becomes `crates/asc/src`, excluding `crates/asc/src/refs_guard.rs` (the one file that writes refs); and `CacheDir::open_read_only(root)` in `crates/asc-store/src/cachedir.rs` (U08; CARRY.md). Both are allowed like the `mod` registration.
   - **Child processes [audit: hook-child-path-real-git]:** every spawn of a hook, alias, editor, driver, `rebase --exec`, `bisect run` or `git-<name>`/`asc-<name>` external command goes through `asc::child::command()` (U20, `crates/asc/src/child.rs`), which applies SPEC §9.4.1's child PATH. Only `RealGit` children bypass it. Registering an implementation is one line in `main.rs`, which the general exception allows.
 
@@ -28,7 +29,7 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
 
 ```
 Cargo.toml  rust-toolchain.toml  deny.toml  .cargo/config.toml  docker-compose.it.yml
-proto/asc/v1/{repo,workspace,projects,changes}.proto   proto/buf.yaml   proto/buf.gen.yaml   (changes.proto: C17)
+proto/asc/v1/{repo,workspace,projects,changes,cloud}.proto   proto/buf.yaml   proto/buf.gen.yaml   (changes.proto: C17; cloud.proto: B07)
 crates/asc-core     pure data model, codec, git rendering, content ingest
 crates/asc-store    Objects/Refs traits, bucket, cache dir, tiered, SQL refs, bucket refs, GC
 crates/asc-engine   trees, commits, revspec, graph, skip lists, derive, diff, merge, rebase, land, blame, sync, history, projects
@@ -227,6 +228,37 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | C50 | `RequestMerge` RPC (proxies to the forge's queue) | asc-serve | C19, U46 | CD |
 | C51 | `asc uncommit`, `asc unamend`, `asc abandon` | asc | C10, C11 | – |
 | C52 | Server `no_content_merge` land flag | asc-serve | U46, U48b, U68, C17 | – |
+| B01 | Config keys and effective-mode resolver | asc | U20, U50, C11 | BD |
+| B02 | Local `draft_heads`, `cloud_queue`, `cloud_state`, `cloud_base` tables | asc-state | U17, C02 | – |
+| B03 | `DraftHeadSink`: head and queue maintenance | asc | B02, C04, U25 | BC |
+| B04 | Visible set, hide and unhide rules, obsolete heads | asc-engine | B02, C05, U14b | BA |
+| B05 | `asc hide`, `asc unhide` | asc | B04, C07, C15 | BD |
+| B06 | Local GC of hidden un-uploaded drafts | asc-state, asc | B04, B01, C03, U40b | BE |
+| B07 | Proto `cloud.proto` and the `repo.proto` follow-up | asc-rpc | U41, C17 | – |
+| B08a | Server ref policy, user-ref classification, advertisement, `ImportGitPush` mapping | asc-serve | U43b, U47, U48d | BC |
+| B08b | User-ref authz, per-user ref cap, quota on user-ref pushes | asc-serve | B08a, U44 | BD |
+| B08c | User-ref TTL, `landed_at` marker and expiry | asc-serve | B08a, U48d, U46 | BD |
+| B09 | Cloud workspace tables and RPCs, caps, label validation, `quota::charge` | asc-serve | B07, C18, U69 | BE |
+| B10 | Expiry worker, GC roots, `Purge`, `cache_evict` | asc-serve | B09, O01, U43c | BF |
+| B11 | Cloud sync engine (three-way merge, CAS retry) | asc-engine | B04, B07 | BB |
+| B12 | Client push mapping (user ref plus per-change AGit) | asc | B01, B08a, B08b, B13, C24, U32, B18a | BG |
+| B13 | Upload pipeline (closure, `HasObjects`, `PutObjects`, `Ingest`), bounded | asc-engine | B02, B28, C23, U31 | BB |
+| B14 | Daemon uploader and scheduler task | asc | B13, B11, B09, U53b | BF |
+| B15 | Cloud pull on fetch and `Watch KIND_CLOUD` | asc | B11, B14, C49 | BG |
+| B16 | `asc cloud status\|sync\|join\|list\|release\|purge`, `asc sl --cloud --user` | asc | B14, B15, B10, C08 | BH |
+| B17 | Forgejo: branchless repo setting, no branch rows or push events for user refs, draft PR default | forgejo | K07, K12, C34, B08a | own track |
+| B18 | `asc serve admin branchless enable` | asc-serve | B08a, B08c, B18a, U47, U66 | BE |
+| B18a | Migration-mode change-id tier (follow-up to built C01) | asc-core | C01 | – |
+| B19 | `asc migrate branchless` | asc | B03, B04, B18a | BD |
+| B20 | Withdrawn (folded into C01 and then into B18a) | – | – | – |
+| B21 | Compat suite in both modes; `asc-sim` cloud scenario | tests, asc-sim | B12, B14, U25, O08 | BH |
+| B22 | MCP handlers for `drafts`, `cloud_status`, `hide`, `unhide` | asc, asc-mcp | B16, M03, M10 | BI |
+| B23 | Forgejo "Your drafts" page (v1.x) | forgejo | B09, K06 | own track |
+| B24 | `asc doctor --workflows` | asc | U40, B01 | BE |
+| B25 | Benchmark scenarios for the commit cloud | bench | B14, O05 | BG |
+| B26 | `legacy_shared` conversion | asc-serve | B18, B08a, K12, C34 | BG |
+| B27 | CI: draft-PR trigger spike and stacked-PR base for `asc ci checkout` | asc-ci | U62, B17, C40 | BH |
+| B28 | Pre-upload guard (ignored and denied paths, bounded secret scan) | asc-engine | B02 | BA |
 | K01–K17 | Forgejo fork | Go | see §K | own track |
 | R01–R02 | Runner fork | Go | see §K | own track |
 | A01 | `asc/actions` mirror | actions | U64 | own track |
@@ -238,7 +270,7 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | O07 | Fuzz targets | fuzz | U04, U05, U13, U16, U41, U48a, G03–G06 | P |
 | O08 | Simulation harness | asc-sim | U46, U48d, O01, U65, U70, U01b | P |
 
-Unit ids keep their v1.0 numbers; split units carry letter suffixes, and new units continue the numbering (U65–U75, G01–G11, O06–O08, K17, R01–R02, A01; round 2 adds U01b and U24f). Round 3 adds the stack track C01–C52 (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12; C16 is withdrawn). There is no U74. U01–U12 and U14 are built; U15 is in progress; everything else is to do.
+Unit ids keep their v1.0 numbers; split units carry letter suffixes, and new units continue the numbering (U65–U75, G01–G11, O06–O08, K17, R01–R02, A01; round 2 adds U01b and U24f). Round 3 adds the stack track C01–C52 (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12; C16 is withdrawn). Round 5 adds the branchless track B01–B28 (SPEC §21; B20 is withdrawn and not reused; B18a is a follow-up unit for the built C01; the group letters `BA`–`BI` are by wave). There is no U74. U01–U12 and U14 are built; U15 is in progress; everything else is to do.
 
 Critical path to the **local-only milestone (U25)**: U01 → U02/U03 → U04 → U05/U06 → U07/U09 → U08 → U10 → U11 → U12/U14 → U13/U17 → U18/U19 → U20 → U20a, U21–U24 → U25. Cheap plain worktrees (U54w) follow immediately.
 Critical path to **disk relief on Windows (U58)**: U25 → U27a → U27c → U32 → U39 → U40, and U25 → U54v → U55 → U53a → U53b → U56/U57 → U58.
@@ -246,6 +278,7 @@ Critical path to **native affected (local)**: U04 → G01 → G02 → G03–G06 
 Critical path to **M-meta (U71)**: U42 → U43a → U43b → U43c → U44/U47 → U45 → U71, with U65 and G09 (`FindLanding` follows with U66).
 The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a Go engineer is available. K06 needs U41 and U43c.
 Critical path to **local stacks (phase 1c)**: U20 (`ext.rs` sinks) → U17/U26 → C01 → C02 → C05 → C06/C07 → C10 (needs U27c) → C11–C14, C51; C04 (after U27d, U27e, U32) → C15. The S-track of stacks.md is this C-track.
+Critical path to the **commit cloud** (SPEC §21.3): U17 → C02 → B02 → B28 → B13 (also needs C23, U31) → B14 (also needs B11, B09, U53b) → B15, B16. Critical path to **branchless `push`**: U43b/U47/U48d → B08a → B08b → B12 (also needs B13, C24, U32, B18a). B17 and B23 (Go) and B27 (CI) follow C34 and C40.
 Critical path to **stacked PRs**: C17 → C18 (needs U43b, U66) → C19 (needs U47) → C22 (needs U68), C24 (needs U50), C50 → C28; Forgejo C34 (after K17) → C36 → C38 → C39.
 
 ---
@@ -948,6 +981,76 @@ Each unit is done under the general rules (acceptance passes, clippy green, only
 
 ---
 
+## §B Branchless track: user refs, commit cloud and the pre-upload guard (SPEC §21) [audit: branchless-folded]
+
+Source: `docs/research/branchless.md` §7, with the review fixes it records. B20 is withdrawn (folded into C01 and then into B18a) and is not reused. Branchless code lives in `crates/asc/src/branchless/` (`mod.rs` owned by B01), `crates/asc-engine/src/branchless/` (`mod.rs` owned by B04) and `crates/asc-serve/src/cloud/` (`mod.rs` owned by B09). The first unit to land creates a missing `mod.rs`; each later unit adds its own `pub mod` line to it (the general exception). Every unit owns its test files, and none is shared.
+
+**Phases (SPEC §18):** the local units B01–B06 and B24 are phase 1c (after C04/C05); B07–B28 are phase 4b (after U47/U48d/U53b/C24). B17, B23 and B27 run on the Forgejo and CI tracks. B22 needs the MCP units M03 and M10 (`docs/research/mcp.md`), which the MCP fold adds to this plan; B22 cannot start before they exist.
+
+**Recorded amendments.** These hunks go into files that another unit owns. The B unit makes the hunk; it is allowed like the `mod` registration.
+
+| Owning unit and file | Hunk | Made by |
+|---|---|---|
+| C04 `crates/asc/src/stack/sinks.rs` | call `DraftHeadSink` next to `RewriteSink` | B03 |
+| C05 `crates/asc-engine/src/stack/mod.rs` | heads include visible draft heads | B04 |
+| U43b `UpdateRefs` step 1, U47 `ListRefs` | call `refpolicy::classify` / `refpolicy::advertise` | B08a |
+| U43b ingest, U48a `Ingest`/`PutObjects`, U48d `ImportGitPush` | call `quota::charge` (cloud and user-ref pushes skip pre-receive) | B09 |
+| U48d `ImportGitPush` | a non-shared branch maps to the pusher's user ref | B08a |
+| U48d expiry worker | user refs with TTL and `landed_at` | B08c |
+| U46 `UpdateRefs(LAND)` transaction (SPEC §8.5; the design text said "C34 land transaction", but C34 is the Forgejo PR patch) | set `user_ref_meta.landed_at` (SPEC §21.2.4a) | B08c |
+| U43c outbox | `cache_evict` row kind | B10 |
+| O01 GC marks | roots += `cloud_heads`; `gc_purge` | B10 |
+| U62 `asc ci checkout` | export `TURBO_SCM_BASE` from the PR's `merge_base`; always write `origin/<default_branch>` | B27 |
+| O05 `bench/**` (`asc-bench` CLI) | add the `--only <scenario>` filter | B25 |
+| M03 `crates/asc-mcp/tools.toml` | rows for the four tools of SPEC §21.7 | B22 |
+| U32 `cli/push.rs` | call `push_map` when the effective mode is branchless | B12 |
+| U31/U32 fetch | trigger a cloud pull after fetch (non-blocking request to the daemon) | B15 |
+| U53b daemon scheduler | register the uploader and sync tasks | B14 |
+| C08 `cli/sl.rs` | `--cloud`, `--user` | B16 |
+| C11 `crates/asc/src/stack/cli/create.rs` | `--no-branch` is implied when the effective mode is branchless (SPEC §20.7) | B01 |
+| C46 `services/pull/asc_branch_chain.go` (brief) | branch-chain PRs apply only when `repos.branchless=false` (SPEC §21.5.2) | B17 |
+| U41 `proto/asc/v1/repo.proto` (built) | the additive fields of SPEC §21.3.5 (`ErrorDetail` codes, `RepoConfigResponse` fields, `WatchEvent` kind `KIND_CLOUD`). B07 is the follow-up unit; U41's brief is not rewritten | B07 |
+| U69 admission | class `background` | B09 |
+| `crates/asc/src/branchless/mod.rs` (B01), `crates/asc-engine/src/branchless/mod.rs` and `crates/asc-engine/src/lib.rs` (B04), `crates/asc-serve/src/cloud/mod.rs` (B09), `crates/asc-serve/src/lib.rs`, `crates/asc-core/src/lib.rs` | `pub mod` lines of the later B units (`heads_sink`, `push_map`, `pull`, `local_gc`, `migrate`; `sync`, `upload`, `guard`; `expiry`, `purge`; `refpolicy`, `refauthz`, `reftl`; `change_migrate`) | the unit that owns the new file |
+
+The C01 import rule is **not** amended (C01 is built). The migration-mode third tier, `blake3_derive("asc v1 change import", cs)[..16]` with `op = Import`, lives in the new file of B18a; B12, B18 and B19 call it.
+
+| ID | Title | Depends | Owns | Accept | Brief and required tests |
+|---|---|---|---|---|---|
+| B01 | Config keys and effective-mode resolver (`asc.branchless`, `asc.cloud*`, `asc.draft.hiddenDays`, `asc.push.review`, env) | U20, U50, C11 | `crates/asc/src/branchless/{mod.rs,mode.rs}`, `crates/asc/tests/branchless_mode.rs` | `cargo test -p asc --test branchless_mode` | SPEC §21.6.1. Effective mode = `asc.branchless` AND the repo's `branchless` (from `RepoConfig`). Amendment: makes `--no-branch` the default of C11's `asc create` when the effective mode is branchless (SPEC §20.7). Tests: every scope (system, global, local, worktree, `-c`, env `ASC_BRANCHLESS`); `asc create` names no branch unless `<branch>` is given, and names one from `asc.stack.branchTemplate` when branchless is off; a branchless client on a branch-mode repo keeps local draft heads and uploads nothing; a branch-mode client on a branchless repo pushes user refs without submitting PRs; `asc.cloud=on` on a public repo is refused with a message. |
+| B02 | Local `draft_heads`, `cloud_queue`, `cloud_state`, `cloud_base` tables | U17, C02 | `crates/asc-state/migrations/0203_drafts.sql`, `crates/asc-state/src/drafts.rs` | `cargo test -p asc-state drafts::` | SPEC §21.2.2 DDL and the maintenance table. Tests: each event row of the table (new changeset, rewrite, becomes immutable, hide, unhide) leaves the expected rows; maintenance runs in the caller's transaction. |
+| B03 | `DraftHeadSink`: head and queue maintenance on every new or rewritten changeset | B02, C04, U25 | `crates/asc/src/branchless/heads_sink.rs`, `crates/asc/tests/branchless_heads.rs` | `cargo test -p asc --test branchless_heads && cargo test -p asc-compat --test compat` | Amendment: C04's sink calls it next to `RewriteSink`. It runs in both modes and is invisible. Tests: **the full compat suite is byte-identical with `asc.branchless` true and false**, under `git` and `asc`. |
+| B04 | Visible set, hide and unhide rules, obsolete heads | B02, C05, U14b | `crates/asc-engine/src/branchless/{mod.rs,visible.rs}` | `cargo test -p asc-engine branchless::visible` | Amendment: C05's heads include visible draft heads. Tests: the visible set equals a naive oracle on random DAGs; hiding a mid-stack change hides its descendants and re-exposes the parent; evaluating visibility issues no tag lookups and no walk below the trunk. |
+| B05 | `asc hide`, `asc unhide` (op-log undoable) | B04, C07, C15 | `crates/asc/src/stack/cli/hide.rs`, `crates/asc/tests/branchless_hide.rs` | `cargo test -p asc --test branchless_hide` | Registers itself through C07's `linkme` slice. Tests: hide then `asc undo` restores the head; `asc unhide <id>` within the grace period recovers the draft. |
+| B06 | Local GC of hidden un-uploaded drafts (own retention `asc.draft.hiddenDays`) | B04, B01, C03, U40b | `crates/asc/src/branchless/local_gc.rs`, `crates/asc/tests/branchless_gc.rs` | `cargo test -p asc --test branchless_gc` | SPEC §21.2.4 local column; independent of the op-log cap of §20.3. Tests: `asc undo` of an op whose head expired fails with "objects expired" and changes nothing; un-uploaded objects of visible heads are never removed. |
+| B07 | Proto `cloud.proto` and the `repo.proto` follow-up | U41, C17 | `proto/asc/v1/cloud.proto`, `crates/asc-rpc/src/cloud.rs` | `cargo test -p asc-rpc cloud:: && buf lint proto` | SPEC §21.3.5 verbatim, plus the additive `repo.proto` hunks (follow-up to built U41). |
+| B08a | Server ref policy: `shared_refs`, user-ref classification, advertisement, `ImportGitPush` mapping | U43b, U47, U48d | `crates/asc-serve/src/refpolicy.rs`, `crates/asc-serve/migrations/{postgres,sqlite}/0203_branchless.sql`, `crates/asc-serve/tests/refpolicy.rs` | `cargo test -p asc-serve --test refpolicy` | SPEC §21.5.1. Tests: `ListRefs` for one user is O(shared + own), checked with 100k user refs of other users; `REF_NOT_SHARED` for a non-shared tag; a plain git push to a non-shared branch lands as a user ref. |
+| B08b | User-ref authz (owner-only), per-user ref cap, quota on user-ref pushes, no outbox fan-out | B08a, U44 | `crates/asc-serve/src/refauthz.rs`, `crates/asc-serve/tests/refauthz.rs` | `cargo test -p asc-serve --test refauthz` | Tests: a non-owner cannot push or list another user's ref; user-ref updates write no outbox `post_receive`; the 1,001st user ref gets `USER_REFS_LIMIT`. |
+| B08c | User-ref TTL, `user_ref_meta.landed_at` and `landed_ref_days` expiry | B08a, U48d, U46 | `crates/asc-serve/src/reftl.rs`, `crates/asc-serve/migrations/{postgres,sqlite}/0205_user_ref_meta.sql`, `crates/asc-serve/tests/reftl.rs` | `cargo test -p asc-serve --test reftl` | SPEC §21.2.4 and §21.2.4a. Tests: the landed marker and the `push --delete` reachability check read only the owner's rows (query-count test). |
+| B09 | Cloud workspace tables and `GetWorkspace`/`UpdateWorkspace`/`ListWorkspaces` (CAS, idempotent), workspace caps, label validation, `quota::charge` | B07, C18, U69 | `crates/asc-serve/src/cloud/{mod.rs,rpc.rs,quota.rs}`, `crates/asc-serve/migrations/{postgres,sqlite}/0204_cloud.sql` | `cargo test -p asc-serve cloud::rpc cloud::quota` | Tests: a concurrent `UpdateWorkspace` gets `VERSION_CONFLICT`; a retried `op_id` returns the stored result; a client-supplied `change` is ignored; bad labels and a 17th workspace are refused; `PutObjects` over quota gets `QUOTA_EXCEEDED`. |
+| B10 | Expiry worker, GC roots, `Purge` (owner and admin), `cache_evict` | B09, O01, U43c | `crates/asc-serve/src/cloud/{expiry.rs,purge.rs}` | `cargo test -p asc-serve cloud::expiry cloud::purge` | Tests: hidden heads expire after the grace period and their objects are swept by two marks; a head with an open PR is never auto-hidden; a purged object is swept at the next run; an owner can purge their own unsubmitted draft but not a submitted one or another user's; `cache_evict` is retried until acked. |
+| B11 | Cloud sync engine (three-way merge, CAS retry) | B04, B07 | `crates/asc-engine/src/branchless/sync.rs` | `cargo test -p asc-engine branchless::sync` | SPEC §21.3.4. Tests: two machines in one workspace converge with no lost heads after 1,000 random interleaved operations. |
+| B12 | Client push mapping (user ref plus per-change AGit in one `UpdateRefs`; `--all`, `--mirror`, merge rejection; git-identical output) | B01, B08a, B08b, B13, C24, U32, B18a | `crates/asc/src/branchless/push_map.rs`, `crates/asc/tests/branchless_push.rs` | `cargo test -p asc --test branchless_push` | SPEC §21.4.3. Commits without a `ChangeMeta` get an id by the C01 rule plus B18a's tier. Tests: `push --all` creates no PR; `push --mirror` is rejected; a range with a merge is rejected with nothing moved; the output of `git push origin feat`, `-u`, `--force-with-lease`, `--delete` and a rejected push equals real git's against a git server after stripping `remote:` lines; a per-change rejection moves nothing. |
+| B13 | Upload pipeline (guard, closure, `HasObjects`, `PutObjects`, `Ingest`, demotion), bounded | B02, B28, C23, U31 | `crates/asc-engine/src/branchless/upload.rs` | `cargo test -p asc-engine branchless::upload` | SPEC §21.3.1–§21.3.2. Tests: a killed upload resumes with `HasObjects`; a 1 GiB stack stays within the batch-window memory bound. |
+| B14 | Daemon uploader and scheduler task (backoff, offline probe, no-daemon path, public-repo gate) | B13, B11, B09, U53b | `crates/asc/src/daemon/cloud.rs`, `crates/asc/tests/branchless_daemon.rs` | `cargo test -p asc --test branchless_daemon` | SPEC §21.3.3. Tests: nothing uploads on a public repo or when `repos.cloud` is off; the no-daemon path uploads nothing; offline commits never block; daemon RSS stays within budget while uploading a 1 GiB stack. |
+| B15 | Cloud pull on fetch (daemon only, best-effort) and `Watch KIND_CLOUD` (owner only) | B11, B14, C49 | `crates/asc/src/branchless/pull.rs`, `crates/asc/tests/branchless_pull.rs` | `cargo test -p asc --test branchless_pull` | Tests: a failed cloud pull leaves `fetch`'s exit code and stderr identical to a run with no daemon. |
+| B16 | `asc cloud status\|sync\|join\|list\|release\|purge`, `asc sl --cloud --user` | B14, B15, B10, C08 | `crates/asc/src/stack/cli/cloud.rs`, `crates/asc/tests/branchless_cloud_cli.rs` | `cargo test -p asc --test branchless_cloud_cli` | Registers through C07's slice; `sl --cloud` and `cloud sync` run in-process and report failures. |
+| B17 | Forgejo: repo setting (branchless, cloud, `shared_refs`), no branch rows or push events for user refs, draft PR default, draft-PR `pull_request` trigger if spike S13 requires it | K07, K12, C34, B08a | `routers/web/repo/setting/asc_branchless.go`, `services/ascsync/branchless.go` | `go test ./services/ascsync/... ./routers/web/repo/setting/... -run TestAscBranchless` | SPEC §21.5.2. Go track (`D:\dev\forgejo`). |
+| B18 | `asc serve admin branchless enable` (classify, convert, `legacy_shared`, report) | B08a, B08c, B18a, U47, U66 | `crates/asc-serve/src/admin/branchless.rs`, `crates/asc-serve/tests/branchless_migrate.rs` | `cargo test -p asc-serve --test branchless_migrate` | SPEC §21.6.2. Tests: a dry run over an ASC-shaped fixture (117 branches) reports the classification; applying it twice is a no-op. |
+| B18a | Migration-mode change-id tier (follow-up to built C01) | C01 | `crates/asc-core/src/change_migrate.rs`, `crates/asc-core/tests/change_migrate.rs` | `cargo test -p asc-core --test change_migrate` | SPEC §21.6.2. `migration_id(commit, jj_header, gerrit, scope) -> Option<ChangeId>`: jj header, then the Gerrit trailer (calling C01's `from_jj_header` and `from_gerrit`), then `blake3_derive("asc v1 change import", cs)[..16]`. C01's files are untouched. Tests: golden ids; the same input gives the same id on the client and the server. |
+| B19 | `asc migrate branchless` (report, `--prune-merged`, seed heads, derive ids) | B03, B04, B18a | `crates/asc/src/branchless/migrate.rs`, `crates/asc/tests/branchless_migrate.rs` | `cargo test -p asc --test branchless_migrate` | Undoable through the op log; derives ids with B18a so both sides agree with no coordination. |
+| B20 | Withdrawn: folded into C01, then into B18a | – | – | – | – |
+| B21 | Compat suite in both modes; `asc-sim` scenario (offline, reconnect, two machines, concurrent CAS) | B12, B14, U25, O08 | `tests/compat/tests/modes.rs`, `tests/compat/scenarios/branchless-push.t`, `crates/asc-sim/src/scenarios/cloud.rs` | `cargo test -p asc-compat --test modes && cargo test -p asc-sim cloud` | SPEC §17.1. Tests: two machines in one workspace converge after 1,000 random interleavings. |
+| B22 | MCP handlers for `drafts`, `cloud_status`, `hide`, `unhide`; rows in `tools.toml` by amendment | B16, M03, M10 | `crates/asc/src/mcp/branchless.rs`, `crates/asc/tests/mcp_branchless.rs` | `cargo test -p asc-mcp catalogue:: && cargo test -p asc --test mcp_branchless` | SPEC §21.7. Names are unprefixed. `hide` and `unhide` are gated as `create` and `modify` are (`write=local` while the workspace does not upload, else `write=remote`); there is no separate push tool (`submit` covers it); purge is not exposed. Tests: labels and messages come back marked untrusted. |
+| B23 | Forgejo "Your drafts" page (v1.x; escapes labels) | B09, K06 | `routers/web/user/asc_drafts.go`, `templates/user/asc_drafts.tmpl` | `go test ./routers/web/user/... -run TestAscDrafts` | v1.x. Go track. |
+| B24 | `asc doctor --workflows`: list `on: push` triggers on non-shared branches | U40, B01 | `crates/asc/src/doctor/workflows.rs`, `crates/asc/tests/doctor_workflows.rs` | `cargo test -p asc --test doctor_workflows` | SPEC §21.4.4. |
+| B25 | Benchmark scenarios: commit latency with upload, time to visible, push of an uploaded stack | B14, O05 | `bench/scenarios/branchless.toml` (amendment: O05 owns `bench/**` and gains `--only`) | `cargo run -p asc-bench --release -- --suite quick --only branchless` | SPEC §21.3.6 budgets. |
+| B26 | `legacy_shared` conversion: when a PR closes, convert its head branch to a user ref of the PR author | B18, B08a, K12, C34 | `crates/asc-serve/src/admin/legacy_shared.rs`, `crates/asc-serve/tests/legacy_shared.rs` | `cargo test -p asc-serve --test legacy_shared` | Tests: closing a `legacy_shared` PR converts its branch to the author's user ref once. |
+| B27 | CI: spike whether Forgejo Actions fires `pull_request` for draft PRs (S13); `asc ci checkout` base for stacked PRs | U62, B17, C40 | `crates/asc-ci/src/stack_base.rs`, `crates/asc-ci/tests/stack_base.rs` | `cargo test -p asc-ci stack_base::` | SPEC §21.4.4. The spike result is recorded by the parent. |
+| B28 | Pre-upload guard: ignored and denied paths, bounded secret scan | B02 | `crates/asc-engine/src/branchless/guard.rs` | `cargo test -p asc-engine branchless::guard` | SPEC §21.3.7. Tests: a `.env` change and a changeset with a planted token are held and not uploaded; `asc cloud release` uploads a held changeset. |
+
+---
+
 ## §K Forgejo fork track (Go, `D:\dev\forgejo`, branch `asc/v16`)
 
 Each unit is one commit on the patch stack (SPEC §13.3). Commands run from `D:\dev\forgejo`. A Go engineer owns this track. It needs Rust units only where noted, as `ASC_SERVER_BIN` **[audit: k-track-deps]**: `ASC_SERVER_BIN` = `<source-control>/target/release/asc` built by `cargo build -p asc --release --no-default-features --features serve`. The Go tests start it with `serve --config <tmp> --db sqlite::memory: --store memory://`.
@@ -1057,24 +1160,26 @@ Waves are the longest dependency chain to each unit (computed from the unit inde
 | 2 | U01b, U02, U03, U16a (+ K01 on the Go track; U02–U12 and U14 are built, U15 is in progress) |
 | 3 | U04, U06 (+ K02) |
 | 4 | U05, U07, U09, U41, G01, C01 |
-| 5 | U08, U16, U29, G02, C17 |
-| 6 | U10, G03, G04, G05, G06 (U30 may run any time after U29; it is deferred and off the critical path) |
+| 5 | U08, U16, U29, G02, C17, B18a |
+| 6 | U10, G03, G04, G05, G06, B07 (U30 may run any time after U29; it is deferred and off the critical path) |
 | 7 | U11, U15 |
 | 8 | U12, U14 |
 | 9 | U13, U14b, U17, U28a, U31, U33, U34, G07 |
 | 10 | U18, U19, U26, U35, C03 |
 | 11 | U20, U42, C02 |
-| 12 | U20a, U21a, U21b, U21d, U22, U24a, U24c, U24d, U24e, U36, U43a, U52, C05, C23, C45 |
-| 13 | U21c, U23, U43b, C06, C07 |
-| 14 | U25, U43c, U65, O01, C08, C09 |
+| 12 | U20a, U21a, U21b, U21d, U22, U24a, U24c, U24d, U24e, U36, U43a, U52, C05, C23, C45, B02 |
+| 13 | U21c, U23, U43b, C06, C07, B04, B28 |
+| 14 | U25, U43c, U65, O01, C08, C09, B11, B13 |
 | 15 | U24b, U25a, U27a, U28b, U37, U44, U47, U49, U54v, U54w, U69, U72, G08 |
 | 16 | U27b, U27c, U27e, U45, U46, U55, U67, U70, G09, G11, C29, C30a–C30d (C33 v1.x) |
 | 17 | U27d, U32, U48a, U53a, U56, U59, U60, U71, C10 |
 | 18 | U24f, U39, U48b, U48c, U48d, U53b, U53c, O07, C04, C11, C12, C13, C14, C32 |
-| 19 | U40, U50, U57, U66, U68, U73, O02, O08, C15, C51 |
-| 20 | U40b, U51, U58, U61p, U62, G10, O04, C18, C31, C52 |
-| 21 | U61v, U63, U75, O05, C19 |
-| 22 | U64, O06, C20, C21, C22, C24, C25, C26, C49, C50 |
-| 23 | A01, O03 (after K09), C27, C28 |
+| 19 | U40, U50, U57, U66, U68, U73, O02, O08, C15, C51, B03, B08a |
+| 20 | U40b, U51, U58, U61p, U62, G10, O04, C18, C31, C52, B01, B05, B08b, B08c, B19 |
+| 21 | U61v, U63, U75, O05, C19, B06, B09, B18, B24 |
+| 22 | U64, O06, C20, C21, C22, C24, C25, C26, C49, C50, B10, B14 |
+| 23 | A01, O03 (after K09), C27, C28, B12, B15, B25, B26 (after C34) |
+| 24 | B16, B21, B27 (after B17 and C40) |
+| 25 | B22 (not before the MCP units M03 and M10 exist) |
 
-The Go track runs alongside: K01 from wave 2 and K02 from wave 3 (K02 depends on K01); K03–K05 next; K06 after U41 and U43c; K07 and K08 next; K09 after U48d; K10–K15 after U47 and U48a–U48c; K17 after K10 and U67; the Forgejo stack units C34–C43 and C46–C48 after K17 and C19 (C38 after C22, C39 after C50/C52, C42 after C29, C43 after C21/C30b; C44 is v1.x). The runner fork: R01 any time, R02 after U62.
+The Go track runs alongside: K01 from wave 2 and K02 from wave 3 (K02 depends on K01); K03–K05 next; K06 after U41 and U43c; K07 and K08 next; K09 after U48d; K10–K15 after U47 and U48a–U48c; K17 after K10 and U67; the Forgejo stack units C34–C43 and C46–C48 after K17 and C19 (C38 after C22, C39 after C50/C52, C42 after C29, C43 after C21/C30b; C44 is v1.x). The branchless Go units: B17 after K07, K12, C34 and B08a; B23 (v1.x) after K06 and B09. The runner fork: R01 any time, R02 after U62.
