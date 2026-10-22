@@ -9,9 +9,18 @@
 //! Extra-input globs fold ASCII case and escape glob syntax MSBuild lacks.
 //! Item and attribute names match in any case, `%` escapes are not evaluated,
 //! and an `Import` of a file the detector does not read is a gap.
-//! A property that chooses an imported file (`CustomAfterMicrosoftCommonTargets`,
-//! `DirectoryBuildTargetsPath`, `BaseIntermediateOutputPath`, ...) is a gap.
-//! Build files are found by directory in any case.
+//! `Import` fails closed: its `Project` may use only the two directory
+//! properties, and an `Sdk` import needs a plain literal `Sdk` and `Project`;
+//! any other property (defined in a scanned file, a command line or a response
+//! file, none of which is evaluated) makes the project opaque. The SDK itself
+//! imports files by property, out of sight, so a property that chooses one
+//! (`CustomAfterMicrosoftCommonTargets`, `DirectoryBuildTargetsPath`,
+//! `BaseIntermediateOutputPath`, ...) is also a gap. `Directory.Build.rsp` and
+//! `MSBuild.rsp` set properties with no XML, so they make every project at or
+//! below their directory opaque.
+//! Build files are found by directory in any ASCII case. Where a file system
+//! could join a non-ASCII spelling of a directory or name with another, the
+//! project is opaque.
 //! Anything the detector cannot resolve to a known project or a repository
 //! path makes the project opaque.
 
@@ -46,6 +55,9 @@ const MAX_BUILD_SCAN_VALUES: usize = 1 << 20;
 const MAX_BUILD_SCAN_BYTES: usize = 1 << 26;
 /// Longest single path value; a longer one makes the project opaque.
 const MAX_PATH_VALUE_BYTES: usize = 4096;
+/// Most directory and name comparisons [`Linker::ambiguous`] makes in one
+/// link, summed over all projects. Past it the remaining projects are opaque.
+const MAX_ALIAS_CHECKS: usize = 1 << 22;
 
 /// Why a project is opaque; each is also reported once per project.
 const UNEVALUATED_REFERENCE: &str =
@@ -61,6 +73,11 @@ const UNSCANNED_IMPORT: &str = "Import names a file the detector does not read";
 const REDIRECTED_IMPORT: &str =
     "a property chooses a file MSBuild imports, which the detector does not read";
 const LONG_VALUE: &str = "reference, Import or item path is longer than the limit";
+const RESPONSE_FILE: &str =
+    "an MSBuild response file above the project can set properties the detector does not read";
+const NON_LITERAL_SDK: &str = "Import Sdk or its Project is not a plain literal";
+const NON_ASCII_DIR: &str =
+    "a file that applies to the project may name its directory by another non-ASCII spelling";
 
 /// The .NET detector.
 pub struct Dotnet;
@@ -80,7 +97,7 @@ fn split_ext(name: &[u8]) -> Option<(&[u8], &[u8])> {
 
 fn manifest_kind(name: &[u8]) -> Option<FileKind> {
     // MSBuild finds it by a file system lookup, which ignores case on Windows and macOS.
-    if name.eq_ignore_ascii_case(CENTRAL) {
+    if name_may_be(name, CENTRAL) {
         return Some(FileKind::Central);
     }
     let (_, ext) = split_ext(name)?;
@@ -171,9 +188,113 @@ fn parse_global(bytes: &[u8]) -> Parsed {
 /// `Directory.Build.props`/`.targets` in any case: MSBuild finds them by a
 /// case-insensitive file system lookup on Windows and macOS, so a file in any
 /// case may apply.
+///
+/// The response files `Directory.Build.rsp` and `MSBuild.rsp` count as build
+/// files, so they are found by directory like the others: their `-p:` switches
+/// set properties without any XML. Names that only a non-ASCII spelling
+/// separates from these (see [`name_may_be`]) count too.
 fn is_build_file(name: &[u8]) -> bool {
-    name.eq_ignore_ascii_case(b"Directory.Build.props")
-        || name.eq_ignore_ascii_case(b"Directory.Build.targets")
+    name_may_be(name, b"Directory.Build.props")
+        || name_may_be(name, b"Directory.Build.targets")
+        || is_response_file(name)
+}
+
+/// `Directory.Build.rsp` or `MSBuild.rsp`, which MSBuild reads from the
+/// project's directory or one above it.
+fn is_response_file(name: &[u8]) -> bool {
+    name_may_be(name, b"Directory.Build.rsp") || name_may_be(name, b"MSBuild.rsp")
+}
+
+/// Most ASCII letters one non-ASCII character may stand for when a file system
+/// normalises or folds names (`ß` is `ss`, `ﬃ` is `ffi`, `İ` is `i` plus a mark).
+const MAX_FOLD_EXPANSION: usize = 3;
+
+/// A character of a script that has ASCII letters in its canonical or case
+/// folding: Latin letters and marks, the Latin letter-like block (the Kelvin
+/// sign is `K`), the Latin ligatures and the full-width forms.
+fn latin_like(c: char) -> bool {
+    matches!(u32::from(c),
+        0x80..=0x24F | 0x300..=0x36F | 0x37E | 0x1E00..=0x1EFF | 0x1FEF
+        | 0x2100..=0x214F | 0xFB00..=0xFB06 | 0xFF00..=0xFFEF)
+}
+
+/// Whether the non-ASCII name `wide` may name the same file as the ASCII name
+/// `plain` on a file system that folds case or normalises Unicode. The ASCII
+/// letters of `wide` must be among those of `plain`, and the rest must be few
+/// enough for its non-ASCII characters to stand for. A name that is not UTF-8
+/// or has a Latin-like character is judged this way; others cannot become ASCII.
+fn ascii_reachable(wide: &[u8], plain: &[u8]) -> bool {
+    let Ok(wide) = std::str::from_utf8(wide) else {
+        return true;
+    };
+    let kept: Vec<u8> = wide
+        .bytes()
+        .filter(u8::is_ascii)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let (count, latin) = wide
+        .chars()
+        .filter(|c| !c.is_ascii())
+        .fold((0, false), |(n, l), c| (n + 1, l || latin_like(c)));
+    let plain = plain.to_ascii_lowercase();
+    if !latin || plain.len() < kept.len() || plain.len() - kept.len() > MAX_FOLD_EXPANSION * count {
+        return false;
+    }
+    let mut rest = plain.iter();
+    kept.iter().all(|k| rest.any(|p| p == k))
+}
+
+/// Whether `name` is the ASCII file name `pat`, or may be on a file system that
+/// folds case or normalises Unicode: ASCII case is folded, and a non-ASCII
+/// spelling counts when [`ascii_reachable`].
+fn name_may_be(name: &[u8], pat: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(pat) || (!name.is_ascii() && ascii_reachable(name, pat))
+}
+
+/// Whether two names of one path component may be one name: ASCII case is
+/// folded; a non-ASCII name may be any other non-ASCII name (composed or
+/// decomposed, folded) or an ASCII one it can reduce to ([`ascii_reachable`]).
+fn may_alias(a: &[u8], b: &[u8]) -> bool {
+    match (a.is_ascii(), b.is_ascii()) {
+        (true, true) => a.eq_ignore_ascii_case(b),
+        (false, false) => true,
+        (false, true) => ascii_reachable(a, b),
+        (true, false) => ascii_reachable(b, a),
+    }
+}
+
+/// How a file's directory `f` relates to a project directory `p`.
+#[derive(PartialEq, Eq)]
+enum Rel {
+    /// Different directories, whatever the file system does.
+    Apart,
+    /// The same directory, or an ancestor of it, up to ASCII case.
+    Exact,
+    /// Not the same by bytes, but a file system may treat it so.
+    Maybe,
+}
+
+fn components(dir: &[u8]) -> impl Iterator<Item = &[u8]> {
+    dir.split(|&c| c == b'/').filter(|_| !dir.is_empty())
+}
+
+/// `f` against `p` or, unless `same`, any ancestor of `p`.
+fn dir_rel(f: &[u8], p: &[u8], same: bool) -> Rel {
+    let (nf, np) = (components(f).count(), components(p).count());
+    if nf > np || (same && nf != np) {
+        return Rel::Apart;
+    }
+    let mut rel = Rel::Exact;
+    for (a, b) in components(f).zip(components(p)) {
+        if a.eq_ignore_ascii_case(b) {
+            continue;
+        }
+        if !may_alias(a, b) {
+            return Rel::Apart;
+        }
+        rel = Rel::Maybe;
+    }
+    rel
 }
 
 fn ends_with_ci(name: &[u8], suffix: &[u8]) -> bool {
@@ -447,6 +568,17 @@ fn resolve_one(dir: &[u8], raw: &str) -> Resolved {
     join_dir(dir, &s).map_or(Resolved::Outside, Resolved::Path)
 }
 
+/// An `Import` `Sdk` name, or the `Project` under it, that is a plain literal:
+/// letters, digits and `. _ - /` only, not rooted and with no `..`. Anything
+/// else (a property, item or escape, a wildcard, `;`, a rooted path) could
+/// resolve to a file the detector does not read.
+fn plain_sdk(s: &str) -> bool {
+    !s.starts_with('/')
+        && !s.contains("..")
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'/'))
+}
+
 /// The `;`-separated values of an MSBuild path attribute.
 fn values(raw: Option<&str>) -> impl Iterator<Item = &str> {
     raw.unwrap_or_default()
@@ -567,6 +699,16 @@ struct Linker<'c, 'a> {
     scanned: Cell<usize>,
     /// Build-file attribute bytes walked so far, against [`MAX_BUILD_SCAN_BYTES`].
     scanned_bytes: Cell<usize>,
+    /// Directories of the build, `Directory.Packages.props` and unreadable
+    /// `Directory.Packages.props` files, once each.
+    ancestor_dirs: Vec<Vec<u8>>,
+    /// The non-ASCII ones among `ancestor_dirs`.
+    wide_ancestor_dirs: Vec<Vec<u8>>,
+    /// The `autos` whose directory or file name is not ASCII.
+    wide_autos: Vec<usize>,
+    /// Directory and name comparisons made by [`Self::ambiguous`], against
+    /// [`MAX_ALIAS_CHECKS`].
+    alias_checks: Cell<usize>,
     exact: BTreeMap<Vec<u8>, usize>,
     folded: BTreeMap<Vec<u8>, Vec<usize>>,
 }
@@ -588,26 +730,19 @@ enum Lookup {
     Missing,
 }
 
-/// A directory (bytes) as a key that is equal for every spelling the file
-/// system may treat as one directory: ASCII letters fold to lower case, and a
-/// run of non-ASCII bytes is one marker, since its case folding is not decided
-/// here. The key may join directories that differ, never split ones that do not.
+/// A directory (bytes) as a key: ASCII letters fold to lower case and every
+/// other byte is exact. Two directories with one key are the same directory on
+/// any file system. Non-ASCII spellings that only a file system would join
+/// (case, composed against decomposed) get different keys here, so they are
+/// never matched by key: [`Linker::ambiguous`] makes the project opaque instead.
 fn fold_dir(dir: &[u8]) -> Vec<u8> {
-    let mut o = Vec::with_capacity(dir.len());
-    for &b in dir {
-        if b.is_ascii() {
-            o.push(b.to_ascii_lowercase());
-        } else if o.last() != Some(&0xFF) {
-            o.push(0xFF);
-        }
-    }
-    o
+    dir.to_ascii_lowercase()
 }
 
 /// File indices by directory (bytes, empty is the root, compared by
 /// [`fold_dir`]): finds the files at or above a directory by walking its
 /// parents, not by scanning every file. MSBuild finds `Directory.Build.props`
-/// by a file system lookup, which ignores case on Windows and macOS.
+/// by a file system lookup, which ignores ASCII case on Windows and macOS.
 #[derive(Default)]
 struct ByDir(BTreeMap<Vec<u8>, Vec<usize>>);
 
@@ -727,8 +862,30 @@ impl<'c, 'a> Linker<'c, 'a> {
                     .unwrap_or_default()
             })
             .collect();
+        let ancestor_dirs: BTreeSet<&[u8]> = builds
+            .iter()
+            .chain(&props)
+            .map(|m| m.dir.as_slice())
+            .chain(failed_dirs.iter().map(Vec::as_slice))
+            .collect();
+        let ancestor_dirs: Vec<Vec<u8>> = ancestor_dirs.into_iter().map(<[u8]>::to_vec).collect();
+        let wide_ancestor_dirs = ancestor_dirs
+            .iter()
+            .filter(|d| !d.is_ascii())
+            .cloned()
+            .collect();
+        let wide_autos = autos
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !m.dir.is_ascii() || !m.path.file_name().as_bytes().is_ascii())
+            .map(|(j, _)| j)
+            .collect();
         Self {
             cx,
+            ancestor_dirs,
+            wide_ancestor_dirs,
+            wide_autos,
+            alias_checks: Cell::new(0),
             projects,
             solutions,
             props_ix: ByDir::new(props.iter().map(|m| m.dir.as_slice())),
@@ -819,7 +976,10 @@ impl<'c, 'a> Linker<'c, 'a> {
             )
             .chain(autos.iter().map(|&a| (&self.autos[a], &self.auto_items[a])));
         for (f, items) in files {
-            if is_element(f.v) {
+            if is_response_file(f.path.file_name().as_bytes()) {
+                self.cx.report(f.path.clone(), RESPONSE_FILE);
+                scan.gaps.insert(RESPONSE_FILE);
+            } else if is_element(f.v) {
                 self.scan(i, &f.dir, items, true, &applied, &mut scan);
             } else {
                 self.cx.report(f.path.clone(), UNREADABLE_BUILD_FILE);
@@ -834,6 +994,9 @@ impl<'c, 'a> Linker<'c, 'a> {
             self.cx
                 .report(self.failed_props[f].clone(), UNREADABLE_BUILD_FILE);
             scan.gaps.insert(UNREADABLE_BUILD_FILE);
+        }
+        if self.ambiguous(i) {
+            scan.gaps.insert(NON_ASCII_DIR);
         }
         scan.refs.sort_unstable();
         scan.refs.dedup();
@@ -852,6 +1015,69 @@ impl<'c, 'a> Linker<'c, 'a> {
         p.config_fp = self.config_fp(&ancestors, &packages);
         p.external_fp = self.external_fp(m, &packages);
         p
+    }
+
+    /// Whether a file that applies to project `i` may be missed because a file
+    /// system could join a non-ASCII spelling of a directory or name with
+    /// another by case folding or normalisation, which byte keys do not decide.
+    /// Only the build, `Directory.Packages.props` and auto-imported files are
+    /// checked. A directory pair is ambiguous when a file's directory is not an
+    /// ancestor of the project's by ASCII-folded bytes but may be one
+    /// ([`dir_rel`]); an auto-imported file when its directory matches and a
+    /// non-ASCII name may be the project's. Pure-ASCII pairs never are.
+    /// Past [`MAX_ALIAS_CHECKS`] every project is ambiguous.
+    fn ambiguous(&self, i: usize) -> bool {
+        let m = &self.projects[i];
+        let file = m.path.file_name();
+        let file = file.as_bytes();
+        let (wide_dir, wide_file) = (!m.dir.is_ascii(), !file.is_ascii());
+        let spend = || {
+            let n = self.alias_checks.get().saturating_add(1);
+            self.alias_checks.set(n);
+            n <= MAX_ALIAS_CHECKS
+        };
+        // A pure-ASCII project can only meet a non-ASCII directory.
+        let dirs = if wide_dir {
+            &self.ancestor_dirs
+        } else {
+            &self.wide_ancestor_dirs
+        };
+        for d in dirs {
+            if !spend() || dir_rel(d, &m.dir, false) == Rel::Maybe {
+                return true;
+            }
+        }
+        let mut obj = m.dir.clone();
+        if !obj.is_empty() {
+            obj.push(b'/');
+        }
+        obj.extend_from_slice(b"obj");
+        let every = wide_dir || wide_file;
+        let autos: Box<dyn Iterator<Item = usize> + '_> = if every {
+            Box::new(0..self.autos.len())
+        } else {
+            Box::new(self.wide_autos.iter().copied())
+        };
+        for j in autos {
+            let a = &self.autos[j];
+            let name = a.path.file_name();
+            let name = name.as_bytes();
+            for (dir, in_obj) in [(&m.dir, false), (&obj, true)] {
+                if !spend() {
+                    return true;
+                }
+                let rel = dir_rel(&a.dir, dir, true);
+                if rel == Rel::Apart {
+                    continue;
+                }
+                let named = is_auto_import_of(name, file, in_obj);
+                let maybe = !named && (wide_file || !name.is_ascii());
+                if (rel == Rel::Maybe && (named || maybe)) || (rel == Rel::Exact && maybe) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Counts one build-file element or value of `bytes` attribute bytes; false
@@ -903,10 +1129,18 @@ impl<'c, 'a> Linker<'c, 'a> {
                 acc.gaps.insert(REDIRECTED_IMPORT);
                 continue;
             }
-            // An SDK import is found by the SDK resolver, not by path. An empty
-            // name is no SDK to rely on (MSBuild fails to resolve it), so that
-            // import is followed by path like any other.
-            if kind == PathItem::Import && attr_ci(e, "Sdk").is_some_and(|s| !s.trim().is_empty()) {
+            // An SDK import is found by the SDK resolver, not by path, so it
+            // names no repository file; but only when the SDK name and the
+            // path under it are plain literals. Otherwise the import may
+            // resolve to anything. An empty name is no SDK to rely on (MSBuild
+            // fails to resolve it), so that import is followed by path like
+            // any other.
+            if kind == PathItem::Import
+                && let Some(sdk) = attr_ci(e, "Sdk").filter(|s| !s.trim().is_empty())
+            {
+                if !plain_sdk(sdk) || raw.is_some_and(|p| !plain_sdk(p)) {
+                    acc.gaps.insert(NON_LITERAL_SDK);
+                }
                 continue;
             }
             for value in values(raw) {
@@ -2301,20 +2535,243 @@ mod tests {
         }
     }
 
+    const REFS: &str = "<ItemGroup><ProjectReference Include=\"$(MSBuildThisFileDirectory)../tools/Gen/Gen.csproj\" /></ItemGroup>";
+
     #[test]
-    fn non_ascii_directory_case_variants_apply_too() {
-        // The file system may fold the case of non-ASCII letters, which byte
-        // comparison does not decide; the directories are then treated as one.
+    fn a_response_file_makes_the_projects_below_it_opaque() {
+        // `-p:` sets a property with no XML, and MSBuild reads the file by itself.
+        let rsp = [
+            "-p:CustomAfterMicrosoftCommonTargets=$(MSBuildProjectDirectory)/../../eng/refs.targets\n",
+            "-p:CustomAfterMicrosoftCommonTargets=eng/refs.targets",
+            "@other.rsp",
+            "",
+            "<Project />",
+        ];
+        let cases: [(&str, &[&str]); 5] = [
+            ("Directory.Build.rsp", &["A", "B", "Gen"]),
+            ("src/Directory.Build.rsp", &["A", "B"]),
+            ("src/A/Directory.Build.rsp", &["A"]),
+            ("src/A/directory.build.RSP", &["A"]),
+            ("src/A/MSBuild.rsp", &["A"]),
+        ];
+        for (path, below) in cases {
+            assert_eq!(Dotnet.claim(&rp(path)), Some(Claim::EcoGlobal), "{path}");
+            for content in rsp {
+                let mut t = with_build_file(path, content);
+                t.insert("eng/refs.targets".into(), props(REFS));
+                let (g, _) = build(&t);
+                for n in ["A", "B", "Gen"] {
+                    assert_eq!(project(&g, n).opaque, below.contains(&n), "{path} {n}");
+                }
+                let manifest = "src/A/A.csproj";
+                assert!(
+                    opaque_with_issue(&g, manifest, RESPONSE_FILE),
+                    "{path} {content:?}"
+                );
+            }
+        }
+        // The opaque project is affected by a change to the project it would reference.
+        let mut t = with_build_file("src/A/Directory.Build.rsp", "-p:X=eng/refs.targets");
+        t.insert("eng/refs.targets".into(), props(REFS));
+        assert_eq!(affected_ids(&t, GEN), ["dotnet:A", "dotnet:Gen"]);
+    }
+
+    #[test]
+    fn an_import_with_a_computed_sdk_or_project_makes_the_project_opaque() {
+        let computed = [
+            "<Import Sdk=\"$(SdkName)\" Project=\"Sdk.props\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk/$(V)\" Project=\"Sdk.props\" />",
+            "<Import Sdk=\"@(SdkItem)\" />",
+            "<Import Sdk=\"Name%2fBad\" Project=\"Sdk.props\" />",
+            "<Import Sdk=\"..\\..\\eng\" Project=\"refs.targets\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk\" Project=\"$(Dir)/refs.targets\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk\" Project=\"%2e%2e/refs.targets\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk\" Project=\"../../eng/refs.targets\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk\" Project=\"*.props\" />",
+        ];
+        for import in computed {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert("src/A/A.csproj".into(), csproj(import));
+            let (g, _) = build(&t);
+            assert!(
+                opaque_with_issue(&g, "src/A/A.csproj", NON_LITERAL_SDK),
+                "{import}"
+            );
+            assert!(!project(&g, "B").opaque, "{import}");
+            // The same import in a build file that applies.
+            let t = with_build_file("src/A/Directory.Build.props", &props(import));
+            let (g, _) = build(&t);
+            assert!(
+                opaque_with_issue(&g, "src/A/A.csproj", NON_LITERAL_SDK),
+                "{import} in a build file"
+            );
+            assert!(!project(&g, "B").opaque, "{import}");
+        }
+        for import in [
+            "<Import Sdk=\"Microsoft.NET.Sdk\" Project=\"Sdk.props\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk\" />",
+            "<Import Sdk=\"Microsoft.NET.Sdk/9.0.100\" Project=\"Sdk.targets\" />",
+            "<Import Sdk=\"Aspire.AppHost.Sdk\" Project=\"Sdk.props\" />",
+        ] {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert("src/A/A.csproj".into(), csproj(import));
+            let (g, _) = build(&t);
+            assert!(g.projects.iter().all(|p| !p.opaque), "{import}");
+        }
+    }
+
+    #[test]
+    fn a_property_in_an_import_path_is_never_resolved() {
+        // Not even when a scanned file defines it; one set by a command line
+        // or response file cannot be seen at all.
+        for name in [
+            "ToolsDir",
+            "NuGetPackageRoot",
+            "RestorePackagesPath",
+            "RestoreOutputPath",
+            "ProjectAssetsFile",
+            "VSToolsPath",
+            "SolutionDir",
+            "PkgSome_Package",
+        ] {
+            let defined = format!(
+                "<PropertyGroup><{name}>$(MSBuildThisFileDirectory)eng/</{name}></PropertyGroup>"
+            );
+            let import = format!("<Import Project=\"$({name})refs.targets\" />");
+            let mut t = with_build_file("Directory.Build.props", &props(&defined));
+            t.insert("src/A/A.csproj".into(), csproj(&import));
+            let (g, _) = build(&t);
+            assert!(
+                opaque_with_issue(&g, "src/A/A.csproj", UNEVALUATED_ITEM),
+                "{name}"
+            );
+            assert!(!project(&g, "B").opaque, "{name}");
+            let mut t = with_build_file("src/A/Directory.Build.rsp", &format!("-p:{name}=eng/"));
+            t.insert("src/A/A.csproj".into(), csproj(&import));
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{name}");
+        }
+    }
+
+    const GEN_UP: &str =
+        "<ItemGroup><ProjectReference Include=\"../tools/Gen/Gen.csproj\" /></ItemGroup>";
+    const NFC: &str = "caf\u{e9}";
+    const NFD: &str = "cafe\u{301}";
+
+    /// Spellings that a file system may treat as one directory.
+    const ALIASES: [(&str, &str); 7] = [
+        (NFC, NFD),
+        (NFD, NFC),
+        ("\u{c9}", "\u{e9}"),
+        ("src/caf\u{e9}", "src/cafe\u{301}"),
+        ("\u{212a}", "k"),
+        ("k", "\u{212a}"),
+        ("\u{17f}rc", "src"),
+    ];
+
+    /// `Gen`, a far project `docs/B`, a project `A` in `proj_dir`, and `file`
+    /// in `file_dir`.
+    fn alias_tree(file_dir: &str, file: &str, content: &str, proj_dir: &str) -> Tree {
         let mut t = Tree::new();
         t.insert(GEN.into(), csproj(""));
-        t.insert(
-            "\u{c9}/Directory.Build.props".into(),
-            props(
-                "<ItemGroup><ProjectReference Include=\"../tools/Gen/Gen.csproj\" /></ItemGroup>",
-            ),
-        );
-        t.insert("\u{e9}/A/A.csproj".into(), csproj(""));
+        t.insert("docs/B/B.csproj".into(), csproj(""));
+        t.insert(format!("{file_dir}/{file}"), content.into());
+        t.insert(format!("{proj_dir}/A/A.csproj"), csproj(""));
+        t
+    }
+
+    fn assert_alias_opaque(t: &Tree, proj_dir: &str, what: &str) {
+        let (g, _) = build(t);
+        let manifest = format!("{proj_dir}/A/A.csproj");
+        assert!(opaque_with_issue(&g, &manifest, NON_ASCII_DIR), "{what}");
+        assert!(!project(&g, "B").opaque, "{what}");
+        assert!(!project(&g, "Gen").opaque, "{what}");
+    }
+
+    #[test]
+    fn non_ascii_directory_spellings_that_may_alias_make_the_project_opaque() {
+        // The file system may fold the case of, or normalise, non-ASCII names,
+        // which byte comparison does not decide.
+        for (file_dir, proj_dir) in ALIASES {
+            let what = format!("{file_dir:?} {proj_dir:?}");
+            // Directory.Build.props, readable.
+            let t = alias_tree(file_dir, "Directory.Build.props", &props(GEN_UP), proj_dir);
+            assert_alias_opaque(&t, proj_dir, &what);
+            // Directory.Packages.props, readable and not.
+            let imp = props("<Import Project=\"eng/refs.props\" />");
+            let t = alias_tree(file_dir, "Directory.Packages.props", &imp, proj_dir);
+            assert_alias_opaque(&t, proj_dir, &what);
+            let t = alias_tree(file_dir, "Directory.Packages.props", "not xml", proj_dir);
+            assert_alias_opaque(&t, proj_dir, &what);
+            // An auto-imported file beside the project, and one in its `obj`.
+            let t = alias_tree(
+                &format!("{file_dir}/A"),
+                "A.csproj.user",
+                &props(GEN_UP),
+                proj_dir,
+            );
+            assert_alias_opaque(&t, proj_dir, &what);
+            let t = alias_tree(
+                &format!("{file_dir}/A/obj"),
+                "A.csproj.nuget.g.props",
+                &props(GEN_UP),
+                proj_dir,
+            );
+            assert_alias_opaque(&t, proj_dir, &what);
+        }
+    }
+
+    #[test]
+    fn non_ascii_project_files_that_may_alias_an_auto_import_make_the_project_opaque() {
+        let mut t = Tree::new();
+        t.insert(GEN.into(), csproj(""));
+        t.insert("docs/B/B.csproj".into(), csproj(""));
+        t.insert(format!("p/{NFC}.csproj"), csproj(""));
+        t.insert(format!("p/{NFD}.csproj.user"), props(GEN_UP));
+        let (g, _) = build(&t);
+        assert!(project(&g, NFC).opaque);
+        assert!(!project(&g, "B").opaque);
+        assert!(!project(&g, "Gen").opaque);
+    }
+
+    #[test]
+    fn a_non_ascii_directory_with_the_same_bytes_applies_normally() {
+        let t = alias_tree(NFC, "Directory.Build.props", &props(GEN_UP), NFC);
         let (g, _) = build(&t);
         assert_eq!(deps(&g, "A"), ["Normal:Gen"]);
+        assert!(g.projects.iter().all(|p| !p.opaque), "{:?}", g.issues);
+        // A different script, or unrelated Latin names, are not aliases.
+        for other in [
+            "\u{65e5}\u{672c}/Directory.Build.props",
+            "docs/x\u{e9}/Directory.Build.props",
+        ] {
+            let mut t = with_build_file("src/Directory.Build.props", &props(""));
+            t.insert(other.into(), props(GEN_UP));
+            let (g, _) = build(&t);
+            assert!(!project(&g, "A").opaque, "{other}");
+        }
+    }
+
+    #[test]
+    fn build_file_names_with_a_look_alike_non_ascii_letter_are_build_files() {
+        for name in [
+            "Directory.Build.prop\u{17f}",
+            "Directory.Build.target\u{17f}",
+            "Directory.Packages.prop\u{17f}",
+        ] {
+            let c = Dotnet.claim(&rp(&format!("src/{name}")));
+            assert!(c.is_some(), "{name}");
+        }
+        // A look-alike build file is read like the real one.
+        let t = with_build_file("src/Directory.Build.prop\u{17f}", &props(GEN_UP));
+        let (g, _) = build(&t);
+        assert_eq!(deps(&g, "A"), ["Normal:Gen"]);
+        let t = with_build_file("src/Directory.Build.r\u{17f}p", "-p:X=1");
+        assert_eq!(
+            Dotnet.claim(&rp("src/Directory.Build.r\u{17f}p")),
+            Some(Claim::EcoGlobal)
+        );
+        let (g, _) = build(&t);
+        assert!(project(&g, "A").opaque);
     }
 }
