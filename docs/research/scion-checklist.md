@@ -171,3 +171,19 @@ asc has no LFS support.
   - branch and stack comparison;
   - undo-aware operations.
 - Each feature must be designed for both surfaces: the CLI/API, and the Forgejo fork's UI and API.
+
+## Decision: branchless by default (2026-10-22)
+
+- This follows Scion: "The development lifecycle in Scion discourages refs (branches and tags), except for the main ref or release branches." It also follows "every commit, rebase, or merge happens on the server, so there's nothing to push."
+- asc is branchless by default, and teams can switch it off per repo or per user. Work is a set of changes, identified by change id and grouped into stacks. A change needs no branch.
+- Shared refs are only `master` and release branches. All other work is a draft change that the server indexes by change id and that is visible everywhere as soon as it exists.
+- Git DX still works. `git branch`, `git checkout -b` and `git push origin feat` behave as git does. In branchless mode a branch is a local label, and pushing a branch submits its stack as draft changes.
+- When a client is online, commits go to the server at once (asynchronously, through the daemon), so `submit` and `push` have nothing left to upload. Local-only mode still works.
+
+## Decision: MCP built in (2026-10-22)
+
+- MCP is a first-class interface alongside RPC, IPC and `--json`, because agents are the main clients. There are three surfaces:
+  - `asc mcp`: a local stdio server over the workspace and daemon.
+  - The asc server: a remote Streamable HTTP endpoint.
+  - The Forgejo fork: an MCP endpoint for PRs, reviews, issues and Actions.
+- All three use the same tool schemas as the `--json` and RPC shapes, are ACL-scoped, and default to read-only.
