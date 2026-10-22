@@ -10,6 +10,7 @@ use asc_core::id::ChangesetId;
 
 use crate::stack;
 
+pub mod guard;
 pub mod visible;
 
 /// Failures from branchless visibility.
