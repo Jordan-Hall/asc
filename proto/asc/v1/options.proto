@@ -1,0 +1,19 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "google/protobuf/descriptor.proto";
+
+// How the asc JSON profile `json.profile.v1` (SPEC 22.4.2) prints a `bytes` field.
+enum JsonKind {
+  JSON_KIND_UNSPECIFIED = 0;   // standard proto3 JSON: base64 string
+  JSON_KIND_HEX = 1;           // object id: lowercase hex (40 = git SHA, 64 = asc id)
+  JSON_KIND_CHANGE = 2;        // change id: letters k-z
+  JSON_KIND_PATH = 3;          // path: UTF-8 string, else {"b64": ...}
+  JSON_KIND_TEXT = 4;          // message or text: UTF-8 string, else {"b64": ...}
+  JSON_KIND_DATA = 5;          // file data: as TEXT; binary data prints `binary: true` and no data
+}
+
+extend google.protobuf.FieldOptions {
+  JsonKind json = 50101;
+}
