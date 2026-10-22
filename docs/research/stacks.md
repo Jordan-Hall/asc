@@ -7,7 +7,7 @@ Inputs: the Graphite docs, CLI changelog and blog; GitLens and GitKraken help pa
 Fixed rules this design obeys:
 - git commands keep git's exact semantics, output and exit codes;
 - stack features are additive verbs;
-- there is no IDE extension, so GitLens/GitKraken-style features are data APIs;
+- GitLens/GitKraken-style features are data APIs, and ASC's IDE plugins render them (`ide-plugins.md`; SPEC §24) [audit: ide-plugins-folded];
 - the default branch is `master`;
 - there are no whole-repo scans;
 - there is no LFS.
@@ -136,7 +136,7 @@ Classes: **CC** core client (asc CLI, engine, `state.db`); **CS** core server de
 | Autolinks | CS | `[autolinks]` in `.asc/review.toml`, read at the revision and returned by `RepoConfig`. |
 | Open on remote, deep links, avatars | API | `/.well-known/asc` gains a `web` URL template. Forgejo serves avatars. |
 | Signature badges | existing | The `%G?` placeholders (§11.1) and Forgejo verification. |
-| Command palette, terminal links, repo tabs, profiles, Gitflow, multi-repo workspaces, work items, agent sessions | OUT | These are IDE or desktop UI, or products GitKraken itself deprecated. |
+| Command palette, terminal links, repo tabs, profiles, Gitflow, multi-repo workspaces, work items, agent sessions | OUT | GitKraken desktop features, or products GitKraken itself deprecated; the IDE surfaces are built in `ide-plugins.md` [audit: ide-plugins-folded]. |
 
 ---
 

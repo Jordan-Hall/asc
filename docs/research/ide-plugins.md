@@ -1,6 +1,6 @@
 # ASC-built IDE plugins for asc
 
-Status: design for the checklist decision "ASC-built IDE plugins" (2026-10-22). Not normative until folded into SPEC.md and PLAN.md; §9 lists the edits those files need. Reviewed once (see "Review notes" at the end).
+Status: design for the checklist decision "ASC-built IDE plugins" (2026-10-22). Folded into SPEC.md v1.8 (§24) and PLAN.md (§P) on 2026-10-22; where this file and SPEC §24 differ, SPEC wins (SPEC §24.10 lists the rulings). §9 listed the edits those files needed. Reviewed once (see "Review notes" at the end).
 
 User decision of 2026-10-22: IDE support is wanted, built by ASC as plugins that match GitKraken and Graphite in one place and replace the built-in git. "No IDE support" in older text now means only "asc does not rely on an IDE's built-in git and has no full `.git` projection" (`scion-checklist.md:204`).
 
