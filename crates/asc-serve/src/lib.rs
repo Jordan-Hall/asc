@@ -5,13 +5,19 @@
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
 pub mod config;
+pub mod forgejo;
 pub mod graph_sql;
 pub mod http;
+pub mod idmode;
 pub mod ingest;
+pub mod limits;
 pub mod mainline;
 pub mod migrate;
 pub mod outbox;
+pub mod read;
 pub mod registry;
+pub mod seeds;
+pub mod turbo;
 pub mod update;
 
 use std::future::Future;
@@ -136,8 +142,10 @@ impl Authorizer for DenyAll {
 // ------------------------------------------------------------------------------ startup
 
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
-fn register_all(ext: &Extensions, registry: &Arc<Registry>) {
+fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Limits) {
+    limits::register(ext, limits);
     update::register(ext, registry);
+    read::register(ext, registry);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
@@ -206,14 +214,27 @@ pub async fn serve(
         outbox::OutboxConfig::default(),
     ));
     let ext = Extensions::new();
-    register_all(&ext, &registry);
+    register_all(&ext, &registry, &cfg.limits);
+    forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
+        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let well_known = http::WellKnown {
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
     };
-    let http_state = http::HttpState::new(pool, outbox.clone(), metrics, well_known);
+    let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known);
     http::register(&ext, http_state.clone());
+    let turbo = Arc::new(
+        turbo::TurboState::open(&cfg, authorizer.clone(), metrics)
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?,
+    );
+    turbo::register(&ext, turbo.clone());
     let routes = build_routes(&ext, authorizer, ServerInfo::default());
+    let admission = Arc::new(limits::Admission::new(&cfg.limits));
+    let routes = Routes::from(
+        routes
+            .into_axum_router()
+            .layer(limits::AdmissionLayer::new(admission)),
+    );
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {
@@ -240,6 +261,7 @@ pub async fn serve(
     }
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
+    let sweeper = turbo.spawn_sweeper();
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -249,6 +271,7 @@ pub async fn serve(
         .await;
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
+    sweeper.abort();
     admin.abort();
     served?;
     Ok(())

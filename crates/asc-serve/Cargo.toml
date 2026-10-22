@@ -9,6 +9,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Runs real `turbo` against the server (needs bunx and network).
+it-turbo = []
+
 [dependencies]
 asc-core = { workspace = true }
 asc-rpc = { workspace = true }
@@ -23,18 +27,27 @@ prost = { workspace = true }
 serde_json = { workspace = true }
 axum = { workspace = true }
 quick_cache = { workspace = true }
+base64 = { workspace = true }
+regex = { workspace = true }
+gix-attributes = { workspace = true }
+bstr = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
 serde = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 object_store = { workspace = true }
 tokio = { workspace = true }
 tower = { workspace = true }
+http-body = { workspace = true }
 toml = { workspace = true }
 tonic = { workspace = true, features = ["tls-ring"] }
 tracing = { workspace = true }
 url = { workspace = true }
 prometheus-client = { workspace = true }
 uuid = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
