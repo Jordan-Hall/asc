@@ -4,7 +4,7 @@
 //! read on demand through the engine's cache; nothing materialises a whole tree.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use asc_core::codec::{CodecError, Enveloped, decode_envelope};
@@ -16,11 +16,14 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
-use futures::stream::{BoxStream, StreamExt};
+use futures::stream::{BoxStream, StreamExt, TryStreamExt};
 
 use crate::Engine;
 
 pub use pathspec::{Pathspec, PathspecError};
+
+/// Child trees read concurrently ahead of use when a directory is rebuilt.
+pub const LOAD_WINDOW: usize = 16;
 
 /// Tree operation failures.
 #[derive(Debug, thiserror::Error)]
@@ -211,6 +214,15 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         self.put_tree(Tree::new(entries, true)?).await
     }
 
+    /// Reads trees concurrently, in order, with at most [`LOAD_WINDOW`] reads in flight.
+    pub async fn get_trees(&self, ids: &[TreeId]) -> Result<Vec<Arc<Tree>>> {
+        futures::stream::iter(ids)
+            .map(|&id| self.get_tree(id))
+            .buffered(LOAD_WINDOW)
+            .try_collect()
+            .await
+    }
+
     /// New entries of the root directory after applying the trie level `nodes` to `base`.
     ///
     /// Iterative: one frame per directory on the spine, so stack use does not depend on depth.
@@ -228,6 +240,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             out: Vec<Entry>,
             /// The child being built: its name, node and existing entry.
             pending: Option<(&'a Name, &'a Node, Option<Entry>)>,
+            /// Child base trees fetched ahead of use, by node index.
+            loaded: HashMap<usize, Arc<Tree>>,
         }
         fn frame<'a>(base: Option<Arc<Tree>>, nodes: &'a BTreeMap<Name, Node>) -> Frame<'a> {
             Frame {
@@ -237,6 +251,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 i: 0,
                 out: Vec::new(),
                 pending: None,
+                loaded: HashMap::new(),
             }
         }
         let mut stack = vec![frame(base, nodes)];
@@ -283,7 +298,39 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 continue;
             }
             let below_base = match (&existing, existing_dir) {
-                (_, Some(d)) => Some(self.get_tree(TreeId::from_bytes(d.id)).await?),
+                (_, Some(d)) => {
+                    let idx = top.k - 1;
+                    if !top.loaded.contains_key(&idx) {
+                        // Fetch this child and the next ones that will need their base tree,
+                        // concurrently, at most LOAD_WINDOW at a time.
+                        let mut want = vec![(idx, TreeId::from_bytes(d.id))];
+                        let end = (idx + LOAD_WINDOW).min(top.nodes.len());
+                        for j in idx + 1..end {
+                            let (n, node_j) = top.nodes[j];
+                            if node_j.children.is_empty() {
+                                continue;
+                            }
+                            let at = old.partition_point(|e| e.name < *n);
+                            if let Some(e) =
+                                old.get(at).filter(|e| e.name == *n && e.kind == Kind::Dir)
+                            {
+                                want.push((j, TreeId::from_bytes(e.id)));
+                            }
+                        }
+                        let ids: Vec<TreeId> = want.iter().map(|w| w.1).collect();
+                        let trees = self.get_trees(&ids).await?;
+                        let Some(top) = stack.last_mut() else {
+                            return Err(Error::TooDeep);
+                        };
+                        for ((j, _), t) in want.into_iter().zip(trees) {
+                            top.loaded.insert(j, t);
+                        }
+                    }
+                    let Some(top) = stack.last_mut() else {
+                        return Err(Error::TooDeep);
+                    };
+                    top.loaded.remove(&idx)
+                }
                 (Some(_), None) if !deleting => {
                     return Err(Error::PathThroughFile(node.path.clone()));
                 }
@@ -758,7 +805,6 @@ mod pathspec {
 
 #[cfg(test)]
 mod tests {
-    use futures::stream::TryStreamExt;
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
@@ -804,13 +850,20 @@ mod tests {
         inner: BucketObjects,
         gets: AtomicUsize,
         puts: AtomicUsize,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
     }
 
     #[async_trait]
     impl Objects for Counting {
         async fn get(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
             self.gets.fetch_add(1, SeqCst);
-            self.inner.get(key).await
+            let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+            self.max_in_flight.fetch_max(now, SeqCst);
+            tokio::task::yield_now().await;
+            let got = self.inner.get(key).await;
+            self.in_flight.fetch_sub(1, SeqCst);
+            got
         }
         async fn get_stored(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
             self.inner.get_stored(key).await
@@ -845,6 +898,8 @@ mod tests {
             inner: BucketObjects::memory(),
             gets: AtomicUsize::new(0),
             puts: AtomicUsize::new(0),
+            in_flight: AtomicUsize::new(0),
+            max_in_flight: AtomicUsize::new(0),
         })
     }
 
@@ -1120,6 +1175,29 @@ mod tests {
             e.get_tree(ghost).await,
             Err(Error::MissingTree(id)) if id == ghost
         ));
+    }
+
+    #[tokio::test]
+    async fn wide_apply_loads_children_concurrently_within_the_window() {
+        let objs = counting();
+        let e = engine_on(objs.clone());
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        let base: Vec<_> = (0..40)
+            .map(|i| (p(&format!("d{i:02}/x")), file(1)))
+            .collect();
+        let root = e.apply(empty, &base).await.unwrap();
+
+        // A fresh engine has no cached trees, so every child directory is read from the store.
+        let fresh = engine_on(objs.clone());
+        objs.max_in_flight.store(0, SeqCst);
+        let edits: Vec<_> = (0..40)
+            .map(|i| (p(&format!("d{i:02}/y")), file(2)))
+            .collect();
+        let next = fresh.apply(root, &edits).await.unwrap();
+        let max = objs.max_in_flight.load(SeqCst);
+        assert!(max > 1, "child loads ran one at a time");
+        assert!(max <= LOAD_WINDOW, "{max} reads in flight");
+        assert_eq!(all_leaves(&fresh, next, None).await.len(), 80);
     }
 
     fn deep_path(levels: usize) -> RepoPath {
