@@ -794,6 +794,8 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             is_root: bool,
             next: usize,
             entries: Vec<Entry>,
+            /// Child base trees fetched ahead of use, by plan index.
+            loaded: HashMap<usize, Arc<Tree>>,
         }
         let frame = |plan, base, is_root| Frame {
             plan,
@@ -801,9 +803,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             is_root,
             next: 0,
             entries: Vec::with_capacity(plan.entries.len()),
+            loaded: HashMap::new(),
         };
         let mut stack = vec![frame(plan, base, is_root)];
         loop {
+            let depth = stack.len();
             let Some(top) = stack.last_mut() else {
                 return Err(ImportError::Inconsistent(plan.git));
             };
@@ -859,15 +863,34 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
                 },
                 Plan::Dir(sub) => {
                     let top_base = top.base.clone();
-                    if stack.len() > MAX_TREE_DEPTH {
+                    if depth > MAX_TREE_DEPTH {
                         return Err(ImportError::TreeTooDeep(sub.git));
                     }
-                    let under = match top_base.as_ref().and_then(|b| b.get(name)) {
-                        Some(e) if e.kind == Kind::Dir => {
-                            Some(self.engine.get_tree(TreeId::from_bytes(e.id)).await?)
+                    let idx = top.next - 1;
+                    if !top.loaded.contains_key(&idx) {
+                        // Read this child's base tree and those of the next siblings together,
+                        // at most LOAD_WINDOW in flight.
+                        let base_dir = |n: &Name| {
+                            top_base
+                                .as_ref()
+                                .and_then(|b| b.get(n))
+                                .filter(|e| e.kind == Kind::Dir)
+                                .map(|e| TreeId::from_bytes(e.id))
+                        };
+                        let end = (idx + tree::LOAD_WINDOW).min(cur.entries.len());
+                        let want: Vec<(usize, TreeId)> = (idx..end)
+                            .filter(|&j| matches!(cur.entries[j].1, Plan::Dir(_)))
+                            .filter_map(|j| base_dir(&cur.entries[j].0).map(|id| (j, id)))
+                            .collect();
+                        let ids: Vec<TreeId> = want.iter().map(|w| w.1).collect();
+                        let trees = self.engine.get_trees(&ids).await?;
+                        if let Some(top) = stack.last_mut() {
+                            for ((j, _), t) in want.into_iter().zip(trees) {
+                                top.loaded.insert(j, t);
+                            }
                         }
-                        _ => None,
-                    };
+                    }
+                    let under = stack.last_mut().and_then(|t| t.loaded.remove(&idx));
                     stack.push(frame(sub, under, false));
                     continue;
                 }
