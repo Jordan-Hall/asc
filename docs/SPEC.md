@@ -1,8 +1,10 @@
 # asc: final specification
 
-Status: **authoritative**, v1.0, 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.3 (audit round 3; stacks folded in), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
-Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci}.md`, and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]** and listed in Appendix A.
+Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
+
+**User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no IDE git-plumbing support**: there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52).
 
 Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo at `D:\dev\monorepo` and its Forgejo at `https://forge.example.org`. Sizes are binary (KiB, MiB, GiB).
 
@@ -16,30 +18,35 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 
 | Deployable | What it is |
 |---|---|
-| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve`, and, by argv[0], `git-remote-asc` and `asc-fsmonitor`. Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
+| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve` (`--role primary` or `--role cache`), and, by argv[0], `git` (the shim, §11.4). Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
 | Forgejo fork | Forgejo v16.0.6 plus an ordered patch stack (seams, asc client, hooks, bridge). Go, separate repo, GPLv3. Talks to `asc serve` only over gRPC. |
-| `asc/asc-actions` | Composite actions `checkout` and `affected` that call `asc ci …`. |
+| `asc/actions` | Forked `checkout`, `cache`, `upload-artifact`, `download-artifact` (aliased from `actions/*`, §12.7) plus `asc/setup`, `asc/changed`, `asc/affected`, `asc/turbo-cache`, all calling `asc ci …` |
 
-**Ten decisions**
+**Twelve decisions**
 
 1. **A remote is a store or a server.** `Objects` (immutable, content-addressed) and `Refs` (CAS). One `Engine` runs over the machine store, an S3/local bucket, or a gRPC client. Local-only, serverless-bucket, git-remote and client/server modes share one code path.
 2. **Identity is asc's.** BLAKE3 ids, typed per kind. Git SHA-1s are deterministic derived data. Import is lossless and canonical, so a commit exported from asc and re-imported has the same changeset id **[fix: determinism across modes]**.
 3. **The changeset hashes its change list and its root tree.** Validated as `apply(parents[0].root, changes) == root` and `changes == leafdiff(parents[0].root, root)`. The v1 tree format has no size limit and is frozen. A tree-format change would be a history rewrite and is out of scope; this trade is accepted and documented **[fix J3: identity coupling]**.
-4. **Tree entries carry the git blob/tree SHA-1 and size.** Export, the projection index, turbo hashing and index-vs-HEAD are metadata-only. Servers recompute and verify every client-supplied git field **[graft: integration] [fix J1]**.
+4. **Tree entries carry the git blob/tree SHA-1 and size.** Export, the synthetic turbo index, turbo hashing and staged-vs-HEAD are metadata-only. Servers recompute and verify every client-supplied git field **[graft: integration] [fix J1]**.
 5. **The machine cache is a directory.** Atomic rename, content-addressed names, BLAKE3 verified on every read **[graft: integration]**. `store/` (never evicted: unpushed and local-only data) is separate from `cache/` (evictable copies of remote objects).
-6. **Every working copy has a real `.git` projection; the git index is asc's staging area.** Git, turbo, IDEs and husky work unchanged. Commits made by `git commit` (IDE, lint tools) are imported, not refused **[graft: judge 2]**. Unimplemented read-only git commands are delegated to git **[graft: integration D11]**.
+6. **asc is git at the surface.** Same commands, flags, output, messages and exit codes as git 2.55 (§11). The `asc` binary installed as `git` serves every git command in an asc workspace natively and falls through to real git everywhere else (§11.4). Each working copy has a **minimal synthetic `.git` for Turborepo only**: `HEAD` plus, when the repo uses turbo or the workspace is plain, an index rendered from tree metadata (§9.4). asc keeps its own staging area (§9.5). Every child asc spawns (hooks, aliases, editors, drivers) finds asc first on `PATH`, so `git` inside a hook is asc (§9.4.1). Real git never operates on an asc workspace, and IDE git plumbing is not a target: ASC's IDE plugins use asc's API **[audit: user decision No-IDE]**.
 7. **Lazy materialisation.** ProjFS (Windows) and FUSE (Linux) virtual working copies; plain mode (reflink/copy) everywhere else and as the CI default. Switch updates placeholders from metadata and downloads nothing. Placeholder timestamps are per-placeholder switch-epoch times that only move forward **[fix J1/J2/J3]**.
-8. **Server-side history, API-first CI.** `Diff`, `MergeBase`, `Log`, `Blame` run on the server with no checkout. CI plan jobs need one RPC.
+8. **Server-side history, API-first CI.** `Diff`, `MergeBase`, `Log`, `Blame`, `Affected` run on the server with no checkout. CI plan jobs need one RPC.
 9. **Staged, reversible Forgejo cutover.** Stage 0 git-remote mode (no server) → Stage 1 mirror mode (no fork) → Stage 2 asc is truth, Forgejo reads a git bridge → Stage 3 Forgejo reads through asc (Seam A) → Stage 4 Forgejo writes through asc (Seam B, full replacement). `storage_backend` and `object_format_name` are independent switches; git SHAs stay visible until a separate, optional ID flip **[graft: integration D2/D9]**.
 10. **One SQL transaction moves refs.** Ref CAS, ref log, idempotency record and outbox row (bridge promotion, post-receive) commit together; the outbox delivers at least once **[graft: integration] [fix J1]**.
+11. **Built-in project graph.** asc detects Cargo, Python (uv/pyproject/requirements), .NET (sln/slnx/csproj/fsproj) and Bun/Node workspaces itself, by parsing manifest and lockfile bytes. The graph is derived data per changeset. `asc affected` and the `Affected` RPC map a diff to the owning projects plus their reverse-dependency closure, with no checkout and no hydration. turbo and nx are optional consumers, never dependencies (§12A) **[audit: projgraph]**.
+12. **Scion-core efficiency is v1.** Want-only tree-then-blob fetch of stored bytes; a bounded local history window, with older history answered by the server (§6.3); tiers that speak the same RPCs (daemon cache → `asc serve --role cache` → primary); seed snapshots; generation numbers plus skip lists; explicit memory and storage budgets enforced by a benchmark gate in CI (§16.4) **[audit: user decision efficiency]**.
 
-**Not built in v1** (each is additive, gated on measurement): segment packing of small objects, zstd dictionaries, skip lists, a path-log table, regional cache tier, SSH `asc-authenticate`, jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, server-run `turbo ls`, daemon-side turbo cache tier, write-behind uploads, bootstrap snapshots, `WatchRefs`.
+**Not built in v1** (each is additive):
+- *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
+- *Gated on measurement:* a path-log table beyond the mainline index (§5.1), virtual CI, daemon-side turbo cache tier, a host-level fetch proxy for CI.
+- *Out of scope:* SSH `asc-authenticate`, jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, write-behind uploads, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), IDE git-plumbing compatibility, and real git operating inside an asc workspace.
 
 ---
 
 ## 1. Requirements traceability
 
-| Fixed requirement | Where met |
+| Fixed requirement / checklist section | Where met |
 |---|---|
 | New changeset model, content-addressed; git derived | §2, §5 (`gitcommit`), §14 |
 | Full storage replacement in Forgejo | §13 stages 2–4 |
@@ -48,8 +55,30 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | S3-compatible and local storage; local-only and client/server | §3, §6 |
 | Lazy materialisation on checkout/switch/branch | §10 |
 | Diffs server-side or from metadata | §4.3, §7 `Diff` |
-| Cheap worktrees, shared object cache | §3.5, §9.3 |
-| Faster Turborepo CI | §12 |
+| Cheap worktrees, shared object cache; `worktree add` cost independent of repo size | §3.5, §9.3, §9.4 (`asc.turboIndex`), §16.4; `worktree convert --plain` fallback (§9.1, §11.2) |
+| Faster Turborepo CI | §12, §12A; §12.1 staged files hash as in git; §12.2 rules read at the merge base without checkout; §12.3/§3.5 tier stack keys |
+| **Default branch is `master`, never `main`** | §6.5; CI lint covering push/pull/merge/rebase/`-b`/`--base`/`ref:`/`default_branch`/YAML list forms over docs, README, crates, tests, deploy, actions, bench, packaging, proto and build (§6.5); `-c init.defaultBranch=master` for every real-git script and `bench/gen` (§6.5); fixtures (§17.1); Forgejo `DEFAULT_BRANCH` (§6.5); stack trunk default (§20.3) |
+| **TOP: git-identical DX**: same commands, flags, revisions, output, exit codes; byte-compatible `--porcelain`/`-z`/`--format` | §11.1, §11.2, §11.5 (native table), §4.3 diff contract, §11.1 ids; §11.4 verb precedence (git builtins → `alias.*` → `git-<name>` → asc-only verbs, so aliases and external commands keep working); §9.7 staging rollback on hook failure; §9.4 index mirrors staging; §9.4.1 single ref-update chokepoint (hooks, reflog) |
+| asc installable as `git`, falls through to real git outside asc repos and for repository-independent commands; IDEs and tools that run `git` work | §11.4 (dispatch, Windows machine-PATH order, target-based routing of `clone`/`init`/`ls-remote`, external-command lookup), §9.4.1 child PATH |
+| `git` inside hooks, aliases, editors and drivers reaches asc | §9.4.1 (child PATH) |
+| Hook tools work unchanged (husky, lint-staged, commitlint, Claude Code) | §9.4.1, §9.5 (`GIT_INDEX_FILE` stage sets), §9.7 (hook order), §17.1 |
+| No IDE support: no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`; turbo-only synthetic `.git`; plugin API (ASC's IDE plugins) | §0 decision 6, §9.4, §9.5, §9.6, §7 `workspace.proto` (messages defined), §11.2 `--json`/`asc watch`, §9.1 |
+| Same files and config: `.gitignore`, `.gitattributes`, git config, aliases, hooks, credential helpers, `GIT_*` env | §11.1 (env and global options), §2.4.1, §2.4.2, §9.4.1, §9.4 (`includeIf`) |
+| Same mental model: commit then push, push is the CAS, branch-scoped refs, drafts local | §6.1 (branch scope), §8.5 (land only on request), §2.7 (ref scope) |
+| Familiar errors and hints | §11.6 |
+| Unavoidable differences invisible or additive | §11.5 (asc-only flags), §8.5 (`--land` explicit), §2.4.1 (documented attribute deviation), §17.1 `allowed.toml` |
+| Compatibility test suite as an acceptance gate | §17.1, §18 exit criteria |
+| **TOP: built-in polyglot project graph and `asc affected`** (Rust, Python, .NET, Node/Bun), API-first; `--base` defaults to the default branch | §12A, §5, §7 `Projects`, §11.2, §12.2, §12A.9 defaults |
+| Scion principles 1–7, data model 8–10, fetching and tiers 11–20, migration lessons 21–23, quality and operations 24–30, advice 31–32 | §1.1 |
+| **TOP: Scion-core memory and storage efficiency** | §6.3 (want-only; history window), §3.2 (stored bytes), §7 (tier contract, cache role), §12.3 (seeds), §5 (`skip.v1`), §5.1, §3.5 (storage budgets), §3.3 (bucket efficiency; logical fork-network dedup deferred, §19 decision 6), §16.4 (memory budgets, `limits.text_memory`, benchmark gate) |
+| Ignore files: `.ascignore` first, `.gitignore` fallback; `.ascattributes` first | §2.4.2 (incl. shadow warning, `migrate ignore` copies), §2.4.1 |
+| Own Actions fork: CI uses asc, not git | §12.7 (`asc/actions`, cache/artifact store contract), §12.3 step 6, §13.3 (runner fork), §19 decision 5 |
+| Benchmark against git: asc must be faster | §16.4 benchmark gate, `docs/BENCHMARKS.md` |
+| Checkout speed: small, medium and HUGE monorepos | §16.4 workloads and goal; §6.3 history window (clone O(window + root tree)) |
+| No LFS: pointer files are ordinary blobs; LFS content archived outside asc; large files native with no setup | §2.5, §2.4.1 (`filter=lfs` ignored), §14.1, §14.3, §13.3 K13 |
+| Stacked commits and stacked PRs are core (decision 2026-10-22) | §20 (stack model D1–D3, op log/undo D6, in-memory restack D7, stacked PRs D8/D11, land D10, GitLens/GitKraken data D12); §11.2 stack verbs; §11.4 D5 precedence; §13.3 C34–C48; §7 and §20.5 `Changes` service; §2.2/§3.1 `ChangeMeta`; §12.6 stack queue; §17.1 invisibility case |
+| Stack and review features in the Forgejo fork UI (stack navigator, per-change review, stack merge through the queue, commit graph, blame/file history, inbox, comparison, undo-aware operations) | §20.8, §13.3 C34–C48, §20.5 flows |
+| GitLens/GitKraken data features in core and the plugin API (blame, history, graph, worktrees, conflicts) | §20.6, §7 `workspace.proto` additions |
 
 ASC workload (from `asc-profile.md`): 4,543 files / 119 MiB at HEAD, 5,502 commits, 104,800 reachable objects (311 MiB packed), 113 historical LFS objects (25.6 GiB), one submodule `packages/soma/sdk`, 50 worktrees, 26 commits/day mean (303 peak), median 4 files per commit.
 
@@ -65,6 +94,48 @@ ASC workload (from `asc-profile.md`): 4,543 files / 119 MiB at HEAD, 5,502 commi
 | CI plain checkout from warm host cache | < 3 s |
 | Turbo task hashes on clean virtual copy | equal to a git clone, 0 hydrations beyond manifests |
 | Per-machine footprint replacing 58 GB `.git` | < 2 GiB plus hydrated content |
+| `asc affected` / `Affected` RPC | < 300 ms warm, < 2 s cold (§12A.8) |
+| Shim fall-through overhead (`git` in a non-asc repo) | p95 ≤ 5 ms Windows, ≤ 2 ms Linux (§11.4) |
+| Daemon idle RSS | ≤ 64 MiB (§16.4) |
+
+### 1.1 Scion checklist traceability (items 1–32)
+
+Every item of `scion-checklist.md` is either met or dropped with a reason.
+
+| # | Item | asc handling | Where |
+|---|---|---|---|
+| 1 | Always online, plus local-only | Online by default; local-only mode; offline subset; history beyond the local window is answered by the server | §6.1, §6.3, §6.4 |
+| 2 | Client-server asymmetry | Server does history, blame, merge, land, rebase; client keeps a bounded cache and a bounded history window | §4, §8, §3.5, §6.3 |
+| 3 | API-first | Every client query is a public RPC; `asc api` | §7 |
+| 4 | Horizontal scale, no packfiles, no maintenance | No packfiles; `gc`/`repack` are no-ops | §3.3, §11.2 |
+| 5 | Cheap commits, cost scales with the change | Local commits stay local; server `Commit`/`Merge`/`Apply`; ingest O(changed paths × depth) | §8.7, §8.4 |
+| 6 | Few global refs | Local branches are machine-local; only pushed refs are global; agent refs expire and are not fetched by default; changesets need no ref | §2.7, §6.1, §8.7 |
+| 7 | Optional, sparse, virtual working copy | Virtual and sparse workspaces; writes through the API | §10, §8.7 |
+| 8 | Changeset is a WAL entry | Changes relative to the first parent; visible on ingest | §2.6, §8.7 |
+| 9 | Accepting changesets needs no ref move | `Commit` without `update_ref`; `Ingest` RPC | §8.7 |
+| 10 | One generic derived-data mechanism | `Derived` and `DerivedKeyed`; named future types | §5 |
+| 11 | Content-addressed, immutable | BLAKE3 ids, create-only puts | §2.1, §3.3 |
+| 12 | Want-only negotiation | Explicit wants; Log-driven history fetch; resumable | §6.3 |
+| 13 | Sparse/virtual need no protocol support | The client does not ask | §6.3, §10 |
+| 14 | Per-node daemon | Per-user daemon plus shared cache; CI host cache as the node store | §9.1 |
+| 15 | Daemon boots from a seed | Seed snapshots published by the server | §12.3 |
+| 16 | Caches stream stored bytes | `get_stored`; no per-client computation | §3.2 |
+| 17 | Every tier speaks the same RPCs | Object tier contract; `asc serve --role cache` | §7 |
+| 18 | Strict tiering | Retries with budget, coalescing, shedding, no tier bypass | §16.3 |
+| 19 | Stateless tiers, > 99% hit rate | Cache SLOs; every cache is disposable | §16.4 |
+| 20 | No client or cache maintenance | No packfiles, no projection ODB, LRU caches | §3.5, §9.4 |
+| 21 | Metadata first | Milestone M-meta | §18 |
+| 22 | Ingestion invariants, memory and speed | I1–I7 | §14.4 |
+| 23 | No brute-force lookups | `land_map`, `FindLanding`, mainline index | §8.9, §5.1 |
+| 24 | Hermetic simulation, fuzzing, rate limiting | `asc-sim`, fuzz targets, admission control | §17.2, §17.3, §16.3 |
+| 25 | No over-engineering; no re-validation of trusted services | Trust boundaries | §15.4 |
+| 26 | Repo ACLs plus directory permissions | Write rules in pre-receive; read isolation by composed repos | §15.5 |
+| 27 | Semantic review constraints | `Classify` RPC; Forgejo relaxed approvals (K17) | §8.10 |
+| 28 | Post-merge testing; agents resolve conflicts | `Rebase` RPC with structured conflicts; content-merge land; `green/*` refs | §8.11, §12.6 |
+| 29 | Per-component monitoring | Per-tier metric and log catalogue; runbooks | §16.1 |
+| 30 | Ancestry through indexes | Generation numbers, skip lists, mainline and path index | §4.3, §5, §5.1 |
+| 31 | Standardised server RPCs | `asc.v1` public API, forge-neutral; `asc api` | §7 |
+| 32 | Negotiation can change; sparse and shallow compose | No asc-side git helper (No-IDE decision). The Forgejo git bridge is served by real git, which handles `filter`/`shallow`/`deepen` | §13.1, §9.6 |
 
 ---
 
@@ -85,7 +156,7 @@ All ids are 32-byte BLAKE3 outputs using **derive-key mode** with a per-kind con
 `id = blake3::Hasher::new_derive_key(CONTEXT).update(bytes).finalize()`.
 
 - Each is a distinct Rust newtype over `[u8; 32]` with no shared base type. `GitOid([u8; 20])` is a separate newtype and is never an identity inside asc.
-- Display: 64 lowercase hex; abbreviated display is 12 hex. Input accepts full hex or a unique prefix of ≥ 4 hex characters. A 40-hex string is a git SHA. A prefix that matches both an asc id and a git SHA is an error that lists candidates. Explicit prefixes `asc:` and `git:` force one interpretation.
+- Display: 64 lowercase hex; abbreviated display of asc ids (opt-in, §11.1) is 12 hex. Input accepts full hex or a unique prefix of ≥ 4 hex characters. A 40-hex string is a git SHA. A prefix that matches both an asc id and a git SHA is an error that lists candidates. Explicit prefixes `asc:` and `git:` force one interpretation.
 - The empty tree has a fixed `TreeId` = hash of the envelope of `Tree { entries: [] }`; golden value in `crates/asc-core/tests/golden/ids.txt`.
 
 ### 2.2 Canonical encoding
@@ -98,10 +169,15 @@ All ids are 32-byte BLAKE3 outputs using **derive-key mode** with a per-kind con
 | 2 | `Changeset` | 1 |
 | 3 | `TagRecord` | 1 |
 | 4 | `ChunkList` | 1 |
-| 5 | `FileMeta` (server-side only) | 1 |
+| 5 | reserved (was `FileMeta`; dropped from v1, server metadata lives in SQL and derived data) | – |
+| 6 | `ChangeMeta` (stable change identity sidecar, §20.2) | 1 |
 | 16–63 | derived values (§5) | per type |
 
 Postcard 1.x rules (normative, golden-tested): unsigned ints are LEB128 varints, signed ints are zigzag varints, `u8` is one raw byte, `bool` is one byte 0/1, `Option` is a tag byte 0/1 then the value, `Vec<T>`/`Vec<u8>` is a varint length then elements, `[u8; N]` is N raw bytes with no length, enums are a varint variant index then fields, structs are fields in declaration order. Forbidden in encoded types: `HashMap`, `f32/f64`, `String` (use `Vec<u8>` except where noted), `#[serde(skip_serializing_if)]`, `flatten`, untagged enums. Maps are `Vec<(K, V)>` sorted strictly ascending by key bytes (no duplicates); decoders MUST reject unsorted or duplicate keys, trailing bytes, unknown kinds and unknown versions. Therefore `encode(decode(b)) == b` for every accepted `b`.
+
+### 2.2a Versioned non-envelope encodings [audit: rolling-upgrade-encodings]
+
+Every postcard value stored outside an envelope starts with `version: u8`. This covers `BucketRefEntry` (v1), the commit `asc` header (`asc <base64(0x01 ‖ postcard(AscGitExtra))>`), the seed manifest, and `state.db` blobs. `AscGitExtra` v1 is frozen like the tree format. An importer that sees an unknown `asc` header version fails with `upgrade asc`. It never stores that commit raw, because that would fork ids. A `BucketRefs` reader that sees an unknown entry version fails with `upgrade asc` and never writes.
 
 ### 2.3 Names and paths
 
@@ -125,7 +201,32 @@ pub struct ChunkList { pub size: u64, pub chunks: Vec<(ChunkId, u32)> } // u32 =
 
 `ChunkList` is not identity-bearing: it is stored under the file's `FileId`, and a reader accepts any `ChunkList` whose assembled bytes hash to that `FileId`. A reader verifies each chunk against its `ChunkId` while streaming, and the whole file against `FileId` at the end. On mismatch it discards the result and reports corruption.
 
-- Bytes are stored exactly as committed. asc performs no EOL or filter conversion. Projections set `core.autocrlf=false` (§9.4).
+- Bytes are stored exactly as committed. Checkout performs no EOL or filter conversion. Ingest applies git's normalisation only as §2.4.1 says.
+
+#### 2.4.1 Attributes [audit: gitattributes, gitattributes-normalisation]
+
+- asc reads attributes with `gix-attributes` from, per directory, `.ascattributes` if present, else `.gitattributes` (tree and worktree; the files are never merged), then `<common>/info/attributes` and `core.attributesFile`.
+- **Honoured natively:**
+  - `binary`, `-diff`, `diff` (no driver) and `-text` in diff output (`Binary files … differ`);
+  - `merge=union`, `merge=ours`, `merge=binary` and `-merge` in merges (§4.4);
+  - `export-ignore` and `export-subst` in `archive`;
+  - `diff=<driver>` with `diff.<driver>.textconv` or `.command`, and `merge=<driver>` with `merge.<driver>.driver`, by running the configured command as git does;
+  - `linguist-generated` (classification, §8.10).
+- **Ingest-side normalisation, as `git add` does:** for paths whose attributes are `text`, `text=auto` (when the content is not binary by git's heuristic) or `eol=*`, `asc add`, `commit -a` and status hashing convert CRLF to LF. A working file and the same file added with git therefore give the same blob.
+- **Not applied at checkout (documented, accepted deviation):** `eol`, `crlf`, `text` conversion on checkout. Working files always hold the committed bytes. VFS sizes come from tree metadata, so a conversion would break placeholder sizes and turbo's stat hashing. A global `core.autocrlf=true` is ignored in asc workspaces.
+- **Unsupported:** `ident`, `working-tree-encoding` and `filter=<x>` other than `lfs`. `asc add` of such a path fails with `fatal: asc: attribute '<a>' is not supported` (exit 128).
+- **`filter=lfs` is ignored [audit: lfs-filter-add-fails]:** the content is stored natively (chunked over 4 MiB) and `asc add` prints `warning: asc: ignoring filter=lfs for <path> (large files are native)` once per command. Existing pointer files stay ordinary blobs (§2.5).
+- When a repo tracks a `.gitattributes` that uses an unapplied or unsupported attribute, `asc clone` and `asc doctor` print one `warning: asc: …` naming the attribute and the affected paths. The warning also explains the `autocrlf` rule when a global `core.autocrlf=true` is present. The compat allow-list (§17.1) records the deviation.
+
+#### 2.4.2 Ignore files: `.ascignore` first, `.gitignore` as fallback (user decision)
+
+- **Per-directory precedence:** if a directory contains a `.ascignore`, asc uses it and does not read that directory's `.gitignore`; otherwise asc reads `.gitignore`. Files are never merged.
+- **Syntax and semantics are gitignore's** (negation, `**`, anchoring, trailing `/`, escaping, nested files scoped to their directory). One parser (`ignore` crate rules) serves both names.
+- **Repo-local excludes [audit: asc-info-exclude-location]:** `.asc/info/exclude` is `<worktree root>/.asc/info/exclude`. The path `.asc/info/` is never tracked: status, add and ls-files treat it as ignored, like `.git`. asc reads it if it exists, else `<common>/info/exclude` (the `.git/info/exclude` equivalent).
+- **Global excludes:** `asc.excludesFile`, default `~/.config/asc/ignore`; when that file does not exist, git's `core.excludesFile`.
+- **Commands [audit: migrate-ignore-default-and-stale-text]:** `asc check-ignore -v` reports the file and line that matched (git's format). `asc migrate ignore [--move]` copies each `.gitignore` to `.ascignore` (default), so tools that read `.gitignore` directly (ripgrep, prettier, eslint, biome) keep working; `--move` renames. `asc doctor` warns when a directory has both files with different content.
+- **`asc init` and the shadow warning [audit: ascignore-shadows-gitignore]:** `asc init` writes a `.ascignore` only when the directory has no `.gitignore`, with the first line `# asc: replaces .gitignore in this directory`. `git init` through the shim writes none (§11.4). When one directory holds both files and their contents differ, `asc status`, `asc add` and `asc check-ignore` print once per command on stderr `warning: asc: <dir>/.gitignore is not read because <dir>/.ascignore exists (rename or merge it: asc migrate ignore)`, and `asc doctor` lists every such directory.
+- Git export and the Forgejo bridge carry both files as ordinary tracked content. With no `.ascignore` anywhere, behaviour is exactly git's, so the compat suite (§17.1) is unaffected.
 
 ### 2.5 Trees
 
@@ -137,17 +238,15 @@ pub struct Entry {
     pub id: [u8; 32],          // File/Exec/Symlink: FileId; Dir: TreeId; Gitlink: all zero
     pub size: u64,             // File/Exec/Symlink: byte length of the git blob; Dir: sum of descendant blob sizes; Gitlink: 0
     pub git: GitOid,           // git blob oid / git tree oid / gitlink commit oid
-    pub lfs: Option<LfsRef>,   // Some only for File/Exec entries imported as git-LFS pointers
 }
 pub enum Kind { File = 0, Exec = 1, Symlink = 2, Dir = 3, Gitlink = 4 }   // postcard variant index as listed
-pub struct LfsRef { pub sha256: [u8; 32], pub size: u64 }                  // resolved content hash and size
 ```
 
 - A tree depends only on content, never on path or history.
-- `git` of a `Dir` entry is the git oid of that subtree **as git saw it**. For canonical trees this equals `sha1(render_git_tree(child))`. For imported non-canonical git trees (unusual modes, odd ordering) it is the original oid, and the original raw git tree object is stored as a **git tree override** object `o/<oid>` (§3.3). The exporter uses the override whenever `sha1(render) != git`.
+- `git` of a `Dir` entry is the git oid of that subtree **as git saw it**. For canonical trees this equals `sha1(render_git_tree(child))`. For imported non-canonical git trees (unusual modes, odd ordering) it is the original oid, and the original git tree body (no header) is stored as a **git tree override** object `o/<oid>` (§3.1, §3.3). The exporter uses the override whenever `sha1(render) != git`.
 - The git oid of the root tree is not stored in `Tree`. It is `sha1(render_git_tree(root))`, except for imported commits that keep raw bytes (§2.9), whose tree line is authoritative and whose root override is stored like any other.
-- **LFS entries [fix J1: pointer identity]:** `id` is the `FileId` of the **pointer blob bytes**, `size` is the pointer blob's size, and `git` is the pointer blob's oid, exactly as git stored them. `lfs.size`/`lfs.sha256` describe the real content. Working copies show the real content (size `lfs.size`), resolved via the `x/sha256/<hex>` alias (§3.3). The projection index records `git` (the pointer oid) with stat size `lfs.size`, which is exactly what a git+LFS clone records. Import is deterministic whether or not LFS bytes are available.
-- Large files committed natively are chunked content (§2.4). asc never creates new LFS pointers.
+- **No LFS (user decision) [audit: user decision No-LFS]:** asc has no LFS support. Git LFS pointer files in imported history are ordinary small blobs, kept byte-exact, so git SHAs and the mirror stay identical; working copies show the pointer text. LFS content is never fetched or migrated; ASC's 25.6 GiB LFS store is archived once to a cold S3 bucket, outside asc (§14.3).
+- Large files are native chunked content (§2.4), with no setup needed.
 
 ### 2.6 Changesets
 
@@ -164,7 +263,7 @@ pub struct Changeset {
 pub struct Signature { pub name: Vec<u8>, pub email: Vec<u8>, pub time: i64 /*unix s*/, pub tz_min: i16 }
 pub enum Change {
     Write { kind: Kind /* File|Exec|Symlink */, file: FileId, size: u64, git: GitOid,
-            lfs: Option<LfsRef>, copy_from: Option<RepoPath> },
+            copy_from: Option<RepoPath> },
     Gitlink { commit: GitOid },
     Delete,
 }
@@ -175,7 +274,7 @@ pub enum Change {
 1. Every parent exists; `parents` has no duplicates.
 2. `apply(tree(parents[0]) or empty, changes) == root`, where `apply` builds the new tree along changed spines (§4.1).
 3. `changes == leafdiff(tree(parents[0]) or empty, root)` exactly: every changed leaf appears once, nothing unchanged appears, and a file replaced by a directory (or the reverse) appears as `Delete` of the old leaf plus `Write`s of the new leaves. Therefore `changes` is a pure function of the two roots plus `copy_from` annotations, and two producers of the same commit always agree.
-4. Every `Write.file` exists, and its `size`, `git` (blob SHA-1) and `lfs` match the content (§8.4 verifies on the server).
+4. Every `Write.file` exists, and its `size` and `git` (blob SHA-1) match the content (§8.4 verifies on the server).
 5. `copy_from`, if present, names a path that exists in `tree(parents[0])`.
 6. Merge changesets record changes relative to `parents[0]` only (Scion/Bonsai).
 
@@ -195,7 +294,15 @@ pub struct TagRecord { pub target: ChangesetId, pub name: Vec<u8>, pub tagger: O
 pub enum RefTarget { Changeset(ChangesetId), Tag(TagId) }   // stored as 33 bytes: 0x01|0x02 ‖ id
 ```
 
-Ref names follow `git check-ref-format`. Namespaces: `refs/heads/*`, `refs/tags/*`, `refs/remotes/*` (local only), `refs/stash` (local only), `refs/pull/<n>/head` and `refs/for/*` (Forgejo), `refs/heads/agent/*` (may carry an expiry, §8.8).
+Ref names follow `git check-ref-format`. Namespaces: `refs/heads/*`, `refs/tags/*`, `refs/remotes/*` (local only), `refs/stash` (local only), `refs/pull/<n>/head` (Forgejo), `refs/heads/agent/*` and `refs/snapshots/*` (may carry an expiry, §8.8), `refs/heads/green/*` (post-merge, §12.6), `refs/bisect/*` (local only). `refs/for/*` is never stored; it is an AGit push target (§13.5).
+
+**Ref scope (Scion principle 6) [audit: 6-ref-scoping, branch-scope-model]:**
+- Creating a changeset never touches refs (§8.7). A server ref is one SQL row with per-row CAS (§3.4); no cross-server agreement exists. A ref costs one row and one `ListRefs` entry.
+- Unpushed local branches are machine-local (§6.1).
+- Global refs that every client follows by default: `master`, `release/*`, tags, and developer branches pushed for review.
+- Agent branches live under `refs/heads/agent/*` with a TTL (§8.8). `asc clone` writes the fetch refspecs `+refs/heads/*:refs/remotes/origin/*` and `^refs/heads/agent/*` (git ≥ 2.29 negative refspec syntax). `asc fetch origin agent/<name>`, or an explicit refspec, fetches one agent branch.
+- `ListRefs` with a prefix is paged (`limit` default 1,000).
+- Agents that need no branch use `Ingest`, or `Commit` without a ref, and refer to changesets by id.
 
 ### 2.8 Path rules by context
 
@@ -219,7 +326,7 @@ tree <root git oid hex>\n
 parent <gitcommit(p) hex>\n                       (one per parent, in order)
 author <name> <<email>> <time> <tz>\n             (tz = sign ‖ HH ‖ MM from tz_min, e.g. +0100, -0530, +0000)
 committer <name> <<email>> <time> <tz>\n
-asc <base64(postcard(AscGitExtra))>\n               (only when AscGitExtra is non-empty)
+asc <base64(0x01 ‖ postcard(AscGitExtra))>\n       (only when AscGitExtra is non-empty; version byte, §2.2a)
 gpgsig <line 1>\n <line 2>\n …                    (only when extra has git.gpgsig; continuation lines start with one space)
 \n
 <message bytes verbatim>
@@ -249,9 +356,9 @@ pub enum ObjKey {
     Tree(TreeId),            // t/
     Changeset(ChangesetId),  // c/
     Tag(TagId),              // g/
-    GitTreeOverride(GitOid), // o/   raw git tree object, "tree <len>\0…"
+    GitTreeOverride(GitOid), // o/   git tree object body without the "tree <len>\0" header; valid iff sha1("tree " ‖ ascii(len) ‖ 0x00 ‖ body) == oid
+    ChangeMeta(MetaId),      // m/   ChangeMeta envelope (kind 6, §20.2); id = BLAKE3 of the envelope
     Derived { name: &'static str, version: u32, id: [u8; 32] },   // d/<name>.v<version>/
-    Sha256Alias([u8; 32]),   // x/sha256/   value = FileId (32 raw bytes)
 }
 ```
 
@@ -265,6 +372,7 @@ pub enum ObjKey {
 #[async_trait]
 pub trait Objects: Send + Sync {
     async fn get(&self, key: &ObjKey) -> Result<Option<Bytes>>;                  // decoded data (codec removed), verified
+    async fn get_stored(&self, key: &ObjKey) -> Result<Option<Bytes>>;           // stored bytes (codec ‖ data); not decoded, not verified
     async fn get_range(&self, key: &ObjKey, r: Range<u64>) -> Result<Option<Bytes>>; // File/Chunk only
     async fn put(&self, key: &ObjKey, data: Bytes) -> Result<()>;               // create-if-absent; AlreadyExists == Ok
     async fn has_many(&self, keys: &[ObjKey]) -> Result<Vec<bool>>;
@@ -284,7 +392,10 @@ pub struct RefUpdate { pub name: RefName, pub expect: Expect, pub new: Option<Re
 pub enum Expect { Any, Absent, Value(RefTarget) }
 ```
 
-**Verify on read (MUST):** `get` verifies `File`, `Chunk`, `Tree`, `Changeset` and `Tag` values against their id before returning. A mismatch is `Error::Corrupt(key)`. The caller treats the object as missing, and caches delete the file **[graft: integration] [fix J1: cache poisoning]**.
+**Verification happens where an object is consumed (MUST) [audit: 16-stored-bytes-serving]:** `get` verifies `File`, `Chunk`, `Tree`, `Changeset`, `Tag` and `ChangeMeta` values against their id before returning. A mismatch is `Error::Corrupt(key)`. The caller treats the object as missing, and caches delete the file **[graft: integration] [fix J1: cache poisoning]**.
+- Every client and CI `Tiered` fill, and any server code that decodes an object for its own work (diff, merge, blame, derivation, export), uses `get` and so verifies.
+- `get_stored` returns the stored bytes untouched: `BucketObjects` returns the object body, `CacheDir` returns `0x00 ‖ file bytes`, and `Tiered` fills A from B's stored bytes. The server's `GetObjects` and the cache role (§7) serve `get_stored` bytes from memory, disk or the bucket without decompressing, re-compressing or hashing. Each object was verified once at `PutObjects` (§8.4), and the server's own bucket is trusted (§15.4).
+- `asc fsck` and `RepoAdmin.verify` re-hash stored objects offline.
 
 ### 3.3 Implementations
 
@@ -307,16 +418,18 @@ pub enum Expect { Any, Absent, Value(RefTarget) }
 <root>/ns/<ns>/c/<h2>/<hex64>          changeset
 <root>/ns/<ns>/g/<h2>/<hex64>          tag
 <root>/ns/<ns>/o/<h2>/<hex40>          git tree override
+<root>/ns/<ns>/m/<h2>/<hex64>          change meta (§20.2)
 <root>/ns/<ns>/d/<name>.v<N>/<h2>/<hex64>   derived (recomputable)
-<root>/ns/<ns>/x/sha256/<hex64>        alias → FileId
 <root>/ns/<ns>/rl/<refname>/<v:020>    ref log entries (BucketRefs only)
 <root>/ns/<ns>/r/<refname>             ref hint (BucketRefs only)
 <root>/turbo/<repo-slug>/<scope>/<hash>[.meta]   turbo remote cache (§12.4)
+<root>/actions/<owner>.<repo>/<cache|artifact>/<scope>/<pct(key)>   Actions manifests (§12.7)
+<root>/seeds/<repo-slug>/<changeset>.tar.zst, latest   seed snapshots (§12.3)
 ```
 
 `<h2>` is the first two hex characters. `<ns>` is a 16-byte random id (hex) assigned at repo creation. A bucket remote URL (`s3://…`, `file://…`) addresses one namespace directly: its URL prefix plays the role of `<root>/ns/<ns>`. There are no packfiles. Every object can be fetched alone, so transfers resume by asking again for whatever is missing.
 
-**Namespaces and forks.** Objects are only ever read within the namespace of the repository named in the request. A Forgejo fork gets a new namespace. `Fork` copies the reachable closure server-side, using S3 `CopyObject` or a local reflink, as a background job. The fork is readable when the copy completes (minutes for ASC). Cross-namespace operations (PR merges from forks, `refs/pull/<n>/head`) first call `CopyClosure` (§7), authorised against both repositories. This closes the confirmation attack ("does this content exist in a private fork?").
+**Namespaces and forks.** Objects are only ever read within the namespace of the repository named in the request. A Forgejo fork gets a new namespace. `Fork` copies the reachable closure server-side, using S3 `CopyObject` or a local reflink, as a background job. The fork is readable when the copy completes (minutes for ASC). Cross-namespace operations (PR merges from forks, `refs/pull/<n>/head`) first call `CopyClosure` (§7), authorised against both repositories. This closes the confirmation attack ("does this content exist in a private fork?"). Cross-fork dedup is therefore physical only: `CopyObject`/reflink copies, and Garage's block-level dedup. Logical dedup across a fork network is a measured v1.x item (ASC has one repository and no forks). This defers a checklist v1 item and is recorded as §19 decision 6 **[audit: fork-dedup-deviation-unsigned]**.
 
 ### 3.4 Ref stores and their atomicity
 
@@ -334,43 +447,55 @@ Update: in one transaction, for each update, `UPDATE refs SET target=$new, versi
 
 **`BucketRefs`** (serverless shared bucket) **[fix J1/J2: serverless multi-writer, ABA, reflog]**:
 
+- **Deferred (post-v1, unit U30, off the critical path) [audit: bucketrefs-defer]:** v1 bucket remotes use `--refs local` (single-writer) by default. Multi-writer teams use `asc serve`. `asc init --store` without `--refs` uses `local` until U30 ships. The design below is kept so U30 can be built without redesign.
 - The **ref log is the truth.** Entry `rl/<ref>/<v>` (v zero-padded to 20 digits, starting at 1) holds `postcard(BucketRefEntry { old: Option<RefTarget>, new: Option<RefTarget>, op_id: [u8;16], actor: Vec<u8>, at: i64 })`. The current value is the entry with the highest `v`.
 - **CAS = create-only put** of `rl/<ref>/<v+1>` after reading entry `v` and checking that `entry_v.new == expected`. Only one writer can create a given `v+1`. On `AlreadyExists`, read the entry: if its `op_id` equals mine, the earlier attempt succeeded (a retried create), so return success. Otherwise return `RefConflict`. Version numbers never repeat, so there is no ABA.
 - `r/<ref>` holds the latest known `v` as a **hint**, written with a plain overwrite after a successful CAS. Readers start at the hint and probe `v+1, v+2, …` until a missing key. Listing refs lists `r/` and then resolves each one.
 - Atomicity covers one ref per update. A multi-ref push applies refs in order and reports partial success explicitly.
 - **Probe** (`asc doctor --store`, and automatically on `asc init --store s3://…` and on the first push to a bucket remote): put key `probe/<uuid>` with `Create` twice. The second put MUST fail with `AlreadyExists`. If it succeeds (header ignored) or the store errors with `NotImplemented`, `BucketRefs` is refused for that bucket with a message naming the store. The bucket can still hold objects, and refs then need a server or the single-writer mode below. Garage v2 is expected to fail the probe.
-- **Single-writer fallback:** `asc init --store <bucket> --refs local` keeps refs in the machine's `state.db`. It is explicitly single-machine and is labelled as such in `asc remote -v`.
+- **Single-writer fallback:** `asc init --store <bucket> --refs local` keeps refs in the machine's `state.db`. It is explicitly single-machine and is labelled as such in `asc remote -v`. Workspaces on that machine (one `$ASC_HOME`) share the refs. The bucket's refs are stored under a dedicated `state.db.repos` row per bucket (`remote_kind = bucket-local-refs`, `remote_url` = the normalised bucket URL, `ns` = the bucket's namespace), as `refs/heads/*` and `refs/tags/*`. Push CASes those rows (`BucketRemote::update_refs`). Fetch copies them into the cloning repo's `refs/remotes/<remote>/*`. Each clone is its own `repos` row with its own local branches, as with git **[audit: bucket-local-refs-storage-undefined]**. The first push writes the create-only bucket key `refs-local` holding this machine's id (`state.db.meta.machine_id`). A clone or fetch of a bucket remote from a machine that does not hold its refs (the key names another machine) fails with `fatal: asc: refs for <url> are local to another machine; use an asc server or --refs shared (U30)` (exit 128) **[audit: bucket-local-refs-two-clones]**.
 
 ### 3.5 Machine layout (`$ASC_HOME`)
 
-`$ASC_HOME` = env `ASC_HOME`, else global git config `asc.home`, else `%LOCALAPPDATA%\asc` (Windows) or `${XDG_DATA_HOME:-~/.local/share}/asc`. ASC sets `D:\asc`, on the same volume as bun's cache.
+`$ASC_HOME` = env `ASC_HOME`, else global git config `asc.home`, else `%LOCALAPPDATA%\asc` (Windows) or `${XDG_DATA_HOME:-~/.local/share}/asc`. ASC sets `D:\asc`, on the same volume as bun's cache. Inside a workspace, asc derives `$ASC_HOME` from the gitfile target (`<home>/wc/<ws>/git` → `<home>`); `ASC_HOME`/`asc.home` apply only outside workspaces **[audit: ci-later-steps-asc-home-and-runner-mounts]**.
 
 ```
-cache/{f,l,k,t,c,g,o,d}/<h2>/<hex>   evictable decoded copies of remote objects (CacheDir)
-store/{f,l,k,t,c,g,o,d}/<h2>/<hex>   objects that exist only here: local-only repos, unpushed commits, staged content. Never evicted.
+cache/{f,l,k,t,c,g,o,m,d}/<h2>/<hex>   evictable decoded copies of remote objects (CacheDir)
+store/{f,l,k,t,c,g,o,m,d}/<h2>/<hex>   objects that exist only here: local-only repos, unpushed commits, staged content. Never evicted.
 tmp/                                  staging for atomic writes (same volume)
-state.db                              SQLite: repos, local refs, ref log, workspaces, journal, git map, entry times, intents
-repos/<repo-id>/.git/                 projection common dir per repo (objects, refs mirror, packed-refs, config, logs)
-wc/<ws-id>/git/                       per-workspace gitdir (HEAD, index, config.worktree, commondir, logs/HEAD)
+state.db                              SQLite: repos, local refs, ref log, workspaces, staging and stage sets, journal, git map, history boundary, entry times, intents
+repos/<repo-id>/.git/                 common dir per repo: git-format `config` (remotes, upstreams, local settings), `info/exclude`,
+                                      `hooks/` (default hooks dir). No objects and no refs (§9.4)
+repos/<repo-id>/.turbo/cache/         machine-wide turbo cache shared by the repo's workspaces (§9.4)
+repos/<repo-id>/git-remote.git/       git-remote mode only: a private bare repo that real git fetches into and pushes from (§6.3)
+wc/<ws-id>/git/                       synthetic per-workspace gitdir (§9.4): HEAD, index, commondir, asc-workspace, in-progress state files
 wc/<ws-id>/overlay/                   FUSE only: modified file bodies
+wt/<ws-id>/                           mount roots for worktrees requested inside another workspace (§9.3)
 redirect/<ws-id>/<path>               FUSE only: redirected directories
-hooks/                                asc-owned git hook dispatchers
-tools/                                pinned helper tools (e.g. turbo for `asc ci affected`)
-run/                                  daemon pid, Unix socket fallback
+tools/                                reserved for pinned helper tools (none in v1)
+run/                                  daemon pid, Unix socket fallback, real-git resolution cache
 log/daemon.log
 ```
+
+`$ASC_HOME` and `state.db` are implemented in crate `asc-state` (it depends on `asc-store` for `SqlRefs` and on `asc-engine` for `GitMapSink`). `asc-git`, `asc-wc`, `asc-vfs`, `asc-ci` and `asc` depend on it **[audit: crate-cycle-statedb]**.
 
 - **Atomic write:** write to `tmp/<uuid>`, fsync, then rename to the final path. If the final path exists, delete the temp file and succeed. Readers never see partial files. Files are opened for read with `FILE_SHARE_DELETE` on Windows, so eviction never blocks readers.
 - **Content files** (`f/`, `k/`) hold raw bytes. A chunked file also gets an assembled `f/` copy when it is first hydrated, if it is ≤ 1 GiB.
 - **LRU** uses file mtime. A read touches mtime when it is older than 24 h. The daemon (or `asc gc`) evicts `cache/` files with the oldest mtime once the cache exceeds `asc.cache.maxSize` (default 20 GiB), down to 80% of that.
 - **Demotion:** after a successful push, pushed objects are renamed from `store/` to `cache/`.
 - **Store set:** `StoreSet` reads `store/` then `cache/`, and writes new local objects to `store/`.
+- **Cache keys [audit: ci-tier-stack-config-undefined-unowned]:** `asc.cache.dir` replaces `$ASC_HOME/cache` as the evictable cache. `asc.cache.readOnly` (multi-valued) adds read-only `CacheDir` tiers in front of it, verified on read and never written. Every asc process builds `Tiered<readOnly…, StoreSet{store, cache}, remote>` from these keys.
+- **Storage budgets [audit: user decision efficiency]:** each object is stored once per machine and shared by all workspaces, worktrees and repos; `cache/` is LRU-bounded; hydrated files are released by dehydration (§10.2.9); there are no packfiles and no cruft. `asc debug stats` reports bytes per workspace, which is about 0 before hydration (only the synthetic `.git` index and rows).
 
 ### 3.6 Garbage collection (server and bucket; unit O01, not needed for ASC v1)
 
 - Objects are never deleted on the write path.
-- **Two-mark rule [fix: missing-from-all, concurrent writers]:** a sweep deletes an object only if it was unreachable in two marks taken at least 24 h apart, and its `LastModified` is older than 14 days. Roots for each mark are: all refs; every changeset object whose `LastModified` is within 14 days; retained snapshot refs; turbo objects (by their own retention). A push in progress during mark 1 that re-references an old object uploads its changeset before mark 2, which makes the object reachable again. Pushes taking longer than 24 h are not supported. The client re-uploads on `FAILED_PRECONDITION: missing objects`.
+- **Two-mark rule [fix: missing-from-all, concurrent writers]:** a sweep deletes an object only if it was unreachable in two marks taken at least 24 h apart, and its `LastModified` is older than 14 days. Roots for each mark are: all refs; every changeset object whose `LastModified` is within 14 days; retained snapshot refs; every changeset named by `change_versions` (§20.4; a `m/` object follows its changeset); turbo objects (by their own retention); the FileIds named by every unexpired Actions manifest (§12.7). A push in progress during mark 1 that re-references an old object uploads its changeset before mark 2, which makes the object reachable again. Pushes taking longer than 24 h are not supported. The client re-uploads on `FAILED_PRECONDITION: missing objects`.
 - Server marks are stored in SQL (`gc_marks`). Bucket-mode GC (`asc gc --store <url>`) keeps its marks in the bucket under `gc/<run>/` and refuses to run concurrently, using a `gc/lock` create-only key with a 6 h lease.
+- **Sweep fencing [audit: gc-sweep-race-and-pitr-roots]:**
+  - *Server:* `UpdateRefs` holds a shared `pg_advisory_xact_lock(asc_gc)` (SQLite: an in-process RwLock) from pipeline step 4 until the commit in step 8. Each sweep batch takes the lock exclusively, re-marks from refs and from changesets ingested since mark 2 started, removes newly reachable keys from the batch, and only then deletes.
+  - *Bucket mode:* the sweep first creates `gc/freeze` (create-only; body = start time), waits 10 min, re-marks from all refs, deletes, then removes `gc/freeze`. A bucket-mode push reads `gc/freeze` immediately before its ref CAS. If the key is present, it aborts before the CAS with `fatal: asc: bucket is being garbage-collected; retry after <t>`.
+  - *PITR roots:* roots also include every `new` target in `ref_log` (server) or in ref-log entries (bucket) newer than `asc.gc.pitrDays` (default 14; MUST be ≥ the Postgres PITR window).
 
 ---
 
@@ -393,16 +518,32 @@ log/daemon.log
 ### 4.3 Graph and history (`graph.rs`)
 
 - An in-memory graph per repo, `ChangesetId -> (gen: u32, parents)`, where `gen = 1 + max(gen(parents))`. It is loaded lazily: from `cs_graph` on the server, from the `gen` derived value locally.
-- `merge_base(a, b)`: a two-frontier walk in descending generation order (git's paint-down algorithm). `is_ancestor(a, b)`: walk from `b`, pruning nodes with `gen < gen(a)`.
-- `log(range, pathspec, first_parent, limit, skip)`: generation-ordered walk. The path filter uses each changeset's `changes` keys (prefix match), so it costs no tree reads. `--follow` uses `copy_from`.
-- Line diff (`diff/`): `imara-diff` 0.2 Myers with indent heuristic post-processing. Output formats: `--name-only`, `--name-status`, `--stat`, `--numstat`, `--shortstat`, `--raw`, unified patch (`-U<n>`, rename headers, mode lines, `Binary files … differ`, `\ No newline at end of file`), `--word-diff=plain`. **Contract:** every patch passes `git apply --check`, and the patch text equals `git diff` byte for byte on ≥ 99% of the golden corpus (pairs taken from ASC history). Forgejo depends only on the first property **[graft: integration]**.
+- `merge_base(a, b)`: a two-frontier walk in descending generation order (git's paint-down algorithm), jumping along first-parent chains with `skip.v1` pointers (§5) whenever the jump target's generation is still ≥ the other frontier's. `is_ancestor(a, b)`: from `b`, follow skip pointers while the target's `gen ≥ gen(a)`, then walk, pruning nodes with `gen < gen(a)`. On land branches the mainline index answers in O(1) (§5.1).
+- `log(range, pathspec, first_parent, limit, cursor)`: generation-ordered walk. The path filter uses each changeset's `changes` keys (prefix match), so it costs no tree reads. `--follow` uses `copy_from`. On land branches path-filtered log uses the path index (§5.1).
+- **History traits [audit: historyapi-cycle, historyapi-impl-split]:** `HistoryApi` (log, merge_base, is_ancestor, diff, resolve, git_map) in `asc-engine::history`; `BlameApi` (blame) in `asc-engine::blame`; `ProjectsApi` (project_graph, affected, project_hashes) in `asc-engine::projects`. `Engine` implements each trait in the module that defines it. `asc-rpc::RpcClient` implements `HistoryApi` and `BlameApi` (`asc-rpc::client`) and `ProjectsApi` (`asc-rpc::projects`).
+- **History boundary [audit: clone-history-o-history]:** a local walk (log, merge-base, ahead/behind, blame, describe) that reaches a changeset recorded in `history_boundary` (§6.3) continues through the remote's `HistoryApi` (`Log`/`MergeBase`/`IsAncestor` with the boundary ids). Output is identical to a walk over full local history.
+- Line diff (`diff/`): `imara-diff` 0.2 (`Myers`, `MyersMinimal`, `Histogram`) plus a native patience implementation (`diff/patience.rs`), with indent heuristic post-processing. Output formats: `--name-only`, `--name-status`, `--stat`, `--numstat`, `--shortstat`, `--summary`, `--raw`, unified patch (`-U<n>`, rename headers, mode lines, `Binary files … differ`, `\ No newline at end of file`), `--word-diff=plain`.
+- **Diff contract [audit: diff-byte-equality]:**
+  - asc honours `diff.algorithm` and `--diff-algorithm|--histogram|--patience|--minimal`, plus `diff.indentHeuristic`, `diff.context`, `diff.interHunkContext`, `diff.noprefix`, `diff.mnemonicPrefix`, `diff.relative` and `color.diff.*`.
+  - Output with `--raw`, `--name-only`, `--name-status`, `-z`, `--summary` and the `--stat`/`--shortstat` file lists MUST be byte-equal to git on 100% of the golden corpus (pairs taken from ASC history).
+  - Unified patch and `--numstat` MUST be byte-equal on 100% of the corpus for each configured algorithm. Any unequal case is a bug and is recorded in the corpus's exceptions file, which MUST be empty at the phase-1 exit.
+  - Every patch passes `git apply --check`. Forgejo depends only on this property **[graft: integration]**.
 - Renames: exact (equal `FileId`) first, then similarity among added/deleted files only, capped by `diff.renameLimit` (default 1000). Off unless `-M`, or `diff.renames=true` (git's default for porcelain).
 
 ### 4.4 Merge, rebase, land (`merge/`, `rebase.rs`, `land.rs`)
 
 - **Tree merge** of base→ours and base→theirs is the union of two change sets. A path changed on one side takes that side. A path changed identically on both sides takes it. A path changed differently gets a content 3-way merge with the `gix-merge` (pinned to the `gix` 0.89 family) builtin text driver, which produces git's markers in `merge`, `diff3` and `zdiff3` styles. Only both-sides paths read content. File/directory and case-fold conflicts are detected on changed paths only. Binary conflicts take ours and record the conflict.
-- **Conflicts** in a working copy: markers in the files, stages 1/2/3 in the index, `MERGE_HEAD`/`MERGE_MSG` (merge) or `CHERRY_PICK_HEAD` (cherry-pick, revert) in the gitdir, git-compatible. Rebase state lives in `state.db` (`ws_ops`).
-- **Rebase of changeset `C` onto `T`:** if `paths(C)` is disjoint from `paths(base(C)..T)` (§4.5), the result is `C` with `parents = [T]`, the same `changes`, and `root = apply(T.root, C.changes)` (metadata-only, no content reads) **[graft: performance]**. Otherwise only the intersecting files are merged.
+- Merge attributes (§2.4.1) apply per path: `merge=union|ours|binary`, `-merge`, and configured `merge.<driver>.driver` commands.
+- **Conflicts** in a working copy: markers in the files and stages 1/2/3 in asc's staging area (§9.5).
+- **In-progress state uses git's on-disk format in the workspace gitdir, and that format is the only store [audit: git-state-files]:**
+  - merge writes `MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE` and `AUTO_MERGE`;
+  - cherry-pick writes `CHERRY_PICK_HEAD`; revert writes `REVERT_HEAD`; a multi-commit pick or revert uses `sequencer/{todo,head,opts}`;
+  - rebase uses `rebase-merge/` (`head-name`, `onto`, `orig-head`, `git-rebase-todo`, `done`, `msgnum`, `end`, `interactive`, `stopped-sha`, `amend`, `author-script`, `message`, `autostash`) and `REBASE_HEAD`;
+  - `ORIG_HEAD` is written by reset, merge, rebase and pull; `--squash` writes `SQUASH_MSG`; every commit writes `COMMIT_EDITMSG`;
+  - bisect writes `BISECT_START`, `BISECT_LOG`, `BISECT_TERMS`, `BISECT_EXPECTED_REV` and `refs/bisect/*`.
+
+  asc reads and writes these files with git's semantics, so scripts that inspect them (lint-staged, commitlint, shell prompts) work. Ids in them are git SHA-1s. `state.db.ws_ops` keeps only pending `asc mv` renames.
+- **Rebase of changeset `C` onto `T`:** if `paths(C)` is disjoint from `paths(base(C)..T)` (§4.5), the result is `C` with `parents = [T]`, the same `changes`, and `root = apply(T.root, C.changes)` (metadata-only, no content reads) **[graft: performance]**. Otherwise only the intersecting files are merged. A rebased changeset drops `extra["git.gpgsig"]` and `extra["git.commit"]` (a raw body names the old parents), and is re-signed locally when `commit.gpgSign` or `-S` applies **[audit: land-rewrite-signature-and-raw-extra]**.
 - `cherry_pick`, `revert` and `squash` are built on the same primitives.
 
 ### 4.5 Path-set disjointness (shared by land, metadata rebase and merge fast paths)
@@ -413,7 +554,7 @@ Two path sets **conflict** when some `a ∈ A`, `b ∈ B` satisfy any of: `a == 
 
 ### 4.6 Blame (`blame.rs`)
 
-`blame(rev, path)` walks back from `rev` over changesets whose `changes` touch `path` (following `copy_from`). It line-diffs successive versions and assigns each line its origin. Results are memoised per `(changeset, path)` as derived `blame.v1` (§5). Output: git porcelain, incremental and default formats; `-L` ranges.
+`blame(rev, path)` walks back from `rev` over changesets whose `changes` touch `path` (following `copy_from`). It line-diffs successive versions and assigns each line its origin. Results are memoised per `(changeset, path)` as the keyed derived type `blame.v1` (§5). On land branches the candidate list comes from the path index (§5.1). Output: git porcelain, incremental and default formats; `-L` ranges.
 
 ---
 
@@ -431,16 +572,59 @@ pub trait Derived: Sized + Send + Sync {
 ```
 
 - `get::<D>(id)` finds the underived ancestors iteratively (topological order, no recursion), derives the oldest first, and memoises at `d/<NAME>.v<VERSION>/<id>` (and in SQL for the server types below). Derivation is pure, so concurrent derivers write identical bytes.
+- **Keyed derived values [audit: 10-derived-trait-shape]:** values keyed by `(changeset, key)` that recurse along something other than parents use a second trait:
+
+```rust
+#[async_trait]
+pub trait DerivedKeyed: Sized + Send + Sync {
+    const NAME: &'static str; const VERSION: u32;
+    type Key: Encode;
+    async fn derive(e: &EngineCtx, cs: ChangesetId, key: &Self::Key) -> Result<Self>;
+}
+```
+
+  Values are memoised at `d/<NAME>.v<V>/<blake3(cs ‖ encode(key))>`. `blame.v1` is `DerivedKeyed<Key = RepoPath>`; its derive recurses to the previous changeset that touched the path.
+- **Derived data is lazy by default** (computed when first asked for, then written back). Only master-critical types are eager **[audit: user decision efficiency]**. Eager (blocks ref moves): `gen`, `skip`, `gitcommit`. The project graph is warmed asynchronously for every land-branch tip, so no request waits on it and `UpdateRefs` latency never includes manifest parsing **[audit: manifests-eager-terminology]**.
 
 | Type | Eager | Value | Also written to |
 |---|---|---|---|
 | `gen.v1` | yes | `{ gen: u32 }` | server `cs_graph`; local `state.db` |
+| `skip.v1` | yes | `{ ptrs: Vec<ChangesetId> }`: `ptrs[k]` = the first-parent ancestor `4^(k+1)` steps back, computed from the parent's pointers in O(log n) | – |
 | `gitcommit.v1` | yes | `{ commit: GitOid }` | server `git_map`; local `state.db.git_map` |
-| `blame.v1` (per changeset+path; key = blake3(cs ‖ path)) | no | line runs `(start, len, origin ChangesetId, orig_line)` | – |
+| `manifests.v1` | no (`EAGER = false`; land-branch tips are derived asynchronously by `projects_warm`, §12A.5) | `{ set: [u8;32] }` (§12A.5) | – |
+| `blame.v1` (keyed by path) | no | line runs `(start, len, origin ChangesetId, orig_line)` | – |
+| `classify.v1` | no | §8.10 | – |
+| `diffstat.v1` | no | `Vec<(path, added, removed)>` against `parents[0]`; feeds `CommitGraph` stats, visual file history and `Log.with_stats` (§20.4) | – |
 
+- Mergeability (§20.4) is deliberately **not** a keyed derived type: it is the plain SQL table `mergeable`, one overwritten row per open head, so it cannot grow with trunk history.
+
+- Content-keyed memos (`mset`, `parsed`, `pgraph`, `phash`, §12A.5) use `ObjKey::Derived` with the key given in §12A.5, like `blame.v1`.
+- **Named future types** (each is one impl plus registration, with no client change): `pathlog` (a per-path changeset list for non-land refs), `copies` (copy detection), `pathsearch`.
 - **Warm-ref rule:** `UpdateRefs`, local commits and imports derive every eager type for new changesets before a ref moves. Readers never wait.
 - On ingest the server also writes the **git map** for every new tree, file and changeset: `(git oid, kind) -> asc id`. Trees and files come from `Entry.git`. Changesets come from `gitcommit`.
-- Adding a type means one `impl Derived` plus registration. The write path never changes.
+- Adding a type means one `impl Derived` (or `DerivedKeyed`) plus registration. The write path never changes.
+
+### 5.1 Mainline and path index (server; land branches) [audit: 30-ancestry-path-indexes]
+
+```sql
+mainline(ns BLOB, ref TEXT, pos BIGINT, cs BLOB, PRIMARY KEY(ns, ref, pos))  UNIQUE(ns, ref, cs)
+path_changes(ns BLOB, ref TEXT, path_key BLOB /*first 16 bytes of blake3(path)*/, pos BIGINT,
+             PRIMARY KEY(ns, ref, path_key, pos))
+```
+
+- **Maintenance:** for every ref in `repos.land_branches` (default `[default_branch]`), inside the §8.3 step 8 transaction:
+  - the new first-parent changesets between the old and new tip are appended at consecutive positions;
+  - each gets one `path_changes` row per changed path and per ancestor directory of a changed path (root included), deduplicated. Cost is O(changed paths × depth);
+  - a forced non-fast-forward update deletes rows with `pos >` the new tip's position, then appends.
+- **Normative uses:**
+  - `IsAncestor(a, t)` with `t` a land-branch tip and `a` on its mainline compares positions (O(1));
+  - `Log(ref, paths, first_parent)` on a land branch is a descending range scan of `path_changes`;
+  - `LastCommits(dir, names)` is one batched `MAX(pos)` query;
+  - the blame candidate list is the `path_changes` rows for the path, plus `copy_from` hops;
+  - `FindLanding` uses positions (§8.9).
+- Off-mainline ancestry uses the generation-pruned walk with skip pointers (§4.3). `asc_graph_walk_nodes` records walk sizes.
+- **Pagination:** `LogRequest` gains `page_token`, and `LogResponse` gains `next_page_token`. Servers MUST paginate by cursor (a position or generation), never by scanning skipped entries. `skip` remains only for git's `--skip` and is translated to a position offset on land branches.
+- **Rule and test:** no server RPC on a land branch reads more than O(result + log n) changesets. `EngineCtx` counts changeset reads. Tests over a 100k-commit synthetic history assert this bound for `Log` with paths, `LastCommits`, `IsAncestor`, blame candidate lookup and `FindLanding`. Postgres `EXPLAIN` tests assert no sequential scan on `ref_log`, `mainline`, `path_changes`, `git_map` or `land_map`.
 
 ---
 
@@ -450,10 +634,12 @@ pub trait Derived: Sized + Send + Sync {
 
 Every repository a machine knows has a row in `state.db.repos` (`id`, `name`, `ns`, `remote`, `default_branch`, `windows_safe`). Local branches and tags always live in `state.db.refs` (as git keeps local refs locally). Remote-tracking refs are `refs/remotes/<remote>/*` in the same table.
 
+**Branch scope [audit: branch-scope-model]:** local branches are machine-local rows (one `state.db`, shared by that machine's workspaces) and never reach the server until `push`. The only global refs are the ones users push: the default branch, release branches, PR heads, and `refs/heads/agent/*` with a TTL (§8.8). This reconciles git's branch UX with Scion principle 6: git's push model is kept at the surface, and the set of global refs grows only through explicit pushes. Drafts (unpushed commits) live only in `store/`. Server-held drafts (`refs/snapshots/<user>/*`) are opt-in through `asc push -o asc.snapshot`, and never automatic.
+
 | Mode | Authoritative objects | Authoritative remote refs | How history ops run |
 |---|---|---|---|
 | **local-only** (`asc init`) | `store/` | none (local refs are the only refs) | local engine |
-| **bucket remote** (`s3://`, `file://`) | the bucket | `BucketRefs` (shared) or local (single-writer) | local engine over `Tiered<StoreSet, BucketObjects>` |
+| **bucket remote** (`s3://`, `file://`) | the bucket | local (single-writer, the v1 default) or `BucketRefs` (shared, once U30 ships) | local engine over `Tiered<StoreSet, BucketObjects>` |
 | **git remote** (`git+https://`, or Forgejo without asc) | the git server | the git server | local engine; import on fetch; export + `git push` on push |
 | **server remote** (`asc+https://`, or Forgejo with asc discovered) | the server's store | the server's SQL | local engine for local work; server RPCs for `Diff --remote`, blame, long-range log and CI (`asc.serverHistory=auto`) |
 
@@ -461,7 +647,7 @@ Every repository a machine knows has a row in `state.db.repos` (`id`, `name`, `n
 
 | URL | Meaning |
 |---|---|
-| `https://host/owner/repo[.git]` | Discover. Use `remote.<name>.ascServer` if set. Otherwise `GET https://host/.well-known/asc`, which returns `{ "server": "https://asc.host:443", "repos": "*", "mode": {"<owner>/<repo>": "mirror"\|"primary"}, "min_client": "x.y.z" }`. If that is 404, use git-remote mode. |
+| `https://host/owner/repo[.git]` | Discover. Use `remote.<name>.ascServer` if set. Otherwise `GET https://host/.well-known/asc`, which returns `{ "server": "https://asc.host:443", "objects": ["https://asc-cache.<region>:7890", …], "seeds": "https://…", "repos": "*", "mode": {"<owner>/<repo>": "mirror"\|"primary"}, "min_client": "x.y.z" }` (`objects` and `seeds` optional, §7, §12.3). If that is 404, use git-remote mode. |
 | `asc+https://host[:port]/owner/repo` | server remote |
 | `git+https://…`, `git+ssh://…`, `git@host:path` | git-remote mode, forced |
 | `s3://bucket/prefix?endpoint=<url>&region=<r>&path_style=true` | bucket remote. Credentials from `AWS_*` env, or `git credential fill` with `protocol=s3`, `host=<bucket>`. |
@@ -473,7 +659,10 @@ Before the Forgejo fork serves `/.well-known/asc`, ASC's reverse proxy routes th
 
 Negotiation follows Scion. There are no packfiles and no negotiation round trips:
 
-- **fetch:** list remote refs. For each changed ref, walk new changesets from the tip until a known changeset, using batched `GetObjects` of `Changeset` objects. Trees and files are not fetched (`--prefetch <pathspec>` warms them). Update remote-tracking refs. Write `gen` and `gitcommit` locally.
+- **fetch (server remote) [audit: 2/12-history-fetch]:** list remote refs. For changed refs, call `Log(include = new tips, exclude = current remote-tracking tips)`. Only ref tips are sent, never a set of objects the client has. Write `cs_gen` rows (`gen`, `parents`) straight from the streamed `LogEntry`s; the client trusts its remote's `gen` as it trusts ref values, and `asc fsck` re-derives it. Then fetch the changeset bodies with pipelined `GetObjects` batches of 256 ids (8 streams). Trees and files are not fetched (`--prefetch <pathspec>` warms them, tree first, then blobs). Update remote-tracking refs. Write `gitcommit` locally.
+  - **History window [audit: clone-history-o-history]:** changeset bodies and `cs_gen` rows are fetched only for the `asc.fetch.historyWindow` generations (default 10,000) below each fetched tip, via `Log(limit)`. The oldest fetched changesets whose parents are not local are recorded in `state.db.history_boundary(repo_id, cs)`. A local walk (log, merge-base, ahead/behind, blame, describe) that reaches a boundary continues through the server's `Log`/`MergeBase`/`IsAncestor` (passing the boundary ids) when online (§4.3). Offline it fails with the §6.4 offline error. Output is identical to a full history, and `rev-parse --is-shallow-repository` prints `false`. `asc fetch --deepen=<n>`/`--unshallow` and `asc prefetch --history N` widen the window. Bucket remotes keep the full walk.
+- **fetch (bucket remote, no server):** a breadth-first walk that requests every unknown parent of the current frontier in one batch, so it costs one round trip per generation level, not per changeset. `d/gen.v1`, `d/skip.v1` and `d/gitcommit.v1` values are read from the bucket when present.
+- **Want-only, tree then blob [audit: user decision efficiency]:** every object fetch names explicit ids. A checkout or prefetch requests the root tree, then missing subtrees level by level, then blobs. Objects travel as stored bytes (§3.2) in batches, so any tier can answer and an interrupted transfer resumes by asking again.
 - **push:**
   1. compute the closure of new local objects: changesets not on the remote; for each, its new trees (walk `changes` spines), files (and chunk lists, chunks, tags);
   2. `HasObjects` in batches of 4,096;
@@ -481,24 +670,49 @@ Negotiation follows Scion. There are no packfiles and no negotiation round trips
   4. update refs (`UpdateRefs` with `expect = Value(remote-tracking value)`, or `Any` with `--force`, or the lease given by `--force-with-lease`);
   5. on success, demote pushed objects from `store/` to `cache/`.
 
-  A retry of an interrupted push re-runs `HasObjects` and so resumes. Nothing is uploaded before `asc push` **[fix J1: no write-behind]**.
-- **clone:** register the repo, fetch refs and the head changeset and its root tree, create a workspace (§9). Downloads are O(1) in repository size.
-- **Git-remote mode:** fetch = `git fetch` (credential helpers apply) into the projection common dir `repos/<id>/.git` (full objects, about 0.4 GB for ASC, once per machine), then an incremental import of new commits (§14.1) into `cache/`, which is evictable because it is rebuildable from git. Push = export new changesets into the common dir (§14.2), then `git push <url> <sha>:<ref> --force-with-lease=<ref>:<expected sha>`, then update remote-tracking refs. `asc clone <url> --reference <path-to-existing-.git>` first runs `git fetch <path>` (copying reachable objects only, with no alternates link), so the old checkout can be deleted afterwards.
+  A retry of an interrupted push re-runs `HasObjects` and so resumes. Nothing is uploaded before `asc push` **[fix J1: no write-behind]**. A push that would upload a changeset carrying `extra["git.commit"]` (an imported raw commit, §8.4) fails before any upload with `fatal: asc: import this history on the server (asc serve admin import)` **[audit: client-raw-git-extras]**.
+- **clone:** register the repo; if the discovery document names a seed (§12.3), unpack it into `cache/`; fetch refs, the head changeset and its root tree, and the history metadata of the fetched tips as `fetch` does (within `asc.fetch.historyWindow`; ASC's 5.5k changesets fit, so ASC history stays fully offline), so `log`, `merge-base` and ahead/behind work offline inside the window; create a workspace (§9). File and tree downloads are O(1) in repository size. Clone cost is O(window + root tree), independent of history length. ASC's metadata is about 3 MiB compressed, and the `< 5 MiB` clone target includes it.
+- **Git-remote mode:** fetch = real `git fetch` (§11.4 `RealGit`; credential helpers apply) into the private bare repo `repos/<id>/git-remote.git` (full objects, about 0.4 GB for ASC, once per machine), then an incremental import of new commits (§14.1) into `cache/`, which is evictable because it is rebuildable from git. Push = export new changesets into that bare repo (§14.2), then `git push <url> <sha>:<ref> --force-with-lease=<ref>:<expected sha>`, then update remote-tracking refs. The bare repo is never a workspace gitdir. `asc clone <url> --reference <path-to-existing-.git>` first runs `git fetch <path>` into it (copying reachable objects only, with no alternates link), so the old checkout can be deleted afterwards.
 - **Mirror-mode server (Stage 1):** fetch and clone use the server. Push uses the git-remote push path to Forgejo, and the server imports the result (§8.6). `UpdateRefs` from clients is rejected with `FAILED_PRECONDITION: mirror mode`.
 
 ### 6.4 Offline behaviour
 
-These work offline: `status`, `add`, `commit`, `diff` of the working copy, `stash`, `branch`, `tag`, `switch` between cached revisions, `merge`/`rebase`/`cherry-pick` when the content is cached, `log`/`blame` over cached history, and reads of cached files. Everything else fails fast with `asc: offline (<remote> unreachable): <operation> needs <RPC>`. A virtual read of uncached content fails with `STATUS_FILE_IS_OFFLINE` (ProjFS) or `EIO` (FUSE), and the daemon log names the path. `asc prefetch <pathspec> [--history N]` warms the cache before going offline.
+These work offline: `status`, `add`, `commit`, `diff` of the working copy, `stash`, `branch`, `tag`, `switch` between cached revisions, `merge`/`rebase`/`cherry-pick` when the content is cached, `log`/`blame` over cached history inside the history window, and reads of cached files. Everything else, including history beyond the window (§6.3), fails fast with `fatal: asc: offline (<remote> unreachable): <operation> needs <RPC>` (exit 128, §11.6). A virtual read of uncached content fails with `STATUS_FILE_IS_OFFLINE` (ProjFS) or `EIO` (FUSE), and the daemon log names the path. `asc prefetch <pathspec> [--history N]` warms the cache before going offline.
+
+### 6.5 Default branch [audit: master-default, default-branch-master]
+
+The default branch name is `master` everywhere asc chooses one. asc never chooses `main`.
+
+- `asc init` (and `asc init --store`) uses `-b`, else `init.defaultBranch` from git config, else `master`. asc never prints git's default-branch hint.
+- `asc clone` uses the remote's symbolic HEAD, or `master` when there is none. Fetch and import keep existing branch names unchanged.
+- `RepoAdmin.init` with an empty `default_branch` uses `master`; `land_branches` defaults to `[default_branch]`.
+- The shim adds `-c init.defaultBranch=master` to real git `init` and `clone` when the user has not configured `init.defaultBranch` (§11.4). This matters because git 3.0 changes its built-in default to `main`.
+- `asc affected` defaults `--base` to `refs/remotes/origin/HEAD`, else `refs/remotes/origin/<default branch>`, else the local default branch, and compares at the merge base (§12A.9). `asc ci changed|affected` take `--base` explicitly. `asc ci warm --ref` defaults to `<default_branch>`.
+- The Forgejo fork and the deploy bundle set `[repository] DEFAULT_BRANCH = master` in `app.ini` (tests and `deploy/`).
+- Every fixture, test, compat `HOME` config (`init.defaultBranch=master`) and doc example uses `master`.
+- **CI lint [audit: lint-main-fails-own-docs, no-main-lint-self-fails, no-main-lint-misses-common-forms]:** `build/lint/no-main.sh` fails on branch-name uses of `main` only: `rg -n -P '(refs/(heads|remotes/[^/\s]+)/main\b|\b(origin|upstream)[/ ]main\b|\bpush\b.*\S:main\b|(\s-[bBcCmM]|--branch|--initial-branch|--base|--head|--ref|--onto|--rev)[ =]main\b|(?i:default_?branch)["\x27]?\s*[:=]\s*["\x27]?main\b|\b(ref|base|branch|branches)\s*:\s*\[?\s*["\x27]?main\b|^\s*-\s*["\x27]?main["\x27]?\s*(#.*)?$|\bmain\.\.|\.\.\.?main\b|\b(switch|checkout|merge|rebase|pull|fetch|reset|diff|log|branch)\s+(-\S+\s+)*main\b|\b(switch|checkout)\s+-[bBcC]\s+\S+\s+main\b|\bworktree\s+add\s+(-\S+\s+)*\S+\s+main\b)'` over `docs/*.md README.md crates tests deploy actions .forgejo bench packaging proto build --glob '!build/lint/fixtures/**'`. <!-- lint:allow-main -->
+  It matches the push, pull, merge, rebase, `checkout -b`, `branch -M`, `HEAD:main`, `--base[=]main`, Actions `ref: main`, `default_branch`/`defaultBranch`/`DEFAULT_BRANCH` and YAML block-list (`- main`) forms. So `main.rs`, `fn main`, `#[tokio::main]`, `image:main` and prose such as "never `main`" or "the main worktree" pass. `bench/gen` and every script that runs real git pass `-c init.defaultBranch=master`. A line carrying the marker `lint:allow-main` is exempt (in Markdown a trailing `<!-- lint:allow-main -->`, in code a `// lint:allow-main` or `# lint:allow-main` comment); only lines that quote a forbidden form, such as the lint's own self-test fixture, carry it. The `docs/designs/*` headers state that `main` there is superseded by this section. <!-- lint:allow-main -->
 
 ---
 
-## 7. RPC surface (`proto/asc/v1/repo.proto`, `workspace.proto`)
+## 7. RPC surface (`proto/asc/v1/repo.proto`, `workspace.proto`, `changes.proto`)
 
 gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local sockets for the daemon. The Go fork generates stubs from the same files (`buf generate`). Objects travel as stored bytes (codec byte plus data).
 
+**Lint [audit: proto-fails-buf-standard-lint]:** `proto/buf.yaml` uses buf STANDARD except `SERVICE_SUFFIX`, `ENUM_ZERO_VALUE_SUFFIX`, `RPC_REQUEST_STANDARD_NAME`, `RPC_RESPONSE_STANDARD_NAME` and `RPC_REQUEST_RESPONSE_UNIQUE`. Zero enum values are meaningful defaults (for example `ID_MODE_ASC`), and the Workspace plugin RPCs deliberately reuse the `Repo` response messages.
+
+**Stacked changes:** the `Changes` service (`proto/asc/v1/changes.proto`, same port) and the additive `repo.proto`/`workspace.proto` fields for stacks and history insight are specified in §20.5 and §20.6.
+
 **Common metadata:** `authorization: Bearer <token>`; `x-asc-client: asc/<semver> <os>-<arch>`; `x-asc-op-id: <uuidv7>` on every mutating call (idempotency, §8.3); W3C `traceparent`.
 
-**Errors** use gRPC status codes with an `asc.v1.ErrorDetail { string code; repeated string paths; bytes actual; }` detail. `code` values: `REF_CONFLICT`, `NOT_FAST_FORWARD`, `LAND_CONFLICT`, `LAND_NEEDS_CLIENT_REBASE`, `MISSING_OBJECTS`, `INVALID_OBJECT`, `HOOK_REJECTED`, `MIRROR_MODE`, `CLIENT_TOO_OLD`, `PATH_POLICY`.
+**Errors** use gRPC status codes with an `asc.v1.ErrorDetail { string code; repeated string paths; bytes actual; repeated Conflict conflicts; }` detail. `code` values: `REF_CONFLICT`, `NOT_FAST_FORWARD`, `LAND_CONFLICT`, `LAND_NEEDS_CLIENT_REBASE`, `MISSING_OBJECTS`, `INVALID_OBJECT`, `HOOK_REJECTED`, `MIRROR_MODE`, `CLIENT_TOO_OLD`, `PATH_POLICY`, `PROJECTS_CONFIG`, `RATE_LIMITED`, and for stacks (§20.5) `CHANGE_DIVERGED`, `CHANGE_FROZEN`, `CHANGE_NOT_ALLOWED`, `LAND_NEEDS_CONTENT_MERGE`.
+
+**Public API contract [audit: 31-api-standardisation]:** `asc.v1` is the public, stable API for CI, tools, agents and ASC's IDE plugins. `docs/api.md` is generated from the proto comments (buf). For each RPC it lists the required permission (read, write, admin or internal), idempotency, pagination and rate-limit class (§16.3). Every list RPC paginates with an opaque `page_token`/`next_page_token`. `asc api <Rpc> [--json <request>|-]` calls any `Repo` or `Projects` RPC with the user's credentials and prints JSON (proto3 JSON mapping), so scripts need no stubs. The proto is forge-neutral: no Forgejo types appear in `repo.proto`, so another forge or a git server can implement the same service.
+
+**Object tier contract [audit: 17-tier-contract, user decision efficiency]:**
+- The tier RPCs are `Version`, `HasObjects` and `GetObjects`. Any process that implements them for a namespace is a tier: the primary `asc serve`, `asc serve --role cache`, and the CI `Tiered` stack. Clients make no assumption about what is upstream.
+- **Discovery (v1 clients MUST honour it):** when `/.well-known/asc` lists `objects`, the client sends `HasObjects`/`GetObjects` to the first reachable URL in the list and all other RPCs to `server`. `remote.<name>.ascObjects` overrides the list.
+- **Cache role (built in v1):** `asc serve --role cache --upstream <url>`. It has no SQL. It keeps a memory and disk LRU of stored bytes (§3.2 `get_stored`) and serves only the tier RPCs; other RPCs return `UNIMPLEMENTED`. Authorisation is forwarded upstream per `(sha256(token), repo)` and cached as in §15.1. Concurrent misses are coalesced into one upstream `GetObjects` (§16.3).
 
 ```proto
 syntax = "proto3";
@@ -510,7 +724,7 @@ message RepoRef { string name = 1; IdMode id_mode = 2; }   // name = "owner/repo
 
 enum ObjKind { OBJ_KIND_UNSPECIFIED = 0; OBJ_KIND_FILE = 1; OBJ_KIND_CHUNK_LIST = 2; OBJ_KIND_CHUNK = 3;
                OBJ_KIND_TREE = 4; OBJ_KIND_CHANGESET = 5; OBJ_KIND_TAG = 6; OBJ_KIND_GIT_TREE_OVERRIDE = 7;
-               OBJ_KIND_SHA256_ALIAS = 8; }
+               reserved 8; OBJ_KIND_CHANGE_META = 9; }   // 8 was SHA256_ALIAS (removed with LFS); 9 = ChangeMeta (§20.2)
 message ObjKey { ObjKind kind = 1; bytes id = 2; }          // 32 bytes (20 for GIT_TREE_OVERRIDE)
 message Object { ObjKey key = 1; bytes data = 2; }          // stored bytes: codec ‖ data
 
@@ -546,7 +760,12 @@ service Repo {
   rpc CopyClosure(CopyClosureRequest) returns (CopyClosureResponse);
   rpc RepoAdmin(RepoAdminRequest) returns (RepoAdminResponse);
   rpc ImportGitPush(ImportGitPushRequest) returns (ImportGitPushResponse);   // Forgejo internal token only
+  rpc Ingest(IngestRequest) returns (IngestResponse);                        // §8.7
+  rpc FindLanding(FindLandingRequest) returns (FindLandingResponse);         // §8.9
+  rpc Classify(ClassifyRequest) returns (ClassifyResponse);                  // §8.10
+  rpc Rebase(RebaseRequest) returns (RebaseResponse);                        // §8.11
 }
+// service Projects (ProjectGraph, Affected, ProjectHashes) is in proto/asc/v1/projects.proto (§12A.8), on the same port.
 
 message VersionRequest {}
 message VersionResponse { string server_version = 1; string min_client = 2; repeated string features = 3; }
@@ -559,7 +778,7 @@ message PutObjectsRequest { RepoRef repo = 1; repeated Object objects = 2; }
 message PutObjectsResponse { uint64 stored = 1; uint64 already_present = 2; }
 
 message ListRefsRequest { RepoRef repo = 1; string prefix = 2; bytes contains = 3; string after = 4; uint32 limit = 5; }
-message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // head = symbolic HEAD
+message ListRefsResponse { repeated Ref refs = 1; string next = 2; string head = 3; }   // after/next = opaque page token; head = symbolic HEAD
 message RefUpdate { string name = 1;
   oneof expect { bool any = 2; bool absent = 3; RefTarget value = 4; }
   RefTarget new = 5;  bool delete = 6; }
@@ -578,10 +797,10 @@ message GitMapResponse { repeated bytes asc_to_git = 1; repeated bytes git_to_as
 
 message LogRequest { RepoRef repo = 1; repeated string include = 2; repeated string exclude = 3;
   repeated string paths = 4; bool first_parent = 5; bool follow = 6; uint32 skip = 7; uint32 limit = 8;
-  string author = 9; string grep = 10; int64 since = 11; int64 until = 12; bool count_only = 13; }
+  string author = 9; string grep = 10; int64 since = 11; int64 until = 12; bool count_only = 13; string page_token = 14; }
 message LogEntry { bytes id = 1; bytes git = 2; repeated bytes parents = 3; Signature author = 4;
   Signature committer = 5; bytes message = 6; uint32 gen = 7; }
-message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; }
+message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; string next_page_token = 3; }
 message MergeBaseRequest { RepoRef repo = 1; bytes a = 2; repeated bytes b = 3; bool all = 4; }
 message MergeBaseResponse { repeated bytes bases = 1; }
 message IsAncestorRequest { RepoRef repo = 1; bytes ancestor = 2; bytes descendant = 3; }
@@ -610,10 +829,10 @@ message ReadChangesetResponse { LogEntry header = 1; bytes root_tree = 2; bytes 
 message ReadTreeRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; bool recursive = 4; uint32 limit = 5;
   bytes after = 6; }
 message TreeEntryInfo { bytes name = 1; bytes path = 2; uint32 mode = 3; bytes id = 4; bytes git = 5; uint64 size = 6;
-  bool lfs = 7; uint64 lfs_size = 8; }
+  reserved 7, 8; }   // were lfs, lfs_size
 message ReadTreeResponse { repeated TreeEntryInfo entries = 1; bytes tree_id = 2; bytes tree_git = 3; }
 message ReadFileRequest { RepoRef repo = 1; oneof at { string rev_path = 2; bytes file_id = 3; } uint64 offset = 4;
-  uint64 length = 5; bool resolve_lfs = 6; }
+  uint64 length = 5; reserved 6; }   // was resolve_lfs
 message ReadFileResponse { bytes data = 1; uint64 total_size = 2; }
 message StatRequest { RepoRef repo = 1; string rev = 2; repeated bytes paths = 3; repeated ObjKey objects = 4; }
 message StatResponse { repeated TreeEntryInfo entries = 1; repeated bool exists = 2; }
@@ -638,12 +857,16 @@ enum MergeStyle { MERGE_STYLE_MERGE = 0; MERGE_STYLE_SQUASH = 1; MERGE_STYLE_REB
 message MergeRequest { RepoRef repo = 1; string base = 2; string head = 3; RepoRef head_repo = 4; MergeStyle style = 5;
   bytes message = 6; Signature author = 7; Signature committer = 8; bool dry_run = 9; string update_ref = 10;
   repeated string protected_globs = 11; bool sign = 12; }
+enum ConflictKind { CONFLICT_KIND_CONTENT = 0; CONFLICT_KIND_ADD_ADD = 1; CONFLICT_KIND_MODIFY_DELETE = 2;
+  CONFLICT_KIND_FILE_DIR = 3; CONFLICT_KIND_CASE_FOLD = 4; CONFLICT_KIND_BINARY = 5; }
+message Conflict { bytes changeset = 1; bytes path = 2; ConflictKind kind = 3; bytes base_id = 4; bytes ours_id = 5;
+  bytes theirs_id = 6; bytes marked_id = 7; }                 // marked_id: FileId of the diff3-style marked result (§8.11)
 message MergeResponse { bytes result = 1; repeated bytes conflicts = 2; repeated bytes changed_protected = 3;
-  bool is_empty = 4; repeated Rewrite rewritten = 5; }
+  bool is_empty = 4; repeated Rewrite rewritten = 5; repeated Conflict conflict_details = 6; }
 enum ApplyMode { APPLY_MODE_CHERRY_PICK = 0; APPLY_MODE_REVERT = 1; APPLY_MODE_PATCH = 2; }
 message ApplyRequest { RepoRef repo = 1; string onto = 2; string changeset = 3; bytes patch = 4; ApplyMode mode = 5;
   bytes message = 6; Signature author = 7; Signature committer = 8; string update_ref = 9; }
-message ApplyResponse { bytes result = 1; repeated bytes conflicts = 2; }
+message ApplyResponse { bytes result = 1; repeated bytes conflicts = 2; repeated Conflict conflict_details = 3; }
 message CopyClosureRequest { RepoRef from = 1; RepoRef to = 2; repeated bytes changesets = 3; }
 message CopyClosureResponse { uint64 copied = 1; }
 
@@ -658,11 +881,35 @@ message GitRefUpdate { string name = 1; bytes old_git = 2; bytes new_git = 3; }
 message ImportGitPushRequest { RepoRef repo = 1; string git_dir = 2; string object_dir = 3;
   repeated string alternate_dirs = 4; repeated GitRefUpdate updates = 5; int64 pusher_id = 6; }
 message ImportGitPushResponse { repeated RefResult results = 1; }
+
+message IngestRequest { RepoRef repo = 1; repeated bytes changesets = 2; }
+message IngestResponse { repeated bytes ingested = 1; }
+message FindLandingRequest { RepoRef repo = 1; bytes changeset = 2; string ref = 3; }       // asc or git id
+message FindLandingResponse { bool found = 1; bytes landed_as = 2; uint64 ref_log_seq = 3; int64 at = 4;
+  string actor = 5; string via = 6; }
+enum ChangeClass { CHANGE_CLASS_RENAME_ONLY = 0; CHANGE_CLASS_MODE_ONLY = 1; CHANGE_CLASS_WHITESPACE_ONLY = 2;
+  CHANGE_CLASS_COMMENT_ONLY = 3; CHANGE_CLASS_DOCS = 4; CHANGE_CLASS_GENERATED = 5; CHANGE_CLASS_LOCKFILE = 6;
+  CHANGE_CLASS_TEST = 7; CHANGE_CLASS_LOGIC = 8; }
+message ClassifyRequest { RepoRef repo = 1; string base = 2; string head = 3; bool merge_base = 4; }
+message FileClass { bytes path = 1; ChangeClass class = 2; }
+message ClassifyResponse { repeated FileClass files = 1; ChangeClass overall = 2; }
+message Resolution { bytes changeset = 1; bytes path = 2; FileOp op = 3; }
+message RebaseRequest { RepoRef repo = 1; RepoRef head_repo = 2; string base = 3; string head = 4; string onto = 5;
+  repeated Resolution resolutions = 6; bool dry_run = 7; string update_ref = 8; RefTarget expect = 9; UpdateMode mode = 10; }
+message RebaseResponse { bytes result = 1; repeated Rewrite rewritten = 2; repeated Conflict conflicts = 3; }
 ```
 
 ```proto
 // workspace.proto — daemon IPC only (named pipe / Unix socket, current user only)
+// The plugin RPCs (Status … Watch) are the stable, documented API for ASC's IDE plugins [audit: user decision No-IDE].
 service Workspace {
+  rpc Status(WsStatusRequest) returns (WsStatusResponse);       // ws_id → staged, unstaged, untracked, conflicts, ahead/behind, in-progress op
+  rpc Diff(WsDiffRequest) returns (stream DiffResponse);        // worktree/index/rev pairs, same formats as Repo.Diff
+  rpc Log(WsLogRequest) returns (stream LogResponse);           // local engine, or the server per asc.serverHistory
+  rpc Blame(WsBlameRequest) returns (stream BlameResponse);     // includes uncommitted lines
+  rpc Affected(WsAffectedRequest) returns (WsAffectedResponse); // §12A.7, including --uncommitted
+  rpc Watch(WatchRequest) returns (stream WatchEvent);          // path changed, HEAD/ref moved, staging changed, op started/finished, switch done
+  rpc Stage(WsStageRequest) returns (WsStageResponse);          // add/remove paths or hunks; the plugin's "git add"
   rpc Ping(PingRequest) returns (PingResponse);                 // version, pid, uptime
   rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
   rpc Unmount(UnmountRequest) returns (UnmountResponse);
@@ -674,9 +921,35 @@ service Workspace {
   rpc Stats(StatsRequest) returns (StatsResponse);              // hydrations by path/process, bytes, journal size
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
 }
+
+// Plugin messages [audit: plugin-api-undefined]. Ids are 20-byte git SHA-1s (§11.1). workspace.proto imports
+// asc/v1/repo.proto (DiffFormat, LogRequest, DiffResponse, LogResponse, BlameResponse) and asc/v1/projects.proto
+// (AffectedRequest, AffectedResponse, §12A.8).
+message WsStatusRequest { string ws_id = 1; repeated bytes paths = 2; bool untracked = 3; bool ignored = 4; }
+message WsFileStatus { bytes path = 1; string xy = 2; /* git porcelain v2 XY */ bytes orig_path = 3; uint32 mode_head = 4;
+  uint32 mode_index = 5; uint32 mode_worktree = 6; bytes git_head = 7; bytes git_index = 8; }
+message WsStatusResponse { string head_ref = 1; bytes head = 2; string upstream = 3; uint32 ahead = 4; uint32 behind = 5;
+  repeated WsFileStatus files = 6; string in_progress = 7; /* merge|rebase|cherry-pick|revert|bisect|empty */ string token = 8; }
+message WsDiffRequest { string ws_id = 1; string from = 2; string to = 3; /* "index" | "worktree" | revspec */
+  repeated bytes paths = 4; DiffFormat format = 5; uint32 context = 6; }
+message WsLogRequest { string ws_id = 1; LogRequest query = 2; }
+message WsBlameRequest { string ws_id = 1; string rev = 2; /* empty = working copy */ bytes path = 3; uint32 start_line = 4;
+  uint32 end_line = 5; }
+message WsAffectedRequest { string ws_id = 1; AffectedRequest query = 2; bool uncommitted = 3; }
+message WsAffectedResponse { AffectedResponse result = 1; }
+message WatchRequest { string ws_id = 1; string since_token = 2; }
+message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KIND_STAGE = 3; KIND_OP_STARTED = 4;
+  KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7; } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
+  string token = 7; }
+message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
+message WsStageResponse { WsStatusResponse status = 1; }
+// The internal RPCs (Ping … Shutdown) carry the fields named in their comments; their messages are defined in U41
+// and are not part of the stable plugin API.
 ```
 
-**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/healthz`, `/metrics`.
+The plugin RPCs are additive like `asc.v1` (§7 Compatibility), and every one also has an `asc … --json` CLI form (§11.2: `status|diff|log|blame --json`, `asc affected --json`, `asc watch --json`; `asc add` for `Stage`), so plugins can use either.
+
+**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz`, `/readyz`, `/metrics`.
 
 **Compatibility:** `asc.v1` evolves additively only (new fields, RPCs and enum values). A breaking change is `asc.v2`, served side by side. Envelope versions are independent: readers reject unknown versions with "upgrade asc".
 
@@ -716,20 +989,25 @@ refs, ref_log                                  -- §3.4
 cs_graph(ns BLOB, cs BLOB, gen BIGINT, parents BLOB /*concat 32B ids*/, PRIMARY KEY(ns, cs))
 git_map(ns BLOB, git BLOB, kind SMALLINT /*1 file,2 tree,3 changeset,4 tag*/, asc BLOB, PRIMARY KEY(ns, git, kind))
   INDEX git_map_asc (ns, asc)
-file_meta(ns BLOB, file BLOB PK2, size BIGINT, git BLOB, sha256 BLOB)   -- server-computed, see 8.4
+file_meta(ns BLOB, file BLOB PK2, size BIGINT, git BLOB)               -- server-computed, see 8.4
 op_results(op_id BLOB PRIMARY KEY, repo_id BIGINT, result BLOB, at BIGINT)       -- retained 7 days
 outbox(id BIGINT PK autoinc, repo_id BIGINT, op_id BLOB, effects BLOB /*json*/, attempts INT, next_at BIGINT,
        done_at BIGINT NULL, last_error TEXT)
 mirror_state(repo_id BIGINT PK, last_import BIGINT, last_error TEXT)
 gc_marks(run BIGINT, ns BLOB, key BLOB)          -- O01 only
+mainline, path_changes                           -- §5.1
+land_map, INDEX ref_log_by_ref                   -- §8.9
+changes, change_versions, review_state, open_paths, mergeable   -- §20.4 (stacked changes; change_versions are GC roots, §3.6)
 ```
+
+**Schema changes are expand/contract [audit: rolling-upgrade-encodings]:** release N only adds nullable columns and tables, and release N+1 may drop what N stopped using, so replicas N and N-1 run together. `asc serve migrate` runs before the rollout, never at replica start.
 
 ### 8.3 `UpdateRefs` pipeline (normative order)
 
 1. **Authorise:** write permission on the repo (§15.1). `hooks=SKIP_PRE` requires the Forgejo internal token.
 2. **Idempotency:** if `op_results[op_id]` exists, return the stored result.
 3. **Mode check:** a repo in `mirror` mode → `MIRROR_MODE`.
-4. **Ingest closure** for every new target: walk new changesets until known in `cs_graph`. For each in topological order, check that all referenced objects exist (`HasObjects`), validate it (§2.6, §8.4), apply the path policy (§2.8), and upsert `cs_graph` and `git_map` rows (eager derivation). Missing objects → `MISSING_OBJECTS` with the keys.
+4. **Ingest closure** for every new target: walk new changesets until known in `cs_graph` (changesets already ingested through `Ingest`/`Commit` are skipped). For each in topological order, check that all referenced objects exist (`HasObjects`), validate it (§2.6, §8.4), apply the path policy (§2.8), and upsert `cs_graph` and `git_map` rows (eager derivation). Missing objects → `MISSING_OBJECTS` with the keys.
 5. **Policy:** for `FAST_FORWARD`, the new value must descend from the current value (or the ref must be absent). For `LAND`, run §8.5 to produce rewritten changesets, then ingest them as in step 4.
 6. **Bridge quarantine** (only when `repos.forgejo_reads = git`, Stage 2): export the new git objects (§14.2) into `<bridge>/objects/incoming-asc-<op_id>/` (a fresh object directory) **before** pre-receive **[fix J1: Stage 2 ordering]**.
 7. **Pre-receive** (unless `SKIP_PRE`, or no Forgejo is configured): `POST {forgejo}/api/internal/hook/pre-receive/{owner}/{repo}` with `HookOptions` (`OldCommitIDs`/`NewCommitIDs` as git SHAs while `object_format=sha1`; `RefFullNames`; `UserID`/`UserName`/`DeployKeyID` from authz; `GitPushOptions`; `PushTrigger = "asc"`; in Stage 2 `GitObjectDirectory` = quarantine, `GitAlternativeObjectDirectories` = `<bridge>/objects`, `GitQuarantinePath` = quarantine; from Stage 3 these are empty and Forgejo reads through Seam A). Rejection → delete the quarantine, return `HOOK_REJECTED` with Forgejo's message. For land, the hook sees the **rewritten** changesets **[fix: missing-from-all]**.
@@ -745,31 +1023,40 @@ Retries use exponential backoff from 1 s to 5 min, indefinitely. The `asc_outbox
 
 ### 8.4 Ingest verification **[graft: integration] [fix J2: client-supplied git fields]**
 
-- `PutObjects` re-hashes every `File`, `Chunk`, `Tree`, `Changeset` and `Tag`. For each new `File` it computes `size`, `git` (blob SHA-1) and `sha256`, and records them in `file_meta`. Chunked files: when the `ChunkList` arrives, the server streams its chunks once to compute the same metadata.
-- Every `Entry` and `Change::Write` is checked against `file_meta`: `size`, `git` and, for LFS entries, the pointer bytes parse to `lfs.sha256`/`lfs.size`. Every `Dir` entry's `git` must equal the canonical render hash of the child tree, or an override `o/<git>` whose raw bytes hash to `git` and decode to the same entries must exist. A mismatch → `INVALID_OBJECT`. Client-built trees are accepted only after this check.
+- `PutObjects` re-hashes every `File`, `Chunk`, `Tree`, `Changeset`, `Tag` and `ChangeMeta` (a `ChangeMeta` is accepted only when its `cs` is in the same push closure or already stored, §20.2). For each new `File` it computes `size` and `git` (blob SHA-1), and records them in `file_meta`. Chunked files: when the `ChunkList` arrives, the server streams its chunks once to compute the same metadata.
+- Every `Change::Write`, and every `Entry` of a new tree whose `(kind, id, size, git)` differs from the same-named entry in the corresponding tree of `parents[0]`, is checked against `file_meta`: `size` and `git`. Unchanged entries were verified when their tree was first ingested, so ingest cost is O(changed paths × depth) **[audit: 5-ingest-cost]**. Every `Dir` entry's `git` must equal the canonical render hash of the child tree, or an override `o/<git>` whose body, with git's tree header, hashes to `git` and decodes to the same entries must exist. A mismatch → `INVALID_OBJECT`. Client-built trees are accepted only after this check.
+- **Raw git extras [audit: client-raw-git-extras]:** `PutObjects`/`Ingest`/`Commit`/`UpdateRefs` reject with `INVALID_OBJECT` any new changeset carrying `extra["git.commit"]` and any new tag carrying `extra["git.tag"]`. Only server-side importers (mirror import, `ImportGitPush`, `asc serve admin import`) create them, through `canonicalise_commit`/`canonicalise_tag` with the round-trip check of §14.1. Existing changesets already in `cs_graph` are not re-checked. Git history reaches a server by server-side import, never by pushing a locally imported history.
 
 ### 8.5 Land (pushrebase) [graft: performance/simplicity]
 
-Applies when the request mode is `LAND` (client `asc push` to a branch listed in `repos.land_branches`, or `asc push --land`):
+Applies only when the client explicitly asks for it: `asc push --land`, or the push option `-o land` (`git push -o land` through the shim is the same command) **[audit: push-land-semantics]**. `repos.land_branches` lists the branches that accept LAND requests; it never changes a plain push. A plain push is always the CAS (`FAST_FORWARD`, or forced) and gives git's rejection output (`! [rejected] master -> master (fetch first)`).
 
 1. The stack = new changesets from the pushed tip back to `B`, the first ancestor already in `cs_graph` that is an ancestor of the current tip `T`.
 2. If `B == T`, it is a fast-forward.
-3. Otherwise compute `A = ∪ paths(stack)` and `P = paths(B..T)` (§4.5). If they conflict → `LAND_CONFLICT` with the conflicting paths, and the client runs `asc pull --rebase`.
+3. Otherwise compute `A = ∪ paths(stack)` and `P = paths(B..T)` (§4.5). When they intersect, land merges the intersecting files (§4.4) instead of refusing **[audit: 28-agent-conflict-api]**. It returns `LAND_CONFLICT`, with `Conflict` records in the `ErrorDetail`, only when a text merge conflicts or an intersecting path matches `land.noMergeGlobs` (default `bun.lock`, `Cargo.lock`, `uv.lock`, `**/packages.lock.json`). The client then runs `asc pull --rebase`, or an agent uses `Rebase` with resolutions (§8.11). Per-repo `land.contentMerge = false` restores path-disjoint-only landing.
 4. If any stack changeset has `git.gpgsig` and the branch requires signed commits (from authz, §15.1) → `LAND_NEEDS_CLIENT_REBASE` (signatures cannot survive a server rebase).
 5. Metadata-rebase each changeset onto the new tip in order (§4.4). Committer is unchanged; there is no server signature.
-6. Continue with pipeline step 6. The response's `rewritten` maps old → new ids. The client moves its local branch and remote-tracking ref to the new tip, rewrites local branches that pointed into the stack, and prints `landed <n> changesets as <new tip> (rebased onto <T>)`.
+   - 5a. **[audit: land-rewrite-signature-and-raw-extra]** A rewritten changeset drops `extra["git.gpgsig"]` and `extra["git.commit"]` (a raw body names the old parent and cannot be reused). Every other field is kept (author, committer, message, `asc.*` extras). When any signature was dropped, `UpdateRefsResponse.message` = `signatures removed by server rebase: <n> (use 'git pull --rebase' and push again to keep them)`, which the client prints as a `hint:` line. Policy then runs on the rewritten, unsigned changesets (pipeline step 7); a branch that requires signatures would reject them, which is why step 4 returns early.
+6. Continue with pipeline step 6. The response's `rewritten` maps old → new ids. The client prints git's push summary for the rewritten tip (`To <url>` and ` + <old>...<new> master -> master (landed: rebased onto <T>)`), moves its local branch and remote-tracking ref to the new tip, and rewrites local branches that pointed into the stack.
 
 No queue and no leader: concurrent lands race on the CAS and retry (step 8). At ASC's rate (peak about 50 per minute) this is ample.
+
+**Legacy git pushes [audit: git-push-land-tracking-refs]:** pushes that arrive through `ImportGitPush` (legacy git clients, Stage 2+) use `UPDATE_MODE_FAST_FORWARD` even on land branches, because git cannot be told about rewrites. A non-fast-forward is rejected with git's `! [rejected] <src> -> <dst> (fetch first)`.
 
 ### 8.6 Mirror mode (Stage 1)
 
 - `RepoAdmin.init { mode = "mirror", mirror_url }`. The server keeps a bare mirror at `<cache disk_dir>/mirrors/<repo-id>.git`.
 - **Triggers:** a Forgejo push webhook to `/hooks/forgejo` (HMAC-SHA256 `X-Forgejo-Signature` verified with the configured secret), plus a poll every 60 s. Each trigger runs `git fetch --prune <mirror_url> +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* +refs/pull/*:refs/pull/*` with a read token, then imports new commits incrementally (§14.1), then sets asc refs to match the git refs with `via = mirror`, all in one transaction. Imports are idempotent, so duplicate webhooks are harmless.
-- LFS objects referenced by new pointers are copied from Forgejo's LFS API into the namespace (`x/sha256` alias plus content) by a background job.
 
 ### 8.7 Server-side mutations (`Commit`, `Merge`, `Apply`, `CopyClosure`, `RepoAdmin`)
 
 - `Commit` builds a changeset from `FileOp`s on `parent` (content inline or by `FileId`), then runs the full `UpdateRefs` pipeline on `update_ref` with `expect`.
+- **Changesets without refs [audit: 9-ingest-without-ref]:** creating a changeset never requires a ref move (Scion).
+  - `Commit` with an empty `update_ref` runs only pipeline step 4: closure check, §2.6 and §8.4 validation, path policy, eager derivation into `cs_graph`/`git_map`. It returns the id. No ref, hook, `ref_log` or outbox row is involved.
+  - `Ingest` does the same for changesets already uploaded with `PutObjects`. It requires write permission.
+  - An ingested changeset can be used by id at once in every read RPC (`Diff`, `Log`, `MergeBase`, `ReadTree`, `Affected`, `Classify`).
+  - Unreferenced ingested changesets stay GC roots for 14 days (§3.6).
+  - CLI: `asc push --no-ref <rev>` (asc-only flag) uploads the closure, calls `Ingest` and prints the changeset id.
 - `Merge` with `dry_run` is Forgejo's mergeability check: it returns conflicts and the changed paths that match `protected_globs`. Styles: `MERGE` (two-parent changeset), `SQUASH` (one changeset), `REBASE` (metadata rebase of each commit), `REBASE_MERGE` (rebase then a merge commit), `FAST_FORWARD_ONLY`. With `update_ref`, the result goes through `UpdateRefs` so Forgejo hooks run once. When `head_repo` differs, `CopyClosure` runs first.
 - `RepoAdmin`: `init`, `fork` (new namespace plus closure copy job), `delete` (refs dropped; the namespace is deleted after 30 days), `rename` (registry only), `size` (logical = bytes reachable from refs; unique = namespace bytes), `verify` (closure of every ref exists; git map round-trip).
 
@@ -777,9 +1064,40 @@ No queue and no leader: concurrent lands race on the CAS and retry (step 8). At 
 
 `UpdateRefs.ttl_seconds` (from `asc push -o asc.ttl=7d`) sets `refs.expires_at`, and is accepted only for `refs/heads/agent/*` and `refs/snapshots/*`. A worker deletes expired refs every 10 minutes through the normal pipeline (outbox `post_receive` with a deletion), so Forgejo's branch table stays in sync **[graft: performance]**.
 
+### 8.9 Landing map and FindLanding [audit: 23-landing-index]
+
+```sql
+land_map(ns BLOB, old_cs BLOB, new_cs BLOB, ref TEXT, ref_log_seq BIGINT, op_id BLOB, PRIMARY KEY(ns, old_cs))
+  INDEX land_map_new (ns, new_cs)
+INDEX ref_log_by_ref (repo_id, name, seq)
+```
+
+- The `UpdateRefs` transaction (§8.3 step 8) inserts one `land_map` row for every `rewritten` pair: land, and `Merge` with `REBASE`, `REBASE_MERGE` and `SQUASH` (for `SQUASH`, every source changeset maps to the result). Rows are kept forever.
+- `FindLanding(changeset, ref)`: map through `land_map` (old → new), else use the id itself. Look up its position in `mainline` (§5.1). The answer is the first `ref_log` entry for that ref whose new tip has a position ≥ that position, found by binary search over `ref_log_by_ref`. Positions only grow on fast-forward and land refs, so this is O(log n).
+- **Rule:** no asc component, Forgejo patch, CI tool or documented agent workflow finds a landed id or a merge time by walking `Log` or matching messages. They call `FindLanding`, or use Forgejo's PR `merged_commit_id` for PR-level questions.
+- CLI: `asc landed <rev> [--ref <b>] [--json]` (asc-only command).
+
+### 8.10 Change classification (`Classify`) [audit: 27-semantic-classification]
+
+- Derived type `classify.v1` (lazy; per changeset against its first parent). `Classify(base, head, merge_base)` returns a class per file and `overall` = the maximum.
+- `ChangeClass`, in order: `RENAME_ONLY` (same FileId), `MODE_ONLY`, `WHITESPACE_ONLY`, `COMMENT_ONLY`, `DOCS`, `GENERATED`, `LOCKFILE`, `TEST`, `LOGIC`.
+  - `WHITESPACE_ONLY`: equal after removing whitespace. For indentation-significant files (`.py`, `.yaml`, `.yml`, `Makefile`) only trailing whitespace is ignored.
+  - `COMMENT_ONLY`: the token streams are equal after a per-extension lexer drops comments. The lexer handles `//` and `/* */` (rs, ts, tsx, js, jsx, cs, go, c, cpp, java), `#` (py, toml, yaml, sh) and `<!-- -->` (md, html), and skips string literals (Rust raw strings, Python triple quotes, C# verbatim strings). Doc comments count as comments.
+  - `DOCS`, `TEST` and `LOCKFILE` come from `.asc/review.toml` globs. Defaults: `**/*.md` and `docs/**`; `**/*test*/**`; `bun.lock`, `Cargo.lock`, `uv.lock` and `**/packages.lock.json`. `GENERATED` comes from the `linguist-generated` attribute.
+- **Soundness rule:** a false `LOGIC` is acceptable; a false lower class is a bug. Any lexer error, unknown extension or binary file is `LOGIC`.
+- **Review integration (K17):** Forgejo branch protection gains `asc_relaxed_classes` (default empty) and `asc_relaxed_approvals`. A PR whose files are all in the relaxed classes needs `asc_relaxed_approvals` approvals instead of the normal count. Forgejo shows a per-file class badge. Protected-file globs always override relaxation.
+- **Clients:** `asc diff --classify` (asc-only flag); `asc ci changed` writes `semantic=<overall>`.
+
+### 8.11 Server rebase and conflict resolution for agents [audit: 28-agent-conflict-api]
+
+- `Rebase(base, head, onto, resolutions, dry_run, update_ref, expect, mode)` replays `base..head` onto `onto` on the server.
+- A conflict is returned as a `Conflict { changeset, path, kind, base_id, ours_id, theirs_id, marked_id }`. `marked_id` is the FileId of the 3-way result with git markers (`diff3` style), written to the namespace and readable with `ReadFile`.
+- An agent resubmits the same request with `Resolution { changeset, path, op }` entries. The server applies them while replaying the stack, and succeeds when no conflict is left unresolved. With `update_ref`, the result goes through `UpdateRefs` (mode `LAND` or `FAST_FORWARD`), so hooks run once. The request is idempotent by `x-asc-op-id`.
+- `MergeResponse.conflicts` and `ApplyResponse.conflicts` gain `conflict_details` (additive). Land content merge is §8.5 step 3.
+
 ---
 
-## 9. Machine side: daemon, workspaces, projection
+## 9. Machine side: daemon, workspaces, synthetic `.git`
 
 ### 9.1 The daemon (`asc daemon`)
 
@@ -790,116 +1108,148 @@ One per user per machine. It exists because a virtual filesystem needs a long-li
 | Host every virtual workspace (ProjFS root or FUSE mount) | Proxy history RPCs (the CLI calls the remote directly) |
 | Keep each workspace's journal; reconcile on start | Own the cache (a shared directory) |
 | Run switch for virtual workspaces (placeholder updates) | Upload anything before `asc push` |
-| Prefetch, GC the cache, dehydrate idle files, expire ephemeral worktrees | |
-| Serve `asc-fsmonitor` queries | |
+| Prefetch, GC the cache, dehydrate idle files, expire ephemeral worktrees | Run real git |
+| Serve the plugin API (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`; §7) for ASC's IDE plugins | |
 
+- **Mapping to Scion's per-node daemon [audit: 14-node-daemon-mapping]:**
+  - On developer machines the per-user daemon plus the shared `$ASC_HOME/cache` play scion-daemon's role: every workspace and worktree of the user reads one cache.
+  - On CI hosts no daemon runs inside jobs. The host cache (§12.3) is the node's object store. Only the trusted warmer fills it, and jobs read it read-only. This prevents cross-job poisoning and denial of service without a node service that holds job credentials.
+  - Accepted cost: objects that are not on trunk (PR changes) are fetched once per job, not once per host. An ASC PR touches a median of 4 files, so this is kilobytes. A host-level fetch proxy is not built.
 - **Start:** the CLI starts it on first need. The installer registers a per-user logon task (Windows Task Scheduler: restart on failure 3 times, 10 s apart) or a systemd user unit (`Restart=on-failure`, `RestartSec=2`) **[fix: missing-from-all, watchdog]**. Stale pid files are detected by `Ping`.
 - **IPC:** `\\.\pipe\asc-<user-SID>` with a DACL that allows only the user's SID and SYSTEM; Unix `$XDG_RUNTIME_DIR/asc/asc.sock` (or `$ASC_HOME/run/asc.sock`), mode 0600, in a 0700 directory.
-- **Version skew:** the CLI compares `Ping.version` with its own. On mismatch it asks the daemon to `Shutdown` (which stops providers cleanly) and starts the new binary. ProjFS roots re-attach with the same instance GUID; FUSE remounts at the same path.
+- **Version skew:** the CLI compares `Ping.version` with its own. On mismatch it asks the daemon to `Shutdown` (which stops providers cleanly) and starts the new binary. ProjFS roots re-attach with the same instance GUID; FUSE remounts at the same path. The CLI stops a daemon of another version **before** it runs `state.db` migrations (§9.2).
+- **Liveness [audit: daemon-hang-watchdog]:** the CLI calls `Ping` with a 2 s timeout. On timeout it writes a dump (`asc debug trace` of all threads to `log/`), kills the daemon process and starts a new one. The daemon's own watchdog thread aborts the process when a ProjFS/FUSE callback has run for longer than 60 s, and the service manager restarts it. Fallback: `asc worktree convert --plain <path>` materialises a virtual workspace in place, without the daemon, when virtual mode cannot be used.
 - **Daemon down while files are open:** hydrated and full files stay readable and writable (they are real NTFS/overlay files). Reads of virtual files fail until restart (≤ 10 s with the watchdog). Writes during downtime are found by reconcile (§10.2.7). `asc status` prints `daemon restarted at <t>; reconciled N paths`.
 - **No daemon** (`ASC_NO_DAEMON=1`, CI, tests): the CLI does everything in-process. Only plain workspaces are available.
 
 ### 9.2 State database (`$ASC_HOME/state.db`, SQLite via sqlx)
 
 ```sql
+meta(schema_version INT, machine_id BLOB /*16 random bytes, §3.4*/)   -- one row
 repos(id TEXT PK /*uuid*/, name TEXT, ns BLOB, remote_url TEXT, remote_kind TEXT, default_branch TEXT,
-      windows_safe BOOL, display_ids TEXT)
+      windows_safe BOOL)                              -- display ids are the per-user config asc.displayIds (§11.1)
 refs, ref_log                                         -- SqlRefs schema (§3.4), repo_id = rowid of repos
 cs_gen(repo_id, cs BLOB, gen INT, parents BLOB, PRIMARY KEY(repo_id, cs))
+history_boundary(repo_id, cs BLOB, PRIMARY KEY(repo_id, cs))   -- oldest local changesets whose parents are not local (§6.3)
 git_map(repo_id, git BLOB, kind INT, asc BLOB, PRIMARY KEY(repo_id, git, kind)) + index (repo_id, asc)
-workspaces(id TEXT PK, repo_id, path TEXT UNIQUE, mode TEXT /*virtual|plain*/, head TEXT /*ref name or ""*/,
+workspaces(id TEXT PK, repo_id, path TEXT UNIQUE /*requested path*/, mount TEXT /*mount root; differs for nested paths, §9.3*/,
+           mode TEXT /*virtual|plain*/, head TEXT /*ref name or ""*/,
            base_cs BLOB, epoch INT, epoch_time INT /*unix s*/, sparse TEXT, ephemeral_until INT NULL,
            locked TEXT NULL, created INT)
+stage(ws_id, set_id INT NOT NULL DEFAULT 0 /*0 = the workspace's staging*/, path BLOB, stage INT /*0 normal, 1-3 conflict*/,
+      kind INT, file BLOB NULL /*NULL = staged delete*/, size INT, git BLOB, intent_to_add BOOL,
+      PRIMARY KEY(ws_id, set_id, path, stage))        -- staging (§9.5)
+stage_sets(ws_id, set_id INT, index_path TEXT UNIQUE, created INT, PRIMARY KEY(ws_id, set_id))   -- temporary sets (§9.5)
 entry_times(ws_id, path BLOB, time INT, PRIMARY KEY(ws_id, path))   -- placeholder time overrides (§10.1)
 journal(ws_id, seq INT, path BLOB, op INT, PRIMARY KEY(ws_id, seq))  -- op: 1 modified,2 created,3 deleted,4 renamed-from,5 dir-renamed-from,6 dir-renamed-to
 switch_intent(ws_id PK, from_root BLOB, to_root BLOB, to_head TEXT, pending BLOB /*paths*/, started INT)
-ws_ops(ws_id PK, kind TEXT /*rebase|cherry-pick|revert|merge*/, state BLOB)
+ws_ops(ws_id PK, pending_renames BLOB)                -- only pending `asc mv` renames; in-progress ops are git state files (§4.4)
 inodes(ws_id, ino INT, path BLOB, PRIMARY KEY(ws_id, ino)) + UNIQUE(ws_id, path)   -- FUSE only
+changes, change_preds, op_log, stack_frozen, review_cache   -- stacked changes and the operation log (§20.3)
 ```
 
 The journal is appended in batches (≤ 100 ms) from an in-memory queue. A crash can lose hints but never correctness, because reconcile recovers them (§10.2.7).
 
+- **One migrator [audit: sqlx-two-migrators]:** `state.db` has exactly one migrator (`asc-state`). Its `0001_state.sql` contains the `refs` and `ref_log` DDL of §3.4 verbatim. `SqlRefs::new` never migrates; `SqlRefs::migrate()` is called only by `asc serve` on the server database. A test asserts that `PRAGMA table_info` of `refs`/`ref_log` is equal under both migration sets.
+- **Schema version:** an older binary that meets a newer `schema_version` exits with `fatal: asc: state.db is from asc <v>; run asc upgrade`.
+
 ### 9.3 Workspaces and worktrees
 
-A workspace is a `workspaces` row, a gitdir `wc/<id>/git/`, a `.git` gitfile at its root, and a mount (virtual) or materialised files (plain).
+A workspace is a `workspaces` row, a synthetic gitdir `wc/<id>/git/`, a `.git` gitfile at its root, and a mount (virtual) or materialised files (plain).
 
-- `asc clone <url> [<dir>] [--mode virtual|plain] [--branch b] [--sparse <cone>…] [--no-checkout] [--reference <git-dir>]`: register the repo, fetch refs and the head changeset and root tree, create the workspace, write the projection (§9.4), mount or materialise.
-- `asc worktree add <path> [-b <new>] [--detach] [<rev>] [--ephemeral --ttl 7d] [--mode …]`: the same with no network when the revision is cached. Cost: one index file (about 0.5 MB for ASC) plus rows.
-- `asc worktree list [--porcelain]|remove [--force]|prune|lock|unlock|move` mirror git. `remove` unmounts, deletes the root (including redirections) and the gitdir, and refuses when dirty unless `--force`.
+- `asc clone <url> [<dir>] [--mode virtual|plain] [--branch b] [--sparse <cone>…] [--no-checkout] [--reference <git-dir>] [--seed <url>]`: register the repo, fetch (§6.3), create the workspace, write the synthetic `.git` (§9.4), mount or materialise. `asc init`/`asc clone` add `.claude/worktrees/` to the repo-local exclude file in effect (§2.4.2).
+- `asc worktree add <path> [-b <new>] [--detach] [<rev>] [--ephemeral --ttl 7d] [--mode …]`: the same with no network when the revision is cached. Cost: rows, plus one index file (about 0.5 MB for ASC) when `asc.turboIndex` is on (§9.4).
+- `asc worktree list [--porcelain]|remove [--force]|prune|lock|unlock|move` mirror git, including git's output formats. `remove` unmounts, deletes the root (including redirections) and the gitdir, and refuses when dirty unless `--force`. In plain mode `worktree` needs neither the daemon nor any VFS code, so cheap worktrees ship in phase 1.
+- **Branch in use [audit: worktree-layout-and-git-worktree]:** asc applies git's worktree rules across all workspaces of a repo on the machine. `switch`/`checkout` of a branch that another workspace has checked out fails with git's `fatal: '<b>' is already used by worktree at '<path>'`; `branch -d|-D|-m` of such a branch fails with git's error.
+- **Nested paths:** when the requested path lies inside another workspace's root (Claude Code's default is `<repo>/.claude/worktrees/<name>`), asc mounts the new workspace at `$ASC_HOME/wt/<ws-id>` and creates a directory symlink (Developer Mode) or junction at the requested path; `workspaces.path` is the requested path and `workspaces.mount` the mount root. The parent workspace's status treats the path as git does: a directory that contains `.git` is reported as one untracked entry (`?? <dir>/`) unless ignored, and is never descended. Spike S11 confirms that ProjFS serves a junction inside a virtualization root that points to another root. If S11 fails, nested paths use plain mode.
 - **Ephemeral worktrees [graft: integration/performance]:** `--ephemeral --ttl <dur>` sets `ephemeral_until`. The daemon removes expired clean worktrees hourly. Expired dirty worktrees are kept, and `asc status` warns. Agent branches use `refs/heads/agent/<name>` and push with `-o asc.ttl=<dur>`.
-- **Claude Code agents:** configure Claude Code's worktree hooks in ASC's `.claude/settings.json`: `WorktreeCreate` → `asc worktree add --ephemeral --ttl 7d "$path" -b "$branch"`, `WorktreeRemove` → `asc worktree remove --force "$path"`. If the installed Claude Code lacks these hook events, agents call `asc worktree add` through a project instruction instead. Spike S7 confirms which applies.
+- **Claude Code agents [audit: claude-code-worktrees]:**
+  - `asc internal claude-hook worktree-create` reads the hook JSON from stdin (it uses the worktree name field and `cwd`) and runs the equivalent of `asc worktree add --ephemeral --ttl 7d -b agent/<name> <path> <base>`, where `<path>` = `<repo-root>/.claude/worktrees/<name>` and `<base>` = the current `HEAD`. The nested-path rule applies. It prints the absolute path on stdout and nothing else; errors go to stderr with a non-zero exit.
+  - `asc internal claude-hook worktree-remove` reads the worktree path from the JSON and runs `asc worktree remove --force`. Unpushed commits stay reachable from `refs/heads/agent/<name>`.
+  - ASC's `.claude/settings.json` configures both hooks with these commands.
+  - With no hook configured, Claude Code's `git worktree add`/`git worktree remove` reach asc through the shim (§11.4) and are native.
+  - Spike S7 confirms the JSON field names and the stdout contract against the pinned Claude Code version. The compat suite records Claude Code's EnterWorktree/ExitWorktree traces with and without hooks (§17.1).
 
-### 9.4 The git projection
+### 9.4 The synthetic `.git` (Turborepo only) [audit: user decision No-IDE]
 
 ```
 <root>/.git                              gitfile: "gitdir: $ASC_HOME/wc/<ws>/git\n"
 $ASC_HOME/wc/<ws>/git/
   commondir                              "../../../repos/<repo-id>/.git\n"
-  HEAD                                   "ref: refs/heads/<b>\n" or the git sha
-  index                                  written by asc (below); edited by asc and git
-  config.worktree                        core.worktree=<root>, core.hooksPath=$ASC_HOME/hooks, core.fsmonitor=<asc-fsmonitor path> (virtual only)
-  logs/HEAD
-  MERGE_HEAD, MERGE_MSG, CHERRY_PICK_HEAD (when in progress)
-  shallow (CI only)
-$ASC_HOME/repos/<repo-id>/.git/           common dir (shared by all workspaces of the repo on the machine)
-  config                                 core.repositoryformatversion=1, core.bare=false, core.autocrlf=false, core.eol=lf,
-                                         core.symlinks=<os>, core.ignorecase=<true on Windows>, core.longpaths=true,
-                                         core.filemode=<os>, extensions.worktreeConfig=true, extensions.partialClone=origin,
-                                         remote.origin.url=asc::origin, remote.origin.promisor=true,
-                                         remote.origin.partialclonefilter=blob:none, remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*,
-                                         user hooks chain: asc.userHooksPath (detected, see below)
-  objects/                               commits, trees (rendered), blobs (seeded or fetched); git-remote mode: full packs
-  refs/, packed-refs, logs/              mirror of asc refs as git SHAs (written by asc)
+  HEAD                                   "ref: refs/heads/<b>\n", or the git SHA when detached
+  index                                  rendered by asc from tree metadata plus stage set 0 when asc.turboIndex is on (below); nothing else writes it
+  asc-workspace                           the workspace id: the shim's marker (§11.4)
+  asc-commit-index                        temporary stage set rendered for hooks of `commit <paths>`/`--only`/`-i` (§9.7)
+  MERGE_HEAD, rebase-merge/, COMMIT_EDITMSG, …   in-progress state in git's format (§4.4)
+$ASC_HOME/repos/<repo-id>/.git/           common dir, shared by the repo's workspaces on the machine
+  config                                 git-format config (below)
+  info/exclude, hooks/                   as in git
 ```
 
-- **Why the common dir sits at `repos/<id>/.git`:** turbo treats a gitfile worktree as linked and puts its cache under the main worktree root, which is the parent of the common dir. All workspaces of a repo therefore share `$ASC_HOME/repos/<id>/.turbo/cache` (a machine-wide turbo cache). Contract-tested in U61.
-- **Config precedence [fix: missing-from-all, husky and autocrlf]:** `core.hooksPath` and `core.fsmonitor` live in `config.worktree`, which overrides the local `config` that husky's `prepare` script writes. `core.autocrlf=false` in the local config overrides any global `autocrlf=true`. `asc doctor` flags a `--worktree` override of either key.
-- **Hook chain:** `$ASC_HOME/hooks/<name>` dispatchers run asc's own action, then the user's hook from the first existing of: `core.hooksPath` in local or global config (for example husky's `.husky/_`), else `<common>/hooks`. Hooks with no asc action are pure pass-throughs. `asc commit` uses the same resolution to run `pre-commit`, `prepare-commit-msg`, `commit-msg` and `post-commit`, honouring `--no-verify`.
-- **Index (the staging area):** v2 with a TREE (cache-tree) extension, written atomically with git's lock protocol: create `index.lock` with `O_EXCL`, write, fsync, rename. If the lock is held, asc waits up to 5 s with backoff and then fails with git's message (`Unable to create '…/index.lock': File exists`) **[fix: missing-from-all, concurrent index writers]**. asc writes the index on clone, switch, checkout, reset, restore, merge and rebase, and edits it on add/rm/mv. Each entry: path; mode; `git` oid; size (`lfs.size` for LFS entries); ctime = mtime = the placeholder time (virtual, §10.1) or the real stat (plain); dev/ino 0 on Windows, `inodes.ino` on FUSE, real on plain Unix; uid/gid 0 on virtual. No skip-worktree bits except unrepresentable entries (§2.8) and plain sparse mode. Gitlinks: mode 160000. After writing, asc sets the index file's mtime to `max(now, max_entry_time + 2 s)` so no entry is racy.
-- **Objects:**
-  - **Commits:** rendered locally from changesets (§2.9) for all ancestors of every local branch head and remote-tracking ref, written once per machine to the common dir. For ASC that is 5.5k commits, a few MB.
-  - **Trees:** rendered for HEAD and the bases on demand; others arrive lazily through the promisor (git lazily fetches missing trees from promisor remotes).
-  - **Blobs:** seeded at HEAD (and at the CI base) for `**/package.json`, `turbo.json`, `bun.lock`, `.gitignore` files and `**/Cargo.toml`, the files turbo reads. Everything else comes on demand through `git-remote-asc` (§9.5).
-  - Every rendered tree adds `(entry.git → entry.id)` rows to `state.db.git_map`, so blob requests resolve without the server.
-- **Refs mirror:** whenever asc moves a ref, it writes the git SHA into the common dir (`refs/heads/*`, `refs/tags/*`, `refs/remotes/*`, `refs/stash` plus `logs/refs/stash`) and `HEAD`/`logs/HEAD` into the workspace gitdir.
+- **Purpose:** turbo reads `.git/index` with gix-index and asks `git` a few questions. The gitdir holds nothing else: no objects, no refs, no packed-refs, no reflogs, no rendered commits. Real git does not operate on it (§9.6). This replaces v1.0's full projection, git-index staging, refs mirror and `git-remote-asc` helper.
+- **Config:** `core.bare=false`, `core.autocrlf=false`, `core.ignorecase=<true on Windows>`, `core.symlinks=<os>`, `core.filemode=<os>`, `core.longpaths=true`; `remote.<n>.url` = the user's remote URL exactly as given to `clone` or `remote add`, and `remote.<n>.fetch` (including `^refs/heads/agent/*`, §2.7); `branch.<b>.remote`/`.merge`; and any setting the user or a tool writes with `git config --local` (for example husky's `core.hooksPath`). asc reads and writes this file with `gix-config`. `git remote get-url origin` and `git remote -v` therefore print the real URL, which Claude Code and `gh` use to find the forge repo **[audit: remote-url-projection]**.
+- **Conditional includes [audit: includeif-identity]:** asc's config loader evaluates `includeIf "gitdir:"`/`"gitdir/i:"` against `<workspace root>/.git`, the path a plain clone at that location would have, so a `[includeIf "gitdir:~/work/"]` identity applies as it would for git. `asc doctor` re-checks this, reports drift, and recommends `hasconfig:remote.*.url:` conditions, which do not depend on the gitdir location.
+- **When it exists [audit: synthetic-index-o-files]:** the index is written only when `asc.turboIndex` is true. The default `auto` is true when the root tree has a `turbo.json` entry or the workspace is plain (plain status uses the index as its stat cache, and plain materialisation is O(files) anyway). A virtual workspace without it has no `index` file; its status uses the journal (§10.2).
+- **Index (a write-only export, not the staging area) [audit: turbo-index-reflects-head-breaks-staged-contract]:** v2 with a TREE (cache-tree) extension, rendered from HEAD's tree metadata overlaid with stage set 0 (§9.5): staged writes and intent-to-add entries replace or add entries (oid and size from the `stage` row), staged deletes remove them, and conflict stages 1–3 are written as git writes them. Each entry: path; mode; `git` oid; size; ctime = mtime = the placeholder time (virtual, §10.1) or the real stat (plain); dev/ino 0 on Windows, `inodes.ino` on FUSE, real on plain Unix; uid/gid 0 on virtual. No skip-worktree bits except unrepresentable entries (§2.8) and plain sparse mode. Gitlinks: mode 160000.
+  - It is written atomically with git's lock protocol: create `index.lock` with `O_EXCL`, write, fsync, rename. If the lock is held, asc waits up to 5 s with backoff and then fails with git's message (`Unable to create '…/index.lock': File exists`) **[fix: missing-from-all, concurrent index writers]**.
+  - After writing, asc sets the index file's mtime to `max(now, max_entry_time + 2 s)` so no entry is racy.
+  - asc updates it on clone, switch, checkout, commit, reset, restore, merge, rebase, add, rm, mv, stash, apply --cached, update-index and read-tree by patching the previous index with the changed paths only (no reads of unchanged trees), then rewriting the file. It mirrors set 0, as git's index does; asc still never reads it as staging (§9.5). Turbo stat-checks every entry and hashes any file that differs, so its hashes stay correct.
+  - asc also reads it back as its own stat cache for plain-mode status. Nothing else writes it.
+- **Why the common dir sits at `repos/<id>/.git`:** turbo treats a gitfile worktree as linked and puts its cache under the main worktree root, which is the parent of the common dir. All workspaces of a repo therefore share `$ASC_HOME/repos/<id>/.turbo/cache` (a machine-wide turbo cache). Contract-tested in U61p.
+- **Turbo's git calls** (`rev-parse`, `ls-files --others`, `diff-tree --merge-base`, `show <base>:bun.lock`, `status`) reach asc through the shim (§11.4) and are native. The shim MUST precede real git on the PATH that turbo sees; `asc doctor` checks it. Spike S4 records every git invocation turbo 2.10 makes, so the native table (§11.5) covers them, and confirms that turbo's index reading works with this layout.
 
-### 9.5 `git-remote-asc` (promisor and push helper)
+#### 9.4.1 Hooks run by native commands [audit: hooks-full-set]
 
-Invoked by git for `asc::origin` URLs, with `GIT_DIR` set to the workspace gitdir.
+asc runs git hooks itself; there are no dispatcher scripts. The hooks directory is `core.hooksPath`, else `<common>/hooks`. A relative `core.hooksPath` resolves against the workspace root, so husky's `.husky/_` works. On Windows hooks run through `<GitForWindows>\usr\bin\sh.exe` (found from `RealGit`, §11.4), never the `bin\sh.exe`/`bin\bash.exe` wrappers, which put real git first on `PATH`.
 
-- **Capabilities:** `stateless-connect`, `push`, `option`.
-- **Fetch** (protocol v2 over stateless-connect): `ls-refs` returns the asc refs mirror. `fetch` accepts explicit `want` oids (no negotiation; `have` lines are ignored) and returns a pack of whole objects (no deltas). Objects resolve git oid → asc id through `state.db.git_map` (falling back to `GitMap` RPC on the remote), are read through `Tiered` (cache → remote), and are rendered to git form: blobs are the file bytes (pointer bytes for LFS entries), trees use the override or the render, commits use the render.
-- **Push** (`push <src>:<dst>`): reconcile (§9.6) so `<src>` is imported, then run `asc push` semantics for that one ref, then reply `ok <dst>` or `error <dst> <message>`. So `git push` from an IDE pushes through asc.
+**Child PATH (MUST) [audit: hook-child-path-real-git, hook-child-path-shim]:** every child that asc spawns (hooks, `!` aliases, `core.editor`/`GIT_EDITOR`/`GIT_SEQUENCE_EDITOR`, `diff`/`merge` drivers and textconv, `rebase --exec`, `bisect run`, `git-<name>`/`asc-<name>` external commands) gets `PATH = <private shim dir> + PATH_SEPARATOR + PATH`, as git puts its exec-path first for its children. The private shim dir is `<exe dir>/shim` (§11.4): the installer and `asc upgrade` create it, it always exists whether or not the user installed the shim for interactive use, and asc recreates it on first use if it is missing (`fatal: asc: cannot create <dir>; run asc doctor --fix` if that fails). It is never added to the user's own PATH by this rule. On Windows a hook's PATH is `<private shim dir>;<GitForWindows>\mingw64\bin;<GitForWindows>\usr\bin;<inherited PATH>`. `git` in a child, including husky scripts and lint-staged's `execa('git')`, therefore always reaches asc. `RealGit` children (§9.6) are the only exception and keep the inherited PATH.
 
-### 9.6 Git-side edits are imported, not refused [graft: judge 2] [fix: missing-from-all, IDE workflows]
+Native commands MUST run the same hooks at the same points as git 2.55, with git's argv, stdin, cwd (the worktree root) and env:
 
-**Reconcile** (`asc internal reconcile <ws>`) is triggered in four ways:
+- `commit`: `pre-commit`, `prepare-commit-msg <file> [message|template|merge|squash|commit [<sha>]]`, `commit-msg <gitdir>/COMMIT_EDITMSG`, `post-commit`, and `post-rewrite amend` (stdin `<old> <new>`).
+- `merge`/`pull`: `pre-merge-commit` and `post-merge <squash-flag>`.
+- `rebase`: `pre-rebase <upstream> [<branch>]`, then `post-rewrite rebase`.
+- `checkout`/`switch`/`clone`/`worktree add`: `post-checkout <old> <new> <1|0>`. Clone and worktree add use the null SHA as old.
+- `push`: `pre-push <remote> <url>`, with stdin lines `<local ref> <local sha1> <remote ref> <remote sha1>`. It runs before any upload, and a non-zero exit aborts with git's message.
+- `am`: `applypatch-msg`, `pre-applypatch` and `post-applypatch`.
+- every local ref update (commit, branch, tag, reset, update-ref, rebase, merge): `reference-transaction prepared|committed|aborted` with stdin lines `<old> <new> <ref>` (git SHA-1s) **[audit: hooks-must-vs-list]**.
+- **One chokepoint [audit: local-ref-update-chokepoint]:** asc moves local refs through one function, which writes the ref CAS, the reflog, the `reference-transaction` hook calls and, when HEAD's commit changes, the synthetic-index update (§9.4). No command moves a local ref any other way. Fetch and push remote-tracking updates go through it too, as in git.
+- `gc`: `pre-auto-gc` is never run (asc has no auto-gc).
 
-1. the `reference-transaction` dispatcher, in the `committed` state;
-2. `post-checkout`, `post-commit`, `post-merge` and `post-rewrite`;
-3. the start of every `asc` command in that workspace;
-4. a `notify` watch on the common dir's `refs/`, `packed-refs` and the workspace `HEAD`, held by the daemon.
+Never run, because asc has no such mechanism: `post-index-change`, `fsmonitor-watchman`, `push-to-checkout`, `sendemail-validate`, `p4-*`, and the receive-pack hooks (`pre-receive`, `update`, `proc-receive`, `post-receive`, `post-update`; server policy is Forgejo's, §8.3). They are listed in `tests/compat/allowed.toml`.
 
-Hooks only speed up detection. Correctness comes from (3) and (4), so `--no-verify` and a changed `core.hooksPath` cannot cause divergence.
+Env as git sets it: `GIT_INDEX_FILE` (absolute) is always set for commit hooks: `<gitdir>/index` for a normal commit, which asc maps to the real staging (set 0, §9.5), or the rendered temporary stage set `<gitdir>/asc-commit-index` for `commit <paths>`/`--only`/`-i` (§9.7) **[audit: commit-precommit-staging-order, git-index-file-stage-sets]**. git passes `<gitdir>/index.lock` for a normal commit; this path difference is listed in `allowed.toml`. Also `GIT_EDITOR=:` when no editor is used, `GIT_PREFIX`, `GIT_REFLOG_ACTION`, and `GIT_DIR` only where git sets it. All ids passed to hooks are git SHA-1s. `--no-verify` skips exactly the hooks git skips (`pre-commit`, `commit-msg`, `pre-push`, `pre-merge-commit`). Git commands that hooks run (`git diff --cached`, `git add`, `git stash create`, …) reach asc through the child PATH above.
 
-Steps:
+### 9.5 Staging area (asc's own) [audit: user decision No-IDE]
 
-1. For each mirrored ref and `HEAD`, compare the git value with asc's value.
-2. A git value already in the git map → move the asc ref to the mapped changeset (CAS on asc's old value).
-3. An unknown git value → import commits from the projection ODB (gix: loose objects and packs), walking parents until known. The import is lossless and canonical (§14.1), so `git commit` from VS Code produces exactly the changeset `asc commit` would have produced. Then move the asc ref.
-4. If asc's ref moved concurrently (CAS miss): asc wins. The git ref is reset to asc's value, and the git commit stays reachable as `refs/asc/orphans/<sha>`, with a warning printed by the next `asc` command.
-5. `HEAD` moved by `git checkout` / `git switch`: adopt the new HEAD and base for the workspace. Files git wrote are real files that the journal sees (virtual) or the stat scan sees (plain). Status hashes them; those equal to the tree are clean, and the daemon dehydrates them later.
+- Staging lives in `state.db.stage` (§9.2): one row per path whose staged state differs from HEAD, plus conflict stages 1–3 and intent-to-add entries. A path without a row is staged as in HEAD. git's index file is not the staging area (§9.4).
+- `asc add` ingests the content into `store/` (FileId, chunks; normalisation per §2.4.1), computes the git blob SHA-1, and writes the `stage` row plus a `git_map` row. `add -p` stages a hunk-filtered blob the same way. Nothing is read from the working file again at commit time **[fix J1/J2/J3: `git add -p`]**.
+- `ls-files -s`, `diff --cached`, `status`, `write-tree` and the other index plumbing read the HEAD tree overlaid with `stage` rows and print git SHA-1s, exactly as git would print its index.
+- **`GIT_INDEX_FILE` → stage set (normative) [audit: git-index-file-stage-sets]:** if `GIT_INDEX_FILE` is unset, or equals (after normalisation) the workspace's own `<gitdir>/index`, asc uses the default stage set (set 0, the `stage` rows). asc never parses that file as staging. Any other path names a temporary stage set, keyed by its absolute path in `stage_sets`:
+  - a registered path uses its set; a missing file starts an empty set (git semantics); an existing unregistered file is imported once (git oids → FileIds through `git_map`; an unknown oid fails with git's `fatal: unable to read <sha>`);
+  - after any asc command changes a temporary set, asc re-renders the file at that path under git's lock protocol, so tools that pass `GIT_INDEX_FILE` between git calls keep working;
+  - a temporary set is dropped when its file disappears, or after 24 h;
+  - `commit <paths>`/`--only`/`-i` create a temporary set and export its path to hooks. A normal commit exports `<gitdir>/index`, which maps to set 0 (§9.4.1, §9.7).
+- ASC's IDE plugins stage through `Workspace.Stage` (§7) or `asc add`.
 
-`git stash`, `git merge`, `git rebase`, `git cherry-pick` and `git reset` in a projection therefore all work. They are slower than the asc equivalents, because git materialises files. `asc doctor` reports git-written full files per workspace.
+### 9.6 Real git and asc workspaces [audit: user decision No-IDE]
 
-**Delegation [graft: integration D11]:** an `asc <cmd>` that asc does not implement and that git classifies as read-only (`shortlog`, `name-rev`, `describe --contains`, `grep --no-index`, `notes show`, `whatchanged`, `range-diff`, `cherry`, `log --graph` variants asc lacks) runs `git <cmd> …` with `GIT_DIR`/`GIT_WORK_TREE` set to the projection. History-rewriting commands asc lacks (`filter-branch`, `filter-repo`, `replace`) fail with `asc: '<cmd>' is not supported`.
+- In an asc workspace the `git` command is asc (§11.4), and every invocation runs natively (§11.5). Real git never operates on an asc workspace.
+- Real git run directly (without the shim) finds a gitdir with no objects or refs and fails with `fatal: not a git repository`. `asc doctor` reports every PATH surface where the shim is missing (§11.4).
+- Commits made by real git are therefore never imported, and there is no reconcile of git-side refs, no refs mirror and no `git-remote-asc` helper. v1.0's projection reconcile and delegation sections are withdrawn.
+- asc itself still runs real git, always through `RealGit` (§11.4), for: git-remote mode (§6.3), the Forgejo bridge and export (§8.3, §14.2), `git credential`, and the shim's fall-through outside asc workspaces.
 
-### 9.7 `asc commit` (staging → changeset)
+### 9.7 `asc commit` (staging → changeset) [audit: commit-precommit-staging-order]
 
-1. Read the index (holding `index.lock` while reading the stat-dirty set when `-a` is used).
-2. For each index entry whose `(mode, oid)` differs from HEAD's tree: if the oid is in `git_map`, reuse its `FileId` (and LFS ref). Otherwise **read the blob from the projection ODB** (loose object written by `git add`, or a pack), verify `sha1("blob <len>\0" ‖ bytes) == oid`, ingest it into `store/` (FileId, chunks), and add a `git_map` row. The working file is never read for a staged oid **[fix J1/J2/J3: `git add -p`]**. `asc add` writes the loose object itself as it stages (gix `write_blob`), so asc and git staging are interchangeable.
-3. Build the new root with `apply` and the changes with `leafdiff` (§4.2). Record `copy_from` from `asc mv` (kept in `ws_ops`'s pending-renames list until commit).
-4. Run hooks, sign if `-S`/`commit.gpgSign`, write the changeset to `store/`, derive `gen` and `gitcommit`, and move the branch (CAS on the old value). Write the commit object into the common dir's ODB and update the refs mirror and the index's TREE extension.
+git runs `pre-commit` first and then re-reads the index, so a hook's `git add` (lint-staged) is committed. asc follows the same order:
+
+0. Snapshot set 0 (copy its rows into a temporary set). If the commit aborts before step 6 (a failing `pre-commit`, `prepare-commit-msg` or `commit-msg`, an aborted editor, an empty message), restore set 0 from the snapshot, as git rolls back `index.lock`; drop the snapshot in every case **[audit: commit-hook-failure-rollback]**.
+1. With `-a`, stage every stat-dirty tracked file (journal ∪ stat check) as `asc add -u` would. With `<paths>`/`--only`/`-i`, build the temporary stage set (§9.5) and render it to `<gitdir>/asc-commit-index`.
+2. Unless `--no-verify`, run `pre-commit` with `GIT_INDEX_FILE` set to the stage set in use (§9.4.1): `<gitdir>/index` (set 0) for a normal commit, else `<gitdir>/asc-commit-index`.
+3. Re-read that stage set (set 0 rows, or the temporary set, which the shim's `git add` updated). Stage changes made by the hook are committed.
+4. Run `prepare-commit-msg` and `commit-msg`.
+5. Build the root with `apply` and the changes with `leafdiff` (§4.2) from the stage set as re-read: the HEAD tree overlaid with its rows. Every staged row already carries its `FileId`, ingested by `asc add`, so commit reads no file content. Record `copy_from` from `asc mv` (pending renames in `ws_ops`).
+6. Sign if `-S`/`commit.gpgSign`, write the changeset to `store/`, derive the eager types, and move the branch (CAS on the old value). Clear the `stage` rows (for `--only`/`<paths>`, set 0 keeps its rows for other paths and takes the committed paths' new state, as git does), drop the temporary set, write `COMMIT_EDITMSG` and the reflog, update the synthetic index (§9.4), then run `post-commit` (and `post-rewrite amend`).
 
 ---
 
@@ -918,7 +1268,7 @@ Steps:
 
 1. **Binding:** our own thin layer over `windows` 0.62.2 (`Win32_Storage_ProjectedFileSystem`). `ProjectedFSLib.dll` is loaded at runtime with `libloading`, so `asc.exe` runs where the feature is off and falls back to plain mode with a notice. The MSI enables `Client-ProjFS` (it runs elevated). `asc doctor --fix` prints the admin command otherwise.
 2. **One virtualization root per workspace**, with a stable instance GUID (the workspace uuid). The root directory is marked with `FILE_ATTRIBUTE_NOT_CONTENT_INDEXED`.
-3. **Placeholders:** `VersionInfo.ContentID` = 33 bytes `kind ‖ id` (kind 1 = file `FileId`, 2 = LFS `sha256`, 3 = tree `TreeId`). `ProviderID` = the 16-byte workspace uuid. Sizes come from tree metadata (`lfs.size` for LFS). Times follow §10.1. Symlinks use `PrjFillDirEntryBuffer2` with symlink extended info when Developer Mode is on. Otherwise they are projected as text files containing the target, as git does with `core.symlinks=false`, and the projection config says so.
+3. **Placeholders:** `VersionInfo.ContentID` = 33 bytes `kind ‖ id` (kind 1 = file `FileId`, 3 = tree `TreeId`; kind 2 is unused). `ProviderID` = the 16-byte workspace uuid. Sizes come from tree metadata. Times follow §10.1. Symlinks use `PrjFillDirEntryBuffer2` with symlink extended info when Developer Mode is on. Otherwise they are projected as text files containing the target, as git does with `core.symlinks=false`, and the projection config says so.
 4. **Callbacks:**
    - `StartDirectoryEnumeration`/`GetDirectoryEnumeration`/`EndDirectoryEnumeration` answer from the tree at the base, honouring the search expression with `PrjFileNameMatch` and sorting with `PrjFileNameCompare`. Gitlink directories are composed (§10.6).
    - `GetPlaceholderInfo` looks the path up case-insensitively.
@@ -926,28 +1276,35 @@ Steps:
    - `QueryFileName` and `Notification` are also implemented.
    - No ProjFS call is ever made from inside a callback while holding a lock.
 5. **Hydration policy [fix: missing-from-all, indexer/AV storms]:** `GetFileData` receives `TriggeringProcessId` and `TriggeringProcessImageFileName`. Every hydration is counted per process image (metric and `asc debug hydrations`). `asc.vfs.denyHydration` (default `SearchProtocolHost.exe;SearchIndexer.exe;SearchFilterHost.exe`) returns `STATUS_CANNOT_ACCESS`-equivalent (`ERROR_ACCESS_DENIED`) for those images. The installer adds Defender exclusions for `$ASC_HOME`, and `asc doctor` checks Defender exclusions and Dev Drive status (Defender is ProjFS-aware and does not hydrate placeholders it does not open, which spike S1 measures). Directory enumeration and `ReadDirectoryChangesW` watchers (VS Code, turbo, vite) never hydrate. The documented VS Code settings exclude `node_modules`, `dist` and `.turbo` from search and watching.
-6. **Notifications** (registered for the root with mappings that mask redirected directories and the `.git` gitfile): `NEW_FILE_CREATED`, `FILE_OVERWRITTEN`, `PRE_DELETE`, `PRE_RENAME`, `FILE_RENAMED`, `HARDLINK_CREATED`, `FILE_HANDLE_CLOSED_FILE_MODIFIED`, `FILE_HANDLE_CLOSED_FILE_DELETED` and `FILE_PRE_CONVERT_TO_FULL` append journal hints. They are **hints only**.
+   - **5a. Language servers [audit: ls-crawl-hydration]:** tsserver, rust-analyzer, Pylance/pyright and OmniSharp are expected to hydrate the source files of the projects they open. ASC's HEAD is 119 MiB, within `hydrationBudget`. To keep this fast, `asc clone`/`worktree add` start a background `asc prefetch` of the `.asc/prefetch` globs (default: tracked `**/*.{ts,tsx,rs,py,cs,toml,json}` outside redirections). It fills the shared machine cache only and creates no placeholders, so language-server hydration is a local copy. Dehydration (item 9) skips files that any process read in the last 3 days and files open in any process. The documented editor settings scope language servers to the workspace (rust-analyzer `files.excludeDirs` for redirections, `python.analysis.exclude`, tsconfig `exclude`).
+6. **Notifications** (registered for the root; redirected names and the `.git` gitfile are filtered, §10.5): `NEW_FILE_CREATED`, `FILE_OVERWRITTEN`, `PRE_DELETE`, `PRE_RENAME`, `FILE_RENAMED`, `HARDLINK_CREATED`, `FILE_HANDLE_CLOSED_FILE_MODIFIED`, `FILE_HANDLE_CLOSED_FILE_DELETED` and `FILE_PRE_CONVERT_TO_FULL` append journal hints. They are **hints only**.
    - **Directory renames [fix: missing-from-all]:** on `PRE_RENAME` of a directory, the provider hydrates the whole subtree under the source first, so every descendant is a real file before the rename proceeds. It then journals `dir-renamed-from <src>` and `dir-renamed-to <dst>`. Status treats every tracked path under `src` (from the base tree) as deleted and walks `dst` on disk as new or untracked files. Directory renames are rare, so the hydration cost is accepted.
-7. **Reconcile on start [graft: performance]:** for each workspace, enumerate only on-disk (non-virtual) entries. ProjFS keeps placeholders, hydrated, full and tombstone entries as real directory entries; a recursive walk that skips virtual-only directories is bounded by what was materialised. Each path's state comes from `PrjGetOnDiskFileState`: Full or DirtyPlaceholder → journal `modified`; Tombstone → journal `deleted`; full files not in the tree → `created`. Then, if a `switch_intent` exists, the switch is re-run (§10.2.8).
+   - **Pre-hydration threading [audit: projfs-dir-tombstone-reconcile]:** pre-hydration runs on the provider's worker pool, not on the notification thread. The `PRE_RENAME` callback returns only after the pool finishes, and the pool keeps ≥ 2 threads free so callbacks never wait on a callback thread. If hydration fails (offline), the rename is denied with `STATUS_ACCESS_DENIED`, and the daemon log names the missing object.
+7. **Reconcile on start [graft: performance]:** for each workspace, enumerate only on-disk (non-virtual) entries, never descending into redirected names (§10.5). ProjFS keeps placeholders, hydrated, full and tombstone entries as real directory entries; a recursive walk that skips virtual-only directories is bounded by what was materialised. Each path's state comes from `PrjGetOnDiskFileState`: Full or DirtyPlaceholder → journal `modified`; Tombstone → journal `deleted`; full files not in the tree → `created`. A directory tombstone expands to `deleted` for every tracked path under it in the base tree (metadata only). Then, if a `switch_intent` exists, the switch is re-run (§10.2.8).
 8. **Switch, reset --hard, restore** (the daemon executes `Switch`):
    1. Persist `switch_intent {from_root, to_root, to_head, pending = changed paths}` **[graft: performance]**.
-   2. Compute `leafdiff(from_root, to_root)` from metadata, plus directory-level changes.
+   2. Compute the work set `W = leafdiff(from_root, to_root)` (from metadata, plus directory-level changes) `∪`, in FORCE mode and for restore, the dirty set `D = journal ∪ staged ∪ reconcile results`, limited to the command's pathspec. `reset --hard`, `restore --worktree`, `checkout [<rev>] -- <paths>` and `switch -f` run in FORCE mode over `W`, even when `from_root == to_root` **[audit: projfs-reset-restore-dirty-set]**.
    3. Apply git's switch rules to dirty paths (journal ∪ staged): if the target changes a dirty path, refuse (SAFE), three-way merge the content (MERGE, `--merge`), or overwrite (FORCE, `-f`/`reset --hard`).
-   4. For each changed path that is not dirty, in parallel batches:
+   4. For each path in `W`, in parallel batches:
       - virtual (never materialised) → nothing on disk; enumeration serves the new tree after the base changes;
-      - placeholder or hydrated → `PrjUpdateFileIfNeeded(new placeholder info, PRJ_UPDATE_ALLOW_DIRTY_METADATA | PRJ_UPDATE_ALLOW_READ_ONLY)`; for a deletion → `PrjDeleteFile(…, same flags)`;
-      - **tombstone** (the user deleted it locally and the target changes or re-adds it) → in FORCE mode, or when the target equals the deletion, `PrjDeleteFile(path, PRJ_UPDATE_ALLOW_TOMBSTONE)` removes the tombstone so the path becomes virtual and enumerates from the new tree. In SAFE mode a tombstone counts as a dirty path (git semantics) **[fix: missing-from-all, tombstones]**.
-   5. **Files held open** (update fails with `ERROR_SHARING_VIOLATION` or the update-failure reason `PRJ_UPDATE_FAILURE_CAUSE_*`): retry 3 times at 100/300/900 ms, then leave the path in `switch_intent.pending` **[graft: performance]**. The switch completes. Pending paths get index entries for the target oid with stat values that cannot match, so git and turbo hash them. `asc status` shows them as `not updated (in use by <process>)`, and the daemon retries pending paths every 5 s until done, then clears them.
+      - SAFE/MERGE mode, clean placeholder or hydrated → `PrjUpdateFileIfNeeded(new placeholder info, PRJ_UPDATE_ALLOW_DIRTY_METADATA | PRJ_UPDATE_ALLOW_READ_ONLY)` (never `ALLOW_DIRTY_DATA`); dirty paths were handled by step 3;
+      - FORCE mode, placeholder/hydrated/DirtyPlaceholder/Full whose target entry exists → `PrjDeleteFile(path, PRJ_UPDATE_ALLOW_DIRTY_METADATA | PRJ_UPDATE_ALLOW_DIRTY_DATA | PRJ_UPDATE_ALLOW_READ_ONLY)`, so the path becomes virtual again and enumerates from the target tree;
+      - the target deletes the path → `PrjDeleteFile` with the same flags as the mode's update;
+      - **tombstone** (local deletion) in `W` in FORCE mode, or a tombstone whose target entry is absent → `PrjDeleteFile(path, PRJ_UPDATE_ALLOW_TOMBSTONE)`, so the path becomes virtual (restored) or stays absent. In SAFE mode a tombstone that the target changes is a dirty path (git semantics) **[fix: missing-from-all, tombstones]**;
+      - untracked Full files are never touched (git semantics; `asc clean` removes them).
+   4a. **Watcher visibility [audit: watchers-virtual-switch]:** for every path the switch ADDS whose parent directory is on disk (placeholder or full directory), the daemon opens the path with `CreateFileW(…, 0 /*no access*/, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)` and closes it. ProjFS then creates the placeholder (no hydration), and `ReadDirectoryChangesW` reports `FILE_ACTION_ADDED`. Updated and deleted on-disk placeholders already raise events through `PrjUpdateFileIfNeeded`/`PrjDeleteFile`. Paths under never-enumerated virtual directories need no event, because no watcher has seen them.
+   5. **Files held open** (update fails with `ERROR_SHARING_VIOLATION` or the update-failure reason `PRJ_UPDATE_FAILURE_CAUSE_*`): retry 3 times at 100/300/900 ms, then leave the path in `switch_intent.pending` **[graft: performance]**. The switch completes. Pending paths get index entries for the target oid with stat values that cannot match, so turbo and asc status hash them. `asc status` shows them as `not updated (in use by <process>)`, and the daemon retries pending paths every 5 s until done, then clears them.
    6. Bump the epoch and record `entry_times` (§10.1). Rewrite the index and `HEAD` (holding `index.lock` from step 1), clear the negative path cache (`PrjClearNegativePathCache`), and delete the intent if nothing is pending.
 
    A crash at any step: on restart the intent is re-run idempotently (`PrjUpdateFileIfNeeded` to the target version is idempotent), then the index and HEAD are rewritten.
-9. **Dehydration:** clean hydrated placeholders in a workspace are re-virtualised with `PrjDeleteFile(PRJ_UPDATE_ALLOW_READ_ONLY)` (only clean `HydratedPlaceholder` state is eligible) when either: they have not been read for 3 days (from the hydration log), or the workspace's hydrated bytes exceed `asc.vfs.hydrationBudget` (default 500 MiB), least recently hydrated first **[graft: performance]**. It runs during idle (no notifications for 60 s) and on demand with `asc sparse dehydrate <pathspec>`.
+9. **Dehydration:** clean hydrated placeholders in a workspace are re-virtualised with `PrjDeleteFile(PRJ_UPDATE_ALLOW_READ_ONLY)` (only clean `HydratedPlaceholder` state that no process has open is eligible) when either: no process has read them for 3 days (from the hydration log, by process), or the workspace's hydrated bytes exceed `asc.vfs.hydrationBudget` (default 500 MiB), least recently hydrated first **[graft: performance]**. It runs during idle (no notifications for 60 s) and on demand with `asc sparse dehydrate <pathspec>`.
 10. **Long paths:** all internal paths use `\\?\` verbatim form. `core.longpaths=true` is set. `asc doctor` checks `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled=1` **[fix: missing-from-all]**.
 
 ### 10.3 Linux: FUSE (`asc-vfs::fuse`)
 
 - `fuser` 0.18, `default_permissions`. **Inode table persisted** in `state.db.inodes` (allocated sequentially, never reused while the workspace exists), so inode numbers are stable across restarts and the git index's ino matches **[graft: performance] [fix J1]**.
 - `getattr` returns tree metadata, with times from §10.1 and mode from `Kind`. The kernel caches attributes and entries with a 1 h TTL. Switch invalidates changed entries (`notify_inval_entry`, `notify_inval_inode`).
+- **Watchers [audit: watchers-virtual-switch]:** inotify does not report changes the FUSE server makes. In FUSE virtual mode, `asc switch`/`pull`/`reset` print `note: file watchers do not see this switch; restart watch processes or use polling` when a watch-capable process (an inotify user on the mount, from `/proc/*/fdinfo`) is detected. Plain mode has no such limitation. This is a documented limitation of Linux virtual mode.
 - Opening a clean file read-only uses **FUSE passthrough** (kernel ≥ 6.9) to the `cache/f/<id>` file, which gives zero copies and zero extra disk. Without passthrough it reads through.
 - Open-for-write, create, truncate, unlink and rename copy up into `wc/<ws>/overlay/` (the overlay holds modified files and records deletions). Every write passes through the daemon, so the journal is exact and needs no reconcile.
 - Redirected names are served as symlinks to `$ASC_HOME/redirect/<ws>/<path>`, created on first lookup.
@@ -956,21 +1313,21 @@ Steps:
 ### 10.4 Plain mode (`asc-wc::plain`; all OSes; CI default; macOS v1)
 
 - Materialise the tree, or a cone-only sparse set (`asc sparse set <dir>…`; non-materialised entries carry skip-worktree in the index), from the cache using `reflink-copy` (APFS `clonefile`, btrfs/XFS, ReFS Dev Drive) or a plain copy. **Never hardlinks**, so an editor can never corrupt the shared cache.
-- Status is a git-style stat check of index entries against the files (4.5k files take milliseconds), kept warm by `notify` while the daemon runs. Untracked files come from a walk with `.gitignore` rules (`ignore` crate).
+- Status is a git-style stat check of index entries against the files (4.5k files take milliseconds), kept warm by `notify` while the daemon runs. Untracked files come from a walk with the ignore rules of §2.4.2.
 - Switch updates only changed files: write to a temp file in the same directory, then rename. Mtimes are real.
 
 ### 10.5 Redirections
 
 `.asc/redirections` (checked in) lists directory names. ASC's default is `node_modules`, `dist`, `.turbo`, `.next`, `target`, `.venv`, `__pycache__`.
 
-- **ProjFS:** these directories are ordinary NTFS directories inside the root (they are not in the tree, so they are never virtual). Notification mappings mask them, so they never reach the journal. They live on the same volume as bun's cache, so bun's hardlinks keep working. No junctions are used, which removes the need for the junction-inside-root spike **[fix: missing-from-all]**.
+- **ProjFS [audit: redirection-mechanics]:** redirected names are ordinary NTFS directories inside the root (not in the tree, so never virtual). At mount the provider registers `PRJ_NOTIFY_NONE` mappings for every existing `<dir>/<name>` that matches `.asc/redirections`; mappings are fixed path prefixes, so the notification callback also drops, before any other work, any path that has a component in the redirection list, which covers directories created after mount. Reconcile (§10.2.7), status untracked walks and `asc clean` never descend into redirected names. bun's hardlinks need the **workspace root** and `BUN_INSTALL_CACHE_DIR` on the same volume; `asc worktree add`/`clone` warn when they differ, and `asc doctor` checks it. No junctions are used for redirections **[fix: missing-from-all]**.
 - **FUSE:** symlinks to `$ASC_HOME/redirect/<ws>/<path>` on the same filesystem as `$ASC_HOME`.
-- **Plain:** ordinary directories, excluded from status by `.gitignore`.
+- **Plain:** ordinary directories, excluded from status by the ignore rules (§2.4.2).
 
 ### 10.6 Submodules (gitlinks)
 
 - Gitlinks are kept losslessly (`Kind::Gitlink`, `Change::Gitlink`).
-- **Read-only composition [graft: performance; decision per judge 2]:** each gitlink's repo is configured with `asc.submodule.<path>.repo` (default derived from `.gitmodules` `url`, e.g. `../soma.git` → `asc/soma`). The VFS and plain mode project the nested repo's tree at the pinned commit (git oid → changeset through the nested repo's git map) at that path, from the same shared cache. The composed subtree is **read-only**: writes fail with `EACCES`/`ERROR_ACCESS_DENIED`. `asc status` ignores it. The projection index keeps the gitlink entry (mode 160000), as git does for an initialised submodule.
+- **Read-only composition [graft: performance; decision per judge 2]:** each gitlink's repo is configured with `asc.submodule.<path>.repo` (default derived from `.gitmodules` `url`, e.g. `../soma.git` → `asc/soma`). The VFS and plain mode project the nested repo's tree at the pinned commit (git oid → changeset through the nested repo's git map) at that path, from the same shared cache. The composed subtree is **read-only**: writes fail with `EACCES`/`ERROR_ACCESS_DENIED`. `asc status` ignores it. The synthetic index keeps the gitlink entry (mode 160000), as git does for an initialised submodule.
 - To change the sdk, work in a separate workspace of `asc/soma` and update the pin with `asc submodule set-pin <path> <rev>` (writes a `Change::Gitlink`). `asc submodule status` lists pins. `asc submodule update` is a no-op with a notice.
 - This removes the 27 GB of per-worktree submodule git dirs and `submodules: recursive` from CI without merging repositories. **Folding `soma` into `dds` remains a user decision** (§19). If chosen, it is one changeset, and composition stops mattering.
 
@@ -980,11 +1337,20 @@ Steps:
 
 ### 11.1 Principles
 
-- Same verbs, flags, revision syntax, exit codes (0, 1 for diff-like or "nothing to commit", 128 fatal, 129 usage) and output formats as git 2.55: `--porcelain[=v1|v2]`, `-z`, `--format`/`--pretty` placeholders (`%H %h %T %t %P %p %an %ae %ad %ar %at %cn %ce %cd %cr %ct %s %b %B %d %D %n %%`, colors), `--name-status`, `--stat`.
-- **Unsupported flags fail loudly:** `asc: <command>: flag '--x' is not supported yet` (exit 129). They are never ignored.
-- Global options: `-C <dir>`, `-c key=value`, `--no-pager`, `--git-dir`/`--work-tree` (read-only uses only). Plus `alias.*` expansion, `asc-<name>` plugins on `PATH`, git's pager rules (`core.pager`, `GIT_PAGER`, `PAGER`, `less -FRX`), `color.ui`, `NO_COLOR`.
-- Config comes from git's files (`gix-config`): system, `~/.gitconfig`, XDG, the projection's local config and `config.worktree`. asc keys live under `asc.*`. Credentials use `git credential fill/approve/reject` (Git Credential Manager on Windows).
-- **Ids in output:** `asc.displayIds = auto|git|asc|both`. `auto` = `git` for repos whose server `id_mode` is `sha1` and for git-remote repos, otherwise `asc`. Input always accepts both kinds of id.
+- Same verbs, flags, revision syntax, exit codes (0, 1 for diff-like or "nothing to commit", 128 fatal, 129 usage) and output formats as git 2.55: `--porcelain[=v1|v2]`, `-z`, `--format`/`--pretty`, `--name-status`, `--stat`. Native `log`/`show`/`for-each-ref`/`branch --format`/`tag --format` implement git 2.55's **complete** pretty-format placeholder set and ref-filter atom set (including `%aN %aE %aI %cI %ai %ci %x<hh> %gs %gd %gD %m %G? %GS %(trailers) %(upstream[:short|:track|:remotename]) %(push[:track]) %(HEAD) %(*objectname) %(committerdate:unix) %(contents:subject)`) **[audit: unsupported-flags-delegate]**.
+- Which invocations are native, and what happens to the rest, is §11.5. Messages are §11.6.
+- **Environment and global options [audit: git-env-vars].** asc honours, with git's semantics:
+  - `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE` (all staging reads and writes, including hooks; §9.5), `GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`;
+  - `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`. asc exports its own `-c` values to children (hooks, editors) the same way;
+  - `GIT_AUTHOR_{NAME,EMAIL,DATE}`, `GIT_COMMITTER_{NAME,EMAIL,DATE}`, `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `GIT_PAGER`, `GIT_MERGE_AUTOEDIT`, `GIT_REFLOG_ACTION`;
+  - `GIT_OPTIONAL_LOCKS=0` / `--no-optional-locks`: no opportunistic index refresh or write, and no `index.lock`;
+  - `GIT_ASKPASS`, `SSH_ASKPASS`, `core.askPass`, `GIT_TERMINAL_PROMPT`, `GIT_SSH`, `GIT_SSH_COMMAND`, passed through to `git credential` and to asc's own token prompt;
+  - `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS`, and the matching global flags;
+  - `GIT_TRACE`, `GIT_TRACE2*` (asc writes its own trace in git's format to the same target), `NO_COLOR`.
+
+  Messages are always git's English text (§11.6); `LANG`/`LC_ALL` are accepted and ignored. Global options: `-C`, `-c`, `--config-env`, `--git-dir`, `--work-tree` (for all commands, read and write), `--no-pager`, `-p/--paginate`, `--no-optional-locks`, `--literal-pathspecs`, `--glob-pathspecs`, `--noglob-pathspecs`, `--icase-pathspecs`, `--no-replace-objects`, `--exec-path` (prints real git's), `--version`, `-h/--help`. Plus `alias.*` expansion (including `!shell` aliases), `git-<name>` and `asc-<name>` external commands on `PATH` in the §11.4 order **[audit: shim-asc-verbs-shadow-aliases-and-git-dash-commands]**, git's pager rules (`core.pager`, `GIT_PAGER`, `PAGER`, `less -FRX`) and `color.ui`.
+- Config comes from git's files (`gix-config`): system, `~/.gitconfig`, XDG, and the workspace's common `config` (§9.4), with `includeIf` evaluated as §9.4 says. asc keys live under `asc.*` (stack keys under `asc.stack.*`: `trunk` (multi-valued, default the default branch), `immutable`, `exclude`, `branchTemplate`, `submit.draft`; and `asc.opLog`, `asc.opLog.maxDays`, `asc.opLog.maxOps`; §20.3). Credentials use `git credential fill/approve/reject` through `RealGit` (Git Credential Manager on Windows).
+- **Ids in output are git SHA-1s by default** in every mode (local-only, bucket, git-remote, server) **[audit: display-ids, display-ids-contradiction]**. Abbreviation follows git (`core.abbrev`; default auto, at least 7, extended until unique). The SHA comes from `gitcommit.v1` (§5), which exists for every changeset in every mode. `asc.displayIds = git (default) | asc | both` is a per-user opt-in that applies only when invoked as `asc`, and only to human-readable output; it never applies to `--porcelain`, `-z`, `--format`/`--pretty`, plumbing commands, or argv[0] = `git`. `%(ascid)`, `%C` (asc id placeholder) and `rev-parse --asc` stay available as additive features. Input accepts both kinds of id (§2.1).
 - `asc help git` prints the git→asc cheat sheet (§11.3). `asc help <cmd>` shows asc-specific notes and then git's manual.
 
 ### 11.2 Command map
@@ -993,32 +1359,33 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 
 | git command | asc behaviour | Where |
 |---|---|---|
-| `init [dir] [-b <b>] [--store <url> [--refs local]]` | local-only repo plus a plain workspace. `--store` puts objects (and BucketRefs if probed) in a bucket | L |
-| `clone <url> [dir]` | §9.3. `--mode virtual\|plain` (default virtual where available), `-b`, `--sparse`, `--no-checkout`, `--reference`, `--origin`. `--depth`/`--filter` are accepted (always lazy) | L+f |
+| `init [dir] [-b <b>] [--store <url> [--refs local]]` | local-only repo plus a plain workspace; default branch per §6.5. `--store` puts objects (and BucketRefs once U30 ships) in a bucket | L |
+| `clone <url> [dir]` | §9.3. `--mode virtual\|plain` (default virtual where available), `-b`, `--sparse`, `--no-checkout`, `--reference`, `--origin`, `--seed`. `--depth`/`--filter` are accepted (always lazy) | L+f |
 | `worktree add\|list\|remove\|prune\|lock\|unlock\|move` | §9.3; `--ephemeral --ttl` | L |
 | `status` | `-s`, `-b`, `--porcelain[=v2]`, `-z`, `-u[no\|normal\|all]`, `--ignored`, `--ahead-behind` | L |
-| `add`, `rm`, `mv` | edit the index (`-p`, `-u`, `-A`, `-N`, `--cached`, `-f`, `-n`); `mv` records `copy_from` | L |
+| `add`, `rm`, `mv` | edit staging (§9.5; `-p`, `-u`, `-A`, `-N`, `--cached`, `-f`, `-n`); `mv` records `copy_from` | L |
 | `restore`, `reset` | `--staged`, `--worktree`, `--source`; `reset --soft\|--mixed\|--hard [<rev>] [-- paths]`; virtual uses the daemon switch | L+f |
 | `commit` | §9.7. `-m`, `-F`, `-a`, `--amend`, `--fixup`, `--squash`, `--no-verify`, `--allow-empty`, `-S`, `--author`, `--date`, `-v`, `-e`/`--no-edit` | L |
 | `switch`, `checkout` | `-c`/`-C`, `--detach`, `--orphan`, `--merge`, `-f`, `-` ; `checkout <rev> -- <paths>` restores | L+f |
 | `branch` | `-d`/`-D`, `-m`/`-M`, `-c`, `-u`/`--set-upstream-to`, `--unset-upstream`, `-r`, `-a`, `-v`/`-vv`, `--list <pat>`, `--contains`, `--merged`, `--format` | L |
 | `tag` | lightweight and annotated (`-a`, `-m`, `-s`, `-d`, `-l`, `-f`, `-n`) | L |
-| `fetch` | refs plus changesets only (§6.3). `--prune`, `--all`, `--tags`, `--prefetch <pathspec>` | L+f |
+| `fetch` | refs plus changesets within the history window only (§6.3). `--prune`, `--all`, `--tags`, `--deepen=<n>`, `--unshallow`, `--prefetch <pathspec>` | L+f |
 | `pull` | fetch then merge or rebase per `pull.rebase`/`pull.ff`; `--rebase`, `--ff-only`, `--no-rebase` | L+f |
-| `push` | §6.3/§8.3; `-u`, `--force`, `--force-with-lease[=ref:expect]`, `--delete`, `--tags`, `--all`, `-o`, `--land`, `--dry-run`; `refs/for/<b>` (AGit) | S |
+| `push` | §6.3/§8.3; `-u`, `--force`, `--force-with-lease[=ref:expect]`, `--delete`, `--tags`, `--all`, `-o`, `--dry-run`, `--porcelain`; asc-only `--land` (= `-o land`, §8.5) and `--no-ref` (§8.7); `refs/for/<b>` (AGit, §13.5). Output and rejections are git's, byte for byte | S |
 | `merge` | local engine; `--no-ff`, `--ff-only`, `--squash`, `--abort`, `--continue`, `-m`, `--no-commit`, `-X ours\|theirs`, `--conflict` style via `merge.conflictStyle` | L+f |
 | `rebase` | local engine; `--onto`, `--continue`, `--abort`, `--skip`, `-i` (git's todo format and editor), `--autosquash`, `--exec`, `--update-refs` | L+f |
 | `cherry-pick`, `revert` | local engine; `-n`, `-x`, `-m <n>`, `--continue/--abort/--skip` | L+f |
 | `stash` | `push [-u] [-m] [-- paths]`, `pop`, `apply`, `list`, `show [-p]`, `drop`, `clear`, `branch`. git's stash structure (W with parents [HEAD, I], optional U) on `refs/stash`, plus reflog | L |
 | `log` | `--oneline`, `--graph`, `--format`, `-p`, `--stat`, `--name-status`, `--follow`, `-- <path>`, `--since`/`--until`, `--author`, `--grep`, `-n`, `--first-parent`, `--all`, `--decorate`, `--reverse`, ranges | L / S |
 | `show` | `<rev>`, `<rev>:<path>`, `--stat`, `--name-only`, `--format` | L+f / S |
-| `diff` | worktree/index/HEAD (L); `<a> <b>`, `<a>...<b>` (L, or S with `--remote <repo>` and no checkout); all formats; `--cached`, `-M`, `--no-index` (delegated) | L+f / S |
+| `diff` | worktree/index/HEAD (L); `<a> <b>`, `<a>...<b>` (L, or S with `--remote <repo>` and no checkout); all formats; `--cached`, `-M`, `--no-index` (native), `--classify` (asc-only, §8.10) | L+f / S |
 | `blame` | `-L`, `--porcelain`, `--incremental`, `-w`, `-M`, `--reverse` (S when a server remote exists, else local). Dirty files are blamed against the working copy locally | S / L |
 | `grep` | clean files: server `Grep` at base (no hydration); dirty files: local. Local-only repos: local over the tree | S+L |
 | `remote` | `add`, `remove`, `rename`, `set-url`, `get-url`, `-v`, `show`, `prune` | L |
 | `config` | git config files; `--global`, `--local`, `--worktree`, `--get`, `--list`, `--unset` | L |
 | `rev-parse`, `rev-list`, `merge-base`, `show-ref`, `for-each-ref`, `symbolic-ref`, `update-ref`, `describe` | native. `rev-parse --git <rev>` / `--asc <rev>` print either id | L / S |
-| `ls-files`, `ls-tree`, `cat-file`, `diff-tree`, `diff-index`, `hash-object`, `check-ignore`, `check-attr` | native, from metadata; `ls-tree --format` supports `%(objectname)` (git) and `%(ascid)` | L+f |
+| `ls-files`, `ls-tree`, `cat-file` (incl. `--batch`, `--batch-check`), `diff-tree`, `diff-index`, `diff-files`, `hash-object`, `check-ignore` (`-v -z --stdin -n --no-index`), `check-attr` (`-a -z --stdin`) | native, from metadata and staging; `ls-tree --format` supports `%(objectname)` (git) and `%(ascid)` | L+f |
+| `update-index`, `read-tree`, `write-tree`, `commit-tree`, `mktree`, `merge-tree`, `stash create\|store`, `apply --cached`, `interpret-trailers`, `var`, `check-ref-format`, `ls-remote` | native, for the forms in the native table (§11.5) that hooks, lint-staged, Claude Code and repo scripts use | L |
 | `reflog` | `state.db` ref log; `--remote` shows the server log | L |
 | `clean` | `-n`, `-f`, `-d`, `-x`, `-X`; virtual mode walks only materialised directories | L |
 | `bisect` | `start/good/bad/skip/reset/run/log`; midpoints from the graph; the working copy switches each step | L+f |
@@ -1027,14 +1394,62 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 | `submodule` | `status`, `set-pin`; `update`/`init` are no-ops with a notice (§10.6) | L |
 | `gc`, `maintenance`, `prune`, `fsck`, `count-objects`, `repack` | `gc` = cache eviction plus dehydration; `fsck` verifies `store/`/`cache/` hashes and workspaces; `repack`/`prune` print "not needed in asc" and exit 0 | L |
 | `format-patch`, `apply`, `am` | local engine | L |
-| `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry`, `notes show` | delegated to git on the projection (§9.6) | L |
-| `filter-branch`, `filter-repo`, `replace`, `svn`, `p4`, `send-email`, `daemon`, `instaweb`, `lfs` | not supported (`lfs`: "not needed, large files are native") | – |
+| `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry`, `notes show` | native in a later unit; until then git-style usage error (§11.5) | L |
+| `filter-branch`, `filter-repo`, `replace`, `svn`, `p4`, `send-email`, `daemon`, `instaweb`, `lfs`, `notes` (write) | not available in an asc workspace: `fatal: asc: '<cmd>' is not supported in an asc workspace` (exit 129). Outside asc workspaces the shim runs real git (§11.4). `lfs`: large files are native | – |
 
-asc-only operational commands: `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm`, `asc upgrade`, `asc internal …` (hooks, fsmonitor, reconcile).
+Until a command's unit lands, invoking it fails with exit 129 and `fatal: asc: '<cmd>' is not supported yet` **[audit: missing-cli-units]**.
+
+asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
+
+asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the proto3 JSON of the matching `Ws*Response` (§7; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines.
 
 ### 11.3 Cheat sheet (`asc help git`, also `docs/CHEATSHEET.md`)
 
-The rule is to use your git commands with `asc` in front. Differences: `clone` and `worktree add` are instant and virtual; `fetch` downloads no files; `push` to `master` lands (it rebases on the server if paths don't overlap); `submodule update` is unnecessary; `lfs` is unnecessary; `git` itself still works inside an asc working copy (commits made with git are picked up).
+The rule is to keep using your git commands: with the shim installed (§11.4), `git` *is* asc inside an asc workspace and real git elsewhere; `asc <cmd>` is the same thing. Differences: `clone` and `worktree add` are instant and virtual; `fetch` downloads no files; `git push --land` (or `-o land`) rebases on the server when the paths don't conflict; a plain push behaves exactly as git's; `submodule update` is unnecessary; `lfs` is unnecessary; IDE git panels are replaced by ASC's asc plugins.
+
+### 11.4 Installed as `git` (the shim) [audit: git-shim-argv0, git-shim-install-as-git]
+
+- **Dispatch [audit: windows-shim-path-precedence-and-location]:** the `asc` binary MUST behave as the shim when argv[0]'s file stem is `git` (case-insensitive; `.exe` ignored). `asc install-shim [--dir <d>]` creates `git`/`git.exe` in `<prefix>/<ver>/shim/` (a hardlink to `asc.exe` on the same volume on Windows, a symlink on Unix), and prints the PATH line. PATH entries point at `<prefix>/current/shim`. `--dir <d>` must be on the binary's volume on Windows, else `fatal: asc: --dir must be on the same volume as asc.exe`. The same directory is the private shim dir that asc puts first on its children's PATH (§9.4.1). The MSI and `install.sh` offer user-PATH installation as an option, "Use asc for git commands", which is on by default for the pilot cohorts (§18).
+- **Real git resolution (MUST, all modes, not only the shim):** every place where asc runs git uses `RealGit::path()`/`RealGit::command()` (crate `asc-git::realgit`), never `Command::new("git")`; a CI grep check (`build/lint/no-raw-git.sh`) enforces this for non-test code. Test-only code in crates below `asc-git` (asc-core, asc-store, asc-engine, asc-graph) may build golden fixtures with a raw `git` child; such a line carries the marker `lint:allow-raw-git` **[audit: no-raw-git-lint-fails-built-code]**. Resolution order:
+  1. env `ASC_REAL_GIT`;
+  2. global config `asc.realGit`;
+  3. the first `git[.exe]` on `PATH` whose file identity (volume and file id / dev and ino) differs from the running binary;
+  4. on Windows, `%ProgramFiles%\Git\cmd\git.exe`.
+
+  The result is cached in `$ASC_HOME/run/real-git`, validated by the target's mtime. If nothing is found: `fatal: asc: real git not found; set asc.realGit`, exit 128. Real git ≥ 2.40 is a required dependency. **Loop guard:** the shim sets `ASC_SHIM_DEPTH=<n+1>` for its children and fails with exit 128 when n > 4.
+- **Repository classification:** the shim runs git's discovery itself: `-C`, `--git-dir`, `--work-tree`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`, and walking up to a `.git` file or directory. The result is an **asc workspace** if and only if the resolved gitdir contains the marker file `asc-workspace` (§9.4). Otherwise the shim runs real git with identical argv[1..], env, cwd and stdio: `execv` on Unix; on Windows `CreateProcess` with inherited handles, forwarding Ctrl-C/Ctrl-Break and returning the child's exit code. Discovery MUST NOT open `state.db` or contact the daemon. **Budget:** fall-through overhead p95 ≤ 5 ms (Windows) / ≤ 2 ms (Linux), measured by O05.
+- **Outside any repository:**
+  - `--version` prints `git version <real git version>.asc.<asc semver>` (for example `git version 2.55.0.asc.1.2.0`), which still matches the `^git version (\d+\.\d+\.\d+)` parsers tools use. `asc --version` prints `asc <semver> (git <real version>)`.
+  - `clone <url>` becomes `asc clone` when the URL is `asc+…`, `s3://`, or `file://` to a bucket layout, or when discovery (§6.2) finds an asc server for the URL. Otherwise it is real git.
+  - `init` is real git, except that the shim adds `-c init.defaultBranch=master` when the user has not set `init.defaultBranch` (§6.5); the same applies to real git `clone`.
+  - **[audit: compat-fixture-routing]** With global config `asc.shim.init = asc` (default `git`), `init` and `clone` route to asc instead of real git. Invoked as `git`, they stay git-identical: `init` writes no `.ascignore` (argv[0] = `git` is never given asc-only additions, as for display ids, §11.1).
+  - Everything else (`config --global`, `ls-remote`, `credential`, `help`, …) is real git.
+- **Repository-independent invocations [audit: repo-independent-commands-routing]** route by their target, not by cwd: `clone` (target = the destination directory), `init <dir>` with a directory other than the current workspace root, `ls-remote <url>` (a URL or path, not a configured remote name), `config --global|--system|--file <f>` (with `<f>` outside the workspace), `credential*`, `help`, `version`/`--version`, and `archive --remote`. They follow the "Outside any repository" rules even when cwd is inside an asc workspace. A real-git clone or init inside a workspace creates a nested git repository: the parent's status reports it as `?? <dir>/` (§9.3 nested rule), and discovery inside it finds a plain `.git`, so it is served by real git. `asc init`/`asc clone` (invoked as `asc`) always create asc repositories.
+- **Inside an asc workspace** every git builtin is asc (§11.5). Resolution of `<name>` follows git's order **[audit: shim-verb-precedence, shim-asc-verbs-shadow-aliases-and-git-dash-commands]**:
+  - *argv[0] = `git`:* (1) a git 2.55 builtin name: the native table, else the §11.2 unsupported error. `daemon` is git's builtin, so `git daemon` is unsupported, and asc's daemon is reachable only as `asc daemon`. (2) `alias.<name>`. (3) an executable `git-<name>` on PATH or in real git's exec-path, run with the §9.4.1 child PATH. (4) an asc-only verb (§11.2: `affected`, `projects`, `graph`, `landed`, `watch`, the stack verbs, …). (5) git's `git: '<name>' is not a git command. See 'git --help'.` (exit 1).
+  - *argv[0] = `asc`:* (1) git builtins, (2) asc-only verbs, (3) `alias.<name>`, (4) `asc-<name>` then `git-<name>` on PATH.
+  - So under `git`, an asc-only verb (a stack verb included) runs only where git would print "not a git command": a user alias (for example `alias.graph = log --graph`) or a `git-<verb>` on PATH (git-extras' `git undo`/`git sync`, gitext's `git stack`, `git absorb`) wins (§20.1 D5). The verb match is exact and happens before `help.autocorrect`: autocorrect never runs for a name that is an asc-only verb, and asc-only verbs are never autocorrect candidates, so a typo of a git command is corrected as in git.
+- **Install surfaces (documented in O04, checked by `asc doctor`):**
+  - *Windows:* Git for Windows adds `Git\cmd` to the **machine** PATH, which Windows puts before the user PATH. The elevated MSI therefore inserts `<prefix>\current\shim` into the machine PATH immediately before the first Git for Windows entry. A non-elevated install cannot shadow git and says so.
+  - *Git Bash* (which Claude Code uses on Windows, and which puts `/mingw64/bin` first): the installer adds `export PATH="<shimdir>:$PATH"` to `~/.bashrc` inside a `# asc shim` marked block.
+  - `asc doctor` resolves `git` in a freshly spawned cmd, PowerShell and Git Bash process (and the turbo environment) and reports any surface where it is not the shim. Children that asc spawns need none of this (§9.4.1).
+  - IDE git integrations are not a target (§0 decision 6); when an editor's git path points at the shim, it gets whatever the native table covers.
+
+### 11.5 Routing: native table [audit: unsupported-flags-delegate]
+
+- asc serves an invocation natively when the whole invocation (command plus every flag, format placeholder and ref-filter atom) is in the **native table** `crates/asc/src/native.rs` (`NativeSpec { cmd, flags, placeholders }`, `route(argv) -> Native | Unsupported(reason)`). Every table entry MUST be covered by at least one passing compatibility case (§17.1).
+- In an asc workspace there is no fall-through to real git: real git cannot operate there (§9.6). An invocation outside the table fails before doing anything, with `fatal: asc: option '<flag>' is not supported` (or `'<cmd>' is not supported`) and exit 129. Flags are never ignored.
+- **Coverage is driven by the users in scope:** humans, repo scripts, Claude Code, husky, lint-staged, commitlint and turbo. Their recorded traces (§17.1) define the required table. In particular the table covers lint-staged's `stash create|store`, `diff --binary --output --src-prefix --submodule=short`, `apply --recount --unidiff-zero --whitespace=nowarn --3way` and `GIT_INDEX_FILE` flow; Claude Code's status, diff, log, worktree, branch and push invocations; and every invocation turbo makes (spike S4).
+- History rewrites that need real git (`filter-branch`, `filter-repo`, `replace`) are unsupported in asc workspaces. `repack`, `prune` and `gc` are native (asc semantics) and exit 0.
+- asc-only behaviour is reached only through new subcommands or flags (`--land`, `--no-ref`, `--classify`, `--asc`, `%(ascid)`), never by changing an existing command's behaviour.
+- Stacks add no git flag: real git echoes unknown `--options` back from `rev-parse`, so `rev-parse --change-id` is deliberately not added; the change id is read with `asc change-id <rev>` (§20.2). Op-log recording and `ChangeMeta` writing are invisible in git output (§20.3, §17.1).
+
+### 11.6 Messages [audit: error-wording]
+
+- For every condition that git also has, asc MUST print git 2.55's English (`LC_ALL=C`) message byte for byte on the same stream (stdout or stderr), with the same prefix (`fatal: `, `error: `, `warning: `, `hint: `), the same `advice.*` gating and the same exit code. This covers, among others: not a repository; pathspec did not match; local changes would be overwritten (checkout, merge, pull); the merge/rebase/cherry-pick `CONFLICT (…)` and `Automatic merge failed…` lines; the ahead/behind/diverged lines of `status` and `checkout` (`Your branch is ahead of 'origin/master' by 1 commit.`); no tracking information; `Switched to branch` and `Switched to a new branch`; and the branch-in-use-by-worktree error.
+- Message strings live in `crates/asc/src/msg.rs` (`Msg` enum). Each one cites the git source string it copies, and a test checks every string against the pinned git `po/git.pot` msgid. Hints name the program as the user invoked it (`git` or `asc`); the compat suite normalises only that word.
+- `push` output is git's: `To <url>`, the ref-update summary lines, `! [rejected] <src> -> <dst> (fetch first|non-fast-forward|stale info)`, `error: failed to push some refs to '<url>'` with git's hints, and the `--porcelain` format.
+- asc-only conditions use git's style with an `asc: ` tag after the prefix, for example `fatal: asc: offline (origin unreachable): log needs Log RPC`, and git's exit codes (128 fatal, 129 usage).
 
 ---
 
@@ -1042,7 +1457,7 @@ The rule is to use your git commands with `asc` in front. Differences: `clone` a
 
 ### 12.1 Hashing without hydration
 
-Turbo 2.10's hot path reads `.git/index` with `gix-index`, stat-compares each entry, and trusts the stored SHA-1 when the stat matches. The projection index carries the git oid and the exact stat the VFS reports (§9.4, §10.1), and no entry is racy. On a clean virtual workspace, `turbo run --dry=json` therefore reads no tracked files except manifests (which turbo parses) and produces the same hashes as a git clone. Turbo's other git calls (`rev-parse`, `ls-files --others`, `diff-tree --merge-base`, `show <base>:bun.lock`) run the real git against the projection. The only content fetched is `bun.lock` at the base, and only when it changed. `.gitattributes` must not be tracked (ASC's is comment-only; delete it, §12.5).
+Turbo 2.10's hot path reads `.git/index` with `gix-index`, stat-compares each entry, and trusts the stored SHA-1 when the stat matches. The synthetic index carries the git oid and the exact stat the VFS reports (§9.4, §10.1), and no entry is racy. On a clean virtual workspace, `turbo run --dry=json` therefore reads no tracked files except manifests (which turbo parses) and produces the same hashes as a git clone. Turbo's other git calls (`rev-parse`, `ls-files --others`, `diff-tree --merge-base`, `show <base>:bun.lock`) reach asc through the shim (§11.4) and are answered natively from metadata. The only content fetched is `bun.lock` at the base, and only when it changed. Staged-but-uncommitted files are index entries (§9.4 renders set 0), so turbo hashes them exactly as for a git clone **[audit: turbo-index-reflects-head-breaks-staged-contract]**. ASC's comment-only `.gitattributes` should still be deleted (§12.5); attributes that turbo would apply are covered by §2.4.1.
 
 ### 12.2 Plan job (no checkout)
 
@@ -1054,13 +1469,18 @@ plan:
     - run: asc ci affected --repo "$ASC_REPO" --base "$BASE" --head "$HEAD" --rules .asc/ci.toml >> "$GITHUB_OUTPUT"
 ```
 
-- `asc ci changed`: one `Diff(NAMES, merge_base=true)` RPC, then glob rules from `.asc/ci.toml` (`[switches] rust = ["apps/analysis-pipeline/**", "**/*.rs", "**/Cargo.toml"]`, `docs_only = …`). It writes `key=value` lines. This replaces Forgejo `paths:` filters and the docs-only short-circuit.
-- `asc ci affected`: (1) a plain sparse checkout into a temp dir of manifests only (`**/package.json`, `turbo.json`, `bun.lock`, `**/Cargo.toml`, `**/pyproject.toml`, `package.json` workspaces config), with the projection carrying the base refs and a shallow boundary at the merge base; (2) runs `turbo ls --affected --output=json` with `TURBO_SCM_BASE=<merge-base git sha>`, using the turbo version pinned in `.asc/ci.toml` (`turbo = "2.10.11"`), which asc downloads from the npm registry tarball `@turbo/<platform>`, verifies against the `integrity` in `bun.lock` (or a pinned sha512 in `ci.toml`), and caches in `$ASC_HOME/tools/turbo-<ver>`; (3) maps packages to switches with `.asc/ci.toml` `[packages]` rules; (4) writes outputs. No install, no build. If turbo fails, it outputs "all affected" and warns **[fix: integration's unspecified turbo binary]**.
+- `--rules <path>` names a repository path, read with `ReadFile` at the merge base (no checkout). When the changed paths include it, every switch is true and `all=true` (§12A.10), so a PR cannot narrow its own CI by editing the rules. `--rules-file <local path>` reads a local file instead (tests, local use) **[audit: plan-job-rules-file-without-checkout]**.
+- `asc ci changed`: one `Diff(NAMES, merge_base=true)` RPC, then glob rules from `.asc/ci.toml` (`[switches] rust = ["apps/analysis-pipeline/**", "**/*.rs", "**/Cargo.toml"]`, `docs_only = …`). It writes `key=value` lines, plus `semantic=<overall class>` (§8.10). This replaces Forgejo `paths:` filters and the docs-only short-circuit.
+- `asc ci affected` **[audit: ci-plan-job-uses-turbo]** = `asc affected --repo R --format gha` (§12A.9). It makes one `Affected` RPC (§12A.8). There is no checkout, no sparse checkout, no turbo binary and no install.
+  - It also evaluates `.asc/ci.toml` `[switches]` entries of the form `{ projects = ["<selector>", ...] }`. Such a switch is true when any affected project matches, for example `images = { projects = ["tag:image"] }` or `rust = { projects = ["eco:rust"] }`. Each switch is written as one more `key=value` line.
+  - If the RPC fails, it writes `all=true`, sets every switch to true, and prints a warning.
+  - Turbo stays the executor inside build jobs: `turbo run ... --affected` with `TURBO_SCM_BASE` (§12.3), or `--filter` taken from the plan's `turbo_filter`. asc plans; turbo executes.
+- `.asc/ci.toml` schema: `[switches]` (globs or `{ projects = [...] }`) and `[outputs]` names. There is no `turbo`/`turbo_sha512` key.
 
 ### 12.3 Build/test jobs: `asc ci checkout`
 
 ```yaml
-- uses: asc/asc-actions/checkout@v1     # mode: plain (default) | virtual
+- uses: actions/checkout@v4     # aliased to asc/actions/checkout (§12.7); with: mode: plain (default) | virtual
   with: { base: "${{ github.base_ref || github.event.before }}" }
 - run: bun install --frozen-lockfile
 - run: turbo run build check-types test --affected
@@ -1071,12 +1491,20 @@ plan:
 1. authenticates with the Actions task token (`GITHUB_TOKEN`);
 2. resolves head and base, and `MergeBase`;
 3. builds `Tiered<HostCacheRO, JobCache, Remote>`. **`HostCacheRO`** is the runner host's `/var/cache/asc/cache`, bind-mounted **read-only** into the job container. **`JobCache`** is `$RUNNER_TEMP/asc-cache`, writable and discarded after the job. Every read is BLAKE3-verified **[fix J1: CI cache poisoning]**;
-4. materialises the tree (plain, reflink or copy) and writes the projection (index with real stat; commits merge-base..head; `shallow` = {merge-base}; `refs/remotes/origin/<base>`; trees for base, merge-base and head; seeded manifest blobs at base);
-5. exports `TURBO_SCM_BASE=<merge-base git sha>`, `TURBO_SCM_HEAD=HEAD`, `TURBO_API=<asc serve public_url>`, `TURBO_TOKEN=<task token>`, `TURBO_TEAM=<owner>.<repo>`, and `TURBO_CACHE=local:rw,remote:rw` (trusted) or `local:rw,remote:r` (PRs).
+4. materialises the tree (plain, reflink or copy), writes the synthetic `.git` (§9.4; index with real stat), registers `refs/remotes/origin/<base>` in the job's `state.db`, and puts the `git` shim first on the job's `PATH` so turbo's git calls are answered by asc. No `shallow` file is written. History beyond the job's local window is answered by the server (§6.3 history boundary), so `git log`, `git describe` and `rev-parse --is-shallow-repository` (`false`) behave as in a `fetch-depth: 0` clone, whatever `fetch-depth` is set to **[audit: ci-shallow-semantics]**;
+5. exports `TURBO_SCM_BASE=<merge-base git sha>`, `TURBO_SCM_HEAD=HEAD`, `TURBO_API=<asc serve public_url>`, `TURBO_TOKEN=<task token>`, `TURBO_TEAM=<owner>.<repo>`, and `TURBO_CACHE=local:rw,remote:rw` (trusted) or `local:rw,remote:r` (PRs);
+6. persists the job's tier stack in the repository's common config `$ASC_HOME/repos/<id>/.git/config` (§9.4; keys per §3.5) **[audit: ci-tier-stack-config-undefined-unowned]** (`asc.cache.dir = $RUNNER_TEMP/asc-cache`, `asc.cache.readOnly = /var/cache/asc/cache`, `remote.origin.ascServer`), and appends `ASC_HOME=$RUNNER_TEMP/asc-home` and `ASC_TOKEN=<task token>` to `$GITHUB_ENV` and the shim directory to `$GITHUB_PATH`. Later steps (turbo's `git show <base>:bun.lock`, `git diff-tree`, scripts) then use the same workspace, caches and credentials **[audit: ci-later-steps-asc-home-and-runner-mounts]**.
 
-There is no submodule clone (sdk composed via the nested repo, §10.6) and no LFS smudge.
+There is no submodule clone (sdk composed via the nested repo, §10.6) and no LFS (§2.5).
 
-**Host cache warmer:** `asc ci warm --repo R --ref master` runs on each runner host as a systemd timer every minute, as a host-side user that owns `/var/cache/asc`. It fetches trunk's changesets, trees and files into the host cache. Only this trusted process writes the host cache. PR jobs never can.
+**Host cache warmer:** `asc ci warm --repo R --ref master` runs on each runner host as a systemd timer every minute, plus 0–30 s of random jitter per run, as a host-side user that owns `/var/cache/asc`. It fetches trunk's changesets, trees and files into the host cache. Only this trusted process writes the host cache. PR jobs never can.
+
+**Seed snapshots (built in v1) [audit: 15-seed-snapshots, user decision efficiency]:**
+- A seed is a zstd tar of a `CacheDir` subtree (`c/ t/ f/ l/ k/ d/`, files under their final content-addressed names) plus `seed.json { version: 1, repo, changeset, created }`. It holds the master tip's changeset history metadata within the default window (§6.3), all trees, and the hot blobs: every claimed manifest (§12A.2) plus the `.asc/prefetch` globs.
+- The server's `seeds` task publishes a seed for each repo's default branch every hour, and when 50 new changesets have landed, at `seeds/<repo-slug>/<changeset>.tar.zst`, and updates `seeds/<repo-slug>/latest`. It keeps the last 3. `GET /seeds/<owner>/<repo>/latest` redirects to a presigned URL.
+- `asc clone --seed <url>` (default: the discovery document's `seeds`), `asc ci warm --seed-from <url>` and a cold daemon cache unpack the seed into `cache/` before the first fetch, then fetch only the delta. Cache files are content-addressed and verified on read, so unpacking needs no index or validation pass, and a stale seed is still correct.
+
+**Ignore files** follow §2.4.2 on CI as elsewhere.
 
 **Virtual CI** (FUSE on the host, the job sees the mount through a bind mount) is built later, only if measurements show plain checkout (≈ 1–3 s for 119 MiB from a warm cache) is a bottleneck.
 
@@ -1092,7 +1520,301 @@ There is no submodule clone (sdk composed via the nested repo, §10.6) and no LF
 
 ### 12.5 ASC changes independent of asc (do now)
 
-Delete the comment-only `.gitattributes`. Replace `"env": ["*"]` on `build` with an explicit list. Add `check-types` to every package. Add `cargo-check`/`cargo-test` turbo tasks for `apps/analysis-pipeline` (inputs `**/*.rs`, `**/Cargo.toml`, `Cargo.lock`). Bind-mount the bun cache on runners. Merge `ci-intelligence.yml` into `ci.yml`. Use `UV_LINK_MODE=hardlink`.
+Delete the comment-only `.gitattributes`. Replace `"env": ["*"]` on `build` with an explicit list. Add `check-types` to every package. Add `cargo-check`/`cargo-test` turbo tasks for `apps/analysis-pipeline` (inputs `**/*.rs`, `**/Cargo.toml`, `Cargo.lock`). Bind-mount the bun cache on runners. Merge `ci-intelligence.yml` into `ci.yml`. Use `UV_LINK_MODE=hardlink`. Add `.asc/projects.toml` (U64 proposes one): tag the docker services `image` and the Coolify targets `deploy`, and list the CI workflow files under `[global] inputs` if desired. `deploy-affected.ts` may read `asc affected --json` instead of `turbo ls --affected`.
+
+### 12.6 Post-merge and pre-deploy testing (no merge queue) [audit: 28-agent-conflict-api]
+
+- There is no global lock. Every land and merge emits Forgejo's push event, so post-merge CI runs on land-branch tips (Actions `concurrency` per ref, `cancel-in-progress: false`). When CI falls behind it tests the newest tip, and skipped tips count as covered by it.
+- When all required jobs pass, the post-merge workflow moves `refs/heads/green/<branch>` to the tested tip with `UpdateRefs(FAST_FORWARD)`. Deploy workflows build only from `green/*`.
+- On failure, automation or an agent bisects with the API alone: `Log(first_parent, green/<b>..<b>)`, CI results per tip, then `Apply(REVERT, update_ref=<b>)` for the first failing landed changeset, or a fix forward. `FindLanding` (§8.9) maps the changeset to its PR.
+- **Stack queue (§20.5 flow 5):** the Forgejo "merge stack when ready" queue is ordered merge-when-ready over `UpdateRefs(LAND)`: one land in flight per target branch, the largest ready prefix landed atomically, no speculative CI, no batching and no global lock. Post-merge testing as above still covers every land. This does not contradict "no merge queue".
+
+### 12.7 ASC Actions fork: CI uses asc, not git (user decision)
+
+- **One action set [audit: actions-repo-naming, actions-fork-contract-and-naming]:** repository `asc/actions` on Forgejo holds the forked `checkout`, `cache`, `upload-artifact` and `download-artifact`, plus `asc/setup` (installs asc), `asc/changed` (`asc ci changed`), `asc/affected` (`asc ci affected`) and `asc/turbo-cache` (exports `TURBO_API/TOKEN/TEAM/CACHE` as §12.3 step 5 for jobs without checkout). The forks keep upstream's inputs and outputs (`ref`, `fetch-depth`, `path`, `submodules`, `lfs`, `sparse-checkout`), mapped to asc semantics: `fetch-depth` is ignored (no `shallow`; history beyond the window comes from the server, §12.3 step 4), `submodules` uses composition (§10.6), `lfs` is accepted and ignored (large files are native, §2.5), `sparse-checkout` maps to cones.
+  - `checkout` calls `asc ci checkout` (plain, sparse or virtual) and falls back to `actions/checkout`'s git path only for repos that are not asc (discovery, §6.2).
+  - **Cache and artifact store [audit: actions-cache-artifact-underspecified]:** `cache` and the artifact actions upload file content with `HasObjects`/`PutObjects` into the repository's namespace as ordinary `File`/`Chunk` objects (FileIds; chunked over 4 MiB), so they dedupe with repository content. Each entry is a manifest `ActionsManifest { version: u8 = 1, entries: Vec<(RepoPath, Kind, FileId, u64)> }` (postcard, §2.2a), written with `PUT /actions/v1/<owner>/<repo>/<cache|artifact>/<key>` and read with `GET` on the same path. The server derives the scope from the token as §12.4 does (task token; PRs cannot write `trusted`; reads try the caller's scope, then `trusted`) and stores the manifest at `actions/<owner>.<repo>/<cache|artifact>/<scope>/<pct(key)>` (§3.3), where `pct` percent-encodes every byte except `A–Z a–z 0–9 . _ -`, so a key prefix is a listing prefix. `GET /actions/v1/<owner>/<repo>/cache?prefix=<restore-key>` returns the newest matching manifest, as `actions/cache` restore keys do. Retention as §12.4. Every unexpired manifest is a GC root for its FileIds (§3.6).
+  - Artifacts stored in asc are listed and downloaded by `asc ci artifact list|download` and the forked `download-artifact` (also across runs). They are not shown on Forgejo's run page in v1 (§19 decision 5).
+- **Transparent adoption:** the Forgejo fork sets `[actions] DEFAULT_ACTIONS_URL` to the mirror, and the runner fork has an alias table that maps `actions/checkout@*` to `asc/actions/checkout` (likewise `cache`, `upload-artifact`, `download-artifact`). Existing workflows switch with no YAML edits.
+- **Runner-native fast path:** the runner fork recognises the checkout action and runs `asc ci checkout` on the host (sharing the host cache, §12.3) instead of running a node action in the job container. It runs `asc ci checkout` with `ASC_HOME=<job dir>/asc-home` and bind-mounts the tree, that `ASC_HOME`, and the `asc` binary directory into the container at identical absolute paths, so the gitfile's absolute target resolves inside the job. It then sets `GITHUB_ENV`/`GITHUB_PATH` as in §12.3 step 6.
+
+---
+
+## 12A. Polyglot project graph and affected (crate `asc-graph`) [audit: projgraph-section-and-model]
+
+asc finds projects and their dependencies itself for four ecosystems: Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, slnx, csproj, fsproj, vbproj) and Node (package.json workspaces, Bun). It never runs cargo, uv, dotnet, bun, turbo or nx. Detection is a pure parse of manifest and lockfile bytes read from the object store. The graph is therefore derived data per changeset: it needs no checkout and no hydration, and it runs the same way in local-only mode, on a bucket remote and on the server. Turbo and nx stay optional consumers of the output (§12A.9).
+
+### 12A.1 Model and ownership (`asc-graph::{model,own}`)
+
+`asc-graph` is pure: no I/O and no async. It depends only on `asc-core`, plus `toml`, `serde_json`, `quick-xml` and `globset` (exact pins in U01). JSONC files (`bun.lock`, `turbo.json`) first go through the in-crate `jsonc.rs` pre-pass, which strips `//` and `/* */` comments and trailing commas. Derivation, hashing and all I/O live in `asc-engine::projects`.
+
+```rust
+pub enum Ecosystem { Rust = 0, Python = 1, Dotnet = 2, Node = 3, Declared = 4 }   // postcard order frozen
+pub enum ProjectKind { Package = 0, Workspace = 1, Solution = 2 }
+pub struct ProjectKey { pub eco: Ecosystem, pub manifest: RepoPath }            // identity; unique
+pub struct Project {
+    pub key: ProjectKey,
+    pub name: Vec<u8>,          // crate name | PEP 503-normalised dist name | project file stem | package.json name | solution file name
+    pub kind: ProjectKind,
+    pub root: Option<RepoPath>, // manifest directory; None = repository root
+    pub deps: Vec<(ProjectKey, DepKind)>,   // sorted, unique
+    pub extra_inputs: Vec<Vec<u8>>,         // repo-relative globs the manifest references outside root
+    pub config_fp: [u8; 32],    // shared configuration that applies to this project (§12A.4)
+    pub external_fp: [u8; 32],  // resolved third-party closure (§12A.4)
+    pub tags: Vec<Vec<u8>>,     // from .asc/projects.toml
+    pub gitlink: Option<RepoPath>, // Some(G) when the project lives inside gitlink G (§12A.2.6)
+    pub opaque: bool,           // manifest unparsable, over a limit, or uses an unsupported construct
+}
+pub enum DepKind { Normal = 0, Dev = 1, Build = 2, Peer = 3, Optional = 4, Implicit = 5, Contains = 6, Member = 7 }
+pub struct ProjectGraph { pub projects: Vec<Project> /* sorted by key */, pub config: ResolvedConfig, pub issues: Vec<Issue> }
+pub struct Issue { pub path: RepoPath, pub message: Vec<u8> }
+```
+
+These types use the §2.2 encoding rules; their envelope kinds are listed in §12A.5.
+
+- **Display id:** `<eco>:<name>`, with the ecosystem spelled `rust`, `python`, `dotnet`, `node` or `declared`. Input also accepts the aliases `cargo` → rust, `uv` → python, `csharp`/`fsharp` → dotnet, `bun`/`js` → node. When two projects of one ecosystem share a name, both display as `<eco>:<name>@<root>` (ASC has two unrelated Cargo workspaces).
+- **Selectors** (CLI, RPC and config): a display id, a bare unique name, `path:<root>`, `tag:<t>` or `eco:<eco>`. Any selector may be prefixed by `!` to exclude.
+- **Kinds:**
+  - a `Package` is a buildable unit: a crate, a Python distribution, a .NET project file, a package.json with `name`, or a declared project;
+  - a `Workspace` is a Cargo virtual workspace (`[workspace]` without `[package]`) or a uv workspace root without `[project]`;
+  - a `Solution` is a `.sln` or `.slnx`;
+  - Workspaces and Solutions have `Member` edges to their members, so they are affected exactly when a member is. CI uses them to run `cargo test --workspace` or `dotnet test X.sln` once.
+- **Claimed paths:** every path a detector claims (manifests, lockfiles and ecosystem-global files; table in §12A.2), plus `.asc/projects.toml` and `.asc/ci.toml`. Claimed paths act only through fingerprints and global rules (§12A.4, §12A.7), never through ownership, except that a project owns its own manifest.
+- **Ownership:** `owners(path)` = the `Package` projects whose root is the deepest ancestor directory of `path` among all Package roots. On a tie, all of them own it; for example `apps/analysis-pipeline/pipeline-api` belongs to both `rust:pipeline-api` and `node:analysis-pipeline-api`. Workspace and Solution projects own only their manifest. Paths matched by `ignore` (§12A.3) and paths with a `node_modules` component have no owner. A non-claimed path with no owner is **unowned** (§12A.7 step 3e).
+- **Contains edges:** a Node `Package` P whose root is not the repository root gets `(Q, Contains)` for every non-Node `Package` Q whose root equals P's root or lies below it. Node packages are what bun and turbo scripts run, and they wrap native code. ASC: `node:@asc/dsl-compiler` contains the eight `rust:dsl-*` crates; `node:analysis-pipeline-api` contains `rust:pipeline-api`; `node:@asc/soma` contains `python:asc-soma`. Edges between other ecosystems come only from manifests. `.asc/projects.toml` can remove any edge.
+- **Opaque projects:** a project is opaque when its manifest fails to parse, exceeds a §12A.10 limit, or uses an unsupported construct (§12A.2). It keeps its root and ownership, gets `(Q, Implicit)` to every other project of its ecosystem, and is listed in `issues`. One bad manifest never fails the whole graph.
+
+### 12A.2 Detectors (`asc-graph::detect::{rust,python,dotnet,node}`) [audit: detectors]
+
+```rust
+pub enum Claim { Manifest, Lockfile, EcoGlobal }
+pub trait Detector: Send + Sync {
+    fn ecosystem(&self) -> Ecosystem;
+    fn claim(&self, path: &RepoPath) -> Option<Claim>;                      // basename/suffix only
+    fn parse(&self, claim: Claim, bytes: &[u8]) -> Result<Parsed, Issue>;  // pure; memoised by FileId (§12A.5)
+    fn link(&self, cx: &LinkCx<'_>) -> Vec<Project>;                       // all parsed files of this ecosystem -> projects
+}
+pub const DETECTORS: [&dyn Detector; 4] = [&rust::Rust, &python::Python, &dotnet::Dotnet, &node::Node];
+```
+
+"Pluggable" means one module that implements `Detector` plus one line in `DETECTORS`; there is no dynamic loading. `parse` never sees the path, so its results are shared by content. `link` resolves relative paths: `LinkCx` gives it the manifest set (paths and parsed values), the gitlink paths, and a lookup from a directory to the projects of every ecosystem. Glob expansion (workspace members) runs against the manifest set only: a glob matches directory D when D's manifest is in the set. No tree walk happens, and no file outside the manifest set is read.
+
+| Eco | Manifests | Lockfiles | Eco-global (a change affects every project of the ecosystem under the file's directory) |
+|---|---|---|---|
+| rust | `Cargo.toml` | `Cargo.lock` | `rust-toolchain`, `rust-toolchain.toml`, `.cargo/config.toml`, `.cargo/config` |
+| python | `pyproject.toml`, `requirements*.txt`, `setup.py`, `setup.cfg` | `uv.lock` | `.python-version`, `uv.toml` |
+| dotnet | `*.csproj`, `*.fsproj`, `*.vbproj`, `*.sln`, `*.slnx`, `Directory.Packages.props` | `packages.lock.json` | `Directory.Build.props`, `Directory.Build.targets`, `global.json`, `nuget.config` (any case), `.config/dotnet-tools.json` |
+| node | `package.json` | `bun.lock`; patch files named by root `patchedDependencies` | `bunfig.toml`, `.npmrc`, `.nvmrc`, `.node-version`, root `turbo.json`; unsupported lockfiles `bun.lockb`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock` |
+
+**12A.2.1 Rust (Cargo).**
+- A `Cargo.toml` with `[package]` is a Package named by `package.name`. One with `[workspace]` and no `[package]` is a Workspace. A root with both is a Package that is also a member of its own Workspace.
+- **Members** = the `[workspace].members` globs, relative to the workspace directory and matched against directories that hold a `Cargo.toml`, minus `exclude`. A crate belongs to the nearest ancestor workspace that lists it; `package.workspace` is honoured. A crate in no workspace is standalone (ASC: `nela-risk-wasm`, `soma-candle-runner`).
+- **Dependency tables:** `[dependencies]` (Normal), `[dev-dependencies]` (Dev), `[build-dependencies]` (Build), and the same three under `[target.'<cfg>'.*]`. The crate name is the dependency key, or `package = "..."` when renamed.
+- **Internal dependencies:** a dependency with `path` (resolved against the manifest directory; the edge goes to the Package rooted there); one with `workspace = true` whose `[workspace.dependencies]` entry has `path` (resolved against the workspace directory; ASC: `dsl-napi` → `dsl-core`, `dsl-ir`); or one that a `[patch.<source>]` entry in the workspace root gives a `path`. Every other dependency is external.
+- **Extra inputs:** `path` values in `[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`, `[[example]]` and `package.build` that leave the crate root.
+
+**12A.2.2 Python.**
+- A `pyproject.toml` with `[project]` is a Package named by `project.name`, normalised per PEP 503 (lowercase; every run of `-`, `_`, `.` becomes `-`). One with `[tool.uv.workspace]` and no `[project]` is a Workspace; its members are the `members` globs minus `exclude`, matched against directories that hold a `pyproject.toml`.
+- **Dependency tables:** `project.dependencies` (Normal), `project.optional-dependencies.*` (Optional), `[dependency-groups]` and `tool.uv.dev-dependencies` (Dev), `build-system.requires` (Build). The name is the PEP 508 leading identifier, with extras and markers dropped (`soma[onnx]` → `soma`).
+- **Internal dependencies:** only when `[tool.uv.sources]` (the project's own table first, then the workspace root's) maps the name to `{ workspace = true }` (edge to the member with that name) or `{ path = "..." }` (edge to the Package at that directory; `editable` makes no difference). `git`, `url` and `index` sources are external (ASC: `asc-soma` → `soma` is a pinned git source).
+- **`requirements*.txt`** belongs to the Python Package in the same directory, or else creates a Package named by the directory path. `-r <file>` and `-c <file>` add `extra_inputs`; `-e <path>`, a bare relative path and `<name> @ file:<path>` add Normal edges; every other line is external.
+- **`setup.py`/`setup.cfg`** without a `pyproject.toml` `[project]` make an opaque Package named by `setup.cfg` `[metadata] name`, else the directory name.
+
+**12A.2.3 .NET.**
+- Each `*.csproj`, `*.fsproj` and `*.vbproj` is a Package named by the file stem, rooted at its directory. XML is read with `quick-xml`. `Condition` attributes are ignored, so every item counts (conservative).
+- **`<ProjectReference Include="...">`:** one Include may hold several `;`-separated values. Each: backslashes become `/`; `$(MSBuildThisFileDirectory)` and `$(MSBuildProjectDirectory)` become the project directory; the result is resolved against the project directory (exact match first, then a unique ASCII case-insensitive match). Any other `$(...)` makes the project opaque.
+- **Extra inputs:** `<Import Project="...">` values, and `Compile`/`Content`/`None`/`EmbeddedResource` `Include` values that leave the project directory (globs kept as globs).
+- **`<PackageReference Include|Update="N" Version|VersionOverride="V">`** is external; its version comes from the item, else the nearest ancestor `Directory.Packages.props` `<PackageVersion Include="N" Version="V">`.
+- **Solutions:** each `*.sln`/`*.slnx` is a Solution project named by its file name, with Member edges to the projects it lists: in `*.sln`, the `Project("{type}") = "<name>", "<path>", "{guid}"` lines whose path ends in a project extension (solution folders skipped); in `*.slnx`, every `<Project Path="..."/>` at any depth. Unlisted projects are still detected.
+- **`Directory.Build.props`/`.targets`** are eco-global; every one in an ancestor directory applies, not only the nearest (conservative).
+
+**12A.2.4 Node (package.json, Bun).**
+- **Workspace root:** the shallowest `package.json` with `workspaces` (array, or `{ "packages": [...] }`). Member globs match directories that hold a `package.json`. A `!` pattern removes the directory it names, or the directory whose `package.json` it names (ASC: `!packages/soma/sdk/package.json`). The root is a Package when it has `name` (ASC: `node:@asc/private`, turbo's `//`). A `package.json` inside a workspace that the globs do not match is not a project (as in bun and turbo). A `package.json` with `name` outside any workspace is a standalone Package.
+- **Dependency tables:** `dependencies` (Normal), `devDependencies` (Dev), `peerDependencies` (Peer), `optionalDependencies` (Optional).
+- **Internal dependencies:** a `workspace:<anything>` spec (edge to the member with that name); a `file:`/`link:` relative path (edge to the Package there); or any other spec whose name equals a workspace member's name (ASC: `"@asc/dsl-compiler-linux-x64-gnu": "*"` resolves to the `npm/*` members). `npm:<other>@<range>` aliases are external under `<other>`. `catalog:` specs are external; the lockfile records how they resolve (§12A.4).
+- A nested `turbo.json` is owned by its package like any other file.
+
+**12A.2.5 Declared projects.** A `[[project]]` entry in `.asc/projects.toml` with `name` and `root` and no `select` creates a `declared:<name>` Package. It owns paths like any Package; its only edges are its `implicit_dependencies`.
+
+**12A.2.6 Gitlinks [audit: gitlink-workspace-members].** A detector cannot read inside a gitlink.
+- **Node members inside a gitlink:** when a Node workspace glob reaches under gitlink G, the members under G are taken from the root `bun.lock` `workspaces` entries whose key is under G; their name and dependency tables come from the lock entry (ASC: `@soma/budgets`, `@soma/inference`, `@soma/oracle` under `packages/soma/sdk`).
+- These projects have `gitlink = Some(G)` and own nothing. They are affected when the gitlink entry at G changes (§12A.7 step 3f); Normal edges reach them, so `node:@asc/soma` and its dependents follow.
+- Without a `bun.lock` the members are unknown, and an issue is reported.
+- Other ecosystems inside gitlinks (ASC's `soma/sdk/control` Cargo workspace) are not seen. Declare a project with `root = G` to make a pin bump trigger its dependents.
+
+### 12A.3 `.asc/projects.toml` (optional; read from the revision being analysed) [audit: projects-toml-overrides]
+
+```toml
+version = 1
+ignore = ["**/fixtures/**", "examples/**"]   # never define projects, never owned, never trigger anything
+
+[global]
+inputs = [".forgejo/workflows/ci.yml"]   # a change to any match makes every project affected
+unowned = "ignore"                        # "ignore" (default) | "all": what a changed path with no owner does
+builtin_eco_globals = true                # use the §12A.2 eco-global defaults
+
+[ecosystem.node]
+inputs = [".env.example"]                 # extra eco-global inputs for this ecosystem
+[ecosystem.dotnet]
+enabled = false                           # turn a detector off
+
+[named_inputs]                            # built-in: default = ["{projectRoot}/**"]
+production = ["default", "!{projectRoot}/**/*.md", "!{projectRoot}/**/*.test.ts", "!{projectRoot}/tests/**"]
+
+[targets.build]                           # built-in for any target: ["default", "^default"]
+inputs = ["production", "^production"]
+[targets.test]
+inputs = ["default", "^production"]
+
+[[project]]
+select = "node:@asc/plugin-runtime"     # must match exactly one detected project
+inputs = { test = ["default", "^production", "{workspaceRoot}/schemas/**"] }
+implicit_dependencies = ["rust:dsl-napi", "!node:@asc/ui"]   # add edges (kind Implicit) / remove detected edges
+tags = ["image", "deploy"]
+
+[[project]]                               # declared project (§12A.2.5)
+name = "migrations"
+root = "packages/database/migrations"
+tags = ["db"]
+```
+
+- **Pattern grammar:** globset globs over repository paths. `{projectRoot}` expands to the project root; `{projectRoot}/**` matches only paths the project owns (§12A.1) plus its `extra_inputs`, so nested projects never leak in. `{workspaceRoot}` is the repository root and matches any path. A bare identifier is a named input. `^name` means the same named input of each dependency (§12A.6, §12A.7 step 4). `!` excludes; exclusions apply after all inclusions.
+- **Validation:** an unknown key, a cycle between named inputs, a `select` that does not match exactly one project, or a declared `root` that does not exist in the tree is an error that names the line. `asc affected` then exits 1, and the server returns `PROJECTS_CONFIG` (§12A.8).
+- **Which revision's file:** each graph uses its own revision's file (base graph: base's file; head graph: head's file). A change to the file itself makes everything affected (§12A.7 step 3a).
+
+### 12A.4 Configuration and lockfile fingerprints [audit: lockfile-aware-fingerprints]
+
+Each Package carries two 32-byte fingerprints, computed at link time as `blake3::derive_key("asc v1 project fp", canon(...))`. `canon` (`asc-graph::canon`, golden-tested) is the canonical encoding of parsed TOML, JSON and XML values: maps sorted by key, encoded with the §2.2 postcard rules. A fingerprint changes only when something changes that can change this project's build. §12A.7 compares base and head fingerprints, so a shared file never forces "everything changed".
+
+| Eco | `config_fp` covers | `external_fp` covers |
+|---|---|---|
+| rust | From the workspace root: `[workspace.package]`, `[profile.*]`, `[patch.*]`, `[replace]`, `resolver`, `[workspace.lints]`, and the `[workspace.dependencies]` entries this crate inherits | From the governing `Cargo.lock` (the workspace directory's, else the crate's): every package reachable from this crate through `dependencies`, stopping at local packages (no `source`), as sorted unique `(name, version, source, checksum)`. With no `Cargo.lock` tracked (ASC today): the crate's external dependency declarations (name, version requirement, features) |
+| python | The workspace root's `[tool.uv]` table, `requires-python`, and the `[tool.uv.sources]` entries the project uses | From the governing `uv.lock`: packages reachable from this member through `dependencies`, `optional-dependencies` and `dev-dependencies`, stopping at workspace, editable, virtual and directory sources, as `(name, version, source, sdist.hash)`. With no lock: the declared external requirements |
+| dotnet | The non-`PackageVersion` content of every ancestor `Directory.Packages.props`, plus the `PackageVersion` entries for the names this project references | The `FileId` of `packages.lock.json` in the project directory, if present; otherwise the sorted `(name, resolved version)` of its `PackageReference`s |
+| node | The workspace root `package.json` fields `packageManager`, `engines` and `trustedDependencies` | From `bun.lock`, the closure below. With no `bun.lock`: the declared external specs |
+
+**The bun.lock closure:** (1) start at the member's entry in the `workspaces` map; (2) resolve each dependency name `d` requested by key `k`: try `k/d`, then each shorter parent key followed by `/d` (`a/b/@s/n` → `a/b` → `a`, a scoped name counting as one segment), then `d` alone; (3) from each resolved `packages` entry follow its `dependencies`, `optionalDependencies` and `peerDependencies`, stopping at `workspace:` entries; (4) collect each entry's `("name@version", integrity)`, plus the patch file's `FileId` when root `patchedDependencies` names that `name@version`.
+
+Effects: a `bun.lock` diff that only bumps `react` affects only the members whose closure contains `react`, plus their dependents; a `Cargo.lock` bump of `tokio` affects only the crates that reach `tokio`; editing `[profile.release]` in `packages/dsl/core/rust/Cargo.toml` affects only that workspace's crates; one `PackageVersion` bump affects only the .NET projects that reference it. Parse results are keyed by content (§12A.5), so the 1.1 MiB `bun.lock` is parsed once per distinct content.
+
+### 12A.5 Derived data (incremental, no checkout) [audit: derived-data-incremental]
+
+| Name | Key | Value | Computed from |
+|---|---|---|---|
+| `manifests.v1` (`impl Derived`, §5) | changeset | `{ set: [u8; 32] }` | the parent's set, patched with this changeset's `changes` |
+| `mset.v1` (envelope kind 20) | set id = `blake3::derive_key("asc v1 manifest set", encoding)` | sorted `Vec<(RepoPath, Kind, [u8; 32])>`: every claimed path (§12A.2) with its `FileId`, and every gitlink (its 20-byte oid, zero-padded) | – |
+| `parsed.v1` (kind 21) | blake3(eco ‖ claim ‖ FileId) | the detector's parsed form | one file's bytes |
+| `pgraph.v1` (kind 22) | set id | `ProjectGraph` | the parsed files of the set, including `.asc/projects.toml` |
+| `phash.v1` (kind 23) | blake3(set id ‖ root TreeId ‖ target) | `Vec<(ProjectKey, [u8; 32])>` | §12A.6 |
+
+- **Deriving `manifests.v1`:** if no `changes` key is claimed (by basename) and none is a `Change::Gitlink`, the value is the parent's set id: O(1), which covers most ASC commits. Otherwise copy the parent's set, apply each claimed change in turn (`Write`/`Gitlink` inserts or replaces, `Delete` removes) and store the new set. A root changeset walks its tree once. Merges use `parents[0]` (§2.6).
+- **Deriving `pgraph.v1`** does not recurse over parents; it is a function of the set alone. It fetches `parsed.v1` for every entry and parses (and stores) only `FileId`s never parsed before, which in practice are the manifests a changeset touched. Linking all detectors and applying the config takes O(number of manifests) in memory (ASC: about 140 files).
+- **Reads:** only manifest and lockfile bytes are ever read, through `Objects` (machine cache, bucket or server store), never through a working copy. A virtual workspace therefore hydrates nothing, and the server needs no checkout.
+- **Server warming:** the background task `asc-serve::projects_warm` follows `ref_log` and derives `manifests.v1` and `pgraph.v1` for every new tip of `refs/heads/*` and `refs/pull/*/head`; land-branch tips are warmed first (§5). It is not on the `UpdateRefs` path. A cold request derives synchronously (bounded by one link per distinct set). The server also keeps an in-memory LRU of graphs keyed by set id.
+- **Storage:** these values are recomputable, so they live under `d/` and `cache/d/` (evictable), never in `store/`.
+
+### 12A.6 Per-project input hashes (no hydration) [audit: input-hashes-without-hydration]
+
+`input_hash(P, T, cs)` is a cache key for target `T` of project `P` at changeset `cs`. It reads trees only (`Entry.id` is the content hash) and never reads file content.
+
+```
+input_hash = blake3::derive_key("asc v1 project input",
+    postcard((P.key, T, files_digest, P.config_fp, P.external_fp, eco_globals_digest, deps)))
+```
+
+- **`files_digest`:** let S be P's inputs for `T` (§12A.3) without the `^` items. Walk `cs.root`, and for each directory D compute `decide(S, D)`: `All` when some include pattern covers `D/**` and no exclude pattern, nested project root or `ignore` pattern can match under D (decided from literal prefixes; a pattern starting with `**` can match anywhere); `None` when no include pattern's literal prefix overlaps D; `Partial` otherwise. An `All` directory contributes `(D, Dir, TreeId)`, `None` contributes nothing, and `Partial` recurses, each selected file contributing `(path, kind, FileId)`. The digest is blake3 over the sorted contributions, so an unchanged subtree costs one tree id.
+- **`eco_globals_digest`:** the sorted `(path, FileId)` of the eco-global files that apply to P, plus the files matching `[global] inputs`.
+- **`deps`:** for each `^name` item, the sorted `(dep key, dep's input hash for that named input)` over P's dependencies (all DepKinds). Dependency cycles (Cargo dev-dependency cycles, Node peer cycles) collapse into strongly connected components: inside a component `^` uses the members' own `files_digest`, outside it the full hashes.
+- **Memoisation:** `phash.v1`.
+- **Scope:** these are asc's own hashes (CI cache keys, a future `asc run`). Turbo and nx still compute their own task hashes inside jobs (§12.1).
+
+### 12A.7 Affected (normative) [audit: affected-algorithm]
+
+Inputs: a base `B`, a head `H`, an optional target `T`, an optional ecosystem filter, optional selectors.
+
+1. **Changed paths.** `M = merge_base(B, H)`, or `M = B` with `--no-merge-base`. `C` = the changed paths of `leafdiff(M.root, H.root)`, hash-pruned (on the server one `Diff(NAMES)`). Both sides of a rename are in `C`. With `--uncommitted`, also add the working copy's staged, unstaged and untracked-but-not-ignored paths.
+2. **Graphs.** `Gb = pgraph(M)`, `Gh = pgraph(H)`. With `--uncommitted`, `Gh` parses dirty claimed files from the working copy and stores nothing.
+3. **Direct set `D`** (each entry records its reason):
+   a. `C` touches `[global] inputs`, `.asc/projects.toml` or `.asc/ci.toml` → every project, `all = true`, reason `global:<path>`; go to step 5.
+   b. An eco-global file in `C` (§12A.2 table or `[ecosystem.<e>] inputs`) affects every project of that ecosystem whose root is under the file's directory. Reason `eco-global:<path>`.
+   c. Projects in `Gh` whose key is not in `Gb`. Reason `new`.
+   d. Projects in both graphs where `config_fp` differs (reason `config`), `external_fp` differs (reason `lockfile`), or the `FileId` of its own manifest, its `deps` or its `extra_inputs` differ (reason `manifest`).
+   e. For each non-claimed path `c` in `C`, `owners(c)` in `Gh` (and in `Gb` for paths deleted in H). An owner is added only if `c` matches its inputs for `T` (without `T`: the `default` named input); reason `file:<path>`. A project whose `extra_inputs` match `c` is also added. A path with no owner is recorded in `unowned`; with `[global] unowned = "all"` it acts as in 3a.
+   f. A `Change::Gitlink` at G adds the projects with `gitlink == Some(G)` (reason `gitlink:<G>`) and the owners of G as in 3e.
+4. **Closure.** Add every project that reaches a member of `D` along `Gh` edges, reason `dep:<id>`. All DepKinds count, including Contains, Member and opaque projects' Implicit edges. With `--target T`, an edge from P to Q is followed only if T's inputs for P contain a `^` item; the built-in `^default` is one, so with the default config `--target` does not narrow the closure.
+5. **Removed, filters, order.** `removed` = keys in `Gb` not in `Gh`; reported, never counted as affected. `--type` and `--select` filter the result only (the closure has already crossed ecosystems). Order is topological over `Gh`: dependencies first, cycles as components, ties by display id.
+
+Result: `Affected { base, head, merge_base, all, projects: [{ project, direct, reasons, input_hash? }], removed, unowned, issues, changed_paths }`. An empty result is success. Detectors MUST report every edge they can see; an edge they cannot see (for example a TypeScript path alias with no package.json dependency) is fixed with `implicit_dependencies`. The only deliberately conservative parts are opaque projects and Contains edges.
+
+### 12A.8 RPCs (`proto/asc/v1/projects.proto`) [audit: server-rpcs]
+
+```proto
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+import "asc/v1/repo.proto";
+
+service Projects {
+  rpc ProjectGraph(ProjectGraphRequest) returns (ProjectGraphResponse);
+  rpc Affected(AffectedRequest) returns (AffectedResponse);
+  rpc ProjectHashes(ProjectHashesRequest) returns (ProjectHashesResponse);
+}
+enum Ecosystem { ECOSYSTEM_UNSPECIFIED = 0; ECOSYSTEM_RUST = 1; ECOSYSTEM_PYTHON = 2; ECOSYSTEM_DOTNET = 3;
+                 ECOSYSTEM_NODE = 4; ECOSYSTEM_DECLARED = 5; }
+enum ProjectKind { PROJECT_KIND_PACKAGE = 0; PROJECT_KIND_WORKSPACE = 1; PROJECT_KIND_SOLUTION = 2; }
+message ProjectDep { string id = 1; string kind = 2; }   // normal|dev|build|peer|optional|implicit|contains|member
+message ProjectInfo { string id = 1; Ecosystem ecosystem = 2; bytes name = 3; bytes root = 4; bytes manifest = 5;
+  ProjectKind kind = 6; repeated ProjectDep deps = 7; repeated string tags = 8; bytes gitlink = 9; bool opaque = 10; }
+message DetectIssue { bytes path = 1; string message = 2; }
+message ProjectGraphRequest { RepoRef repo = 1; string rev = 2; repeated Ecosystem types = 3; repeated string select = 4; }
+message ProjectGraphResponse { bytes changeset = 1; bytes graph_id = 2; repeated ProjectInfo projects = 3;
+  repeated DetectIssue issues = 4; }
+message AffectedRequest { RepoRef repo = 1; string base = 2; string head = 3; bool no_merge_base = 4;
+  repeated Ecosystem types = 5; string target = 6; repeated string select = 7; bool with_hashes = 8; }
+message AffectedProject { ProjectInfo project = 1; bool direct = 2; repeated string reasons = 3; bytes input_hash = 4; }
+message AffectedResponse { bytes base = 1; bytes head = 2; bytes merge_base = 3; bool all = 4;
+  repeated AffectedProject projects = 5; repeated string removed = 6; repeated bytes unowned = 7;
+  repeated DetectIssue issues = 8; uint32 changed_paths = 9; }
+message ProjectHashesRequest { RepoRef repo = 1; string rev = 2; string target = 3; repeated string select = 4; }
+message ProjectHashesResponse { bytes graph_id = 1; map<string, bytes> by_project = 2; }
+```
+
+- **Access:** read permission on the repo (§15.1). **Ids:** with `id_mode = GIT`, changeset fields are git oids. **Order:** `projects` in §12A.7 order. **Feature flag:** `VersionResponse.features` includes `projects.v1`.
+- **Bad config:** `INVALID_ARGUMENT` with `ErrorDetail.code = PROJECTS_CONFIG` and the file's path.
+- **Latency targets on ASC:** `Affected` < 300 ms warm and < 2 s cold (a new manifest set, including parsing the 1.1 MiB `bun.lock`). The plan-job target in §1 stays < 10 s.
+- **Forgejo:** from Stage 3, Forgejo may call `Affected` to show an "affected projects" panel on a PR. CI needs no Forgejo change.
+
+### 12A.9 CLI and output formats [audit: cli-and-output-formats]
+
+```
+asc affected [--base <rev>] [--head <rev>] [--no-merge-base] [--uncommitted]
+            [--type rust|python|dotnet|node ...] [--target <name>] [--select <selector> ...]
+            [--format list|json|turbo|nx|matrix|gha] [--matrix-by project|workspace|ecosystem]
+            [--json] [--explain] [--hashes] [--repo <owner/repo>]
+asc projects [<selector> ...] [--rev <rev>] [--type ...] [--format list|json] [--owner <path> ...]
+asc graph    [--rev <rev>] [--type ...] [--format json|dot] [--hashes [--target <name>]]
+```
+
+- **Defaults [audit: affected-default-base-contradiction]:** `--head` = `HEAD`. `--base` = `refs/remotes/origin/HEAD`, else `refs/remotes/origin/<default branch>`, else the local default branch (`master`, §6.5); the comparison point is `merge_base(base, head)` unless `--no-merge-base` (§12A.7 step 1). A pushed feature branch therefore compares against the default branch, not its own upstream. `--json` = `--format json`. `--type` accepts the §12A.1 aliases, including `csharp`.
+- **Exit codes:** 0 on success, including an empty result; 1 for an invalid `.asc/projects.toml` or a selector that matches nothing; 128 for a revision that does not resolve.
+- **Where it runs** (§11.2 notation): **L** in local-only and bucket-remote repos (the local engine reads manifests through `Tiered`, fetching missing manifest blobs, never hydrating the working copy); **S** when the repo has a server remote and both revisions are pushed (`asc.serverHistory=auto`); **S** always with `--repo` (no workspace needed; discovery and credentials as for `asc ci`). `--uncommitted` always runs locally.
+- `asc projects --owner <path>` prints the owning projects of each path, or `claimed by <eco>`, or `unowned`. `asc graph --format dot` prints Graphviz.
+- **Formats** (projects by display id; machine formats never use colour):
+  - `list` (default): one display id per line, in §12A.7 order; with `--explain`, a tab and the reasons;
+  - `json`: `{"version":1,"base","head","mergeBase","all","projects":[{"id","ecosystem","name","root","kind","direct","reasons","hash"}],"removed","unowned","issues"}`; changeset ids are git SHA-1s (§11.1);
+  - `turbo`: `--filter=<name>` for each affected Node Package except the repository-root package, space-separated on one line. Non-Node projects reach this list through Contains edges; affected non-Node projects that no Node package contains are printed on stderr as `asc: not visible to turbo: <ids>`. Empty output means nothing is affected, but turbo treats no filter as everything, so callers MUST gate on `count`;
+  - `nx`: comma-separated names for `nx run-many --projects=`, same rules as `turbo`;
+  - `matrix`: `{"include":[{"project","name","ecosystem","root","workspace"}]}`, where `workspace` is the root of the project's Workspace or Solution, else its own root. `--matrix-by workspace` emits one row per Workspace, Solution or standalone Package; `--matrix-by ecosystem` one row per ecosystem;
+  - `gha`: lines for `$GITHUB_OUTPUT`: `affected=<JSON array of ids>`, `count=<n>`, `all=<bool>`, `rust=<bool>`, `python=<bool>`, `dotnet=<bool>`, `node=<bool>`, `turbo_filter=<turbo>`, `nx_projects=<nx>`, `matrix=<matrix JSON>`. It works on Forgejo Actions unchanged.
+- These commands have no git equivalent (§11.2), so they never change git behaviour. With the shim, `git affected` dispatches by the §11.4 order, so a user alias or `git-affected` wins.
+
+### 12A.10 Limits and trust [audit: limits-and-trust]
+
+- **No execution:** detectors never run anything (no `cargo metadata`, `uv`, `msbuild`, `bun`, `turbo`). An unsupported dynamic construct makes a project opaque. Detectors never guess.
+- **Limits:** manifests ≤ 4 MiB (always inline objects, §2.4); lockfiles ≤ 64 MiB; nesting depth ≤ 128; ≤ 200,000 lockfile packages; ≤ 100,000 projects per graph. A manifest over a limit gives an `Issue` and an opaque project. A lockfile over a limit gives every governed project `external_fp` = the lockfile's `FileId`, so any change to it affects them all.
+- **Config tampering:** any change to `.asc/projects.toml` or `.asc/ci.toml` makes everything affected (§12A.7 step 3a), so a PR cannot narrow its own CI by editing the config.
+- **Manifest changes:** narrowing CI through manifests (dropping a dependency) is a reviewed code change, as with turbo and nx.
+- **Backstop:** post-merge jobs on land branches recompute affected against trunk (§12.6): Scion's post-merge testing instead of a merge-queue lock.
 
 ---
 
@@ -1129,14 +1851,31 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 | K06 | `modules/ascproto` (buf-generated from `source-control/proto`, committed) plus `modules/ascclient` (connection, auth, retry, LRU by immutable id) | none |
 | K07 | `routers/private/asc.go`: `POST /api/internal/asc/authz` → `{allowed, user_id, username, perm, deploy_key_id, is_actions_task, task: {run_id, event, ref, pr_index, is_fork_pr}, branch_rules: {require_signed: bool}}`; serve `/.well-known/asc` from `[asc] SERVER_URL` | behind `[asc] ENABLED` |
 | K08 | `storage_backend` column, migration, `[asc]` settings, backend selection in `gitrepo.OpenRepository` (gitcli for `git`/`dual`) | behind the flag |
-| K09 | Stage 2 hook glue: in `HookPreReceive`, for `storage_backend=asc` and git-origin pushes, after policy checks call `ImportGitPush(quarantine paths, updates)`; an asc error rejects the push. In `HookPostReceive`, for `storage_backend=asc`, process only `PushTrigger="asc"` calls (asc's outbox is the single fan-out) and return OK for git-origin calls | behind the flag |
+| K09 | Stage 2 hook glue: in `HookPreReceive`, for `storage_backend=asc` and git-origin pushes, after policy checks call `ImportGitPush(quarantine paths, updates)`; an asc error rejects the push. In `HookPostReceive`, for `storage_backend=asc`, process only `PushTrigger="asc"` calls (asc's outbox is the single fan-out) and return OK for git-origin calls. Internal writers of `refs/pull/*` (AGit proc-receive handling, PR head sync) call asc `UpdateRefs(refs/pull/<n>/head, SKIP_PRE)` first and write the bridge only through `bridge_promote` (§13.5) | behind the flag |
 | K10 | `modules/git/ascbackend`: the `Backend` over `asc.v1.Repo` (`ReadChangeset`, `ReadTree`, `ReadFile`, `Stat`, `ListRefs`, `Log`, `MergeBase`, `IsAncestor`, `LastCommits`, `Blame`, `Diff`, `Archive`, `Grep`, `CheckAttr`, `Resolve`); `services/gitdiff` parses `Diff(PATCH)` text unchanged; language stats computed in Go over `ReadTree` plus `ReadFile` | `storage_backend=asc` |
 | K11 | `modules/git/dual` shadow backend | `storage_backend=dual` |
 | K12 | `modules/repostore/asc`: one RPC per Writer method (`Commit`, `Merge`, `Apply`, `UpdateRefs`, `RepoAdmin`); `CopyClosure` for cross-repo PRs; `refs/pull/<n>/head` via `UpdateRefs` after `CopyClosure` | `storage_backend=asc` |
-| K13 | `services/ascbridge`: `bridgePath(repo)` used by `githttp.go`, `cmd/serv.go`, `services/mirror`, migrations; `bridge=off|lazy|eager`; lazy build = `asc export --git <bridge>`; LFS batch API served from asc content via the `x/sha256` alias (presigned URLs); repo lifecycle (fork O(namespace copy), delete, size = logical) | `storage_backend=asc` |
+| K13 | `services/ascbridge`: `bridgePath(repo)` used by `githttp.go`, `cmd/serv.go`, `services/mirror`, migrations; `bridge=off|lazy|eager`; lazy build = `asc export --git <bridge>`; no LFS serving: for `storage_backend=asc` repos the LFS endpoints are disabled (historic LFS content is archived outside asc, §14.3); repo lifecycle (fork O(namespace copy), delete, size = logical) | `storage_backend=asc` |
 | K14 | Actions: `paths:` filters via `Diff(NAMES)`; context gains `asc_server_url`, `asc_changeset`, `asc_base_merge_base`; `github.sha` stays the git SHA in `sha1` mode | `storage_backend=asc` |
 | K15 | Integration suite matrix: `git`, `dual` (zero mismatches required) and `asc` | test only |
 | K16 | ID mode `asc`: `object_format_name=asc`, a one-off migration rewriting stored SHAs through `GitMap`; every input accepts both forms | per repo, optional |
+| K17 | Relaxed approvals by change class: branch protection `asc_relaxed_classes`/`asc_relaxed_approvals`, per-file class badge from `Classify` (§8.10) | per branch rule |
+| C34 | Stacked PRs: PR ↔ change (`asc_change`), `stack_parent_id`, the `merge_base` rule of §20.5 and its recomputation patch, AGit lookup by change, update authorisation | `storage_backend=asc` |
+| C35 | `SetReviewState` notifier on PR, review and check events | as C34 |
+| C36 | Stack panel, needs-restack banner, mid-stack merge block (web and `POST /pulls/{n}/merge` → 409 `stack-parent-unmerged`) | as C34 |
+| C37 | Versions dropdown, interdiff, "since my last review" | as C34 |
+| C38 | "Merge stack (N)", post-merge `RestackChanges`, approvals kept when `patch_unchanged` | as C34 |
+| C39 | Stack queue: merge-when-ready cascade, order, pause, revalidate; the `RequestMerge` internal endpoint (§12.6) | as C34 |
+| C40 | Actions stack context (`asc_change`, `asc_stack_position`, `asc_stack_size`, `asc_stack_parent_sha`; K14 extension) | as C34 |
+| C41a–c | Launchpad-style inbox: state model (whose turn, pin, snooze), `GET /api/v1/user/asc/inbox`, page | as C34 |
+| C42 | Commit graph page over `CommitGraph` | `storage_backend=asc` |
+| C43 | Overlap and mergeability badges; stack compare view | as C34 |
+| C44 | Suggested changesets (v1.x) | as C34 |
+| C46 | Branch-chain PR retarget (§20.5 flow 6) | as C34 |
+| C47 | "Restore version" (moves `refs/pull/<n>/head` to a kept version) | as C34 |
+| C48 | "Revert landed stack" (`Apply(REVERT)` over `FindLanding`, newest first) | as C34 |
+
+The ASC Actions fork (§12.7) needs no Forgejo patch: `[actions] DEFAULT_ACTIONS_URL` is an upstream setting. The runner fork (`forgejo-runner`, Go, separate repo) carries the alias table and the native checkout fast path (units R01–R02).
 
 **Patch-stack upkeep [fix: missing-from-all]:** budget 2–4 engineer-days per upstream minor release (most conflicts are in `modules/git`, where K03 moved code verbatim to `gitcli`; `build/rebase-map.sh` lists upstream changes to `modules/git/X.go` against `gitcli/X.go`). K02, K03 and K05 are offered upstream as a "storage backend interface"; each one accepted shrinks the stack. The fork moves from v16 to v17 once K01–K05 are stable.
 
@@ -1152,10 +1891,17 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 | Wiki | a second asc repo `<owner>/<name>.wiki` |
 | Mirrors (pull) | git fetch into the bridge, `ImportGitPush`-equivalent import, `UpdateRefs` |
 | Mirrors (push) | bridge forced `eager`, git push from the bridge |
-| AGit `refs/for/*` | `UpdateRefs` to `refs/for/<b>`; asc calls Forgejo `proc-receive` instead of pre/post-receive for that ref |
+| AGit `refs/for/*` | §13.5: never stored; proc-receive returns `refs/pull/<n>/head`, which asc updates |
 | Archive download | `Archive` |
 | Code indexer | `Diff(NAMES)` between indexed and new tip, plus `ReadFile` |
 | Repo doctor | `RepoAdmin.verify` |
+
+### 13.5 AGit and PR head refs [audit: agit-refs-pull-stage2]
+
+- `refs/for/*` is never stored as a ref (§2.7).
+- **Stage ≥ 4:** `asc push origin HEAD:refs/for/<b>[/<topic>] -o topic= -o title= -o description= -o force-push`. `UpdateRefs` ingests the closure, then calls `POST /api/internal/hook/proc-receive/{owner}/{repo}` with the same `HookOptions`. Forgejo returns the PR ref (`refs/pull/<n>/head`) and `is_new`/`is_force`. asc performs that ref update through the normal pipeline (`HOOK_MODE_SKIP_PRE`, internal token) and answers the client with `RefResult{name = refs/pull/<n>/head}` plus Forgejo's message (the PR URL), which `asc push` prints as git does.
+- **Stacked PRs (§20.5):** `asc submit` pushes `refs/for/<trunk>/asc-<change>`, so the AGit topic is `asc-<change>`. The fork (C34) finds the PR by `(repo, change)`, not by `(topic, user)`, and applies the update authorisation of §20.5 flow 1.
+- **Stages 2–3:** K09 also patches Forgejo's internal writers of `refs/pull/*` (proc-receive handling and PR head sync, which call `gitrepo.UpdateRef` or push to the base repo). For `storage_backend=asc` they call asc `UpdateRefs(refs/pull/<n>/head, SKIP_PRE)` first and write the bridge only through `bridge_promote`. Existing `refs/pull/*` move across at the Stage 2 flip through the final mirror import (§8.6 already fetches `+refs/pull/*`).
 
 ---
 
@@ -1163,32 +1909,44 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 
 ### 14.1 Import
 
-`asc import --git <path|url> [--repo <name>] [--incremental]` (also used by git-remote mode, mirror mode, reconcile and `ImportGitPush`):
+`asc import --git <path|url> [--repo <name>] [--incremental]` (also used by git-remote mode, mirror mode and `ImportGitPush`; it obeys §14.4):
 
 1. Use `gix` to list commits not yet in the git map, in topological order (parents first).
-2. For each commit: diff its git tree against its first parent's tree (gix tree diff, no rename detection), giving the changed leaves. Ingest new blobs (BLAKE3, SHA-1 kept, chunking over 4 MiB). LFS pointer blobs (`version https://git-lfs.github.com/spec/v1`, `oid sha256:`, `size`) become entries with `lfs: Some(…)` and **pointer identity** (§2.5). Gitlinks become `Change::Gitlink`.
+2. For each commit: diff its git tree against its first parent's tree (gix tree diff, no rename detection), giving the changed leaves. Ingest new blobs (BLAKE3, SHA-1 kept, chunking over 4 MiB). LFS pointer blobs are ordinary blobs (§2.5). Gitlinks become `Change::Gitlink`.
 3. Build asc trees bottom-up from the git trees. Each `Entry.git` is the actual git oid. Any git tree whose canonical render differs from its raw bytes gets an override `o/<oid>`.
 4. Build the changeset with import canonicalisation (§2.9) and validate it (§2.6).
 5. Write `gen`, `gitcommit` and the git map rows. **Assert `gitcommit(changeset) == original commit oid`**, and abort on mismatch.
-6. Tags: annotated tags become `TagRecord`s, canonical or raw.
+6. Tags: annotated tags become `TagRecord`s, canonical or raw. A tag whose target is not a commit (a tree, a blob, or another tag), lightweight or annotated, cannot be represented. The importer skips it, records it in `ImportReport.skipped_refs` (name, oid, target type), and prints `warning: asc: skipped tag '<name>' (points to a <type>)`. `verify-import`, `asc_roundtrip` and mirror ref sync treat skipped refs as expected, not as mismatches **[audit: import-non-commit-tags]**.
 
-LFS content: the server (mirror, Stage 1+) copies each referenced LFS object from Forgejo's LFS store into the namespace as content plus an `x/sha256` alias, in a resumable background job (25.6 GiB for ASC). Clients never need it unless a historical LFS file is read.
+LFS content is never imported (§2.5).
 
 ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. The 4.6 GB unreachable cruft pack is never read.
 
 ### 14.2 Export
 
-`asc export --git <dir> [--refs <glob>]` and the bridge writer render blobs (file bytes, or pointer bytes for LFS entries), trees (override or render) and commits (raw or canonical) for every changeset not yet in the target. They write loose objects, or one undeltified pack when there are more than 1,000 objects, then index it with `git index-pack`. Refs are set with `git update-ref --stdin`. Export is deterministic, so the same changeset always yields the same SHA.
+`asc export --git <dir> [--refs <glob>]` and the bridge writer render blobs (file bytes), trees (override or render) and commits (raw or canonical) for every changeset not yet in the target. They write loose objects, or one undeltified pack when there are more than 1,000 objects, then index it with `git index-pack`. Refs are set with `git update-ref --stdin`. Both run through `RealGit` (§11.4). Export is deterministic, so the same changeset always yields the same SHA.
 
 ### 14.3 ASC cutover runbook (unit O03)
 
-1. **Prep (no asc):** §12.5 hygiene. Optionally `git gc --prune=now` on the server mirror copy to drop cruft (not required).
+1. **Prep (no asc):** §12.5 hygiene. Archive the 25.6 GiB LFS store once to a cold S3 bucket, outside asc (No LFS, §2.5). Optionally `git gc --prune=now` on the server mirror copy to drop cruft (not required).
 2. **Stage 0 (week ≈ 6):** pilot users install asc (MSI). `asc clone https://forge.example.org/asc/dds D:\work\dds --reference D:\dev\monorepo\.git`. Agents use `asc worktree add --ephemeral`. `asc doctor --report-reclaimable` lists the old `.git` (58 GB), the 49 git worktrees and the submodule git dirs. **The user deletes them; asc never does.**
-3. **Stage 1 (week ≈ 10):** deploy `asc serve` (Postgres schema `asc` on Forgejo's DB server; Garage bucket `asc`, or local disk). `RepoAdmin.init mode=mirror` for `asc/soma` and `asc/dds`. Add the webhook and the proxy route for `/.well-known/asc`. Run `asc serve admin verify-import` (every commit's export equals git, which is required). Client workspaces switch automatically by discovery: ids are identical, so nothing is re-fetched. CI moves to `asc-actions/checkout` and the plan job.
+3. **Stage 1 (week ≈ 10):** deploy `asc serve` (Postgres schema `asc` on Forgejo's DB server; Garage bucket `asc`, or local disk). `RepoAdmin.init mode=mirror` for `asc/soma` and `asc/dds`. Add the webhook and the proxy route for `/.well-known/asc`. Run `asc serve admin verify-import` (every commit's export equals git, which is required). Client workspaces switch automatically by discovery: ids are identical, so nothing is re-fetched. CI moves to the aliased `actions/checkout` (§12.7) and the plan job.
 4. **Stage 2 (week ≈ 14):** deploy the fork with K01–K09. Freeze pushes for minutes, run a final mirror import, and flip `repos.mode=primary`, `forgejo_reads=git`, `bridge=eager`, `storage_backend=asc`. The existing bare repo is now the bridge. **Rollback drill on staging first:** set `storage_backend=git`, `repos.mode=mirror` (once the outbox has drained). The bridge is current and SHAs are identical.
 5. **Stage 3 (week ≈ 18):** `storage_backend=dual` for a week (zero mismatches above noise), then `asc` with `forgejo_reads=asc`.
 6. **Stage 4 (week ≈ 22):** K12–K13; bridge → `lazy`. Full storage replacement.
 7. Later: Stage 6 IDs (optional); fold soma (user decision); artefacts into asc (user decision).
+
+### 14.4 Ingestion invariants (normative for every importer and every server ingest path) [audit: 22-ingest-invariants]
+
+- **I1 Closure before reference:** an object is written only after every object it references is durable in the same namespace (files and chunks → trees bottom-up → changesets → tags).
+- **I2 Parents first:** changesets are ingested in topological order. A `cs_graph`/`cs_gen` row is written only after the rows of all its parents exist.
+- **I3 Commit point:** a changeset's kind-3 `git_map` row is written last, after the changeset object, its eager derived values and its `cs_graph` row. Incremental import selects commits that have no kind-3 row, so a crash at any step re-imports that commit and produces identical bytes.
+- **I4 Refs last:** a ref (asc ref, mirror sync, `ImportGitPush`) moves only when I1–I3 hold for its whole new closure (the warm-ref rule, §5).
+- **I5 Idempotent writes:** object puts are create-if-absent, and map and graph inserts are `INSERT … ON CONFLICT DO NOTHING`. A second concurrent importer of the same commits gets no error and writes no different row.
+- **I6 One importer per repo:** mirror import, the poller and `ImportGitPush` for one repo are serialised by `pg_advisory_xact_lock(repo_id)` (SQLite has a single writer).
+- **I7 Bounded memory:** commits stream in topological order through a bounded window. Peak RSS is O(window + largest tree + chunk buffer), independent of history length. Blob hashing (BLAKE3, SHA-1) runs in parallel across files; changeset construction stays sequential.
+
+**Targets:** ASC full import ≤ 5 min with peak RSS ≤ 1 GiB on 8 cores; a synthetic 1M-commit history imports in < 6 h with peak RSS ≤ 2 GiB. **Test `import_crash`:** 200 seeded runs each kill the importer at a random object write and rerun it; the final store, git map and `cs_graph` must be byte-identical to an uninterrupted import.
 
 ---
 
@@ -1196,11 +1954,11 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 
 ### 15.1 Identity and authorisation
 
-- **Identity is Forgejo's.** Clients present a Forgejo PAT, OAuth token or Actions task token (`git credential fill` with `host = <forge host>`; `asc auth login` stores a PAT via `git credential approve`).
+- **Identity is Forgejo's.** Clients present a Forgejo PAT, OAuth token or Actions task token (env `ASC_TOKEN` when set, as in CI jobs, §12.3 step 6; else `git credential fill` with `host = <forge host>`; `asc auth login` stores a PAT via `git credential approve`).
 - `asc serve` authorises every repo-scoped call. Stage 1 uses Forgejo's public `GET /api/v1/repos/{owner}/{repo}` with the token, checking `permissions.pull`/`push`. Stage 2+ uses the internal authz endpoint (K07). Positive answers are cached for 60 s and negative ones for 5 s, keyed by `(sha256(token), repo, mode)`.
 - **Object access is per namespace** (one per repo, §3.3). Content ids are 256-bit, but the namespace rule, not unguessability, is the control.
 - `HOOK_MODE_SKIP_PRE` and `ImportGitPush` require Forgejo's internal token, over the private network or mTLS.
-- **CI:** a job's token is bound to its repo. With the host cache read-only and the job cache per job, cross-job poisoning is impossible. Every tier verifies BLAKE3.
+- **CI:** a job's token is bound to its repo; reading a composed repo needs a composition grant (§15.5). With the host cache read-only and the job cache per job, cross-job poisoning is impossible. Every consuming tier verifies BLAKE3 (§3.2).
 - **Daemon:** a current-user-only pipe/socket. The daemon never serves another user.
 
 ### 15.2 Integrity and policy
@@ -1210,31 +1968,81 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - Policy stays in Forgejo's pre-receive: branch protection, protected files, signed-commit rules and quota run on the exact changesets that will be referenced (rewritten ones for land).
 - Signing: git-format signatures over canonical commit bytes (§2.9), verified by Forgejo and git unchanged. Turbo artefacts carry HMAC tags.
 - Secrets in drafts never leave the machine before `asc push` (no write-behind).
+- Untrusted manifest and lockfile content from PR branches is parsed under the limits of §12A.10.
 - Supply chain: pinned crate versions, `cargo deny` (licences: MIT/Apache/BSD/ISC/Zlib/Unicode only; no GPL; Sapling, Mononoke and EdenFS are ideas only), `cargo audit` in CI, release binaries signed (Authenticode on Windows, minisign for `asc upgrade`).
+- **Unsafe code [audit: unsafe-forbid-and-allowlist]:** the workspace lint is `unsafe_code = "deny"`. Only the modules listed in PLAN "Rules for implementers" may opt in with `#![allow(unsafe_code)]`, and each wraps its calls in a safe API. Prefer safe crates and tools: `same-file` for file identity, and `schtasks.exe /Create /XML` for the logon task.
 
 ### 15.3 Data at rest and backup/DR [fix: missing-from-all]
 
 - Bucket server-side encryption. Logs carry no file content.
-- **Backup:** Postgres PITR (WAL archiving, 14 days) plus bucket versioning or replication. Because objects are written before refs and never deleted on the write path, restoring Postgres to time T always yields refs whose closure exists in the bucket.
+- **Backup:** Postgres PITR (WAL archiving, 14 days) plus bucket replication. Because objects are written before refs, are never deleted on the write path, and GC roots include all ref-log targets within the PITR window (§3.6), restoring Postgres to time T always yields refs whose closure exists in the bucket. Bucket versioning is not required. Off-site copies MUST NOT propagate deletes for less than the PITR window **[audit: gc-sweep-race-and-pitr-roots]**.
 - **Restore drill** (quarterly, `docs/runbooks/restore.md`): restore Postgres to T on staging, point an `asc serve` at the bucket, run `asc serve admin verify --all` (every ref's closure exists; git map round-trips), then rebuild the bridge with `asc export`. The drill passes when verify exits 0.
+
+### 15.4 Trust boundaries (normative; prevents over-engineering) [audit: 25-trust-boundaries]
+
+- **Untrusted, validated once at entry:** client-supplied objects and git fields (§8.4), tokens, webhook payloads (HMAC), git objects read from quarantines and git-remote repos, files on disk in workspaces, `.asc/*.toml` content, manifests and lockfiles (§12A.10).
+- **Trusted, never re-validated:** the server's own SQL rows; derived values the server wrote; Forgejo internal API responses over the internal token; `asc serve` ↔ Forgejo calls on the private network; the daemon ↔ CLI pipe for the same user; the server's own bucket.
+- **BLAKE3 verification where an object is consumed (§3.2)** is the only integrity check on object reads. No other layer re-hashes or re-parses an object it got from `Objects::get`.
+- **Review rule:** a review finding that asks for more validation of a trusted component must name a concrete failure scenario with inputs. Without one, it is closed as "trusted per §15.4".
+
+### 15.5 Directory-level permissions [audit: 26-directory-permissions]
+
+- **Write:** path rules are Forgejo protected-file patterns plus path-scoped required approvals (K17). Pre-receive evaluates them on the changeset `changes` keys, which is metadata only (`Diff(NAMES)` from Stage 3). Violations return `PATH_POLICY` with the paths.
+- **Read:** asc does not filter objects by path inside a repository. A content-addressed object can appear under any path, so per-path checks on `GetObjects` would be unsound and costly; this is dropped deliberately. A sensitive directory is instead its own repository, composed at a gitlink (§10.6). The namespace rule (§15.1) then enforces read access for every RPC. When a user has no read access to the nested repo, the workspace projects the gitlink path as an empty read-only directory, and `asc status` prints `<path>: restricted (no access to <repo>)`.
+- **CI and composition:** a task token is bound to its repo, so reading a composed repo needs an explicit grant: `asc-serve.toml [[composition_grants]] parent = "asc/dds", child = "asc/soma"`. The grant gives the parent's Actions task tokens read-only access to the child for the token's lifetime. Without a grant, `asc ci checkout` fails with `PATH_POLICY: <path> needs read on <child>`.
 
 ---
 
 ## 16. Operations
 
-### 16.1 Observability
+### 16.1 Observability (per tier, agent-readable) [audit: 29-observability-superfans]
 
-- `tracing` everywhere; JSON logs; optional OTLP (`ASC_OTLP_ENDPOINT`); `traceparent` propagated from Forgejo through gRPC.
-- **Server `/metrics`:** RPC latency and errors per method; bytes in and out; store latency per backend; ref CAS conflicts; land retries and conflicts; hook latency and failures; outbox lag and failures; mirror import lag; turbo hit ratio per scope; cache hit ratios.
-- **Client:** `asc debug stats [--json]` (cache size and hit ratio, hydrations per workspace, journal size, daemon uptime); `asc debug hydrations [--since] [--by-process]`; `ASC_TRACE=1` (per-command RPC timings); `asc doctor`.
+- **Logs:** JSON lines via `tracing` with stable fields `ts, level, tier (cli|daemon|warmer|server|cache|forgejo), event, repo, op_id, rpc, duration_ms, outcome, trace_id`. `event` names are a stable catalogue (`land.conflict`, `land.retry`, `outbox.retry`, `outbox.dead`, `cache.corrupt`, `switch.pending`, `reconcile.orphan`, `import.mismatch`, `rate.limited`, `hydration.denied`, `daemon.restart`, `daemon.hung`). Daemon logs rotate at 50 MiB × 5. OTLP export when `ASC_OTLP_ENDPOINT` is set (any tier); `traceparent` is propagated from Forgejo through gRPC.
+- **Metrics:** Prometheus. Server and cache role: `/metrics`. The daemon serves `--metrics-listen 127.0.0.1:<port>` (off by default; on for CI runner and agent-fleet hosts). The warmer writes its counters to the node-exporter textfile directory. The catalogue (names fixed, in `docs/metrics.md`):
+  - **server/cache:** `asc_rpc_duration_seconds{rpc,code}`, `asc_store_op_seconds{op,backend}`, `asc_ref_cas_conflicts_total`, `asc_land_total{outcome}`, `asc_hook_seconds{hook,outcome}`, `asc_outbox_lag_seconds`, `asc_outbox_failures_total`, `asc_mirror_import_lag_seconds`, `asc_derive_lag_changesets`, `asc_changeset_reads{rpc}` (histogram, §5.1), `asc_graph_walk_nodes`, `asc_cache_requests_total{tier,result}`, `asc_rate_limited_total{class}`, `asc_inflight_requests`, `asc_shed_total{reason}`, `asc_coalesced_total`, `asc_turbo_hit_ratio{scope}`, `asc_rss_bytes`;
+  - **daemon:** `asc_daemon_hydrations_total{process}`, `asc_daemon_hydration_seconds`, `asc_daemon_fetch_bytes_total`, `asc_daemon_cache_bytes{dir}`, `asc_daemon_journal_entries`, `asc_daemon_pending_paths`, `asc_daemon_reconcile_paths_total`, `asc_daemon_provider_errors_total{op}`, `asc_daemon_uptime_seconds`, `asc_rss_bytes`;
+  - **client:** `asc_client_retries_total`;
+  - **warmer:** `asc_warm_lag_seconds` (trunk tip age in the host cache), `asc_warm_objects_total`, `asc_warm_failures_total`;
+  - **forgejo:** `forgejo_asc_rpc_seconds{method}`, `forgejo_asc_shadow_mismatch_total{method}`.
+- **Health:** `/healthz` (liveness) and `/readyz` (store, DB and Forgejo reachable; outbox lag < 5 min) on the server; `asc daemon status --json` for the daemon.
+- **Runbooks:** `docs/runbooks/tier-<name>.md` per tier: normal ranges for each metric, the alert rules (`deploy/alerts.yml`), and the first diagnostic commands. They are written for both humans and monitoring agents.
+- **Client diagnostics:** `asc debug stats [--json]` (cache size and hit ratio, bytes per workspace, hydrations per workspace, journal size, daemon uptime and RSS); `asc debug hydrations [--since] [--by-process]`; `ASC_TRACE=1` (per-command RPC timings); `asc doctor`.
 
 ### 16.2 Distribution, upgrades and version skew [fix: missing-from-all]
 
 - Release CI builds `x86_64-pc-windows-msvc`, `x86_64/aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`.
-- **Windows:** an MSI (`cargo-wix`) installs `asc.exe`, hardlinks `git-remote-asc.exe` and `asc-fsmonitor.exe`, adds `PATH`, enables `Client-ProjFS`, adds Defender exclusions for `$ASC_HOME`, and registers the per-user logon task. A winget manifest is published on ASC's Forgejo releases. Fleet rollout is through winget or GPO.
-- **Linux:** a tarball, `install.sh` (installs the systemd user unit), and a container image `asc:<ver>` for CI.
-- `asc upgrade` downloads the latest signed release from the configured releases URL, verifies the minisign signature and replaces itself. The daemon restarts on the next CLI call (§9.1).
-- **Skew policy:** the server's `Version.min_client` is enforced (`CLIENT_TOO_OLD`, with an upgrade hint). Servers support the current and previous minor clients. Envelope versions only change with a major release. The Forgejo fork checks `Version.features` at startup and refuses to enable `[asc]` when a required feature is missing.
+- **Windows:** an MSI (`cargo-wix`) installs `asc.exe` and its private shim dir, optionally puts the `git` shim on the machine `PATH` before Git for Windows (§11.4, with the `~/.bashrc` block for Git Bash), adds `PATH`, enables `Client-ProjFS`, adds Defender exclusions for `$ASC_HOME`, and registers the per-user logon task. A winget manifest is published on ASC's Forgejo releases. Fleet rollout is through winget or GPO.
+- **Linux:** a tarball, `install.sh` (installs the systemd user unit and optionally the shim), and a container image `asc:<ver>` for CI.
+- **Side-by-side install [audit: upgrade-mechanics-windows]:** binaries install to versioned directories `<prefix>\<ver>\`, and `<prefix>\current` is a directory junction (symlink on Unix) that PATH points to. `asc upgrade` and the MSI write the new version side by side, recreate the shim link in the new directory, switch the junction, and then ask the running daemon to `Shutdown`. The next CLI call starts the new daemon (§9.1), and the old directory is removed at the next start. `asc upgrade` verifies the minisign signature first.
+- **Update check:** the daemon checks the releases URL once a day, and `asc status` prints `hint: asc <v> is available (asc upgrade)`. `asc.autoUpgrade=true` makes the daemon run the upgrade itself while idle.
+- **Skew policy:** the server's `Version.min_client` is enforced (`CLIENT_TOO_OLD`, with an upgrade hint). Servers support the current and previous minor clients. Envelope versions only change with a major release. Non-envelope encodings are versioned (§2.2a). Server schema changes are expand/contract (§8.2); `state.db` migrations run only after the daemon of another version is stopped (§9.2). The Forgejo fork checks `Version.features` at startup and refuses to enable `[asc]` when a required feature is missing.
+
+### 16.3 Admission control, retries and failure isolation [audit: 18-overload-isolation, 24-rate-limiting]
+
+- **Server rate limits:** a per-principal token bucket (keyed by the authz user id, or `sha256(token)` before authz) per RPC class:
+  - `cheap` (`Version`, `ListRefs`, `Resolve`, `GitMap`, `HasObjects`, `Stat`, `MergeBase`, `IsAncestor`, `ReadChangeset`, `FindLanding`): 200 req/s, burst 400;
+  - `objects` (`GetObjects`, `PutObjects`): 400 MiB/s;
+  - `expensive` (`Log` without an index path, `Diff` PATCH, `Blame`, `Grep`, `Archive`, `Classify`, `Merge`, `Apply`, `Rebase`, `Commit`, `CopyClosure`, `Affected` cold): 20 concurrent per principal and 64 per replica;
+  - `UpdateRefs`: 20 req/s per repo;
+  - stacks (§20.5): `ResolveChanges`, `Stack`, `Versions`, `Overlaps` and `RepoConfig` are `cheap`; `InterDiff`, `Mergeability` (on a miss), `RestackChanges`, `RequestMerge`, `CommitGraph` with stats, `LineHistory` and pickaxe `Log` are `expensive`;
+  - the `service` class (Forgejo internal token, CI warmer) has its own limits. All values live in `asc-serve.toml [limits]`.
+- **Over limit:** gRPC `RESOURCE_EXHAUSTED` with `ErrorDetail.code = RATE_LIMITED` and trailer `retry-after-ms`; `/v8` and `/seeds` return 429 with `Retry-After`.
+- **Load shedding:** each replica caps in-flight requests (`limits.max_inflight`, default 1,024) and 64 in-flight RPCs per token. Requests beyond a cap are shed at once (`UNAVAILABLE` or `RESOURCE_EXHAUSTED` with `retry-after-ms`) and never queued for longer than 1 s. Bucket calls have a per-replica concurrency cap (`bucket.max_concurrency = 256`) and a 30 s timeout.
+- **Coalescing:** concurrent misses on the same `(ns, ObjKey)`, and on the same derived `(type, id)`, share one fetch or derivation (in-flight singleflight), in the primary and the cache role.
+- **Client retries (CLI, daemon, warmer, Forgejo `ascclient`):** only `UNAVAILABLE`, `RESOURCE_EXHAUSTED` and `DEADLINE_EXCEEDED` are retried, with exponential backoff and full jitter (base 200 ms, cap 10 s, at most 5 attempts), honouring `retry-after-ms`. Each process has a retry budget: retries may be at most 10% of requests in a 10 s window; beyond that calls fail fast. A mutating call is never retried without its `x-asc-op-id`.
+- **Strict tiering:** a client with an `objects` tier (§7) never falls back to `server` for objects: it tries the next `objects` URL, then fails with `fatal: asc: object tier unavailable`. CI jobs read only host cache → job cache → their configured tier. In server mode only `asc serve` (primary or cache role) talks to the bucket, apart from presigned URLs that the server issues. The warmer adds random jitter (§12.3).
+- **Implementation:** `tower` `ConcurrencyLimit`, `LoadShed` and retry layers, a keyed `governor` limiter, and a generic `Coalesce<K>` singleflight in `asc-rpc`.
+
+### 16.4 Resource budgets, cache SLOs and benchmarks [audit: 19-hit-rate-slo, user decisions efficiency and benchmarks]
+
+- **Memory budgets (enforced by tests and O05):** the daemon's idle RSS is ≤ 64 MiB and stays bounded under load (tree cache ≤ 32 MiB, journal queue ≤ 8 MiB, per-provider buffers pooled). The server and cache role stream every response and never buffer a whole response or tree set; their caches are size-capped by config. Whole-file buffering happens only where an algorithm needs it (line diff, merge, blame, classify, grep), and is gated by a per-replica byte semaphore `limits.text_memory` (default 2 GiB): a request waits ≤ 1 s for budget, then is shed with `RESOURCE_EXHAUSTED` (§16.3). Files above `core.bigFileThreshold` (default 512 MiB) are treated as binary, as git does **[audit: server-whole-file-buffer-cap]**. The CLI never loads the full tree: it walks lazily, by spine.
+- **Cache SLOs:** every tier exports `asc_cache_requests_total{tier=client|host|job|cache_role|server_mem|server_disk, result=hit|miss}`. Targets: object hit rate ≥ 99% at the CI host cache and at the cache role, and ≥ 95% at the server memory plus disk cache, measured daily. Three consecutive days below target raise an alert.
+- **Every cache tier is disposable:** deleting the host cache, a cache role's disk, the server's `disk_dir` or a client's `cache/` loses no data and needs no repair. Only `store/`, `state.db`, server SQL and the bucket hold state.
+- **Benchmark gate (O05, in CI):** a head-to-head harness (`bench/`, hyperfine-driven, plus a criterion suite for internals) runs the same scenarios on git and asc: clone (git full, `--filter=blob:none`, `--depth 1`, sparse-checkout and scalar where they apply, against asc virtual and plain), `worktree add`, `status` clean and dirty, `switch` between tips, `diff` (HEAD, merge-base, `--stat`), path-limited `log`, `blame`, `merge-base`/`is-ancestor`, `commit`/`push`/`fetch`, CI checkout plus affected, and turbo `--dry` hashing.
+  - **Workloads:** small (monorepo, imported, about 4.5k files), medium (about 80k files and 1M commits, imported from a public repo such as the linux kernel), and HUGE (chromium-scale, ≥ 400k files and a 25+ GB working copy, from the deterministic synthetic generator `bench/gen` with configurable files, depth, size distribution, history length and churn, including 1M-file and 100 GB variants), plus 10x and 100x scaled variants of monorepo.
+  - **Metrics:** wall time p50/p95, time to first usable shell, time to first build, bytes transferred, bytes on disk, files hydrated, peak RSS and server CPU, cold (empty machine cache) and warm (seed or shared cache).
+  - **Gate:** asc must beat git on every scenario where Scion's model applies (clone, worktree, switch, CI checkout, merge-base, blame, log, disk and transfer) and be within 10% elsewhere (hot local `diff` and `status`). HUGE-repo virtual checkout completes in seconds, independent of repo size; `worktree add` cost does not depend on repo size. The HUGE `worktree add`/clone size-independence goal is measured with `asc.turboIndex=false`. With the turbo index on, the harness reports index render time separately, and the gate is "beats `git worktree add`" **[audit: synthetic-index-o-files]**. Medium and HUGE clone scenarios run with the default history window (§6.3). CI fails on a regression against the stored baseline.
+  - **Results** are published to `docs/BENCHMARKS.md`: a table per release with the git version, machine spec and reproduction commands.
 
 ---
 
@@ -1244,14 +2052,43 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 |---|---|
 | `asc-core` | proptest round trips (`decode(encode(x)) == x`, `encode(decode(b)) == b`); frozen golden vectors for ids and envelopes; git rendering against `git hash-object`/`mktree`/`commit-tree`/`mktag` outputs |
 | `asc-store` | one conformance suite for every `Objects` and `Refs` impl: InMemory and LocalFileSystem always; MinIO and Garage (`--features it-s3`, docker compose); Postgres (`--features it-pg`); a concurrent CAS race (100 tasks, one winner per round); BucketRefs retry and ABA tests with a fault-injecting store; the put-fallback test with a store that rejects `If-None-Match` |
-| `asc-engine` | tree apply/diff vs naive oracle; merge vs `git merge-file` and `git merge-tree --write-tree` goldens; diff patches pass `git apply --check` and ≥ 99% byte-equal; `merge_base` vs `git merge-base` on generated DAGs; land disjointness truth table (same path, case-fold, file-vs-dir prefix) |
-| `asc-git` | import→export byte identity on fixture repos (signed commits, odd modes, LFS, gitlinks, encodings); native→export→import id equality; `asc_roundtrip` (`#[ignore]`, reads `D:\dev\monorepo` read-only, asserts all 5,502 SHAs) |
-| `asc-wc`, `asc-vfs` | per OS: mount, enumerate, hydrate (counter), write→journal, switch with dirty/open files/tombstones, directory rename, daemon kill and reconcile, crash mid-switch (intent replay), case-insensitivity, unrepresentable names; ProjFS on a Windows runner with ProjFS enabled; FUSE in Linux CI or WSL |
-| CLI | `crates/asc/tests/scenarios/*.t`: each scenario runs the same script under `git` and `asc` against identical fixtures and compares porcelain output |
-| Turbo contract | `tests/turbo/`: pinned turbo 2.10.11; `--dry=json` hashes equal a git clone's; hydrations ⊆ manifests; one edit changes only its tasks; `turbo ls --affected` equals a git clone's; racy run has 0 verified entries; worktrees share `repos/<id>/.turbo/cache`; run on every turbo minor |
-| Server | in-process `asc serve` over InMemory plus SQLite with a fake Forgejo (authz, hooks); every RPC; auth-denied paths; land races; outbox crash injection (kill between CAS and effects); Stage 2 quarantine ordering |
+| `asc-engine` | tree apply/diff vs naive oracle; merge vs `git merge-file` and `git merge-tree --write-tree` goldens; diff output 100% byte-equal for Myers and histogram (§4.3), and every patch passes `git apply --check`; `merge_base` vs `git merge-base` on generated DAGs; skip-list and read-count bounds; land disjointness truth table (same path, case-fold, file-vs-dir prefix) |
+| `asc-git` | import→export byte identity on fixture repos (signed commits, odd modes, LFS pointer files as plain blobs, gitlinks, encodings); native→export→import id equality; `import_crash` (§14.4); `asc_roundtrip` (`#[ignore]`, reads `D:\dev\monorepo` read-only, asserts all 5,502 SHAs) |
+| `asc-wc`, `asc-vfs` | per OS: mount, enumerate, hydrate (counter), write→journal, switch with dirty/open files/tombstones, `reset --hard` with no HEAD change restores modified, Full, read-only and deleted (tombstoned) files, `restore <path>` of a deleted file, watcher sees switch-added files, directory rename and directory tombstones, daemon kill and reconcile, crash mid-switch (intent replay), case-insensitivity, unrepresentable names; ProjFS on a Windows runner with ProjFS enabled; FUSE in Linux CI or WSL |
+| CLI | the git compatibility suite (§17.1); the shim (§11.4): byte-identical fall-through, no recursion, `--version` format, overhead budget |
+| `asc-graph` | Per-detector fixture trees modelled on ASC: bun workspaces with a `!` negation and gitlinked members from bun.lock; two unrelated Cargo workspaces with a duplicate crate name plus standalone crates; `workspace = true` path deps and a `[patch]` path; a uv workspace with `workspace = true` and git sources; requirements files with `-e` and `-r`; a csproj with backslash `ProjectReference` paths and `$(MSBuildThisFileDirectory)`; central package versions, `.sln` with solution folders, nested `.slnx`. Lockfile tests: bumping one package affects exactly the members that reach it (bun.lock, Cargo.lock, uv.lock, Directory.Packages.props, packages.lock.json). Proptest: affected equals the naive full-recompute oracle. Golden encodings for kinds 20–23 |
+| Project graph engine | only touched manifests are parsed (parse counter); a commit with no manifest change reuses the parent set; input hashes read 0 blobs outside the manifest set; a virtual workspace hydrates nothing during `asc affected` |
+| Affected vs turbo | `asc_affected` (`#[ignore]`): for the last 300 ASC master commits, `asc affected --type node` must be a superset of `turbo ls --affected` (turbo 2.10.11 on a git clone) on every commit, and equal on at least 95% of them; differences are printed; cold and warm `Affected` latency are checked against §12A.8 |
+| Turbo contract | `tests/turbo/`: pinned turbo 2.10.11, with the shim first on PATH; `--dry=json` hashes equal a git clone's; hydrations ⊆ manifests; one edit changes only its tasks; `turbo ls --affected` equals a git clone's; racy run has 0 verified entries; worktrees share `repos/<id>/.turbo/cache`; run on every turbo minor; a staged-but-uncommitted new file, a staged deletion and a staged modification each give the same `--dry=json` hashes as a git clone in the same state **[audit: turbo-staged-file-contract]** |
+| Server | in-process `asc serve` over InMemory plus SQLite with a fake Forgejo (authz, hooks); every RPC; auth-denied paths; land races; outbox crash injection (kill between CAS and effects); Stage 2 quarantine ordering; GC sweep races; expand/contract N-1 compatibility; rate limits, shedding and coalescing |
+| Simulation, fuzzing | §17.2, §17.3 |
+| Benchmarks | §16.4 (O05 gate) |
 | Forgejo | upstream unit and integration suites on `git`, `dual` and `asc` (K15) |
 | End to end | `deploy/compose.yml` (Garage, Postgres, asc serve, Forgejo fork, forgejo-runner): clone, push, PR, merge, plan job, cached turbo build, bridge `git clone`, legacy `git push`, rollback flip |
+
+### 17.1 git compatibility suite (acceptance gate) [audit: compat-suite-gate]
+
+- `tests/compat/` holds two kinds of case:
+  - **Scenarios** `scenarios/*.t`: shell scripts that run `git` (resolved through PATH).
+  - **Tool traces** `traces/<tool>/<case>.trace`: recorded invocations (argv list, env, stdin) captured by running the pinned tool against real git with a recording `git` wrapper (or `GIT_TRACE=1`), together with the scripted user action that drove it. Tools in scope: Claude Code, husky, lint-staged, commitlint, turbo, and ASC's repo scripts. IDE git integrations are out of scope (§0 decision 6).
+- The runner runs each case twice on identical fixtures with a fixed environment (`HOME` with a fixed `.gitconfig` that sets `init.defaultBranch=master`; `GIT_AUTHOR_*`/`GIT_COMMITTER_*`; `TZ=UTC`; `LC_ALL=C`): first with real git, then with the asc shim installed as `git` first on PATH, in an asc workspace (plain mode, and virtual mode where available).
+- **asc-side fixtures [audit: compat-fixture-routing]:** the asc side's `HOME/.gitconfig` also sets `asc.shim.init = asc`, so a scenario's `git init`/`git clone` create asc workspaces (§11.4). The shim counts fall-throughs to real git in `ASC_SHIM_TRACE`. The runner fails a case if the asc side fell through to real git at any point inside the scenario directory.
+- It compares: stdout bytes; **stderr bytes**; exit code; and afterwards the output of `git for-each-ref`, `git rev-parse HEAD`, `git status --porcelain=v2 -z` and `git ls-files -s` (each run with the same tool as the case), the set and content of state files in the gitdir (`MERGE_HEAD`, `rebase-merge/*`, `COMMIT_EDITMSG`, …, §4.4), and the working-tree file bytes. Normalisation is limited to temp paths, timing and progress lines, and the program name in hints (§11.6). **Ids are not normalised:** asc must print the same git SHA-1s.
+- Allowed differences are listed one by one in `tests/compat/allowed.toml`, each with a reason and the SPEC section that justifies it (for example §2.4.1 checkout conversion). Anything not listed fails.
+- **Required coverage:** every row of §11.2; every entry of the native table (§11.5); hooks (§9.4.1), including husky `pre-commit`/`pre-push`/`post-checkout` and commitlint `commit-msg`; worktrees, including Claude Code's create/remove flow with and without hooks; push rejection and upstream messages; in-progress merge, rebase, cherry-pick, revert and bisect; config, aliases and `includeIf`; `.ascignore` precedence and the shadow warning; a lint-staged run with partially staged files, including its pre-commit `git add` being committed (§9.7); `git` inside hooks and node scripts reaching asc with no user shim installed (§9.4.1); a `reference-transaction` hook; external commands and verb precedence (`external-commands.t`: a `git-hello` on PATH, a user alias shadowing an asc-only verb, §11.4); op-log recording, pre-destroy snapshots and `ChangeMeta` writing leaving git output unchanged (`stack-invisible.t`, §20.3; stack verbs get their own `stack_*` tests, not compat cases); and every recorded trace.
+- **Gate:** every phase exit in §18 after phase 1 also requires "compat suite green", and every release (O02) requires it on Windows and Linux. Upgrading the pinned real-git version re-records the git side.
+
+### 17.2 Hermetic simulation (`crates/asc-sim`, test-only) [audit: 24-hermetic-simulation]
+
+One process runs N `asc serve` replicas (primary and cache role), M clients, the fake Forgejo and an in-memory store under `turmoil` (simulated network and clock, seeded RNG). A `Faulty<O: Objects>` decorator and turmoil partitions inject added latency, `UNAVAILABLE`, a lost response after a successful write, replica crashes at named points (`before_cas`, `after_cas_before_outbox`, `mid_import`, `mid_land`, `mid_gc_mark`, `mid_gc_sweep`) and daemon kills mid-switch (in-memory `Provider`).
+
+- **Scenarios:** 20 agents pushing and landing concurrently with overlapping edits; webhook storms with duplicates; fetch and push during GC marks and sweeps; replica restart during outbox delivery; client/server version skew; a cache-role failure (upstream must not be stampeded).
+- **Invariants checked after every step:** every ref's closure exists; `ref_log` versions strictly increase per ref; each `op_id` has at most one effect set; every committed ref change eventually gets a delivered `post_receive`; land produces linear first-parent histories that contain every accepted change; `mainline`/`path_changes` equal a recomputation; I1–I5 (§14.4) hold; upstream request rate stays within the shed limits.
+- A failing seed is printed and replays deterministically. CI runs 200 seeds on PRs that touch `asc-store`, `asc-engine` or `asc-serve`, and 10,000 nightly.
+
+### 17.3 Fuzzing [audit: 24-fuzzing]
+
+`fuzz/` (cargo-fuzz, libFuzzer) has these targets: `envelope_decode` (every kind), `git_commit_parse_canonicalise`, `git_tree_parse`, `git_tag_parse`, `index_read`, `revspec_parse`, `patch_parse` (`apply`), `path_validate` (`Name`, `RepoPath`, `checkout_safe`, casefold), `proto_convert` (every `TryFrom` in `asc-rpc`), `bucket_ref_entry`, `ci_toml`, `projects_toml`, `jsonc`, and one per manifest and lockfile parser (§12A.2). Each asserts no panic and no unbounded allocation (`-rss_limit_mb=2048`); decoders also assert `encode(decode(b)) == b` whenever decode succeeds. CI runs each target for 60 s on PRs that touch its crate and for 30 min nightly. Every crash input is committed under `fuzz/regressions/<target>/` and replayed by `cargo test`.
 
 ---
 
@@ -1261,16 +2098,24 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 
 | Phase | Weeks | Units | Ships | Exit criteria |
 |---|---|---|---|---|
-| 1 Local-only asc | 1–4 | U01–U28 | `asc init/add/commit/status/diff/log/branch/switch/merge/rebase/stash/blame` on local disk, plain mode | scenario suite green vs git |
-| 2 Remotes and S3 | 4–5 | U29–U32 | bucket remotes (S3/MinIO/R2/local), shared BucketRefs | conformance on MinIO; two machines push/fetch one bucket |
-| 3 Git interop | 5–7 | U33–U40 | import/export, projection, git-remote mode, `git-remote-asc`, IDE `git commit` import | ASC round trip 0 mismatches; turbo contract on plain mode |
-| 4 Server | 7–10 | U41–U51 | `asc serve` (mirror, primary, land, reads, mutations, `/v8`) | Stage 1 live for pilot; plan job < 10 s |
-| 5 Daemon and ProjFS | 8–12 | U52–U58 | virtual worktrees on Windows | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests |
-| 6 CI | 10–12 | U61–U64 | `asc-actions`, host warmer | typical PR ≤ 8 runner-minutes |
-| 7 FUSE and submodules | 12–14 | U59–U60 | Linux virtual, sdk composition | WSL contract green |
-| 8 Forgejo Stage 2 | 8–15 | K01–K09 | asc is truth | rollback drill passed on staging |
-| 9 Forgejo Stage 3–5 | 15–22 | K10–K15 | full storage replacement | Forgejo suite green on `asc`; a dual week with 0 mismatches |
-| Ops | ongoing | O01–O05 | GC, release/MSI, runbooks, docs, bench | – |
+| 1 Local-only asc | 1–5 | U01–U28b (incl. U01b), U20a, U54w | `asc init/add/commit/status/diff/log/branch/switch/merge/rebase/stash/blame/worktree` on local disk, plain mode; asc installable as `git` | compat suite (§17.1) green vs git on the phase-1 scenarios; diff exceptions file empty |
+| 1c Local stacks | 5–8 | C01–C15, C51 (after U26/U27c/U27d) | `asc create/modify/absorb/restack/sl/up/down/reword/split/squash/fold/move/reorder/undo/abandon`, op log, change ids (all local, all modes) | compat suite unchanged byte for byte with op-log recording and `ChangeMeta` on (C04); stack tests green |
+| 1b Project graph | 3–6 | G01–G08, G11 | `asc affected` / `asc projects` / `asc graph` locally, in all modes, for all four ecosystems | ASC superset check green; `Affected` cold < 2 s |
+| 2 Remotes and S3 | 4–6 | U29, U31, U32 | bucket remotes (S3/MinIO/R2/local; single-writer refs) | conformance on MinIO; two workspaces on one machine exchange commits through one bucket (`--refs local`); a clone from another machine fails cleanly (multi-machine sharing needs `asc serve` or U30); compat suite green |
+| 3 Git interop | 5–7 | U33–U37, U39, U40, U40b, U24f | import/export, synthetic `.git` for turbo, git-remote mode, hook and tool scenarios, remaining plumbing and history verbs | ASC round trip 0 mismatches; turbo contract on plain mode; compat suite green |
+| 4 Server | 7–10 | U41–U51, U65–U71, U72, G09, G10 | `asc serve` (mirror, primary, land, reads, mutations, `/v8`, cache role, seeds, indexes, `Projects`) | M-meta passed; Stage 1 live for pilot; plan job < 10 s; compat suite green |
+| 4s Server stacks | 10–13 | C17–C32, C45, C49, C50, C52 (after U47/U66/U68); C33 is v1.x | `Changes` service, `asc submit/sync/stack get/stack merge/share/evolog`, `CommitGraph`, `LineHistory`, `Compare`, pickaxe, `RepoConfig`, stack plugin API | a 5-change stack submits as one `UpdateRefs`, lands 1..3 atomically and restacks 4..5; compat suite green |
+| 5 Daemon and ProjFS | 8–12 | U52–U58, U73 | virtual worktrees on Windows; plugin API | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests; daemon idle RSS ≤ 64 MiB; compat suite green |
+| 6 CI | 10–12 | U61–U64, U75 | `asc/actions`, runner alias, host warmer, seeds | typical PR ≤ 8 runner-minutes; compat suite green |
+| 7 FUSE and submodules | 12–14 | U59–U60 | Linux virtual, sdk composition | WSL contract green; compat suite green |
+| 8 Forgejo Stage 2 | 8–15 | K01–K09 | asc is truth | rollback drill passed on staging; compat suite green |
+| 9 Forgejo Stage 3–5 | 15–22 | K10–K15, K17, R01–R02 | full storage replacement; relaxed approvals; runner fork | Forgejo suite green on `asc`; a dual week with 0 mismatches; compat suite green |
+| 9s Forgejo stacks | 18–24 | C34–C43, C46–C48 (after K17); C44 is v1.x | stacked PRs, stack panel, versions/interdiff, stack merge and queue, inbox, commit graph page, badges | `asc-sim` lands 20 stacks concurrently with no lost or duplicated change; Forgejo suite green |
+| Ops | ongoing | O01–O08, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
+
+G09–G10 ship with Phase 4, and U63 uses them in Phase 6.
+
+**Milestone M-meta (metadata first, week ≈ 9, before any virtual workspace ships) [audit: 21-metadata-first, roadmap-and-stale-text]:** `asc serve` in mirror mode (§8.6) for asc/dds and asc/soma answers `Version`, `ListRefs`, `Resolve`, `GitMap`, `Log`, `MergeBase`, `IsAncestor`, `Diff`, `Blame`, `LastCommits`, `ReadChangeset`, `ReadTree`, `ReadFile`, `Stat` and `Affected` (`FindLanding` follows with U66). Webhooks keep it current. The CI plan job (§12.2) and automated tools use it with no checkout. M-meta needs no `GetObjects`/`PutObjects`/`UpdateRefs` clients, no daemon and no CLI beyond `asc serve`. Exit: for 500 random (rev, path) pairs from ASC history, every RPC output equals the matching git CLI output (`log --format=%H`, `merge-base`, `diff --name-status`, `blame --porcelain`, `ls-tree`, `cat-file`).
 
 **Pilot and rollout [fix: missing-from-all]:** (1) the agent fleet first (the heaviest worktree users; ephemeral worktrees), (2) 2–3 volunteer developers, (3) all developers, then (4) CI.
 
@@ -1283,22 +2128,332 @@ Success metrics per cohort: disk per worktree (target < 50 MiB before builds), `
 **User decisions (defaults in force until decided):**
 
 1. Fold `asc/soma` into `dds`? Default **no**: the sdk is composed read-only (§10.6).
-2. Commit `ops/artefacts` (about 200 GiB, sha256-addressed in Garage) as asc large files? Default **no**. It is possible later via the `x/sha256` alias, with no copy.
+2. Commit `ops/artefacts` (about 200 GiB, sha256-addressed in Garage) as asc large files? Default **no**. It would be ordinary chunked content (§2.4).
 3. Flip displayed ids to asc (Stage 6)? Default **no**.
 4. Quota semantics: logical size (default) vs namespace-unique size.
+5. Show asc-stored Actions artifacts in Forgejo's run UI (a K-patch)? Default **no**: `asc ci artifact` and the forked `download-artifact` are the access path (§12.7) **[audit: actions-cache-artifact-underspecified]**.
+6. Logical dedup across a fork network in v1 (the checklist lists it as v1)? Default **no**: forks get a server-side physical copy (`CopyObject`/reflink; Garage dedups blocks), and per-repo namespaces close the confirmation attack. ASC has one repository and no forks, so v1 saves nothing; it is a measured v1.x item (§3.3) **[audit: fork-dedup-deviation-unsigned]**.
 
 **Spikes (each 1–2 days, in this order; owner = the unit that depends on it):**
 
 | # | Spike | Blocks |
 |---|---|---|
-| S1 | Enable ProjFS here; a 1k-file provider. Confirm: hydration keeps `PRJ_FILE_BASIC_INFO` times; turbo's gix-index stat check matches with `CreationTime=ChangeTime=LastWriteTime=T`; Defender and the indexer behaviour with the deny list; `PRJ_UPDATE_ALLOW_TOMBSTONE` removal; directory-rename pre-hydration | U56/U57 |
+| S1 | Enable ProjFS here; a 1k-file provider. Confirm: hydration keeps `PRJ_FILE_BASIC_INFO` times; turbo's gix-index stat check matches with `CreationTime=ChangeTime=LastWriteTime=T`; Defender and the indexer behaviour with the deny list; `PRJ_UPDATE_ALLOW_TOMBSTONE` removal; `PRJ_UPDATE_ALLOW_DIRTY_DATA` on Full files; directory-rename pre-hydration; `ReadDirectoryChangesW` events for switch adds/updates/deletes in enumerated directories | U56/U57 |
 | S2 | ASC round-trip import (all 5,502 commits) | U35 |
 | S3 | MinIO, R2 and Garage `If-None-Match` behaviour (probe outcomes) | U29/U30 |
-| S4 | Turbo with the common dir at `repos/<id>/.git` (shared cache path) | U61 |
+| S4 | Turbo 2.10 with the synthetic `.git` (common dir at `repos/<id>/.git`, shared cache path) and the shim first on PATH: record every git invocation turbo makes (`GIT_TRACE`), confirm its index reading needs no `objects/`/`refs/` | U36, U61p |
 | S5 | FUSE passthrough in WSL 6.18 | U59 |
 | S6 | Dev Drive (ReFS) and ProjFS together | dehydration policy |
-| S7 | Claude Code `WorktreeCreate`/`WorktreeRemove` hooks | U54 docs |
-| S8 | git partial clone lazily fetching **trees** from a promisor with `blob:none` | U36/U38 |
+| S7 | Claude Code `WorktreeCreate`/`WorktreeRemove` hook JSON field names and the stdout contract, against the pinned version | U54w |
+| S8 | *(dropped with the No-IDE decision: there is no promisor projection)* | – |
+| S9 | bun.lock (bun 1.2 and 1.4) nested package keys, how each workspace member's dependency names resolve, and how gitlinked members appear in `workspaces`, checked against ASC's bun.lock | G03 |
+| S10 | Which packages turbo 2.10 marks for root-file, root `package.json` and `bun.lock` changes on 50 ASC commits, so the superset test's expected differences are understood | G11 |
+| S11 | ProjFS: a junction (or Developer-Mode directory symlink) inside a virtualization root pointing to another root, for nested worktree paths | U57 |
+| S12 | Shim fall-through overhead on Windows (`CreateProcess` pass-through) against the 5 ms p95 budget | U20a |
+
+---
+
+## 20. Stacked changes and stacked PRs [audit: stacks-design-not-folded, stacks-design-exists-not-folded]
+
+Normative from v1.3 (checklist decision 2026-10-22, "stacked commits and stacked PRs are core"). This section folds in decisions D1–D12, the data model, the commands, the server and Forgejo design and the plugin API of `docs/research/stacks.md`. That file stays the background: its feature matrix (§1, which product has which feature and why each row is in or out of scope) and its review notes are not repeated here. PLAN units are **C01–C52** (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12 of §19; C16 is withdrawn and not reused).
+
+Fixed rules: git commands keep git's exact semantics, output and exit codes (§11); stack features are additive verbs; there is no IDE extension, so GitLens/GitKraken-style features are data APIs; the default branch is `master`; there are no whole-repo scans; there is no LFS.
+
+### 20.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | **The unit of review is the change (one commit).** A stack is the chain of draft changes from a trunk to a head. Branches are optional labels on changes. | jj, Sapling, Gerrit, spr and ghstack all use this model. Graphite's "one commit per branch" convention is the same model with a branch name on every commit. |
+| D2 | **Change identity is a `ChangeMeta` sidecar object.** It is content-addressed (`m/<meta id>`, BLAKE3-verified like every other object) and names the changeset it describes. It is not part of the hashed changeset and not part of the git commit. | Any identity that is hashed or rendered into the commit changes the git SHA of every commit asc makes. That fails the compat gate ("ids are not normalised", §17.1) and breaks export determinism (§2.1). Content addressing keeps §0 decision 5 (every read is verified) true for the sidecar too. |
+| D3 | **Stack parents come from the commit graph plus change ids.** No per-branch parent metadata is stored. | There is nothing to drift or repair, so `gt track` is unnecessary. Obsolete and landed parents are found through the change index and `land_map` (§8.9). |
+| D4 | **No existing git command changes behaviour, under either `git` or `asc`, with or without configuration.** Stack features are new verbs only. Automatic restack after a git rewrite is not offered. | asc's git commands are the git commands, and the checklist rule ("never change what an existing git command does") has no opt-in exception. Re-adding an opt-in needs the user's explicit sign-off. |
+| D5 | **When argv[0] is `git`, a stack verb runs only where git would print "not a git command".** A user alias or a `git-<verb>` executable on PATH wins. The verb match is exact and happens before `help.autocorrect` (§11.4). | git-extras ships `git undo`, `git sync` and `git squash`, and gitext ships `git stack`. Existing setups keep working, and git's typo handling stays byte-identical. |
+| D6 | **The local operation log groups the existing `ref_log` rows by `op_id`.** It adds redacted argv, the workspace and an optional working-copy snapshot, bounded to 1,000 ops or 90 days. `asc undo` covers every ref-moving command, git ones included, and restores the tracked working copy for every command that destroys it (§20.3). Untracked and ignored files that `clean` deletes are a documented gap. | jj/Sapling-style undo for about 200 B per command, recorded invisibly. |
+| D7 | **Restack runs in memory.** It uses a metadata rebase when paths are disjoint (§4.4, §4.5). Only a conflicted change is materialised, in git's own `rebase-merge/` state. | It is instant, does not disturb the working tree, and leaves `git status` and `git rebase --continue` behaving as git. |
+| D8 | **A stacked PR is stored with the trunk as `base_branch`, and its diff base (`merge_base`) is its own parent commit.** The PR is found by change id through the AGit topic `asc-<change>` (§13.5). Users see the checklist behaviour: the base shown is the parent PR, and it becomes the trunk when the parent merges, with no retarget step. | No branch per change, no synthetic base branch (ghstack/spr) and no retarget dance. A metadata rebase keeps the PR's diff unchanged. The commits tab and diff show only the change because both key off `merge_base` (§20.5). |
+| D9 | **The asc server owns forge-neutral change facts** in a new `Changes` service: the index, versions, stack shape, mergeability, overlaps and interdiff. **Forgejo owns social state**: reviews, inbox and queue. Forgejo pushes a summary back to asc (`SetReviewState`). | Scion's API-first rule, and `repo.proto` stays forge-neutral (§7). The CLI and plugins never call a forge API for stack data. |
+| D10 | **A stack lands as one `UpdateRefs(LAND)` call with the prefix's top change as the new tip.** The land is atomic, is a pushrebase (§8.5) and takes no global lock. The "merge queue" is Forgejo's ordered merge-when-ready built on this primitive (§12.6). | Post-merge testing stays as in §12.6. No speculative CI and no batching. Revalidation runs only when the land needed a content merge. |
+| D11 | **After a parent lands, the server restacks open children (`RestackChanges`).** An approval survives when the change's own `changes` list is unchanged. | Graphite's server-side restack. The "patch unchanged" check is O(1) on Bonsai changesets. |
+| D12 | **GitLens/GitKraken features are delivered as data:** Workspace IPC plus `asc.v1` RPCs (`CommitGraph` with lanes, enriched `Blame`, `LineHistory`, `Compare`, `Worktrees`, `Stacks`, `Conflicts`), §20.6. ASC's plugins and the Forgejo fork render them. Everything is free, and AI features stay out of core. | The most-loved features (blame, history, graph) are served from derived data. |
+
+### 20.2 Stable change identity
+
+A field in `Changeset`, a Gerrit `Change-Id:` trailer and an `asc.change` extra-map key were rejected: each is hashed into `ChangesetId` or rendered into the git commit, so every asc commit's git SHA would differ from git's. The chosen design is a content-addressed sidecar that names its changeset and is never rendered.
+
+```rust
+pub struct ChangeId([u8; 16]);                 // random (OsRng) at creation
+pub struct MetaId([u8; 32]);                   // BLAKE3 of the ChangeMeta envelope
+pub struct ChangeMeta {
+    pub version: u8,                           // 1
+    pub cs: ChangesetId,                       // the changeset this describes (binds the object to one commit)
+    pub change: ChangeId,
+    pub preds: Vec<ChangesetId>,               // sorted, deduplicated; empty for a new change
+    pub op: RewriteOp,
+}
+pub enum RewriteOp { New = 0, Amend = 1, Rebase = 2, Absorb = 3, Split = 4, Fold = 5, Squash = 6, Land = 7, Restack = 8, Import = 9 }
+```
+
+**Storage.**
+- Envelope kind 6 (§2.2) under key `m/<meta id>` (§3.1), `OBJ_KIND_CHANGE_META = 9` (§7). `put` and every read verify the BLAKE3 of the envelope (§0 decision 5, §3.2), so caches cannot serve a corrupt one. Every tier caches `m/` objects as immutable. A meta is collected with its changeset (§3.6).
+- The map `cs → meta id` is index data, not object data: `changes.meta` locally (§20.3) and on the server (§20.4), and `LogEntry.meta` on the wire. The first meta indexed for a changeset wins. A second, different meta for the same changeset (only possible for byte-identical commits made independently) is stored but not indexed.
+- **Validation on ingest (§8.4).** The server accepts a meta only if `meta.cs` is a changeset in the same push closure (or already stored), so a meta cannot be attached to someone else's commit. `preds` may name any stored changeset.
+
+**Rules.**
+
+| Operation | Change id of the result | `preds` |
+|---|---|---|
+| `commit`, `asc create` | new | [] |
+| `commit --amend`, `asc modify`, `asc absorb` (each target) | same | [old] |
+| `rebase`, `rebase -i` pick/reword/edit, `pull --rebase`, restack, server `LAND`/`Rebase`/`Merge(REBASE)`/`RestackChanges` | same | [old] |
+| `rebase -i` squash/fixup, `asc fold`, `asc squash` | the earliest folded change's | [all folded] |
+| `asc split` | The piece that keeps the original message keeps the id; the other pieces get new ids. | [old] on every piece |
+| `cherry-pick`, `revert`, merge commits, `stash` | new (a copy is a new change); stash snapshots get none | [] |
+| `Merge(SQUASH)` of a PR submitted with asc | the PR's change | the sources |
+| git import (§14.1) | jj `change-id` header, decoded; else Gerrit `Change-Id` trailer → `blake3_derive("asc v1 change gerrit", scope \|\| 0x00 \|\| value)[..16]`, where `scope` is the first import ref (in sorted ref order) that reached the commit, recorded in the written meta so later imports keep it; else none. A commit reachable from an immutable ref is never obsolete or divergent (§20.3). | [] |
+
+**Display.** The full form is 32 reverse-hex letters `k`–`z` (jj's alphabet: hex digit d becomes `'z' - d`); the short form is 12 letters. They can never be confused with the hex ids of §2.1. New verbs resolve a positional argument in this order: exact branch name, git revspec (`~` and `^` keep git's meaning), unique change prefix (at least 4 letters). A change id is read with `asc change-id <rev>` (`--short` prints 12) or `asc stack info --json`. Git commands gain no flags (§11.5).
+
+**Transport.** Push: the push closure (§6.3) includes the `m/` objects of the new changesets. Fetch: `LogEntry.change` (field 8) and `LogEntry.meta` (field 10) carry the ids, so fetch makes no extra round trip. Bucket remotes store `m/` like any other object. Rolling upgrade: the server advertises `changes.v1` in `Version.features`, and clients upload `m/` objects only after seeing it, so old readers never meet the new key kind (§16.2). A plain git remote (Stage 0) carries no `m/` objects (§20.7 fallback).
+
+### 20.3 Stack derivation, operation log and local state
+
+**Stack derivation (no stored parent metadata).**
+
+| Term | Definition | Cost |
+|---|---|---|
+| trunk tips | For each `asc.stack.trunk` value (default: the repo default branch, `master`), `refs/remotes/<remote>/<t>` if present, else the local branch | O(trunks) |
+| immutable | Ancestors of any trunk tip or any ref matching `asc.stack.immutable` (default `refs/remotes/*/release/*`). Tags are not checked. | `is_ancestor` through generations and skip lists (§4.3), O(trunks + patterns) per change |
+| draft change | A non-immutable changeset that has a `ChangeMeta` | O(1) lookup |
+| heads | Local branches, plus every workspace `HEAD`, plus (with `--remote`) changes in my open reviews | O(local refs) |
+| stack of a head | First-parent walk from the head while the changeset is a draft. A merge changeset ends the walk; stack verbs never rewrite merges. | O(stack length × log n) |
+| stack trunk | The trunk whose tip has the highest-generation merge base with the head | O(trunks × log n) |
+| parent change | The change of `parents[0]` when that is a draft; otherwise the change is the stack bottom | O(1) |
+| branch parent (Graphite view) | The nearest ancestor change that carries a branch label | O(stack) |
+| obsolete | Changeset X is obsolete when a visible changeset with the same change has X in its `preds` closure. "Visible" means reachable from a head or from the latest op-log view. A changeset reachable from an immutable ref is never obsolete. | local index |
+| needs restack | The parent is obsolete, or the parent's change has landed (`landed_as` from the change index or `land_map`) | O(stack) |
+| behind | The stack base is not the trunk tip (reported, not an error) | `is_ancestor` |
+| divergent | One change has more than one visible successor head. Changesets reachable from an immutable ref are ignored, so Gerrit cherry-picks that share an id across branches are not divergent. | local index |
+| frozen | A row in `stack_frozen`. Frozen changes are never rewritten locally. | O(1) |
+
+A revset subset exists only under `-r/--revset`: `stack()`, `draft()`, `trunk()`, `mine()`, `mutable()` and `git(<spec>)` with `|`, `&` and `~` (difference). Positional arguments are never revsets, so git's `HEAD~2` keeps its meaning. Stack verbs never rewrite a branch that another workspace has checked out (§9.3); they skip it and report it.
+
+**Operation log (local, bounded).**
+- **One op per command.** Every ref-moving command already writes `ref_log` rows with an `op_id` (§3.4) through the local ref chokepoint (§9.4.1). The op log adds one row per `op_id`, in the same `state.db` transaction, git commands included. Recording changes no output. `argv` is stored redacted: URL credentials (`scheme://user:pass@`) become `scheme://***@`, the value of every `-c key=value` becomes `***`, and the value of any `--password`, `--token` or `--auth*` option is dropped.
+- **Working-copy snapshot.** Before a verb that rewrites the working copy (`modify`, `absorb`, `split`, `restack` when it pauses, `undo`) **and before every git command that can destroy tracked changes** (`reset --hard`, `checkout -f`/`switch -f`/`--discard-changes`, `checkout <paths>`, `restore` of the worktree, `stash drop` and `clear`, `rebase --abort`, `merge --abort`), the dirty tracked files and the staging rows are saved as an `asc.snapshot` changeset in `store/`, as `stash create` does. Cost O(dirty files). **Documented gap:** untracked and ignored files removed by `clean` (or replaced by `checkout`/`switch`) are not captured, and `asc undo` says so in a `hint:` when the op's argv is one of these.
+- **`asc undo`** applies the inverse of the op's `ref_log` deltas, with a CAS against each ref's recorded new value, and restores `HEAD` and, if present, the snapshot. It refuses when a ref has moved since the op, or when it would move a branch that another workspace has checked out, unless `-f`. Undo is itself an op, so `asc redo` undoes the undo. Remote effects (push, submit, land) are never undone; undo prints a `hint:` naming them.
+- **Bounds.** Ops older than `asc.opLog.maxDays` (90) or beyond `asc.opLog.maxOps` (1,000) are pruned. `ref_log` rows follow git's `gc.reflogExpire`. A snapshot referenced only by pruned ops is removed from `store/` by `asc gc`. `asc.opLog=false` disables recording.
+
+**Local state (`state.db`, §9.2).**
+
+```sql
+changes(repo_id, cs BLOB, change BLOB, meta BLOB /*MetaId*/, op INT, PRIMARY KEY(repo_id, cs)) + INDEX (repo_id, change)
+change_preds(repo_id, cs BLOB, pred BLOB, PRIMARY KEY(repo_id, cs, pred)) + INDEX (repo_id, pred)
+op_log(repo_id, seq INTEGER PRIMARY KEY, op_id BLOB UNIQUE, ws_id TEXT, at INT, argv TEXT /*redacted*/, kind TEXT,
+       head_before BLOB, head_after BLOB, wc_snapshot BLOB NULL, undoes_seq INT NULL)   -- ref deltas = ref_log rows with op_id
+stack_frozen(repo_id, change BLOB PRIMARY KEY)
+review_cache(repo_id, change BLOB PRIMARY KEY, review BLOB /*postcard ReviewState*/, fetched_at INT)   -- TTL 60 s
+```
+
+Config is git-format under `asc.stack.*` (§11.1; `stack.*` belongs to other tools such as git-stack): `trunk` (multi-valued), `immutable`, `exclude` (ref globs; replaces Graphite's `untrack`), `branchTemplate` (default `{user}/{slug}`) and `submit.draft`. A paused stack op keeps its remaining plan in `<gitdir>/asc-stack-op.json`, next to git's state files (§4.4).
+
+### 20.4 Server tables and derived data
+
+```sql
+changes(ns BLOB, cs BLOB, change BLOB, meta BLOB, op SMALLINT, preds BLOB, PRIMARY KEY(ns, cs)) INDEX changes_by_change (ns, change)
+change_versions(ns BLOB, change BLOB, v INT, cs BLOB, parent_change BLOB NULL, at BIGINT, actor TEXT, op_id BLOB,
+                PRIMARY KEY(ns, change, v))                                  -- GC roots (§3.6), never in ListRefs
+review_state(ns BLOB, change BLOB, state BLOB /*ReviewState*/, updated BIGINT, PRIMARY KEY(ns, change))
+open_paths(ns BLOB, path_key BLOB /*16 B, as path_changes*/, change BLOB, PRIMARY KEY(ns, path_key, change))
+mergeable(ns BLOB, head BLOB, trunk_tip BLOB, state SMALLINT, conflicts BLOB, computed_at BIGINT, PRIMARY KEY(ns, head))   -- one row per head, overwritten
+```
+
+- `changes` is written in `UpdateRefs` step 4 (§8.3) and in `Ingest` (§8.7) for every new changeset whose closure carries a valid `m/` object (§20.2). Land, `Merge(REBASE|SQUASH)` and `RestackChanges` write rows for the rewritten changesets in the same transaction as `land_map` (§8.9).
+- `landed_as(change)` is a lookup in `changes_by_change`, filtered to changesets on a land branch's `mainline` (§5.1): one indexed join, never a scan of messages (Scion lesson 23).
+- `open_paths` is maintained when a version is published or a PR closes, from the head changeset's own `changes` keys (relative to its parent), so no diff is needed. `Overlaps` costs O(paths × matches) and skips changes of the same stack (through the `parent_change` chain).
+- `mergeable` is a plain SQL table (§5): one row per head, overwritten when the head or the trunk tip changes, deleted when the PR closes. It uses the path-disjointness check (§4.5) first and reads content only for intersecting paths, recomputed lazily on request. Forgejo asks only for open PRs whose `open_paths` intersect the new trunk changes.
+- `diffstat.v1` (§5) feeds `CommitGraph` stats, visual file history and `Log.with_stats`.
+
+### 20.5 Server model, flows and RPCs
+
+| Concept | asc server (forge-neutral) | Forgejo fork |
+|---|---|---|
+| Change and versions | `changes` and `change_versions` (GC roots) | PR ↔ change (`asc_change` column) |
+| Stack shape | `change_versions.parent_change`, plus `Changes.Stack` | `stack_parent_id` cache for listing; the truth is asc's |
+| PR base | – | `base_branch` = the stack trunk (for example `master`) |
+| PR diff base | – | `merge_base` = the head's first parent while the parent change is unlanded, else the merge base with trunk. Forgejo's diff, commits tab, review, "viewed" and outdated-comment logic all key off `merge_base`, so the patch and the commit list show only the change. |
+| Review / approvals / inbox | `review_state` summary only, written by Forgejo | Owner |
+| Landing | `UpdateRefs(LAND)` (atomic prefix), `land_map`, `FindLanding` | Merge button, queue, policy |
+| Upstack restack | `RestackChanges` | Triggers it after a merge |
+
+**Forgejo seams that D8 requires (C34, C36):** (1) Forgejo recomputes `merge_base` on every push and base-branch update (`UpdateCommitDivergence`/`getMergeBase`); C34 patches that path so a PR with `asc_change` uses the rule above and is never recomputed from the base branch. (2) `POST /repos/{o}/{r}/pulls/{n}/merge` (and the web merge button) on a PR with an unlanded parent PR returns 409 `stack-parent-unmerged` with a link to the stack merge (C36); "Merge stack (N)" is C38.
+
+**Flows.**
+1. **Submit.** `asc submit` sends one `UpdateRefs` whose updates are `refs/for/<trunk>/asc-<change>`, bottom to top, plus push options `asc.draft` and `asc.reviewers`. Pipeline step 4 (§8.3) ingests the closure once, including the `m/` objects. Per ref, in order, asc calls Forgejo `proc-receive` (§13.5). The fork finds the PR by `(repo, change)`. **Who may update it:** the PR's author, a repo admin or owner, or any user with write access when the PR has "allow edits from maintainers" ticked; anyone else gets `not allowed to update change <short>` (`CHANGE_NOT_ALLOWED`), so a forged `preds` cannot replace someone else's PR head. It creates the PR (title and body from the change's message) or records a new version, and sets `stack_parent_id` from the parent change's PR. asc moves `refs/pull/<n>/head` with `SKIP_PRE` and appends `change_versions(v+1)`. **Lease:** a version is accepted only if the server's latest version of that change is in the new changeset's `preds` closure and every `m/` object in the push names a changeset in the same closure; otherwise `CHANGE_DIVERGED`, unless `--force` (which still needs the authorisation above).
+2. **Review.** The PR shows the stack panel, "version N of M", interdiff against any earlier version, and "changes since your last review" (the version of the reviewer's last review `commit_id`). Comments outdate through Forgejo's existing line mapping.
+3. **Land prefix 1..N.** Forgejo checks that every PR in the prefix is approved and green against the trunk's branch protection, then calls `UpdateRefs(master ← head(N), LAND, expect = the approved heads)`. The whole prefix lands atomically (§8.5); `rewritten` gives each PR's landed changeset, and the PRs are marked merged. Stacks always land rebase-style, one commit per change.
+4. **Restack after land.** Forgejo calls `RestackChanges(onto = new trunk tip, items = the open children bottom to top, with update_ref = refs/pull/<m>/head, atomic)`. Each child gets a new version. The rewritten changesets use the **actor** of the call as committer and one **timestamp per call**, both carried in the request, so a retry with the same request yields the same ids. Author and message are kept. `patch_unchanged` keeps approvals even with dismiss-stale enabled. On conflict the child is marked "needs restack", and the author runs `asc sync && asc submit`.
+5. **Queue.** "Merge when ready" on PR N enables it for 1..N. A per-target-branch worker processes entries in enqueue order, one land in flight per branch, and always lands the largest ready prefix. Admins can pause a branch. With `asc_stack_queue.revalidate = on_content_merge` (default) the worker lands with the `LAND_NO_CONTENT_MERGE` flag; the server fails the land with `LAND_NEEDS_CONTENT_MERGE` when §8.5 step 3 would need a content merge, and the worker restacks the stack as new versions and waits for checks again. Path-disjoint lands succeed straight away, and post-merge CI with `green/*` refs covers them (§12.6). `revalidate = off` omits the flag.
+6. **Branch-chain PRs** (plain `git push` of branches with base = another PR's head branch; C46) are recognised as stacked. When the parent merges, the base is retargeted to the parent's base, as GitHub does. They are not rebased on the server unless the author ticked "allow server restack".
+
+**RPCs (new `proto/asc/v1/changes.proto`, same port; additive `repo.proto` fields).**
+
+```proto
+service Changes {
+  rpc ResolveChanges(ResolveChangesRequest) returns (ResolveChangesResponse);  // cheap
+  rpc Stack(StackRequest) returns (StackResponse);                             // cheap
+  rpc Versions(VersionsRequest) returns (VersionsResponse);                    // cheap, paged
+  rpc InterDiff(InterDiffRequest) returns (stream DiffResponse);               // expensive
+  rpc Mergeability(MergeabilityRequest) returns (MergeabilityResponse);        // expensive, memoised
+  rpc Overlaps(OverlapsRequest) returns (OverlapsResponse);                    // cheap (index)
+  rpc RestackChanges(RestackChangesRequest) returns (RestackChangesResponse);  // mutating, x-asc-op-id
+  rpc SetReviewState(SetReviewStateRequest) returns (SetReviewStateResponse);  // internal token only
+  rpc RequestMerge(RequestMergeRequest) returns (RequestMergeResponse);        // mutating; proxies to the forge's queue
+}
+message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
+  uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
+message ChangeInfo { bytes change = 1; bytes head = 2; bytes git = 3; uint32 version = 4; bytes parent_change = 5;
+  bool parent_current = 6; bytes landed_as = 7; ReviewState review = 8; repeated bytes visible = 9; /* >1 = divergent */ }
+message ResolveChangesRequest { RepoRef repo = 1; repeated bytes changes = 2; repeated string revs = 3; }
+message ResolveChangesResponse { repeated ChangeInfo changes = 1; }
+message StackRequest { RepoRef repo = 1; string target = 2; oneof at { bytes change = 3; string rev = 4; uint64 review = 5; } }
+message StackResponse { string trunk = 1; bytes base = 2; repeated ChangeInfo changes = 3; /* bottom → top, forks included */ }
+message VersionsRequest { RepoRef repo = 1; bytes change = 2; string page_token = 3; }
+message Version { uint32 v = 1; bytes cs = 2; bytes git = 3; bytes parent_change = 4; int64 at = 5; string actor = 6; }
+message VersionsResponse { repeated Version versions = 1; string next_page_token = 2; }
+message InterDiffRequest { RepoRef repo = 1; bytes change = 2; uint32 from_v = 3; uint32 to_v = 4; DiffFormat format = 5;
+  repeated string paths = 6; }
+message MergeabilityRequest { RepoRef repo = 1; string target = 2; repeated bytes changes = 3; }
+message Mergeable { bytes change = 1; enum State { STATE_DISJOINT = 0; STATE_CLEAN_MERGE = 1; STATE_CONFLICTS = 2;
+  STATE_NEEDS_RESTACK = 3; } State state = 2; repeated Conflict conflicts = 3; }
+message MergeabilityResponse { repeated Mergeable results = 1; }
+message OverlapsRequest { RepoRef repo = 1; string target = 2; bytes change = 3; repeated bytes paths = 4; }
+message Overlap { bytes change = 1; ReviewState review = 2; repeated bytes paths = 3; }   // never includes a change of the same stack
+message OverlapsResponse { repeated Overlap overlaps = 1; }
+message RestackItem { bytes change = 1; string update_ref = 2; RefTarget expect = 3; }
+message RestackChangesRequest { RepoRef repo = 1; string onto = 2; repeated RestackItem items = 3; bool atomic = 4; bool dry_run = 5;
+  string committer_name = 6; string committer_email = 7; int64 committer_time = 8; }   // defaults: the authenticated actor and the server clock
+message RestackChangesResponse { repeated Rewrite rewritten = 1; repeated Conflict conflicts = 2; repeated bytes patch_unchanged = 3; }
+message SetReviewStateRequest { RepoRef repo = 1; repeated bytes changes = 2; repeated ReviewState states = 3; }
+message SetReviewStateResponse {}
+message RequestMergeRequest { RepoRef repo = 1; bytes change = 2; bool now = 3; }   // bottom..change
+message RequestMergeResponse { enum State { STATE_QUEUED = 0; STATE_LANDED = 1; STATE_REFUSED = 2; } State state = 1; repeated bytes pending = 2; string reason = 3; }
+// The server forwards RequestMerge to the forge through the internal channel that carries proc-receive (§13.5), in the
+// other direction, so the CLI never calls a forge API (D9). Forgejo answers from its queue (C39); with no forge attached,
+// now=true lands directly and now=false is STATE_REFUSED.
+
+// repo.proto, additive (amendment to U41, made by C17):
+//   ObjKind OBJ_KIND_CHANGE_META = 9;  LogEntry.change = 8;  LogEntry.stats = 9 (DiffStat);  LogEntry.meta = 10;
+//   LogRequest.pickaxe = 15, pickaxe_regex = 16, with_stats = 17, scan_budget = 18 (candidates, default 10000);
+//   LogResponse.truncated, resume_token (set when the scan budget ran out);
+//   UpdateRefs flag LAND_NO_CONTENT_MERGE; ErrorDetail.code += CHANGE_DIVERGED, CHANGE_FROZEN, LAND_NEEDS_CONTENT_MERGE, CHANGE_NOT_ALLOWED;
+//   rpc CommitGraph(CommitGraphRequest) returns (stream CommitGraphResponse);  // §20.6; not the project graph of `asc graph`
+//   rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
+//   rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
+//   rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
+```
+
+Rate classes are in §16.3. The `Changes` service follows the §7 lint exceptions.
+
+### 20.6 Plugin API surface
+
+All additive; served by the daemon over IPC (`workspace.proto`), by the server where noted, and by `asc … --json`.
+
+| Need | API | Served from | Efficiency bound |
+|---|---|---|---|
+| Inline, hover, status-bar and gutter blame; heatmap; CodeLens | `Workspace.Blame` plus `buffer` (unsaved bytes) and `ignore_whitespace`; `BlameResponse.commits[].change`; parallel `reviews[]` | `blame.v1` memo (§4.6) with path-index candidates. Buffer lines are mapped by one line diff against the `HEAD` blob. | O(file) per request after the first derive |
+| File history (renames followed) | `Workspace.Log` / `Repo.Log` with `paths`, `follow`, `with_stats` | `path_changes` on land branches (§5.1); otherwise a gen-pruned walk over `changes` keys | O(result + log n) on land branches |
+| Line history (`-L`) | `LineHistory(rev, path, start, end, limit, scan_budget)` | Path-index candidates; the range is carried backwards through each candidate's single-file line diff. Stops after `scan_budget` candidates (default 10,000) with `truncated` plus a resume token. | O(min(candidates, scan_budget) × file size) |
+| Commit graph, minimap, filters | `Repo.CommitGraph` / `Workspace.CommitGraph(include, exclude, preset: all\|current\|smart\|stack, lanes, stats, page_token)`, named apart from `asc graph` (§12A.9). Rows carry `LogEntry`, refs, `column`, `edges`, `stats`, `change`, `review`; the workspace variant adds a WIP row per worktree. | Generation-ordered pages. Lanes come from the deterministic `asc-engine::commit_graph::lanes`, whose state rides in the page token, capped at 256 lanes (further lanes share one `overflow` column; the token stays under 4 KiB). | O(page); earlier pages never re-read |
+| Commit details | `ReadChangeset` plus `ResolveChanges` | existing plus the change index | `cheap` |
+| Branch comparison | `Compare(a, b, three_dot, limit)` → `{merge_base, ahead, behind, ahead_page, behind_page, files}` | `MergeBase` with skip lists; mainline positions; `Diff(NAMES)` | O(log n + result) |
+| Worktrees view and multi-WIP | `Workspace.Worktrees` → `{ws_id, path, mount, mode, head_ref, head, dirty, staged, ahead, behind, ephemeral_until, locked, in_progress}` | `workspaces` rows plus each journal's dirty count | O(workspaces + changed paths) |
+| Worktree management | `asc worktree add\|remove\|lock --json` | §9.3 | `add` < 1 s |
+| Stacks / smartlog | `Workspace.Stacks` (= `asc sl --json`) | §20.3, local | O(heads × stack length × log n) |
+| Launchpad / PR triage | Forgejo `GET /api/v1/user/asc/inbox` (not an asc RPC) | Forgejo DB plus `review_state` | Forgejo indexed queries |
+| Conflicts (merge editor) | `Workspace.Conflicts` → `{path, kind, base, ours, theirs, marked}` | staging stages 1–3 (§9.5) | O(conflicted paths) |
+| Graph actions, rebase editor, drag and drop | The stack verbs with `--json` / `--dry-run --json`; `GIT_SEQUENCE_EDITOR` for git's own `rebase -i` | `merge_trees` in memory; `Rebase(dry_run)` remotely | O(changed paths) unless paths intersect |
+| Autolinks, web URLs | `RepoConfig(rev)` → `autolinks[{prefix, url}]`; a `web` template in `/.well-known/asc` | `.asc/review.toml` at the revision | `cheap`, cached by `FileId` |
+| Events | `Watch` adds `KIND_STACK` (C49): a change rewritten or restacked, a review state changed | the op log and `review_cache` refresh | push-based |
+
+### 20.7 Commands
+
+Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence applies (D5). Every verb takes `--json` (shapes below) and `-n/--dry-run` where it mutates. Exit codes: 0 done or nothing to do; 1 paused on a conflict (as `git rebase`); 2 ambiguous (a fork or several candidates, listed in `candidates` under `--json`); 128 fatal; 129 usage.
+
+| Verb and key flags | Does |
+|---|---|
+| `asc create [<branch>] [-m <msg>] [-a\|-u\|-p] [--insert] [--onto <rev>] [--no-branch]` | New change on `HEAD` (or `--onto`) from the staged changes; empty if nothing is staged. `--insert` reparents `HEAD`'s children onto it. Names a branch from `asc.stack.branchTemplate` unless `--no-branch`. Runs the commit hooks. |
+| `asc modify [-a\|-u\|-p] [-c] [-m <msg>\|-e] [--into <change>]` | Amends the current change (`-c` adds a new change; `--into` amends a downstack change without checking it out), then restacks the descendants. Runs the commit hooks. |
+| `asc absorb [-n] [-f] [-p] [--into <revset>]` | Moves each staged hunk (or each unstaged tracked hunk when nothing is staged) to the nearest mutable change it does not commute with (from `blame.v1` line origins), then restacks. Ambiguous hunks and new files stay. Preview unless `-f`. |
+| `asc restack [<change>] [--downstack\|--upstack\|--only]` | Rebases each change whose parent is obsolete or landed, or whose base is behind its parent. In memory; pauses on the first conflict. |
+| `asc continue [-a]` / `asc abort` | Finishes a paused op (running `rebase --continue` first if needed) or restores the op's before-state |
+| `asc sync [--no-fetch] [--no-restack] [-d] [--all-trunks]` | Fetches; fast-forwards local trunks no other workspace has checked out; drops landed changes (by change id and `FindLanding`, never by message); offers to delete merged branches (`-d` deletes them); restacks each stack onto its trunk. Conflicting stacks are skipped and reported. |
+| `asc submit [<change>] [-s] [--draft\|--publish] [--reviewer <u>…] [--update-only] [--auto-merge] [--force]` | Pushes bottom..change (or the whole stack with `-s`) as one `UpdateRefs` of `refs/for/<trunk>/asc-<change>` refs, one PR per change (§20.5 flow 1). Refuses if a change needs a restack, is divergent or is frozen. |
+| `asc stack merge [<change>] [--now]` | Asks the server to merge bottom..change when ready (`Changes.RequestMerge`). `--now` lands at once if every PR in the prefix is mergeable. Not `asc landed` (§8.9). |
+| `asc sl [-s] [-a] [-r] [--remote] [--json]` (also `asc smartlog`) | Draft changes relative to trunk with branch labels, `@`, needs-restack, divergent, frozen, worktree and (with `--remote`) PR number, state, checks and version |
+| `asc up [n] [--to <b>]`, `asc down [n]`, `asc top`, `asc bottom` (aliases `next`, `prev`) | Switches by relationship. At a fork it prompts; with `--json` or without a terminal it exits 2, moves nothing and lists the candidates. |
+| `asc reword [<change>] [-m <msg>\|-e]` | Edits the message of any mutable change without touching its tree, then restacks. Runs `commit-msg`. |
+| `asc uncommit [<change>] [-a\|-p\|<pathspec>…]`, `asc unamend` | `uncommit` moves the change's tree (or the chosen paths) back into the working copy and staging. `unamend` restores the previous version of the current change from its `preds`. |
+| `asc abandon [<change>…] [--keep-descendants]` | Drops mutable changes and restacks the descendants onto the parent. The commits stay reachable through the op log. |
+| `asc change-id [--short] [<rev>]` | Prints the change id (empty and exit 1 for a commit without one) |
+| `asc split [--by-commit\|--by-hunk\|--by-file <pathspec>…]`, `asc squash [-m\|-e\|-n]`, `asc fold [--keep] [--stack]` | Split one change into a stack; collapse a branch's changes into one; fold a change into its parent and reparent its children |
+| `asc move --onto <rev> [--source <change>] [--only]`, `asc reorder [--stack]` | Reparent a change and its descendants; editor list of changes bottom to top. `git rebase -i` stays git's. |
+| `asc stack rename <new>`, `asc stack delete [--upstack\|--downstack] [-c]`, `asc stack pop` | Branch lifecycle; children are restacked onto the parent; `-c` also closes the PRs |
+| `asc stack get <pr\|change\|branch> [-d] [-u] [--unfrozen] [--worktree <path>]` | Fetches a stack from the server, frozen by default. `--worktree` opens it in a new plain worktree (a virtual one once U57/U58 land). |
+| `asc stack freeze\|unfreeze [<change>]`, `asc stack trunk [--add\|--remove <b>]`, `asc stack info [<change>]`, `asc stack parent\|children` | Local protection; configuration and relationship reads |
+| `asc undo [-n] [-f]`, `asc redo`, `asc op log`, `asc op show <op>`, `asc op restore <op>` | §20.3 |
+| `asc evolog [<change>] [-p]`, `asc interdiff <change> [<v1> <v2>]` | The versions of a change (local and server) and the diff between versions |
+| `asc share [-m <msg>]` | Snapshots the working changes, `Ingest`s them (§8.7), writes `refs/snapshots/<id>` with an expiry (default 30 days, `UpdateRefs.ttl_seconds`, §8.8) and prints `asc:<id>` and a web link. Recipients run `asc stack get asc:<id>`. |
+| `asc stack exec [--revset <r>] -- <cmd>` (v1.x) | Runs a command on each change in an ephemeral worktree, results cached by `TreeId` |
+
+**Hooks and signing.** `asc create`, `modify`, `reword`, `split` (once per piece) and `squash`/`fold` (combined message) run git's commit hooks at git's points (§9.4.1): `pre-commit` on the staged tree, `prepare-commit-msg`, `commit-msg`, `post-commit`; `--no-verify` skips `pre-commit` and `commit-msg`. Restack, move and reorder run `pre-rebase` once up front; every rewrite runs `post-rewrite <amend|rebase>` once afterwards with all old/new pairs, plus `reference-transaction`. A restack does not run `pre-commit` or `commit-msg`, as `git rebase` does not. A non-zero hook aborts before any ref moves. Verbs sign as the matching git command does (`commit.gpgSign`, `-S`); the in-memory restack re-signs when `commit.gpgSign=true` and drops the signature when false, as `git rebase` does. A signing failure pauses like a conflict (exit 1) and moves no ref for that change.
+
+**Stage 0 (git-remote mode) fallback.** A plain git remote carries no `m/` objects. Local verbs work on the local `ChangeMeta`. `asc sync` falls back to git semantics: a change is landed when its commit is reachable from the trunk or its patch-id equals a trunk commit's since the merge base; squash merges are reported as "cannot tell". `asc submit`, `asc stack get`, `asc stack merge` and `asc share` exit 128 with `asc: <verb> needs an asc server (not available on a plain git remote)`.
+
+**Stack awareness in existing git commands: none (D4).** `commit --amend`, `rebase`, `rebase -i`, `pull --rebase` and `rebase --update-refs` keep git's semantics and leave descendants untouched (run `asc restack`). Every ref-moving command is recorded in the op log invisibly, and every new commit gets a `ChangeMeta` invisibly (SHAs unchanged). `push`, `status`, `log`, `branch` and `rev-parse` are unchanged.
+
+**`--json` shapes** (every object carries `"version": 1`; ids are git SHA-1s, as in §11.1, plus the change id):
+
+```jsonc
+// asc sl --json  ==  Workspace.Stacks
+{ "version": 1,
+  "trunks": [{ "name": "master", "tip": "<sha>", "remote": "origin" }],
+  "stacks": [{ "trunk": "master", "base": "<sha>", "behind": 3,
+    "changes": [   // topological, bottom → top; build the tree from parent_change
+      { "change": "<32 k-z>", "short": "<12>", "commit": "<sha>", "asc": "<64 hex>",
+        "parent_change": null, "branches": ["jordan/parser"], "subject": "…",
+        "author": { "name": "…", "email": "…", "time": 0 },
+        "state": "draft|landed|obsolete|divergent", "needs_restack": false, "frozen": false,
+        "empty": false, "current": true, "worktree": null,
+        "review": { "number": 42, "url": "…", "state": "draft|open|merged|closed",
+                    "approvals": 1, "checks": "pending|success|failure|none",
+                    "queue": "none|queued|landing", "version": 3, "reviewed_version": 2 } } ] }] }
+
+// every mutating verb
+{ "version": 1, "op": "<op id>", "status": "ok|nothing|paused",
+  "rewritten": [{ "change": "…", "old": "<sha>", "new": "<sha>" }],
+  "refs": [{ "name": "refs/heads/…", "old": "<sha>", "new": "<sha>" }],
+  "skipped": [{ "change": "…", "reason": "checked-out-elsewhere|frozen|conflict|merge|immutable" }],
+  "conflicts": [{ "change": "…", "paths": ["…"] }],
+  "reviews": [{ "change": "…", "number": 42, "url": "…", "created": false, "version": 4 }],
+  "hints": ["…"] }
+
+// asc op log --json
+[{ "op": "…", "seq": 17, "at": 0, "ws": "…", "argv": ["git", "rebase", "master"],
+   "refs": [{ "name": "…", "old": "…", "new": "…" }], "snapshot": null, "undone": false }]
+
+// asc evolog --json
+[{ "version": 3, "commit": "<sha>", "op": "amend|rebase|…", "at": 0, "actor": "…", "preds": ["<sha>"], "published": true }]
+```
+
+### 20.8 Forgejo UI (rendered from the RPCs above; §13.3 C34–C48)
+
+| Surface | Content |
+|---|---|
+| PR page | Stack navigator (bottom to top; state, checks and approvals per PR; keys to move between them), "needs restack" banner with a server-restack button, "Merge stack (N)" or the mid-stack block, version dropdown with interdiff, "since my last review", overlap and mergeability badges |
+| Repo | Commit graph page over `CommitGraph`; blame and file history (existing pages, via `ascbackend`); stack compare view (`Compare` between two versions or two stacks) |
+| Inbox `/pulls/inbox` and `GET /api/v1/user/asc/inbox` | Needs your review, returned to you, ready to merge, blocked, waiting, drafts, queued or recently merged. Whose turn is derived from review requests, the latest review and the version after it. Per-user pin and timed snooze. ASC's plugins call this API directly. |
+| Actions | Context gains `asc_change`, `asc_stack_position`, `asc_stack_size` and `asc_stack_parent_sha`. Workflows run `asc affected --base $asc_stack_parent_sha` to test only the change's own projects. |
+| Undo-aware operations | "Restore version v" (moves `refs/pull/<n>/head` back to a kept version); "Revert landed stack" (`Apply(REVERT)` over the `FindLanding` results, newest first) |
 
 ---
 
@@ -1307,7 +2462,7 @@ Success metrics per cohort: disk per worktree (target < 50 MiB before builds), `
 | Flaw (judge) | Fix |
 |---|---|
 | Placeholder mtime = committer time; needs per-path history; can be older than build outputs (J1–J3) | Per-placeholder switch-epoch time, monotonically increasing, stored in `entry_times` and the index (§10.1) |
-| `asc commit` ingests unknown staged SHA-1 from the working file (J1–J3) | Read and verify the blob from the projection ODB (§9.7 step 2) |
+| `asc commit` ingests unknown staged SHA-1 from the working file (J1–J3) | `asc add` ingests content when staging; commit reads no content (§9.5, §9.7) |
 | Stage 2 pre-receive ran before new commits existed in git (J1) | Export into a bridge quarantine before pre-receive; promote after the CAS (§8.3 steps 6–8) |
 | No transactional outbox (J1) | Ref CAS, ref log, op result and outbox in one SQL transaction; at-least-once worker (§8.3) |
 | CI host cache read-write; no verify-on-read (J1) | Host cache read-only in jobs, per-job writable cache, trusted warmer; BLAKE3 verification on every read (§12.3, §3.2) |
@@ -1315,16 +2470,124 @@ Success metrics per cohort: disk per worktree (target < 50 MiB before builds), `
 | Land request state not atomic with the CAS (perf) | `op_results` in the same transaction; no queue/leader (§8.5) |
 | Importer renamed case-colliding paths (perf) | History imported as-is; colliding/invalid names are not projected on Windows (§2.8) |
 | Client-supplied `git_oid`/size trusted (perf) | Server recomputes `file_meta` and verifies every entry and change (§8.4) |
-| Too many crates and moving parts (perf/integration) | 10 crates, one binary, no land queue, no segments, no WatchRefs (§0) |
+| Too many crates and moving parts (perf/integration) | 12 crates plus the test-only `asc-sim`, one binary, no land queue, no segments, no WatchRefs (§0) |
 | Two storage formats in server vs serverless (perf) | One bucket layout everywhere (§3.3) |
-| LFS content vs pointer identity ambiguity (integration) | Pointer identity; `size` = pointer, `lfs.size` = resolved; index uses resolved stat with pointer oid (§2.5) |
+| LFS content vs pointer identity ambiguity (integration) | Superseded by the No-LFS user decision: pointer files are ordinary blobs (§2.5) |
 | `asc adopt` in place leaves Full files (integration) | No in-place adopt; `clone --reference` into a new workspace; the user deletes the old checkout (§6.3, §14.3) |
 | Submodule composition with nested writes on the critical path (integration) | Read-only composition, after the MVP; folding is a user decision (§10.6) |
 | Serverless refs single-machine (J2/J3) | `BucketRefs` with ref-log CAS (create-only); probe; explicit single-writer fallback (§3.4) |
-| Linux FUSE and virtual CI deferred (J2/J3) | FUSE in phase 7 with plain mode as the measured CI default; CI meets "no fetch until accessed" for history, LFS and submodules, and virtual CI is gated on measurement (§12.3) |
+| Linux FUSE and virtual CI deferred (J2/J3) | FUSE in phase 7 with plain mode as the measured CI default; CI meets "no fetch until accessed" for history and submodules, and virtual CI is gated on measurement (§12.3) |
 | Forgejo shows asc ids at Stage 2 (J2/J3) | Separate `object_format_name` switch; `id_mode=GIT` at the boundary (§13.2) |
 | Soma folded by fiat (J2) | Not folded; it is a user decision (§19) |
 | Root/tree format coupling unstated (J3) | Stated and accepted; the v1 tree format has no size limit (§0 decision 3) |
-| `git-remote-asc` off the critical path (J3) | U38 in phase 3, before the server (PLAN) |
+| `git-remote-asc` off the critical path (J3) | Superseded: the No-IDE user decision removes `git-remote-asc` (§9.6) |
 | Optimistic schedule; units too coarse (J3) | 5-month plan; the CLI is split into command-family units; the server is split into core, forgejo, mirror, land, reads, mutations and turbo units (PLAN) |
-| Missing: tombstones, directory renames, signatures after rebase, husky hooksPath, Windows-invalid names, PutMode fallback, bucket GC/ABA/reflog, indexer/AV storms, node_modules placement, cross-fork reads, IDE `git commit`, backup/DR, distribution and skew, watchers, daemon crash, patch-stack cost, onboarding, concurrent index writers, autocrlf, Claude Code worktrees, MAX_PATH, rolling upgrades | §10.2 items 6/8, §8.5 step 4, §9.4, §2.8, §3.3, §3.4/§3.6, §10.2.5, §10.5, §3.3, §9.6, §15.3, §16.2, §10.2.5, §9.1, §13.3, §11.3/§18, §9.4, §9.4, §9.3, §10.2.10, §7/§16.2 |
+| Missing: tombstones, directory renames, signatures after rebase, husky hooksPath, Windows-invalid names, PutMode fallback, bucket GC/ABA/reflog, indexer/AV storms, node_modules placement, cross-fork reads, IDE `git commit`, backup/DR, distribution and skew, watchers, daemon crash, patch-stack cost, onboarding, concurrent index writers, autocrlf, Claude Code worktrees, MAX_PATH, rolling upgrades | §10.2 items 6/8, §8.5 step 4, §9.4.1, §2.8, §3.3, §3.4/§3.6, §10.2.5, §10.5, §3.3, §9.6 (superseded by No-IDE), §15.3, §16.2, §10.2.5, §9.1, §13.3, §11.3/§18, §9.4, §2.4.1, §9.3, §10.2.10, §2.2a/§16.2 |
+
+**Round-1 audit fixes (v1.1)**
+
+| Gap | Fix |
+|---|---|
+| User decision No-IDE (checklist, after the audit) | Synthetic `.git` for turbo only, asc-owned staging, no import of `git commit`, no `git-remote-asc`, plugin API (§0, §7, §9.4–§9.7) |
+| git-shim-argv0, git-shim-install-as-git | §11.4 shim and `RealGit` |
+| unsupported-flags-delegate | §11.5 native table; full pretty-format and ref-filter sets (§11.1). Real-git fall-through inside asc workspaces is not possible under No-IDE, so unsupported invocations fail with exit 129 |
+| compat-suite-gate | §17.1, §18 exit criteria |
+| display-ids, display-ids-contradiction | §11.1 (git SHA-1 by default, `core.abbrev`), §2.1 |
+| error-wording | §11.6 |
+| git-state-files | §4.4 in-progress state in git's format |
+| hooks-full-set | §9.4.1 |
+| worktree-layout-and-git-worktree | §9.3 branch-in-use and nested paths (layout change not needed under No-IDE) |
+| claude-code-worktrees | §9.3 |
+| remote-url-projection | §9.4 config |
+| push-land-semantics, git-push-land-tracking-refs | §8.5 (land only on request; legacy pushes fast-forward) |
+| git-env-vars | §11.1 |
+| includeif-identity | §9.4 |
+| gitattributes, gitattributes-normalisation | §2.4.1 |
+| master-default, default-branch-master | §6.5 |
+| branch-scope-model, 6-ref-scoping | §6.1, §2.7 |
+| diff-byte-equality | §4.3 |
+| projgraph (all project-graph gaps) | §12A, §5, §7, §12.2 |
+| 9-ingest-without-ref | §8.7 |
+| 2/12-history-fetch | §6.3 |
+| 16-stored-bytes-serving | §3.2 |
+| 17-tier-contract, 15-seed-snapshots (now v1) | §7 cache role, §12.3 seeds |
+| 18-overload-isolation, 24-rate-limiting | §16.3 |
+| 19-hit-rate-slo | §16.4 |
+| 14-node-daemon-mapping | §9.1 |
+| 10-derived-trait-shape | §5 `DerivedKeyed` |
+| 5-ingest-cost | §8.4 |
+| traceability-21-32, scion-checklist-traceability | §1, §1.1 |
+| 21-metadata-first | §18 M-meta |
+| 22-ingest-invariants | §14.4 |
+| 23-landing-index | §8.9 |
+| 30-ancestry-path-indexes | §5 `skip.v1`, §5.1 |
+| 24-fuzzing, 24-hermetic-simulation | §17.3, §17.2 |
+| 25-trust-boundaries | §15.4 |
+| 26-directory-permissions | §15.5 |
+| 27-semantic-classification | §8.10 |
+| 28-agent-conflict-api | §8.11, §8.5 step 3, §12.6 |
+| 29-observability-superfans | §16.1 |
+| 31-api-standardisation | §7 |
+| projfs-reset-restore-dirty-set, watchers-virtual-switch, projfs-dir-tombstone-reconcile, ls-crawl-hydration, redirection-mechanics | §10.2, §10.3, §10.5 |
+| land-rewrite-signature-and-raw-extra | §8.5 step 5a, §4.4 |
+| gc-sweep-race-and-pitr-roots | §3.6, §15.3 |
+| rolling-upgrade-encodings | §2.2a, §8.2, §9.2, §16.2 |
+| agit-refs-pull-stage2 | §13.5 |
+| upgrade-mechanics-windows | §16.2 |
+| daemon-hang-watchdog | §9.1 |
+| crate-cycle-statedb, historyapi-cycle, sqlx-two-migrators | §3.5, §4.3, §9.2 |
+| bucketrefs-defer | §3.4 |
+| Not applicable under No-IDE: ide-git-fetch-pull, refs-mirror-locking, git-worktree-add-in-projection, 20-projection-odb-maintenance, 32-helper-negotiation | §9.6 (no projection ODB, refs mirror or helper); item 32 in §1.1 |
+| Later checklist additions: `.ascignore`, Actions fork, benchmark vs git, checkout speed tiers, No LFS | §2.4.2, §12.7, §16.4, §2.5 |
+
+**Round-2 audit fixes (v1.2)**
+
+| Gap | Fix |
+|---|---|
+| commit-precommit-staging-order | §9.7 hook order (pre-commit → re-read stage set → message hooks → build); §9.4.1 `GIT_INDEX_FILE` |
+| git-index-file-stage-sets | §9.5 `GIT_INDEX_FILE` → stage set; §9.2 `stage.set_id`, `stage_sets` |
+| hook-child-path-real-git, hook-child-path-shim | §9.4.1 child PATH (private shim dir `<exe dir>/shim`; Git for Windows `usr\bin\sh.exe`) |
+| windows-shim-path-precedence-and-location | §11.4 dispatch (shim in `<prefix>/<ver>/shim`), machine-PATH insertion, `asc doctor` probes; §3.5 `bin/` removed |
+| repo-independent-commands-routing | §11.4 target-based routing |
+| compat-fixture-routing | §11.4 `asc.shim.init`; §17.1 asc-side fixtures and `ASC_SHIM_TRACE` |
+| clone-history-o-history | §6.3 history window and `history_boundary`; §4.3; §6.4; §12.3 seeds; §9.2 |
+| ci-shallow-semantics | §12.3 step 4 (no `shallow`); §9.4 layout |
+| synthetic-index-o-files | §9.4 `asc.turboIndex`, incremental patching; §16.4 gate |
+| plugin-api-undefined | §7 workspace.proto messages; §11.2 `--json`, `asc watch` |
+| affected-default-base-contradiction | §12A.9 defaults (`origin/HEAD` first); §6.5 |
+| affected-base-default-conflict | Superseded by affected-default-base-contradiction (the `@{u}` default would compare a pushed branch only with itself) |
+| lint-main-fails-own-docs, no-main-lint-self-fails | §6.5 branch-name regex plus the `lint:allow-main` marker |
+| actions-cache-artifact-underspecified, actions-fork-contract-and-naming, actions-repo-naming | §12.7 store contract and one action set; §3.3; §3.6; §7 HTTP; §0; §12.3; §14.3; §18; §19 decision 5 |
+| ci-later-steps-asc-home-and-runner-mounts | §3.5 `$ASC_HOME` from the gitfile; §12.3 step 6; §12.7 runner mounts; §15.1 `ASC_TOKEN` |
+| historyapi-impl-split | §4.3 `HistoryApi`, `BlameApi`, `ProjectsApi` |
+| bucket-local-refs-two-clones | §3.4 single-writer scope and message; §18 phase 2 exit |
+| ascignore-shadows-gitignore, migrate-ignore-default-and-stale-text, asc-info-exclude-location | §2.4.2; §9.3; §10.4; §10.5 |
+| lfs-filter-add-fails | §2.4.1 |
+| hooks-must-vs-list | §9.4.1 `reference-transaction`, never-run list |
+| server-whole-file-buffer-cap | §16.4 `limits.text_memory` |
+| fork-dedup-deviation-unsigned, fork-dedup-deviation-unrecorded | §19 decision 6; §0; §1; §3.3 |
+| gittreeoverride-value-format, git-tree-override-format | §3.1, §2.5, §8.4 (body without header) |
+| client-raw-git-extras | §8.4; §6.3 push |
+| import-non-commit-tags | §14.1 step 6 |
+| manifests-eager-terminology | §5 table and bullet; §12A.5 |
+
+**Round-3 audit fixes (v1.3)**
+
+| Gap | Fix |
+|---|---|
+| stacks-design-not-folded, stacks-design-exists-not-folded | §20 (stacks.md D1–D12 normative); §2.2 kind 6, §3.1 `m/`, §7 `OBJ_KIND_CHANGE_META = 9`; §3.6 `change_versions` roots; §5 `diffstat.v1`; §8.2, §9.2 tables; §11.1 `asc.stack.*`; §11.2 stack verbs; §11.5 no new git flag; §12.6 stack queue; §13.3 C34–C48; §13.5 topic `asc-<change>`; §16.3; §17.1; §18 phases 1c/4s/9s; §19 pending note removed. PLAN unit ids are C01–C52 (S-ids collide with spikes) |
+| shim-asc-verbs-shadow-aliases-and-git-dash-commands (shim-verb-precedence) | §11.4 resolution order per argv[0]; §11.1 `git-<name>`/`asc-<name>` external commands; §9.4.1 child PATH; §12A.9; §17.1 `external-commands.t` |
+| turbo-index-reflects-head-breaks-staged-contract | §9.4 index = HEAD overlaid with set 0, updated on staging commands; §12.1 |
+| no-main-lint-misses-common-forms | §6.5 regex and scan set; `-c init.defaultBranch=master` for real-git scripts |
+| no-raw-git-lint-fails-built-code | §11.4 `lint:allow-raw-git` for test fixtures below `asc-git` |
+| unsafe-forbid-and-allowlist | §15.2 `unsafe_code = "deny"` plus a module allow-list |
+| proto-fails-buf-standard-lint | §7 buf lint exceptions |
+| local-ref-update-chokepoint | §9.4.1 one local ref-update function |
+| commit-hook-failure-rollback | §9.7 step 0 snapshot and restore of set 0 |
+| ci-tier-stack-config-undefined-unowned | §3.5 `asc.cache.dir`/`asc.cache.readOnly`; §12.3 step 6 common config |
+| plan-job-rules-file-without-checkout | §12.2 `--rules` read at the merge base; `--rules-file` |
+| bucket-local-refs-storage-undefined | §3.4 dedicated `repos` row per bucket |
+| workspace-deps-rule-blocks-later-units, status-stale-u11-u12-u14-built, cli-unit-acceptance-uses-sibling-commands, asc-serve-no-handler-or-route-extension-points, worktree-convert-plain-unowned | PLAN only (rules, briefs, CARRY.md) |
+| roadmap-and-stale-text | §18 (M-meta week ≈ 9 without `FindLanding`; phases 4 and 6), Appendix A crate count, §10.4/§10.5, §9.2 `display_ids` removed |
+| turbo-staged-file-contract | §17 turbo row |
+| index-renderer-ownership, u01-v11-delta-unowned, unowned-cli-commands | PLAN only (U16 index writer, U01b, U24f) |
