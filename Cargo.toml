@@ -13,6 +13,7 @@ members = [
     "crates/asc-vfs",
     "crates/asc-serve",
     "crates/asc-ci",
+    "crates/asc-embed",
     "crates/asc",
 ]
 
@@ -150,3 +151,6 @@ criterion      = "0.8.2"       # dev
 asc-graph = { path = "crates/asc-graph" }
 asc-state = { path = "crates/asc-state" }
 asc-sim = { path = "crates/asc-sim" }
+# additions (I09)
+fastembed      = { version = "=7.2.0", default-features = false, features = ["ort-download-binaries-rustls-tls"] }
+ort            = "=2.0.0-rc.15"
