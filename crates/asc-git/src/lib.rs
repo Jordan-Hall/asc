@@ -5,5 +5,6 @@ pub mod export;
 pub mod import;
 pub mod index;
 pub mod odb;
+pub mod projection;
 pub mod realgit;
 pub mod tree_override;
