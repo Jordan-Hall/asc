@@ -10,6 +10,7 @@ pub mod conformance_refs;
 pub mod key;
 pub mod objects;
 pub mod refs;
+pub mod s3;
 pub mod sqlrefs;
 pub mod storeset;
 pub mod tiered;

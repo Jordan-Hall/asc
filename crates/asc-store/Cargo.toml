@@ -12,10 +12,13 @@ workspace = true
 [features]
 # Exposes `conformance` to other crates' tests.
 testkit = []
+# Runs the MinIO/Garage integration tests (`docker compose -f docker-compose.it.yml up -d`).
+it-s3 = ["testkit"]
 
 [dependencies]
 asc-core = { workspace = true }
 async-trait = { workspace = true }
+backon = { workspace = true }
 bytes = { workspace = true }
 data-encoding = { workspace = true }
 filetime = { workspace = true }

@@ -48,6 +48,10 @@ impl BucketObjects {
     /// Opens `file:///…`, `memory:///` or any scheme `object_store` can build; the URL path is the root.
     pub fn from_url(url: &str) -> Result<Self> {
         let url = url::Url::parse(url).map_err(|e| Error::Url(e.to_string()))?;
+        if url.scheme() == "s3" {
+            let (store, root) = crate::s3::open(&url)?;
+            return Ok(Self::new(store, root));
+        }
         let (store, root) = object_store::parse_url(&url)?;
         Ok(Self::new(Arc::from(store), root))
     }
