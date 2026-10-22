@@ -1,0 +1,1342 @@
+//! Mirror mode (SPEC §8.6, PLAN U45): Forgejo stays the source of truth and the server follows.
+//!
+//! A trigger (the signed `/hooks/forgejo` webhook, or the 60 s poll) runs `git fetch --prune`
+//! into the bare mirror `<cache disk_dir>/mirrors/<repo-id>.git` through [`RealGit`], imports the
+//! new commits incrementally (SPEC §14.1), writes their `cs_graph` rows, and sets the asc refs to
+//! the git refs with `via = mirror`, all in one transaction. One importer per repo runs at a time
+//! (SPEC §14.4 I6): an in-process mutex, plus `pg_advisory_xact_lock(repo_id)` on Postgres.
+//! Imports are idempotent, so duplicate webhooks cost one no-op fetch.
+//!
+//! The mirror URL, the remote's refs and the webhook body are all untrusted: URLs are checked
+//! (no `-` options, no `ext::` helpers, a protocol allow-list), git runs without the host's
+//! config, output and run time are bounded, and ref counts are capped.
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use async_trait::async_trait;
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::post;
+use base64::Engine as _;
+use asc_core::git::ObjectKind;
+use asc_core::id::{ChangesetId, GitOid, RefTarget};
+use asc_core::path::RefName;
+use asc_engine::derive::{self, GitMapRow, GitMapSink};
+use asc_git::import::{ImportError, ImportMap, ImportPolicy, Importer, Tip};
+use asc_git::odb::{Odb, OdbError};
+use asc_git::realgit::{RealGit, RealGitError};
+use asc_rpc::server::RepoName;
+use asc_store::refs::{Actor, Expect, RefError, RefTxn, RefUpdate, Refs};
+use hmac::{Hmac, KeyInit, Mac};
+use sha2::Sha256;
+use sqlx::any::Any;
+use sqlx::{AnyPool, Row, Transaction};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+use crate::config::ServeConfig;
+use crate::graph_sql::{self, NewNode};
+use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode, SqlGitMap};
+use crate::update::{GcLock, PipelineHooks};
+
+/// The route Forgejo's push webhook posts to (SPEC §8.6).
+pub const WEBHOOK_PATH: &str = "/hooks/forgejo";
+/// The header carrying the hex HMAC-SHA256 of the body.
+const SIGNATURE_HEADER: &str = "x-forgejo-signature";
+/// Largest accepted webhook body.
+const MAX_WEBHOOK_BYTES: usize = 1 << 20;
+/// Largest webhook secret file.
+const MAX_SECRET_BYTES: u64 = 4096;
+/// Most refs one mirror may hold; a bigger remote is refused rather than half-followed.
+pub const MAX_MIRROR_REFS: usize = 500_000;
+/// Most new changesets whose graph rows one sync records.
+const MAX_NEW_CHANGESETS: usize = 2_000_000;
+/// Longest accepted `git for-each-ref` output.
+const MAX_REF_LIST_BYTES: usize = 128 << 20;
+/// Bytes of git's stderr kept for an error message.
+const MAX_STDERR_BYTES: usize = 8192;
+/// Changeset ids per `cs_graph` lookup while walking new history.
+const GRAPH_BATCH: usize = 256;
+/// Graph rows inserted per statement group; bounds nothing but keeps progress logs useful.
+const POLL_INTERVAL: Duration = Duration::from_secs(60);
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// What the fetch brings in (SPEC §8.6).
+const REFSPECS: [&str; 3] = [
+    "+refs/heads/*:refs/heads/*",
+    "+refs/tags/*:refs/tags/*",
+    "+refs/pull/*:refs/pull/*",
+];
+const REF_PREFIXES: [&str; 3] = ["refs/heads/", "refs/tags/", "refs/pull/"];
+/// Protocols a mirror URL may use.
+const ALLOWED_PROTOCOLS: &str = "http:https:ssh:git:file";
+
+/// Why a mirror sync failed.
+#[derive(Debug, thiserror::Error)]
+pub enum MirrorError {
+    #[error("repository {0} is not known")]
+    NotFound(String),
+    #[error("repository {0} is not in mirror mode")]
+    NotMirror(String),
+    #[error("no mirror source is configured for {0}")]
+    NoSource(String),
+    #[error("unusable mirror url: {0}")]
+    BadUrl(&'static str),
+    #[error("git: {0}")]
+    Git(String),
+    #[error("git timed out")]
+    Timeout,
+    #[error("the mirror holds more than {MAX_MIRROR_REFS} refs")]
+    TooManyRefs,
+    #[error("the sync adds more than {MAX_NEW_CHANGESETS} changesets")]
+    TooLarge,
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    RealGit(#[from] RealGitError),
+    #[error(transparent)]
+    Odb(#[from] OdbError),
+    #[error("import: {0}")]
+    Import(#[from] ImportError),
+    #[error(transparent)]
+    Registry(RegistryError),
+    #[error("graph: {0}")]
+    Graph(String),
+    #[error("refs: {0}")]
+    Refs(#[from] RefError),
+    #[error("database: {0}")]
+    Sql(#[from] sqlx::Error),
+}
+
+impl From<RegistryError> for MirrorError {
+    fn from(e: RegistryError) -> Self {
+        match e {
+            RegistryError::NotFound(n) => Self::NotFound(n),
+            e => Self::Registry(e),
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------ sources
+
+/// Where one mirror repo is fetched from.
+#[derive(Clone)]
+pub struct MirrorTarget {
+    pub url: String,
+    /// Read token, sent as an HTTP basic-auth header through git's environment config (never on
+    /// the command line).
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for MirrorTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MirrorTarget")
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Mirror URLs: explicit entries (`RepoAdmin.init { mirror_url }` sets them), else
+/// `<forgejo.url>/<owner>/<repo>.git`.
+#[derive(Default)]
+pub struct MirrorSources {
+    explicit: RwLock<HashMap<String, MirrorTarget>>,
+    forgejo: Option<String>,
+}
+
+impl MirrorSources {
+    /// Sources that fall back to the Forgejo at `forgejo_url`.
+    pub fn with_forgejo(forgejo_url: Option<&str>) -> Self {
+        Self {
+            explicit: RwLock::default(),
+            forgejo: forgejo_url.map(|u| u.trim_end_matches('/').to_owned()),
+        }
+    }
+
+    /// Sets the source of `repo`; the URL is checked on every use.
+    pub fn set(&self, repo: &RepoName, target: MirrorTarget) {
+        if let Ok(mut m) = self.explicit.write() {
+            m.insert(repo.to_string(), target);
+        }
+    }
+
+    fn resolve(&self, repo: &RepoName) -> Option<MirrorTarget> {
+        if let Ok(m) = self.explicit.read()
+            && let Some(t) = m.get(repo.as_str())
+        {
+            return Some(t.clone());
+        }
+        self.forgejo.as_ref().map(|base| MirrorTarget {
+            url: format!("{base}/{repo}.git"),
+            token: None,
+        })
+    }
+}
+
+/// Refuses URLs git could be tricked by: option look-alikes, transport helpers (`ext::`), and
+/// protocols outside the allow-list. An absolute path is a local repository.
+pub fn check_url(url: &str) -> Result<(), MirrorError> {
+    let bad = MirrorError::BadUrl;
+    if url.is_empty() || url.len() > 4096 {
+        return Err(bad("empty or too long"));
+    }
+    if url.starts_with('-') || url.contains(['\0', '\n', '\r']) {
+        return Err(bad("looks like an option"));
+    }
+    if url.contains("::") {
+        return Err(bad("transport helpers are not allowed"));
+    }
+    if Path::new(url).is_absolute() {
+        return Ok(());
+    }
+    let parsed = url::Url::parse(url).map_err(|_| bad("not a url or absolute path"))?;
+    if matches!(parsed.scheme(), "http" | "https" | "ssh" | "git" | "file") {
+        Ok(())
+    } else {
+        Err(bad("protocol not allowed"))
+    }
+}
+
+// ------------------------------------------------------------------------------ config
+
+/// Mirror settings derived from `asc-serve.toml`.
+#[derive(Clone, Debug)]
+pub struct MirrorConfig {
+    /// `<cache disk_dir>/mirrors`.
+    pub dir: PathBuf,
+    /// The webhook secret; without it the webhook route is not served and only the poll runs.
+    pub secret: Option<Vec<u8>>,
+    pub forgejo_url: Option<String>,
+    pub interval: Duration,
+    pub fetch_timeout: Duration,
+}
+
+impl MirrorConfig {
+    /// `None` when the server has no `cache.disk_dir` to keep mirrors in.
+    pub fn from_serve(cfg: &ServeConfig) -> Result<Option<Self>, MirrorError> {
+        let Some(disk) = &cfg.cache.disk_dir else {
+            return Ok(None);
+        };
+        let secret = match cfg
+            .forgejo
+            .as_ref()
+            .and_then(|f| f.webhook_secret_file.as_deref())
+        {
+            Some(p) => Some(read_secret(p)?),
+            None => None,
+        };
+        Ok(Some(Self {
+            dir: disk.join("mirrors"),
+            secret,
+            forgejo_url: cfg.forgejo.as_ref().map(|f| f.url.clone()),
+            interval: POLL_INTERVAL,
+            fetch_timeout: FETCH_TIMEOUT,
+        }))
+    }
+}
+
+fn read_secret(path: &Path) -> Result<Vec<u8>, MirrorError> {
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(std::fs::File::open(path)?, MAX_SECRET_BYTES + 1),
+        &mut buf,
+    )?;
+    if buf.len() as u64 > MAX_SECRET_BYTES {
+        return Err(MirrorError::Git("webhook secret file is too large".into()));
+    }
+    while buf.last().is_some_and(|b| matches!(b, b'\n' | b'\r')) {
+        buf.pop();
+    }
+    if buf.is_empty() {
+        return Err(MirrorError::Git("webhook secret file is empty".into()));
+    }
+    Ok(buf)
+}
+
+// ------------------------------------------------------------------------------ webhook auth
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
+        return None;
+    }
+    let nibble = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    b.chunks_exact(2)
+        .map(|p| Some(nibble(p[0])? << 4 | nibble(p[1])?))
+        .collect()
+}
+
+/// Whether `signature` (hex, optionally `sha256=`-prefixed) is HMAC-SHA256 of `body` under
+/// `secret`. The comparison is constant time.
+pub fn verify_signature(secret: &[u8], body: &[u8], signature: &str) -> bool {
+    let hex = signature.trim();
+    let hex = hex.strip_prefix("sha256=").unwrap_or(hex);
+    let Some(want) = unhex(hex) else {
+        return false;
+    };
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
+        return false;
+    };
+    mac.update(body);
+    mac.verify_slice(&want).is_ok()
+}
+
+// ------------------------------------------------------------------------------ the mirror
+
+/// What one sync did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SyncReport {
+    pub commits: usize,
+    pub refs_set: usize,
+    pub refs_deleted: usize,
+    /// Tags and refs asc cannot represent (SPEC §14.1 step 6): expected, not errors.
+    pub skipped: Vec<String>,
+}
+
+/// The mirror engine: fetch, import and ref sync for mirror-mode repos.
+pub struct Mirror {
+    registry: Arc<Registry>,
+    gc: GcLock,
+    git: RealGit,
+    cfg: MirrorConfig,
+    sources: MirrorSources,
+    locks: StdMutex<HashMap<i64, Arc<Mutex<()>>>>,
+}
+
+impl Mirror {
+    pub fn new(
+        registry: Arc<Registry>,
+        hooks: &PipelineHooks,
+        git: RealGit,
+        cfg: MirrorConfig,
+    ) -> Self {
+        let sources = MirrorSources::with_forgejo(cfg.forgejo_url.as_deref());
+        Self {
+            registry,
+            gc: hooks.gc().clone(),
+            git,
+            cfg,
+            sources,
+            locks: StdMutex::default(),
+        }
+    }
+
+    /// Where mirror repos are fetched from.
+    pub fn sources(&self) -> &MirrorSources {
+        &self.sources
+    }
+
+    fn repo_lock(&self, repo: i64) -> Arc<Mutex<()>> {
+        let mut m = self.locks.lock().unwrap_or_else(|e| e.into_inner());
+        m.retain(|_, v| Arc::strong_count(v) > 1);
+        m.entry(repo).or_default().clone()
+    }
+
+    /// Fetches, imports and syncs refs for `name`. Safe to call concurrently and repeatedly.
+    pub async fn sync(&self, name: &RepoName) -> Result<SyncReport, MirrorError> {
+        let entry = self.registry.open(name).await?;
+        if entry.mode != RepoMode::Mirror {
+            return Err(MirrorError::NotMirror(name.to_string()));
+        }
+        let lock = self.repo_lock(entry.key.0);
+        let _one = lock.lock().await;
+        let result = self.sync_locked(&entry).await;
+        if let Err(e) = &result {
+            self.record_error(&entry, &e.to_string()).await;
+        }
+        result
+    }
+
+    async fn record_error(&self, entry: &RepoEntry, message: &str) {
+        let message: String = message.chars().take(1024).collect();
+        let r = sqlx::query(
+            "INSERT INTO mirror_state (repo_id, last_import, last_error) VALUES ($1, 0, $2) \
+             ON CONFLICT (repo_id) DO UPDATE SET last_error = $2",
+        )
+        .bind(entry.key.0)
+        .bind(message)
+        .execute(self.registry.pool())
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(repo = %entry.name, error = %e, "recording the mirror error failed");
+        }
+    }
+
+    async fn sync_locked(&self, entry: &Arc<RepoEntry>) -> Result<SyncReport, MirrorError> {
+        let target = self
+            .sources
+            .resolve(&entry.name)
+            .ok_or_else(|| MirrorError::NoSource(entry.name.to_string()))?;
+        check_url(&target.url)?;
+        let pool = self.registry.pool();
+        let refs = self.registry.refs();
+        // The GC fence (SPEC §3.6) covers the import through the ref commit, like a push.
+        let _gc = self.gc.shared().await;
+        let lock_tx = import_lock(pool, entry.key.0).await?;
+
+        let dir = self.cfg.dir.join(format!("{}.git", entry.key.0));
+        self.ensure_repo(&dir).await?;
+        self.fetch(&dir, &target).await?;
+        let tips = self.list_refs(&dir).await?;
+
+        let report = import_tips(entry.clone(), pool.clone(), dir, tips).await?;
+        let desired = desired_refs(&report);
+        let nodes = new_graph_nodes(entry, pool, &report).await?;
+        let (ref_txn, set, deleted) = self.plan_refs(entry, &desired).await?;
+
+        let mut tx = match lock_tx {
+            Some(t) => t,
+            None => refs.begin().await?,
+        };
+        let new_nodes: Vec<NewNode<'_>> = nodes
+            .iter()
+            .map(|n| NewNode {
+                id: n.id,
+                generation: n.generation,
+                parents: &n.parents,
+            })
+            .collect();
+        graph_sql::insert_nodes(&mut tx, entry.ns, &new_nodes).await?;
+        if let Some(txn) = &ref_txn {
+            refs.update_in_tx(&mut tx, entry.key, txn).await?;
+        }
+        sqlx::query(
+            "INSERT INTO mirror_state (repo_id, last_import, last_error) VALUES ($1, $2, NULL) \
+             ON CONFLICT (repo_id) DO UPDATE SET last_import = $2, last_error = NULL",
+        )
+        .bind(entry.key.0)
+        .bind(now())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(SyncReport {
+            commits: report.commits,
+            refs_set: set,
+            refs_deleted: deleted,
+            skipped: report
+                .skipped_refs
+                .iter()
+                .map(asc_git::import::SkippedRef::warning)
+                .collect(),
+        })
+    }
+
+    /// The ref changes that make the asc refs under the mirrored prefixes equal `desired`. Read
+    /// before the write transaction opens (a one-connection pool could not read inside it).
+    async fn plan_refs(
+        &self,
+        entry: &RepoEntry,
+        desired: &HashMap<RefName, RefTarget>,
+    ) -> Result<(Option<RefTxn>, usize, usize), MirrorError> {
+        let refs = self.registry.refs();
+        let mut current = HashMap::new();
+        for prefix in REF_PREFIXES {
+            for e in refs.list(entry.key, prefix).await? {
+                current.insert(e.name, e.target);
+            }
+        }
+        let mut updates = Vec::new();
+        let (mut set, mut deleted) = (0, 0);
+        for (name, target) in desired {
+            if current.get(name) == Some(target) {
+                continue;
+            }
+            set += 1;
+            updates.push(RefUpdate {
+                name: name.clone(),
+                expect: current.get(name).map_or(Expect::Absent, |t| Expect::Value(*t)),
+                new: Some(*target),
+                expires_at: None,
+            });
+        }
+        for (name, target) in &current {
+            if !desired.contains_key(name) {
+                deleted += 1;
+                updates.push(RefUpdate {
+                    name: name.clone(),
+                    expect: Expect::Value(*target),
+                    new: None,
+                    expires_at: None,
+                });
+            }
+        }
+        if updates.is_empty() {
+            return Ok((None, 0, 0));
+        }
+        updates.sort_by(|a, b| a.name.cmp(&b.name));
+        let txn = RefTxn {
+            updates,
+            actor: Actor {
+                id: "mirror".into(),
+                via: "mirror".into(),
+            },
+            reason: "mirror sync".into(),
+            op_id: Uuid::new_v4(),
+        };
+        Ok((Some(txn), set, deleted))
+    }
+
+    // -------------------------------------------------------------------------- git
+
+    fn base(&self, dir: &Path) -> Result<tokio::process::Command, MirrorError> {
+        let mut cmd = tokio::process::Command::from(self.git.command()?);
+        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        cmd.arg("--git-dir")
+            .arg(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GCM_INTERACTIVE", "never")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", null)
+            .env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS)
+            .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        Ok(cmd)
+    }
+
+    async fn ensure_repo(&self, dir: &Path) -> Result<(), MirrorError> {
+        if dir.join("HEAD").is_file() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dir)?;
+        let mut cmd = tokio::process::Command::from(self.git.command()?);
+        cmd.arg("init")
+            .arg("--bare")
+            .arg("--quiet")
+            .arg("--initial-branch=master")
+            .arg(dir);
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        let mut args = cmd;
+        run_capped(&mut args, 1024, self.cfg.fetch_timeout).await?;
+        Ok(())
+    }
+
+    async fn fetch(&self, dir: &Path, target: &MirrorTarget) -> Result<(), MirrorError> {
+        let mut cmd = self.base(dir)?;
+        if let Some(token) = &target.token {
+            let basic = base64::engine::general_purpose::STANDARD
+                .encode(format!("x-access-token:{token}"));
+            cmd.env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+                .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"));
+        }
+        cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+            .args(["-c", "protocol.ext.allow=never"])
+            .args([
+                "fetch",
+                "--quiet",
+                "--prune",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                "--",
+            ])
+            .arg(&target.url)
+            .args(REFSPECS);
+        run_capped(&mut cmd, 1024, self.cfg.fetch_timeout).await?;
+        Ok(())
+    }
+
+    async fn list_refs(&self, dir: &Path) -> Result<Vec<Tip>, MirrorError> {
+        let mut cmd = self.base(dir)?;
+        cmd.args(["for-each-ref", "--format=%(objectname) %(refname)"])
+            .args(REF_PREFIXES.map(|p| p.trim_end_matches('/')));
+        let out = run_capped(&mut cmd, MAX_REF_LIST_BYTES, self.cfg.fetch_timeout).await?;
+        let mut tips = Vec::new();
+        for line in out.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+            let Some(sp) = line.iter().position(|&b| b == b' ') else {
+                return Err(MirrorError::Git("unexpected for-each-ref output".into()));
+            };
+            let (oid, name) = (&line[..sp], &line[sp + 1..]);
+            let oid: GitOid = std::str::from_utf8(oid)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| MirrorError::Git("unexpected object id in for-each-ref".into()))?;
+            if tips.len() >= MAX_MIRROR_REFS {
+                return Err(MirrorError::TooManyRefs);
+            }
+            tips.push(Tip {
+                name: name.to_vec(),
+                oid,
+            });
+        }
+        Ok(tips)
+    }
+
+    // -------------------------------------------------------------------------- triggers
+
+    /// The webhook and poller entry points share this: sync, mapping errors to a status.
+    async fn webhook(self: Arc<Self>, headers: HeaderMap, body: Bytes) -> StatusCode {
+        let Some(secret) = &self.cfg.secret else {
+            return StatusCode::NOT_FOUND;
+        };
+        let signed = headers
+            .get(SIGNATURE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|s| verify_signature(secret, &body, s));
+        if !signed {
+            return StatusCode::UNAUTHORIZED;
+        }
+        let Some(name) = repo_of_payload(&body) else {
+            return StatusCode::BAD_REQUEST;
+        };
+        // The sync outlives a client that hangs up.
+        let me = self.clone();
+        let task = tokio::spawn(async move { me.sync(&name).await });
+        match task.await {
+            Ok(Ok(_)) => StatusCode::OK,
+            Ok(Err(MirrorError::NotFound(_) | MirrorError::NotMirror(_))) => StatusCode::NOT_FOUND,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "mirror webhook sync failed");
+                StatusCode::BAD_GATEWAY
+            }
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    /// The `/hooks/forgejo` router.
+    pub fn router(self: &Arc<Self>) -> Router {
+        Router::new()
+            .route(
+                WEBHOOK_PATH,
+                post(
+                    |State(m): State<Arc<Mirror>>, headers: HeaderMap, body: Bytes| async move {
+                        m.webhook(headers, body).await
+                    },
+                ),
+            )
+            .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BYTES))
+            .with_state(self.clone())
+    }
+
+    /// Syncs every mirror repo once.
+    pub async fn poll_once(&self) {
+        let rows = sqlx::query("SELECT name FROM repos WHERE mode = 'mirror' ORDER BY id")
+            .fetch_all(self.registry.pool())
+            .await;
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "listing mirror repos failed");
+                return;
+            }
+        };
+        for row in rows {
+            let Ok(name) = row.try_get::<String, _>("name") else {
+                continue;
+            };
+            let Ok(name) = RepoName::parse(&name) else {
+                continue;
+            };
+            if let Err(e) = self.sync(&name).await {
+                tracing::warn!(repo = %name, error = %e, "mirror poll failed");
+            }
+        }
+    }
+
+    /// Polls every `interval`; abort the handle to stop (a sync interrupted mid-way is safe).
+    pub fn spawn_poller(self: &Arc<Self>) -> JoinHandle<()> {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(me.cfg.interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                me.poll_once().await;
+            }
+        })
+    }
+}
+
+/// The repository a Forgejo push payload names (`repository.full_name`).
+fn repo_of_payload(body: &[u8]) -> Option<RepoName> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    RepoName::parse(v.get("repository")?.get("full_name")?.as_str()?).ok()
+}
+
+/// Runs `cmd`, returns stdout capped at `cap` bytes (more is an error), and fails on a non-zero
+/// exit with the head of stderr. Both pipes are drained so the child never blocks.
+async fn run_capped(
+    cmd: &mut tokio::process::Command,
+    cap: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, MirrorError> {
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn()?;
+    let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err(MirrorError::Git("no pipes".into()));
+    };
+    let run = async {
+        let (stdout, stderr, status) = tokio::join!(
+            read_capped(out, cap),
+            read_capped(err, MAX_STDERR_BYTES),
+            child.wait()
+        );
+        Ok::<_, std::io::Error>((stdout?, stderr?, status?))
+    };
+    let ((stdout, over), (stderr, _), status) = tokio::time::timeout(timeout, run)
+        .await
+        .map_err(|_| MirrorError::Timeout)??;
+    if !status.success() {
+        let text = String::from_utf8_lossy(&stderr);
+        return Err(MirrorError::Git(format!("{status}: {}", text.trim())));
+    }
+    if over {
+        return Err(MirrorError::Git("output is too large".into()));
+    }
+    Ok(stdout)
+}
+
+/// Reads up to `cap` bytes, then discards the rest. The flag says whether there was more.
+async fn read_capped<R: AsyncRead + Unpin>(
+    mut r: R,
+    cap: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut buf = Vec::new();
+    (&mut r).take(cap as u64 + 1).read_to_end(&mut buf).await?;
+    let over = buf.len() > cap;
+    buf.truncate(cap);
+    if over {
+        tokio::io::copy(&mut r, &mut tokio::io::sink()).await?;
+    }
+    Ok((buf, over))
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+// ------------------------------------------------------------------------------ locking
+
+/// Serialises importers of one repo across processes (SPEC §14.4 I6): on Postgres, a transaction
+/// holding `pg_advisory_xact_lock(repo_id)` that the caller commits together with its writes;
+/// `None` on SQLite, whose single writer already serialises. `ImportGitPush` (U48d) takes the same
+/// lock. Callers in one process also hold a per-repo mutex, since pool connections do not queue.
+pub async fn import_lock(
+    pool: &AnyPool,
+    repo_id: i64,
+) -> Result<Option<Transaction<'static, Any>>, sqlx::Error> {
+    if !matches!(
+        pool.connect_options().database_url.scheme(),
+        "postgres" | "postgresql"
+    ) {
+        return Ok(None);
+    }
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(repo_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(Some(tx))
+}
+
+// ------------------------------------------------------------------------------ import glue
+
+/// The `git_map` table as the importer's lookup and sink.
+struct SqlImportMap {
+    pool: AnyPool,
+    ns: crate::registry::Ns,
+    sink: Arc<SqlGitMap>,
+}
+
+impl SqlImportMap {
+    fn new(pool: AnyPool, entry: &RepoEntry) -> Self {
+        Self {
+            pool,
+            ns: entry.ns,
+            sink: entry.git_map.clone(),
+        }
+    }
+}
+
+#[async_trait]
+impl GitMapSink for SqlImportMap {
+    async fn put(&self, rows: &[GitMapRow]) -> derive::Result<()> {
+        self.sink.put(rows).await
+    }
+}
+
+#[async_trait]
+impl ImportMap for SqlImportMap {
+    async fn get(&self, git: GitOid, kind: ObjectKind) -> derive::Result<Option<[u8; 32]>> {
+        let code: i32 = match kind {
+            ObjectKind::Blob => 1,
+            ObjectKind::Tree => 2,
+            ObjectKind::Commit => 3,
+            ObjectKind::Tag => 4,
+        };
+        let sink = |e: sqlx::Error| derive::Error::Sink(e.to_string());
+        let row = sqlx::query("SELECT asc FROM git_map WHERE ns = $1 AND git = $2 AND kind = $3")
+            .bind(self.ns.as_bytes().to_vec())
+            .bind(git.as_bytes().to_vec())
+            .bind(code)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sink)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let asc: Vec<u8> = row.try_get("asc").map_err(sink)?;
+        <[u8; 32]>::try_from(asc.as_slice())
+            .map(Some)
+            .map_err(|_| derive::Error::Sink("git_map holds an asc id that is not 32 bytes".into()))
+    }
+}
+
+/// Imports `tips` from the git repo at `dir`. The importer holds git's single-threaded object
+/// database handles, so it runs on a blocking thread rather than on the shared runtime workers.
+async fn import_tips(
+    entry: Arc<RepoEntry>,
+    pool: AnyPool,
+    dir: PathBuf,
+    tips: Vec<Tip>,
+) -> Result<asc_git::import::ImportReport, MirrorError> {
+    let handle = tokio::runtime::Handle::current();
+    let joined = tokio::task::spawn_blocking(move || {
+        handle.block_on(async {
+            let odb = Odb::open(&dir)?;
+            let map = SqlImportMap::new(pool, &entry);
+            let mut importer = Importer::new(
+                entry.backend.engine(),
+                entry.objects.clone(),
+                &odb,
+                &map,
+                ImportPolicy::default(),
+            );
+            Ok::<_, MirrorError>(importer.import_commits(&tips).await?)
+        })
+    })
+    .await;
+    joined.map_err(|e| MirrorError::Git(format!("import task: {e}")))?
+}
+
+/// The asc ref value for each mirrored git ref: an annotated tag names its `TagRecord`, anything
+/// else its changeset. Names outside the mirrored prefixes or not UTF-8 are dropped.
+fn desired_refs(report: &asc_git::import::ImportReport) -> HashMap<RefName, RefTarget> {
+    let mut out = HashMap::new();
+    let named = report
+        .refs
+        .iter()
+        .map(|(n, c)| (n, RefTarget::Changeset(*c)))
+        .chain(report.tags.iter().map(|(n, t)| (n, RefTarget::Tag(*t))));
+    for (name, target) in named {
+        let Ok(text) = std::str::from_utf8(name) else {
+            continue;
+        };
+        if !REF_PREFIXES.iter().any(|p| text.starts_with(p)) {
+            continue;
+        }
+        if let Ok(name) = RefName::new(name.clone()) {
+            // Tags come last, so a tag ref ends up naming its `TagRecord`.
+            out.insert(name, target);
+        }
+    }
+    out
+}
+
+/// One `cs_graph` row to add.
+struct GraphNode {
+    id: ChangesetId,
+    generation: u32,
+    parents: Vec<ChangesetId>,
+}
+
+/// The imported changesets that `cs_graph` does not hold yet, parents first, with generations.
+async fn new_graph_nodes(
+    entry: &RepoEntry,
+    pool: &AnyPool,
+    report: &asc_git::import::ImportReport,
+) -> Result<Vec<GraphNode>, MirrorError> {
+    let graph = |e: &dyn std::fmt::Display| MirrorError::Graph(e.to_string());
+    let engine = entry.backend.engine();
+    let mut seen: HashSet<ChangesetId> = report.refs.iter().map(|(_, c)| *c).collect();
+    let mut frontier: Vec<ChangesetId> = seen.iter().copied().collect();
+    let mut parents_of: HashMap<ChangesetId, Vec<ChangesetId>> = HashMap::new();
+    let mut gens: HashMap<ChangesetId, u32> = HashMap::new();
+    while !frontier.is_empty() {
+        let at = frontier.len().saturating_sub(GRAPH_BATCH);
+        let batch = frontier.split_off(at);
+        let known = graph_sql::known(pool, entry.ns, &batch)
+            .await
+            .map_err(|e| graph(&e))?;
+        for id in batch {
+            if let Some(&g) = known.get(&id) {
+                gens.insert(id, g);
+                continue;
+            }
+            if parents_of.len() >= MAX_NEW_CHANGESETS {
+                return Err(MirrorError::TooLarge);
+            }
+            let cs = engine.get_changeset(id).await.map_err(|e| graph(&e))?;
+            for p in &cs.parents {
+                if seen.insert(*p) {
+                    frontier.push(*p);
+                }
+            }
+            parents_of.insert(id, cs.parents.clone());
+        }
+    }
+    // Iterative post-order: a node is numbered once all its parents are.
+    let mut out = Vec::with_capacity(parents_of.len());
+    let mut entered: HashSet<ChangesetId> = HashSet::new();
+    let roots: Vec<ChangesetId> = parents_of.keys().copied().collect();
+    for root in roots {
+        let mut stack = vec![(root, false)];
+        while let Some((id, done)) = stack.pop() {
+            if gens.contains_key(&id) {
+                continue;
+            }
+            let parents = parents_of
+                .get(&id)
+                .ok_or_else(|| MirrorError::Graph("a parent is missing".into()))?;
+            if !done {
+                if entered.insert(id) {
+                    stack.push((id, true));
+                    stack.extend(parents.iter().map(|p| (*p, false)));
+                }
+                continue;
+            }
+            let mut top = 0u32;
+            for p in parents {
+                let g = gens
+                    .get(p)
+                    .ok_or_else(|| MirrorError::Graph("the history has a cycle".into()))?;
+                top = top.max(*g);
+            }
+            let generation = top.saturating_add(1);
+            gens.insert(id, generation);
+            out.push(GraphNode {
+                id,
+                generation,
+                parents: parents.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+// ------------------------------------------------------------------------------ registration
+
+/// The one registration line of this unit (called from `lib.rs`). Serves the webhook when a
+/// secret is configured; the caller starts [`Mirror::spawn_poller`] on the result. Returns `None`
+/// (mirror mode off) without `cache.disk_dir` or without a real git.
+pub fn register(
+    ext: &Extensions,
+    registry: &Arc<Registry>,
+    cfg: &ServeConfig,
+) -> Result<Option<Arc<Mirror>>, MirrorError> {
+    let Some(mc) = MirrorConfig::from_serve(cfg)? else {
+        return Ok(None);
+    };
+    let git = match RealGit::resolve(None, None) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(error = %e, "mirror mode is off: no usable git");
+            return Ok(None);
+        }
+    };
+    let has_secret = mc.secret.is_some();
+    let mirror = Arc::new(Mirror::new(registry.clone(), &ext.pipeline, git, mc));
+    if has_secret {
+        ext.http.register(mirror.router());
+    }
+    Ok(Some(mirror))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::ingest::testutil::registry;
+    use crate::registry::NewRepo;
+
+    const SECRET: &[u8] = b"s3cret";
+
+    fn sign(body: &[u8]) -> String {
+        let mut mac = Hmac::<Sha256>::new_from_slice(SECRET).unwrap();
+        mac.update(body);
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
+        use std::io::Write as _;
+        let real = RealGit::resolve(None, None).expect("git is installed");
+        let mut cmd = real.command().unwrap();
+        cmd.arg("--git-dir")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@x")
+            .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@x")
+            .env("GIT_COMMITTER_DATE", "1700000000 +0000")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(stdin).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Commits `file = content` on top of `parent` and points `refname` at it.
+    fn push(up: &Path, parent: Option<&str>, file: &str, content: &str, refname: &str) -> String {
+        let blob = git(up, &["hash-object", "-w", "--stdin"], content.as_bytes());
+        let tree = git(
+            up,
+            &["mktree"],
+            format!("100644 blob {blob}\t{file}\n").as_bytes(),
+        );
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", content];
+        if let Some(p) = parent {
+            args.extend(["-p", p]);
+        }
+        let commit = git(up, &args, b"");
+        git(up, &["update-ref", refname, &commit], b"");
+        commit
+    }
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        up: PathBuf,
+        registry: Arc<Registry>,
+        entry: Arc<RepoEntry>,
+        mirror: Arc<Mirror>,
+    }
+
+    async fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().unwrap();
+        let up = tmp.path().join("up.git");
+        let real = RealGit::resolve(None, None).expect("git is installed");
+        let ok = real
+            .command()
+            .unwrap()
+            .args(["init", "--bare", "--quiet", "--initial-branch=master"])
+            .arg(&up)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let registry = registry().await;
+        let name = RepoName::parse("o/m").unwrap();
+        let entry = registry
+            .create(
+                &name,
+                &NewRepo {
+                    mode: RepoMode::Mirror,
+                    ..NewRepo::default()
+                },
+            )
+            .await
+            .unwrap();
+        let cfg = MirrorConfig {
+            dir: tmp.path().join("mirrors"),
+            secret: Some(SECRET.to_vec()),
+            forgejo_url: None,
+            interval: POLL_INTERVAL,
+            fetch_timeout: Duration::from_secs(120),
+        };
+        let mirror = Arc::new(Mirror::new(
+            registry.clone(),
+            &PipelineHooks::default(),
+            real,
+            cfg,
+        ));
+        mirror.sources().set(
+            &name,
+            MirrorTarget {
+                url: up.to_str().unwrap().to_owned(),
+                token: None,
+            },
+        );
+        Fixture {
+            _tmp: tmp,
+            up,
+            registry,
+            entry,
+            mirror,
+        }
+    }
+
+    async fn webhook(f: &Fixture, repo: &str, signature: Option<String>) -> StatusCode {
+        let body =
+            format!(r#"{{"repository":{{"full_name":"{repo}"}},"ref":"refs/heads/master"}}"#);
+        let sig = signature.unwrap_or_else(|| sign(body.as_bytes()));
+        f.mirror
+            .router()
+            .oneshot(
+                Request::post(WEBHOOK_PATH)
+                    .header(SIGNATURE_HEADER, sig)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The git refs of the upstream, name to oid.
+    fn git_refs(up: &Path) -> Vec<(String, String)> {
+        git(
+            up,
+            &["for-each-ref", "--format=%(objectname) %(refname)"],
+            b"",
+        )
+        .lines()
+        .map(|l| {
+            let (o, n) = l.split_once(' ').unwrap();
+            (n.to_owned(), o.to_owned())
+        })
+        .collect()
+    }
+
+    /// Every asc ref under the mirrored prefixes, name to the git oid of its peeled commit.
+    async fn asc_refs(f: &Fixture) -> Vec<(String, String)> {
+        let engine = f.entry.backend.engine();
+        let mut out = Vec::new();
+        for prefix in REF_PREFIXES {
+            for e in f.registry.refs().list(f.entry.key, prefix).await.unwrap() {
+                let cs = match e.target {
+                    RefTarget::Changeset(c) => c,
+                    RefTarget::Tag(_) => {
+                        // Resolve through the git map: the tag's commit is what `peel` names.
+                        let id = f
+                            .registry
+                            .refs()
+                            .get(f.entry.key, &e.name)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert!(matches!(id.target, RefTarget::Tag(_)));
+                        out.push((e.name.to_string(), String::new()));
+                        continue;
+                    }
+                };
+                out.push((
+                    e.name.to_string(),
+                    engine.git_commit_of(cs).await.unwrap().to_string(),
+                ));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    async fn count(f: &Fixture, sql: &str) -> i64 {
+        sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
+            .fetch_one(f.registry.pool())
+            .await
+            .unwrap()
+            .get::<i64, _>(0)
+    }
+
+    #[test]
+    fn urls_are_checked() {
+        for bad in [
+            "",
+            "-oProxyCommand=x",
+            "ext::sh -c id",
+            "fd::7",
+            "ftp://h/r.git",
+            "relative/path",
+            "https://h/r\n.git",
+        ] {
+            assert!(check_url(bad).is_err(), "{bad:?}");
+        }
+        for good in [
+            "https://forgejo.example/o/r.git",
+            "ssh://git@h/o/r.git",
+            "file:///srv/r.git",
+            std::env::temp_dir().to_str().unwrap(),
+        ] {
+            assert!(check_url(good).is_ok(), "{good:?}");
+        }
+    }
+
+    #[test]
+    fn signatures_are_verified() {
+        let body = b"{}";
+        let good = sign(body);
+        assert!(verify_signature(SECRET, body, &good));
+        assert!(verify_signature(SECRET, body, &format!("sha256={good}")));
+        assert!(!verify_signature(b"other", body, &good));
+        assert!(!verify_signature(SECRET, b"{ }", &good));
+        assert!(!verify_signature(SECRET, body, ""));
+        assert!(!verify_signature(SECRET, body, "zz"));
+        assert!(!verify_signature(SECRET, body, &good[1..]));
+    }
+
+    #[tokio::test]
+    async fn webhook_follows_the_upstream_and_duplicates_are_harmless() {
+        let f = fixture().await;
+        let c1 = push(&f.up, None, "a.txt", "one\n", "refs/heads/master");
+        push(&f.up, Some(&c1), "b.txt", "two\n", "refs/heads/feature");
+        git(&f.up, &["tag", "-a", "-m", "release", "v1", &c1], b"");
+        git(&f.up, &["update-ref", "refs/pull/1/head", &c1], b"");
+
+        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        let got = asc_refs(&f).await;
+        let mut want: Vec<_> = git_refs(&f.up)
+            .into_iter()
+            // An annotated tag's asc ref names its `TagRecord`, not a commit.
+            .map(|(n, o)| if n == "refs/tags/v1" { (n, String::new()) } else { (n, o) })
+            .collect();
+        want.sort();
+        assert_eq!(got, want);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, 2);
+        let state = "SELECT COUNT(*) FROM mirror_state WHERE last_error IS NULL AND last_import > 0";
+        assert_eq!(count(&f, state).await, 1);
+        let logged = count(&f, "SELECT COUNT(*) FROM ref_log").await;
+        assert_eq!(logged, 4);
+
+        // The same webhook again changes nothing.
+        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM ref_log").await, logged);
+
+        // A move, a new commit and a deletion all arrive; the ref log says `mirror`.
+        let c3 = push(&f.up, Some(&c1), "c.txt", "three\n", "refs/heads/master");
+        git(&f.up, &["update-ref", "-d", "refs/heads/feature"], b"");
+        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        let got = asc_refs(&f).await;
+        assert!(got.contains(&("refs/heads/master".to_owned(), c3)));
+        assert!(!got.iter().any(|(n, _)| n == "refs/heads/feature"));
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, 3);
+        assert_eq!(
+            count(&f, "SELECT COUNT(*) FROM ref_log WHERE via <> 'mirror'").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn webhook_rejects_bad_signatures_and_unknown_repos() {
+        let f = fixture().await;
+        push(&f.up, None, "a", "x", "refs/heads/master");
+        assert_eq!(
+            webhook(&f, "o/m", Some("00".repeat(32))).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(webhook(&f, "o/zzz", None).await, StatusCode::NOT_FOUND);
+        assert!(asc_refs(&f).await.is_empty());
+        // A primary repo is not a mirror.
+        f.registry
+            .create(&RepoName::parse("o/p").unwrap(), &NewRepo::default())
+            .await
+            .unwrap();
+        assert_eq!(webhook(&f, "o/p", None).await, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn concurrent_syncs_both_succeed_with_one_set_of_rows() {
+        let f = fixture().await;
+        let c1 = push(&f.up, None, "a", "x", "refs/heads/master");
+        push(&f.up, Some(&c1), "b", "y", "refs/heads/master");
+        let name = RepoName::parse("o/m").unwrap();
+        let (a, b) = tokio::join!(f.mirror.sync(&name), f.mirror.sync(&name));
+        let (a, b) = (a.unwrap(), b.unwrap());
+        assert_eq!(a.commits + b.commits, 2);
+        assert_eq!(a.refs_set + b.refs_set, 1);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM refs").await, 1);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM ref_log").await, 1);
+        assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, 2);
+    }
+
+    #[tokio::test]
+    async fn ids_equal_a_client_side_import_of_the_same_history() {
+        let f = fixture().await;
+        let c1 = push(&f.up, None, "a", "x", "refs/heads/master");
+        push(&f.up, Some(&c1), "b", "y", "refs/heads/master");
+        f.mirror.sync(&RepoName::parse("o/m").unwrap()).await.unwrap();
+
+        let client = f
+            .registry
+            .create(&RepoName::parse("o/c").unwrap(), &NewRepo::default())
+            .await
+            .unwrap();
+        let tips = f.mirror.list_refs(&f.up).await.unwrap();
+        let odb = Odb::open(&f.up).unwrap();
+        let map = SqlImportMap::new(f.registry.pool().clone(), &client);
+        let report = Importer::new(
+            client.backend.engine(),
+            client.objects.clone(),
+            &odb,
+            &map,
+            ImportPolicy::default(),
+        )
+        .import_commits(&tips)
+        .await
+        .unwrap();
+        let theirs = report.refs[0].1;
+        let ours = f
+            .registry
+            .refs()
+            .get(f.entry.key, &RefName::new("refs/heads/master").unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .target;
+        assert_eq!(ours, RefTarget::Changeset(theirs));
+    }
+
+    #[tokio::test]
+    async fn unrepresentable_refs_are_skipped_and_a_bad_source_is_recorded() {
+        let f = fixture().await;
+        push(&f.up, None, "a", "x", "refs/heads/master");
+        let tree = git(&f.up, &["mktree"], b"");
+        git(&f.up, &["update-ref", "refs/tags/tree", &tree], b"");
+        let name = RepoName::parse("o/m").unwrap();
+        let report = f.mirror.sync(&name).await.unwrap();
+        assert_eq!(report.skipped.len(), 1);
+        assert!(report.skipped[0].contains("tree"));
+        assert_eq!(asc_refs(&f).await.len(), 1);
+
+        f.mirror.sources().set(
+            &name,
+            MirrorTarget {
+                url: "ext::sh -c id".into(),
+                token: None,
+            },
+        );
+        assert!(matches!(
+            f.mirror.sync(&name).await,
+            Err(MirrorError::BadUrl(_))
+        ));
+        let failed = "SELECT COUNT(*) FROM mirror_state WHERE last_error IS NOT NULL";
+        assert_eq!(count(&f, failed).await, 1);
+        // The refs are untouched by the failure.
+        assert_eq!(asc_refs(&f).await.len(), 1);
+    }
+}

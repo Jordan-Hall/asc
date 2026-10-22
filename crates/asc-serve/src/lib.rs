@@ -14,6 +14,7 @@ pub mod land;
 pub mod limits;
 pub mod mainline;
 pub mod migrate;
+pub mod mirror;
 pub mod outbox;
 pub mod read;
 pub mod registry;
@@ -218,6 +219,8 @@ pub async fn serve(
     register_all(&ext, &registry, &cfg.limits);
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+    let mirror = mirror::register(&ext, &registry, &cfg)
+        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let well_known = http::WellKnown {
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
@@ -269,6 +272,7 @@ pub async fn serve(
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();
+    let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -279,6 +283,9 @@ pub async fn serve(
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();
+    if let Some(p) = poller {
+        p.abort();
+    }
     admin.abort();
     served?;
     Ok(())
