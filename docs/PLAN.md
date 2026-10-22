@@ -22,6 +22,7 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
   - **Server extension points [audit: asc-serve-no-handler-or-route-extension-points]:** U42's `RepoHandlers` (one `Arc<dyn …>` per RPC group) and U43a's `HttpRoutes` and `GrpcServices` registries are filled by one registration line per unit in `crates/asc-serve/src/lib.rs` (U43b, U45, U47, U48a–U48d, U49, U66, U67, U68, U70, U72, U75, G09, C18–C22, C29, C30a–C30d, C50), which the general exception allows.
   - **Recorded amendments (stacks):** a few C units make one named hunk in a file another unit owns (table in §C). The hunk is listed in the C unit's brief and is allowed like the `mod` registration.
   - **Recorded amendments (branchless) [audit: branchless-folded]:** the B units make a few named hunks in files other units own (table in §B). Each hunk is listed in the B unit's brief and is allowed like the `mod` registration. Built units (U41, U14b and the rest of U01–U16) change behaviour only through the follow-up unit named in the table, never by rewriting their briefs.
+  - **Recorded amendments (MCP) [audit: mcp-folded]:** the M units make a few named hunks in files other units own (table in §M). Built units (U41) are changed only through the follow-up units M01a and M01b; their briefs are not rewritten. Each hunk is listed in the M unit's brief and is allowed like the `mod` registration.
   - **Recorded amendments (non-stack) [audit: engine-local-ref-moves-bypass-chokepoint, object-stack-selector-single-owner-blocks-remote-tier]:** U20 makes two named hunks in built units' files: `build/lint/no-raw-git.sh` (U01b): `check_refs_update crates/asc/src/cli` becomes `crates/asc/src`, excluding `crates/asc/src/refs_guard.rs` (the one file that writes refs); and `CacheDir::open_read_only(root)` in `crates/asc-store/src/cachedir.rs` (U08; CARRY.md). Both are allowed like the `mod` registration.
   - **Child processes [audit: hook-child-path-real-git]:** every spawn of a hook, alias, editor, driver, `rebase --exec`, `bisect run` or `git-<name>`/`asc-<name>` external command goes through `asc::child::command()` (U20, `crates/asc/src/child.rs`), which applies SPEC §9.4.1's child PATH. Only `RealGit` children bypass it. Registering an implementation is one line in `main.rs`, which the general exception allows.
 
@@ -29,10 +30,10 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
 
 ```
 Cargo.toml  rust-toolchain.toml  deny.toml  .cargo/config.toml  docker-compose.it.yml
-proto/asc/v1/{repo,workspace,projects,changes,cloud}.proto   proto/buf.yaml   proto/buf.gen.yaml   (changes.proto: C17; cloud.proto: B07)
+proto/asc/v1/{repo,workspace,projects,changes,cloud,options,cli}.proto   proto/buf.yaml   proto/buf.gen.yaml   (changes.proto: C17; cloud.proto: B07; options.proto: M01a; cli.proto: M02)
 crates/asc-core     pure data model, codec, git rendering, content ingest
 crates/asc-store    Objects/Refs traits, bucket, cache dir, tiered, SQL refs, bucket refs, GC
-crates/asc-engine   trees, commits, revspec, graph, skip lists, derive, diff, merge, rebase, land, blame, sync, history, projects
+crates/asc-engine   trees, commits, revspec, graph, skip lists, derive, diff, merge, rebase, land, blame, sync, history, projects, render (text renderers shared by `asc` and `asc-mcp`, M04a)
 crates/asc-graph    pure project graph: model, detectors (rust, python, dotnet, node), lockfiles, .asc/projects.toml, ownership, affected algebra
 crates/asc-state    $ASC_HOME, state.db (one migrator), staging rows, workspaces rows
 crates/asc-git      git index file, odb, RealGit, synthetic .git, import, export, git-remote mode
@@ -40,6 +41,7 @@ crates/asc-rpc      proto codegen, conversions, gRPC server/client, auth interce
 crates/asc-wc       workspaces, journal, status, switch planner, plain materialiser, worktrees
 crates/asc-vfs      provider core, ProjFS (cfg windows), FUSE (cfg linux), submodule composition
 crates/asc-serve    asc serve: registry, ingest, UpdateRefs, outbox, Forgejo client, mirror, land, reads, mutations, indexes, /v8, cache role, seeds, Projects
+crates/asc-mcp       MCP protocol layer, no repository logic: tools.toml, schema generator, catalogue, handler, shaping, cursors, confirmation, resources, prompts (SPEC §22; M units)
 crates/asc-ci       asc ci checkout/affected/changed/warm/cache/artifact
 crates/asc-sim      hermetic simulation (test-only)
 crates/asc          the binary: CLI, daemon, argv[0] dispatch (asc, git shim), stack verbs (src/stack/, C units)
@@ -47,7 +49,7 @@ fuzz/              cargo-fuzz targets          bench/          git-vs-asc benchm
 tests/turbo/       turbo contract suite        tests/compat/   git compatibility suite        actions/   composite actions        deploy/   compose bundle
 ```
 
-Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**: `asc-core ← asc-graph ← asc-engine`; `asc-core ← asc-store ← asc-engine ← asc-state ← asc-git ← asc-wc ← asc-vfs ← asc`; `asc-rpc` depends on `asc-engine` (and implements `HistoryApi`, `BlameApi` and `ProjectsApi` remotely, SPEC §4.3); `asc-serve` on `asc-rpc`, `asc-git`, `asc-state`; `asc-ci` on `asc-wc`, `asc-git`, `asc-rpc`; `asc-sim` (dev only) on `asc-serve`; `asc` on everything (features `serve`, `vfs-projfs`, `vfs-fuse`).
+Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**: `asc-core ← asc-graph ← asc-engine`; `asc-core ← asc-store ← asc-engine ← asc-state ← asc-git ← asc-wc ← asc-vfs ← asc`; `asc-rpc` depends on `asc-engine` (and implements `HistoryApi`, `BlameApi` and `ProjectsApi` remotely, SPEC §4.3); `asc-serve` on `asc-rpc`, `asc-git`, `asc-state`; `asc-ci` on `asc-wc`, `asc-git`, `asc-rpc`; `asc-sim` (dev only) on `asc-serve`; `asc-mcp` on `asc-rpc` and `asc-engine` (never on `asc`) [audit: mcp-folded]; `asc` and `asc-serve` on `asc-mcp` (feature `mcp`, on by default); `asc` on everything (features `serve`, `vfs-projfs`, `vfs-fuse`, `mcp`).
 
 **Parallelism notation:** units in the same `‖ group` have disjoint files and no dependency on each other, so they can run concurrently once their dependencies are done.
 
@@ -259,6 +261,38 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | B26 | `legacy_shared` conversion | asc-serve | B18, B08a, K12, C34 | BG |
 | B27 | CI: draft-PR trigger spike and stacked-PR base for `asc ci checkout` | asc-ci | U62, B17, C40 | BH |
 | B28 | Pre-upload guard (ignored and denied paths, bounded secret scan) | asc-engine | B02 | BA |
+| M01a | Descriptor set export, `options.proto`, the asc JSON profile codec | asc-rpc | U41 | – |
+| M01b | Annotate the existing protos with `(asc.v1.json)` | asc-rpc | M01a, C17, C31, U73 | MA |
+| M01c | `--json` prints through the profile | asc | M01b, U21a, U73 | – |
+| M02 | `cli.proto` and the reconciled `--json` shapes (op log wrapper, signatures) | asc-rpc, asc | M01c, C07, C15 | – |
+| M03 | asc-mcp skeleton, `tools.toml`, schema generator, catalogue, `tools/list` snapshot | asc-mcp | M01b, M02, C17, C31, G09, C30a, C30b | – |
+| M04a | Text renderers moved into the engine (`asc-engine::render`) | asc-engine | U15, U21a | – |
+| M04 | Shaping: stream folding, token budget, truncation, cursors | asc-mcp | M03, M04a | MC |
+| M17 | Generated tool reference `docs/mcp.md` (drift-checked) | asc-mcp | M03 | MC |
+| M05 | Handler core: discover, tools/call, error mapping, gating | asc-mcp | M03, M04 | – |
+| M06 | MRTR elicitation and sealed `requestState` | asc-mcp | M05 | MD |
+| M07 | Resources, templates, completion, prompts | asc-mcp | M05 | MD |
+| M08 | `RpcBackend` over `RpcClient` and the IPC `WorkspaceClient` | asc-mcp | M05, U42, U52, C17, G09 | MD |
+| M12a | `asc serve /mcp` transport (stateless HTTP, Origin and header checks, caps) | asc-serve | M05, U43c | MD |
+| M09 | `asc mcp` over stdio, `LocalBackend`, path gate, stdout guard | asc | M07, M08, U73, C31, U50 | ME |
+| M12b | `ServeBackend` and rate classes | asc-serve | M12a, U47, U69, C19, G09 | ME |
+| M15 | `search` tool (listed when `search.v1` is advertised) | asc-mcp | M08, I12 | ME |
+| M09b | `asc mcp install` | asc | M09 | MF |
+| M10 | Local write tools through child verbs | asc | M09, M06, C10, C11, C12, C15, C24, C25, U54w | MF |
+| M11 | Local `subscriptions/listen` over `Workspace.Watch` | asc | M09, C49 | MF |
+| M13 | Server auth: PRM, 401/403, bearer validation, scopes | asc-serve | M12b, U44, K07 | MF |
+| M18 | Server `Commit` writes a `ChangeMeta` | asc-serve | U48a, C18 | MA |
+| M14 | Server write tools: `commit`, `submit`, `rebase`, `restack` | asc-serve | M13, M06, M18, U48a, U68, C22, C24 | MG |
+| M16 | MCP budgets and conformance (RSS, latency, tokens, inspector job) | asc, bench | M10, M12b | MG |
+| M20 | Forgejo MCP framework (`/api/mcp`, auth reuse, read-only gate) | forgejo | K01, K07 | own track |
+| M21 | Forgejo `pr_read` with `AscHandles` and the stack panel | forgejo | M20, M03, C34, C36 | own track |
+| M22 | Forgejo `pr_write` and `review_write` | forgejo | M21, M28, C38, C39 | own track |
+| M23 | Forgejo `issue_read`, `issue_write` | forgejo | M20 | own track |
+| M24 | Forgejo `actions_read`, `actions_write` | forgejo | M20, K14, C40 | own track |
+| M25 | Forgejo `inbox_read`, `inbox_write` | forgejo | M20, C41b | own track |
+| M26 | Forgejo OAuth: resource indicators, audience, `asc-mcp` client | forgejo | K07 | own track |
+| M27 | (v1.x) CIMD client registration | forgejo | M26 | own track |
+| M28 | Forgejo `lockdown` mode | forgejo | M21, M23, M24 | own track |
 | K01–K17 | Forgejo fork | Go | see §K | own track |
 | R01–R02 | Runner fork | Go | see §K | own track |
 | A01 | `asc/actions` mirror | actions | U64 | own track |
@@ -270,7 +304,7 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | O07 | Fuzz targets | fuzz | U04, U05, U13, U16, U41, U48a, G03–G06 | P |
 | O08 | Simulation harness | asc-sim | U46, U48d, O01, U65, U70, U01b | P |
 
-Unit ids keep their v1.0 numbers; split units carry letter suffixes, and new units continue the numbering (U65–U75, G01–G11, O06–O08, K17, R01–R02, A01; round 2 adds U01b and U24f). Round 3 adds the stack track C01–C52 (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12; C16 is withdrawn). Round 5 adds the branchless track B01–B28 (SPEC §21; B20 is withdrawn and not reused; B18a is a follow-up unit for the built C01; the group letters `BA`–`BI` are by wave). There is no U74. U01–U12 and U14 are built; U15 is in progress; everything else is to do.
+Unit ids keep their v1.0 numbers; split units carry letter suffixes, and new units continue the numbering (U65–U75, G01–G11, O06–O08, K17, R01–R02, A01; round 2 adds U01b and U24f). Round 3 adds the stack track C01–C52 (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12; C16 is withdrawn). Round 5 adds the branchless track B01–B28 (SPEC §21; B20 is withdrawn and not reused; B18a is a follow-up unit for the built C01; the group letters `BA`–`BI` are by wave). Round 6 adds the MCP track M01a–M28 (SPEC §22; mcp.md's own ids, so the IDE-plugin and code-intelligence designs keep their references; M19 does not exist; the group letters `MA`–`MG` are by wave) [audit: mcp-folded]. There is no U74. U01–U12 and U14 are built; U15 is in progress; everything else is to do.
 
 Critical path to the **local-only milestone (U25)**: U01 → U02/U03 → U04 → U05/U06 → U07/U09 → U08 → U10 → U11 → U12/U14 → U13/U17 → U18/U19 → U20 → U20a, U21–U24 → U25. Cheap plain worktrees (U54w) follow immediately.
 Critical path to **disk relief on Windows (U58)**: U25 → U27a → U27c → U32 → U39 → U40, and U25 → U54v → U55 → U53a → U53b → U56/U57 → U58.
@@ -280,6 +314,7 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 Critical path to **local stacks (phase 1c)**: U20 (`ext.rs` sinks) → U17/U26 → C01 → C02 → C05 → C06/C07 → C10 (needs U27c) → C11–C14, C51; C04 (after U27d, U27e, U32) → C15. The S-track of stacks.md is this C-track.
 Critical path to the **commit cloud** (SPEC §21.3): U17 → C02 → B02 → B28 → B13 (also needs C23, U31) → B14 (also needs B11, B09, U53b) → B15, B16. Critical path to **branchless `push`**: U43b/U47/U48d → B08a → B08b → B12 (also needs B13, C24, U32, B18a). B17 and B23 (Go) and B27 (CI) follow C34 and C40.
 Critical path to **stacked PRs**: C17 → C18 (needs U43b, U66) → C19 (needs U47) → C22 (needs U68), C24 (needs U50), C50 → C28; Forgejo C34 (after K17) → C36 → C38 → C39.
+Critical path to **MCP** (SPEC §22) [audit: mcp-folded]: U41 → M01a → M01b (needs C17, C31, U73) → M01c → M02 → M03 → M04 → M05 → M08 → M09 → M10; the server path is M05 → M12a → M12b → M13 → M14 (M18 first). M04a needs only U15 and U21a. The `search` tool (M15) also needs the `CodeIntel` proto (I12).
 
 ---
 
@@ -411,7 +446,7 @@ Critical path to **stacked PRs**: C17 → C18 (needs U43b, U66) → C19 (needs U
   - **Ids [audit: display-ids]:** `Ctx` decides the display-id policy from argv[0] and output kind: git SHA-1 by default with `core.abbrev`; `asc.displayIds` only for human output when invoked as `asc`.
   - Global options of SPEC §11.1, alias expansion (`alias.*`, including `!shell` aliases), external commands and verb precedence per SPEC §11.4 (`dispatch.rs`: a `GIT_BUILTINS` const list for git 2.55, then alias, then `git-<name>`, then asc-only verbs when argv[0] = `git`; builtins, asc-only verbs, alias, `asc-<name>` then `git-<name>` when argv[0] = `asc`; asc-only verbs are matched exactly before `help.autocorrect` and are never autocorrect candidates; `git-<name>`/`asc-<name>` spawned through `child::command`) [audit: shim-asc-verbs-shadow-aliases-and-git-dash-commands], pager and colour policy as git. `Ctx` loads `AscHome` (`AscHome::for_workspace` inside a workspace), `StateDb`, the workspace, the git config snapshot (with `includeIf` per U19), and an `Engine` over the SPEC §3.5 object stack, which `Ctx` builds itself: `Tiered<ReadOnly(asc.cache.readOnly)…, StoreSet{store, asc.cache.dir or $ASC_HOME/cache}, R>`, where `R` comes from `ext::RemoteObjectsSelector` for the default remote's kind (none for local-only and git-remote modes) [audit: object-stack-selector-single-owner-blocks-remote-tier]. Recorded amendment to built U08's `crates/asc-store/src/cachedir.rs`: `CacheDir::open_read_only(root)`, where `put` returns `Ok` without writing and a corrupt read returns `Error::Corrupt` without deleting (CARRY.md).
   - **Children [audit: hook-child-path-real-git, hook-child-path-shim]:** `child.rs` holds `asc::child::command(program)` and `GitEnv::child_env()`: the child PATH of SPEC §9.4.1 (private shim dir `<exe dir>/shim` first, created atomically on first use if missing, via U16a's `RealGit::child_path`), asc's `-c` values as `GIT_CONFIG_PARAMETERS`, and `ASC_SHIM_DEPTH`. Aliases, editors, pagers, drivers and plugins spawn only through it.
-  - **JSON output [audit: plugin-api-undefined]:** `cli/json.rs` is the shared proto3-JSON writer (JSON lines, one object per stream message) that `status|diff|log|blame --json`, `asc watch --json` and `asc affected --json` use (SPEC §11.2).
+  - **JSON output [audit: plugin-api-undefined]:** `cli/json.rs` is the shared JSON writer (JSON lines, one object per stream message) that `status|diff|log|blame --json`, `asc watch --json` and `asc affected --json` use (SPEC §11.2). Until M01c it prints the proto3 JSON of the message; M01c switches it to the asc JSON profile `asc_rpc::json` (SPEC §22.4.2), so every caller stays unchanged [audit: mcp-folded].
   - `asc init [dir] [-b]` creates a local-only repo (ns = random), a plain workspace, the synthetic `.git`, the unborn branch per SPEC §6.5 (`-b`, else `init.defaultBranch`, else `master`), and a `.ascignore` only when the directory has no `.gitignore`, with the first line `# asc: replaces .gitignore in this directory`; invoked as `git` (argv[0], `asc.shim.init = asc`) it writes no `.ascignore` (SPEC §2.4.2, §11.4) [audit: ascignore-shadows-gitignore]. `.claude/worktrees/` goes to the exclude file in effect (U19). `asc config` uses gix-config with git's flags.
   - Tests (only `init`, `config` and the frame; no sibling commands) [audit: cli-unit-acceptance-uses-sibling-commands]: after `asc init`, `<gitdir>/HEAD` contains `ref: refs/heads/master` with `HOME` empty, and `ref: refs/heads/trunk` with `init.defaultBranch=trunk`; `-C`; an alias to `config`; `asc config --bogus` gives exit 129 with the §11.5 message; `-c` propagation to a child process; with real git first on the inherited PATH, a `!sh -c "command -v git"` alias prints `<exe dir>/shim/git`; `asc init` in a directory with a `.gitignore` writes no `.ascignore`; dispatch tests call `dispatch::resolve` with argv[0] = `git` directly (the shim's in-workspace hand-off is U20a): with `alias.graph = log --oneline --graph`, `git graph` resolves to the alias; a `git-affected` script on PATH wins over asc's `affected`; `git daemon` in a workspace exits 129 with the unsupported message; `git nosuch` prints git's `git: 'nosuch' is not a git command. See 'git --help'.` with exit 1; `asc graph` still runs the project graph (stub exit 129 until G08); `help.autocorrect=immediate` never turns a typo of a git command into an asc-only verb; the no-op sinks leave `cli_frame` output unchanged; `ReadOnlyRefs::update` returns `Error::ReadOnly`; `update_local_refs` with `Keep` after a HEAD move leaves the effective staged state unchanged (through U17's `stage::rebase`); `CacheDir::open_read_only` neither writes nor deletes a corrupt file.
 
@@ -1051,6 +1086,72 @@ The C01 import rule is **not** amended (C01 is built). The migration-mode third 
 
 ---
 
+## §M MCP track: the asc JSON profile, `asc mcp`, `asc serve /mcp` and the Forgejo `/api/mcp` (SPEC §22) [audit: mcp-folded]
+
+Source: `docs/research/mcp.md` §8, with the review fixes it records (SPEC §22.9 lists the rulings made at the fold). The unit ids are mcp.md's own, so `docs/research/ide-plugins.md` (P33b, P42, P50) and `docs/research/codeintel.md` (I21) keep pointing at the right units. Code lives in `crates/asc-mcp/` (the protocol layer, no repository logic; `Cargo.toml`, `build.rs`, `tools.toml` and `src/lib.rs` are owned by M03), `crates/asc/src/mcp/` (`mod.rs` owned by M09), `crates/asc-serve/src/mcp/` (`mod.rs` owned by M12a) and `crates/asc-engine/src/render/` (`mod.rs` owned by M04a). The first unit to land creates a missing `mod.rs`; each later unit adds its own `pub mod` line (the general exception). Every unit owns its test files, and none is shared. Dependencies: `rmcp = { version = "3.6.0", default-features = false, features = ["server", "base64", "transport-io", "transport-async-rw", "transport-streamable-http-server", "elicitation", "request-state"] }` is added by M03 as its one `[workspace.dependencies]` line (SPEC §22.7.1: no `macros`, no `schemars`, no `auth`). The stdio acceptance tests are inspector-style: an rmcp client (a dev-dependency with `client` and `transport-child-process`) spawns `asc mcp` and runs `server/discover`, `tools/list` and tool calls against a fixture repo.
+
+**Phases (SPEC §18):** M12a–M14 and M18 are phase 4m (after U47, U69, C19, G09); M01a–M11 and M15–M17 are phase 5m (after U73, C31, C24, C25); M20–M26 and M28 are phase 9m on the Go track (M27 is v1.x). B22 (the branchless tools of SPEC §21.7) needs M03 and M10, so it moved to wave 30. Critical path: M01a → M01b → M01c → M02 → M03 → M04 → M05 → M08 → M09 (the local read surface, which works in local-only mode) → M10. M04a runs in parallel with M01a–M03 and gates M04. The server path is M05 → M12a → M12b → M13 → M14 (M18 before M14). M06, M07, M09b and M17 run in parallel after their dependencies.
+
+**Recorded amendments.** These hunks go into files that another unit owns. The M unit makes the hunk; it is allowed like the `mod` registration. U41 is built, so its briefs are not rewritten: M01a and M01b are its follow-up units.
+
+| Owning unit and file | Hunk | Made by |
+|---|---|---|
+| U41 `crates/asc-rpc/build.rs`, `lib.rs` (built) | write the `FileDescriptorSet` (`file_descriptor_set_path`) and export `pub const DESCRIPTOR_SET` | M01a |
+| U41 `proto/asc/v1/{repo,workspace,projects}.proto` (built); C17 `changes.proto`; U73 and C31 `workspace.proto` hunks | `(asc.v1.json)` options on `bytes` fields | M01b |
+| U20 `crates/asc/src/cli/json.rs` (the shared `--json` writer; U21a, U24a, U24c, U28b and U73 call it) | print through `asc_rpc::json` | M01c |
+| C07 `crates/asc/src/stack/json.rs`; C15 `op log` output | reconcile to the profile schemas: snake_case, `tz` on `Signature`, `op log` wrapped as `{"ops": [...]}` | M02 |
+| C15 `crates/asc/src/stack/cli/undo.rs` | `asc undo --op <id>` and `asc redo --op <id>`, refusing with `STALE_OP` (SPEC §20.7) | M10 |
+| U21a `asc status` text output | call the `asc-engine::render` porcelain v2 renderer | M04a |
+| U42 `crates/asc-rpc/src/server.rs` (`Version` handler) | `Version.features += "json.profile.v1"` | M12b |
+| U43a `crates/asc-serve/src/lib.rs` | one `HttpRoutes` registration line | M12a |
+| `asc-serve.toml [mcp]` default `enabled` | `false` until M13, then `true` | M13 |
+| U48a `Commit` handler | write a `ChangeMeta` through `IngestObserver` (SPEC §8.7) | M18 |
+| B22 `tools.toml` rows | the four branchless tools of SPEC §21.7 | B22 |
+
+Each unit is done under the general rules (acceptance passes, clippy green, only owned files changed). The SPEC sections named are normative.
+
+| ID | Title | Depends | Owns | Accept | Brief and required tests |
+|---|---|---|---|---|---|
+| M01a | `options.proto`, the JSON profile codec, descriptor export | U41 | `proto/asc/v1/options.proto`, `crates/asc-rpc/src/json.rs`; amendment: `build.rs` and `lib.rs` of U41 (descriptor set) | `cargo test -p asc-rpc json:: && buf lint proto` | SPEC §22.4.2. `extend google.protobuf.FieldOptions { JsonKind json = 50101; }` with kinds `HEX`, `CHANGE`, `PATH`, `TEXT`, `DATA`. `asc_rpc::json` encodes and decodes a `DynamicMessage` by descriptor (decoding accepts exactly what encoding prints; enums also accept the full name), and exports the constant `json.profile.v1`. Tests: golden round trip for every kind; a non-UTF-8 path becomes `{"b64": …}`; `Signature` prints `tz` as `+0530` from `tz_min`; a binary `DATA` field prints `binary: true` and no data; `asc api` encoding is unchanged (standard proto3 JSON). |
+| M01b | Annotate the existing protos with `(asc.v1.json)` | M01a, C17, C31, U73 | `crates/asc-rpc/tests/json_annotations.rs` (the hunks of the amendments table) | `cargo test -p asc-rpc --test json_annotations && buf lint proto` | Every `bytes` field of `repo`, `workspace`, `projects` and `changes` protos has an option; the test walks the descriptor set and fails on any `bytes` field without one. |
+| M01c | `--json` prints through the profile | M01b, U21a, U73 | `crates/asc/tests/json_profile.rs` (plus the U20 `cli/json.rs` hunk) | `cargo test -p asc --test json_profile` | Golden `--json` of `status`, `diff` and `log` in the profile (snake_case, hex ids, `tz`); `asc api` stays standard proto3 JSON; a result is always a JSON object. |
+| M02 | `cli.proto` and the reconciliation of the C07 shapes | M01c, C07, C15 | `proto/asc/v1/cli.proto`, `crates/asc/tests/mcp_json_shapes.rs` (plus the C07 and C15 hunks) | `cargo test -p asc --test mcp_json_shapes` | `OpResult` (`status` `ok\|nothing\|paused\|ambiguous`, `conflicts`, `candidates`), `OpLogResponse`, the `*Args` messages (`CreateArgs`, `ModifyArgs`, `AbsorbArgs`, `RestackArgs`, `UndoArgs`, `SyncArgs`, `SubmitArgs`, `WorktreeAddArgs`, `OpLogArgs`), `WorktreeAddResult`, `AscHandles`. Tests: every SPEC §20.7 `--json` shape validates against its message; `asc op log --json` prints `{"ops": [...]}`. |
+| M03 | asc-mcp skeleton, `tools.toml`, schema generator, catalogue, `tools/list` snapshot and token budget | M01b, M02, C17, C31, G09, C30a, C30b | `crates/asc-mcp/{Cargo.toml,build.rs,tools.toml}`, `src/{lib.rs,catalogue.rs,schema.rs}`, `schema/asc_handles.schema.json`, `tests/snapshots/**` | `cargo test -p asc-mcp -- catalogue:: schema:: && cargo deny check` | SPEC §22.4.1, §22.3. `build.rs` reads `tools.toml` (one row per tool: name, toolset, surfaces, RPC, request and response message, hidden and added fields, defaults, caps, annotations, confirm rule, description) and `asc_rpc::DESCRIPTOR_SET` through `prost-reflect`, and emits `tools_gen.rs` (JSON Schema 2020-12 as `&'static str`, one `$defs` per schema). Adds the `rmcp` pin and `crates/asc-mcp` to the workspace. Tests: an insta snapshot of `tools/list` per toolset; the default set estimates at most 6,000 tokens; the default `core` set has 11 read tools; `cargo tree -d` shows one axum; `asc_handles.schema.json` is written. |
+| M04a | Text renderers moved into the engine: porcelain v2 status, `--oneline` log, blame, `path:line:text` grep | U15, U21a | `crates/asc-engine/src/render/{mod.rs,status.rs,log.rs,blame.rs,grep.rs}`; amendment: U21a calls the porcelain v2 renderer | `cargo test -p asc-engine render::` | SPEC §22.7.2. The CLI and MCP share one set of renderers; U21a's output is unchanged byte for byte (the U25 compat suite stays green). |
+| M04 | Shaping: stream folding, budget (bytes / 3), truncation, cursors | M03, M04a | `crates/asc-mcp/src/{shape.rs,cursor.rs}` | `cargo test -p asc-mcp -- shape:: cursor::` | SPEC §22.6.2. Tests: the 300-file diff cap with whole-hunk cuts and `omitted` counts; byte-offset cursors for `read_file` seek and cost O(page); an HMAC key ring (a cursor from another call or after a restart gives -32602); the budget is shared by `structuredContent` and the text block. |
+| M05 | Handler core: discover, tools/call, error mapping (exit 1 and 2 are not errors), gating, concurrency, progress, cancel | M03, M04 | `crates/asc-mcp/src/{handler.rs,backend.rs,config.rs,errors.rs}` | `cargo test -p asc-mcp handler::` | SPEC §22.3.1, §22.5, §22.8. An in-memory duplex transport. Tests: config-trust (repo and worktree config cannot set `asc.mcp.write` or `asc.mcp.confirm`; flags can only narrow; `--read-only` wins); 8 concurrent calls and a queue of 32, then `isError` "busy"; `notifications/cancelled` drops the stream; `server/discover` lists `json.profile.v1`. |
+| M06 | MRTR elicitation and sealed `requestState`, escaped summaries | M05 | `crates/asc-mcp/src/confirm.rs` | `cargo test -p asc-mcp confirm::` | SPEC §22.5 (Confirmation). Tests: a replay with changed arguments is refused; expired state (5 min) is refused; a client without elicitation gets `NEEDS_CONFIRMATION`; a hostile commit subject is escaped and cut to 80 characters, at most 10 listed, no bodies. |
+| M07 | Resources, templates, completion, prompts | M05 | `crates/asc-mcp/src/{resources.rs,prompts.rs}` | `cargo test -p asc-mcp -- resources:: prompts::` | SPEC §22.3.5, §22.3.6. `resources/list` never enumerates repository content; completion for `rev` and `path` is limited to 50 entries; the five prompts embed no repository content. |
+| M08 | `RpcBackend` over `RpcClient` and the IPC `WorkspaceClient` | M05, U42, U52, C17, G09 | `crates/asc-mcp/src/rpc_backend.rs`, `crates/asc-mcp/tests/rpc_backend.rs` | `cargo test -p asc-mcp --test rpc_backend` | An in-process tonic server over U42's `EngineBackend`. Tests: each read tool of SPEC §22.3.2 returns the folded RPC message; a stream is dropped when the budget is spent. |
+| M09 | `asc mcp` over stdio: `LocalBackend` routing (daemon start; `ASC_NO_DAEMON` in-process with per-call state and a schema check; server; local-only), path gate, stdout guard | M07, M08, U73, C31, U50 | `crates/asc/src/mcp/{mod.rs,backend.rs,pathgate.rs}`, `crates/asc/src/cli/mcp.rs`, `crates/asc/tests/mcp_stdio.rs` | `ASC_NO_DAEMON=1 cargo test -p asc --test mcp_stdio` | SPEC §22.7.2, §22.5. Local-only fixture: discover, list, `status`, `diff`, `log`, `show`, ranged `read_file`, `ls_tree` paging, `grep`, `blame`, `smartlog`; snapshots of the results. Refused: `..`, a symlink, a junction, an unlisted `worktree`, an ignored path (`.env`). A hook that prints to stdout does not break the stream. Edits `cli/mcp.rs` (U20's stub). |
+| M09b | `asc mcp install` | M09 | `crates/asc/src/mcp/install.rs`, `crates/asc/tests/mcp_install.rs` | `cargo test -p asc --test mcp_install` | SPEC §22.8. Project scope writes only narrowing flags; user scope writes the user config keys; it never adds the HTTP endpoint next to `asc mcp`. |
+| M10 | Local write tools through child verbs (`current_exe`, null stdin, graceful cancel, lock recovery), confirmations, `undo` by op id | M09, M06, C10, C11, C12, C15, C24, C25, U54w | `crates/asc/src/mcp/write.rs`, `crates/asc/tests/mcp_write.rs`; amendment: the `--op` hunk in C15's `undo.rs` | `cargo test -p asc --test mcp_write` | SPEC §22.3.3, §22.5, §20.7. Tests: create → modify → restack → undo round trip; `undo` of a non-latest op gives `STALE_OP`; a cancelled child leaves no `index.lock`; `submit` against a test server needs confirmation; the write tools are absent when `asc.mcp.write=false`; the local/remote split follows the workspace's upload state. |
+| M11 | Local `subscriptions/listen` over `Workspace.Watch` | M09, C49 | `crates/asc/src/mcp/listen.rs`, `crates/asc/tests/mcp_listen.rs` | `cargo test -p asc --test mcp_listen` | SPEC §22.3.5. At most 2 listens with 64 URIs each per process; path, HEAD and `KIND_STACK` events become `notifications/resources/updated`. |
+| M12a | `asc serve /mcp` transport: stateless Streamable HTTP, Origin and header checks, body caps, mount off by default | M05, U43c | `crates/asc-serve/src/mcp/{mod.rs,limits.rs}`, `crates/asc-serve/tests/mcp_http.rs`; amendment: one `HttpRoutes` line in U43a's `lib.rs` | `cargo test -p asc-serve --test mcp_http` | SPEC §22.5 (HTTP transport). A stub backend. Tests: POST JSON and SSE replies; GET and DELETE return 405; a bad Origin gives 403 and an absent Origin is accepted; a header mismatch gives -32020; the body cap is 1 MiB (4 MiB for `commit`); `enabled = true` is refused while no auth layer exists; the cache role answers 404. |
+| M12b | `ServeBackend` and rate classes | M12a, U47, U69, C19, G09 | `crates/asc-serve/src/mcp/backend.rs`, `crates/asc-serve/tests/mcp_backend.rs`; amendment: the `Version` handler of U42 | `cargo test -p asc-serve --test mcp_backend` | SPEC §22.7.2, §16.3. Tests: the read tools run through the in-process handlers with `id_mode = GIT`; each call is charged to its SPEC §16.3 class; 8 in-flight calls per principal and instance, then `RATE_LIMITED`; an unreadable repo returns the same `NOT_FOUND` as a missing one; `Version.features` lists `json.profile.v1`. |
+| M13 | Server auth: PRM document, 401/403, bearer validation (PAT, and OAuth `aud` through K07), scope-filtered `tools/list`; flips `enabled` to true by default | M12b, U44, K07 | `crates/asc-serve/src/mcp/auth.rs`, `crates/asc-serve/tests/mcp_auth.rs` | `cargo test -p asc-serve --test mcp_auth` | SPEC §22.7.3, §15.1. Tests: a request without a token gets 401 with `WWW-Authenticate` and `resource_metadata`; too little scope gets 403 `insufficient_scope`; a token with another `aud` is refused; a PAT maps its scopes; a query-string token gets 400; the PRM document is served at `/.well-known/oauth-protected-resource/mcp`. |
+| M18 | Server `Commit` writes a `ChangeMeta` (SPEC §8.7 gap) | U48a, C18 | `crates/asc-serve/tests/commit_change_meta.rs`; amendment: the `Commit` hunk in U48a | `cargo test -p asc-serve --test commit_change_meta` | SPEC §8.7, §20.4. The changeset created by `Commit` gets a `ChangeMeta` (`op = New`, `preds = []`) and a `changes` row in step 4 through `IngestObserver`. Tests: `Commit` with an empty `update_ref` returns a change id; the change resolves through `ResolveChanges`; an existing `ChangeMeta` is never overwritten. |
+| M14 | Server write tools: `commit` (empty `update_ref` or `refs/for/*` only), `submit`, `rebase`, `restack` | M13, M06, M18, U48a, U68, C22, C24 | `crates/asc-serve/src/mcp/write.rs`, `crates/asc-serve/tests/mcp_write.rs` | `cargo test -p asc-serve --test mcp_write` | SPEC §22.3.3. Tests: a `commit` with `update_ref = refs/heads/master` (or any branch) is -32602; `refs/for/*` runs the SPEC §8.3 pipeline (hooks, Forgejo push event); the tools need `asc:write` and `[mcp] write`; confirmation is required for `submit` and for `commit` or `rebase` with `refs/for/*`. |
+| M15 | `search` tool (listed when `search.v1` is advertised): mode mapping onto the three `CodeIntel` RPCs, the additive fields, the use-policy description | M08, I12 | `crates/asc-mcp/tools.toml` row, `crates/asc-mcp/src/search.rs` | `cargo test -p asc-mcp search::` | SPEC §22.3.2 (`search` row and note) [audit: codeintel-fields]. Modes `text\|regex` → `Search`, `symbol` → `Symbols`, `semantic` → `Semantic`; the optional fields `change`, `stack`, `diff_only`, `op` (`def\|refs\|callers\|outline\|find`, `symbol` mode only), `k` (10), `context_lines` (2), `max_tokens` (4,000, capped by `asc.mcp.maxTokens`), `rerank`, `include_excluded`; the response carries `scope`, `coverage` and `est_tokens`. Tests, with a fake `CodeIntel` backend: the row is absent from `tools/list` unless `Version.features` has `search.v1`; `toolsListChanged` fires when it appears; `op` is refused outside `symbol` mode. The real service is wired by I21 (code-intelligence design). |
+| M16 | Budgets and conformance: RSS, latency, `tools/list` tokens; the inspector CLI job | M10, M12b | `crates/asc/tests/mcp_budgets.rs`, `crates/asc/tests/inspector/{package.json,package-lock.json}`, `.forgejo/workflows/mcp-inspector.yml` | `cargo test -p asc --test mcp_budgets -- --ignored` | SPEC §16.4, §22.5. Idle RSS ≤ 24 MiB; ≤ 64 MiB with 8 concurrent 25k-token diffs on the HUGE generator repo. The workflow has `on:` filters (`push` to `master` and `pull_request`; paths `crates/asc-mcp/**`, `crates/asc/src/mcp/**`, `crates/asc-serve/src/mcp/**`, `proto/**`), checks out with `asc ci checkout` (SPEC §12.7) and installs the pinned inspector with `npm ci` from the committed lockfile (no floating `npx`). |
+| M17 | Generated tool reference `docs/mcp.md` (drift-checked, including the `AscHandles` schema hash) | M03 | `crates/asc-mcp/src/bin/asc-mcp-docs.rs`, `docs/mcp.md` | `cargo run -p asc-mcp --bin asc-mcp-docs -- --check` | Written from the same tables as `tools/list`; `--check` fails when the file or the vendored `asc_handles.schema.json` hash drifts. |
+
+**Forgejo units** (Go, `D:\dev\forgejo`, branch `asc/v16`, one commit per unit; commands run from `D:\dev\forgejo`; SPEC §13.3 M20–M28, §22.3.4). SDK decision: the official `modelcontextprotocol/go-sdk`, pinned to its first release that implements 2026-07-28. If no such release exists when M20 starts, M20 implements the thin stateless POST transport itself and uses only the SDK's types and JSON-RPC code. No other Go MCP library is evaluated. The Forgejo tools are consolidated read and write tools with a `method` parameter; every result carries the asc handles (`AscHandles`), and none exposes a file, tree, commit, diff, blame, branch or tag (those are asc's tools).
+
+| ID | Title | Owns | Depends | Accept |
+|---|---|---|---|---|
+| M20 | MCP framework: `/api/mcp` stateless Streamable HTTP, `server/discover`, API-auth reuse, Origin check, `[mcp]` settings, read-only gate (write methods also need `lockdown` available, registered by M28), PRM document | `routers/api/mcp/{server.go,transport.go,auth.go}`, `modules/setting/mcp.go` | K01, K07 | `go test ./routers/api/mcp/... -run TestMcpTransport` |
+| M21 | `pr_read` (with `AscHandles` and the stack panel); vendors `asc_handles.schema.json` | `routers/api/mcp/pr_read.go`, `routers/api/mcp/schema/asc_handles.schema.json` (hash recorded; M17 drift-checks it) | M20, M03, C34, C36 | `go test ./routers/api/mcp/... -run TestMcpPrRead` |
+| M22 | `pr_write` (stack-aware merge, 409 `stack-parent-unmerged` returned as `isError`, auto-merge) and `review_write` (confirmation on approve and dismiss) | `routers/api/mcp/{pr_write.go,review_write.go}` | M21, M28, C38, C39 | `go test ./routers/api/mcp/... -run 'TestMcpPrWrite\|TestMcpReviewWrite'` |
+| M23 | `issue_read`, `issue_write` (confirmation on every method but `label`) | `routers/api/mcp/issue.go` | M20 | `go test ./routers/api/mcp/... -run TestMcpIssue` |
+| M24 | `actions_read` (ranged and tailed logs with a 64 KiB cap), `actions_write` | `routers/api/mcp/actions.go` | M20, K14, C40 | `go test ./routers/api/mcp/... -run TestMcpActions` |
+| M25 | `inbox_read`, `inbox_write` | `routers/api/mcp/inbox.go` | M20, C41b | `go test ./routers/api/mcp/... -run TestMcpInbox` |
+| M26 | OAuth: RFC 8707 `resource`, `aud` in access tokens, RFC 9207 `iss`, the pre-registered public client `asc-mcp` (PKCE, loopback redirects), `aud` and scopes in the K07 authz answer | `services/oauth2_provider/resource_indicator.go`, `routers/web/auth/oauth_asc_mcp.go`, `routers/private/asc.go` hunk | K07 | `go test ./services/oauth2_provider/... -run TestResourceIndicator` |
+| M27 | (v1.x) CIMD client registration | `services/oauth2_provider/cimd.go` | M26 | `go test ./services/oauth2_provider/... -run TestCimd` |
+| M28 | `lockdown` mode (v1): hide content by authors without write access in `pr_read`, `issue_read` and `actions_read`; registers `lockdown.Available()` so write methods can be enabled | `routers/api/mcp/lockdown.go` | M21, M23, M24 | `go test ./routers/api/mcp/... -run TestLockdown` |
+
+---
+
 ## §K Forgejo fork track (Go, `D:\dev\forgejo`, branch `asc/v16`)
 
 Each unit is one commit on the patch stack (SPEC §13.3). Commands run from `D:\dev\forgejo`. A Go engineer owns this track. It needs Rust units only where noted, as `ASC_SERVER_BIN` **[audit: k-track-deps]**: `ASC_SERVER_BIN` = `<source-control>/target/release/asc` built by `cargo build -p asc --release --no-default-features --features serve`. The Go tests start it with `serve --config <tmp> --db sqlite::memory: --store memory://`.
@@ -1160,7 +1261,7 @@ Waves are the longest dependency chain to each unit (computed from the unit inde
 | 2 | U01b, U02, U03, U16a (+ K01 on the Go track; U02–U12 and U14 are built, U15 is in progress) |
 | 3 | U04, U06 (+ K02) |
 | 4 | U05, U07, U09, U41, G01, C01 |
-| 5 | U08, U16, U29, G02, C17, B18a |
+| 5 | U08, U16, U29, G02, C17, B18a, M01a |
 | 6 | U10, G03, G04, G05, G06, B07 (U30 may run any time after U29; it is deferred and off the critical path) |
 | 7 | U11, U15 |
 | 8 | U12, U14 |
@@ -1168,7 +1269,7 @@ Waves are the longest dependency chain to each unit (computed from the unit inde
 | 10 | U18, U19, U26, U35, C03 |
 | 11 | U20, U42, C02 |
 | 12 | U20a, U21a, U21b, U21d, U22, U24a, U24c, U24d, U24e, U36, U43a, U52, C05, C23, C45, B02 |
-| 13 | U21c, U23, U43b, C06, C07, B04, B28 |
+| 13 | U21c, U23, U43b, C06, C07, B04, B28, M04a |
 | 14 | U25, U43c, U65, O01, C08, C09, B11, B13 |
 | 15 | U24b, U25a, U27a, U28b, U37, U44, U47, U49, U54v, U54w, U69, U72, G08 |
 | 16 | U27b, U27c, U27e, U45, U46, U55, U67, U70, G09, G11, C29, C30a–C30d (C33 v1.x) |
@@ -1176,10 +1277,15 @@ Waves are the longest dependency chain to each unit (computed from the unit inde
 | 18 | U24f, U39, U48b, U48c, U48d, U53b, U53c, O07, C04, C11, C12, C13, C14, C32 |
 | 19 | U40, U50, U57, U66, U68, U73, O02, O08, C15, C51, B03, B08a |
 | 20 | U40b, U51, U58, U61p, U62, G10, O04, C18, C31, C52, B01, B05, B08b, B08c, B19 |
-| 21 | U61v, U63, U75, O05, C19, B06, B09, B18, B24 |
-| 22 | U64, O06, C20, C21, C22, C24, C25, C26, C49, C50, B10, B14 |
-| 23 | A01, O03 (after K09), C27, C28, B12, B15, B25, B26 (after C34) |
-| 24 | B16, B21, B27 (after B17 and C40) |
-| 25 | B22 (not before the MCP units M03 and M10 exist) |
+| 21 | U61v, U63, U75, O05, C19, B06, B09, B18, B24, M01b, M18 |
+| 22 | U64, O06, C20, C21, C22, C24, C25, C26, C49, C50, B10, B14, M01c |
+| 23 | A01, O03 (after K09), C27, C28, B12, B15, B25, B26 (after C34), M02 |
+| 24 | B16, B21, B27 (after B17 and C40), M03 |
+| 25 | M04, M17 |
+| 26 | M05 |
+| 27 | M06, M07, M08, M12a |
+| 28 | M09, M12b, M15 |
+| 29 | M09b, M10, M11, M13 |
+| 30 | M14, M16, B22 (moved from wave 25: B22 needs M03 and M10) |
 
-The Go track runs alongside: K01 from wave 2 and K02 from wave 3 (K02 depends on K01); K03–K05 next; K06 after U41 and U43c; K07 and K08 next; K09 after U48d; K10–K15 after U47 and U48a–U48c; K17 after K10 and U67; the Forgejo stack units C34–C43 and C46–C48 after K17 and C19 (C38 after C22, C39 after C50/C52, C42 after C29, C43 after C21/C30b; C44 is v1.x). The branchless Go units: B17 after K07, K12, C34 and B08a; B23 (v1.x) after K06 and B09. The runner fork: R01 any time, R02 after U62.
+The Go track runs alongside: K01 from wave 2 and K02 from wave 3 (K02 depends on K01); K03–K05 next; K06 after U41 and U43c; K07 and K08 next; K09 after U48d; K10–K15 after U47 and U48a–U48c; K17 after K10 and U67; the Forgejo stack units C34–C43 and C46–C48 after K17 and C19 (C38 after C22, C39 after C50/C52, C42 after C29, C43 after C21/C30b; C44 is v1.x). The branchless Go units: B17 after K07, K12, C34 and B08a; B23 (v1.x) after K06 and B09. The runner fork: R01 any time, R02 after U62. The MCP Go units [audit: mcp-folded]: M20 and M26 after K07 (wave 4), M23 and M27 next, M24 after K14 and C40, M21 after M03, C34 and C36, M25 after C41b, M28 after M21, M23 and M24, M22 last (after M21, M28, C38 and C39).
