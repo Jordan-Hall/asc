@@ -1,6 +1,7 @@
 //! asc-store.
 
 pub mod bucket;
+pub mod bucketrefs;
 pub mod cachedir;
 pub mod codec;
 #[cfg(any(test, feature = "testkit"))]
@@ -9,6 +10,7 @@ pub mod conformance;
 pub mod conformance_refs;
 pub mod key;
 pub mod objects;
+pub mod probe;
 pub mod refs;
 pub mod s3;
 pub mod sqlrefs;
