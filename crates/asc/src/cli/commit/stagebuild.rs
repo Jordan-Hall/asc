@@ -23,7 +23,8 @@ use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::storeset::StoreSet;
 use asc_wc::ignore::IgnoreSources;
-use asc_wc::plain::{Sparse, Wc, fs_path};
+use asc_wc::SafeRoot;
+use asc_wc::plain::{Sparse, Wc};
 use asc_wc::redirect::Redirections;
 use asc_wc::status::{self, ChangeKind, NoEol};
 use futures::TryStreamExt;
@@ -83,7 +84,8 @@ pub async fn rows_to_changes(
 /// A leaf for the file at `path` in the work tree, ingested into `store/`; `None` when the path
 /// does not exist. `prev` keeps the executable bit where the file system has none.
 pub async fn ingest_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Result<Option<Leaf>> {
-    let abs = fs_path(ws.projection.toplevel(), path);
+    // Behind a symlinked or reparse-point ancestor the path is outside the work tree: it is gone.
+    let Some(abs) = SafeRoot::new(ws.projection.toplevel()).resolve(path) else { return Ok(None) };
     let meta = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

@@ -704,3 +704,52 @@ mod hooks {
         assert_eq!(master(&f).await, a);
     }
 }
+
+/// Makes `link` a directory symlink (Unix) or a junction (Windows, where a symlink needs a
+/// privilege) to `target`; false when the OS refuses.
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(windows)]
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    #[cfg(not(any(unix, windows)))]
+    let made = false;
+    made
+}
+
+/// A tracked path under a linked directory is outside the work tree (git's
+/// has_symlink_leading_path): `commit <path>` and `commit -a` never read it.
+#[tokio::test]
+async fn commit_does_not_read_through_a_linked_directory() {
+    for args in [&["-m", "p", "d/x"][..], &["-a", "-m", "all"]] {
+        let f = Fixture::new().await;
+        fs::write(
+            f.sandbox.user.join(".gitconfig"),
+            "[user]\n\tname = Tester\n\temail = tester@example.com\n",
+        )
+        .unwrap();
+        let a = f.commit(&[], &[("d/x", b"one"), ("g.txt", b"keep")]).await;
+        f.set_branch("master", a).await;
+        f.checkout_branch("master", Some(a)).await;
+        fs::write(f.root.join("g.txt"), "keep").unwrap();
+        let outside = f.sandbox.dir("outside");
+        fs::write(outside.join("x"), "SECRET").unwrap();
+        assert!(link_dir(&outside, &f.root.join("d")), "cannot make a directory link here");
+
+        let secret = leaf(&f, b"SECRET").await.git;
+        let r = commit(&f, args);
+        assert!(r.code == 0 || r.code == 1, "{args:?}: {}", r.err);
+        let tip = master(&f).await;
+        let root = f.engine.get_changeset(tip).await.unwrap().root;
+        let path = asc_core::path::RepoPath::new("d/x").unwrap();
+        if let Some(entry) = f.engine.lookup(root, &path).await.unwrap() {
+            assert_ne!(entry.git, secret, "{args:?} committed outside content");
+        }
+        assert_eq!(fs::read(outside.join("x")).unwrap(), b"SECRET");
+    }
+}
