@@ -1,5 +1,6 @@
-//! The server's plain HTTP routes (SPEC §8.1, §16.1; PLAN U43c): `/healthz`, `/readyz`,
-//! `/metrics` and `/.well-known/asc`.
+//! The server's plain HTTP routes (SPEC §8.1, §16.1; PLAN U43c). The public [`router`] serves
+//! `/healthz`, a status-only `/readyz` and `/.well-known/asc`. The [`admin_router`], bound to
+//! `[admin] listen`, serves `/metrics` and the detailed `/readyz`.
 //!
 //! `/readyz` fails when the database does not answer, when the oldest undelivered outbox row is
 //! older than [`MAX_OUTBOX_LAG_SECS`], or when a registered [`Probe`] (the store, Forgejo) fails.
@@ -282,19 +283,71 @@ impl HttpState {
     }
 }
 
-async fn healthz() -> &'static str {
-    "ok"
+/// Liveness: a body-less 200.
+async fn healthz() -> StatusCode {
+    StatusCode::OK
 }
 
-async fn readyz(State(s): State<HttpState>) -> Response {
+/// Public readiness: a status code only. The reasons name internal dependencies, so they go to
+/// the log and to the admin listener, never to this caller.
+async fn readyz(State(s): State<HttpState>) -> StatusCode {
     let failed = s.readiness().await;
     if failed.is_empty() {
-        "ready".into_response()
+        StatusCode::OK
     } else {
-        // The reasons name internal dependencies; they go to the log, not to the caller.
         tracing::warn!(event = "readyz.failed", reasons = ?failed);
-        (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response()
+        StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+/// Admin readiness: the status code plus the JSON list of failed checks.
+async fn readyz_detailed(State(s): State<HttpState>) -> Response {
+    let failed = s.readiness().await;
+    let code = if failed.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (
+        code,
+        axum::Json(serde_json::json!({ "ready": failed.is_empty(), "failed": failed })),
+    )
+        .into_response()
+}
+
+/// Compares two byte strings without an early exit on the first differing byte.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= usize::from(x ^ y);
+    }
+    std::hint::black_box(diff) == 0
+}
+
+/// Requires `Authorization: Bearer <token>` when the admin listener has a token.
+async fn admin_auth(
+    State(token): State<Option<Arc<str>>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(expected) = token {
+        let given = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if !ct_eq(given.as_bytes(), expected.as_bytes()) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Bearer")],
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
 }
 
 async fn metrics(State(s): State<HttpState>) -> Response {
@@ -315,14 +368,22 @@ async fn well_known(State(s): State<HttpState>) -> Response {
         .into_response()
 }
 
-/// The routes for `state`.
+/// The public routes for `state`: no metrics, no readiness details.
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/metrics", get(metrics))
         .route("/.well-known/asc", get(well_known))
         .with_state(state)
+}
+
+/// The admin routes (`/metrics`, detailed `/readyz`). With a `token`, every route requires it.
+pub fn admin_router(state: HttpState, token: Option<Arc<str>>) -> Router {
+    Router::new()
+        .route("/metrics", get(metrics))
+        .route("/readyz", get(readyz_detailed))
+        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(token, admin_auth))
 }
 
 /// One registration line in `lib.rs`: mounts the routes on `ext`.
@@ -351,13 +412,13 @@ mod tests {
         (st, outbox, pool)
     }
 
-    async fn get_path(st: &HttpState, path: &str) -> (u16, String) {
-        let res = router(st.clone())
-            .oneshot(
-                axum::http::Request::get(path)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
+    async fn send(app: Router, path: &str, auth: Option<&str>) -> (u16, String) {
+        let mut req = axum::http::Request::get(path);
+        if let Some(a) = auth {
+            req = req.header(header::AUTHORIZATION, a);
+        }
+        let res = app
+            .oneshot(req.body(axum::body::Body::empty()).unwrap())
             .await
             .unwrap();
         let status = res.status().as_u16();
@@ -367,11 +428,61 @@ mod tests {
         (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
+    async fn get_path(st: &HttpState, path: &str) -> (u16, String) {
+        send(router(st.clone()), path, None).await
+    }
+
+    async fn admin_get(st: &HttpState, path: &str) -> (u16, String) {
+        send(admin_router(st.clone(), None), path, None).await
+    }
+
     #[tokio::test]
     async fn health_and_ready() {
         let (st, _, _) = state(WellKnown::default()).await;
-        assert_eq!(get_path(&st, "/healthz").await, (200, "ok".into()));
-        assert_eq!(get_path(&st, "/readyz").await.0, 200);
+        assert_eq!(get_path(&st, "/healthz").await, (200, String::new()));
+        assert_eq!(get_path(&st, "/readyz").await, (200, String::new()));
+    }
+
+    #[tokio::test]
+    async fn public_listener_does_not_serve_metrics() {
+        let (st, _, _) = state(WellKnown::default()).await;
+        assert_eq!(get_path(&st, "/metrics").await.0, 404);
+    }
+
+    #[tokio::test]
+    async fn admin_serves_metrics_and_detailed_readiness_on_loopback() {
+        let (st, _, _) = state(WellKnown::default()).await;
+        let (code, body) = admin_get(&st, "/metrics").await;
+        assert_eq!(code, 200);
+        assert!(body.contains("asc_rss_bytes"));
+        let (code, body) = admin_get(&st, "/readyz").await;
+        assert_eq!(code, 200);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ready"], true);
+        assert_eq!(admin_get(&st, "/healthz").await.0, 404);
+    }
+
+    #[tokio::test]
+    async fn admin_token_is_required_and_compared_exactly() {
+        let (st, _, _) = state(WellKnown::default()).await;
+        let app = || admin_router(st.clone(), Some(Arc::from("s3cret")));
+        for path in ["/metrics", "/readyz"] {
+            assert_eq!(send(app(), path, None).await.0, 401);
+            assert_eq!(send(app(), path, Some("Bearer wrong")).await.0, 401);
+            assert_eq!(send(app(), path, Some("Bearer s3cre")).await.0, 401);
+            assert_eq!(send(app(), path, Some("Bearer s3cret!")).await.0, 401);
+            assert_eq!(send(app(), path, Some("s3cret")).await.0, 401);
+            assert_eq!(send(app(), path, Some("Bearer s3cret")).await.0, 200);
+        }
+    }
+
+    #[test]
+    fn constant_time_compare() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(ct_eq(b"", b""));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(!ct_eq(b"", b"a"));
     }
 
     #[tokio::test]
@@ -395,7 +506,10 @@ mod tests {
         insert(now - MAX_OUTBOX_LAG_SECS - 10).await;
         let (code, body) = get_path(&st, "/readyz").await;
         assert_eq!(code, 503);
-        assert!(!body.contains("outbox"), "reasons stay out of the response");
+        assert!(body.is_empty(), "reasons stay out of the public response");
+        let (code, body) = admin_get(&st, "/readyz").await;
+        assert_eq!(code, 503);
+        assert!(body.contains("outbox"));
     }
 
     #[tokio::test]
@@ -427,7 +541,7 @@ mod tests {
                 ("code".into(), "OK".into()),
             ])
             .observe(0.01);
-        let (code, body) = get_path(&st, "/metrics").await;
+        let (code, body) = admin_get(&st, "/metrics").await;
         assert_eq!(code, 200);
         for name in [
             "asc_outbox_lag_seconds",
