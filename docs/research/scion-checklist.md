@@ -163,7 +163,7 @@ asc has no LFS support.
 - Bring the community-favourite features of GitLens and GitKraken into the core and the plugin API (blame/history/graph data, worktree management, and so on). asc exposes the data through RPC, IPC and `--json`, and the asc IDE plugins (see the "IDE plugins" decision below) and the Forgejo fork render it.
 - Git commands keep git semantics. Stack commands are additive (new verbs) and never change what an existing git command does.
 - The Forgejo fork supports stacked PRs natively. Users see each PR's base as its parent in the stack, and that base becomes the trunk automatically when the parent merges, with no retarget step. Under the hood the PR is stored against the trunk and diffs against its parent commit (stacks.md D8). The review UI is stack-aware, and the stack lands through the merge queue.
-- Design: docs/research/stacks.md (pending).
+- Design: docs/research/stacks.md (decisions D1–D12), folded into SPEC §20 (v1.3); PLAN units C01–C52.
 - The Forgejo fork gets the same features in its web UI, rendered from asc server derived data:
   - stacked PR pages (stack navigator, per-change review, retarget, and stack merge through the queue);
   - a commit graph view and blame/file history;

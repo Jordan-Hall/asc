@@ -1,5 +1,7 @@
 # asc architecture: performance and scale first
 
+> Note (SPEC v1.1): branch names `main` in this document are superseded by SPEC §6.5 (`master`). This document is background only; `docs/SPEC.md` is authoritative.
+
 Status: design proposal (performance/scale angle). Date: 2026-10-22.
 Inputs: `docs/research/{forgejo,prior-art,turbo-ci,rust-stack,asc-profile}.md`. Those reports hold the evidence; this document makes decisions.
 

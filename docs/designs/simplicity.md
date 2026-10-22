@@ -1,5 +1,7 @@
 # asc: simplicity-first architecture
 
+> Note (SPEC v1.1): branch names `main` in this document are superseded by SPEC §6.5 (`master`). This document is background only; `docs/SPEC.md` is authoritative.
+
 Status: design proposal, 2026-10-22. Angle: **the smallest number of crates, services and moving parts that still meets every fixed requirement**, with an MVP that ships cheap worktrees, lazy checkout and CI affected-detection in weeks.
 
 Inputs: `docs/research/{forgejo,prior-art,turbo-ci,rust-stack,asc-profile}.md`. Where this design deviates from a research recommendation, the deviation and its reason are stated inline and marked **[simplification]**.
