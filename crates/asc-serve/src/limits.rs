@@ -149,6 +149,13 @@ pub fn class_of(path: &str) -> Option<Class> {
 /// How long an authorizer-verified token keeps its own bucket after the authorizer last
 /// accepted it (the positive cache lifetime of SPEC §15.1).
 const VERIFIED_TTL: Duration = Duration::from_secs(60);
+/// The longest a token stays verified since the authorizer last accepted it, however often it
+/// is used in between. Use renews the lifetime (see [`Verified::touch`]) but never past this, so
+/// a token that has been revoked cannot hold a bucket of its own for ever.
+const VERIFIED_MAX_AGE: Duration = Duration::from_secs(600);
+/// Hops of `X-Forwarded-For` examined, counted from the right, and bytes of each header value.
+const XFF_MAX_HOPS: usize = 32;
+const XFF_MAX_BYTES: usize = 2048;
 /// Verified tokens remembered at once. Past this, a newly verified token stays in the peer
 /// tier until an entry expires.
 const MAX_VERIFIED: usize = 100_000;
@@ -263,8 +270,9 @@ pub enum Caller {
     /// A configured service token (Forgejo, the CI warmer).
     Service,
     /// A token that has not been verified yet and is spending its bootstrap allowance (see
-    /// [`Bootstrap`]). It has no rate bucket: the allowance is its limit.
-    Bootstrap([u8; 32]),
+    /// [`Bootstrap`]). It has no rate bucket: the allowance is its limit. Its in-flight slots are
+    /// its peer's.
+    Bootstrap { token: [u8; 32], peer: Peer },
 }
 
 impl Caller {
@@ -308,25 +316,42 @@ fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
 /// new tokens are simply not recorded and stay in the peer tier.
 pub struct Verified {
     ttl: Duration,
+    max_age: Duration,
     max: usize,
     inner: Mutex<VerifiedMap>,
 }
 
+/// One accepted token.
+struct VerifiedEntry {
+    /// When the authorizer last accepted the token. The entry never outlives `max_age` from here.
+    accepted: Instant,
+    /// The last accepted use; the entry lapses `ttl` after it.
+    used: Instant,
+    who: Caller,
+}
+
 #[derive(Default)]
 struct VerifiedMap {
-    tokens: HashMap<[u8; 32], (Instant, Caller)>,
+    tokens: HashMap<[u8; 32], VerifiedEntry>,
     last_prune: Option<Instant>,
 }
 
 impl Verified {
-    fn new(ttl: Duration, max: usize) -> Self {
+    fn new(ttl: Duration, max_age: Duration, max: usize) -> Self {
         Self {
             ttl,
+            max_age,
             max,
             inner: Mutex::default(),
         }
     }
 
+    fn live(&self, e: &VerifiedEntry, now: Instant) -> bool {
+        now.saturating_duration_since(e.used) < self.ttl
+            && now.saturating_duration_since(e.accepted) < self.max_age
+    }
+
+    /// The authorizer accepted `token` for `principal`.
     fn record(&self, token: &str, principal: &str) {
         let now = Instant::now();
         let key = token_hash(token);
@@ -337,36 +362,56 @@ impl Verified {
                 .is_none_or(|p| now.saturating_duration_since(p) >= Duration::from_secs(1));
             if due {
                 g.last_prune = Some(now);
-                let ttl = self.ttl;
-                g.tokens
-                    .retain(|_, (at, _)| now.saturating_duration_since(*at) < ttl);
+                let live: Vec<_> = g
+                    .tokens
+                    .iter()
+                    .filter(|(_, e)| self.live(e, now))
+                    .map(|(k, _)| *k)
+                    .collect();
+                g.tokens.retain(|k, _| live.contains(k));
             }
             if g.tokens.len() >= self.max {
                 return;
             }
         }
-        g.tokens.insert(key, (now, Caller::principal(principal)));
+        let who = Caller::principal(principal);
+        g.tokens.insert(
+            key,
+            VerifiedEntry {
+                accepted: now,
+                used: now,
+                who,
+            },
+        );
     }
 
-    /// Extends a live entry from now. Called for every request admitted under the token, so a
-    /// token in steady use stays verified however long the peer bucket stays saturated.
-    fn touch(&self, token_hash: &[u8; 32]) {
+    /// The authorizer refused `token`: it no longer has a bucket of its own.
+    fn forget(&self, token_hash: &[u8; 32]) {
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, _)) = g.tokens.get_mut(token_hash)
-            && at.elapsed() < self.ttl
-        {
-            *at = Instant::now();
+        g.tokens.remove(token_hash);
+    }
+
+    /// Extends a live entry's lifetime from now. Called for every request admitted under the
+    /// token, so a token in steady use stays verified however long the peer bucket stays
+    /// saturated. It never extends past `max_age` since the authorizer last accepted the token.
+    fn touch(&self, token_hash: &[u8; 32]) {
+        let now = Instant::now();
+        let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let live = g.tokens.get(token_hash).is_some_and(|e| self.live(e, now));
+        if live && let Some(e) = g.tokens.get_mut(token_hash) {
+            e.used = now;
         }
     }
 
     fn lookup(&self, token_hash: &[u8; 32]) -> Option<Caller> {
         let g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let (at, who) = g.tokens.get(token_hash)?;
-        (at.elapsed() < self.ttl).then_some(*who)
+        let e = g.tokens.get(token_hash)?;
+        self.live(e, Instant::now()).then_some(e.who)
     }
 }
 
-/// A small, bounded allowance of requests for tokens that are not verified yet.
+/// A small, bounded allowance of requests for tokens that are not verified yet. It applies to
+/// cheap calls only, and only when the peer's rate bucket refused them.
 ///
 /// Verification happens after admission, inside the authorizer. Behind a NAT or proxy a flood in
 /// the peer bucket could keep a legitimate token from ever reaching it. So a token that the peer
@@ -463,8 +508,10 @@ impl Authorizer for RecordingAuthorizer {
     ) -> Result<Principal, AuthError> {
         let answer = self.inner.authorize(token, repo, access).await;
         if let Some(t) = token {
-            if let Ok(p) = &answer {
-                self.ids.verified.record(t.expose(), &p.id);
+            match &answer {
+                Ok(p) => self.ids.verified.record(t.expose(), &p.id),
+                // A refused token (revoked, or not allowed here) is no longer a known caller.
+                Err(_) => self.ids.verified.forget(&token_hash(t.expose())),
             }
             self.ids
                 .bootstrap
@@ -493,7 +540,7 @@ impl Tiered {
     fn tier(&self, who: &Caller) -> &KeyedLimiter<Caller> {
         match who {
             Caller::Unverified(_) => &self.unverified,
-            Caller::Verified(_) | Caller::Service | Caller::Bootstrap(_) => &self.verified,
+            Caller::Verified(_) | Caller::Service | Caller::Bootstrap { .. } => &self.verified,
         }
     }
 
@@ -526,6 +573,23 @@ fn overloaded() -> Status {
     let mut s = Status::unavailable("server overloaded");
     set_retry_after(&mut s, INFLIGHT_RETRY);
     s
+}
+
+/// Why admission said no.
+struct Refusal {
+    status: Status,
+    /// The caller's own rate bucket was empty. Every other refusal (global overload, a
+    /// concurrency cap, a replica cap) says nothing about this caller's rate and is final.
+    bucket: bool,
+}
+
+impl Refusal {
+    fn other(status: Status) -> Self {
+        Self {
+            status,
+            bucket: false,
+        }
+    }
 }
 
 /// Everything a request holds while it runs; dropping it frees the slots.
@@ -591,7 +655,7 @@ impl Admission {
             semantic_replica: Arc::new(Semaphore::new(cfg.semantic_concurrency as usize)),
             service_tokens: HashSet::new(),
             ids: Arc::new(Identities {
-                verified: Verified::new(VERIFIED_TTL, MAX_VERIFIED),
+                verified: Verified::new(VERIFIED_TTL, VERIFIED_MAX_AGE, MAX_VERIFIED),
                 bootstrap: Bootstrap::new(max_keys.min(MAX_BOOTSTRAP)),
             }),
             bootstrap_gate: KeyedLimiter::bounded(
@@ -611,11 +675,16 @@ impl Admission {
         }
     }
 
-    /// Test hook: the lifetime of a verified entry.
+    /// Test hook: the lifetimes of a verified entry.
     #[cfg(test)]
-    fn with_verified_ttl(mut self, ttl: Duration) -> Self {
+    fn with_verified_ttl(self, ttl: Duration) -> Self {
+        self.with_verified_lifetimes(ttl, VERIFIED_MAX_AGE)
+    }
+
+    #[cfg(test)]
+    fn with_verified_lifetimes(mut self, ttl: Duration, max_age: Duration) -> Self {
         self.ids = Arc::new(Identities {
-            verified: Verified::new(ttl, MAX_VERIFIED),
+            verified: Verified::new(ttl, max_age, MAX_VERIFIED),
             bootstrap: Bootstrap::new(self.ids.bootstrap.max),
         });
         self
@@ -637,29 +706,45 @@ impl Admission {
     }
 
     /// The client address to charge: the TCP peer, or, when the peer is a trusted proxy, the
-    /// rightmost `X-Forwarded-For` hop that is not itself a trusted proxy. A header from any other
-    /// peer is ignored, and so is one that does not parse.
+    /// rightmost `X-Forwarded-For` hop that is not itself a trusted proxy. The header is ignored
+    /// from any other peer.
+    ///
+    /// Hops are read right to left, so only what the trusted proxies appended can matter: the
+    /// first hop that is not a trusted proxy decides, and nothing to its left is looked at. A hop
+    /// that does not parse before that point, a header with more than [`XFF_MAX_HOPS`] hops to
+    /// get through, or one with no client in it, all give the proxy's own address. Only the last
+    /// [`XFF_MAX_BYTES`] bytes of each header value are read.
     pub fn client_ip(&self, tcp: IpAddr, headers: &axum::http::HeaderMap) -> IpAddr {
         let trusted = |ip: IpAddr| self.trusted_proxies.iter().any(|c| c.contains(ip));
         if !trusted(tcp) {
             return tcp;
         }
-        let mut hops = Vec::new();
-        for value in headers.get_all("x-forwarded-for") {
-            let Ok(text) = value.to_str() else {
+        let mut seen = 0;
+        for value in headers.get_all("x-forwarded-for").iter().rev() {
+            let bytes = value.as_bytes();
+            let cut = bytes.len() > XFF_MAX_BYTES;
+            let tail = &bytes[bytes.len().saturating_sub(XFF_MAX_BYTES)..];
+            let Ok(text) = std::str::from_utf8(tail) else {
                 return tcp;
             };
-            for hop in text.split(',') {
-                let Ok(ip) = hop.trim().parse::<IpAddr>() else {
+            let mut parts: Vec<&str> = text.split(',').collect();
+            if cut {
+                // The first part may be the end of a longer hop; never read it.
+                parts.remove(0);
+            }
+            for part in parts.into_iter().rev() {
+                seen += 1;
+                if seen > XFF_MAX_HOPS {
                     return tcp;
-                };
-                hops.push(ip);
+                }
+                match part.trim().parse::<IpAddr>() {
+                    Ok(ip) if !trusted(ip) => return ip,
+                    Ok(_) => {}
+                    Err(_) => return tcp,
+                }
             }
         }
-        hops.into_iter()
-            .rev()
-            .find(|ip| !trusted(*ip))
-            .unwrap_or(tcp)
+        tcp
     }
 
     /// Requests that arrived with no peer address. They all share one bucket, so a non-zero
@@ -718,7 +803,7 @@ impl Admission {
         }
         let who = self.identify(token, peer);
         let hash = token.map(token_hash);
-        match self.admit(who, class, cost) {
+        match self.try_admit(who, class, cost) {
             Ok(permit) => {
                 if let (Caller::Verified(_), Some(h)) = (who, &hash) {
                     self.ids.verified.touch(h);
@@ -726,14 +811,17 @@ impl Admission {
                 Ok((who, permit))
             }
             Err(refused) => {
-                if let (Caller::Unverified(_), Some(h), true) = (who, hash, class != Class::Objects)
+                // Only a cheap call, and only when the peer's rate bucket is what said no: never
+                // for overload, a concurrency cap or the heavier classes.
+                if let (Caller::Unverified(peer), Some(token), true) =
+                    (who, hash, refused.bucket && class == Class::Cheap)
                     && self.bootstrap_gate.check(&who, 1).is_ok()
-                    && self.ids.bootstrap.take(&h)
+                    && self.ids.bootstrap.take(&token)
                 {
-                    let who = Caller::Bootstrap(h);
+                    let who = Caller::Bootstrap { token, peer };
                     return self.admit(who, class, cost).map(|p| (who, p));
                 }
-                Err(refused)
+                Err(refused.status)
             }
         }
     }
@@ -741,23 +829,37 @@ impl Admission {
     /// Admits one call of `class` by `who`, charging `cost` (bytes for `Objects`, else ignored).
     /// Never waits: the error is the status to send back.
     pub fn admit(&self, who: Caller, class: Class, cost: u64) -> Result<Permit, Status> {
+        self.try_admit(who, class, cost).map_err(|r| r.status)
+    }
+
+    /// The key a caller's in-flight slots are counted under. A bootstrapping token counts
+    /// against its peer, so new tokens do not multiply the peer's slots.
+    fn slot_key(who: Caller) -> Caller {
+        match who {
+            Caller::Bootstrap { peer, .. } => Caller::Unverified(peer),
+            other => other,
+        }
+    }
+
+    fn try_admit(&self, who: Caller, class: Class, cost: u64) -> Result<Permit, Refusal> {
         let mut permit = Permit::default();
         let slot = self
             .inflight
             .clone()
             .try_acquire_owned()
-            .map_err(|_| overloaded())?;
+            .map_err(|_| Refusal::other(overloaded()))?;
         permit.hold(slot);
         let max = self.cfg.max_inflight;
         if class == Class::Background
             && self.inflight.available_permits() < (max / BACKGROUND_FREE_SHARE) as usize
         {
-            return Err(overloaded());
+            return Err(Refusal::other(overloaded()));
         }
+        let slots = Self::slot_key(who);
         let token_slot = self
             .per_token
-            .try_acquire(&who, self.cfg.max_inflight_per_token)
-            .map_err(rate_limited)?;
+            .try_acquire(&slots, self.cfg.max_inflight_per_token)
+            .map_err(|shed| Refusal::other(rate_limited(shed)))?;
         permit.hold(CounterHold(token_slot));
 
         let class = if who == Caller::Service {
@@ -766,7 +868,7 @@ impl Admission {
             class
         };
         match class {
-            _ if matches!(who, Caller::Bootstrap(_)) => Ok(()),
+            _ if matches!(who, Caller::Bootstrap { .. }) => Ok(()),
             Class::Cheap | Class::Background => self.cheap.check(&who, 1),
             // `cost` is what is known up front; the body's bytes are charged as they stream.
             Class::Objects => self.objects.check(&who, cost),
@@ -776,18 +878,27 @@ impl Admission {
             Class::Semantic => self.semantic.check(&who, 1),
             Class::Expensive => Ok(()),
         }
-        .map_err(rate_limited)?;
+        .map_err(|shed| Refusal {
+            status: rate_limited(shed),
+            bucket: true,
+        })?;
 
         match class {
             Class::Expensive => {
                 permit.hold(CounterHold(
                     self.expensive_principal
-                        .try_acquire(&who, self.cfg.expensive_per_principal)
-                        .map_err(rate_limited)?,
+                        .try_acquire(&slots, self.cfg.expensive_per_principal)
+                        .map_err(|shed| Refusal::other(rate_limited(shed)))?,
                 ));
-                permit.hold(self.replica_slot(&self.expensive_replica)?);
+                permit.hold(
+                    self.replica_slot(&self.expensive_replica)
+                        .map_err(Refusal::other)?,
+                );
             }
-            Class::Semantic => permit.hold(self.replica_slot(&self.semantic_replica)?),
+            Class::Semantic => permit.hold(
+                self.replica_slot(&self.semantic_replica)
+                    .map_err(Refusal::other)?,
+            ),
             _ => {}
         }
         Ok(permit)
@@ -1751,7 +1862,7 @@ mod tests {
         let mut through = 0;
         for _ in 0..10 {
             if let Ok((who, _)) = a.admit_request(Some("bob-token"), Some(ip), Class::Cheap, 1) {
-                assert!(matches!(who, Caller::Bootstrap(_)));
+                assert!(matches!(who, Caller::Bootstrap { .. }));
                 through += 1;
             }
         }
@@ -1947,5 +2058,201 @@ mod tests {
         );
         req.extensions_mut().clear();
         assert_eq!(connect_addr(req.extensions()), None);
+    }
+
+    #[test]
+    fn junk_left_of_the_client_hop_cannot_change_who_the_client_is() {
+        let a = with_proxies(&["10.0.0.0/24"]);
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let proxy = ip("10.0.0.1");
+        let client = ip("203.0.113.9");
+        let from = |chain: &str| a.client_ip(proxy, &forwarded(chain));
+        assert_eq!(from("garbage, 203.0.113.9"), client);
+        assert_eq!(from("1.2.3.4, junk, 203.0.113.9, 10.0.0.7"), client);
+        assert_eq!(from(&format!("{}203.0.113.9", "x,".repeat(500))), client);
+        // Junk right of the client, next to the proxies, is not the client: use the proxy.
+        assert_eq!(from("203.0.113.9, garbage"), proxy);
+        assert_eq!(from("203.0.113.9, 10.0.0.7, garbage"), proxy);
+        // Only trusted hops: no client in the header.
+        assert_eq!(from("10.0.0.5, 10.0.0.7"), proxy);
+        // Too many hops to get through, or a value too long to read whole.
+        let many = "10.0.0.5,".repeat(40) + "203.0.113.9";
+        assert_eq!(from(&many), client, "the client is the rightmost hop");
+        let buried = format!("203.0.113.9{}", ",10.0.0.5".repeat(40));
+        assert_eq!(from(&buried), proxy);
+        let long = format!("{}10.0.0.5", "7".repeat(5000));
+        assert_eq!(from(&long), proxy);
+        // Several header lines are one list; the last line is the rightmost.
+        let mut h = forwarded("198.51.100.1");
+        h.append("x-forwarded-for", "203.0.113.9".parse().unwrap());
+        assert_eq!(a.client_ip(proxy, &h), client);
+    }
+
+    struct Switch(std::sync::atomic::AtomicBool);
+
+    #[async_trait]
+    impl Authorizer for Switch {
+        async fn authorize(
+            &self,
+            token: Option<&BearerToken>,
+            _repo: &str,
+            _access: Access,
+        ) -> Result<Principal, AuthError> {
+            match token {
+                Some(_) if self.0.load(Ordering::SeqCst) => Ok(Principal { id: "alice".into() }),
+                _ => Err(AuthError::Forbidden),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_loses_its_verified_bucket() {
+        let a = Admission::new(&limits(|_| {}));
+        let switch = Arc::new(Switch(std::sync::atomic::AtomicBool::new(true)));
+        let authz = a.recording(switch.clone());
+        let token = BearerToken::new("alice-token").unwrap();
+        authz
+            .authorize(Some(&token), "o/r", Access::Read)
+            .await
+            .unwrap();
+        let ip = Some(IpAddr::from([10, 4, 4, 4]));
+        assert!(matches!(
+            a.identify(Some("alice-token"), ip),
+            Caller::Verified(_)
+        ));
+        // The token is revoked. The next refusal drops it to the peer tier, and use cannot
+        // bring it back.
+        switch.0.store(false, Ordering::SeqCst);
+        assert!(
+            authz
+                .authorize(Some(&token), "o/r", Access::Read)
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            a.identify(Some("alice-token"), ip),
+            Caller::Unverified(_)
+        ));
+        assert!(
+            a.admit_request(Some("alice-token"), ip, Class::Cheap, 1)
+                .is_ok()
+        );
+        assert!(matches!(
+            a.identify(Some("alice-token"), ip),
+            Caller::Unverified(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn constant_use_cannot_keep_a_token_verified_past_the_absolute_cap() {
+        let a = Admission::new(&limits(|l| {
+            l.cheap_burst = 100;
+            l.cheap_rps = 1;
+        }))
+        .with_verified_lifetimes(Duration::from_millis(300), Duration::from_millis(500));
+        let authz = a.recording(Arc::new(Accepts));
+        let alice = BearerToken::new("alice-token").unwrap();
+        authz
+            .authorize(Some(&alice), "o/r", Access::Read)
+            .await
+            .unwrap();
+        let ip = Some(IpAddr::from([10, 5, 5, 5]));
+        let start = Instant::now();
+        let mut lapsed = None;
+        for _ in 0..25 {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            let verified = matches!(
+                a.admit_request(Some("alice-token"), ip, Class::Cheap, 1),
+                Ok((Caller::Verified(_), _))
+            );
+            if !verified {
+                lapsed = Some(start.elapsed());
+                break;
+            }
+        }
+        // Used every 60 ms, well inside the 300 ms lifetime, it still ends at the 500 ms cap.
+        let lapsed = lapsed.expect("a token in constant use stayed verified past the cap");
+        assert!(lapsed >= Duration::from_millis(400), "lapsed at {lapsed:?}");
+        assert!(lapsed < Duration::from_millis(900), "lapsed at {lapsed:?}");
+    }
+
+    #[test]
+    fn a_bootstrap_caller_cannot_start_an_expensive_call() {
+        let a = Admission::new(&limits(|l| l.expensive_per_principal = 1));
+        let ip = Some(IpAddr::from([10, 6, 6, 6]));
+        // The peer's one expensive slot is taken. A new token does not get one of its own.
+        let held = a
+            .admit_request(Some("t1"), ip, Class::Expensive, 1)
+            .unwrap();
+        assert!(
+            a.admit_request(Some("t2"), ip, Class::Expensive, 1)
+                .is_err()
+        );
+        assert!(
+            a.admit_request(Some("t3"), ip, Class::Expensive, 1)
+                .is_err()
+        );
+        assert_eq!(a.in_flight(), 1);
+        drop(held);
+        // Nor does the class that needs a byte bucket or a replica slot.
+        let ip = Some(IpAddr::from([10, 6, 6, 7]));
+        let a = Admission::new(&limits(|l| {
+            l.semantic_concurrency = 1;
+            l.semantic_rps = 1;
+        }));
+        let _s = a.admit_request(Some("s1"), ip, Class::Semantic, 1).unwrap();
+        assert!(a.admit_request(Some("s2"), ip, Class::Semantic, 1).is_err());
+    }
+
+    #[test]
+    fn bootstrap_concurrency_is_bounded_per_peer() {
+        let a = Admission::new(&limits(|l| {
+            l.cheap_burst = 3;
+            l.cheap_rps = 1;
+            l.max_inflight_per_token = 2;
+        }));
+        let ip = IpAddr::from([10, 7, 7, 7]);
+        drain_peer(&a, ip);
+        let token = |t: &'static str| a.admit_request(Some(t), Some(ip), Class::Cheap, 1);
+        let one = token("tA").unwrap();
+        let two = token("tB").unwrap();
+        assert!(matches!(one.0, Caller::Bootstrap { .. }));
+        // New tokens do not bring new slots: the peer has two in flight.
+        assert!(token("tC").is_err());
+        assert!(token("tD").is_err());
+        drop(one);
+        assert!(token("tC").is_ok());
+        drop(two);
+    }
+
+    #[test]
+    fn global_overload_gives_a_new_token_no_bootstrap() {
+        let a = Admission::new(&limits(|l| {
+            l.max_inflight = 2;
+            l.cheap_burst = 3;
+            l.cheap_rps = 1;
+        }));
+        let ip = IpAddr::from([10, 8, 8, 8]);
+        drain_peer(&a, ip);
+        let (p1, p2) = (
+            a.admit(caller(1), Class::Cheap, 1).unwrap(),
+            a.admit(caller(2), Class::Cheap, 1).unwrap(),
+        );
+        for _ in 0..5 {
+            let refused = a
+                .admit_request(Some("tok"), Some(ip), Class::Cheap, 1)
+                .err()
+                .unwrap();
+            assert_eq!(refused.code(), Code::Unavailable);
+        }
+        drop((p1, p2));
+        // Overload spent nothing of the token's allowance.
+        let admitted = (0..10)
+            .filter(|_| {
+                a.admit_request(Some("tok"), Some(ip), Class::Cheap, 1)
+                    .is_ok()
+            })
+            .count();
+        assert_eq!(admitted, BOOTSTRAP_ALLOWANCE as usize);
     }
 }
