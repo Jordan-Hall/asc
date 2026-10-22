@@ -130,6 +130,7 @@ sha2           = "0.11.1"
 url            = "2.5.4"       # asc-store (U07)
 # additions (U01b)
 gix-attributes = "=0.37.1"     # gix 0.89 family
+gix-imara-diff = "=0.3.2"      # gix 0.89 family; names gix-merge's InternedInput (U26)
 quick-xml      = "0.42.0"
 governor       = "0.10.4"
 prost-reflect  = "0.16.5"

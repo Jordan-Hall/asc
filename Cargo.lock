@@ -384,6 +384,8 @@ dependencies = [
  "asc-core",
  "asc-store",
  "futures",
+ "gix-hash",
+ "gix-imara-diff",
  "gix-merge",
  "globset",
  "imara-diff",
