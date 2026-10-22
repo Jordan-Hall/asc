@@ -47,6 +47,10 @@ service Repo {
   rpc FindLanding(FindLandingRequest) returns (FindLandingResponse);         // §8.9
   rpc Classify(ClassifyRequest) returns (ClassifyResponse);                  // §8.10
   rpc Rebase(RebaseRequest) returns (RebaseResponse);                        // §8.11
+  rpc CommitGraph(CommitGraphRequest) returns (stream CommitGraphResponse);  // §20.6; not the project graph of `asc graph`
+  rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
+  rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
+  rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
 }
 // service Projects (ProjectGraph, Affected, ProjectHashes) is in proto/asc/v1/projects.proto (§12A.8), on the same port.
 
@@ -68,7 +72,8 @@ message RefUpdate { string name = 1;
 enum UpdateMode { UPDATE_MODE_FAST_FORWARD = 0; UPDATE_MODE_FORCE = 1; UPDATE_MODE_LAND = 2; }
 enum HookMode { HOOK_MODE_RUN = 0; HOOK_MODE_SKIP_PRE = 1; }                        // SKIP_PRE: internal token only
 message UpdateRefsRequest { RepoRef repo = 1; repeated RefUpdate updates = 2; UpdateMode mode = 3;
-  repeated string push_options = 4; HookMode hooks = 5; int64 ttl_seconds = 6; }
+  repeated string push_options = 4; HookMode hooks = 5; int64 ttl_seconds = 6;
+  bool no_content_merge = 7; }   // no_content_merge: LAND only (§20.5)
 message Rewrite { bytes old = 1; bytes new = 2; }
 message RefResult { string name = 1; RefTarget old = 2; RefTarget new = 3; }
 message UpdateRefsResponse { repeated RefResult results = 1; repeated Rewrite rewritten = 2; string message = 3; }
@@ -80,10 +85,14 @@ message GitMapResponse { repeated bytes asc_to_git = 1; repeated bytes git_to_as
 
 message LogRequest { RepoRef repo = 1; repeated string include = 2; repeated string exclude = 3;
   repeated string paths = 4; bool first_parent = 5; bool follow = 6; uint32 skip = 7; uint32 limit = 8;
-  string author = 9; string grep = 10; int64 since = 11; int64 until = 12; bool count_only = 13; string page_token = 14; }
+  string author = 9; string grep = 10; int64 since = 11; int64 until = 12; bool count_only = 13; string page_token = 14;
+  bytes pickaxe = 15; bool pickaxe_regex = 16; bool with_stats = 17;
+  uint32 scan_budget = 18; /* candidates, default 10000 */ string resume_token = 19; }
 message LogEntry { bytes id = 1; bytes git = 2; repeated bytes parents = 3; Signature author = 4;
-  Signature committer = 5; bytes message = 6; uint32 gen = 7; }
-message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; string next_page_token = 3; }
+  Signature committer = 5; bytes message = 6; uint32 gen = 7;
+  bytes change = 8; DiffStat stats = 9; bytes meta = 10; }
+message LogResponse { repeated LogEntry entries = 1; uint64 count = 2; string next_page_token = 3;
+  bool truncated = 4; string resume_token = 5; }   // truncated: the scan budget ran out
 message MergeBaseRequest { RepoRef repo = 1; bytes a = 2; repeated bytes b = 3; bool all = 4; }
 message MergeBaseResponse { repeated bytes bases = 1; }
 message IsAncestorRequest { RepoRef repo = 1; bytes ancestor = 2; bytes descendant = 3; }
@@ -102,7 +111,8 @@ message DiffResponse { repeated PathChange changes = 1; bytes text = 2; bool tru
 message BlameRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; uint32 start_line = 4; uint32 end_line = 5;
   bool reverse = 6; }
 message BlameHunk { bytes origin = 1; bytes orig_path = 2; uint32 orig_start = 3; uint32 start = 4; uint32 len = 5; }
-message BlameResponse { repeated BlameHunk hunks = 1; repeated LogEntry commits = 2; }
+message BlameResponse { repeated BlameHunk hunks = 1; repeated LogEntry commits = 2;
+  repeated ReviewState reviews = 3; }   // parallel to commits
 message LastCommitsRequest { RepoRef repo = 1; string rev = 2; bytes dir = 3; repeated bytes names = 4; }
 message LastCommitsResponse { map<string, LogEntry> by_name = 1; }
 
@@ -183,3 +193,26 @@ message RebaseResponse { bytes result = 1; repeated Rewrite rewritten = 2; repea
 
 // Detail attached to a failed call's gRPC status (§7). `code` is one of the documented code strings.
 message ErrorDetail { string code = 1; repeated string paths = 2; bytes actual = 3; repeated Conflict conflicts = 4; }
+
+// Stacked changes and history insight (SPEC §20.5, §20.6; amendment made by C17).
+// ErrorDetail.code also carries CHANGE_DIVERGED, CHANGE_FROZEN, LAND_NEEDS_CONTENT_MERGE and CHANGE_NOT_ALLOWED.
+message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
+  uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
+message FileStat { bytes path = 1; uint32 added = 2; uint32 removed = 3; bool binary = 4; }
+message DiffStat { repeated FileStat files = 1; }
+enum GraphPreset { GRAPH_PRESET_ALL = 0; GRAPH_PRESET_CURRENT = 1; GRAPH_PRESET_SMART = 2; GRAPH_PRESET_STACK = 3; }
+message CommitGraphRequest { RepoRef repo = 1; repeated string include = 2; repeated string exclude = 3; GraphPreset preset = 4;
+  bool lanes = 5; bool stats = 6; uint32 limit = 7; string page_token = 8; }
+message GraphEdge { uint32 to_column = 1; bytes parent = 2; }
+message GraphRow { LogEntry entry = 1; repeated string refs = 2; uint32 column = 3; repeated GraphEdge edges = 4;
+  bool overflow = 5; ReviewState review = 6; bool wip = 7; string ws_id = 8; }
+message CommitGraphResponse { repeated GraphRow rows = 1; string next_page_token = 2; }
+message LineHistoryRequest { RepoRef repo = 1; string rev = 2; bytes path = 3; uint32 start_line = 4; uint32 end_line = 5;
+  uint32 limit = 6; uint32 scan_budget = 7; string resume_token = 8; }
+message CompareRequest { RepoRef repo = 1; string a = 2; string b = 3; bool three_dot = 4; uint32 limit = 5;
+  string ahead_page_token = 6; string behind_page_token = 7; }
+message CompareResponse { bytes merge_base = 1; uint64 ahead = 2; uint64 behind = 3; repeated LogEntry ahead_entries = 4;
+  repeated LogEntry behind_entries = 5; string ahead_next = 6; string behind_next = 7; repeated PathChange files = 8; }
+message Autolink { string prefix = 1; string url = 2; }
+message RepoConfigRequest { RepoRef repo = 1; string rev = 2; }
+message RepoConfigResponse { repeated Autolink autolinks = 1; }
