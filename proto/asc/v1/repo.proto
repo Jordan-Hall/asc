@@ -215,4 +215,8 @@ message CompareResponse { bytes merge_base = 1; uint64 ahead = 2; uint64 behind 
   repeated LogEntry behind_entries = 5; string ahead_next = 6; string behind_next = 7; repeated PathChange files = 8; }
 message Autolink { string prefix = 1; string url = 2; }
 message RepoConfigRequest { RepoRef repo = 1; string rev = 2; }
-message RepoConfigResponse { repeated Autolink autolinks = 1; }
+// Commit cloud and branchless additions (SPEC §21.3.5; follow-up B07). VersionResponse.features also lists
+// "cloud.v1" and "branchless.v1"; ErrorDetail.code also carries VERSION_CONFLICT, CLOUD_HEADS_LIMIT,
+// CLOUD_WORKSPACES_LIMIT, USER_REFS_LIMIT, QUOTA_EXCEEDED and REF_NOT_SHARED. visibility is "private", "internal" or "public".
+message RepoConfigResponse { repeated Autolink autolinks = 1; bool branchless = 2; bool cloud = 3;
+  repeated string shared_refs = 4; string visibility = 5; }

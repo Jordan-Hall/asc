@@ -43,7 +43,8 @@ message WsAffectedRequest { string ws_id = 1; AffectedRequest query = 2; bool un
 message WsAffectedResponse { AffectedResponse result = 1; }
 message WatchRequest { string ws_id = 1; string since_token = 2; }
 message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KIND_STAGE = 3; KIND_OP_STARTED = 4;
-  KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7; } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
+  KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7;
+  KIND_CLOUD = 9; /* 8 is KIND_STACK (C31); cloud events go to the workspace owner only (§21.3.7) */ } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
   string token = 7; }
 message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
 message WsStageResponse { WsStatusResponse status = 1; }
