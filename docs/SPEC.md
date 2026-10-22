@@ -2238,7 +2238,7 @@ Success metrics per cohort: disk per worktree (target < 50 MiB before builds), `
 4. Quota semantics: logical size (default) vs namespace-unique size.
 5. Show asc-stored Actions artifacts in Forgejo's run UI (a K-patch)? Default **no**: `asc ci artifact` and the forked `download-artifact` are the access path (§12.7) **[audit: actions-cache-artifact-underspecified]**.
 6. Logical dedup across a fork network in v1 (the checklist lists it as v1)? Default **no**: forks get a server-side physical copy (`CopyObject`/reflink; Garage dedups blocks), and per-repo namespaces close the confirmation attack. ASC has one repository and no forks, so v1 saves nothing; it is a measured v1.x item (§3.3) **[audit: fork-dedup-deviation-unsigned]**.
-7. Branchless defaults to confirm (in force until decided): `git push` creates **draft** PRs (`asc.push.review = draft`), and listing another user's cloud workspace needs repo **write** (`[cloud] list_others = "write"`, §21.2.5) [audit: branchless-folded].
+7. Branchless defaults (confirmed by the user, 2026-10-22): `git push` creates **draft** PRs (`asc.push.review = draft`), and listing another user's cloud workspace needs repo **write** (`[cloud] list_others = "write"`, §21.2.5) [audit: branchless-folded].
 
 **Spikes (each 1–2 days, in this order; owner = the unit that depends on it):**
 
