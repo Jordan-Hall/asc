@@ -16,7 +16,14 @@ asc-store = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
 thiserror = { workspace = true }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring", "tls-native-roots", "tls-webpki-roots"] }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 tonic-prost = { workspace = true }
 prost-reflect = { workspace = true }
 serde_json = { workspace = true }
@@ -24,6 +31,9 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 protox = { workspace = true }
+sqlx = { workspace = true }
+tempfile = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
 
 [build-dependencies]
 prost = { workspace = true }
