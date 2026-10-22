@@ -1,5 +1,6 @@
 //! asc-core.
 
+pub mod change;
 pub mod codec;
 pub mod content;
 pub mod git;

@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
+use asc_core::change::MetaId;
 use asc_core::id::{ChangesetId, ChunkId, FileId, GitOid, TagId, TreeId};
 use data_encoding::HEXLOWER;
 
@@ -21,6 +22,8 @@ pub enum ObjKey {
     Tag(TagId),
     /// Raw git tree object (`tree <len>\0...`) that does not re-render canonically.
     GitTreeOverride(GitOid),
+    /// Stable change identity sidecar (SPEC §20.2).
+    ChangeMeta(MetaId),
     /// Recomputable derived value.
     Derived {
         name: &'static str,
@@ -39,6 +42,7 @@ pub enum KeyClass {
     Changeset,
     Tag,
     GitTreeOverride,
+    ChangeMeta,
     Derived,
 }
 
@@ -53,6 +57,7 @@ impl KeyClass {
             Self::Changeset => "c",
             Self::Tag => "g",
             Self::GitTreeOverride => "o",
+            Self::ChangeMeta => "m",
             Self::Derived => "d",
         }
     }
@@ -114,6 +119,7 @@ impl ObjKey {
             Self::Changeset(_) => KeyClass::Changeset,
             Self::Tag(_) => KeyClass::Tag,
             Self::GitTreeOverride(_) => KeyClass::GitTreeOverride,
+            Self::ChangeMeta(_) => KeyClass::ChangeMeta,
             Self::Derived { .. } => KeyClass::Derived,
         }
     }
@@ -128,6 +134,7 @@ impl ObjKey {
             Self::Changeset(i) => leaf(dir, &i.to_string()),
             Self::Tag(i) => leaf(dir, &i.to_string()),
             Self::GitTreeOverride(i) => leaf(dir, &i.to_string()),
+            Self::ChangeMeta(i) => leaf(dir, &i.to_string()),
             Self::Derived { name, version, id } => {
                 leaf(&format!("{dir}/{name}.v{version}"), &HEXLOWER.encode(id))
             }
@@ -149,6 +156,7 @@ impl ObjKey {
             "c" => Self::Changeset(ChangesetId::from_bytes(unhex(&sharded(rest)?)?)),
             "g" => Self::Tag(TagId::from_bytes(unhex(&sharded(rest)?)?)),
             "o" => Self::GitTreeOverride(GitOid::from_bytes(unhex(&sharded(rest)?)?)),
+            "m" => Self::ChangeMeta(MetaId::from_bytes(unhex(&sharded(rest)?)?)),
             "d" => {
                 let (nv, rest) = rest.split_once('/')?;
                 let (name, version) = nv.rsplit_once(".v")?;
@@ -186,6 +194,7 @@ mod tests {
             ObjKey::Changeset(ChangesetId::of(b"e")),
             ObjKey::Tag(TagId::of(b"f")),
             ObjKey::GitTreeOverride(GitOid::from_bytes([0xab; 20])),
+            ObjKey::ChangeMeta(MetaId::from_bytes([0x3c; 32])),
             ObjKey::Derived {
                 name: "skip",
                 version: 3,
