@@ -5,8 +5,19 @@
 //! [`unpack`] treats the archive as untrusted: only regular files with a canonical cache path
 //! are accepted, sizes and counts are bounded, nothing is installed unless the whole archive
 //! reads cleanly (the zstd frame carries a checksum), an existing file is never overwritten, and
-//! no symlinked ancestor is followed. Cache files are verified on read, so a planted file with
-//! the wrong bytes is evicted by the first `get`.
+//! no symlinked ancestor is followed.
+//!
+//! Every entry is verified before anything is installed: the bytes of a `c`, `t`, `f` or `k`
+//! entry must hash to the key in its name, using the same check as the cache read path
+//! ([`verify`]). One mismatch fails the whole seed. `l` (chunk lists) and `d` (derived values)
+//! cannot be checked from their key (a `FileId` covers the reassembled content, which needs the
+//! chunks, and a derived value is not content-addressed), so a seed never carries them: [`pack`]
+//! skips them and [`unpack`] refuses an archive that has one.
+//!
+//! Where a seed may come from is decided by [`Origin`]: a URL from the server's discovery
+//! document may only be `https`; an explicit one may also be a local file. No origin may name a
+//! network share (`file:` with a host, or a `\\` or `//` path), because opening one makes
+//! Windows send NTLM credentials to that host.
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
@@ -15,6 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+
+use crate::key::ObjKey;
+use crate::objects::verify;
 
 /// The only `seed.json` version this build reads and writes.
 pub const VERSION: u32 = 1;
@@ -112,6 +126,8 @@ pub struct Packed {
     pub files: u64,
     /// Selected files that were missing (evicted meanwhile) and skipped.
     pub missing: u64,
+    /// Selected `l` and `d` files left out because a client cannot verify them.
+    pub unverifiable: u64,
     pub bytes: u64,
 }
 
@@ -133,6 +149,11 @@ fn derived_dir_ok(s: &str) -> bool {
         && !ver.is_empty()
         && ver.len() <= 9
         && ver.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether an entry of this class can be checked against its key. `l` and `d` cannot.
+fn is_verifiable(rel: &str) -> bool {
+    matches!(rel.as_bytes().first(), Some(b'c' | b't' | b'f' | b'k'))
 }
 
 /// Checks a cache-relative path (`/`-separated): `<class>/<h2>/<hex64>` or
@@ -228,6 +249,10 @@ pub fn pack(
     for rel in rel_paths {
         let cap = check_rel(rel)?;
         if !seen.insert(rel.as_str()) {
+            continue;
+        }
+        if !is_verifiable(rel) {
+            stats.unverifiable += 1;
             continue;
         }
         let path = cache.join(rel);
@@ -332,6 +357,12 @@ pub fn unpack_reader(src: impl Read, cache: &Path, expect_repo: Option<&str>) ->
             continue;
         }
         let cap = check_rel(&name)?;
+        if !is_verifiable(&name) {
+            return Err(SeedError::Refused(format!(
+                "entry {name} cannot be verified from its key"
+            )));
+        }
+        let key = ObjKey::parse(&name).ok_or_else(|| corrupt(format!("bad entry key {name}")))?;
         if size > cap {
             return Err(SeedError::Refused(format!("entry {name} is too large")));
         }
@@ -342,12 +373,17 @@ pub fn unpack_reader(src: impl Read, cache: &Path, expect_repo: Option<&str>) ->
         if !seen.insert(name.clone()) {
             return Err(corrupt(format!("duplicate entry {name}")));
         }
-        let dst = stage.0.join(format!("{}", staged.len()));
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&dst)?;
-        let copied = io::copy(&mut (&mut entry).take(size), &mut f)?;
-        if copied != size {
+        // Entries are at most `cap` bytes, the bound the cache read path also reads into memory.
+        let mut data = Vec::with_capacity(size.min(1 << 20) as usize);
+        (&mut entry).take(size).read_to_end(&mut data)?;
+        if data.len() as u64 != size {
             return Err(corrupt(format!("entry {name} is truncated")));
         }
+        verify(&key, &data)
+            .map_err(|_| SeedError::Refused(format!("entry {name} does not match its key")))?;
+        let dst = stage.0.join(format!("{}", staged.len()));
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&dst)?;
+        f.write_all(&data)?;
         staged.push(name);
     }
     // The tar reader stops at its end marker; drain the rest (bounded) so the zstd frame's
@@ -390,36 +426,103 @@ pub fn unpack_file(path: &Path, cache: &Path, expect_repo: Option<&str>) -> Resu
     unpack_reader(io::BufReader::new(f), cache, expect_repo)
 }
 
-/// Fetches the seed at `url` (`file:`, `http:` or `https:`) and unpacks it into `cache`.
-///
-/// `http(s)` bodies stream to a temporary file under `cache` (bounded by
-/// [`MAX_ARCHIVE_BYTES`]), so memory stays constant.
-pub async fn unpack(url: &url::Url, cache: &Path, expect_repo: Option<&str>) -> Result<Unpacked> {
-    let cache = cache.to_path_buf();
-    let expect = expect_repo.map(str::to_owned);
-    match url.scheme() {
-        "file" => {
-            let path = url
-                .to_file_path()
-                .map_err(|()| SeedError::Refused("bad file url".into()))?;
-            blocking(move || unpack_file(&path, &cache, expect.as_deref())).await
+/// Who named a seed URL, which decides what it may point at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The user: a command-line flag (`asc clone --seed`, `asc ci warm --seed-from`). May be
+    /// `https`, a local `file:` URL or a plain local path.
+    Explicit,
+    /// The server's discovery document. A hostile server controls it, so it may only be
+    /// `https`: never a local file, a share, or cleartext.
+    Discovered,
+}
+
+fn refused(m: impl Into<String>) -> SeedError {
+    SeedError::Refused(m.into())
+}
+
+/// Whether `s` names a network share: `\\host\share` or `//host/share`. Opening one on Windows
+/// sends the user's NTLM credentials to the host.
+fn is_unc(s: &str) -> bool {
+    s.starts_with("\\\\") || s.starts_with("//")
+}
+
+/// A local seed path must not be a network share.
+fn check_local_path(path: &Path) -> Result<()> {
+    if is_unc(&path.to_string_lossy()) {
+        return Err(refused("seed path is a network share"));
+    }
+    Ok(())
+}
+
+/// The scheme and host policy for `url` from `origin`.
+fn check_url(url: &url::Url, origin: Origin) -> Result<()> {
+    match (url.scheme(), origin) {
+        ("https", _) => Ok(()),
+        ("file", Origin::Explicit) => {
+            if url.host().is_some() {
+                return Err(refused("file: seed URL names a host (network share)"));
+            }
+            Ok(())
         }
-        "http" | "https" => {
-            fs::create_dir_all(&cache)?;
-            let n = STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let tmp = cache.join(format!(".seed-dl-{}-{n}", std::process::id()));
-            let _guard = RemoveOnDrop(tmp.clone());
-            download(url, &tmp).await?;
-            blocking(move || unpack_file(&tmp, &cache, expect.as_deref())).await
-        }
-        s => Err(SeedError::Refused(format!("unsupported seed scheme {s:?}"))),
+        ("file", Origin::Discovered) => Err(refused(
+            "a seed URL from the server's discovery document must be https, not file:",
+        )),
+        ("http", _) => Err(refused("seed URLs must be https, not http:")),
+        (s, _) => Err(refused(format!("unsupported seed scheme {s:?}"))),
     }
 }
 
-/// [`unpack`] for a URL given as text (a command-line flag or the discovery document).
-pub async fn unpack_str(url: &str, cache: &Path, expect_repo: Option<&str>) -> Result<Unpacked> {
-    let url = url::Url::parse(url).map_err(|e| SeedError::Refused(format!("bad seed url: {e}")))?;
-    unpack(&url, cache, expect_repo).await
+/// Fetches the seed at `url` and unpacks it into `cache`. `origin` limits the URL (see
+/// [`Origin`]): `https` always, a local `file:` URL only from [`Origin::Explicit`].
+///
+/// `https` bodies stream to a temporary file under `cache` (bounded by [`MAX_ARCHIVE_BYTES`]),
+/// so memory stays constant. A redirect may only lead to another `https` URL.
+pub async fn unpack(
+    url: &url::Url,
+    cache: &Path,
+    expect_repo: Option<&str>,
+    origin: Origin,
+) -> Result<Unpacked> {
+    check_url(url, origin)?;
+    let cache = cache.to_path_buf();
+    let expect = expect_repo.map(str::to_owned);
+    if url.scheme() == "file" {
+        let path = url.to_file_path().map_err(|()| refused("bad file url"))?;
+        check_local_path(&path)?;
+        return blocking(move || unpack_file(&path, &cache, expect.as_deref())).await;
+    }
+    fs::create_dir_all(&cache)?;
+    let n = STAGE_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = cache.join(format!(".seed-dl-{}-{n}", std::process::id()));
+    let _guard = RemoveOnDrop(tmp.clone());
+    download(url, &tmp, "https").await?;
+    blocking(move || unpack_file(&tmp, &cache, expect.as_deref())).await
+}
+
+/// [`unpack`] for a URL given as text (a command-line flag or the discovery document). An
+/// [`Origin::Explicit`] value that is not a URL (`/srv/seed.tar.zst`, `C:\seeds\s.tar.zst`) is
+/// a local path.
+pub async fn unpack_str(
+    text: &str,
+    cache: &Path,
+    expect_repo: Option<&str>,
+    origin: Origin,
+) -> Result<Unpacked> {
+    match url::Url::parse(text) {
+        // A one-letter scheme is a Windows drive letter.
+        Ok(url) if url.scheme().len() > 1 => unpack(&url, cache, expect_repo, origin).await,
+        Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) if origin == Origin::Explicit => {
+            let path = PathBuf::from(text);
+            check_local_path(&path)?;
+            let (cache, expect) = (cache.to_path_buf(), expect_repo.map(str::to_owned));
+            blocking(move || unpack_file(&path, &cache, expect.as_deref())).await
+        }
+        Ok(_) | Err(url::ParseError::RelativeUrlWithoutBase) => Err(refused(
+            "a seed URL from the server's discovery document must be https",
+        )),
+        Err(e) => Err(refused(format!("bad seed url: {e}"))),
+    }
 }
 
 struct RemoveOnDrop(PathBuf);
@@ -436,11 +539,24 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
         .map_err(|e| SeedError::Download(e.to_string()))?
 }
 
-async fn download(url: &url::Url, to: &Path) -> Result<()> {
+/// Follows at most three redirects, and only to `scheme` (so `https` cannot be downgraded).
+fn redirect_policy(scheme: &'static str) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.url().scheme() != scheme {
+            attempt.error(format!("redirect to a non-{scheme} url refused"))
+        } else if attempt.previous().len() >= 3 {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
+async fn download(url: &url::Url, to: &Path, redirect_scheme: &'static str) -> Result<()> {
     use tokio::io::AsyncWriteExt;
     let dl = |e: reqwest::Error| SeedError::Download(e.to_string());
     let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(3))
+        .redirect(redirect_policy(redirect_scheme))
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(dl)?;
@@ -742,9 +858,193 @@ mod tests {
         let file = tmp.path().join("s.tar.zst");
         fs::write(&file, bytes).unwrap();
         let url = url::Url::from_file_path(&file).unwrap();
-        let got = unpack(&url, &tmp.path().join("dst"), None).await.unwrap();
+        let got = unpack(&url, &tmp.path().join("dst"), None, Origin::Explicit)
+            .await
+            .unwrap();
         assert_eq!(got.installed, 1);
         let bad = url::Url::parse("ftp://x/y").unwrap();
-        assert!(unpack(&bad, &tmp.path().join("dst"), None).await.is_err());
+        let dst = tmp.path().join("dst");
+        assert!(unpack(&bad, &dst, None, Origin::Explicit).await.is_err());
+    }
+
+    fn mismatched(rel: &str, data: &[u8]) -> Vec<u8> {
+        let good_rel = ObjKey::File(FileId::of(b"good")).path();
+        raw_archive(&[
+            (&good_rel, b"good", tar::EntryType::Regular),
+            (rel, data, tar::EntryType::Regular),
+        ])
+    }
+
+    fn assert_nothing_installed(root: &Path) {
+        let left: Vec<_> = fs::read_dir(root).unwrap().collect();
+        assert!(
+            left.is_empty(),
+            "nothing installed, stage cleaned: {left:?}"
+        );
+    }
+
+    #[test]
+    fn entry_whose_bytes_do_not_match_its_key_fails_the_whole_seed() {
+        use asc_core::id::{ChangesetId, ChunkId, TreeId};
+        let tmp = tempfile::tempdir().unwrap();
+        let keys = [
+            ObjKey::Changeset(ChangesetId::of(b"claimed")),
+            ObjKey::Tree(TreeId::of(b"claimed")),
+            ObjKey::File(FileId::of(b"claimed")),
+            ObjKey::Chunk(ChunkId::of(b"claimed")),
+        ];
+        for key in keys {
+            let a = mismatched(&key.path(), b"planted");
+            let root = tmp.path().join(key.class().dir());
+            let r = unpack_reader(&a[..], &root, None);
+            assert!(matches!(r, Err(SeedError::Refused(_))), "{key}: {r:?}");
+            assert_nothing_installed(&root);
+            // The same entry with the right bytes installs.
+            let ok = mismatched(&key.path(), b"claimed");
+            let root = tmp.path().join(format!("ok-{}", key.class().dir()));
+            let got = unpack_reader(&ok[..], &root, None).unwrap();
+            assert_eq!(got.installed, 2, "{key}");
+        }
+    }
+
+    fn unverifiable_keys() -> [ObjKey; 2] {
+        [
+            ObjKey::ChunkList(FileId::of(b"big")),
+            ObjKey::Derived {
+                name: "skip",
+                version: 1,
+                id: [7; 32],
+            },
+        ]
+    }
+
+    #[test]
+    fn chunk_list_and_derived_entries_are_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        for key in unverifiable_keys() {
+            let a = mismatched(&key.path(), b"anything");
+            let root = tmp.path().join(key.class().dir());
+            let r = unpack_reader(&a[..], &root, None);
+            assert!(matches!(r, Err(SeedError::Refused(_))), "{key}: {r:?}");
+            assert_nothing_installed(&root);
+        }
+    }
+
+    #[tokio::test]
+    async fn pack_leaves_out_chunk_lists_and_derived_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = cache(tmp.path(), "src");
+        let mut rels = vec![put(&src, b"alpha").await];
+        for key in unverifiable_keys() {
+            let rel = key.path();
+            let path = tmp.path().join("src").join(&rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"x").unwrap();
+            rels.push(rel);
+        }
+        let mut out = Vec::new();
+        let root = tmp.path().join("src");
+        let stats = pack(&root, &manifest(), &rels, &mut out).unwrap();
+        assert_eq!((stats.files, stats.unverifiable), (1, 2));
+        let got = unpack_reader(&out[..], &tmp.path().join("dst"), None).unwrap();
+        assert_eq!(got.installed, 1);
+    }
+
+    async fn seed_file(tmp: &Path) -> PathBuf {
+        let src = cache(tmp, "src");
+        let a = put(&src, b"alpha").await;
+        let file = tmp.join("s.tar.zst");
+        fs::write(&file, pack_to_vec(&tmp.join("src"), &[a])).unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn discovered_urls_must_be_https() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = seed_file(tmp.path()).await;
+        let dst = tmp.path().join("dst");
+        let furl = url::Url::from_file_path(&file).unwrap();
+        for text in [
+            furl.to_string(),
+            "http://seeds.example/s.tar.zst".into(),
+            file.to_string_lossy().into_owned(),
+        ] {
+            let r = unpack_str(&text, &dst, None, Origin::Discovered).await;
+            assert!(matches!(r, Err(SeedError::Refused(_))), "{text}: {r:?}");
+        }
+        assert!(!dst.exists() || fs::read_dir(&dst).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn explicit_urls_may_be_local_but_never_http_or_a_share() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = seed_file(tmp.path()).await;
+        let dst = tmp.path().join("dst");
+        for text in [
+            "http://seeds.example/s.tar.zst",
+            "file://127.0.0.1/seed-test/s.tar.zst",
+            "file://attacker.invalid/share/s.tar.zst",
+            r"\\127.0.0.1\seed-test\s.tar.zst",
+            "//127.0.0.1/seed-test/s.tar.zst",
+            "file:////127.0.0.1/seed-test/s.tar.zst",
+        ] {
+            let r = unpack_str(text, &dst, None, Origin::Explicit).await;
+            assert!(matches!(r, Err(SeedError::Refused(_))), "{text}: {r:?}");
+        }
+        // A local file URL and a plain path still work.
+        let furl = url::Url::from_file_path(&file).unwrap();
+        let got = unpack_str(furl.as_str(), &dst, None, Origin::Explicit)
+            .await
+            .unwrap();
+        assert_eq!(got.installed, 1);
+        let dst2 = tmp.path().join("dst2");
+        let plain = file.to_string_lossy().into_owned();
+        let got = unpack_str(&plain, &dst2, None, Origin::Explicit)
+            .await
+            .unwrap();
+        assert_eq!(got.installed, 1);
+    }
+
+    /// A server that answers every request with a redirect to `/final`, which serves a body.
+    async fn redirecting_server() -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut c, _)) = l.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = c.read(&mut buf).await.unwrap_or(0);
+                    let first = String::from_utf8_lossy(&buf[..n]);
+                    let resp = if first.starts_with("GET /final") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                            .to_owned()
+                    } else {
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://{addr}/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                    };
+                    let _ = c.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_another_scheme_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let addr = redirecting_server().await;
+        let url = url::Url::parse(&format!("http://{addr}/start")).unwrap();
+        let to = tmp.path().join("dl");
+        // The start URL is not checked here; the redirect to `http` leaves the required scheme.
+        let r = download(&url, &to, "https").await;
+        assert!(matches!(r, Err(SeedError::Download(_))), "{r:?}");
+        // Control: the same chain downloads when its scheme is the required one.
+        download(&url, &to, "http").await.unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"ok");
     }
 }
