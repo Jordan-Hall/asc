@@ -404,7 +404,16 @@ impl<'c, 'a> Linker<'c, 'a> {
         for e in all.iter().filter(|e| el_name(e) == "ProjectReference") {
             for r in resolve_list(&m.dir, attr(e, "Include").unwrap_or_default()) {
                 match r {
-                    Resolved::Path(t) => refs.extend(self.lookup(&t).filter(|&j| j != i)),
+                    Resolved::Path(t) if t.iter().any(|b| matches!(b, b'*' | b'?')) => {
+                        unknown = true;
+                    }
+                    Resolved::Path(t) => match self.lookup(&t) {
+                        Some(j) => refs.extend(Some(j).filter(|&j| j != i)),
+                        None => self.cx.report(
+                            m.path.clone(),
+                            "ProjectReference does not resolve to a known project",
+                        ),
+                    },
                     Resolved::Outside => {}
                     Resolved::Unknown => unknown = true,
                 }
@@ -419,11 +428,19 @@ impl<'c, 'a> Linker<'c, 'a> {
         if unknown {
             self.cx.report(
                 m.path.clone(),
-                "ProjectReference uses an unevaluated MSBuild property",
+                "ProjectReference uses an unevaluated MSBuild property or wildcard",
             );
             p.opaque = true;
         }
-        p.extra_inputs = extra_inputs(&m.dir, &all);
+        let (extra, extra_unknown) = extra_inputs(&m.dir, &all);
+        p.extra_inputs = extra;
+        if extra_unknown {
+            self.cx.report(
+                m.path.clone(),
+                "Import or item uses an unevaluated MSBuild property",
+            );
+            p.opaque = true;
+        }
 
         let ancestors = self.ancestors(&m.dir);
         let packages = self.packages(&all, &ancestors);
@@ -565,7 +582,9 @@ fn package_versions(root: &Value) -> BTreeMap<&str, &Value> {
 
 /// `Import` projects and `Compile`/`Content`/`None`/`EmbeddedResource` items
 /// that leave the project directory; item globs stay globs.
-fn extra_inputs(dir: &[u8], all: &[&Value]) -> Vec<Vec<u8>> {
+/// The flag is set when a value uses an unevaluated property or item.
+fn extra_inputs(dir: &[u8], all: &[&Value]) -> (Vec<Vec<u8>>, bool) {
+    let mut unknown = false;
     let mut out = BTreeSet::new();
     for e in all {
         let (raw, literal) = match el_name(e) {
@@ -574,14 +593,16 @@ fn extra_inputs(dir: &[u8], all: &[&Value]) -> Vec<Vec<u8>> {
             _ => continue,
         };
         for r in resolve_list(dir, raw.unwrap_or_default()) {
-            if let Resolved::Path(p) = r
-                && !inside(dir, &p)
-            {
-                out.insert(if literal { escape_glob(&p) } else { p });
+            match r {
+                Resolved::Path(p) if !inside(dir, &p) => {
+                    out.insert(if literal { escape_glob(&p) } else { p });
+                }
+                Resolved::Unknown => unknown = true,
+                _ => {}
             }
         }
     }
-    out.into_iter().collect()
+    (out.into_iter().collect(), unknown)
 }
 
 #[cfg(test)]
@@ -729,7 +750,8 @@ mod tests {
     #[test]
     fn project_references_resolve_backslashes_variables_and_case() {
         let (g, _) = build(&shop());
-        assert_eq!(g.issues.len(), 1, "only Weird is reported: {:?}", g.issues);
+        // Weird (unevaluated property) and App (conditional, missing target).
+        assert_eq!(g.issues.len(), 2, "{:?}", g.issues);
         assert_eq!(deps(&g, "App"), ["Normal:Core", "Normal:Lib"]);
         assert_eq!(deps(&g, "Lib"), ["Normal:Core"]);
         assert!(deps(&g, "Core").is_empty());
@@ -764,6 +786,37 @@ mod tests {
                 .any(|i| i.path == rp("src/Weird/Weird.csproj"))
         );
         assert!(!project(&g, "App").opaque);
+    }
+
+    #[test]
+    fn wildcard_references_and_unknown_imports_fail_closed() {
+        let proj = |body: &str| format!("<Project Sdk=\"Microsoft.NET.Sdk\">{body}</Project>");
+        let mut t = shop();
+        t.insert(
+            "src/Wild/Wild.csproj".into(),
+            proj("<ItemGroup><ProjectReference Include=\"../**/*.csproj\" /></ItemGroup>"),
+        );
+        t.insert(
+            "src/Imp/Imp.csproj".into(),
+            proj("<Import Project=\"$(SolutionDir)build.props\" />"),
+        );
+        t.insert(
+            "src/Item/Item.csproj".into(),
+            proj("<ItemGroup><Compile Include=\"$(Shared)/**\" /></ItemGroup>"),
+        );
+        t.insert(
+            "src/Gone/Gone.csproj".into(),
+            proj("<ItemGroup><ProjectReference Include=\"../Nope/Nope.csproj\" /></ItemGroup>"),
+        );
+        let (g, _) = build(&t);
+        for n in ["Wild", "Imp", "Item"] {
+            assert!(project(&g, n).opaque, "{n}");
+        }
+        for n in ["Wild", "Imp", "Item", "Gone"] {
+            let path = rp(&format!("src/{n}/{n}.csproj"));
+            assert!(g.issues.iter().any(|i| i.path == path), "{n}");
+        }
+        assert!(!project(&g, "Gone").opaque);
     }
 
     #[test]
