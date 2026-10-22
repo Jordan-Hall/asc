@@ -232,19 +232,10 @@ pub async fn serve(
             .map_err(|e| ConfigError::Invalid(e.to_string()))?,
     );
     turbo::register(&ext, turbo.clone());
-    let routes = build_routes(&ext, authorizer, ServerInfo::default());
+    // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
+    // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
-    let routes = Routes::from(
-        routes
-            .into_axum_router()
-            .layer(limits::AdmissionLayer::new(admission)),
-    );
-    let admission = Arc::new(limits::Admission::new(&cfg.limits));
-    let routes = Routes::from(
-        routes
-            .into_axum_router()
-            .layer(limits::AdmissionLayer::new(admission)),
-    );
+    let routes = limits::guarded_routes(&ext, authorizer, admission, ServerInfo::default());
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {
