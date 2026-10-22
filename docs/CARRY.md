@@ -8,3 +8,4 @@ These are requirements that fixes in earlier units created for later units. Ever
 - **Object decode** validates `Change`, `Changeset` and `ChunkList` invariants. Full apply/leafdiff validation stays in asc-engine ingest.
 - **Paths:** `checkout_safe` rejects any backslash. `windows_valid` matches git's `is_valid_win32_path`.
 - **`FileMeta` is dropped.** Envelope kind 5 is reserved.
+- **No LFS anywhere:** no LFS fields, alias keys, pointer parsing, LFS API or LFS copy jobs. Pointer files are plain blobs.
