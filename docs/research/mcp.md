@@ -38,7 +38,7 @@ Fixed rules this design obeys:
 | `asc serve` `/mcp` | Streamable HTTP 2026-07-28 (POST only; GET and DELETE return 405) | in `asc serve` (primary role only; the cache role returns 404) | OAuth 2.1 resource server (RFC 9728) with Forgejo as the authorization server, or a Forgejo PAT as the bearer token | in-process `RepoHandlers`, `Changes` and `Projects` (no network hop) | any repo the principal can read, named per call |
 | Forgejo `/api/mcp` | Streamable HTTP 2026-07-28, stateless | in the Forgejo fork (Go), calling Forgejo services in-process (not REST) | Forgejo's API auth (PAT or OAuth2 token) and its scopes | Forgejo models and services | PRs, reviews, issues, Actions, inbox |
 
-**Placement rule.** If the answer comes from a changeset, tree, file, ref or derived data, the tool is asc's. If the answer comes from Forgejo's database (people, discussion, approvals, queue, runs), the tool is Forgejo's. Forgejo results carry the asc handles (`asc_change`, `head`, `merge_base`), so the agent calls asc tools for the code.
+**Placement rule.** If the answer comes from a changeset, tree, file, ref or derived data, the tool is asc's. If the answer comes from Forgejo's database (people, discussion, approvals, queue, runs), the tool is Forgejo's. Forgejo results carry the asc handles (`asc_change`, `head`, `merge_base`), so the agent calls asc tools for the code. IDE MCP clients register through the same OAuth path as other clients (M26): spike P50 of `ide-plugins.md` decides whether `asc-mcp` or a second public client covers them [audit: ide-plugins-folded].
 
 | Need | Tool | Surface |
 |---|---|---|

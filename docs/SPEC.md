@@ -1,10 +1,10 @@
 # asc: final specification
 
-Status: **authoritative**, v1.7 (agentic code intelligence folded in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.8 (ASC-built IDE plugins folded in as §24; v1.7 folded agentic code intelligence in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
-Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp,codeintel}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
+Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp,codeintel,ide-plugins}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
-**User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no IDE git-plumbing support**: there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52); (8) **branchless by default** (checklist decision of 2026-10-22, overriding the earlier "nothing is uploaded before `asc push`", "no write-behind" and "secrets in drafts never leave the machine" rules): shared refs are only `master`, release branches and tags; all other work is draft changes indexed by change id; a pushed branch becomes the pusher's user ref and submits its stack as draft changes; the daemon uploads new commits at once (the opt-out commit cloud) behind a pre-upload secret hold, with purge; off switches per repo and per user: specified in new §21 (decisions BD1–BD12 of `docs/research/branchless.md`, now normative; PLAN units B01–B28) [audit: branchless-folded]; (9) **MCP is built in** (checklist decision of 2026-10-22): `asc mcp` (stdio), `asc serve /mcp` (Streamable HTTP) and the Forgejo fork's `/api/mcp`, all generated from the proto schemas, read-only by default and ACL-scoped: specified in new §22 (decisions M-D1–M-D10 of `docs/research/mcp.md`, now normative; PLAN units M01a–M28) [audit: mcp-folded].
+**User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no reliance on the IDEs' built-in git** (the IDEs' built-in git is not supported; ASC builds its own VS Code and JetBrains plugins, item (10)): there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1, §24); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52); (8) **branchless by default** (checklist decision of 2026-10-22, overriding the earlier "nothing is uploaded before `asc push`", "no write-behind" and "secrets in drafts never leave the machine" rules): shared refs are only `master`, release branches and tags; all other work is draft changes indexed by change id; a pushed branch becomes the pusher's user ref and submits its stack as draft changes; the daemon uploads new commits at once (the opt-out commit cloud) behind a pre-upload secret hold, with purge; off switches per repo and per user: specified in new §21 (decisions BD1–BD12 of `docs/research/branchless.md`, now normative; PLAN units B01–B28) [audit: branchless-folded]; (9) **MCP is built in** (checklist decision of 2026-10-22): `asc mcp` (stdio), `asc serve /mcp` (Streamable HTTP) and the Forgejo fork's `/api/mcp`, all generated from the proto schemas, read-only by default and ACL-scoped: specified in new §22 (decisions M-D1–M-D10 of `docs/research/mcp.md`, now normative; PLAN units M01a–M28) [audit: mcp-folded]. (10) **ASC-built IDE plugins** (checklist decision of 2026-10-22, "as good as GitKraken plus Graphite"): a VS Code extension (Cursor and VSCodium through Open VSX) first, then one IntelliJ Platform plugin; they replace the built-in git SCM in asc workspaces, share one generated TypeScript client and one React UI (`asc-ui`) with the Forgejo fork, and reach asc only through the `asc api --stdio` bridge: specified in new §24 (decisions IP-D1–IP-D15 of `docs/research/ide-plugins.md`, now normative; PLAN units P01a–P58) [audit: ide-plugins-folded].
 
 Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo at `D:\dev\monorepo` and its Forgejo at `https://forge.example.org`. Sizes are binary (KiB, MiB, GiB).
 
@@ -30,7 +30,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 3. **The changeset hashes its change list and its root tree.** Validated as `apply(parents[0].root, changes) == root` and `changes == leafdiff(parents[0].root, root)`. The v1 tree format has no size limit and is frozen. A tree-format change would be a history rewrite and is out of scope; this trade is accepted and documented **[fix J3: identity coupling]**.
 4. **Tree entries carry the git blob/tree SHA-1 and size.** Export, the synthetic turbo index, turbo hashing and staged-vs-HEAD are metadata-only. Servers recompute and verify every client-supplied git field **[graft: integration] [fix J1]**.
 5. **The machine cache is a directory.** Atomic rename, content-addressed names, BLAKE3 verified on every read **[graft: integration]**. `store/` (never evicted by LRU: not-yet-uploaded and local-only data; only the hidden-draft expiry of §21.2.4 removes from it) is separate from `cache/` (evictable copies of remote objects).
-6. **asc is git at the surface.** Same commands, flags, output, messages and exit codes as git 2.55 (§11). The `asc` binary installed as `git` serves every git command in an asc workspace natively and falls through to real git everywhere else (§11.4). Each working copy has a **minimal synthetic `.git` for Turborepo only**: `HEAD` plus, when the repo uses turbo or the workspace is plain, an index rendered from tree metadata (§9.4). asc keeps its own staging area (§9.5). Every child asc spawns (hooks, aliases, editors, drivers) finds asc first on `PATH`, so `git` inside a hook is asc (§9.4.1). Real git never operates on an asc workspace, and IDE git plumbing is not a target: ASC's IDE plugins use asc's API **[audit: user decision No-IDE]**.
+6. **asc is git at the surface.** Same commands, flags, output, messages and exit codes as git 2.55 (§11). The `asc` binary installed as `git` serves every git command in an asc workspace natively and falls through to real git everywhere else (§11.4). Each working copy has a **minimal synthetic `.git` for Turborepo only**: `HEAD` plus, when the repo uses turbo or the workspace is plain, an index rendered from tree metadata (§9.4). asc keeps its own staging area (§9.5). Every child asc spawns (hooks, aliases, editors, drivers) finds asc first on `PATH`, so `git` inside a hook is asc (§9.4.1). Real git never operates on an asc workspace, and the IDEs' built-in git is not supported: ASC's own IDE plugins replace it and use asc's API (§24) **[audit: user decision No-IDE, superseded in part by ide-plugins-folded: plugins are built, git plumbing still is not]**.
 7. **Lazy materialisation.** ProjFS (Windows) and FUSE (Linux) virtual working copies; plain mode (reflink/copy) everywhere else and as the CI default. Switch updates placeholders from metadata and downloads nothing. Placeholder timestamps are per-placeholder switch-epoch times that only move forward **[fix J1/J2/J3]**.
 8. **Server-side history, API-first CI.** `Diff`, `MergeBase`, `Log`, `Blame`, `Affected` run on the server with no checkout. CI plan jobs need one RPC.
 9. **Staged, reversible Forgejo cutover.** Stage 0 git-remote mode (no server) → Stage 1 mirror mode (no fork) → Stage 2 asc is truth, Forgejo reads a git bridge → Stage 3 Forgejo reads through asc (Seam A) → Stage 4 Forgejo writes through asc (Seam B, full replacement). `storage_backend` and `object_format_name` are independent switches; git SHAs stay visible until a separate, optional ID flip **[graft: integration D2/D9]**.
@@ -40,11 +40,12 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 13. **Branchless by default, with a commit cloud.** Shared refs are only `master`, `release/*`, `green/*` and tags (per-repo `shared_refs`). A draft is a non-immutable changeset with a `ChangeMeta`, named by change id; it needs no branch. Visibility is a set of draft heads (`draft_heads` locally, `cloud_heads` per user workspace on the server), not refs. A local branch is a real local ref and a label; a pushed non-shared branch is the pusher's user ref (`refs/users/<owner-id>/heads/<n>`, one CAS row, owner-only), and `git push origin feat` also submits the stack as draft PRs. While online, the daemon uploads new changesets asynchronously (want-only, idempotent) after a pre-upload ignore and secret hold, never on public repos, with owner purge and cache eviction. No local git command changes its output with the mode. Off switches: client `asc.branchless`, server `repos.branchless` and `repos.cloud` (§21) [audit: branchless-folded].
 14. **MCP is built in.** Three surfaces, one owner per fact: `asc mcp` (stdio: workspace and repo), `asc serve` `/mcp` (Streamable HTTP 2026-07-28: the repo without a checkout) and the Forgejo fork's `/api/mcp` (PRs, reviews, issues, Actions, inbox). Tool schemas are generated from the proto descriptors; CLI `--json` and MCP share one codec, the asc JSON profile `json.profile.v1`, while `asc api` keeps standard proto3 JSON. Calls are stateless and handle-based. The default is read-only and only the user's own config widens it; destructive actions are confirmed through MRTR elicitation; every result is bounded by a token budget; the SDK is rmcp 3.6.0. See §22 [audit: mcp-folded].
 15. **Agentic code intelligence is built in.** Exact (trigram) search, tree-sitter symbols and local-model vector search run on `asc serve` as derived data keyed by `FileId`, so an agent can query any revision, draft or stack with no checkout. Exact search and symbols come first; vectors are the third tool, fused by RRF. One engine (tantivy) holds the postings and BM25; embeddings run on the server CPU by default and no code leaves ASC. Indexes are per namespace and every result is read-ACL filtered inside the ANN traversal. The tools are `search` and `read_file` (§22), and Forgejo code search reads the same service. See §23 [audit: codeintel-folded].
+16. **ASC builds its own IDE plugins.** VS Code (Cursor and VSCodium through Open VSX) first, then one IntelliJ Platform plugin. They replace the built-in git SCM in asc workspaces (`git.enabled: false`; JetBrains maps the roots to `asc`), render a native SCM view plus one shared React UI (`asc-ui`: smartlog, graph, review, history), and reach asc only through one `asc api --stdio` bridge, so neither Node nor the JVM touches the daemon pipe and no plugin parses human output. One generated TypeScript client and `asc-ui` also serve the Forgejo fork. Local features never need an account. See §24 [audit: ide-plugins-folded].
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
 - *Gated on measurement:* a path-log table beyond the mainline index (§5.1), virtual CI, daemon-side turbo cache tier, a host-level fetch proxy for CI.
-- *Out of scope:* SSH `asc-authenticate`, jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), IDE git-plumbing compatibility, and real git operating inside an asc workspace.
+- *Out of scope:* SSH `asc-authenticate`, jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
 
 ---
 
@@ -66,7 +67,8 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | asc installable as `git`, falls through to real git outside asc repos and for repository-independent commands; IDEs and tools that run `git` work | §11.4 (dispatch, Windows machine-PATH order, target-based routing of `clone`/`init`/`ls-remote`, external-command lookup), §9.4.1 child PATH |
 | `git` inside hooks, aliases, editors and drivers reaches asc | §9.4.1 (child PATH) |
 | Hook tools work unchanged (husky, lint-staged, commitlint, Claude Code) | §9.4.1, §9.5 (`GIT_INDEX_FILE` stage sets), §9.7 (hook order), §17.1 |
-| No IDE support: no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`; turbo-only synthetic `.git`; plugin API (ASC's IDE plugins) | §0 decision 6, §9.4, §9.5, §9.6, §7 `workspace.proto` (messages defined), §11.2 `--json`/`asc watch`, §9.1 |
+| IDEs' built-in git is not supported (ASC's plugins are): no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`; turbo-only synthetic `.git`; plugin API (ASC's IDE plugins) [audit: ide-plugins-folded] | §0 decision 6, §9.4, §9.5, §9.6, §7 `workspace.proto` (messages defined), §11.2 `--json`/`asc watch`, §9.1 |
+| **ASC-built IDE plugins** (decision 2026-10-22): VS Code (Cursor, VSCodium) first, then JetBrains; they replace the built-in git SCM, with the feature list of GitKraken and Graphite in one place; one generated TypeScript client shared with the Forgejo UI; no parsing of human output; the asc performance budgets | §24 (IP-D1–IP-D15), §0 decision 16, §7 (`bridge.proto`, `Workspace.ReadFile`), §20.6, §11.2, §13.3 (P04–P07, P58), §16.4, §17 |
 | Same files and config: `.gitignore`, `.gitattributes`, git config, aliases, hooks, credential helpers, `GIT_*` env | §11.1 (env and global options), §2.4.1, §2.4.2, §9.4.1, §9.4 (`includeIf`) |
 | Same mental model: commit then push, push is the CAS, branches are local labels, drafts are uploaded in the background | §6.1 (branch scope), §8.5 (land only on request), §2.7 (ref scope), §21 |
 | Familiar errors and hints | §11.6 |
@@ -86,6 +88,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | **Branchless by default** (decision 2026-10-22): shared refs are only `master` and release branches; other work is draft changes indexed by change id and visible at once; `git push origin feat` submits the stack as draft changes; the daemon uploads commits asynchronously; off switch per repo and per user; local-only mode still works | §21 (BD1–BD12), §0 decision 13, §6.1, §6.3, §6.4, §2.7, §3.5, §3.6, §8.2, §8.3, §9.1, §11.1, §11.2, §13.3, §15.2, §16.3, §17.1; PLAN units B01–B28 |
 | **MCP built in** (decision 2026-10-22): `asc mcp`, `asc serve /mcp` and Forgejo `/api/mcp`; schemas generated from proto; read-only by default; ACL-scoped; bounded results | §22 (M-D1–M-D10), §0 decision 14, §7 (`options.proto`, `cli.proto`, `/mcp`, the JSON profile), §8.1 `[mcp]`, §8.7, §11.2 `asc mcp`, §13.3 M20–M28, §15.1, §16.3, §16.4, §20.7 (`--json` shapes), §21.7; PLAN units M01a–M28 |
 | **Agentic code intelligence built in** (decision 2026-10-22): trigram exact and regex search, tree-sitter symbols for Rust, TypeScript, Python, C# and Go, and local-model vector search with hybrid ranking; server-side derived data keyed by `FileId`, ACL-filtered, incremental per commit; exposed through MCP, RPC, IPC, `--json` and Forgejo search; offline queries from the daemon | §23 (CI-D1–CI-D8), §0 decision 15, §3.3, §5, §7, §8.1, §8.2, §9.1, §11.2, §13.3 I23–I26, §15, §16.1, §16.3, §16.4, §18 (phases 4c, 4c-MCP, 5c, 9c), §22.3.2; PLAN units I01–I31 |
+| **ASC-built IDE plugins** (decision 2026-10-22): VS Code (Cursor, VSCodium) first, then JetBrains; they replace the built-in git SCM, with the feature list of GitKraken and Graphite in one place; one generated TypeScript client shared with the Forgejo UI; no parsing of human output; the asc performance budgets | §24 (IP-D1–IP-D15), §0 decision 16, §7 (`bridge.proto`, `Workspace.ReadFile`), §20.6, §11.2, §13.3 (P04–P07, P58), §16.4, §17 |
 
 ASC workload (from `asc-profile.md`): 4,543 files / 119 MiB at HEAD, 5,502 commits, 104,800 reachable objects (311 MiB packed), 113 historical LFS objects (25.6 GiB), one submodule `packages/soma/sdk`, 50 worktrees, 26 commits/day mean (303 peak), median 4 files per commit.
 
@@ -142,7 +145,7 @@ Every item of `scion-checklist.md` is either met or dropped with a reason.
 | 29 | Per-component monitoring | Per-tier metric and log catalogue; runbooks | §16.1 |
 | 30 | Ancestry through indexes | Generation numbers, skip lists, mainline and path index | §4.3, §5, §5.1 |
 | 31 | Standardised server RPCs | `asc.v1` public API, forge-neutral; `asc api` | §7 |
-| 32 | Negotiation can change; sparse and shallow compose | No asc-side git helper (No-IDE decision). The Forgejo git bridge is served by real git, which handles `filter`/`shallow`/`deepen` | §13.1, §9.6 |
+| 32 | Negotiation can change; sparse and shallow compose | No asc-side git helper (the full-projection decision, §0 principle 6; ASC's plugins use the asc API, §24). The Forgejo git bridge is served by real git, which handles `filter`/`shallow`/`deepen` | §13.1, §9.6 |
 
 ---
 
@@ -719,6 +722,8 @@ gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local socket
 
 **Code intelligence (§23) [audit: codeintel-folded]:** the `CodeIntel` service (`proto/asc/v1/codeintel.proto`, same port: `Search` (streaming), `Symbols`, `Semantic`, `IndexStatus`; full messages in §23.4.1) and the same four RPCs on `workspace.proto` (workspace scope, IPC only). `Version.features += "search.v1"` when the service is enabled. A cache-role server serves none of them.
 
+**IDE bridge (§24) [audit: ide-plugins-folded]:** `proto/asc/v1/bridge.proto` (`service Bridge`: `Hello`, `Run`, `Token`, `StoreToken`, `Events`; `BridgeFrame`, `Call`, `End`, `RunRequest` with no stdin field; full text in §24.2) is the transport of ASC's IDE plugins. `asc api --stdio` carries length-prefixed `BridgeFrame` messages and routes each call to the daemon IPC (`Workspace`), the asc server (`Repo`, `Changes`, `Projects`, `Cloud`, `CodeIntel`) or the in-process engine, with the same `LocalBackend` routing as `asc mcp`. The plugins therefore reach every RPC without a Node or JVM client for the named pipe. `Bridge.Run` runs an asc verb with `--json` against a per-verb flag schema and returns the typed `OpResult` of `cli.proto`. `HelloResponse.features` joins the bridge flags (`plugin.v1`, `json-verbs.v1`, `reorder-todo.v1`, `split-hunks.v1`) with `Repo.Version.features`; gating uses features, never version comparison.
+
 **Common metadata:** `authorization: Bearer <token>`; `x-asc-client: asc/<semver> <os>-<arch>`; `x-asc-op-id: <uuidv7>` on every mutating call (idempotency, §8.3); W3C `traceparent`.
 
 **Errors** use gRPC status codes with an `asc.v1.ErrorDetail { string code; repeated string paths; bytes actual; repeated Conflict conflicts; }` detail. `code` values: `REF_CONFLICT`, `NOT_FAST_FORWARD`, `LAND_CONFLICT`, `LAND_NEEDS_CLIENT_REBASE`, `MISSING_OBJECTS`, `INVALID_OBJECT`, `HOOK_REJECTED`, `MIRROR_MODE`, `CLIENT_TOO_OLD`, `PATH_POLICY`, `PROJECTS_CONFIG`, `RATE_LIMITED`, and for stacks (§20.5) `CHANGE_DIVERGED`, `CHANGE_FROZEN`, `CHANGE_NOT_ALLOWED`, `LAND_NEEDS_CONTENT_MERGE`, and for branchless (§21.3.5) `VERSION_CONFLICT`, `CLOUD_HEADS_LIMIT`, `CLOUD_WORKSPACES_LIMIT`, `USER_REFS_LIMIT`, `QUOTA_EXCEEDED`, `REF_NOT_SHARED`.
@@ -917,7 +922,7 @@ message RebaseResponse { bytes result = 1; repeated Rewrite rewritten = 2; repea
 
 ```proto
 // workspace.proto — daemon IPC only (named pipe / Unix socket, current user only)
-// The plugin RPCs (Status … Watch) are the stable, documented API for ASC's IDE plugins [audit: user decision No-IDE].
+// The plugin RPCs (Status … Watch, ReadFile) are the stable, documented API for ASC's IDE plugins [audit: user decision No-IDE, superseded in part by ide-plugins-folded].
 service Workspace {
   rpc Status(WsStatusRequest) returns (WsStatusResponse);       // ws_id → staged, unstaged, untracked, conflicts, ahead/behind, in-progress op
   rpc Diff(WsDiffRequest) returns (stream DiffResponse);        // worktree/index/rev pairs, same formats as Repo.Diff
@@ -926,6 +931,7 @@ service Workspace {
   rpc Affected(WsAffectedRequest) returns (WsAffectedResponse); // §12A.7, including --uncommitted
   rpc Watch(WatchRequest) returns (stream WatchEvent);          // path changed, HEAD/ref moved, staging changed, op started/finished, switch done
   rpc Stage(WsStageRequest) returns (WsStageResponse);          // add/remove paths or hunks; the plugin's "git add"
+  rpc ReadFile(WsReadFileRequest) returns (stream ReadFileResponse); // §24.4.2: a file at rev:path, a FileId or a stage (0-3) from the local store; offline; never reads the working tree [audit: ide-plugins-folded]
   rpc Ping(PingRequest) returns (PingResponse);                 // version, pid, uptime
   rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
   rpc Unmount(UnmountRequest) returns (UnmountResponse);
@@ -959,11 +965,16 @@ message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KI
   string token = 7; }
 message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
 message WsStageResponse { WsStatusResponse status = 1; }
+message WsReadFileRequest { string ws_id = 1; oneof at { WsRevPath rev_path = 2; bytes file_id = 3; WsStagePath stage = 4; }
+  uint64 offset = 5; uint64 length = 6; }
+message WsRevPath { string rev = 1; bytes path = 2; }
+message WsStagePath { uint32 stage = 1; /* 0..3 */ bytes path = 2; }
+// ReadFileResponse is repo.proto's; the stream chunks the content. A missing object is hydrated through the tiers; the working tree is never read.
 // The internal RPCs (Ping … Shutdown) carry the fields named in their comments; their messages are defined in U41
 // and are not part of the stable plugin API.
 ```
 
-The plugin RPCs are additive like `asc.v1` (§7 Compatibility), and every one also has an `asc … --json` CLI form (§11.2: `status|diff|log|blame --json`, `asc affected --json`, `asc watch --json`; `asc add` for `Stage`), so plugins can use either.
+The plugin RPCs are additive like `asc.v1` (§7 Compatibility), and every one also has an `asc … --json` CLI form (§11.2: `status|diff|log|blame --json`, `asc affected --json`, `asc watch --json`; `asc add` for `Stage`), so plugins can use either. ASC's IDE plugins reach all of them through `asc api --stdio` (§24.2), never through the pipe directly.
 
 **HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/mcp` (MCP Streamable HTTP, primary role only, §22.2) and `/.well-known/oauth-protected-resource/mcp` (RFC 9728 metadata), `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz`, `/readyz`, `/metrics`.
 
@@ -1147,7 +1158,7 @@ One per user per machine. It exists because a virtual filesystem needs a long-li
 | Run switch for virtual workspaces (placeholder updates) | Make a command wait for an upload (uploads are asynchronous, §21.3.1) |
 | Upload new drafts and sync cloud heads in the background, in branchless repos (§21.3) | |
 | Prefetch, GC the cache, dehydrate idle files, expire ephemeral worktrees | Run real git |
-| Serve the plugin API (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`; §7) for ASC's IDE plugins | |
+| Serve the plugin API (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`, `ReadFile`; §7) for ASC's IDE plugins, which reach it through the `asc api --stdio` bridge (§24.2) | |
 | Serve the `CodeIntel` IPC from a lazily built overlay of dirty files; close local index readers after 5 min idle (§23.2.5) | Load an embedding model or build an index (the `asc codeintel worker` and `asc-embed` helpers do, in separate processes) |
 
 - **Mapping to Scion's per-node daemon [audit: 14-node-daemon-mapping]:**
@@ -1445,13 +1456,13 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 
 Until a command's unit lands, invoking it fails with exit 129 and `fatal: asc: '<cmd>' is not supported yet` **[audit: missing-cli-units]**.
 
-asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc search`, `asc sym` and `asc semantic` (§23.4.2), `asc codeintel status|worker|enable-embed` (§23.4.2), `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]` (§22.8), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
+asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api [--stdio]` (§7, §24.2), `asc watch` (§7), `asc search`, `asc sym` and `asc semantic` (§23.4.2), `asc codeintel status|worker|enable-embed` (§23.4.2), `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]` (§22.8), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
 
-asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the matching `Ws*Response` in the asc JSON profile (§22.4.2; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines.
+asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the matching `Ws*Response` in the asc JSON profile (§22.4.2; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines. For the IDE bridge (§24.2, §24.8.2 A5, A7, A8) [audit: ide-plugins-folded]: `asc reorder --todo <file>` applies a `StackTodo` as one operation; `asc split --hunks <spec>` splits non-interactively from a `SplitSpec` (the interactive `--by-hunk` is unchanged); `restore`, `switch`, `cherry-pick`, `revert`, `clone`, `worktree add|remove|list`, `stash`, `fetch`, `pull` and `push` gain `--json` forms that print a typed `OpResult` (M02); `ASC_NO_ALIASES=1` disables `alias.*` and external-command resolution; every verb the bridge runs accepts `--end-of-options`.
 
 ### 11.3 Cheat sheet (`asc help git`, also `docs/CHEATSHEET.md`)
 
-The rule is to keep using your git commands: with the shim installed (§11.4), `git` *is* asc inside an asc workspace and real git elsewhere; `asc <cmd>` is the same thing. Differences: `clone` and `worktree add` are instant and virtual; `fetch` downloads no files; `git push --land` (or `-o land`) rebases on the server when the paths don't conflict; a plain push behaves exactly as git's; `submodule update` is unnecessary; `lfs` is unnecessary; IDE git panels are replaced by ASC's asc plugins. In a branchless repo (the default) a branch is a local label: new commits upload in the background, `git push origin feat` also submits the stack as draft changes, and `asc hide` hides a draft (§21).
+The rule is to keep using your git commands: with the shim installed (§11.4), `git` *is* asc inside an asc workspace and real git elsewhere; `asc <cmd>` is the same thing. Differences: `clone` and `worktree add` are instant and virtual; `fetch` downloads no files; `git push --land` (or `-o land`) rebases on the server when the paths don't conflict; a plain push behaves exactly as git's; `submodule update` is unnecessary; `lfs` is unnecessary; IDE git panels are replaced by ASC's asc plugins (§24). In a branchless repo (the default) a branch is a local label: new commits upload in the background, `git push origin feat` also submits the stack as draft changes, and `asc hide` hides a draft (§21).
 
 ### 11.4 Installed as `git` (the shim) [audit: git-shim-argv0, git-shim-install-as-git]
 
@@ -1825,6 +1836,8 @@ message ProjectHashesRequest { RepoRef repo = 1; string rev = 2; string target =
 message ProjectHashesResponse { bytes graph_id = 1; map<string, bytes> by_project = 2; }
 ```
 
+**IDE target commands (§24.8.2, A4) [audit: ide-plugins-folded]:** a `[[project]]` may carry `argv = { test = ["bun", "run", "test"] }` in `.asc/projects.toml`. `AffectedProject` gains `map<string, TargetCmd> targets = 5` with `message TargetCmd { repeated string argv = 1; }` (made by P57). asc stores and serves it and never runs it; an IDE "Run target" task runs it with the project root as cwd.
+
 - **Access:** read permission on the repo (§15.1). **Ids:** with `id_mode = GIT`, changeset fields are git oids. **Order:** `projects` in §12A.7 order. **Feature flag:** `VersionResponse.features` includes `projects.v1`.
 - **Bad config:** `INVALID_ARGUMENT` with `ErrorDetail.code = PROJECTS_CONFIG` and the file's path.
 - **Latency targets on ASC:** `Affected` < 300 ms warm and < 2 s cold (a new manifest set, including parsing the 1.1 MiB `bun.lock`). The plan-job target in §1 stays < 10 s.
@@ -1935,6 +1948,11 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 | I24 | Repo search page: mode tabs (exact, regex, symbols, semantic), scope selector, coverage note; shows server-redacted text only | as I23 |
 | I25 | File-view symbol panel and outline; PR "find usages in the base" | as I23 |
 | I26 | `/explore/code` fan-out (RRF across readable repos) and `/api/v1/repos/{owner}/{repo}/asc/search\|symbols\|semantic` (also the hook for the Forgejo MCP endpoint) | as I23 |
+| P04 | Read-only asc RPC proxy `/-/asc/rpc/<service>/<method>` [audit: ide-plugins-folded]: gRPC-Web in, raw passthrough to `asc serve` with the internal token, a method allowlist (read RPCs only), repo read permission checked first (§24.5.3) | `storage_backend=asc` |
+| P05 | Actions REST for plugins: runs and jobs by `asc_change`, ranged and tailed job logs (reuses the M24 services) | as P04 |
+| P06 | OAuth public client `asc-ide` (PKCE; `vscode://`, `cursor://`, `vscodium://` redirects and loopback redirects on any port; RFC 8252 §7.3); separate from `asc-mcp` (M26) | OAuth provider additions |
+| P07 | `asc-ui` islands: the vendored bundle at `public/assets/asc-ui/<version>/`, the mount partial `templates/base/asc_ui.tmpl`, a version pin | as P04 |
+| P58 | Inbox count: `GET /api/v1/user/asc/inbox?section=&limit=` returns `X-Total-Count` and honours `If-None-Match` (a hunk in C41b) | as C41b |
 
 The ASC Actions fork (§12.7) needs no Forgejo patch: `[actions] DEFAULT_ACTIONS_URL` is an upstream setting. The runner fork (`forgejo-runner`, Go, separate repo) carries the alias table and the native checkout fast path (units R01–R02).
 
@@ -2106,6 +2124,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **Memory budgets (enforced by tests and O05):** the daemon's idle RSS is ≤ 64 MiB and stays bounded under load (tree cache ≤ 32 MiB, journal queue ≤ 8 MiB, per-provider buffers pooled). The server and cache role stream every response and never buffer a whole response or tree set; their caches are size-capped by config. Whole-file buffering happens only where an algorithm needs it (line diff, merge, blame, classify, grep), and is gated by a per-replica byte semaphore `limits.text_memory` (default 2 GiB): a request waits ≤ 1 s for budget, then is shed with `RESOURCE_EXHAUSTED` (§16.3). Files above `core.bigFileThreshold` (default 512 MiB) are treated as binary, as git does **[audit: server-whole-file-buffer-cap]**. The CLI never loads the full tree: it walks lazily, by spine.
 - **`asc mcp` [audit: mcp-folded]:** idle RSS ≤ 24 MiB, and ≤ 64 MiB with 8 concurrent 25k-token diffs on the HUGE generator repo; at most 8 concurrent calls and a queue of 32 per process. The default `tools/list` estimates at most 6,000 tokens. Both are gated by M16 (§22.5).
 - **Code intelligence [audit: codeintel-folded]:** the gates of §23.9 (exact search p50/p99 ≤ 50/300 ms on HUGE, ≥ 10x faster than `git grep <rev>` and cold `rg` on medium and HUGE, median-commit index ≤ 2 s without and ≤ 10 s with CPU embeddings, grams plus symbols ≤ 0.4x of indexed text, hybrid NDCG@10 ≥ BM25-only + 5 points) run in `bench/codeintel` (I27, I28) under the O05 gate. The daemon limit stays idle RSS ≤ 64 MiB and ≤ 96 MiB while serving CodeIntel.
+- **ASC IDE plugins [audit: ide-plugins-folded]:** the budgets of §24.4.10, enforced by P44a (VS Code) and P44b (JetBrains) against checked-in baselines: `activate()` ≤ 30 ms and ≤ 5 ms in a non-asc folder (no bridge spawned); first SCM status ≤ 300 ms on ASC with a warm daemon; attributable extension-host heap ≤ 25 MiB at idle (measured by delta in a test-only window); bridge RSS ≤ 20 MiB; at most one webview at idle; graph first paint ≤ 150 ms and ≥ 55 fps over 100,000 rows with ≤ 5,000 rows in memory; host bundle ≤ 350 KB, `asc-ui` initial ≤ 300 KB gzip, JetBrains jar ≤ 4 MB. Never: `*` activation, a file watcher on `**`, `workspace.findFiles` over the repo, unpaged history, polling without a visible view.
 - **Cache SLOs:** every tier exports `asc_cache_requests_total{tier=client|host|job|cache_role|server_mem|server_disk, result=hit|miss}`. Targets: object hit rate ≥ 99% at the CI host cache and at the cache role, and ≥ 95% at the server memory plus disk cache, measured daily. Three consecutive days below target raise an alert.
 - **Every cache tier is disposable:** deleting the host cache, a cache role's disk, the server's `disk_dir` or a client's `cache/` loses no data and needs no repair. Only `store/`, `state.db`, server SQL and the bucket hold state.
 - **Benchmark gate (O05, in CI):** a head-to-head harness (`bench/`, hyperfine-driven, plus a criterion suite for internals) runs the same scenarios on git and asc: clone (git full, `--filter=blob:none`, `--depth 1`, sparse-checkout and scalar where they apply, against asc virtual and plain), `worktree add`, `status` clean and dirty, `switch` between tips, `diff` (HEAD, merge-base, `--stat`), path-limited `log`, `blame`, `merge-base`/`is-ancestor`, `commit`/`push`/`fetch`, CI checkout plus affected, and turbo `--dry` hashing.
@@ -2133,6 +2152,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 | Server | in-process `asc serve` over InMemory plus SQLite with a fake Forgejo (authz, hooks); every RPC; auth-denied paths; land races; outbox crash injection (kill between CAS and effects); Stage 2 quarantine ordering; GC sweep races; expand/contract N-1 compatibility; rate limits, shedding and coalescing |
 | Simulation, fuzzing | §17.2, §17.3 |
 | Benchmarks | §16.4 (O05 gate) |
+| IDE plugins [audit: ide-plugins-folded] | the layers of §24.7.1: the Rust bridge tests (`bridge`, `bridge_run` with the argv injection corpus, `bridge_auth`), `bun test` for `@asc/asc-client` and the `asc-ui` logic, Playwright for `asc-ui` (axe, screenshots, 100,000-row graph trace), `@vscode/test-electron` on the bundled extension, the VSIX smoke test on VSCodium and VS Code, Gradle `HeavyPlatformTestCase`, IDE Starter + Driver (nightly) and `verifyPlugin`, Go tests for P04–P07 and P58, and the mock-Forgejo contract check (nightly) |
 | Forgejo | upstream unit and integration suites on `git`, `dual` and `asc` (K15) |
 | End to end | `deploy/compose.yml` (Garage, Postgres, asc serve, Forgejo fork, forgejo-runner): clone, push, PR, merge, plan job, cached turbo build, bridge `git clone`, legacy `git push`, rollback flip |
 
@@ -2182,6 +2202,7 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 5 Daemon and ProjFS | 8–12 | U52–U58, U73 | virtual worktrees on Windows; plugin API | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests; daemon idle RSS ≤ 64 MiB; compat suite green |
 | 5m Local MCP | 12–16 | M01a–M11, M15–M17 (after U73, C31, C24, C25) | the asc JSON profile for `--json`, `asc mcp` over stdio, `asc mcp install`, the generated tool reference | stdio acceptance tests green in local-only mode; default `tools/list` ≤ 6,000 tokens; idle RSS ≤ 24 MiB (M16) |
 | 5c Daemon code intelligence | 13–18 | I18–I20 (after U53b, U73) | daemon overlay, degraded local index, opt-in local embeddings | idle RSS ≤ 64 MiB after the reader closes; search works with `--store` local-only |
+| 5p Plugin bridge [audit: ide-plugins-folded] | 16–19 | P01a–P03, P45, P46, P57 (after U50, U52, M02, M09, U73, C31) | `asc api --stdio`, `Workspace.ReadFile`, `reorder --todo`, `split --hunks`, the `--json` forms of the plugin verbs | `bridge`, `bridge_run`, `bridge_auth`, `plugin_api_read`, `plugin_json_verbs` tests green; the argv injection corpus is rejected |
 | 6 CI | 10–12 | U61–U64, U75 | `asc/actions`, runner alias, host warmer, seeds | typical PR ≤ 8 runner-minutes; compat suite green |
 | 7 FUSE and submodules | 12–14 | U59–U60 | Linux virtual, sdk composition | WSL contract green; compat suite green |
 | 8 Forgejo Stage 2 | 8–15 | K01–K09 | asc is truth | rollback drill passed on staging; compat suite green |
@@ -2189,6 +2210,9 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 9s Forgejo stacks | 18–24 | C34–C43, C46–C48 (after K17); C44 is v1.x | stacked PRs, stack panel, versions/interdiff, stack merge and queue, inbox, commit graph page, badges | `asc-sim` lands 20 stacks concurrently with no lost or duplicated change; Forgejo suite green |
 | 9m Forgejo MCP | 18–24 | M20–M26, M28 (after K07, K14, C34–C39); M27 is v1.x | `/api/mcp`: PRs, reviews, issues, Actions, inbox; OAuth with audience binding; `lockdown` | the Forgejo `go test` selectors green; an IDE or agent host signs in by OAuth or PAT |
 | 9c Forgejo code search | 18–24 | I23–I26 (after K10, I16) | search page, symbol panels, `/explore/code`, API | the Forgejo `go test` selectors green; fixture secrets absent from HTML and JSON |
+| 9p Forgejo plugin support | 18–26 | P04–P07, P58 (after K06, K07, K14, M24, M26, C41b) | the read-only RPC proxy, Actions REST, the `asc-ide` OAuth client, `asc-ui` islands, the inbox count | the Forgejo `go test` selectors green |
+| 10 VS Code plugin | 18–30 | P08–P35c, P44a, P47a–P47c, P49a, P50, and the `asc-ui` views P13–P23, P56 | the `asc.asc` extension for VS Code, Cursor and VSCodium | the VS Code rows of §24.3 (`VSC v1 = Y`) demonstrated on ASC; P44a budgets met; VSIX smoke test green on VSCodium and VS Code |
+| 10j JetBrains plugin | 24–34 | P36–P43b, P44b, P48, P49b, P51–P55 (after P01a–P01c and the `asc-ui` views P15, P17, P19) | one plugin for IntelliJ IDEA, Rider, RustRover, PyCharm and WebStorm | the JetBrains rows of §24.3 (`JB v1 = Y`) demonstrated; `verifyPlugin` green on 2026.1 and 2026.2; P44b budgets met |
 | Ops | ongoing | O01–O08, I27, I28, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
 
 G09–G10 ship with Phase 4, and U63 uses them in Phase 6.
@@ -2231,13 +2255,15 @@ Success metrics per cohort: disk per worktree (target < 50 MiB before builds), `
 | S12 | Shim fall-through overhead on Windows (`CreateProcess` pass-through) against the 5 ms p95 budget | U20a |
 | S13 | Whether Forgejo Actions fires `pull_request` for a draft PR (not documented); if not, patch the fork (B17) or default `asc.push.review` to `publish` on repos that need CI on every push | B17, B27 |
 
+The IDE-plugin spikes are PLAN units, not S-numbered: P35b (Cursor and VSCodium engines), P50 (MCP OAuth from IDE clients), P51 (what degrades without a `VcsLogProvider`; the comments API), P52 (Git4Idea and the synthetic `.git`), P53 (partial-line commits), P54 (the `jcef` module) and P55 (OAuth loopback). See §24.9 [audit: ide-plugins-folded].
+
 ---
 
 ## 20. Stacked changes and stacked PRs [audit: stacks-design-not-folded, stacks-design-exists-not-folded]
 
 Normative from v1.3 (checklist decision 2026-10-22, "stacked commits and stacked PRs are core"). This section folds in decisions D1–D12, the data model, the commands, the server and Forgejo design and the plugin API of `docs/research/stacks.md`. That file stays the background: its feature matrix (§1, which product has which feature and why each row is in or out of scope) and its review notes are not repeated here. PLAN units are **C01–C52** (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12 of §19; C16 is withdrawn and not reused).
 
-Fixed rules: git commands keep git's exact semantics, output and exit codes (§11); stack features are additive verbs; there is no IDE extension, so GitLens/GitKraken-style features are data APIs; the default branch is `master`; there are no whole-repo scans; there is no LFS.
+Fixed rules: git commands keep git's exact semantics, output and exit codes (§11); stack features are additive verbs; GitLens/GitKraken-style features are data APIs rendered by ASC's IDE plugins (§24) and the Forgejo fork; the default branch is `master`; there are no whole-repo scans; there is no LFS.
 
 ### 20.1 Decisions
 
@@ -2519,6 +2545,9 @@ All additive; served by the daemon over IPC (`workspace.proto`), by the server w
 | Graph actions, rebase editor, drag and drop | The stack verbs with `--json` / `--dry-run --json`; `GIT_SEQUENCE_EDITOR` for git's own `rebase -i` | `merge_trees` in memory; `Rebase(dry_run)` remotely | O(changed paths) unless paths intersect |
 | Autolinks, web URLs | `RepoConfig(rev)` → `autolinks[{prefix, url}]`; a `web` template in `/.well-known/asc` | `.asc/review.toml` at the revision | `cheap`, cached by `FileId` |
 | Events | `Watch` adds `KIND_STACK` (C49): a change rewritten or restacked, a review state changed | the op log and `review_cache` refresh | push-based |
+| Status-bar `↓N` [audit: ide-plugins-folded] | `WsStack.behind`: the number of trunk commits not in the stack base, capped at 999 (§24.8.2 A1) | the `Stacks` snapshot | O(min(behind, 999)) with generation numbers |
+| Minimap data | the first `CommitGraphResponse` page may carry `total` and `ref_markers[]` (§24.8.2 A2) | mainline positions; omitted when not cheap | O(refs) |
+| Transport for IDE plugins | all of the above are reached through `asc api --stdio` (§24.2); the daemon pipe is never opened by Node or the JVM | the bridge | n/a |
 
 ### 20.7 Commands
 
@@ -2607,7 +2636,7 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
 
 Normative. Source: `docs/research/branchless.md` (decisions BD1-BD12), which implements the checklist decision "branchless by default" (2026-10-22, `scion-checklist.md`). This section overrides three earlier rules, by user decision: "nothing is uploaded before `asc push`" (old §6.3), "no write-behind" (old §0) and "secrets in drafts never leave the machine" (old §15.2). The compensating controls are the opt-out commit cloud (§21.3), the pre-upload secret hold (§21.3.7) and purge. It builds on §20 (`ChangeMeta`, the `changes` index, `change_versions`, the `Changes` service and D1-D12 are used and not restated). PLAN units are B01-B28 (PLAN §B).
 
-Fixed rules this section obeys: git commands keep git's exact semantics, output and exit codes; the default branch is `master`; there is no IDE git plumbing; there is no LFS; memory is bounded and nothing scans the whole repo; local-only mode keeps working.
+Fixed rules this section obeys: git commands keep git's exact semantics, output and exit codes; the default branch is `master`; the IDEs' built-in git is not supported (ASC's own IDE plugins, §24, replace it); there is no LFS; memory is bounded and nothing scans the whole repo; local-only mode keeps working.
 
 ### 21.1 Decisions
 
@@ -3323,7 +3352,7 @@ CLI: `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tool
 - **`--json` shapes:** §11.2 and §20.7 disagreed (proto3 JSON versus snake_case with hex ids). The asc JSON profile (§22.4.2) settles it for every `--json` output; `asc api` keeps standard proto3 JSON (§7). A bare-array shape is wrapped in an object, so `asc op log --json` prints `{"ops": [...]}` and `asc evolog --json` prints `{"versions": [...]}` (§20.7).
 - **Server `Commit` and `ChangeMeta`:** §20.4 already requires meta for every changeset the server creates, through `IngestObserver`; M18 is the unit that makes the `Commit` handler of U48a take that path (`op = New`, `preds = []`), so changes created through MCP `commit` get a change id.
 - **`search`:** the tool exists once (§22.3.2, rule M-D1). M15 depends on the `CodeIntel` proto unit I12 and is wired to the service by I21 (§23.11); until then the row is absent from `tools/list` because `Version.features` lacks `search.v1`.
-- **IDE plugins** register `asc mcp` and Forgejo `/api/mcp`, and never `/mcp` next to them (§22.2 placement rule), so an agent never sees a tool twice.
+- **IDE plugins** register `asc mcp` and Forgejo `/api/mcp`, and never `/mcp` next to them (§22.2 placement rule), so an agent never sees a tool twice. IDE MCP clients register through the same OAuth path as other clients: spike P50 decides whether M26's `asc-mcp` public client covers them or a second public client is needed, and the `asc-ide` token (`write:repository`, §24.6) is never handed to an agent channel [audit: ide-plugins-folded].
 
 ---
 
@@ -3672,6 +3701,700 @@ Required tests beyond each acceptance command:
 
 ---
 
+## 24. ASC IDE plugins: VS Code and JetBrains, built by ASC [audit: ide-plugins-folded]
+
+Normative from v1.8 (checklist decision "ASC-built IDE plugins", 2026-10-22). This section folds `docs/research/ide-plugins.md` (final, reviewed): its §N is §24.(N+1) here, its decisions ID1–ID15 are IP-D1–IP-D15 (§24.1), its units are PLAN §P (P01a–P56, plus P57 and P58 added at the fold, §24.10) and its API additions A1–A9 are §24.8.2. The research file stays as background and review history; where it and this section differ, this section wins. Related text: §7 (`bridge.proto`, `Workspace.ReadFile`), §9.1, §9.4, §9.5, §11.2, §13.3, §15, §16.4, §17, §20.6, §22.2, §23.4.3.
+
+**What "no IDE support" means now.** Older text (the checklist's "No IDE support", user decision (3) of v1.1) means only that asc does not rely on an IDE's built-in git and has no full `.git` projection. It does not mean "no IDE integration": ASC builds its own plugins, they replace the built-in git SCM in asc workspaces, and they are specified here. The IDEs' built-in git is not supported.
+
+Fixed rules this section obeys:
+- The plugins talk only to the asc daemon IPC, the asc server RPC (`asc.v1`) and the Forgejo API. One generated TypeScript client package (from proto) serves both IDE plugins and the Forgejo fork UI.
+- They never parse human CLI output. Every value they read comes from proto messages.
+- They replace the built-in git SCM. There is no full `.git` projection.
+- They follow the asc efficiency budgets: lazy activation, no whole-repo scans, virtualised lists, paging.
+- The default branch is `master`, never `main`. Branchless is the default (§21).
+- TypeScript tooling is Bun, Turborepo, and Hono where a server is needed. JetBrains uses Kotlin and Gradle.
+
+`stacks.md` and the fixed rules of §20 said "there is no IDE extension"; the 2026-10-22 decision supersedes that line, and both texts are updated (§20, §24.10).
+
+### 24.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| IP-D1 | **Two layers in each IDE.** The IDE's native API is used wherever it has a primitive: SCM status, gutters, badges, blame, hover, CodeLens, diff, merge, comments, quick pick, status bar and simple trees. Everything with a graph, drag and drop, a stack, review navigation or a chart lives in **one shared React UI, `asc-ui`**. The same `asc-ui` runs in a VS Code webview, a JetBrains JCEF tool window and as islands in the Forgejo fork. | This is the Sapling ISL model: a native SCM view plus a rich smartlog webview. One implementation of the hard UI for three hosts. Native primitives are faster, use less memory and work with the keyboard. |
+| IP-D2 | **One transport: the `asc api --stdio` bridge.** Each IDE host spawns one long-lived `asc api --stdio` child. It carries length-prefixed `asc.v1.BridgeFrame` protobuf frames. The bridge routes each call to the daemon IPC (`Workspace`), the asc server (`Repo`, `Changes`, `Projects`, `Cloud`, `CodeIntel`) or the in-process engine. The routing is asc's own: the same `LocalBackend` routing as `asc mcp` (M09). | Discovery (`/.well-known/asc`), credentials (`git credential fill`), tiers, `CLIENT_TOO_OLD`, no-daemon mode and Windows named pipes already exist in Rust. Each plugin reimplementing them would duplicate the hardest code twice. The bridge relays the same messages unchanged, so the rule "talk only to IPC and RPC" holds. |
+| IP-D3 | **Reads are RPCs. Writes are asc verbs run through `Bridge.Run`**, which returns the typed `OpResult` of `cli.proto` (M02). The bridge validates the argv against a per-verb flag schema (§24.4.5.1), spawns `asc <verb> --json …`, and decodes the output with `asc_rpc::json`, the single codec. | The same rule as M-D7 (§22.1). Hooks, the op log, the ref chokepoint and locks are reused exactly. TypeScript and Kotlin only ever see protobuf, never JSON text and never human output. |
+| IP-D4 | **Webviews hold no tokens and no process access.** `asc-ui` calls a `Platform` interface. Its RPCs go through a host relay that forwards only the entries of the checked-in `allowlist.json` (§24.4.5.1): named RPCs, named verbs with a flag schema, and (method, path template) pairs for Forgejo. Merge, review submit and other destructive writes need a native confirmation dialog that the host builds from the parsed request. The host adds the Forgejo token; the webview never sees it. | This is ISL's security model. A compromised webview cannot merge, delete, call admin endpoints, inject git options or read credentials. |
+| IP-D5 | **No proposed VS Code APIs.** The commit graph is a webview, not `scmHistoryProvider`. Timeline is our own history view. The action button becomes `acceptInputCommand` plus title buttons. | Marketplace and Open VSX builds cannot enable proposals (§24.4.9). GitLens ships the same way. |
+| IP-D6 | **Replace built-in git, and be inert elsewhere.** The plugins claim only asc workspaces: a root `.git` gitfile whose gitdir contains `asc-workspace` (SPEC §9.4). VS Code: the workspace setting `git.enabled: false`, offered once and checked into ASC. JetBrains: `vcs.xml` maps the roots to `asc`. A non-asc folder costs one `stat` and nothing else. | The built-in git would otherwise drive asc through the shim and duplicate every view. A plain git repo in the same window keeps working. |
+| IP-D7 | **Branchless first.** The status bar shows the change id, the stack position and the cloud state, not a branch. The primary action is "Create change" (`asc create --no-branch`; the flag is passed only when `Hello` reports branchless mode, §24.10 ruling 6), not "Commit to branch". Branches appear only as labels. The trunk is `master`. | Checklist decision "branchless by default", plus BD1–BD3. |
+| IP-D8 | **Never gate a local feature behind an account.** Status, commit, stacks, graph, blame, history, undo, conflicts and affected all work signed out and offline. Only Forgejo-backed views ask for sign-in. | The top complaint against GitLens 19 and GitKraken. |
+| IP-D9 | **Event-driven only.** The `Watch` stream (paths, HEAD, ref, stage, op, switch, `KIND_STACK`, `KIND_CLOUD`) is the only refresh trigger. There is no FileSystemWatcher on `**` and no timer polling of asc state. The exceptions are the no-daemon fallback (§24.6) and the Forgejo views, which have no event stream and use ETag-conditioned polls with the caps of §24.4.4 (inbox, Actions runs). | The cost of a refresh is then O(changed paths), with no repo walks. |
+| IP-D10 | **Optimistic operation queue.** Each `asc-ui` mutation has a pure preview applier over the `Stacks` model. The UI shows the predicted state at once, queues verbs in order and keeps the preview until `Watch` confirms. `--dry-run` predicts conflicts before a drag is dropped. | ISL's lifecycle (preview, queued, running, optimistic, done) is why it feels instant over a CLI. |
+| IP-D11 | **JetBrains: native VCS providers, but no `VcsLogProvider`.** `readAllHashes` loads the whole history, which breaks the no-whole-repo-scan rule. The graph is `asc-ui` in JCEF, as jj-idea builds its own graph. | Native providers give the Commit window, gutters, Annotate, Show History, the merge tool and Rollback for free. |
+| IP-D12 | **AI stays out of the plugins.** Agents get asc through MCP. The plugin registers `asc mcp` and Forgejo `/api/mcp` with the IDE and injects no token: the IDE's own MCP OAuth flow (§24.4.8) obtains one. | stacks D12 and mcp.md M-D1. No upsell surface. |
+| IP-D13 | **Bun for all TypeScript** (install, build, test, scripts), Turborepo for orchestration, Hono only for the `asc-ui` dev host and the mock Forgejo. JetBrains is Gradle (Kotlin DSL), wrapped as Turbo tasks. | One toolchain. Hono is small and runs on Bun. |
+| IP-D14 | **Never cause a hydration storm.** On a virtual workspace the plugins do not walk, read or index working files themselves; every content read goes through `Workspace.ReadFile` (store, no hydration). They write exclusions for generated folders and watch the per-process hydration counters (§24.4.11). | IDE indexers, search and watchers are the main source of accidental hydration (SPEC §10.2 item 5, hydration policy). |
+| IP-D15 | **Every cache and queue has a cap.** Ops queue, comment threads, op log, `Run` children, avatar and content caches all have a stated limit and debounce (§24.4.12). | Long sessions must not grow the extension host or JVM. |
+
+### 24.2 Repo layout and the bridge protocol
+
+The TypeScript and Kotlin code lives in this repo next to the Rust crates, so `proto/` is the single source.
+
+```
+package.json               Bun workspaces ["packages/*", "plugins/*"], packageManager bun@<pinned>,
+                           devDeps: turbo, typescript, oxlint (ASC anti-slop rules), @biomejs/biome (format), @bufbuild/buf
+turbo.json                 tasks: codegen → build → typecheck, lint, test, test:e2e, package
+tsconfig.base.json         strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes, verbatimModuleSyntax
+proto/buf.gen.ts.yaml      protoc-gen-es v2 (target ts) → packages/asc-client-ts/src/gen/ (generated, gitignored, Turbo-cached)
+proto/asc/v1/bridge.proto   BridgeFrame, Bridge service (Hello, Run, Token, StoreToken, Events)            (P01a)
+packages/asc-client-ts/     @asc/asc-client: gen/, transport/{bridge-node,relay,host,grpc-web}.ts, transport/allowlist.json, forgejo/, ids.ts
+packages/asc-ui/            @asc/asc-ui: React 19, Jotai, CSS modules, @vscode/codicons, TanStack Virtual;
+                           src/{platform.ts,theme/,state/,ops/,views/<view>/}; builds dist/ (ESM, code-split per view)
+packages/asc-ui-devhost/    @asc/asc-ui-devhost: Hono on Bun; serves asc-ui in a browser against a fixture bridge,
+                           plus a mock Forgejo (inbox, pulls, reviews, Actions) typed from the fork's swagger
+packages/asc-fixtures/      @asc/asc-fixtures: deterministic fixture repos built with the asc CLI (§24.7.2)
+plugins/vscode/            asc.asc extension: src/, test/, package.json (manifest); Bun.build bundle
+plugins/jetbrains/         IntelliJ Platform plugin: build.gradle.kts, settings.gradle.kts, src/main/kotlin/asc/asc/**,
+                           package.json whose scripts call ./gradlew (so Turbo orders and caches it)
+```
+
+| Package | Contents | Size budget |
+|---|---|---|
+| `@asc/asc-client` | protobuf-es v2 messages and Connect-ES v2 service descriptors for `repo`, `workspace`, `changes`, `projects`, `cloud`, `codeintel`, `cli`, `bridge`. Transports: `bridgeNode` (spawns and frames `asc api --stdio`), `relay`/`host` (webview ↔ host, allowlisted), `grpcWeb` (browser → Forgejo proxy, P04). The Forgejo REST client (`openapi-typescript` types generated from the fork's `swagger.v1.json`, plus `openapi-fetch`) with an injectable `fetch`. Id helpers (hex, k–z change ids). | ≤ 120 KB min, tree-shaken per consumer |
+| `@asc/asc-ui` | Views (§24.3), the `Platform` interface, theme tokens (`--asc-*`), state, the ops queue | initial ≤ 300 KB gzip; each lazy view ≤ 150 KB gzip |
+| `asc.asc` (VS Code) | Extension host bundle, one CJS file, `vscode` external | ≤ 350 KB min (excluding `asc-ui` assets) |
+| JetBrains plugin | Kotlin providers, protobuf-java messages generated from `proto/` by the Gradle protobuf plugin, the `asc-ui` dist as jar resources | jar ≤ 4 MB |
+
+**Build.** `bun run codegen` runs `buf generate` (Turbo inputs: `proto/**`). The extension host is bundled with `Bun.build({ target: "node", format: "cjs", external: ["vscode"] })`. CJS output is marked experimental in Bun, so the `@vscode/test-electron` suite always runs against the bundle. `scripts/bundle.ts` is the one file to swap to esbuild if that guard ever fails. `asc-ui` is built with `Bun.build` (HTML entry, code splitting, CSS). JetBrains `processResources` copies `packages/asc-ui/dist`, and the Turbo task `@asc/jetbrains#build` depends on `@asc/asc-ui#build`. Rust is not built by Turbo: tests read `ASC_BIN` (default `target/release/asc`) through `passThroughEnv`.
+
+**Bridge protocol (`bridge.proto`, P01a–P01c).**
+
+```proto
+message BridgeFrame { uint32 id = 1;
+  oneof f { Call call = 2; bytes reply = 3; End end = 4; bool cancel = 5; } }
+message Call { string method = 1;      // "asc.v1.Workspace/Status", "asc.v1.Changes/Stack", "asc.v1.Bridge/Run", …
+  bytes request = 2; bool server_stream = 3; string root = 4; /* workspace root; selects ws_id, repo, remote */ }
+message End { int32 code = 1; string message = 2; bytes error_detail = 3; /* asc.v1.ErrorDetail */ }
+service Bridge {
+  rpc Hello(HelloRequest) returns (HelloResponse);   // asc version, features (below), roots → {ws_id, repo, remote kind, forge URL,
+                                                     //  branchless, daemon|server|forge state}
+  rpc Run(RunRequest) returns (stream RunEvent);     // verb + args validated against the verb's flag schema; --json added; no stdin;
+                                                     //  events: stderr line, OpResult, exit
+  rpc Token(TokenRequest) returns (TokenResponse);   // forge host → bearer; host-only, never relayed to a webview; never prompts
+  rpc StoreToken(StoreTokenRequest) returns (StoreTokenResponse);  // git credential approve; fails NO_CREDENTIAL_HELPER (§24.6)
+  rpc Events(EventsRequest) returns (stream BridgeEvent);          // connectivity changes, daemon restarts
+}
+message RunRequest { string verb = 1; repeated string args = 2; /* flags and positionals, split by the host; no shell */
+  string root = 3; /* no stdin field: the child's stdin is the null device */ }
+
+// HelloResponse.features is the union of (a) bridge flags: "plugin.v1" (this protocol), "json-verbs.v1" (every verb of
+// allowlist.json has a --json form, P45), "reorder-todo.v1" (P03), "split-hunks.v1" (P46); and (b) Repo.Version.features
+// copied from the asc server when one is configured ("search.v1" is added there when CodeIntel is enabled, §23.4.1).
+// HelloResponse.asc_version is for display only. Gating uses features, never version comparison (§24.4.1).
+```
+
+Frames are `u32 little-endian length ‖ BridgeFrame`, at most 16 MiB each, so streams stay chunked. Cancellation drops the server call or kills the `Run` child (M-D7). The host restarts the bridge with backoff (0.2 s, 1 s, 5 s) and resubscribes to `Watch` with its last token.
+
+### 24.3 Feature matrix
+
+Seen in: **GK** GitKraken Desktop, **GL** GitLens, **GT** Graphite (CLI, VS Code, web), **ISL** Sapling ISL, **VG** VS Code built-in git, **JB** JetBrains Git. "Run x" means `Bridge.Run` of the asc verb `x` (typed `OpResult`). VS Code v1 and JetBrains v1 mark what ships in the first release of each plugin. A dash means v1.x.
+
+#### 24.3.1 Working copy and commit
+
+| Feature | Seen in | VS Code surface | JetBrains surface | asc API | VSC v1 | JB v1 |
+|---|---|---|---|---|---|---|
+| Changes view: conflicts, staged, changes, untracked | all | SCM provider, four resource groups | `ChangeProvider` → Commit tool window | `Workspace.Status`, `Watch` | Y | Y |
+| Stage and unstage file, hunk, selected lines | GK GT VG JB | `scm/resourceState/context`, `scm/change/title` (gutter peek), editor command | Commit window partial selection → patch | `Workspace.Stage` (`add`/`remove`/`patch`) | Y | Y |
+| Discard | all | resource menu with a modal confirmation | `RollbackEnvironment` | Run `restore --staged --worktree` (`--json` form: P45) | Y | Y |
+| Quick-diff gutter against `HEAD` | VG JB | `quickDiffProvider` → `asc:` URIs | `DiffProvider`/`ContentRevision` (line status tracker) | `Workspace.ReadFile` (P02) | Y | Y |
+| Explorer and tab badges | VG JB | `FileDecorationProvider`, targeted invalidation | `FileStatus` from `ChangeProvider` | `Status` | Y | Y |
+| Create change, amend, reword | all | input box + `acceptInputCommand` (Ctrl+Enter = create), title buttons | `CheckinEnvironment` + `AmendCommitAware`; executors "Create change", "Create and submit" | Run `create --no-branch`, `modify`, `reword` | Y | Y |
+| Absorb with preview | GT ISL | SCM title button → preview quick pick → apply | Commit window action | Run `absorb -n`, then `absorb -f` | Y | Y |
+| Hook output (husky, commitlint) | GK | Output channel; a failure shows stderr in a notification | VCS console | `RunEvent.stderr` | Y | Y |
+| Uncommit, unamend, abandon | ISL | stack menu and commands (P26b) | `asc-ui` Stack tab context menu (P15) | Run `uncommit`, `unamend`, `abandon` (C51) | Y | Y |
+| Multi-root and nested worktrees | GK GL | one `SourceControl` per asc root | one VCS root mapping per root | `Bridge.Hello` per root | Y | Y |
+| Stash: push (with untracked), pop, apply, drop, list | GK VG JB | SCM `...` menu and a "Stashes" group in the Worktrees tree | – (v1.x; JetBrains Shelf is not wired to `refs/stash`) | Run `stash push\|pop\|apply\|drop\|list` (`--json`: P45) | Y | – |
+| Tags: list, create, delete | GK GL | – (v1.x; needs `Repo.ListRefs`, §24.8.2 API additions) | – | Run `tag` | – | – |
+| Fetch, pull, push (git-remote mode only; hidden in server mode, where `sync` and `submit` apply) | GK VG JB | SCM `...` menu, status-bar sync | VCS menu actions | Run `fetch`, `pull`, `push` (`--json`: P45) | Y | Y |
+| Add to `.ascignore` (from an untracked or ignored file) | GK | resource menu → appends the pattern to the nearest `.ascignore` through a `WorkspaceEdit` | `IgnoredFileContentProvider` for `.ascignore` + "Add to .ascignore" action | file edit; `Status` then refreshes via `Watch` | Y | Y |
+| Signing | GK | no settings UI (out of scope, §24.3.6); a "signed" badge in commit details | same | `commit.gpgSign` is honoured by `create`/`modify`; the badge is `%G?` from `Log` | – | – |
+
+#### 24.3.2 Stacks and branchless (Graphite, ISL)
+
+| Feature | Seen in | VS Code surface | JetBrains surface | asc API | VSC v1 | JB v1 |
+|---|---|---|---|---|---|---|
+| Smartlog: drafts relative to `master` with PR state, checks, needs-restack, divergent, frozen, worktree, version | GT ISL | `asc-ui` smartlog in a webview view in the SCM container | `asc-ui` tab "Stack" | `Workspace.Stacks`, `Changes.Stack`/`ResolveChanges`, `Watch KIND_STACK` | Y | Y |
+| Uncommitted node with per-file checkboxes → "create change" or "modify ‹change›" | GT | smartlog | smartlog | `Stage`, Run `create`/`modify --into` | Y | Y |
+| Drag a change onto a new parent (moves descendants) | GT ISL GK GG | `asc-ui` drag and drop with predicted-conflict badge | same | Run `move --onto -n`, then `move` | Y | Y |
+| Stack editor: reorder, fold, drop, reword, committed in one op | ISL GK GL | `asc-ui` stack editor | same | Run `reorder --todo` (P03) | Y | Y |
+| Split a change: interactive dialog that picks hunks and lines per piece | ISL GT GK | `asc-ui` split dialog | same | `Repo.Diff` of the change, then Run `split --hunks <spec>` (P46; the interactive `--by-hunk` is never run by a plugin) | Y | Y |
+| Restack, sync, continue, abort | GT ISL | smartlog buttons, commands, `scm/title` buttons (P47a), status-bar "needs restack" | actions | Run `restack`, `sync`, `continue`, `abort` | Y | Y |
+| Navigate up, down, top, bottom | GT | commands with keybindings (P47a); at a fork, a quick pick of `OpResult.candidates` | actions | Run `up`/`down`/`top`/`bottom` (exit 2 → candidates; C09) | Y | Y |
+| Submit stack, update PRs as new versions | GT | smartlog, command, `scm/title` | smartlog | Run `submit [-s]` | Y | Y |
+| Submit options: draft or publish, reviewers, auto-merge | GT | `asc-ui` submit dialog; reviewer list from Forgejo `GET …/assignees` | same | Run `submit [--draft\|--publish] [--reviewer <u>…] [--auto-merge]` (modal confirmation) | Y | Y |
+| PR title and description | GT | submit dialog and review panel; the PR text defaults to the change message | same | Forgejo `PATCH …/pulls/{n}` (allowlisted body: `title`, `body`, `draft`) | Y | Y |
+| Merge stack (queue) | GT | smartlog, review panel | same | `Changes.RequestMerge` (relayed, modal confirmation) or Run `stack merge` (SPEC §20.7) | Y | Y |
+| Get a stack (frozen), optionally into a new worktree | GT ISL | command with PR or change quick pick | action | Run `stack get [--worktree]` | Y | – |
+| Hide and unhide drafts; other machines' drafts | ISL | smartlog menu, "Show cloud drafts" toggle | same | Run `hide`/`unhide` (B05); `Cloud.GetWorkspace`, or Run `sl --cloud --user <me>` (B16); `Watch KIND_CLOUD` | Y | Y |
+| Cloud upload state | – | status bar item ("synced", "N pending", "offline"); owner P47b | status bar widget | `Bridge.Events`, `Watch KIND_CLOUD` | Y | Y |
+| Undo and redo, op log | GK ISL | status-bar undo/redo, "Op log" tree | `asc-ui` tab | Run `undo`/`redo`, `op log` | Y | Y |
+| Change versions and interdiff | ISL GT | `asc-ui` details | same | `Changes.Versions`, `Changes.InterDiff` | Y | Y |
+| Optimistic queue (IP-D10) | ISL | `asc-ui` ops | same | Run + `Watch` | Y | Y |
+| Branch labels (opt-in) | GK GL | labels on graph rows; "Name this change" | same | `Stacks.branches`, Run `create <branch>` | Y | Y |
+| Share a snapshot link | – | command, copies `asc:<id>` and the web link (P47a) | action (v1.x) | Run `share` (C32) | Y | – |
+
+#### 24.3.3 History and insight (GitLens, GitKraken)
+
+| Feature | Seen in | VS Code surface | JetBrains surface | asc API | VSC v1 | JB v1 |
+|---|---|---|---|---|---|---|
+| Inline blame on the current line, status-bar blame | GL VG | `TextEditorDecorationType` `after`, status bar | Annotate gutter, status-bar widget | `Workspace.Blame` with `buffer` (C31) | Y | Y |
+| Blame hover: commit, change, PR, autolinks, "blame previous revision", open changes | GL | `HoverProvider` scoped to the active file | annotation tooltip | `BlameResponse.commits[].change`, `reviews[]`, `RepoConfig` | Y | Y |
+| Whole-file blame and heatmap | GL JB | toggle: gutter decorations by age | native Annotate (age colours) | `Blame` | Y | Y |
+| CodeLens: recent change, authors | GL | `CodeLensProvider`, lazy `resolveCodeLens` | – | `Blame` (cached) | Y | – |
+| File history, renames followed | all | tree view "File History" for the active editor | `VcsHistoryProvider` (Show History) | `Workspace.Log` `paths`, `follow`, `with_stats`, paged | Y | Y |
+| Line history (selection) | GL JB | command → the same tree in line mode | `getVcsBlockHistoryProvider` (Show History for Selection) | `LineHistory` (truncated + resume) | Y | Y |
+| Revision navigation (previous and next version of the file) | GL | `editor/title` buttons over `asc:` URIs | native Compare with previous | `Log` + `ReadFile` | Y | Y |
+| Visual file history (swim lanes, size by churn) | GL | `asc-ui` editor panel | `asc-ui` tab | `Log` `with_stats` (`diffstat.v1`) | Y | – |
+| Commit graph: lanes, minimap, scroll markers, column toggles, search, keyboard navigation, WIP rows per worktree | GK GL | `asc-ui` editor panel; compact graph in the sidebar view | `asc-ui` tab | `Workspace.CommitGraph` / `Repo.CommitGraph` (C29, C31); minimap data in §24.4.5 | Y | Y |
+| Commit details: message, files, diff, change, PR | all | `asc-ui` details; files open in `vscode.changes` (multi-diff) | `asc-ui` details; native diff | `ReadChangeset`, `ResolveChanges`, `Diff` | Y | Y |
+| Compare two revisions, changes or stacks | GK GL JB | `asc-ui` compare + `vscode.changes` | `asc-ui` + native diff | `Compare` (C30b), `Diff` | Y | Y |
+| Search commits by message, author, file, code change | GK GL JB | quick pick + graph filter | `asc-ui` graph filter | `Log` `grep`/`author`/`paths`, pickaxe (C30c) | Y | Y |
+| Worktrees: list, create, open, remove, dirty, ahead/behind | GK GL | tree view "Worktrees" | `asc-ui` tab | `Workspace.Worktrees`, Run `worktree add/remove` (`--json`: P45) | Y | Y |
+| Cherry-pick and revert from the graph | GK GL | graph context menu (asc-ui in P17, host wiring in P47c) | same | Run `cherry-pick`/`revert` (`--json`: P45) | Y | Y |
+
+#### 24.3.4 Conflicts
+
+| Feature | Seen in | VS Code surface | JetBrains surface | asc API | VSC v1 | JB v1 |
+|---|---|---|---|---|---|---|
+| 3-way merge editor | GK JB VG | `_open.mergeEditor` with `asc:` inputs (feature-detected); fallback: the marked file plus VS Code's built-in conflict-marker CodeLens | `MergeProvider` → native merge tool (non-conflicting changes in one click) | `Workspace.Conflicts`, `ReadFile`, `Stage` | Y | Y |
+| Conflict list, in-progress banner, continue and abort | GK | SCM "Conflicts" group, title buttons, status bar | Commit window | `Status.in_progress`, Run `continue`/`abort` | Y | Y |
+| Predicted conflicts before a move or restack | – | `asc-ui` badges during drag | same | `--dry-run` `OpResult.conflicts`, `Changes.Mergeability` | Y | Y |
+
+#### 24.3.5 Review, inbox, CI, projects, search, agents
+
+| Feature | Seen in | VS Code surface | JetBrains surface | asc API | VSC v1 | JB v1 |
+|---|---|---|---|---|---|---|
+| Launchpad inbox: needs your review, returned, ready, blocked, waiting, drafts, queued; pin and snooze | GK GL GT | tree view "Inbox" + status-bar count | `asc-ui` tab | Forgejo `GET /api/v1/user/asc/inbox` (C41b) | Y | Y |
+| Stack-aware review: navigator, per-change diff, version picker, interdiff, "since my last review", overlap and mergeability badges | GT | `asc-ui` review panel; files open in native diff editors | `asc-ui` review tab + native diff | `Changes.Stack`/`Versions`/`InterDiff`/`Overlaps`/`Mergeability`, `Diff`; Forgejo pulls | Y | Y |
+| Inline review comments in diff editors | GT | Comments API (`comments.createCommentController`) on `asc:` diff URIs | comment list in `asc-ui` (inline: v1.x, §24.3.6) | Forgejo reviews and comments API | Y | – |
+| Approve, request changes, merge (stack guard 409) | GT | review panel, commands | review tab | Forgejo reviews and merge (review submit and merge: modal confirmation); `Changes.RequestMerge` | Y | Y |
+| Check out a PR's stack | GT GK | command from the inbox or review | action | Run `stack get` (C26) | Y | Y |
+| Actions: runs and jobs per change, log tail | GT (checks) | tree view "Actions"; logs as read-only `asc-actions:` documents | `asc-ui` tab | Forgejo Actions REST (P05) | Y | Y |
+| Affected projects (uncommitted, change, stack) | – | tree view "Affected" | `asc-ui` tab | `Workspace.Affected` (`uncommitted`), `Projects.Affected` | Y | Y |
+| Project graph | – | `asc-ui` panel | `asc-ui` tab | `Projects.ProjectGraph` | Y | – |
+| Code search: exact and regex at any revision, change or stack | – | quick pick (streamed) + `asc-ui` results panel | `asc-ui` tab | `CodeIntel.Search` (I16, I18), fallback `Repo.Grep` | Y | Y |
+| Symbol and semantic search | – | `asc-ui` search modes; `Go to asc symbol` command | `asc-ui` tab | `CodeIntel.Symbols`, `CodeIntel.Semantic`, `IndexStatus` | Y (when `Hello.features` has `search.v1`) | Y (same) |
+| MCP for agents | GL | `lm.registerMcpServerDefinitionProvider` (`asc mcp` stdio + Forgejo `/api/mcp`, no token injected, §24.4.8); Cursor: `vscode.cursor.mcp.registerServer` | action "Configure agents" → Run `mcp install` | M09, M20 | Y | Y |
+
+**Out of scope:** AI commit messages and AI compose (IP-D12), cloud workspaces shared across a team (GitKraken), GitHub, GitLab and Jira integrations, LFS (No LFS decision), git-flow, submodule editing (submodules are read-only compositions, SPEC §10.6), paid tiers, a signing settings UI (signing is `commit.gpgSign`/`gpg.*` in `asc config`; the plugins only show the badge), command palette, repo tabs, profiles and work items (GitKraken desktop features, stacks.md fixed rules).
+
+#### 24.3.6 JetBrains v1 limits and the reason for each
+
+| Missing in JetBrains v1 | Why | Target |
+|---|---|---|
+| Inline review comments in diff editors | No stable public comments API for diff editors is verified for 2026.1 and 2026.2; the review tab in `asc-ui` carries threads | v1.x, after the API survey in spike P51 |
+| CodeLens-style authors and recent change | The platform's code vision is internal API in `261`; Annotate and the status-bar widget cover blame | v1.x |
+| Stash, tags, project graph, visual file history, share, `stack get --worktree` | Not worth a native surface yet; stash and share are Run verbs reachable from the Stack tab later | v1.x |
+| Everything a `VcsLogProvider` feeds (§24.5.4 lists them) | IP-D11: `readAllHashes` loads the whole history | not planned; the `asc-ui` graph replaces it |
+| Split mode and remote development | The providers need the backend; the UI needs the frontend | after v1 (§24.5) |
+
+### 24.4 VS Code plugin
+
+Extension id `asc.asc`, published to the VS Marketplace and Open VSX (Cursor, VSCodium). `engines.vscode: ^1.101.0`, the first release with a stable MCP server definition provider. No `enabledApiProposals`.
+
+#### 24.4.1 Activation and lifecycle
+
+| Step | What | Cost |
+|---|---|---|
+| Activation events | `workspaceContains:.git` (a root `stat`, not a glob), `onFileSystem:asc`, `onUri`, `onWebviewPanel:asc.graph`, `onWebviewPanel:asc.review`, `onWebviewPanel:asc.history`. Views, commands and the auth provider activate implicitly. Never `*`. | – |
+| `activate()` | For each folder: read `.git` (one small file), `stat` `<gitdir>/asc-workspace`. If no folder is an asc workspace, register nothing and return. | ≤ 5 ms |
+| asc folder found | Register the contributions synchronously. Spawn the bridge lazily (fire-and-forget); `Hello` returns roots, features and state. Then `Status`, then `Watch`. | `activate()` ≤ 30 ms; first SCM status ≤ 300 ms on ASC (warm daemon) |
+| Built-in git | If `git.enabled` is true for an asc folder, show one notification: "Use asc instead of built-in git for this workspace" → writes `"git.enabled": false` at workspace scope. ASC checks the setting into `.vscode/settings.json`. | once |
+| `asc` binary | Setting `asc.path`, else `PATH`, else `$ASC_HOME/bin`. The minimum is defined by features, not a version number: `Hello.features` must contain `plugin.v1` and `json-verbs.v1` (the first asc release that ships P01a–P01c, P02, P03, P45 and P46). Otherwise the plugin shows "Update asc" (with `asc_version` for display) and disables mutating commands; read-only views keep working when `plugin.v1` is present. `CLIENT_TOO_OLD` from the server shows the same notice. | – |
+| Dispose | Close the `Watch` streams and end the bridge (stdin EOF). Webview panels are disposed when closed. | – |
+
+Source layout (`plugins/vscode/src`), each module ≤ 400 lines:
+
+| Module | Responsibility |
+|---|---|
+| `extension.ts` | activation, detection, registration |
+| `bridge.ts` | one `bridgeNode` per window; restart; `Events` → state |
+| `repo.ts` | per root: the `Status` snapshot, `Watch` subscription, event coalescing (50 ms), the `Stacks` snapshot |
+| `scm/` | `SourceControl`, groups, input box, commands, status bar |
+| `fs/ascfs.ts` | read-only `FileSystemProvider` for `asc:` |
+| `decorations.ts` | `FileDecorationProvider` |
+| `blame/` | inline decoration, hover, CodeLens, heatmap |
+| `views/` | trees: Worktrees, Inbox, Actions, Affected, Op log, File History |
+| `webview/` | panel and view hosts for `asc-ui`, the relay and its allowlist |
+| `conflicts.ts`, `review/`, `auth.ts`, `mcp.ts` | §24.4.6–§24.4.8, §24.5 |
+
+#### 24.4.2 SCM provider, `asc:` documents and decorations
+
+- `scm.createSourceControl("asc", "asc", root)` per asc root. Groups: `conflicts`, `staged`, `changes`, `untracked`, hidden when empty. Each `SourceControlResourceState` carries the porcelain `xy` as `contextValue` and opens `vscode.diff(asc:HEAD, file)`, or `(asc:stage, file)` for staged entries.
+- Input box placeholder: "Message (Ctrl+Enter to create a change on ‹change›)". `acceptInputCommand` = `asc.create`. `scm/title`: Create, Amend, Absorb, Undo (P26a); Restack, Sync, Submit stack (P47a). `count` = the number of changed files.
+- **`asc:` URIs:** `asc:/<path>?root=<ws>&rev=<sha>`, `…&stage=<0-3>` or `…&file=<FileId>`. They are served by `Workspace.ReadFile` (P02), which works offline from the local store and hydrates through the tiers. Immutable content (rev or file id) is cached in an LRU by id (32 MiB). Stage content is invalidated by `KIND_STAGE`.
+- **Quick diff:** `quickDiffProvider.provideOriginalResource(uri)` returns `asc:` at `HEAD`. "Diff against stack parent" opens `vscode.diff(asc:parent, file)`, since a second quick-diff provider would be a proposed API.
+- **Stage selected ranges or a hunk:** compute the hunks of `asc:HEAD` against the buffer in the host (the `diff` package, file-local), build a `git apply --cached` patch, then call `Workspace.Stage{patch}`.
+- **Decorations:** one `FileDecorationProvider`. `onDidChangeFileDecorations` fires only with the URIs from the last `Status(paths)` delta. Colours use the `gitDecoration.*` theme colours so themes keep working.
+- **Status bar:** `$(git-commit) kxyzq… · 2/5 · ↓3` (change, stack position, behind `master`), a cloud indicator (P47b), and "needs restack" as a warning item. Clicking it opens the smartlog. `↓3` is the number of `master` (trunk) commits that are not in the stack's base. It comes from the `Stacks` snapshot (`WsStack.behind`, API addition A1), not from `WsStatusResponse.behind`, which compares the HEAD ref with its upstream and is empty in branchless mode. It is hidden at 0, and clicking it offers "Restack onto `master`".
+- **Refresh:** `KIND_PATHS`/`KIND_STAGE` → `Status(paths)` for those paths only. `KIND_HEAD`/`KIND_REF`/`KIND_SWITCH_DONE`/`KIND_RESYNC` → full `Status`. At most one `Status` call per 100 ms per root. The resource list is capped at 10,000 entries, with a "N more, open in terminal" node (the built-in git `statusLimit` default).
+
+#### 24.4.3 Inline blame, hover and CodeLens
+
+| Piece | Implementation | Budget |
+|---|---|---|
+| Current-line blame | `createTextEditorDecorationType({ after: { color: ThemeColor("asc.blameForeground"), margin: "0 0 0 3em" } })`, set on selection change, debounced 150 ms | ≤ 1 request per 150 ms per editor |
+| Data | `Workspace.Blame{rev: "" (working copy), buffer}` for dirty documents (throttled to 500 ms after the last edit), else at `HEAD`. One response covers the whole file, so cursor moves are free. | O(file), served from the `blame.v1` memo |
+| Cache | LRU of 100 entries per root, keyed by `(path, HEAD, document version)`. Invalidated by `KIND_HEAD` and saves. | – |
+| Hover | Commit subject and message, author and time, change id and version, PR number and state (`reviews[]`), autolinked issue refs (`RepoConfig`), actions: Open changes, Blame previous revision, Open PR, Copy change id | – |
+| Whole-file blame and heatmap | Toggle command; `before` decorations per hunk; the heatmap is a gutter border coloured by age quantile | visible ranges only |
+| CodeLens | `provideCodeLenses` returns unresolved lenses at top-level symbols (from the document symbol provider). `resolveCodeLens` reads the cached blame. Off for files over 5,000 lines. | no RPC in `provide` |
+| Skips | binary files, files over 2 MiB, `asc:` and untitled documents, files outside asc roots | – |
+
+Inline blame is on by default; the setting `asc.blame.inline` turns it off. Built-in git ships it off, but GitLens users expect it on.
+
+#### 24.4.4 Tree views
+
+All trees are `TreeDataProvider`s in the `asc` activity-bar container, except File History, which sits in Explorer. They page with a "Load more" item and fetch only when visible (`onDidChangeVisibility`).
+
+| View | Source | Refresh |
+|---|---|---|
+| Worktrees | `Workspace.Worktrees` | `Watch` on any root; actions: open in new window, add (`--ephemeral`), remove, lock |
+| Inbox | Forgejo inbox | on focus, and every 60 s only while visible (`If-None-Match`; a 304 costs almost nothing). The status-bar count has its own poll, §24.4.7 |
+| Actions | Forgejo runs for the current stack's PRs | every 5 s only while a run is in progress and the view is visible |
+| Affected | `Workspace.Affected{uncommitted}` and per change | `KIND_PATHS` (debounced 1 s) |
+| Op log | Run `op log -n 50` | `KIND_OP_FINISHED` with a 500 ms trailing debounce, only while the view is visible (otherwise the view is marked stale and refreshes when shown); at most one `op log` child at a time and one per 2 s; "Load more" up to 500 entries (§24.4.12) |
+| File History | `Workspace.Log{paths, follow, with_stats, limit: 50}` for the active editor | active editor change, `KIND_HEAD` |
+
+#### 24.4.5 `asc-ui` webviews: smartlog, graph, review, history
+
+- **Hosts:** one `WebviewViewProvider` (`asc.smartlog`) in the SCM container, and `createWebviewPanel` editor tabs for the graph, review, visual history, project graph and search. Each panel restores through a `WebviewPanelSerializer` (`onWebviewPanel:*`). `retainContextWhenHidden` is false; `asc-ui` keeps its scroll and selection in `vscode.setState`.
+- **Security:** the CSP is `default-src 'none'; script-src ${cspSource}; style-src ${cspSource}; font-src ${cspSource}; img-src ${cspSource} data:; connect-src 'none'`, and `localResourceRoots` = the `asc-ui` dist. `font-src` serves the bundled codicons `woff2` from the dist. The webview makes no network request. **Avatars** are not loaded from the forge or from third-party hosts (Forgejo's `avatar_url` can point at Gravatar or another external service); the webview calls `Platform.avatar(url)` and the host fetches it: https only, no cookies and no token, public addresses only (loopback and private ranges are refused, every redirect is re-checked, at most 3 redirects), content type png, jpeg, webp or gif (never SVG), at most 256 KB, 5 s timeout, LRU of 200 entries and 2 MiB, returned as a `data:` URI. JetBrains applies the same rule in Kotlin.
+- **Relay:** the webview's `asc-client` uses the `host` transport (`postMessage` of `{id, method, bytes}`). The host forwards a message only when it matches an entry of `allowlist.json` (§24.4.5.1). "All read RPCs" is not a rule: every RPC, verb and Forgejo operation `asc-ui` uses is classified there, and a unit test fails when a proto RPC or a used swagger operation is unclassified. Three request kinds: (1) asc RPCs by full name; (2) `Bridge.Run` with a verb entry whose flag schema the bridge enforces (the host runs the same check so an invalid call fails early, but the bridge is the authority); (3) Forgejo REST as `{method, path, body}`, matched against (method, path template) pairs with a body schema and a repo scope. Anything else is dropped and logged. The host never shows confirmation text supplied by the webview; it composes the text from the parsed request.
+- **Theme:** `asc-ui` uses its own `--asc-*` tokens. The VS Code platform maps them from `--vscode-*` variables and the `vscode-light`/`vscode-dark`/`vscode-high-contrast` body classes.
+- **Graph rendering:** rows come from `CommitGraph` pages of 200, with server-computed `column` and `edges`, so the client does no layout. DOM rows are virtualised (TanStack Virtual, overscan 20). One `<canvas>` draws the lanes for the visible window. At most 5,000 rows stay in memory (a ring keyed by page token). A `Watch` event refetches only the first page and splices rows by commit id (GitLens's ledger-diff idea, without the whole ledger). The minimap uses the header of the first `CommitGraphResponse` page (the total row count and `ref_markers[]` with row indexes), not `LogResponse.count`, because the graph and the log are different streams. If the server omits them (API addition A2), the minimap shows only the loaded pages. Keyboard: arrow keys, parent and child, next fork or ref, `/` to search.
+- **Smartlog interactions:** single click selects (files of the change, no checkout); double click checks out (Run `switch`); drag reparents; buttons are disabled with a tooltip that says why ("Uncommitted changes: create or stash them first", "Frozen", "Landed").
+
+##### 24.4.5.1 The relay allowlist (`allowlist.json`) and the bridge argv rules
+
+`packages/asc-client-ts/src/transport/allowlist.json` is the one checked-in source. `scripts/gen-allowlist.ts` (P10) validates it against the proto descriptors and the fork's `swagger.v1.json` (it fails on an unclassified RPC, an unknown verb flag or an unknown path), and P48 generates `Allowlist.kt` from it. The Rust bridge embeds its own per-verb schema (`argv_schema.rs`, P01b) and a test checks that both agree.
+
+```json
+{
+  "version": 1,
+  "rpc": {
+    "read": [
+      "asc.v1.Workspace/Status", "asc.v1.Workspace/Diff", "asc.v1.Workspace/Log", "asc.v1.Workspace/Blame",
+      "asc.v1.Workspace/Affected", "asc.v1.Workspace/Watch", "asc.v1.Workspace/Stacks", "asc.v1.Workspace/Worktrees",
+      "asc.v1.Workspace/Conflicts", "asc.v1.Workspace/CommitGraph", "asc.v1.Workspace/ReadFile",
+      "asc.v1.Repo/Version", "asc.v1.Repo/Log", "asc.v1.Repo/Diff", "asc.v1.Repo/Blame", "asc.v1.Repo/ReadChangeset",
+      "asc.v1.Repo/ReadFile", "asc.v1.Repo/Grep", "asc.v1.Repo/CommitGraph", "asc.v1.Repo/LineHistory",
+      "asc.v1.Repo/Compare", "asc.v1.Repo/RepoConfig",
+      "asc.v1.Changes/ResolveChanges", "asc.v1.Changes/Stack", "asc.v1.Changes/Versions", "asc.v1.Changes/InterDiff",
+      "asc.v1.Changes/Mergeability", "asc.v1.Changes/Overlaps",
+      "asc.v1.Projects/ProjectGraph", "asc.v1.Projects/Affected",
+      "asc.v1.Cloud/GetWorkspace",
+      "asc.v1.CodeIntel/Search", "asc.v1.CodeIntel/Symbols", "asc.v1.CodeIntel/Semantic", "asc.v1.CodeIntel/IndexStatus"
+    ],
+    "write": [
+      { "name": "asc.v1.Workspace/Stage", "confirm": "none", "limits": { "patchBytes": 1048576, "paths": 10000 } },
+      { "name": "asc.v1.Changes/RequestMerge", "confirm": "modal" }
+    ],
+    "never": [
+      "asc.v1.Workspace/Ping", "asc.v1.Workspace/Mount", "asc.v1.Workspace/Unmount", "asc.v1.Workspace/Switch",
+      "asc.v1.Workspace/Dehydrate", "asc.v1.Workspace/Prefetch", "asc.v1.Workspace/Journal",
+      "asc.v1.Workspace/ClearJournal", "asc.v1.Workspace/Stats", "asc.v1.Workspace/Shutdown",
+      "asc.v1.Repo/GetObjects", "asc.v1.Changes/RestackChanges", "asc.v1.Changes/SetReviewState",
+      "asc.v1.Bridge/Hello", "asc.v1.Bridge/Token", "asc.v1.Bridge/StoreToken", "asc.v1.Bridge/Events"
+    ]
+  },
+  "run": {
+    "reject": ["-c", "-C", "--exec", "--exec-path", "--git-dir", "--work-tree", "--config-env", "--namespace",
+               "--super-prefix", "--upload-pack", "--receive-pack", "--force", "--force-with-lease"],
+    "aliases": "never", "stdin": "none", "endOfOptions": true, "maxArgs": 64, "maxArgBytes": 65536,
+    "types": { "rev": "^[^-\\s\\x00-\\x1f][^\\x00-\\x1f]{0,255}$", "path": "inside root after canonicalisation",
+               "tmpfile": "absolute, inside $ASC_PLUGIN_TMP, written by the host", "user": "^[A-Za-z0-9._-]{1,40}$" },
+    "verbs": {
+      "create":      { "flags": { "--no-branch": "bool", "-m": "str:65536", "-a": "bool" }, "pos": "path*" },
+      "modify":      { "flags": { "--into": "rev", "-m": "str:65536", "-a": "bool" }, "pos": "path*" },
+      "reword":      { "flags": { "-m": "str:65536" }, "pos": "rev?" },
+      "absorb":      { "flags": { "-n": "bool", "-f": "bool" } },
+      "move":        { "flags": { "--onto": "rev", "--source": "rev", "-n": "bool" } },
+      "reorder":     { "flags": { "--todo": "tmpfile" } },
+      "split":       { "flags": { "--hunks": "tmpfile" }, "pos": "rev?" },
+      "squash":      { "flags": { "-m": "str:65536" }, "pos": "rev*" },
+      "fold":        { "flags": { "-m": "str:65536" }, "pos": "rev*" },
+      "restack":     { "pos": "rev?" },
+      "sync":        {},
+      "continue":    {},
+      "abort":       {},
+      "up":          { "pos": "int:100?" },
+      "down":        { "pos": "int:100?" },
+      "top":         {},
+      "bottom":      {},
+      "submit":      { "flags": { "-s": "bool", "--draft": "bool", "--publish": "bool", "--reviewer": "user*",
+                                  "--update-only": "bool", "--auto-merge": "bool" }, "pos": "rev?", "confirm": "modal" },
+      "stack get":   { "flags": { "--worktree": "path" }, "pos": "rev" },
+      "stack merge": { "flags": { "--now": "bool" }, "pos": "rev?", "confirm": "modal" },
+      "stack delete":{ "pos": "rev?", "confirm": "modal" },
+      "stack rename":{ "pos": "str:80" },
+      "stack freeze":{ "pos": "rev?" },
+      "stack unfreeze": { "pos": "rev?" },
+      "hide":        { "pos": "rev*", "confirm": "modal" },
+      "unhide":      { "pos": "rev*" },
+      "abandon":     { "pos": "rev*", "confirm": "modal" },
+      "uncommit":    {},
+      "unamend":     {},
+      "undo":        {},
+      "redo":        {},
+      "op log":      { "flags": { "-n": "int:500" } },
+      "sl":          { "flags": { "--cloud": "bool", "--user": "user" } },
+      "share":       { "pos": "rev?" },
+      "switch":      { "flags": { "--detach": "bool" }, "pos": "rev" },
+      "restore":     { "flags": { "--staged": "bool", "--worktree": "bool", "--source": "rev" }, "pos": "path+", "confirm": "modal" },
+      "cherry-pick": { "pos": "rev+" },
+      "revert":      { "pos": "rev+" },
+      "worktree add":    { "flags": { "--ephemeral": "bool" }, "pos": "path rev?" },
+      "worktree remove": { "pos": "path", "confirm": "modal" },
+      "stash push":  { "flags": { "-u": "bool", "-m": "str:1024" }, "pos": "path*" },
+      "stash pop":   {}, "stash apply": {}, "stash list": {},
+      "stash drop":  { "confirm": "modal" },
+      "fetch":       { "flags": { "--prune": "bool" } },
+      "pull":        { "flags": { "--rebase": "bool", "--ff-only": "bool" } },
+      "push":        { "flags": { "-u": "bool" }, "confirm": "modal" }
+    }
+  },
+  "forgejo": {
+    "base": "/api/v1", "origin": "the forge URL of an opened asc root", "repoScope": "{o}/{r} must be the forge repo of an opened asc root",
+    "pairs": [
+      { "m": "GET",  "p": "/user" },
+      { "m": "GET",  "p": "/user/asc/inbox" },
+      { "m": "PUT",  "p": "/user/asc/inbox/{id}", "body": ["pinned", "snoozed_until"] },
+      { "m": "GET",  "p": "/repos/{o}/{r}/assignees" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/pulls/{n}" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/pulls/{n}/files" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/pulls/{n}/commits" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/pulls/{n}/reviews" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}/comments" },
+      { "m": "POST", "p": "/repos/{o}/{r}/pulls/{n}/reviews", "body": ["body", "commit_id", "comments"], "note": "pending review only: `event` must be absent" },
+      { "m": "POST", "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}", "body": ["body", "event"], "confirm": "modal", "note": "review submit" },
+      { "m": "PATCH","p": "/repos/{o}/{r}/pulls/{n}", "body": ["title", "body", "draft"] },
+      { "m": "POST", "p": "/repos/{o}/{r}/pulls/{n}/merge", "body": ["Do", "merge_when_checks_succeed"], "confirm": "modal" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/actions/runs" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/actions/runs/{id}" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/actions/runs/{id}/jobs" },
+      { "m": "GET",  "p": "/repos/{o}/{r}/actions/jobs/{id}/logs" },
+      { "m": "POST", "p": "/repos/{o}/{r}/actions/runs/{id}/rerun" }
+    ],
+    "never": ["every DELETE", "/admin/**", "/orgs/**", "/user/keys/**", "/user/applications/**", "/users/*/tokens/**",
+              "PATCH or DELETE /repos/{o}/{r}", "/repos/{o}/{r}/hooks/**", "/repos/{o}/{r}/collaborators/**",
+              "/repos/{o}/{r}/branch_protections/**", "/api/mcp"]
+  }
+}
+```
+
+**Confirmation rule.** An entry with `"confirm": "modal"` makes the host show a native modal dialog (VS Code `showWarningMessage({modal: true})`, JetBrains `Messages`) that names the action, the targets (change ids, PR numbers, paths, counts) and the consequence. The default button is Cancel. The same rule applies when a command (not the webview) triggers the call. A `none` write is still bounded by its `limits`. Forgejo bodies are validated against the swagger schema of the operation, and any field not listed in `body` is rejected.
+
+**Bridge argv rules (`argv_schema.rs`, P01b).** The bridge, not the webview and not the host, is the authority:
+
+1. The verb must be a key of the embedded schema. Aliases (`alias.*`), external commands and prefixes are never resolved: the child runs with `ASC_NO_ALIASES=1` (API addition A5).
+2. Each argument is a known flag of that verb, in the form `--flag=value`, or a positional of the declared type. Unknown flags are rejected, as are all flags in `run.reject` (this includes `-c`, `-C`, `--exec`, `--exec-path`) even if a verb would otherwise accept them.
+3. The bridge builds the child argv itself: `asc <verb> --json <flags…> --end-of-options <positionals…>`. Revs and paths always come after `--end-of-options`, so a value that starts with `-` can never be read as an option.
+4. There is no stdin from the webview or the host: the child's stdin is the null device. Messages go in `-m` (at most 64 KiB); a split or reorder plan goes in a `tmpfile` that the host wrote into `$ASC_PLUGIN_TMP` (a per-session 0700 directory) and that the bridge opens itself.
+5. The child's environment is rebuilt: a fixed set (`PATH`, `HOME`, `USERPROFILE`, `SystemRoot`, `ASC_*` set by the bridge), `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, `GCM_INTERACTIVE=never`, no inherited `GIT_*`.
+6. Limits: 64 arguments, 64 KiB per argument, at most 4 `Run` children per bridge (others queue), stderr kept to 1 MiB per child.
+
+#### 24.4.6 Conflicts
+
+1. `Status` reports conflicted paths and `in_progress`. The SCM "Conflicts" group and a status-bar banner ("Restack paused: 2 conflicts · Continue · Abort") appear.
+2. Opening a conflict calls `Workspace.Conflicts` for `{base, ours, theirs, marked}`. If `commands.getCommands()` includes `_open.mergeEditor`, it is called with `asc:` inputs (`file=<id>`), as the built-in git does (inputs swapped during a restack). `_open.mergeEditor` is an internal, unversioned command, so it is used only when present.
+3. Otherwise the working file already holds the diff3 markers (`marked`). VS Code's built-in `merge-conflict` extension, which does not depend on git, adds its Accept current, incoming or both CodeLens.
+4. Saving a file with no markers left offers "Mark resolved" → `Workspace.Stage{add}`. "Continue" runs `asc continue`.
+
+#### 24.4.7 Review, inbox, Actions, affected, search
+
+- **Review:** opening a PR (from the inbox, smartlog or a URI) opens the `asc-ui` review panel: the stack navigator, change list, version picker, interdiff and approve/merge. Files open in native diff editors over `asc:` URIs, or all at once with `vscode.changes`. A `CommentController` (`asc.review`) shows Forgejo review threads on those diff editors. New comments go into a pending review submitted from the panel. Line mapping uses the PR's `merge_base` and head (stacks D8).
+- **Inbox:** the tree (§24.4.4) plus a status-bar count of "needs your review". Pin and snooze go through the inbox API. The count has its own light poll, independent of the view: `GET /user/asc/inbox?section=needs_review&limit=1` with `If-None-Match`, reading `X-Total-Count` (C41b must return it, API addition A6). It runs once on window focus and after any review action, then every 5 minutes while the window is focused and the user is signed in, and stops on blur or when `asc.inbox.statusBar` is false. The item is dimmed with a tooltip "updated N min ago" when the last success is older than 15 minutes or the forge is offline.
+- **Actions:** runs, jobs and steps per change (Actions context `asc_change`, C40). A log opens as a read-only `asc-actions:` document filled by range reads (tail 64 KiB, "load earlier"). "Re-run" calls the Forgejo API.
+- **Affected:** the tree lists projects with their reasons. "Run target" is a `TaskProvider` of type `asc`: one `vscode.Task` per affected project and target, `new ShellExecution(cmd, args)` with the argv and cwd from the project's target definition (`AffectedResponse.projects[].targets[<t>].argv`, API addition A4), run in the terminal panel; JetBrains uses the terminal tool window. asc does not run or schedule targets, and the task detail shows the equivalent `asc affected --target <t>` command. A project without a target definition does not offer the action. No task runner is built in.
+- **Search:** "asc: Search code" is a quick pick that streams `CodeIntel.Search` (workspace scope over IPC), cancels on each keystroke and stops at 200 hits. "Open in panel" shows `asc-ui` search with modes (exact, regex, symbol, semantic), a scope picker (workspace, revision, change, stack) and the index coverage from `IndexStatus`. `search.v1` is advertised by the asc server in `Repo.Version.features` when CodeIntel is enabled (§23.4.1) and reaches the plugin as `Hello.features`. When it is absent (including every local-only workspace, which has no server), exact search falls back to the local engine's `Grep` (`Repo.Grep`) and the other modes are hidden with the reason.
+
+#### 24.4.8 MCP registration
+
+- `contributes.mcpServerDefinitionProviders: [{ id: "asc", label: "asc" }]`. The provider returns `McpStdioServerDefinition("asc", ascPath, ["mcp"], { cwd: root })` per asc root and `McpHttpServerDefinition("forgejo", <forge>/api/mcp)`. **No `resolveMcpServerDefinition` token injection:** the `asc-ide` token carries `write:repository`, which an agent channel must not receive. The IDE's own MCP OAuth flow discovers the authorization server from the protected-resource metadata that M20 serves (`/api/mcp` answers 401 with `WWW-Authenticate: Bearer resource_metadata=…`) and gets its own, narrower token. M20 would accept any Forgejo API token (PAT or OAuth2), but the `asc-ide` token is not reused for agents, for least privilege. Open point, owned by spike P50: M26 registers only the `asc-mcp` public client, builds no dynamic client registration and leaves client-ID metadata documents to v1.x (M27), so the IDE client may have nothing to register with. Until P50 passes, the provider declares an `inputs` entry (`promptString`, `password: true`) so the user pastes a Forgejo PAT that VS Code stores securely and sends as the bearer; the extension never reads it.
+- It never also registers the asc server's `/mcp` (mcp.md placement rule: no tool appears twice).
+- Cursor: when `vscode.lm.registerMcpServerDefinitionProvider` is missing, it calls `vscode.cursor?.mcp?.registerServer` with the same two definitions. Otherwise the command "Configure agents" runs `asc mcp install --scope project`.
+
+#### 24.4.9 Proposed-API gaps and the replacements
+
+| Built-in git uses (proposal) | asc plugin instead |
+|---|---|
+| `scmHistoryProvider` (Source Control Graph) | `asc-ui` graph and smartlog webviews |
+| `scmActionButton` | `acceptInputCommand`, `scm/title` buttons, status bar |
+| `scmValidation` | validated on accept; an error notification keeps the message in the input box |
+| `timeline` | File History tree and visual history panel |
+| `quickDiffProvider` (secondary) | "Diff against stack parent" command |
+| `scmMultiDiffEditor` | the public `vscode.changes` command |
+| merge editor API | `_open.mergeEditor` when present, else conflict markers (§24.4.6) |
+
+#### 24.4.10 Performance budgets (enforced by P44a for VS Code, P44b for JetBrains)
+
+| Metric | Budget | Measured by |
+|---|---|---|
+| `activate()` in an asc workspace | ≤ 30 ms, no awaited I/O except the marker read | test-electron timing |
+| Cost in a non-asc workspace | ≤ 5 ms, no bridge spawned | test-electron |
+| First SCM status visible | ≤ 300 ms after activation (ASC, warm daemon) | test-electron with the fixture |
+| Extension-host heap attributable to `asc.asc` at idle | ≤ 25 MiB | The extension host is shared, so per-extension heap cannot be read in a normal window. P44a starts a test-only window (`--disable-extensions --extensionDevelopmentPath=plugins/vscode`, `--js-flags=--expose-gc`) with a probe that forces GC and reads `v8.getHeapStatistics().used_heap_size`, and compares it with the same window on a non-asc folder (the extension inert). The delta is the attributable heap; median of 5 runs |
+| Bridge RSS at idle | ≤ 20 MiB | process stats |
+| Webviews at idle | at most one (the smartlog view, only when visible) | test |
+| Graph | first 200 rows painted ≤ 150 ms after data; scrolling 100,000 rows ≥ 55 fps; ≤ 5,000 rows in memory | Playwright trace (§24.7) |
+| Event handling | `Watch` events coalesced over 50 ms; ≤ 1 `Status` per 100 ms per root | unit test with a fake clock |
+| Bundles | host ≤ 350 KB min; `asc-ui` initial ≤ 300 KB gzip; each lazy view ≤ 150 KB gzip | CI size check |
+| Never | `*` activation, `createFileSystemWatcher("**")`, `workspace.findFiles` over the repo, unpaged history, polling without a visible view | oxlint rule + review |
+
+#### 24.4.11 Hydration discipline (SPEC §10.2 item 5, hydration policy)
+
+On a virtual workspace, a read of a file that is not local hydrates it. IDE search, indexing and watchers are the usual cause. Directory enumeration and `ReadDirectoryChangesW` watchers never hydrate (SPEC §10.2 item 5); reading file bodies does.
+
+| Rule | VS Code | JetBrains |
+|---|---|---|
+| The plugin itself | Content comes from `Workspace.ReadFile` (store, no hydration). It reads working files only for open editors. | Same (`AscContentRevision`). No `VfsUtil` recursive refresh. |
+| Exclusions, written once at workspace scope after a prompt and checked in | `files.watcherExclude`, `search.exclude` and `files.exclude` for `**/node_modules`, `**/dist`, `**/.turbo`, `**/target`, `**/.next`, `**/.asc`; `search.followSymlinks: false`. | `DirectoryIndexExcludePolicy` for the same folders; `.ascignore` through `IgnoredFileContentProvider`. Source roots stay indexed: language servers and IDE indexers are expected to hydrate sources, and `asc clone`/`worktree add` prefetch the `.asc/prefetch` globs for that (SPEC §10.2 item 5a). |
+| Find in Files | VS Code's text search reads every file it visits. The default is therefore "asc: Search code" (index-backed, no hydration, §24.4.7); the plugin never rebinds Ctrl+Shift+F. | `asc` tool window search tab; the IDE's Find in Files stays available. |
+| Watching the counters | The host reads `Workspace.Stats` (never relayed to a webview) once a minute while a window is focused and `asc debug hydrations --by-process` semantics apply. If one editor process (`rg`, `Code Helper`, an indexer) caused more than `asc.vfs.hydrationBudget` hydrations in a day, show one notification per 24 hours: "Search is hydrating files. Use asc: Search code, or exclude folders" with the top three folders. | Same, from Kotlin, with a link to the excludes. |
+| `asc.vfs.denyHydration` | Not changed by the plugin. The notification names the process image so the user can add it. | Same. Windows Search images are already denied by default. |
+
+P49a and P49b test this on a virtual fixture: after activation, a window reload, a search-for-text and an indexing run, `asc debug hydrations --by-process` shows 0 hydrations from the plugin and none beyond manifests from the watcher.
+
+#### 24.4.12 Limits and debounce
+
+| State | Limit | Behaviour at the limit |
+|---|---|---|
+| `asc-ui` ops queue | 50 queued ops per root; 1 running; 20 finished ops kept for the status line | New ops are refused with "Wait for the running operations"; a queued op whose preview no longer applies after a `Watch` event is cancelled and shown as such |
+| `Run` children | 4 per bridge; stderr 1 MiB per child | Others wait in order; excess stderr is truncated with a marker |
+| Op log | `-n 50`, "Load more" to 500; refresh debounced 500 ms, one per 2 s, visible view only | Older entries: "open `asc op log` in a terminal" |
+| Review comment threads | 200 threads per PR loaded; pages of 50; comment text 64 KiB; `CommentController` threads of a closed diff editor are disposed; at most 20 PR controllers (LRU) | "N more threads, open in the review panel" |
+| `asc:` content cache | 32 MiB LRU by id (immutable content) | Evict oldest |
+| Blame cache | 100 entries per root | Evict oldest |
+| Avatars | 200 entries and 2 MiB | Evict oldest |
+| Status resources | 10,000 entries | "N more" node (§24.4.2) |
+| Graph rows | 5,000 in memory (ring) | Page tokens evicted and refetched |
+| Event coalescing | `Watch` 50 ms; `Status` one per 100 ms per root | – |
+
+### 24.5 JetBrains plugin
+
+One IntelliJ Platform plugin for IntelliJ IDEA, Rider, RustRover, PyCharm and WebStorm. Kotlin, IntelliJ Platform Gradle Plugin 2.x, `intellijIdea("2026.1")` (Java 21), `sinceBuild = 261`, no `untilBuild`. Depends on `com.intellij.modules.vcs`. `com.intellij.modules.jcef` is declared as an optional dependency (`<depends optional="true" config-file="asc-jcef.xml">`) with a runtime `JBCefApp.isSupported()` check, because the claim that the module becomes required from 2026.2 is unverified. Spike P54 settles it against 2026.1 and 2026.2 with `verifyPlugin`. Split mode and remote development are not supported in v1; the code is kept in `vcs/` (backend-side) and `ui/` (frontend-side) packages so a later split stays mechanical.
+
+#### 24.5.1 Components
+
+| Class | Platform API | asc call |
+|---|---|---|
+| `AscBridgeService` (application service) | coroutines, `Disposable` | one `asc api --stdio` per IDE process; protobuf-java messages; `Flow` for streams |
+| `AscVcs` | `AbstractVcs` (name `asc`), `<vcs name="asc" vcsClass="asc.asc.vcs.AscVcs"/>` | – |
+| `AscRootChecker` | `vcsRootChecker` | `.git` gitfile + `asc-workspace` marker |
+| `AscMappingActivity` | `ProjectActivity` | maps asc roots to `asc` in `vcs.xml` and drops `Git` mappings for them; one notification; also suppresses Git4Idea's "unregistered VCS root" notice for the synthetic `.git` (spike P52, §24.5.4) |
+| `AscChangeProvider` | `ChangeProvider` (background, dirty scopes) | `Workspace.Status(paths of the dirty scope)` → `ChangelistBuilder` |
+| `AscWatchService` (project service) | `VcsDirtyScopeManager.filesDirty`, message bus topic `ASC_STATE` | `Workspace.Watch` |
+| `AscContentRevision`, `AscDiffProvider` | `ContentRevision`, `DiffProvider`, `RevisionSelector` | `Workspace.ReadFile` (P02), `Log` |
+| `AscCheckinEnvironment` | `CheckinEnvironment` + `AmendCommitAware`; `vcs.changes.localCommitExecutor` "Create and submit" | `Workspace.Stage` of the selected changes, then Run `create --no-branch` / `modify` / `submit`. Partial-line commits need `arePartialChangelistsSupported` and the partial-changelist tracker, which are not assumed: spike P53 decides; until it passes, v1 commits whole files and stages hunks and lines in the `asc-ui` smartlog |
+| `AscRollbackEnvironment` | `RollbackEnvironment` | Run `restore --staged --worktree` |
+| `AscAnnotationProvider` | `AnnotationProvider` → `FileAnnotation` (revision, author, date, change, PR in the tooltip) | `Workspace.Blame` (with the unsaved buffer) |
+| `AscHistoryProvider` | `VcsHistoryProvider.reportAppendableHistory` (pages of 50); block history | `Workspace.Log{paths, follow}`; `LineHistory` |
+| `AscMergeProvider` | `MergeProvider.loadRevisions` → `MergeData`; `conflictResolvedForFile` | `Workspace.Conflicts`, `ReadFile`, `Stage` |
+| `AscCheckoutProvider` | `checkoutProvider` (Get from VCS) | Run `clone` (`--json`: P45) |
+| `AscToolWindowFactory` | tool window `asc` (JCEF, created on first open) | `asc-ui` tabs: Stack, Graph, Review, Inbox, Actions, Affected, Worktrees, Search, History |
+| `AscStatusBarWidgetFactory` | `statusBarWidgetFactory` | change id, stack position, cloud state, "needs restack" |
+| `AscActions` | action group in VCS menu and Commit toolbar | up, down, restack, sync, submit, absorb, undo, redo |
+| `AscConfigurable` | `projectConfigurable` under Version Control | `asc` path, inline blame, forge account |
+
+Not registered in v1: `logProvider` (IP-D11), `pushSupport` (asc has no separate push step for drafts; `submit` is an action), `UpdateEnvironment` (sync is an action).
+
+#### 24.5.2 JCEF host for `asc-ui`
+
+- Check `JBCefApp.isSupported()`. Without JCEF, the tool window shows a notice and a link to the same view on the Forgejo fork (§24.5.3 islands).
+- `JBCefBrowser` loads `https://asc-ui.local/index.html`. A `CefRequestHandler`/`CefResourceRequestHandler` serves the bundle from jar resources (the `JCefImageViewer` pattern), so nothing is loaded from the network.
+- **Relay:** `JBCefJSQuery` carries base64 bridge frames JS → Kotlin, and `executeJavaScript("window.ascHost.deliver(...)")` carries them back. The allowlist and confirmation rules of §24.4.5 apply unchanged (same table, generated into Kotlin from `packages/asc-client-ts/src/transport/allowlist.json` by the Gradle task `generateAllowlist`, P48; the argv rules of §24.4.5.1 are enforced by the bridge).
+- **Theme:** Kotlin computes the `--asc-*` tokens from `JBColor`/`UIManager` on open and on `LafManagerListener`, and pushes them as a `theme` message. `JBCefScrollbarsHelper` styles the scrollbars.
+- **Lifecycle:** the browser is created on first open and disposed when the tool window has been hidden for 10 minutes. `asc-ui` restores its state through `Platform.getPersistedState` (`PropertiesComponent`).
+- **Host actions** (`Platform.openFile`, `openDiff`, `confirm`) map to `FileEditorManager`, `DiffManager` with `AscContentRevision`s, and `Messages`.
+
+#### 24.5.3 Forgejo fork reuse
+
+`asc-ui` is built a second time as a self-contained ESM bundle and vendored into the fork at `public/assets/asc-ui/<version>/` (P07). A Go template partial mounts an island: `<div data-asc-ui="graph" data-repo="owner/repo">`. In the browser, the `Platform` uses the `grpcWeb` transport to a same-origin, read-only proxy `/-/asc/rpc/*` (P04). The proxy checks Forgejo's repo permission, then forwards with the internal token. Writes from the web go through Forgejo's own handlers (merge, restack button). Suggested adopters: the commit graph page (C42) and visual file history; the existing Go templates stay valid.
+
+#### 24.5.4 Degraded features and the spikes that settle them
+
+Without a `VcsLogProvider` (IP-D11), these platform features are expected to degrade or disappear for `asc` roots. Spike P51 runs each on 2026.1 and records the real behaviour in `plugins/jetbrains/spikes/RESULTS-vcslog.md`; the list below is the starting hypothesis, not a finding.
+
+| Platform feature | Expected effect | Replacement in v1 |
+|---|---|---|
+| Git tool window "Log" tab, "Show in Log", "Go to hash/branch" | absent for `asc` roots | `asc` tool window Graph tab; hash links open there |
+| Compare with Branch / Tag / Revision | absent or file-only | `asc-ui` compare (P18) and `DiffProvider`-based "Compare with previous" |
+| Directory and project history | file history works through `VcsHistoryProvider`; directory history works only if `supportsHistoryForDirectories` is true | Graph tab with a path filter (`Log{paths}`) |
+| Cherry-pick, revert, reset from the Log context menu | absent | graph context menu in `asc-ui` (P47c is VS Code only; JetBrains uses the same `asc-ui` menu through the relay) |
+| Annotate gutter "Show in Log" click | opens nothing | opens the `asc` tool window on that change |
+| Branches popup, Update Project | the `Git` popup is absent | actions in `AscActions` |
+
+Other JetBrains risks and their spikes (all start from P36, results recorded under `plugins/jetbrains/spikes/`):
+
+| Spike | Question | Decision rule |
+|---|---|---|
+| P51 | What degrades without `VcsLogProvider`? Is there a stable comments API for diff editors in 2026.1 and 2026.2? | Fill the table above; the API survey decides whether inline review comments move from v1.x to v1 |
+| P52 | With `Git4Idea` enabled, does the synthetic `.git` gitfile make the IDE report an unregistered Git root, offer to add it, or map it to `Git`? | Pick the least invasive fix: `vcs.xml` ignored roots, a `VcsRootChecker` that claims the root, or disabling `Git4Idea` for the project; otherwise document it |
+| P53 | Can `AscCheckinEnvironment` support `arePartialChangelistsSupported` (partial-line commit from the Commit window) with a `ContentRevision` backed by `ReadFile` and a patch for `Workspace.Stage`? | If not within the spike, v1 ships whole-file commit plus `asc-ui` line staging, and §24.3.1 row "Stage ... selected lines" becomes `–` for JetBrains in the Commit window |
+| P54 | Is `com.intellij.modules.jcef` a module id in 2026.1 and required in 2026.2? Does `verifyPlugin` pass with it optional? | Use optional if the verifier passes on both; else required from `sinceBuild` that needs it |
+| P55 | Does the OAuth loopback survive a moved built-in-server port, Remote Dev, and `state`/PKCE checks? Does Forgejo accept a variable loopback port for `asc-ide` (P06)? | Built-in server if stable; else an own `ServerSocket` on a random loopback port |
+
+### 24.6 Auth, offline and local-only
+
+| Topic | Decision |
+|---|---|
+| Credential store | asc's first: `ASC_TOKEN`, else `git credential fill` for the forge host (SPEC §15.1). The bridge runs with `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, `GIT_ASKPASS` unset and no editor, so `fill` never opens a Git Credential Manager dialog at startup: with no stored credential `Token` returns `NOT_FOUND` and the UI shows "Sign in". `Bridge.StoreToken` first checks that a credential helper is configured (`credential.helper` is set and is not `store`); with none (typical on Linux, WSL and Remote) it fails with `NO_CREDENTIAL_HELPER` and writes nothing. It never uses the plaintext `store` helper. Where a helper exists, the CLI, `asc mcp`, VS Code and JetBrains share one sign-in. |
+| Credential fallback | On `NO_CREDENTIAL_HELPER` the host keeps the token in VS Code `SecretStorage` (key `asc.asc.token.<forge host>`) or the JetBrains `PasswordSafe`, and passes it to the bridge as `ASC_TOKEN` at spawn. The bridge is respawned when the token changes, and a host-supplied value wins over an inherited `ASC_TOKEN`. In this mode the CLI and `asc mcp` do not share the sign-in; the UI says so once and suggests `git config credential.helper`. Under Remote or WSL the bridge runs on the workspace side and VS Code proxies `SecretStorage` from the local side. Files and settings never hold tokens. |
+| asc server calls | Authenticated inside the bridge. The plugin never sees the asc server token path. |
+| Forgejo REST calls | Bearer token from `Bridge.Token`, attached by the host (extension host or Kotlin). Never relayed to a webview. |
+| VS Code sign-in | `AuthenticationProvider` `asc-forgejo`. `getSessions` → `Bridge.Token`. `createSession` → Forgejo OAuth2 authorization code with PKCE for the pre-registered public client `asc-ide` (P06). The redirect is `${env.uriScheme}://asc.asc/auth` through `env.asExternalUri` + `onUri`, so VS Code, Cursor and VSCodium all work. The token is then saved with `Bridge.StoreToken`, or in `SecretStorage` when that fails with `NO_CREDENTIAL_HELPER`. A PAT can be pasted instead. |
+| JetBrains sign-in | The same OAuth flow with PKCE, a `state` value (128 random bits, single use, valid 5 minutes; a callback is ignored unless `state` and the PKCE verifier both match) and a loopback redirect. The port is not fixed: the IDE built-in server listens on `BuiltInServerManager.getInstance().port` (63342 by default, higher when taken, different under Remote Dev), so the redirect is built from the live port, and P06 must accept any port on `127.0.0.1` for `asc-ide` (RFC 8252 §7.3). If the built-in server is unavailable the plugin opens its own `ServerSocket` on `127.0.0.1`. Spike P55 verifies both. A pasted PAT is the alternative; it is stored in `PasswordSafe` (or `StoreToken`) and never in settings. |
+| Scopes | `read:user`, `read:repository`, `write:repository` (submit goes through asc, but merge goes through Forgejo), `read:issue`, `write:issue` (reviews and comments). `asc-ide` is a separate client from `asc-mcp` (M26). |
+| Signed out | Every local feature works (IP-D8). Forgejo views show one "Sign in to Forgejo" button. No nags and no trials. |
+
+**Connectivity states.** `Bridge.Hello` and `Bridge.Events` report three independent states: daemon (up, restarting, none), asc server (online, offline, none = git-remote or local-only mode), forge (online, offline, signed out).
+
+| Feature group | Daemon down | Server offline | Local-only or git remote (Stage 0) | Forge offline or signed out |
+|---|---|---|---|---|
+| Status, stage, create, amend, discard, quick diff | CLI in-process through the bridge (plain workspaces); virtual workspaces wait for the daemon restart (≤ 10 s) | works | works | works |
+| Blame, file history, graph | local engine | local engine within the fetched window; older history shows "available when online" | local engine | works |
+| Stacks, restack, absorb, split, move, undo | works | works | works | works |
+| Cloud drafts | – | queued; status bar shows "N pending" | not applicable | works |
+| Submit, stack get, stack merge, `Changes.*` badges | – | disabled with reason | disabled ("needs an asc server", the exit-128 message) | submit works; PR state hidden |
+| Review, inbox, Actions | works | works | works when Forgejo exists | disabled with reason |
+| Affected | local graph (`--uncommitted`) | local | local | works |
+| Code search | daemon overlay index | daemon degraded local index (I19) | `Repo.Grep`-style local fallback | works |
+
+Disabled controls always say why (IP-D8). The UI never blocks on the network: cheap RPCs time out at 2 s, expensive ones show progress and can be cancelled. When the daemon is absent (`ASC_NO_DAEMON` or plain mode with no daemon), `Watch` is unavailable. VS Code then uses one `createFileSystemWatcher` per root with the `.ascignore`/`.gitignore` excludes and a 1 s debounce. This is the only file watcher in the design.
+
+### 24.7 Testing
+
+#### 24.7.1 Layers
+
+| Layer | Tool | Scope | When |
+|---|---|---|---|
+| Bridge (Rust) | `cargo test -p asc --test bridge --test bridge_run --test bridge_auth` | framing, routing, cancel kills `Run` children, no-daemon path; argv injection corpus (`-c`, `-C`, `--exec`, `--exec-path`, aliases, `-x` after `--`, values starting with `-`, stdin attempts) is rejected, and every allowlisted verb has a `--json` form; `Token` never prompts and never leaves stdout unrequested; `StoreToken` fails with `NO_CREDENTIAL_HELPER` and writes nothing when no helper is set | PR |
+| `@asc/asc-client` | `bun test` | transports against a real `asc api --stdio` on a fixture; the relay allowlist; Forgejo client against the mock | PR |
+| `@asc/asc-ui` logic | `bun test` | preview appliers equal the real result on fixture DAGs (apply verb, re-read `Stacks`, compare); ops queue ordering; graph ring buffer | PR |
+| `@asc/asc-ui` UI | Playwright (Chromium) against `asc-ui-devhost` | each view's flows; axe accessibility; screenshots in light, dark and high contrast; keyboard-only navigation; graph performance trace (100,000 rows) | PR |
+| VS Code | `@vscode/test-cli` + `@vscode/test-electron` (Mocha in the extension host) on the bundled extension, VS Code stable and the `engines` minimum, Windows and Linux | SCM groups and counts, decorations, blame text, `asc:` content, commands produce the expected `OpResult`, conflicts flow, relay rejects non-allowlisted RPCs, verbs, flags and Forgejo paths and shows the modal for each `confirm` entry, activation budgets, inert in a non-asc folder | PR |
+| VS Code packaged smoke | `bun plugins/vscode/scripts/smoke-vsix.ts --editor vscodium` (also `--editor vscode`; Cursor's engine is covered by pinning its VS Code version) | installs the built VSIX headless, opens the `dirty` fixture, asserts activation, the SCM group counts through a probe command, and inertness in a non-asc folder | PR (P35b) |
+| VS Code budgets | `bun bench/plugins/collect.ts --target vscode --check` | the budgets of §24.4.10, with the heap probe in a test-only extension-host window | PR (P44a) |
+| JetBrains providers | Gradle `test` with `HeavyPlatformTestCase` on the fixture | `ChangeProvider` output, annotation, history paging, merge data, checkin | PR |
+| JetBrains UI | IntelliJ IDE Starter + Driver (`runIdeForUiTests`) | Commit window commit, Annotate, merge dialog, `asc` tool window loads `asc-ui` and shows the stack | nightly |
+| JetBrains compatibility | `verifyPlugin` (Plugin Verifier) against IU, RD, RR, PY and WS 2026.1 and 2026.2 | API compatibility | PR |
+| Forgejo islands and proxy | Go tests (P04, P07) + Playwright against the docker-compose Forgejo | proxy allowlist and permission checks, island mount | PR (Go), nightly (Playwright) |
+| Mock Forgejo contract | the same requests against the mock and the real fork | the mock does not drift from the fork's swagger | nightly |
+
+#### 24.7.2 Fixture repos (`@asc/asc-fixtures`)
+
+Built only with the `asc` CLI (`ASC_BIN`), with fixed `GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE`, identity and `asc.branchless=true`. Building a scenario twice must give identical change ids and SHAs (P12 acceptance). A Hono mock Forgejo and an in-process `asc serve --db sqlite::memory: --store memory://` (the K-track pattern) provide the server side.
+
+| Scenario | Contents |
+|---|---|
+| `clean` | `master` with 200 commits |
+| `dirty` | staged, unstaged, untracked, ignored, rename, mode change, binary, a 10,000-line file, a `.ascignore` |
+| `stacks` | two stacks of 3 and 5 changes, one needs restack, one divergent, one frozen; one branch label; two hidden drafts |
+| `conflict` | a restack paused on two conflicted files (content and modify/delete) |
+| `worktrees` | three workspaces, one ephemeral, one nested under `.claude/worktrees/` |
+| `history` | 2,000 commits with renames, for blame, line history and the graph |
+| `review` | the `stacks` scenario submitted to the in-process server, with mock PRs, reviews, inbox entries and Actions runs |
+| `big` (nightly) | `bench/gen` repo with 100,000 files and 100,000 commits, virtual mode, for performance budgets |
+
+### 24.8 Units, phases and asc API additions
+
+#### 24.8.1 Units, phases and recorded amendments
+
+The units are P01a–P58 in PLAN §P. Code lives in `packages/` (TypeScript: `asc-client-ts`, `asc-ui`, `asc-ui-devhost`, `asc-fixtures`), `plugins/vscode`, `plugins/jetbrains`, `proto/asc/v1/bridge.proto` and `crates/asc/src/bridge/` (§24.2). There is no new Rust crate: the bridge is a module of the `asc` crate.
+
+| Group | Units |
+|---|---|
+| Rust: bridge, plugin API and CLI forms | P01a–P01c, P02, P03, P45, P46, P57 |
+| Forgejo fork (Go) | P04–P07, P58 |
+| TypeScript tooling and `@asc/asc-client` | P08–P12 |
+| `asc-ui` (React; shared by VS Code, JetBrains and the fork) | P13–P23, P56 |
+| VS Code extension | P24–P35c, P47a–P47c, P49a, P50 |
+| JetBrains plugin | P36–P43b, P48, P49b, P51–P55 |
+| Budget gates | P44a, P44b |
+
+**Phases (§18):** 5p (the bridge and plugin API units, after U50, U52, M02, M09, U73 and C31), 9p (the Forgejo units, on the Go track after K06, K07, K14, M24, M26 and C41b), 10 (VS Code and the `asc-ui` views) and 10j (JetBrains).
+
+**Recorded amendments** (a named hunk in a file another unit owns, made by the P unit; built units change only through a follow-up unit, so the hunks in U41's files are made by P57):
+
+| Owning unit and file | Hunk | Made by |
+|---|---|---|
+| U50 `crates/asc/src/cli/api.rs` | the `--stdio` flag dispatching to `crate::bridge` | P01a |
+| U73 `proto/asc/v1/workspace.proto`, `docs/plugin-api.md` | `rpc ReadFile(WsReadFileRequest) returns (stream ReadFileResponse)` (§7); one doc row | P02 |
+| C14 `crates/asc/src/stack/cli/reorder.rs` | `--todo <file>` dispatching to `reorder_todo.rs` | P03 |
+| M02 `proto/asc/v1/cli.proto` | `StackTodo { repeated TodoItem items }` (`pick`, `fold`, `drop`, `reword`, ordered bottom to top) | P03 |
+| M02 `proto/asc/v1/cli.proto` | `--json` result messages (each an `OpResult` with typed fields) for `restore`, `switch`, `cherry-pick`, `revert`, `clone`, `worktree add\|remove\|list`, `stash`, `fetch`, `pull`, `push` | P45 |
+| M02 `proto/asc/v1/cli.proto` | `SplitSpec { repeated SplitPiece pieces }`, `SplitPiece { string message; bytes patch; repeated bytes whole_files }` (git-apply patch per piece; the last piece takes the remainder) | P46 |
+| C13 `crates/asc/src/stack/cli/split.rs` | `--hunks <spec>` dispatching to `split_hunks.rs`; the interactive `--by-hunk` is unchanged and never run by a plugin | P46 |
+| U20 `crates/asc/src/dispatch.rs` | honour `ASC_NO_ALIASES=1` (A5) | P01b |
+| U20 `crates/asc/src/cli/common.rs` | `--end-of-options` accepted by every verb of `allowlist.json` (A7) | P01b |
+| U41 `proto/asc/v1/repo.proto` (built; with C17's block), C29 `crates/asc-serve/src/commit_graph_rpc.rs`, C31 `crates/asc/src/daemon/plugin_api_stack.rs` | `CommitGraphResponse.total` and `ref_markers[]` on the first page (A2); the meaning of `WsStack.behind` (A1) | P57 |
+| U41 `proto/asc/v1/projects.proto` (built), G01 `crates/asc-graph/src/config.rs` | `AffectedProject.targets` and `[[project]] argv` (A4) | P57 |
+| C41b `routers/api/v1/user/asc_inbox.go` | `section`, `limit`, `X-Total-Count`, `If-None-Match` (A6) | P58 |
+
+**Order.** P01a, P01c, P02, P03, P45 and P46 follow their Rust dependencies; P01b needs P45. P08–P14 can start as soon as P01a exists (P09 needs P01b and P01c). The VS Code release is P24–P35c, P44a, P47a–P47c, P49a and P50 plus the `asc-ui` views they embed (P15–P23, P56); it never waits for JetBrains. JetBrains: P36 needs only P08 and P01a–P01c, so the spikes P51–P55 and the provider units P37a–P40, P42, P48 and P49b need no `asc-ui` view and can start right after it (gated by their spikes: P37a by P52, P38 by P53, P42 by P55). P41a needs P15, P17, P19, P48 and P54; P41b and P43a need P41a. The JetBrains release gate is P44b. The Forgejo units P04–P07 run on the Go track after K07, K14 and M26.
+
+Required tests beyond each acceptance command are the layers of §24.7.1 (bridge injection corpus, relay allowlist, preview appliers, hydration, budgets).
+
+#### 24.8.2 asc API additions the plugins need
+
+| # | Addition | Used by | Where it lives | Made by |
+|---|---|---|---|---|
+| A1 | `WsStack.behind` (field 3 of §20.6's `WsStack`, already defined) means the number of trunk commits that are not in the stack base, capped at 999; 0 when the base is the trunk tip. There is no `behind_trunk` field (§24.10 ruling 3). | status bar `↓N` (§24.4.2) | §20.6 | P57 (test), C31 |
+| A2 | The first `CommitGraphResponse` page carries `uint64 total = 3` (rows) and `repeated RefMarker ref_markers = 4` (`message RefMarker { string name = 1; uint64 row = 2; }`); the server may omit both when the total is not cheaply known, and later pages never carry them | minimap (§24.4.5) | §20.5, §20.6 | P57 |
+| A3 | `Repo.ListRefs` with kind `tag`/`branch`, paged | tags view (v1.x) | §7 | none in v1 |
+| A4 | `message TargetCmd { repeated string argv = 1; }` and `AffectedProject += map<string, TargetCmd> targets = 5`; source: `argv = { <target> = ["bun", "run", "test"] }` in a `[[project]]` of `.asc/projects.toml`, run with the project root as cwd. asc never runs it (`asc run` stays out of scope, §0) | "Run target" task (§24.4.7) | §12A.8 | P57 |
+| A5 | `ASC_NO_ALIASES=1` disables `alias.*` resolution and external `git-<name>`/`asc-<name>` lookup | bridge argv rule 1 | §11.4 | P01b |
+| A6 | `GET /user/asc/inbox?section=&limit=` returns `X-Total-Count` and honours `If-None-Match` | inbox count poll (§24.4.7) | §20.8, C41b | P58 |
+| A7 | `--end-of-options` accepted by every verb of `allowlist.json` (git 2.55 does; checked per asc verb by P01b's tests) | bridge argv rule 3 | §11.1 | P01b |
+| A8 | `--json` forms for the verbs of P45, and `split --hunks <spec>` with `SplitSpec` (P46) | `Run` | §11.2, M02 | P45, P46 |
+| A9 | `HelloResponse.features`: `plugin.v1`, `json-verbs.v1`, `reorder-todo.v1`, `split-hunks.v1` | minimum-feature check (§24.4.1) | §7 `bridge.proto` | P01a |
+
+### 24.9 Risks and spikes
+
+| Risk | Mitigation |
+|---|---|
+| `Bun.build` CJS output is experimental | the test-electron suite runs on the bundle; `scripts/bundle.ts` swaps to esbuild in one file |
+| `_open.mergeEditor` is internal and unversioned | feature-detected; the marker fallback is fully functional |
+| Cursor and VSCodium lag the VS Code engine | spike in P35b: install the VSIX on the current Cursor and VSCodium; lower `engines` only if a stable API used here is missing |
+| JCEF unavailable (some Linux setups, remote IDEs) | a notice and the Forgejo island fallback (§24.5.2) |
+| Bridge process crash | restart with backoff, `Watch` resumes from its token; the UI shows "reconnecting" |
+| Kotlin and TypeScript disagree on the relay allowlist | one `allowlist.json`, generated into Kotlin at build time (P48); the bridge schema is tested against it (P01b) |
+| A compromised webview or a bad argv reaches git options | the bridge, not the host, owns the flag schema; `--end-of-options`; no stdin; injection corpus in `bridge_run` (P01b) |
+| IDE MCP clients cannot register with Forgejo (no DCR; CIMD is v1.x) | spike P50; the PAT `inputs` fallback of §24.4.8 ships if it fails |
+| JetBrains degrades without `VcsLogProvider`, shows the synthetic `.git` as an unregistered root, lacks partial-line commit support, or has a different `jcef` module rule | spikes P51–P54; features listed in §24.3.6 and §24.5.4 |
+| OAuth loopback port moves or the redirect is not accepted | spike P55; own `ServerSocket` fallback |
+| Search and indexers hydrate a virtual workspace | exclusions, `asc: Search code`, per-process counters (§24.4.11, P49a/b) |
+| Publishing to the Marketplace and Open VSX cannot be proven by a local command | `release-check.ts` covers everything but the token step; the first tagged release is watched by hand and recorded in the CHANGELOG |
+
+### 24.10 Rulings recorded at the fold [audit: ide-plugins-folded]
+
+1. **Names and numbers:** the research decisions ID1–ID15 are IP-D1–IP-D15 here, so they do not collide with other sections' numbers. The unit ids are the research file's own (P01a–P56), so `docs/research/mcp.md` and `docs/research/codeintel.md` keep pointing at the right units (codeintel.md names P09 and P23).
+2. **Superseded audit proposal (contradiction, resolved):** the audit entries `ide-plugins-unspecified-and-contradicted` and `checklist-ide-plugins-missing` proposed units IP01–IP08, directories `ide/vscode` and `ide/client-ts`, Node HTTP/2 and a Kotlin client straight over the daemon's named pipe or Unix socket, a `tonic-web` layer on `asc serve`, a new spike S13 for the JVM pipe, a fallback 127.0.0.1 daemon listener with a `$ASC_HOME/run/ipc-token`, and budgets of 300 ms activation and 150 MiB. This section replaces all of that: one `asc api --stdio` bridge per IDE process (§24.2), so neither Node nor the JVM touches the pipe and the daemon opens no TCP listener; the browser reaches asc through the Forgejo proxy P04 (gRPC-Web to the browser, plain gRPC to `asc serve`; no `tonic-web`); directories are `packages/` and `plugins/`; the budgets are those of §24.4.10. The audit's S13 is not created (S13 is the branchless spike, §19). The audit's rule "never dirty a tracked file" is not adopted: ASC checks `git.enabled: false` into `.vscode/settings.json` after a one-time prompt (IP-D6).
+3. **A1 (contradiction with §20.6, resolved):** the research file adds `WsStacksResponse.stacks[].behind_trunk`, but `WsStack.behind` (field 3, `asc sl --json` "behind") already exists. No field is added; A1 defines `behind` as the count of trunk commits not in the stack base, capped at 999. The status bar `↓N` reads `WsStack.behind`, not `WsStatusResponse.behind` (which compares the HEAD ref with its upstream and is empty in branchless mode).
+4. **`stack get --worktree` (contradiction with §20.7, resolved):** the research allowlist typed `--worktree` as a boolean, but §20.7 gives it a path argument (`--worktree <path>`). The allowlist entry is `"--worktree": "path"`, a path inside the opened root's parent after canonicalisation; the plugin passes the path it chose.
+5. **A4 (gap in §12A, resolved):** `[targets.*]` in `.asc/projects.toml` define inputs only, so there was no source for a target's argv. A4 adds an optional per-project `argv` table. asc stores and serves it and never runs it, which keeps `asc run` out of scope.
+6. **Create under a non-branchless repo:** IP-D7 says the primary action is `asc create --no-branch`. §20.7 makes `--no-branch` the default only in branchless mode, so the plugin passes `--no-branch` only when `Hello` reports branchless; otherwise it runs plain `asc create`, and the branch template names a branch as the user configured.
+7. **Dependencies added at the fold:** P57 (A1, A2, A4) and P58 (A6) own the API hunks that the research file left to unnamed owners (§24.8.1 amendments table). P17 depends on P57 (minimap data), P32 on P57 (target argv) and P31b on P58 (inbox count). Hunks in the built U41 files are made by the follow-up unit P57, never by editing U41's brief.
+8. **Alias and argument-frame owners:** the research file left "CLI alias resolution" without an owner. It is U20's `dispatch.rs`; the `--end-of-options` hunk (A7) is in U20's `cli/common.rs`; both are made by P01b.
+9. **MCP (consistent, one sentence added):** the plugins register `asc mcp` and `/api/mcp` and never `/mcp` (§22.2 placement rule). IDE MCP clients register through the same OAuth path as other clients; spike P50 decides whether the `asc-mcp` public client of M26 covers them or a second public client is needed. The `asc-ide` token (`write:repository`) is never handed to an agent channel (§22.9 note added).
+10. **Hydration references:** the research file cites "SPEC line 1284" and "SPEC 5a"; they are §10.2 item 5 and item 5a. Its cite of `codeintel.md:207` is §23.4.1 (`Version.features` has `search.v1`).
+11. **Old wording rewritten:** every statement of "no IDE support" in SPEC, PLAN and `stacks.md` now says that the IDEs' built-in git is not supported and ASC-built plugins are; the full `.git` projection stays out of scope. The `[audit: user decision No-IDE]` tags stay, because they name the history of the decision.
+12. **Related designs:** `docs/research/stacks.md` (rows that marked IDE UI as OUT are corrected), `docs/research/mcp.md` (placement rule and M26 note), `docs/research/codeintel.md` (the plugins call `CodeIntel` through the bridge; `Hello.features` mirrors `Version.features`' `search.v1`) and `docs/research/branchless.md` (BD1–BD3 are the basis of IP-D7; the cloud status item and `Watch KIND_CLOUD` are §21.3).
+
+---
+
 ## Appendix A. Judge flaws and how they are fixed
 
 | Flaw (judge) | Fix |
@@ -3851,3 +4574,16 @@ Required tests beyond each acceptance command:
 | codeintel.md I09 (keep or bypass `onig`) | §23.6 and §23.12 ruling 1: keep; bypass only if the Windows build fails |
 | `Fork`/`CopyClosure` copy only "the reachable closure" (§3.3) | §3.3 states the content closure only, never derived index data; test in I15 |
 | spec edits of codeintel.md §10 | §3.3, §5, §7, §8.1 (`[codeintel]`, `--role indexer`), §8.2 (`ci_*`), §9.1, §11.2, §13.3 (I23–I26), §15.2, §15.5, §16.1, §16.3 (`codeintel` class), §16.4, §18 (phases 4c, 4c-MCP, 5c, 9c), §22.3.2 pointers |
+
+**Round-8 fold (v1.8)** (changelog: v1.8 folds `docs/research/ide-plugins.md` into §24 and the sections it amends)
+
+| Gap | Fix |
+|---|---|
+| ide-plugins-unspecified-and-contradicted, checklist-ide-plugins-missing | New §24 (IP-D1–IP-D15; layout, bridge protocol, feature matrix, VS Code, JetBrains, auth and offline, testing, units and API additions, risks, rulings), §0 decision 16, §1 rows; PLAN §P units P01a–P58 (the audit's IP01–IP08 proposal is superseded, §24.10) |
+| §20 fixed rules and stacks.md: "there is no IDE extension" | §20 and stacks.md now say that GitLens/GitKraken-style features are data APIs rendered by ASC's IDE plugins (§24) and the Forgejo fork; the stacks.md GitKraken row keeps its OUT status for GitKraken desktop features only |
+| "No IDE support" wording (v1.1 decision (3), principle 6, §0 out-of-scope, §1, §21 fixed rules) | The IDEs' built-in git is not supported and ASC-built plugins are; the full `.git` projection stays out of scope. The `[audit: user decision No-IDE]` tags stay as history |
+| research A1 `behind_trunk` versus §20.6 `WsStack.behind` | No new field; `behind` is defined as the capped count of trunk commits not in the stack base (§24.8.2 A1) |
+| research allowlist `stack get --worktree` as a boolean versus §20.7 `--worktree <path>` | The allowlist types it as a path (§24.10 ruling 4) |
+| research A4 `targets[].argv` with no source in §12A | An optional per-project `argv` table in `.asc/projects.toml`; asc never runs it (§12A.8, §24.8.2) |
+| IP-D7 `create --no-branch` versus §20.7 (implied only in branchless mode) | The plugin passes `--no-branch` only when `Hello` reports branchless mode (§24.10 ruling 6) |
+| spec edits of ide-plugins.md §9 | §7 (`bridge.proto`, `Workspace.ReadFile`), §9.1, §11.2 (`asc api --stdio`, `reorder --todo`, `split --hunks`, the P45 `--json` forms, `ASC_NO_ALIASES`), §12A.8, §13.3 (P04–P07, P58), §16.4, §17, §18 (phases 5p, 9p, 10, 10j), §19, §20, §20.6, §21, §22 |
