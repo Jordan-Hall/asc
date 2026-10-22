@@ -142,3 +142,11 @@ Scion's efficiency model is the core of asc, not an optional later step. The fol
 - **Metrics:** wall time p50/p95, bytes transferred, bytes on disk, peak RSS, files hydrated and server CPU.
 - **Gate:** asc must beat git on every scenario where Scion's model applies: clone, worktree, switch, CI checkout, merge-base, blame, log, disk and transfer. It must be within 10% elsewhere, such as hot local `diff` or `status`. CI fails on regression against the stored baseline.
 - **Results are published** to `docs/BENCHMARKS.md`: a table for each release with the git version, machine spec and reproduction commands.
+
+## Checkout speed: small and HUGE monorepos (user requirement, 2026-10-22)
+- **Benchmark tiers for checkout** (clone, `worktree add`, `switch`, CI checkout), against git's best options each time: full, `--filter=blob:none`, `--depth 1`, sparse-checkout, and scalar where it applies.
+  - **Small:** monorepo, about 4.5k files.
+  - **Medium:** about 80k files and 1M commits, imported from a public repo such as the linux kernel.
+  - **HUGE:** chromium-scale, at least 400k files and a 25+ GB working copy. Use a synthetic generator (`bench/gen`): a deterministic repo with configurable files, depth, size distribution, history length and churn, including 1M-file and 100 GB variants. Optionally also import a chromium snapshot.
+- **Measured:** time to first usable shell, time to first build, bytes transferred, bytes on disk, files hydrated and peak RSS, both cold (empty machine cache) and warm (seed snapshot or shared cache).
+- **Goal, following Scion:** HUGE-repo virtual checkout in seconds, independent of repo size. Cost must scale with the files read, not the files in the repo. The `worktree add` cost must not depend on repo size.
