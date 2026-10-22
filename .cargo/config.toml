@@ -3,3 +3,16 @@ rustflags = []
 
 [term]
 color = "auto"
+
+# Keep target/ small: line tables for our crates (backtraces keep file:line), no debug info
+# for dependencies, and no incremental cache (it was most of target/ with many parallel builds).
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
