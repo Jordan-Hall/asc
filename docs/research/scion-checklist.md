@@ -164,3 +164,10 @@ asc has no LFS support.
 - Git commands keep git semantics. Stack commands are additive (new verbs) and never change what an existing git command does.
 - The Forgejo fork supports stacked PRs natively: the PR base is the parent in the stack, it is retargeted automatically when the parent merges, the review UI is stack-aware, and the stack lands through the merge queue.
 - Design: docs/research/stacks.md (pending).
+- The Forgejo fork gets the same features in its web UI, rendered from asc server derived data:
+  - stacked PR pages (stack navigator, per-change review, retarget, and stack merge through the queue);
+  - a commit graph view and blame/file history;
+  - a Launchpad-style PR triage inbox;
+  - branch and stack comparison;
+  - undo-aware operations.
+- Each feature must be designed for both surfaces: the CLI/API, and the Forgejo fork's UI and API.
