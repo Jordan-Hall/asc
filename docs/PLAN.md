@@ -5,30 +5,47 @@ Normative design: `docs/SPEC.md`. This file orders the work into **implementatio
 **Rules for implementers (people or agents)**
 
 - Agents run at effort ≤ medium. Read the SPEC sections cited in the brief before coding; do not re-decide anything the SPEC fixes.
+- **Read `docs/CARRY.md` before every unit [audit: u01-v11-delta-unowned].** Units U01–U12 and U14 are built (U01–U10 as v1.0 code, updated by CARRY.md); U15 is in progress. Their v1.1–v1.3 deltas are U01b and the CARRY items [audit: status-stale-u11-u12-u14-built].
 - Strong types: every id is a newtype; no `String` for paths or refs past the CLI boundary; errors via `thiserror` per crate, `anyhow` only in `crates/asc/src/main.rs`.
-- No `unsafe` outside `asc-vfs::projfs::ffi` and `asc-vfs::fuse::passthrough`.
+- No `unsafe` outside `asc-vfs::projfs::ffi` (which also wraps the `CreateFileW` that U57 uses), `asc-vfs::fuse::passthrough`, `asc-rpc::ipc` (Windows DACL only) and `asc::shim` (Windows console control handler only). Each starts with `#![allow(unsafe_code)]` or carries it on the specific item; the workspace lint is `unsafe_code = "deny"` (SPEC §15.2). U16a uses `same-file` for file identity, and U53c registers the logon task with `schtasks.exe /Create /XML` (no COM) [audit: unsafe-forbid-and-allowlist].
 - Tests live next to the code (`#[cfg(test)]`) or in the unit's owned `tests/` files. Integration tests needing Docker, ProjFS, FUSE, turbo or ASC's repo are `#[ignore]` and gated behind the features named in the acceptance command.
-- Pinned dependency versions are in SPEC §3/§4 and `docs/research/rust-stack.md` §10. Add each dependency to `[workspace.dependencies]` in U01 only; units reference `workspace = true`.
+- Pinned dependency versions are in SPEC §3/§4 and `docs/research/rust-stack.md` §10. Dependencies are pinned once in `[workspace.dependencies]` and units reference `workspace = true`. A unit that needs a crate not yet pinned may add exactly one exact-version line per crate to `[workspace.dependencies]`; this is allowed like the `mod` registration. The crate must pass `cargo deny` [audit: workspace-deps-rule-blocks-later-units].
+- **SPEC v1.1–v1.3 user decisions are fixed:** default branch `master` (never `main`); git-identical CLI and the `git` shim; **no IDE git plumbing** (no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`); the built-in project graph; Scion-core efficiency budgets; stacked changes and stacked PRs as additive verbs (SPEC §20; units C01–C52). Do not reintroduce removed mechanisms.
+- **Running git:** every git child process goes through `asc_git::realgit::RealGit::command()` (SPEC §11.4). `Command::new("git")` is forbidden outside test fixtures of crates below asc-git (marker `lint:allow-raw-git`); U01b's `no-raw-git.sh` fails on it [audit: no-raw-git-lint-fails-built-code].
+- **Acceptance before U25 [audit: cli-unit-acceptance-uses-sibling-commands]:** an acceptance test may run only CLI commands owned by the unit itself or by a declared dependency. Fixtures are built with `crates/asc/tests/support/mod.rs` (owned by U20: engine/state builders for repos, commits, branches and staging) or with real git through `RealGit`.
+- **Trust boundaries (SPEC §15.4) are fixed.** More validation of a trusted component needs a SPEC change, not a unit-level decision.
+- **Compatibility:** every CLI unit declares the flags, placeholders and atoms it implements as `pub const NATIVE: &[NativeSpec]` in its own `cli/<cmd>.rs` (the native table in `crates/asc/src/native.rs`, owned by U20, collects them), and adds compat cases under `tests/compat/scenarios/<cmd>-*.t` (SPEC §17.1).
+- **Stubs and extension points [audit: ownership-violations-extension-points]:**
+  - U20 creates one file per command in SPEC §11.2 and §12A.9, `crates/asc/src/cli/<cmd>.rs`, each holding the clap `Args` struct and `pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode>` that returns "not supported yet" (exit 129). `cli/mod.rs` only lists them and is never edited after U20. The implementing unit owns and replaces its stub file (and its `native_<cmd>.rs` registration). The `asc ci` stub is `crates/asc/src/cli/ci/mod.rs` (there is no `cli/ci.rs`); U62 replaces it [audit: unowned-cli-commands].
+  - U20 also defines these traits in `crates/asc/src/ext.rs`, each with a no-op or local default, selected in `Ctx::open` from a registry of `OnceLock<Box<dyn …>>` setters: `SyntheticIndexSink { on_commit, on_head_moved }` (U36 → `crates/asc/src/index_sink.rs`); `HistorySelector -> (Arc<dyn HistoryApi>, Arc<dyn BlameApi>)` (U50 → `crates/asc/src/remote/server.rs`); `ProjectsSelector -> Arc<dyn ProjectsApi>` (G10 → `crates/asc/src/remote/projects.rs`) [audit: historyapi-impl-split]; `RefTxnHook { prepared, committed, aborted }` (U22 → `crates/asc/src/hooks_runner.rs`) [audit: hooks-must-vs-list]; `WorkspaceFactory { plain | virtual, convert_plain(ws) }` (U53a → `crates/asc/src/daemon/workspace_factory.rs`; the default `convert_plain` is a no-op for plain workspaces and "not supported yet" for virtual ones) [audit: worktree-convert-plain-unowned]; `RewriteSink { fn on_rewrite(&self, old: ChangesetId, new: ChangesetId, op: OpId) }` and `OpSink { fn begin(&self, argv: &[OsString]) -> OpId; fn end(&self, op: OpId); fn snapshot_wc(&self) }` (C04 → `crates/asc/src/stack/sinks.rs`; SPEC §20.3) [audit: stacks-design-not-folded]; `StoreStackSelector -> Arc<dyn Objects>`, default `Tiered<StoreSet, NoRemote>` (U62 → `crates/asc/src/ci_tiers.rs`; SPEC §3.5 `asc.cache.*`) [audit: ci-tier-stack-config-undefined-unowned]. `SyntheticIndexSink` also has `on_stage_changed(ws, paths)`, called after every change to stage set 0 (SPEC §9.4) [audit: turbo-index-reflects-head-breaks-staged-contract].
+  - **Local ref updates [audit: local-ref-update-chokepoint]:** `Ctx::update_local_refs(txn: RefTxn, reflog_msg)` (U20) is the only way CLI code moves a local ref (SPEC §9.4.1). It runs `ext::RefTxnHook` (prepared → CAS → committed | aborted), appends the reflog, calls `OpSink`/`RewriteSink` bookkeeping, and calls `ext::SyntheticIndexSink::on_head_moved` when HEAD's commit changes. Every CLI unit that moves a ref (commit, branch, tag, reset, update-ref, merge, cherry-pick, revert, rebase, bisect, stash, fetch/push/pull remote-tracking updates, `worktree add -b`, stack verbs) calls it.
+  - **Server extension points [audit: asc-serve-no-handler-or-route-extension-points]:** U42's `RepoHandlers` (one `Arc<dyn …>` per RPC group) and U43a's `HttpRoutes` and `GrpcServices` registries are filled by one registration line per unit in `crates/asc-serve/src/lib.rs` (U43b, U45, U47, U48a–U48d, U49, U66, U67, U68, U70, U72, U75, G09, C18–C22, C29, C30a–C30d, C50), which the general exception allows.
+  - **Recorded amendments (stacks):** a few C units make one named hunk in a file another unit owns (table in §C). The hunk is listed in the C unit's brief and is allowed like the `mod` registration.
+  - **Child processes [audit: hook-child-path-real-git]:** every spawn of a hook, alias, editor, driver, `rebase --exec`, `bisect run` or `git-<name>`/`asc-<name>` external command goes through `asc::child::command()` (U20, `crates/asc/src/child.rs`), which applies SPEC §9.4.1's child PATH. Only `RealGit` children bypass it. Registering an implementation is one line in `main.rs`, which the general exception allows.
 
 **Workspace layout (fixed by U01)**
 
 ```
 Cargo.toml  rust-toolchain.toml  deny.toml  .cargo/config.toml  docker-compose.it.yml
-proto/asc/v1/{repo,workspace}.proto   proto/buf.yaml   proto/buf.gen.yaml
+proto/asc/v1/{repo,workspace,projects,changes}.proto   proto/buf.yaml   proto/buf.gen.yaml   (changes.proto: C17)
 crates/asc-core     pure data model, codec, git rendering, content ingest
 crates/asc-store    Objects/Refs traits, bucket, cache dir, tiered, SQL refs, bucket refs, GC
-crates/asc-engine   trees, commits, revspec, graph, derive, diff, merge, rebase, land, blame, sync
-crates/asc-git      index, odb, projection, import, export, remote helper, git-remote mode
-crates/asc-rpc      proto codegen, conversions, gRPC server/client, auth interceptor, IPC transport
-crates/asc-wc       $ASC_HOME, state.db, workspaces, journal, status, switch planner, plain materialiser
+crates/asc-engine   trees, commits, revspec, graph, skip lists, derive, diff, merge, rebase, land, blame, sync, history, projects
+crates/asc-graph    pure project graph: model, detectors (rust, python, dotnet, node), lockfiles, .asc/projects.toml, ownership, affected algebra
+crates/asc-state    $ASC_HOME, state.db (one migrator), staging rows, workspaces rows
+crates/asc-git      git index file, odb, RealGit, synthetic .git, import, export, git-remote mode
+crates/asc-rpc      proto codegen, conversions, gRPC server/client, auth interceptor, retry/limits/coalescing, IPC transport
+crates/asc-wc       workspaces, journal, status, switch planner, plain materialiser, worktrees
 crates/asc-vfs      provider core, ProjFS (cfg windows), FUSE (cfg linux), submodule composition
-crates/asc-serve    asc serve: registry, ingest, UpdateRefs, outbox, Forgejo client, mirror, land, reads, mutations, /v8
-crates/asc-ci       asc ci checkout/affected/changed/warm
-crates/asc          the binary: CLI, daemon, argv[0] dispatch (asc, git-remote-asc, asc-fsmonitor)
-tests/turbo/       turbo contract suite        actions/       composite actions        deploy/   compose bundle
+crates/asc-serve    asc serve: registry, ingest, UpdateRefs, outbox, Forgejo client, mirror, land, reads, mutations, indexes, /v8, cache role, seeds, Projects
+crates/asc-ci       asc ci checkout/affected/changed/warm/cache/artifact
+crates/asc-sim      hermetic simulation (test-only)
+crates/asc          the binary: CLI, daemon, argv[0] dispatch (asc, git shim), stack verbs (src/stack/, C units)
+fuzz/              cargo-fuzz targets          bench/          git-vs-asc benchmark harness and repo generator
+tests/turbo/       turbo contract suite        tests/compat/   git compatibility suite        actions/   composite actions        deploy/   compose bundle
 ```
 
-Dependency direction (strict): `asc-core ← asc-store ← asc-engine ← asc-git ← asc-wc ← asc-vfs ← asc`; `asc-rpc` depends on `asc-engine`; `asc-serve` on `asc-rpc`, `asc-git`; `asc-ci` on `asc-wc`, `asc-git`, `asc-rpc`; `asc` on everything (features `serve`, `vfs-projfs`, `vfs-fuse`).
+Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**: `asc-core ← asc-graph ← asc-engine`; `asc-core ← asc-store ← asc-engine ← asc-state ← asc-git ← asc-wc ← asc-vfs ← asc`; `asc-rpc` depends on `asc-engine` (and implements `HistoryApi`, `BlameApi` and `ProjectsApi` remotely, SPEC §4.3); `asc-serve` on `asc-rpc`, `asc-git`, `asc-state`; `asc-ci` on `asc-wc`, `asc-git`, `asc-rpc`; `asc-sim` (dev only) on `asc-serve`; `asc` on everything (features `serve`, `vfs-projfs`, `vfs-fuse`).
 
 **Parallelism notation:** units in the same `‖ group` have disjoint files and no dependency on each other, so they can run concurrently once their dependencies are done.
 
@@ -38,90 +55,213 @@ Dependency direction (strict): `asc-core ← asc-store ← asc-engine ← asc-gi
 
 | ID | Title | Crate | Depends on | ‖ group |
 |---|---|---|---|---|
-| U01 | Workspace skeleton | all | – | – |
+| U01 | Workspace skeleton (built, v1.0) | all | – | – |
+| U01b | Skeleton delta for v1.1/v1.2 | all | U01 | A |
 | U02 | Typed ids | asc-core | U01 | A |
 | U03 | Names and paths | asc-core | U01 | A |
+| U16a | RealGit resolution | asc-git | U01 | A |
 | U04 | Objects and canonical codec | asc-core | U02, U03 | – |
 | U05 | Git object rendering | asc-core | U04 | B |
 | U06 | Content ingest and chunking | asc-core | U02 | B |
+| G01 | Graph model, canon, patterns, selectors, config | asc-graph | U03, U04, U01b | B |
 | U07 | Objects trait, keys, bucket (memory/fs) | asc-store | U04, U06 | C |
 | U09 | Refs trait and SqlRefs | asc-store | U04 | C |
-| U08 | CacheDir, StoreSet, Tiered | asc-store | U07 | – |
-| U10 | Tree apply/diff | asc-engine | U05, U08 | – |
-| U11 | Changeset build and validation | asc-engine | U10 | – |
-| U12 | Commit graph and log | asc-engine | U11, U09 | D |
-| U14 | Derived data (gen, gitcommit) | asc-engine | U11, U05 | D |
-| U15 | Line diff and output formats | asc-engine | U10 | D |
-| U13 | Revspec resolution | asc-engine | U12, U14 | – |
-| U16 | Git index and ODB access | asc-git | U05, U06 | D |
-| U17 | $ASC_HOME and state.db | asc-wc | U09 | D |
-| U19 | Projection layout and config | asc-git | U16, U17 | – |
-| U18 | Plain working copy | asc-wc | U16, U17, U10 | – |
-| U20 | CLI frame, init, config | asc | U13, U18, U19 | – |
-| U21 | CLI status/add/rm/mv/restore/reset | asc | U20, U15 | E |
-| U22 | CLI commit | asc | U20, U14 | E |
-| U23 | CLI branch/switch/checkout/tag | asc | U20 | E |
-| U24 | CLI history and plumbing verbs | asc | U20, U15 | E |
-| U25 | Scenario harness, local-only milestone | asc | U21–U24 | – |
-| U26 | Merge, rebase, cherry-pick, land check | asc-engine | U15, U13 | F |
-| U28 | Blame engine and CLI | asc-engine, asc | U25, U15 | F |
-| U27 | CLI merge/rebase/cherry-pick/revert/stash | asc | U25, U26 | – |
-| U29 | S3 bucket objects and put fallback | asc-store | U07 | G |
-| U30 | BucketRefs and probe | asc-store | U07, U09 | G |
-| U31 | Sync engine (push/fetch) | asc-engine | U08, U09, U14 | G |
-| U32 | CLI remote/fetch/push/pull/clone (bucket remotes) | asc | U27, U29–U31 | – |
-| U33 | Git import | asc-git | U14, U16 | H |
-| U34 | Git export | asc-git | U14, U16 | H |
-| U35 | ASC round-trip milestone | asc-git | U33, U34 | – |
-| U36 | Projection objects and refs mirror | asc-git | U19, U34 | – |
-| U37 | Hooks dispatcher and reconcile | asc-git, asc | U36, U33, U22 | I |
-| U38 | git-remote-asc helper | asc-git, asc | U36, U31 | I |
-| U39 | Git-remote mode | asc-git, asc | U32, U33, U34, U36 | – |
-| U40 | fsmonitor, doctor, reclaimable report | asc | U39 | – |
 | U41 | Proto and conversions | asc-rpc | U04 | J (may start after U04) |
-| U42 | gRPC server/client, auth interceptor | asc-rpc | U41, U31, U26, U28 | – |
-| U43 | Server core: registry, ingest, UpdateRefs, outbox | asc-serve | U42, U34 | – |
-| U44 | Forgejo client (authz, hooks) | asc-serve | U43 | K |
-| U47 | Decoded read RPCs | asc-serve | U43 | K |
-| U49 | Turbo /v8 cache | asc-serve | U43 | K |
+| U08 | CacheDir, StoreSet, Tiered | asc-store | U07 | – |
+| U16 | Git index file and ODB access | asc-git | U05, U06 | – |
+| U29 | S3 bucket objects and put fallback | asc-store | U07 | – |
+| G02 | Ownership, linking, affected algebra | asc-graph | G01 | – |
+| U10 | Tree apply/diff | asc-engine | U05, U08 | – |
+| G03 | Node detector and bun.lock | asc-graph | G02 | Q |
+| G04 | Rust detector and Cargo.lock | asc-graph | G02 | Q |
+| G05 | Python detector, uv.lock, requirements | asc-graph | G02 | Q |
+| G06 | .NET detector | asc-graph | G02 | Q |
+| U11 | Changeset build and validation | asc-engine | U10 | – |
+| U15 | Line diff and output formats | asc-engine | U10 | – |
+| U12 | Commit graph and log | asc-engine | U11, U09 | D |
+| U14 | Derived data (gen, gitcommit, DerivedKeyed) | asc-engine | U11, U05 | D |
+| U13 | Revspec resolution | asc-engine | U12, U14 | – |
+| U14b | Skip lists | asc-engine | U12, U14 | – |
+| U17 | $ASC_HOME and state.db (`asc-state`) | asc-state | U09, U14, U01b | – |
+| U28a | Blame engine | asc-engine | U15, U12, U14 | F |
+| U31 | Sync engine (push/fetch) and `HistoryApi` | asc-engine | U08, U09, U12, U14 | G |
+| U33 | Git import | asc-git | U14, U16 | H |
+| U34 | Git export | asc-git | U14, U16, U16a | H |
+| G07 | Project graph engine integration | asc-engine | U10, U14, G03–G06 | – |
+| U18 | Plain working copy | asc-wc | U16, U17, U10 | – |
+| U19 | Synthetic `.git` layout and config | asc-git | U16, U17 | – |
+| U26 | Merge, rebase, cherry-pick, land check | asc-engine | U15, U13 | F |
+| U35 | ASC round-trip milestone | asc-git | U33, U34 | – |
+| U20 | CLI frame, init, config, native table, messages, env | asc | U13, U18, U19, U16a | – |
+| U42 | gRPC server/client, auth interceptor | asc-rpc | U41, U31, U26, U28a | – |
+| U20a | git shim | asc | U20 | E |
+| U21a | CLI status | asc | U20, U15 | E |
+| U21b | CLI add/rm/mv | asc | U20 | E |
+| U21d | CLI restore/reset | asc | U20 | E |
+| U22 | CLI commit and hooks runner | asc | U20, U14 | E |
+| U23 | CLI branch/switch/checkout/tag | asc | U20, U24e | – |
+| U24a | CLI log/show (incl. `--graph`) | asc | U20, U15 | E |
+| U24c | CLI diff/diff-tree/diff-index | asc | U20, U15 | E |
+| U24d | CLI rev plumbing | asc | U20 | E |
+| U24e | CLI object and ref plumbing | asc | U20 | E |
+| U36 | Synthetic index export for turbo | asc-git, asc | U19, U20 | E |
+| U43a | Server config, schema, registry | asc-serve | U42, U34 | – |
+| U52 | IPC transport and Workspace service | asc-rpc | U42 | – |
+| U21c | CLI `add -p` | asc | U21b, U15 | – |
+| U43b | Server ingest and UpdateRefs | asc-serve | U43a | – |
+| U25 | Compatibility suite, local-only milestone | asc, tests | U20a, U21a–U21d, U22, U23, U24a, U24c–U24e | – |
+| U43c | Server outbox and HTTP | asc-serve | U43b | – |
+| U65 | Mainline and path index | asc-serve | U43b | – |
+| O01 | GC (two-mark, fenced) | asc-store, asc-serve | U43b | P |
+| U24b | CLI ignore/attr/grep/clean | asc | U25 | R |
+| U25a | Tool trace corpus | tests | U25 | R |
+| U27a | CLI merge/cherry-pick/revert | asc | U25, U26 | R |
+| U28b | CLI blame | asc | U25, U28a | R |
+| U37 | Hook and tool scenarios | tests | U22, U25, U36, U20a | R |
+| U54w | `asc worktree` (plain) and Claude Code hooks | asc-wc, asc | U23, U25 | R |
+| U54v | Journal, virtual status, switch intent, times | asc-wc | U25 | R |
+| G08 | CLI `affected`/`projects`/`graph` (local) | asc | U25, G07 | R |
+| U44 | Forgejo client (authz, hooks) | asc-serve | U43c | K |
+| U47 | Decoded read RPCs | asc-serve | U43c | K |
+| U49 | Turbo /v8 cache | asc-serve | U43c | K |
+| U69 | Admission control, retry, coalescing | asc-rpc, asc-serve | U43c, U42 | K |
+| U72 | Seed snapshots | asc-serve, asc | U43c, G07 | K |
+| U27b | Patches and bisect | asc-engine, asc | U27a | S |
+| U27c | CLI rebase (non-interactive) | asc | U27a | S |
+| U27e | CLI stash | asc | U27a | S |
+| U55 | VFS provider core | asc-vfs | U54v | – |
 | U45 | Mirror mode | asc-serve | U44, U33 | L |
-| U46 | Land | asc-serve | U44 | L |
-| U48 | Mutations and admin | asc-serve | U44, U47 | L |
-| U50 | CLI server wiring | asc | U42, U39, U46 | – |
-| U51 | Deploy bundle and smoke | deploy | U45–U50 | – |
-| U52 | IPC transport and Workspace service | asc-rpc | U42 | M |
-| U54 | Journal, virtual status, switch intent, worktrees | asc-wc | U25 | M |
-| U55 | VFS provider core | asc-vfs | U54 | – |
-| U53 | Daemon | asc | U52, U54, U55 | – |
+| U46 | Land | asc-serve | U44, U26 | L |
+| U67 | Classify | asc-engine, asc-serve | U15, U47 | L |
+| U70 | Cache role (`asc serve --role cache`) | asc-serve | U43c, U69 | L |
+| G09 | Projects service | asc-rpc, asc-serve | U43c, U47, G07 | L |
+| G11 | ASC affected validation | asc | U35, G08 | – |
+| U27d | CLI `rebase -i` | asc | U27c | – |
+| U32 | CLI remote/fetch/push/pull/clone (bucket remotes) | asc | U27a, U27c, U29, U31 | – |
+| U48a | Commit, Ingest and Apply RPCs | asc-serve | U44, U47, U27b | – |
+| U53a | Daemon lifecycle | asc | U52, U54v, U55 | – |
 | U56 | ProjFS binding and callbacks | asc-vfs | U55 | N |
 | U59 | FUSE provider | asc-vfs | U55 | N |
-| U57 | ProjFS switch, tombstones, reconcile, dehydration | asc-vfs | U56, U53 | – |
+| U60 | Submodule read-only composition | asc-vfs, asc-wc | U55, U18 | N |
+| U39 | Git-remote mode | asc-git, asc | U32, U33, U34, U16a | – |
+| U24f | CLI remaining plumbing and history verbs | asc | U25a, U26, U32 | – |
+| U48b | Merge styles and dry run | asc-serve | U48a | T |
+| U48c | CopyClosure and RepoAdmin | asc-serve | U48a | T |
+| U48d | ImportGitPush and expiry | asc-serve | U48a, U33 | T |
+| U53b | Daemon service and scheduler | asc | U53a | T |
+| U53c | Daemon OS service install | asc | U53a | T |
+| U40 | Doctor and reclaimable report | asc | U39, U20a | – |
+| U50 | CLI server wiring | asc | U42, U39, U46 | – |
+| U57 | ProjFS switch, tombstones, reconcile, dehydration | asc-vfs | U56, U53b | – |
+| U66 | Landing map and FindLanding | asc-serve, asc | U46, U48b, U65 | – |
+| U68 | Rebase RPC and land content merge | asc-serve | U46, U48b | – |
+| U73 | Plugin API (Workspace plugin RPCs) and `asc watch` | asc | U52, U53b, G07, U21a, U24a, U24c, U28b | – |
+| U40b | Operational verbs | asc | U40, U33, U34 | – |
+| U51 | Deploy bundle and smoke | deploy | U45–U50, U48a–U48d | – |
 | U58 | Windows virtual end-to-end | asc, tests | U57, U40 | – |
-| U60 | Submodule read-only composition | asc-vfs, asc-wc | U55, U18 | – |
-| U61 | Turbo contract suite | tests/turbo | U40 (plain), U58/U59 (virtual) | – |
-| U62 | asc ci checkout | asc-ci | U50 | O |
-| U63 | asc ci changed/affected/warm | asc-ci | U50 | O |
-| U64 | Actions and ASC workflows | actions | U62, U63, U49 | – |
-| K01–K16 | Forgejo fork | Go | see §K | own track |
-| O01 | GC (two-mark) | asc-store, asc-serve | U43 | P |
-| O02 | Release and distribution | release | U53 | P |
+| U61p | Turbo contract suite (plain) | tests/turbo | U40, U36 | – |
+| U62 | asc ci checkout | asc-ci | U50, U72 | O |
+| U71 | Metadata-first milestone (M-meta) | asc-serve | U45, U47, U65, G09 | – |
+| G10 | CLI affected: server path and `--repo` | asc | U50, G08, G09 | – |
+| U61v | Turbo contract suite (virtual) | tests/turbo | U58 | – |
+| U63 | asc ci changed/affected/warm | asc-ci | U50, G10 | O |
+| U75 | asc ci cache/artifact (Actions fork backend) | asc-ci, asc-serve | U62, U49, O01 | – |
+| U64 | Actions, ASC Actions fork and ASC workflows | actions | U62, U63, U49, U72, U75 | – |
+| U30 | BucketRefs and probe (deferred, off the critical path) | asc-store | U29 | P |
+| U38 | *(removed: `git-remote-asc` is not built, SPEC §9.6)* | – | – | – |
+| C01 | `ChangeId`, content-addressed `ChangeMeta`, display, import derivation | asc-core | U04 | – |
+| C02 | Local change index and rewrite recording | asc-state, asc-engine | C01, U17, U26 | CA |
+| C03 | Operation log store, pruning, argv redaction | asc-state | U17, U09 | CA |
+| C04 | `RewriteSink`/`OpSink` implementations for git commands (ids, op log, pre-destroy snapshots; invisible) | asc | C02, C03, U20, U21d, U22, U23, U27a, U27c, U27d, U27e, U32 | – |
+| C05 | Stack model and revset subset (`-r/--revset` only) | asc-engine | C02, U13, U14b | – |
+| C06 | In-memory restack planner and executor (with re-signing) | asc-engine | C05, U26 | – |
+| C07 | Stack CLI frame, the D5 precedence hook-up, `--json` types | asc | C05, U20, U20a | – |
+| C08 | `asc sl`, `asc stack info\|parent\|children\|trunk`, `asc change-id` | asc | C07, U24a | CB |
+| C09 | Navigation `up/down/top/bottom/next/prev` (exit 2 at a fork) | asc | C07, U23 | CB |
+| C10 | `asc restack`, `asc continue`, `asc abort` | asc | C06, C07, U27c | – |
+| C11 | `asc create`, `asc modify`, `asc reword` (hooks) | asc | C10, U22 | CC |
+| C12 | `asc absorb` | asc-engine, asc | C10, U21c, U28a | CC |
+| C13 | `asc split`, `asc squash`, `asc fold` | asc | C10, U21c | CC |
+| C14 | `asc move`, `asc reorder`, `asc stack rename\|delete\|pop` | asc | C10, U27d | CC |
+| C15 | `asc undo/redo/op` | asc | C03, C04, C07, U23 | – |
+| C16 | *(withdrawn: opt-in `restackOnRewrite`, SPEC §20.1 D4)* | – | – | – |
+| C17 | Proto: `changes.proto` and conversions, plus the `repo.proto` amendment | asc-rpc | C01, U41 | – |
+| C18 | Server change index, `m/` ingest and validation, versions, GC roots | asc-serve | C17, U43b, U66 | – |
+| C19 | `ResolveChanges`, `Stack`, `Versions`, `SetReviewState` | asc-serve | C18, U47 | – |
+| C20 | `InterDiff` | asc-engine, asc-serve | C19, U26 | CD |
+| C21 | `Mergeability` (one row per head), `Overlaps`, `open_paths` | asc-serve | C19, U65 | CD |
+| C22 | `RestackChanges` (actor committer, one timestamp per call) | asc-serve | C19, U68 | CD |
+| C23 | Client transport of change metadata (push closure `m/`, fetch `LogEntry.change/meta`) | asc-engine | C02, C17, U31 | – |
+| C24 | `asc submit` | asc | C19, C23, U32, U50, U44 | CD |
+| C25 | `asc sync` (with the Stage 0 fallback) | asc | C10, C19, C23, U32, U39, U66 | CD |
+| C26 | `asc stack get\|freeze\|unfreeze` (`--worktree` opens a plain worktree) | asc | C19, C23, U54w | CD |
+| C27 | `asc evolog`, `asc interdiff` | asc | C20, C07 | – |
+| C28 | `asc stack merge` (calls `Changes.RequestMerge`) | asc | C24, C50 | – |
+| C29 | `CommitGraph` RPC with capped lanes, `diffstat.v1` | asc-engine, asc-serve | U47, U14, U15 | CE |
+| C30a | `LineHistory` RPC with scan budget | asc-engine, asc-serve | U47, U65 | CE |
+| C30b | `Compare` RPC | asc-engine, asc-serve | U47, U65 | CE |
+| C30c | Pickaxe `Log` (path required, scan budget) | asc-engine, asc-serve | U47, U65 | CE |
+| C30d | `RepoConfig` RPC (autolinks, `review.toml` at a rev) | asc-serve | U47 | CE |
+| C31 | Workspace plugin additions (SPEC §20.6) | asc | U73, C08, C29, C30a, C30b, C30c, C30d | – |
+| C32 | `asc share` (rooted by `refs/snapshots/<id>` with expiry) | asc | C23, U48a | – |
+| C33 | `asc stack exec` (v1.x) | asc | C06, U54w | – |
+| C34 | PR ↔ change, `stack_parent_id`, the `merge_base` rule and its recomputation patch, AGit lookup by change, update authorisation | forgejo | K09, K12, K17, C19 | own track (after K17) |
+| C35 | `SetReviewState` notifier on PR, review and check events | forgejo | C34 | ASC |
+| C36 | Stack panel, needs-restack banner, mid-stack merge block (web and `POST /pulls/{n}/merge`) | forgejo | C34 | ASC |
+| C37 | Versions dropdown, interdiff, since-last-review | forgejo | C34, C20 | ASC |
+| C38 | Merge stack (N), post-merge `RestackChanges`, approvals kept | forgejo | C36, C22 | – |
+| C39 | Stack queue: merge-when-ready cascade, order, pause, revalidate, the `RequestMerge` internal endpoint | forgejo | C38, C50, C52 | – |
+| C40 | Actions stack context (K14 extension) | forgejo | C34, K14 | ASC |
+| C41a | Inbox state model (whose turn, pin, snooze) | forgejo | C35 | – |
+| C41b | Inbox API `GET /api/v1/user/asc/inbox` | forgejo | C41a | – |
+| C41c | Inbox page | forgejo | C41b | – |
+| C42 | Commit graph page over `CommitGraph` | forgejo | C29, K10 | – |
+| C43 | Overlap and mergeability badges, stack compare view | forgejo | C21, C30b, C36 | – |
+| C44 | Suggested changesets (v1.x) | forgejo, asc-serve | C37, U48a | – |
+| C45 | Git import writes `ChangeMeta` (jj header, Gerrit trailer, scoped id) | asc-git | C01, C02, U33 | – |
+| C46 | Branch-chain PR retarget (SPEC §20.5 flow 6) | forgejo | C34 | ASC |
+| C47 | "Restore version" (moves `refs/pull/<n>/head` to a kept version) | forgejo | C37 | – |
+| C48 | "Revert landed stack" (`Apply(REVERT)` over `FindLanding`, newest first) | forgejo | C38, U66 | – |
+| C49 | `Watch KIND_STACK` events (server emit, client delivery) | asc-serve, asc | C19, C02, U73 | CD |
+| C50 | `RequestMerge` RPC (proxies to the forge's queue) | asc-serve | C19, U46 | CD |
+| C51 | `asc uncommit`, `asc unamend`, `asc abandon` | asc | C10, C11 | – |
+| C52 | Server `LAND_NO_CONTENT_MERGE` flag | asc-serve | U46, U48b, U68, C17 | – |
+| K01–K17 | Forgejo fork | Go | see §K | own track |
+| R01–R02 | Runner fork | Go | see §K | own track |
+| A01 | `asc/actions` mirror | actions | U64 | own track |
+| O02 | Release and distribution | release | U53c, U20a | P |
 | O03 | Migration runbook and admin verify | asc-serve, docs | U45, K09 | P |
-| O04 | Developer docs and cheat sheet | docs, asc | U40 | P |
-| O05 | Benchmarks | asc-bench | U58 | P |
+| O04 | Developer docs and cheat sheet | docs, asc | U40, U54w | P |
+| O05 | Benchmark gate (git vs asc) | bench | U58, G08, U62 | P |
+| O06 | Observability catalogue | asc, deploy, docs | U43c, U53b, U63 | P |
+| O07 | Fuzz targets | fuzz | U04, U05, U13, U16, U41, U48a, G03–G06 | P |
+| O08 | Simulation harness | asc-sim | U46, U48d, O01, U65, U70, U01b | P |
 
-Critical path to the **local-only milestone (U25)**: U01 → U02/U03 → U04 → U05/U06 → U07/U09 → U08 → U10 → U11 → U12/U14/U15/U16/U17 → U13 → U18/U19 → U20 → U21–U24 → U25.
-Critical path to **disk relief on Windows (U58)**: U25 → U27 → U32 → U33/U34 → U36 → U39 → U40 → U54 → U55 → U53 → U56 → U57 → U58.
-The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a Go engineer is available. K06 needs U41.
+Unit ids keep their v1.0 numbers; split units carry letter suffixes, and new units continue the numbering (U65–U75, G01–G11, O06–O08, K17, R01–R02, A01; round 2 adds U01b and U24f). Round 3 adds the stack track C01–C52 (stacks.md's S01–S52, renamed so they cannot be confused with the spikes S1–S12; C16 is withdrawn). There is no U74. U01–U12 and U14 are built; U15 is in progress; everything else is to do.
+
+Critical path to the **local-only milestone (U25)**: U01 → U02/U03 → U04 → U05/U06 → U07/U09 → U08 → U10 → U11 → U12/U14 → U13/U17 → U18/U19 → U20 → U20a, U21–U24 → U25. Cheap plain worktrees (U54w) follow immediately.
+Critical path to **disk relief on Windows (U58)**: U25 → U27a → U27c → U32 → U39 → U40, and U25 → U54v → U55 → U53a → U53b → U56/U57 → U58.
+Critical path to **native affected (local)**: U04 → G01 → G02 → G03–G06 → G07 (needs U14) → G08 (needs U25). The feature works in local-only and bucket modes from phase 1 on, before any server exists.
+Critical path to **M-meta (U71)**: U42 → U43a → U43b → U43c → U44/U47 → U45 → U71, with U65 and G09 (`FindLanding` follows with U66).
+The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a Go engineer is available. K06 needs U41 and U43c.
+Critical path to **local stacks (phase 1c)**: U20 (`ext.rs` sinks) → U17/U26 → C01 → C02 → C05 → C06/C07 → C10 (needs U27c) → C11–C14, C51; C04 (after U27d, U27e, U32) → C15. The S-track of stacks.md is this C-track.
+Critical path to **stacked PRs**: C17 → C18 (needs U43b, U66) → C19 (needs U47) → C22 (needs U68), C24 (needs U50), C50 → C28; Forgejo C34 (after K17) → C36 → C38 → C39.
 
 ---
 
 ## Phase 1: local-only asc (no VFS, no network)
 
 ### U01 Workspace skeleton
+- **Status:** built (v1.0). Its v1.1/v1.2 delta is U01b; do not rerun it.
 - **Crate:** all. **Owns:** `Cargo.toml`, `rust-toolchain.toml` (`1.95.0`, components rustfmt, clippy), `deny.toml`, `.cargo/config.toml`, `docker-compose.it.yml` (MinIO, Garage, Postgres), `crates/*/Cargo.toml`, `crates/*/src/lib.rs` (empty), `crates/asc/src/main.rs` (prints version), `proto/buf.yaml`, `proto/buf.gen.yaml`, `.forgejo/workflows/asc-ci.yml`, `.gitignore`, `LICENSE-MIT`, `LICENSE-APACHE`.
 - **Depends:** –
 - **Accept:** `cargo clippy --workspace --all-targets -- -D warnings && cargo deny check && cargo run -p asc -- --version`
-- **Brief:** Edition 2024, `rust-version = "1.95"`, license `MIT OR Apache-2.0`. `[workspace.dependencies]` exactly as `rust-stack.md` §10, plus `gix-index`/`gix-merge` (same gix family pin), `async-trait`, `uuid` (v7), `base64`, `regex`, `globset`, `filetime`, `sha2`. Crate features on `asc`: `default = ["serve", "vfs-projfs", "vfs-fuse"]`, each forwarding to the owning crate; `vfs-projfs` is target-gated to Windows and `vfs-fuse` to Linux. CI workflow runs fmt, clippy, deny and `cargo test --workspace` on Linux and Windows. `deny.toml` denies GPL/AGPL/LGPL and unknown registries.
+- **Brief:** Edition 2024, `rust-version = "1.95"`, license `MIT OR Apache-2.0`. `[workspace.dependencies]` exactly as `rust-stack.md` §10. `deny.toml` denies GPL/AGPL/LGPL and unknown registries.
+
+### U01b Skeleton delta for v1.1–v1.3 [audit: u01-v11-delta-unowned, no-main-lint-self-fails, lint-main-fails-own-docs, no-main-lint-misses-common-forms, no-raw-git-lint-fails-built-code, unsafe-forbid-and-allowlist]
+- **Crate:** all. **Owns:** `build/lint/{no-main.sh,no-raw-git.sh}`, `build/lint/fixtures/**`, `crates/{asc-graph,asc-state,asc-sim}/{Cargo.toml,src/lib.rs}`, the `[workspace.dependencies]` additions, `members` entries and the `[workspace.lints.rust]` table in the root `Cargo.toml`, the `asc` features in `crates/asc/Cargo.toml`, the lint steps in `.forgejo/workflows/asc-ci.yml`, and the `// lint:allow-raw-git` markers on the existing test-only `Command::new("git")` lines in `crates/asc-engine/src/{derive/gitcommit.rs,graph.rs}` (U15 marks its own `diff/golden.rs` lines).
+- **Depends:** U01. **Accept:** `cargo clippy --workspace --all-targets -- -D warnings && cargo deny check && cargo run -p asc -- --version && bash build/lint/no-main.sh && bash build/lint/no-raw-git.sh && bash build/lint/no-main.sh --self-test`
+- **Brief:** Crate skeletons `asc-graph`, `asc-state` and `asc-sim` (layout above). `[workspace.dependencies]` additions, each an exact pin: `gix-index`/`gix-merge`/`gix-attributes`/`gix-config` (same gix family pin), `async-trait`, `uuid` (v7), `base64`, `regex`, `globset`, `filetime`, `sha2`, `toml`, `serde_json`, `quick-xml`, `governor`, `prost-reflect`, `same-file`, `tar`, `zip`, `minisign-verify`, `prometheus-client`, `opentelemetry`, `opentelemetry-otlp`, `tracing-opentelemetry`, `hmac`, `percent-encoding`, `libfuzzer-sys` (fuzz only), `turmoil` (dev), `criterion` (dev). `[workspace.lints.rust] unsafe_code` changes from `forbid` to `deny` (SPEC §15.2; the allow-listed modules opt in). `buf` is pinned in the toolchain notes (CI installs it). `no-main.sh` is the SPEC §6.5 lint: exactly the branch-name regex given there (not `rg -w main`) over `docs/*.md README.md crates tests deploy actions .forgejo bench packaging proto build --glob '!build/lint/fixtures/**'`, exempting lines that carry `lint:allow-main`. `--self-test` runs it on `build/lint/fixtures/`: each of `git push origin main`, `git push -u origin main`, `git merge main`, `git checkout -b x main`, `--base=main`, `ref: main`, `default_branch = "main"` and a two-line `branches:`/`  - main` YAML block exits 1, and the same line with `# lint:allow-main` passes; `fn main`, `#[tokio::main]`, `main.rs`, `image:main` and the current SPEC.md, PLAN.md and README.md pass. `no-raw-git.sh` fails on `Command::new("git")` anywhere except `crates/asc-git/src/realgit.rs` and lines carrying `lint:allow-raw-git` (test-only fixtures in crates below asc-git), and on `.update(` calls on the local `Refs` under `crates/asc/src/cli/` (SPEC §9.4.1 chokepoint); `--self-test` checks each case. Crate features on `asc`: `default = ["serve", "vfs-projfs", "vfs-fuse"]`, each forwarding to the owning crate; `vfs-projfs` is target-gated to Windows and `vfs-fuse` to Linux. The CI workflow runs fmt, clippy, deny, both lint scripts and `cargo test --workspace` on Linux and Windows. <!-- lint:allow-main -->
 
 ### U02 Typed ids (`asc-core::id`)
 - **Owns:** `crates/asc-core/src/id.rs`, `crates/asc-core/tests/golden/ids.txt`
@@ -136,32 +276,32 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 ### U04 Objects and canonical codec (`asc-core::object`, `codec`)
 - **Owns:** `crates/asc-core/src/{object.rs,codec.rs,sig.rs}`, `crates/asc-core/tests/golden/envelopes/*`
 - **Depends:** U02, U03. **Accept:** `cargo test -p asc-core -- object:: codec::`
-- **Brief:** The structs exactly as SPEC §2.4–§2.7 (`Tree`, `Entry`, `Kind`, `LfsRef`, `Changeset`, `Signature`, `Change`, `TagRecord`, `ChunkList`, `AscGitExtra` (kind 5 is reserved; no `FileMeta`)). `SortedMap<K, V>` (a `Vec<(K, V)>` whose constructor sorts, and whose deserialiser rejects unsorted or duplicate keys). `encode_envelope(kind, version, &T) -> Vec<u8>`; `decode_envelope::<T>(&[u8]) -> Result<T>` rejects bad magic, unknown kind/version and trailing bytes. `Tree::id()`, `Changeset::id()`, `TagRecord::id()`. `Tree` invariants checked in `Tree::new` (sorted, unique, non-empty unless root, Gitlink id zero, `lfs` only on File/Exec). Tests: proptest `decode(encode(x)) == x` and `encode(decode(b)) == b`; golden envelope bytes for one value of each type (frozen hex files); rejection tests for each malformed case.
+- **Brief:** The structs exactly as SPEC §2.4–§2.7 (`Tree`, `Entry`, `Kind`, `Changeset`, `Signature`, `Change`, `TagRecord`, `ChunkList`, `AscGitExtra` (kind 5 is reserved; no `FileMeta`)). `SortedMap<K, V>` (a `Vec<(K, V)>` whose constructor sorts, and whose deserialiser rejects unsorted or duplicate keys). `encode_envelope(kind, version, &T) -> Vec<u8>`; `decode_envelope::<T>(&[u8]) -> Result<T>` rejects bad magic, unknown kind/version and trailing bytes. `Tree::id()`, `Changeset::id()`, `TagRecord::id()`. `Tree` invariants checked in `Tree::new` (sorted, unique, non-empty unless root, Gitlink id zero). Tests: proptest `decode(encode(x)) == x` and `encode(decode(b)) == b`; golden envelope bytes for one value of each type (frozen hex files); rejection tests for each malformed case.
 
 ### U05 Git object rendering (`asc-core::git`)
 - **Owns:** `crates/asc-core/src/git.rs`, `crates/asc-core/tests/golden/git/*`
 - **Depends:** U04. **Accept:** `cargo test -p asc-core git::`
-- **Brief:** `blob_oid(&[u8])`, `BlobOidHasher` (streaming), `render_tree(&Tree) -> Vec<u8>` (git sort order, modes per SPEC §2.9) and `tree_oid`, `render_commit(&Changeset, root_git, parent_gits) -> Vec<u8>` (canonical, with the optional `asc` header and `gpgsig` header with continuation lines), `parse_commit(raw) -> ParsedCommit`, `canonicalise_commit(raw, ...) -> (Changeset fields, Option<raw>)` (SPEC §2.9 rule), the same for tags, `parse_lfs_pointer(&[u8]) -> Option<LfsRef>`, `tz_to_string(i16)`/`parse_tz`. Golden tests: fixtures created with `git hash-object`, `git mktree`, `git commit-tree` (including a signed commit, a merge, a non-UTF-8 author, `+0530`, an `encoding` header, which must stay raw) committed as files with expected SHAs. Property: canonical render → parse → canonicalise is the identity.
+- **Brief:** `blob_oid(&[u8])`, `BlobOidHasher` (streaming), `render_tree(&Tree) -> Vec<u8>` (git sort order, modes per SPEC §2.9) and `tree_oid`, `render_commit(&Changeset, root_git, parent_gits) -> Vec<u8>` (canonical, with the optional `asc` header and `gpgsig` header with continuation lines), `parse_commit(raw) -> ParsedCommit`, `canonicalise_commit(raw, ...) -> (Changeset fields, Option<raw>)` (SPEC §2.9 rule), the same for tags, `tz_to_string(i16)`/`parse_tz`. Golden tests: fixtures created with `git hash-object`, `git mktree`, `git commit-tree` (including a signed commit, a merge, a non-UTF-8 author, `+0530`, an `encoding` header, which must stay raw) committed as files with expected SHAs. Property: canonical render → parse → canonicalise is the identity.
 
 ### U06 Content ingest and chunking (`asc-core::content`)
 - **Owns:** `crates/asc-core/src/content.rs`
 - **Depends:** U02. **Accept:** `cargo test -p asc-core content::`
-- **Brief:** `pub const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024`. `ingest(reader) -> Ingested { file: FileId, size, git: GitOid, sha256: [u8; 32], body: Body }`, where `Body::Inline(Bytes)` or `Body::Chunked { list: ChunkList, chunks: Vec<(ChunkId, Bytes)> }`. One pass computes BLAKE3, SHA-1 (blob header needs the size: use a two-pass read for a seekable source, or buffer ≤ 4 MiB, then stream) and SHA-256. FastCDC v2020 with the SPEC parameters. `ChunkAssembler` verifies each chunk and the final `FileId`. Tests: chunk boundaries are stable for a fixed pseudo-random 20 MiB input (golden chunk ids); inline/chunked threshold edges (4 MiB exactly is inline); a corrupt chunk is detected.
+- **Brief:** `pub const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024`. `ingest(reader) -> Ingested { file: FileId, size, git: GitOid, body: Body }`, where `Body::Inline(Bytes)` or `Body::Chunked { list: ChunkList, chunks: Vec<(ChunkId, Bytes)> }`. One pass computes BLAKE3, SHA-1 (blob header needs the size: use a two-pass read for a seekable source, or buffer ≤ 4 MiB, then stream). No SHA-256 (No LFS, SPEC §2.5). FastCDC v2020 with the SPEC parameters. `ChunkAssembler` verifies each chunk and the final `FileId`. Tests: chunk boundaries are stable for a fixed pseudo-random 20 MiB input (golden chunk ids); inline/chunked threshold edges (4 MiB exactly is inline); a corrupt chunk is detected.
 
 ### U07 Objects trait, keys, bucket backend (`asc-store::{key,objects,bucket,conformance}`)
 - **Owns:** `crates/asc-store/src/{key.rs,objects.rs,bucket.rs,codec.rs,conformance.rs}`
 - **Depends:** U04, U06. **Accept:** `cargo test -p asc-store -- objects:: bucket::`
-- **Brief:** `ObjKey` (SPEC §3.1) with `path(&self) -> String` producing the layout keys (`f/<h2>/<hex>`, …), and `KeyPrefix`. The `Objects` trait (SPEC §3.2). `codec::{encode_stored, decode_stored}` (codec byte; zstd level 3 only if < 90%). `verify(key, &data)` for verifiable kinds. `BucketObjects::new(store: Arc<dyn ObjectStore>, root: Path)` with `InMemory` and `LocalFileSystem` constructors (`from_url("file:///…")`, `memory()`). `put` = `PutMode::Create` with `AlreadyExists` → Ok (the S3 fallback is added in U29). `conformance::run_objects_suite(impl Objects)`, a public async fn behind feature `testkit`: put/get/has_many/range/idempotent put/verify-corrupt detection (tamper with the underlying store and expect `Error::Corrupt`).
+- **Brief:** `ObjKey` (SPEC §3.1) with `path(&self) -> String` producing the layout keys (`f/<h2>/<hex>`, …), and `KeyPrefix`. The `Objects` trait (SPEC §3.2). `codec::{encode_stored, decode_stored}` (codec byte; zstd level 3 only if < 90%). `verify(key, &data)` for verifiable kinds. `BucketObjects::new(store: Arc<dyn ObjectStore>, root: Path)` with `InMemory` and `LocalFileSystem` constructors (`from_url("file:///…")`, `memory()`). `put` = `PutMode::Create` with `AlreadyExists` → Ok (the S3 fallback is added in U29). `conformance::run_objects_suite(impl Objects)`, a public async fn behind feature `testkit`: put/get/has_many/range/idempotent put/verify-corrupt detection (tamper with the underlying store and expect `Error::Corrupt`), and `get_stored` returning the stored bytes (codec ‖ data) unverified, round-tripping with `put` (SPEC §3.2).
 
 ### U08 CacheDir, StoreSet, Tiered (`asc-store::{cachedir,tiered}`)
 - **Owns:** `crates/asc-store/src/{cachedir.rs,tiered.rs,storeset.rs}`
 - **Depends:** U07. **Accept:** `cargo test -p asc-store -- cachedir:: tiered::`
-- **Brief:** `CacheDir::open(root, tmp)` stores **decoded** data at `<root>/<letter>/<h2>/<hex>`. Atomic write: temp file, fsync, rename; an existing destination counts as success. Opens with `FILE_SHARE_DELETE` on Windows (`std::os::windows::fs::OpenOptionsExt::share_mode`). `get` verifies and deletes corrupt files. Touches mtime on read if it is older than 24 h (`filetime`). `content_path(FileId) -> Option<PathBuf>` for reflink, ProjFS and passthrough. `evict_to(max_bytes)` evicts by oldest mtime down to 80%. `StoreSet { store: CacheDir, cache: CacheDir }`: reads store then cache, writes new objects to the store, `demote(keys)` renames store → cache. `Tiered<A, B>`: read-through with fill and write-to-A. Run the U07 conformance suite against `CacheDir` and `Tiered<CacheDir, InMemory>`. Tests: concurrent writers of the same key (16 tasks) all succeed with one final file; eviction keeps `store/` intact.
+- **Brief:** `CacheDir::open(root, tmp)` stores **decoded** data at `<root>/<letter>/<h2>/<hex>`. Atomic write: temp file, fsync, rename; an existing destination counts as success. Opens with `FILE_SHARE_DELETE` on Windows (`std::os::windows::fs::OpenOptionsExt::share_mode`). `get` verifies and deletes corrupt files. Touches mtime on read if it is older than 24 h (`filetime`). `content_path(FileId) -> Option<PathBuf>` for reflink, ProjFS and passthrough. `evict_to(max_bytes)` evicts by oldest mtime down to 80%. `StoreSet { store: CacheDir, cache: CacheDir }`: reads store then cache, writes new objects to the store, `demote(keys)` renames store → cache. `Tiered<A, B>`: read-through with fill and write-to-A; `get_stored` on `CacheDir` returns `0x00 ‖ file bytes`, and `Tiered` fills A from B's stored bytes. Run the U07 conformance suite against `CacheDir` and `Tiered<CacheDir, InMemory>`. Tests: concurrent writers of the same key (16 tasks) all succeed with one final file; eviction keeps `store/` intact.
 
 ### U09 Refs trait and SqlRefs (`asc-store::{refs,sqlrefs}`)
-- **Owns:** `crates/asc-store/src/{refs.rs,sqlrefs.rs}`, `crates/asc-store/migrations/{sqlite,postgres}/0001_refs.sql`
-- **Depends:** U04. **Accept:** `cargo test -p asc-store refs::` (Postgres: `cargo test -p asc-store --features it-pg -- --ignored refs`)
-- **Brief:** The `Refs` trait, `RefTxn`, `RefUpdate`, `Expect`, `RefConflict`, `RefLogEntry`, `Actor`, `RepoKey(i64)`. `SqlRefs::new(AnyPool)` with the SPEC §3.4 schema and `migrate()`. `update` runs one transaction: per update a versioned `UPDATE`/`INSERT`/`DELETE`, and on a zero-row result rolls back with `RefConflict{name, actual}`, plus `ref_log` inserts. Expose `update_in_tx(&mut Transaction, …)` so `asc-serve` can append statements. `list` by prefix (`LIKE prefix || '%'` with escaping). `expires_at` stored and returned. `conformance::run_refs_suite` (behind `testkit`): absent→create, CAS mismatch, multi-ref atomicity, delete, log order, and a race (100 tasks doing CAS increments; exactly one winner per version).
+- **Owns:** `crates/asc-store/src/{refs.rs,sqlrefs.rs,conformance_refs.rs}`, `crates/asc-store/migrations/{sqlite,postgres}/0001_refs.sql`
+- **Depends:** U04. **Accept:** `cargo test -p asc-store refs:: && docker compose -f docker-compose.it.yml up -d postgres && cargo test -p asc-store --features it-pg -- --ignored refs`
+- **Brief:** The `Refs` trait, `RefTxn`, `RefUpdate`, `Expect`, `RefConflict`, `RefLogEntry`, `Actor`, `RepoKey(i64)`. `SqlRefs::new(AnyPool)` with the SPEC §3.4 schema; `migrate()` is a separate call (server only), and `new()` never migrates (SPEC §9.2). `update` runs one transaction: per update a versioned `UPDATE`/`INSERT`/`DELETE`, and on a zero-row result rolls back with `RefConflict{name, actual}`, plus `ref_log` inserts. Expose `update_in_tx(&mut Transaction, …)` so `asc-serve` can append statements. `list` by prefix (`LIKE prefix || '%'` with escaping). `expires_at` stored and returned. `conformance_refs::run_refs_suite` (behind `testkit`; its own file, so U07's `conformance.rs` is untouched): absent→create, CAS mismatch, multi-ref atomicity, delete, log order, and a race (100 tasks doing CAS increments; exactly one winner per version).
 
 ### U10 Tree apply and diff (`asc-engine::tree`)
 - **Owns:** `crates/asc-engine/src/tree.rs`, `crates/asc-engine/src/lib.rs` (Engine struct skeleton)
@@ -176,7 +316,7 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 ### U12 Commit graph and log (`asc-engine::graph`)
 - **Owns:** `crates/asc-engine/src/graph.rs`
 - **Depends:** U11, U09. **Accept:** `cargo test -p asc-engine graph::`
-- **Brief:** A `GraphSource` trait (`get(id) -> (gen, parents)` and batch get) with implementations for "derived via Engine" (U14 supplies `gen`; until then compute recursively and memoise in memory) and, later, SQL. `Graph` keeps an in-memory `HashMap<ChangesetId, Node>`. `merge_base(a, &[b], all: bool)` (paint-down by descending generation), `is_ancestor`, `log(LogQuery) -> Stream<ChangesetId>` (`include`/`exclude` sets, `first_parent`, path filter over `changes` prefixes, `--follow` through `copy_from`, skip/limit, author/grep/since/until filters on decoded headers), `count`. Tests: generated DAGs compared with `git merge-base --all` and `git rev-list` on the same DAG built via `git commit-tree` (test helper builds both).
+- **Brief:** A `GraphSource` trait (`get(id) -> Node { gen, parents } | Boundary` and batch get; `Boundary` lets U31's decorator continue a walk through the remote, SPEC §6.3) with implementations for "derived via Engine" (U14 supplies `gen`; until then compute recursively and memoise in memory) and, later, SQL. `Graph` keeps an in-memory `HashMap<ChangesetId, Node>`. `merge_base(a, &[b], all: bool)` (paint-down by descending generation), `is_ancestor`, `log(LogQuery) -> Stream<ChangesetId>` (`include`/`exclude` sets, `first_parent`, path filter over `changes` prefixes, `--follow` through `copy_from`, skip/limit, author/grep/since/until filters on decoded headers), `count`. `GraphSource` exposes a changeset-read counter (SPEC §5.1 read bounds), and `Graph` consults an optional `JumpIndex` trait (no-op default; U14b supplies skip pointers). `log` paginates by cursor, never by scanning skipped entries. Tests: generated DAGs compared with `git merge-base --all` and `git rev-list` on the same DAG built via `git commit-tree` (test helper builds both).
 
 ### U13 Revspec resolution (`asc-engine::revspec`)
 - **Owns:** `crates/asc-engine/src/revspec.rs`
@@ -186,77 +326,224 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 ### U14 Derived data (`asc-engine::derive`)
 - **Owns:** `crates/asc-engine/src/derive/{mod.rs,gen.rs,gitcommit.rs}`
 - **Depends:** U11, U05. **Accept:** `cargo test -p asc-engine derive::`
-- **Brief:** The `Derived` trait (SPEC §5). `get::<D>(id)`: an iterative topological walk to find underived ancestors (an explicit stack, no recursion), derive oldest first, store at `ObjKey::Derived`. `GitMapSink` trait (implemented later by state.db and the server) receives `(git, kind, asc)` rows; `gitcommit` emits rows for the changeset, and `derive::index_tree_git(tree)` emits file and tree rows. `gen` value `{gen: u32}`. `gitcommit`: raw bytes if `extra["git.commit"]` is present, otherwise the canonical render with `root_git = tree_oid(root)` and parents mapped through `gitcommit`. `Engine::warm(id)` derives all eager types. Tests: a 10k-changeset linear chain derives without stack overflow; a native commit's `gitcommit` equals `git commit-tree` output for the same tree, parents and identity.
+- **Brief:** The `Derived` trait and the `DerivedKeyed` trait with memoisation at `d/<NAME>.v<V>/<blake3(cs ‖ encode(key))>` (SPEC §5; accept also runs `derive::keyed`). Derived data is lazy unless the type is eager. `get::<D>(id)`: an iterative topological walk to find underived ancestors (an explicit stack, no recursion), derive oldest first, store at `ObjKey::Derived`. `GitMapSink` trait (implemented later by state.db and the server) receives `(git, kind, asc)` rows; `gitcommit` emits rows for the changeset, and `derive::index_tree_git(tree)` emits file and tree rows. `gen` value `{gen: u32}`. `gitcommit`: raw bytes if `extra["git.commit"]` is present, otherwise the canonical render with `root_git = tree_oid(root)` and parents mapped through `gitcommit`. `Engine::warm(id)` derives all eager types. Tests: a 10k-changeset linear chain derives without stack overflow; a native commit's `gitcommit` equals `git commit-tree` output for the same tree, parents and identity.
+
+### U14b Skip lists (`asc-engine::derive::skip`) [audit: 30-ancestry-path-indexes, user decision efficiency]
+- **Owns:** `crates/asc-engine/src/derive/skip.rs`, `crates/asc-engine/src/graph_skip.rs`
+- **Depends:** U12, U14. **Accept:** `cargo test -p asc-engine derive::skip graph_skip::`
+- **Brief:** The eager `skip.v1` derived type (SPEC §5): `ptrs[k]` = the first-parent ancestor `4^(k+1)` steps back, computed from the parent's pointers in O(log n). `graph_skip.rs` implements U12's `JumpIndex` so `merge_base` and `is_ancestor` jump along first-parent chains while the target's generation stays ≥ the other frontier's (SPEC §4.3). Tests: on a 100k linear chain plus random merges, `is_ancestor` and `merge_base` read O(log n) changesets (U12's read counter) and agree with the plain walk.
 
 ### U15 Line diff and output formats (`asc-engine::diff`)
-- **Owns:** `crates/asc-engine/src/diff/{mod.rs,line.rs,format.rs,rename.rs}`, `crates/asc-engine/tests/diff_golden/**`
+- **Owns:** `crates/asc-engine/src/diff/{mod.rs,line.rs,format.rs,rename.rs,patience.rs,golden.rs}`, `crates/asc-engine/tests/diff_golden/**`
 - **Depends:** U10. **Accept:** `cargo test -p asc-engine diff::`
-- **Brief:** `TreeChange { path, old: Option<Entry>, new: Option<Entry>, status: A|M|D|R(score)|C|T }` from `leafdiff`. Renames per SPEC §4.3 (`rename.rs`). Line diff: `imara-diff` Myers plus indent-heuristic post-processing, with binary detection (NUL in the first 8 KiB, as git does). Formatters writing to `impl Write`: name-only, name-status, raw, stat (git's width rules, `--stat=<w>`), numstat, shortstat, unified patch (headers `diff --git`, `index <short>..<short> <mode>`, `new file mode`, `deleted file mode`, `rename from/to`, `similarity index`, `Binary files … differ`, `\ No newline at end of file`, `-U<n>`, function-context header lines like git's default `funcname` regex), word-diff plain. A content source trait for fetching file bytes lazily. Golden tests: 200 file pairs extracted from ASC history (script `tests/diff_golden/extract.sh` checked in; fixtures committed) compared with `git diff --no-index` output. Assert `git apply --check` succeeds for all and byte equality for ≥ 99%.
+- **Brief:** `TreeChange { path, old: Option<Entry>, new: Option<Entry>, status: A|M|D|R(score)|C|T }` from `leafdiff`. Renames per SPEC §4.3 (`rename.rs`). Line diff: `imara-diff` Myers plus indent-heuristic post-processing, with binary detection (NUL in the first 8 KiB, as git does). Formatters writing to `impl Write`: name-only, name-status, raw, stat (git's width rules, `--stat=<w>`), numstat, shortstat, unified patch (headers `diff --git`, `index <short>..<short> <mode>`, `new file mode`, `deleted file mode`, `rename from/to`, `similarity index`, `Binary files … differ`, `\ No newline at end of file`, `-U<n>`, function-context header lines like git's default `funcname` regex), word-diff plain. A content source trait for fetching file bytes lazily. Algorithms per SPEC §4.3 [audit: diff-byte-equality]: imara-diff `Myers`, `MyersMinimal` and `Histogram`, a native patience implementation, and `diff.algorithm`/`--diff-algorithm|--histogram|--patience|--minimal`, `diff.indentHeuristic`, `diff.context`, `diff.interHunkContext`, `diff.noprefix`, `diff.mnemonicPrefix`, `diff.relative`. Attribute-aware binary detection and textconv (`binary`, `-diff`, `diff=<driver>`; SPEC §2.4.1). Golden tests: 200 file pairs extracted from ASC history (script `tests/diff_golden/extract.sh` checked in; fixtures committed) compared with `git diff --no-index` output, for Myers and histogram. Assert `git apply --check` succeeds for all and byte equality for 100% of the corpus, with a recorded `tests/diff_golden/exceptions.txt` that must be empty at the phase-1 exit. The test-only `Command::new("git")` lines in `golden.rs` carry `// lint:allow-raw-git` (SPEC §11.4).
 
-### U16 Git index and ODB access (`asc-git::{index,odb}`)
+### U16a RealGit resolution (`asc-git::realgit`) [audit: git-shim-argv0, git-shim-install-as-git]
+- **Owns:** `crates/asc-git/src/realgit.rs`
+- **Depends:** U01. **Accept:** `cargo test -p asc-git realgit::`
+- **Brief:** SPEC §11.4 real-git resolution: `ASC_REAL_GIT`, `asc.realGit`, first `git[.exe]` on `PATH` whose file identity (volume + file id / dev + ino, via the `same-file` crate; no `unsafe`) differs from the running binary, `%ProgramFiles%\Git\cmd\git.exe` on Windows; cached in `$ASC_HOME/run/real-git`, validated by mtime; git ≥ 2.40 check; `RealGit::command()` sets `ASC_SHIM_DEPTH=<n+1>` and refuses n > 4 (its children keep the inherited PATH); `RealGit::sh()` returns Git for Windows' `usr\bin\sh.exe` (never the `bin\sh.exe`/`bin\bash.exe` wrappers); `RealGit::child_path(shim_dir)` builds the SPEC §9.4.1 hook PATH (`<shim>;<GfW>\mingw64\bin;<GfW>\usr\bin;<inherited>` on Windows, `<shim>:<inherited>` elsewhere) [audit: hook-child-path-real-git]. Tests: a PATH whose first `git` is an asc hardlink resolves to the next one; a PATH with only the shim gives `fatal: asc: real git not found; set asc.realGit` (exit 128); the cache is invalidated by mtime; the depth guard fires.
+
+### U16 Git index file and ODB access (`asc-git::{index,odb}`)
 - **Owns:** `crates/asc-git/src/{index.rs,odb.rs}`
 - **Depends:** U05, U06. **Accept:** `cargo test -p asc-git index:: odb::`
-- **Brief:** `IndexFile` read/write over `gix-index` (v2 plus TREE extension), with `IndexEntry { path, mode, oid, size, ctime, mtime, dev, ino, uid, gid, flags: {stage, skip_worktree, intent_to_add} }`. `IndexLock::acquire(gitdir, timeout = 5 s)` uses git's `index.lock` protocol and git's error text; `commit()` fsyncs and renames; `set_index_mtime(t)`. Build the cache-tree from an asc tree (`git` fields). `Odb::open(common_dir)` over gix ODB (loose, packs, alternates): `read_blob_verified(oid) -> Result<Bytes>` (re-hashes), `write_loose(kind, bytes) -> GitOid`, `contains(oid)`. Tests: an index written by asc is accepted by `git ls-files -s` and `git status` (using a temporary real git repo); a git-written index round-trips through asc unchanged; a held lock produces git's message after the timeout.
+- **Brief:** The index file is only the synthetic turbo export and asc's stat cache (SPEC §9.4), plus temporary stage-set files for `GIT_INDEX_FILE` (SPEC §9.5); the ODB is used only by import/export and git-remote mode. `IndexFile` read/write over `gix-index` (v2 plus TREE extension), with `IndexEntry { path, mode, oid, size, ctime, mtime, dev, ino, uid, gid, flags: {stage, skip_worktree, intent_to_add} }`. `IndexLock::acquire(gitdir, timeout = 5 s)` uses git's `index.lock` protocol and git's error text; `commit()` fsyncs and renames; `set_index_mtime(t)`. Build the cache-tree from an asc tree (`git` fields). **The only index writer [audit: index-renderer-ownership]:** `index::render(entries: impl Iterator<Item = (RepoPath, Entry)>, stat: &dyn StatSource, opts) -> IndexFile` and `index::write(path, &IndexFile)` (TREE extension, `index.lock` protocol, index mtime = `max(now, max_entry_time + 2 s)`); U18, U21a, U22 and U36 call them and nothing else writes an index. `StatSource` is a trait (plain: real stat; virtual: SPEC §10.1 times, implemented later by the VFS). `Odb::open(common_dir)` over gix ODB (loose, packs, alternates): `read_blob_verified(oid) -> Result<Bytes>` (re-hashes), `write_loose(kind, bytes) -> GitOid`, `contains(oid)`. Tests: an index written by asc is accepted by `git ls-files -s` and `git status` (using a temporary real git repo); a git-written index round-trips through asc unchanged; a held lock produces git's message after the timeout.
 
-### U17 $ASC_HOME and state.db (`asc-wc::{home,state}`)
-- **Owns:** `crates/asc-wc/src/{home.rs,state.rs}`, `crates/asc-wc/migrations/0001_state.sql`
-- **Depends:** U09. **Accept:** `cargo test -p asc-wc state:: home::`
-- **Brief:** `AscHome::locate()` (`ASC_HOME` env → global git config `asc.home` → platform default) creates the SPEC §3.5 directories. `StateDb::open(home)` is an sqlx SQLite pool (WAL mode, `busy_timeout = 5000`) with the SPEC §9.2 schema. Typed accessors: `repos` (insert/get/by_name), `workspaces` (insert/get/by_path/update_head_base/epoch bump/list), `git_map` (`insert_many`, `git_to_asc`, `asc_to_git`, implementing `GitMapSink`), `cs_gen`, `entry_times`, `journal` (append batch / since / clear), `switch_intent`, `ws_ops`, `inodes`. Local refs reuse `SqlRefs` over the same pool. Tests: migrations apply twice idempotently; concurrent CLI processes (spawn 4) can write without `SQLITE_BUSY` failures.
+### U17 $ASC_HOME and state.db (crate `asc-state`) [audit: crate-cycle-statedb, sqlx-two-migrators]
+- **Owns:** `crates/asc-state/src/{lib.rs,home.rs,state.rs}`, `crates/asc-state/migrations/0001_state.sql`
+- **Depends:** U09, U14 (`GitMapSink`). **Accept:** `cargo test -p asc-state`
+- **Brief:** `AscHome::locate()` (`ASC_HOME` env → global git config `asc.home` → platform default) creates the SPEC §3.5 directories; `AscHome::for_workspace(gitdir)` derives the home from a gitfile target (`<home>/wc/<ws>/git` → `<home>`), which takes precedence inside a workspace (SPEC §3.5) [audit: ci-later-steps-asc-home-and-runner-mounts]. `StateDb::open(home)` is an sqlx SQLite pool (WAL mode, `busy_timeout = 5000`) with the SPEC §9.2 schema, including `meta.schema_version` (an older binary meeting a newer schema exits with SPEC §9.2's message) and `meta.machine_id` (SPEC §3.4); `repos` has no `display_ids` column. **One migrator:** `0001_state.sql` contains the `refs` and `ref_log` DDL of SPEC §3.4 verbatim; `SqlRefs::new` never migrates. Typed accessors: `repos` (insert/get/by_name; `repos::bucket_refs_row(url) -> RepoKey` gets or inserts the dedicated `bucket-local-refs` row of SPEC §3.4) [audit: bucket-local-refs-storage-undefined], `workspaces` (insert/get/by_path/by_mount/update_head_base/epoch bump/list/`holding_branch(b)` for git's branch-in-use rule), `stage` taking a `StageSet` (`Default | Temp(set_id)`; get/overlay/upsert/clear; `stage::snapshot(ws) -> SetId` and `stage::restore(ws, SetId)` for SPEC §9.7 step 0) [audit: commit-hook-failure-rollback] plus `stage_sets` register/lookup-by-path/import/drop (SPEC §9.5) [audit: git-index-file-stage-sets], `git_map` (`insert_many`, `git_to_asc`, `asc_to_git`, implementing `GitMapSink`), `cs_gen`, `history_boundary` (insert/contains/remove, SPEC §6.3) [audit: clone-history-o-history], `entry_times`, `journal` (append batch / since / clear), `switch_intent`, `ws_ops` (pending renames only), `inodes`. Local refs reuse `SqlRefs` over the same pool. Tests: migrations apply twice idempotently; `PRAGMA table_info` of `refs`/`ref_log` equals U09's server migration; concurrent CLI processes (spawn 4) can write without `SQLITE_BUSY` failures; `for_workspace` ignores `ASC_HOME` inside a workspace; a temporary stage set never touches set 0's rows.
 
 ### U18 Plain working copy (`asc-wc::{plain,status,switch}`)
 - **Owns:** `crates/asc-wc/src/{plain.rs,status.rs,switch.rs,ignore.rs,redirect.rs}`
 - **Depends:** U16, U17, U10. **Accept:** `cargo test -p asc-wc plain:: status:: switch::`
-- **Brief:** `Materialiser` writes files from `StoreSet` content paths using `reflink_copy::reflink_or_copy` (never hardlinks), applying `checkout_safe`, exec bits and symlinks (Windows: a symlink if permitted, else a text file per `core.symlinks`). `plain::checkout(ws, from_root, to_root, mode: Safe|Merge|Force) -> SwitchReport` updates only changed paths (write to a temp file, rename) and rewrites the index from metadata with real stat. `status::compute(ws) -> Status` (staged = index vs HEAD tree via oids plus cache-tree pruning; unstaged = stat check, hashing only stat-dirty files with `BlobOidHasher`; untracked via the `ignore` crate honouring `.gitignore`, `.git/info/exclude`, `core.excludesFile`). Sparse cones set skip-worktree. Redirection list loader (`.asc/redirections`). `switch::plan(from, to, dirty) -> Plan { updates, deletes, conflicts }` is OS-neutral and reused by the VFS. Tests: switch refuses on a dirty conflict in Safe mode; Force overwrites; untracked files survive; status equals `git status --porcelain=v2` on the same materialised tree.
+- **Brief:** `Materialiser` writes files from `StoreSet` content paths using `reflink_copy::reflink_or_copy` (never hardlinks), applying `checkout_safe`, exec bits and symlinks (Windows: a symlink if permitted, else a text file per `core.symlinks`). `plain::checkout(ws, from_root, to_root, mode: Safe|Merge|Force) -> SwitchReport` updates only changed paths (write to a temp file, rename) and rewrites the index from metadata with real stat through U16's `index::render`/`index::write` (the only index writer). `status::compute(ws) -> Status` (staged = `state.db.stage` rows vs HEAD, SPEC §9.5; unstaged = stat check against the synthetic index used as asc's stat cache, hashing only stat-dirty files with `BlobOidHasher` after the §2.4.1 ingest normalisation; untracked via one gitignore-syntax parser honouring, per directory, `.ascignore` else `.gitignore`, then `.asc/info/exclude` else `<common>/info/exclude`, then `asc.excludesFile` (default `~/.config/asc/ignore`) else `core.excludesFile` — SPEC §2.4.2; redirected names and nested workspaces (`?? <dir>/`) are never descended). `ignore.rs` also: treats `.asc/info/` as implicitly ignored, like `.git` [audit: asc-info-exclude-location]; and returns the directories where a `.ascignore` shadows a `.gitignore` with different content, so status, add and check-ignore can print the SPEC §2.4.2 warning [audit: ascignore-shadows-gitignore]. Sparse cones set skip-worktree. Redirection list loader (`.asc/redirections`). `switch::plan(from, to, dirty) -> Plan { updates, deletes, conflicts }` is OS-neutral and reused by the VFS. Tests: switch refuses on a dirty conflict in Safe mode; Force overwrites; untracked files survive; status equals `git status --porcelain=v2` on the same materialised tree; `.asc/info/exclude` is never untracked; a differing shadowed `.gitignore` is reported and an identical one is not.
 
-### U19 Projection layout and config (`asc-git::projection::{layout,config}`)
+### U19 Synthetic `.git` layout and config (`asc-git::projection::{layout,config}`) [audit: user decision No-IDE]
 - **Owns:** `crates/asc-git/src/projection/{mod.rs,layout.rs,config.rs}`
 - **Depends:** U16, U17. **Accept:** `cargo test -p asc-git projection::layout projection::config`
-- **Brief:** `Projection::create(home, repo, ws, root)` writes the `.git` gitfile, `wc/<ws>/git/{commondir,HEAD,config.worktree,logs/}`, and the common dir `repos/<id>/.git` with the SPEC §9.4 config keys (via `gix-config` writes). `write_head(Head)`. `detect_user_hooks_path()` reads `core.hooksPath` from local and global config but **not** worktree config. `Projection::open(root)` discovers by walking up to a `.git` gitfile whose target is under `$ASC_HOME/wc/`. Tests: `git rev-parse --git-dir --git-common-dir --show-toplevel` returns the expected paths; `git config core.hooksPath` from inside returns asc's value even after `git config core.hooksPath .husky/_` (worktree config wins); `core.autocrlf` is false even with a global true (set `HOME` to a temp dir with a global config).
+- **Brief:** SPEC §9.4. `Projection::create(home, repo, ws, root)` writes the `.git` gitfile, `wc/<ws>/git/{commondir,HEAD,asc-workspace}`, and the common dir `repos/<id>/.git/{config,info/exclude,hooks/}` with the SPEC §9.4 config keys (via `gix-config`): no objects, refs or `config.worktree`. `remote.<n>.url` is the user's URL as given (`remote-url-projection`), and the clone refspecs include `^refs/heads/agent/*` (SPEC §2.7). `.claude/worktrees/` is written to the repo-local exclude file in effect: `.asc/info/exclude` if it exists, else `<common>/info/exclude` (SPEC §2.4.2, §9.3). `write_head(Head)`. `hooks_dir()` resolves `core.hooksPath` (relative to the workspace root) else `<common>/hooks`. `Projection::open(root)` discovers by walking up to a `.git` gitfile whose gitdir contains `asc-workspace`. **Conditional includes [audit: includeif-identity]:** `config::load(ws)` evaluates `includeIf "gitdir:"`/`"gitdir/i:"` against `<root>/.git`. Tests (library only; no CLI exists yet) [audit: cli-unit-acceptance-uses-sibling-commands]: `Projection::open(root)` → `git_dir()`/`common_dir()`/`toplevel()` return the expected paths; real `git status` (through `RealGit`) in the workspace fails with `not a git repository`; `core.autocrlf` is false even with a global true; a global config with `includeIf gitdir:<tmp>/work/` matches a workspace rooted under `<tmp>/work/` and `config::load(ws).get("user.email")` returns the work email; `config::load(ws)` returns `remote.origin.url` equal to the clone URL.
 
-### U20 CLI frame, init, config (`asc` binary)
-- **Owns:** `crates/asc/src/{main.rs,dispatch.rs}`, `crates/asc/src/cli/{mod.rs,common.rs,output.rs,pager.rs,init.rs,config.rs}`
-- **Depends:** U13, U18, U19. **Accept:** `cargo test -p asc --test cli_frame`, with `crates/asc/tests/cli_frame.rs` owned by this unit
-- **Brief:** argv[0] dispatch (`asc`, `git-remote-asc`, `asc-fsmonitor`, case-insensitive and ignoring `.exe`). A clap derive tree with every command in SPEC §11.2 declared; unimplemented ones return `asc: '<cmd>' is not implemented yet` (exit 1) until their unit lands. Global `-C`, `-c k=v`, `--no-pager`. Alias expansion (`alias.*`, including `!shell` aliases), and `asc-<name>` plugin lookup. Pager and colour policy as git. `Ctx` loads `AscHome`, `StateDb`, the projection, the git config snapshot, and an `Engine` over `Tiered<StoreSet, NoRemote>`. Error policy: an unknown flag → exit 129 with `flag '<x>' is not supported yet`. `asc init [dir] [-b]` creates a local-only repo (ns = random), a plain workspace, the projection and the unborn branch. `asc config` delegates to gix-config with git's flags. Tests: `init`, then `git rev-parse --show-toplevel` works; `-C`; an alias; an unsupported flag gives 129.
+### U20 CLI frame, init, config, native table, messages, env (`asc` binary)
+- **Owns:** `crates/asc/src/{main.rs,dispatch.rs,ext.rs,native.rs,msg.rs,env.rs,child.rs}`, `crates/asc/src/cli/{mod.rs,common.rs,output.rs,pager.rs,init.rs,config.rs,json.rs}`, the stub files `crates/asc/src/cli/<cmd>.rs` for every other command and `crates/asc/src/cli/ci/mod.rs` (each replaced later by its owning unit), `crates/asc/tests/cli_frame.rs`, `crates/asc/tests/support/mod.rs`
+- **Depends:** U13, U18, U19, U16a. **Accept:** `cargo test -p asc --test cli_frame`
+- **Brief:**
+  - argv[0] dispatch: `asc`, and `git` (case-insensitive, `.exe` ignored) forwarding to `shim::run` (a stub until U20a).
+  - The stub-per-command layout and the `ext.rs` extension points from "Rules for implementers". `ext.rs` also defines `RewriteSink { fn on_rewrite(&self, old: ChangesetId, new: ChangesetId, op: OpId) }` and `OpSink { fn begin(&self, argv: &[OsString]) -> OpId; fn end(&self, op: OpId); fn snapshot_wc(&self) }`, each with a no-op default; `commit --amend`, `rebase`, `cherry-pick`, `reset` and every ref-moving command call them (through `Ctx::update_local_refs` and the rewrite paths). C04 replaces the defaults (SPEC §20.3) [audit: stacks-design-not-folded].
+  - `Ctx::update_local_refs(txn, reflog_msg)`: the single local ref-update path of "Rules for implementers" (SPEC §9.4.1) [audit: local-ref-update-chokepoint].
+  - `tests/support/mod.rs`: engine/state fixture builders (repos, commits, branches, staging) used by CLI-unit tests before U25.
+  - **Routing [audit: unsupported-flags-delegate]:** `native.rs` holds `NativeSpec { cmd, flags, placeholders }` and `route(argv) -> Native | Unsupported(reason)`, collecting each command file's `NATIVE` const. An invocation outside the table, or a command whose unit has not landed, exits 129 with `fatal: asc: option '<flag>' is not supported` / `fatal: asc: '<cmd>' is not supported yet` (SPEC §11.2, §11.5). `asc.delegate` does not exist.
+  - **Messages [audit: error-wording]:** `msg.rs` holds the `Msg` enum (SPEC §11.6); each variant cites its git source string, and a test checks every string against the pinned git `po/git.pot` msgid. Hints use the invoked program name.
+  - **Env [audit: git-env-vars]:** `env.rs` holds `GitEnv`, a strong-typed struct parsed once in `Ctx` with every variable and global option of SPEC §11.1 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_CONFIG_*`, author/committer, editors, pager, `GIT_OPTIONAL_LOCKS`, askpass/ssh, pathspec modes, trace), and exports asc's own `-c` values to children as `GIT_CONFIG_PARAMETERS`.
+  - **Ids [audit: display-ids]:** `Ctx` decides the display-id policy from argv[0] and output kind: git SHA-1 by default with `core.abbrev`; `asc.displayIds` only for human output when invoked as `asc`.
+  - Global options of SPEC §11.1, alias expansion (`alias.*`, including `!shell` aliases), external commands and verb precedence per SPEC §11.4 (`dispatch.rs`: a `GIT_BUILTINS` const list for git 2.55, then alias, then `git-<name>`, then asc-only verbs when argv[0] = `git`; builtins, asc-only verbs, alias, `asc-<name>` then `git-<name>` when argv[0] = `asc`; asc-only verbs are matched exactly before `help.autocorrect` and are never autocorrect candidates; `git-<name>`/`asc-<name>` spawned through `child::command`) [audit: shim-asc-verbs-shadow-aliases-and-git-dash-commands], pager and colour policy as git. `Ctx` loads `AscHome` (`AscHome::for_workspace` inside a workspace), `StateDb`, the workspace, the git config snapshot (with `includeIf` per U19), and an `Engine` over the object stack from `ext::StoreStackSelector` (default `Tiered<StoreSet, NoRemote>`).
+  - **Children [audit: hook-child-path-real-git, hook-child-path-shim]:** `child.rs` holds `asc::child::command(program)` and `GitEnv::child_env()`: the child PATH of SPEC §9.4.1 (private shim dir `<exe dir>/shim` first, created atomically on first use if missing, via U16a's `RealGit::child_path`), asc's `-c` values as `GIT_CONFIG_PARAMETERS`, and `ASC_SHIM_DEPTH`. Aliases, editors, pagers, drivers and plugins spawn only through it.
+  - **JSON output [audit: plugin-api-undefined]:** `cli/json.rs` is the shared proto3-JSON writer (JSON lines, one object per stream message) that `status|diff|log|blame --json`, `asc watch --json` and `asc affected --json` use (SPEC §11.2).
+  - `asc init [dir] [-b]` creates a local-only repo (ns = random), a plain workspace, the synthetic `.git`, the unborn branch per SPEC §6.5 (`-b`, else `init.defaultBranch`, else `master`), and a `.ascignore` only when the directory has no `.gitignore`, with the first line `# asc: replaces .gitignore in this directory`; invoked as `git` (argv[0], `asc.shim.init = asc`) it writes no `.ascignore` (SPEC §2.4.2, §11.4) [audit: ascignore-shadows-gitignore]. `.claude/worktrees/` goes to the exclude file in effect (U19). `asc config` uses gix-config with git's flags.
+  - Tests (only `init`, `config` and the frame; no sibling commands) [audit: cli-unit-acceptance-uses-sibling-commands]: after `asc init`, `<gitdir>/HEAD` contains `ref: refs/heads/master` with `HOME` empty, and `ref: refs/heads/trunk` with `init.defaultBranch=trunk`; `-C`; an alias to `config`; `asc config --bogus` gives exit 129 with the §11.5 message; `-c` propagation to a child process; with real git first on the inherited PATH, a `!sh -c "command -v git"` alias prints `<exe dir>/shim/git`; `asc init` in a directory with a `.gitignore` writes no `.ascignore`; dispatch tests call `dispatch::resolve` with argv[0] = `git` directly (the shim's in-workspace hand-off is U20a): with `alias.graph = log --oneline --graph`, `git graph` resolves to the alias; a `git-affected` script on PATH wins over asc's `affected`; `git daemon` in a workspace exits 129 with the unsupported message; `git nosuch` prints git's `git: 'nosuch' is not a git command. See 'git --help'.` with exit 1; `asc graph` still runs the project graph (stub exit 129 until G08); `help.autocorrect=immediate` never turns a typo of a git command into an asc-only verb; the no-op sinks leave `cli_frame` output unchanged.
 
-### U21 CLI status/add/rm/mv/restore/reset
-- **Owns:** `crates/asc/src/cli/{status.rs,add.rs,rm.rs,mv.rs,restore.rs,reset.rs}`
-- **Depends:** U20, U15. **Accept:** `cargo test -p asc --test cli_stage`, with `crates/asc/tests/cli_stage.rs` owned
-- **Brief:** `status` in all porcelain forms (v1, v2, `-s`, `-b`, `-z`, `-u` modes, ahead/behind against the upstream). `add` writes loose objects (U16 `write_loose`), ingests into `store/` and adds a `git_map` row; flags `-p` (interactive hunk selection on the file-vs-index diff, git's prompt letters `y n q a d s e ?`), `-u`, `-A`, `-N`, `-f`, `-n`. `rm` (`--cached`, `-r`, `-f`). `mv` (records a pending rename in `ws_ops` for `copy_from`). `restore` (`--staged`, `--worktree`, `--source`). `reset` (`--soft/--mixed/--hard`, paths). Plain mode only at this point. Tests: compare with git on identical fixtures (porcelain v2 output), `add -p` driven by stdin.
+### U20a git shim (`asc::shim`) [audit: git-shim-argv0]
+- **Owns:** `crates/asc/src/shim.rs`, `crates/asc/src/cli/install_shim.rs`, `crates/asc/tests/shim.rs`
+- **Depends:** U20. **Accept:** `cargo test -p asc --test shim`
+- **Brief:** SPEC §11.4: git-style discovery without `state.db` or the daemon; `asc-workspace` marker → asc, else exec real git (`execv` on Unix; `CreateProcess` with inherited handles, Ctrl-C/Ctrl-Break forwarding and exit-code pass-through on Windows); outside repos `--version` (`git version <real>.asc.<semver>`), `clone` routing, `init`/`clone` with `-c init.defaultBranch=master` when unset, and `asc.shim.init = asc` routing of `init`/`clone` to asc (argv[0] = `git` never gets a `.ascignore`) [audit: compat-fixture-routing]. Inside a workspace the shim hands the invocation to U20's `dispatch.rs`, which applies the SPEC §11.4 order for argv[0] = `git` (stack verbs only where git would print "not a git command", D5). The Windows console control handler (`SetConsoleCtrlHandler`) is the only `unsafe` in this module (allow-listed). **Target-based routing [audit: repo-independent-commands-routing]:** `clone`, `init <dir>` (other than the current workspace root), `ls-remote <url>`, `config --global|--system|--file <f outside the workspace>`, `credential*`, `help`, `version`/`--version` and `archive --remote` follow the outside-repository rules even inside a workspace. `ASC_SHIM_TRACE=<file>` appends one line per fall-through to real git (used by U25). `asc install-shim [--dir]` (`install_shim.rs`) writes `git[.exe]` to `<exe dir>/shim` (hardlink on Windows, symlink on Unix); `--dir` on another volume fails with SPEC §11.4's message [audit: windows-shim-path-precedence-and-location]. Tests: invoked as `git` in a plain git repo, the shim is byte-identical to real git (stdout, stderr, exit) for `status`, `log -1` and `commit`; in an asc workspace it runs asc; `--version` matches `^git version \d+\.\d+\.\d+`; a PATH holding only the shim with `ASC_REAL_GIT` unset gives a clean fatal error with no recursion; the depth guard fires; fall-through overhead stays within the SPEC §11.4 budget (spike S12); in an asc workspace, `git clone <local bare repo> sub` produces a real git repo (no `asc-workspace` marker) that `git -C sub log` serves through real git, `git clone --bare <url> <tmp>/x` runs real git, `git init fixtures/tmp` then `git -C fixtures/tmp commit --allow-empty -m x` runs real git, and the parent's `git status` shows `?? fixtures/tmp/`; with `asc.shim.init=asc`, `git init x` creates an asc workspace (marker present, no `.ascignore`); install-shim's same-volume rule; relinking through the `current` junction.
 
-### U22 CLI commit
-- **Owns:** `crates/asc/src/cli/commit.rs`, `crates/asc/src/hooks_runner.rs`
-- **Depends:** U20, U14. **Accept:** `cargo test -p asc --test cli_commit`, with `crates/asc/tests/cli_commit.rs` owned
-- **Brief:** SPEC §9.7 exactly: index vs HEAD; unknown oids read **from the ODB with verification** (never the working file); apply and leafdiff; the hook chain (`pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`) resolved via U19; `-m`, `-F`, `-a`, `--amend`, `--fixup`, `--squash`, `--no-verify`, `--allow-empty`, `--author`, `--date`, `-e`, `-v`, `-S` (git's signing program; signature into `git.gpgsig`), message cleanup like git (`commit.cleanup`, default strip). Writes the changeset to `store/`, warms derived data, CAS-moves the branch and writes the reflog. Writing the commit into the git ODB and refs mirror is a hook point filled by U36 (no-op until then). Tests: **`git add` a file, edit it again, `asc commit` → the committed blob equals the staged version**; `--amend`; a hook rejecting the commit; a merge commit from `MERGE_HEAD`.
+### U21a CLI status
+- **Owns:** `crates/asc/src/cli/status.rs`, `crates/asc/tests/cli_status.rs`
+- **Depends:** U20, U15. **Accept:** `cargo test -p asc --test cli_status`
+- **Brief:** `status` in all porcelain forms (v1, v2, `-s`, `-b`, `-z`, `-u` modes, `--ignored`, ahead/behind against the upstream, git's advice lines), and the asc-only `--json` (`WsStatusResponse` through `cli/json.rs`, SPEC §7, §11.2) [audit: plugin-api-undefined]. It refreshes the synthetic index's stat cache (through U16's writer) only when optional locks are allowed (`GIT_OPTIONAL_LOCKS`, `--no-optional-locks`). It prints the SPEC §2.4.2 shadow warning. Plain mode only at this point. Tests: compare with git on identical fixtures (porcelain v2 output, long format with advice); `--json` golden output; `GIT_OPTIONAL_LOCKS=0` leaves the index mtime unchanged after `status` (moved from U20).
+
+### U21b CLI add/rm/mv
+- **Owns:** `crates/asc/src/cli/{add.rs,rm.rs,mv.rs}`, `crates/asc/tests/cli_add.rs`
+- **Depends:** U20. **Accept:** `cargo test -p asc --test cli_add`
+- **Brief:** SPEC §9.5: `add` ingests into `store/` (with §2.4.1 normalisation; unsupported attributes fail), computes the git blob SHA-1, and writes `stage` and `git_map` rows; flags `-u`, `-A`, `-N`, `-f`, `-n`. `rm` (`--cached`, `-r`, `-f`). `mv` (records a pending rename in `ws_ops` for `copy_from`). The stage set is resolved from `GitEnv.index_file` per SPEC §9.5 (`<gitdir>/index` or unset → set 0; any other path → a registered, new or imported temporary set, re-rendered under the lock protocol after each change) [audit: git-index-file-stage-sets]. `filter=lfs` paths are stored natively with SPEC §2.4.1's warning [audit: lfs-filter-add-fails]; `add` prints the §2.4.2 shadow warning. After each change to set 0, call `ext::SyntheticIndexSink::on_stage_changed` (SPEC §9.4) [audit: turbo-index-reflects-head-breaks-staged-contract]. Tests vs git: after each operation the stage rows (U17 accessors) equal what real git's `ls-files -s` (via `RealGit`) shows for the same operations; CRLF `text=auto` files give the same blob oid as `git add`; `GIT_INDEX_FILE=$tmp/x asc add a`, then parse `$tmp/x` with U16 `IndexFile` and compare its entries with the file that real git (via `RealGit`) writes for the same `add`, and the default staging is unchanged [audit: cli-unit-acceptance-uses-sibling-commands]; adding a 10 MiB file under a `filter=lfs` pattern succeeds with the warning and stores a chunked FileId.
+
+### U21c CLI `add -p`
+- **Owns:** `crates/asc/src/cli/add_patch.rs`, `crates/asc/tests/cli_add_patch.rs`
+- **Depends:** U21b, U15. **Accept:** `cargo test -p asc --test cli_add_patch`
+- **Brief:** interactive hunk selection on the file-vs-staged diff with git's prompt letters `y n q a d s e ?` and git's prompts; the selected blob is staged as in U21b. Tests: driven by stdin; the staged blob equals git's for the same answers.
+
+### U21d CLI restore/reset
+- **Owns:** `crates/asc/src/cli/{restore.rs,reset.rs}`, `crates/asc/tests/cli_reset.rs`
+- **Depends:** U20. **Accept:** `cargo test -p asc --test cli_reset`
+- **Brief:** `restore` (`--staged`, `--worktree`, `--source`), `reset` (`--soft/--mixed/--hard`, paths), writing `ORIG_HEAD` (SPEC §4.4). Ref moves go through `Ctx::update_local_refs`; staging changes call `ext::SyntheticIndexSink::on_stage_changed`; `reset --hard` and worktree `restore` call `OpSink::snapshot_wc` first (SPEC §20.3). Plain mode now; virtual through the daemon later (U57). Tests vs git, including `reset --hard` with no HEAD change restoring modified and deleted files.
+
+### U22 CLI commit and hooks runner
+- **Owns:** `crates/asc/src/cli/commit.rs`, `crates/asc/src/hooks_runner.rs`, `crates/asc/tests/cli_commit.rs`
+- **Depends:** U20, U14. **Accept:** `cargo test -p asc --test cli_commit && cargo test -p asc --test cli_commit -- hooks`
+- **Brief:** SPEC §9.7 exactly, in its hook order (step-0 `stage::snapshot` of set 0 → pre-commit → re-read stage set → message hooks → build; `stage::restore` when the commit aborts before step 6, then drop the snapshot in every case) [audit: commit-precommit-staging-order, commit-hook-failure-rollback]: `-a` stages stat-dirty tracked files first; `<paths>`/`--only`/`-i` render the temporary set to `<gitdir>/asc-commit-index`; the build reads no content; `-m`, `-F`, `-a`, `--amend`, `--fixup`, `--squash`, `--no-verify`, `--allow-empty`, `--allow-empty-message`, `--only`/`-i`/`commit <paths>` (temporary stage set), `--author`, `--date`, `-e`, `-v`, `-S` (git's signing program through `RealGit` config; signature into `git.gpgsig`), message cleanup like git (`commit.cleanup`, default strip); writes `COMMIT_EDITMSG`, the reflog and the synthetic index (through `SyntheticIndexSink`, which uses U16's writer). **Hooks [audit: hooks-full-set, hooks-must-vs-list]:** `hooks_runner.rs` has a `Hook` enum covering every hook SPEC §9.4.1 lists (including `ReferenceTransaction { prepared | committed | aborted }`, which U22 registers as U20's `RefTxnHook`, so U23, U24e and U27c run it around every local ref update without depending on U22) plus the argv/env/stdin contract (`GIT_INDEX_FILE` = `<gitdir>/index` or `<gitdir>/asc-commit-index`, `GIT_EDITOR=:`, `GIT_PREFIX`, `GIT_REFLOG_ACTION`), resolves the hooks dir (relative `core.hooksPath` against the workspace root), spawns through `asc::child::command()` with `RealGit::sh()` (`usr\bin\sh.exe`) on Windows, and is used by every later unit that runs hooks. Tests: staging a file, editing it again, then `asc commit` commits the staged version; `--amend` runs `post-rewrite amend`; a hook rejecting the commit; `prepare-commit-msg` source arguments; a merge commit from `MERGE_HEAD`; a `reference-transaction` hook sees `prepared` then `committed` with git SHA-1s; `commit -a` with a failing pre-commit leaves the stage rows (U17 accessors) equal to their state before the commit, as git leaves its index (changes unstaged); a pre-commit that stages a file and then fails leaves set 0 unchanged. `hooks::precommit_add_is_committed`, `hooks::precommit_sees_staged` and `hooks::real_git_first_on_path` moved to U37's `hooks-path.t` (they need `git add`, `git diff --cached` and the shim) [audit: cli-unit-acceptance-uses-sibling-commands].
 
 ### U23 CLI branch/switch/checkout/tag
-- **Owns:** `crates/asc/src/cli/{branch.rs,switch.rs,checkout.rs,tag.rs}`
-- **Depends:** U20. **Accept:** `cargo test -p asc --test cli_branch`, with `crates/asc/tests/cli_branch.rs` owned
-- **Brief:** `branch` with all flags in SPEC §11.2 (`--contains`/`--merged` via the graph, `--format` with `%(refname)`, `%(objectname)`, `%(upstream)`). `switch`/`checkout` over U18 plain checkout (`-c/-C/--detach/--orphan/--merge/-f/-`); `checkout <rev> -- <paths>`; `checkout <branch>` DWIM to a remote-tracking branch. `tag` lightweight and annotated (`TagRecord`), `-s` signing, `-d`, `-l` with patterns, `-n`. Reflog entries for HEAD and branches. Tests vs git: switch with an untracked file in the way; `-` toggles; tag listing order.
+- **Owns:** `crates/asc/src/cli/{branch.rs,switch.rs,checkout.rs,tag.rs}`, `crates/asc/tests/cli_branch.rs`
+- **Depends:** U20, U24e. **Accept:** `cargo test -p asc --test cli_branch`
+- **Brief:** `branch` with all flags in SPEC §11.2 (`--contains`/`--merged` via the graph, `--format` through U24e's `ref_filter.rs`, so the full atom set applies). `switch`/`checkout` over U18 plain checkout (`-c/-C/--detach/--orphan/--merge/-f/-`); `checkout <rev> -- <paths>`; `checkout <branch>` DWIM to a remote-tracking branch; `post-checkout` hook; every ref update through `Ctx::update_local_refs` (reflog, `reference-transaction`, synthetic index); `checkout -f`/`switch -f`/`--discard-changes`/`checkout <paths>` call `OpSink::snapshot_wc` first (SPEC §20.3). **Branch in use [audit: worktree-layout-and-git-worktree]:** switching to, or `branch -d|-D|-m` of, a branch held by another workspace (`StateDb::holding_branch`) fails with git's message. `tag` lightweight and annotated (`TagRecord`), `-s` signing, `-d`, `-l` with patterns, `-n`. Reflog entries for HEAD and branches. Tests vs git: switch with an untracked file in the way; `-` toggles; tag listing order; branch in use by another workspace.
 
-### U24 CLI history and plumbing verbs
-- **Owns:** `crates/asc/src/cli/{log.rs,show.rs,diff.rs,plumbing.rs,reflog.rs,format.rs}`
-- **Depends:** U20, U15. **Accept:** `cargo test -p asc --test cli_history`, with `crates/asc/tests/cli_history.rs` owned
-- **Brief:** `log` (flags in SPEC §11.2; the `--graph` renderer ports git's graph lane algorithm; `--format` placeholders as listed in SPEC §11.1; `--decorate`), `show`, `diff` (worktree/index/HEAD/rev pairs, all formats), `rev-parse` (incl. `--git`/`--asc`, `--show-toplevel`, `--abbrev-ref`, `--verify`, `--short`), `rev-list` (`--count`, ranges), `merge-base` (`--all`, `--is-ancestor`), `ls-files` (`-s`, `-o`, `--exclude-standard`, `-z`), `ls-tree` (`-r`, `-l`, `--name-only`, `--format`), `cat-file` (`-t`, `-s`, `-p`, `--batch`), `diff-tree`, `diff-index`, `hash-object`, `show-ref`, `for-each-ref`, `symbolic-ref`, `update-ref`, `describe`, `reflog`. Ids are displayed per `asc.displayIds`. Tests: output equality with git on a fixture repo created by both tools with identical timestamps (`GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` honoured by asc).
+### U24a CLI log/show
+- **Owns:** `crates/asc/src/cli/{log.rs,show.rs,format.rs}`, `crates/asc/tests/cli_log.rs`
+- **Depends:** U20, U15. **Accept:** `cargo test -p asc --test cli_log`
+- **Brief:** `log` (flags in SPEC §11.2; the `--graph` renderer ports git's graph lane algorithm; `--decorate`; asc-only `--json` printing `LogResponse` JSON lines through `cli/json.rs`), `show`. Walks that reach a history boundary continue through the remote (SPEC §6.3; the U31 decorator). `format.rs` implements git 2.55's **complete** pretty-format placeholder set (SPEC §11.1), with golden tests for every placeholder against git 2.55. Ids are git SHA-1s by default with `core.abbrev` (SPEC §11.1): a test asserts `asc log --format=%H` emits 40-hex in a local-only repo and `--oneline` equals git's. Tests: output equality with git on a fixture repo built with `tests/support` (asc side) and real git through `RealGit` (git side) with identical timestamps (`GIT_AUTHOR_DATE`/`GIT_COMMITTER_DATE` honoured by asc).
 
-### U25 Scenario harness and local-only milestone
-- **Owns:** `crates/asc/tests/scenario.rs`, `crates/asc/tests/scenarios/*.t`
-- **Depends:** U21, U22, U23, U24. **Accept:** `cargo test -p asc --test scenario`
-- **Brief:** A runner for `.t` files: each is a shell script (bash on Unix, run through Git Bash on Windows) using a `$VCS` variable. The runner executes it twice, with `VCS=git` and `VCS=asc`, in fresh temp dirs with fixed env (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `TZ=UTC`, `HOME`), captures stdout and exit codes per command, normalises ids (replacing each distinct 40/64-hex id with `<id1>`, …), and diffs. Scenarios: `init-add-commit.t`, `status-variants.t`, `branch-switch.t`, `diff-log.t`, `reset-restore.t`, `tag.t`, `rename.t`, `ignore.t`. **Milestone:** a local-only asc handles init/add/commit/status/diff/log/branch/switch end to end.
+### U24c CLI diff/diff-tree/diff-index
+- **Owns:** `crates/asc/src/cli/{diff.rs,diff_tree.rs}`, `crates/asc/tests/cli_diff.rs`
+- **Depends:** U20, U15. **Accept:** `cargo test -p asc --test cli_diff`
+- **Brief:** `diff` (worktree/staged/HEAD/rev pairs, `--no-index`, all formats and algorithms of SPEC §4.3, `--binary`, `--output`, `--src-prefix`/`--dst-prefix`, `--submodule=short`; asc-only `--json` printing `DiffResponse` JSON lines through `cli/json.rs`), `diff-tree`, `diff-index`, `diff-files`. Tests vs git byte for byte, including lint-staged's `diff --binary` invocation; `--json` golden output.
+
+### U24d CLI rev plumbing
+- **Owns:** `crates/asc/src/cli/{revparse.rs,revlist.rs,reflog.rs,describe.rs}`, `crates/asc/tests/cli_rev.rs`
+- **Depends:** U20. **Accept:** `cargo test -p asc --test cli_rev`
+- **Brief:** `rev-parse` (incl. `--git`/`--asc`, `--show-toplevel`, `--git-dir`, `--git-common-dir`, `--abbrev-ref`, `--verify`, `--short`, `--is-inside-work-tree`), `rev-list` (`--count`, ranges), `merge-base` (`--all`, `--is-ancestor`), `describe`, `reflog`. Tests vs git.
+
+### U24e CLI object and ref plumbing
+- **Owns:** `crates/asc/src/cli/{plumbing.rs,refs_plumbing.rs,ref_filter.rs}`, `crates/asc/tests/cli_plumbing.rs`
+- **Depends:** U20. **Accept:** `cargo test -p asc --test cli_plumbing`
+- **Brief:** `ls-files` (`-s`, `-o`, `--exclude-standard`, `-z`; from the staging overlay), `ls-tree` (`-r`, `-l`, `--name-only`, `--format`), `cat-file` (`-t`, `-s`, `-p`, `-e`, `--batch`, `--batch-check`), `hash-object` (`-w`, `--stdin`, `--path`), `update-index` (`--add`, `--cacheinfo`, `--remove`, `--refresh`), `write-tree`, `read-tree` (index-only forms; `update-index` and `read-tree` call `SyntheticIndexSink::on_stage_changed`), `show-ref`, `for-each-ref`, `symbolic-ref`, `update-ref` (through `Ctx::update_local_refs`), `check-ref-format`, `var`. Index plumbing resolves the stage set from `GIT_INDEX_FILE` (SPEC §9.5). `ref_filter.rs` implements git 2.55's **complete** ref-filter atom set (SPEC §11.1) with golden tests against git 2.55. Tests: output equality with git.
+
+### U25 Compatibility suite and local-only milestone
+- **Owns:** `tests/compat/{Cargo.toml,src/lib.rs,tests/compat.rs,allowed.toml,home/.gitconfig,home-asc/.gitconfig}`, `tests/compat/scenarios/{init-add-commit,status-variants,branch-switch,diff-log,reset-restore,tag,rename,ignore,ascignore,config-alias-includeif,external-commands}.t`
+- **Depends:** U20a, U21a–U21d, U22, U23, U24a, U24c–U24e. **Accept:** `cargo test -p asc-compat --test compat`
+- **Brief [audit: compat-suite-gate]:** the SPEC §17.1 runner. Each case runs twice on identical fixtures with the fixed environment (`HOME` with a `.gitconfig` that sets `init.defaultBranch=master`, `GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `TZ=UTC`, `LC_ALL=C`): once with real git, once with the shim installed as `git` first on PATH in an asc workspace (plain mode; virtual mode added by U58). It compares stdout, **stderr** and exit codes per command, then the post-state (`for-each-ref`, `rev-parse HEAD`, `status --porcelain=v2 -z`, `ls-files -s`, gitdir state files, working-tree bytes). Normalisation: temp paths, timing/progress lines, the program name in hints; **ids are not normalised**. `allowed.toml` lists each allowed difference with a reason and a SPEC section (including the never-run hooks and the `GIT_INDEX_FILE` path for a normal commit, SPEC §9.4.1). **asc-side fixtures [audit: compat-fixture-routing]:** both home configs are written; the asc side's (`home-asc/.gitconfig`) also sets `asc.shim.init = asc`, so a scenario's `git init`/`git clone` create asc workspaces; the runner reads `ASC_SHIM_TRACE` and fails a case if the asc side fell through to real git inside the scenario directory (self-check: a deliberate fall-through case must fail the runner). Clone scenarios against a git fixture join after U39 (git-remote mode). `ascignore.t` creates a `.gitignore` after `asc init` and asserts the SPEC §2.4.2 shadow warning. `external-commands.t` puts a `git-hello` script on PATH and runs `git hello` through the shim in an asc workspace, and checks that `alias.graph` shadows asc's `graph` under `git` (SPEC §11.4) [audit: shim-asc-verbs-shadow-aliases-and-git-dash-commands]. Later units add their own `scenarios/<cmd>-*.t` files. **Milestone:** a local-only asc handles init/add/commit/status/diff/log/branch/switch end to end, through the shim.
+
+### U25a Tool trace corpus [audit: compat-suite-gate]
+- **Owns:** `tests/compat/traces/**`, `tests/compat/record/**` (the recording `git` wrapper and a README per tool)
+- **Depends:** U25. **Accept:** `cargo test -p asc-compat --test compat -- traces`
+- **Brief:** recorded invocations (argv, env, stdin) plus the driving script for Claude Code (status/diff/log/commit/push, EnterWorktree/ExitWorktree with and without hooks — spike S7), husky, lint-staged (partially staged files), commitlint, turbo (spike S4) and ASC's repo scripts, at pinned versions. The runner replays each trace against real git and against the shim. Every invocation in a trace must be in the native table (SPEC §11.5).
+
+### U24b CLI ignore, attr, grep, clean [audit: missing-cli-units]
+- **Owns:** `crates/asc/src/cli/{check_ignore.rs,check_attr.rs,grep.rs,clean.rs}`, `tests/compat/scenarios/{ignore-attr,grep,clean}.t`
+- **Depends:** U25. **Accept:** `cargo test -p asc-compat --test compat -- ignore-attr grep clean`
+- **Brief:** `check-ignore` with `-v`, `-z`, `--stdin`, `-n`, `--no-index` (git's output format; `-v` names the `.ascignore` or `.gitignore` file and line, SPEC §2.4.2; the §2.4.2 shadow warning); `check-attr` with `-a`, `-z`, `--stdin` (`gix-attributes`, `.ascattributes` first); `grep` local over the tree and dirty files with `-n -i -w -l -e -F -E -- <pathspec>`; `clean` with `-n -f -d -x -X` (virtual mode walks only materialised directories; redirected names skipped).
 
 ### U26 Merge, rebase, cherry-pick, land check (`asc-engine::{merge,rebase,land}`)
 - **Owns:** `crates/asc-engine/src/merge/{mod.rs,tree.rs,text.rs}`, `crates/asc-engine/src/{rebase.rs,land.rs}`, `crates/asc-engine/tests/merge_golden/**`
 - **Depends:** U15, U13. **Accept:** `cargo test -p asc-engine merge:: rebase:: land::`
-- **Brief:** `merge_trees(base, ours, theirs, opts) -> MergeOutcome { root: TreeId, conflicts: Vec<Conflict{path, kind: Content|AddAdd|ModifyDelete|FileDir|CaseFold|Binary, stages}> }` per SPEC §4.4; the text merge via `gix-merge` `blob::builtin_driver::text` with `merge`/`diff3`/`zdiff3` and `-X ours|theirs`. `cherry_pick(cs, onto)`, `revert(cs, onto)`. `rebase_metadata(cs, onto) -> Option<Changeset>` (succeeds only when disjoint). `rebase_stack(stack, onto) -> Vec<Result<..>>`. `land::paths_since(base, tip) -> PathSet` (first-parent union, or the tree-diff fallback); `PathSet::conflicts(&other) -> Vec<(RepoPath, RepoPath)>` using the casefold trie of SPEC §4.5. Tests: goldens vs `git merge-tree --write-tree` and `git merge-file` (conflict markers byte-equal); the disjointness truth table (`a/b` vs `a`, `A.ts` vs `a.ts`, `x/` vs `x/y/z`, unrelated paths).
+- **Brief:** Merge attributes per SPEC §2.4.1 (`merge=union|ours|binary`, `-merge`, configured drivers). A metadata rebase drops `git.gpgsig` and `git.commit` (test `rebase::drops_gpgsig`) [audit: land-rewrite-signature-and-raw-extra]. A `content_merge_land(stack, tip, no_merge_globs)` helper merges intersecting files for land (SPEC §8.5 step 3) and returns `Conflict` records with `marked_id` content in diff3 style. `merge_trees(base, ours, theirs, opts) -> MergeOutcome { root: TreeId, conflicts: Vec<Conflict{path, kind: Content|AddAdd|ModifyDelete|FileDir|CaseFold|Binary, stages}> }` per SPEC §4.4; the text merge via `gix-merge` `blob::builtin_driver::text` with `merge`/`diff3`/`zdiff3` and `-X ours|theirs`. `cherry_pick(cs, onto)`, `revert(cs, onto)`. `rebase_metadata(cs, onto) -> Option<Changeset>` (succeeds only when disjoint). `rebase_stack(stack, onto) -> Vec<Result<..>>`. `land::paths_since(base, tip) -> PathSet` (first-parent union, or the tree-diff fallback); `PathSet::conflicts(&other) -> Vec<(RepoPath, RepoPath)>` using the casefold trie of SPEC §4.5. Tests: goldens vs `git merge-tree --write-tree` and `git merge-file` (conflict markers byte-equal); the disjointness truth table (`a/b` vs `a`, `A.ts` vs `a.ts`, `x/` vs `x/y/z`, unrelated paths).
 
-### U27 CLI merge/rebase/cherry-pick/revert/stash
-- **Owns:** `crates/asc/src/cli/{merge.rs,rebase.rs,pick.rs,stash.rs}`, `crates/asc/tests/scenarios/{merge,rebase,stash,pick}.t`
-- **Depends:** U25, U26. **Accept:** `cargo test -p asc --test scenario -- merge rebase stash pick`
-- **Brief:** Conflict materialisation (markers in files, index stages 1/2/3, `MERGE_HEAD`/`MERGE_MSG`/`CHERRY_PICK_HEAD`); `--continue/--abort/--skip`; rebase state in `ws_ops`; `rebase -i` with git's todo grammar (`pick reword edit squash fixup drop exec break`, `--autosquash`, `--update-refs`) using `core.editor`/`GIT_SEQUENCE_EDITOR`; `pull` is added in U32. `stash` with git's commit structure, `refs/stash` and its reflog, `-u`, paths, `pop` conflicts kept. Scenarios as listed must match git.
+### U27a CLI merge/cherry-pick/revert [audit: oversized-units, git-state-files]
+- **Owns:** `crates/asc/src/cli/{merge.rs,pick.rs,revert.rs,conflict.rs,seqstate.rs}`, `tests/compat/scenarios/{merge,pick,revert}-*.t`
+- **Depends:** U25, U26. **Accept:** `cargo test -p asc-compat --test compat -- merge pick revert`
+- **Brief:** Conflict materialisation shared in `conflict.rs` (markers in files, stages 1/2/3 in the staging rows, git's `CONFLICT (…)` messages). `seqstate.rs` reads and writes git's in-progress state files exactly (SPEC §4.4): `MERGE_HEAD`, `MERGE_MSG`, `MERGE_MODE`, `AUTO_MERGE`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `sequencer/`, `ORIG_HEAD`, `SQUASH_MSG`, used by every later sequencer unit. `--continue/--abort/--skip`, `-n`, `-x`, `-m <n>`, `--no-ff`, `--ff-only`, `--squash`, `--no-commit`, `-X ours|theirs`, `merge.conflictStyle`; `pre-merge-commit` and `post-merge` hooks; configured merge drivers and textconv run through `asc::child::command()` (handed to U26's driver hook as a command factory, SPEC §9.4.1). Scenarios: a conflicted merge aborted with `--abort`; lint-staged's save/restore of `MERGE_HEAD`/`MERGE_MODE`/`MERGE_MSG` works.
 
-### U28 Blame engine and CLI (`asc-engine::blame`, `asc` blame)
-- **Owns:** `crates/asc-engine/src/blame.rs`, `crates/asc/src/cli/blame.rs`, `crates/asc/tests/scenarios/blame.t`
-- **Depends:** U25, U15. **Accept:** `cargo test -p asc-engine blame:: && cargo test -p asc --test scenario -- blame`
-- **Brief:** SPEC §4.6, with derived `blame.v1` memoisation keyed by `blake3(cs ‖ path)`. Output formats: default, `--porcelain`, `--line-porcelain`, `--incremental`, `-L a,b`, `-w`, `--reverse`. Dirty working files are blamed with uncommitted lines as `Not Committed Yet`. Tests: line origins equal `git blame --porcelain` on fixture histories (ties are allowed to differ only where git's `-M` heuristics differ; no `-M` by default).
+### U27b Patches and bisect [audit: missing-cli-units]
+- **Owns:** `crates/asc-engine/src/diff/apply.rs`, `crates/asc/src/cli/{apply.rs,am.rs,format_patch.rs,bisect.rs}`, `tests/compat/scenarios/{apply,am,format-patch,bisect}-*.t`
+- **Depends:** U27a. **Accept:** `cargo test -p asc-engine diff::apply && cargo test -p asc-compat --test compat -- apply am format-patch bisect`
+- **Brief:** A `git apply`-compatible patch parser and applier in `asc-engine` (used later by `Apply` RPC, U48a), with `--cached`, `--check`, `--index`, `--3way`, `--recount`, `--unidiff-zero`, `--whitespace=nowarn` (lint-staged's invocation); `am` with `applypatch-msg`/`pre-applypatch`/`post-applypatch`; `format-patch`; `bisect start/good/bad/skip/reset/run/log` with git's `BISECT_*` files and `refs/bisect/*`. `bisect run` spawns through `asc::child::command()` (SPEC §9.4.1 child PATH).
+
+### U27c CLI rebase (non-interactive)
+- **Owns:** `crates/asc/src/cli/rebase.rs`, `tests/compat/scenarios/rebase-*.t`
+- **Depends:** U27a. **Accept:** `cargo test -p asc-compat --test compat -- rebase`
+- **Brief:** `rebase` with `--onto`, `--continue`, `--abort`, `--skip`, `--autostash`, `--exec`, state in git's `rebase-merge/` format through `seqstate.rs`; `pre-rebase` and `post-rewrite rebase` hooks; ref moves through `Ctx::update_local_refs`; `--exec` spawns through `asc::child::command()`; metadata rebase when disjoint (U26).
+
+### U27d CLI `rebase -i`
+- **Owns:** `crates/asc/src/cli/rebase_todo.rs`, `tests/compat/scenarios/rebase-i-*.t`
+- **Depends:** U27c. **Accept:** `cargo test -p asc-compat --test compat -- rebase-i`
+- **Brief:** git's todo grammar (`pick reword edit squash fixup drop exec break label reset merge`), `--autosquash`, `--update-refs`, `--rebase-merges`, `--keep-empty`, `core.editor`/`GIT_SEQUENCE_EDITOR` (spawned through `asc::child::command()`); `stopped-sha`, `amend`, `done` and `git-rebase-todo` exactly as git writes them. Scenario: `asc rebase -i` stops on `edit`, then `git rebase --continue` (through the shim) finishes it.
+
+### U27e CLI stash
+- **Owns:** `crates/asc/src/cli/stash.rs`, `tests/compat/scenarios/stash-*.t`
+- **Depends:** U27a. **Accept:** `cargo test -p asc-compat --test compat -- stash`
+- **Brief:** `stash` with git's commit structure, `refs/stash` and its reflog, `-u`, paths, `pop` conflicts kept; `stash create` and `stash store` (lint-staged); `stash list -z --pretty=…`. Staging changes call `SyntheticIndexSink::on_stage_changed`; `refs/stash` moves through `Ctx::update_local_refs`; `stash drop`/`clear` call `OpSink::snapshot_wc` first. `pull` is added in U32.
+
+### U28a Blame engine (`asc-engine::blame`) [audit: 21-metadata-first]
+- **Owns:** `crates/asc-engine/src/blame.rs`
+- **Depends:** U15, U12, U14. **Accept:** `cargo test -p asc-engine blame::`
+- **Brief:** SPEC §4.6, implemented as the keyed derived type `blame.v1` (`DerivedKeyed<Key = RepoPath>`, SPEC §5) that recurses to the previous changeset touching the path; a candidate-list hook for the server's path index (U65). Defines the `BlameApi` trait (SPEC §4.3) in `blame.rs` and implements it for `Engine` there [audit: historyapi-impl-split]. Tests: line origins equal `git blame --porcelain` on fixture histories (ties may differ only where git's `-M` heuristics differ; no `-M` by default).
+
+### U28b CLI blame
+- **Owns:** `crates/asc/src/cli/blame.rs`, `tests/compat/scenarios/blame-*.t`
+- **Depends:** U25, U28a. **Accept:** `cargo test -p asc-compat --test compat -- blame`
+- **Brief:** Output formats: default, `--porcelain`, `--line-porcelain`, `--incremental`, `-L a,b`, `-w`, `--reverse`, and asc-only `--json` (`BlameResponse` JSON lines through `cli/json.rs`). Dirty working files are blamed with uncommitted lines as `Not Committed Yet`.
+
+### U54w `asc worktree` (plain) and Claude Code hooks [audit: oversized-units, claude-code-worktrees]
+- **Owns:** `crates/asc-wc/src/worktree.rs`, `crates/asc/src/cli/worktree.rs`, `crates/asc/src/cli/claude_hook.rs`, `tests/compat/scenarios/worktree-*.t`
+- **Depends:** U23, U25. **Accept:** `cargo test -p asc-wc worktree:: && cargo test -p asc claude_hook:: && cargo test -p asc-compat --test compat -- worktree`
+- **Brief:** `asc worktree add|list|remove|prune|lock|unlock|move` with `--ephemeral --ttl` in plain mode (virtual through the daemon later, U53a's `WorkspaceFactory`), git's output formats, branch-in-use errors, and the SPEC §9.3 nested-path rule (mount at `$ASC_HOME/wt/<id>`, directory symlink or junction at the requested path; the parent reports `?? <dir>/`). `post-checkout` runs with the null SHA as old. `asc internal claude-hook worktree-create|worktree-remove` per SPEC §9.3. The `worktree convert --plain <path>` subcommand calls `ext::WorkspaceFactory::convert_plain` (SPEC §9.1). `worktree add -b` moves the branch through `Ctx::update_local_refs`. Tests: `worktree remove` refuses when dirty; feeding sample hook JSON prints exactly one absolute path on stdout; a nested `.claude/worktrees/<name>` path is untracked as one entry in the parent.
+
+---
+
+## Phase 1b: project graph (crate `asc-graph`, `asc-engine::projects`)
+
+### G01 Model, canon, patterns, selectors, config (`asc-graph`)
+- **Owns:** `crates/asc-graph/src/{model.rs,canon.rs,pattern.rs,select.rs,config.rs,jsonc.rs}`
+- **Depends:** U03, U04. **Accept:** `cargo test -p asc-graph model:: canon:: pattern:: select:: config:: jsonc::`
+- **Brief:** SPEC §12A.1 types with golden encodings (kinds 20–23); display ids with the `@root` collision suffix; selectors with aliases; the §12A.3 parser with line-numbered errors; named-input resolution and its cycle error; `decide(S, dir)` from §12A.6; the JSONC pre-pass, tested on ASC's `turbo.json` and a `bun.lock` sample. Depth limits of §12A.10 in `jsonc.rs` and `canon.rs`, each with an over-limit test.
+
+### G02 Ownership, linking, affected algebra
+- **Owns:** `crates/asc-graph/src/{own.rs,link.rs,affected.rs,registry.rs,detect/mod.rs}`
+- **Depends:** G01. **Accept:** `cargo test -p asc-graph own:: link:: affected::`
+- **Brief:** the `Detector` trait, `Claim`, `LinkCx`; `DETECTORS` (each detector unit may add its one registry line, like a `mod` line); ownership (deepest Package root, ties, claimed, ignored, unowned); Contains edges; opaque Implicit edges; config application (tags, edge add/remove, declared projects, ignore); SPEC §12A.7 steps 3–5 as a pure function with SCC topological order. Tests use a fake detector on ASC-shaped trees (the pipeline-api tie, dsl-compiler Contains), plus closure, `--target`, removed, unowned and global cases, and a proptest against the naive oracle (run all detectors on both full trees, mark owners of changed paths, close over reverse edges).
+
+### G03 Node detector and bun.lock
+- **Owns:** `crates/asc-graph/src/detect/node.rs`, `crates/asc-graph/src/lock/bun.rs`, `crates/asc-graph/tests/fixtures/node/**`
+- **Depends:** G02. **Accept:** `cargo test -p asc-graph detect::node:: lock::bun::`
+- **Brief:** SPEC §12A.2.4, §12A.2.6 and the node row of §12A.4 (nested-key resolution, `patchedDependencies`). Uses spike S9. Tests: ASC's `!` negation, `apps/*/*/*` globs, `workspace:*` deps, `optionalDependencies` with `*` resolving to `npm/*` members; a fixture with a gitlink and bun.lock workspace entries under it, where `workspace:*` edges resolve and a `Change::Gitlink` affects the gitlinked members and `node:@asc/soma`-style dependents; bumping one external package changes `external_fp` only for members whose closure reaches it; one over-limit test.
+
+### G04 Rust detector and Cargo.lock
+- **Owns:** `crates/asc-graph/src/detect/rust.rs`, `crates/asc-graph/src/lock/cargo.rs`, `crates/asc-graph/tests/fixtures/rust/**`
+- **Depends:** G02. **Accept:** `cargo test -p asc-graph detect::rust:: lock::cargo::`
+- **Brief:** SPEC §12A.2.1 and the rust row of §12A.4. Tests: two workspaces with duplicate names; inherited path deps; `[patch]`; target-specific tables; the no-lock fallback; a profile edit affects only one workspace; a lock bump affects only reaching crates; one over-limit test.
+
+### G05 Python detector, uv.lock and requirements
+- **Owns:** `crates/asc-graph/src/detect/python.rs`, `crates/asc-graph/src/lock/uv.rs`, `crates/asc-graph/tests/fixtures/python/**`
+- **Depends:** G02. **Accept:** `cargo test -p asc-graph detect::python:: lock::uv::`
+- **Brief:** SPEC §12A.2.2 and the python row of §12A.4 (PEP 503, sources, requirements, opaque `setup.py`). Tests include git sources staying external, a uv.lock bump scoped to reaching members, and one over-limit test.
+
+### G06 .NET detector
+- **Owns:** `crates/asc-graph/src/detect/dotnet.rs`, `crates/asc-graph/src/lock/nuget.rs`, `crates/asc-graph/tests/fixtures/dotnet/**`
+- **Depends:** G02. **Accept:** `cargo test -p asc-graph detect::dotnet:: lock::nuget::`
+- **Brief:** SPEC §12A.2.3 and the dotnet row of §12A.4: backslash and MSBuild-variable `ProjectReference` paths; an unknown `$(X)` makes the project opaque; sln and slnx Member edges; central versions; `Directory.Build.*` as eco-global; `packages.lock.json`. One over-limit test.
+
+### G07 Engine integration (`asc-engine::projects`) [audit: derived-data-incremental, input-hashes-without-hydration]
+- **Owns:** `crates/asc-engine/src/projects/{mod.rs,derive.rs,hash.rs,affected.rs}`
+- **Depends:** U10, U14, G03–G06. **Accept:** `cargo test -p asc-engine projects::`
+- **Brief:** the `manifests.v1` `Derived` impl with `EAGER = false` (SPEC §5) [audit: manifests-eager-terminology]; content-keyed memos under `ObjKey::Derived` (`mset`, `parsed`, `pgraph`, `phash`); `Engine::project_graph(cs)`, `Engine::affected(query)` (merge base, leafdiff, loading the two graphs, then G02's algebra), `Engine::input_hashes(cs, target)` (SPEC §12A.6); a graph LRU; defines the `ProjectsApi` trait (project_graph, affected, project_hashes; SPEC §4.3) in `projects/mod.rs` and implements it for `Engine` there [audit: historyapi-impl-split]. Tests: a parse counter shows that a 2,000-changeset history where 5% of changesets touch manifests parses each distinct manifest FileId once, and a changeset with no manifest change reuses the parent's set id with 0 parses; a counting `Objects` wrapper shows 0 `File` reads outside the manifest set; editing one file changes the hashes of its owner and of the dependents whose target inputs use `^`, and no other; excluding `**/*.md` makes a README edit leave the `build` hash unchanged; a `projects.toml` change gives `all=true`; oracle equality on 500 random pairs.
+
+### G08 CLI, local (`asc affected`, `asc projects`, `asc graph`) [audit: cli-and-output-formats]
+- **Owns:** `crates/asc/src/cli/{affected.rs,projects.rs,graph.rs}`, `crates/asc/src/fmt/affected.rs`, `crates/asc/tests/cli_affected.rs`, `tests/compat/scenarios/affected-*.t`
+- **Depends:** U25, G07. **Accept:** `cargo test -p asc --test cli_affected`
+- **Brief:** SPEC §12A.9: flags, defaults (base per SPEC §12A.9: `origin/HEAD`, else `origin/<default>`, else `master`; compared at the merge base) [audit: affected-default-base-contradiction], exit codes, `--uncommitted`, every output format (`list`, `json`, `turbo`, `nx`, `matrix`, `gha`) with golden outputs, `--explain`, `--hashes`, `projects --owner`, `graph --format dot`. Test: on a branch whose upstream is `origin/feat`, `asc affected` compares against `origin/master`.
+
+### G11 ASC validation
+- **Owns:** `crates/asc/tests/asc_affected.rs`
+- **Depends:** U35, G08. **Accept:** `cargo test -p asc --test asc_affected -- --ignored` (needs bun and network for `bunx turbo@2.10.11`)
+- **Brief:** SPEC §17 "Affected vs turbo" row and spike S10. Reads `D:\dev\monorepo` read-only; runs turbo on a `git clone --shared` temporary copy, never in monorepo itself.
 
 ---
 
@@ -267,123 +554,206 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 - **Depends:** U07. **Accept:** `cargo test -p asc-store s3:: && docker compose -f docker-compose.it.yml up -d minio garage && cargo test -p asc-store --features it-s3 --test it_s3 -- --ignored`
 - **Brief:** `BucketObjects::from_url("s3://bucket/prefix?endpoint=&region=&path_style=")` builds `AmazonS3Builder` (credentials from env, or `git credential fill` with `protocol=s3`). Put fallback per SPEC §3.3: an `AtomicBool create_unsupported` per store instance, set on `NotImplemented`/501/400-with-conditional-message, then `PutMode::Overwrite`. Multipart above 32 MiB. Retries via `backon` (exponential, 5 tries) for 5xx and timeouts only. Conformance on MinIO and Garage. Test the fallback with a wrapper store that returns `NotImplemented` for `Create`.
 
-### U30 BucketRefs and probe (`asc-store::{bucketrefs,probe}`)
+### U30 BucketRefs and probe (`asc-store::{bucketrefs,probe}`) — deferred, Ops track [audit: bucketrefs-defer]
 - **Owns:** `crates/asc-store/src/{bucketrefs.rs,probe.rs}`, `crates/asc-store/tests/it_bucketrefs.rs`
-- **Depends:** U07, U09. **Accept:** `cargo test -p asc-store bucketrefs:: probe:: && cargo test -p asc-store --features it-s3 --test it_bucketrefs -- --ignored`
-- **Brief:** SPEC §3.4 exactly: `BucketRefEntry`, the `rl/<ref>/<v:020>` create-only CAS, retry success iff `op_id` matches, `r/<ref>` hint and forward probing, deletes as entries with `new = None`, `list` via the `r/` prefix, `log` from entries. `probe(store) -> ProbeResult { create_exclusive: bool, detail }`. Tests: race (32 writers, one ref) with exactly one winner per version; a retried create after a simulated lost response returns success (fault-injecting store that performs the put and then returns a timeout); ABA (A→B→A) is impossible because versions only increase; the probe fails on a store that ignores `Create`.
+- **Depends:** U29. **Accept:** `cargo test -p asc-store bucketrefs:: probe:: && cargo test -p asc-store --features it-s3 --test it_bucketrefs -- --ignored`
+- **Brief:** Off the critical path: v1 bucket remotes use `--refs local` until this ships (SPEC §3.4). SPEC §3.4 exactly: `BucketRefEntry` (with its version byte, SPEC §2.2a; an unknown version fails with `upgrade asc` and never writes), the `rl/<ref>/<v:020>` create-only CAS, retry success iff `op_id` matches, `r/<ref>` hint and forward probing, deletes as entries with `new = None`, `list` via the `r/` prefix, `log` from entries, and the `gc/freeze` check before the CAS (SPEC §3.6; test `gc::bucket_freeze_blocks_cas`). `probe(store) -> ProbeResult { create_exclusive: bool, detail }`. Tests: race (32 writers, one ref) with exactly one winner per version; a retried create after a simulated lost response returns success (fault-injecting store that performs the put and then returns a timeout); ABA (A→B→A) is impossible because versions only increase; the probe fails on a store that ignores `Create`.
 
-### U31 Sync engine (`asc-engine::sync`)
-- **Owns:** `crates/asc-engine/src/sync.rs`
-- **Depends:** U08, U09, U14. **Accept:** `cargo test -p asc-engine sync::`
-- **Brief:** A `Remote` trait: `list_refs`, `has_many`, `get_many` (stream), `put_many` (stream), `update_refs`, and optional `history: Option<&dyn HistoryApi>`. `BucketRemote` implements it over `BucketObjects` and `BucketRefs` or `SqlRefs`. `fetch(remote, refspecs) -> FetchReport` per SPEC §6.3 (changesets only; `--prefetch` pathspec walks trees and files). `push(remote, updates, mode) -> PushReport`: closure computation, `has_many` batches of 4,096, dependency-ordered `put_many` with 8 concurrent streams of ≤ 16 MiB, ref update, demotion. `clone_minimal(remote, branch)`. Tests: two in-memory "machines" push and fetch one `file://` bucket; an interrupted push (fault after N puts) resumes and uploads only the rest; a push uploads nothing for unchanged trees.
+### U31 Sync engine and `HistoryApi` (`asc-engine::{sync,history}`) [audit: 2/12-history-fetch, historyapi-cycle]
+- **Owns:** `crates/asc-engine/src/{sync.rs,history.rs}`, `crates/asc-engine/src/graph.rs` (the boundary change only; see CARRY.md "Graph boundary")
+- **Depends:** U08, U09, U12, U14. **Accept:** `cargo test -p asc-engine sync:: history::`
+- **Brief:** `history.rs` defines the `HistoryApi` trait (log, merge_base, is_ancestor, diff, resolve, git_map; SPEC §4.3) and implements it for `Engine`; blame and affected are separate traits (`BlameApi` in U28a, `ProjectsApi` in G07) [audit: historyapi-impl-split]. **History window [audit: clone-history-o-history]:** fetch asks `Log` with `limit = asc.fetch.historyWindow` (default 10,000), records the oldest fetched changesets whose parents are not local through a `BoundaryStore` trait (U32 implements it over U17's `history_boundary` accessors; tests use an in-memory one), and `history.rs` provides a `GraphSource` decorator that, on U12's `Boundary`, continues the walk through the remote's `HistoryApi` (`Log`/`MergeBase`/`IsAncestor` with the boundary ids), or fails with the SPEC §6.4 offline error; `deepen(n)`/`unshallow()` widen the window. Bucket remotes keep the full walk. A `Remote` trait: `list_refs`, `has_many`, `get_many` (stream of stored bytes), `put_many` (stream), `update_refs`, and optional `history: Option<&dyn HistoryApi>`. `BucketRemote` implements it over `BucketObjects` and the bucket's dedicated `repos` row in the shared `SqlRefs` (SPEC §3.4; BucketRefs once U30 lands) [audit: bucket-local-refs-storage-undefined]. `fetch(remote, refspecs) -> FetchReport` per SPEC §6.3: with a `HistoryApi`, `Log(include = new tips, exclude = known tips)` fills `cs_gen` without deriving, then pipelined `GetObjects` batches of 256 (8 streams) fetch changeset bodies; bucket mode uses the frontier-batched walk (one round trip per generation level) reading `d/gen.v1`/`d/skip.v1`/`d/gitcommit.v1` when present; negative refspecs (`^refs/heads/agent/*`). `--prefetch` walks trees level by level, then files. `push(remote, updates, mode) -> PushReport`: closure computation, `has_many` batches of 4,096, dependency-ordered `put_many` with 8 concurrent streams of ≤ 16 MiB, ref update, demotion; `--no-ref` (closure upload plus `Ingest`). Before uploading, push detects any changeset in the closure carrying `extra["git.commit"]` and fails with SPEC §6.3's `import this history on the server` message [audit: client-raw-git-extras]. `clone_minimal(remote, branch)` plus history metadata within the window and an optional seed unpack. Tests: two engines that share one `SqlRefs` (one machine) push and fetch one `file://` bucket [audit: bucket-local-refs-two-clones]; `sync::window` (a 100k chain fetches ≤ window bodies, and `log` past the boundary equals the full log through an in-process history source); a push of a locally imported raw commit fails before any upload; an interrupted push (fault after N puts) resumes and uploads only the rest; a push uploads nothing for unchanged trees; fetching a 10k-changeset linear chain over an in-process history source makes ≤ 50 round trips (mock transport counter); bucket fetch of a 1k chain takes ≤ 1,000/256 + depth batches; 500 agent refs on the remote cause 0 changeset downloads on a plain fetch.
 
 ### U32 CLI remote/fetch/push/pull/clone for bucket remotes
-- **Owns:** `crates/asc/src/cli/{remote.rs,fetch.rs,push.rs,pull.rs,clone.rs}`, `crates/asc/src/remote/{mod.rs,url.rs,bucket.rs}`, `crates/asc/tests/scenarios/remote-bucket.t`
-- **Depends:** U27, U29, U30, U31. **Accept:** `cargo test -p asc --test scenario -- remote-bucket && cargo test -p asc --test cli_remote`, with `crates/asc/tests/cli_remote.rs` owned
-- **Brief:** URL parsing per SPEC §6.2 into `RemoteSpec { Bucket{url, refs: Shared|Local}, Git{url}, Server{url}, Discover{url} }` (discovery is stubbed to Git until U50). Remotes are stored in git config `remote.<n>.url` and `.fetch`, plus `remote.<n>.ascRefs=local` for single-writer buckets. `fetch` (`--prune`, `--all`, `--tags`, `--prefetch`), `push` (flags in SPEC §11.2 except `--land`), `pull` (merge or rebase per config), `clone` for bucket URLs (plain mode). `asc init --store <url> [--refs local]`. Test: two clones of the same `file://` bucket exchange commits; a non-fast-forward push is rejected with git's message.
+- **Owns:** `crates/asc/src/cli/{remote.rs,fetch.rs,push.rs,pull.rs,clone.rs}`, `crates/asc/src/remote/{mod.rs,url.rs,bucket.rs}`, `crates/asc/tests/cli_remote.rs`, `tests/compat/scenarios/{remote-bucket,push-reject,fetch-agent-refs}.t`
+- **Depends:** U27a, U27c, U29, U31. **Accept:** `cargo test -p asc-compat --test compat -- remote-bucket push-reject fetch-agent-refs && cargo test -p asc --test cli_remote`
+- **Brief:** URL parsing per SPEC §6.2 into `RemoteSpec { Bucket{url, refs: Local|Shared}, Git{url}, Server{url}, Discover{url} }` (discovery is stubbed to Git until U50). Remotes are stored in git config `remote.<n>.url` (the user's URL as given) and `.fetch` (clone writes `^refs/heads/agent/*`), plus `remote.<n>.ascRefs=local` for single-writer buckets. `fetch` (`--prune`, `--all`, `--tags`, `--deepen=<n>`, `--unshallow`, `--prefetch`), `push` (flags in SPEC §11.2, git's output byte for byte: `To <url>`, summary lines, `! [rejected] … (fetch first|non-fast-forward|stale info)`, `--porcelain`; `pre-push` hook before any upload with git SHA-1s on stdin), `pull` (merge or rebase per config; `post-merge`), `clone` for bucket URLs (plain mode; `post-checkout`; the §2.4.1 attribute warning). `asc init --store <url> [--refs local]` (default `local` until U30; the first push writes the `refs-local` key, SPEC §3.4). `remote/mod.rs` implements U31's `BoundaryStore` over `state.db.history_boundary`. Tests: two clones under one `$ASC_HOME` exchange commits through the same `file://` bucket; a clone under a second `$ASC_HOME` prints the SPEC §3.4 message and exits 128; a plain push while behind gives git's rejection, byte-equal; `pre-push` can abort a push.
 
 ---
 
 ## Phase 3: git interop
 
 ### U33 Git import (`asc-git::import`)
-- **Owns:** `crates/asc-git/src/import.rs`, `crates/asc-git/tests/fixtures/**` (fixture-builder scripts), `crates/asc-git/tests/import.rs`
-- **Depends:** U14, U16. **Accept:** `cargo test -p asc-git --test import`
-- **Brief:** `Importer::new(engine, odb, map: &dyn GitMapSink, policy)`, with `import_commits(tips) -> ImportReport` per SPEC §14.1: topological order of unknown commits; first-parent tree diff via gix; blob ingest; LFS pointer detection to `LfsRef` with pointer identity; gitlinks; asc tree building with actual git oids and overrides for non-canonical trees; commit canonicalisation; validation with `PathPolicy::Import`; derive; **assert `gitcommit == oid`**; tags. Incremental (skips oids in the map). Fixtures built by scripts with real git: signed commits, odd modes (`100664`), an unsorted tree (written with `git hash-object -t tree --literally`), LFS pointers, a gitlink, a non-UTF-8 author, the `encoding` header, octopus merges, `A.ts`/`a.ts` collisions, and a `CON` file.
+- **Owns:** `crates/asc-git/src/import.rs`, `crates/asc-git/tests/fixtures/**` (fixture-builder scripts), `crates/asc-git/tests/{import.rs,import_crash.rs}`
+- **Depends:** U14, U16. **Accept:** `cargo test -p asc-git --test import --test import_crash`
+- **Brief:** Implements SPEC §14.4 invariants I1–I5 and I7 (bounded topological window, parallel blob hashing, the kind-3 `git_map` row as the commit point) and owns `crates/asc-git/tests/import_crash.rs` (200 seeded kill-and-rerun runs give byte-identical results) [audit: 22-ingest-invariants]. An unknown `asc` header version fails with `upgrade asc` (SPEC §2.2a). `Importer::new(engine, odb, map: &dyn GitMapSink, policy)`, with `import_commits(tips) -> ImportReport` per SPEC §14.1: topological order of unknown commits; first-parent tree diff via gix; blob ingest (LFS pointer files are ordinary blobs, SPEC §2.5); gitlinks; asc tree building with actual git oids and overrides for non-canonical trees; commit canonicalisation; validation with `PathPolicy::Import`; derive; **assert `gitcommit == oid`**; tags; tags of trees, blobs or tags (lightweight or annotated) are skipped into `ImportReport.skipped_refs` with SPEC §14.1's warning [audit: import-non-commit-tags]. Incremental (skips oids in the map). Fixtures built by scripts with real git: signed commits, odd modes (`100664`), an unsorted tree (written with `git hash-object -t tree --literally`), LFS pointers, a gitlink, a non-UTF-8 author, the `encoding` header, octopus merges, `A.ts`/`a.ts` collisions, a `CON` file, and a tag of a tree, a tag of a blob and a tag of a tag (all three in `skipped_refs`).
 
 ### U34 Git export (`asc-git::export`)
 - **Owns:** `crates/asc-git/src/export.rs`, `crates/asc-git/tests/export.rs`
-- **Depends:** U14, U16. **Accept:** `cargo test -p asc-git --test export`
-- **Brief:** `Exporter::export(changesets | ref tips, target: &Odb) -> ExportReport`: renders blobs (pointer bytes for LFS), trees (override or render), commits and tags; skips oids present in the target (`contains`); writes loose objects, or one pack (built with gix pack writing, no deltas) plus `git index-pack` when there are more than 1,000 objects; `set_refs(&[(name, oid)])` via `git update-ref --stdin`. Tests: export of a native history produces commits identical to `git commit-tree` outputs; native → export → import yields identical `ChangesetId`s, including `copy_from` through the `asc` header and a `-S` signature.
+- **Depends:** U14, U16, U16a. **Accept:** `cargo test -p asc-git --test export`
+- **Brief:** `git index-pack` and `git update-ref --stdin` run through `RealGit::command()`. `Exporter::export(changesets | ref tips, target: &Odb) -> ExportReport`: renders blobs, trees (override or render), commits and tags; skips oids present in the target (`contains`); writes loose objects, or one pack (built with gix pack writing, no deltas) plus `git index-pack` when there are more than 1,000 objects; `set_refs(&[(name, oid)])` via `git update-ref --stdin`. Tests: export of a native history produces commits identical to `git commit-tree` outputs; native → export → import yields identical `ChangesetId`s, including `copy_from` through the `asc` header and a `-S` signature.
 
 ### U35 ASC round-trip milestone
 - **Owns:** `crates/asc-git/examples/roundtrip.rs`, `crates/asc-git/tests/asc_roundtrip.rs`
-- **Depends:** U33, U34. **Accept:** `cargo run -p asc-git --release --example roundtrip -- D:\dev\monorepo` prints `mismatches: 0` (and `cargo test -p asc-git --test asc_roundtrip -- --ignored`)
-- **Brief:** Opens the repo **read-only** (never writes to it), imports all refs' history into an `InMemory`/temp store, exports to a temp bare repo, and compares every commit, tree, tag and blob oid. Prints counts, elapsed time, the number of overrides needed and the LFS pointers found. Also imports `D:\dev\soma` when present. Report-only output; no ASC files modified.
+- **Depends:** U33, U34. **Accept:** `cargo test -p asc-git --release --test asc_roundtrip -- --ignored` (it runs the example's logic and asserts `mismatches == 0`, and that peak RSS and elapsed time meet the SPEC §14.4 ASC targets) [audit: acceptance-ambiguity]
+- **Brief:** Opens the repo **read-only** (never writes to it), imports all refs' history into an `InMemory`/temp store, exports to a temp bare repo, and compares every commit, tree, tag and blob oid; skipped refs (SPEC §14.1 step 6) are excluded from the mismatch count and listed. Prints counts, elapsed time, the number of overrides needed and the LFS pointers found. Also imports `D:\dev\soma` when present. Report-only output; no ASC files modified.
 
-### U36 Projection objects and refs mirror (`asc-git::projection::{objects,refs,seed}`)
-- **Owns:** `crates/asc-git/src/projection/{objects.rs,refs.rs,seed.rs,shallow.rs}`
-- **Depends:** U19, U34. **Accept:** `cargo test -p asc-git projection::objects projection::refs`
-- **Brief:** `ensure_commits(tips)` renders all missing ancestor commits into the common ODB (stops at commits already present). `ensure_tree(root)` renders one tree level, `ensure_trees_recursive(root)`, and adds `git_map` rows for entries. `seed_blobs(root, globs)` writes the manifest blobs (SPEC §9.4). `mirror_refs(&StateDb)` writes `refs/heads`, `refs/tags`, `refs/remotes`, `refs/stash` plus its reflog, packed-refs for large sets, and the workspace `HEAD`. `write_shallow(set)`. Hooks are filled into U22's commit path and U23's switch path (`on_ref_moved`, `on_head_moved`). Tests: after an asc commit and switch, `git log --oneline -5`, `git rev-parse HEAD^{tree}` and `git status` (clean) work in the projection with no blob reads except seeded ones (count via the ODB loose directory).
+### U36 Synthetic index export for turbo (`asc-git::projection::index_export`) [audit: user decision No-IDE, synthetic-index-o-files, index-renderer-ownership]
+- **Owns:** `crates/asc-git/src/projection/index_export.rs`, `crates/asc/src/index_sink.rs`
+- **Depends:** U19, U20. **Accept:** `cargo test -p asc-git projection::index_export`
+- **Brief:** SPEC §9.4, on top of U16's `index::render`/`index::write` (the only index writer; this unit does not render on its own): the `asc.turboIndex` policy (`auto` = true when the root tree has `turbo.json` or the workspace is plain; a virtual workspace without it has no `index` file); the index is HEAD's tree overlaid with set-0 stage rows (SPEC §9.4) [audit: turbo-index-reflects-head-breaks-staged-contract]; **incremental patching**: `patch(prev, changed_paths, stat, stage_overlay)` updates the previous index with the changed paths only (no reads of unchanged trees), handling gitlinks, unrepresentable entries with skip-worktree and sparse cones. No `shallow` file is written anywhere (SPEC §12.3 step 4). `index_sink.rs` implements U20's `SyntheticIndexSink` (`on_commit`, `on_head_moved`, `on_stage_changed`), so commit, switch, reset, merge, rebase and every staging command update it. Tests: drive `SyntheticIndexSink::on_commit`/`on_head_moved`/`on_stage_changed` directly with engine-built changesets and stage rows (`tests/support`) [audit: cli-unit-acceptance-uses-sibling-commands]; `gix-index` reads the file and every entry matches HEAD's tree overlaid with set-0 stage rows (a staged new file, a staged delete and a staged modify each match `git ls-files -s` of a git clone in the same state); no entry is racy; turbo-style stat comparison on a clean plain workspace hashes no files (spike S4 records turbo's exact calls); a one-path commit in a 100k-entry index reads 0 unchanged trees (tree-read counter); a virtual workspace whose tree has no `turbo.json` gets no `index` file.
 
-### U37 Hooks dispatcher and reconcile (`asc-git::projection::{hooks,reconcile}`, `asc internal`)
-- **Owns:** `crates/asc-git/src/projection/{hooks.rs,reconcile.rs}`, `crates/asc/src/cli/internal.rs`, `crates/asc/tests/scenarios/git-in-projection.t`
-- **Depends:** U36, U33, U22. **Accept:** `cargo test -p asc-git projection::reconcile && cargo test -p asc --test scenario -- git-in-projection`
-- **Brief:** Install the dispatcher scripts in `$ASC_HOME/hooks/` (POSIX sh, run by git's bundled sh on Windows) that call `asc internal hook <name> "$@"` and then chain to the user's hook (SPEC §9.4). `reconcile(ws)` per SPEC §9.6 (CAS, orphan refs, HEAD adoption). Every `asc` command start calls `reconcile_fast` (compares the ref mirror's mtime and value snapshot; a no-op in < 1 ms when unchanged). Scenario: `git commit -m x` in a projection followed by `asc log -1` shows the commit with the same git SHA; `git commit --no-verify` with `core.hooksPath` changed is still picked up by the next `asc status`; `git checkout -b y` is adopted; husky's `pre-commit` runs both for `asc commit` and for `git commit`.
+### U37 Hook and tool scenarios (`tests/compat`) [audit: hooks-full-set]
+- **Owns:** `tests/compat/scenarios/{hooks-husky,hooks-commitlint,lint-staged,claude-code}-*.t`, `tests/compat/scenarios/{hooks-path,hooks-reference-transaction}.t`, `tests/compat/fixtures/tools/**`
+- **Depends:** U22, U25, U36, U20a. **Accept:** `cargo test -p asc-compat --test compat -- hooks lint-staged claude-code`
+- **Brief:** Replaces v1.0's dispatcher-and-reconcile unit (withdrawn with the No-IDE decision). Scenarios run through both `asc` and the `git` shim: husky `pre-commit`, `pre-push` and `post-checkout` (a `bun install` stub) with `core.hooksPath=.husky/_`; commitlint `commit-msg` reading `COMMIT_EDITMSG`; a lint-staged run with partially staged files (`GIT_INDEX_FILE`, `stash create|store`, `diff --binary`, `apply --3way`); Claude Code's status/diff/commit/push flow. Real `git status` run directly in the workspace (no shim) fails with `not a git repository`. `hooks-path.t` [audit: hook-child-path-real-git]: a husky pre-commit that runs `git rev-parse --git-dir` and a node script that calls `git status` both reach asc, on Windows and Linux, with no user shim installed; lint-staged's reformat-and-`git add` in pre-commit is committed (SPEC §9.7); and the cases moved from U22: `precommit_add_is_committed` (a pre-commit hook edits a staged file and runs `git add`; the committed blob equals git's), `precommit_sees_staged` (`git diff --cached --name-only` in pre-commit prints the staged paths, with and without lint-staged) and `real_git_first_on_path` (the same with real git first on the inherited PATH and no user shim). `hooks-reference-transaction.t`: a `reference-transaction` hook logs commit, branch and reset updates as git does.
 
-### U38 git-remote-asc helper (`asc-git::remote_helper`)
-- **Owns:** `crates/asc-git/src/remote_helper.rs`, `crates/asc/src/cli/remote_helper_main.rs`
-- **Depends:** U36, U31. **Accept:** `cargo test -p asc-git remote_helper::`
-- **Brief:** The helper protocol: `capabilities` (`stateless-connect`, `push`, `option`), `stateless-connect git-upload-pack` speaking protocol v2 (`ls-refs`, `fetch` with explicit wants only; pkt-line framing; a response pack of whole objects, no deltas, no thin pack). Object source: `git_map` → asc id → `Tiered` read → git rendering. `push` lines → reconcile → sync push of that ref → `ok`/`error`. Tests: in a projected repo with no blobs, `git show HEAD:<file>` fetches exactly one blob; `git diff HEAD~1` fetches only changed blobs; `git push origin HEAD:refs/heads/x` from git lands the branch in the asc remote (a `file://` bucket).
+### U38 *(removed)*
+`git-remote-asc` is not built (SPEC §9.6, No-IDE decision). The id stays unused.
 
 ### U39 Git-remote mode (`asc-git::gitremote`)
-- **Owns:** `crates/asc-git/src/gitremote.rs`, `crates/asc/src/remote/git.rs`, `crates/asc/tests/scenarios/git-remote.t`
-- **Depends:** U32, U33, U34, U36. **Accept:** `cargo test -p asc --test scenario -- git-remote`
-- **Brief:** A `GitRemote` that implements U31's `Remote` by shelling out to `git fetch`/`git push` in the common dir (credential helpers apply; `GIT_TERMINAL_PROMPT=0` in non-interactive mode), with import after fetch (objects into `cache/`) and export before push (`--force-with-lease`). `asc clone <git url> --reference <git-dir>` runs `git fetch <path>` first, with no alternates. Status and ahead/behind work. Scenario against a local bare repo standing in for Forgejo: clone, commit, push, a second clone fetches, and the ids are equal on both machines.
+- **Owns:** `crates/asc-git/src/gitremote.rs`, `crates/asc/src/remote/git.rs`, `tests/compat/scenarios/git-remote-*.t`
+- **Depends:** U32, U33, U34, U16a. **Accept:** `cargo test -p asc-compat --test compat -- git-remote`
+- **Brief:** A `GitRemote` that implements U31's `Remote` by running real git (`RealGit::command()`, never `git` by name) for `git fetch`/`git push` in the private bare repo `repos/<id>/git-remote.git` (SPEC §6.3; credential helpers apply; `GIT_TERMINAL_PROMPT=0` in non-interactive mode), with import after fetch (objects into `cache/`) and export before push (`--force-with-lease`). `asc clone <git url> --reference <git-dir>` runs `git fetch <path>` first, with no alternates. Status and ahead/behind work. Scenario against a local bare repo standing in for Forgejo: clone, commit, push, a second clone fetches, and the ids are equal on both machines; with the shim first on PATH, push and export do not recurse (child-count assertion).
 
-### U40 fsmonitor, doctor, reclaimable report
-- **Owns:** `crates/asc/src/cli/{doctor.rs,fsmonitor.rs,gc.rs}`
-- **Depends:** U39. **Accept:** `cargo test -p asc --test cli_doctor`, with `crates/asc/tests/cli_doctor.rs` owned
-- **Brief:** `asc-fsmonitor` (argv[0]) implements hook protocol v2 (`2 <token>` → token NUL paths). In plain mode with no daemon it answers `/` (everything). Wiring to the daemon journal comes in U53. `asc doctor` checks: ProjFS feature state (Windows), FUSE availability, daemon reachability, `$ASC_HOME` free space, `LongPathsEnabled`, Defender exclusions, `core.hooksPath`/`fsmonitor` worktree overrides, global `autocrlf`, git version ≥ 2.40, credentials present, remote reachability, and `--store <url>` running the U30 probe. `--report-reclaimable <path>…` reports sizes of the old `.git`, `worktrees/`, `modules/`, `lfs/` and cruft packs **without deleting anything**. `asc gc` evicts the cache. Tests: the reclaimable report on a fixture repo with worktrees; fsmonitor protocol framing.
+### U24f CLI remaining plumbing and history verbs [audit: unowned-cli-commands]
+- **Owns:** `crates/asc/src/cli/{commit_tree,mktree,merge_tree,interpret_trailers,ls_remote,count_objects,shortlog,name_rev,whatchanged,range_diff,cherry,notes}.rs`, `tests/compat/scenarios/{plumbing-write,shortlog,name-rev,range-diff,cherry,notes}-*.t`
+- **Depends:** U25a, U26, U32. **Accept:** `cargo test -p asc-compat --test compat -- plumbing-write shortlog name-rev range-diff cherry notes`
+- **Brief:** The commands SPEC §11.2 lists as native that no other unit owns: `commit-tree`, `mktree`, `merge-tree` (`--write-tree` over U26), `interpret-trailers`, `ls-remote` with a configured remote name (a URL routes to real git, SPEC §11.4), `count-objects` (asc semantics, exit 0), `shortlog`, `name-rev`, `whatchanged`, `range-diff`, `cherry` and `notes show` (`notes` writes stay unsupported). Each implements the forms the U25a traces require plus SPEC §11.2, with its `NATIVE` table entries and compat scenarios against git.
+
+### U40 Doctor and reclaimable report
+- **Owns:** `crates/asc/src/cli/{doctor.rs,gc.rs}`, `crates/asc/tests/cli_doctor.rs`
+- **Depends:** U39, U20a. **Accept:** `cargo test -p asc --test cli_doctor`
+- **Brief:** `asc doctor` checks: ProjFS feature state (Windows), FUSE availability, daemon reachability, `$ASC_HOME` free space, `LongPathsEnabled`, Defender exclusions, real git ≥ 2.40 (`RealGit`), **which `git` each surface resolves to**, probed in freshly spawned cmd, PowerShell and Git Bash processes (not only the current environment; the machine-PATH order on Windows) and the environment turbo sees (SPEC §11.4) [audit: windows-shim-path-precedence-and-location], the private shim dir `<exe dir>/shim` exists, directories where a `.ascignore` shadows a differing `.gitignore` (SPEC §2.4.2) [audit: ascignore-shadows-gitignore, migrate-ignore-default-and-stale-text], global `autocrlf` and unapplied `.gitattributes` attributes (SPEC §2.4.1 warning), `includeIf` drift (SPEC §9.4), the workspace root and `BUN_INSTALL_CACHE_DIR` on the same volume (SPEC §10.5), credentials present, remote reachability, and `--store <url>` running the U30 probe once it lands. `--fix` repairs what it can. `--report-reclaimable <path>…` reports sizes of the old `.git`, `worktrees/`, `modules/`, `lfs/` and cruft packs **without deleting anything**. `asc gc` evicts the cache. Tests: the reclaimable report on a fixture repo with worktrees; a PATH without the shim is reported.
+
+### U40b Operational verbs [audit: missing-cli-units]
+- **Owns:** `crates/asc/src/cli/{import.rs,export.rs,prefetch.rs,debug.rs,fsck.rs,sparse.rs,archive.rs,noop_maint.rs,migrate_ignore.rs}`, `crates/asc/tests/cli_ops.rs`
+- **Depends:** U40, U33, U34. **Accept:** `cargo test -p asc --test cli_ops`
+- **Brief:** `asc import --git` and `asc export --git <dir> [--refs]` over U33/U34; `prefetch <pathspec> [--history N]`; `debug stats|hydrations|trace` (bytes per workspace; hydrations read from the daemon when present); `fsck` verifies the store, cache and workspaces and re-derives `cs_gen`; `sparse-checkout set|add|list|disable` and `sparse dehydrate`; local `archive` (tar, zip; `export-ignore`/`export-subst`); `repack`/`prune`/`maintenance` no-ops (exit 0); `asc migrate ignore [--move]` (copies by default; `--move` renames; SPEC §2.4.2) [audit: migrate-ignore-default-and-stale-text].
 
 ---
 
 ## Phase 4: server
 
 ### U41 Proto and conversions (`asc-rpc` codegen)
-- **Owns:** `proto/asc/v1/repo.proto`, `proto/asc/v1/workspace.proto`, `crates/asc-rpc/build.rs`, `crates/asc-rpc/src/{lib.rs,convert.rs,errors.rs}`
-- **Depends:** U04. **Accept:** `cargo test -p asc-rpc convert:: && buf lint proto` (buf optional locally; CI requires it)
-- **Brief:** The proto files exactly as SPEC §7. `tonic-prost-build` codegen in `build.rs`. `convert.rs` provides `TryFrom` between prost types and `asc-core`/`asc-store` types (ids by length and mode, `RefTarget`, `Signature`, `PathChange`, `ObjKey`). Prost types never leave this crate's public API except through the generated service traits. `errors.rs` maps `ErrorDetail` ↔ a Rust `RpcError` enum. Tests: round trip of every message type that has an asc-core equivalent; bad lengths are rejected.
+- **Owns:** `proto/asc/v1/repo.proto`, `proto/asc/v1/workspace.proto`, `proto/asc/v1/projects.proto` (messages and service only), `proto/buf.yaml` (the `lint.except` list only), `crates/asc-rpc/build.rs`, `crates/asc-rpc/src/{lib.rs,convert.rs,errors.rs}`
+- **Depends:** U04. **Accept:** `cargo test -p asc-rpc convert:: && buf lint proto` [audit: acceptance-ambiguity]
+- **Brief:** Set `lint.except` in `proto/buf.yaml` to the five rules SPEC §7 names (`SERVICE_SUFFIX`, `ENUM_ZERO_VALUE_SUFFIX`, `RPC_REQUEST_STANDARD_NAME`, `RPC_RESPONSE_STANDARD_NAME`, `RPC_REQUEST_RESPONSE_UNIQUE`) [audit: proto-fails-buf-standard-lint]. Reserve `OBJ_KIND_CHANGE_META = 9` in `ObjKind` (SPEC §7, §20.2). The proto files exactly as SPEC §7 and §12A.8, including `Ingest`, `FindLanding`, `Classify`, `Rebase`, `Conflict`, the `Log` page tokens, the `ErrorDetail.conflicts` field, the `PROJECTS_CONFIG`/`RATE_LIMITED` codes, the Workspace plugin RPCs (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`) with every `Ws*`/`Watch*` message SPEC §7 defines, and messages for the internal daemon RPCs built from their SPEC comments [audit: plugin-api-undefined]. `projects.proto` moves here from G09 so `workspace.proto` can import `AffectedRequest`/`AffectedResponse`; G09 keeps the Rust conversions and the service. `build.rs` compiles **every** `proto/asc/v1/*.proto` with `tonic-prost-build`. `convert.rs` provides `TryFrom` between prost types and `asc-core`/`asc-store` types (ids by length and mode, `RefTarget`, `Signature`, `PathChange`, `ObjKey`, `Conflict`). Prost types never leave this crate's public API except through the generated service traits. `errors.rs` maps `ErrorDetail` ↔ a Rust `RpcError` enum. Tests: round trip of every message type that has an asc-core equivalent; bad lengths are rejected.
 
 ### U42 gRPC server/client, auth interceptor (`asc-rpc::{server,client,auth}`)
-- **Owns:** `crates/asc-rpc/src/{server.rs,client.rs,auth.rs,history.rs}`
-- **Depends:** U41, U31, U26, U28. **Accept:** `cargo test -p asc-rpc server:: client::`
-- **Brief:** `HistoryApi` trait (log, merge_base, is_ancestor, diff, blame, resolve, git_map) implemented by `Engine` (in `asc-engine` through a blanket adapter in this crate) and by `RpcClient`. `RepoService<B: RepoBackend>`: a tonic server implementing object, ref and history RPCs over a `RepoBackend` trait (the server crate implements that trait for the real pipeline; this unit ships a simple `EngineBackend` for tests and local use). `RpcClient` implements `Remote` (U31) and `HistoryApi`: 8 pipelined `GetObjects` streams, batching, resumable `PutObjects`, `x-asc-op-id`, version header, TLS via rustls. `AuthInterceptor` extracts the bearer token into request extensions; an `Authorizer` trait is supplied by the server. Tests: the U07/U09 conformance suites run through an in-process server and client; a history equality check (engine vs RPC) on fixture repos.
+- **Owns:** `crates/asc-rpc/src/{server.rs,client.rs,auth.rs}`
+- **Depends:** U41, U31, U26, U28a. **Accept:** `cargo test -p asc-rpc server:: client::`
+- **Brief:** `RpcClient` implements `asc_engine::history::HistoryApi` (defined in U31), `asc_engine::blame::BlameApi` (U28a) and U31's `Remote` [audit: historyapi-cycle, historyapi-impl-split]; `ProjectsApi` is added by G09. `RepoService`: a tonic server over `RepoHandlers`: one `Arc<dyn …>` per RPC group (`Objects`, `Refs`, `History`, `Reads`, `Mutations`, `Admin`, `ImportPush`, `Landing`, `Classify`, `Rebase`). Each defaults to `UNIMPLEMENTED`, and each is set once through a registry of `OnceLock` setters. `EngineBackend` fills the object, ref and history groups for tests and local use [audit: asc-serve-no-handler-or-route-extension-points]. `GetObjects` serves `get_stored` bytes without decoding (SPEC §3.2). The client: 8 pipelined `GetObjects` streams, batching, resumable `PutObjects`, `x-asc-op-id`, version header, TLS via rustls, and routing of `HasObjects`/`GetObjects` to a configured `objects` tier list (SPEC §7). `AuthInterceptor` extracts the bearer token into request extensions; an `Authorizer` trait is supplied by the server. Tests: the U07/U09 conformance suites run through an in-process server and client; a history equality check (engine vs RPC) on fixture repos; serving 1,000 objects performs 0 zstd decodes (codec counter).
 
-### U43 Server core (`asc-serve::{config,registry,ingest,update,outbox,http}`)
-- **Owns:** `crates/asc-serve/src/{lib.rs,config.rs,registry.rs,ingest.rs,update.rs,outbox.rs,http.rs,graph_sql.rs}`, `crates/asc-serve/migrations/{postgres,sqlite}/**`, `crates/asc/src/cli/serve.rs`
-- **Depends:** U42, U34. **Accept:** `cargo test -p asc-serve update:: ingest:: outbox::`
-- **Brief:** The `asc-serve.toml` loader (SPEC §8.1). The SPEC §8.2 schema with migrations for both databases. A registry with per-repo `Engine` construction (`BucketObjects` namespace + `SqlRefs` + SQL `GraphSource` + SQL `GitMapSink`). Ingest verification (SPEC §8.4) with `file_meta`. The `UpdateRefs` pipeline steps 1–5, 8 and 9 (steps 6–7 are hook points with a no-op default; Forgejo arrives in U44). FAST_FORWARD and FORCE modes; `op_results` idempotency; outbox table and worker (per-repo ordering, backoff, metrics) with an `Effect` trait (implementations added by U44 and K-units). axum routes `/healthz`, `/metrics` (prometheus) and `/.well-known/asc`. The `asc serve` subcommand. Tests: in-process server over InMemory + SQLite; push of a stack; a duplicate `op_id` returns the stored result; **crash injection** (panic after commit, before effects) followed by restart delivers the effects; a client lying about a `git` oid or size is rejected with `INVALID_OBJECT`.
+### U43a Server config, schema, registry (`asc-serve::{config,registry}`) [audit: oversized-units]
+- **Owns:** `crates/asc-serve/src/{lib.rs,config.rs,registry.rs,migrate.rs}`, `crates/asc-serve/migrations/{postgres,sqlite}/**`, `crates/asc/src/cli/serve.rs`
+- **Depends:** U42, U34. **Accept:** `cargo test -p asc-serve config:: registry:: migrate::`
+- **Brief:** The `asc-serve.toml` loader (SPEC §8.1, plus `[limits]`, `[[composition_grants]]`, `role = primary|cache`). The SPEC §8.2 schema for both databases; `asc serve migrate` as a separate subcommand (never at replica start), with an expand/contract CI check that runs the N-1 server test suite against the N schema (test `migrate::n_minus_1_compat`) [audit: rolling-upgrade-encodings]. `SqlRefs::migrate()` is called here. A registry with per-repo `Engine` construction (`BucketObjects` namespace + `SqlRefs` + SQL `GraphSource` + SQL `GitMapSink`). `lib.rs` defines the `TextBudget` extension point (`acquire(bytes) -> Guard`, unlimited by default) that U47, U48a, U48b and U67 call before buffering a whole file; U69 registers the real `limits.text_memory` semaphore [audit: server-whole-file-buffer-cap]. `registry.rs` also holds the `HttpRoutes` (`fn router(&self) -> axum::Router`) and `GrpcServices` registries; `lib.rs` merges every registered router and service, and every registered `RepoHandlers` group (U42), at startup. U43b, U45, U47, U48a–U48d, U49, U66, U67, U68, U70, U72, U75, G09 and the C server units each register their handler, route or service with one line in `lib.rs` [audit: asc-serve-no-handler-or-route-extension-points]. The `asc serve` subcommand.
+
+### U43b Server ingest and UpdateRefs (`asc-serve::{ingest,update,graph_sql}`)
+- **Owns:** `crates/asc-serve/src/{ingest.rs,update.rs,graph_sql.rs}`
+- **Depends:** U43a. **Accept:** `cargo test -p asc-serve update:: ingest::`
+- **Brief:** Ingest verification (SPEC §8.4) with `file_meta`, comparing each new tree with its parent tree so cost is O(changed paths × depth) (test `ingest::cost`: a one-file change in a 5,000-entry directory performs at most depth + 1 `file_meta` lookups) [audit: 5-ingest-cost]. The `UpdateRefs` pipeline steps 1–5, 8 and 9 (steps 6–7 are hook points with a no-op default; Forgejo arrives in U44); step 4 skips changesets already ingested; the shared GC advisory lock from step 4 to commit (SPEC §3.6). FAST_FORWARD and FORCE modes; `op_results` idempotency. Raw git extras: any new changeset carrying `extra["git.commit"]` or tag carrying `extra["git.tag"]` from `PutObjects`/`Ingest`/`Commit`/`UpdateRefs` is rejected with `INVALID_OBJECT` (SPEC §8.4) [audit: client-raw-git-extras]. Tests: in-process server over InMemory + SQLite; push of a stack; a duplicate `op_id` returns the stored result; a client lying about a `git` oid or size is rejected with `INVALID_OBJECT`; a push of a changeset with a forged `git.commit` → `INVALID_OBJECT`.
+
+### U43c Server outbox and HTTP (`asc-serve::{outbox,http}`)
+- **Owns:** `crates/asc-serve/src/{outbox.rs,http.rs}`
+- **Depends:** U43b. **Accept:** `cargo test -p asc-serve outbox:: http::`
+- **Brief:** Outbox table and worker (per-repo ordering, backoff, metrics) with an `Effect` trait (implementations added by U44 and K-units). axum routes `/healthz`, `/readyz`, `/metrics` (prometheus, the SPEC §16.1 catalogue names) and `/.well-known/asc` (including `objects` and `seeds` when configured). Tests: **crash injection** (panic after commit, before effects) followed by restart delivers the effects; `/readyz` fails when outbox lag exceeds 5 min.
 
 ### U44 Forgejo client: authz and hooks (`asc-serve::forgejo`)
 - **Owns:** `crates/asc-serve/src/forgejo.rs`, `crates/asc-serve/tests/fake_forgejo.rs`
-- **Depends:** U43. **Accept:** `cargo test -p asc-serve forgejo:: --test fake_forgejo`
-- **Brief:** `Authorizer` implementations: `PublicApiAuthz` (Stage 1: `GET /api/v1/repos/{o}/{r}` with the user's token, reading `permissions`) and `InternalAuthz` (Stage 2+: `POST /api/internal/asc/authz`, response as in K07). Cache: 60 s positive / 5 s negative, keyed by `sha256(token)`. `HookClient::pre_receive(HookOptions)`, `post_receive`, `proc_receive` against Forgejo's internal API with `INTERNAL_TOKEN`; `HookOptions` JSON matches `modules/private/hook.go` field names exactly. Effects: `PostReceive`. Pipeline step 7 wired in. The `fake_forgejo` test server (axum) records calls and can reject. Tests: a pre-receive rejection propagates the message as `HOOK_REJECTED`; `SKIP_PRE` without the internal token is refused; post-receive is delivered exactly once even after a forced retry (idempotent by op_id on the fake).
+- **Depends:** U43c. **Accept:** `cargo test -p asc-serve forgejo:: --test fake_forgejo`
+- **Brief:** `Authorizer` implementations: `PublicApiAuthz` (Stage 1: `GET /api/v1/repos/{o}/{r}` with the user's token, reading `permissions`) and `InternalAuthz` (Stage 2+: `POST /api/internal/asc/authz`, response as in K07). Cache: 60 s positive / 5 s negative, keyed by `sha256(token)`. Composition grants (SPEC §15.5): a task token reads a child repo only with a grant (test). `HookClient::pre_receive(HookOptions)`, `post_receive`, `proc_receive` against Forgejo's internal API with `INTERNAL_TOKEN`; `HookOptions` JSON matches `modules/private/hook.go` field names exactly. Effects: `PostReceive`. Pipeline step 7 wired in. The `fake_forgejo` test server (axum) records calls and can reject. Tests: a pre-receive rejection propagates the message as `HOOK_REJECTED`; `SKIP_PRE` without the internal token is refused; post-receive is delivered exactly once even after a forced retry (idempotent by op_id on the fake).
 
 ### U45 Mirror mode (`asc-serve::mirror`)
 - **Owns:** `crates/asc-serve/src/mirror.rs`
 - **Depends:** U44, U33. **Accept:** `cargo test -p asc-serve mirror::`
-- **Brief:** SPEC §8.6: the webhook handler (HMAC verification), a poller, `git fetch` into the mirror dir, incremental import, ref sync in one transaction (`via = mirror`), the LFS copy job (Forgejo LFS batch API download → content + alias, resumable via a `mirror_lfs` progress table added in this unit's migration), `mirror_state`. `UpdateRefs` returns `MIRROR_MODE` for mirror repos. Tests: a local bare repo as upstream; a push to it plus a webhook → asc refs equal git refs within one call; duplicate webhooks are harmless; ids equal those of a client-side import (U39) of the same history.
+- **Brief:** SPEC §8.6: the webhook handler (HMAC verification), a poller, `git fetch` (through `RealGit`) into the mirror dir, incremental import, ref sync in one transaction (`via = mirror`) (no LFS copy job: SPEC §2.5), `mirror_state`. Mirror import, the poller and `ImportGitPush` for one repo take `pg_advisory_xact_lock(repo_id)` (SPEC §14.4 I6). `UpdateRefs` returns `MIRROR_MODE` for mirror repos. Tests: a local bare repo as upstream; a push to it plus a webhook → asc refs equal git refs within one call; duplicate webhooks are harmless; two concurrent imports of the same push both succeed with identical rows; ids equal those of a client-side import (U39) of the same history.
 
 ### U46 Land (`asc-serve::land`)
 - **Owns:** `crates/asc-serve/src/land.rs`
-- **Depends:** U44. **Accept:** `cargo test -p asc-serve land::`
-- **Brief:** SPEC §8.5 inside the pipeline: stack discovery, disjointness via U26, the signed-commit refusal (`branch_rules.require_signed` from authz), metadata rebase, ingest of rewritten changesets, pre-receive on the rewritten ids, CAS retry (≤ 20), `rewritten` in the response, and `op_results` in the same transaction. Tests: 20 concurrent lands of disjoint changes all succeed and produce a linear history; an overlapping pair → one `LAND_CONFLICT` naming the paths; a file-vs-directory prefix conflict and a case-fold conflict are detected; a retried land with the same `op_id` returns the original mapping and does not rebase again.
+- **Depends:** U44, U26. **Accept:** `cargo test -p asc-serve land::`
+- **Brief:** SPEC §8.5 inside the pipeline, **only for explicit LAND requests** (`--land` or push option `land`); a plain push to a land branch is FAST_FORWARD [audit: push-land-semantics]. Stack discovery, disjointness via U26, the signed-commit refusal (`branch_rules.require_signed` from authz), metadata rebase with the step 5a drop of `git.gpgsig`/`git.commit` and the `signatures removed…` message, ingest of rewritten changesets, pre-receive on the rewritten ids, CAS retry (≤ 20), `rewritten` in the response, `op_results` in the same transaction, and the mainline append (U65). Tests: 20 concurrent lands of disjoint changes all succeed and produce a linear history; an overlapping pair → one `LAND_CONFLICT` naming the paths (until U68 adds content merge); a file-vs-directory prefix conflict and a case-fold conflict are detected; a retried land with the same `op_id` returns the original mapping and does not rebase again; `land::signed_stack_unprotected_drops_sig` and `land::raw_git_commit_rebased_exports_valid`.
 
 ### U47 Decoded read RPCs (`asc-serve::read`)
 - **Owns:** `crates/asc-serve/src/read.rs`, `crates/asc-serve/src/idmode.rs`
-- **Depends:** U43. **Accept:** `cargo test -p asc-serve read:: idmode::`
-- **Brief:** `ReadChangeset`, `ReadTree` (paged), `ReadFile` (ranges, LFS resolution), `Stat`, `LastCommits` (a first-parent walk over `changes`, memoised per (tip, dir) in a bounded LRU), `CheckAttr` (gitattributes via `gix-attributes`), `Grep` (`regex`, streaming over the tree, skipping binaries and files > 1 MiB), `Archive` (tar and zip via the `tar`/`zip` crates; prefix; pathspec), `Diff` with `merge_base`. `idmode.rs` translates every id field to and from git oids through `git_map` when `id_mode = GIT`. Tests: each RPC against fixtures; in `GIT` mode, results equal `git` CLI outputs (`ls-tree`, `cat-file`, `diff --name-status`, `log --format=%H`).
+- **Depends:** U43c. **Accept:** `cargo test -p asc-serve read:: idmode::`
+- **Brief:** `ReadChangeset`, `ReadTree` (paged), `ReadFile` (ranges), `Stat`, `LastCommits` (through the path index on land branches once U65 lands; otherwise a first-parent walk memoised per (tip, dir) in a bounded LRU), `CheckAttr` (gitattributes via `gix-attributes`), `Grep` (`regex`, streaming over the tree, skipping binaries and files > 1 MiB), `Archive` (tar and zip; prefix; pathspec; `export-ignore`/`export-subst`), `Diff` with `merge_base`, `Log` with cursor pagination (`page_token`). Every response streams; nothing buffers a whole response or tree set; whole-file buffering for line diff, blame (U28a's engine, as served) and grep goes through `TextBudget`, and files above `core.bigFileThreshold` are binary (SPEC §16.4). `idmode.rs` translates every id field to and from git oids through `git_map` when `id_mode = GIT`. Tests: each RPC against fixtures; in `GIT` mode, results equal `git` CLI outputs (`ls-tree`, `cat-file`, `diff --name-status`, `log --format=%H`).
 
-### U48 Mutations and admin (`asc-serve::{mutations,admin}`)
-- **Owns:** `crates/asc-serve/src/{mutations.rs,admin.rs,expire.rs}`
-- **Depends:** U44, U47. **Accept:** `cargo test -p asc-serve mutations:: admin:: expire::`
-- **Brief:** `Commit` (FileOps → changeset → pipeline), `Merge` (all styles and `dry_run`; protected-glob detection; cross-repo via `CopyClosure`), `Apply` (cherry-pick, revert, patch via a `git apply`-compatible parser in `asc-engine::diff`), `CopyClosure`, `RepoAdmin` (init, fork with a background copy job and a readiness flag, delete with a delayed namespace drop, rename, size, verify), `ImportGitPush` (reads the quarantine with gix, imports, `UpdateRefs(SKIP_PRE)`), and the expiring-refs worker (SPEC §8.8). Tests: the merge styles produce the expected parents and trees; a dry run reports conflicts equal to `git merge-tree`; a fork is readable only after the copy completes; `ImportGitPush` with a stale old value → `REF_CONFLICT`; an expired agent ref is deleted with a post-receive effect.
+### U48a Commit, Ingest and Apply RPCs (`asc-serve::mutations`) [audit: oversized-units, 9-ingest-without-ref]
+- **Owns:** `crates/asc-serve/src/mutations.rs`
+- **Depends:** U44, U47, U27b. **Accept:** `cargo test -p asc-serve mutations::`
+- **Brief:** `Commit` (FileOps → changeset → pipeline; with an empty `update_ref` only pipeline step 4 runs), the `Ingest` RPC, and `Apply` (cherry-pick, revert, patch via U27b's parser) with `conflict_details`; content merges acquire `TextBudget` first. Test `mutations::ingest`: ingest without a ref, then `Diff`/`MergeBase` by id succeed, and `ref_log` is unchanged.
+
+### U48b Merge styles and dry run (`asc-serve::merge_rpc`)
+- **Owns:** `crates/asc-serve/src/merge_rpc.rs`
+- **Depends:** U48a. **Accept:** `cargo test -p asc-serve merge_rpc::`
+- **Brief:** `Merge` with all styles and `dry_run`; protected-glob detection; cross-repo via `CopyClosure`; `conflict_details`; content merges acquire `TextBudget` first. Tests: the merge styles produce the expected parents and trees; a dry run reports conflicts equal to `git merge-tree`.
+
+### U48c CopyClosure and RepoAdmin (`asc-serve::admin`)
+- **Owns:** `crates/asc-serve/src/admin.rs`
+- **Depends:** U48a. **Accept:** `cargo test -p asc-serve admin::`
+- **Brief:** `CopyClosure`; `RepoAdmin` (init with `default_branch` defaulting to `master` and `land_branches` to `[default_branch]`, fork with a background copy job and a readiness flag, delete with a delayed namespace drop, rename, size, verify). Tests: `RepoAdmin.init` with an empty `default_branch` yields `master`; a fork is readable only after the copy completes.
+
+### U48d ImportGitPush and expiry (`asc-serve::{import_push,expire}`)
+- **Owns:** `crates/asc-serve/src/{import_push.rs,expire.rs}`
+- **Depends:** U48a, U33. **Accept:** `cargo test -p asc-serve import_push:: expire::`
+- **Brief:** `ImportGitPush` (reads the quarantine with gix, imports under the per-repo advisory lock, `UpdateRefs(SKIP_PRE)` in FAST_FORWARD mode even on land branches, git's `(fetch first)` rejection) and the expiring-refs worker (SPEC §8.8). Tests: a stale old value → `REF_CONFLICT`; an expired agent ref is deleted with a post-receive effect.
 
 ### U49 Turbo /v8 cache (`asc-serve::turbo`)
 - **Owns:** `crates/asc-serve/src/turbo.rs`, `crates/asc-serve/tests/turbo_it.rs`
-- **Depends:** U43. **Accept:** `cargo test -p asc-serve turbo:: && cargo test -p asc-serve --features it-turbo --test turbo_it -- --ignored`
+- **Depends:** U43c. **Accept:** `cargo test -p asc-serve turbo:: && cargo test -p asc-serve --features it-turbo --test turbo_it -- --ignored`
 - **Brief:** SPEC §12.4: all endpoints, `.meta` storage, scopes and fallback reads, Stage 1 trusted-token rule, Stage 2 authz-driven scopes, presigned `OPTIONS` for S3, a retention sweep, events counted as metrics. `slug = <owner>.<repo>`. The integration test runs real `turbo` 2.10.11 (`bunx turbo@2.10.11`) against a fixture monorepo twice: the second run is a full remote hit, and a signature mismatch is rejected by turbo.
 
 ### U50 CLI server wiring
-- **Owns:** `crates/asc/src/remote/{server.rs,discover.rs}`, `crates/asc/src/cli/push_land.rs`, `crates/asc/tests/cli_server.rs`
-- **Depends:** U42, U39, U46. **Accept:** `cargo test -p asc --test cli_server`
-- **Brief:** Discovery per SPEC §6.2 (`remote.<n>.ascServer`, `/.well-known/asc`, fallback to git-remote) and caching of the discovery result in `state.db` for 1 h. `ServerRemote` = `RpcClient` + credentials from `git credential fill`. Mirror-mode push uses the U39 git path. Primary-mode push uses `UpdateRefs` (`--land` and configured land branches → `LAND`; prints the rewritten mapping and moves local refs). `diff --remote`, and server-backed `log`/`blame` per `asc.serverHistory`. `asc.displayIds=auto` resolution. `asc auth login|status|logout`. `CLIENT_TOO_OLD` handling. Tests against an in-process server: clone, commit, push, fetch on a second client; land rewrite handling; `diff --remote` with no workspace.
+- **Owns:** `crates/asc/src/remote/{server.rs,discover.rs}`, `crates/asc/src/cli/{push_land.rs,api.rs,auth.rs}`, `crates/asc/tests/{cli_server.rs,cli_api.rs}`
+- **Depends:** U42, U39, U46. **Accept:** `cargo test -p asc --test cli_server && cargo test -p asc --test cli_api`
+- **Brief:** Discovery per SPEC §6.2 (`remote.<n>.ascServer`, `/.well-known/asc` including `objects` and `seeds`, `remote.<n>.ascObjects` override, fallback to git-remote) and caching of the discovery result in `state.db` for 1 h. `ServerRemote` = `RpcClient` + credentials from `git credential fill` (through `RealGit`, honouring `GIT_ASKPASS`/`GIT_TERMINAL_PROMPT`). Mirror-mode push uses the U39 git path. Server-remote fetch honours `--deepen=<n>`/`--unshallow` and the history window (U31; SPEC §6.3). Primary-mode push uses `UpdateRefs`: `--land`/`-o land` → `LAND` (git-format summary with `(landed: rebased onto <T>)`, moves local refs); a plain push is FAST_FORWARD with git's rejection; `--no-ref` → `Ingest`; AGit `refs/for/<b>` prints the PR URL (SPEC §13.5). `diff --remote`, and server-backed `log`/`blame` per `asc.serverHistory` (implements U20's `HistorySelector`, returning the `RpcClient` as `HistoryApi` and `BlameApi`). `asc api <Rpc> [--json <req>|-]` over `prost-reflect` (SPEC §7) and `docs/api.md` generation (buf). `asc auth login|status|logout`. `CLIENT_TOO_OLD` handling. Tests against an in-process server: clone, commit, push, fetch on a second client; land rewrite handling; `diff --remote` with no workspace; a fake discovery document with an `objects` URL sends `GetObjects` there and `Log` to `server` (test `discovery_objects`); `asc api` round-trips `MergeBase`, `Log` and `Diff` through JSON.
 
 ### U51 Deploy bundle and smoke
-- **Owns:** `deploy/{compose.yml,asc-serve.toml.example,Dockerfile,README.md}`, `crates/asc/tests/deploy_smoke.rs`
-- **Depends:** U45–U50. **Accept:** `docker compose -f deploy/compose.yml up -d --wait && cargo test -p asc --test deploy_smoke -- --ignored`
-- **Brief:** A multi-stage Dockerfile building `asc --no-default-features --features serve`; compose with Garage (single node, bucket bootstrap script), Postgres and asc serve. The smoke test: init a primary repo via admin, clone, push, land, `diff --remote`, turbo cache put/get, metrics scrape.
+- **Owns:** `deploy/{compose.yml,asc-serve.toml.example,Dockerfile,README.md,forgejo/app.ini}`, `crates/asc/tests/deploy_smoke.rs`
+- **Depends:** U45–U50, U48a–U48d. **Accept:** `docker compose -f deploy/compose.yml up -d --wait && cargo test -p asc --test deploy_smoke -- --ignored`
+- **Brief:** A multi-stage Dockerfile building `asc --no-default-features --features serve`; compose with Garage (single node, bucket bootstrap script), Postgres, asc serve (primary and a cache-role replica), and Forgejo with `[repository] DEFAULT_BRANCH = master` (`FORGEJO__repository__DEFAULT_BRANCH=master`). The smoke test: init a primary repo via admin, clone, push, land, `diff --remote`, turbo cache put/get, metrics scrape.
+
+### U65 Mainline and path index (`asc-serve::mainline`) [audit: 30-ancestry-path-indexes]
+- **Owns:** `crates/asc-serve/src/mainline.rs` and its migration files `crates/asc-serve/migrations/{postgres,sqlite}/0101_mainline.sql`
+- **Depends:** U43b. **Accept:** `cargo test -p asc-serve mainline::`
+- **Brief:** SPEC §5.1: maintenance inside the step-8 transaction (append, forced-update truncation), `IsAncestor` by position, path-filtered `Log`, batched `LastCommits`, blame candidates; a `MainlineIndex` trait that U46, U47 and U28a's candidate hook use. Tests: the index equals a from-scratch recomputation after random land, force and merge sequences; read-count bounds on a 100k-commit synthetic history; `EXPLAIN` checks with `--features it-pg`.
+
+### U66 Landing map and FindLanding (`asc-serve::landing`) [audit: 23-landing-index]
+- **Owns:** `crates/asc-serve/src/landing.rs`, `crates/asc-serve/migrations/{postgres,sqlite}/0102_land_map.sql`, `crates/asc/src/cli/landed.rs`
+- **Depends:** U46, U48b, U65. **Accept:** `cargo test -p asc-serve landing::`
+- **Brief:** SPEC §8.9: `land_map` rows in the step-8 transaction for land and `Merge` rewrites, `ref_log_by_ref`, the `FindLanding` RPC, and `asc landed <rev> [--ref] [--json]`. Tests: land three stacks; `FindLanding` on every pre-land id returns the right new id and `ref_log` seq; an `EXPLAIN` test shows no sequential scan.
+
+### U67 Classify (`asc-engine::classify`, `asc-serve::classify`) [audit: 27-semantic-classification]
+- **Owns:** `crates/asc-engine/src/classify/{mod.rs,lexer.rs}`, `crates/asc-serve/src/classify.rs`
+- **Depends:** U15, U47. **Accept:** `cargo test -p asc-engine classify:: && cargo test -p asc-serve classify::`
+- **Brief:** SPEC §8.10: the `classify.v1` derived type, the per-extension lexer, `.asc/review.toml` globs, the `Classify` RPC (whole-file reads through `TextBudget`), `asc diff --classify` support in the engine API, and `semantic=` for `asc ci changed`. Tests: a table for each class per language; a proptest that inserting comments or whitespace into generated Rust and TS stays at or below COMMENT_ONLY while a one-token change gives LOGIC; a string containing `//` is not treated as a comment.
+
+### U68 Rebase RPC and land content merge (`asc-serve::rebase`) [audit: 28-agent-conflict-api]
+- **Owns:** `crates/asc-serve/src/rebase.rs`, `crates/asc-serve/src/land_merge.rs`
+- **Depends:** U46, U48b. **Accept:** `cargo test -p asc-serve rebase:: land_merge::`
+- **Brief:** SPEC §8.11 `Rebase` with `Resolution`s, `dry_run`, `update_ref` and op-id idempotency; SPEC §8.5 step 3 content merge, plugged into U46 through its `OverlapPolicy` hook (`land.contentMerge`, `land.noMergeGlobs`). Tests: overlapping but cleanly mergeable lands succeed; a lockfile overlap gives `LAND_CONFLICT` with `Conflict` records; a conflict resolved through resolutions lands; `marked_id` content is byte-equal to `git merge-file --diff3`.
+
+### U69 Admission control, retry, coalescing [audit: 18-overload-isolation, 24-rate-limiting]
+- **Owns:** `crates/asc-rpc/src/{retry.rs,limits.rs,coalesce.rs}`, `crates/asc-serve/src/limits.rs`
+- **Depends:** U43c, U42. **Accept:** `cargo test -p asc-serve limits:: && cargo test -p asc-rpc retry:: limits:: coalesce::`
+- **Brief:** SPEC §16.3: the client tower retry layer with full jitter, `retry-after-ms` and the 10% budget; per-principal token buckets by RPC class, per-token and per-replica concurrency limits, load shedding (never queue > 1 s), bucket concurrency cap; a generic `Coalesce<K>` singleflight for object and derived misses; the `TextMemory` byte semaphore in `asc-serve/src/limits.rs` (`limits.text_memory`, default 2 GiB; wait ≤ 1 s, then shed with `RESOURCE_EXHAUSTED`), registered as U43a's `TextBudget` [audit: server-whole-file-buffer-cap]. Tests: 100 concurrent `GetObjects` for one key cause exactly 1 backend read; 10 concurrent diffs of 400 MiB files with a 1 GiB budget shed rather than exceed it; a burst above the limit gets `RATE_LIMITED` with retry-after; in-flight overflow is shed, not queued; the client honours retry-after and stops at its retry budget against a failing fake.
+
+### U70 Cache role (`asc serve --role cache`) [audit: 17-tier-contract, user decision efficiency]
+- **Owns:** `crates/asc-serve/src/cache_role.rs`
+- **Depends:** U43c, U69. **Accept:** `cargo test -p asc-serve cache_role::`
+- **Brief:** SPEC §7 object tier contract: no SQL; a memory and disk LRU of stored bytes; serves only `Version`, `HasObjects`, `GetObjects` (others `UNIMPLEMENTED`); authorisation forwarded upstream per `(sha256(token), repo)` with the §15.1 cache; misses coalesced upstream (U69); `asc_cache_requests_total{tier="cache_role"}`. Tests: a client with an `objects` tier fetches through the cache role and never falls back to the primary; a cache-role restart loses nothing; 50 concurrent misses for one object make one upstream call.
+
+### U71 Metadata-first milestone (M-meta) [audit: 21-metadata-first]
+- **Owns:** `crates/asc-serve/tests/meta_milestone.rs`
+- **Depends:** U45, U47, U65, G09. **Accept:** `cargo test -p asc-serve --test meta_milestone`
+- **Brief:** SPEC §18 M-meta (week ≈ 9) [audit: roadmap-and-stale-text]: mirrors a fixture bare repo and compares every listed RPC (including `Affected`; `FindLanding` needs no land in mirror mode and stays covered by U66's tests) with the git CLI output on 500 random (rev, path) pairs.
+
+### U72 Seed snapshots (`asc-serve::seeds`, client unpack) [audit: 15-seed-snapshots, user decision efficiency]
+- **Owns:** `crates/asc-serve/src/seeds.rs`, `crates/asc-store/src/seed.rs`, `crates/asc/src/cli/seed_opts.rs`
+- **Depends:** U43c, G07. **Accept:** `cargo test -p asc-serve seeds:: && cargo test -p asc-store seed::`
+- **Brief:** SPEC §12.3 seeds: the server task publishes `seeds/<repo-slug>/<changeset>.tar.zst` (CacheDir subtree with history metadata, all trees, claimed manifests from G07 and `.asc/prefetch` blobs; versioned `seed.json`) hourly and after 50 landed changesets, keeps 3, serves `GET /seeds/<owner>/<repo>/latest` as a presigned redirect; `seed::unpack(url, cache)` used by `clone --seed`, `ci warm --seed-from` and a cold daemon. Tests: a clone from a seed then fetches only the delta (object counter); a stale seed is still correct; a corrupted seed file is rejected on read.
+
+### G09 Projects service (`proto/asc/v1/projects.proto`, `asc-serve::projects`) [audit: server-rpcs]
+- **Owns:** `crates/asc-rpc/src/projects.rs`, `crates/asc-serve/src/{projects.rs,projects_warm.rs}` (the proto file is U41's)
+- **Depends:** U43c, U47, G07. **Accept:** `cargo test -p asc-serve projects::`
+- **Brief:** SPEC §12A.8: `ProjectGraph`, `Affected`, `ProjectHashes`; `projects.v1` feature flag; `PROJECTS_CONFIG` errors; `RpcClient` implements `ProjectsApi` in `asc-rpc/src/projects.rs` [audit: historyapi-impl-split]; the asynchronous warmer following `ref_log` (land-branch tips first; never on the `UpdateRefs` path, SPEC §5) [audit: manifests-eager-terminology]; the graph LRU. Tests: RPC results equal the local engine's on the same history; GIT id mode; a request right after a push does no parsing once the warmer has caught up (warmer counter); an invalid config returns the `PROJECTS_CONFIG` error detail; cold and warm latency budgets on an ASC-sized fixture.
+
+### G10 CLI, server path and `--repo` [audit: cli-and-output-formats]
+- **Owns:** `crates/asc/src/remote/projects.rs`, `crates/asc/tests/cli_affected_server.rs`
+- **Depends:** U50, G08, G09. **Accept:** `cargo test -p asc --test cli_affected_server`
+- **Brief:** SPEC §12A.9 "Where it runs": **S** with a server remote when both revisions are pushed, and always with `--repo` (no workspace); output identical to the local path for the same history. `remote/projects.rs` implements U20's `ProjectsSelector` (the `RpcClient` as `ProjectsApi`) [audit: historyapi-impl-split].
 
 ---
 
@@ -394,35 +764,57 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 - **Depends:** U42. **Accept:** `cargo test -p asc-rpc ipc::`
 - **Brief:** `interprocess` local sockets adapted to tonic (`Connected` stream plus a connector). Windows: pipe name `asc-<user SID>`, a security descriptor allowing only the user SID and SYSTEM (built with the `windows` crate). Unix: `$XDG_RUNTIME_DIR/asc/asc.sock` (or `$ASC_HOME/run`), 0700 dir, 0600 socket, stale-socket cleanup. Generated `Workspace` service traits are re-exported. Tests: a client from the same user connects; on Unix a different-uid connection is refused (run with `sudo -u nobody` only in CI); on Windows the DACL is asserted by reading it back.
 
-### U53 Daemon (`asc::daemon`)
-- **Owns:** `crates/asc/src/daemon/{mod.rs,lifecycle.rs,service.rs,scheduler.rs,install.rs}`, `crates/asc/src/cli/daemon.rs`
-- **Depends:** U52, U54, U55. **Accept:** `cargo test -p asc daemon::`
-- **Brief:** `asc daemon start|stop|status|run`. Autostart from the CLI (spawn detached, wait for `Ping` ≤ 3 s). Single instance via the pipe/socket name. Version-skew restart (SPEC §9.1). `Workspace` service implementation dispatching to mounted providers (plain mode uses U18; virtual uses the U55 provider-core trait with OS backends from U56/U59 behind features). Scheduler: hourly cache GC, idle dehydration hook, ephemeral worktree expiry, pending-path retries every 5 s, reconcile at start, notify watches for the reconcile triggers (U37), and fsmonitor answers from the journal (wires U40's `asc-fsmonitor`). `install.rs`: register/unregister the Windows logon task (Task Scheduler COM via the `windows` crate, restart on failure ×3 at 10 s) and the systemd user unit. Tests: the start/stop/restart cycle; kill -9 and auto-restart by the CLI; a version mismatch triggers restart; journal-backed fsmonitor answers.
+### U53a Daemon lifecycle (`asc::daemon::{mod,lifecycle}`) [audit: oversized-units, daemon-hang-watchdog]
+- **Owns:** `crates/asc/src/daemon/{mod.rs,lifecycle.rs,workspace_factory.rs}`, `crates/asc/src/cli/daemon.rs`
+- **Depends:** U52, U54v, U55. **Accept:** `cargo test -p asc daemon::lifecycle`
+- **Brief:** `asc daemon start|stop|status|run`. Autostart from the CLI (spawn detached, wait for `Ping` ≤ 3 s). Single instance via the pipe/socket name. Version-skew restart, stopping the old daemon before `state.db` migrations (SPEC §9.1). **Liveness:** the CLI's 2 s `Ping` timeout writes a thread dump to `log/`, kills and restarts the daemon; a watchdog thread aborts the process when a provider callback runs > 60 s. `workspace_factory.rs` implements U20's `WorkspaceFactory` (plain via U18, virtual via the U55 provider-core trait with OS backends behind features), including `convert_plain`: unmount, materialise in place through U18, set `workspaces.mode = plain`, and write the index with real stat [audit: worktree-convert-plain-unowned]. Tests: converting a virtual workspace leaves `status` clean and identical; the start/stop/restart cycle; kill -9 and auto-restart by the CLI; a version mismatch triggers restart; `daemon::lifecycle::hung_daemon_is_replaced`.
 
-### U54 Journal, virtual status, switch intent, worktrees (`asc-wc::{journal,vstatus,intent,worktree}`)
-- **Owns:** `crates/asc-wc/src/{journal.rs,vstatus.rs,intent.rs,worktree.rs,times.rs}`, `crates/asc/src/cli/worktree.rs`
-- **Depends:** U25. **Accept:** `cargo test -p asc-wc journal:: vstatus:: intent:: worktree:: times::`
-- **Brief:** `Journal` with an in-memory queue, 100 ms batch flush to `state.db`, sequence tokens (`<epoch>:<seq>`), `since(token) -> (paths, fresh)`, `clear(paths)`. `vstatus::compute(ws, disk: &dyn DiskState)`: the dirty candidates (journal ∪ staged), the `DiskState` trait (`state(path) -> Virtual|Placeholder|Hydrated|Full|Tombstone|Missing`, `stat`, `read`) implemented by the OS providers, dir-rename expansion (SPEC §10.2.6), and untracked only in materialised dirs. `times.rs`: SPEC §10.1 (`epoch_time`, `next_time`, `entry_times` lookups, compaction). `intent.rs`: persist, replay and clear `switch_intent`. `worktree.rs` and `asc worktree add|list|remove|prune|lock|unlock|move` with `--ephemeral --ttl` (plain mode now; virtual through the daemon later). Tests with a fake `DiskState`: status for every on-disk state; dir-rename expansion; times strictly increase across switches; intent replay is idempotent; `worktree remove` refuses when dirty.
+### U53b Daemon service and scheduler (`asc::daemon::{service,scheduler}`)
+- **Owns:** `crates/asc/src/daemon/{service.rs,scheduler.rs,metrics.rs}`
+- **Depends:** U53a. **Accept:** `cargo test -p asc daemon::service daemon::scheduler`
+- **Brief:** `Workspace` service implementation dispatching to mounted providers. Scheduler: hourly cache GC, idle dehydration hook, ephemeral worktree expiry, pending-path retries every 5 s, reconcile at start, the post-clone background prefetch (SPEC §10.2.5a), the daily update check (SPEC §16.2), and seed unpack for a cold cache (U72). `metrics.rs`: `--metrics-listen` and the SPEC §16.1 daemon metrics, log rotation at 50 MiB × 5. **Idle RSS ≤ 64 MiB** (SPEC §16.4): a test starts the daemon with two mounted plain workspaces, waits for idle and asserts RSS.
+
+### U53c Daemon OS service install (`asc::daemon::install`)
+- **Owns:** `crates/asc/src/daemon/install.rs`
+- **Depends:** U53a. **Accept:** `cargo test -p asc daemon::install`
+- **Brief:** Register/unregister the Windows logon task (`schtasks.exe /Create /XML` with a generated task XML, no COM and no `unsafe`; restart on failure ×3 at 10 s) and the systemd user unit (`Restart=on-failure`, `RestartSec=2`). Tests: the generated task XML and unit file match golden files; register/unregister round trip on CI hosts.
+
+### U54v Journal, virtual status, switch intent, times (`asc-wc::{journal,vstatus,intent,times}`) [audit: oversized-units]
+- **Owns:** `crates/asc-wc/src/{journal.rs,vstatus.rs,intent.rs,times.rs}`
+- **Depends:** U25. **Accept:** `cargo test -p asc-wc journal:: vstatus:: intent:: times::`
+- **Brief:** `Journal` with an in-memory queue, 100 ms batch flush to `state.db`, sequence tokens (`<epoch>:<seq>`), `since(token) -> (paths, fresh)`, `clear(paths)`. `vstatus::compute(ws, disk: &dyn DiskState)`: the dirty candidates (journal ∪ staged), the `DiskState` trait (`state(path) -> Virtual|Placeholder|Hydrated|Full|Tombstone|Missing`, `stat`, `read`) implemented by the OS providers, dir-rename and directory-tombstone expansion (SPEC §10.2.6–7), untracked only in materialised dirs and never under redirected names. `times.rs`: SPEC §10.1 (`epoch_time`, `next_time`, `entry_times` lookups, compaction). `intent.rs`: persist, replay and clear `switch_intent`, and the FORCE work set `W = leafdiff ∪ dirty(pathspec)` (SPEC §10.2.8 step 2). Tests with a fake `DiskState`: status for every on-disk state; dir-rename and dir-tombstone expansion; times strictly increase across switches; intent replay is idempotent; `W` for `reset --hard` with an unchanged tree contains exactly the dirty paths.
 
 ### U55 VFS provider core (`asc-vfs::core`)
 - **Owns:** `crates/asc-vfs/src/{lib.rs,core.rs,policy.rs,stats.rs}`
-- **Depends:** U54. **Accept:** `cargo test -p asc-vfs core::`
-- **Brief:** The `Provider` trait the OS backends implement (`mount`, `unmount`, `apply_switch(plan, times) -> SwitchOutcome{pending}`, `dehydrate(paths)`, `disk_state()`). `CoreFs`, shared logic: path → entry resolution against the base tree with a `quick_cache` of trees; case-insensitive lookup mode (Windows); the unrepresentable-name filter (SPEC §2.8); `read_content(ContentRef) -> ContentStream` (`cache/f` path or fetch through `Tiered`, LFS via alias, chunk streaming with verification); a gitlink composition hook (filled by U60); `HydrationPolicy` (deny list by process image); `Stats` counters per path and process. An in-memory OS harness implementing `Provider` for tests. Tests: lookup, unrepresentable filtering, the deny list, stats.
+- **Depends:** U54v. **Accept:** `cargo test -p asc-vfs core::`
+- **Brief:** The `Provider` trait the OS backends implement (`mount`, `unmount`, `apply_switch(plan, times) -> SwitchOutcome{pending}`, `dehydrate(paths)`, `disk_state()`). `CoreFs`, shared logic: path → entry resolution against the base tree with a size-capped `quick_cache` of trees (SPEC §16.4 budget); case-insensitive lookup mode (Windows); the unrepresentable-name filter (SPEC §2.8); the redirection name filter (SPEC §10.5); `read_content(ContentRef) -> ContentStream` (`cache/f` path or fetch through `Tiered`, chunk streaming with verification); a gitlink composition hook (filled by U60); `HydrationPolicy` (deny list by process image); `Stats` counters per path and process, including last-read time per process for dehydration. An in-memory OS harness implementing `Provider` for tests. Tests: lookup, unrepresentable filtering, redirection filtering, the deny list, stats.
 
 ### U56 ProjFS binding and callbacks (`asc-vfs::projfs`)
 - **Owns:** `crates/asc-vfs/src/projfs/{mod.rs,ffi.rs,provider.rs,enumerate.rs,data.rs,notify.rs}`
 - **Depends:** U55. **Accept:** `cargo test -p asc-vfs --features projfs projfs::basic -- --ignored` (Windows with Client-ProjFS enabled)
-- **Brief:** Runtime loading of `ProjectedFSLib.dll` (`libloading`; every function pointer is resolved at start; a missing DLL → `ProviderUnavailable`). `PrjMarkDirectoryAsPlaceholder` for the root with the workspace GUID, then `PrjStartVirtualizing` with callbacks and notification mappings (redirections and `.git` masked). Callbacks per SPEC §10.2 items 3–6: enumeration sessions keyed by GUID, `PrjFileNameMatch`/`PrjFileNameCompare`, placeholder info with times from U54 `times`, `GetFileData` reading the placeholder's ContentID with aligned buffers, async completion (`ERROR_IO_PENDING` + `PrjCompleteCommand`, tracked per command id, cancellation), notifications appending to the journal, and the hydration policy. No locks are held across ProjFS calls. Tests (ignored unless ProjFS is available): mount a 1k-file tree; `dir` enumerates without hydrating; reading one file hydrates exactly one; `stat` times equal the epoch time before and after hydration; a write journals the path; a denied process gets access-denied.
+- **Brief:** Runtime loading of `ProjectedFSLib.dll` (`libloading`; every function pointer is resolved at start; a missing DLL → `ProviderUnavailable`). `PrjMarkDirectoryAsPlaceholder` for the root with the workspace GUID, then `PrjStartVirtualizing` with callbacks and `PRJ_NOTIFY_NONE` mappings for existing redirected directories; the notification callback drops any path with a redirected component or `.git` before other work (SPEC §10.5). Callbacks per SPEC §10.2 items 3–6: enumeration sessions keyed by GUID, `PrjFileNameMatch`/`PrjFileNameCompare`, placeholder info with times from U54v `times`, `GetFileData` reading the placeholder's ContentID with aligned buffers, async completion (`ERROR_IO_PENDING` + `PrjCompleteCommand`, tracked per command id, cancellation), notifications appending to the journal, and the hydration policy. No locks are held across ProjFS calls. Tests (ignored unless ProjFS is available): mount a 1k-file tree; `dir` enumerates without hydrating; reading one file hydrates exactly one; `stat` times equal the epoch time before and after hydration; a write journals the path; a denied process gets access-denied; `projfs::redirect::new_node_modules_not_journaled`.
 
 ### U57 ProjFS switch, tombstones, reconcile, dehydration (`asc-vfs::projfs`)
-- **Owns:** `crates/asc-vfs/src/projfs/{switch.rs,reconcile.rs,dehydrate.rs,rename.rs}`
-- **Depends:** U56, U53. **Accept:** `cargo test -p asc-vfs --features projfs projfs::lifecycle -- --ignored`
-- **Brief:** SPEC §10.2 items 6–9: directory-rename pre-hydration on `PRE_RENAME`; the switch algorithm with intent, `PrjUpdateFileIfNeeded`/`PrjDeleteFile` flags, tombstone handling (`PRJ_UPDATE_ALLOW_TOMBSTONE`), held-open retry then pending, `PrjClearNegativePathCache`, epoch times; reconcile at start via an on-disk walk plus `PrjGetOnDiskFileState`; dehydration (idle, budget, on demand) for clean hydrated placeholders only. Tests: switch with a file held open by another process (spawn a child that holds the handle) → pending, then cleared after release; delete a placeholder, then `reset --hard` restores it; kill the daemon mid-switch, restart → consistent; rename a directory with virtual children → status shows deletes plus untracked correctly; dehydration returns hydrated bytes to 0 for clean files and never touches dirty ones.
+- **Owns:** `crates/asc-vfs/src/projfs/{switch.rs,reconcile.rs,dehydrate.rs,rename.rs,nested.rs}`
+- **Depends:** U56, U53b. **Accept:** `cargo test -p asc-vfs --features projfs projfs::lifecycle projfs::switch projfs::reconcile projfs::rename -- --ignored`
+- **Brief:** SPEC §10.2 items 6–9:
+  - directory-rename pre-hydration on `PRE_RENAME`, run on the worker pool (≥ 2 free threads), denied with `STATUS_ACCESS_DENIED` when offline [audit: projfs-dir-tombstone-reconcile];
+  - the switch algorithm with intent, the FORCE work set `W` and its flags (`PRJ_UPDATE_ALLOW_DIRTY_DATA`, `ALLOW_TOMBSTONE`) [audit: projfs-reset-restore-dirty-set], held-open retry then pending, `PrjClearNegativePathCache`, epoch times, and the post-switch placeholder-creation pass for added paths (step 4a) [audit: watchers-virtual-switch];
+  - reconcile at start via an on-disk walk plus `PrjGetOnDiskFileState`, expanding directory tombstones and skipping redirected names;
+  - dehydration (idle, budget, on demand) for clean hydrated placeholders that no process has read for 3 days or has open [audit: ls-crawl-hydration];
+  - `nested.rs`: mounts for nested worktree paths under `$ASC_HOME/wt/<id>` with the junction at the requested path (spike S11; plain fallback).
+
+  Tests: switch with a file held open by another process (spawn a child that holds the handle) → pending, then cleared after release; `projfs::switch::reset_hard_same_tree` (modified, Full, read-only and tombstoned files restored); `projfs::switch::restore_deleted_file`; `projfs::switch::watcher_sees_added_file` (a `ReadDirectoryChangesW` listener on `src/` receives ADDED for a file the switch adds); kill the daemon mid-switch, restart → consistent; `projfs::reconcile::dir_tombstone`; `projfs::reconcile::skips_redirections`; `projfs::rename::offline_denied`; dehydration returns hydrated bytes to 0 for clean files, never touches dirty ones, and skips recently read files (`dehydrate::skips_recently_read`).
 
 ### U58 Windows virtual end-to-end
-- **Owns:** `crates/asc/tests/windows_virtual.rs`, `crates/asc/tests/scenarios/virtual-*.t`
+- **Owns:** `crates/asc/tests/windows_virtual.rs`, `tests/compat/scenarios/virtual-*.t`
 - **Depends:** U57, U40. **Accept:** `cargo test -p asc --test windows_virtual -- --ignored` (Windows with ProjFS)
-- **Brief:** `asc clone` (virtual) from a local `asc serve` and from a `file://` bucket; `worktree add` < 1 s; `status` clean < 50 ms; edit, add and commit; switch between branches with 0 downloads (download counter); `git status`/`git log`/`git diff` in the projection; IDE-style `git commit` imported; `asc worktree remove`. The virtual scenario files re-run selected U25 scenarios in virtual mode and require identical output.
+- **Brief:** `asc clone` (virtual) from a local `asc serve` and from a `file://` bucket; `worktree add` < 1 s; `status` clean < 50 ms; edit, add and commit; switch between branches with 0 downloads (download counter); `git status`/`git log`/`git diff` through the shim; nested `.claude/worktrees/<name>` worktree; `asc worktree remove`; `asc worktree convert --plain`; a virtual workspace of a tree without `turbo.json` has no `index` file and its status still equals git's (SPEC §9.4 `asc.turboIndex`). The virtual scenario files re-run selected U25 scenarios in virtual mode and require identical output.
+
+### U73 Plugin API (Workspace plugin RPCs) [audit: user decision No-IDE]
+- **Owns:** `crates/asc/src/daemon/plugin_api.rs`, `crates/asc/src/cli/watch.rs`, `docs/plugin-api.md`, `crates/asc/tests/plugin_api.rs`
+- **Depends:** U52, U53b, G07, U21a, U24a, U24c, U28b. **Accept:** `cargo test -p asc --test plugin_api`
+- **Brief:** SPEC §7 `workspace.proto` plugin RPCs (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`) and their messages for ASC's IDE plugins, reusing the CLI's engine paths; `Watch` streams `WatchEvent`s (paths, HEAD, ref, stage, operation started/finished, switch done, resync) from the journal and ref log with resumable tokens. `asc watch [--since <token>] --json` (`cli/watch.rs`, through `cli/json.rs`) [audit: plugin-api-undefined]. `docs/plugin-api.md` documents each RPC and its `asc … --json` equivalent (the `--json` flags are added by U21a, U24a, U24c and U28b). Tests: each RPC equals the matching `--json` CLI output on a fixture workspace; a `Watch` client receives events for an edit, a commit and a switch; `asc watch --since` resumes without loss.
 
 ---
 
@@ -431,57 +823,167 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 ### U59 FUSE provider (`asc-vfs::fuse`)
 - **Owns:** `crates/asc-vfs/src/fuse/{mod.rs,fs.rs,inodes.rs,overlay.rs,passthrough.rs}`
 - **Depends:** U55. **Accept:** `cargo test -p asc-vfs --features fuse fuse:: -- --ignored` (Linux/WSL with `/dev/fuse`)
-- **Brief:** SPEC §10.3: `fuser` filesystem; persisted inode table (`state.db.inodes`); `getattr` with epoch times; `readdirplus`; passthrough via `BackingId` for clean files when supported; overlay copy-up for writes, creates, unlinks and renames (exact journal); redirection symlinks; switch via entry and inode invalidation; `DiskState` from the overlay. Tests: inode stability across remount; passthrough read with zero overlay bytes; overlay exactness; switch invalidation visible to `stat`.
+- **Brief:** SPEC §10.3: `fuser` filesystem; persisted inode table (`state.db.inodes`); `getattr` with epoch times; `readdirplus`; passthrough via `BackingId` for clean files when supported; overlay copy-up for writes, creates, unlinks and renames (exact journal); redirection symlinks; switch via entry and inode invalidation; the watcher notice when an inotify user on the mount is detected [audit: watchers-virtual-switch]; `DiskState` from the overlay. Tests: inode stability across remount; passthrough read with zero overlay bytes; overlay exactness; switch invalidation visible to `stat`; the watcher notice is printed when a process holds an inotify watch on the mount.
 
 ### U60 Submodule read-only composition (`asc-vfs::compose`, plain support)
 - **Owns:** `crates/asc-vfs/src/compose.rs`, `crates/asc-wc/src/compose_plain.rs`, `crates/asc/src/cli/submodule.rs`
 - **Depends:** U55, U18. **Accept:** `cargo test -p asc-vfs compose:: && cargo test -p asc-wc compose_plain::`
-- **Brief:** SPEC §10.6: resolve `asc.submodule.<path>.repo` (default from `.gitmodules`); map the gitlink commit → nested changeset via the nested repo's `git_map` (fetching from its remote if needed); project its root tree read-only (writes are denied); plain mode materialises read-only files. `asc submodule status|set-pin|update(no-op)`. Tests: a fixture parent and child repo; a composed read; a denied write; a pin change via `set-pin` produces a `Change::Gitlink`.
+- **Brief:** SPEC §10.6: resolve `asc.submodule.<path>.repo` (default from `.gitmodules`); map the gitlink commit → nested changeset via the nested repo's `git_map` (fetching from its remote if needed); project its root tree read-only (writes are denied); plain mode materialises read-only files. **Restricted projection (SPEC §15.5):** when the nested fetch is denied, project an empty read-only directory and report `<path>: restricted (no access to <repo>)` in status. `asc submodule status|set-pin|update(no-op)`. Tests: a fixture parent and child repo; a composed read; a denied write; a pin change via `set-pin` produces a `Change::Gitlink`; a denied child gives the restricted directory and status line.
 
-### U61 Turbo contract suite
+### U61p Turbo contract suite (plain) [audit: acceptance-ambiguity]
 - **Owns:** `tests/turbo/{Cargo.toml,src/lib.rs,tests/contract.rs,fixture/**}`
-- **Depends:** U40 (plain), U58/U59 (virtual). **Accept:** `cargo test -p asc-turbo-contract -- --ignored` (needs bun and network for `bunx turbo@2.10.11`)
-- **Brief:** SPEC §17 turbo row: a fixture monorepo with 20 packages, a `bun.lock` and `turbo.json`; compare `turbo run build --dry=json` task hashes between a real git clone and an asc workspace (plain always, virtual where available) with hydration counters; a one-file edit; `turbo ls --affected` equality with `TURBO_SCM_BASE`; a racy run (immediately after checkout) showing 0 verified entries (turbo debug log); worktrees share `$ASC_HOME/repos/<id>/.turbo/cache` (spike S4).
+- **Depends:** U40, U36. **Accept:** `cargo test -p asc-turbo-contract plain -- --ignored` (needs bun and network for `bunx turbo@2.10.11`)
+- **Brief:** SPEC §17 turbo row, with the shim first on PATH: a fixture monorepo with 20 packages, a `bun.lock` and `turbo.json`; compare `turbo run build --dry=json` task hashes between a real git clone and a plain asc workspace with hydration counters; a one-file edit; `turbo ls --affected` equality with `TURBO_SCM_BASE`; a racy run (immediately after checkout) showing 0 verified entries (turbo debug log); worktrees share `$ASC_HOME/repos/<id>/.turbo/cache` (spike S4); `staged_new`, `staged_delete` and `staged_modify` cases give the same `--dry=json` hashes as a git clone in the same state [audit: turbo-staged-file-contract].
+
+### U61v Turbo contract suite (virtual)
+- **Owns:** `tests/turbo/tests/contract_virtual.rs`
+- **Depends:** U58. **Accept:** `cargo test -p asc-turbo-contract virtual -- --ignored`
+- **Brief:** The U61p cases in a virtual workspace (ProjFS on Windows; FUSE once U59 lands), plus 0 hydrations beyond manifests. The fixture has `turbo.json`, so the index exists; a second fixture without it asserts that no `index` exists.
 
 ### U62 asc ci checkout (`asc-ci::checkout`)
-- **Owns:** `crates/asc-ci/src/{lib.rs,checkout.rs,env.rs}`, `crates/asc/src/cli/ci.rs`
-- **Depends:** U50. **Accept:** `cargo test -p asc-ci checkout::`
-- **Brief:** SPEC §12.3 steps 1–5: `HostCacheRO` (a `CacheDir` opened read-only: writes go to the next tier) layered over `JobCache` and the remote; materialise (plain, sparse optional); projection with `shallow` at the merge base, base refs, commits merge-base..head, base and head trees, seeded manifests at the base; env exports written to `$GITHUB_ENV`; task-token auth; trusted vs PR cache mode decided from the event. Tests: a read-only host cache is never written (permissions test); a corrupted host cache file is detected and re-fetched; `git diff-tree --merge-base` inside the checkout works within the shallow boundary.
+- **Owns:** `crates/asc-ci/src/{lib.rs,checkout.rs,env.rs}`, `crates/asc/src/ci_tiers.rs`, `crates/asc/src/cli/ci/{mod.rs,checkout.rs}` plus the stubs `crates/asc/src/cli/ci/{changed,affected,warm,cache,artifact}.rs` (owned later by U63 and U75)
+- **Depends:** U50, U72. **Accept:** `cargo test -p asc-ci checkout::`
+- **Brief:** SPEC §12.3 steps 1–6: `HostCacheRO` (a `CacheDir` opened read-only: writes go to the next tier) layered over `JobCache` and the remote; materialise (plain, sparse optional); the synthetic `.git` with no `shallow` file and `refs/remotes/origin/<base>` registered [audit: ci-shallow-semantics]; the `git` shim first on the job's `PATH`; env exports written to `$GITHUB_ENV`; **step 6** [audit: ci-later-steps-asc-home-and-runner-mounts]: the tier stack persisted in the repository's common config `$ASC_HOME/repos/<id>/.git/config` (`asc.cache.dir`, `asc.cache.readOnly`, `remote.origin.ascServer`; SPEC §3.5, §12.3); `ci_tiers.rs` registers U20's `StoreStackSelector`, which reads `asc.cache.dir`/`asc.cache.readOnly` and puts a read-only `CacheDir` first [audit: ci-tier-stack-config-undefined-unowned]; and `ASC_HOME`, `ASC_TOKEN` and the shim directory appended to `$GITHUB_ENV`/`$GITHUB_PATH`; task-token auth; trusted vs PR cache mode decided from the event; seed unpack when the host cache is cold (U72). Composition needs a grant: without one, `PATH_POLICY: <path> needs read on <child>` (SPEC §15.5). Tests: a read-only host cache is never written (permissions test); a corrupted host cache file is detected and re-fetched; `asc diff-tree --merge-base` (through the shim) inside the checkout works; `git describe --tags` and `git log --oneline | wc -l` equal a full clone's; a second process started with only the exported env runs `git show <base>:bun.lock` through the shim, reading the host cache first; the grant-missing error.
 
-### U63 asc ci changed/affected/warm (`asc-ci::{changed,affected,warm,rules,tools}`)
-- **Owns:** `crates/asc-ci/src/{changed.rs,affected.rs,warm.rs,rules.rs,tools.rs}`
-- **Depends:** U50. **Accept:** `cargo test -p asc-ci changed:: affected:: warm:: rules::`
-- **Brief:** `.asc/ci.toml` schema (`turbo`, optional `turbo_sha512`, `[switches]` globs, `[packages]` mapping rules, `[outputs]` names). `changed`: one `Diff(NAMES, merge_base)` → switches. `affected`: manifest-only sparse checkout in a temp dir → `tools::turbo(version)` (download the npm tarball for the platform, verify integrity from `bun.lock` or `ci.toml`, cache in `$ASC_HOME/tools`) → `turbo ls --affected --output=json` → mapping → outputs; on failure, "all" plus a warning. `warm`: fetch trunk changesets, trees and files into the host cache (a systemd timer unit file template is included in `deploy/`). Tests: rules evaluation; the turbo download verification rejects a tampered tarball; the affected fallback path.
+### U63 asc ci changed/affected/warm (`asc-ci::{changed,affected,warm,rules}`) [audit: ci-plan-job-uses-turbo]
+- **Owns:** `crates/asc-ci/src/{changed.rs,affected.rs,warm.rs,rules.rs}`, `crates/asc/src/cli/ci/{changed,affected,warm}.rs`
+- **Depends:** U50, G10. **Accept:** `cargo test -p asc-ci changed:: affected:: warm:: rules::`
+- **Brief:** `.asc/ci.toml` (read via `ReadFile` at the merge base, or `--rules-file <local path>`; any change to it sets every switch true and `all=true`, SPEC §12.2) [audit: plan-job-rules-file-without-checkout] schema: `[switches]` (globs, or `{ projects = ["<selector>", ...] }`) and `[outputs]` names; no `turbo` keys. `changed`: one `Diff(NAMES, merge_base)` → switches, plus `semantic=<overall>` from `Classify` (U67) when the server offers it. `affected`: calls the G10 client with `--format gha` and adds the project-selector switches; on RPC failure it writes `all=true`, sets every switch true, and warns (SPEC §12.2). `warm`: fetch trunk changesets, trees and files into the host cache, with 0–30 s jitter and `--seed-from` (a systemd timer unit file template is included in `deploy/`); `asc_cache_requests_total{tier="host"}` and `asc_warm_*` metrics. Tests: rules evaluation; selector switches; the failure fallback; rules read without a checkout; a PR that edits `.asc/ci.toml` gets every switch true.
 
-### U64 Actions and ASC workflows
-- **Owns:** `actions/checkout/action.yml`, `actions/affected/action.yml`, `actions/changed/action.yml`, `actions/test/selftest.sh`, `deploy/runner/{asc-warm.service,asc-warm.timer,runner-config-snippet.yaml}`, `docs/ci/asc-workflows.patch` (proposed changes to `D:\dev\monorepo\.forgejo\workflows\*`, applied by ASC as a PR, not by this unit)
-- **Depends:** U62, U63, U49. **Accept:** `bash actions/test/selftest.sh` (starts a local asc serve, runs the actions' commands in a container with a read-only host cache mount, asserts the projection, `TURBO_SCM_BASE` and outputs)
-- **Brief:** Composite actions that install `asc` (cached by version) and call `asc ci …`. Runner config for the host cache read-only bind mount and the warm timer. The workflow patch: a plan job (`changed` + `affected`), verify/rust/images/e2e jobs gated on outputs, no `fetch-depth: 0`, no `submodules: recursive`, `TURBO_API` to asc serve.
+### U75 asc ci cache/artifact (Actions fork backend) [audit: user decision Actions fork]
+- **Owns:** `crates/asc-ci/src/{cache.rs,artifact.rs}`, `crates/asc/src/cli/ci/{cache,artifact}.rs`, `crates/asc-serve/src/actions_store.rs`
+- **Depends:** U62, U49, O01. **Accept:** `cargo test -p asc-ci cache:: artifact:: && cargo test -p asc-serve actions_store::`
+- **Brief [audit: actions-cache-artifact-underspecified, actions-fork-contract-and-naming]:** exactly SPEC §12.7's store contract. `asc ci cache save|restore <key> [--restore-keys …] <paths>` and `asc ci artifact upload|download|list <name> <paths>` upload file content with `HasObjects`/`PutObjects` into the repo namespace (FileIds; chunked over 4 MiB) and write an `ActionsManifest { version: u8 = 1, entries: Vec<(RepoPath, Kind, FileId, u64)> }` (postcard) through `PUT /actions/v1/<owner>/<repo>/<cache|artifact>/<key>`; `GET` on the same path, and `GET …/cache?prefix=<restore-key>` (newest first). `actions_store.rs` derives the scope from the token (SPEC §12.4), stores manifests at `actions/<owner>.<repo>/<cache|artifact>/<scope>/<pct(key)>`, applies §12.4 retention, and implements O01's `GcRootSource` (every unexpired manifest's FileIds). Tests: an identical file in two caches is stored once; PR scopes cannot write `trusted`; `actions_store::restore_keys_prefix` (prefix matching equals `actions/cache` semantics); `actions_store::gc_root` (O01's sweep keeps the files of an unexpired manifest).
+
+### U64 Actions, ASC Actions fork and ASC workflows
+- **Owns [audit: actions-repo-naming, actions-fork-contract-and-naming]:** `actions/{checkout,cache,upload-artifact,download-artifact}/action.yml`, `actions/asc/{setup,changed,affected,turbo-cache}/action.yml` (the SPEC §12.7 action set; `asc/turbo-cache` exports `TURBO_API/TOKEN/TEAM/CACHE` for jobs without checkout), `actions/test/selftest.sh`, `deploy/runner/{asc-warm.service,asc-warm.timer,runner-config-snippet.yaml}`, `docs/ci/asc-workflows.patch` (proposed changes to `D:\dev\monorepo\.forgejo\workflows\*`, applied by ASC as a PR, not by this unit), `docs/ci/asc-projects.toml`
+- **Depends:** U62, U63, U49, U72, U75. **Accept:** `bash actions/test/selftest.sh` (starts a local asc serve, runs the actions' commands in a container with a read-only host cache mount, asserts the synthetic `.git`, `TURBO_SCM_BASE` and outputs)
+- **Brief:** Composite actions that install `asc` (cached by version) and call `asc ci …`, keeping upstream's inputs and outputs (`ref`, `fetch-depth`, `path`, `submodules`, `lfs`, `sparse-checkout`) mapped to asc semantics (SPEC §12.7); `checkout` falls back to upstream git checkout for repos that are not asc. Runner config for the host cache read-only bind mount and the warm timer. The workflow patch: a plan job (`asc ci changed` + `asc ci affected`, outputs `rust`, `matrix`, `turbo_filter`, `count`), verify/rust/images/e2e jobs gated on outputs, no `fetch-depth: 0`, no `submodules: recursive`, `TURBO_API` to asc serve, a `green/master` post-merge job and a deploy gate on `green/*` (SPEC §12.6). `docs/ci/asc-projects.toml` proposes an ASC `.asc/projects.toml` (tags `image`/`deploy`; CI workflow files as global inputs).
+
+---
+
+## §C Stack track: stacked changes and stacked PRs (SPEC §20) [audit: stacks-design-not-folded, stacks-design-exists-not-folded]
+
+Source: `docs/research/stacks.md` §6, with its unit ids S01–S52 renamed to **C01–C52** (S-ids collide with the spikes S1–S12 of SPEC §19, for example `S12` was both a spike and `asc absorb`). Stack verbs live under `crates/asc/src/stack/`; every unit owns its own test file (`crates/asc/tests/stack_<name>.rs`), and none is shared. C07 owns only `crates/asc/src/stack/cli/mod.rs`, which uses `automod::dir!` and a `linkme` distributed slice, so each verb unit adds its own file and registers itself without touching `mod.rs`. Ids are stable: C16 is withdrawn and not reused.
+
+**Phases (SPEC §18):**
+- **1c Local stacks:** C01–C15 and C51, after U26/U27c/U27d (C04 also after U32). C05–C15 run in every mode, with no server.
+- **4s Server stacks:** C17–C32, C45, C49, C50 and C52, after U47/U66/U68 (C17, C23, C29 and C30a–C30d can start earlier, as their dependencies allow). C33 is v1.x.
+- **9s Forgejo stacks:** C34–C43 and C46–C48 on the Go track after K17. C44 is v1.x.
+
+**Recorded amendments.** These hunks go into files that another unit owns. The C unit makes the hunk, and the hunk is recorded in the owning unit's Owns list by this table; it is allowed like the `mod` registration.
+
+| Owning unit and file | Hunk | Made by |
+|---|---|---|
+| U20 `crates/asc/src/ext.rs` | `RewriteSink`/`OpSink` with no-op defaults (already in U20's brief, so U20 lands them) | U20 |
+| `asc-core`/`asc-store` key enums (built, U04/U07) | `ObjKey::ChangeMeta` (`m/`), envelope kind 6 (CARRY.md) | C01 |
+| U22 (commit, amend), U27a (merge, cherry-pick, revert), U27c (rebase), U27d (`rebase -i`), U27e (stash), U32 (`pull --rebase`) | One sink call at each place a changeset is created or rewritten | C04 |
+| U21d (`reset`, `restore`), U23 (`checkout`, `switch`) | `snapshot_wc()` before a working-copy-destroying path (SPEC §20.3) | C04 |
+| U33 `crates/asc-git/src/import.rs` | Call `import_change::write_meta` for each imported commit | C45 |
+| U41 `proto/asc/v1/repo.proto` | The additive `repo.proto` hunks of SPEC §20.5 | C17 |
+| U73 `proto/asc/v1/workspace.proto`, `docs/plugin-api.md` | The additive `workspace.proto` hunks of SPEC §20.6, and a link to `docs/plugin-api-stack.md` | C31 |
+| U46 / U48b / U68 (`UpdateRefs(LAND)`, merge styles, land content merge) | The `LAND_NO_CONTENT_MERGE` flag and `LAND_NEEDS_CONTENT_MERGE` error | C52 |
+
+Each unit is done under the general rules (acceptance passes, clippy green, only owned files changed). Briefs are short: the SPEC section named in the title is normative.
+
+| ID | Title | Depends | Owns | Accept | Brief and required tests |
+|---|---|---|---|---|---|
+| C01 | `ChangeId`, content-addressed `ChangeMeta`, display, import derivation | U04 | `crates/asc-core/src/change.rs`, `crates/asc-core/tests/golden/change.txt`; amendment: `ObjKey::ChangeMeta` (`m/`) in `asc-core`/`asc-store` key enums and envelope kind 6 (CARRY.md) | `cargo test -p asc-core change::` | SPEC §20.2 types, k–z display/parse, `RewriteOp`, Gerrit/jj import derivation helpers. Tests: golden ids; an envelope round trip; `put` of a tampered `m/` object fails; k–z display and parse. |
+| C02 | Local change index and rewrite recording | C01, U17, U26 | `crates/asc-state/migrations/0201_changes.sql`, `crates/asc-state/src/changes.rs`, `crates/asc-engine/src/change.rs` | `cargo test -p asc-state changes:: && cargo test -p asc-engine change::` | `changes`, `change_preds` (SPEC §20.3) and the engine-side rules table of §20.2 (which op keeps, folds or mints a change id). |
+| C03 | Operation log store, pruning, argv redaction | U17, U09 | `crates/asc-state/migrations/0202_oplog.sql`, `crates/asc-state/src/oplog.rs` | `cargo test -p asc-state oplog::` | `op_log` (SPEC §20.3). Tests: argv redaction (URL credentials, `-c` values, `--token`); pruning bounds. |
+| C04 | `RewriteSink`/`OpSink` implementations for git commands (ids, op log, pre-destroy snapshots; invisible) | C02, C03, U20, U21d, U22, U23, U27a, U27c, U27d, U27e, U32 | `crates/asc/src/stack/sinks.rs`, `crates/asc/tests/stack_sinks.rs`, `tests/compat/scenarios/stack-invisible.t`; amendments: one sink call where U22, U27a, U27c, U27d, U27e and U32 create or rewrite a changeset, and `snapshot_wc()` before the destroying paths of U21d and U23 | `cargo test -p asc --test stack_sinks && cargo test -p asc-compat --test compat` | Registers the U20 sinks. Tests: the whole compat suite is unchanged, byte for byte; `reset --hard`, `checkout -f` and `switch --discard-changes` each leave a snapshot that `asc undo` restores (with C15); `clean -f` prints the gap hint. |
+| C05 | Stack model and revset subset (`-r/--revset` only) | C02, U13, U14b | `crates/asc-engine/src/stack/{mod.rs,revset.rs}` | `cargo test -p asc-engine stack::` | SPEC §20.3 derivation table. Tests: the stack equals a naive oracle on random DAGs; `immutable` evaluation issues no tag lookups; a Gerrit-style shared id on two immutable commits is neither obsolete nor divergent. |
+| C06 | In-memory restack planner and executor (with re-signing) | C05, U26 | `crates/asc-engine/src/stack/restack.rs` | `cargo test -p asc-engine stack::restack` | SPEC §20.1 D7. Tests: a stack of 50 changes restacks with 0 content reads when paths are disjoint; with `commit.gpgSign=true` every rewritten commit is signed, with it false none is; a signing failure pauses with exit 1 and moves no ref. |
+| C07 | Stack CLI frame, the D5 precedence hook-up, `--json` types | C05, U20, U20a | `crates/asc/src/stack/{mod.rs,precedence.rs,json.rs}`, `crates/asc/src/stack/cli/mod.rs` (`automod::dir!` plus a `linkme` slice, so each verb registers itself), `crates/asc/tests/stack_frame.rs` | `cargo test -p asc --test stack_frame` | Registers the stack verbs as asc-only verbs in U20's `dispatch.rs` order (SPEC §11.4). Tests: `help.autocorrect=immediate` does not turn a typo of a git command into a stack verb, and a stack verb name is not autocorrected; a `git-sync` on PATH wins over `git sync`. |
+| C08 | `asc sl`, `asc stack info\|parent\|children\|trunk`, `asc change-id` | C07, U24a | `crates/asc/src/stack/cli/{sl.rs,info.rs,change_id.rs}`, `crates/asc/tests/stack_sl.rs` | `cargo test -p asc --test stack_sl` | `asc sl --json` is `Workspace.Stacks` (SPEC §20.7). |
+| C09 | Navigation `up/down/top/bottom/next/prev` (exit 2 at a fork) | C07, U23 | `crates/asc/src/stack/cli/nav.rs`, `crates/asc/tests/stack_nav.rs` | `cargo test -p asc --test stack_nav` | Switches through U23's checkout path. |
+| C10 | `asc restack`, `asc continue`, `asc abort` | C06, C07, U27c | `crates/asc/src/stack/opstate.rs`, `crates/asc/src/stack/cli/{restack.rs,continue_.rs,abort.rs}`, `crates/asc/tests/stack_restack.rs` | `cargo test -p asc --test stack_restack` | Pauses in git's `rebase-merge/` plus `<gitdir>/asc-stack-op.json` (SPEC §20.3). |
+| C11 | `asc create`, `asc modify`, `asc reword` (hooks) | C10, U22 | `crates/asc/src/stack/cli/{create.rs,modify.rs,reword.rs}`, `crates/asc/tests/stack_create.rs` | `cargo test -p asc --test stack_create` | Tests: `pre-commit`, `commit-msg` and `post-commit` run (husky and commitlint fixture; a rejecting hook moves no ref); `post-rewrite` runs once per restack with all pairs. |
+| C12 | `asc absorb` | C10, U21c, U28a | `crates/asc-engine/src/stack/absorb.rs`, `crates/asc/src/stack/cli/absorb.rs`, `crates/asc/tests/stack_absorb.rs` | `cargo test -p asc-engine stack::absorb && cargo test -p asc --test stack_absorb` | Tests: absorb targets equal `git absorb`/Sapling on fixtures. |
+| C13 | `asc split`, `asc squash`, `asc fold` | C10, U21c | `crates/asc/src/stack/cli/{split.rs,squash.rs,fold.rs}`, `crates/asc/tests/stack_split.rs` | `cargo test -p asc --test stack_split` | Id rules of SPEC §20.2 for split, squash and fold. |
+| C14 | `asc move`, `asc reorder`, `asc stack rename\|delete\|pop` | C10, U27d | `crates/asc/src/stack/cli/{move_.rs,reorder.rs,lifecycle.rs}`, `crates/asc/tests/stack_move.rs` | `cargo test -p asc --test stack_move` | `reorder` uses the editor through `asc::child::command()`. |
+| C15 | `asc undo/redo/op` | C03, C04, C07, U23 | `crates/asc/src/stack/cli/{undo.rs,op.rs}`, `crates/asc/tests/stack_undo.rs` | `cargo test -p asc --test stack_undo` | Tests: undo of `git rebase`, `asc modify` and `asc split` restores refs, `HEAD` and the working copy. |
+| C16 | Withdrawn: opt-in `restackOnRewrite` (SPEC §20.1 D4; re-adding it needs the user's sign-off) | – | – | – | – |
+| C17 | Proto: `changes.proto` and conversions, plus the `repo.proto` amendment | C01, U41 | `proto/asc/v1/changes.proto`, `crates/asc-rpc/src/changes.rs`; amendment: the additive `repo.proto` hunks of SPEC §20.5 (U41's file) | `cargo test -p asc-rpc changes:: && buf lint proto` | SPEC §20.5 proto. |
+| C18 | Server change index, `m/` ingest and validation, versions, GC roots | C17, U43b, U66 | `crates/asc-serve/src/changes/{mod.rs,index.rs,versions.rs}`, `crates/asc-serve/migrations/{postgres,sqlite}/0201_changes.sql` | `cargo test -p asc-serve changes::index changes::versions` | SPEC §20.4. Tests: a meta whose `cs` is not in the push closure is rejected; `landed_as` uses no sequential scan (`EXPLAIN`); `CHANGE_DIVERGED` on a concurrent rewrite. |
+| C19 | `ResolveChanges`, `Stack`, `Versions`, `SetReviewState` | C18, U47 | `crates/asc-serve/src/changes/rpc.rs` | `cargo test -p asc-serve changes::rpc` | Registers the `Changes` service (U43a `GrpcServices`). |
+| C20 | `InterDiff` | C19, U26 | `crates/asc-engine/src/interdiff.rs`, `crates/asc-serve/src/changes/interdiff.rs` | `cargo test -p asc-engine interdiff:: && cargo test -p asc-serve changes::interdiff` | – |
+| C21 | `Mergeability` (one row per head), `Overlaps`, `open_paths` | C19, U65 | `crates/asc-serve/src/changes/{mergeable.rs,overlaps.rs}`, `crates/asc-serve/migrations/{postgres,sqlite}/0202_open_paths.sql` | `cargo test -p asc-serve changes::mergeable changes::overlaps` | Tests: after the trunk moves ten times the `mergeable` table still has one row per head; `Overlaps` omits the requested change's own stack. |
+| C22 | `RestackChanges` (actor committer, one timestamp per call) | C19, U68 | `crates/asc-serve/src/changes/restack.rs` | `cargo test -p asc-serve changes::restack` | Tests: `patch_unchanged` holds for metadata rebases; two calls with the same request produce identical changeset ids. |
+| C23 | Client transport of change metadata (push closure `m/`, fetch `LogEntry.change/meta`) | C02, C17, U31 | `crates/asc-engine/src/sync/changes.rs` | `cargo test -p asc-engine sync::changes` | Uploads `m/` only after the server advertises `changes.v1` (SPEC §20.2). |
+| C24 | `asc submit` | C19, C23, U32, U50, U44 | `crates/asc/src/stack/cli/submit.rs`, `crates/asc/tests/stack_submit.rs` | `cargo test -p asc --test stack_submit` | Tests: one `UpdateRefs` call per submit; PRs are created bottom-up. |
+| C25 | `asc sync` (with the Stage 0 fallback) | C10, C19, C23, U32, U39, U66 | `crates/asc/src/stack/cli/sync.rs`, `crates/asc/tests/stack_sync.rs` | `cargo test -p asc --test stack_sync` | Tests: on a plain git remote, `sync` detects landed changes by ancestry and patch-id, and `submit`, `get` and `stack merge` exit 128. |
+| C26 | `asc stack get\|freeze\|unfreeze` (`--worktree` opens a plain worktree) | C19, C23, U54w | `crates/asc/src/stack/cli/get.rs`, `crates/asc/tests/stack_get.rs` | `cargo test -p asc --test stack_get` | – |
+| C27 | `asc evolog`, `asc interdiff` | C20, C07 | `crates/asc/src/stack/cli/evolog.rs`, `crates/asc/tests/stack_evolog.rs` | `cargo test -p asc --test stack_evolog` | – |
+| C28 | `asc stack merge` (calls `Changes.RequestMerge`) | C24, C50 | `crates/asc/src/stack/cli/merge.rs`, `crates/asc/tests/stack_merge.rs` | `cargo test -p asc --test stack_merge` | Distinct from `asc landed` (SPEC §8.9). |
+| C29 | `CommitGraph` RPC with capped lanes, `diffstat.v1` | U47, U14, U15 | `crates/asc-engine/src/commit_graph/lanes.rs`, `crates/asc-engine/src/derive/diffstat.rs`, `crates/asc-serve/src/commit_graph_rpc.rs` | `cargo test -p asc-engine commit_graph::lanes derive::diffstat && cargo test -p asc-serve commit_graph_rpc::` | Tests: lanes are identical for one page of 1,000 rows and for ten pages of 100; 1,000 live lanes yield a page token under 4 KiB. |
+| C30a | `LineHistory` RPC with scan budget | U47, U65 | `crates/asc-engine/src/history/linehist.rs`, `crates/asc-serve/src/history/linehist_rpc.rs` | `cargo test -p asc-engine history::linehist && cargo test -p asc-serve history::linehist_rpc` | Tests: exhausting `scan_budget` returns `truncated` with a resume token. |
+| C30b | `Compare` RPC | U47, U65 | `crates/asc-engine/src/history/compare.rs`, `crates/asc-serve/src/history/compare_rpc.rs` | `cargo test -p asc-engine history::compare && cargo test -p asc-serve history::compare_rpc` | – |
+| C30c | Pickaxe `Log` (path required, scan budget) | U47, U65 | `crates/asc-engine/src/history/pickaxe.rs`, `crates/asc-serve/src/history/pickaxe_rpc.rs` | `cargo test -p asc-engine history::pickaxe && cargo test -p asc-serve history::pickaxe_rpc` | Tests: budget exhaustion returns `truncated`; pickaxe without a path is rejected. |
+| C30d | `RepoConfig` RPC (autolinks, `review.toml` at a rev) | U47 | `crates/asc-serve/src/history/repo_config.rs` | `cargo test -p asc-serve history::repo_config` | – |
+| C31 | Workspace plugin additions (SPEC §20.6) | U73, C08, C29, C30a, C30b, C30c, C30d | `crates/asc/src/daemon/plugin_api_stack.rs`, `docs/plugin-api-stack.md`, `crates/asc/tests/plugin_api_stack.rs`; amendment: the additive `workspace.proto` hunks and a link in `docs/plugin-api.md` (U73's files) | `cargo test -p asc --test plugin_api_stack` | `Stacks`, `Worktrees`, `Conflicts`, `CommitGraph` (WIP rows), blame `buffer`. |
+| C32 | `asc share` (rooted by `refs/snapshots/<id>` with expiry) | C23, U48a | `crates/asc/src/stack/cli/share.rs`, `crates/asc/tests/stack_share.rs` | `cargo test -p asc --test stack_share` | – |
+| C33 | `asc stack exec` (v1.x) | C06, U54w | `crates/asc/src/stack/cli/exec.rs`, `crates/asc/tests/stack_exec.rs` | `cargo test -p asc --test stack_exec` | v1.x, not on the v1 path. |
+| C34 | PR ↔ change, `stack_parent_id`, the `merge_base` rule and its recomputation patch, AGit lookup by change, update authorisation | K09, K12, K17, C19 | `models/issues/pull_asc_stack.go`, `models/forgejo_migrations/v*_asc_stack.go`, `services/agit/agit_asc.go`, `services/pull/asc_stack_base.go` | `go test ./services/pull/... ./services/agit/... -run TestAscStack` | SPEC §20.5 seams. Tests: a user without write access, or a non-author without "allow edits", cannot update a PR by forging `preds`; a push does not change a stacked PR's `merge_base`; the commits tab lists only the change. |
+| C35 | `SetReviewState` notifier on PR, review and check events | C34 | `services/ascsync/review_state.go` | `go test ./services/ascsync/... -run TestAscReviewState` | – |
+| C36 | Stack panel, needs-restack banner, mid-stack merge block (web and `POST /pulls/{n}/merge`) | C34 | `routers/web/repo/pull_asc_stack.go`, `routers/api/v1/repo/pull_asc_merge_guard.go`, `templates/repo/pulls/asc_stack.tmpl` | `go test ./routers/... -run 'TestAscStackPanel\|TestAscMergeGuard'` | Tests: `POST /pulls/{n}/merge` on a mid-stack PR returns 409. |
+| C37 | Versions dropdown, interdiff, since-last-review | C34, C20 | `services/pull/asc_versions.go`, `templates/repo/pulls/asc_versions.tmpl` | `go test ./services/pull/... -run TestAscVersions` | – |
+| C38 | Merge stack (N), post-merge `RestackChanges`, approvals kept | C36, C22 | `services/pull/asc_stack_merge.go` | `go test ./services/pull/... -run TestAscStackMerge` | Tests: a partial merge lands exactly 1..N atomically. |
+| C39 | Stack queue: merge-when-ready cascade, order, pause, revalidate, the `RequestMerge` internal endpoint | C38, C50, C52 | `services/automerge/asc_stack_queue.go`, `routers/private/asc_request_merge.go`, `models/forgejo_migrations/v*_asc_queue.go` | `go test ./services/automerge/... ./routers/private/... -run 'TestAscStackQueue\|TestAscRequestMerge'` | SPEC §12.6, §20.5 flow 5. Tests: the `asc-sim` run lands 20 stacks concurrently with no lost or duplicated change. |
+| C40 | Actions stack context (K14 extension) | C34, K14 | `services/actions/asc_stack_context.go` | `go test ./services/actions/... -run TestAscStackContext` | – |
+| C41a | Inbox state model (whose turn, pin, snooze) | C35 | `models/issues/asc_inbox_state.go` | `go test ./models/issues/... -run TestAscInboxState` | – |
+| C41b | Inbox API `GET /api/v1/user/asc/inbox` | C41a | `routers/api/v1/user/asc_inbox.go` | `go test ./routers/api/v1/user/... -run TestAscInbox` | – |
+| C41c | Inbox page | C41b | `routers/web/user/asc_inbox.go`, `templates/user/asc_inbox.tmpl` | `go test ./routers/web/user/... -run TestAscInboxPage` | – |
+| C42 | Commit graph page over `CommitGraph` | C29, K10 | `routers/web/repo/asc_graph.go`, `templates/repo/asc_graph.tmpl` | `go test ./routers/web/repo/... -run TestAscGraph` | – |
+| C43 | Overlap and mergeability badges, stack compare view | C21, C30b, C36 | `routers/web/repo/asc_compare.go`, `templates/repo/pulls/asc_badges.tmpl` | `go test ./routers/web/repo/... -run TestAscOverlap` | – |
+| C44 | Suggested changesets (v1.x) | C37, U48a | `services/pull/asc_suggest.go`, `templates/repo/pulls/asc_suggest.tmpl` | `go test ./services/pull/... -run TestAscSuggest` | v1.x. |
+| C45 | Git import writes `ChangeMeta` (jj header, Gerrit trailer, scoped id) | C01, C02, U33 | `crates/asc-git/src/import_change.rs`, `crates/asc-git/tests/import_change.rs`; amendment: the `import_change::write_meta` call in U33's `import.rs` | `cargo test -p asc-git --test import_change && cargo test -p asc-git --release --test asc_roundtrip -- --ignored` | Git SHAs stay identical (the round trip proves it). |
+| C46 | Branch-chain PR retarget (SPEC §20.5 flow 6) | C34 | `services/pull/asc_branch_chain.go` | `go test ./services/pull/... -run TestAscBranchChain` | – |
+| C47 | "Restore version" (moves `refs/pull/<n>/head` to a kept version) | C37 | `services/pull/asc_restore_version.go` | `go test ./services/pull/... -run TestAscRestoreVersion` | – |
+| C48 | "Revert landed stack" (`Apply(REVERT)` over `FindLanding`, newest first) | C38, U66 | `services/pull/asc_revert_stack.go` | `go test ./services/pull/... -run TestAscRevertStack` | – |
+| C49 | `Watch KIND_STACK` events (server emit, client delivery) | C19, C02, U73 | `crates/asc-serve/src/changes/watch.rs`, `crates/asc/src/daemon/watch_stack.rs`, `crates/asc/tests/stack_watch.rs` | `cargo test -p asc-serve changes::watch && cargo test -p asc --test stack_watch` | – |
+| C50 | `RequestMerge` RPC (proxies to the forge's queue) | C19, U46 | `crates/asc-serve/src/changes/request_merge.rs` | `cargo test -p asc-serve changes::request_merge` | With no forge attached, `now=true` lands directly and `now=false` is refused. |
+| C51 | `asc uncommit`, `asc unamend`, `asc abandon` | C10, C11 | `crates/asc/src/stack/cli/{uncommit.rs,abandon.rs}`, `crates/asc/tests/stack_abandon.rs` | `cargo test -p asc --test stack_abandon` | – |
+| C52 | Server `LAND_NO_CONTENT_MERGE` flag | U46, U48b, U68, C17 | `crates/asc-serve/tests/land_no_content_merge.rs`; amendment: the flag and the `LAND_NEEDS_CONTENT_MERGE` error in U46/U48b/U68's land path | `cargo test -p asc-serve --test land_no_content_merge` | Tests: a land that would need a content merge fails with `LAND_NEEDS_CONTENT_MERGE` and changes no ref. |
 
 ---
 
 ## §K Forgejo fork track (Go, `D:\dev\forgejo`, branch `asc/v16`)
 
-Each unit is one commit on the patch stack (SPEC §13.3). Commands run from `D:\dev\forgejo`. A Go engineer owns this track. It needs Rust units only where noted (as an `ASC_SERVER_BIN` built from this repo).
+Each unit is one commit on the patch stack (SPEC §13.3). Commands run from `D:\dev\forgejo`. A Go engineer owns this track. It needs Rust units only where noted, as `ASC_SERVER_BIN` **[audit: k-track-deps]**: `ASC_SERVER_BIN` = `<source-control>/target/release/asc` built by `cargo build -p asc --release --no-default-features --features serve`. The Go tests start it with `serve --config <tmp> --db sqlite::memory: --store memory://`.
 
 | ID | Title | Owns | Depends | Accept |
 |---|---|---|---|---|
-| K01 | Baseline and CI | `.forgejo/workflows/asc-fork.yml`, `docs/asc/BASELINE.md` (recorded passing tests) | – | `go build ./... && make test-backend` |
+| K01 | Baseline and CI | `.forgejo/workflows/asc-fork.yml`, `docs/asc/BASELINE.md` (recorded passing tests), `[repository] DEFAULT_BRANCH = master` in `tests/{sqlite,pgsql}.ini.tmpl` | – | `go build ./... && make test-backend` |
 | K02 | Path hiding | the 34 `git.OpenRepository(path)` callers, `modules/gitrepo/**`, `modules/git/{blame,diff,log_name_status}.go` signatures | K01 | `make test-backend test-sqlite` |
 | K03 | Seam A `Backend` + `gitcli` | `modules/git/backend.go`, `modules/git/gitcli/**`, `modules/git/*.go` dispatch | K02 | `go test ./modules/git/... && make test-sqlite` |
 | K04 | Seam B `repostore` + gitcli writer | `modules/repostore/**`, temp-repo call sites in `services/{repository/files,pull,wiki,repository}` | K03 | `go test ./modules/repostore/... ./services/pull/... ./services/wiki/... && make test-sqlite` |
 | K05 | Raw git removal + checker | `build/check-raw-git/**`, call sites in `modules/indexer/code`, `services/*` | K04 | `go run ./build/check-raw-git && make test-sqlite` |
-| K06 | `ascproto` + `ascclient` | `modules/ascproto/**` (buf-generated, committed), `modules/ascclient/**`, `buf.gen.yaml` | U41 | `go test ./modules/ascclient/...` (with `ASC_SERVER_BIN` set: in-process server tests) |
+| K06 | `ascproto` + `ascclient` | `modules/ascproto/**` (buf-generated, committed), `modules/ascclient/**`, `buf.gen.yaml` | U41, U43c | `go test ./modules/ascclient/...` (with `ASC_SERVER_BIN` set: in-process server tests) |
 | K07 | Internal authz endpoint + well-known | `routers/private/asc.go`, route registration in `routers/private/internal.go`, `modules/private/asc.go`, `routers/web/wellknown_asc.go`, `modules/setting/asc.go` | K01 | `go test ./routers/private/... -run TestAscAuthz` |
 | K08 | `storage_backend` column + selection | `models/repo/repo.go`, `models/forgejo_migrations/v*_asc_storage_backend.go`, `modules/gitrepo/backend_select.go` | K03, K06 | `go test ./models/... ./modules/gitrepo/...` |
-| K09 | Stage 2 hook glue | `routers/private/hook_pre_receive.go` (asc branch), `routers/private/hook_post_receive.go` (`PushTrigger="asc"` handling), `services/ascsync/**` | K07, K08, U48 | `ASC_SERVER_BIN=… go test ./services/ascsync/... ./routers/private/...` |
-| K10 | `ascbackend` reads | `modules/git/ascbackend/**` | K08, U47 | `ASC_SERVER_BIN=… go test ./modules/git/ascbackend/...` |
+| K09 | Stage 2 hook glue and `refs/pull/*` writers | `routers/private/hook_pre_receive.go` (asc branch), `routers/private/hook_post_receive.go` (`PushTrigger="asc"` handling), `services/ascsync/**`, `services/agit/agit.go` and `services/pull/pull.go` hunks (SPEC §13.5) | K07, K08, U48d | `ASC_SERVER_BIN=… go test ./services/ascsync/... ./routers/private/... && go test ./tests/integration -run 'TestAgit\|TestPullHeadRef' -tags asc` |
+| K10 | `ascbackend` reads | `modules/git/ascbackend/**` | K08, U47 | `go test ./modules/git/ascbackend/...` (with `ASC_SERVER_BIN`) |
 | K11 | `dual` shadow backend | `modules/git/dual/**` | K10 | `go test ./modules/git/dual/...` |
-| K12 | `repostore` asc writer | `modules/repostore/asc/**` | K04, K10, U48 | `ASC_SERVER_BIN=… go test ./modules/repostore/asc/...` |
-| K13 | Bridge, LFS, lifecycle | `services/ascbridge/**`, `routers/web/repo/githttp.go`, `cmd/serv.go`, `services/lfs/**`, `services/mirror/**`, `services/repository/{create,fork,delete,adopt,check}.go` | K12 | `ASC_SERVER_BIN=… go test ./services/ascbridge/... ./services/lfs/...` |
+| K12 | `repostore` asc writer | `modules/repostore/asc/**` | K04, K10, U48a–U48c | `go test ./modules/repostore/asc/...` (with `ASC_SERVER_BIN`) |
+| K13 | Bridge, LFS endpoints off, lifecycle | `services/ascbridge/**`, `routers/web/repo/githttp.go`, `cmd/serv.go`, `services/lfs/**`, `services/mirror/**`, `services/repository/{create,fork,delete,adopt,check}.go` | K12 | `go test ./services/ascbridge/... ./services/lfs/...` (with `ASC_SERVER_BIN`) |
 | K14 | Actions integration | `services/actions/**`, `modules/actions/**` | K10 | `go test ./modules/actions/... ./services/actions/...` |
-| K15 | Integration matrix | `tests/integration/asc_backend_test.go`, CI matrix | K11, K13, K14 | `FORGEJO_TEST_STORAGE_BACKEND=asc make test-sqlite test-pgsql` and the same with `dual` (0 mismatches) |
+| K15 | Integration matrix | `tests/integration/asc_backend_test.go`, `tests/test_utils.go` (reads `FORGEJO_TEST_STORAGE_BACKEND`), CI matrix | K11, K13, K14 | `FORGEJO_TEST_STORAGE_BACKEND=asc make test-sqlite test-pgsql` and the same with `dual` (0 mismatches) |
 | K16 | ID mode `asc` (optional, later) | `modules/git/object_format.go`, `models/**` id columns migration, `services/context/**` | K15 | `FORGEJO_TEST_OBJECT_FORMAT=asc make test-sqlite` |
+| K17 | Relaxed approvals by change class [audit: 27-semantic-classification] | `models/git/protected_branch.go` fields plus a migration, `services/pull/review_asc.go`, `templates/repo/diff/asc_class_badge.tmpl` | K10, U67 | `go test ./services/pull/... -run TestAscRelaxedApprovals` |
+
+**Runner fork track** (Go, `D:\dev\forgejo-runner`, one commit per unit) [audit: user decision Actions fork]:
+
+| ID | Title | Owns | Depends | Accept |
+|---|---|---|---|---|
+| R01 | Action alias table | `internal/app/run/alias.go`, `config.example.yaml` hunk | – | `go test ./internal/app/run/... -run TestActionAlias` |
+| R02 | Native checkout fast path | `internal/app/run/asc_checkout.go` | R01, U62 | `go test ./internal/app/run/... -run TestAscCheckoutNative` |
+
+**Actions mirror** (`asc/actions` on Forgejo):
+
+| ID | Title | Owns | Depends | Accept |
+|---|---|---|---|---|
+| A01 | `asc/actions` mirror | the `asc/actions` repo: `checkout`, `cache`, `upload-artifact`, `download-artifact`, `asc/setup`, `asc/changed`, `asc/affected`, `asc/turbo-cache` (from U64's `actions/`), plus `deploy/forgejo/actions.ini.snippet` (`[actions] DEFAULT_ACTIONS_URL` pointing at the mirror) | U64 | `bash actions/test/selftest.sh --mirror <url>` |
 
 **Briefs:**
 
@@ -492,66 +994,87 @@ Each unit is one commit on the patch stack (SPEC §13.3). Commands run from `D:\
 - **K09:** pre-receive asc branch: after the existing checks, call `ImportGitPush` with `GIT_QUARANTINE_PATH`, `GIT_OBJECT_DIRECTORY` and `GIT_ALTERNATE_OBJECT_DIRECTORIES` from the hook env; on error, reject with asc's message. Post-receive: for `storage_backend=asc` repos, ignore calls whose `PushTrigger != "asc"`, because asc's outbox is the single fan-out. `HookOptions` gains nothing new; `PushTrigger` already exists.
 - **K10:** map every `Backend` method to the RPCs in SPEC §13.3 K10 with `id_mode=GIT` while `object_format=sha1`. Batch `LastCommits` and `Stat`. Language stats are computed in Go over `ReadTree` plus `ReadFile`.
 - **K11:** sampled comparison (`[asc] SHADOW_SAMPLE=0.1`) of `GetCommit`, `GetTree`, `ListRefs`, `Log` pages, `GetDiff` name-status, `GetMergeBase`, blame and `Merge(dry_run)` vs `git merge-tree`. Metrics plus logs; the response always comes from gitcli.
-- **K12:** each `Writer` method = one RPC. PR head refs use `CopyClosure` then `UpdateRefs refs/pull/<n>/head`. The AGit flow maps to `UpdateRefs refs/for/<b>`, after which asc calls `proc-receive`.
-- **K13:** `bridgePath(repo)` everywhere a repo path served git. A lazy bridge build calls `asc export --git <bridge>` (the `asc` binary on the host) on the first legacy request (a request-scoped lock). The LFS batch API answers from asc via the `x/sha256` alias with presigned URLs. Fork, delete and size use `RepoAdmin`.
+- **K12:** each `Writer` method = one RPC. PR head refs use `CopyClosure` then `UpdateRefs refs/pull/<n>/head`. AGit pushes (Stage ≥ 4) go through asc's proc-receive call path (SPEC §13.5): `refs/for/*` is never stored; Forgejo returns `refs/pull/<n>/head`, which asc updates with `SKIP_PRE`.
+- **K09 (AGit, Stages 2–3):** patch the internal writers of `refs/pull/*` (proc-receive handling, PR head sync) to call asc `UpdateRefs(refs/pull/<n>/head, SKIP_PRE)` first and write the bridge only through `bridge_promote`. An asc-serve test `agit::proc_receive_sets_pull_head` (in U48d's `import_push.rs` test module) covers the server side.
+- **K17:** branch protection fields `asc_relaxed_classes`/`asc_relaxed_approvals`; a PR whose files are all in relaxed classes (from `Classify`) needs the relaxed approval count; protected-file globs always override; a per-file class badge.
+- **R01/R02:** the alias table maps `actions/checkout@*`, `actions/cache@*`, `actions/upload-artifact@*`, `actions/download-artifact@*` to `asc/actions/*`; the fast path recognises the checkout action and runs `asc ci checkout` on the host with `ASC_HOME=<job dir>/asc-home`, bind-mounting the tree, that `ASC_HOME` and the `asc` binary directory into the job container at identical absolute paths, then sets `GITHUB_ENV`/`GITHUB_PATH` as SPEC §12.3 step 6 (SPEC §12.7) [audit: ci-later-steps-asc-home-and-runner-mounts]. Test `TestAscCheckoutNative` runs `git rev-parse HEAD` inside the container.
+- **K13:** `bridgePath(repo)` everywhere a repo path served git. A lazy bridge build calls `asc export --git <bridge>` (the `asc` binary on the host) on the first legacy request (a request-scoped lock). For `storage_backend=asc` repos the LFS endpoints are disabled (No LFS, SPEC §2.5); historic LFS content is archived outside asc. Fork, delete and size use `RepoAdmin`.
 - **K14:** `paths:` matching uses `Diff(NAMES)` between before and after (push) or merge base and head (PR). The context gains the SPEC fields.
 
 ---
 
 ## Ops units
 
-### O01 GC (two-mark)
+### O01 GC (two-mark, fenced)
 - **Owns:** `crates/asc-store/src/gc.rs`, `crates/asc-serve/src/gc.rs`, `crates/asc/src/cli/gc_store.rs`
-- **Depends:** U43. **Accept:** `cargo test -p asc-store gc:: && cargo test -p asc-serve gc::`
-- **Brief:** SPEC §3.6: marks from refs plus recent changesets, the two-mark and 14-day rule, the server's `gc_marks` table, bucket marks under `gc/<run>/` with a `gc/lock` lease, and dry-run output. Tests: an in-flight push across marks keeps re-referenced old objects; unreachable old objects are deleted only after the second mark; concurrent GC runs are refused.
+- **Depends:** U43b. **Accept:** `cargo test -p asc-store gc:: && cargo test -p asc-serve gc::`
+- **Brief:** SPEC §3.6: marks from refs plus recent changesets and `ref_log` targets within `asc.gc.pitrDays`, the two-mark and 14-day rule, the server's `gc_marks` table, bucket marks under `gc/<run>/` with a `gc/lock` lease, dry-run output, extra roots from a `GcRootSource` trait defined here (U75 implements it for unexpired Actions manifests, SPEC §3.6) [audit: actions-cache-artifact-underspecified], and **sweep fencing** [audit: gc-sweep-race-and-pitr-roots]: the exclusive advisory lock per sweep batch with re-mark (server) and `gc/freeze` (bucket). Tests: an in-flight push across marks keeps re-referenced old objects; unreachable old objects are deleted only after the second mark; concurrent GC runs are refused; `gc::sweep_race_push_after_mark2`; `gc::pitr_restore_closure`.
 
 ### O02 Release and distribution
 - **Owns:** `.forgejo/workflows/release.yml`, `packaging/windows/{main.wxs,register-task.ps1,defender.ps1}`, `packaging/winget/**`, `packaging/linux/{install.sh,asc-daemon.service}`, `crates/asc/src/cli/upgrade.rs`
-- **Depends:** U53. **Accept:** `cargo test -p asc upgrade:: && cargo wix --nocapture --package asc` (on Windows CI)
-- **Brief:** SPEC §16.2: release builds for 4 targets; the MSI (installs, hardlinks the helper names, enables Client-ProjFS, adds Defender exclusions, registers the logon task); a winget manifest; the Linux installer and user unit; `asc upgrade` with minisign verification; `Version.min_client` enforcement messages. Test: upgrade refuses a tampered artefact.
+- **Depends:** U53c, U20a. **Accept:** `cargo test -p asc upgrade:: && cargo wix --nocapture --package asc` (on Windows CI)
+- **Brief:** SPEC §16.2: release builds for 4 targets; the MSI (installs to a versioned directory behind a `current` junction, always creates the private shim dir `<ver>\shim`, and the optional "Use asc for git commands" shim: an elevated install inserts `<prefix>\current\shim` into the **machine** PATH immediately before `Git\cmd` (SPEC §11.4) [audit: windows-shim-path-precedence-and-location], plus the `~/.bashrc` block for Git Bash; enables Client-ProjFS, adds Defender exclusions, registers the logon task; a WiX test asserts that `where git` lists the shim first); a winget manifest; the Linux installer (versioned layout, optional shim) and user unit; `asc upgrade` with minisign verification, side-by-side install, shim relinking and the daemon `Shutdown`; the daily update check; `Version.min_client` enforcement messages. **Release gate:** the compat suite (SPEC §17.1) is green on Windows and Linux. Tests: upgrade refuses a tampered artefact; `upgrade::side_by_side_relinks_helpers` (Windows CI).
 
 ### O03 Migration runbook and admin verify
 - **Owns:** `docs/runbooks/{asc-cutover.md,rollback.md,restore.md}`, `crates/asc-serve/src/admin_cli.rs`
-- **Depends:** U45, K09. **Accept:** `cargo test -p asc-serve admin_cli::` and, on staging, `asc serve admin verify-import --repo asc/dds --repo asc/soma` exits 0 with `mismatches: 0`
-- **Brief:** SPEC §14.3 as an executable runbook with exact commands; `asc serve admin verify-import` (every git commit's export equals git), `verify --all` (closure and git map), `outbox drain --wait`, and `set-mode`. The rollback and restore drills are scripted.
+- **Depends:** U45, K09. **Accept:** `cargo test -p asc-serve admin_cli::` [audit: acceptance-ambiguity]
+- **Brief:** SPEC §14.3 as an executable runbook with exact commands; `asc serve admin import` (server-side import, the only way git history reaches a server, SPEC §8.4), `asc serve admin verify-import` (every git commit's export equals git; skipped refs of SPEC §14.1 step 6 are excluded from the mismatch count) [audit: import-non-commit-tags], `verify --all` (closure and git map), `outbox drain --wait`, and `set-mode`. The rollback and restore drills are scripted. The staging run (`asc serve admin verify-import --repo asc/dds --repo asc/soma` exits 0 with `mismatches: 0`) is a cutover gate in the runbook, not the unit's acceptance.
 
 ### O04 Developer docs and cheat sheet
-- **Owns:** `docs/CHEATSHEET.md`, `docs/ONBOARDING.md`, `docs/agents/claude-code-worktrees.md`, `crates/asc/src/cli/help_git.rs`
-- **Depends:** U40. **Accept:** `cargo test -p asc help_git::` (the cheat sheet embedded in `asc help git` matches `docs/CHEATSHEET.md`)
-- **Brief:** The git → asc mapping (SPEC §11.3); onboarding (install, `clone --reference`, reclaim disk, VS Code settings for search and watcher excludes); Claude Code `WorktreeCreate`/`WorktreeRemove` hook configuration (outcome of spike S7); a troubleshooting section keyed by `asc doctor` findings.
+- **Owns:** `docs/CHEATSHEET.md`, `docs/ONBOARDING.md`, `docs/SCION-TRACEABILITY.md`, `docs/agents/claude-code-worktrees.md`, `crates/asc/src/cli/help_git.rs`
+- **Depends:** U40, U54w. **Accept:** `cargo test -p asc help_git::` (the cheat sheet embedded in `asc help git` matches `docs/CHEATSHEET.md`; the sibling test `traceability_rows` asserts that every checklist number 1–32 has a row in SPEC §1.1)
+- **Brief:** The git → asc mapping (SPEC §11.3); onboarding (install, the `git` shim and its surfaces — PATH order, Git Bash `~/.bashrc`, turbo's environment; `clone --reference`, reclaim disk; editor settings for search, watcher excludes and language servers per SPEC §10.2.5a; the branch-scope model, SPEC §6.1; the `.gitattributes` and checkout-option deviations, SPEC §2.4.1, §11.5); Claude Code `WorktreeCreate`/`WorktreeRemove` hook configuration and the `.claude/settings.json` snippet (spike S7); a troubleshooting section keyed by `asc doctor` findings. IDE git integrations are documented as unsupported; ASC's plugins use the API (U73).
 
-### O05 Benchmarks (`asc-bench`)
-- **Owns:** `crates/asc-bench/**`
-- **Depends:** U58. **Accept:** `cargo run -p asc-bench --release -- --suite quick` (prints a table and fails on regression > 20% vs `crates/asc-bench/baseline.json`)
-- **Brief:** The SPEC §1 targets: clone, worktree add, status (clean and 10 dirty), switch between trunk tips, commit, push, `diff --remote`, plan job, import throughput. Uses a synthetic 100k-file repo plus an optional ASC mirror.
+### O05 Benchmark gate: git vs asc (`bench/`) [audit: user decisions benchmarks and checkout speed]
+- **Owns:** `bench/**` (hyperfine scenario scripts, a criterion suite for internals, the deterministic repo generator `bench/gen`, `bench/baseline.json`), `.forgejo/workflows/bench.yml`, `docs/BENCHMARKS.md`
+- **Depends:** U58, G08, U62. **Accept:** `cargo run -p asc-bench --release -- --suite quick` (runs git and asc on the small workload and a 10x synthetic repo, prints the table, and fails when asc loses a Scion-model scenario, is > 10% slower elsewhere, or regresses > 20% vs `bench/baseline.json`)
+- **Brief:** SPEC §16.4: scenarios (clone full/blobless/shallow/sparse/scalar for git vs asc virtual and plain, `worktree add`, `status` clean and dirty, `switch`, `diff` HEAD/merge-base/`--stat`, path-limited `log`, `blame`, `merge-base`/`is-ancestor`, `commit`/`push`/`fetch`, CI checkout plus affected, turbo `--dry`), workloads (small, medium, HUGE; `bench/gen` with 1M-file and 100 GB variants for the nightly run), metrics (wall p50/p95, time to first usable shell and first build, bytes transferred and on disk, files hydrated, peak RSS, server CPU; cold and warm), daemon idle RSS ≤ 64 MiB, and the published `docs/BENCHMARKS.md` table per release. The medium and HUGE clone scenarios run with the default history window (SPEC §6.3) [audit: clone-history-o-history]; the HUGE scenarios run with `asc.turboIndex` on and off, reporting index render time separately (SPEC §16.4) [audit: synthetic-index-o-files]. Every real-git invocation in `bench/` passes `-c init.defaultBranch=master` (U01b's lint covers `bench/`) [audit: no-main-lint-misses-common-forms].
+
+### O06 Observability catalogue [audit: 29-observability-superfans]
+- **Owns:** `docs/metrics.md`, `deploy/alerts.yml`, `deploy/grafana/*.json`, `docs/runbooks/tier-*.md`, `crates/asc/src/telemetry.rs`
+- **Depends:** U43c, U53b, U63. **Accept:** `cargo test -p asc telemetry:: && promtool check rules deploy/alerts.yml`
+- **Brief:** SPEC §16.1 and §16.4: shared log fields, OTLP init and the event catalogue (`telemetry.rs`), the metric catalogue, alert rules (including the three-day cache-SLO rule), dashboards and per-tier runbooks. A test asserts that every metric name in `docs/metrics.md` is registered by the binary.
+
+### O07 Fuzz targets [audit: 24-fuzzing]
+- **Owns:** `fuzz/**`, `.forgejo/workflows/fuzz.yml`
+- **Depends:** U04, U05, U13, U16, U41, U48a, G03–G06. **Accept:** `bash fuzz/run-all.sh 60` (runs every target for 60 s; non-zero on a crash)
+- **Brief:** SPEC §17.3 targets, regressions under `fuzz/regressions/<target>/` replayed by `cargo test`, PR (60 s per touched crate) and nightly (30 min) schedules.
+
+### O08 Simulation harness (`asc-sim`) [audit: 24-hermetic-simulation]
+- **Owns:** `crates/asc-sim/**`
+- **Depends:** U46, U48d, O01, U65, U70. **Accept:** `cargo test -p asc-sim -- --seeds 200`
+- **Brief:** SPEC §17.2: turmoil-based replicas (primary and cache role), clients, fake Forgejo and in-memory store; `Faulty<O>`; named crash points; the scenarios and invariants listed there; seed printing and replay; PR and nightly seed counts.
 
 ---
 
 ## Parallel execution summary
 
+Waves are the longest dependency chain to each unit (computed from the unit index). Units in one wave can run concurrently.
+
 | Wave | Units that can run concurrently |
 |---|---|
-| 1 | U01 |
-| 2 | U02, U03 (+ K01, K02 on the Go track; U41 after U04) |
-| 3 | U04 |
-| 4 | U05, U06 |
-| 5 | U07, U09 |
-| 6 | U08 |
-| 7 | U10 |
-| 8 | U11 |
-| 9 | U12, U14, U15, U16, U17 |
-| 10 | U13, U18, U19 |
-| 11 | U20 |
-| 12 | U21, U22, U23, U24 |
-| 13 | U25 |
-| 14 | U26, U28, U29, U30, U31, U33, U34, U41, U54 |
-| 15 | U27, U35, U55 |
-| 16 | U32, U36, U42, U56, U59 |
-| 17 | U37, U38, U43, U52, U60 |
-| 18 | U39, U44, U47, U49, U53 |
-| 19 | U40, U45, U46, U48, U57 |
-| 20 | U50, U58, O01 |
-| 21 | U51, U61, U62, U63, O02, O04 |
-| 22 | U64, O03, O05 |
+| 1 | U01 (built) |
+| 2 | U01b, U02, U03, U16a (+ K01 on the Go track; U02–U12 and U14 are built, U15 is in progress) |
+| 3 | U04, U06 (+ K02) |
+| 4 | U05, U07, U09, U41, G01, C01 |
+| 5 | U08, U16, U29, G02, C17 |
+| 6 | U10, G03, G04, G05, G06 (U30 may run any time after U29; it is deferred and off the critical path) |
+| 7 | U11, U15 |
+| 8 | U12, U14 |
+| 9 | U13, U14b, U17, U28a, U31, U33, U34, G07 |
+| 10 | U18, U19, U26, U35, C03 |
+| 11 | U20, U42, C02 |
+| 12 | U20a, U21a, U21b, U21d, U22, U24a, U24c, U24d, U24e, U36, U43a, U52, C05, C23, C45 |
+| 13 | U21c, U23, U43b, C06, C07 |
+| 14 | U25, U43c, U65, O01, C08, C09 |
+| 15 | U24b, U25a, U27a, U28b, U37, U44, U47, U49, U54v, U54w, U69, U72, G08 |
+| 16 | U27b, U27c, U27e, U45, U46, U55, U67, U70, G09, G11, C29, C30a–C30d (C33 v1.x) |
+| 17 | U27d, U32, U48a, U53a, U56, U59, U60, U71, C10 |
+| 18 | U24f, U39, U48b, U48c, U48d, U53b, U53c, O07, C04, C11, C12, C13, C14, C32 |
+| 19 | U40, U50, U57, U66, U68, U73, O02, O08, C15, C51 |
+| 20 | U40b, U51, U58, U61p, U62, G10, O04, C18, C31, C52 |
+| 21 | U61v, U63, U75, O05, C19 |
+| 22 | U64, O06, C20, C21, C22, C24, C25, C26, C49, C50 |
+| 23 | A01, O03 (after K09), C27, C28 |
 
-The Go track (K01–K16) runs alongside: K01–K05 from wave 2; K06 after U41; K07 and K08 next; K09 after U48; K10–K15 after U47 and U48.
+The Go track runs alongside: K01 from wave 2 and K02 from wave 3 (K02 depends on K01); K03–K05 next; K06 after U41 and U43c; K07 and K08 next; K09 after U48d; K10–K15 after U47 and U48a–U48c; K17 after K10 and U67; the Forgejo stack units C34–C43 and C46–C48 after K17 and C19 (C38 after C22, C39 after C50/C52, C42 after C29, C43 after C21/C30b; C44 is v1.x). The runner fork: R01 any time, R02 after U62.
