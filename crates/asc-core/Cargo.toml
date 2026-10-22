@@ -10,3 +10,11 @@ publish = false
 workspace = true
 
 [dependencies]
+blake3.workspace = true
+data-encoding.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true
+proptest.workspace = true
