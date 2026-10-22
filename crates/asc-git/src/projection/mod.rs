@@ -3,6 +3,7 @@
 //! `config`, `info/exclude` and `hooks/`. No objects, refs or `config.worktree`.
 
 pub mod config;
+pub mod index_export;
 pub mod layout;
 
 use std::io::{self, Write};
