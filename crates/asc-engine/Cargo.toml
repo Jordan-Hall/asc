@@ -12,3 +12,13 @@ workspace = true
 [dependencies]
 asc-core = { workspace = true }
 asc-store = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+globset = { workspace = true }
+quick_cache = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+proptest = { workspace = true }
+tokio = { workspace = true }
