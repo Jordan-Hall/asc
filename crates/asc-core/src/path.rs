@@ -151,12 +151,21 @@ pub fn windows_valid(name: &Name) -> bool {
     if b.iter().any(|&c| c < 0x20 || b"<>:\"\\|?*".contains(&c)) {
         return false;
     }
+    // Windows ignores trailing spaces before the extension: "CON .txt" opens CON (git `is_valid_win32_path`).
     let stem = b.split(|&c| c == b'.').next().unwrap_or_default();
-    let reserved = ["CON", "PRN", "AUX", "NUL"].iter().any(|r| stem.eq_ignore_ascii_case(r.as_bytes()))
-        || (stem.len() == 4
-            && (stem[..3].eq_ignore_ascii_case(b"COM") || stem[..3].eq_ignore_ascii_case(b"LPT"))
-            && (b'1'..=b'9').contains(&stem[3]));
-    !reserved
+    let stem = &stem[..stem.iter().rposition(|&c| c != b' ').map_or(0, |i| i + 1)];
+    !is_reserved_device(stem)
+}
+
+/// DOS device names, including `CONIN$`/`CONOUT$` and COM/LPT with superscript ¹²³.
+fn is_reserved_device(stem: &[u8]) -> bool {
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].iter().any(|r| stem.eq_ignore_ascii_case(r.as_bytes())) {
+        return true;
+    }
+    if stem.len() < 4 || !(stem[..3].eq_ignore_ascii_case(b"COM") || stem[..3].eq_ignore_ascii_case(b"LPT")) {
+        return false;
+    }
+    matches!(&stem[3..], [b'1'..=b'9'] | [0xC2, 0xB9 | 0xB2 | 0xB3])
 }
 
 /// HFS+ ignorable code points (git `next_hfs_char`).
@@ -184,7 +193,9 @@ fn is_dotgit_alias(comp: &[u8]) -> bool {
 /// Port of git's `verify_path` with `core.protectNTFS` and `core.protectHFS`.
 /// Backslash is treated as a separator, as NTFS does.
 pub fn checkout_safe(path: &RepoPath) -> bool {
-    path.components().all(|c| c.split(|&b| b == b'\\').all(|p| !is_dotgit_alias(p) && p != b".." && p != b"."))
+    // git with core.protectNTFS rejects any backslash outright (CVE-2019-1353/1354); ':' and drive
+    // letters are rejected on Windows by `windows_valid`, which materialisation also applies.
+    path.components().all(|c| !c.contains(&b'\\') && !is_dotgit_alias(c) && c != b".." && c != b".")
 }
 
 /// A ref name validated per `git check-ref-format`.
@@ -378,6 +389,28 @@ mod tests {
                 let mut up = path.clone();
                 while let Some(par) = up.parent() { prop_assert!(path.starts_with_dir(&par)); up = par; }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod windows_hardening_tests {
+    use super::*;
+
+    #[test]
+    fn device_names_with_padding_and_variants_are_invalid() {
+        for s in ["CON .txt", "nul  .tar.gz", "CONIN$", "conout$.log", "COM\u{b9}", "lpt\u{b3}.x", "AUX "] {
+            assert!(!windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
+        }
+        for s in ["CONSOLE", "COM10", "LPT0", "nully.txt"] {
+            assert!(windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn backslash_components_are_not_checkout_safe() {
+        for s in [r"a\..\b", r"c:\x", r"dir\.git", r"x\\y"] {
+            assert!(!checkout_safe(&RepoPath::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
         }
     }
 }
