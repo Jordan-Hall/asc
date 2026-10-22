@@ -13,3 +13,13 @@ workspace = true
 asc-core = { workspace = true }
 asc-store = { workspace = true }
 asc-engine = { workspace = true }
+async-trait = { workspace = true }
+gix-config = { workspace = true }
+gix-hash = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

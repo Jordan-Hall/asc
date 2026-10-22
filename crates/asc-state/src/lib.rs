@@ -1,1 +1,7 @@
-//! asc-state: $ASC_HOME and state.db.
+//! asc-state: `$ASC_HOME` and `state.db` (SPEC §3.5, §9.2).
+
+pub mod home;
+pub mod state;
+
+pub use home::{AscHome, HomeError, RepoId, WorkspaceId};
+pub use state::{Error, Result, StateDb};
