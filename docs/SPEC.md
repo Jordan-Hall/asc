@@ -1,6 +1,6 @@
 # asc: final specification
 
-Status: **authoritative**, v1.8 (ASC-built IDE plugins folded in as §24; v1.7 folded agentic code intelligence in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.9 (fold verification round 2: crate-edge fixes, MCP rename recorded, no change to behaviour; v1.8 folded ASC-built IDE plugins in as §24; v1.7 folded agentic code intelligence in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
 Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp,codeintel,ide-plugins}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
@@ -42,6 +42,8 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 15. **Agentic code intelligence is built in.** Exact (trigram) search, tree-sitter symbols and local-model vector search run on `asc serve` as derived data keyed by `FileId`, so an agent can query any revision, draft or stack with no checkout. Exact search and symbols come first; vectors are the third tool, fused by RRF. One engine (tantivy) holds the postings and BM25; embeddings run on the server CPU by default and no code leaves ASC. Indexes are per namespace and every result is read-ACL filtered inside the ANN traversal. The tools are `search` and `read_file` (§22), and Forgejo code search reads the same service. See §23 [audit: codeintel-folded].
 16. **ASC builds its own IDE plugins.** VS Code (Cursor and VSCodium through Open VSX) first, then one IntelliJ Platform plugin. They replace the built-in git SCM in asc workspaces (`git.enabled: false`; JetBrains maps the roots to `asc`), render a native SCM view plus one shared React UI (`asc-ui`: smartlog, graph, review, history), and reach asc only through one `asc api --stdio` bridge, so neither Node nor the JVM touches the daemon pipe and no plugin parses human output. One generated TypeScript client and `asc-ui` also serve the Forgejo fork. Local features never need an account. See §24 [audit: ide-plugins-folded].
 
+Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, then asc-rpc and asc-state; asc-engine never names a proto or SQL type and reaches them through traits it defines (§4.3).
+
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
 - *Gated on measurement:* a path-log table beyond the mainline index (§5.1), virtual CI, daemon-side turbo cache tier, a host-level fetch proxy for CI.
@@ -68,6 +70,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | `git` inside hooks, aliases, editors and drivers reaches asc | §9.4.1 (child PATH) |
 | Hook tools work unchanged (husky, lint-staged, commitlint, Claude Code) | §9.4.1, §9.5 (`GIT_INDEX_FILE` stage sets), §9.7 (hook order), §17.1 |
 | IDEs' built-in git is not supported (ASC's plugins are): no full projection, no git-index staging, no import of `git commit`, no `git-remote-asc`; turbo-only synthetic `.git`; plugin API (ASC's IDE plugins) [audit: ide-plugins-folded] | §0 decision 6, §9.4, §9.5, §9.6, §7 `workspace.proto` (messages defined), §11.2 `--json`/`asc watch`, §9.1 |
+| Crate edges stay acyclic (fold verification round 2) | §4.3 (engine-native `LogMeta`; row traits `ChangeRows`, `DraftRows`, `CloudStore` implemented outside asc-engine); PLAN C17x, C23, B11, B13, B14 |
 | **ASC-built IDE plugins** (decision 2026-10-22): VS Code (Cursor, VSCodium) first, then JetBrains; they replace the built-in git SCM, with the feature list of GitKraken and Graphite in one place; one generated TypeScript client shared with the Forgejo UI; no parsing of human output; the asc performance budgets | §24 (IP-D1–IP-D15), §0 decision 16, §7 (`bridge.proto`, `Workspace.ReadFile`), §20.6, §11.2, §13.3 (P04–P07, P58), §16.4, §17 |
 | Same files and config: `.gitignore`, `.gitattributes`, git config, aliases, hooks, credential helpers, `GIT_*` env | §11.1 (env and global options), §2.4.1, §2.4.2, §9.4.1, §9.4 (`includeIf`) |
 | Same mental model: commit then push, push is the CAS, branches are local labels, drafts are uploaded in the background | §6.1 (branch scope), §8.5 (land only on request), §2.7 (ref scope), §21 |
@@ -531,7 +534,7 @@ log/daemon.log
 - An in-memory graph per repo, `ChangesetId -> (gen: u32, parents)`, where `gen = 1 + max(gen(parents))`. It is loaded lazily: from `cs_graph` on the server, from the `gen` derived value locally.
 - `merge_base(a, b)`: a two-frontier walk in descending generation order (git's paint-down algorithm), jumping along first-parent chains with `skip.v1` pointers (§5) whenever the jump target's generation is still ≥ the other frontier's. `is_ancestor(a, b)`: from `b`, follow skip pointers while the target's `gen ≥ gen(a)`, then walk, pruning nodes with `gen < gen(a)`. On land branches the mainline index answers in O(1) (§5.1).
 - `log(range, pathspec, first_parent, limit, cursor)`: generation-ordered walk. The path filter uses each changeset's `changes` keys (prefix match), so it costs no tree reads. `--follow` uses `copy_from`. On land branches path-filtered log uses the path index (§5.1).
-- **History traits [audit: historyapi-cycle, historyapi-impl-split]:** `HistoryApi` (log, merge_base, is_ancestor, diff, resolve, git_map) in `asc-engine::history`; `BlameApi` (blame) in `asc-engine::blame`; `ProjectsApi` (project_graph, affected, project_hashes) in `asc-engine::projects`. `Engine` implements each trait in the module that defines it. `asc-rpc::RpcClient` implements `HistoryApi` and `BlameApi` (`asc-rpc::client`) and `ProjectsApi` (`asc-rpc::projects`).
+- **History traits [audit: historyapi-cycle, historyapi-impl-split]:** `HistoryApi` (log, merge_base, is_ancestor, diff, resolve, git_map) in `asc-engine::history`; `BlameApi` (blame) in `asc-engine::blame`; `ProjectsApi` (project_graph, affected, project_hashes) in `asc-engine::projects`. `Engine` implements each trait in the module that defines it. The sync hook `SyncExt::on_log_entries` takes the engine-native `history::LogMeta { id, change, meta }`, never the proto `LogEntry`; asc-rpc converts (PLAN C17x). Engine code that reads rows owned by asc-state (`changes`, `draft_heads`, `cloud_queue`) does so through traits defined in asc-engine (`ChangeRows`, `DraftRows`, `CloudStore`) and implemented in asc-state or the `asc` crate, because asc-rpc and asc-state depend on asc-engine [audit: fold-verification-2]. `asc-rpc::RpcClient` implements `HistoryApi` and `BlameApi` (`asc-rpc::client`) and `ProjectsApi` (`asc-rpc::projects`).
 - **History boundary [audit: clone-history-o-history]:** a local walk (log, merge-base, ahead/behind, blame, describe) that reaches a changeset recorded in `history_boundary` (§6.3) continues through the remote's `HistoryApi` (`Log`/`MergeBase`/`IsAncestor` with the boundary ids). Output is identical to a walk over full local history.
 - Line diff (`diff/`): `imara-diff` 0.2 (`Myers`, `MyersMinimal`, `Histogram`) plus a native patience implementation (`diff/patience.rs`), with indent heuristic post-processing. Output formats: `--name-only`, `--name-status`, `--stat`, `--numstat`, `--shortstat`, `--summary`, `--raw`, unified patch (`-U<n>`, rename headers, mode lines, `Binary files … differ`, `\ No newline at end of file`), `--word-diff=plain`.
 - **Diff contract [audit: diff-byte-equality]:**
@@ -4530,7 +4533,7 @@ Required tests beyond each acceptance command are the layers of §24.7.1 (bridge
 | turbo-staged-file-contract | §17 turbo row |
 | index-renderer-ownership, u01-v11-delta-unowned, unowned-cli-commands | PLAN only (U16 index writer, U01b, U24f) |
 
-**Round-4 audit fixes (v1.4)** (changelog: v1.4 closes the major contract gaps of the round-4 audit; the blocker entries are folded in by a later pass)
+**Round-4 audit fixes (v1.4)** (changelog: v1.4 closes the major contract gaps of the round-4 audit; the audit input held only major entries, so there is no blocker set to fold) [audit: fold-verification-2]
 
 | Gap | Fix |
 |---|---|
@@ -4548,6 +4551,7 @@ Required tests beyond each acceptance command are the layers of §24.7.1 (bridge
 |---|---|
 | branchless-by-default-missing-and-contradicted, checklist-branchless-by-default-missing | New §21 (BD1–BD12), §0 decision 13, §1 and §1.1 rows; the five contradicting rules replaced: §0 "write-behind" (out of scope), §6.1 branch scope and drafts, §6.3 "nothing is uploaded before push", §9.1 daemon "does not upload", §15.2 secrets; §2.7 ref scope and §6.1 pushed developer branches replaced by user refs |
 | branchless remote effect vs stacks D4 | §20.1 D4 recorded amendment (local commands unchanged; remote effect of `push` and the cloud pull of `fetch` depend on the mode) |
+| branchless.md §6 tool names `asc_drafts`, `asc_cloud_status`, `asc_hide`, `asc_unhide`, `asc_push_stack` and the per-verb `write=local` gate | Renamed to `drafts`, `cloud_status`, `hide`, `unhide` (matching `mcp.md` and §22.3, 42 names); `asc_push_stack` dropped because `submit` covers it; one per-workspace gate (see the next row). `branchless.md` §6 carries a superseded note [audit: fold-verification-2] |
 | branchless vs MCP tool naming and write gate | §21.7: tools are `drafts`, `cloud_status`, `hide`, `unhide` (short names; no separate push tool, `submit` covers it); `hide` and `unhide` need `write=remote` when the workspace uploads, as `create` and `modify` do |
 | C01 is built; the migration-mode id tier | §21.6.2 and PLAN B18a: a new file and unit, C01 unchanged |
 | spec edits of branchless §8 | §3.5, §3.6, §6.3, §6.4, §7, §8.2, §8.3, §8.8, §9.1, §9.2, §11.1–§11.3, §13.3, §15.2, §16.3, §17.1, §18, §19 (decision 7, spike S13), §20.2, §20.3, §20.7 |
@@ -4587,3 +4591,13 @@ Required tests beyond each acceptance command are the layers of §24.7.1 (bridge
 | research A4 `targets[].argv` with no source in §12A | An optional per-project `argv` table in `.asc/projects.toml`; asc never runs it (§12A.8, §24.8.2) |
 | IP-D7 `create --no-branch` versus §20.7 (implied only in branchless mode) | The plugin passes `--no-branch` only when `Hello` reports branchless mode (§24.10 ruling 6) |
 | spec edits of ide-plugins.md §9 | §7 (`bridge.proto`, `Workspace.ReadFile`), §9.1, §11.2 (`asc api --stdio`, `reorder --todo`, `split --hunks`, the P45 `--json` forms, `ASC_NO_ALIASES`), §12A.8, §13.3 (P04–P07, P58), §16.4, §17, §18 (phases 5p, 9p, 10, 10j), §19, §20, §20.6, §21, §22 |
+
+**Round-9 fold verification (v1.9)** (changelog: v1.9 fixes crate edges and records the MCP rename; no behaviour change)
+
+| Gap | Fix |
+|---|---|
+| blocker entries missing from the audit input | Not applicable: the input held 7 major entries, all applied; the "later pass" promise in the v1.4 heading is removed |
+| asc-engine uses asc-rpc types (`LogEntry`, `cloud.proto`) | §4.3 `history::LogMeta`; PLAN U31, new C17x (asc-rpc conversions), C23 and B11 drop their asc-rpc dependencies; B14 converts `cloud.proto` |
+| asc-engine units depend on asc-state units | §4.3 row traits defined in asc-engine and implemented in asc-state or `asc` (PLAN C02, C05, C07, C23, B04, B13, B14, B28 briefs) |
+| MCP tool names differ from branchless.md | §21 fold table row; `branchless.md` §6 superseded note |
+| three briefs lack the `Insights` registration | PLAN C30a, C30b, C30d |

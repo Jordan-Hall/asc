@@ -366,6 +366,8 @@ The checklist's built-in MCP decision covers this surface too. Tools are rows in
 | `asc_hide`, `asc_unhide` | `write` | mutating-verb JSON (stacks §3); local effect, undoable | yes | `asc.mcp.write=local` |
 | `asc_push_stack` | `write` | `asc submit --json`; remote effect, needs confirmation | yes | `asc.mcp.write=remote` |
 
+**Superseded [audit: fold-verification-2]:** SPEC §21.7 and §22.3 use the short names `drafts`, `cloud_status`, `hide` and `unhide`, drop `asc_push_stack` (`submit` covers it) and use one per-workspace write gate instead of `write=local` for hide/unhide. The names above are history.
+
 The default `core` set (11 read tools) is unchanged. `asc_hide`/`asc_unhide` run as child verbs through M10's write path; `asc_push_stack` is hidden unless `write=remote`. Purge is not exposed over MCP.
 
 ---
