@@ -1,0 +1,7 @@
+ a.txt                             |   3 +--
+ bin.dat                           | Bin 8 -> 11 bytes
+ docs/{old name.md => new name.md} |   2 +-
+ empty.txt                         |   0
+ gone.txt                          |   1 -
+ ...
+ 9 files changed, 7 insertions(+), 6 deletions(-)

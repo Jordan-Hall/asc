@@ -1,0 +1,91 @@
+diff --git a/a.txt b/a.txt
+index fa2da6e..aba0ac0 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,10 +1,9 @@
+ line 1
+ line 2
+-line 3
++line three
+ line 4
+ line 5
+ line 6
+ line 7
+ line 8
+-line 9
+ line 10
+diff --git a/bin.dat b/bin.dat
+index 6ec6930..bae7464 100644
+Binary files a/bin.dat and b/bin.dat differ
+diff --git a/docs/new name.md b/docs/new name.md
+new file mode 100644
+index 0000000..9ba7c2f
+--- /dev/null
++++ b/docs/new name.md	
+@@ -0,0 +1,8 @@
++The quick brown fox
++jumps over the lazy dog.
++Pack my box with
++five dozen liquor jugs.
++How vexingly quick
++daft zebras leap!
++Sphinx of black quartz,
++judge my vow.
+diff --git a/docs/old name.md b/docs/old name.md
+deleted file mode 100644
+index 0155643..0000000
+--- a/docs/old name.md	
++++ /dev/null
+@@ -1,8 +0,0 @@
+-The quick brown fox
+-jumps over the lazy dog.
+-Pack my box with
+-five dozen liquor jugs.
+-How vexingly quick
+-daft zebras jump!
+-Sphinx of black quartz,
+-judge my vow.
+diff --git a/empty.txt b/empty.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git a/gone.txt b/gone.txt
+deleted file mode 100644
+index b023018..0000000
+--- a/gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..94954ab
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,2 @@
++hello
++world
+diff --git a/nonl.txt b/nonl.txt
+index 1b32298..206b378 100644
+--- a/nonl.txt
++++ b/nonl.txt
+@@ -1,2 +1,2 @@
+ x
+-y
+\ No newline at end of file
++z
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/src/lib.rs b/src/lib.rs
+index e5dc2a5..038050a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,7 +12,8 @@ impl Counter {
+     pub fn bump(&mut self) {
+         self.n += 1;
+         log("bump");
+-        log("done");
++        log("finished");
++        log("really");
+     }
+ 
+     pub fn get(&self) -> u32 {

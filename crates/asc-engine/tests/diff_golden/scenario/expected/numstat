@@ -1,0 +1,9 @@
+1	2	a.txt
+-	-	bin.dat
+1	1	docs/{old name.md => new name.md}
+0	0	empty.txt
+0	1	gone.txt
+2	0	new.txt
+1	1	nonl.txt
+0	0	run.sh
+2	1	src/lib.rs

@@ -1,0 +1,5 @@
+ rename docs/{old name.md => new name.md} (88%)
+ create mode 100644 empty.txt
+ delete mode 100644 gone.txt
+ create mode 100644 new.txt
+ mode change 100644 => 100755 run.sh

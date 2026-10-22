@@ -1,0 +1,15 @@
+diff --git a/old name.md b/new name.md
+similarity index 88%
+rename from old name.md
+rename to new name.md
+index 0155643..9ba7c2f 100644
+--- a/old name.md	
++++ b/new name.md	
+@@ -3,6 +3,6 @@ jumps over the lazy dog.
+ Pack my box with
+ five dozen liquor jugs.
+ How vexingly quick
+-daft zebras jump!
++daft zebras leap!
+ Sphinx of black quartz,
+ judge my vow.

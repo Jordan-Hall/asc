@@ -1,0 +1,9 @@
+M	a.txt
+M	bin.dat
+R088	docs/old name.md	docs/new name.md
+A	empty.txt
+D	gone.txt
+A	new.txt
+M	nonl.txt
+M	run.sh
+M	src/lib.rs

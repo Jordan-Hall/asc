@@ -9,6 +9,7 @@ use asc_store::refs::{Refs, RepoKey};
 
 pub mod commit;
 pub mod derive;
+pub mod diff;
 pub mod graph;
 pub mod tree;
 
