@@ -1,6 +1,7 @@
 //! asc-core.
 
 pub mod change;
+pub mod change_migrate;
 pub mod codec;
 pub mod content;
 pub mod git;
