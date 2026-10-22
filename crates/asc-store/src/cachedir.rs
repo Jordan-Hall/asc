@@ -40,6 +40,8 @@ struct Inner {
     tmp: PathBuf,
     /// Delete files that fail verification on `get` (always on outside tests).
     evict_corrupt: bool,
+    /// A tier that is only read: it never writes and never deletes (SPEC §3.5).
+    read_only: bool,
 }
 
 fn io_err(e: io::Error) -> Error {
@@ -62,6 +64,22 @@ impl CacheDir {
                 root,
                 tmp,
                 evict_corrupt: true,
+                read_only: false,
+            }),
+        })
+    }
+
+    /// Opens `root` as a read-only tier (`asc.cache.readOnly`, SPEC §3.5). It creates nothing:
+    /// a missing directory is an empty cache. `put`, `delete` and eviction do nothing, and a
+    /// corrupt file is reported as `Error::Corrupt` and left in place.
+    pub fn open_read_only(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        Ok(Self {
+            inner: Arc::new(Inner {
+                tmp: root.clone(),
+                root,
+                evict_corrupt: false,
+                read_only: true,
             }),
         })
     }
@@ -74,6 +92,7 @@ impl CacheDir {
                 root: self.inner.root.clone(),
                 tmp: self.inner.tmp.clone(),
                 evict_corrupt: false,
+                read_only: self.inner.read_only,
             }),
         }
     }
@@ -88,6 +107,9 @@ impl CacheDir {
     ///
     /// Does nothing while the cache is within `max_bytes`. Returns the bytes freed.
     pub async fn evict_to(&self, max_bytes: u64) -> Result<u64> {
+        if self.inner.read_only {
+            return Ok(0);
+        }
         self.blocking(move |i| i.evict_to(max_bytes).map_err(io_err))
             .await
     }
@@ -141,7 +163,7 @@ impl Inner {
             .ok()
             .and_then(|m| m.elapsed().ok())
             .is_some_and(|age| age > TOUCH_AFTER);
-        if stale {
+        if stale && !self.read_only {
             // Best effort: a failed touch only makes the file look older.
             let _ = filetime::set_file_mtime(&path, FileTime::now());
         }
@@ -356,6 +378,9 @@ impl Objects for CacheDir {
         let key = *key;
         let data = decode_verified(&key, &stored)?;
         drop(stored);
+        if self.inner.read_only {
+            return Ok(());
+        }
         self.blocking(move |i| i.write(&key, &data)).await
     }
 
@@ -366,6 +391,9 @@ impl Objects for CacheDir {
     }
 
     async fn delete(&self, key: &ObjKey) -> Result<()> {
+        if self.inner.read_only {
+            return Ok(());
+        }
         let key = *key;
         self.blocking(move |i| remove_if_present(&i.path(&key)).map_err(io_err))
             .await
@@ -487,6 +515,41 @@ pub(crate) mod tests {
         assert!(matches!(c.get(&key).await, Err(Error::Corrupt(_))));
         assert_eq!(c.has_many(&[key]).await.unwrap(), [false]);
         assert!(c.get(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_only_tier_neither_writes_nor_deletes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rw = open_in(tmp.path(), "cache");
+        let good = b"good bytes".to_vec();
+        let good_key = file_key(&good);
+        rw.put(&good_key, encode_stored(&good)).await.unwrap();
+        let ro = CacheDir::open_read_only(tmp.path().join("cache")).unwrap();
+        assert_eq!(ro.get(&good_key).await.unwrap().unwrap(), good);
+
+        // `put` succeeds without writing.
+        let other = b"other bytes".to_vec();
+        let other_key = file_key(&other);
+        ro.put(&other_key, encode_stored(&other)).await.unwrap();
+        assert_eq!(rw.has_many(&[other_key]).await.unwrap(), [false]);
+        // A mismatched value is still refused.
+        assert!(ro.put(&file_key(b"a"), encode_stored(b"b")).await.is_err());
+
+        // A corrupt file reads as `Corrupt` and stays on disk.
+        let bad_key = file_key(b"real");
+        tamper(&rw, bad_key, encode_stored(b"fake"));
+        let path = rw.inner.path(&bad_key);
+        assert!(matches!(ro.get(&bad_key).await, Err(Error::Corrupt(_))));
+        assert!(matches!(ro.get(&bad_key).await, Err(Error::Corrupt(_))));
+        assert!(path.exists(), "the read-only tier must not delete");
+
+        // `delete` and eviction leave the files alone; a missing root is an empty cache.
+        ro.delete(&good_key).await.unwrap();
+        assert_eq!(ro.evict_to(0).await.unwrap(), 0);
+        assert_eq!(rw.has_many(&[good_key]).await.unwrap(), [true]);
+        let absent = CacheDir::open_read_only(tmp.path().join("nowhere")).unwrap();
+        assert!(absent.get(&good_key).await.unwrap().is_none());
+        assert!(!tmp.path().join("nowhere").exists());
     }
 
     #[tokio::test]
