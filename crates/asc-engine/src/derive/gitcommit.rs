@@ -80,7 +80,7 @@ mod tests {
 
     /// Runs git in `dir` with a fixed identity, feeding `stdin`; returns trimmed stdout.
     fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
-        let mut child = Command::new("git")
+        let mut child = Command::new("git") // lint:allow-raw-git
             .args(args)
             .current_dir(dir)
             .env("GIT_AUTHOR_NAME", "A")

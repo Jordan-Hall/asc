@@ -336,6 +336,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "asc-graph"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+]
+
+[[package]]
 name = "asc-rpc"
 version = "0.1.0"
 dependencies = [
@@ -350,6 +357,22 @@ dependencies = [
  "asc-core",
  "asc-git",
  "asc-rpc",
+]
+
+[[package]]
+name = "asc-sim"
+version = "0.1.0"
+dependencies = [
+ "asc-serve",
+]
+
+[[package]]
+name = "asc-state"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-store",
 ]
 
 [[package]]
