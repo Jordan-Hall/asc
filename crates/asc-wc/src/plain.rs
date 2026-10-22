@@ -27,6 +27,7 @@ use asc_store::storeset::StoreSet;
 
 use crate::ignore::IgnoreSources;
 use crate::redirect::Redirections;
+use crate::safe_path::{Verified, case_collisions, is_link, remove_link, try_fs_path};
 use crate::status::{self, EolRules, Probe};
 pub use crate::switch::Mode;
 use crate::switch::{Dirty, plan};
@@ -127,17 +128,20 @@ pub struct SwitchReport {
     pub skipped: Vec<RepoPath>,
 }
 
-/// The file system path of `path` below `root`.
+/// The file system path of `path` below `root` (see [`try_fs_path`]). A path that cannot be
+/// represented maps to a name that never exists, so reads see "not found" and nothing is written.
 pub fn fs_path(root: &Path, path: &RepoPath) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        root.join(std::ffi::OsStr::from_bytes(path.as_bytes()))
-    }
-    #[cfg(not(unix))]
-    {
-        root.join(String::from_utf8_lossy(path.as_bytes()).as_ref())
-    }
+    try_fs_path(root, path).unwrap_or_else(|| root.join(".asc-unrepresentable-path"))
+}
+
+fn fs_path_checked(root: &Path, path: &RepoPath) -> Result<PathBuf> {
+    try_fs_path(root, path).ok_or_else(|| Error::Io {
+        path: PathBuf::from(String::from_utf8_lossy(path.as_bytes()).into_owned()),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path cannot be represented on this file system",
+        ),
+    })
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -163,9 +167,20 @@ pub async fn checkout<O: Objects, R: Refs>(
     let (in_cone, outside): (Vec<_>, Vec<_>) = diff
         .into_iter()
         .partition(|(p, _)| wc.sparse.is_none_or(|s| s.contains(p)));
-    let (safe, unsafe_paths): (Vec<_>, Vec<_>) = in_cone
-        .into_iter()
-        .partition(|(p, c)| matches!(c, Change::Delete) || checkout_safe(p));
+    let collisions = if cfg!(windows) {
+        case_collisions(
+            in_cone
+                .iter()
+                .filter(|(_, c)| !matches!(c, Change::Delete))
+                .map(|(p, _)| p),
+        )
+    } else {
+        HashSet::new()
+    };
+    let (safe, unsafe_paths): (Vec<_>, Vec<_>) = in_cone.into_iter().partition(|(p, c)| {
+        matches!(c, Change::Delete)
+            || (checkout_safe(p) && !collisions.contains(p) && try_fs_path(wc.root, p).is_some())
+    });
 
     let mut index = IndexFile::read_or_empty(wc.index_path)?;
     let dirty = if mode == Mode::Force {
@@ -183,13 +198,14 @@ pub async fn checkout<O: Objects, R: Refs>(
         skipped: unsafe_paths.into_iter().map(|(p, _)| p).collect(),
         ..SwitchReport::default()
     };
+    let mut verified = Verified::default();
     for path in &plan.deletes {
-        report.removed += u64::from(remove_path(wc.root, path)?);
+        report.removed += u64::from(remove_path(wc.root, path, &mut verified)?);
     }
     let mut fresh: Vec<(RepoPath, Entry)> = Vec::new();
     for (path, change) in &plan.updates {
         fresh.push((path.clone(), entry_of(path, change)?));
-        write_path(wc, path, change, force).await?;
+        write_path(wc, path, change, force, &mut verified).await?;
         report.written += 1;
     }
     for (path, change) in outside {
@@ -340,13 +356,24 @@ fn collect_dirty<O: Objects, R: Refs>(
 }
 
 /// Removes `path` and the directories it leaves empty (never the root). Returns whether a file
-/// was removed.
-fn remove_path(root: &Path, path: &RepoPath) -> Result<bool> {
-    let abs = fs_path(root, path);
+/// was removed. Nothing is removed through a symlinked ancestor.
+fn remove_path(root: &Path, path: &RepoPath, verified: &mut Verified) -> Result<bool> {
+    let Some(abs) = try_fs_path(root, path) else {
+        return Ok(false);
+    };
+    if !verified.check_parent(root, path).map_err(io_at(&abs))? {
+        return Ok(false);
+    }
     let removed = match fs::symlink_metadata(&abs) {
-        Ok(m) if m.is_dir() => fs::remove_dir(&abs).is_ok(),
+        Ok(m) if m.is_dir() && !is_link(&m) => {
+            let gone = fs::remove_dir(&abs).is_ok();
+            if gone {
+                verified.forget(path);
+            }
+            gone
+        }
         Ok(_) => {
-            fs::remove_file(&abs).map_err(io_at(&abs))?;
+            remove_link(&abs).map_err(io_at(&abs))?;
             true
         }
         Err(_) => false,
@@ -356,32 +383,10 @@ fn remove_path(root: &Path, path: &RepoPath) -> Result<bool> {
         if fs::remove_dir(fs_path(root, &dir)).is_err() {
             break;
         }
+        verified.forget(&dir);
         cur = dir.parent();
     }
     Ok(removed)
-}
-
-/// Creates the parent directories of `path`; with `force`, a file in the way is removed.
-fn ensure_parent(root: &Path, path: &RepoPath, force: bool) -> Result<()> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    let abs = fs_path(root, &parent);
-    match fs::create_dir_all(&abs) {
-        Ok(()) => Ok(()),
-        Err(_) if force => {
-            let mut cur = Some(parent);
-            while let Some(dir) = cur {
-                let p = fs_path(root, &dir);
-                if fs::symlink_metadata(&p).is_ok_and(|m| !m.is_dir()) {
-                    fs::remove_file(&p).map_err(io_at(&p))?;
-                }
-                cur = dir.parent();
-            }
-            fs::create_dir_all(&abs).map_err(io_at(&abs))
-        }
-        Err(e) => Err(io_at(&abs)(e)),
-    }
 }
 
 async fn write_path<O: Objects, R: Refs>(
@@ -389,14 +394,23 @@ async fn write_path<O: Objects, R: Refs>(
     path: &RepoPath,
     change: &Change,
     force: bool,
+    verified: &mut Verified,
 ) -> Result<()> {
-    ensure_parent(wc.root, path, force)?;
-    let dest = fs_path(wc.root, path);
-    clear_dir_in_the_way(&dest, force)?;
+    let dest = fs_path_checked(wc.root, path)?;
+    verified
+        .ensure_parent(wc.root, path, force)
+        .map_err(io_at(&dest))?;
+    // A symlink at the destination is replaced, never followed.
+    if fs::symlink_metadata(&dest).is_ok_and(|m| is_link(&m)) {
+        remove_link(&dest).map_err(io_at(&dest))?;
+    }
+    if clear_dir_in_the_way(&dest, force)? {
+        verified.forget(path);
+    }
     match change {
         Change::Gitlink { .. } => {
             if fs::symlink_metadata(&dest).is_ok_and(|m| !m.is_dir()) {
-                fs::remove_file(&dest).map_err(io_at(&dest))?;
+                remove_link(&dest).map_err(io_at(&dest))?;
             }
             fs::create_dir_all(&dest).map_err(io_at(&dest))
         }
@@ -418,17 +432,19 @@ async fn write_path<O: Objects, R: Refs>(
     }
 }
 
-/// A directory where a file goes: removed when empty, or entirely under `force`.
-fn clear_dir_in_the_way(dest: &Path, force: bool) -> Result<()> {
-    if fs::symlink_metadata(dest).is_ok_and(|m| m.is_dir()) {
+/// A directory where a file goes: removed when empty, or entirely under `force`. Returns whether
+/// one was there.
+fn clear_dir_in_the_way(dest: &Path, force: bool) -> Result<bool> {
+    if fs::symlink_metadata(dest).is_ok_and(|m| m.is_dir() && !is_link(&m)) {
         let r = if force {
             fs::remove_dir_all(dest)
         } else {
             fs::remove_dir(dest)
         };
         r.map_err(io_at(dest))?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 /// Writes the content of `file` to `tmp` as a regular file, a symlink or (without symlink
@@ -878,5 +894,116 @@ mod tests {
         ] {
             assert_eq!(s.contains(&p(path)), want, "{path}");
         }
+    }
+
+    /// A directory outside the work tree holding `keep`, and the tree root's symlink to it at `at`.
+    fn outside_link(fx: &Fixture, at: &str) -> Option<PathBuf> {
+        let outside = fx.root.parent().unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), b"keep").unwrap();
+        crate::safe_path::symlink_dir(&outside, &fx.root.join(at)).then_some(outside)
+    }
+
+    fn outside_untouched(outside: &Path) {
+        let names: Vec<_> = fs::read_dir(outside)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from("keep")]);
+        assert_eq!(fs::read(outside.join("keep")).unwrap(), b"keep");
+    }
+
+    #[tokio::test]
+    async fn force_checkout_never_writes_through_a_symlinked_directory() {
+        let fx = Fixture::new();
+        let Some(outside) = outside_link(&fx, "a") else {
+            return;
+        };
+        let to = fx
+            .tree(&[("a/x", F, b"payload"), ("a/y/z", F, b"deep")])
+            .await;
+        checkout(&fx.wc(), fx.empty(), to, Mode::Force)
+            .await
+            .unwrap();
+        outside_untouched(&outside);
+        assert_eq!(fx.read("a/x"), b"payload");
+        assert_eq!(fx.read("a/y/z"), b"deep");
+        let meta = fs::symlink_metadata(fx.root.join("a")).unwrap();
+        assert!(meta.is_dir() && !is_link(&meta));
+    }
+
+    #[tokio::test]
+    async fn safe_checkout_over_a_symlinked_directory_conflicts_untouched() {
+        let fx = Fixture::new();
+        let Some(outside) = outside_link(&fx, "a") else {
+            return;
+        };
+        let to = fx.tree(&[("a/x", F, b"payload")]).await;
+        let r = checkout(&fx.wc(), fx.empty(), to, Mode::Safe).await;
+        assert!(r.is_err());
+        outside_untouched(&outside);
+    }
+
+    #[tokio::test]
+    async fn deletes_do_not_go_through_a_symlinked_parent() {
+        let fx = Fixture::new();
+        let t1 = fx.tree(&[("a/keep", F, b"mine")]).await;
+        checkout(&fx.wc(), fx.empty(), t1, Mode::Safe)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fx.root.join("a")).unwrap();
+        let Some(outside) = outside_link(&fx, "a") else {
+            return;
+        };
+        let r = checkout(&fx.wc(), t1, fx.empty(), Mode::Force)
+            .await
+            .unwrap();
+        assert_eq!(r.removed, 0);
+        outside_untouched(&outside);
+    }
+
+    #[tokio::test]
+    async fn a_symlink_replaced_by_a_directory_is_removed_not_followed() {
+        let fx = Fixture::new();
+        let outside = fx.root.parent().unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep"), b"keep").unwrap();
+        let t1 = fx.tree(&[("d", Kind::Symlink, b"../outside")]).await;
+        checkout(&fx.wc(), fx.empty(), t1, Mode::Safe)
+            .await
+            .unwrap();
+        if !fs::symlink_metadata(fx.root.join("d")).is_ok_and(|m| is_link(&m)) {
+            return;
+        }
+        let t2 = fx.tree(&[("d/f", F, b"new")]).await;
+        checkout(&fx.wc(), t1, t2, Mode::Safe).await.unwrap();
+        outside_untouched(&outside);
+        assert_eq!(fx.read("d/f"), b"new");
+        assert!(!is_link(&fs::symlink_metadata(fx.root.join("d")).unwrap()));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_skips_unrepresentable_and_colliding_paths() {
+        let fx = Fixture::new();
+        let to = fx
+            .tree(&[
+                ("ok", F, b"1"),
+                ("aux", F, b"2"),
+                ("dir/nul.txt", F, b"3"),
+                ("dot.", F, b"4"),
+                ("s:ads", F, b"5"),
+                ("Case/x", F, b"6"),
+                ("case/y", F, b"7"),
+            ])
+            .await;
+        let r = checkout(&fx.wc(), fx.empty(), to, Mode::Safe)
+            .await
+            .unwrap();
+        let mut skipped: Vec<_> = r.skipped.iter().map(|p| p.to_string()).collect();
+        skipped.sort();
+        assert_eq!(skipped, ["aux", "case/y", "dir/nul.txt", "dot.", "s:ads"]);
+        assert_eq!(fx.read("ok"), b"1");
+        assert_eq!(fx.read("Case/x"), b"6");
     }
 }
