@@ -7,7 +7,7 @@ use data_encoding::BASE64;
 use sha1::{Digest, Sha1};
 
 use crate::id::{ChangesetId, GitOid, TreeId};
-use crate::object::{AscGitExtra, Change, Changeset, Kind, LfsRef, ObjectError, SortedMap, TagRecord, Tree};
+use crate::object::{AscGitExtra, Change, Changeset, Kind, ObjectError, SortedMap, TagRecord, Tree};
 use crate::path::RepoPath;
 use crate::sig::{SigError, Signature};
 
@@ -521,39 +521,6 @@ pub fn canonicalise_tag(raw: &[u8], target: ChangesetId) -> Result<TagRecord, Gi
     Ok(tag)
 }
 
-// ------------------------------------------------------------------ LFS
-
-const LFS_MAX_POINTER: usize = 1024;
-const LFS_VERSIONS: [&str; 2] = ["https://git-lfs.github.com/spec/v1", "https://hawser.github.com/spec/v1"];
-
-/// Parses a git-LFS pointer file: `version` first, then `oid sha256:<hex>` and
-/// `size <n>`; other keys are ignored. `None` if the bytes are not a pointer.
-pub fn parse_lfs_pointer(bytes: &[u8]) -> Option<LfsRef> {
-    if bytes.len() > LFS_MAX_POINTER {
-        return None;
-    }
-    let text = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
-    let mut lines = text.split('\n');
-    let version = lines.next()?.strip_prefix("version ")?;
-    if !LFS_VERSIONS.contains(&version) {
-        return None;
-    }
-    let (mut oid, mut size) = (None, None);
-    for line in lines {
-        let (key, value) = line.split_once(' ')?;
-        match key {
-            "oid" => {
-                let hex = value.strip_prefix("sha256:")?;
-                let raw = data_encoding::HEXLOWER.decode(hex.as_bytes()).ok()?;
-                oid = Some(<[u8; 32]>::try_from(raw).ok()?);
-            }
-            "size" => size = Some(value.parse::<u64>().ok().filter(|_| value.bytes().all(|c| c.is_ascii_digit()))?),
-            _ => {}
-        }
-    }
-    Some(LfsRef { sha256: oid?, size: size? })
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -619,7 +586,7 @@ mod tests {
                 m => panic!("mode {m:?}"),
             };
             let git = GitOid::from_bytes(raw[nul + 1..nul + 21].try_into().unwrap());
-            entries.push(Entry { name: Name::new(&raw[sp + 1..nul]).unwrap(), kind, id: [0; 32], size: 0, git, lfs: None });
+            entries.push(Entry { name: Name::new(&raw[sp + 1..nul]).unwrap(), kind, id: [0; 32], size: 0, git });
             raw = &raw[nul + 21..];
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -652,7 +619,6 @@ mod tests {
             file: crate::id::FileId::of(b"x"),
             size: 1,
             git: blob_oid(b"x"),
-            lfs: None,
             copy_from: None,
         };
         vec![(RepoPath::new("a").unwrap(), w)]
@@ -786,30 +752,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lfs_pointer() {
-        let hex = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
-        let ok = format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hex}\nsize 12345\n");
-        let r = parse_lfs_pointer(ok.as_bytes()).unwrap();
-        assert_eq!((r.size, data_encoding::HEXLOWER.encode(&r.sha256)), (12345, hex.to_owned()));
-        let with_ext = format!("version https://git-lfs.github.com/spec/v1\next-0-foo sha256:{hex}\noid sha256:{hex}\nsize 1\n");
-        assert!(parse_lfs_pointer(with_ext.as_bytes()).is_some());
-        for bad in [
-            format!("oid sha256:{hex}\nsize 1\nversion https://git-lfs.github.com/spec/v1\n"),
-            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hex}\nsize 1"),
-            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hex}\n"),
-            format!("version https://git-lfs.github.com/spec/v1\noid sha1:{hex}\nsize 1\n"),
-            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 1\n", hex.to_uppercase()),
-            format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hex}\nsize +1\n"),
-            format!("version https://example.com/v9\noid sha256:{hex}\nsize 1\n"),
-            "just a file\n".to_owned(),
-        ] {
-            assert!(parse_lfs_pointer(bad.as_bytes()).is_none(), "{bad}");
-        }
-        let big = format!("version https://git-lfs.github.com/spec/v1\noid sha256:{hex}\nsize 1\nx {}\n", "y".repeat(1100));
-        assert!(parse_lfs_pointer(big.as_bytes()).is_none());
-    }
-
     fn arb_sig() -> impl Strategy<Value = Signature> {
         let name = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
         let email = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
@@ -840,7 +782,7 @@ mod tests {
                 let changes = files
                     .into_iter()
                     .map(|(p, copy_from)| {
-                        let w = Change::Write { kind: Kind::File, file: crate::id::FileId::of(p.as_bytes()), size: 1, git: root_git, lfs: None, copy_from };
+                        let w = Change::Write { kind: Kind::File, file: crate::id::FileId::of(p.as_bytes()), size: 1, git: root_git, copy_from };
                         (p, w)
                     })
                     .collect();

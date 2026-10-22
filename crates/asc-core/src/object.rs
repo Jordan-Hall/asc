@@ -21,8 +21,6 @@ pub enum ObjectError {
     EmptyTree,
     #[error("gitlink entry has a non-zero id")]
     GitlinkId,
-    #[error("lfs ref on an entry that is not File or Exec")]
-    LfsKind,
     #[error("change write kind is not File, Exec or Symlink")]
     WriteKind,
     #[error("changeset parents contain a duplicate")]
@@ -135,13 +133,6 @@ pub enum Kind {
     Gitlink = 4,
 }
 
-/// Resolved git-LFS content hash and size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LfsRef {
-    pub sha256: [u8; 32],
-    pub size: u64,
-}
-
 /// One tree entry. `id` is a `FileId` or `TreeId`, or all zero for a gitlink.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -150,7 +141,6 @@ pub struct Entry {
     pub id: [u8; 32],
     pub size: u64,
     pub git: GitOid,
-    pub lfs: Option<LfsRef>,
 }
 
 /// A directory: entries strictly ascending by name. The field is private so
@@ -178,7 +168,7 @@ impl TryFrom<RawTree> for Tree {
 
 impl Tree {
     /// Checks sort order, uniqueness, non-emptiness (unless `is_root`),
-    /// gitlink ids and `lfs` placement.
+    /// and gitlink ids.
     pub fn new(entries: Vec<Entry>, is_root: bool) -> Result<Self, ObjectError> {
         if entries.is_empty() && !is_root {
             return Err(ObjectError::EmptyTree);
@@ -194,9 +184,6 @@ impl Tree {
         for e in entries {
             if e.kind == Kind::Gitlink && e.id != [0; 32] {
                 return Err(ObjectError::GitlinkId);
-            }
-            if e.lfs.is_some() && !matches!(e.kind, Kind::File | Kind::Exec) {
-                return Err(ObjectError::LfsKind);
             }
         }
         Ok(())
@@ -229,7 +216,6 @@ pub enum Change {
         file: FileId,
         size: u64,
         git: GitOid,
-        lfs: Option<LfsRef>,
         copy_from: Option<RepoPath>,
     },
     Gitlink { commit: GitOid },
@@ -239,7 +225,7 @@ pub enum Change {
 /// Wire mirror of `Change`; variant order must match.
 #[derive(Deserialize)]
 enum RawChange {
-    Write { kind: Kind, file: FileId, size: u64, git: GitOid, lfs: Option<LfsRef>, copy_from: Option<RepoPath> },
+    Write { kind: Kind, file: FileId, size: u64, git: GitOid, copy_from: Option<RepoPath> },
     Gitlink { commit: GitOid },
     Delete,
 }
@@ -249,7 +235,7 @@ impl TryFrom<RawChange> for Change {
 
     fn try_from(raw: RawChange) -> Result<Self, ObjectError> {
         Ok(match raw {
-            RawChange::Write { kind, file, size, git, lfs, copy_from } => Change::write(kind, file, size, git, lfs, copy_from)?,
+            RawChange::Write { kind, file, size, git, copy_from } => Change::write(kind, file, size, git, copy_from)?,
             RawChange::Gitlink { commit } => Change::Gitlink { commit },
             RawChange::Delete => Change::Delete,
         })
@@ -257,16 +243,12 @@ impl TryFrom<RawChange> for Change {
 }
 
 impl Change {
-    /// Builds a `Write`: kind must be File, Exec or Symlink, and `lfs` is
-    /// allowed only for File or Exec.
-    pub fn write(kind: Kind, file: FileId, size: u64, git: GitOid, lfs: Option<LfsRef>, copy_from: Option<RepoPath>) -> Result<Self, ObjectError> {
+    /// Builds a `Write`: kind must be File, Exec or Symlink.
+    pub fn write(kind: Kind, file: FileId, size: u64, git: GitOid, copy_from: Option<RepoPath>) -> Result<Self, ObjectError> {
         if !matches!(kind, Kind::File | Kind::Exec | Kind::Symlink) {
             return Err(ObjectError::WriteKind);
         }
-        if lfs.is_some() && kind == Kind::Symlink {
-            return Err(ObjectError::LfsKind);
-        }
-        Ok(Change::Write { kind, file, size, git, lfs, copy_from })
+        Ok(Change::Write { kind, file, size, git, copy_from })
     }
 }
 
@@ -425,16 +407,14 @@ mod tests {
 
     fn entry(n: &str, kind: Kind) -> Entry {
         let id = if kind == Kind::Gitlink { [0; 32] } else { [7; 32] };
-        Entry { name: name(n), kind, id, size: 5, git: GitOid::from_bytes([9; 20]), lfs: None }
+        Entry { name: name(n), kind, id, size: 5, git: GitOid::from_bytes([9; 20]) }
     }
 
     // ---- golden samples ----
 
     fn samples() -> Vec<(&'static str, Vec<u8>)> {
-        let mut lfs = entry("big.bin", Kind::File);
-        lfs.lfs = Some(LfsRef { sha256: [3; 32], size: 1 << 33 });
         let tree = Tree::new(
-            vec![lfs, entry("link", Kind::Symlink), entry("run.sh", Kind::Exec), entry("sub", Kind::Dir), entry("vendor", Kind::Gitlink)],
+            vec![entry("big.bin", Kind::File), entry("link", Kind::Symlink), entry("run.sh", Kind::Exec), entry("sub", Kind::Dir), entry("vendor", Kind::Gitlink)],
             true,
         )
         .unwrap();
@@ -451,7 +431,6 @@ mod tests {
                     file: FileId::from_bytes([4; 32]),
                     size: 300,
                     git: GitOid::from_bytes([5; 20]),
-                    lfs: Some(LfsRef { sha256: [6; 32], size: 9 }),
                     copy_from: Some(path("a/c")),
                 }),
                 (path("g"), Change::Gitlink { commit: GitOid::from_bytes([8; 20]) }),
@@ -563,31 +542,29 @@ mod tests {
         }
     }
 
-    fn write(kind: Kind, lfs: Option<LfsRef>) -> Change {
-        Change::Write { kind, file: FileId::from_bytes([4; 32]), size: 1, git: GitOid::from_bytes([5; 20]), lfs, copy_from: None }
+    fn write(kind: Kind) -> Change {
+        Change::Write { kind, file: FileId::from_bytes([4; 32]), size: 1, git: GitOid::from_bytes([5; 20]), copy_from: None }
     }
 
     #[test]
     fn rejects_bad_change_write() {
-        let lfs = Some(LfsRef { sha256: [6; 32], size: 9 });
         let cs = |c: Change| bare_changeset(vec![], vec![(path("a"), c)]).to_envelope();
-        for bad in [write(Kind::Dir, None), write(Kind::Gitlink, None), write(Kind::Symlink, lfs)] {
+        for bad in [write(Kind::Dir), write(Kind::Gitlink)] {
             assert!(decode_envelope::<Changeset>(&cs(bad)).is_err());
         }
-        for good in [write(Kind::File, lfs), write(Kind::Exec, lfs), write(Kind::Symlink, None)] {
+        for good in [write(Kind::File), write(Kind::Exec), write(Kind::Symlink)] {
             assert!(decode_envelope::<Changeset>(&cs(good)).is_ok());
         }
         let f = FileId::from_bytes([4; 32]);
         let g = GitOid::from_bytes([5; 20]);
-        assert_eq!(Change::write(Kind::Dir, f, 1, g, None, None).unwrap_err(), ObjectError::WriteKind);
-        assert_eq!(Change::write(Kind::Symlink, f, 1, g, lfs, None).unwrap_err(), ObjectError::LfsKind);
-        assert!(Change::write(Kind::File, f, 1, g, lfs, None).is_ok());
+        assert_eq!(Change::write(Kind::Dir, f, 1, g, None).unwrap_err(), ObjectError::WriteKind);
+        assert!(Change::write(Kind::Symlink, f, 1, g, None).is_ok());
     }
 
     #[test]
     fn rejects_duplicate_parents_but_allows_ancestor_paths() {
         let p = ChangesetId::from_bytes([1; 32]);
-        let changes = vec![(path("a"), Change::Delete), (path("a/b"), write(Kind::File, None))];
+        let changes = vec![(path("a"), Change::Delete), (path("a/b"), write(Kind::File))];
         assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p, p], changes.clone()).to_envelope()).is_err());
         assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p], changes).to_envelope()).is_ok());
     }
@@ -623,9 +600,6 @@ mod tests {
         let mut g = entry("g", Kind::Gitlink);
         g.id = [1; 32];
         assert_eq!(Tree::new(vec![g], true).unwrap_err(), ObjectError::GitlinkId);
-        let mut l = entry("l", Kind::Dir);
-        l.lfs = Some(LfsRef { sha256: [0; 32], size: 1 });
-        assert_eq!(Tree::new(vec![l], true).unwrap_err(), ObjectError::LfsKind);
     }
 
     #[test]
@@ -671,16 +645,11 @@ mod tests {
         prop_oneof![Just(Kind::File), Just(Kind::Exec), Just(Kind::Symlink), Just(Kind::Dir), Just(Kind::Gitlink)]
     }
 
-    fn arb_lfs() -> impl Strategy<Value = Option<LfsRef>> {
-        prop::option::of((any::<[u8; 32]>(), any::<u64>()).prop_map(|(sha256, size)| LfsRef { sha256, size }))
-    }
-
     fn arb_entry() -> impl Strategy<Value = Entry> {
-        (arb_name(), arb_kind(), any::<[u8; 32]>(), any::<u64>(), any::<[u8; 20]>(), arb_lfs()).prop_map(
-            |(name, kind, id, size, git, lfs)| {
+        (arb_name(), arb_kind(), any::<[u8; 32]>(), any::<u64>(), any::<[u8; 20]>()).prop_map(
+            |(name, kind, id, size, git)| {
                 let id = if kind == Kind::Gitlink { [0; 32] } else { id };
-                let lfs = if matches!(kind, Kind::File | Kind::Exec) { lfs } else { None };
-                Entry { name, kind, id, size, git: GitOid::from_bytes(git), lfs }
+                Entry { name, kind, id, size, git: GitOid::from_bytes(git) }
             },
         )
     }
@@ -710,15 +679,13 @@ mod tests {
                 any::<[u8; 32]>(),
                 any::<u64>(),
                 any::<[u8; 20]>(),
-                arb_lfs(),
                 prop::option::of(arb_path()),
             )
-                .prop_map(|(kind, file, size, git, lfs, copy_from)| Change::Write {
+                .prop_map(|(kind, file, size, git, copy_from)| Change::Write {
                     kind,
                     file: FileId::from_bytes(file),
                     size,
                     git: GitOid::from_bytes(git),
-                    lfs: if kind == Kind::Symlink { None } else { lfs },
                     copy_from,
                 }),
             any::<[u8; 20]>().prop_map(|c| Change::Gitlink { commit: GitOid::from_bytes(c) }),
