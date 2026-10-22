@@ -20,8 +20,10 @@ bytes = { workspace = true }
 data-encoding = { workspace = true }
 futures = { workspace = true }
 object_store = { workspace = true }
+sqlx = { workspace = true }
 thiserror = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]

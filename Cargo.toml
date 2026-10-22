@@ -36,7 +36,7 @@ asc-ci = { path = "crates/asc-ci" }
 # storage
 object_store   = { version = "0.14.2", default-features = false, features = ["fs", "aws"] }
 redb           = "4.4.0"
-sqlx           = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "migrate", "macros"] }
+sqlx           = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "migrate", "macros", "any"] }
 # hashing / compression / chunking / encoding
 blake3         = { version = "1.8.7", features = ["rayon"] }
 sha1           = "0.11.0"
