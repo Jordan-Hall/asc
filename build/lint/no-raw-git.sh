@@ -2,7 +2,8 @@
 # SPEC 11.4 / 9.4.1 lint. Usage: no-raw-git.sh | no-raw-git.sh --self-test
 #  1. `Command::new("git")` is allowed only in crates/asc-git/src/realgit.rs and on lines
 #     carrying `lint:allow-raw-git` (test-only fixtures in crates below asc-git).
-#  2. Under crates/asc/src/cli/, no `.update(` on the local `Refs` (use `Ctx::update_local_refs`).
+#  2. Under crates/asc/src/ (except refs_guard.rs, the one file that writes refs), no `.update(` on
+#     the local `Refs` (use `Ctx::update_local_refs`, SPEC 9.4.1).
 set -u
 cd "$(dirname "$0")/../.."
 
@@ -19,7 +20,7 @@ hits() {
 # check_raw_git <path>...: nonzero if any offending line.
 check_raw_git() { ! hits "$RAW_GIT" "$@" | grep -v -e '^crates/asc-git/src/realgit\.rs:' | grep -q .; }
 # check_refs_update <path>...
-check_refs_update() { ! hits "$REFS_UPDATE" "$@" | grep -q .; }
+check_refs_update() { ! hits "$REFS_UPDATE" "$@" | grep -v -e '^crates/asc/src/refs_guard.rs:' | grep -q .; }
 
 if [ "${1:-}" = "--self-test" ]; then
   fx=build/lint/fixtures/no-raw-git
@@ -38,7 +39,7 @@ if [ "${1:-}" = "--self-test" ]; then
   expect fail "update_local_refs passes" has_hit "$REFS_UPDATE" "$fx/good/refs.rs"
   # The real tree must pass.
   expect pass "tree: raw git" check_raw_git crates tests bench deploy actions packaging
-  expect pass "tree: refs update" check_refs_update crates/asc/src/cli
+  expect pass "tree: refs update" check_refs_update crates/asc/src
   [ "$fail" -eq 0 ] && echo "no-raw-git self-test ok"
   exit "$fail"
 fi
@@ -51,8 +52,8 @@ if ! check_raw_git "${paths[@]}"; then
   echo 'no-raw-git: use RealGit::command(); test fixtures below asc-git carry lint:allow-raw-git (SPEC 11.4)' >&2
   status=1
 fi
-if [ -d crates/asc/src/cli ] && ! check_refs_update crates/asc/src/cli; then
-  hits "$REFS_UPDATE" crates/asc/src/cli
+if [ -d crates/asc/src ] && ! check_refs_update crates/asc/src; then
+  hits "$REFS_UPDATE" crates/asc/src | grep -v -e '^crates/asc/src/refs_guard.rs:'
   echo 'no-raw-git: use Ctx::update_local_refs (SPEC 9.4.1)' >&2
   status=1
 fi
