@@ -27,6 +27,9 @@ pub enum RealGitError {
     /// `ASC_REAL_GIT` or `asc.realGit` names something that is not a file.
     #[error("fatal: asc: configured real git '{}' is not a file", .0.display())]
     NotAFile(PathBuf),
+    /// `ASC_REAL_GIT` or `asc.realGit` is a relative path, which would resolve against the cwd.
+    #[error("fatal: asc: configured real git '{}' must be an absolute path", .0.display())]
+    NotAbsolute(PathBuf),
     /// The resolved git is older than [`MIN_VERSION`] or did not report a version.
     #[error("fatal: asc: real git '{}' must be version 2.40 or newer (found '{found}')", path.display())]
     TooOld { path: PathBuf, found: String },
@@ -106,6 +109,9 @@ impl Resolver {
     /// Resolves real git: env, config, cache, `PATH`, then the Windows default.
     pub fn resolve(&self) -> Result<RealGit, RealGitError> {
         if let Some(p) = self.env_override.as_ref().or(self.config.as_ref()) {
+            if !p.is_absolute() {
+                return Err(RealGitError::NotAbsolute(p.clone()));
+            }
             if !p.is_file() {
                 return Err(RealGitError::NotAFile(p.clone()));
             }
@@ -130,8 +136,11 @@ impl Resolver {
         same_file::is_same_file(candidate, &self.current_exe).unwrap_or(false)
     }
 
+    /// Empty and relative `PATH` entries are skipped: they resolve against the cwd, so a
+    /// repository could plant its own `git` there.
     fn search_path(&self) -> Option<PathBuf> {
         std::env::split_paths(&self.path)
+            .filter(|dir| dir.is_absolute())
             .map(|dir| dir.join(GIT_FILE))
             .find(|c| c.is_file() && !self.is_self(c))
     }
@@ -153,7 +162,7 @@ impl Resolver {
         let text = fs::read_to_string(self.cache_file()?).ok()?;
         let (path, stamp) = text.split_once('\n')?;
         let path = PathBuf::from(path);
-        (stamp.trim() == mtime_stamp(&path)? && !self.is_self(&path)).then_some(path)
+        (path.is_absolute() && stamp.trim() == mtime_stamp(&path)? && !self.is_self(&path)).then_some(path)
     }
 
     /// Best effort: a cache that cannot be written only costs a re-resolve.
@@ -299,6 +308,25 @@ mod tests {
         let real = touch(&t.path().join("real"), GIT_FILE);
         let r = resolver(vec![shim, t.path().join("real")], exe, None).resolve().unwrap();
         assert_eq!(r.path(), real);
+    }
+
+    #[test]
+    fn skips_relative_and_empty_path_entries() {
+        let t = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let rel = PathBuf::from(format!("asc-realgit-test-{}", std::process::id()));
+        touch(&cwd.join(&rel), GIT_FILE);
+        let real = touch(&t.path().join("real"), GIT_FILE);
+        let r = resolver(vec![PathBuf::new(), rel.clone(), t.path().join("real")], PathBuf::new(), None).resolve();
+        fs::remove_dir_all(cwd.join(&rel)).unwrap();
+        assert_eq!(r.unwrap().path(), real);
+    }
+
+    #[test]
+    fn relative_override_is_rejected() {
+        let mut r = resolver(vec![], PathBuf::new(), None);
+        r.env_override = Some(PathBuf::from("git"));
+        assert!(matches!(r.resolve().unwrap_err(), RealGitError::NotAbsolute(_)));
     }
 
     #[test]
