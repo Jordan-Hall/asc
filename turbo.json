@@ -1,0 +1,39 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "codegen": {
+      "inputs": ["$TURBO_ROOT$/proto/**"],
+      "outputs": ["src/gen/**"]
+    },
+    "build": {
+      "dependsOn": ["^build", "codegen"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["codegen", "^build"]
+    },
+    "lint": {
+      "dependsOn": ["codegen"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "passThroughEnv": ["ASC_BIN"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "passThroughEnv": ["ASC_BIN"]
+    },
+    "package": {
+      "dependsOn": ["build"],
+      "outputs": ["*.vsix", "build/distributions/**"]
+    },
+    "//#lint": {
+      "inputs": [
+        "$TURBO_ROOT$/**/*.{ts,tsx,js,mjs,json}",
+        "$TURBO_ROOT$/.oxlintrc.json",
+        "$TURBO_ROOT$/biome.json"
+      ]
+    }
+  }
+}

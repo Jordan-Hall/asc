@@ -3,3 +3,8 @@ target/
 .DS_Store
 .env
 /asc-it-data/
+node_modules/
+dist/
+.turbo/
+src/gen/
+*.vsix
