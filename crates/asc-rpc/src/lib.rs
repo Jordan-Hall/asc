@@ -8,12 +8,15 @@ pub mod auth;
 pub mod changes;
 pub mod client;
 pub mod cloud;
+pub mod coalesce;
 pub mod codeintel;
 pub mod convert;
 pub mod errors;
 pub mod ipc;
 pub mod json;
+pub mod limits;
 pub mod log_meta;
+pub mod retry;
 pub mod server;
 
 /// Generated prost messages and tonic services for package `asc.v1`.
