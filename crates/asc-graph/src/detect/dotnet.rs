@@ -3,7 +3,10 @@
 //! Project files and `Directory.Packages.props` are parsed to canonical XML
 //! values, solutions to their project paths. `link` reads only the manifest
 //! set. `Condition` attributes are ignored, so every item counts. The items of
-//! every `Directory.Build.props`/`.targets` above a project count as its own.
+//! every `Directory.Build.props`/`.targets` above a project count as its own,
+//! as do those of each `Directory.Packages.props` above it and of the files
+//! MSBuild imports by name (`<project>.user`, `obj/<project>.*.props`).
+//! Extra-input globs fold ASCII case and escape glob syntax MSBuild lacks.
 //! Item and attribute names match in any case, `%` escapes are not evaluated,
 //! and an `Import` of a file the detector does not read is a gap.
 //! Anything the detector cannot resolve to a known project or a repository
@@ -71,7 +74,8 @@ fn split_ext(name: &[u8]) -> Option<(&[u8], &[u8])> {
 }
 
 fn manifest_kind(name: &[u8]) -> Option<FileKind> {
-    if name == CENTRAL {
+    // MSBuild finds it by a file system lookup, which ignores case on Windows and macOS.
+    if name.eq_ignore_ascii_case(CENTRAL) {
         return Some(FileKind::Central);
     }
     let (_, ext) = split_ext(name)?;
@@ -99,7 +103,7 @@ impl Detector for Dotnet {
         }
         match name {
             b"packages.lock.json" => Some(Claim::Lockfile),
-            n if is_build_file(n) => Some(Claim::EcoGlobal),
+            n if is_build_file(n) || is_auto_import(path) => Some(Claim::EcoGlobal),
             b"global.json" => Some(Claim::EcoGlobal),
             b"dotnet-tools.json"
                 if path
@@ -165,6 +169,58 @@ fn parse_global(bytes: &[u8]) -> Parsed {
 fn is_build_file(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(b"Directory.Build.props")
         || name.eq_ignore_ascii_case(b"Directory.Build.targets")
+}
+
+fn ends_with_ci(name: &[u8], suffix: &[u8]) -> bool {
+    name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
+}
+
+fn starts_with_ci(name: &[u8], prefix: &[u8]) -> bool {
+    name.len() >= prefix.len() && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+/// A file MSBuild imports for a project without any `Import` in a project
+/// file: `<project file>.user` beside it, and `<project file>.*.props` and
+/// `.targets` in its `obj` directory (`Microsoft.Common.CurrentVersion.targets`,
+/// `Microsoft.Common.props` and `Microsoft.Common.targets`). `proj_file` is the
+/// project's file name; `in_obj` says the file is in the `obj` directory.
+fn is_auto_import_of(name: &[u8], proj_file: &[u8], in_obj: bool) -> bool {
+    let rest = |suffix: &[u8]| {
+        // `.user` follows the file name; the others have a `.` and a name between.
+        let min = proj_file.len()
+            + if in_obj {
+                1 + suffix.len()
+            } else {
+                suffix.len()
+            };
+        name.len() >= min && starts_with_ci(name, proj_file) && ends_with_ci(name, suffix)
+    };
+    if in_obj {
+        (rest(b".props") || rest(b".targets")) && name.get(proj_file.len()) == Some(&b'.')
+    } else {
+        name.len() == proj_file.len() + 5 && rest(b".user")
+    }
+}
+
+/// True for a path that may be an auto-imported file of some project.
+fn is_auto_import(path: &RepoPath) -> bool {
+    let name = path.file_name();
+    let name = name.as_bytes();
+    if ends_with_ci(name, b".user") {
+        return split_ext(&name[..name.len() - 5])
+            .is_some_and(|(_, e)| PROJECT_EXTS.iter().any(|x| e.eq_ignore_ascii_case(x)));
+    }
+    (ends_with_ci(name, b".props") || ends_with_ci(name, b".targets"))
+        && path
+            .parent()
+            .is_some_and(|p| p.file_name().as_bytes().eq_ignore_ascii_case(b"obj"))
+        && PROJECT_EXTS.iter().any(|e| {
+            let mut pat = vec![b'.'];
+            pat.extend_from_slice(e);
+            pat.push(b'.');
+            name.windows(pat.len())
+                .any(|w| w.eq_ignore_ascii_case(&pat))
+        })
 }
 
 /// The project paths of a `.sln`: the `Project("{type}") = "name", "path", "{guid}"` lines
@@ -311,15 +367,51 @@ fn path_in(dir: &[u8], file: &str) -> Option<RepoPath> {
     RepoPath::new(b).ok()
 }
 
-fn escape_glob(b: &[u8]) -> Vec<u8> {
-    let mut o = Vec::with_capacity(b.len());
-    for &c in b {
-        if matches!(c, b'*' | b'?' | b'[' | b']' | b'{' | b'}' | b'\\') {
-            o.push(b'\\');
-        }
-        o.push(c);
-    }
-    o
+/// The glob that selects the files an MSBuild path names, for `extra_inputs`.
+/// The matcher is case-sensitive and reads `{}`, `[]` and `\`, none of which
+/// MSBuild reads, so:
+/// - ASCII letters become `[xX]`, because MSBuild resolves paths by a file
+///   system lookup that ignores case on Windows and macOS;
+/// - a non-ASCII character becomes `*`, since its case folding is not decided
+///   here; the match is wider, never narrower;
+/// - `{`, `}`, `[`, `]` and `\` are escaped, so no glob is invalid or expands;
+/// - with `wildcards`, `*` and `?` stay wildcards (`?` as `*`, because the
+///   matcher's `?` reads one byte, not one character) and a run of them is one
+///   `*`, since `**` is only valid as a whole component. Otherwise they are
+///   escaped.
+fn fs_glob(p: &[u8], wildcards: bool) -> Vec<u8> {
+    let text = String::from_utf8_lossy(p);
+    let comps: Vec<String> = text
+        .split('/')
+        .map(|c| {
+            if wildcards && c == "**" {
+                return c.to_owned();
+            }
+            let mut o = String::with_capacity(c.len() * 2);
+            let mut star = false;
+            for ch in c.chars() {
+                let wide = !ch.is_ascii() || (wildcards && matches!(ch, '*' | '?'));
+                if wide {
+                    if !star {
+                        o.push('*');
+                    }
+                    star = true;
+                    continue;
+                }
+                star = false;
+                if ch.is_ascii_alphabetic() {
+                    o.extend(['[', ch.to_ascii_lowercase(), ch.to_ascii_uppercase(), ']']);
+                } else {
+                    if matches!(ch, '*' | '?' | '[' | ']' | '{' | '}' | '\\') {
+                        o.push('\\');
+                    }
+                    o.push(ch);
+                }
+            }
+            o
+        })
+        .collect();
+    comps.join("/").into_bytes()
 }
 
 fn inside(dir: &[u8], p: &[u8]) -> bool {
@@ -399,12 +491,25 @@ struct Linker<'c, 'a> {
     projects: Vec<Man<'a>>,
     solutions: Vec<(Man<'a>, FileKind)>,
     props: Vec<Man<'a>>,
+    props_ix: ByDir,
+    /// Per `props` entry: its path items; empty when it is not an element.
+    props_items: Vec<Vec<&'a Value>>,
+    /// Directories of `Directory.Packages.props` files that failed to parse.
+    failed_props: Vec<&'a RepoPath>,
+    failed_props_ix: ByDir,
     /// Per `props` entry: `PackageVersion` elements by package name.
     versions: Vec<BTreeMap<&'a str, &'a Value>>,
     /// The `Directory.Build.props`/`.targets` files.
     builds: Vec<Man<'a>>,
+    builds_ix: ByDir,
     /// Per `builds` entry: its path items; empty when it is not an element.
     build_items: Vec<Vec<&'a Value>>,
+    /// `<project>.user` and `obj/<project>.*.props`/`.targets` files.
+    autos: Vec<Man<'a>>,
+    /// Per `autos` entry: its path items; empty when it is not an element.
+    auto_items: Vec<Vec<&'a Value>>,
+    /// `autos` by lower-cased directory.
+    autos_by_dir: BTreeMap<Vec<u8>, Vec<usize>>,
     /// Build-file values resolved so far, against [`MAX_BUILD_SCAN_VALUES`].
     scanned: Cell<usize>,
     /// Build-file attribute bytes walked so far, against [`MAX_BUILD_SCAN_BYTES`].
@@ -430,13 +535,50 @@ enum Lookup {
     Missing,
 }
 
-/// Indices of the `mans` at or above `dir`, outermost first.
-fn at_or_above(mans: &[Man<'_>], dir: &[u8]) -> Vec<usize> {
-    let mut v: Vec<usize> = (0..mans.len())
-        .filter(|&j| mans[j].dir == dir || inside(&mans[j].dir, dir))
-        .collect();
-    v.sort_by_key(|&j| mans[j].dir.len());
-    v
+/// File indices by directory (bytes, empty is the root): finds the files at or
+/// above a directory by walking its parents, not by scanning every file.
+#[derive(Default)]
+struct ByDir(BTreeMap<Vec<u8>, Vec<usize>>);
+
+impl ByDir {
+    fn new<'d>(dirs: impl Iterator<Item = &'d [u8]>) -> Self {
+        let mut m: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
+        for (i, d) in dirs.enumerate() {
+            m.entry(d.to_vec()).or_default().push(i);
+        }
+        Self(m)
+    }
+
+    /// Indices of the entries at or above `dir`, outermost first.
+    fn at_or_above(&self, dir: &[u8]) -> Vec<usize> {
+        #[cfg(test)]
+        tests::LOOKUPS.with(|c| c.set(c.get() + 1));
+        let mut v = Vec::new();
+        let ends = std::iter::once(0)
+            .chain(
+                dir.iter()
+                    .enumerate()
+                    .filter(|(_, c)| **c == b'/')
+                    .map(|(i, _)| i),
+            )
+            .chain((!dir.is_empty()).then_some(dir.len()));
+        for end in ends {
+            if let Some(x) = self.0.get(&dir[..end]) {
+                v.extend_from_slice(x);
+            }
+        }
+        v
+    }
+}
+
+/// The path items of an MSBuild file; empty when it is not an element.
+fn path_items(root: &Value) -> Vec<&Value> {
+    let mut all = Vec::new();
+    if is_element(root) {
+        elements(root, &mut all);
+    }
+    all.retain(|e| path_item(el_name(e)).is_some());
+    all
 }
 
 /// One `PackageReference`.
@@ -478,38 +620,59 @@ impl<'c, 'a> Linker<'c, 'a> {
                 .push(i);
         }
         let versions = props.iter().map(|m| package_versions(m.v)).collect();
-        let builds: Vec<Man<'a>> = cx
-            .files_of(Claim::EcoGlobal)
-            .filter(|f| is_build_file(f.path.file_name().as_bytes()))
-            .map(|f| Man {
-                path: f.path,
-                dir: f
-                    .path
-                    .parent()
-                    .map(|d| d.as_bytes().to_vec())
-                    .unwrap_or_default(),
-                v: &f.parsed.0,
-            })
-            .collect();
-        let build_items = builds
+        let eco_global = |keep: fn(&RepoPath) -> bool| -> Vec<Man<'a>> {
+            cx.files_of(Claim::EcoGlobal)
+                .filter(|f| keep(f.path))
+                .map(|f| Man {
+                    path: f.path,
+                    dir: f
+                        .path
+                        .parent()
+                        .map(|d| d.as_bytes().to_vec())
+                        .unwrap_or_default(),
+                    v: &f.parsed.0,
+                })
+                .collect()
+        };
+        let builds = eco_global(|p| is_build_file(p.file_name().as_bytes()));
+        let autos = eco_global(|p| !is_build_file(p.file_name().as_bytes()) && is_auto_import(p));
+        let mut autos_by_dir: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
+        for (j, m) in autos.iter().enumerate() {
+            autos_by_dir
+                .entry(m.dir.to_ascii_lowercase())
+                .or_default()
+                .push(j);
+        }
+        let failed_props: Vec<&'a RepoPath> = cx
+            .failed_manifests()
             .iter()
-            .map(|m| {
-                let mut all = Vec::new();
-                if is_element(m.v) {
-                    elements(m.v, &mut all);
-                }
-                all.retain(|e| path_item(el_name(e)).is_some());
-                all
+            .copied()
+            .filter(|p| manifest_kind(p.file_name().as_bytes()) == Some(FileKind::Central))
+            .collect();
+        let failed_dirs: Vec<Vec<u8>> = failed_props
+            .iter()
+            .map(|p| {
+                p.parent()
+                    .map(|d| d.as_bytes().to_vec())
+                    .unwrap_or_default()
             })
             .collect();
         Self {
             cx,
             projects,
             solutions,
+            props_ix: ByDir::new(props.iter().map(|m| m.dir.as_slice())),
+            props_items: props.iter().map(|m| path_items(m.v)).collect(),
             props,
+            failed_props,
+            failed_props_ix: ByDir::new(failed_dirs.iter().map(Vec::as_slice)),
             versions,
+            builds_ix: ByDir::new(builds.iter().map(|m| m.dir.as_slice())),
+            build_items: builds.iter().map(|m| path_items(m.v)).collect(),
             builds,
-            build_items,
+            auto_items: autos.iter().map(|m| path_items(m.v)).collect(),
+            autos,
+            autos_by_dir,
             scanned: Cell::new(0),
             scanned_bytes: Cell::new(0),
             exact,
@@ -565,15 +728,42 @@ impl<'c, 'a> Linker<'c, 'a> {
 
         let mut p = Project::new(self.key_of(i), name, ProjectKind::Package);
         let mut scan = Scan::default();
-        self.scan(i, &m.dir, &all, false, &mut scan);
-        for b in at_or_above(&self.builds, &m.dir) {
-            let f = &self.builds[b];
+        // The files MSBuild imports for this project without an `Import`.
+        let builds = self.builds_ix.at_or_above(&m.dir);
+        let ancestors = self.ancestors(&m.dir);
+        let autos = self.autos_of(i);
+        let applied: Vec<&[u8]> = builds
+            .iter()
+            .map(|&b| self.builds[b].path.as_bytes())
+            .chain(ancestors.iter().map(|&j| self.props[j].path.as_bytes()))
+            .chain(autos.iter().map(|&a| self.autos[a].path.as_bytes()))
+            .collect();
+        self.scan(i, &m.dir, &all, false, &applied, &mut scan);
+        let files = builds
+            .iter()
+            .map(|&b| (&self.builds[b], &self.build_items[b]))
+            .chain(
+                ancestors
+                    .iter()
+                    .map(|&j| (&self.props[j], &self.props_items[j])),
+            )
+            .chain(autos.iter().map(|&a| (&self.autos[a], &self.auto_items[a])));
+        for (f, items) in files {
             if is_element(f.v) {
-                self.scan(i, &f.dir, &self.build_items[b], true, &mut scan);
+                self.scan(i, &f.dir, items, true, &applied, &mut scan);
             } else {
                 self.cx.report(f.path.clone(), UNREADABLE_BUILD_FILE);
                 scan.gaps.insert(UNREADABLE_BUILD_FILE);
             }
+        }
+        for &a in &autos {
+            scan.extra
+                .insert(fs_glob(self.autos[a].path.as_bytes(), false));
+        }
+        for f in self.failed_props_ix.at_or_above(&m.dir) {
+            self.cx
+                .report(self.failed_props[f].clone(), UNREADABLE_BUILD_FILE);
+            scan.gaps.insert(UNREADABLE_BUILD_FILE);
         }
         scan.refs.sort_unstable();
         scan.refs.dedup();
@@ -588,7 +778,6 @@ impl<'c, 'a> Linker<'c, 'a> {
         p.opaque = !scan.gaps.is_empty();
         p.extra_inputs = scan.extra.into_iter().collect();
 
-        let ancestors = self.ancestors(&m.dir);
         let packages = self.packages(&all, &ancestors);
         p.config_fp = self.config_fp(&ancestors, &packages);
         p.external_fp = self.external_fp(m, &packages);
@@ -611,7 +800,15 @@ impl<'c, 'a> Linker<'c, 'a> {
     /// paths against either depending on the item; `Import` is relative to the
     /// file. `counted` charges the build-file scan budget for every element
     /// and value, including those with no value.
-    fn scan(&self, i: usize, origin: &[u8], elems: &[&Value], counted: bool, acc: &mut Scan) {
+    fn scan(
+        &self,
+        i: usize,
+        origin: &[u8],
+        elems: &[&Value],
+        counted: bool,
+        applied: &[&[u8]],
+        acc: &mut Scan,
+    ) {
         let proj_dir = self.projects[i].dir.as_slice();
         let both = [origin, proj_dir];
         let bases = if origin == proj_dir {
@@ -631,8 +828,10 @@ impl<'c, 'a> Linker<'c, 'a> {
                 acc.gaps.insert(BUILD_SCAN_BUDGET);
                 return;
             }
-            // An SDK import is found by the SDK resolver, not by path.
-            if kind == PathItem::Import && attr_ci(e, "Sdk").is_some() {
+            // An SDK import is found by the SDK resolver, not by path. An empty
+            // name is no SDK to rely on (MSBuild fails to resolve it), so that
+            // import is followed by path like any other.
+            if kind == PathItem::Import && attr_ci(e, "Sdk").is_some_and(|s| !s.trim().is_empty()) {
                 continue;
             }
             for value in values(raw) {
@@ -647,7 +846,7 @@ impl<'c, 'a> Linker<'c, 'a> {
                 let rs: Vec<Resolved> = bases.iter().map(|b| resolve_one(b, value)).collect();
                 match kind {
                     PathItem::Reference => self.reference(i, &rs, acc),
-                    PathItem::Import => self.import(i, &rs[0], acc),
+                    PathItem::Import => self.import(i, &rs[0], applied, acc),
                     PathItem::Other => item(proj_dir, &rs, acc),
                 }
             }
@@ -688,13 +887,13 @@ impl<'c, 'a> Linker<'c, 'a> {
         acc.refs.extend(found.into_iter().filter(|&j| j != i));
     }
 
-    /// An `Import` project. A literal path is read only when it is a
-    /// `Directory.Build.*` file that applies to project `i`; any other file is
-    /// never parsed, so what it references would be missed, and the project is
-    /// opaque. A path that leaves the project directory is also an extra
-    /// input. A wildcard, an unevaluated property, an absolute path or one that
-    /// leaves the repository makes the project opaque.
-    fn import(&self, i: usize, r: &Resolved, acc: &mut Scan) {
+    /// An `Import` project. A literal path is read only when it is one of the
+    /// `applied` files, which the detector scans for project `i` anyway; any
+    /// other file is never parsed, so what it references would be missed, and
+    /// the project is opaque. A path that leaves the project directory is also
+    /// an extra input. A wildcard, an unevaluated property, an absolute path or
+    /// one that leaves the repository makes the project opaque.
+    fn import(&self, i: usize, r: &Resolved, applied: &[&[u8]], acc: &mut Scan) {
         let proj_dir = self.projects[i].dir.as_slice();
         match r {
             Resolved::Unknown => {
@@ -707,14 +906,11 @@ impl<'c, 'a> Linker<'c, 'a> {
                 acc.gaps.insert(WILDCARD_IMPORT);
             }
             Resolved::Path(p) => {
-                let scanned = at_or_above(&self.builds, proj_dir)
-                    .into_iter()
-                    .any(|b| self.builds[b].path.as_bytes() == p.as_slice());
-                if !scanned {
+                if !applied.contains(&p.as_slice()) {
                     acc.gaps.insert(UNSCANNED_IMPORT);
                 }
                 if !inside(proj_dir, p) {
-                    acc.extra.insert(escape_glob(p));
+                    acc.extra.insert(fs_glob(p, false));
                 }
             }
         }
@@ -761,7 +957,37 @@ impl<'c, 'a> Linker<'c, 'a> {
 
     /// `Directory.Packages.props` files at or above `dir`, outermost first.
     fn ancestors(&self, dir: &[u8]) -> Vec<usize> {
-        at_or_above(&self.props, dir)
+        self.props_ix.at_or_above(dir)
+    }
+
+    /// The auto-imported files of project `i`: `<project file>.user` beside it
+    /// and `<project file>.*.props`/`.targets` in its `obj` directory, in any
+    /// case.
+    fn autos_of(&self, i: usize) -> Vec<usize> {
+        let m = &self.projects[i];
+        let proj_file = m.path.file_name();
+        let proj_file = proj_file.as_bytes();
+        let dir = m.dir.to_ascii_lowercase();
+        let mut obj = dir.clone();
+        if !obj.is_empty() {
+            obj.push(b'/');
+        }
+        obj.extend_from_slice(b"obj");
+        let at = |d: &[u8], in_obj: bool| -> Vec<usize> {
+            self.autos_by_dir
+                .get(d)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|&a| {
+                    let n = self.autos[a].path.file_name();
+                    is_auto_import_of(n.as_bytes(), proj_file, in_obj)
+                })
+                .collect()
+        };
+        let mut v = at(&dir, false);
+        v.extend(at(&obj, true));
+        v
     }
 
     /// The package references of a project with their versions resolved.
@@ -858,7 +1084,7 @@ fn item(proj_dir: &[u8], rs: &[Resolved], acc: &mut Scan) {
                 acc.gaps.insert(UNEVALUATED_ITEM);
             }
             Resolved::Path(p) if !inside(proj_dir, p) => {
-                acc.extra.insert(p.clone());
+                acc.extra.insert(fs_glob(p, true));
             }
             Resolved::Path(_) | Resolved::Outside => {}
         }
@@ -900,6 +1126,11 @@ mod tests {
     ];
 
     type Tree = BTreeMap<String, String>;
+
+    thread_local! {
+        /// Calls of `at_or_above` on this thread.
+        pub(super) static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
 
     fn rp(s: &str) -> RepoPath {
         RepoPath::new(s).unwrap()
@@ -1251,7 +1482,10 @@ mod tests {
         for n in ["A", "B", "Gen"] {
             assert_eq!(
                 project(&g, n).extra_inputs,
-                [b"build/common.props".to_vec(), b"docs/**".to_vec()],
+                [
+                    fs_glob(b"build/common.props", false),
+                    fs_glob(b"docs/**", true)
+                ],
                 "{n}"
             );
         }
@@ -1553,7 +1787,10 @@ mod tests {
         let (g, _) = build(&shop());
         assert_eq!(
             project(&g, "App").extra_inputs,
-            [b"build/app.targets".to_vec(), b"src/Shared/*.cs".to_vec()]
+            [
+                fs_glob(b"build/app.targets", false),
+                fs_glob(b"src/Shared/*.cs", true)
+            ]
         );
         assert!(project(&g, "Lib").extra_inputs.is_empty());
     }
@@ -1651,5 +1888,232 @@ mod tests {
         assert!(Dotnet.parse(Claim::Manifest, &[0xff, 0xfe]).is_err());
         let big = vec![b' '; MAX_MANIFEST_BYTES + 1];
         assert!(Dotnet.parse(Claim::Manifest, &big).is_err());
+    }
+
+    #[test]
+    fn extra_input_globs_fold_case_and_escape_syntax() {
+        assert_eq!(fs_glob(b"a/B*.c{", true), b"[aA]/[bB]*.[cC]\\{".to_vec());
+        assert_eq!(fs_glob(b"a?*b", true), b"[aA]*[bB]".to_vec());
+        assert_eq!(fs_glob(b"x**y/**/z", true), b"[xX]*[yY]/**/[zZ]".to_vec());
+        assert_eq!(fs_glob(b"a*/**", false), b"[aA]\\*/\\*\\*".to_vec());
+        assert_eq!(fs_glob("\u{e9}x".as_bytes(), false), b"*[xX]".to_vec());
+    }
+
+    const GEN_REF: &str =
+        "<ItemGroup><ProjectReference Include=\"tools/Gen/Gen.csproj\" /></ItemGroup>";
+
+    #[test]
+    fn directory_packages_props_imports_and_references_are_followed() {
+        // MSBuild imports it for every project (NuGet.props, ImportDirectoryPackagesProps),
+        // so what it imports is as much an input as a Directory.Build file's imports.
+        let mut t = with_build_file(
+            "Directory.Packages.props",
+            &props("<Import Project=\"eng/refs.props\" />"),
+        );
+        t.insert(
+            "eng/refs.props".into(),
+            props(
+                "<ItemGroup><ProjectReference Include=\"$(MSBuildThisFileDirectory)../tools/Gen/Gen.csproj\" /></ItemGroup>",
+            ),
+        );
+        all_opaque(&t, "import in Directory.Packages.props");
+        // Its own references are dependencies.
+        let t = with_build_file("Directory.Packages.props", &props(GEN_REF));
+        let (g, _) = build(&t);
+        assert_eq!(deps(&g, "A"), ["Normal:Gen"]);
+        assert_eq!(deps(&g, "B"), ["Normal:Gen"]);
+        assert_eq!(
+            affected_ids(&t, GEN),
+            ["dotnet:A", "dotnet:B", "dotnet:Gen"]
+        );
+        for body in [
+            "<ItemGroup><ProjectReference Include=\"$(Lib)\" /></ItemGroup>",
+            "<Import Project=\"build/*.props\" />",
+            "<ItemGroup><Compile Include=\"/abs/x.cs\" /></ItemGroup>",
+        ] {
+            all_opaque(
+                &with_build_file("Directory.Packages.props", &props(body)),
+                body,
+            );
+        }
+    }
+
+    #[test]
+    fn directory_packages_props_names_match_in_any_case() {
+        for name in ["directory.packages.props", "DIRECTORY.PACKAGES.PROPS"] {
+            assert_eq!(Dotnet.claim(&rp(name)), Some(Claim::Manifest), "{name}");
+            let t = with_build_file(name, &props("<Import Project=\"eng/refs.props\" />"));
+            all_opaque(&t, name);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_directory_packages_props_makes_the_projects_below_opaque() {
+        // Oversized, so it is never parsed; MSBuild still imports it.
+        let big = props(&" ".repeat(MAX_MANIFEST_BYTES));
+        all_opaque(
+            &with_build_file("Directory.Packages.props", &big),
+            "oversized root props",
+        );
+        let (g, _) = build(&with_build_file("src/Directory.Packages.props", &big));
+        assert!(project(&g, "A").opaque && project(&g, "B").opaque);
+        // Gen is not below the file.
+        assert!(!project(&g, "Gen").opaque);
+    }
+
+    #[test]
+    fn user_and_project_extension_files_are_followed() {
+        // Beside the project and in its `obj` directory, in any case.
+        let gen_ref =
+            "<ItemGroup><ProjectReference Include=\"../../tools/Gen/Gen.csproj\" /></ItemGroup>";
+        for path in [
+            "src/A/A.csproj.user",
+            "src/A/a.CSProj.User",
+            "src/a/A.csproj.user",
+            "src/A/obj/A.csproj.nuget.g.props",
+            "src/A/OBJ/A.csproj.Foo.TARGETS",
+        ] {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(path.into(), props(gen_ref));
+            let (g, _) = build(&t);
+            assert_eq!(deps(&g, "A"), ["Normal:Gen"], "{path}");
+            assert!(deps(&g, "B").is_empty(), "{path}");
+            assert_eq!(affected_ids(&t, GEN), ["dotnet:A", "dotnet:Gen"], "{path}");
+            // What they import is not read.
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(path.into(), props("<Import Project=\"x.props\" />"));
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{path}");
+            assert!(!project(&g, "B").opaque, "{path}");
+            // An unreadable one.
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(path.into(), "not xml".into());
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{path}");
+        }
+        // A file named for another project does not apply.
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        t.insert("src/A/B.csproj.user".into(), props(GEN_REF));
+        t.insert("src/A/obj/B.csproj.nuget.g.props".into(), props(GEN_REF));
+        let (g, _) = build(&t);
+        assert!(deps(&g, "A").is_empty() && deps(&g, "B").is_empty());
+    }
+
+    #[test]
+    fn imports_do_not_rescan_the_build_files_for_every_value() {
+        // 3 projects with 3000 literal imports each, in a tree with a build file.
+        let imports = "<Import Project=\"a.props\" />".repeat(3000);
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        for n in ["A", "B"] {
+            t.insert(format!("src/{n}/{n}.csproj"), csproj(&imports));
+        }
+        LOOKUPS.with(|c| c.set(0));
+        let (g, _) = build(&t);
+        let calls = LOOKUPS.with(Cell::get);
+        assert!(calls <= 30, "{calls} directory lookups");
+        assert!(opaque_with_issue(&g, "src/A/A.csproj", UNSCANNED_IMPORT));
+    }
+
+    #[test]
+    fn many_build_files_and_imports_link_in_bounded_time() {
+        // 5000 build files in other directories and one project of ~100k imports.
+        let mut t = Tree::new();
+        for i in 0..5000 {
+            t.insert(format!("d{i:04}/Directory.Build.props"), props(""));
+        }
+        let imports = "<Import Project=\"a\" />".repeat(MAX_MANIFEST_BYTES / 40);
+        t.insert("src/A/A.csproj".into(), csproj(&imports));
+        let start = std::time::Instant::now();
+        let (g, _) = build(&t);
+        assert!(project(&g, "A").opaque);
+        assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    }
+
+    /// The projects a change to `changed` selects when `A` holds `body` in an
+    /// `ItemGroup`.
+    fn selected_by_item(body: &str, changed: &str) -> Vec<String> {
+        let mut t = with_build_file("Directory.Build.props", &props(""));
+        t.insert(
+            "src/A/A.csproj".into(),
+            csproj(&format!("<ItemGroup>{body}</ItemGroup>")),
+        );
+        t.insert(changed.into(), "x".into());
+        affected_ids(&t, changed)
+    }
+
+    #[test]
+    fn item_paths_outside_the_project_match_as_the_file_system_does() {
+        for (include, changed) in [
+            // Another case: the same file on Windows and macOS.
+            ("../SHARED/x.cs", "src/shared/x.cs"),
+            ("../shared/x.cs", "src/SHARED/X.CS"),
+            // Characters that are not wildcards in MSBuild.
+            ("../shared/{a,b}/x.cs", "src/shared/{a,b}/x.cs"),
+            (
+                "../shared/{projectRoot}/x.cs",
+                "src/shared/{projectRoot}/x.cs",
+            ),
+            ("../shared/[ab]/x.cs", "src/shared/[ab]/x.cs"),
+            // An invalid glob must not stop the run.
+            ("../a/[.cs", "src/a/[.cs"),
+            ("../a/x**y.cs", "src/a/xzzy.cs"),
+            ("../a/\\x.cs", "src/a/x.cs"),
+            // Wildcards stay wildcards.
+            ("../shared/*.cs", "src/shared/y.cs"),
+            ("../sh?red/**", "src/shared/d/e/y.cs"),
+            // Non-ASCII case folding is not decided here: match wider.
+            ("../shared/\u{e9}.cs", "src/shared/\u{c9}.cs"),
+        ] {
+            let body = format!("<Compile Include=\"{include}\" />");
+            assert_eq!(selected_by_item(&body, changed), ["dotnet:A"], "{include}");
+        }
+        for (include, changed) in [
+            ("../shared/{a,b}/x.cs", "src/shared/a/x.cs"),
+            ("../shared/[ab]/x.cs", "src/shared/a/x.cs"),
+            ("../shared/*.cs", "src/other/y.cs"),
+            ("../shared/*.cs", "src/shared/d/y.cs"),
+        ] {
+            let body = format!("<Compile Include=\"{include}\" />");
+            assert!(selected_by_item(&body, changed).is_empty(), "{include}");
+        }
+    }
+
+    #[test]
+    fn import_paths_outside_the_project_match_as_the_file_system_does() {
+        for (include, changed) in [
+            ("../SHARED/Common.props", "src/shared/common.props"),
+            ("../shared/{a,b}.props", "src/shared/{a,b}.props"),
+            ("../shared/[x].props", "src/shared/[x].props"),
+            ("../shared/a\\[.props", "src/shared/a/[.props"),
+        ] {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(
+                "src/A/A.csproj".into(),
+                csproj(&format!("<Import Project=\"{include}\" />")),
+            );
+            let (g, _) = build(&t);
+            let extra = &project(&g, "A").extra_inputs;
+            let globs: Vec<&str> = extra
+                .iter()
+                .map(|e| std::str::from_utf8(e).unwrap())
+                .collect();
+            let set = crate::pattern::PatternSet::new(globs.iter().copied(), [], None)
+                .unwrap_or_else(|e| panic!("{include}: {e}"));
+            assert!(set.matches(&rp(changed)), "{include}: {globs:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_sdk_attribute_does_not_hide_an_import() {
+        // MSBuild tries to resolve an SDK named "" and fails; never skip the path.
+        for sdk in ["", " "] {
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert(
+                "src/A/A.csproj".into(),
+                csproj(&format!("<Import Project=\"../x.props\" Sdk=\"{sdk}\" />")),
+            );
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{sdk:?}");
+        }
     }
 }
