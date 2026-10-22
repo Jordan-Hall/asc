@@ -50,6 +50,10 @@ mod forgejo {
         fail_post: u32,
         applied_ops: HashSet<String>,
         proc_answer: Option<Value>,
+        /// Tokens without `write:repository`: Forgejo's scope middleware answers 403 to a POST.
+        read_only_tokens: HashSet<String>,
+        /// Overrides the scope probe's answer (a Forgejo that changed the route, or a 5xx).
+        probe_status: Option<u16>,
     }
 
     #[derive(Clone, Default)]
@@ -110,6 +114,22 @@ mod forgejo {
                     Some((id, login)) => reply(200, json!({"id": id, "login": login})),
                     None => reply(401, json!({})),
                 };
+            }
+            if method == Method::POST
+                && path.starts_with("/api/v1/repos/")
+                && path.ends_with("/markdown")
+            {
+                // The scope check of the `/repos` group runs before any handler.
+                if let Some(s) = i.probe_status {
+                    return reply(s, json!({}));
+                }
+                if i.read_only_tokens.contains(&token) {
+                    return reply(
+                        403,
+                        json!({"message": "token does not have at least one of required scope(s): [write:repository]"}),
+                    );
+                }
+                return (StatusCode::OK, "<p>x</p>".to_owned());
             }
             if let Some(repo) = path.strip_prefix("/api/v1/repos/") {
                 return match i.repos.get(&(token, repo.to_owned())) {
@@ -270,6 +290,90 @@ mod forgejo {
                 .await
                 .is_err()
         );
+    }
+
+    fn stage1(url: &str) -> PublicApiAuthz {
+        PublicApiAuthz::new(client(url, false), AuthzCacheConfig::default())
+    }
+
+    /// The user's `permissions.push` / `admin` belong to the user, not the token: a token without
+    /// `write:repository` must never be granted Write or Admin.
+    #[tokio::test]
+    async fn public_api_denies_write_to_a_token_without_the_write_scope() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            for (t, id, login) in [("ro-tok", 1, "ro"), ("rw-tok", 2, "rw")] {
+                i.users.insert(t.into(), (id, login.into()));
+                i.repos
+                    .insert((t.into(), "o/w".into()), (false, true, true));
+                i.repos.insert((t.into(), "o/a".into()), (true, true, true));
+            }
+            i.read_only_tokens.insert("ro-tok".into());
+        });
+        let authz = stage1(&url);
+        let (ro, rw) = (tok("ro-tok"), tok("rw-tok"));
+
+        for (repo, access) in [
+            ("o/w", Access::Write),
+            ("o/a", Access::Write),
+            ("o/a", Access::Admin),
+        ] {
+            assert_eq!(
+                authz.authorize(Some(&ro), repo, access).await.unwrap_err(),
+                AuthError::Forbidden,
+                "{repo} {access:?}"
+            );
+            authz.authorize(Some(&rw), repo, access).await.unwrap();
+        }
+        // The read-only token still reads.
+        authz
+            .authorize(Some(&ro), "o/w", Access::Read)
+            .await
+            .unwrap();
+
+        // The probe is a harmless POST (render markdown) and nothing else is ever sent.
+        let posts: Vec<_> = fake
+            .calls("/api/v1/")
+            .into_iter()
+            .filter(|c| c.method != "GET")
+            .collect();
+        assert!(!posts.is_empty());
+        assert!(
+            posts
+                .iter()
+                .all(|c| c.method == "POST" && c.path.ends_with("/markdown")),
+            "{posts:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_api_fails_closed_when_the_scope_probe_is_not_a_clear_yes() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            i.users.insert("t".into(), (3, "t".into()));
+            i.repos
+                .insert(("t".into(), "o/w".into()), (false, true, true));
+        });
+        let t = tok("t");
+        for status in [403, 404, 500, 204] {
+            fake.with(|i| i.probe_status = Some(status));
+            let authz = stage1(&url);
+            assert_eq!(
+                authz
+                    .authorize(Some(&t), "o/w", Access::Write)
+                    .await
+                    .unwrap_err(),
+                AuthError::Forbidden,
+                "probe answered {status}"
+            );
+        }
+        // Reading needs no probe at all.
+        let before = fake.calls("/api/v1/repos/o/w/markdown").len();
+        stage1(&url)
+            .authorize(Some(&t), "o/w", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(fake.calls("/api/v1/repos/o/w/markdown").len(), before);
     }
 
     #[tokio::test]
