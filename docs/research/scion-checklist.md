@@ -162,7 +162,7 @@ asc has no LFS support.
 - Stacks are first-class in asc core, not a plugin. Model them on Graphite (gt create/submit/sync/restack, stacked PRs, merge queue for stacks), Sapling (smartlog, absorb, amend auto-restacks descendants, split/fold) and jj (stable change ids, auto-rebase of descendants, operation log/undo).
 - Bring the community-favourite features of GitLens and GitKraken into the core and the plugin API (blame/history/graph data, worktree management, and so on). There is still no IDE: asc exposes data through RPC, IPC and `--json`, and ASC's own plugins render it.
 - Git commands keep git semantics. Stack commands are additive (new verbs) and never change what an existing git command does.
-- The Forgejo fork supports stacked PRs natively: the PR base is the parent in the stack, it is retargeted automatically when the parent merges, the review UI is stack-aware, and the stack lands through the merge queue.
+- The Forgejo fork supports stacked PRs natively. Users see each PR's base as its parent in the stack, and that base becomes the trunk automatically when the parent merges, with no retarget step. Under the hood the PR is stored against the trunk and diffs against its parent commit (stacks.md D8). The review UI is stack-aware, and the stack lands through the merge queue.
 - Design: docs/research/stacks.md (pending).
 - The Forgejo fork gets the same features in its web UI, rendered from asc server derived data:
   - stacked PR pages (stack navigator, per-change review, retarget, and stack merge through the queue);
