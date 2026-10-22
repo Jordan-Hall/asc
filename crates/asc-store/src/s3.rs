@@ -5,9 +5,7 @@
 //! above 32 MiB and `backon` retries for 5xx and timeouts.
 
 use std::fmt;
-use std::io::Write as _;
 use std::ops::Range;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -34,9 +32,32 @@ const MAX_RETRIES: usize = 4;
 
 /// Builds the S3 store and key root for an `s3://` URL.
 ///
-/// Credentials come from the environment (`AWS_*`), or from `git credential fill` with
-/// `protocol=s3` when the environment has none.
+/// Credentials come from the environment (`AWS_*`) and IMDS. This crate never spawns git.
 pub fn open(url: &url::Url) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    open_with(url, None)
+}
+
+/// Static S3 credentials injected by the caller.
+#[derive(Clone)]
+pub struct S3Credentials {
+    pub key_id: String,
+    pub secret: String,
+}
+
+impl fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("key_id", &"<redacted>")
+            .field("secret", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Like [`open`], with optional caller-supplied static credentials.
+pub fn open_with(
+    url: &url::Url,
+    credentials: Option<S3Credentials>,
+) -> Result<(Arc<dyn ObjectStore>, Path)> {
     let bucket = url
         .host_str()
         .filter(|h| !h.is_empty())
@@ -73,14 +94,12 @@ pub fn open(url: &url::Url) -> Result<(Arc<dyn ObjectStore>, Path)> {
     if let Some(ps) = path_style {
         builder = builder.with_virtual_hosted_style_request(!ps);
     }
-    // The git credential helper is opt-in: a library must never trigger an interactive login.
-    if git_credentials_enabled()
-        && !env_has_credentials()
-        && let Some((id, secret)) = git_credential(bucket)
-    {
+    // Caller-supplied static credentials override the environment; otherwise `object_store`
+    // keeps its env and IMDS behaviour.
+    if let Some(c) = credentials {
         builder = builder
-            .with_access_key_id(id)
-            .with_secret_access_key(secret);
+            .with_access_key_id(c.key_id)
+            .with_secret_access_key(c.secret);
     }
     let store = builder.build()?;
     let root = Path::from(url.path().trim_matches('/'));
@@ -93,53 +112,6 @@ fn parse_bool(v: &str) -> Result<bool> {
         "false" | "0" => Ok(false),
         _ => Err(Error::Url(format!("invalid boolean `{v}` in s3 url"))),
     }
-}
-
-/// `ASC_S3_GIT_CREDENTIALS=1` enables the `git credential fill` lookup; it is off by default.
-fn git_credentials_enabled() -> bool {
-    !cfg!(test) && std::env::var_os("ASC_S3_GIT_CREDENTIALS").is_some_and(|v| v == "1")
-}
-
-fn env_has_credentials() -> bool {
-    std::env::var_os("AWS_ACCESS_KEY_ID").is_some()
-        && std::env::var_os("AWS_SECRET_ACCESS_KEY").is_some()
-}
-
-/// Asks `git credential fill` for `protocol=s3` credentials (`username` = key id, `password` = secret).
-fn git_credential(bucket: &str) -> Option<(String, String)> {
-    // lint:allow-raw-git
-    let mut child = Command::new("git")
-        .args(["-c", "credential.interactive=false", "credential", "fill"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    child
-        .stdin
-        .take()?
-        .write_all(format!("protocol=s3\nhost={bucket}\n\n").as_bytes())
-        .ok()?;
-    let out = child.wait_with_output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_credential(&String::from_utf8_lossy(&out.stdout))
-}
-
-fn parse_credential(output: &str) -> Option<(String, String)> {
-    let (mut user, mut pass) = (None, None);
-    for line in output.lines() {
-        match line.split_once('=') {
-            Some(("username", v)) => user = Some(v.to_owned()),
-            Some(("password", v)) => pass = Some(v.to_owned()),
-            _ => {}
-        }
-    }
-    user.zip(pass)
-        .filter(|(u, p)| !u.is_empty() && !p.is_empty())
 }
 
 /// The HTTP status of a failed request and the error text, read from the error message.
@@ -640,14 +612,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_git_credential_output() {
-        let out = "protocol=s3\nhost=b\nusername=AKIA\npassword=sekret\n";
-        assert_eq!(
-            parse_credential(out),
-            Some(("AKIA".into(), "sekret".into()))
-        );
-        assert_eq!(parse_credential("protocol=s3\n"), None);
-        assert_eq!(parse_credential("username=a\npassword=\n"), None);
+    fn credentials_debug_redacts() {
+        let c = S3Credentials {
+            key_id: "AKIA".into(),
+            secret: "sekret".into(),
+        };
+        let d = format!("{c:?}");
+        assert!(!d.contains("AKIA") && !d.contains("sekret"));
+        let u = url::Url::parse("s3://bkt/p?region=eu-west-1").unwrap();
+        assert!(open_with(&u, Some(c)).is_ok());
     }
 
     #[test]
