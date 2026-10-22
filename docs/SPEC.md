@@ -1100,6 +1100,7 @@ No queue and no leader: concurrent lands race on the CAS and retry (step 8). At 
 
 - `RepoAdmin.init { mode = "mirror", mirror_url }`. The server keeps a bare mirror at `<cache disk_dir>/mirrors/<repo-id>.git`.
 - **Triggers:** a Forgejo push webhook to `/hooks/forgejo` (HMAC-SHA256 `X-Forgejo-Signature` verified with the configured secret), plus a poll every 60 s. Each trigger runs `git fetch --prune <mirror_url> +refs/heads/*:refs/heads/* +refs/tags/*:refs/tags/* +refs/pull/*:refs/pull/*` with a read token, then imports new commits incrementally (§14.1), then sets asc refs to match the git refs with `via = mirror`, all in one transaction. Imports are idempotent, so duplicate webhooks are harmless.
+- **Mirror URL policy [fail closed]:** the URL a client sends in `RepoAdmin.init` must use `https` or `ssh`, carry no password, and name the `[forgejo]` host or a host the operator lists; with neither configured, every client URL is refused. IP literals in loopback, private, link-local or unspecified ranges need an exact operator entry. Local paths and `file:` URLs are accepted only from the server config, never from RPC. The fetch runs with `GIT_ALLOW_PROTOCOL=https:ssh` (plus `file` for a config-sourced local mirror), `http.followRedirects=false`, no prompts and no credential helper.
 
 ### 8.7 Server-side mutations (`Commit`, `Merge`, `Apply`, `CopyClosure`, `RepoAdmin`)
 
