@@ -117,7 +117,7 @@ fn build_trie(changes: &[(RepoPath, Change)]) -> Result<BTreeMap<Name, Node>> {
                 return Err(Error::TooDeep);
             }
             let name = Name::new(comp)?;
-            let here = child_path(acc.as_ref(), &name);
+            let here = bounded_child_path(acc.as_ref(), &name)?;
             let node = level.entry(name).or_insert_with(|| Node::new(here.clone()));
             if comps.peek().is_none() {
                 if node.leaf.is_some() {
@@ -195,6 +195,23 @@ fn bounded_child_path(prefix: Option<&RepoPath>, name: &Name) -> Result<RepoPath
     Ok(child_path(prefix, name))
 }
 
+/// Refuses a tree holding an entry name longer than [`MAX_WALK_PATH_BYTES`]. Such a name can
+/// never appear in a path asc builds, and diffing would copy and compare it once per directory
+/// pair. `what` names the tree in the error.
+fn check_name_lengths(tree: &Tree, what: &str) -> Result<()> {
+    match tree
+        .entries()
+        .iter()
+        .find(|e| e.name.as_bytes().len() > MAX_WALK_PATH_BYTES)
+    {
+        Some(e) => Err(Error::PathTooLong(format!(
+            "tree {what} (entry of {} bytes)",
+            e.name.as_bytes().len()
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn empty_tree() -> Tree {
     Tree::new(Vec::new(), true).expect("an empty root tree is valid")
 }
@@ -221,23 +238,18 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let tree = decode_envelope::<Tree>(&data)?;
         // Stored trees are untrusted: a name past the path bound can never appear in a path
         // asc builds, and diffing would otherwise copy and compare it once per directory pair.
-        if let Some(e) = tree
-            .entries()
-            .iter()
-            .find(|e| e.name.as_bytes().len() > MAX_WALK_PATH_BYTES)
-        {
-            return Err(Error::PathTooLong(format!(
-                "tree {id} (entry of {} bytes)",
-                e.name.as_bytes().len()
-            )));
-        }
+        check_name_lengths(&tree, &id.to_string())?;
         let tree = Arc::new(tree);
         self.trees.insert(id, tree.clone());
         Ok(tree)
     }
 
     /// Stores a tree and returns its id.
+    ///
+    /// Refuses an entry name longer than [`MAX_WALK_PATH_BYTES`], exactly as [`Self::get_tree`]
+    /// would on the way back, so no caller can cache or store a tree the walkers cannot bound.
     pub async fn put_tree(&self, tree: Tree) -> Result<TreeId> {
+        check_name_lengths(&tree, "being stored")?;
         let envelope = tree.to_envelope();
         let id = TreeId::of(&envelope);
         self.objects
@@ -1325,9 +1337,7 @@ mod tests {
             size: 0,
             git: blob_oid(b""),
         };
-        e.put_tree(Tree::new(vec![entry], is_root).unwrap())
-            .await
-            .unwrap()
+        put_raw(e, Tree::new(vec![entry], is_root).unwrap()).await
     }
 
     #[tokio::test]
@@ -1352,12 +1362,66 @@ mod tests {
         assert!(matches!(walked.last(), Some(Err(Error::PathTooLong(_)))));
     }
 
-    /// A stored tree holding `entries`, written through `e` (so it is in the store, not only the
-    /// writer's cache).
-    async fn put(e: &Engine<Counting, NoRefs>, entries: Vec<Entry>, is_root: bool) -> TreeId {
-        e.put_tree(Tree::new(entries, is_root).unwrap())
+    /// Writes `tree` straight to the store, as a hostile writer or bucket could, bypassing the
+    /// name check in `put_tree`. Nothing is cached, so a read decodes it from the store.
+    async fn put_raw(e: &Engine<Counting, NoRefs>, tree: Tree) -> TreeId {
+        let envelope = tree.to_envelope();
+        let id = TreeId::of(&envelope);
+        e.objects
+            .put(&ObjKey::Tree(id), encode_stored(&envelope))
             .await
-            .unwrap()
+            .unwrap();
+        id
+    }
+
+    /// A stored tree holding `entries`, written straight to the store.
+    async fn put(e: &Engine<Counting, NoRefs>, entries: Vec<Entry>, is_root: bool) -> TreeId {
+        put_raw(e, Tree::new(entries, is_root).unwrap()).await
+    }
+
+    /// `put_tree` is the only other way a `Tree` reaches the cache, so it applies the same name
+    /// bound as `get_tree`: a caller cannot park an oversized name in the cache or the store.
+    #[tokio::test]
+    async fn put_tree_refuses_an_oversized_name() {
+        let objs = counting();
+        let e = engine_on(objs.clone());
+        let entry = |len: usize| Entry {
+            name: Name::new("n".repeat(len)).unwrap(),
+            kind: Kind::File,
+            id: *FileId::of(&[3]).as_bytes(),
+            size: 1,
+            git: blob_oid(b"n"),
+        };
+        let big = Tree::new(vec![entry(MAX_WALK_PATH_BYTES + 1)], true).unwrap();
+        let id = TreeId::of(&big.to_envelope());
+        let err = e.put_tree(big).await.unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(_)), "{err}");
+        // Refused before anything was stored or cached.
+        assert!(matches!(
+            e.get_tree(id).await.unwrap_err(),
+            Error::MissingTree(_)
+        ));
+        // A name of exactly the bound still goes in.
+        let ok = Tree::new(vec![entry(MAX_WALK_PATH_BYTES)], true).unwrap();
+        let id = e.put_tree(ok).await.unwrap();
+        e.get_tree(id).await.unwrap();
+    }
+
+    /// `build_trie` builds a path per trie node; one longer than the bound is refused before
+    /// any tree is read or written.
+    #[tokio::test]
+    async fn apply_refuses_a_path_past_the_walk_bound() {
+        let e = engine();
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        let comp = "c".repeat(200);
+        let long = vec![comp.as_str(); MAX_WALK_PATH_BYTES / 200 + 1].join("/");
+        assert!(long.len() > MAX_WALK_PATH_BYTES);
+        let change = Change::write(Kind::File, FileId::of(&[4]), 1, blob_oid(b"p"), None).unwrap();
+        let err = e
+            .apply(empty, &[(RepoPath::new(long).unwrap(), change)])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(_)), "{err}");
     }
 
     /// An oversized name that is skipped, not reported, must still be refused: the diff may not

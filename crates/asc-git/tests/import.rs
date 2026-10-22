@@ -13,6 +13,7 @@ use asc_core::id::{ChangesetId, FileId, GitOid, TreeId};
 use asc_core::object::{AscGitExtra, Kind, SortedMap};
 use asc_core::path::RepoPath;
 use asc_engine::Engine;
+use asc_engine::tree::MAX_WALK_PATH_BYTES;
 use asc_git::import::Tip as ImportTip;
 use asc_git::import::{ImportError, ImportPolicy, ImportReport, Importer, SkippedRef, Tip};
 use asc_git::odb::Odb;
@@ -310,6 +311,52 @@ async fn asc_header_copy_without_a_write_is_rejected() {
     let err = import(&e, &r, &r.tips()).await.expect_err("must fail");
     assert!(matches!(err, ImportError::RoundTrip { .. }), "{err}");
     assert!(e.map.lookup(c, ObjectKind::Commit).is_none());
+}
+
+/// A hostile repo can hold a tree entry name of any length. Import refuses one past
+/// `MAX_WALK_PATH_BYTES` (the bound `get_tree` applies), names the commit, and writes nothing,
+/// whether the name is in the root tree or in a nested one.
+#[tokio::test]
+async fn an_oversized_tree_entry_name_is_refused_naming_the_commit() {
+    let long = vec![b'n'; MAX_WALK_PATH_BYTES + 1];
+    let at_root = |r: &Repo| {
+        let blob = r.blob(b"x\n");
+        r.tree(&[("100644", &long, blob)])
+    };
+    let nested = |r: &Repo| {
+        let blob = r.blob(b"x\n");
+        let sub = r.tree(&[("100644", &long, blob)]);
+        r.tree(&[("40000", b"d", sub)])
+    };
+    for build in [&at_root as &dyn Fn(&Repo) -> GitOid, &nested] {
+        let r = Repo::init();
+        let tree = build(&r);
+        let c = r.commit(tree, &[], "m\n");
+        r.set_ref("refs/heads/master", c);
+        let e = env();
+        let err = import(&e, &r, &r.tips()).await.expect_err("must fail");
+        let ImportError::CommitNameTooLong { commit, len, .. } = err else {
+            panic!("wrong error: {err}");
+        };
+        assert_eq!((commit, len), (c, MAX_WALK_PATH_BYTES + 1));
+        let msg = err.to_string();
+        assert!(msg.contains(&c.to_string()), "{msg}");
+        assert!(msg.contains(&MAX_WALK_PATH_BYTES.to_string()), "{msg}");
+        assert!(e.map.lookup(c, ObjectKind::Commit).is_none());
+    }
+}
+
+/// The bound is inclusive: a name of exactly `MAX_WALK_PATH_BYTES` still imports.
+#[tokio::test]
+async fn a_tree_entry_name_at_the_bound_imports() {
+    let r = Repo::init();
+    let blob = r.blob(b"x\n");
+    let tree = r.tree(&[("100644", &vec![b'n'; MAX_WALK_PATH_BYTES], blob)]);
+    let c = r.commit(tree, &[], "m\n");
+    r.set_ref("refs/heads/master", c);
+    let e = env();
+    import(&e, &r, &r.tips()).await.expect("import");
+    assert!(e.map.lookup(c, ObjectKind::Commit).is_some());
 }
 
 #[tokio::test]

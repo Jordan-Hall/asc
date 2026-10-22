@@ -23,7 +23,7 @@ use asc_core::path::{MAX_TREE_DEPTH, Name, PathError};
 use asc_engine::Engine;
 use asc_engine::commit::{self, PathPolicy};
 use asc_engine::derive::{self, Derived, Gen, GitCommit, GitMapRow, GitMapSink};
-use asc_engine::tree;
+use asc_engine::tree::{self, MAX_WALK_PATH_BYTES};
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
@@ -66,6 +66,21 @@ pub enum ImportError {
     BadTree(GitOid, &'static str),
     #[error("tree {0} has an entry name asc cannot hold: {1}")]
     BadName(GitOid, PathError),
+    /// Raised while parsing one tree, which does not know its commit; [`prepare`] turns it into
+    /// [`ImportError::CommitNameTooLong`].
+    #[error(
+        "tree {tree} has an entry name of {len} bytes, past the {MAX_WALK_PATH_BYTES} byte limit"
+    )]
+    TreeNameTooLong { tree: GitOid, len: usize },
+    #[error(
+        "commit {commit} is refused: its tree {tree} has an entry name of {len} bytes, \
+         past the {MAX_WALK_PATH_BYTES} byte limit"
+    )]
+    CommitNameTooLong {
+        commit: GitOid,
+        tree: GitOid,
+        len: usize,
+    },
     #[error("tree {0} nests deeper than {MAX_TREE_DEPTH} levels")]
     TreeTooDeep(GitOid),
     #[error("git tree {oid} does not describe the asc tree built from it: {source}")]
@@ -217,6 +232,13 @@ fn parse_git_tree(oid: GitOid, body: Vec<u8>) -> Result<GitTree> {
             .iter()
             .position(|&c| c == 0)
             .ok_or(bad("no name end"))?;
+        // Git trees are untrusted: bound the name before copying it, as `get_tree` does on read.
+        if nul > MAX_WALK_PATH_BYTES {
+            return Err(ImportError::TreeNameTooLong {
+                tree: oid,
+                len: nul,
+            });
+        }
         let name = Name::new(&rest[..nul]).map_err(|e| ImportError::BadName(oid, e))?;
         rest = &rest[nul + 1..];
         let git = rest
@@ -477,7 +499,14 @@ fn prepare(odb: &Odb, oid: GitOid) -> Result<Prepared> {
         None => None,
     };
     let mut blobs = Vec::new();
-    let plan = plan_dir(odb, parsed.tree, parent_tree, true, &mut blobs)?;
+    let plan = plan_dir(odb, parsed.tree, parent_tree, true, &mut blobs).map_err(|e| match e {
+        ImportError::TreeNameTooLong { tree, len } => ImportError::CommitNameTooLong {
+            commit: oid,
+            tree,
+            len,
+        },
+        other => other,
+    })?;
     Ok(Prepared {
         oid,
         raw,
