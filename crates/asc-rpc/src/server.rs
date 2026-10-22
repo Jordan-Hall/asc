@@ -894,6 +894,7 @@ fn path_change(path: &RepoPath, change: &Change) -> convert::PathChange {
 }
 
 /// `git.commit` and `git.tag` extras are only legal on git import (CARRY: ingest rule).
+/// Derived values are recomputed server-side, never accepted from a client.
 fn ingest_policy(key: &ObjKey, stored: &Bytes) -> Result<(), Status> {
     let invalid = || {
         rpc_status(&RpcError::InvalidObject(ErrorInfo {
@@ -916,6 +917,7 @@ fn ingest_policy(key: &ObjKey, stored: &Bytes) -> Result<(), Status> {
                 return Err(invalid());
             }
         }
+        ObjKey::Derived { .. } => return Err(invalid()),
         _ => {}
     }
     Ok(())
@@ -1673,6 +1675,17 @@ mod tests {
         let junk =
             Status::with_details(tonic::Code::Internal, "x", Bytes::from_static(b"\xff\xff"));
         assert_eq!(status_rpc_error(&junk), None);
+    }
+
+    #[test]
+    fn clients_cannot_upload_derived_values() {
+        let key = ObjKey::Derived {
+            name: "gen",
+            version: 1,
+            id: [7; 32],
+        };
+        let err = ingest_policy(&key, &Bytes::from_static(&[0, 1])).unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]
