@@ -3,4 +3,4 @@
 use crate::detect::Detector;
 
 /// Every built-in detector, in no particular order.
-pub const DETECTORS: &[&dyn Detector] = &[];
+pub const DETECTORS: &[&dyn Detector] = &[&crate::detect::rust::Rust];

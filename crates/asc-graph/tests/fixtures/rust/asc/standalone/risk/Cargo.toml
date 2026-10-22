@@ -1,0 +1,9 @@
+[package]
+name = "risk"
+version = "0.1.0"
+
+[dependencies]
+ir = { path = "../../dsl/crates/ir" }
+
+[target.'cfg(unix)'.build-dependencies]
+util = { path = "../../pipeline/crates/util" }

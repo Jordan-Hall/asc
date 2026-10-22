@@ -1,0 +1,6 @@
+[package]
+name = "ir"
+version.workspace = true
+
+[dependencies]
+smallvec = "1"

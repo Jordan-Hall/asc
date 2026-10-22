@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.3.0"
+
+[workspace.dependencies]
+ir = { path = "crates/ir" }
+serde = "1.0"
+
+[profile.release]
+opt-level = 3
+
+[patch.crates-io]
+extlib = { path = "vendor/extlib" }
