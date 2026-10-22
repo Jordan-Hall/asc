@@ -118,19 +118,30 @@ impl<R: ChangeRows> ChangesExt<R> {
 
     /// Fetches, verifies and indexes the metas noted so far. Returns how many rows were new.
     /// A meta that fails verification fails the call and indexes nothing from its batch.
-    pub async fn apply(&self, remote: &dyn Remote) -> Result<usize> {
+    ///
+    /// `fetched` is the set of changesets this fetch received and verified. An entry for any
+    /// other changeset is ignored, so a remote cannot attach a change to a local commit (the
+    /// client half of the §20.2 ingest rule).
+    pub async fn apply(
+        &self,
+        remote: &dyn Remote,
+        fetched: &HashSet<ChangesetId>,
+    ) -> Result<usize> {
         let noted = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|e| e.into_inner()));
         let mut seen = HashSet::new();
         let mut todo = Vec::new();
         for e in noted {
-            if self.rows.get(e.id).await?.is_none() && seen.insert(e.id) {
+            if fetched.contains(&e.id) && self.rows.get(e.id).await?.is_none() && seen.insert(e.id)
+            {
                 todo.push(e);
             }
         }
         let mut added = 0;
         for batch in todo.chunks(FETCH_BATCH) {
-            let claims: BTreeMap<MetaId, &LogMeta> =
-                batch.iter().filter_map(|e| e.meta.map(|m| (m, e))).collect();
+            let claims: BTreeMap<MetaId, &LogMeta> = batch
+                .iter()
+                .filter_map(|e| e.meta.map(|m| (m, e)))
+                .collect();
             let keys: Vec<ObjKey> = claims.keys().map(|&m| ObjKey::ChangeMeta(m)).collect();
             let mut got = Vec::new();
             let mut stream = remote.get_many(keys);
@@ -271,6 +282,26 @@ mod tests {
         }
     }
 
+    fn ids(ns: &[u8]) -> HashSet<ChangesetId> {
+        ns.iter().map(|&n| cs(n)).collect()
+    }
+
+    #[tokio::test]
+    async fn an_entry_for_a_changeset_not_fetched_indexes_nothing() {
+        let m = meta(1, 7, vec![]);
+        let remote = Mem::default();
+        remote.put_many(vec![stored(&m)]).await.unwrap();
+        let ext = ChangesExt::with_advertised(MemRows::default(), true);
+        ext.note(&[LogMeta {
+            id: cs(1),
+            change: Some(m.change),
+            meta: Some(m.id()),
+        }])
+        .unwrap();
+        assert_eq!(ext.apply(&remote, &ids(&[2])).await.unwrap(), 0);
+        assert!(ext.rows.get(cs(1)).await.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn fetch_indexes_verified_metas_and_skips_known_ones() {
         let m = meta(1, 7, vec![cs(9)]);
@@ -288,13 +319,13 @@ mod tests {
             meta: None,
         };
         ext.note(&[entry, bare]).unwrap();
-        assert_eq!(ext.apply(&remote).await.unwrap(), 1);
+        assert_eq!(ext.apply(&remote, &ids(&[1, 2])).await.unwrap(), 1);
         let row = ext.rows.get(cs(1)).await.unwrap().unwrap();
         assert_eq!((row.change, row.meta), (m.change, m.id()));
         assert_eq!(ext.rows.preds(cs(1)).await.unwrap(), vec![cs(9)]);
         assert!(ext.rows.get(cs(2)).await.unwrap().is_none());
         ext.note(&[entry]).unwrap();
-        assert_eq!(ext.apply(&remote).await.unwrap(), 0);
+        assert_eq!(ext.apply(&remote, &ids(&[1, 2])).await.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -310,7 +341,7 @@ mod tests {
                 meta: Some(m.id()),
             }])
             .unwrap();
-            let err = ext.apply(&remote).await.unwrap_err();
+            let err = ext.apply(&remote, &ids(&[1, 2])).await.unwrap_err();
             assert!(matches!(err, Error::Mismatch(..)), "{err}");
             assert!(ext.rows.get(id).await.unwrap().is_none());
         }
@@ -335,7 +366,7 @@ mod tests {
             meta: Some(m.id()),
         }])
         .unwrap();
-        let err = ext.apply(&remote).await.unwrap_err();
+        let err = ext.apply(&remote, &ids(&[1, 2])).await.unwrap_err();
         assert!(matches!(err, Error::Store(_)), "{err}");
         assert!(ext.rows.get(cs(1)).await.unwrap().is_none());
     }
@@ -349,6 +380,6 @@ mod tests {
             meta: Some(MetaId::from_bytes([3; 32])),
         }])
         .unwrap();
-        assert_eq!(ext.apply(&Mem::default()).await.unwrap(), 0);
+        assert_eq!(ext.apply(&Mem::default(), &ids(&[1])).await.unwrap(), 0);
     }
 }
