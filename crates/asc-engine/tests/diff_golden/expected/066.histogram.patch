@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index 87cb865..2adba26 100644
+--- a/file
++++ b/file
+@@ -92,6 +92,7 @@ export function toXlsx(report: ValidationReport): Uint8Array<ArrayBuffer> {
+   const bytes: ArrayBuffer = XLSX.write(workbook, {
+     type: 'array',
+     bookType: 'xlsx',
++    compression: true,
+   });
+   return new Uint8Array(bytes);
+ }
+@@ -140,6 +141,7 @@ export function loadToXlsx(report: LoadReport): Uint8Array<ArrayBuffer> {
+   const bytes: ArrayBuffer = XLSX.write(workbook, {
+     type: 'array',
+     bookType: 'xlsx',
++    compression: true,
+   });
+   return new Uint8Array(bytes);
+ }

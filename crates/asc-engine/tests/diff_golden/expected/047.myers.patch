@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 3fa610e..4e5ee59 100644
+--- a/file
++++ b/file
+@@ -69,7 +69,7 @@ export async function runFormExtract(
+     opts.generate ??
+     (somaAvailable('form-extract')
+       ? (m: Array<{ role: string; content: string }>) =>
+-          somaGenerate('form-extract', lastUserText(m), 512)
++          somaGenerate('form-extract', lastUserText(m))
+       : (m: Array<{ role: string; content: string }>) =>
+           getBackend().generate(m, { maxNewTokens: 512, doSample: false }));
+   let completion: string;

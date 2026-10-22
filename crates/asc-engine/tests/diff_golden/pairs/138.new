@@ -1,0 +1,64 @@
+import { AUTH_BASE_URL } from './auth-client';
+
+export type BootstrapStatus = {
+  /**
+   * Whether the platform already has an administrator — or `unknown` when the
+   * question could not be answered.
+   *
+   * Three states, not two. `false` is what puts the first-owner setup wizard on
+   * screen, so a failure that collapses to `false` offers account creation to
+   * whoever happens to reload during an outage.
+   */
+  hasAdmin: boolean | 'unknown';
+  error?: string;
+};
+
+function apiUrl(path: string): string {
+  const base = AUTH_BASE_URL.replace(/\/$/, '');
+  return `${base}${path}`;
+}
+
+/**
+ * Ask the auth service whether the platform already has an administrator.
+ *
+ * A failure here is retried rather than answered. `hasAdmin: false` is what
+ * puts the first-owner setup flow on screen, so treating one dropped connection
+ * as "there is no admin" offers account creation to whoever happens to reload
+ * while the auth service is restarting.
+ */
+export async function fetchBootstrapStatus(): Promise<BootstrapStatus> {
+  const attempts = 3;
+  let lastError = 'UNKNOWN_ERROR';
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+
+    try {
+      const res = await fetch(apiUrl('/api/bootstrap/status'), {
+        credentials: 'include',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) {
+        lastError = `HTTP_${res.status}`;
+        console.warn(`[bootstrap] Status request failed (${lastError})`);
+        // The server answered, but not with an answer to the question — it
+        // reports hasAdmin:false alongside a 500 when its own database read
+        // fails. Treat that as unknown rather than as "there is no admin".
+        return { hasAdmin: 'unknown', error: lastError };
+      }
+      const data = await res.json() as Partial<BootstrapStatus>;
+      return {
+        hasAdmin: Boolean(data?.hasAdmin),
+        error: data?.error,
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'UNKNOWN_ERROR';
+      console.warn(`[bootstrap] Status request attempt ${attempt + 1} failed`, err);
+    }
+  }
+
+  console.error(`[bootstrap] Failed to fetch status after ${attempts} attempts`);
+  return { hasAdmin: 'unknown', error: lastError };
+}

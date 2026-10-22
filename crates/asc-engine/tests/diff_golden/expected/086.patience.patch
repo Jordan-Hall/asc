@@ -1,0 +1,38 @@
+diff --git a/file b/file
+index 7710ce4..6ea8161 100644
+--- a/file
++++ b/file
+@@ -58,7 +58,11 @@ target it is built for - run from the crate's own directory, because it is a
+ separate workspace on purpose and cargo would otherwise resolve the engine's
+ and try to build host-only dependencies for wasm.
+ 
+-What remains: building and loading it. `bun run build:surrealism` runs
++The engine also builds for that target: `cargo build --release --target
++wasm32-wasip1` in the crate produces `dsl_surrealism.wasm`, 1.8 MB. So the
++code is not the unknown here.
++
++What remains: packaging and loading it. `bun run build:surrealism` runs
+ `surreal module build`, which exists in SurrealDB v3 and not in the v2 CLI
+ this machine has, and the artefact then has to reach the database:
+ 
+@@ -68,10 +72,20 @@ DEFINE MODULE mod::asc AS f"modules:/asc-dsl.surli";
+ RETURN mod::asc::matches("root.age >= 65", { age: 74 });  -- true
+ ```
+ 
++`.surli` is a packaged component rather than that bare wasm - `surreal module
++build` embeds `surrealism.toml`, including the capability grants, which is
++the part that must not be guessed at. A module loaded with the wrong
++capabilities is a security decision made by accident.
++
+ The migration that defines the module is deliberately NOT written yet: it
+ would fail against a database whose bucket has no artefact in it, and a
+ migration that cannot run blocks every migration behind it.
+ 
++Loading it is an operator's action, not a build step. `DEFINE BUCKET` and
++`DEFINE MODULE` change what a live database will execute, and the module's
++grants are declared in `surrealism.toml` - nothing granted, deliberately.
++That is a change somebody signs off, not one a tool applies on its way past.
++
+ **Port the translator to Rust.** Keeps the current shape and needs no
+ infrastructure, but it is 2,111 lines of translation whose correctness is
+ defined by behaviour against a live database, so the parity harness has to

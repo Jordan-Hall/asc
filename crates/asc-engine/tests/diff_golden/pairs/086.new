@@ -1,0 +1,105 @@
+# What is still TypeScript, and what it is waiting on
+
+The language is Rust. Parsing, compiling and evaluating all happen in
+`dsl-core` and `dsl-ir`, reached through `@asc/dsl-compiler` — natively on a
+server, as WebAssembly in a browser. This page is the honest account of what
+has not moved, because "mostly Rust" invites somebody to add to the wrong half.
+
+## What moved
+
+| What | Now answered by |
+| --- | --- |
+| Lexing, for editors | `lexExpr` — comments included, which the engine's own lexer used to discard |
+| Program vs expression | `isProgramSource` — asked before every evaluation a form performs |
+| Parse tree and diagnostics | `parse`, `diagnostics` |
+| A path checked against a schema | `diagnosticsAgainstSchema` — the whole path, nested, not just its first segment |
+| Stepping through an evaluation | `debugTrace` — every step with the source span it came from |
+
+Two lexers is the failure this avoids. They had already drifted: the Rust one
+discarded comments and had a `Regex` token, the TypeScript one emitted comments
+and had none. An editor switched between them silently loses comment
+highlighting, and a classifier that disagrees with the compiler about what a
+keyword is sends a program down the expression path.
+
+## What has not moved, and why
+
+`src/expression/parser-detailed.ts` (2,192 lines) and `src/expression/sql.ts`
+(2,111 lines) are still here, and the reason is a chain:
+
+```
+parser-detailed.ts  ←  sql.ts  ←  records-service search predicate
+                              ←  schema designer expression editor
+```
+
+`sql.ts` compiles an expression to a SurrealQL condition so a search filters
+in the DATABASE. That is not a convenience: without it a search fetches rows
+and filters them here, after `LIMIT` has already been applied — so an entry
+that matches but sorts below the limit is never found. It is checked against a
+running SurrealDB by `conformance/surreal-parity.ts`, 26 of 26 translatable
+cases answering what the engine answers, and what cannot be translated
+faithfully is declined rather than guessed at.
+
+So `sql.ts` is superseded in principle and load-bearing in practice. It was
+deleted once on the strength of a search for its own path, which found only its
+tests: both callers reach it through the package barrel. Typechecking the
+APPLICATIONS, not the package, is what caught that.
+
+## The two ways out
+
+**Run the engine inside the database.** `crates/dsl-surrealism` compiles the
+engine into a SurrealDB plugin, so `mod::asc::matches` answers what the
+engine answers because it IS the engine — no translator, and the whole
+language rather than the translatable subset. The search predicate becomes a
+call rather than a compilation.
+
+What is ready: the module source compiles. `bun run check:surrealism` in
+`packages/dsl/core/rust` checks it against `wasm32-wasip1`, which is the
+target it is built for - run from the crate's own directory, because it is a
+separate workspace on purpose and cargo would otherwise resolve the engine's
+and try to build host-only dependencies for wasm.
+
+The engine also builds for that target: `cargo build --release --target
+wasm32-wasip1` in the crate produces `dsl_surrealism.wasm`, 1.8 MB. So the
+code is not the unknown here.
+
+What remains: packaging and loading it. `bun run build:surrealism` runs
+`surreal module build`, which exists in SurrealDB v3 and not in the v2 CLI
+this machine has, and the artefact then has to reach the database:
+
+```text
+DEFINE BUCKET modules BACKEND "file:/modules";
+DEFINE MODULE mod::asc AS f"modules:/asc-dsl.surli";
+RETURN mod::asc::matches("root.age >= 65", { age: 74 });  -- true
+```
+
+`.surli` is a packaged component rather than that bare wasm - `surreal module
+build` embeds `surrealism.toml`, including the capability grants, which is
+the part that must not be guessed at. A module loaded with the wrong
+capabilities is a security decision made by accident.
+
+The migration that defines the module is deliberately NOT written yet: it
+would fail against a database whose bucket has no artefact in it, and a
+migration that cannot run blocks every migration behind it.
+
+Loading it is an operator's action, not a build step. `DEFINE BUCKET` and
+`DEFINE MODULE` change what a live database will execute, and the module's
+grants are declared in `surrealism.toml` - nothing granted, deliberately.
+That is a change somebody signs off, not one a tool applies on its way past.
+
+**Port the translator to Rust.** Keeps the current shape and needs no
+infrastructure, but it is 2,111 lines of translation whose correctness is
+defined by behaviour against a live database, so the parity harness has to
+move with it.
+
+The first is smaller and is the architecturally right answer. The second is
+available if the module cannot be deployed.
+
+## Also still here
+
+- `expression/lexer.ts` — the docs generator reads it, and `sql.ts` parses with it.
+- `expression/ast.ts` — the language reference is generated by reading this
+  file with ts-morph. Docs generated from the Rust definitions would retire it,
+  and would make the types generated rather than mirrored by hand.
+- `expression/js-comparison.ts` — not an evaluator. It compares two
+  already-evaluated values while deciding whether a rule matched, for
+  `unified-program.ts`.

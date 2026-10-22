@@ -1,0 +1,22 @@
+diff --git a/file b/file
+index b59186e..c8729b2 100644
+--- a/file
++++ b/file
+@@ -7,15 +7,13 @@
+  * the thing this product exists to stop.
+  */
+ import { expect, test } from '@rstest/core';
++import type { DocumentValue } from './form-field-registry.js';
+ import { CollaborationSession } from './collaboration.js';
+ 
+ const ME = 'user:me';
+ const THEM = 'user:them';
+ 
+-/** What a field can hold in these tests, rather than anything at all. */
+-type Answer = string | number | boolean | null;
+-
+-const patch = (field: string, value: Answer, at: number, by = THEM) => ({
++const patch = (field: string, value: DocumentValue, at: number, by = THEM) => ({
+   by,
+   field,
+   value,

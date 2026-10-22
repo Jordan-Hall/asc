@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index 7449b9c..d75c399 100644
+--- a/file
++++ b/file
+@@ -4,6 +4,7 @@
+  * One definition, so a router mounted here and the socket registered beside it
+  * agree about what they can read.
+  */
++import type { Ability, UserContext } from '@asc/better-auth-permissions/hono';
+ import type { Surreal } from 'surrealdb';
+ 
+ export type AppContext = {
+@@ -13,5 +14,7 @@ export type AppContext = {
+     activeWorkspaceId: string;
+     activeTeamId: string;
+     activeOrganizationId: string;
++    userContext: UserContext;
++    ability: Ability;
+   };
+ };

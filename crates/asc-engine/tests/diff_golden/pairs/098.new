@@ -1,0 +1,80 @@
+# Audits App
+
+TypeScript migration completed with unified structure matching `application-list` (index/bootstrap/ui + pages/components). Routes are lazily code-split and heavy chart pages are loaded on demand. All pages and core components are strongly typed and use router-provided lifecycle/context and signals/effect.
+
+**NEW: Patient Management with Form Entries** - Now integrated with Forms Service and Patient Service microservices for full CRUD operations and real-time form entry management using the `asc-schema-form` web component.
+
+## Structure
+
+- src/index.ts: entry; imports CSS and calls bootstrap()
+- src/bootstrap.ts: initializes chrome, branding, and router
+- src/ui.ts: signals + UI helpers (toast, setActiveBranding, initChrome)
+- src/router-config.ts: central typed router with dynamic imports for heavy pages
+- src/pages/: route components (TypeScript)
+  - dashboards.ts, kpis.ts, charts.ts, benchmarks.ts, patients.ts, support.ts, copd-chart.ts, test.ts
+- src/components/: reusable UI building blocks (TypeScript)
+  - patient/: PatientSearchCommand.ts, PatientTableReactive.ts, PatientTableUsage.ts, AdvancedSearchContent.ts
+  - search/: CriterionRow.ts, SearchDropdown.ts
+  - stats/: StatsCards.ts
+- src/pages/data/: typed data helpers (TypeScript)
+
+Notes:
+
+- Charts and COPD pages align with Highcharts v12 options (zooming, panning.enabled, dash styles) and use modular series types. Exporting can be lazy-loaded if needed.
+- Router uses extensionless imports; Rspack resolves `.ts` first. Components/pages accept `ComponentDataContext<T>` and `ComponentLifecycleManager` from `@asc/router`.
+
+## Develop
+
+- Start dev server:
+
+```pwsh
+bun run --cwd apps/audits dev
+```
+
+- Build:
+
+```pwsh
+bun run --cwd apps/audits build
+```
+
+- Preview prod build:
+
+```pwsh
+bun run --cwd apps/audits preview
+```
+
+## Highlights
+
+- Code-splitting for heavy routes (charts and children) to keep main entry small
+- Shared UI helpers (toast, branding) and signals
+- Strongly typed router lifecycle/context wiring for all pages
+- Patients page demonstrates Command search + reactive table with typed signals and callbacks
+
+## Next steps (optional)
+
+- Add small unit tests for router config and UI helpers
+- Add lazy loading of Highcharts exporting on charts (currently enabled on COPD chart)
+
+# Rspack project
+
+## Setup
+
+Install the dependencies:
+
+```pwsh
+bun install
+```
+
+## Get started
+
+Start the dev server:
+
+```pwsh
+bun run dev
+```
+
+Build the app for production:
+
+```pwsh
+bun run build
+```

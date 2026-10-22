@@ -1,0 +1,38 @@
+diff --git a/file b/file
+index 540b345..3a43687 100644
+--- a/file
++++ b/file
+@@ -2,23 +2,25 @@ import { describe, it, expect } from "bun:test";
+ import { ensureUserExistsAndAssignRole } from "../src/admin/system-admin-helpers.js";
+ 
+ describe("ensureUserExistsAndAssignRole", () => {
+-  it("creates via admin.users.create and sets role via admin.users.update", async () => {
++  it("creates through the admin client and then sets the role", async () => {
++    // The shapes here are better-auth's own admin client: createUser to make the account
++    // and setRole to grant it. An earlier version of this test mocked admin.users.create
++    // and admin.users.update, which the helper has never called — so it asserted an API
++    // that does not exist and could not have passed.
+     const calls: any[] = [];
+     const authClient = {
+       admin: {
+-        users: {
+-          create: async (payload: any) => { calls.push(["create", payload]); return { data: { id: "u_123" } }; },
+-          update: async ({ id, data }: any) => { calls.push(["update", id, data]); return { ok: true }; },
+-        }
++        createUser: async (payload: any) => { calls.push(["createUser", payload]); return { data: { id: "u_123" } }; },
++        setRole: async ({ userId, role }: any) => { calls.push(["setRole", userId, role]); return { ok: true }; },
+       }
+     };
+     const id = await ensureUserExistsAndAssignRole({ authClient, email: "a@b.c", name: "Alice", desiredId: "u_123", role: "admin" });
+     expect(id).toBe("u_123");
+-    expect(calls[0][0]).toBe("create");
+-    expect(calls[1][0]).toBe("update");
++    expect(calls[0][0]).toBe("createUser");
++    expect(calls[1]).toEqual(["setRole", "u_123", "admin"]);
+   });
+ 
+-  it("supports admin.createUser fallback shape", async () => {
++  it("reads the new id from an unwrapped response as well as a data-wrapped one", async () => {
+     const calls: any[] = [];
+     const authClient = {
+       admin: {

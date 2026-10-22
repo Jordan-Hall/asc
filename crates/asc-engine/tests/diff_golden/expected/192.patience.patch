@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index 34bf19d..fb27a7d 100644
+--- a/file
++++ b/file
+@@ -60,10 +60,18 @@ class AnvilDenoiser(nn.Module):
+         self.head = nn.Linear(d, VOCAB, bias=False)   # never predicts MASK
+ 
+     def forward(self, ids: torch.Tensor, step: torch.Tensor,
+-                diagnostics: torch.Tensor | None = None) -> torch.Tensor:
++                diagnostics: torch.Tensor | None = None,
++                workspace=None, read_port=None) -> torch.Tensor:
++        """Trine hook: `workspace` + `read_port` condition the canvas on the
++        LiquidWorkspace - the single bridge carrying the member's own streamed
++        context, other members' thought (Plexus) and oracle verdicts. The
++        read enters through the port's zero-initialised gate, so a portless
++        denoiser is byte-identical to one grafted and untrained."""
+         x = self.embed(ids) + self.step_embed(step)[:, None, :]
+         if diagnostics is not None:
+             x = x + self.diag_embed(diagnostics)
++        if workspace is not None and read_port is not None:
++            x = x + read_port(x, workspace)
+         for block in self.blocks:
+             x = block(x)
+         return self.head(self.norm(x))

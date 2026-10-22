@@ -1,0 +1,17 @@
+diff --git a/file b/file
+index a0666f0..f1e757e 100644
+--- a/file
++++ b/file
+@@ -16,6 +16,12 @@
+       ],
+       "env": {}
+     },
++    
++    "coolify": {
++      "type": "http",
++      "url": "https://coolify.example.org/mcp",
++      "headers": { "Authorization": "Bearer ${COOLIFY_API_TOKEN}" }
++    },
+     "asc-schema": {
+       "type": "stdio",
+       "command": "bun",

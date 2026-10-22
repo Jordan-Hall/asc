@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 1a02654..178abbe 100644
+--- a/file
++++ b/file
+@@ -36,7 +36,7 @@ dev = [
+ #
+ # which replaces the resolved package in the active environment and leaves the
+ # manifest reproducible.
+-soma = { git = "https://forge.example.org/asc/soma.git", rev = "9c754dc1de55d0626bb1788880ff51637682b3c5" }
++soma = { git = "https://forge.example.org/asc/soma.git", rev = "a8d74859128f25b728f8d82ecc9ddc74f921766a" }
+ 
+ [tool.hatch.build.targets.wheel]
+ packages = ["asc_soma"]

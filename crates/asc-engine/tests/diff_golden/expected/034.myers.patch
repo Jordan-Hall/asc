@@ -1,0 +1,30 @@
+diff --git a/file b/file
+index 60492d6..4e73403 100644
+--- a/file
++++ b/file
+@@ -14,7 +14,24 @@ export default defineConfig({
+         content: {
+           name: 'NELA Risk Calculator',
+           short_name: 'NELA Risk',
+-          description: 'Calculate the parsimonious NELA risk score offline.',
++          description:
++            'Estimate the risk of death within 30 days of emergency abdominal surgery. Use the result alongside clinical judgement and discussion with the patient and their family. The calculator works offline after your first visit.',
++          screenshots: [
++            {
++              src: '/screenshots/disclaimer-mobile.png',
++              sizes: '390x844',
++              type: 'image/png',
++              form_factor: 'narrow',
++              label: 'Review the NELA disclaimer',
++            },
++            {
++              src: '/screenshots/assessment-mobile.png',
++              sizes: '390x844',
++              type: 'image/png',
++              form_factor: 'narrow',
++              label: 'Complete the risk assessment',
++            },
++          ],
+           id: '/',
+           start_url: '/',
+           scope: '/',

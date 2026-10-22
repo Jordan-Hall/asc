@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index e25daf4..ef65e90 100644
+--- a/file
++++ b/file
+@@ -20,6 +20,7 @@
+     "apps/docs-site/public/explorer/**",
+     ".claude/worktrees/**",
+     "packages/soma/sdk/**",
++    "plugins/tracedecay/cursor-native-extension/embedded/**",
+     "**/target/**",
+     "**/playwright-report/**",
+     "**/test-results/**",

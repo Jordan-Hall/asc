@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 673f54c..001906a 100644
+--- a/file
++++ b/file
+@@ -14,7 +14,7 @@ The expression language used by rules, computed fields, transforms and controls.
+ 
+ ## Quick facts
+ 
+-- **266 documented built-in functions**
++- **274 documented built-in functions**
+ - **Exact decimal arithmetic**: `0.1 + 0.2` is `0.3`.
+ - **A missing value is unknown**, as in R and SQL: see [Missing values](./expression/syntax#missing-values).
+ - **Currency literals** support common currency symbols.

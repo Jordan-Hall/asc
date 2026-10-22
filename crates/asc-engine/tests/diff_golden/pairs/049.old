@@ -1,0 +1,36 @@
+import { createApp, websocket } from './app';
+import { dominoAdmission } from './domino';
+
+const port = Number(import.meta.env.COLLAB_SERVICE_PORT ?? 3040);
+
+function list(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+}
+
+const hosts = list(import.meta.env.COLLAB_DOMINO_HOSTS);
+const ticketSecret = import.meta.env.COLLAB_TICKET_SECRET || undefined;
+if (hosts.length === 0 && !ticketSecret) {
+  throw new Error(
+    'Nothing to serve: set COLLAB_DOMINO_HOSTS (Domino hosts whose records may have rooms, e.g. www.example.org) and/or COLLAB_TICKET_SECRET (the secret records-service signs room tickets with)',
+  );
+}
+
+const app = createApp({
+  allowedOrigins: list(import.meta.env.COLLAB_ALLOWED_ORIGINS),
+  ticketSecret,
+  domino: dominoAdmission({
+    hosts,
+    cacheMs: Number(import.meta.env.COLLAB_DOMINO_CACHE_SECONDS ?? 60) * 1000,
+    timeoutMs:
+      Number(import.meta.env.COLLAB_DOMINO_TIMEOUT_SECONDS ?? 10) * 1000,
+  }),
+});
+
+console.log(
+  `collab service on http://localhost:${port}${hosts.length ? ` for ${hosts.join(', ')}` : ''}${ticketSecret ? ' and asc rooms by ticket' : ''}`,
+);
+
+export default { port, fetch: app.fetch, websocket, idleTimeout: 255 };

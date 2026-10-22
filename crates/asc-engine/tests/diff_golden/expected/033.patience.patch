@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 2861bb9..16a4498 100644
+--- a/file
++++ b/file
+@@ -34,6 +34,7 @@ pub mod context;
+ pub mod dependencies;
+ pub mod diagnostics;
+ pub mod error;
++pub mod explain;
+ pub mod functions;
+ pub mod lexer;
+ /// The functions a decimal cannot compute exactly.

@@ -1,0 +1,48 @@
+diff --git a/file b/file
+index 91100b7..cc962d7 100644
+--- a/file
++++ b/file
+@@ -33,6 +33,10 @@ export {
+   GraphViewProps,
+   ButtonProps,
+   TabsProps,
++  ActionRef,
++  ascCatalog,
++  type ValidationIssue,
++  type ValidationOutcome,
+ } from './catalog.js';
+ 
+ // Registry
+@@ -43,14 +47,32 @@ export {
+   registerDefaultComponents,
+ } from './registry.js';
+ 
++// Schema (the core spec definition behind the catalog)
++export { ascSchema } from './schema.js';
++
+ // Renderer
+ export {
+   type SpecElement,
++  type NestedSpec,
++  type FlatSpec,
++  type FlatElement,
+   type Spec,
+   type RendererHandle,
++  isFlatSpec,
++  normaliseSpec,
+   renderSpec,
+ } from './renderer.js';
+ 
++// Actions
++export {
++  type ActionHandler,
++  type ActionPayload,
++  registerActionHandler,
++  getActionHandler,
++  clearActionHandlers,
++  dispatchAction,
++} from './actions.js';
++
+ // Stream Renderer
+ export {
+   type StreamHandle,

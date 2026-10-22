@@ -1,0 +1,45 @@
+{
+  "name": "nela-risk-calculator",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "rsbuild build",
+    "check": "biome check --write",
+    "dev": "rsbuild dev",
+    "format": "prettier --write .",
+    "nela:map": "bun run scripts/nela-csv-mapper/cli.ts",
+    "nela:sql-schema": "bun run scripts/nela-csv-mapper/build-sql-schema.ts",
+    "nolap:map": "bun run scripts/nolap-csv-mapper/cli.ts",
+    "preview": "rsbuild preview",
+    "schema:parity": "bun run scripts/check-schema-parity.ts",
+    "start": "rsbuild dev",
+    "test": "rstest run",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:watch": "rstest"
+  },
+  "dependencies": {
+    "@asc/better-auth-permissions": "workspace:*",
+    "@asc/router": "workspace:*",
+    "@asc/schema-dsl": "workspace:*",
+    "@asc/signal": "workspace:*",
+    "@asc/ui": "workspace:*",
+    "@openpanel/web": "^1.0.1",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.1.3",
+    "@playwright/test": "^1.52.0",
+    "@repo/typescript-config": "workspace:*",
+    "@rsbuild/core": "^1.7.3",
+    "@rstest/core": "^0.0.10",
+    "@tailwindcss/postcss": "^4.1.3",
+    "@types/node": "^22.10.5",
+    "csv-parse": "^5.6.0",
+    "postcss": "^8.5.3",
+    "prettier": "^3.5.3",
+    "tailwindcss": "^4.1.3",
+    "typescript": "7.0.2"
+  }
+}

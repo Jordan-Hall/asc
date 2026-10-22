@@ -1,0 +1,113 @@
+diff --git a/file b/file
+index ddb6e81..2dd562e 100644
+--- a/file
++++ b/file
+@@ -1,54 +1,56 @@
+ {
+-	"name": "@asc/plugin-runtime",
+-	"version": "0.0.1",
+-	"license": "MIT",
+-	"type": "module",
+-	"description": "Loads federated plugin bundles, mounts them at declared placements, and takes them away again",
+-	"sideEffects": false,
+-	"files": [
+-		"dist"
+-	],
+-	"main": "./dist/index.js",
+-	"types": "./dist/index.d.ts",
+-	"exports": {
+-		".": {
+-			"types": "./dist/index.d.ts",
+-			"import": "./dist/index.js"
+-		},
+-		"./placements": {
+-			"types": "./dist/placements/index.d.ts",
+-			"import": "./dist/placements.js"
+-		},
+-		"./*": null
+-	},
+-	"scripts": {
+-		"build": "rslib build",
+-		"dev": "rslib build --watch",
+-		"test": "rstest run",
+-		"test:watch": "rstest run --watch",
+-		"check-types": "tsc -p tsconfig.json --noEmit",
+-		"check": "biome check --write",
+-		"format": "biome format --write"
+-	},
+-	"devDependencies": {
+-		"@biomejs/biome": "2.0.6",
+-		"@repo/typescript-config": "workspace:*",
+-		"@rslib/core": "^0.23.2",
+-		"@rstest/core": "^0.0.10",
+-		"@types/bun": "latest",
+-		"jsdom": "^24.0.0",
+-		"typescript": "7.0.2"
+-	},
+-	"dependencies": {
+-		"@asc/plugin-manifest": "workspace:*",
+-		"@asc/plugin-placements": "workspace:*",
+-		"@asc/ui": "workspace:*",
+-		"@module-federation/enhanced": "^0.18.4"
+-	},
+-	"peerDependencies": {
+-		"@asc/signal": "workspace:*"
+-	},
+-	"publishConfig": {
+-		"access": "restricted"
+-	}
++  "name": "@asc/plugin-runtime",
++  "version": "0.0.1",
++  "license": "MIT",
++  "type": "module",
++  "description": "Loads federated plugin bundles, mounts them at declared placements, and takes them away again",
++  "sideEffects": false,
++  "files": [
++    "dist"
++  ],
++  "main": "./dist/index.js",
++  "types": "./dist/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./dist/index.d.ts",
++      "import": "./dist/index.js"
++    },
++    "./placements": {
++      "types": "./dist/placements/index.d.ts",
++      "import": "./dist/placements.js"
++    },
++    "./*": null
++  },
++  "scripts": {
++    "build": "rslib build",
++    "dev": "rslib build --watch",
++    "test": "rstest run",
++    "test:watch": "rstest run --watch",
++    "check-types": "tsc -p tsconfig.json --noEmit",
++    "check": "biome check --write",
++    "format": "biome format --write",
++    "e2e": "playwright test -c e2e/playwright.config.ts",
++    "e2e:build": "bun install && bun run --cwd e2e/host build"
++  },
++  "devDependencies": {
++    "@biomejs/biome": "2.0.6",
++    "@repo/typescript-config": "workspace:*",
++    "@rslib/core": "^0.23.2",
++    "@rstest/core": "^0.0.10",
++    "@types/bun": "latest",
++    "jsdom": "^24.0.0",
++    "typescript": "7.0.2"
++  },
++  "dependencies": {
++    "@asc/plugin-manifest": "workspace:*",
++    "@asc/plugin-placements": "workspace:*",
++    "@asc/ui": "workspace:*",
++    "@module-federation/enhanced": "^0.18.4"
++  },
++  "peerDependencies": {
++    "@asc/signal": "workspace:*"
++  },
++  "publishConfig": {
++    "access": "restricted"
++  }
+ }

@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index a61089b..740eb30 100644
+--- a/file
++++ b/file
+@@ -1,6 +1,6 @@
+ ---
+ description: Run the deterministic repository audit and report dead code, duplication, database and RLS findings with cited evidence
+-argument-hint: "[--fail-on=error|warning|info] [--review=ollama] [--watch]"
++argument-hint: '[--fail-on=error|warning|info] [--review=ollama] [--watch]'
+ allowed-tools: Bash(bun:*), Read, Grep, Glob
+ ---
+ 

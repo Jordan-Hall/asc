@@ -1,0 +1,32 @@
+import { FullConfig } from '@playwright/test';
+import { resetDatabase, waitForServices } from './utils/database';
+
+/**
+ * Global setup runs once before all tests.
+ * - Resets the database to a clean state
+ * - Waits for all services to be healthy
+ */
+async function globalSetup(config: FullConfig): Promise<void> {
+  console.log('\n🔄 ASC E2E: Starting global setup...\n');
+  const useExistingServices = process.env.E2E_USE_RUNNING_SERVICES === 'true';
+  
+  // Reset database to clean state
+  if (!useExistingServices && process.env.SKIP_DB_RESET !== 'true') {
+    console.log('📦 Resetting database...');
+    await resetDatabase();
+    console.log('✅ Database reset complete\n');
+  } else if (useExistingServices) {
+    console.log('⏭️  Reusing already-running services (E2E_USE_RUNNING_SERVICES=true), skipping database reset\n');
+  } else {
+    console.log('⏭️  Skipping database reset (SKIP_DB_RESET=true)\n');
+  }
+  
+  // Wait for services to be ready
+  console.log('⏳ Waiting for services to be healthy...');
+  await waitForServices();
+  console.log('✅ All services ready\n');
+  
+  console.log('🚀 ASC E2E: Global setup complete!\n');
+}
+
+export default globalSetup;

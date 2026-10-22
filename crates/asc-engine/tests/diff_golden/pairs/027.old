@@ -1,0 +1,129 @@
+import { describe, expect, it } from '@rstest/core';
+import {
+  compileExpressionToQuery,
+  compileExpressionToSql,
+  createSurrealQueryAdapter,
+  getQueryTranslationSupport,
+  getSqlTranslationSupport,
+} from '../src/expression/sql.js';
+
+describe('Expression SQL translation', () => {
+  it('compiles postgres comparisons with positional parameters', () => {
+    const result = compileExpressionToSql('age >= 18 and <= 65', {
+      adapter: 'postgres',
+      references: { root: 'payload' },
+    });
+
+    expect(result.adapter).toBe('postgres');
+    expect(result.supported).toBe(true);
+    expect(result.sql).toContain(
+      "CAST((payload #>> '{age}') AS numeric) >= $1",
+    );
+    expect(result.sql).toContain(
+      "CAST((payload #>> '{age}') AS numeric) <= $2",
+    );
+    expect(result.parameters).toEqual([18, 65]);
+  });
+
+  it('compiles surreal string functions with named parameters', () => {
+    const result = compileExpressionToSql('lower(name) == lower("BOB")', {
+      adapter: 'surreal',
+      references: { root: 'entry' },
+    });
+
+    expect(result.adapter).toBe('surreal');
+    expect(result.supported).toBe(true);
+    expect(result.sql).toContain('string::lowercase(entry.name)');
+    expect(result.sql).toContain('string::lowercase($p0)');
+    expect(result.parameters).toEqual({ p0: 'BOB' });
+  });
+
+  it('inlines let-bound expressions into sql output', () => {
+    const result = compileExpressionToSql('let minAge = 18; age >= minAge', {
+      adapter: 'postgres',
+      references: { root: 'payload' },
+    });
+
+    expect(result.supported).toBe(true);
+    expect(result.sql).toContain(
+      "CAST((payload #>> '{age}') AS numeric) >= $1",
+    );
+    expect(result.parameters).toEqual([18]);
+  });
+
+  it('translates match expressions into case expressions', () => {
+    const result = compileExpressionToSql(
+      'match score { 90..=100 => "A", _ => "B" }',
+      {
+        adapter: 'postgres',
+        references: { root: 'payload' },
+      },
+    );
+
+    expect(result.supported).toBe(true);
+    expect(result.sql).toContain('CASE');
+    expect(result.sql).toContain('WHEN');
+    expect(result.parameters).toEqual([90, 100, 'A', 'B']);
+  });
+
+  it('reports unsupported higher-order functions for docs and callers', () => {
+    const result = compileExpressionToSql('where(items, (x) => x > 2)', {
+      adapter: 'surreal',
+    });
+
+    expect(result.supported).toBe(false);
+    expect(
+      result.unsupported.some((issue) => issue.functionName === 'where'),
+    ).toBe(true);
+  });
+
+  it('supports backend-agnostic adapters with custom surreal function mappings', () => {
+    const surreal = createSurrealQueryAdapter({
+      customFunctionTranslators: {
+        percentile: ({ args }) => ({
+          sql: `fn::analytics_percentile(${args.map((arg) => arg.sql).join(', ')})`,
+          type: 'number',
+        }),
+      },
+    });
+
+    const result = compileExpressionToQuery('percentile(scores, 90) >= 10', {
+      adapter: surreal,
+      references: { root: 'entry' },
+    });
+
+    expect(result.adapter).toBe('surreal');
+    expect(result.supported).toBe(true);
+    expect(result.sql).toContain('fn::analytics_percentile(entry.scores, $p0)');
+    expect(result.parameters).toEqual({ p0: 90, p1: 10 });
+  });
+
+  it('exposes sql support reports for documentation generation', () => {
+    const postgres = getSqlTranslationSupport('postgres');
+    const surreal = getSqlTranslationSupport('surreal');
+
+    expect(postgres.supportedFunctions.includes('lower')).toBe(true);
+    expect(
+      postgres.unsupportedFunctions.some((item) => item.name === 'hashSync'),
+    ).toBe(true);
+    expect(
+      surreal.unsupportedFunctions.some((item) => item.name === 'where'),
+    ).toBe(true);
+  });
+
+  it('query support reports include adapter family and custom mapped functions', () => {
+    const surreal = createSurrealQueryAdapter({
+      customFunctionTranslators: {
+        percentile: ({ args }) => ({
+          sql: `fn::analytics_percentile(${args.map((arg) => arg.sql).join(', ')})`,
+          type: 'number',
+        }),
+      },
+    });
+
+    const report = getQueryTranslationSupport(surreal);
+
+    expect(report.family).toBe('nosql');
+    expect(report.supportedFunctions.includes('percentile')).toBe(true);
+  });
+});

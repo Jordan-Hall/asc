@@ -1,0 +1,18 @@
+diff --git a/file b/file
+index a0666f0..36eea64 100644
+--- a/file
++++ b/file
+@@ -1,13 +1,5 @@
+ {
+   "mcpServers": {
+-    "pcstorage": {
+-      "command": "bun",
+-      "args": ["scripts/mcp/pcstorage-mcp.ts"],
+-      "env": {
+-        "PCSTORAGE_OPS_URL": "${PCSTORAGE_OPS_URL:-http://100.103.125.26:8300}",
+-        "PCSTORAGE_OPS_TOKEN": "${PCSTORAGE_OPS_TOKEN}"
+-      }
+-    },
+     "repo-audit": {
+       "type": "stdio",
+       "command": "repo-audit",

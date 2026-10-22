@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "asc-soma"
+version = "0.1.0"
+description = "ASC's specialists, declared for the soma harness"
+requires-python = ">=3.12"
+# The harness, consumed as a package rather than reached into. During
+# development this resolves to the working copy through the tool.uv source
+# below; a cloud bundle installs a built wheel pinned by digest.
+dependencies = ["soma"]
+
+[project.optional-dependencies]
+onnx = ["soma[onnx]"]
+cloud = ["soma[cloud]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pyyaml>=6.0.3",
+    "ruff>=0.6",
+]
+
+[tool.uv.sources]
+# Git, not a path. A relative path out of the repository resolves on a
+# developer's disk and nowhere else - a Docker build has no `../../../../soma`
+# in its context, so the image could not be built at all. Pinned to a revision
+# rather than a branch: an image that rebuilds against whatever master happens
+# to be is an image whose contents nobody can state.
+#
+# For local iteration on the SDK itself, override without editing this file:
+#
+#     uv pip install -e ../../../../soma
+#
+# which replaces the resolved package in the active environment and leaves the
+# manifest reproducible.
+soma = { git = "https://forge.example.org/asc/soma.git", rev = "a8d74859128f25b728f8d82ecc9ddc74f921766a" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["asc_soma"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLC0415"]
+
+[tool.ruff.lint.per-file-ignores]
+# A stage imports torch and the harness's training code inside `execute`, so
+# that resolving a plan and listing the fleet never load a tensor library.
+"asc_soma/stages.py" = ["PLC0415"]
+"asc_soma/specs.py" = ["PLC0415"]
+"asc_soma/cli.py" = ["PLC0415"]
+"tests/*" = ["PLC0415"]

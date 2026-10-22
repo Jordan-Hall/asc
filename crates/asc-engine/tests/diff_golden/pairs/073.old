@@ -1,0 +1,152 @@
+/**
+ * What somebody may see and change in a room, field by field.
+ *
+ * The case these exist for: a director reads across the workspace, opens an
+ * entry belonging to a team they are not in, and watches it being filled in.
+ * They are entitled to be there. They are NOT entitled to the patient's
+ * identifiers, and the socket carries values the moment they are typed - so a
+ * room that let them in on the strength of "may read the entry" would hand them
+ * live what the entry route would have removed before serving it.
+ */
+import { describe, expect, it } from 'bun:test';
+import {
+  type EntryFacts,
+  participationFor,
+  type SchemaFacts,
+  type Viewer,
+} from './participation';
+
+/**
+ * One protected identifier, one field a role may only look at, and one
+ * ordinary answer.
+ */
+const DOCUMENT: SchemaFacts['schema'] = {
+  $schema: 'https://example.org/schemas/form.json',
+  kind: 'object',
+  properties: {
+    nhs_number: { kind: 'string', pidProtected: true },
+    consultant: {
+      kind: 'string',
+      privacy: { permissions: { readOnlyRoles: ['auditor'] } },
+    },
+    asa_grade: { kind: 'string' },
+  },
+};
+
+/** An entry owned by the surgery team, in one workspace. */
+const ENTRY: EntryFacts = {
+  team: 'team:surgery',
+  workspace: 'workspace:w1',
+  org: 'organization:o1',
+  created_by: 'user:author',
+  payload: { nhs_number: '9434765919', asa_grade: '3' },
+};
+
+const SCHEMA: SchemaFacts = { schema: DOCUMENT };
+
+/** Somebody in the entry's own team. */
+const colleague: Viewer = {
+  userId: 'user:colleague',
+  activeWorkspaceId: 'w1',
+  activeTeamId: 'surgery',
+  activeOrganizationId: 'o1',
+  userContext: { teamIds: ['surgery'] },
+};
+
+/** Somebody reading the whole workspace, in none of its teams. */
+const director: Viewer = {
+  userId: 'user:director',
+  activeWorkspaceId: 'w1',
+  activeTeamId: 'governance',
+  activeOrganizationId: 'o1',
+  userContext: { teamIds: ['governance'] },
+};
+
+const inRoom = (ctx: Viewer, canEdit: boolean) =>
+  participationFor({ entry: ENTRY, schema: SCHEMA, ctx, canEdit });
+
+describe('somebody in the entry’s own team', () => {
+  const them = inRoom(colleague, true);
+
+  it('sees the protected identifier, because it is their patient', () => {
+    expect(them.view('nhs_number')).toEqual({ visible: true });
+  });
+
+  it('may change it', () => {
+    expect(them.canWriteField('nhs_number')).toBe(true);
+  });
+});
+
+describe('somebody reading in from outside the team', () => {
+  const reading = inRoom(director, false);
+
+  it('is told nothing about the protected identifier', () => {
+    // Not the value, and not that it changed: PID protection is team
+    // membership, and reading across teams is not membership of one.
+    expect(reading.view('nhs_number')).toEqual({ visible: false });
+  });
+
+  it('still sees the ordinary answers', () => {
+    expect(reading.view('asa_grade')).toEqual({ visible: true });
+  });
+
+  it('may change nothing at all', () => {
+    expect(reading.canEdit).toBe(false);
+    expect(reading.canWriteField('asa_grade')).toBe(false);
+  });
+});
+
+describe('somebody who may edit an entry outside their team', () => {
+  /*
+    The case worth being explicit about. Permission to update the entry says
+    nothing about the patient's identifiers: those are decided by the field
+    rules, which ask about the team that owns the RECORD.
+  */
+  const editing = inRoom(director, true);
+
+  it('may change the ordinary answers', () => {
+    expect(editing.canWriteField('asa_grade')).toBe(true);
+  });
+
+  it('does not thereby get the protected identifier', () => {
+    expect(editing.view('nhs_number')).toEqual({ visible: false });
+    expect(editing.canWriteField('nhs_number')).toBe(false);
+  });
+});
+
+describe('a field a role may look at but not change', () => {
+  const auditor = inRoom(
+    {
+      ...colleague,
+      userId: 'user:auditor',
+      userContext: { teamIds: ['surgery'], customRoles: ['auditor'] },
+    },
+    true,
+  );
+
+  it('arrives as a mask rather than the answer', () => {
+    const seen = auditor.view('consultant');
+    expect(seen).toEqual({ visible: true, mask: expect.any(String) });
+  });
+
+  it('cannot be written back over the wire', () => {
+    // A value they were never shown is not one they can overwrite.
+    expect(auditor.canWriteField('consultant')).toBe(false);
+  });
+});
+
+describe('an entry whose schema could not be read', () => {
+  it('changes nothing about what a reader may do', () => {
+    // No document means no privacy declaration to honour and none to check.
+    // Nothing is loosened: a room this person could not join was refused
+    // before any of this was asked.
+    const them = participationFor({
+      entry: ENTRY,
+      schema: null,
+      ctx: director,
+      canEdit: false,
+    });
+    expect(them.view('nhs_number')).toEqual({ visible: true });
+    expect(them.canWriteField('nhs_number')).toBe(false);
+  });
+});

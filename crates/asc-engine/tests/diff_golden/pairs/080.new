@@ -1,0 +1,122 @@
+import { describe, expect, it } from 'bun:test';
+import { Hono } from 'hono';
+import type { AppContext } from '../types';
+import datasetsRouter from './datasets';
+
+/**
+ * The PID projection on `GET /:id/rows`.
+ *
+ * The route resolves the dataset's PID columns from two sources: the stored
+ * `pid_fields`, written the last time rules were applied, and the meta-schema's
+ * own `privacy.pidProtected` flags, which are the authority. The two must be
+ * UNIONED. A fallback that consults the schema only when `pid_fields` is empty
+ * lets a stale-but-non-empty array answer the question, and the flagged column
+ * it does not mention is handed back in the preview — so the decisive case here
+ * is a NON-EMPTY stale array, not an empty one.
+ */
+
+const NHS_NUMBER = '9434765919';
+const HOSPITAL_NUMBER = 'RXK-88213';
+
+/** `nhs_number` is flagged in the schema; `hospital_number` is not. */
+const META_SCHEMA = {
+  kind: 'object',
+  properties: {
+    region: { kind: 'string' },
+    hospital_number: { kind: 'string' },
+    nhs_number: { kind: 'string', pidProtected: true },
+  },
+};
+
+const ROW = {
+  region: 'North West',
+  hospital_number: HOSPITAL_NUMBER,
+  nhs_number: NHS_NUMBER,
+};
+
+interface StubOptions {
+  /** The dataset's stored `pid_fields`, as written at the last rules run. */
+  pidFields?: string[];
+  metaSchema?: unknown;
+}
+
+function makeApp(opts: StubOptions) {
+  const userDb = {
+    query: async (sql: string) => {
+      /*
+        The dataset gate, as `ownsDataset` asks it now.
+
+        It used to be `SELECT VALUE workspace`; the gate moved into
+        `@asc/ingest-core` and asks for the team as well, so this stub stopped
+        matching, answered nothing, and every case below failed as a 404 -
+        reading as a route that had lost its dataset rather than a stub that had
+        lost the query.
+      */
+      if (sql.startsWith('SELECT workspace, team'))
+        return [[{ workspace: 'workspace:ws1', team: null }]];
+      if (sql.startsWith('SELECT pid_fields, meta_schema')) {
+        return [
+          [{ pid_fields: opts.pidFields ?? [], meta_schema: opts.metaSchema }],
+        ];
+      }
+      if (sql.startsWith('SELECT data, created_at')) {
+        return [[{ data: { ...ROW }, created_at: new Date() }]];
+      }
+      return [[]];
+    },
+  };
+  return new Hono<AppContext>()
+    .use('*', async (c, next) => {
+      c.set('userDb', userDb as never);
+      c.set('userId', 'u1');
+      c.set('activeWorkspaceId', 'ws1');
+      c.set('activeTeamId', '');
+      c.set('activeOrganizationId', 'org1');
+      await next();
+    })
+    .route('/api/datasets', datasetsRouter);
+}
+
+async function previewRow(opts: StubOptions): Promise<Record<string, unknown>> {
+  const res = await makeApp(opts).request('/api/datasets/ds1/rows');
+  expect(res.status).toBe(200);
+  const body = (await res.json()) as { rows: Array<Record<string, unknown>> };
+  expect(body.rows).toHaveLength(1);
+  return body.rows[0]!;
+}
+
+describe('GET /:id/rows — the PID columns are the union of both sources', () => {
+  it('strips a schema-flagged column that a STALE, NON-EMPTY pid_fields omits', async () => {
+    // The array was written before `nhs_number` was flagged, and mentions only
+    // an unrelated column. An empty-only fallback never consults the schema
+    // here, so the flagged column survives into the response.
+    const row = await previewRow({
+      pidFields: ['hospital_number'],
+      metaSchema: META_SCHEMA,
+    });
+    expect(row).not.toHaveProperty('nhs_number');
+    expect(JSON.stringify(row)).not.toContain(NHS_NUMBER);
+    // The stored entry still counts — a union drops neither side.
+    expect(row).not.toHaveProperty('hospital_number');
+    expect(row).toEqual({ region: 'North West' });
+  });
+
+  it('strips a schema-flagged column when pid_fields is empty', async () => {
+    const row = await previewRow({ pidFields: [], metaSchema: META_SCHEMA });
+    expect(row).toEqual({
+      region: 'North West',
+      hospital_number: HOSPITAL_NUMBER,
+    });
+  });
+
+  it('strips the stored pid_fields when the dataset has no meta-schema', async () => {
+    const row = await previewRow({
+      pidFields: ['nhs_number'],
+      metaSchema: undefined,
+    });
+    expect(row).toEqual({
+      region: 'North West',
+      hospital_number: HOSPITAL_NUMBER,
+    });
+  });
+});

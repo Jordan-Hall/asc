@@ -1,0 +1,111 @@
+/**
+ * `@asc/schema-core` — the shared vocabulary a schema-describing package
+ * builds its own domain on top of.
+ *
+ * `@asc/schema-meta-v2` describes a FORM (what a person types in, and the
+ * rules that check it). `@asc/report-meta` describes a REPORT (a dataset
+ * breakdown, and whether the definition itself is well-formed). The two are
+ * not the same problem — a report collects nothing from a person, so it has
+ * no equivalent of a form's cross-field date comparison or NHS-number
+ * checksum — but both start from the same handful of primitive kinds, and
+ * both attach small, structured rules to a field or a document. This module
+ * is that shared starting point, kept deliberately narrow: it names the
+ * kinds and the rule shape, and leaves every domain-specific operator to the
+ * package that needs it.
+ *
+ * `CoreKind` mirrors `MetaPrimitiveKind` in `@asc/schema-meta-v2` exactly —
+ * same six literals, same order — so a value typed against one reads as the
+ * other without a conversion. It deliberately excludes `object`/`array`
+ * (container kinds, a forms-only concept so far) and `reference`/`record`
+ * (a future person-schema kind, not yet needed anywhere).
+ */
+import type { Severity } from '@asc/severity-v3';
+
+export type { Severity };
+
+/**
+ * What a single-answer field holds.
+ *
+ * `date`, `datetime` and `time` are their own kinds rather than `string`
+ * because the string is not the point: a `date` field's value is a real
+ * calendar date, not merely text shaped like one.
+ */
+export type CoreKind = 'string' | 'number' | 'boolean' | 'date' | 'datetime' | 'time';
+
+/**
+ * Fields every `CoreRuleSpec` branch carries regardless of `type` — nothing
+ * here depends on whether the rule is `builtin`, `dsl`, or `expr`.
+ */
+export interface CoreRuleSpecCommon {
+  /** Stable identifier for the issue, surfaced on the validation result. */
+  code?: string;
+  /** Severity of a failing rule. Reuses severity-v3's `Severity` rather than a parallel type. */
+  level?: Severity;
+  /** Shown to whoever is looking at the failure. Every operator has a generic fallback. */
+  message?: string;
+}
+
+/**
+ * A rule attached to a field or a document, generalising `BaseBuiltinRule`
+ * from `@asc/schema-meta-v2`.
+ *
+ * `type` discriminates a builtin (structured, `op`-driven) rule from one
+ * written in the ASC DSL or as a raw expression, the same three forms
+ * `MetaRuleSpec` accepts. This module does not evaluate `dsl`/`expr` rules —
+ * that machinery lives in `@asc/schema-dsl` — it only names the shape so a
+ * consumer can carry either kind of rule on one field without a union of
+ * unrelated types.
+ *
+ * A real 3-branch discriminated union (rather than one flat interface with
+ * every field optional): TypeScript itself rejects `{ type: 'dsl', op: 'x' }`
+ * or any other cross-variant field mixing at compile time, and the mirrored
+ * `CORE_RULE_SPEC_SCHEMA` (`core-field.ts`) rejects the same shape at the
+ * JSON Schema level via a `variant()`/`oneOf`.
+ *
+ * `op` is intentionally a bare `string`, not a closed union: the 30-member
+ * `MetaRuleSpec` operator set forms and this package's own narrow structural
+ * set (see `@asc/schema-core/rules`) are each a domain's own vocabulary,
+ * and neither belongs baked into the shared type.
+ */
+export type CoreRuleSpec =
+  | (CoreRuleSpecCommon & {
+      /** Discriminates a builtin (`op`-driven) rule from a `dsl` or `expr` one. */
+      type: 'builtin';
+      /** The builtin operator. */
+      op: string;
+    })
+  | (CoreRuleSpecCommon & {
+      type: 'dsl';
+      /** The rule text, written in the ASC DSL. */
+      dsl: string;
+    })
+  | (CoreRuleSpecCommon & {
+      type: 'expr';
+      /** The rule text, as a raw expression. */
+      expression: string;
+    });
+
+/**
+ * One field of a schema, as far as the shared core needs to see it.
+ *
+ * A domain package (report-meta, and eventually schema-meta-v2) is free to
+ * carry a richer field shape of its own — this is the common subset, not a
+ * replacement for either.
+ */
+export interface CoreFieldSchema {
+  /** The field's name, exactly as it is addressed elsewhere (a column, a key). */
+  name: string;
+  /** Shown to a person. Falls back to `name` in most consumers when absent. */
+  title?: string;
+  kind: CoreKind;
+  rules?: CoreRuleSpec[];
+  /** Whether the field carries patient-identifiable data and must never reach a model. */
+  pidProtected?: boolean;
+  /**
+   * A `@asc/ui` widget kind reference — e.g. `'select'`, `'nhsNumber'`. Not
+   * every consumer renders a field, so this is optional the way `title` is.
+   */
+  widget?: string;
+  /** How this field is matched during dedupe/linkage — e.g. `'exact'`, `'fuzzy'`. */
+  matchStrategy?: string;
+}

@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index e116b34..21d5781 100644
+--- a/file
++++ b/file
+@@ -82,7 +82,9 @@ export async function syncDatasetPublication(db: Surreal, touched: string[] = []
+     const want = shouldBePublic.has(id);
+     const has = currentlyPublic.has(id);
+     if (want === has) continue;
+-    await db.query('UPDATE type::thing("ingest_dataset", $id) SET public = $want', { id, want });
++    // `rid()`, not `type::thing(…)`: the latter is a v2 form this codebase bans,
++    // and a bound RecordId is the v3 way to name a row anyway.
++    await db.query('UPDATE $id SET public = $want', { id: rid('ingest_dataset', id), want });
+     changed.push(id);
+   }
+ 

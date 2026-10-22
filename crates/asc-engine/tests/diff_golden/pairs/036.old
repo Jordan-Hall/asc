@@ -1,0 +1,14 @@
+/** Soma in ASC.
+ *
+ * One package: what the specialists are (the contracts), how their artefacts
+ * are judged (the checkers), how they are served (the adapter over
+ * `@soma/inference`), and one project per model under `models/`.
+ *
+ * Generation, training, gating and export are `soma`'s. Nothing generic lives
+ * here any more.
+ */
+
+export * from './config';
+export * from './contracts/index';
+export * from './embed';
+export * from './serving';

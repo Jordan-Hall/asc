@@ -1,0 +1,92 @@
+/**
+ * What a workbook looks like before it is read: its sheets, their headers,
+ * a few sample rows, which layout (if any) recognises it, and a proposed
+ * column mapping from the columns that are evidently one of ours. The
+ * website shows this when a file is chosen, and asks the user to finish
+ * the mapping when no layout fits.
+ */
+import * as XLSX from 'xlsx';
+import { z } from 'zod';
+import { layoutFor, summarise } from './layouts';
+import { suggestTarget, type Target } from './layouts/custom';
+import { recordsOf } from './layouts/layout';
+import { looksLikeData } from './layouts/simulated';
+import { FIELDS } from './mapping';
+import { cellSchema } from './types';
+
+const SAMPLE_ROWS = 3;
+
+export const inspectedSheetSchema = z.object({
+  name: z.string(),
+  headers: z.array(z.string()),
+  rowCount: z.number(),
+  sample: z.array(z.record(z.string(), cellSchema)),
+  /** Does this sheet look like data: at least one recognisable column */
+  data: z.boolean(),
+});
+
+export const inspectionSchema = z.object({
+  name: z.string(),
+  /** The layout that recognised the workbook, or null when the user must map it */
+  layout: z.string().nullable(),
+  sheets: z.array(inspectedSheetSchema),
+  /** What each column evidently is, across all sheets */
+  suggested: z.record(z.string(), z.string()),
+  /** The targets a column can be mapped to, for the UI's menu */
+  targets: z.array(z.object({ value: z.string(), label: z.string() })),
+});
+
+export type Inspection = z.infer<typeof inspectionSchema>;
+
+export interface TargetChoice {
+  value: Target;
+  label: string;
+}
+
+/** The choices a column can be mapped to */
+export function targetChoices(): TargetChoice[] {
+  const fixed: TargetChoice[] = [
+    { value: 'ignore', label: 'Ignore (kept as an extra column)' },
+    { value: 'index', label: 'Row number' },
+    { value: 'patient', label: 'Record / patient id' },
+    { value: 'expected', label: 'Expected score, pre-op (the model)' },
+    { value: 'expectedPost', label: 'Expected score, post-op (the model)' },
+    { value: 'stored', label: 'Score saved on ASC Audit, pre-op' },
+    { value: 'storedPost', label: 'Score saved on ASC Audit, post-op' },
+  ];
+  const inputs = FIELDS.map((field): TargetChoice => ({
+    value: `field:${field.header}`,
+    label: `Input: ${field.header}${field.modes.includes('post') && !field.modes.includes('pre') ? ' (post-op)' : ''}`,
+  }));
+  return [...fixed, ...inputs];
+}
+
+export function inspectSource(data: Uint8Array, name: string): Inspection {
+  const workbook = XLSX.read(data, { type: 'array' });
+  const summary = summarise(workbook);
+  const layout = layoutFor(summary);
+  const suggested: Record<string, Target> = {};
+  const sheets = workbook.SheetNames.map((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    const headers = summary.headers.get(sheetName) ?? [];
+    const records = sheet ? recordsOf(sheet) : [];
+    for (const header of headers) {
+      if (header === '') continue;
+      suggested[header] ??= suggestTarget(header);
+    }
+    return {
+      name: sheetName,
+      headers,
+      rowCount: records.length,
+      sample: records.slice(0, SAMPLE_ROWS),
+      data: records.length > 0 && looksLikeData(headers),
+    };
+  });
+  return {
+    name,
+    layout: layout ? layout.name : null,
+    sheets,
+    suggested,
+    targets: targetChoices(),
+  };
+}

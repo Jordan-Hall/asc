@@ -1,0 +1,76 @@
+//! What an expression is evaluated against.
+//!
+//! Three things, and the difference matters to what a rule can see: `value` is
+//! the record being evaluated, `root` is the whole it sits inside - so a rule
+//! on one answer can reach the rest of the form - and `ctx` is anything further
+//! the host chose to expose.
+//!
+//! For a rule evaluated on its own, `value` and `root` are the same record.
+
+use crate::value::Value;
+
+/// Context passed to every evaluation.
+#[derive(Debug, Clone)]
+pub struct EvalContext {
+    /// The primary record being evaluated.
+    pub value: Value,
+    /// The root collection (e.g. the full dataset).
+    pub root: Value,
+    /// Additional context object (optional extra data).
+    pub ctx: Option<Value>,
+}
+
+impl EvalContext {
+    /// A context where the record is also the root - the ordinary case for a
+    /// rule evaluated against one record.
+    pub fn new(value: Value) -> Self {
+        Self {
+            value: value.clone(),
+            root: value,
+            ctx: None,
+        }
+    }
+
+    /// A context where the record sits inside a larger one, so an expression
+    /// can reach back out to the whole.
+    pub fn with_root(value: Value, root: Value) -> Self {
+        Self {
+            value,
+            root,
+            ctx: None,
+        }
+    }
+
+    /// As [`with_root`](Self::with_root), with a further object of data the
+    /// host wants the expression to see.
+    pub fn with_ctx(value: Value, root: Value, ctx: Value) -> Self {
+        Self {
+            value,
+            root,
+            ctx: Some(ctx),
+        }
+    }
+}
+
+/// Context for program-level execution (multi-statement scripts).
+#[derive(Debug, Clone)]
+pub struct ProgramContext {
+    /// The base expression evaluation context.
+    pub base: EvalContext,
+    /// Accumulated output lines from `print` statements.
+    pub output: Vec<Value>,
+    /// Global variable bindings within the program.
+    pub env: std::collections::HashMap<String, Value>,
+}
+
+impl ProgramContext {
+    /// A program context over an expression context, with nothing printed
+    /// and nothing bound yet.
+    pub fn new(base: EvalContext) -> Self {
+        Self {
+            base,
+            output: Vec::new(),
+            env: std::collections::HashMap::new(),
+        }
+    }
+}

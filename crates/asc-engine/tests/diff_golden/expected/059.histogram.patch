@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index 31ad102..ba74929 100644
+--- a/file
++++ b/file
+@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
+ import { join } from 'node:path';
+ import { expect, test } from '@playwright/test';
+ import { compareRow } from '../src/core/compare';
++import { extractFacts } from '../src/core/run-api';
+ import { toFormValues } from '../src/core/mapping';
+ import { buildReport, reportFileStem, toText } from '../src/core/report';
+ import { toXlsx } from '../src/core/report-xlsx';
+@@ -41,6 +42,7 @@ function errorResult(row: SourceRow, message: string): RowResult {
+     outcome: row.expected === null ? 'no-score-match' : 'error',
+     message,
+     intermediates: row.intermediates,
++    ...extractFacts(row, 'pre'),
+   };
+ }
+ 
+@@ -82,6 +84,7 @@ async function checkRow(form: NelaForm, row: SourceRow): Promise<RowResult> {
+     durationMs: Date.now() - started,
+     frame,
+     intermediates: row.intermediates,
++    ...extractFacts(row, 'pre'),
+   };
+ }
+ 

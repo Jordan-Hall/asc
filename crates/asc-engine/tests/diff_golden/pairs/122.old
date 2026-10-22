@@ -1,0 +1,53 @@
+import { Table } from 'surrealdb';
+import type { Surreal } from 'surrealdb';
+import { recordId } from '@asc/database-types';
+
+export type AccessLogAction = 'view' | 'edit' | 'print' | 'export' | 'history_view' | 'field_access';
+
+interface AccessLogParams {
+  entryId: string;
+  personId?: string;
+  schemaId?: string;
+  userId: string;
+  orgId: string;
+  workspaceId: string;
+  teamId: string;
+  action: AccessLogAction;
+  fieldsAccessed?: string[];
+  ipAddress?: string;
+  userAgent?: string;
+  sessionId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+function stripTablePrefix(id: string): string {
+  const parts = id.split(':');
+  return parts.length > 1 ? (parts[parts.length - 1] ?? id) : id;
+}
+
+export async function logFormEntryAccess(db: Surreal, params: AccessLogParams): Promise<void> {
+  try {
+    const entryId = stripTablePrefix(params.entryId);
+    const personId = params.personId ? stripTablePrefix(params.personId) : undefined;
+    const schemaId = params.schemaId ? stripTablePrefix(params.schemaId) : undefined;
+
+    await db.create(new Table('form_entry_access_log')).content({
+      entry: recordId('form_entry', entryId),
+      person: personId ? recordId('person', personId) : undefined,
+      schema: schemaId ? recordId('schema_design', schemaId) : undefined,
+      user: recordId('user', stripTablePrefix(params.userId)),
+      org: recordId('organization', stripTablePrefix(params.orgId)),
+      workspace: recordId('workspace', stripTablePrefix(params.workspaceId)),
+      team: recordId('team', stripTablePrefix(params.teamId)),
+      action: params.action,
+      fields_accessed: params.fieldsAccessed ?? undefined,
+      ip_address: params.ipAddress ?? undefined,
+      user_agent: params.userAgent ?? undefined,
+      session_id: params.sessionId ?? undefined,
+      metadata: params.metadata ?? {},
+      created_at: new Date(),
+    } as Record<string, unknown>);
+  } catch (error) {
+    console.warn('[AccessLog] Failed to record form entry access:', error);
+  }
+}

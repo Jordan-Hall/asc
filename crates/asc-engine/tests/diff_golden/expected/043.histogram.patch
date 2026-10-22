@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 884da20..d4f6104 100644
+--- a/file
++++ b/file
+@@ -19,6 +19,9 @@ export E2E_INSIGHT_SERVICE_PORT=4723
+ export E2E_SUPPORT_SERVICE_PORT=4799
+ export E2E_USER_ACTIVITY_SERVICE_PORT=4797
+ export E2E_CMS_SERVICE_PORT=4798
++# The risk service was left at its default 4800, so an alt run collided with a
++# run on the standard ports on that one port and neither could start.
++export E2E_RISK_SERVICE_PORT=5500
+ 
+ # Infrastructure. The dev database is on 8010, the default e2e one on 8020.
+ export E2E_SURREAL_PORT=8320

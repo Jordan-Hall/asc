@@ -1,0 +1,23 @@
+diff --git a/file b/file
+index 3bde16e..c786dd9 100644
+--- a/file
++++ b/file
+@@ -12,6 +12,7 @@ import { renderMetricPage } from '../pages/metric.js';
+ import { renderExplorePage } from '../pages/explore.js';
+ import { renderDesignerPage } from '../pages/designer.js';
+ import { renderDashboardDesignerPage } from '../pages/dashboard-designer.js';
++import { renderPublicExplorerPage } from '../pages/public-explorer.js';
+ import { renderDataPage, renderAboutPage } from '../pages/data.js';
+ import { clearActivePage, setActivePage, type PageContext } from '../pages/render.js';
+ 
+@@ -79,6 +80,10 @@ export function createReportingRouter(base: string, deps: RouteDependencies): Ro
+       // Same real platform, same live render path; the document is a
+       // DashboardDefinition instead of a ReportDefinition.
+       { path: 'dashboard', component: page(renderDashboardDesignerPage, deps), title: 'Build a dashboard' },
++      // The public explorer, folded in from apps/public-explorer-shell. Same
++      // service, no credentials: what a visitor may read is decided by the
++      // anonymous RLS principal, not by this route.
++      { path: 'public', component: page(renderPublicExplorerPage, deps), title: 'Published data' },
+       { path: 'data', component: page(renderDataPage, deps), title: 'The data' },
+       { path: 'about', component: page(renderAboutPage, deps), title: 'About this data' },
+     ],

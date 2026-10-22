@@ -1,0 +1,78 @@
+diff --git a.txt a.txt
+index fa2da6e..aba0ac0 100644
+--- a.txt
++++ a.txt
+@@ -1,10 +1,9 @@
+ line 1
+ line 2
+-line 3
++line three
+ line 4
+ line 5
+ line 6
+ line 7
+ line 8
+-line 9
+ line 10
+diff --git bin.dat bin.dat
+index 6ec6930..bae7464 100644
+Binary files bin.dat and bin.dat differ
+diff --git docs/old name.md docs/new name.md
+similarity index 88%
+rename from docs/old name.md
+rename to docs/new name.md
+index 0155643..9ba7c2f 100644
+--- docs/old name.md	
++++ docs/new name.md	
+@@ -3,6 +3,6 @@ jumps over the lazy dog.
+ Pack my box with
+ five dozen liquor jugs.
+ How vexingly quick
+-daft zebras jump!
++daft zebras leap!
+ Sphinx of black quartz,
+ judge my vow.
+diff --git empty.txt empty.txt
+new file mode 100644
+index 0000000..e69de29
+diff --git gone.txt gone.txt
+deleted file mode 100644
+index b023018..0000000
+--- gone.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-bye
+diff --git new.txt new.txt
+new file mode 100644
+index 0000000..94954ab
+--- /dev/null
++++ new.txt
+@@ -0,0 +1,2 @@
++hello
++world
+diff --git nonl.txt nonl.txt
+index 1b32298..206b378 100644
+--- nonl.txt
++++ nonl.txt
+@@ -1,2 +1,2 @@
+ x
+-y
+\ No newline at end of file
++z
+diff --git run.sh run.sh
+old mode 100644
+new mode 100755
+diff --git src/lib.rs src/lib.rs
+index e5dc2a5..038050a 100644
+--- src/lib.rs
++++ src/lib.rs
+@@ -12,7 +12,8 @@ impl Counter {
+     pub fn bump(&mut self) {
+         self.n += 1;
+         log("bump");
+-        log("done");
++        log("finished");
++        log("really");
+     }
+ 
+     pub fn get(&self) -> u32 {

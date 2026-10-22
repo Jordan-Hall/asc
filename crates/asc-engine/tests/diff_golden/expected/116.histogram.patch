@@ -1,0 +1,41 @@
+diff --git a/file b/file
+index 8eee397..0fa11f1 100644
+--- a/file
++++ b/file
+@@ -42,6 +42,10 @@
+             "type": "string"
+           },
+           "description": "Derived from the blocks; see `pageDatasetRefs`."
++        },
++        "level": {
++          "$ref": "#/$defs/ReportingLevel",
++          "description": "What the page is ABOUT — one team's, a workspace's, or the organisation's. Guidance written once for the whole organisation is the case this exists for; without it every workspace writes the same methodology note again."
+         }
+       },
+       "description": "A page, described. The document the page editor edits and insight stores.",
+@@ -49,7 +53,8 @@
+         "slug",
+         "title",
+         "blocks",
+-        "visibility"
++        "visibility",
++        "level"
+       ],
+       "unevaluatedProperties": false
+     },
+@@ -75,6 +80,15 @@
+       ],
+       "description": "Where a page sits for a reader. Mirrors the dashboard visibility ladder."
+     },
++    "ReportingLevel": {
++      "type": "string",
++      "enum": [
++        "team",
++        "workspace",
++        "org"
++      ],
++      "description": "The three levels reporting is done at, from the narrowest up.\n\nThey are the platform's own tenancy — a dataset belongs to a team inside a workspace inside an organisation — rather than a vocabulary reporting made up for itself, so a figure at any of them corresponds to a real unit somebody is accountable for."
++    },
+     "PageReference": {
+       "anyOf": [
+         {

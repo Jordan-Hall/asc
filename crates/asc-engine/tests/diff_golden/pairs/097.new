@@ -1,0 +1,71 @@
+# Schema Designer V2 - Modern Form Builder
+
+A modern, intuitive schema designer inspired by SurveyMonkey, JotForm, and Typeform.
+
+## Key Features
+
+### 🎨 Beautiful, Modern UI
+
+- Clean, uncluttered interface
+- Smooth animations and transitions
+- Dark mode support
+- Responsive design
+
+### 🎯 Intuitive UX
+
+- Drag-and-drop field builder
+- Live preview panel
+- Visual field palette with icons
+- Quick actions and keyboard shortcuts
+- Field templates for common patterns
+
+### ⚡ Powerful Features
+
+- Real-time validation
+- Advanced field configuration
+- Section management
+- Rule builder with natural language
+- Export/import capabilities
+
+## Architecture
+
+### Component Structure
+
+```
+src/
+├── components/
+│   ├── builder/          # Main builder interface
+│   │   ├── BuilderCanvas.tsx
+│   │   ├── FieldPalette.tsx
+│   │   └── LivePreview.tsx
+│   ├── fields/           # Field components
+│   │   ├── FieldCard.tsx
+│   │   ├── FieldEditor.tsx
+│   │   └── FieldTypeSelector.tsx
+│   ├── sections/         # Section management
+│   │   └── SectionManager.tsx
+│   └── ui/              # Shared UI components (from ASC UI)
+├── hooks/               # Custom React hooks
+├── lib/                # Utilities and helpers
+└── styles/             # Global styles
+```
+
+### Design Principles
+
+1. **Progressive Disclosure**: Show simple options first, advanced features on demand
+2. **Visual Feedback**: Clear indication of state changes, drag targets, validation
+3. **Consistent Patterns**: Reuse UI patterns across the application
+4. **Performance**: Smooth 60fps animations, optimized re-renders
+5. **Accessibility**: Keyboard navigation, ARIA labels, screen reader support
+
+## Improvements over V1
+
+- ✨ Modern split-panel interface (builder + preview)
+- 🎨 Visual field type selector with icons
+- 🚀 Faster field configuration with inline editing
+- 📱 Better responsive design
+- ⌨️ Keyboard shortcuts for power users
+- 🎭 Smooth animations and micro-interactions
+- 🔄 Live preview updates
+- 📋 Field templates and quick actions
+- 🎯 Better drag-and-drop experience with visual feedback

@@ -1,0 +1,123 @@
+import { createAuthEndpoint, createAuthMiddleware } from "better-auth/api";
+import type { BetterAuthPlugin } from "better-auth";
+import type { BetterAuthClientPlugin } from "better-auth/client";
+
+/**
+ * ASC's two-factor preference, and the endpoint that reads it back before a
+ * session exists.
+ *
+ * Better Auth records *whether* two-factor is enabled and, since 1.7, which
+ * methods are available at sign-in (`twoFactorMethods` on the sign-in response).
+ * What it does not record is which method a particular user chose, or that a
+ * user has switched one of them off for themselves. ASC keeps that on the
+ * user record as `twoFactorMethod` / `twoFactorMethods`.
+ *
+ * Two things follow, and both live here:
+ *
+ * 1. The preference is written inside the `/two-factor/enable` request, which
+ *    now carries the method. Writing it from the browser afterwards used to
+ *    race the session rotation that `enable` performs, which is why the client
+ *    had a retry loop and the session-create hook had a backfill. Neither is
+ *    needed once the write happens here.
+ *
+ * 2. The verify page needs the preference while the user is mid-challenge, when
+ *    there is no session — only the short-lived `two_factor` cookie. Reading
+ *    that cookie is done with `ctx.getSignedCookie`, the same call Better Auth's
+ *    own `verifyTwoFactor` uses, rather than re-deriving the HMAC by hand.
+ */
+export const twoFactorContext = () => {
+  return {
+    id: "asc-two-factor-context",
+
+    endpoints: {
+      /**
+       * Resolve the pending two-factor challenge to the user it belongs to.
+       *
+       * Returns the stored method preference only. The list of methods the
+       * server will actually accept comes from the sign-in response, so the
+       * client intersects the two rather than trusting either alone.
+       */
+      twoFactorContext: createAuthEndpoint(
+        "/two-factor/context",
+        { method: "GET" },
+        async (ctx) => {
+          const cookie = ctx.context.createAuthCookie("two_factor");
+          const signed = await ctx.getSignedCookie(
+            cookie.name,
+            ctx.context.secret,
+          );
+          if (!signed) {
+            return ctx.json({ error: "No two-factor challenge" }, { status: 401 });
+          }
+
+          const verification =
+            await ctx.context.internalAdapter.findVerificationValue(signed);
+          if (!verification || new Date(verification.expiresAt) < new Date()) {
+            return ctx.json(
+              { error: "Expired or invalid two-factor challenge" },
+              { status: 401 },
+            );
+          }
+
+          const user = await ctx.context.internalAdapter.findUserById(
+            verification.value,
+          );
+          if (!user) {
+            return ctx.json({ error: "User not found" }, { status: 401 });
+          }
+
+          return ctx.json({
+            email: user.email,
+            name: user.name ?? null,
+            twoFactorMethod:
+              (user as { twoFactorMethod?: string | null }).twoFactorMethod ??
+              null,
+            twoFactorMethods:
+              (user as { twoFactorMethods?: string[] | null })
+                .twoFactorMethods ?? null,
+          });
+        },
+      ),
+    },
+
+    hooks: {
+      after: [
+        {
+          matcher: (context) => context.path === "/two-factor/enable",
+          handler: createAuthMiddleware(async (ctx) => {
+            const method = (ctx.body as { method?: string } | undefined)?.method;
+            if (method !== "otp" && method !== "totp") return;
+
+            // `enable` rotates the session, so read the user id from the
+            // request's own session rather than from anything cached.
+            const userId = ctx.context.session?.user?.id;
+            if (!userId) return;
+
+            const existing =
+              await ctx.context.internalAdapter.findUserById(userId);
+            const enrolled = new Set(
+              (existing as { twoFactorMethods?: string[] } | null)
+                ?.twoFactorMethods ?? [],
+            );
+            enrolled.add(method);
+
+            await ctx.context.internalAdapter.updateUser(userId, {
+              twoFactorMethod: method,
+              twoFactorMethods: [...enrolled],
+            });
+          }),
+        },
+      ],
+    },
+  } satisfies BetterAuthPlugin;
+};
+
+export const twoFactorContextClient = () => {
+  return {
+    id: "asc-two-factor-context",
+    $InferServerPlugin: {} as ReturnType<typeof twoFactorContext>,
+    pathMethods: {
+      "/two-factor/context": "GET",
+    },
+  } satisfies BetterAuthClientPlugin;
+};

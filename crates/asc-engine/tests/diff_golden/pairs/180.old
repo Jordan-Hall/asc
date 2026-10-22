@@ -1,0 +1,106 @@
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { websocket } from 'hono/bun';
+import type { Surreal } from 'surrealdb';
+import { surrealAuthMiddleware } from './middleware/surreal-auth';
+import { createDebugLogger } from './middleware/debug-logger';
+import queryRouter from './routes/query';
+import reportsRouter from './routes/reports';
+import nationalRouter from './routes/national';
+import searchRouter from './routes/search';
+import exportRouter from './routes/export';
+import publicReportsRouter from './routes/public';
+import liveRouter from './routes/live';
+import statsLiveRouter from './routes/stats-live';
+import { startSnapshotJob } from './jobs/snapshot';
+
+const FRONTEND_ORIGIN = import.meta.env.ANALYTICS_SERVICE_FRONTEND_ORIGIN;
+const PORT = import.meta.env.ANALYTICS_SERVICE_PORT || 3007;
+
+type AppContext = {
+  Variables: {
+    userDb: Surreal;
+    userId: string;
+    activeWorkspaceId: string;
+    activeTeamId: string;
+    activeOrganizationId: string;
+  };
+};
+
+const app = new Hono<AppContext>();
+
+app.use(
+  '*',
+  cors({
+    origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN.split(',') : [],
+    allowHeaders: ['Content-Type', 'Authorization'],
+    allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    maxAge: 600,
+  })
+);
+
+app.get('/health', async (c) => {
+  const containerId = import.meta.env.HOSTNAME || 'unknown';
+
+  let imageSha = import.meta.env.IMAGE_SHA || 'unknown';
+  if (imageSha === 'unknown' || imageSha === '') {
+    try {
+      const fs = await import('fs');
+      if (import.meta.env.IMAGE_ID) {
+        imageSha = import.meta.env.IMAGE_ID;
+      } else if (fs.existsSync('/proc/self/cgroup')) {
+        const cgroup = fs.readFileSync('/proc/self/cgroup', 'utf8');
+        const match = cgroup.match(/docker[/-]([a-f0-9]{64}|[a-f0-9]{12})/);
+        if (match && match[1]) imageSha = match[1].substring(0, 12);
+      }
+    } catch {
+    }
+  }
+
+  const docker = {
+    container_id: containerId,
+    image_sha: imageSha,
+    image_name: import.meta.env.IMAGE_NAME || 'unknown',
+    image_tag: import.meta.env.IMAGE_TAG || 'unknown',
+    platform: process.platform,
+    bun_version: process.versions.bun || process.version,
+    uptime: Math.round(process.uptime()),
+    memory: {
+      used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+      total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+      unit: 'MB',
+    },
+  };
+
+  return c.json({
+    status: 'ok',
+    service: 'analytics-service',
+    docker,
+  });
+});
+
+app.use('/api/*', surrealAuthMiddleware);
+app.use('/api/*', createDebugLogger('analytics-service'));
+
+const routes = app
+  .route('/public/reports', publicReportsRouter)
+  .route('/api/live', liveRouter)
+  .route('/api/stats-live', statsLiveRouter)
+  .route('/api/query', queryRouter)
+  .route('/api/reports', reportsRouter)
+  .route('/api/national', nationalRouter)
+  .route('/api/search', searchRouter)
+  .route('/api/export', exportRouter);
+
+startSnapshotJob().catch(err => console.error('Failed to start snapshot job:', err));
+
+console.log(`🚀 Analytics Service running on port ${PORT}`);
+
+export default {
+  port: PORT,
+  fetch: app.fetch,
+  websocket,
+};
+
+export type AppType = typeof routes;

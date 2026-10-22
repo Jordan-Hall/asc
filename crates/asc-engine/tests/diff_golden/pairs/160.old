@@ -1,0 +1,58 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  createHostMap,
+  resolveEnabledServices,
+  resolveRequestService,
+} from './routing';
+
+describe('core runtime routing', () => {
+  test('all role enables every core service', () => {
+    const selection = resolveEnabledServices({ ASC_ROLE: 'all' });
+    expect(selection.services).toEqual([
+      'auth',
+      'forms',
+      'person',
+      'activity',
+      'cms',
+      'audit',
+      'support',
+      'analytics',
+    ]);
+    expect(selection.workersOnly).toBe(false);
+  });
+
+  test('standalone role accepts the Docker service name', () => {
+    expect(resolveEnabledServices({ ASC_ROLE: 'forms-service' }).services).toEqual(['forms']);
+  });
+
+  test('rejects misspelled module names instead of silently dropping them', () => {
+    expect(() =>
+      resolveEnabledServices({ ASC_MODULES: 'auth,formz' }),
+    ).toThrow('Unknown ASC_MODULES entries: formz');
+  });
+
+  test('maps internal aliases and existing external URLs', () => {
+    const environment = {
+      AUTH_SERVICE_EXTERNAL_URL: 'https://auth.example.test',
+      FORMS_SERVICE_DOMAIN: 'forms.example.test',
+    };
+    const hosts = createHostMap(environment, ['auth', 'forms']);
+
+    expect(hosts.get('auth-service')).toBe('auth');
+    expect(hosts.get('auth.example.test')).toBe('auth');
+    expect(hosts.get('forms.example.test')).toBe('forms');
+  });
+
+  test('dispatches by host without changing the request path', () => {
+    const hosts = createHostMap({}, ['auth', 'forms']);
+    const request = new Request('http://forms-service:8080/api/schemas');
+
+    expect(resolveRequestService(request, ['auth', 'forms'], hosts)).toBe('forms');
+    expect(new URL(request.url).pathname).toBe('/api/schemas');
+  });
+
+  test('single-service role accepts an arbitrary platform hostname', () => {
+    const request = new Request('https://generated.coolify.example/api/schemas');
+    expect(resolveRequestService(request, ['forms'], new Map())).toBe('forms');
+  });
+});

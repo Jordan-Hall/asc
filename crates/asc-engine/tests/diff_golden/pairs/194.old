@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""The fleet's shared vocabulary. Owned by no domain, usable by all of them.
+
+    from vocabulary import field_pools, words
+    pools = field_pools()
+    pools["string"]        # every text-ish field title we know of
+
+Real field names and real English are a FLEET asset, not a schema-author one.
+They were briefly loaded inside schema-author's corpus builder, which made a
+shared thing into one domain's private improvement — form-extract, query and the
+orchestrator read the same requests from the same users and were left out.
+
+Two sources, both licensed for commercial use and both generated rather than
+hand-written:
+
+  field-vocabulary.json   mined from the real forms in this repository
+  nhs-vocabulary.json     NHS Data Model and Dictionary, Open Government Licence
+
+Both are optional. A bundle that ships without them must still build a corpus,
+so a missing file is an empty pool rather than an error.
+"""
+from __future__ import annotations
+
+import json
+import re
+from collections import Counter
+from functools import lru_cache
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SOURCES = ("field-vocabulary.json", "nhs-vocabulary.json")
+
+
+def corpus_dir() -> Path | None:
+    for parent in HERE.parents:
+        candidate = parent / "ai-corpus" / "data" / "soma-train"
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=1)
+def entries() -> tuple[dict, ...]:
+    """Every (title, kind, widget) we hold, from every source, deduplicated."""
+    directory = corpus_dir()
+    if directory is None:
+        return ()
+    seen: dict[str, dict] = {}
+    for name in SOURCES:
+        path = directory / name
+        if not path.is_file():
+            continue
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        # The repo miner writes a bare list; the NHS fetcher wraps its entries
+        # in the licence block the OGL requires it to carry.
+        rows = loaded if isinstance(loaded, list) else loaded.get("fields", [])
+        for row in rows:
+            title = str(row.get("title", "")).strip()
+            if title and title.lower() not in seen:
+                seen[title.lower()] = {"title": title, "kind": row.get("kind"),
+                                       "widget": row.get("widget")}
+    return tuple(seen.values())
+
+
+@lru_cache(maxsize=1)
+def field_pools() -> dict[str, list[str]]:
+    """Titles grouped by the kind a corpus builder would place them under.
+
+    Routed by the kind and widget the SOURCE declared, so a length rule never
+    lands on a number and a date rule never lands on free text — the checker
+    would refuse those anyway, and a builder should not be generating them.
+    """
+    pools: dict[str, list[str]] = {"string": [], "number": [], "date": [],
+                                   "boolean": [], "longText": []}
+    for entry in entries():
+        kind, widget = entry["kind"], entry["widget"]
+        if kind == "number":
+            pools["number"].append(entry["title"])
+        elif kind in ("date", "datetime", "time"):
+            pools["date"].append(entry["title"])
+        elif kind == "boolean":
+            pools["boolean"].append(entry["title"])
+        elif kind == "string" and widget == "textarea":
+            pools["longText"].append(entry["title"])
+        elif kind == "string" and widget in (None, "text"):
+            pools["string"].append(entry["title"])
+    return pools
+
+
+@lru_cache(maxsize=1)
+def words() -> Counter:
+    """Distinct word types across every title we hold — the measure that matters.
+
+    The generated corpus reached 1,308 word types, which is smaller than Basic
+    English and is why a specialist that can emit every operator still cannot
+    read "make that mandatory".
+    """
+    counter: Counter = Counter()
+    for entry in entries():
+        counter.update(w.lower() for w in re.findall(r"[A-Za-z]+", entry["title"]))
+    return counter
+
+
+if __name__ == "__main__":
+    pools = field_pools()
+    print(f"[vocabulary] {len(entries())} titles, {len(words())} distinct word types")
+    for kind, pool in pools.items():
+        print(f"[vocabulary]   {kind:9} {len(pool):>5}")

@@ -1,0 +1,45 @@
+import { expect, test } from 'bun:test';
+import { rewriteText } from './domino-proxy';
+
+const host = 'www.example.org';
+
+test('rewrites absolute and root-relative references in html', () => {
+  const html = `<form action="https://www.example.org/names.nsf?Login"><link href="/domcfg.nsf/a.css"><script src="b.js"></script><a href="//cdn.example/x">x</a>`;
+  expect(rewriteText(html, host, 'text/html')).toBe(
+    `<form action="/domino/www.example.org/names.nsf?Login"><link href="/domino/www.example.org/domcfg.nsf/a.css"><script src="b.js"></script><a href="//cdn.example/x">x</a>`,
+  );
+});
+
+test('rewrites Domino paths inside scripts and css urls', () => {
+  expect(
+    rewriteText(
+      `fetch('/RCOA/NELAUAT2.nsf/x?open'); var a = "/other/thing";`,
+      host,
+      'text/javascript',
+    ),
+  ).toBe(
+    `fetch('/domino/www.example.org/RCOA/NELAUAT2.nsf/x?open'); var a = "/other/thing";`,
+  );
+  expect(
+    rewriteText(`a{background:url(/domcfg.nsf/i.png)}`, host, 'text/css'),
+  ).toBe(`a{background:url(/domino/www.example.org/domcfg.nsf/i.png)}`);
+});
+
+test('leaves form values alone so Domino redirects stay on its own host', () => {
+  const html = `<input name="RedirectTo" value="https://www.example.org/RCOA/x" type="hidden"><a href="https://www.example.org/RCOA/x">x</a>`;
+  expect(rewriteText(html, host, 'text/html')).toBe(
+    `<input name="RedirectTo" value="https://www.example.org/RCOA/x" type="hidden"><a href="/domino/www.example.org/RCOA/x">x</a>`,
+  );
+});
+
+test('rewrites protocol-relative references too', () => {
+  expect(
+    rewriteText(
+      `<base href="//www.example.org/RCOA/NELAUAT2.nsf/"><script src="//www.example.org/RCOA/NELAUAT2.nsf/a.js?openFileResource"></script>`,
+      host,
+      'text/html',
+    ),
+  ).toBe(
+    `<base href="/domino/www.example.org/RCOA/NELAUAT2.nsf/"><script src="/domino/www.example.org/RCOA/NELAUAT2.nsf/a.js?openFileResource"></script>`,
+  );
+});

@@ -1,0 +1,53 @@
+import {
+  availableLocales,
+  type CatalogueSet,
+  createTranslator,
+  resolveLocale,
+  type Translator,
+} from '@asc/i18n';
+import coreEnGB from '@asc/i18n/locales/en-GB.json';
+import coreEnUS from '@asc/i18n/locales/en-US.json';
+import coreCy from '@asc/i18n/locales/cy.json';
+import cy from '../../../locales/cy.json';
+import enGB from '../../../locales/en-GB.json';
+
+export type EmailTranslator = Translator;
+
+const catalogues: CatalogueSet = {
+  'en-GB': { ...coreEnGB, ...enGB },
+  'en-US': coreEnUS,
+  cy: { ...coreCy, ...cy },
+};
+const available = availableLocales(catalogues);
+const translators = new Map<string, EmailTranslator>();
+
+/**
+ * The translator an email renders with: the recipient's locale when the
+ * account has one, en-GB otherwise. Email copy has no use-case wording, so
+ * every translator is clinical.
+ */
+export function emailTranslator(locale?: string | null): EmailTranslator {
+  const resolved = resolveLocale(locale ? [locale] : [], available);
+  let translator = translators.get(resolved);
+  if (!translator) {
+    translator = createTranslator({
+      locale: resolved,
+      useCase: 'clinical',
+      catalogues,
+    });
+    translators.set(resolved, translator);
+  }
+  return translator;
+}
+
+/**
+ * The `locale` on a user row when the account has set one. The typed user
+ * Better Auth hands a hook is its core shape; the additional field is on
+ * the row underneath.
+ */
+export function localeOf(user: object): string | undefined {
+  if (!('locale' in user)) return undefined;
+  return typeof user.locale === 'string' && user.locale !== ''
+    ? user.locale
+    : undefined;
+}

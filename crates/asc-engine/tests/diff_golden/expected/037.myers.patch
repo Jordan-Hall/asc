@@ -1,0 +1,34 @@
+diff --git a/file b/file
+index 1c0f444..b4a2698 100644
+--- a/file
++++ b/file
+@@ -1,6 +1,7 @@
+ import { expect, test } from 'bun:test';
+ import {
+   displayedScore,
++  oneDecimalProblem,
+   type RawScore,
+   readingFrom,
+   reasonFrom,
+@@ -160,3 +161,21 @@ test('a card with no reason does not borrow the one in its footer', () => {
+     ),
+   ).toBe('the card says the score cannot be calculated and gives no reason');
+ });
++
++test('a score is always shown to one decimal place: 0.0%, never 0% or --', () => {
++  expect(
++    oneDecimalProblem('card', 'LOW PRE-OP RISK SCORE0.0%This patient'),
++  ).toBeNull();
++  expect(oneDecimalProblem('card', 'HIGH PRE-OP RISK SCORE12.4%')).toBeNull();
++  expect(oneDecimalProblem('card', 'LOW PRE-OP RISK SCORE0%This patient')).toBe(
++    'the card shows 0%: a score is always shown to one decimal place (0.0%)',
++  );
++  expect(oneDecimalProblem('card', 'LOW PRE-OP RISK SCORE3%')).toContain(
++    '(3.0%)',
++  );
++  expect(oneDecimalProblem('card', 'LOW 2.35%')).toContain('(2.4%)');
++  // No score shown: judged against the model, not here
++  expect(
++    oneDecimalProblem('card', 'UNABLE TO CALCULATE PRE-OP SCORE'),
++  ).toBeNull();
++});

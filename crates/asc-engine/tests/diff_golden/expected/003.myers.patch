@@ -1,0 +1,34 @@
+diff --git a/file b/file
+index 918dd7e..3c2108a 100644
+--- a/file
++++ b/file
+@@ -6,11 +6,13 @@
+  * its size; for a pair, whether the two agree on every probe and, if not, the
+  * first record on which they differ. `{"id", "answer", "target"}` is graded
+  * as the gate grades it: the checker's fidelity against the reference.
++ * `{"id", "answer", "declare": true}` answers the rule with its inputs
++ * declared in front of it (`let root = sys.input("root")`).
+  *
+  *   ASC_DSL_WASM_PATH=dsl_wasm_bg.wasm bun dist/rowcheck.bundle.js < rows.jsonl
+  */
+ import { createInterface } from 'node:readline';
+-import { init as initDsl } from '@asc/dsl-compiler';
++import { declareInputs, init as initDsl } from '@asc/dsl-compiler';
+ import { canVary, checkRule, deepDisagreement, ruleSize } from './rules';
+ 
+ await initDsl();
+@@ -20,8 +22,12 @@ for await (const line of lines) {
+   if (!line.trim()) continue;
+   let out: Record<string, unknown>;
+   try {
+-    const row = JSON.parse(line) as { id: unknown; answer: string; other?: string; target?: string };
+-    if (typeof row.target === 'string') {
++    const row = JSON.parse(line) as { id: unknown; answer: string; other?: string; target?: string; declare?: boolean };
++    if (row.declare === true) {
++      // The rule with its inputs declared, as a program that says where
++      // everything it reads comes from.
++      out = { id: row.id, declared: declareInputs(row.answer) };
++    } else if (typeof row.target === 'string') {
+       // Graded as the gate grades: the checker's fidelity against a reference.
+       const v = checkRule(row.answer, { target: row.target });
+       out = { id: row.id, fidelity: v.fidelity, simplicity: v.simplicity ?? null, parses: v.parses };

@@ -1,0 +1,127 @@
+//! ASC IR - typed SSA intermediate representation for the ASC DSL compiler.
+//!
+//! Pipeline:
+//!   dsl-core AST
+//!     → [`builder::IRBuilder::lower_program`]  (AST → AscModule)
+//!     → [`optimize::run_passes`]               (optimizer)
+//!     → [`vm::IrVm`]                           (dev/REPL interpreter)
+//!     → dsl-cranelift                          (AOT → native binary, future)
+//!     → dsl-wasm-codegen                       (→ WASM/WASI, future)
+
+pub mod compiled;
+pub mod types;
+pub mod ir;
+pub mod builder;
+pub mod optimize;
+pub mod vm;
+
+pub use compiled::{compile, compile_program, compile_program_src, CompiledExpr, CompiledProgram};
+pub use types::{AscType, AscVal, AllocSite};
+pub use ir::{AscModule, AscFn, BasicBlock, Terminator, AscInst, ValId, BlockId};
+pub use builder::IRBuilder;
+pub use vm::{DebugSourceLocation, DebugTraceEvent, DebugTraceResult, IrVm};
+
+// Re-export the types that consumers previously imported from dsl-core.
+pub use dsl_core::{
+    context::{EvalContext, ProgramContext},
+    error::{DslError, DslResult},
+    value::Value,
+};
+
+// Dependency and diagnostic operations - part of the binding contract, so they
+// are re-exported here alongside compile/evaluate rather than making every
+// binding reach into `dsl-core` separately.
+pub use dsl_core::dependencies::{
+    expression_dependencies, program_dependencies, program_source_dependencies,
+    source_dependencies,
+};
+pub use dsl_core::diagnostics::Diagnostic;
+
+// Parse-tree operation: the AST in the TypeScript `ExprNode` JSON shape.
+pub use dsl_core::ast_json::{parse_expr_json, parse_program_json};
+
+/// Every diagnostic an expression source produces, across all stages: lex,
+/// parse, unknown-function and compile. Spans are UTF-16 code-unit offsets.
+/// Whether a source carries program statements rather than one expression.
+///
+/// The distinction the caller has to make before every evaluation: a program
+/// has statements and needs its own run, an expression does not. It was
+/// decided by a second lexer written in TypeScript, on the hot path, for every
+/// evaluation a form performs. Answered here it is one call into the lexer
+/// that already owns the language, and no token stream crosses the bridge.
+///
+/// A source that will not lex is not a program: it is a broken expression, and
+/// reporting it as one gives the caller the error it expects.
+#[must_use]
+pub fn is_program_source(src: &str) -> bool {
+    const PROGRAM_KEYWORDS: [&str; 3] = ["use", "return", "when"];
+    dsl_core::lexer::lex_spanned(src).is_ok_and(|tokens| {
+        tokens.iter().any(|token| {
+            token.kind == dsl_core::lexer::TokenKind::Keyword
+                && PROGRAM_KEYWORDS.contains(&token.value.as_str())
+        })
+    })
+}
+
+/// The token stream of an expression, comments included, as JSON.
+///
+/// What an editor needs and the compiler does not: every token in source
+/// order, with the comments the parser discards, so syntax highlighting and
+/// hover ranges come from the same lexer that decides what the language means.
+/// A lexical failure is returned as an empty stream with the error alongside,
+/// because a half-typed expression must still colour the part that parsed.
+#[must_use]
+pub fn lex_expr_json(src: &str) -> serde_json::Value {
+    match dsl_core::lexer::lex_with_comments(src) {
+        Ok(tokens) => serde_json::json!({ "tokens": tokens, "error": null }),
+        Err(error) => serde_json::json!({
+            "tokens": [],
+            "error": {
+                "message": error.message,
+                "index": error.index,
+                "length": error.length,
+            },
+        }),
+    }
+}
+
+pub fn diagnose_expr_source(src: &str) -> Vec<Diagnostic> {
+    diagnose_expr_source_with(src, &dsl_core::KnownShape::unknown())
+}
+
+/// `diagnose_expr_source`, told what the record declares, so a property the
+/// schema does not name is reported rather than read as null.
+pub fn diagnose_expr_source_with(
+    src: &str,
+    shape: &dsl_core::KnownShape,
+) -> Vec<Diagnostic> {
+    let mut diags = dsl_core::diagnostics::diagnose_expression_with(src, shape);
+    if !diags.iter().any(|d| d.severity == "error") {
+        if let Err(e) = compile(src) {
+            diags.push(dsl_core::diagnostics::compile_diagnostic(src, e.to_string()));
+        }
+    }
+    diags
+}
+
+/// Every diagnostic a program source produces. Spans are UTF-16 code-unit offsets.
+pub fn diagnose_program_source(src: &str) -> Vec<Diagnostic> {
+    diagnose_program_source_with(src, &dsl_core::KnownShape::unknown())
+}
+
+/// `diagnose_program_source`, told what the record declares.
+pub fn diagnose_program_source_with(
+    src: &str,
+    shape: &dsl_core::KnownShape,
+) -> Vec<Diagnostic> {
+    let mut diags = dsl_core::diagnostics::diagnose_program_with(src, shape);
+    if !diags.iter().any(|d| d.severity == "error") {
+        if let Err(e) = compile_program_src(src) {
+            diags.push(dsl_core::diagnostics::compile_diagnostic(src, e.to_string()));
+        }
+    }
+    diags
+}
+
+#[cfg(feature = "parallel")]
+pub use compiled::configure_thread_pool;

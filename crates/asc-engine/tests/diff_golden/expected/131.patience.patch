@@ -1,0 +1,35 @@
+diff --git a/file b/file
+index 893652c..7b7939f 100644
+--- a/file
++++ b/file
+@@ -59,8 +59,15 @@ export async function submitVersionForReview(
+ ): Promise<Record<string, unknown> | null> {
+ 	const db = await connect(config);
+ 	await db.query(
++		// Guarded on the status it is transitioning FROM, not only on the caller's earlier
++		// read of it. That read happens on another connection, and between the two a reviewer
++		// can approve, reject or revoke the same version — a publisher resubmitting a
++		// rejected version at the moment a reviewer acts on it is not a contrived race. An
++		// unguarded UPDATE would flip an approved version back to `submitted`, silently
++		// undoing the one decision the whole platform rests on.
+ 		`BEGIN TRANSACTION;
+-		 UPDATE $version SET status = 'submitted', submitted_at = time::now();
++		 UPDATE $version SET status = 'submitted', submitted_at = time::now()
++		   WHERE status IN ['draft', 'rejected'];
+ 		 CREATE plugin_review_event SET plugin_version = $version, action = $action, actor = $actor;
+ 		 COMMIT TRANSACTION;`,
+ 		{ version: versionId, action, actor: actorId },
+@@ -75,7 +82,12 @@ export async function submitVersionForReview(
+ 		'SELECT * FROM plugin_version WHERE id = $version LIMIT 1',
+ 		{ version: versionId },
+ 	);
+-	return rows?.[0] ?? null;
++	const row = rows?.[0] ?? null;
++	// The guard above can decline the transition, and a caller told "submitted" when the
++	// version is sitting at `approved` would be told something untrue. Null means the same
++	// thing it always meant here: this did not happen, say so.
++	if (!row || row.status !== 'submitted') return null;
++	return row;
+ }
+ 
+ /*** Close the connection. Used when the process shuts down and by tests. */

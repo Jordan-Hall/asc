@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index f3fa7a0..d13d7fa 100644
+--- a/file
++++ b/file
+@@ -18,6 +18,7 @@ export const diagnose_expr_with_fields: (a: number, b: number, c: number, d: num
+ export const diagnose_expr_with_shape: (a: number, b: number, c: number, d: number, e: number) => void;
+ export const diagnose_program: (a: number, b: number, c: number) => void;
+ export const diagnose_program_with_fields: (a: number, b: number, c: number, d: number, e: number) => void;
++export const dslcontext_setInputs: (a: number, b: number, c: number, d: number) => void;
+ export const dslcontext_set_value: (a: number, b: number, c: number, d: number) => void;
+ export const dslcontextbatch_is_empty: (a: number) => number;
+ export const dslcontextbatch_len: (a: number) => number;

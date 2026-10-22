@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index b1f8245..a58670f 100644
+--- a/file
++++ b/file
+@@ -44,6 +44,7 @@
+     "@asc/composite-value": "workspace:*",
+     "@asc/dsl": "workspace:*",
+     "@asc/schema-runtime": "workspace:*",
++    "@asc/schema-validators": "workspace:*",
+     "ajv": "^8.20.0"
+   },
+   "devDependencies": {

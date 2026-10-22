@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 22f8b9a..7e54502 100644
+--- a/file
++++ b/file
+@@ -13,6 +13,7 @@
+   },
+   "dependencies": {
+     "@asc/ai-corpus": "workspace:*",
++    "@asc/nano-forge": "workspace:*",
+     "@asc/schema-dsl": "workspace:*",
+     "@asc/schema-meta-v2": "workspace:*",
+     "@asc/soma": "workspace:*"

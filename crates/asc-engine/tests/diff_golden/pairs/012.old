@@ -1,0 +1,115 @@
+/**
+ * Every field tells the Validated panel about itself the moment it is left.
+ *
+ * Text and number boxes: focus, then Tab out with nothing typed. The field
+ * shows its required message, and the panel's error count goes up by one -
+ * at that blur, not at the next change somewhere else. Radio and checkbox
+ * groups: choosing an option counts as answered, so the panel's to-do count
+ * goes down by one on the click. Every field the schema declares is
+ * exercised by name, so a field that stops reporting is named in the
+ * failure.
+ */
+import { expect, type Page, test } from '@playwright/test';
+import { waitForFormRuntime } from './helpers/nela-page';
+
+interface Counts {
+  errors: number;
+  todo: number;
+}
+
+/** The counts the desktop Validated panel shows */
+async function panelCounts(page: Page): Promise<Counts> {
+  return page.evaluate(() => {
+    const widget = document.querySelector('asc-form-progress:not([mode="mobile"])');
+    const root = widget?.shadowRoot;
+    const number = (selector: string) => {
+      const text = root?.querySelector(selector)?.textContent ?? '0';
+      return Number.parseInt(text, 10) || 0;
+    };
+    return { errors: number('.issue-count-error'), todo: number('.issue-count-todo') };
+  });
+}
+
+interface SchemaField {
+  name: string;
+  widget: string;
+  required: boolean;
+}
+
+/** The fields the schema declares, with how each is answered */
+async function schemaFields(page: Page): Promise<SchemaField[]> {
+  const schema = (await (await page.request.get('/schema/nela-risk-calculator.json')).json()) as {
+    properties: Record<string, { ui?: { type?: string }; rules?: { op?: string }[] }>;
+    sections: { fields: string[] }[];
+  };
+  const order = schema.sections.flatMap((section) => section.fields);
+  return order.map((name) => {
+    const property = schema.properties[name];
+    return {
+      name,
+      widget: property?.ui?.type ?? 'Text',
+      required: (property?.rules ?? []).some((rule) => rule.op === 'required'),
+    };
+  });
+}
+
+async function waitForCounts(page: Page, want: (counts: Counts) => boolean): Promise<Counts> {
+  const deadline = Date.now() + 4000;
+  let last = await panelCounts(page);
+  while (!want(last) && Date.now() < deadline) {
+    await page.waitForTimeout(100);
+    last = await panelCounts(page);
+  }
+  return last;
+}
+
+test('every field updates the Validated panel the moment it is left or answered', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto('/');
+  await waitForFormRuntime(page);
+  await page.waitForTimeout(1000);
+
+  const fields = await schemaFields(page);
+  expect(fields.length).toBeGreaterThan(10);
+
+  // The disclaimer first: everything else is disabled until it is accepted
+  const disclaimer = page.locator('[data-field-name="disclaimer_accepted"] input[type="checkbox"]');
+  await disclaimer.check();
+  await waitForCounts(page, (c) => c.todo > 0);
+
+  const failures: string[] = [];
+  for (const field of fields) {
+    if (field.name === 'disclaimer_accepted') continue;
+    const box = page.locator(`[data-field-name="${field.name}"]`);
+    if ((await box.count()) === 0) {
+      failures.push(`${field.name}: not on the page`);
+      continue;
+    }
+    const before = await panelCounts(page);
+    if (field.widget === 'Radio' || field.widget === 'Checkbox' || field.widget === 'CheckboxGroup') {
+      // Choosing an option answers it: one fewer to do, at the click
+      const option = box.locator('input[type="radio"], input[type="checkbox"]').first();
+      await option.check();
+      const after = await waitForCounts(page, (c) => c.todo === before.todo - 1);
+      if (after.todo !== before.todo - 1)
+        failures.push(
+          `${field.name} (${field.widget}): to do ${before.todo} -> ${after.todo} after choosing an option, expected ${before.todo - 1}`,
+        );
+      continue;
+    }
+    if (!field.required) continue;
+    // Leaving a required box empty: its message shows and the panel counts it
+    const input = box.locator('input, textarea, select').first();
+    await input.click();
+    await page.keyboard.press('Tab');
+    const after = await waitForCounts(page, (c) => c.errors === before.errors + 1);
+    const message = (await box.locator('.field-message:not(.field-message-empty), .field-error').first().textContent().catch(() => '')) ?? '';
+    if (after.errors !== before.errors + 1)
+      failures.push(
+        `${field.name} (${field.widget}): errors ${before.errors} -> ${after.errors} after leaving it empty, expected ${before.errors + 1}; field says "${message.trim()}"`,
+      );
+    else if (message.trim() === '')
+      failures.push(`${field.name} (${field.widget}): the panel counted it but the field shows no message`);
+  }
+  expect(failures, failures.join('\n')).toEqual([]);
+});

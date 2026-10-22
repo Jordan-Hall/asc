@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index e70f909..ffbc9e5 100644
+--- a/file
++++ b/file
+@@ -52,7 +52,13 @@ export interface RiskCalculatorState {
+  * Create a new risk calculator state instance
+  */
+ export function createRiskCalculatorState(): RiskCalculatorState {
+-  const formData = new Signal.State<Record<string, unknown>>({});
++  const formData = new Signal.State<Record<string, unknown>>(
++    {},
++    {
++      equals: (previous, next) =>
++        JSON.stringify(previous) === JSON.stringify(next),
++    },
++  );
+   const formValidation = new Signal.State<FormValidation>({
+     isValid: false,
+     hasData: false,
+@@ -97,7 +103,7 @@ export function createRiskCalculatorState(): RiskCalculatorState {
+    */
+   function updateValidation(validation: FormValidation) {
+     formValidation.set(validation);
+-    if (riskResult.get() !== null) {
++    if (!validation.isValid || !validation.hasData) {
+       riskResult.set(null);
+       calculationStatus.set('idle');
+     }

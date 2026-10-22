@@ -1,0 +1,93 @@
+/**
+ * End-to-end check of the two document flows, driven directly through the
+ * harness (no HTTP/auth), using whatever model LLM_MODEL points at.
+ *
+ *   bun apps/ai-service/scripts/flows-check.ts
+ *
+ * Set LLM_MODEL to a model you have pulled since the .env default may point
+ * at a model that isn't installed. The schema flow uses the REAL `schema`
+ * profile prompt (SCHEMA_SYSTEM, profiles.ts) — since the prompt diet
+ * (task-5) it's a lean instruction core plus retrieval-composed reference
+ * material (harness-runner.ts's buildSchemaContext, wired automatically
+ * whenever update_schema is in the tool set), not the old ~148KB whole-
+ * meta-schema embed, so no reduced/stand-in prompt is needed here anymore.
+ */
+import type { Surreal } from 'surrealdb';
+import { runAgent, type RunAgentParams } from '../src/lib/harness-runner';
+import { getProfile } from '../src/lib/profiles';
+import { augmentMessage } from '../src/lib/attachments';
+
+const dummyDb = undefined as unknown as Surreal;
+const identity = { userId: 'u', orgId: 'o', workspaceId: 'w', teamId: 't', token: '' };
+
+function dataUrl(text: string, mime = 'text/plain'): string {
+  return `data:${mime};base64,${Buffer.from(text).toString('base64')}`;
+}
+
+async function run(label: string, params: RunAgentParams): Promise<void> {
+  console.log(`\n================ ${label} ================`);
+  const types: string[] = [];
+  let sawToolCall = false;
+  let sawPage = false;
+  for await (const ev of runAgent(params)) {
+    types.push(ev.type);
+    if (ev.type === 'tool_call') { sawToolCall = true; console.log('\nTOOL_CALL:', ev.data); }
+    else if (ev.type === 'page') { sawPage = true; console.log('\nPAGE EVENT (what the client would apply):\n', ev.data.slice(0, 1200)); }
+    else if (ev.type === 'text') process.stdout.write(ev.data);
+    else if (ev.type === 'escalated') console.log(`\n[escalated -> ${ev.data}]`);
+    else if (ev.type === 'error') console.log('\nERROR:', ev.data);
+  }
+  console.log(`\n--- ${label}: events = ${types.join(', ')}`);
+  console.log(`--- toolCall=${sawToolCall} pageEvent=${sawPage}`);
+}
+
+async function main(): Promise<void> {
+  console.log('model =', process.env.LLM_MODEL || process.env.OLLAMA_MODEL || '(default)');
+
+  // ── FORMS: document -> extract -> fuzzy field map -> fill the form ──
+  const patientDoc = dataUrl(
+    'PATIENT RECORD\nFull name: John A. Smith\nDOB: 12/03/1985\nNHS Number: 943 476 5919\n' +
+    'Presenting complaint: Chest pain on exertion for 2 weeks\nGP: Dr. Patel',
+  );
+  const forms = getProfile('forms');
+  const formMessage = await augmentMessage(
+    'Fill in the form from the attached patient record. The document labels may NOT match the form field keys — map them by meaning, then call set_form_values.',
+    [{ data_url: patientDoc, file_name: 'patient.txt' }],
+    {
+      form_fields: {
+        patient_full_name: { label: 'Patient name', type: 'string' },
+        date_of_birth: { label: 'Date of birth', type: 'date' },
+        nhs_no: { label: 'NHS number', type: 'string' },
+        complaint: { label: 'Presenting complaint', type: 'string' },
+      },
+    },
+  );
+  await run('FORMS — fill from document (fuzzy field mapping)', {
+    system: forms.system, tools: forms.tools, startTier: forms.startTier,
+    message: formMessage, db: dummyDb, identity, userPerms: new Set<string>(), maxRounds: 4,
+  });
+
+  if (!process.env.RUN_SCHEMA) {
+    console.log('\n(skipping SCHEMA flow — set RUN_SCHEMA=1 to include it; slow on a CPU model)');
+    return;
+  }
+
+  // ── SCHEMA: spec text -> create schema (real production prompt — see header) ──
+  const schema = getProfile('schema');
+  const schemaMessage = await augmentMessage(
+    'Create a schema from this specification.',
+    [{
+      data_url: dataUrl(
+        'Referral Form Spec\n1. Patient name (required)\n2. Date of birth (required, not in the future)\n' +
+        '3. Urgency: routine / urgent / emergency (required)\n4. Reason for referral (free text)',
+      ),
+      file_name: 'spec.txt',
+    }],
+  );
+  await run('SCHEMA — create from spec (real schema profile prompt)', {
+    system: schema.system, tools: schema.tools, startTier: 'big',
+    message: schemaMessage, db: dummyDb, identity, userPerms: new Set<string>(), maxRounds: 4,
+  });
+}
+
+main().catch((e) => { console.error(e); process.exitCode = 1; });

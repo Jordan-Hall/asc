@@ -1,0 +1,26 @@
+diff --git a/file b/file
+index 7b7939f..ac28563 100644
+--- a/file
++++ b/file
+@@ -65,10 +65,18 @@ export async function submitVersionForReview(
+ 		// rejected version at the moment a reviewer acts on it is not a contrived race. An
+ 		// unguarded UPDATE would flip an approved version back to `submitted`, silently
+ 		// undoing the one decision the whole platform rests on.
++		// The event is written from the UPDATE's own result, so it exists only if the
++		// transition did. A non-matching WHERE is a no-op in SurrealDB rather than an abort,
++		// so an unconditional CREATE appended a `submitted` entry to an append-only audit
++		// trail for a transition that never happened — twice for one real submission if the
++		// route was simply called again, and once for every refused race. A trail that
++		// records decisions nobody made is worse than no trail.
+ 		`BEGIN TRANSACTION;
+-		 UPDATE $version SET status = 'submitted', submitted_at = time::now()
+-		   WHERE status IN ['draft', 'rejected'];
+-		 CREATE plugin_review_event SET plugin_version = $version, action = $action, actor = $actor;
++		 LET $moved = (UPDATE $version SET status = 'submitted', submitted_at = time::now()
++		   WHERE status IN ['draft', 'rejected'] RETURN id);
++		 FOR $row IN $moved {
++		   CREATE plugin_review_event SET plugin_version = $version, action = $action, actor = $actor;
++		 };
+ 		 COMMIT TRANSACTION;`,
+ 		{ version: versionId, action, actor: actorId },
+ 	);

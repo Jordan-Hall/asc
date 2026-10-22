@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index c8971bc..6aa30f7 100644
+--- a/file
++++ b/file
+@@ -51,6 +51,7 @@
+     "typescript": "7.0.2"
+   },
+   "dependencies": {
++    "@asc/composite-value": "workspace:*",
+     "decimal.js": "^10.6.0"
+   }
+ }

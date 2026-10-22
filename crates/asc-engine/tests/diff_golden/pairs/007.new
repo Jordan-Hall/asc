@@ -1,0 +1,47 @@
+import { describe, expect, test } from 'bun:test';
+import { buildSchemaContext } from './schema-context';
+
+describe('buildSchemaContext', () => {
+  test('does not treat a zero retrieved-context budget as unlimited', async () => {
+    const withoutRetrieval = await buildSchemaContext('', { budgetTokens: 0 });
+    const keywordMatched = await buildSchemaContext(
+      'Make the discharge date required',
+      { budgetTokens: 0 },
+    );
+
+    expect(keywordMatched).toBe(withoutRetrieval);
+    expect(keywordMatched).not.toContain('## Meta-schema reference:');
+  });
+
+  test('keeps a truncated meta-schema reference valid JSON', async () => {
+    const context = await buildSchemaContext(
+      'Make the discharge date required',
+      // Room above the always-on core (which now also teaches choice options
+      // and builtin arguments) for one truncated meta-schema section.
+      { budgetTokens: 2000 },
+    );
+    const match = context.match(/## Meta-schema reference: [^\n]+\n([^\n]+)/);
+
+    expect(match).not.toBeNull();
+    expect(() =>
+      JSON.parse(match![1]!.replace(/\n?… \(truncated\)$/, '')),
+    ).not.toThrow();
+  });
+
+  test('never retrieves the component/option sections json-render owns', async () => {
+    const context = await buildSchemaContext(
+      'Add a dropdown for admission reason with options elective, emergency and other',
+    );
+
+    expect(context).not.toContain('## Meta-schema reference: components');
+    expect(context).not.toContain('## Meta-schema reference: options');
+  });
+
+  test('the always-on core no longer teaches component names or props', async () => {
+    const context = await buildSchemaContext('', { budgetTokens: 0 });
+
+    expect(context).toContain('"ui"');
+    expect(context).not.toContain('MultiSelect');
+    expect(context).not.toContain('placeholder');
+  });
+});

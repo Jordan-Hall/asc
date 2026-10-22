@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index debf265..f942b4a 100644
+--- a/file
++++ b/file
+@@ -75,3 +75,15 @@ describe('a rule that cannot be evaluated', () => {
+     expect(evaluateLanguageRule(broken, 'anything', {})).toBe(false);
+   });
+ });
++
++describe('a year that is a typo', () => {
++  it('is caught by the age rule, which is what makes 0001 invalid', () => {
++    // The date control is right to accept it as a CALENDAR date - year 1 is a
++    // year. What says a patient was not born in it is the schema's own rule,
++    // and that rule was the one being read as a pass.
++    expect(evaluateLanguageRule(ageRule, '0001-01-01', {})).toBe(false);
++    expect(languageRuleOutcome(ageRule, '0001-01-01', {}).message).toBe(
++      'Patient must be between 18 and 115 years of age',
++    );
++  });
++});

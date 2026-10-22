@@ -1,0 +1,42 @@
+diff --git a/file b/file
+index d0a205f..6c817dc 100644
+--- a/file
++++ b/file
+@@ -1,5 +1,5 @@
+ import { expect, test } from 'bun:test';
+-import { selectRows } from './rows';
++import { pinRandom, selectRows } from './rows';
+ import type { SourceRow } from './types';
+ 
+ const rows: SourceRow[] = [1, 2, 3, 4, 5].map((index) => ({
+@@ -18,7 +18,7 @@ test('all, count and range', () => {
+ 
+ test('unknown spec is refused', () => {
+   expect(() => selectRows(rows, 'some')).toThrow(
+-    'ROWS must be all, a count, a range like 10-20, or a list',
++    'ROWS must be all, a count, a range like 10-20, a list',
+   );
+ });
+ 
+@@ -28,3 +28,21 @@ test('a comma list picks single rows and ranges in sheet order', () => {
+   ]);
+   expect(() => selectRows(rows, '1,x')).toThrow();
+ });
++
++test('random:N draws N distinct rows in sheet order; a seed repeats the draw', () => {
++  const drawn = selectRows(rows, 'random:3');
++  expect(drawn.length).toBe(3);
++  expect(new Set(drawn.map((row) => row.index)).size).toBe(3);
++  const indices = drawn.map((row) => row.index);
++  expect(indices).toEqual(indices.toSorted((a, b) => a - b));
++  expect(selectRows(rows, 'random:2:7')).toEqual(
++    selectRows(rows, 'random:2:7'),
++  );
++  expect(selectRows(rows, 'random:9').length).toBe(5);
++});
++
++test('pinRandom writes a seed into an unseeded sample and leaves the rest alone', () => {
++  expect(pinRandom('random:5')).toMatch(/^random:5:\d+$/);
++  expect(pinRandom('random:5:9')).toBe('random:5:9');
++  expect(pinRandom('1-4')).toBe('1-4');
++});

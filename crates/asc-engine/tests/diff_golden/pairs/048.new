@@ -1,0 +1,209 @@
+/**
+ * Risk Calculator State Management using Signals
+ * Centralized reactive state for risk calculation
+ */
+import { Signal } from '@asc/signal';
+
+// The result shape and the wording that goes with it are shared with every other surface
+// that shows a NELA score, so the audit form-entry panel and this application cannot drift
+// into saying different things about the same patient.
+export type {
+  CalculationStatus,
+  FormValidation,
+  RiskResult,
+} from '@asc/nela-risk-display';
+
+import type {
+  CalculationStatus,
+  FormValidation,
+  RiskResult,
+} from '@asc/nela-risk-display';
+
+/**
+ * Risk Calculator Reactive State
+ */
+export interface RiskCalculatorState {
+  formData: Signal.State<Record<string, unknown>>;
+  formValidation: Signal.State<FormValidation>;
+
+  calculationStatus: Signal.State<CalculationStatus>;
+  riskResult: Signal.State<RiskResult | null>;
+
+  abortController: { current: AbortController | null };
+
+  isReadyToCalculate: Signal.Computed<boolean>;
+  isCalculating: Signal.Computed<boolean>;
+  hasResult: Signal.Computed<boolean>;
+  isHighRisk: Signal.Computed<boolean>;
+
+  updateFormData(data: Record<string, unknown>): void;
+  updateValidation(validation: FormValidation): void;
+  calculate(
+    apiCall: (
+      data: Record<string, unknown>,
+      signal: AbortSignal,
+    ) => Promise<RiskResult>,
+  ): Promise<void>;
+  abort(): void;
+  reset(): void;
+}
+
+/**
+ * Create a new risk calculator state instance
+ */
+export function createRiskCalculatorState(): RiskCalculatorState {
+  const formData = new Signal.State<Record<string, unknown>>(
+    {},
+    {
+      equals: (previous, next) =>
+        JSON.stringify(previous) === JSON.stringify(next),
+    },
+  );
+  const formValidation = new Signal.State<FormValidation>({
+    isValid: false,
+    hasData: false,
+    issues: [],
+  });
+
+  const calculationStatus = new Signal.State<CalculationStatus>('idle');
+  const riskResult = new Signal.State<RiskResult | null>(null);
+
+  const abortController: { current: AbortController | null } = {
+    current: null,
+  };
+
+  const isReadyToCalculate = new Signal.Computed(() => {
+    const validation = formValidation.get();
+    return validation.isValid && validation.hasData;
+  });
+
+  const isCalculating = new Signal.Computed(() => {
+    return calculationStatus.get() === 'calculating';
+  });
+
+  const hasResult = new Signal.Computed(() => {
+    return riskResult.get() !== null;
+  });
+
+  const isHighRisk = new Signal.Computed(() => {
+    const result = riskResult.get();
+    if (!result || result.riskScore === null) return true;
+    return result.riskScore >= 5;
+  });
+
+  /**
+   * Update form data (from live validation events)
+   */
+  function updateFormData(data: Record<string, unknown>) {
+    formData.set(data);
+  }
+
+  /**
+   * Update form validation state
+   */
+  function updateValidation(validation: FormValidation) {
+    formValidation.set(validation);
+    if (!validation.isValid || !validation.hasData) {
+      riskResult.set(null);
+      calculationStatus.set('idle');
+    }
+  }
+
+  /**
+   * Calculate risk score with API call
+   */
+  async function calculate(
+    apiCall: (
+      data: Record<string, unknown>,
+      signal: AbortSignal,
+    ) => Promise<RiskResult>,
+  ) {
+    if (abortController.current) {
+      abortController.current.abort();
+    }
+
+    const controller = new AbortController();
+    abortController.current = controller;
+    const signal = controller.signal;
+
+    if (signal.aborted) return;
+
+    calculationStatus.set('calculating');
+
+    try {
+      const data = formData.get();
+      const result = await apiCall(data, signal);
+
+      if (!signal.aborted && abortController.current === controller) {
+        riskResult.set(result);
+        calculationStatus.set('success');
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return;
+
+      if (!signal.aborted && abortController.current === controller) {
+        riskResult.set({
+          riskScore: null,
+          riskCategory: 'Unable to calculate',
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+        calculationStatus.set('error');
+      }
+    } finally {
+      if (abortController.current === controller) {
+        abortController.current = null;
+      }
+    }
+  }
+
+  /**
+   * Abort any in-flight calculation
+   */
+  function abort() {
+    if (abortController.current) {
+      console.log('[RiskState] Aborting calculation');
+      abortController.current.abort();
+      abortController.current = null;
+    }
+
+    if (calculationStatus.get() === 'calculating') {
+      calculationStatus.set('idle');
+    }
+  }
+
+  /**
+   * Reset state
+   */
+  function reset() {
+    abort();
+
+    formData.set({});
+    formValidation.set({ isValid: false, hasData: false, issues: [] });
+    calculationStatus.set('idle');
+    riskResult.set(null);
+  }
+
+  return {
+    formData,
+    formValidation,
+    calculationStatus,
+    riskResult,
+    abortController,
+    isReadyToCalculate,
+    isCalculating,
+    hasResult,
+    isHighRisk,
+    updateFormData,
+    updateValidation,
+    calculate,
+    abort,
+    reset,
+  };
+}
+
+/**
+ * Display state computed from risk calculator state
+ */
+
+export type { DisplayState } from '@asc/nela-risk-display';
+export { computeDisplayState } from '@asc/nela-risk-display';

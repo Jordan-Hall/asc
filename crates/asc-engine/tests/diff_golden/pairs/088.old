@@ -1,0 +1,162 @@
+import {
+  diagnosticsWithShape,
+  parse as parseWithEngine,
+} from '@asc/dsl-compiler';
+import type {
+  ExpressionDiagnostic,
+  ExprNode,
+  ParseExpressionOptions,
+} from './expression.js';
+
+/**
+ * Parse a source with the engine that will run it.
+ *
+ * The parse tree the engine returns is the exact JSON shape of `ExprNode`, and
+ * its diagnostics carry the four fields `ExpressionDiagnostic` declares plus a
+ * stable `code`. A second parser written in TypeScript answered this until
+ * now, which meant an editor could accept an expression the engine would then
+ * refuse, or underline one it would have accepted.
+ */
+function parseSource(
+  src: string,
+  options: ParseExpressionOptions,
+): {
+  ast?: ExprNode;
+  diagnostics: ExpressionDiagnostic[];
+} {
+  const parsed = parseWithEngine(src);
+  /*
+    The caller's schema, so a misspelt field is reported rather than evaluated.
+
+    The parse alone cannot know it - `root.anything.at.all` is syntactically
+    fine - so the schema goes to the engine, which walks the whole path against
+    it. Without this an editor accepts a wrong field name silently and the rule
+    quietly comes out false against every record.
+  */
+  const shape = {
+    root: options.documentSchema,
+    ctx: options.contextSchema,
+  };
+  const shapeDiagnostics =
+    shape.root || shape.ctx ? diagnosticsWithShape(src, shape) : [];
+
+  // A diagnostic reported by both halves is one problem, not two.
+  const seen = new Set(
+    parsed.diagnostics.map((d) => `${d.index}:${d.length}:${d.message}`),
+  );
+  const diagnostics = [
+    ...parsed.diagnostics,
+    ...shapeDiagnostics.filter(
+      (d) => !seen.has(`${d.index}:${d.length}:${d.message}`),
+    ),
+  ];
+
+  return {
+    // SAFETY: the engine documents `ast` as the exact JSON shape of the
+    // `ExprNode` union, and the wasm and napi bridges are checked against it;
+    // `null` for a source nothing survived of becomes the absent field this
+    // interface declares.
+    ast: (parsed.ast ?? undefined) as ExprNode | undefined,
+    diagnostics,
+  };
+}
+
+/** An expression's state at a moment: its source, whether it parses, and what is wrong if not. */
+export interface ExpressionProgramSnapshot {
+  source: string;
+  ast?: ExprNode;
+  diagnostics: ExpressionDiagnostic[];
+  stats: { lexedChars: number; fullReparse: boolean };
+}
+
+/**
+ * A parsed expression that can be re-parsed as its source changes.
+ *
+ * The unit an editor holds onto: parsing once and updating in place, rather than
+ * re-parsing from scratch on every keystroke.
+ */
+export interface ExpressionProgram {
+  getSnapshot(): ExpressionProgramSnapshot;
+  update(
+    spanStart: number,
+    spanEnd: number,
+    newText: string,
+  ): ExpressionProgramSnapshot;
+  replaceAll(newSource: string): ExpressionProgramSnapshot;
+}
+
+/** Parse an expression into a program. Invalid source yields a program whose snapshot reports the problem, not a throw. */
+export function createExpressionProgram(
+  source: string,
+  options: ParseExpressionOptions = {},
+): ExpressionProgram {
+  let current = parseSource(source, options);
+  let prevSource = source;
+  let lastLexedChars = source.length;
+  let lastFull = true;
+  function buildSnapshot(): ExpressionProgramSnapshot {
+    return {
+      source,
+      ast: current.ast,
+      diagnostics: current.diagnostics,
+      stats: { lexedChars: lastLexedChars, fullReparse: lastFull },
+    };
+  }
+  function incrementalUpdate(oldSrc: string, newSrc: string) {
+    let start = 0;
+    while (
+      start < oldSrc.length &&
+      start < newSrc.length &&
+      oldSrc[start] === newSrc[start]
+    )
+      start++;
+    if (start === oldSrc.length && start === newSrc.length) return false;
+    let endOld = oldSrc.length - 1;
+    let endNew = newSrc.length - 1;
+    while (
+      endOld >= start &&
+      endNew >= start &&
+      oldSrc[endOld] === newSrc[endNew]
+    ) {
+      endOld--;
+      endNew--;
+    }
+    const windowNew = newSrc.slice(start, endNew + 1);
+
+    if (windowNew.length > newSrc.length * 0.5) {
+      lastLexedChars = newSrc.length;
+      lastFull = true;
+      current = parseSource(newSrc, options);
+      return true;
+    }
+
+    lastLexedChars = windowNew.length;
+    lastFull = false;
+    current = parseSource(newSrc, options);
+    return true;
+  }
+  return {
+    getSnapshot() {
+      return buildSnapshot();
+    },
+    update(spanStart, spanEnd, newText) {
+      if (spanStart < 0) spanStart = 0;
+      if (spanEnd > source.length) spanEnd = source.length;
+      if (spanEnd < spanStart) spanEnd = spanStart;
+      source = source.slice(0, spanStart) + newText + source.slice(spanEnd);
+      if (!incrementalUpdate(prevSource, source)) {
+        current = parseSource(source, options);
+      }
+      prevSource = source;
+      return buildSnapshot();
+    },
+    replaceAll(newSource) {
+      source = newSource;
+      prevSource = source;
+      current = parseSource(source, options);
+      lastLexedChars = source.length;
+      lastFull = true;
+      return buildSnapshot();
+    },
+  };
+}

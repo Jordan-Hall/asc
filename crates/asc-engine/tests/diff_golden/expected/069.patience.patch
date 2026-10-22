@@ -1,0 +1,72 @@
+diff --git a/file b/file
+index 957f2c0..1df22ca 100644
+--- a/file
++++ b/file
+@@ -42,7 +42,7 @@ import {
+   checkQuery,
+   checkSchema,
+ } from './scenarios';
+-import { failurePoint } from './failure-point';
++import { failurePoint, semanticFailurePoint } from './failure-point';
+ import { analystChecker } from './analyst';
+ import { mathsChecker } from './maths';
+ import { statisticsChecker } from './statistics';
+@@ -55,7 +55,11 @@ import type { Verdict } from './types';
+  * its own scalar is a checker that can disagree with the gate about what its
+  * own verdict meant.
+  */
+-function signals(verdict: Verdict, scenario: string): CheckSignals {
++function signals(
++  verdict: Verdict,
++  scenario: string,
++  target: string | undefined,
++): CheckSignals {
+   return {
+     parses: verdict.parses,
+     executes: verdict.executes,
+@@ -64,17 +68,27 @@ function signals(verdict: Verdict, scenario: string): CheckSignals {
+     structuralScore: verdict.structuralScore,
+     fidelity: verdict.fidelity,
+     reasons: verdict.reasons,
+-    // Where a refused artefact broke. Computed only on refusal, because it is
+-    // only then that a position means anything, and the parser has already
+-    // done the work of finding it.
+-    failureAt: verdict.parses ? null : failurePoint(scenario, verdict.artifact),
++    // Where the artefact broke. For a refused one, the byte the parser gave
++    // up at - and when the scan finds the structure sound (a checker refuses
++    // for reasons a JSON scan cannot see, an unknown enum value among them),
++    // the first byte at which it stops matching the target. For one that
++    // parsed and is not faithful, that same byte. A faithful artefact has none.
++    failureAt: !verdict.parses
++      ? (failurePoint(scenario, verdict.artifact) ??
++        semanticFailurePoint(scenario, verdict.artifact, target))
++      : verdict.fidelity != null && verdict.fidelity < 1
++        ? semanticFailurePoint(scenario, verdict.artifact, target)
++        : null,
+   };
+ }
+ 
+ const check =
+-  (scenario: string, fn: (artifact: string, options: { target?: string }) => Verdict) =>
++  (
++    scenario: string,
++    fn: (artifact: string, options: { target?: string }) => Verdict,
++  ) =>
+   (artifact: string, context: { target?: string }): CheckSignals =>
+-    signals(fn(artifact, context), scenario);
++    signals(fn(artifact, context), scenario, context.target);
+ 
+ export const CHECKERS = [
+   defineChecker({
+@@ -96,7 +110,10 @@ export const CHECKERS = [
+     scenario: ['form', 'form-extract'],
+     check: check('form-extract', checkForm),
+   }),
+-  defineChecker({ scenario: 'orchestrator', check: check('orchestrator', checkOrchestrator) }),
++  defineChecker({
++    scenario: 'orchestrator',
++    check: check('orchestrator', checkOrchestrator),
++  }),
+   // Registered whole rather than through `check()`, which adapts an ASC
+   // validator's verdict. Statistics has no ASC validator - there is no ASC
+   // component whose job is to be right about a confidence interval - so it

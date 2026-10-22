@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 3c82f81..80759fd 100644
+--- a/file
++++ b/file
+@@ -7,6 +7,8 @@ import {
+ } from '@asc/i18n';
+ import coreEnGB from '@asc/i18n/locales/en-GB.json';
+ import coreEnUS from '@asc/i18n/locales/en-US.json';
++import coreCy from '@asc/i18n/locales/cy.json';
++import cy from '../../../locales/cy.json';
+ import enGB from '../../../locales/en-GB.json';
+ 
+ export type EmailTranslator = Translator;
+@@ -14,6 +16,7 @@ export type EmailTranslator = Translator;
+ const catalogues: CatalogueSet = {
+   'en-GB': { ...coreEnGB, ...enGB },
+   'en-US': coreEnUS,
++  cy: { ...coreCy, ...cy },
+ };
+ const available = availableLocales(catalogues);
+ const translators = new Map<string, EmailTranslator>();

@@ -1,0 +1,68 @@
+{
+  "name": "@asc/private",
+  "private": true,
+  "scripts": {
+    "artefacts": "bun scripts/artefacts.ts status",
+    "artefacts:pull": "bun scripts/artefacts.ts pull",
+    "artefacts:push": "bun scripts/artefacts.ts push",
+    "audit:graph": "bun packages/repo-audit/src/cli.ts --graphify",
+    "audit:repo": "bun packages/repo-audit/src/cli.ts",
+    "audit:repo:ai": "bun packages/repo-audit/src/cli.ts --graphify --review=ollama",
+    "audit:repo:ci": "bun packages/repo-audit/src/cli.ts --fail-on=error",
+    "build": "turbo run build",
+    "check": "turbo run check",
+    "comments:prune": "bun scripts/prune-comments.ts",
+    "dev": "turbo run dev",
+    "format": "turbo run format",
+    "lint": "turbo run lint",
+    "postinstall": "bun scripts/artefacts.ts postinstall || true",
+    "preview": "turbo run preview",
+    "skills:check": "bun scripts/check-skills-sync.ts",
+    "skills:sync": "bun scripts/check-skills-sync.ts --write",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/bun": "latest",
+    "@types/quill": "^2.0.14",
+    "ajv": "^8.20.0",
+    "prettier": "^3.8.3",
+    "turbo": "^2.9.16",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": ">=1.2.22",
+    "node": ">=18"
+  },
+  "packageManager": "bun@1.2.22",
+  "workspaces": [
+    "packages/*",
+    "packages/soma-sdk/ts/*",
+    "apps/*"
+  ],
+  "overrides": {
+    "better-auth": "1.7.0-rc.6",
+    "error-ex": "1.3.2",
+    "zod": "^4",
+    "@hono/zod-validator": "^0.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  },
+  "patchedDependencies": {
+    "compromise@14.14.5": "patches/compromise@14.14.5.patch"
+  },
+  "trustedDependencies": [
+    "@biomejs/biome",
+    "@parcel/watcher",
+    "@swc/core",
+    "@tailwindcss/oxide",
+    "core-js",
+    "core-js-pure"
+  ],
+  "dependencies": {
+    "@rslib/core": "^0.23.2",
+    "quill": "^2.0.3"
+  }
+}

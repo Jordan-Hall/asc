@@ -1,0 +1,22 @@
+diff --git a/file b/file
+index 73650f1..a9b0a59 100644
+--- a/file
++++ b/file
+@@ -1,9 +1,17 @@
+ import { Hono } from 'hono';
+ import { cors } from 'hono/cors';
+ import { authMiddleware, type AuthContextVariables } from './middleware/auth';
++import { assertNelaRecordLevelAccess } from './lib/rls-guard';
+ import surgeonRouter from './routes/surgeon';
+ import anaesthetistRouter from './routes/anaesthetist';
+ 
++// Fail-closed RLS guard: verify the `nela` access is record-level (migration
++// 0243) before this process serves any request. If it is still TYPE JWT, $auth
++// is NONE on v3 and the surgeon/anaesthetist PERMISSIONS are bypassed, so the
++// guard process.exit(1)s rather than serving with RLS off. Run at module load,
++// before the server export is evaluated; a failure here aborts startup.
++await assertNelaRecordLevelAccess();
++
+ const FRONTEND_ORIGIN = import.meta.env.NELA_SERVICE_FRONTEND_ORIGIN || '*';
+ const PORT = import.meta.env.NELA_SERVICE_PORT || 3018;
+ 

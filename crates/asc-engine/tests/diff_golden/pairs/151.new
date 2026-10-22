@@ -1,0 +1,130 @@
+# asc-dsl - requirement to DSL expression; traces quote the requirement's own words
+#
+# This file is the source. It is read by `soma run --spec`, and every value in
+# it is claimed by exactly one component: a key nothing declares is refused
+# before anything is allocated, and a key declared and never read is refused
+# after the run resolves.
+
+name = "asc-dsl"
+seed = 7
+workDir = ".work"
+releaseDir = ".release"
+
+# Imported at plan time so the stages below exist.
+pluginModules = ["asc_soma.stages"]
+
+[model]
+# Promoted from the matched tournament; see model-nl-base/soma.toml
+# for the evidence and for the incumbent control it is measured against.
+builder = "asc-stateful"
+
+[model.config]
+width = 512
+depth = 10
+heads = 8
+kv_heads = 2
+window = 256
+representation = "bytes"
+# The cell in the odd layers. `liquid-scan`, not `cfc`, and the five-seed
+# finalists are why. The screen promoted cfc on the intelligence index, which
+# is aggregated over all three representations - but cfc's lead lives entirely
+# in byte-macro (1.9617 against 1.9758) and bpe (1.9645 against 1.9944), and
+# both of those were then rejected. On BYTES, which is what this model trains
+# on, liquid was ahead in the screen (1.8530 against 1.8645) and is ahead at
+# five seeds (1.8392 against 1.8512).
+#
+# It is NOT a significant lead: the gap is 0.0119 and the widest seed spread is
+# 0.0217, so at 0.55x the spread the two are indistinguishable and more seeds
+# rather than more argument is what would settle it. The choice between two
+# indistinguishable trunks is then made on cost, and liquid trains around
+# fifteen times faster for the same export and checkpoint status.
+#
+# Choosing a trunk on an index that averages over representations this model
+# does not use would be the same class of error as the metric faults that
+# index was built from.
+cell = "liquid-scan"
+commons = true
+canvas = true
+
+[task]
+name = "asc-dsl"
+layout = "chatml-think-v1"
+
+[task.hooks.coverage_axes]
+target = "coverage_axes:asc_dsl"
+
+# Budgets in positions. These must equal the serving contract in
+# @asc/soma-contracts/serving-budgets.json, which TypeScript serving reads;
+# a test asserts it, so the two cannot drift.
+[options]
+"stage.encode.corpus_dir" = "packages/ai-corpus/data/soma-train/asc-dsl"
+"stage.encode.train_corpus" = "asc-dsl-traced"
+"stage.encode.source_corpus" = "asc-dsl-grounded"
+"stage.encode.max_input_positions" = 512
+"stage.encode.max_generation_positions" = 2048
+"stage.encode.max_sequence_positions" = 2688
+"stage.pretrain.steps" = 8000
+"stage.pretrain.width" = 512
+"stage.pretrain.depth" = 10
+"stage.reinforce.steps" = 2000
+"stage.reinforce.prompts" = 64
+"stage.reinforce.prompt_dir" = "packages/ai-corpus/data/soma-train/asc-dsl"
+"stage.reinforce.prompt_corpus" = "asc-dsl-grounded"
+"stage.gate.heldout" = "asc-dsl-grounded"
+"stage.gate.heldout_dir" = "packages/ai-corpus/data/soma-heldout/asc-dsl"
+"stage.gate.cases" = 20
+
+[training]
+reward = "asc-dsl"
+
+[[training.stages]]
+kind = "asc-encode"
+name = "encode"
+
+[[training.stages]]
+kind = "asc-pretrain"
+name = "pretrain"
+
+[[training.stages]]
+kind = "asc-reinforce"
+name = "reinforce"
+
+[[training.stages]]
+kind = "asc-gate"
+name = "gate"
+
+[release]
+# The promoted architecture and both composition surfaces are registered
+# `research`, and the gate refuses those under the default policy - correctly,
+# because a mechanism that has not been measured here must not reach a release
+# by accident. This run says so out loud instead.
+#
+# What is being opted into, precisely. `asc-stateful` won a matched
+# tournament at 13M on 12MB of ASC DSL and has never been trained at this
+# size on this corpus; `soma-incumbent.toml` is the control that answers
+# whether it transfers. The commons passed its probe and the canvas did not.
+# None of the three is stable, and this key is what stops that being forgotten.
+allowedMaturity = ["stable", "research"]
+
+[release.gate]
+minValidRate = 0.95
+minFaithfulRate = 0.90
+minPositiveRate = 0.90
+maxEmpty = 0
+
+[[release.panels]]
+name = "asc-dsl-smoke"
+role = "smoke"
+cases = 20
+
+[[release.panels]]
+name = "asc-dsl-release"
+role = "release"
+cases = 20
+
+# Five hundred, because twenty cases is five percentage points each: adequate
+# to refuse a release and not adequate to choose between two candidates.
+[[release.panels]]
+name = "asc-dsl-champion"
+role = "champion"
+cases = 500

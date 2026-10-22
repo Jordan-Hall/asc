@@ -1,0 +1,19 @@
+diff --git a/file b/file
+index 7f9221f..98b241b 100644
+--- a/file
++++ b/file
+@@ -61,8 +61,13 @@ export class TabRecorder {
+       recorder.onstop = () => done();
+       recorder.stop();
+     });
+-    const clip = { name, blob: new Blob(this.chunks, { type: 'video/webm' }) };
++    const type = recorder.mimeType || 'video/webm';
++    const blob = new Blob(this.chunks, { type });
+     this.chunks = [];
++    // A cut shorter than the recorder's first slice has no playable data;
++    // a tile for it would only say the format was not supported
++    if (blob.size < 1024) return null;
++    const clip = { name, blob };
+     this.clips.push(clip);
+     return clip;
+   }

@@ -1,0 +1,56 @@
+{
+  "name": "@asc/schema-core",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist",
+    "schema",
+    "scripts"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./generator": {
+      "types": "./dist/generator.d.ts",
+      "import": "./dist/generator.js"
+    },
+    "./pid-permissions": {
+      "types": "./dist/pid-permissions.d.ts",
+      "import": "./dist/pid-permissions.js"
+    },
+    "./schema/*": "./schema/*",
+    "./scripts/tsdoc-schema": "./scripts/tsdoc-schema.ts",
+    "./pid": {
+      "types": "./dist/pid.d.ts",
+      "import": "./dist/pid.js"
+    }
+  },
+  "scripts": {
+    "build": "rslib build",
+    "dev": "rslib build --watch --no-dts",
+    "typecheck": "tsgo -p tsconfig.tests.json --noEmit",
+    "test": "bun test --timeout 30000 tests",
+    "json-schema": "bun run scripts/gen-json-schema.ts",
+    "json-schema:check": "bun run scripts/gen-json-schema.ts --check",
+    "check": "bun run scripts/gen-json-schema.ts --check"
+  },
+  "dependencies": {
+    "@asc/composite-value": "workspace:*",
+    "@asc/dsl": "workspace:*",
+    "@asc/schema-runtime": "workspace:*",
+    "ajv": "^8.20.0"
+  },
+  "devDependencies": {
+    "@asc/ts-docs": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@typescript/native-preview": "latest",
+    "typescript": "7.0.2"
+  }
+}

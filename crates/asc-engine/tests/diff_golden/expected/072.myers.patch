@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index aa10652..0da9889 100644
+--- a/file
++++ b/file
+@@ -9,6 +9,10 @@
+     ".": {
+       "types": "./src/index.ts",
+       "default": "./dist/index.js"
++    },
++    "./routes/entries": {
++      "types": "./src/routes/entries.ts",
++      "default": "./src/routes/entries.ts"
+     }
+   },
+   "scripts": {

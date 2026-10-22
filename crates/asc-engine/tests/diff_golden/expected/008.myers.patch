@@ -1,0 +1,61 @@
+diff --git a/file b/file
+index eeb6cd8..0e9f2e5 100644
+--- a/file
++++ b/file
+@@ -11,7 +11,7 @@
+  * their own proportions, and never a request any held-out panel holds: a
+  * row the gate asks is not one training has seen.
+  *
+- *   bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1]
++ *   bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1] [--seed N] [--exclude <train.jsonl>]...
+  */
+ import { readFileSync, writeFileSync } from 'node:fs';
+ import { generateBareComparisonCorpus } from './bare-comparison-corpus';
+@@ -28,17 +28,33 @@ interface Item {
+ }
+ 
+ const args = process.argv.slice(2);
+-const scaleAt = args.indexOf('--scale');
+-const scale = scaleAt >= 0 ? Number(args[scaleAt + 1]) : 1;
+-const [out, ...heldoutFiles] = args.filter((_, i) => i !== scaleAt && i !== scaleAt + 1);
++const flags = new Map<string, string[]>();
++const positional: string[] = [];
++for (let i = 0; i < args.length; i++) {
++  const a = args[i] as string;
++  if (a.startsWith('--')) {
++    flags.set(a, [...(flags.get(a) ?? []), args[i + 1] as string]);
++    i++;
++  } else positional.push(a);
++}
++const scale = Number(flags.get('--scale')?.[0] ?? 1);
++// A seed per use: the training pool, and a fresh panel no training draws
++// from, are drawn from different ones.
++const seedBase = Number(flags.get('--seed')?.[0] ?? 0x6a7e_2026);
++// Requests already asked elsewhere - training corpora, an earlier pool -
++// left out too, so a fresh panel is fresh.
++const excludeFiles = flags.get('--exclude') ?? [];
++const [out, ...heldoutFiles] = positional;
+ if (!out || heldoutFiles.length === 0) {
+-  console.error('usage: bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1]');
++  console.error(
++    'usage: bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1] [--seed N] [--exclude <train.jsonl>]...',
++  );
+   process.exit(2);
+ }
+ 
+ /** Every request any held-out panel asks, as it is written there. */
+ const heldout = new Set<string>();
+-for (const file of heldoutFiles)
++for (const file of [...heldoutFiles, ...excludeFiles])
+   for (const line of readFileSync(file, 'utf8').split('\n')) {
+     if (!line.trim()) continue;
+     const row = JSON.parse(line) as { messages: Array<{ role: string; content: string }> };
+@@ -51,7 +67,7 @@ for (const file of heldoutFiles)
+ 
+ // Seeds that no committed corpus uses: each generator's default seed built
+ // the training and held-out corpora.
+-const seed = 0x6a7e_2026;
++const seed = seedBase;
+ const generators: Array<[string, () => Item[]]> = [
+   ['expression-depth', () => generateExpressionDepthCorpus(scale, seed)],
+   ['expression-function-coverage', () => generateFunctionCoverageCorpus(seed + 1)],

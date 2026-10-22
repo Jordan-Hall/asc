@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 351b909..7e025e6 100644
+--- a/file
++++ b/file
+@@ -80,6 +80,11 @@ declare module '#dsl-wasm' {
+     rootFieldsJson: string,
+   ): string;
+   export function lex_expr(src: string): string;
++  export function debug_trace_expr(
++    src: string,
++    value_json: string,
++    root_json: string,
++  ): string;
+   export function diagnose_expr_with_shape(
+     src: string,
+     shape_json: string,

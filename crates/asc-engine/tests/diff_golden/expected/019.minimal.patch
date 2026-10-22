@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index bb12d94..d337af7 100644
+--- a/file
++++ b/file
+@@ -18,7 +18,7 @@ export function syncBadge(
+     case 'backfilling':
+       return `<span class="ms-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[rgb(var(--color-warning)/0.14)] text-[rgb(var(--color-warning))]"><span class="inline-block w-2 h-2 rounded-full border border-current border-t-transparent animate-spin"></span>${translate('ingest.syncBadge.loadingEntries', 'Loading entries')}</span>`;
+     case 'error':
+-      return `<span class="ms-2 text-[10px] px-1.5 py-0.5 rounded bg-[rgb(var(--color-danger)/0.12)] text-[rgb(var(--color-danger))]" title="${esc(d.sync_error ?? '')}">Sync failed</span>`;
++      return `<span class="ms-2 text-[10px] px-1.5 py-0.5 rounded bg-[rgb(var(--color-danger)/0.12)] text-[rgb(var(--color-danger))]" title="${esc(d.sync_error ?? '')}">${translate('ingest.syncBadge.syncFailed', 'Sync failed')}</span>`;
+     case 'live':
+       return `<span class="ms-2 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-[rgb(var(--color-success)/0.12)] text-[rgb(var(--color-success))]"><span class="inline-block w-1.5 h-1.5 rounded-full bg-current"></span>${translate('ingest.syncBadge.live', 'Live')}</span>`;
+     default:

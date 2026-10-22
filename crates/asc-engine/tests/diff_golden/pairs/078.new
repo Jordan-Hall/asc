@@ -1,0 +1,104 @@
+{
+  "$schema": "https://v2-10-11.turborepo.dev/schema.json",
+  "ui": "tui",
+  "concurrency": "100",
+  "globalPassThroughEnv": [
+    "NODE_ENV",
+    "AUTH_SERVICE_URL",
+    "AUTH_SERVICE_EXTERNAL_URL",
+    "SURREALDB_ENDPOINT",
+    "SURREALDB_NAMESPACE",
+    "SURREALDB_DATABASE",
+    "SURREALDB_USERNAME",
+    "SURREALDB_PASSWORD",
+    "INGEST_HASH_SALT",
+    "INGEST_ALLOW_DEV_HASH_SALT"
+  ],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": ["dist/**", "js/dist/**", "src/database.ts"],
+      "env": ["*"]
+    },
+    "docs": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "apps/*/package.json",
+        "apps/*/*/package.json",
+        "apps/*/*/*/package.json",
+        "packages/*/package.json",
+        "packages/*/*/package.json",
+        "packages/dsl/core/rust/package.json",
+        "packages/dsl/core/rust/npm/*/package.json",
+        "packages/soma/models/*/package.json",
+        "packages/soma/sdk/ts/*/package.json",
+        "plugins/*/package.json",
+        "docker-compose*.yml",
+        "apps/docs-site/scripts/**",
+        "apps/docs-site/public/content/**/*.md",
+        ".env*"
+      ],
+      "outputs": [
+        "apps/docs-site/public/diagrams/generated/**",
+        "apps/docs-site/public/content/architecture/generated/**",
+        "apps/docs-site/public/explorer/graph-data.json"
+      ],
+      "env": ["*"]
+    },
+    "docs-site#build": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": [
+        "dist/**",
+        "public/diagrams/generated/**",
+        "public/content/architecture/generated/**",
+        "public/explorer/graph-data.json"
+      ]
+    },
+    "@asc/database-migrations#build": {
+      "outputs": []
+    },
+    // soma-workspace is an orchestrator: its build is `bun run --filter '*' build`,
+    // which delegates to the packages of a NESTED workspace and writes nothing of
+    // its own. The default `dist/**` never matches, so turbo warned about missing
+    // outputs on every run. Declaring none is the truthful answer — the artefacts
+    // belong to the children, and each of those caches on its own terms.
+    "soma-workspace#build": {
+      "outputs": []
+    },
+    "preview": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": ["dist/**"],
+      "env": ["*"]
+    },
+    "lint": {
+      "dependsOn": ["^lint"]
+    },
+    "format": {
+      "dependsOn": ["^format"]
+    },
+    "check": {
+      "dependsOn": ["^check"]
+    },
+    "check-types": {
+      "dependsOn": ["^check-types"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "cache": true
+    },
+    "dev": {
+      "dependsOn": [],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": [],
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": ["*"]
+    }
+  }
+}

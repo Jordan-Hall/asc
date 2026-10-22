@@ -1,0 +1,10 @@
+ a.txt                |   3 +--
+ bin.dat              | Bin 8 -> 11 bytes
+ ...d => new name.md} |   2 +-
+ empty.txt            |   0
+ gone.txt             |   1 -
+ new.txt              |   2 ++
+ nonl.txt             |   2 +-
+ run.sh               |   0
+ src/lib.rs           |   3 ++-
+ 9 files changed, 7 insertions(+), 6 deletions(-)

@@ -1,0 +1,44 @@
+# Owned by packages/soma; applications consume exported artifacts, not trainer internals.
+"""nl-base — the shared language model the specialists borrow from.
+
+Every specialist is asked to understand ordinary English AND emit a formal
+artefact, on 6.5M to 43M parameters. They cannot afford both, and the failures
+say so: asked for a field plus a required-rule carrying a message, schema-author
+produced a FIELD named `message_is_required`. It had no capacity left for the
+sentence.
+
+This buys the language once. It trains on real British English — GOV.UK under
+the Open Government Licence — rather than on generated schema requests, whose
+whole vocabulary is 1,308 words, smaller than Basic English.
+
+STAGE-A ONLY, deliberately. There is no tool to emit and therefore no checker to
+reward against, so `target_tool` is None and the chain is run with `--only
+stagea`. Its measure is bits per byte on held-out prose, which is what M1 in
+docs/superpowers/specs/2026-08-03-soma-shared-nl-base-design.md compares across
+sizes. A specialist that later borrows this trunk is still gated the same way it
+is today, against its own corpus and its own tool.
+
+The preset is a starting point, not a conclusion: M1 exists to find the size,
+and this is the middle of the ladder the capacity work already qualified.
+"""
+from . import Domain, register
+
+DOMAIN = register(Domain(
+    name="nl-base",
+    hooks={"coverage_axes": "coverage_axes:nl_base"},
+    # 4.79M, not the 31.6M this was. Sized FROM the corpus rather than from
+    # ambition: 107.4 MB against Chinchilla's 20 tokens/param puts 256x6 at
+    # 1.12x optimal and 512x10 at 0.17x - six times too large for the data that
+    # exists. The failed general-English base was trained at the larger tier,
+    # reached 1.82 bits/byte and could not spell "compulsory"; the tier was
+    # wrong, not only the corpus.
+    preset=dict(d_model=256, n_layers=6, n_heads=8, n_kv_heads=2, window=256),
+    big_preset=dict(d_model=768, n_layers=12, n_heads=12, n_kv_heads=3, window=384),
+    source_corpus="govuk-english",
+    train_corpus="govuk-english",
+    heldout="govuk-english-heldout",
+    target_tool=None,
+    gated=False,          # Stage-A only: no artefact, so nothing to promote
+    stage_a_steps=16000,
+    notes="shared British-English trunk; Stage-A only, no tool and no checker",
+))

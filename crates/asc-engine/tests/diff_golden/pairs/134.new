@@ -1,0 +1,32 @@
+# ASC Admin UI
+
+Web-based administration panel for managing organizations, workspaces, teams, users, and invitations.
+
+This replaces the `asccli` command-line tool, which has been removed.
+
+## Features
+
+- **Organizations**: Create and manage organizations with namespaces
+- **Workspaces**: Create workspaces within organizations
+- **Teams**: Create and manage teams within organizations
+- **Users**: Manage user memberships across organizations, workspaces, and teams
+- **Invitations**: Send, view, resend, and cancel organization invitations
+- **System Admin**: Manage system administrators
+
+## Development
+
+```bash
+bun install
+bun dev
+```
+
+The app will be available at http://localhost:3015
+
+## Environment
+
+Copy `.env.example` to `.env` and configure:
+
+- `AUTH_BASE_URL`: Backend authentication service URL
+- `SURREALDB_ENDPOINT`: SurrealDB connection URL
+- `BACKEND_ORIGIN`: Backend service origin
+- `JWKS_PATH`: JWKS endpoint for JWT validation

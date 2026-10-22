@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index cc9affd..055c39e 100644
+--- a/file
++++ b/file
+@@ -24,7 +24,7 @@ function compileLater(file: string) {
+   let compiled: ReturnType<typeof compileProgram> | null = null;
+   return (fields: Record<string, unknown>) => {
+     compiled ??= compileProgram(source);
+-    return compiled.run(null, fields as never).value as number | null;
++    return compiled.run({ root: fields as never }).value as number | null;
+   };
+ }
+ 

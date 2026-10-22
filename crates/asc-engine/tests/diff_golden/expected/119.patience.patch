@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 4fe9a0b..4650b0c 100644
+--- a/file
++++ b/file
+@@ -73,9 +73,8 @@ export function createReportingRouter(base: string, deps: RouteDependencies): Ro
+       { path: '/', component: page(renderOverview, deps), title: 'Overview' },
+       { path: 'metric/:id', component: metricPage(deps), title: 'Measure' },
+       { path: 'explore', component: page(renderExplorePage, deps), title: 'Explore' },
+-      // The designer runs against the REAL platform — ingested datasets, the
+-      // live aggregation, a report that saves — while the routes above still
+-      // read the bundled fixtures.
++      // The designer is the authoring surface: the same live aggregation the
++      // routes above read from, plus a report that saves.
+       { path: 'designer', component: page(renderDesignerPage, deps), title: 'Build a report' },
+       // The dashboard designer builds a PAGE of blocks — the mini CMS surface.
+       // Same real platform, same live render path; the document is a

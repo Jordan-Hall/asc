@@ -1,0 +1,129 @@
+/**
+ * report_job claim-loop worker (0223). Decouples the report build — which can
+ * spend up to ~25s inside the inline LLM narrative-polish — from the request
+ * that asks for it. POST /api/reports/jobs enqueues a report_job and returns 202
+ * immediately; this loop claims the row on the ROOT connection, replays the
+ * stored ReportRequest through buildReport (which writes the analysis_report and
+ * runs the chokepoint + optional polish), then marks the job done with the new
+ * report id so GET /:id/status can surface the result.
+ *
+ * report_job is create/update/delete-locked (worker root only) and SELECT is
+ * workspace/team clamped, so claiming + advancing happens here via getDb(), and
+ * the enqueuing caller polls status through their own userDb (see report-jobs.ts).
+ *
+ * Single-threaded by design: one job at a time, then a short idle sleep when the
+ * queue is empty. Mirrors the analysis-pipeline worker's claim/back-off mechanics
+ * but lives in TS because buildReport (PID chokepoint + spec validation + the
+ * ai-service streaming polish) already lives in this service.
+ */
+import { Table, type Surreal } from 'surrealdb';
+import { getDb } from './db';
+import { idStr, rid } from './ids';
+import { buildReport, type ReportRequest } from './report-builder';
+
+/** A claimed report_job row (fn::claim_report_job RETURN *). */
+interface ReportJobRow {
+  id: unknown;
+  request?: Partial<ReportRequest>;
+  requested_by?: unknown;
+}
+
+const IDLE_MS = 2000;
+const RETRY_BACKOFF_SECONDS = 30;
+
+let running = false;
+
+/** Kill-switch, mirroring enqueue-analysis-job's ANALYSIS_ENABLED. Default ON. */
+function workerEnabled(): boolean {
+  const v = (import.meta.env.REPORT_JOBS_ENABLED ?? '').trim().toLowerCase();
+  if (v === '') return true;
+  return !['false', '0', 'no', 'off'].includes(v);
+}
+
+function firstRow<T>(res: unknown): T | undefined {
+  const arr = res as Array<T[]> | undefined;
+  return arr?.[0]?.[0];
+}
+
+/**
+ * Claim + run a single due report_job. Returns true when a job was claimed (so
+ * the loop can immediately try for another), false when the queue was empty.
+ */
+async function runOnce(db: Surreal): Promise<boolean> {
+  const claimed = firstRow<ReportJobRow>(await db.query('RETURN fn::claim_report_job();'));
+  if (!claimed?.id) return false;
+
+  const jobId = rid('report_job', idStr(claimed.id));
+  const req = claimed.request;
+  if (!req || typeof req.datasetId !== 'string' || !req.datasetId || typeof req.title !== 'string' || !req.title) {
+    await db.query('RETURN fn::mark_report_job_failed($id, $error, $delay);', {
+      id: jobId,
+      error: 'Invalid report request payload',
+      delay: RETRY_BACKOFF_SECONDS,
+    });
+    return true;
+  }
+
+  try {
+    // buildReport persists the analysis_report on the ROOT connection (the same
+    // connection that POST /api/reports uses) and applies the PID chokepoint,
+    // spec validation and the optional ai-service streaming polish. The job's
+    // ownership was already enforced at enqueue time (userDb ownedDataset gate),
+    // so no per-row authorisation is needed here. No authToken is forwarded:
+    // the polish helper is tokenless-safe and falls back to raw markdown.
+    const userId = claimed.requested_by ? idStr(claimed.requested_by) : undefined;
+    const report = await buildReport(db, req as ReportRequest, userId);
+    const reportId = report?.id;
+    if (reportId) {
+      await db.query('RETURN fn::mark_report_job_done($id, $result);', {
+        id: jobId,
+        result: rid('analysis_report', idStr(reportId)),
+      });
+    } else {
+      await db.query('RETURN fn::mark_report_job_failed($id, $error, $delay);', {
+        id: jobId,
+        error: 'Report build returned no record',
+        delay: RETRY_BACKOFF_SECONDS,
+      });
+    }
+  } catch (err) {
+    await db.query('RETURN fn::mark_report_job_failed($id, $error, $delay);', {
+      id: jobId,
+      error: err instanceof Error ? err.message : String(err),
+      delay: RETRY_BACKOFF_SECONDS,
+    });
+  }
+  return true;
+}
+
+/**
+ * Start the report_job claim-loop. Idempotent (a second call is a no-op) and a
+ * no-op when REPORT_JOBS_ENABLED is off. Detached: it runs for the process
+ * lifetime, draining the queue then sleeping IDLE_MS when empty. Errors in the
+ * claim query are logged and treated as an empty poll so one bad poll can't kill
+ * the worker.
+ */
+export function startReportJobRunner(): void {
+  if (running) return;
+  if (!workerEnabled()) {
+    console.log('[ReportJobs] worker disabled (REPORT_JOBS_ENABLED=off)');
+    return;
+  }
+  running = true;
+  console.log('[ReportJobs] report_job worker started');
+
+  void (async () => {
+    for (;;) {
+      let claimedAny = false;
+      try {
+        claimedAny = await runOnce(getDb());
+      } catch (err) {
+        console.error('[ReportJobs] claim loop error:', err);
+      }
+      if (!claimedAny) await new Promise((r) => setTimeout(r, IDLE_MS));
+    }
+  })();
+}
+
+/** Exposed for an inline enqueue path that wants to mirror the worker's table name. */
+export const REPORT_JOB_TABLE = new Table('report_job');

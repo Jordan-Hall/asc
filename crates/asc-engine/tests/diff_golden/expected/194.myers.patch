@@ -1,0 +1,44 @@
+diff --git a/file b/file
+index a36f933..b5be679 100644
+--- a/file
++++ b/file
+@@ -46,10 +46,21 @@ def entries() -> tuple[dict, ...]:
+     if directory is None:
+         return ()
+     seen: dict[str, dict] = {}
++    missing: list[str] = []
+     for name in SOURCES:
++        # Flat OR one folder deep. soma-train is grouped per model now and these
++        # two live in shared/ — read flat, they were absent, and `continue` turned
++        # that into an EMPTY VOCABULARY rather than an error. field_pools() went
++        # from thousands of clinical titles to {string: 0, number: 0, date: 0,
++        # boolean: 0, longText: 0} and every generator using it would have built a
++        # corpus with no field names in it at all, reporting success.
+         path = directory / name
+         if not path.is_file():
+-            continue
++            found = next(iter(sorted(directory.glob(f"*/{name}"))), None)
++            if found is None:
++                missing.append(name)
++                continue
++            path = found
+         try:
+             loaded = json.loads(path.read_text(encoding="utf-8"))
+         except (OSError, json.JSONDecodeError):
+@@ -62,6 +73,16 @@ def entries() -> tuple[dict, ...]:
+             if title and title.lower() not in seen:
+                 seen[title.lower()] = {"title": title, "kind": row.get("kind"),
+                                        "widget": row.get("widget")}
++    if not seen:
++        # An empty vocabulary is never a legitimate answer: this module exists
++        # because the corpus needs real clinical field names, and returning none
++        # silently is how a generator produces rows with no titles and a builder
++        # prints a row count that looks fine.
++        raise SystemExit(
++            f"[vocabulary] no titles loaded from {directory}. Missing: "
++            f"{missing or list(SOURCES)}. Both sources are searched flat and one "
++            f"folder deep; if they have moved further, say so here rather than "
++            f"letting every corpus build with an empty vocabulary.")
+     return tuple(seen.values())
+ 
+ 

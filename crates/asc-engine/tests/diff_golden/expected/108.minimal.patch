@@ -1,0 +1,11 @@
+diff --git a/file b/file
+index 6327e11..493c0ff 100644
+--- a/file
++++ b/file
+@@ -1,5 +1,5 @@
+ export {
+-  FORM_COMPONENT_NAMES,
++  FORM_ALLOWED_COMPONENTS,
+   type FormComponentName,
+   type FormFieldConditions,
+   type FormFieldControl,

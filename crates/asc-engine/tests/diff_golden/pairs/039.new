@@ -1,0 +1,110 @@
+import { describe, expect, test } from 'bun:test';
+
+import { checkMaths, expressionsAgree, finalAnswer, valuesAgree } from './maths';
+
+describe('the final answer', () => {
+  test('is the Answer line, the boxed value, or the last short line', () => {
+    expect(finalAnswer('Work.\nAnswer: 42')).toBe('42');
+    expect(finalAnswer('so $\\boxed{\\frac{3}{4}}$ is it')).toBe('\\frac{3}{4}');
+    expect(finalAnswer('a\nb\n7/2')).toBe('7/2');
+    expect(finalAnswer('')).toBeNull();
+  });
+});
+
+describe('values agree by value, not by string', () => {
+  test('numbers, fractions and percentages', () => {
+    expect(valuesAgree('0.75', '3/4', 'fraction')).toBe(true);
+    expect(valuesAgree('75%', '3/4', 'fraction')).toBe(true);
+    expect(valuesAgree('1,234', '1234', 'numeric')).toBe(true);
+    expect(valuesAgree('-1.5', '-3/2', 'numeric')).toBe(true);
+    expect(valuesAgree('2', '3', 'numeric')).toBe(false);
+    expect(valuesAgree('sqrt(2)', '1.41421356', 'numeric')).toBe(true);
+    expect(valuesAgree('pi/2', '1.5707963', 'numeric')).toBe(true);
+  });
+
+  test('expressions at random points', () => {
+    expect(expressionsAgree('(x+1)^2', 'x^2 + 2x + 1')).toBe(true);
+    expect(expressionsAgree('2x', 'x + x')).toBe(true);
+    expect(expressionsAgree('x^2', 'x^3')).toBe(false);
+    expect(expressionsAgree('\\frac{x}{2}', 'x/2')).toBe(true);
+    expect(expressionsAgree('sin(x)^2 + cos(x)^2', '1')).toBe(true);
+    expect(expressionsAgree('qqq', 'x')).toBeNull();
+  });
+
+  test('sets in any order, booleans in any spelling', () => {
+    expect(valuesAgree('{2, 3}', '3, 2', 'set')).toBe(true);
+    expect(valuesAgree('{2, 3}', '2, 3, 4', 'set')).toBe(false);
+    expect(valuesAgree('Yes.', 'true', 'boolean')).toBe(true);
+    expect(valuesAgree('no', 'true', 'boolean')).toBe(false);
+  });
+});
+
+describe('the verdict', () => {
+  test('a right answer scores at the top, a wrong one in the valid-but-wrong band', () => {
+    const right = checkMaths('2 + 2 = 4\nAnswer: 4', { check: { answer: '4', kind: 'numeric' } });
+    expect(right.parses).toBe(true);
+    expect(right.fidelity).toBe(1);
+    const wrong = checkMaths('Answer: 5', { check: { answer: '4', kind: 'numeric' } });
+    expect(wrong.parses).toBe(true);
+    expect(wrong.fidelity).toBe(0);
+    expect(wrong.reasons).toEqual(['expected 4, got 5']);
+  });
+
+  test('no committed answer does not parse; a proof parses and is not judged', () => {
+    const none = checkMaths('I think it is probably around four or five, hard to say really, one of those', {
+      check: { answer: '4', kind: 'numeric' },
+    });
+    expect(none.parses).toBe(false);
+    const proof = checkMaths('Suppose not. Then ... contradiction.\nAnswer: proved', {
+      check: { answer: 'proved', kind: 'proof' },
+    });
+    expect(proof.parses).toBe(true);
+    expect(proof.fidelity).toBeNull();
+  });
+});
+
+describe('a ciphertext is right to the character or not right', () => {
+  test('text compares exactly, forgiving only quotes and whitespace', () => {
+    expect(valuesAgree('khoor zruog', 'khoor zruog', 'text')).toBe(true);
+    expect(valuesAgree(' "khoor zruog" ', 'khoor zruog', 'text')).toBe(true);
+    expect(valuesAgree('khoor zruoh', 'khoor zruog', 'text')).toBe(false);
+    expect(valuesAgree('KHOOR ZRUOG', 'khoor zruog', 'text')).toBe(false);
+  });
+
+  test('a digest that is nearly right is wrong', () => {
+    const check = { answer: '2cf24dba', kind: 'text' as const };
+    expect(checkMaths('Answer: 2cf24dba', { check }).fidelity).toBe(1);
+    expect(checkMaths('Answer: 2cf24dbb', { check }).fidelity).toBe(0);
+  });
+});
+
+describe('an ordered answer is graded in order', () => {
+  test('a traversal agrees with itself, whatever its node names mean in maths', () => {
+    // E is Euler's number when read as an expression.
+    expect(valuesAgree('A, B, C, E, D', 'A, B, C, E, D', 'sequence')).toBe(true);
+    expect(valuesAgree('A, B, C, E, D', 'A, B, C, E, D', 'set')).toBe(true);
+  });
+
+  test('the same members in another order are wrong', () => {
+    expect(valuesAgree('A, B, D, E, C', 'A, B, C, E, D', 'sequence')).toBe(false);
+    // One pass of bubble sort: the unsorted input has the same members.
+    expect(valuesAgree('31, 4, 17, 9', '4, 17, 9, 31', 'sequence')).toBe(false);
+    expect(valuesAgree('4, 17, 9, 31', '4, 17, 9, 31', 'sequence')).toBe(true);
+  });
+
+  test('a set still ignores order', () => {
+    expect(valuesAgree('{3, 1, 2}', '{1, 2, 3}', 'set')).toBe(true);
+  });
+});
+
+describe('what the corpus writes, the checker can read', () => {
+  test('complexity notation', () => {
+    expect(valuesAgree('n^3 log n', 'n^3 log n', 'expression')).toBe(true);
+    expect(valuesAgree('n^2 log n', 'n^3 log n', 'expression')).toBe(false);
+  });
+
+  test('an expression undefined at most points is still compared', () => {
+    expect(valuesAgree('28/sqrt(7 - 8*x)', '28/sqrt(7 - 8*x)', 'expression')).toBe(true);
+    expect(valuesAgree('28/sqrt(7 - 8*x)', '14/sqrt(7 - 8*x)', 'expression')).toBe(false);
+  });
+});

@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index cbc6238..78508ee 100644
+--- a/file
++++ b/file
+@@ -25,6 +25,7 @@
+     "@asc/doc-extract": "workspace:*",
+     "@asc/form-fill": "workspace:*",
+     "@asc/harness": "workspace:*",
++    "@asc/ingest-core": "workspace:*",
+     "@asc/llm": "workspace:*",
+     "@asc/query-nl": "workspace:*",
+     "@asc/schema-meta-v2": "workspace:*",

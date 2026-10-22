@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index ff92e87..a38bc95 100644
+--- a/file
++++ b/file
+@@ -27,6 +27,10 @@ describe('checkRule — every external source is probed', () => {
+     ['a context field', 'ctx.max_allowed_dose > 10'],
+     ['a record against the context', 'root.dose <= ctx.max_allowed_dose'],
+     ['a nested context field', 'ctx.user.ward == "north"'],
++    // Two fields compared to each other must meet on some round.
++    ['the context against the record', 'ctx.user.ward == root.ward'],
++    ['two record fields', 'root.referring_code == root.receiving_code'],
++    ['a date against today passed in', 'isBefore(root.referral_date, ctx.today)'],
+   ])('%s varies', (_label, artifact) => {
+     expect(graded(artifact)).toEqual({ parses: true, executes: true, varies: true });
+   });

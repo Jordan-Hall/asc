@@ -1,0 +1,164 @@
+/**
+ * Two people filling in the same form at once.
+ *
+ * The unforgivable failure is a remote change landing in the field somebody is
+ * typing in. A form that eats a half-typed answer teaches people not to trust
+ * it, and they go back to filling in paper and entering it later - which is
+ * the thing this product exists to stop.
+ */
+import { describe, expect, it, test } from '@rstest/core';
+import type { DocumentValue } from './form-field-registry.js';
+import { CollaborationSession } from './collaboration.js';
+
+const ME = 'user:me';
+const THEM = 'user:them';
+
+const patch = (field: string, value: DocumentValue, at: number, by = THEM) => ({
+  by,
+  field,
+  value,
+  at,
+});
+
+test('a change from somebody else is applied', () => {
+  const session = new CollaborationSession(ME);
+  expect(session.receive(patch('ward', 'ASH', 1))).toEqual({ applied: true });
+});
+
+test('a change never lands in the field I am typing in', () => {
+  const session = new CollaborationSession(ME);
+  session.focus('ward');
+  expect(session.receive(patch('ward', 'ASH', 1))).toEqual({
+    applied: false,
+    reason: 'held',
+  });
+});
+
+test('leaving the field lets their change through', () => {
+  const session = new CollaborationSession(ME);
+  session.focus('ward');
+  session.receive(patch('ward', 'ASH', 1));
+  session.blur();
+  expect(session.receive(patch('ward', 'ASH', 2))).toEqual({ applied: true });
+});
+
+test('a change to another field lands while I type in mine', () => {
+  const session = new CollaborationSession(ME);
+  session.focus('ward');
+  expect(session.receive(patch('age', 74, 1))).toEqual({ applied: true });
+});
+
+test('my own change echoing back is ignored', () => {
+  const session = new CollaborationSession(ME);
+  expect(session.receive(patch('ward', 'ASH', 1, ME))).toEqual({
+    applied: false,
+    reason: 'own',
+  });
+});
+
+test('an older change cannot undo a newer one', () => {
+  // Messages arrive out of order. Without this, a slow message carrying an
+  // earlier value overwrites the later one and the field silently goes back.
+  const session = new CollaborationSession(ME);
+  session.receive(patch('ward', 'NIGHTINGALE', 5));
+  expect(session.receive(patch('ward', 'ASH', 3))).toEqual({
+    applied: false,
+    reason: 'stale',
+  });
+});
+
+test('a change of my own is remembered, so a slower echo cannot undo it', () => {
+  const session = new CollaborationSession(ME);
+  session.sent('ward', 10);
+  expect(session.receive(patch('ward', 'ASH', 4))).toEqual({
+    applied: false,
+    reason: 'stale',
+  });
+});
+
+test('who else is here, and where', () => {
+  const session = new CollaborationSession(ME);
+  session.saw({ id: THEM, name: 'Ada', field: 'age' }, 1_000);
+  expect(session.others(1_000).map((p) => p.name)).toEqual(['Ada']);
+  expect(session.inField('age', 1_000).map((p) => p.name)).toEqual(['Ada']);
+  expect(session.inField('ward', 1_000)).toEqual([]);
+});
+
+test('I am not shown to myself', () => {
+  const session = new CollaborationSession(ME);
+  session.saw({ id: ME, name: 'Me', field: 'age' }, 1_000);
+  expect(session.others(1_000)).toEqual([]);
+});
+
+test('somebody who closed their laptop stops being listed', () => {
+  // No farewell arrives. A list of people who left is worse than no list: it
+  // says the form is busier than it is, and the next person waits for nobody.
+  const session = new CollaborationSession(ME);
+  session.saw({ id: THEM, name: 'Ada', field: 'age' }, 1_000);
+  expect(session.others(20_000)).toHaveLength(1);
+  expect(session.others(40_000)).toHaveLength(0);
+});
+
+test('leaving removes them at once, without waiting for the timeout', () => {
+  const session = new CollaborationSession(ME);
+  session.saw({ id: THEM, name: 'Ada' }, 1_000);
+  session.left(THEM);
+  expect(session.others(1_000)).toEqual([]);
+});
+
+test('the most recently heard from come first', () => {
+  const session = new CollaborationSession(ME);
+  session.saw({ id: 'user:a', name: 'A' }, 1_000);
+  session.saw({ id: 'user:b', name: 'B' }, 2_000);
+  expect(session.others(2_000).map((p) => p.name)).toEqual(['B', 'A']);
+});
+
+/**
+ * The same person, with the entry open twice.
+ *
+ * The first thing anybody tries - a second tab, or a second screen - and it
+ * showed nothing at all, which read as a feature that did not work. A session
+ * ignores anything carrying its own id, and the id was the USER's: both tabs
+ * were the same participant, so each dropped the other's cursor and answers as
+ * an echo of itself.
+ *
+ * Identity here is a CONNECTION, not an account. Two tabs are two people as
+ * far as a shared form is concerned - each holds its own cursor and its own
+ * half-typed answer - and the host makes the id per tab.
+ */
+describe('two tabs belonging to one person', () => {
+  const FIRST = 'user:jordan#tab-a';
+  const SECOND = 'user:jordan#tab-b';
+
+  it('takes the other tab’s answer rather than dropping it as its own', () => {
+    const here = new CollaborationSession(FIRST);
+    const outcome = here.receive({
+      by: SECOND,
+      field: 'ward',
+      value: 'ASH',
+      at: 1,
+    });
+    expect(outcome.applied).toBe(true);
+  });
+
+  it('still refuses what it sent itself', () => {
+    // The echo suppression that made the two-tab case fail is the right rule
+    // for one connection: its own form already shows what it did.
+    const here = new CollaborationSession(FIRST);
+    const outcome = here.receive({
+      by: FIRST,
+      field: 'ward',
+      value: 'ASH',
+      at: 1,
+    });
+    expect(outcome.applied).toBe(false);
+    expect(outcome.reason).toBe('own');
+  });
+
+  it('shows the other tab as somebody in the room', () => {
+    const here = new CollaborationSession(FIRST);
+    here.saw({ id: SECOND, name: 'Jordan Upton', field: 'ward' }, 1000);
+    const others = here.others(1000);
+    expect(others.map((participant) => participant.id)).toEqual([SECOND]);
+  });
+});

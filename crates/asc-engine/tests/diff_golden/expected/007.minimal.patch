@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 9c8acf1..1900b59 100644
+--- a/file
++++ b/file
+@@ -16,7 +16,9 @@ describe('buildSchemaContext', () => {
+   test('keeps a truncated meta-schema reference valid JSON', async () => {
+     const context = await buildSchemaContext(
+       'Make the discharge date required',
+-      { budgetTokens: 1400 },
++      // Room above the always-on core (which now also teaches choice options
++      // and builtin arguments) for one truncated meta-schema section.
++      { budgetTokens: 2000 },
+     );
+     const match = context.match(/## Meta-schema reference: [^\n]+\n([^\n]+)/);
+ 

@@ -1,0 +1,52 @@
+diff --git a/file b/file
+index d26b7ff..6f5ffb7 100644
+--- a/file
++++ b/file
+@@ -18,6 +18,11 @@ pub struct EvalContext {
+     pub root: Value,
+     /// Additional context object (optional extra data).
+     pub ctx: Option<Value>,
++    /// Named inputs the host passes in, read with `sys.input("name")`: an
++    /// object of any values a program is given, beside the three above. A
++    /// program that names its inputs itself - `let record = sys.input("record")`
++    /// - needs none of `value`, `root` or `ctx` to mean anything.
++    pub inputs: Option<Value>,
+ }
+ 
+ impl EvalContext {
+@@ -28,6 +33,7 @@ impl EvalContext {
+             value: value.clone(),
+             root: value,
+             ctx: None,
++            inputs: None,
+         }
+     }
+ 
+@@ -38,6 +44,7 @@ impl EvalContext {
+             value,
+             root,
+             ctx: None,
++            inputs: None,
+         }
+     }
+ 
+@@ -48,10 +55,19 @@ impl EvalContext {
+             value,
+             root,
+             ctx: Some(ctx),
++            inputs: None,
+         }
+     }
+ }
+ 
++impl EvalContext {
++    /// This context with named inputs, for `sys.input("name")`.
++    pub fn with_inputs(mut self, inputs: Value) -> Self {
++        self.inputs = Some(inputs);
++        self
++    }
++}
++
+ /// Context for program-level execution (multi-statement scripts).
+ #[derive(Debug, Clone)]
+ pub struct ProgramContext {

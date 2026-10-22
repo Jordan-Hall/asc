@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 8b7ff21..7e22103 100644
+--- a/file
++++ b/file
+@@ -3,7 +3,10 @@ import { defineConfig } from '@rstest/core';
+ export default defineConfig({
+   testEnvironment: 'happy-dom',
+   setupFiles: ['./test-setup.ts'],
+-  testMatch: ['**/*.test.ts'],
++  // Playwright owns e2e/*.spec.ts and drives a real browser; collecting those here makes
++  // Playwright's own test() refuse to run. `include` is what rstest filters on.
++  include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
++  exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
+   plugins: [
+     {
+       // Keep the rstest server off the dev-stack ports (mirrors

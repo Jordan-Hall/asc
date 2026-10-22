@@ -1,0 +1,100 @@
+import { createCommand, init as initCommand } from '@asc/ui/command';
+import { adminPermissions } from '../../platform/access-control/admin-permissions';
+import { adminFeatureForPath, adminGroups, visibleAdminFeatures } from './features';
+
+export function updateAdminNavigation(path = window.location.pathname): void {
+  const feature = adminFeatureForPath(path);
+  const currentId = feature?.id ?? 'overview';
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-admin-nav]')) {
+    const active = link.dataset.adminNav === currentId;
+    link.classList.toggle('active', active);
+    if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+  }
+  document.title = `${feature?.title ?? 'Overview'} · ASC Admin`;
+  const breadcrumb = document.querySelector<HTMLElement>('[data-admin-breadcrumb]');
+  if (!breadcrumb) return;
+  const home = document.createElement('a');
+  home.href = '/';
+  home.textContent = 'Overview';
+  breadcrumb.replaceChildren(home);
+  if (feature) {
+    const separator = document.createElement('span');
+    separator.textContent = '/';
+    separator.setAttribute('aria-hidden', 'true');
+    const current = document.createElement('span');
+    current.textContent = feature.title;
+    current.setAttribute('aria-current', 'page');
+    breadcrumb.append(separator, current);
+  }
+}
+
+export function installAdminNavigation(): void {
+  let cleanupCommand: (() => void) | undefined;
+  const render = () => {
+    const host = document.querySelector<HTMLElement>('[data-admin-navigation]');
+    if (!host) return;
+    const features = visibleAdminFeatures(adminPermissions.canAccessHiddenSystemFeatures());
+    host.replaceChildren();
+    const linkTo = (id: string, title: string, href: string) => {
+      const link = document.createElement('a');
+      link.href = href;
+      link.className = 'sidebar-nav-item';
+      link.dataset.adminNav = id;
+      link.dataset.route = id;
+      link.title = title;
+      const icon = document.createElement('span');
+      icon.className = 'nav-link-icon admin-nav-symbol';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = title.split(' ').map((word) => word.charAt(0)).join('').slice(0, 2);
+      const text = document.createElement('span');
+      text.className = 'nav-link-text';
+      text.textContent = title;
+      link.append(icon, text);
+      if (id === 'invitations') {
+        const badge = document.createElement('span');
+        badge.id = 'invitation-badge';
+        badge.className = 'invitation-badge hidden';
+        link.append(badge);
+      }
+      return link;
+    };
+    host.append(linkTo('overview', 'Overview', '/'));
+    for (const group of adminGroups) {
+      const section = document.createElement('div');
+      section.className = 'admin-nav-group';
+      const heading = document.createElement('h2');
+      heading.className = 'admin-nav-heading';
+      heading.textContent = group.label;
+      const list = document.createElement('ul');
+      list.className = 'sidebar-links';
+      for (const feature of features.filter((item) => item.group === group.id)) {
+        const item = document.createElement('li');
+        item.append(linkTo(feature.id, feature.title, feature.href));
+        list.append(item);
+      }
+      section.append(heading, list);
+      host.append(section);
+    }
+    const commandHost = document.querySelector<HTMLElement>('[data-admin-command]');
+    if (commandHost) {
+      cleanupCommand?.();
+      const command = createCommand({
+        id: 'admin-command-search', placeholder: 'Go to a tool…', magicBar: false,
+        shortcuts: { open: ['ctrl+k', 'meta+k'] },
+        groups: adminGroups.map((group) => ({ id: group.id, label: group.label, items: features.filter((item) => item.group === group.id).map((item) => ({ id: item.id, label: item.title, description: item.description, keywords: item.keywords, value: item.href })) })),
+        onSelect(item) {
+          if (!item.value) return;
+          if (window.appRouter) void window.appRouter.navigateTo(item.value);
+          else window.location.assign(item.value);
+        },
+      });
+      command.removeAttribute('data-dls-init');
+      commandHost.replaceChildren(command);
+      cleanupCommand = initCommand(command);
+    }
+    updateAdminNavigation();
+  };
+  const unsubscribe = adminPermissions.subscribe(render);
+  window.addEventListener('pagehide', () => { unsubscribe(); cleanupCommand?.(); }, { once: true });
+  render();
+}

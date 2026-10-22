@@ -1,0 +1,32 @@
+# NELA risk model in ASC DSL
+
+`risk-score-service/src/risk-calculator.R` is supplied to us and stays the
+specification. `nela-pre.dsl` and `nela-post.dsl` are its two functions,
+`calculate_risk_score` and `calculate_risk_score_post`, written in ASC DSL
+section by section in the R's own order: validation, indication groups, the
+category mappings, winsorising and logs, centring, the logit, and R's
+`round(x, 1)`. They run on the same engine as every other rule, so a form, a
+report or a pipeline can score a case with no R service and no bespoke port.
+
+R's `NA` is `null` here. A code the R maps to `NA`, a missing indication or an
+invalid value gives no score, as R's `NA` carried through the sum does. R
+rounds halves to even, and so does `round_r`.
+
+## Proof
+
+| Against | Cases | Scored | Differ |
+| --- | --- | --- | --- |
+| Reference sheet `sim_data_v4` (pre-op) | 5,103 | 4,099 | 0 |
+| ASC Audit extract, pre-op | 3,361 | 3,350 | 0 |
+| ASC Audit extract, post-op | 5,154 | 3,232 | 0 |
+| `risk-calculator.R` run by Rscript, synthetic edge cases (pre and post) | 40,000 | 17,710 | 0 |
+| The WebAssembly port, directly, every row of `sim_data_v4` (pre, and post with each row's S03 answers as its S06 ones - the same fields, answered at operation) | 10,206 | 8,198 | 0 |
+
+`bun test` runs the sheets - every row the R service was signed off against,
+with the service's scores held in them - and the WebAssembly comparison.
+`bun r-parity.ts [cases]` runs the synthetic cases against R itself, and needs
+`Rscript` and `dplyr`. Its
+cases sit on and either side of every validity bound, including the
+winsorising limits, and include missing values, codes the R maps to `NA`, no
+indication, and several indications at once. It is deterministic, so a
+failing case can be found again.

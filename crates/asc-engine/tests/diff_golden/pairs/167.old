@@ -1,0 +1,37 @@
+/**
+ * @asc/ingest-core — pure ingest logic shared by ingestion-service and
+ * insight-service: schema inference, meta-schema mapping, the ingest gate, and
+ * the PID vault-split + read-chokepoint primitives. Connector / file-driver
+ * contracts live here too; their implementations live in the services.
+ */
+export * from './types';
+export {
+  inferType,
+  inferColumnTypes,
+  detectSchema,
+  diffSchemas,
+  isEmptyDiff,
+  widenType,
+  mergeColumns,
+  profileColumns,
+  type SemanticType,
+  type ColumnProfile,
+  type DatasetProfile,
+} from './infer';
+export {
+  toMetaSchema,
+  suggestedPidColumns,
+  detectPid,
+  looksLikePidByName,
+  type ToMetaSchemaOptions,
+} from './meta-schema';
+export {
+  PidFieldError,
+  pidFieldNames,
+  pidFieldSet,
+  splitPid,
+  omitPid,
+  projectPidSafe,
+  assertNoPidField,
+} from './pid';
+export { runGate, type GateInput } from './gate';

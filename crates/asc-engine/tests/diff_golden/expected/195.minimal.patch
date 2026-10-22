@@ -1,0 +1,25 @@
+diff --git a/file b/file
+index 91c5b22..d14c81a 100644
+--- a/file
++++ b/file
+@@ -34,8 +34,19 @@ DOMAIN = register(Domain(
+     # wrong, not only the corpus.
+     preset=dict(d_model=256, n_layers=6, n_heads=8, n_kv_heads=2, window=256),
+     big_preset=dict(d_model=768, n_layers=12, n_heads=12, n_kv_heads=3, window=384),
++    # govuk-english is the HARVEST — 4,910 GOV.UK documents under OGL, raw prose.
++    # nl-controlled is what is actually trained on: those documents turned into
++    # conversational turns and then restricted to the ~5,000 word types a 4.2M
++    # byte model can spell. That restriction is the whole difference between
++    # "copulsory (noun): a serve of the seconder" and grammatical English.
++    #
++    # The declaration used to name govuk-english for both, so training on the
++    # controlled corpus meant OVERWRITING the harvest file with it — the corpus
++    # the registry named was not the corpus the model saw. Naming it properly is
++    # what lets `is the right data with the right model` be checked rather than
++    # remembered.
+     source_corpus="govuk-english",
+-    train_corpus="govuk-english",
++    train_corpus="nl-controlled",
+     heldout="govuk-english-heldout",
+     target_tool=None,
+     gated=False,          # Stage-A only: no artefact, so nothing to promote

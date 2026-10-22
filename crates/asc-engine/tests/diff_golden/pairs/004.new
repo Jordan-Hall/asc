@@ -1,0 +1,65 @@
+/**
+ * The NELA model written in ASC DSL against everything the R service was
+ * checked with: the reference sheet and the two ASC Audit extracts, scored
+ * by the engine that runs every other rule, row for row against the scores
+ * the sheets carry. The same rows and the same tolerance as the WebAssembly
+ * port's parity test.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { beforeAll, expect, test } from 'bun:test';
+import { compileProgram, init } from '@asc/dsl-compiler';
+import { toApiPayload } from '../risk-score-validation-testing/src/core/mapping';
+import type { Source } from '../risk-score-validation-testing/src/core/types';
+import { readSource } from '../risk-score-validation-testing/src/core/workbook';
+
+const harness = join(import.meta.dir, '..', 'risk-score-validation-testing');
+const programs = {
+  pre: compileLater('nela-pre.dsl'),
+  post: compileLater('nela-post.dsl'),
+};
+
+function compileLater(file: string) {
+  const source = readFileSync(join(import.meta.dir, file), 'utf-8');
+  let compiled: ReturnType<typeof compileProgram> | null = null;
+  return (fields: Record<string, unknown>) => {
+    compiled ??= compileProgram(source);
+    return compiled.run({ root: fields as never }).value as number | null;
+  };
+}
+
+function load(relative: string): Source {
+  return readSource(new Uint8Array(readFileSync(join(harness, relative))), relative);
+}
+
+beforeAll(async () => {
+  await init();
+});
+
+test.each([
+  ['fixtures/sim_data_v4 2024 05 31 with data dictionary.xlsx', 'pre'],
+  ['fixtures/202526_R12_PREopriskscoretesting.xls', 'pre'],
+  ['fixtures/202526_R12_POSTopriskscoretesting.xls', 'post'],
+] as const)('%s: the DSL model matches the R service row for row', (file, mode) => {
+  let compared = 0;
+  let scored = 0;
+  const wrong: string[] = [];
+  for (const row of load(file).rows) {
+    const expected = mode === 'pre' ? row.expected : row.expectedPost;
+    const { fields, errors } = toApiPayload(row, mode);
+    if (errors.length > 0) {
+      if (expected !== null) wrong.push(`row ${row.index}: unsendable but expected ${expected}`);
+      continue;
+    }
+    const got = programs[mode](fields);
+    compared += 1;
+    if (got !== null) scored += 1;
+    // The sheets carry the service's numbers as floating point (0.6000000000000001)
+    const same =
+      got === expected || (got !== null && expected !== null && Math.abs(got - expected) < 0.005);
+    if (!same) wrong.push(`row ${row.index}: dsl ${got} vs expected ${expected}`);
+  }
+  console.log(`${file}: ${compared} rows compared, ${scored} scored, ${wrong.length} differ`);
+  expect(scored).toBeGreaterThan(1000);
+  expect(wrong.slice(0, 10), `${wrong.length} of ${compared} differ`).toEqual([]);
+}, 120_000);

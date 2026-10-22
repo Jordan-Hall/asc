@@ -1,0 +1,31 @@
+diff --git a/file b/file
+index 4542392..975f6f9 100644
+--- a/file
++++ b/file
+@@ -58,6 +58,26 @@ replacing means overwriting an unknown teacher with a known one.
+ old `soma` model module, all deleted with the harness. Rewiring those three is
+ what stands between here and regenerating a traced corpus from source.
+ 
++## Everything else that went with them
++
++Recovered the same day, from the same commit:
++
++| Where | What |
++|---|---|
++| `asc_soma/corpus/` | 43 tools: every specialist's corpus builder, the fetchers for GOV.UK, Hansard, the NHS vocabulary and the dictionary, the British-English normaliser, the typo augmenter, coverage and language-cost measurement, held-out panel builders |
++| `asc_soma/domains/` | the 15 declaration modules the `soma.toml` files were generated from |
++| `asc_soma/teacher/` | the five teacher-cache tools |
++| `asc_soma/derive/` | the five trace derivers, and their 35 tests, which pass |
++| `packages/soma/lab-results/` | the Stage-A and Stage-B run logs, the gate, energy and probe logs, and the LFS pointers for `schema-author.sm.pt` and its sidecars |
++
++The `.pt` files were Git LFS pointers rather than weights, so what was in the
++repository is what came back; whether the objects behind them still exist in the
++LFS store is a separate question worth checking.
++
++Most of `corpus/` and all of `teacher/` still import `soma_paths`, `domains` or
++the old `soma` module and will not run until those are repointed. They are
++recovered so the work exists rather than presented as working.
++
+ ## Why this file exists
+ 
+ The corpora were checked in and the recipe was not. That is the same failure as

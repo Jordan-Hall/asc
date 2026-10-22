@@ -1,0 +1,22 @@
+# Expression Language Reference
+
+The expression language used by rules, computed fields, transforms and controls.
+
+## Pages
+
+| Page | Contents |
+| --- | --- |
+| [Syntax](./expression/syntax) | Lexical forms, operators, AST nodes and primitive methods |
+| [Built-in Functions](./expression/functions) | Annotated callable functions |
+| [Program Mode](./expression/program-mode) | use, let, return, when and runtime modules |
+| [Examples](./expression/examples) | Hand-written end-to-end examples |
+| [SQL Translation](./sql) | PostgreSQL and SurrealQL support |
+
+## Quick facts
+
+- **274 documented built-in functions**
+- **Exact decimal arithmetic**: `0.1 + 0.2` is `0.3`.
+- **A missing value is unknown**, as in R and SQL: see [Missing values](./expression/syntax#missing-values).
+- **Currency literals** support common currency symbols.
+- **Program mode** supports runtime modules and async evaluation.
+

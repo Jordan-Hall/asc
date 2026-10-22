@@ -1,0 +1,271 @@
+{
+  "ReferralReason": {
+    "1": "Suspected eating disorder",
+    "2": "Relapse",
+    "3": "Transfer of care",
+    "4": "Other"
+  },
+  "ServiceType": {
+    "1": "Community adult",
+    "2": "Community CYP",
+    "3": "All-age community",
+    "4": "Inpatient"
+  },
+  "ServTeamIntAgeGroup": {
+    "1": "Adult",
+    "2": "CYP",
+    "3": "All ages"
+  },
+  "NHS_IHS": {
+    "1": "NHS",
+    "2": "Independent healthcare"
+  },
+  "GenderIDCode": {
+    "1": "Male",
+    "2": "Female",
+    "3": "Not stated",
+    "4": "Not stated",
+    "5": "Not stated"
+  },
+  "GenderSameAtBirth": {
+    "1": "Yes",
+    "2": "No",
+    "4": "Not stated"
+  },
+  "EthnicCategory": {
+    "1": "White British",
+    "2": "White Irish",
+    "3": "Other White",
+    "4": "White and Black Caribbean",
+    "5": "White and Black African",
+    "6": "White and Asian",
+    "7": "Other Mixed",
+    "8": "Indian",
+    "9": "Pakistani",
+    "10": "Bangladeshi",
+    "11": "Other Asian",
+    "12": "Caribbean",
+    "13": "African",
+    "14": "Other Black",
+    "15": "Chinese",
+    "16": "Any other ethnic group",
+    "17": "Not stated",
+    "18": "Not known"
+  },
+  "MaritalStatus": {
+    "1": "Single",
+    "2": "Married or civil partnership",
+    "3": "Separated",
+    "4": "Divorced",
+    "5": "Widowed",
+    "8": "Not stated"
+  },
+  "DisabCode": {
+    "5": "Physical disability",
+    "12": "No disability recorded",
+    "13": "Learning disability"
+  },
+  "SexualOrientation": {
+    "1": "Heterosexual",
+    "2": "Gay",
+    "3": "Lesbian",
+    "4": "Bisexual",
+    "8": "Not stated"
+  },
+  "Pregnancy": {
+    "0": "Not pregnant",
+    "1": "Pregnant"
+  },
+  "Religion": {
+    "0": "None",
+    "1": "Christian",
+    "2": "Muslim",
+    "3": "Hindu",
+    "4": "Other",
+    "8": "Not stated"
+  },
+  "EmploymentNationalLatest": {
+    "1": "Employed",
+    "2": "Unemployed and seeking work",
+    "3": "Student",
+    "4": "Long-term sick",
+    "5": "Homemaker",
+    "6": "Retired",
+    "7": "Other",
+    "8": "Not known"
+  },
+  "MethAdmMHHospProvSpell": {
+    "1": "Emergency",
+    "2": "Planned",
+    "3": "Transfer",
+    "4": "Other",
+    "5": "Not known",
+    "8": "Crisis admission",
+    "13": "Elective admission"
+  },
+  "ADMIMETH": {
+    "1": "Elective \u2014 waiting list",
+    "2": "Elective \u2014 booked",
+    "3": "Elective \u2014 planned",
+    "4": "Emergency \u2014 A&E",
+    "5": "Emergency \u2014 GP referral",
+    "8": "Emergency \u2014 other",
+    "21": "Emergency admission",
+    "25": "Admission from another provider"
+  },
+  "LegalStatusCode": {
+    "0": "Informal",
+    "1": "Informal",
+    "2": "Section 2",
+    "3": "Section 3",
+    "25": "Informal patient"
+  },
+  "CYP_AWT_met": {
+    "1": "Met",
+    "2": "Not met"
+  },
+  "Adult_AWT_met": {
+    "1": "Met",
+    "2": "Not met"
+  },
+  "SelfReferral": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "SelfReferral_Carer": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "MoreThenOneService": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Transition_CYP_adults": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "GSH_CBT": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "Ind_CBT_ED": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "Group_CBT_ED": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "MANTRA": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "SSCM": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "FT_ED": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "FPT": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "AFP_AN": {
+    "1": "Offered and taken up",
+    "2": "Offered, declined",
+    "3": "Offered, awaiting",
+    "4": "Not offered"
+  },
+  "AN": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "AtypicalAN": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "BN": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "AtypicalBN": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "BED": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "OSFED": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Pica": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Rumination": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "ARFID": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "UFED": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Other_ED": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Diabetes_1": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Diabetes_2": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Autism": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "PTSD": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "DepressiveEp": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "SubstanceMis": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "Anxiety": {
+    "0": "No",
+    "1": "Yes"
+  },
+  "OCD": {
+    "0": "No",
+    "1": "Yes"
+  }
+}

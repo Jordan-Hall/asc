@@ -1,0 +1,61 @@
+diff --git a/file b/file
+index 2c7505a..8e46355 100644
+--- a/file
++++ b/file
+@@ -2,7 +2,7 @@
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "$id": "https://example.org/schemas/form-field.schema.json",
+   "title": "Form field",
+-  "description": "A CoreField plus what a form needs: a widget to render it with, when it is hidden, what it does to other fields, who may see it, its key-field / manual-number status. Composed against CoreField via allOf/$ref rather than restated.",
++  "description": "A CoreField (which carries conditions/controls) plus what a form needs: a widget to render it with, who may see it, its key-field / manual-number status. Composed against CoreField via allOf/$ref rather than restated.",
+   "allOf": [
+     {
+       "$ref": "https://example.org/schemas/core-field.schema.json#/$defs/CoreField"
+@@ -13,47 +13,6 @@
+         "ui": {
+           "$ref": "https://example.org/schemas/form-ui-spec.schema.json"
+         },
+-        "conditions": {
+-          "type": "object",
+-          "additionalProperties": false,
+-          "properties": {
+-            "hiddenWhen": {
+-              "type": "object",
+-              "additionalProperties": false,
+-              "required": [
+-                "type",
+-                "expression"
+-              ],
+-              "properties": {
+-                "type": {
+-                  "const": "expr"
+-                },
+-                "expression": {
+-                  "type": "string"
+-                }
+-              }
+-            }
+-          }
+-        },
+-        "controls": {
+-          "type": "array",
+-          "items": {
+-            "type": "object",
+-            "additionalProperties": false,
+-            "required": [
+-              "target",
+-              "action"
+-            ],
+-            "properties": {
+-              "target": {
+-                "type": "string"
+-              },
+-              "action": {
+-                "type": "string"
+-              }
+-            }
+-          }
+-        },
+         "privacy": {
+           "type": "object",
+           "additionalProperties": false,

@@ -1,0 +1,146 @@
+import type { CollaborationTransport } from '@asc/ui/json-render';
+import type { FormPersonMapping as PersonFieldMapping } from '@asc/form-schema';
+import type {
+  JsonFormElement,
+  JsonFormEventDetail,
+  JsonFormIssue,
+  JsonFormSubmitDetail,
+} from '@asc/ui/json-render';
+
+/** Compatibility names for the JSON-render validation event contract. */
+export type PrimitiveIssue = JsonFormIssue & { code?: string; level?: string };
+export type SchemaFormLiveValidationDetail = Pick<
+  JsonFormEventDetail,
+  'issues'
+>;
+
+export interface PersonData {
+  id: string;
+  identifier: string;
+  forename?: string;
+  surname?: string;
+  postcode?: string;
+  local_identifier?: string;
+  date_of_birth?: string;
+  gender?: string;
+}
+
+export interface FormEntryData {
+  person: PersonData | null;
+  schema: {
+    id: string;
+    slug: string;
+    name?: string;
+    title?: string;
+    schema?: unknown;
+    version?: number;
+    /** Which level of the org tree the schema is published at. */
+    scope_level?: string;
+    /** Characters an unlock reason must reach before the entry reopens. */
+    unlock_reason_min_length?: number;
+    formConfig?: {
+      personMapping?: PersonFieldMapping[];
+      fieldSpacing?: string;
+      fieldLayout?: string;
+      fieldMinWidth?: string;
+      optionLayout?: string;
+      checkboxFieldLayout?: string;
+      checkboxColumns?: number;
+      checkboxGroupColumns?: number;
+    };
+  };
+  entry?: {
+    id: string;
+    // The answers, keyed by field name, and what the service recorded
+    // alongside them. Both hold whatever the schema declares.
+    payload: Record<string, FieldValue>;
+    state?: 'draft' | 'completed' | 'locked' | 'deleted';
+    reference_number?: string;
+    metadata?: Record<string, FieldValue>;
+  } | null;
+  mode: 'new' | 'edit' | 'view';
+  schemaUpdated?: boolean;
+  originalSchemaVersion?: number;
+  currentSchemaVersion?: number;
+  originalSchemaData?: unknown;
+  schemaRetired?: boolean;
+  forcedReadOnly?: boolean;
+}
+
+export interface SchemaFormElement extends JsonFormElement {
+  /** Compatibility alias used by the entry page's save orchestration. */
+  __saveState?: 'draft' | 'completed' | 'locked';
+  /** Set once the person has agreed to leave with unsaved changes. */
+  __userConfirmedLeave?: boolean;
+}
+
+export interface SchemaFormElementWithState extends SchemaFormElement {
+  __saveState?: 'draft' | 'completed' | 'locked';
+  /**
+   * Join this entry's room, or leave it.
+   *
+   * Optional because the element may predate collaboration - a page holding an
+   * older build should carry on working alone rather than fail to render a
+   * form because a feature it has never used is missing.
+   */
+  collaborateWith?: (
+    link:
+      | {
+          transport: CollaborationTransport;
+          me: { id: string; name: string };
+        }
+      | undefined,
+  ) => void;
+}
+
+/**
+ * Anything a form field can hold.
+ *
+ * A field's value is whatever its schema declares, and this is the vocabulary
+ * that covers it. The helpers that read one used to take and answer `unknown`,
+ * which told their callers nothing and made every branch a narrowing.
+ */
+export type FieldValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Date
+  | FieldValue[]
+  | { [member: string]: FieldValue };
+
+/** What a submitted form carries, with its values named. */
+export type SchemaFormSubmitDetail = JsonFormSubmitDetail<
+  Record<string, FieldValue>
+>;
+
+export type SessionData = {
+  activeOrganizationId?: string;
+  activeWorkspaceId?: string;
+  activeTeamId?: string;
+  organizationIds?: string[];
+  workspaceIds?: string[];
+  teamIds?: string[];
+  user?: { id?: string; name?: string; role?: string };
+  member?: { role?: string };
+  workspace?: { role?: string };
+  team?: { role?: string };
+  customRoles?: string[];
+  customPermissions?: Record<string, string[]>;
+};
+
+export type IssueWithLegacyLevel = PrimitiveIssue & { level?: string };
+
+export interface WindowWithAscUI extends Window {
+  // The renderer's own field configuration, whose keys are its options.
+  __asc_ui_configureField?: (config: Record<string, FieldValue>) => void;
+}
+
+export interface ValidationDrawerInstance {
+  drawerElement: HTMLElement;
+  backdropElement: HTMLElement;
+  isOpen: boolean;
+  currentIssues: PrimitiveIssue[];
+  currentSeverityFilter: string | null;
+}

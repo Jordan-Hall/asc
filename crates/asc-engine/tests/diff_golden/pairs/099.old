@@ -1,0 +1,46 @@
+---
+description: Run the deterministic repository audit and report dead code, duplication, database and RLS findings with cited evidence
+argument-hint: "[--fail-on=error|warning|info] [--review=ollama] [--watch]"
+allowed-tools: Bash(bun:*), Read, Grep, Glob
+---
+
+Run `bun packages/repo-audit/src/cli.ts $ARGUMENTS` from the repository root.
+
+Every artefact is written natively. Do not pass `--graphify` and do not call Graphify — the flag only adds Graphify's own output alongside ours and is required by nothing.
+
+`--fail-on=error|warning|info` exits non-zero when any finding reaches that severity. Use it when the caller wants a gate; omit it when the caller wants a report.
+
+## Read, in this order
+
+1. `repo-audit-out/repo-audit.json` — every finding with `category`, `severity`, `confidence`, `file`, `line` and `evidence` lines. Categories: `export`, `file`, `package`, `dependency`, `endpoint`, `database`, `migration`, `duplication`, `comment`, `implementation`, `graph`.
+2. `repo-audit-out/ANALYSIS.md` — communities, god nodes, surprising connections, graph health.
+3. `repo-audit-out/DUPLICATION.md` — clone classes ranked by mass, with every member's `file:line` range.
+4. `repo-audit-out/DATABASE.md` — objects per dialect, ER diagram, RLS matrix, migration timeline.
+
+There are roughly 8,000 findings on a repository this size. Do not enumerate them. Rank by severity, then by confidence, then by blast radius, and report what is actionable.
+
+## Verify before reporting
+
+- Dead-code findings are import-resolved from parsed syntax, not from identifier text, but static resolution cannot see dynamic loading. Before confirming any file or export as dead, grep for `import(`, `require(`, the bare symbol name in strings, and the path in configuration, workflow and manifest files.
+- Database findings carry the matched line as evidence. Read that line before repeating the claim.
+- Duplication findings are mechanical. Open both locations before calling anything worth consolidating.
+- Use `bun packages/repo-audit/src/cli.ts affected "<node>" --depth 3` for reverse reachability rather than guessing, and `explain "<node>"` for a node's inbound and outbound edges.
+
+## Report, grouped like this
+
+- **Confirmed dead** — high confidence, and the dynamic-use checks above came back empty. Give `file:line` and what was checked.
+- **Candidates** — medium or low confidence. Quote the evidence line and say what would settle it.
+- **Needless exports** — the "used only inside its own file" tier. The fix is deleting the `export` keyword, not the declaration. Never report these as dead code.
+- **Namespace-only exports** — reachable solely through `import * as` of the module. Opaque to the scan; report as unresolved, not as dead.
+- **Duplication worth consolidating** — `warning` severity only. `info`-severity clone classes are noise at this scale. Say whether the duplication is architectural (same computation in several packages or languages) or cosmetic.
+- **RLS gaps** — tables with no access rule, partial operation coverage, or unrestricted rules, with the dialect and the defining file.
+- **Migration and runner defects** — `migration` category; these are usually the highest-severity findings in the run.
+- **False positives** — with the reason each one is wrong, so the same finding is not re-litigated next run.
+
+Record what turned out to be true so the next session recalls it:
+
+```sh
+bun packages/repo-audit/src/cli.ts save-result "<question>" --outcome "<what was true>"
+```
+
+Never delete anything automatically. Propose scoped removals and wait for the user to authorise them.

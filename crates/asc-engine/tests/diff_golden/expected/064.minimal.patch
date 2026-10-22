@@ -1,0 +1,19 @@
+diff --git a/file b/file
+index 166fefc..d0a205f 100644
+--- a/file
++++ b/file
+@@ -18,6 +18,13 @@ test('all, count and range', () => {
+ 
+ test('unknown spec is refused', () => {
+   expect(() => selectRows(rows, 'some')).toThrow(
+-    'ROWS must be all, a count or a range like 10-20',
++    'ROWS must be all, a count, a range like 10-20, or a list',
+   );
+ });
++
++test('a comma list picks single rows and ranges in sheet order', () => {
++  expect(selectRows(rows, '5,2,3-4').map((row) => row.index)).toEqual([
++    2, 3, 4, 5,
++  ]);
++  expect(() => selectRows(rows, '1,x')).toThrow();
++});

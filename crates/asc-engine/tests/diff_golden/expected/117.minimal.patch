@@ -1,0 +1,22 @@
+diff --git a/file b/file
+index b80c713..ee7e592 100644
+--- a/file
++++ b/file
+@@ -10,6 +10,7 @@ import liveRouter from './routes/live';
+ import dashboardsRouter from './routes/dashboards';
+ import datasetsRouter from './routes/datasets';
+ import metricsRouter from './routes/metrics';
++import pagesRouter from './routes/pages';
+ import analysisStatusRouter from './routes/analysis-status';
+ import publicRouter from './routes/public';
+ import { startReportJobRunner } from './lib/report-job-runner';
+@@ -92,6 +93,9 @@ const routes = app
+   .route('/api/datasets', datasetsRouter)
+   // Governed metrics: definitions, and evaluation on demand.
+   .route('/api/metrics', metricsRouter)
++  // Reporting pages: the writing around the figures, and the references that
++  // keep it true when a definition is corrected.
++  .route('/api/pages', pagesRouter)
+   .route('/api/analysis', analysisStatusRouter);
+ 
+ await initDb().catch((err) => console.error('[Insight] DB init failed:', err));

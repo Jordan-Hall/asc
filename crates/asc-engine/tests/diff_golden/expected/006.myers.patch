@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 803a1ff..4f2d9f1 100644
+--- a/file
++++ b/file
+@@ -34,6 +34,8 @@ pub mod diagnostics;
+ pub mod error;
+ pub mod explain;
+ pub mod field_types;
++/// What a rule reads and what each read is compared with, for building probe records.
++pub mod probe_plan;
+ pub mod format;
+ pub mod generate;
+ pub mod imports;

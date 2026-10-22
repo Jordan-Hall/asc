@@ -1,0 +1,41 @@
+diff --git a/file b/file
+index d6020e0..df42326 100644
+--- a/file
++++ b/file
+@@ -1,5 +1,5 @@
+ import { Signal } from '@asc/signal';
+-import { effect } from '@asc/ui';
++import { createIsolatedEffects } from './isolated-effect';
+ import type { PlacementLifecycle, PlacementPhase } from './types';
+ 
+ /***
+@@ -32,13 +32,19 @@ export function createPlacementLifecycle(): PlacementLifecycle {
+ 
+ 	const readOnly = <T>(state: Signal.State<T>) => Object.freeze({ get: () => state.get() });
+ 
++	// A watcher of this mount's own. Sharing the application's watcher put every plugin
++	// effect in one graph with every other effect in the application, which is how a plugin
++	// reached the host's unprojected state, another placement's state, and unrelated host
++	// signals — none of it through the context.
++	const scope = createIsolatedEffects();
++
+ 	const lifecycle: PlacementLifecycle = {
+ 		phase: readOnly(phase),
+ 		isActive: readOnly(isActive),
+ 		onInit: readOnly(onInit),
+ 		onDestroy: readOnly(onDestroy),
+ 		effect: (fn: () => void | (() => void)) => {
+-			const dispose = effect(() => {
++			const dispose = scope.effect(() => {
+ 				if (isActive.get() && phase.get() === 'mounted') return fn();
+ 			});
+ 			cleanup.add(dispose);
+@@ -64,6 +70,8 @@ export function createPlacementLifecycle(): PlacementLifecycle {
+ 				}
+ 			}
+ 			cleanup.clear();
++			// Drop the watcher with the mount, so no effect of this plugin's outlives it.
++			scope.dispose();
+ 			phase.set('destroyed');
+ 		},
+ 	};

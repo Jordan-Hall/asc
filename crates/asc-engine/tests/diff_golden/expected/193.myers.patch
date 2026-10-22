@@ -1,0 +1,17 @@
+diff --git a/file b/file
+index 8690eaa..283c3c1 100644
+--- a/file
++++ b/file
+@@ -10,6 +10,12 @@ DOMAIN = register(Domain(
+     name="schema-author-big",
+     hooks={"coverage_axes": "coverage_axes:schema_author_big"},
+     preset=dict(d_model=512, n_layers=10, n_heads=8, n_kv_heads=2, window=256),
++    # The one-shot corpus is now the FOLD of the incremental corpus plus the
++    # authentic subset: 1,543 rows -> 49,132. Both tiers answer the same
++    # requests (see coverage_axes.py:157), so every incremental row's ops are
++    # EXECUTED and their resulting whole schema kept as an update_schema target.
++    # The ops themselves never reach this model - it would learn the wrong tool.
++    # See packages/ai-corpus/scripts/fold-oneshot-from-ops.ts.
+     source_corpus="schema-author-oneshot",
+     train_corpus="schema-author-oneshot",
+     heldout="schema-author-oneshot",

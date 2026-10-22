@@ -1,0 +1,17 @@
+diff --git a/file b/file
+index 9f18f8f..8b3632d 100644
+--- a/file
++++ b/file
+@@ -11,8 +11,11 @@
+     "test": "rstest run"
+   },
+   "dependencies": {
++    "@asc/better-auth-workspace": "workspace:*",
++    "@asc/router": "workspace:*",
+     "@asc/signal": "workspace:*",
+-    "@asc/ui": "workspace:*"
++    "@asc/ui": "workspace:*",
++    "better-auth": "^1.4.1"
+   },
+   "devDependencies": {
+     "@repo/typescript-config": "workspace:*",

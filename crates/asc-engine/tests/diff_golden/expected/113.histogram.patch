@@ -1,0 +1,99 @@
+diff --git a/file b/file
+index b2bf962..e5dab59 100644
+--- a/file
++++ b/file
+@@ -14,22 +14,77 @@
+   ],
+   "environment": "DeltaPaluse / dev",
+   "targets": {
+-    "@asc/database-migrations": { "uuid": "blosu4izyagkz6zpbe26vj1q", "order": 0 },
+-    "asc-core-api": { "uuid": "qhku5g2axmjbiwcanxkoua6r", "order": 10 },
+-    "ai-service": { "uuid": "zjngdbblltncnxemtzb0pquq", "order": 20 },
+-    "ingestion-service": { "uuid": "y40grzfce6gzdyvpl9gvaqj1", "order": 20 },
+-    "insight-service": { "uuid": "bjetq9u5ak7nxu99f0s3kflz", "order": 20 },
+-    "ml-training-service": { "uuid": "hvf03epf0glp6q0kwlplj8nl", "order": 20 },
+-    "audits": { "uuid": "0ict4ghrymqsr6pjz6t9o8mi", "order": 30 },
+-    "authentication": { "uuid": "myoohzsrf5xo7hhqegjvvb9x", "order": 30 },
+-    "admin-ui": { "uuid": "sgsutiph3lw9p7q6zisxg3wq", "order": 30 },
+-    "application-list": { "uuid": "j0irumywbcemnbdpx2kpleqc", "order": 30 },
+-    "schema-designer-v2": { "uuid": "kprituwzudbjxsjvldg8gmnz", "order": 30 },
+-    "docs-site": { "uuid": "6aywhrsoz4fsfhpoutm1mflc", "order": 30 },
+-    "intelligence-shell": { "uuid": "ubuckzt60zoviylzelrilsct", "order": 30 },
+-    "reporting-mfe": { "uuid": "uf52mmdwk9z1yem7jafsndlk", "order": 30 },
+-    "analytics-ui": { "uuid": "w5zyt2smqroahhdpzrinvmfd", "order": 30 },
+-    "ingest-mfe": { "uuid": "trlci7mdhgcquare3r8hry5d", "order": 30 },
+-    "dashboards-mfe": { "uuid": "4gv3zlhglxumh7tfbu2zkw4h", "order": 30 }
++    "@asc/database-migrations": {
++      "uuid": "blosu4izyagkz6zpbe26vj1q",
++      "order": 0
++    },
++    "asc-core-api": {
++      "uuid": "qhku5g2axmjbiwcanxkoua6r",
++      "order": 10
++    },
++    "ai-service": {
++      "uuid": "zjngdbblltncnxemtzb0pquq",
++      "order": 20
++    },
++    "ingestion-service": {
++      "uuid": "y40grzfce6gzdyvpl9gvaqj1",
++      "order": 20
++    },
++    "insight-service": {
++      "uuid": "bjetq9u5ak7nxu99f0s3kflz",
++      "order": 20
++    },
++    "ml-training-service": {
++      "uuid": "hvf03epf0glp6q0kwlplj8nl",
++      "order": 20
++    },
++    "audits": {
++      "uuid": "0ict4ghrymqsr6pjz6t9o8mi",
++      "order": 30
++    },
++    "authentication": {
++      "uuid": "myoohzsrf5xo7hhqegjvvb9x",
++      "order": 30
++    },
++    "admin-ui": {
++      "uuid": "sgsutiph3lw9p7q6zisxg3wq",
++      "order": 30
++    },
++    "application-list": {
++      "uuid": "j0irumywbcemnbdpx2kpleqc",
++      "order": 30
++    },
++    "schema-designer-v2": {
++      "uuid": "kprituwzudbjxsjvldg8gmnz",
++      "order": 30
++    },
++    "docs-site": {
++      "uuid": "6aywhrsoz4fsfhpoutm1mflc",
++      "order": 30
++    },
++    "intelligence-shell": {
++      "uuid": "ubuckzt60zoviylzelrilsct",
++      "order": 30
++    },
++    "reporting-mfe": {
++      "uuid": "uf52mmdwk9z1yem7jafsndlk",
++      "order": 30
++    },
++    "analytics-ui": {
++      "uuid": "w5zyt2smqroahhdpzrinvmfd",
++      "order": 30
++    },
++    "ingest-mfe": {
++      "uuid": "trlci7mdhgcquare3r8hry5d",
++      "order": 30
++    },
++    "dashboards-mfe": {
++      "uuid": "4gv3zlhglxumh7tfbu2zkw4h",
++      "order": 30
++    },
++    "plugin-registry": {
++      "uuid": "z1dr612sxydb5kmi6no5utq4",
++      "order": 20
++    }
+   }
+ }

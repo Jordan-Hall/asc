@@ -1,0 +1,54 @@
+# Response to the Soma review of 19 September 2026
+
+Written 20 September 2026 against the live training tree (asc-soma
+`ad9df6fe3`, SDK `21e6d85`) and this checkout.
+
+The review examined the copy of the training pipeline under
+`packages/soma/core/python`, which had fallen behind the tree the training
+box runs (`d:/dev/asc-soma`, branch `soma/architecture-promotion`). Several
+findings were already closed there; the two Priority-0 findings that concern
+training were live, and one of them was in the run that was finishing as the
+review landed. Every finding below names what was done and where.
+
+## Findings
+
+| # | Finding | Status | Where |
+| --- | --- | --- | --- |
+| F01 | Future bytes reach earlier predictions through the commons | **Fixed.** The probe reproduces on the live SDK (0.0 / 0.0 / 0.1257). The commons and canvas are off in every specification, a test refuses any canonical specification that composes a surface, and the trunk every specialist warm-starts from - which trained 60,000 steps with its read gate at 0.127 - is being retrained with the surface off. The query run that trained under it was discarded. | asc-soma `543fc9ac3`; `packages/model-*/soma.toml`; `tests/test_models.py::test_no_project_composes_a_surface_whose_write_is_not_causal` |
+| F02 | Stage keys omit result-changing inputs | **Fixed.** Pretrain binds the seed and the composition; reinforce binds the seed, the prompt corpora's content and the checker's identity; the gate binds the held-out corpus's content, the thresholds, the panel seed and the checker. Content digests, trunk identity and learning rate were already bound. | asc-soma `543fc9ac3`, `asc_soma/stages.py` |
+| F03 | Feedback persisted before schema-based PID checks | **Fixed.** The feedback log now holds a projection - rating, tool names, lengths, a message digest, a user hash and the run id - never the reply, the comment or tool arguments. The message is kept only when the single tool is not a PID-bearing route and the identifier scan is clean; the classifier's online learning admits under the same rule. The Soma intake no longer queues the query family at all. Replay admission already joined an event to a traced run with a matching successful tool call (`build-soma-replay.ts`). | `8b6972968` |
+| F04 | Training and serving budgets disagree | **Fixed.** The serving contract is the one the training specifications are tested against, and the callers pass no generation cap of their own. | `8f889253e` |
+| F05 | Reinforcement below the prompt floor | **Fixed.** Every specification reinforces on at least 100 prompts (form-extract was at 64). | asc-soma `543fc9ac3` |
+| F06 | Chain not locally reproducible | **Fixed.** Corpora live in Garage with manifests and are pulled (`asc_soma.corpus.pull`); the preflights `scripts/soma/check-budgets.py` and `check-stage-inputs.py` refuse a chain and say what is missing without downloading. This checkout's copy of the pipeline is now produced by `scripts/soma/sync-training-tree.py` from the training tree - 139 mirrored specification tests pass here - and the SDK submodule is on the forge master. | `4b6ffeda4`, `48a3847a8` |
+| F07 | Panels selected by the training seed | **Fixed.** The probe and the gate draw their panel with `PANEL_SEED`, independent of the training seed; the held-out content and panel seed are in the gate's key. A sealed confirmation set beyond the 500-case release panel is not yet declared. | asc-soma `543fc9ac3` |
+| F08 | Warm start, validation, device, recovery unused | **Closed in the live tree** (trunk warm start by identity, epochs, held-out validation, CUDA, resume sidecar, continuation by content). Optimiser state is saved in the resume sidecar; scheduler and sampler state are not. | asc-soma `stages.py` |
+| F09 | Composed loss is not the exported trunk's | **Fixed.** `train()` scores the model that will be kept, and the stages pass the trunk; with the surfaces off the two are the same model. | SDK `9d19326`; asc-soma `543fc9ac3` |
+| F10 | Finite-loss guard only; cached payloads unverified | **Fixed.** A non-finite gradient norm refuses the update before it is applied, on the offloaded optimiser too; a cached artefact's payload is verified against its manifest before it satisfies a dependency. | SDK `9d19326` |
+| F11 | Promotion authority not scoped | **Fixed.** A Soma release is platform-wide, so every fleet change - train, promote, rollback, cycle - requires the platform role; organisation owners and admins keep read access. | `cf8f612d0` |
+| F12 | Claim-level provenance | **Open.** The benchmark ledger records void results; the machine-readable invalidation relation is not built. No architecture claim is being made from the affected path: the surfaces are off. | — |
+
+## What the restart costs
+
+The trunk retrain is ~29 hours on the card (60,000 steps at 640 × 15). Query
+and asc-dsl are queued behind it on the chain lock and warm-start from the
+trunk it publishes; query's earlier gate panels remain on the box for
+comparison but no result from them is carried forward.
+
+## Also done in the same pass
+
+Constrained decoding for every JSON specialist (shape harvested from the
+corpus: keys, enumerations, value kinds, trace cap) and a balance constraint
+for expression answers; per-answer confidence with a calibrated
+`defer_below`; typed decision heads over the trunk's reading with a
+`asc-decide` stage. These are the review's "compiler-guided generation"
+and "calibrated specialist routing" directions, measured on the query panel
+before the restart: 488 → 499 of 500 valid on the same checkpoint and
+prompts, without retraining.
+
+## Still to do from the review
+
+- Declare a sealed confirmation panel per model beyond the release panel
+  (F07), and the per-route confidence intervals the review asks for.
+- Persist scheduler and sampler state in the resume sidecar (F08).
+- The prompt-only commons write and the active-gate causal test, if the
+  surface is ever to come back (F01).

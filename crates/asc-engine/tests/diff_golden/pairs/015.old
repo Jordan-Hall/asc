@@ -1,0 +1,7 @@
+import { addCatalogues, translate } from '@asc/ui/i18n';
+import cy from '../locales/cy.json';
+import enGB from '../locales/en-GB.json';
+
+addCatalogues({ 'en-GB': enGB, cy });
+
+export { translate };

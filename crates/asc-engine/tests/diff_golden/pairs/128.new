@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "pcstorage": {
+      "command": "bun",
+      "args": ["scripts/mcp/pcstorage-mcp.ts"],
+      "env": {
+        "PCSTORAGE_OPS_URL": "${PCSTORAGE_OPS_URL:-http://100.103.125.26:8300}",
+        "PCSTORAGE_OPS_TOKEN": "${PCSTORAGE_OPS_TOKEN}"
+      }
+    },
+    "repo-audit": {
+      "type": "stdio",
+      "command": "repo-audit",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    },
+    
+    "coolify": {
+      "type": "http",
+      "url": "https://coolify.example.org/mcp",
+      "headers": { "Authorization": "Bearer ${COOLIFY_API_TOKEN}" }
+    },
+    "asc-schema": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "packages/schema-meta-v2/scripts/mcp-server.ts"
+      ],
+      "env": {}
+    }
+  }
+}

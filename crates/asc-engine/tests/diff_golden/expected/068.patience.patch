@@ -1,0 +1,43 @@
+diff --git a/file b/file
+index 4cfeb6a..6835758 100644
+--- a/file
++++ b/file
+@@ -12,7 +12,11 @@ Checks that a NELA risk API and the NELA risk calculator website give the scores
+     bun run validate form --site-url https://nela-risk-tool.example.org
+     bun run validate form --site-url http://localhost:5178 --rows 1-50
+ 
+-Flags: `--file`, `--mode pre|post|both`, `--tolerance`, `--out`, `--rows all|N|a-b`, `--workers`, `--origin`. Environment fallbacks: `RISK_API_URL`, `RISK_API_ORIGIN`, `NELA_SITE_URL`, `SOURCE_FILE`.
++    bun run validate load --api-url https://risk-score-service.example.org --concurrency 20 --duration 30
++
++Flags: `--file`, `--mode pre|post|both`, `--tolerance`, `--out`, `--rows all|N|a-b`, `--workers`, `--origin`, `--concurrency`, `--duration`. Environment fallbacks: `RISK_API_URL`, `RISK_API_ORIGIN`, `NELA_SITE_URL`, `SOURCE_FILE`.
++
++`load` keeps the given number of users sending one row each at a time for the duration, checks every answer against the spreadsheet, and reports requests per second, latency percentiles (mean, p50, p90, p95, p99, max), a per-second series, and every answer that did not agree.
+ 
+ Exit code 0 when every row passes, 1 when any row fails, 2 on a run error. Reports land in `reports/` as JSON and Excel.
+ 
+@@ -30,7 +34,7 @@ The ASC Audit patient form calls the same risk API from tab 3 (pre-op) and tab
+     NELA_SITE_URL=https://nela-risk-tool.example.org bun run test:e2e:form
+     DOMINO_FORM_URL=https://www.example.org/RCOA/NELAUAT2.nsf/PatientEmlapV13 bunx playwright test domino.spec
+ 
+-`ROWS`, `TOLERANCE`, `WORKERS`, `BATCH`, `OUT_DIR`, `MODE`, `TRACE` are read from the environment. The form suite opens the calculator, ticks the disclaimer, fills every field one at a time, waits for the risk requests to settle, and reads the score the page shows. A failing row gets a full-page screenshot in `reports/screenshots/`.
++`ROWS`, `TOLERANCE`, `WORKERS`, `BATCH`, `OUT_DIR`, `MODE`, `TRACE`, `VIDEO`, `RECORDING` (`browser` or `row`), `LIVE_WS_URL` are read from the environment. The form suite opens the calculator, ticks the disclaimer, fills every field one at a time, waits for the risk requests to settle, and reads the score the page shows. A failing row gets a full-page screenshot in `reports/screenshots/`.
+ 
+ A full sheet against production takes about twenty minutes on eight workers.
+ 
+@@ -39,7 +43,15 @@ A full sheet against production takes about twenty minutes on eight workers.
+     bun run build
+     bun run web
+ 
+-Open http://localhost:3031, choose the spreadsheet and an environment, then check the API or the form. Results show on screen and download as JSON or Excel. A form check runs Playwright on the server and streams progress; one form run at a time.
++Open http://localhost:3031, choose the spreadsheet and an environment, then choose what to check:
++
++- Risk API: every row sent to the service, from the server or from the browser, with a live tape of results.
++- Calculator form, headless browsers on the server: Playwright fills the form, each browser is streamed live to the page over a WebSocket (CDP screencast, typically 30-40 fps), and Playwright records one video per browser or one per row.
++- Calculator form, in this browser: the calculator loads in a frame on the page (its HTML is rebased so scripts and the risk API are the real ones) and is filled in with real DOM events in front of the viewer. The tab can be recorded with the browser's own screen capture, one video for the run or one per row; the recording stays on the viewer's machine.
++- ASC Audit form: as the headless calculator run, with sign-in by cookie header or username and password.
++- Load test: concurrent users against the risk API with every answer checked.
++
++Results show on screen and download as Excel, PDF (validation runs) or JSON. One headless form run at a time.
+ 
+ `VALIDATION_WEB_PORT` and `VALIDATION_UI_DIR` configure the server. The Dockerfile builds on the Playwright image so form runs work in the container.
+ 

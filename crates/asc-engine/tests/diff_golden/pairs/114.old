@@ -1,0 +1,90 @@
+{
+  "name": "@asc/severity-v3",
+  "version": "3.0.0",
+  "description": "Tree-shakeable, type-safe validation library with severity levels",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./constraints": {
+      "types": "./dist/constraints/index.d.ts",
+      "import": "./dist/constraints/index.js"
+    },
+    "./formats": {
+      "types": "./dist/formats/index.d.ts",
+      "import": "./dist/formats/index.js"
+    },
+    "./transforms": {
+      "types": "./dist/transforms/index.d.ts",
+      "import": "./dist/transforms/index.js"
+    },
+    "./standard": {
+      "types": "./dist/standard/index.d.ts",
+      "import": "./dist/standard/index.js"
+    },
+    "./live": {
+      "types": "./dist/live/index.d.ts",
+      "import": "./dist/live/index.js"
+    },
+    "./api": {
+      "types": "./dist/api/index.d.ts",
+      "import": "./dist/api/index.js"
+    },
+    "./i18n": {
+      "types": "./dist/i18n/index.d.ts",
+      "import": "./dist/i18n/index.js"
+    },
+    "./computed": {
+      "types": "./dist/computed/index.d.ts",
+      "import": "./dist/computed/index.js"
+    },
+    "./fetcher": {
+      "types": "./dist/fetcher/index.d.ts",
+      "import": "./dist/fetcher/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "rslib build",
+    "dev": "rslib build --watch",
+    "docs": "bun run scripts/generate-docs.ts",
+    "docs:dev": "rspress dev",
+    "docs:build": "rspress build",
+    "typecheck": "tsc --noEmit -p tsconfig.tests.json",
+    "test": "rstest run",
+    "test:watch": "rstest --watch",
+    "test:coverage": "rstest --coverage"
+  },
+  "dependencies": {
+    "@standard-schema/spec": "^1.0.0"
+  },
+  "devDependencies": {
+    "@asc/signal": "workspace:*",
+    "@asc/ts-docs": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@rstest/core": "^0.0.10",
+    "rspress": "^1.45.6",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "@asc/signal": "workspace:*"
+  },
+  "keywords": [
+    "validation",
+    "schema",
+    "typescript",
+    "type-safe",
+    "tree-shakeable",
+    "severity"
+  ],
+  "license": "MIT"
+}

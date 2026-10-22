@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 42b5049..1b31ff9 100644
+--- a/file
++++ b/file
+@@ -17,7 +17,8 @@
+     "@asc/ui": "workspace:*",
+     "better-auth": "^1.4.1",
+     "hono": "^4.10.6",
+-    "insight-service": "workspace:*"
++    "insight-service": "workspace:*",
++    "@asc/report-meta": "workspace:*"
+   },
+   "devDependencies": {
+     "@repo/typescript-config": "workspace:*",
+@@ -30,4 +31,4 @@
+     "xlsx": "^0.18.5",
+     "@rstest/core": "^0.0.10"
+   }
+-}
+\ No newline at end of file
++}

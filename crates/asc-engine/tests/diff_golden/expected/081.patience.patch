@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 7154967..c0834d8 100644
+--- a/file
++++ b/file
+@@ -21,7 +21,8 @@
+   "dependencies": {
+     "@asc/database-types": "workspace:*",
+     "@asc/form-schema": "workspace:*",
+-    "@asc/schema-core": "workspace:*"
++    "@asc/schema-core": "workspace:*",
++    "@asc/schema-validators": "workspace:*"
+   },
+   "devDependencies": {
+     "@repo/typescript-config": "workspace:*",

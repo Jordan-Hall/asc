@@ -1,0 +1,85 @@
+/***
+ * A root connection, used for exactly one thing.
+ *
+ * Everything in this service runs on the caller's own connection so that row-level security
+ * is the real enforcement. There is one transition that cannot work that way, and it is
+ * worth spelling out rather than quietly widening a permission clause to accommodate it.
+ *
+ * A publisher may edit a draft version and nothing else. Once a version is submitted it is
+ * closed to them, because a reviewer has to be able to trust that what they approve is what
+ * runs — a publisher who could still change the manifest or the bundle digest after
+ * submission could have one thing reviewed and another thing shipped.
+ *
+ * But SurrealDB evaluates an update against the permission clause on BOTH images, so the
+ * move from draft to submitted fails on its own post-image under a draft-only rule. Adding
+ * 'submitted' to that rule makes the transition work and reopens exactly the hole the rule
+ * exists to close.
+ *
+ * So the transition is performed here instead: after the route has established, on the
+ * caller's own connection, that the version exists, that it is in a state which may be
+ * submitted, and that the caller holds publish rights on the owning publisher. This
+ * connection then sets `status` and `submitted_at` and writes the review event. It touches
+ * no other field and is reachable from nowhere else in the service.
+ */
+
+import { Surreal } from 'surrealdb';
+import { RecordId } from 'surrealdb';
+
+export interface PrivilegedDbConfig {
+	endpoint: string;
+	namespace: string;
+	database: string;
+	username: string;
+	password: string;
+}
+
+let connection: Surreal | null = null;
+
+async function connect(config: PrivilegedDbConfig): Promise<Surreal> {
+	if (connection) return connection;
+	const db = new Surreal();
+	await db.connect(config.endpoint, { namespace: config.namespace, database: config.database });
+	await db.signin({ username: config.username, password: config.password });
+	connection = db;
+	return db;
+}
+
+/***
+ * Move a version into review.
+ *
+ * Deliberately takes the version's record id rather than any user-supplied name: the caller
+ * has already looked the row up and checked it, and passing an id it fetched means this
+ * cannot be pointed at a different row by a crafted parameter.
+ */
+export async function submitVersionForReview(
+	config: PrivilegedDbConfig,
+	versionId: RecordId | string,
+	actorId: RecordId,
+	action: 'submitted' | 'resubmitted',
+): Promise<Record<string, unknown> | null> {
+	const db = await connect(config);
+	await db.query(
+		`BEGIN TRANSACTION;
+		 UPDATE $version SET status = 'submitted', submitted_at = time::now();
+		 CREATE plugin_review_event SET plugin_version = $version, action = $action, actor = $actor;
+		 COMMIT TRANSACTION;`,
+		{ version: versionId, action, actor: actorId },
+	);
+
+	// Read back rather than unwrapping the transaction's own reply. Inside BEGIN/COMMIT the
+	// driver returns one entry per statement, so `RETURN $result` is not at index 0 — it sits
+	// wherever the statement happened to fall, and reading the first entry returned the LET's
+	// own null. Every caller took that null to mean the submission had failed, while the
+	// transition had in fact committed.
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		'SELECT * FROM plugin_version WHERE id = $version LIMIT 1',
+		{ version: versionId },
+	);
+	return rows?.[0] ?? null;
+}
+
+/*** Close the connection. Used when the process shuts down and by tests. */
+export async function closePrivilegedDb(): Promise<void> {
+	await connection?.close?.();
+	connection = null;
+}

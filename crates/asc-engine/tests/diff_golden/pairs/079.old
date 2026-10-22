@@ -1,0 +1,87 @@
+/**
+ * Walking a rule that came out wrong.
+ *
+ * The debugger runs the real engine over the real record: anything that worked
+ * out what an expression "would" do would be a second evaluator, and one that
+ * disagreed with the first is worse than no debugger - it would explain
+ * confidently why a rule did something it did not do.
+ */
+import { expect, test } from '@rstest/core';
+import { createExpressionDebugger } from './expression-debugger.js';
+
+const RULE = 'root.age >= 18 and root.age <= 65';
+
+function open(source: string, root: unknown) {
+  const { element, run } = createExpressionDebugger();
+  document.body.appendChild(element);
+  run({ source, value: null, root });
+  return element;
+}
+
+const textOf = (el: HTMLElement, selector: string): string =>
+  el.querySelector(selector)?.textContent ?? '';
+
+/** A control by what it says it does, rather than by where it sits. */
+function press(panel: HTMLElement, title: string): HTMLButtonElement {
+  // SAFETY: the selector names a `<button>`, so a match is one.
+  const found = panel.querySelector(
+    `button[title="${title}"]`,
+  ) as HTMLButtonElement | null;
+  if (!found) throw new Error(`no control titled ${title}`);
+  return found;
+}
+
+test('the first step highlights the first comparison, not the whole rule', () => {
+  const panel = open(RULE, { age: 74 });
+  expect(textOf(panel, '.dsl-debugger-covered')).toBe('root.age >= 18');
+});
+
+test('stepping on highlights the comparison that decided it', () => {
+  const panel = open(RULE, { age: 74 });
+  // 74 is over 18 and over 65: the second comparison is why this is false, and
+  // finding that is the whole reason for opening a debugger.
+  press(panel, 'Next step').click();
+  expect(textOf(panel, '.dsl-debugger-covered')).toBe('root.age <= 65');
+  expect(textOf(panel, '.dsl-debugger-value')).toContain('false');
+});
+
+test('the first comparison is shown passing', () => {
+  const panel = open(RULE, { age: 74 });
+  expect(textOf(panel, '.dsl-debugger-value')).toContain('true');
+});
+
+test('the panel says where in the run the reader is', () => {
+  const panel = open(RULE, { age: 40 });
+  expect(textOf(panel, '.dsl-debugger-status')).toContain('Step 1 of');
+});
+
+test('the whole answer is reported beside the steps', () => {
+  const panel = open(RULE, { age: 40 });
+  expect(textOf(panel, '.dsl-debugger-status')).toContain(
+    'the whole expression came to true',
+  );
+});
+
+test('stepping stops at the ends rather than wrapping', () => {
+  const panel = open(RULE, { age: 40 });
+  expect(press(panel, 'First step').disabled).toBe(true);
+  expect(press(panel, 'Previous step').disabled).toBe(true);
+  press(panel, 'Last step').click();
+  expect(press(panel, 'Next step').disabled).toBe(true);
+});
+
+test('the source is put in as text, never as markup', () => {
+  // The source is somebody's rule. Building markup out of it would be one
+  // injection away from a problem.
+  const panel = open("root.name == '<img src=x onerror=alert(1)>'", {
+    name: 'x',
+  });
+  expect(panel.querySelector('img')).toBeNull();
+  expect(panel.textContent).toContain('<img src=x onerror=alert(1)>');
+});
+
+test('an expression that will not compile says so instead of showing nothing', () => {
+  const panel = open('root.age >=', { age: 40 });
+  expect(textOf(panel, '.dsl-debugger-status')).not.toBe('');
+  expect(textOf(panel, '.dsl-debugger-status')).not.toContain('Step 1 of');
+});

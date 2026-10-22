@@ -1,0 +1,98 @@
+name: Publish the platform images
+description: >
+  Build every platform image and push it to the Forgejo container registry,
+  tagged with the commit sha and the branch. Shared by the CD workflow and the
+  e2e workflow so there is one description of what gets built and where it goes
+  — two copies would drift the moment a service is added.
+
+inputs:
+  push:
+    description: >
+      Whether to sign in to the registry and push. Set to 'false' for a
+      pull-request build, which proves the images still compile without ever
+      being handed a registry credential.
+    required: false
+    default: 'true'
+  registry:
+    description: Container registry host.
+    required: false
+    default: forge.example.org
+  owner:
+    description: Registry namespace.
+    required: false
+    default: asc
+  project:
+    description: Compose project name, which prefixes the locally built image names.
+    required: false
+    default: monorepo
+  token:
+    description: Registry password or token. Not needed when push is 'false'.
+    required: false
+    default: ''
+  username:
+    description: Registry user. Not needed when push is 'false'.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Signing in BEFORE the build, so a misconfigured registry fails in one
+    # clear step rather than after twenty minutes of building.
+    - name: Sign in to the container registry
+      if: ${{ inputs.push == 'true' }}
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.token }}
+
+    - name: Build the images
+      shell: bash
+      env:
+        COMPOSE_DOCKER_CLI_BUILD: 1
+        DOCKER_BUILDKIT: 1
+      run: |
+        docker compose build \
+          ingestion-service \
+          insight-service \
+          analysis-pipeline-api \
+          analysis-pipeline-worker \
+          intelligence-shell \
+          ingest-mfe \
+          reporting-mfe \
+          dashboards-mfe
+
+    # Two tags per image: the commit sha, which is what a deploy should pin to,
+    # and the branch, which is what a person reaches for. `docker compose build`
+    # names images after the compose project, so the rename to the registry path
+    # is explicit rather than assumed.
+    - name: Tag and push
+      if: ${{ inputs.push == 'true' }}
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+        OWNER: ${{ inputs.owner }}
+        PROJECT: ${{ inputs.project }}
+      run: |
+        set -euo pipefail
+        sha="${GITHUB_SHA::12}"
+        branch="$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
+        for service in \
+          ingestion-service \
+          insight-service \
+          analysis-pipeline-api \
+          analysis-pipeline-worker \
+          intelligence-shell \
+          ingest-mfe \
+          reporting-mfe \
+          dashboards-mfe
+        do
+          local_image="${PROJECT}-${service}"
+          target="${REGISTRY}/${OWNER}/${service}"
+          docker tag "$local_image" "${target}:${sha}"
+          docker tag "$local_image" "${target}:${branch}"
+          docker push "${target}:${sha}"
+          docker push "${target}:${branch}"
+          echo "published ${target}:${sha} and :${branch}"
+        done

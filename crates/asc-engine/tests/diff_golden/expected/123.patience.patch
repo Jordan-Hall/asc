@@ -1,0 +1,37 @@
+diff --git a/file b/file
+index 0873302..46c9acb 100644
+--- a/file
++++ b/file
+@@ -1,4 +1,4 @@
+-import { getDb, initDb } from '../lib/db';
++import { ensureDb, initDb } from '../lib/db';
+ 
+ const SNAPSHOT_INTERVAL_MS = (parseInt(import.meta.env.SNAPSHOT_INTERVAL_MINUTES || '10', 10)) * 60 * 1000;
+ 
+@@ -8,7 +8,7 @@ let isRunning = false;
+ 
+ async function takeHourlySnapshot(): Promise<void> {
+   try {
+-    const db = getDb();
++    const db = await ensureDb();
+     
+     const aggregates = await db.query<[{ scope: string; scope_id?: string; metric: string; value: number }[]]>(`
+       SELECT scope, scope_id, metric, value FROM realtime_aggregate
+@@ -47,7 +47,7 @@ async function takeHourlySnapshot(): Promise<void> {
+ 
+ async function pruneOldSnapshots(): Promise<void> {
+   try {
+-    const db = getDb();
++    const db = await ensureDb();
+     
+     const hourlyDeleted = await db.query<[{ count: number }[]]>(`
+       DELETE FROM stats_snapshot 
+@@ -77,7 +77,7 @@ async function pruneOldSnapshots(): Promise<void> {
+ 
+ async function createDailyRollup(): Promise<void> {
+   try {
+-    const db = getDb();
++    const db = await ensureDb();
+     
+     const yesterday = new Date();
+     yesterday.setDate(yesterday.getDate() - 1);

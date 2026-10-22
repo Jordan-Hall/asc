@@ -1,0 +1,46 @@
+diff --git a/file b/file
+index a270592..9d8bc07 100644
+--- a/file
++++ b/file
+@@ -6,7 +6,7 @@ sys.path.insert(0, str(HERE))
+ 
+ from collections import Counter
+ 
+-from coverage import (Axis, covered, missing, report, required_cells,
++from coverage import (Axis, cell, covered, missing, report, required_cells,
+                       strength_report)
+ 
+ AXES = {
+@@ -79,3 +79,32 @@ def test_a_complete_corpus_is_complete_at_every_strength():
+ 
+ def test_strength_above_the_factor_count_is_not_an_error():
+     assert strength_report(AXES, [row("add_field", "string")], 99) == (0, 0, Counter())
++
++
++def test_every_model_declares_its_own_factor_space():
++    # The mistake this replaced: schema-author's eleven operators used as the
++    # cover for form-extract, which has no operators and would have reported
++    # fully covered while never checking a scanned image had been seen.
++    import sys
++    sys.path.insert(0, str(HERE.parent.parent.parent / "soma-harness" / "python"))
++    sys.path.insert(0, str(HERE.parent))
++    import soma_paths
++    soma_paths.bootstrap(require=("harness", "domains"))
++    import domains
++    from coverage import declared_axes
++
++    spaces = {}
++    for d in domains.all_domains():
++        axes = declared_axes(d.name)
++        assert axes, d.name
++        spaces[d.name] = tuple(axes)
++
++    # Distinct models measure distinct things - form-extract on modality,
++    # query on aggregation, schema-author on operator.
++    assert "modality" in spaces["form-extract"]
++    assert "aggregation" in spaces["query"]
++    assert "operator" in spaces["schema-author"]
++    assert "language" in spaces["nl-base"]
++    # ...and the one-shot tier shares schema-author's space rather than a
++    # parallel copy that could drift from it.
++    assert spaces["schema-author-big"] == spaces["schema-author"]

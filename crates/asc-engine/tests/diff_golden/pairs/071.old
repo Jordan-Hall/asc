@@ -1,0 +1,77 @@
+/**
+ * A rule that answers with a message has FAILED.
+ *
+ * ASC rules are commonly written as `condition || 'why not'`:
+ *
+ *   value == null || (yearsBetween(value, now()) >= 18) || 'Patient must be 18 or over'
+ *
+ * Read as a plain boolean, that expression passes when it fails, because a
+ * non-empty message is truthy. Every rule written this way was inert - the
+ * COPD biologic schema's 18-to-115 age check accepted a ten-year-old and said
+ * nothing.
+ */
+import { describe, expect, it } from 'bun:test';
+import { evaluateLanguageRule, languageRuleOutcome, ruleAnswer } from '../src/runtime';
+import type { CoreRuleSpec } from '../src/rules';
+
+const ageRule: CoreRuleSpec = {
+  type: 'expr',
+  level: 'error',
+  message: 'Patient must be between 18 and 115 years of age',
+  expression:
+    "value == null || (yearsBetween(value, now()) >= 18 && yearsBetween(value, now()) <= 115) || 'Patient must be between 18 and 115 years of age'",
+};
+
+describe('what a rule expression’s answer means', () => {
+  it('true passes', () => expect(ruleAnswer(true).passed).toBe(true));
+  it('false fails', () => expect(ruleAnswer(false).passed).toBe(false));
+  it('nothing fails', () => {
+    expect(ruleAnswer(undefined).passed).toBe(false);
+    expect(ruleAnswer(null).passed).toBe(false);
+  });
+  it('a message fails, and is the reason', () => {
+    expect(ruleAnswer('Too young')).toEqual({
+      passed: false,
+      message: 'Too young',
+    });
+  });
+  it('an empty message fails with nothing to say', () => {
+    expect(ruleAnswer('')).toEqual({ passed: false });
+  });
+});
+
+describe('the COPD biologic age rule', () => {
+  it('accepts an adult', () => {
+    expect(evaluateLanguageRule(ageRule, '1985-03-15', {})).toBe(true);
+  });
+
+  it('REFUSES a child, which it used to accept', () => {
+    expect(evaluateLanguageRule(ageRule, '2015-03-15', {})).toBe(false);
+  });
+
+  it('refuses somebody over 115', () => {
+    expect(evaluateLanguageRule(ageRule, '1890-01-01', {})).toBe(false);
+  });
+
+  it('says nothing about an empty field, which `required` is for', () => {
+    expect(evaluateLanguageRule(ageRule, null, {})).toBe(true);
+  });
+
+  it('carries the expression’s own words as the reason', () => {
+    expect(languageRuleOutcome(ageRule, '2015-03-15', {}).message).toBe(
+      'Patient must be between 18 and 115 years of age',
+    );
+  });
+});
+
+describe('a rule that cannot be evaluated', () => {
+  it('fails rather than letting the value through', () => {
+    const broken: CoreRuleSpec = {
+      type: 'expr',
+      level: 'error',
+      message: 'nonsense',
+      expression: 'this is not an expression (((',
+    };
+    expect(evaluateLanguageRule(broken, 'anything', {})).toBe(false);
+  });
+});

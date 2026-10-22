@@ -1,0 +1,19 @@
+diff --git a/file b/file
+index 099fdbb..b7f69cf 100644
+--- a/file
++++ b/file
+@@ -76,6 +76,14 @@ export interface SchemaFormElement extends JsonFormElement {
+ 
+ export interface SchemaFormElementWithState extends SchemaFormElement {
+   __saveState?: 'draft' | 'completed' | 'locked';
++  /**
++   * Whether the save now in flight is one nobody asked for.
++   *
++   * An autosave is silent: announcing each one gives a stream of toasts over
++   * the form somebody is filling in, and the page never settles. Failures are
++   * still announced - it is the routine success that goes unsaid.
++   */
++  __autosaving?: boolean;
+   /**
+    * Join this entry's room, or leave it.
+    *

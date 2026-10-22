@@ -1,0 +1,57 @@
+# NELA risk score validation testing
+
+Checks that a NELA risk API and the NELA risk calculator website give the scores in the reference spreadsheet. Every check takes a URL, so the same run works against local, dev and production.
+
+## Source data
+
+`fixtures/sim_data_v4 2024 05 31 with data dictionary.xlsx` is the default. Any `.xlsx` with a `Data` sheet, or a `.csv`, with the same headers works. The sheet deliberately includes values outside the model range; those rows have no expected score and the check confirms that none is produced.
+
+## CLI
+
+    bun run validate api  --api-url https://risk-score-service.example.org
+    bun run validate form --site-url https://nela-risk-tool.example.org
+    bun run validate form --site-url http://localhost:5178 --rows 1-50
+
+Flags: `--file`, `--mode pre|post|both`, `--tolerance`, `--out`, `--rows all|N|a-b`, `--workers`, `--origin`. Environment fallbacks: `RISK_API_URL`, `RISK_API_ORIGIN`, `NELA_SITE_URL`, `SOURCE_FILE`.
+
+Exit code 0 when every row passes, 1 when any row fails, 2 on a run error. Reports land in `reports/` as JSON and Excel.
+
+The production R service answers `{}` to a request without an `Origin` header, so API checks send one. It defaults to the production calculator's address; pass `--origin` for a service that allows a different one.
+
+## ASC Audit (Domino) form
+
+    bun run validate domino --site-url https://www.example.org/RCOA/NELAUAT2.nsf/PatientEmlapV13 --rows 1-50
+
+The ASC Audit patient form calls the same risk API from tab 3 (pre-op) and tab 6 (post-op). The check signs in with a saved browser state at `.auth/domino.json` (gitignored): sign in once in a Playwright browser and save `context.storageState()` there, or set `DOMINO_USERNAME`/`DOMINO_PASSWORD` for an account without MFA. `DOMINO_FORM_URL` is the environment fallback for the form address. Age is entered as a date of birth against an arrival date of 01/06/2026; a fresh draft is opened per row and never saved.
+
+## Playwright
+
+    RISK_API_URL=https://risk-score-service.example.org bun run test:e2e:api
+    NELA_SITE_URL=https://nela-risk-tool.example.org bun run test:e2e:form
+    DOMINO_FORM_URL=https://www.example.org/RCOA/NELAUAT2.nsf/PatientEmlapV13 bunx playwright test domino.spec
+
+`ROWS`, `TOLERANCE`, `WORKERS`, `BATCH`, `OUT_DIR`, `MODE`, `TRACE` are read from the environment. The form suite opens the calculator, ticks the disclaimer, fills every field one at a time, waits for the risk requests to settle, and reads the score the page shows. A failing row gets a full-page screenshot in `reports/screenshots/`.
+
+A full sheet against production takes about twenty minutes on eight workers.
+
+## Website
+
+    bun run build
+    bun run web
+
+Open http://localhost:3031, choose the spreadsheet and an environment, then check the API or the form. Results show on screen and download as JSON or Excel. A form check runs Playwright on the server and streams progress; one form run at a time.
+
+`VALIDATION_WEB_PORT` and `VALIDATION_UI_DIR` configure the server. The Dockerfile builds on the Playwright image so form runs work in the container.
+
+## Report
+
+Per row: index, every input as given, the exact request sent (for the form, the values typed and the values the inputs kept), the exact response received (for the form, the score text read from the page), expected, actual, diff, outcome, and the spreadsheet's intermediate model columns.
+
+Outcomes: `match`, `no-score-match`, `diff`, `unexpected-score`, `missing-score`, `error`. A row whose inputs cannot be mapped or entered is `no-score-match` when the sheet expects no score and `error` when it does.
+
+Excel sheets: Summary, Breakdown, Rows, Failures.
+
+## Tests
+
+    bun run test
+    bun run check-types

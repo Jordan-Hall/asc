@@ -1,0 +1,114 @@
+/**
+ * A history row as the database actually hands it over.
+ *
+ * `state_before`, `rollback_to_version`, `reverted_version`,
+ * `cherry_picked_paths` and `payload_size_bytes` are `option<...>` columns in
+ * SurrealDB. An unset one is NONE, which does not appear in the JSON at all -
+ * and the create event sets `state_before = NONE` outright, so version 1 of
+ * EVERY entry arrives without it.
+ *
+ * The schema demanded an explicit null, so the whole page died on the first
+ * row of the first entry anybody opened: "Entry history came back in an
+ * unrecognised shape", with nothing to say which field.
+ */
+import { describe, expect, it } from '@rstest/core';
+import { historyRowSchema, personSchema } from './entry-history';
+
+/** Version 1, exactly as the create event writes it. */
+const createdRow = {
+  version: 1,
+  action: 'created',
+  changed_at: '2026-09-09T08:00:00Z',
+  change_reason: 'Form created automatically',
+  field_changes: [],
+  state_after: 'draft',
+};
+
+describe('a history row from the database', () => {
+  it('accepts version 1, which has no state before it', () => {
+    const parsed = historyRowSchema.safeParse(createdRow);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data.state_before).toBeNull();
+  });
+
+  it('reads every absent option column as null', () => {
+    const parsed = historyRowSchema.parse(createdRow);
+    expect(parsed.rollback_to_version).toBeNull();
+    expect(parsed.reverted_version).toBeNull();
+    expect(parsed.cherry_picked_paths).toBeNull();
+  });
+
+  it('counts a row with no recorded size as nothing, as the service does', () => {
+    expect(historyRowSchema.parse(createdRow).payload_size_bytes).toBe(0);
+  });
+
+  it('still reads an explicit null, which is what a rollback row carries', () => {
+    const parsed = historyRowSchema.parse({
+      ...createdRow,
+      version: 2,
+      state_before: 'draft',
+      state_after: 'completed',
+      rollback_to_version: null,
+      cherry_picked_paths: null,
+      payload_size_bytes: 412,
+    });
+    expect(parsed.state_before).toBe('draft');
+    expect(parsed.rollback_to_version).toBeNull();
+    expect(parsed.payload_size_bytes).toBe(412);
+  });
+
+  it('keeps the values a cherry-pick records', () => {
+    const parsed = historyRowSchema.parse({
+      ...createdRow,
+      version: 3,
+      action: 'cherry_pick',
+      cherry_picked_paths: ['patient.nhs_number', 'admission.date'],
+      reverted_version: 2,
+    });
+    expect(parsed.cherry_picked_paths).toEqual([
+      'patient.nhs_number',
+      'admission.date',
+    ]);
+    expect(parsed.reverted_version).toBe(2);
+  });
+
+  it('still refuses a row missing something it cannot do without', () => {
+    // A shape that is genuinely wrong stays wrong: the point is to accept
+    // absent OPTIONAL columns, not to stop checking.
+    const { state_after, ...withoutState } = createdRow;
+    void state_after;
+    expect(historyRowSchema.safeParse(withoutState).success).toBe(false);
+  });
+});
+
+/**
+ * A patient whose identifier this reader may not see.
+ *
+ * `identifier`, `forename` and `surname` are PID: somebody without
+ * patient-data read in that scope is served the record with those fields
+ * removed, which is the system working as designed. Requiring `identifier`
+ * turned that into a parse failure reported as "Person not found" - about a
+ * person who plainly exists and whose history the reader was entitled to see.
+ */
+describe('the person, as much of them as this reader is allowed', () => {
+  it('accepts a record with the PID fields stripped out', () => {
+    const parsed = personSchema.safeParse({ id: 'person:abc' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('keeps them when they are there', () => {
+    const parsed = personSchema.parse({
+      id: 'person:abc',
+      identifier: 'NHS-123',
+      forename: 'Ada',
+      surname: 'Lovelace',
+    });
+    expect(parsed.identifier).toBe('NHS-123');
+  });
+
+  it('still refuses a record with no id', () => {
+    expect(personSchema.safeParse({ identifier: 'NHS-123' }).success).toBe(
+      false,
+    );
+  });
+});

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/schemas/form-ui-spec.schema.json",
+  "title": "Form field UI spec",
+  "type": "object",
+  "required": [
+    "type"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "enum": [
+        "TextInput",
+        "Number",
+        "Checkbox",
+        "Select",
+        "Textarea",
+        "Date",
+        "Radio",
+        "MultiSelect",
+        "CheckboxGroup",
+        "Rating",
+        "Time",
+        "DateSplit",
+        "Display",
+        "Composite",
+        "Computed",
+        "ApiComputed"
+      ],
+      "description": "A form-widget name from the @asc/ui form catalogue."
+    },
+    "props": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

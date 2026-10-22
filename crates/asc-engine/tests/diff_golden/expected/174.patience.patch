@@ -1,0 +1,26 @@
+diff --git a/file b/file
+index d975d5a..0e2a02c 100644
+--- a/file
++++ b/file
+@@ -12,7 +12,9 @@ export { listReports, reportById, canOpen, offersOutlierAnalysis, isMembershipRe
+ export { runQuery, benchmarkQuery, matchesFilter, bucketDate } from './query.js';
+ export { evaluateMetric, listMetrics, metricById, loadMetricDefinitions, derivedColumns } from './metrics.js';
+ export { suggestSpec, suggestChartType } from './suggest.js';
+-export { parseQuestion, suggestedQuestions, isRanking } from './nl.js';
++export { parseQuestion, suggestedQuestions, isRanking, isAmbiguous, didYouMean, describeInterpretation } from './nl.js';
++export { buildLexicon, correctSpelling } from './vocabulary.js';
++export { similarity, bestMatch, rankMatches, editDistance, trigramSimilarity, stemPhrase } from './fuzzy.js';
+ export { rankUnits, describeRanking } from './ranking.js';
+ export {
+   NATIONAL,
+@@ -37,7 +39,9 @@ export { loadCodebook, decode, encode, isCoded, labelsFor } from './codebook.js'
+ export type { Persona } from './scope.js';
+ export type { EvaluateOptions } from './metrics.js';
+ export type { ChartKind, Intent, Spec, SpecElement, SuggestInput } from './suggest.js';
+-export type { ParsedQuestion, ParsedRanking, ParsedAsk } from './nl.js';
++export type { ParsedQuestion, ParsedRanking, ParsedAmbiguity, ParsedAsk, Interpretation } from './nl.js';
++export type { Lexicon, Term } from './vocabulary.js';
++export type { Match, MatchResult, Candidate } from './fuzzy.js';
+ export type { CompositeRanking, UnitRanking, RankOptions } from './ranking.js';
+ export type {
+   Aggregation,

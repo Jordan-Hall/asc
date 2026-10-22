@@ -1,0 +1,47 @@
+/**
+ * The compiler's word on corpus rows. Each line on standard input is
+ * `{"id", "answer"}` - one rule to check - or `{"id", "answer", "other"}` - two
+ * answers to one request, to compare. Each line out says, for a rule, whether
+ * it parses, runs on the checker's probe records and varies across them, and
+ * its size; for a pair, whether the two agree on every probe and, if not, the
+ * first record on which they differ. `{"id", "answer", "target"}` is graded
+ * as the gate grades it: the checker's fidelity against the reference.
+ *
+ *   ASC_DSL_WASM_PATH=dsl_wasm_bg.wasm bun dist/rowcheck.bundle.js < rows.jsonl
+ */
+import { createInterface } from 'node:readline';
+import { init as initDsl } from '@asc/dsl-compiler';
+import { canVary, checkRule, deepDisagreement, ruleSize } from './rules';
+
+await initDsl();
+
+const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of lines) {
+  if (!line.trim()) continue;
+  let out: Record<string, unknown>;
+  try {
+    const row = JSON.parse(line) as { id: unknown; answer: string; other?: string; target?: string };
+    if (typeof row.target === 'string') {
+      // Graded as the gate grades: the checker's fidelity against a reference.
+      const v = checkRule(row.answer, { target: row.target });
+      out = { id: row.id, fidelity: v.fidelity, simplicity: v.simplicity ?? null, parses: v.parses };
+    } else if (typeof row.other === 'string') {
+      const differs = deepDisagreement(row.answer, row.other);
+      out = { id: row.id, agree: differs === null, differs };
+    } else {
+      const v = checkRule(row.answer);
+      out = {
+        id: row.id,
+        parses: v.parses,
+        executes: v.executes,
+        varies: v.outputVaries || (v.executes && canVary(row.answer)),
+        degeneracy: v.degeneracyScore,
+        reasons: v.reasons,
+        size: ruleSize(row.answer),
+      };
+    }
+  } catch (error) {
+    out = { error: String(error) };
+  }
+  process.stdout.write(`${JSON.stringify(out)}\n`);
+}

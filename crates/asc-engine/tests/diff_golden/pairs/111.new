@@ -1,0 +1,32 @@
+{
+  "name": "@asc/model-asc-dsl",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "requirement to DSL expression - specification and corpus recipe.",
+  "files": [
+    "soma.toml",
+    "corpus"
+  ],
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@asc/ai-corpus": "workspace:*",
+    "@asc/nano-forge": "workspace:*",
+    "@asc/schema-dsl": "workspace:*",
+    "@asc/schema-meta-v2": "workspace:*",
+    "@asc/soma": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "7.0.2"
+  },
+  "exports": {
+    "./corpus": {
+      "types": "./corpus/index.ts",
+      "import": "./corpus/index.ts"
+    }
+  }
+}

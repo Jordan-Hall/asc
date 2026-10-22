@@ -1,0 +1,35 @@
+diff --git a/file b/file
+index 25c667e..b20d8b7 100644
+--- a/file
++++ b/file
+@@ -12,6 +12,7 @@ import { suggestTarget, type Target } from './layouts/custom';
+ import { recordsOf } from './layouts/layout';
+ import { looksLikeData } from './layouts/simulated';
+ import { FIELDS } from './mapping';
++import { modesOf } from './run-api';
+ import { cellSchema } from './types';
+ 
+ const SAMPLE_ROWS = 3;
+@@ -34,6 +35,8 @@ export const inspectionSchema = z.object({
+   suggested: z.record(z.string(), z.string()),
+   /** The targets a column can be mapped to, for the UI's menu */
+   targets: z.array(z.object({ value: z.string(), label: z.string() })),
++  /** Which scores the workbook can be checked for, as read by its layout */
++  modes: z.array(z.enum(['pre', 'post'])),
+ });
+ 
+ export type Inspection = z.infer<typeof inspectionSchema>;
+@@ -82,11 +85,13 @@ export function inspectSource(data: Uint8Array, name: string): Inspection {
+       data: records.length > 0 && looksLikeData(headers),
+     };
+   });
++  const rows = layout ? layout.rows(workbook, summary) : [];
+   return {
+     name,
+     layout: layout ? layout.name : null,
+     sheets,
+     suggested,
+     targets: targetChoices(),
++    modes: rows.length > 0 ? modesOf({ name, rows, dictionary: [] }) : [],
+   };
+ }

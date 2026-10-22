@@ -1,0 +1,43 @@
+diff --git a/file b/file
+index 3d7a267..3374b18 100644
+--- a/file
++++ b/file
+@@ -10,22 +10,22 @@
+   "properties": {
+     "type": {
+       "enum": [
+-        "TextField",
+-        "NumberField",
+-        "BooleanField",
+-        "SelectField",
+-        "TextareaField",
+-        "DateField",
+-        "RadioField",
+-        "MultiSelectField",
+-        "CheckboxGroupField",
+-        "RatingField",
+-        "TimeField",
+-        "DateSplitField",
+-        "DisplayField",
+-        "CompositeField",
+-        "ComputedField",
+-        "ApiComputedField"
++        "TextInput",
++        "Number",
++        "Checkbox",
++        "Select",
++        "Textarea",
++        "Date",
++        "Radio",
++        "MultiSelect",
++        "CheckboxGroup",
++        "Rating",
++        "Time",
++        "DateSplit",
++        "Display",
++        "Composite",
++        "Computed",
++        "ApiComputed"
+       ],
+       "description": "A form-widget name from the @asc/ui form catalogue."
+     },

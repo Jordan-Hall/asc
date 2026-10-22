@@ -1,0 +1,44 @@
+import { describe, it, expect } from "bun:test";
+import { ensureUserExistsAndAssignRole } from "../src/admin/system-admin-helpers.js";
+
+describe("ensureUserExistsAndAssignRole", () => {
+  it("creates via admin.users.create and sets role via admin.users.update", async () => {
+    const calls: any[] = [];
+    const authClient = {
+      admin: {
+        users: {
+          create: async (payload: any) => { calls.push(["create", payload]); return { data: { id: "u_123" } }; },
+          update: async ({ id, data }: any) => { calls.push(["update", id, data]); return { ok: true }; },
+        }
+      }
+    };
+    const id = await ensureUserExistsAndAssignRole({ authClient, email: "a@b.c", name: "Alice", desiredId: "u_123", role: "admin" });
+    expect(id).toBe("u_123");
+    expect(calls[0][0]).toBe("create");
+    expect(calls[1][0]).toBe("update");
+  });
+
+  it("supports admin.createUser fallback shape", async () => {
+    const calls: any[] = [];
+    const authClient = {
+      admin: {
+        createUser: async (payload: any) => { calls.push(["createUser", payload]); return { id: "u_999" }; },
+        updateUser: async ({ id, role }: any) => { calls.push(["updateUser", id, role]); return { ok: true }; },
+      }
+    };
+    const id = await ensureUserExistsAndAssignRole({ authClient, email: "x@y.z", role: "owner" });
+    expect(id).toBe("u_999");
+    expect(calls[0][0]).toBe("createUser");
+  });
+
+  it("throws for invalid email", async () => {
+    const authClient = { admin: {} } as any;
+    let threw = false;
+    try {
+      await ensureUserExistsAndAssignRole({ authClient, email: "not-an-email", role: "admin" });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+  });
+});

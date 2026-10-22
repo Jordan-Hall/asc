@@ -1,0 +1,61 @@
+{
+  "name": "records-service",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "bun run generate:types && bun build src/index.ts --outdir dist --target bun",
+    "check-types": "tsc -p tsconfig.json --noEmit",
+    "dev": "bun --env-file=../../../.env run --hot src/index.ts",
+    "generate:types": "tsc -p tsconfig.json || tsc -p tsconfig.json",
+    "start": "bun run dist/index.js",
+    "test": "bun test --timeout 30000 src",
+    "test:debug-auth": "bun run scripts/debug-auth-test.ts"
+  },
+  "dependencies": {
+    "@better-auth/passkey": "1.7.0-rc.6",
+    "@asc/better-auth-permissions": "workspace:*",
+    "@asc/better-auth-workspace": "workspace:*",
+    "@asc/database-migrations": "workspace:*",
+    "@asc/database-types": "workspace:*",
+    "@asc/doc-extract": "workspace:*",
+    "@asc/dsl": "workspace:*",
+    "@asc/dsl-compiler": "workspace:*",
+    "@asc/form-schema": "workspace:*",
+    "@asc/notifications": "workspace:*",
+    "@asc/person-matching": "workspace:*",
+    "@asc/realtime": "workspace:*",
+    "@asc/schema-check": "workspace:*",
+    "@asc/schema-core": "workspace:*",
+    "@asc/schema-runtime": "workspace:*",
+    "@hono/standard-validator": "^0.2.0",
+    "archiver": "^7.0.1",
+    "archiver-zip-encrypted": "^2.0.0",
+    "better-auth": "1.7.0-rc.6",
+    "csv-parse": "^5.6.0",
+    "csv-stringify": "^6.5.2",
+    "exceljs": "^4.4.0",
+    "hono": "^4.10.6",
+    "jose": "^6.1.0",
+    "jspdf": "^4.0.0",
+    "jspdf-autotable": "^5.0.7",
+    "surrealdb": "^2.0.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/archiver": "^6.0.3",
+    "@types/bun": "latest",
+    "eslint": "^9.34.0",
+    "typescript": "7.0.2"
+  }
+}

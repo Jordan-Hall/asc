@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 78dbafc..6cc5df5 100644
+--- a/file
++++ b/file
+@@ -19,7 +19,7 @@
+   "scripts": {
+     "build": "rslib build",
+     "dev": "rslib build --watch",
+-    "typecheck": "tsgo -p tsconfig.json --noEmit",
++    "typecheck": "tsgo -p tsconfig.tests.json --noEmit",
+     "test": "bun test tests",
+     "json-schema": "bun run scripts/gen-json-schema.ts",
+     "json-schema:check": "bun run scripts/gen-json-schema.ts --check",

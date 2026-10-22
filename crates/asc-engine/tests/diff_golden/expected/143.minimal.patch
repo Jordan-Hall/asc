@@ -1,0 +1,40 @@
+diff --git a/file b/file
+index 8d82ed1..fdc2f0f 100644
+--- a/file
++++ b/file
+@@ -24,25 +24,29 @@ on:
+       - 'packages/**'
+       - 'docker-compose.yml'
+       - '.forgejo/workflows/docker-intelligence.yml'
+-  pull_request:
+-    branches: [feat/ingest-intelligence-phase1, main, ai-service-custom-model]
+   workflow_dispatch:
+ 
+ jobs:
++  # This job holds the registry token, so it must never run on code a pull
++  # request controls: a PR can edit the Dockerfiles, docker-compose.yml, the MFE
++  # build scripts or the composite action below, all of which run here. Hence no
++  # `pull_request:` trigger above, and the guard below as well — either alone
++  # would be one edit away from leaking the token.
+   build-images:
++    if: ${{ github.event_name != 'pull_request' }}
+     runs-on: ubuntu-latest
+     timeout-minutes: 60
+     steps:
+       - name: Checkout
+-        uses: actions/checkout@v4
++        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+ 
+       - name: Set up Docker Buildx
+-        uses: docker/setup-buildx-action@v3
++        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+ 
+       - name: Setup Bun
+-        uses: oven-sh/setup-bun@v2
++        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         with:
+-          bun-version: latest
++          bun-version: 1.2.22
+ 
+       # The 3 federation REMOTE MFEs are built on the runner (their in-container
+       # rspack build hits a module-federation `data:`-URI bug specific to the linux

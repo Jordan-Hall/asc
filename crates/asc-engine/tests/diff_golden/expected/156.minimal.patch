@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index ad9956c..456727a 100644
+--- a/file
++++ b/file
+@@ -21,6 +21,7 @@
+   },
+   "dependencies": {
+     "@asc/better-auth-permissions": "workspace:*",
++    "@asc/nela-risk-display": "workspace:*",
+     "@asc/router": "workspace:*",
+     "@asc/schema-dsl": "workspace:*",
+     "@asc/signal": "workspace:*",

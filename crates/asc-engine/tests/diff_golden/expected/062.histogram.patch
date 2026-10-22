@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index 05f58e4..588bd35 100644
+--- a/file
++++ b/file
+@@ -1,4 +1,4 @@
+-import { existsSync, mkdirSync } from 'node:fs';
++import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+ import { join, resolve } from 'node:path';
+ import type { Page } from '@playwright/test';
+ import { DEFAULT_FILE } from '../src/cli/args';
+@@ -85,6 +85,13 @@ export async function saveRowVideo(
+   const name =
+     pass === 0 ? `row-${index}.webm` : `row-${index}-pass-${pass}.webm`;
+   await video.saveAs(join(dir, name));
++  // Which browser made it, so the per-browser video can be joined even for
++  // rows that never produced a result (the test stopped on them)
++  appendFileSync(
++    join(dir, 'rows.ndjson'),
++    `${JSON.stringify({ index, pass, worker: process.env.TEST_PARALLEL_INDEX ?? '0', file: name })}
++`,
++  );
+ }
+ 
+ export async function liveTicker(page: Page): Promise<() => Promise<void>> {

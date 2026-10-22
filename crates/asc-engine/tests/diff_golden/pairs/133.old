@@ -1,0 +1,123 @@
+/***
+ * The platform's side of the plugin registry.
+ *
+ * Everything here is reserved to a platform reviewer. The registry refuses the rest
+ * through its own row-level security and a platform-scope permission check, so this
+ * client is a convenience rather than a control — but the refusals it surfaces are the
+ * ones a reviewer needs to read, so they are passed through rather than swallowed.
+ */
+
+import { authClient } from './auth-client';
+
+const REGISTRY_URL = import.meta.env.PLUGIN_REGISTRY_URL || 'http://localhost:3096';
+
+export interface ReviewVersion {
+	id: string;
+	version: string;
+	status: 'draft' | 'submitted' | 'approved' | 'rejected' | 'revoked';
+	remote_name: string;
+	bundle_sha256: string;
+	manifest_sha256: string;
+	platform_api_version: number;
+	size_bytes: number;
+	changelog?: string | null;
+	created_at: string;
+	submitted_at?: string | null;
+	reviewed_at?: string | null;
+	review_notes?: string | null;
+	plugin?: {
+		plugin_key: string;
+		name: string;
+		visibility: string;
+		publisher?: { slug: string; name: string } | string;
+	};
+	manifest: Record<string, unknown>;
+}
+
+export interface KilledPlugin {
+	id: string;
+	plugin: { plugin_key: string; name: string } | string;
+	severity: 'bug' | 'security';
+	reason: string;
+	killed_at: string;
+}
+
+export interface PublisherSummary {
+	id: string;
+	slug: string;
+	name: string;
+	verified: boolean;
+	created_at: string;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+	const result = await authClient.token();
+	if (result.error) throw new Error('Not authenticated');
+	const token = result.data?.token || (result.data as { jwt?: string } | undefined)?.jwt;
+	if (!token) throw new Error('No auth token');
+	return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+/***
+ * Call the registry, surfacing its own message on refusal.
+ *
+ * A 403 here means the caller is not a platform reviewer, which is worth saying plainly:
+ * the alternative is a blank screen that looks like a bug.
+ */
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+	const response = await fetch(`${REGISTRY_URL}${path}`, {
+		...init,
+		credentials: 'include',
+		headers: { ...(await authHeaders()), ...(init.headers as Record<string, string> | undefined) },
+	});
+	const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+	if (!response.ok) {
+		throw new Error(String(body.error ?? `The registry returned ${response.status}.`));
+	}
+	return body as T;
+}
+
+export const pluginReviewApi = {
+	queue: () => request<{ versions: ReviewVersion[] }>('/api/review/queue'),
+
+	versionsFor: (pluginKey: string) =>
+		request<{ versions: ReviewVersion[] }>(`/api/versions/${encodeURIComponent(pluginKey)}`),
+
+	approve: (versionId: string, notes?: string) =>
+		request<{ version: ReviewVersion }>(`/api/review/versions/${encodeURIComponent(versionId)}/approve`, {
+			method: 'POST',
+			body: JSON.stringify({ notes }),
+		}),
+
+	reject: (versionId: string, notes: string) =>
+		request<{ version: ReviewVersion }>(`/api/review/versions/${encodeURIComponent(versionId)}/reject`, {
+			method: 'POST',
+			body: JSON.stringify({ notes }),
+		}),
+
+	revoke: (versionId: string, reason: string) =>
+		request<{ version: ReviewVersion }>(`/api/review/versions/${encodeURIComponent(versionId)}/revoke`, {
+			method: 'POST',
+			body: JSON.stringify({ reason }),
+		}),
+
+	verifyPublisher: (slug: string, notes?: string) =>
+		request<{ publisher: PublisherSummary }>(`/api/review/publishers/${encodeURIComponent(slug)}/verify`, {
+			method: 'POST',
+			body: JSON.stringify({ notes }),
+		}),
+
+	killed: () => request<{ killSwitches: KilledPlugin[] }>('/api/admin/plugins/killed'),
+
+	kill: (pluginKey: string, severity: 'bug' | 'security', reason: string) =>
+		request<{ killSwitch: KilledPlugin }>(`/api/admin/plugins/${encodeURIComponent(pluginKey)}/kill`, {
+			method: 'POST',
+			body: JSON.stringify({ severity, reason }),
+		}),
+
+	unkill: (pluginKey: string, reason?: string) =>
+		request<{ killSwitch: KilledPlugin }>(`/api/admin/plugins/${encodeURIComponent(pluginKey)}/unkill`, {
+			method: 'POST',
+			body: JSON.stringify({ reason }),
+		}),
+};

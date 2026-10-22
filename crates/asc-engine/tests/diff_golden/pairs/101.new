@@ -1,0 +1,86 @@
+import { describe, it, expect } from 'bun:test';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { safeParse } from '@asc/severity-v3';
+import { loadMetaSchema, type MetaObjectField } from '../src';
+
+/***
+ * Smoke coverage for the real example schemas shipped with the NELA risk
+ * calculator app: every example JSON must load through loadMetaSchema and
+ * produce a usable severity-v3 schema. Guards the loader against regressions
+ * relative to the actual production metadata, not just synthetic fixtures.
+ */
+
+const SCHEMA_DIR = join(
+  import.meta.dir,
+  '../../../apps/shared/nela-risk-calculator/public/schema',
+);
+
+const exampleFiles = readdirSync(SCHEMA_DIR).filter((f) => f.endsWith('.json'));
+
+function loadExample(name: string): unknown {
+  return JSON.parse(readFileSync(join(SCHEMA_DIR, name), 'utf-8'));
+}
+
+function isObjectMeta(meta: unknown): meta is MetaObjectField {
+  return (
+    typeof meta === 'object' &&
+    meta !== null &&
+    (meta as { kind?: unknown }).kind === 'object'
+  );
+}
+
+describe('example schemas (apps/nela-risk-calculator/public/schema)', () => {
+  it('found the example schema files', () => {
+    expect(exampleFiles.length).toBeGreaterThan(0);
+    expect(exampleFiles).toContain('nela-v12.json');
+  });
+
+  for (const file of exampleFiles) {
+    it(`${file} loads through loadMetaSchema`, () => {
+      const raw = loadExample(file);
+      // Some examples wrap the meta (e.g. under a schema/meta key) — find the
+      // object-kind root.
+      const meta = isObjectMeta(raw)
+        ? raw
+        : Object.values(raw as Record<string, unknown>).find(isObjectMeta);
+      expect(meta).toBeDefined();
+
+      const loaded = loadMetaSchema(meta as MetaObjectField);
+      expect(loaded.schema).toBeDefined();
+      expect(loaded.schema.kind).toBe('object');
+      // `shape` lives on ObjectSchema; `loaded.schema` is typed as the base
+      // Schema, so reading it needs the narrowing the assertion above proves.
+      const object = loaded.schema as unknown as { shape: Record<string, unknown> };
+      expect(Object.keys(object.shape).length).toBeGreaterThan(0);
+    });
+  }
+
+  it('nela-v12 compiled schema validates: empty entry fails, required issues carry severity', () => {
+    const meta = loadExample('nela-v12.json') as MetaObjectField;
+    const loaded = loadMetaSchema(meta);
+
+    const result = safeParse(loaded.schema, {});
+    expect(result.success).toBe(false);
+    // The metadata declares critical-level required rules (e.g. admission_datetime).
+    expect(
+      result.issues.some(
+        (i) => i.severity === 'critical' || i.severity === 'error',
+      ),
+    ).toBe(true);
+  });
+
+  it('nela-v12 admission_datetime required rule fires with its configured message', () => {
+    const meta = loadExample('nela-v12.json') as MetaObjectField;
+    const loaded = loadMetaSchema(meta);
+
+    const result = safeParse(loaded.schema, {});
+    const admission = result.issues.filter(
+      (i) => i.path[0] === 'admission_datetime',
+    );
+    expect(admission.length).toBeGreaterThan(0);
+    expect(
+      admission.some((i) => /required/i.test(i.message)),
+    ).toBe(true);
+  });
+});

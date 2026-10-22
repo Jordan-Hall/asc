@@ -1,0 +1,76 @@
+import { Signal } from '@asc/signal';
+import { effect } from '@asc/ui';
+import type { PlacementLifecycle, PlacementPhase } from './types';
+
+/***
+ * The lifecycle a mounted placement module receives.
+ *
+ * Field for field the object `@asc/router` builds for a route component in
+ * `runtimeCore.renderToOutlet`, and deliberately so: a plugin author writing a routed page
+ * and a plugin author writing a side panel should be writing against the same thing.
+ *
+ * `effect` wraps `@asc/ui`'s effect in the same active-and-mounted guard the router uses,
+ * so an effect that is still queued when a mount is destroyed runs its body no further. The
+ * disposer it returns is registered for cleanup and also returned to the caller, which is
+ * what lets a plugin drop one effect without tearing down the mount.
+ *
+ * The effect function comes from `@asc/ui` rather than from a local copy on purpose. The
+ * measurement showed what happens when two copies of the reactive graph exist: every
+ * effect across the plugin boundary goes silent, with no error beyond the duplicate-load
+ * guard `@asc/signal` prints. One shared singleton, imported from the same place the host
+ * imports it, is the whole reason cross-boundary reactivity works at all.
+ */
+export function createPlacementLifecycle(): PlacementLifecycle {
+	const cleanup = new Set<() => void>();
+
+	// The states stay here, in the platform's own closure. The plugin gets frozen read-only
+	// views of them, so it can observe its lifecycle and cannot rewrite it.
+	const phase = new Signal.State<PlacementPhase>('mounted');
+	const isActive = new Signal.State(true);
+	const onInit = new Signal.State(false);
+	const onDestroy = new Signal.State(false);
+
+	const readOnly = <T>(state: Signal.State<T>) => Object.freeze({ get: () => state.get() });
+
+	const lifecycle: PlacementLifecycle = {
+		phase: readOnly(phase),
+		isActive: readOnly(isActive),
+		onInit: readOnly(onInit),
+		onDestroy: readOnly(onDestroy),
+		effect: (fn: () => void | (() => void)) => {
+			const dispose = effect(() => {
+				if (isActive.get() && phase.get() === 'mounted') return fn();
+			});
+			cleanup.add(dispose);
+			return () => {
+				cleanup.delete(dispose);
+				dispose();
+			};
+		},
+		onCleanup: (fn: () => void) => {
+			cleanup.add(fn);
+		},
+		destroy: () => {
+			if (phase.get() === 'destroyed' || phase.get() === 'destroying') return;
+			phase.set('destroying');
+			isActive.set(false);
+			onDestroy.set(true);
+			for (const fn of cleanup) {
+				try {
+					fn();
+				} catch {
+					// One plugin's failing cleanup must not prevent the next one running, and
+					// there is nothing sensible for the host to do about it either way.
+				}
+			}
+			cleanup.clear();
+			phase.set('destroyed');
+		},
+	};
+
+	queueMicrotask(() => {
+		if (phase.get() === 'mounted') onInit.set(true);
+	});
+
+	return lifecycle;
+}

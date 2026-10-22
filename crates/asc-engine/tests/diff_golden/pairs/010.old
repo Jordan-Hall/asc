@@ -1,0 +1,85 @@
+//! Forms people write that the engine refused or answered wrongly: a pipe
+//! followed by an operator, the placeholder `_`, a column named as text in a
+//! higher-order call, `join` with its separator first, and a time kept as a
+//! date and time.
+
+mod common;
+use serde_json::{json, Value as J};
+
+fn run(expr: &str, root: J) -> J {
+    common::run(expr, root, json!(null)).to_json()
+}
+
+#[test]
+fn an_operator_after_a_pipe_applies_to_the_pipeline() {
+    // `2.345 |> round(1) > 2` answered false and `[1, 2, 3] |> average * 100`
+    // null: the stage was read whole, `(round(1) > 2)`, and applied.
+    assert_eq!(run("2.345 |> round(1) > 2", json!({})), json!(true));
+    assert_eq!(run("[1, 2, 3] |> average * 100", json!({})), json!(200));
+    assert_eq!(run("[1, 2] |> average > 1 && true", json!({})), json!(true));
+    let rule = r#"root.email |> split("@") |> last |> lower() in ["hospital.org"] || "Invalid email domain""#;
+    assert_eq!(run(rule, json!({ "email": "a@Hospital.org" })), json!(true));
+    assert_eq!(run(rule, json!({ "email": "a@x.org" })), json!("Invalid email domain"));
+}
+
+#[test]
+fn a_stage_that_is_a_function_keeps_its_meaning() {
+    assert_eq!(run("[3, 1] |> sortBy(x => x) |> first", json!({})), json!(1));
+    assert_eq!(run("\"A\" |> lower()", json!({})), json!("a"));
+}
+
+#[test]
+fn the_placeholder_is_the_item() {
+    let root = json!({ "allergies": [{ "severity": "mild" }, { "severity": "severe", "n": 2 }] });
+    assert_eq!(run(r#"find(root.allergies, _.severity == "severe")"#, root), json!({ "severity": "severe", "n": 2 }));
+    assert_eq!(run("map([1, 2], _ * 2)", json!({})), json!([2, 4]));
+}
+
+#[test]
+fn a_column_named_as_text_is_the_column_of_each_item() {
+    let root = json!({ "readings": [{ "date": "2024-01-03", "value": 3 }, { "date": "2024-01-01", "value": 4.25 }] });
+    assert_eq!(
+        run(r#"root.readings |> sortBy("date", false) |> first(3) |> averageOf("value") |> round(1)"#, root.clone()),
+        json!(3.6)
+    );
+    assert_eq!(run(r#"(sortBy(root.readings, "value", true) |> first).value"#, root.clone()), json!(4.25));
+    assert_eq!(run(r#"maxBy(root.readings, "value").value"#, root.clone()), json!(4.25));
+    assert_eq!(run(r#"where([{ "flag": true }, { "flag": false }], "flag")"#, json!({})), json!([{ "flag": true }]));
+}
+
+#[test]
+fn text_that_is_a_value_is_left_alone() {
+    // A start, and the columns to group by, are values - never the function.
+    assert_eq!(run(r#"reduce(["a", "b"], (acc, x) => acc + x, "z")"#, json!({})), json!("zab"));
+    let root = json!({ "r": [{ "g": "a" }, { "g": "a" }] });
+    assert_eq!(run(r#"summarise(root.r, "g", g => { n: count(g) })"#, root), json!([{ "g": "a", "n": 2 }]));
+}
+
+#[test]
+fn join_takes_its_separator_first_too() {
+    assert_eq!(run(r#"join(" - ", ["a", "b"])"#, json!({})), json!("a - b"));
+    assert_eq!(run(r#"join(["a", "b"], " - ")"#, json!({})), json!("a - b"));
+}
+
+#[test]
+fn a_time_kept_as_a_date_gives_its_time_of_day() {
+    let root = json!({ "d": "2024-01-02", "t": "2024-05-01T10:30:00" });
+    assert_eq!(run("combineDateTime(root.d, root.t)", root), json!("2024-01-02T10:30:00"));
+}
+
+#[test]
+fn every_value_after_a_list_counts() {
+    // `npv(r, [a, b], c)` dropped `c`, and `percentile(xs, x, 90)` read `x` as
+    // the percentile and dropped the 90, both without a word.
+    assert_eq!(run("round(npv(0.1, [-10000, 3000], 4200, 6800), 2)", json!({})), json!(1188.44));
+    assert_eq!(run("percentile([1, 2, 3], 4, 5, 90)", json!({})), json!(4.6));
+    assert_eq!(run("percentile([1, 2, 3, 4, 5], 90)", json!({})), json!(4.6));
+    assert_eq!(run("percentile([1, 2, 3, 4, 5])", json!({})), json!(3));
+}
+
+#[test]
+fn a_name_alone_in_a_match_arm_binds_the_value() {
+    // `n => n * 2` in an arm was read as a lambda, which swallowed the arm.
+    assert_eq!(run("match root.score { n => n * 2 }", json!({ "score": 4 })), json!(8));
+    assert_eq!(run("match 3 { n if n > 1 => 1, _ => 0 }", json!({})), json!(1));
+}

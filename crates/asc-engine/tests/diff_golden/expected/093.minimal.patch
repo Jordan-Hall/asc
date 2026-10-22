@@ -1,0 +1,27 @@
+diff --git a/file b/file
+index 6eb5731..b1f8245 100644
+--- a/file
++++ b/file
+@@ -20,12 +20,16 @@
+       "types": "./dist/generator.d.ts",
+       "import": "./dist/generator.js"
+     },
+-  "./pid-permissions": {
+-   "types": "./dist/pid-permissions.d.ts",
+-   "import": "./dist/pid-permissions.js"
+-  },
+-  "./schema/*": "./schema/*",
+-    "./scripts/tsdoc-schema": "./scripts/tsdoc-schema.ts"
++    "./pid-permissions": {
++      "types": "./dist/pid-permissions.d.ts",
++      "import": "./dist/pid-permissions.js"
++    },
++    "./schema/*": "./schema/*",
++    "./scripts/tsdoc-schema": "./scripts/tsdoc-schema.ts",
++    "./pid": {
++      "types": "./dist/pid.d.ts",
++      "import": "./dist/pid.js"
++    }
+   },
+   "scripts": {
+     "build": "rslib build",

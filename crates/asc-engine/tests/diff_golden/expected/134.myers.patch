@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index f1b3b5d..35eff75 100644
+--- a/file
++++ b/file
+@@ -2,7 +2,7 @@
+ 
+ Web-based administration panel for managing organizations, workspaces, teams, users, and invitations.
+ 
+-This is the web version of the `asccli` command-line tool, providing the same functionality through a modern web interface.
++This replaces the `asccli` command-line tool, which has been removed.
+ 
+ ## Features
+ 

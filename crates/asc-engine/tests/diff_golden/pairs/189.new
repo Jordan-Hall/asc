@@ -1,0 +1,88 @@
+// Owned by @asc/soma-contracts; kept transport-agnostic for training and qualification.
+/**
+ * Checker server — a persistent bun process the Soma training loop (Python) pipes
+ * to. Reads one JSON request per line on stdin `{scenario, artifact, target?}` and
+ * writes one verdict JSON per line on stdout. Persistent so per-call cost is a
+ * parse + probe, not a process spawn.
+ *
+ *   bun apps/ai-service/soma/checker/server.ts        # run from apps/ai-service
+ */
+import { checkRule } from './rules';
+import { checkSchema, checkQuery, checkForm, checkOrchestrator } from './scenarios';
+
+type Req = { protocolVersion: number; requestId: string; scenario: string; artifact: string; target?: string };
+const PROTOCOL_VERSION = 1;
+const MAX_ARTIFACT_BYTES = 64 * 1024;
+const MAX_LINE_BYTES = 256 * 1024;
+
+const CHECKERS: Record<string, (a: string, o: { target?: string }) => unknown> = {
+  'asc-dsl': (a, o) => checkRule(a, o),
+  'rules-expressions': (a, o) => checkRule(a, o), // legacy wire alias
+  schema: (a, o) => checkSchema(a, o),
+  'schema-author': (a, o) => checkSchema(a, o),
+  'schema-author-big': (a, o) => checkSchema(a, o),
+  query: (a, o) => checkQuery(a, o),
+  form: (a, o) => checkForm(a, o),
+  'form-extract': (a, o) => checkForm(a, o),
+  orchestrator: (a, o) => checkOrchestrator(a, o),
+};
+
+/**
+ * STDOUT IS THE PROTOCOL, so nothing the checker EVALUATES may write to it.
+ *
+ * The DSL ships a `print()` builtin backed by console.log, and 64 rows of the
+ * asc-dsl corpus use it. Probing those rules emitted `debug 0`, `debug 65`,
+ * `debug -10` - the probe values themselves - straight into the verdict stream,
+ * so the caller read a line of chatter where a JSON verdict should be and died
+ * with "Expecting value: line 1 column 1". It looked like a broken corpus.
+ *
+ * That is not an asc-dsl quirk: any artifact the checker runs can log, and the
+ * trainer parses this same stream through bridge.py, so a rule that prints would
+ * have corrupted Stage-B rewards silently. Muzzling console for the duration of
+ * a check fixes the whole class at the one point that owns the protocol.
+ */
+const silenced = { log: console.log, info: console.info, warn: console.warn,
+                   debug: console.debug, error: console.error };
+function checkQuietly(fn: (a: string, o: { target?: string }) => unknown,
+                      artifact: string, target?: string): unknown {
+  console.log = console.info = console.warn = console.debug = () => {};
+  // stderr stays open: a genuine error should still be visible to an operator,
+  // and only stdout carries the protocol.
+  try {
+    return fn(artifact, { target });
+  } finally {
+    Object.assign(console, silenced);
+  }
+}
+
+for await (const line of console) {
+  const t = line.trim();
+  if (!t) continue;
+  let requestId = '';
+  try {
+    if (Buffer.byteLength(t, 'utf8') > MAX_LINE_BYTES) throw new Error('request line too large');
+    const req = JSON.parse(t) as Req;
+    requestId = typeof req.requestId === 'string' ? req.requestId : '';
+    if (req.protocolVersion !== PROTOCOL_VERSION || typeof req.requestId !== 'string'
+        || typeof req.scenario !== 'string' || typeof req.artifact !== 'string'
+        || Buffer.byteLength(req.artifact, 'utf8') > MAX_ARTIFACT_BYTES
+        || (req.target !== undefined && Buffer.byteLength(req.target, 'utf8') > MAX_ARTIFACT_BYTES)) {
+      throw new Error('invalid checker request');
+    }
+    // FAIL CLOSED on an unknown scenario. This fell back to the asc-dsl
+    // checker, so a domain added to the registry but not to CHECKERS would
+    // train its whole Stage-B against the WRONG oracle - every schema graded
+    // as a DSL expression, every reward meaningless, and no error anywhere to
+    // say so. A missing checker is a configuration mistake, not a default.
+    const fn = CHECKERS[req.scenario];
+    if (!fn) {
+      throw new Error(
+        `no checker registered for scenario ${JSON.stringify(req.scenario)}; ` +
+        `known: ${Object.keys(CHECKERS).sort().join(', ')}`);
+    }
+    const raw = checkQuietly(fn, req.artifact, req.target) as Record<string, unknown>;
+    process.stdout.write(JSON.stringify({ ...raw, protocolVersion: PROTOCOL_VERSION, requestId }) + '\n');
+  } catch (e) {
+    process.stdout.write(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, requestId, scenario: 'rules', artifact: '', parses: false, executes: false, outputVaries: false, degeneracyScore: 1, structuralScore: 0, fidelity: null, quality: -1, processReward: 0, reasons: [`server-error: ${String(e).slice(0, 80)}`] }) + '\n');
+  }
+}

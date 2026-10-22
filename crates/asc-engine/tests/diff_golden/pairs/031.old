@@ -1,0 +1,12 @@
+# Guides
+
+- [Getting Started](../index)
+- [API Reference](../api/index)
+- [Expression Language](../reference/expression)
+  - [Syntax](../reference/expression/syntax)
+  - [Built-in Functions](../reference/expression/functions)
+  - [Program Mode](../reference/expression/program-mode)
+  - [Examples](../reference/expression/examples)
+- [DSL Reference](../reference/dsl)
+- [Natural Language Reference](../reference/natural-language)
+- [SQL Translation](../reference/sql)

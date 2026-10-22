@@ -1,0 +1,29 @@
+{
+  "name": "asc-core-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js",
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "analytics-service": "workspace:*",
+    "audit-service": "workspace:*",
+    "auth": "workspace:*",
+    "cms-service": "workspace:*",
+    "forms-service": "workspace:*",
+    "hono": "^4.10.6",
+    "person-service": "workspace:*",
+    "support-service": "workspace:*",
+    "user-activity-service": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "7.0.2"
+  }
+}

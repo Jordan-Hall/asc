@@ -1,0 +1,78 @@
+/**
+ * Tests for large CWN validation guard
+ * @vitest-environment node
+ */
+
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from '@rstest/core';
+import {
+  CWN_VALIDATION_MAX_LENGTH,
+  shouldDeferCwnValidation,
+  validateCwnText,
+} from './cwnValidation';
+
+/*
+  The fixture lives beside the test that reads it.
+
+  It was counted out in `../` steps from the repository root - six of them,
+  after an earlier fix made it five - and then a cleanup commit deleted the
+  file at the end of that path. The suite failed with ENOENT naming a location
+  that said nothing about what was missing. A test that reaches outside its own
+  app for the thing it is about breaks whenever anything above it moves.
+*/
+const cwnValidationFixturePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'nela-v12.cwn',
+);
+
+describe('cwnValidation', () => {
+  it('defers validation for nela-v12.cwn sized paste payloads', () => {
+    const nelaCwn = readFileSync(cwnValidationFixturePath, 'utf8');
+    let called = false;
+
+    const result = validateCwnText(nelaCwn, (() => {
+      called = true;
+      throw new Error('validator should not run for large CWN documents');
+    }) as any);
+
+    expect(nelaCwn.length).toBeGreaterThan(CWN_VALIDATION_MAX_LENGTH);
+    expect(shouldDeferCwnValidation(nelaCwn)).toBe(true);
+    expect(called).toBe(false);
+    expect(result).toEqual({ errors: [], deferred: true });
+  });
+
+  it('still validates smaller CWN documents immediately', () => {
+    let called = false;
+
+    const result = validateCwnText('field age { kind: number }', ((
+      text: string,
+    ) => {
+      called = true;
+      expect(text).toContain('field age');
+      return [
+        {
+          line: 2,
+          column: 4,
+          message: 'Example warning',
+          severity: 'warning' as const,
+        },
+      ];
+    }) as any);
+
+    expect(called).toBe(true);
+    expect(result).toEqual({
+      deferred: false,
+      errors: [
+        {
+          line: 2,
+          column: 4,
+          message: 'Example warning',
+          severity: 'warning',
+        },
+      ],
+    });
+  });
+});

@@ -1,0 +1,64 @@
+import { beforeAll, describe, expect, test } from 'bun:test';
+import { init as initDsl } from '@asc/dsl-compiler';
+import { checkRule } from './rules';
+
+// The engine has three external sources - `root` (the record), `ctx` (what the
+// caller passes in beside it) and `value` (the field under validation, which a
+// bare name reads from) - each readable at depth. The probe filled only the
+// first segment of `root`, so the rest read null on every round.
+
+beforeAll(async () => {
+  await initDsl();
+});
+
+describe('checkRule — every external source is probed', () => {
+  const graded = (artifact: string) => {
+    const v = checkRule(artifact);
+    return { parses: v.parses, executes: v.executes, varies: v.outputVaries };
+  };
+
+  test.each([
+    ['a record field', 'root.age > 65'],
+    ['a nested record field', 'root.address.postcode == "BL1"'],
+    ['the value itself', 'value > 10'],
+    // A null check cannot vary against a probe that never draws null; the
+    // length of the notes does.
+    ['a bare name, read from the value', 'len(ward_notes) > 3'],
+    ['a context field', 'ctx.max_allowed_dose > 10'],
+    ['a record against the context', 'root.dose <= ctx.max_allowed_dose'],
+    ['a nested context field', 'ctx.user.ward == "north"'],
+  ])('%s varies', (_label, artifact) => {
+    expect(graded(artifact)).toEqual({ parses: true, executes: true, varies: true });
+  });
+
+  test('a date property is a property of the date, not a field', () => {
+    expect(graded('root.triage_date.day > 10').varies).toBe(true);
+  });
+});
+
+describe('checkRule — the wrong source or path is not the right answer', () => {
+  test('the wrong context path scores below the right one', () => {
+    const right = checkRule('root.dose <= ctx.limits.dose', {
+      target: 'root.dose <= ctx.limits.dose',
+    });
+    const wrong = checkRule('root.dose <= ctx.limits.age', {
+      target: 'root.dose <= ctx.limits.dose',
+    });
+    expect(right.fidelity).toBe(1);
+    expect(wrong.fidelity ?? 0).toBeLessThan(1);
+  });
+
+  test('reading the record where the context was asked for is wrong', () => {
+    const v = checkRule('root.max_allowed_dose >= root.dose', {
+      target: 'ctx.max_allowed_dose >= root.dose',
+    });
+    expect(v.fidelity ?? 0).toBeLessThan(1);
+  });
+
+  test('a let binding and a lambda parameter are not sources', () => {
+    expect(
+      checkRule('let p = root.pulse; p > 100', { target: 'root.pulse > 100' }).fidelity,
+    ).toBe(1);
+    expect(checkRule('len(where(root.readings, (x) => x > 5)) > 1').outputVaries).toBe(true);
+  });
+});

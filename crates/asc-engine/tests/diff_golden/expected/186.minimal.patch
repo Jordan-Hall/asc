@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index 097cc52..1c6608f 100644
+--- a/file
++++ b/file
+@@ -4,7 +4,6 @@
+  * Consumers may train Soma, LoRA, or other fine-tuned models from the same
+  * validated generators. Generic corpus mechanics remain in @asc/nano-forge.
+  */
+-export * from './dsl-corpus';
+ export * from './meta-schema-corpus';
+ export * from './spec-corpus';
+ export * from './edit-corpus';
+@@ -12,15 +11,6 @@ export * from './apply-ops-corpus';
+ export * from './incremental-authoring-corpus';
+ export * from './real-schema-corpus';
+ export * from './schema-gold-sources';
+-export * from './expression-syntax-corpus';
+-export * from './expression-compose-corpus';
+-export * from './expression-advanced-corpus';
+-export * from './expression-grounding-corpus';
+-export * from './implicit-binding-corpus';
+-export * from './bare-comparison-corpus';
+-export * from './expression-function-coverage-corpus';
+-export * from './expression-pairwise-corpus';
+-export * from './expression-depth-corpus';
+ export * from './search-trace-corpus';
+ export * from './structured-repair-corpus';
+ export * from './english-warmup-corpus';

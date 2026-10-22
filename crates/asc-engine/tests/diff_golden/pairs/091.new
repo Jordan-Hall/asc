@@ -1,0 +1,16 @@
+# API Reference
+
+The TypeScript API is generated from exported declarations with ts-docs.
+
+## Categories
+
+- [Core](./core) — 26 functions, 20 types
+- [DSL - Grammar](./dsl-grammar) — 21 functions, 14 types
+- [DSL - Parser](./dsl-parser) — 4 functions, 0 types
+- [Editor Support](./editor-support) — 8 functions, 7 types
+- [Expression - AST](./expression-ast) — 0 functions, 10 types
+- [Expression - Lexer](./expression-lexer) — 1 functions, 1 types
+- [Expression - Parser](./expression-parser) — 6 functions, 5 types
+- [Natural Language](./natural-language) — 25 functions, 25 types
+- [Unified Program](./unified-program) — 4 functions, 7 types
+- [Utilities](./utilities) — 8 functions, 0 types

@@ -1,0 +1,38 @@
+diff --git a/file b/file
+index 33cde18..36f84ca 100644
+--- a/file
++++ b/file
+@@ -149,4 +149,33 @@ describe('runtime smoke', () => {
+ 
+     expect(mounts).toBe(2);
+   });
++
++  it('matches a route when the path carries a query string', async () => {
++    if (typeof document === 'undefined') {
++      return;
++    }
++    setupDom();
++    const r = (active = createRouter({
++      routes: [
++        defineRoute({
++          path: 'home',
++          component: defineComponent(() => '<h1>Home</h1>'),
++        }),
++        defineRoute({
++          path: 'organizations',
++          component: defineComponent(() => '<h1>Organisations</h1>'),
++        }),
++      ] as const,
++      defaultRoute: 'home',
++      notFoundRoute: 'home',
++    }));
++    await r.init();
++    await r.navigateTo('organizations?action=create');
++    await flushRender();
++    expect(r.state.currentRoute.get()).toBe('organizations?action=create');
++    expect(document.querySelector('[router-outlet]')!.innerHTML).toContain(
++      'Organisations',
++    );
++    expect(window.location.search).toBe('?action=create');
++  });
+ });

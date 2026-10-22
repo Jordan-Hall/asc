@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index 678ca80..31ad102 100644
+--- a/file
++++ b/file
+@@ -11,6 +11,7 @@ import {
+   captureFrame,
+   chunk,
+   emitReport,
++  emitStage,
+   emitRow,
+   liveTicker,
+   loadDeadline,
+@@ -59,6 +60,7 @@ async function checkRow(form: NelaForm, row: SourceRow): Promise<RowResult> {
+     if (!(error instanceof Error)) throw error;
+     return {
+       ...errorResult(row, firstLine(error)),
++      outcome: 'error',
+       durationMs: Date.now() - started,
+     };
+   }
+@@ -106,6 +108,7 @@ for (const batch of batches) {
+     test.setTimeout(
+       deadline ? deadline - Date.now() + 180_000 : batch.length * 30_000,
+     );
++    emitStage(`Opening ${siteUrl}`);
+     const failures: string[] = [];
+     let shared: NelaForm | null = null;
+     let stopShared = async () => {};

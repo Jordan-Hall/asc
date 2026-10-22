@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index a87c871..860ff8e 100644
+--- a/file
++++ b/file
+@@ -36,13 +36,13 @@ jobs:
+         run: bunx turbo run build --filter=insight-service... --filter=ingestion-service...
+ 
+       - name: Typecheck insight-service
+-        run: bun run --cwd apps/insight-service check-types
++        run: bun run --cwd apps/pulse/insight-service check-types
+ 
+       - name: Typecheck ingestion-service
+-        run: bun run --cwd apps/ingestion-service check-types
++        run: bun run --cwd apps/core/ingestion-service check-types
+ 
+       - name: Unit tests — insight-service
+-        run: cd apps/insight-service && bun test
++        run: cd apps/pulse/insight-service && bun test
+ 
+       # House-rule lint: the new migrations must use v3 SurrealQL forms only and
+       # every DEFINE ACCESS must be OVERWRITE (re-runnable).

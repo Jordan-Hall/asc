@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 9c76b83..7809bad 100644
+--- a/file
++++ b/file
+@@ -1,5 +1,5 @@
+ {
+   "common.error.forbidden": "You don't have permission to do that.",
+-  "common.error.notFound": "We couldn't find what you were looking for.",
+-  "common.error.network": "We couldn't reach the server. Check your connection and try again."
++  "common.error.network": "We couldn't reach the server. Check your connection and try again.",
++  "common.error.notFound": "We couldn't find what you were looking for."
+ }

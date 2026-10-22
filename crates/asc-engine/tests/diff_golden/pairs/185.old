@@ -1,0 +1,66 @@
+# How a traced corpus is actually built
+
+Recovered from git history on 2026-08-09, after the derivers were found missing
+and a first attempt to regenerate produced 56,938 rows against the 56,875 on
+disk with not one row matching.
+
+The reason it did not match is that **a traced corpus is not deriver output.**
+
+## The chain
+
+```
+<model>-grounded.finetune.jsonl          the source pairs
+        │
+        ▼  asc_soma.derive.<model>     deterministic, free, no teacher
+   derived traces                        --repair-pct 15 --direct-pct 20
+        │
+        ▼  asc_soma.teacher.merge_all_cached_traces
+   bought teacher traces merged over it, by priority
+        │
+        ▼
+<model>-traced.finetune.jsonl
+```
+
+## The flags, recovered
+
+From `kernel_asc_dsl_v3.py` at `9caf8dd4`:
+
+```
+derive_traces.py --in  <model>-grounded.finetune.jsonl
+                 --out <model>-traced.finetune.jsonl
+                 --repair-pct 15
+                 --direct-pct 20
+```
+
+Those are the defaults, which is why the flags were never the discrepancy.
+
+## Teacher priority, which is load-bearing
+
+`merge_all_cached_traces.MODELS` is an ordered list and the order is the
+priority. Luna leads because it is the strongest teacher run and the one whose
+traces were bought deliberately; the rest are fallbacks for rows Luna never saw.
+
+A row that already has a trace **keeps** it. That rule was added at `6db19055`
+after the merge was found to be replacing rather than filling: 2,480 query rows,
+5,024 form-extract and 1,016 asc-dsl had been quietly demoted from Luna to
+kimi, which is the exact opposite of the stated priority. The tool can identify
+the teacher of a trace it looks up and never of one already in the corpus, so
+replacing means overwriting an unknown teacher with a known one.
+
+## What survived and what did not
+
+**Survived.** The teacher caches, 94 MB at
+`packages/ai-corpus/data/soma-train/teacher/`, committed deliberately at
+`90a97774` as "the paid-for artefact". The five derivers, restored to
+`asc_soma/derive/`. The five teacher tools, restored to `asc_soma/teacher/`.
+
+**Does not run yet.** The teacher tools import `soma_paths`, `domains` and the
+old `soma` model module, all deleted with the harness. Rewiring those three is
+what stands between here and regenerating a traced corpus from source.
+
+## Why this file exists
+
+The corpora were checked in and the recipe was not. That is the same failure as
+the derivers being deleted, one level up, and it cost an afternoon to undo. A
+derive stage should write its own parameters into the artefact manifest so this
+document becomes redundant.

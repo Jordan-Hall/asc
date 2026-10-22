@@ -1,0 +1,11 @@
+[mcp_servers.tracedecay]
+command = "bun"
+args = ["--no-env-file", "scripts/tracedecay.ts", "serve"]
+
+[mcp_servers.repo-audit]
+command = "bun"
+args = ["--no-env-file", "packages/repo-audit/src/cli.ts", "mcp"]
+
+[mcp_servers.asc-schema]
+command = "bun"
+args = ["--no-env-file", "packages/schema/form/scripts/mcp-server.ts"]

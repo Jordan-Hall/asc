@@ -1,0 +1,31 @@
+diff --git a/file b/file
+index ca8c54a..893652c 100644
+--- a/file
++++ b/file
+@@ -58,14 +58,23 @@ export async function submitVersionForReview(
+ 	action: 'submitted' | 'resubmitted',
+ ): Promise<Record<string, unknown> | null> {
+ 	const db = await connect(config);
+-	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
++	await db.query(
+ 		`BEGIN TRANSACTION;
+-		 LET $result = (UPDATE $version SET status = 'submitted', submitted_at = time::now() RETURN *);
++		 UPDATE $version SET status = 'submitted', submitted_at = time::now();
+ 		 CREATE plugin_review_event SET plugin_version = $version, action = $action, actor = $actor;
+-		 RETURN $result;
+ 		 COMMIT TRANSACTION;`,
+ 		{ version: versionId, action, actor: actorId },
+ 	);
++
++	// Read back rather than unwrapping the transaction's own reply. Inside BEGIN/COMMIT the
++	// driver returns one entry per statement, so `RETURN $result` is not at index 0 — it sits
++	// wherever the statement happened to fall, and reading the first entry returned the LET's
++	// own null. Every caller took that null to mean the submission had failed, while the
++	// transition had in fact committed.
++	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
++		'SELECT * FROM plugin_version WHERE id = $version LIMIT 1',
++		{ version: versionId },
++	);
+ 	return rows?.[0] ?? null;
+ }
+ 

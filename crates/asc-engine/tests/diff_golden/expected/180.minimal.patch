@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index cc6f489..68b3623 100644
+--- a/file
++++ b/file
+@@ -27,7 +27,7 @@ type AppContext = {
+   };
+ };
+ 
+-const app = new Hono<AppContext>();
++export const app = new Hono<AppContext>();
+ 
+ app.use(
+   '*',
+@@ -93,7 +93,9 @@ const routes = app
+   .route('/api/search', searchRouter)
+   .route('/api/export', exportRouter);
+ 
+-startSnapshotJob().catch(err => console.error('Failed to start snapshot job:', err));
++if (import.meta.env.ASC_BACKGROUND_JOBS !== 'off') {
++  startSnapshotJob().catch(err => console.error('Failed to start snapshot job:', err));
++}
+ 
+ console.log(`🚀 Analytics Service running on port ${PORT}`);
+ 

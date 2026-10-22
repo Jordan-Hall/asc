@@ -1,0 +1,146 @@
+/**
+ * The shape of the wasm-bindgen glue, declared rather than read.
+ *
+ * `#dsl-wasm` resolves through this package's `imports` map to
+ * `js/wasm/dsl_wasm.js`, which `bun run build:wasm` writes and which is not in
+ * the repository. Declaring the surface here means a typecheck does not depend
+ * on whether someone has run the WASM build.
+ *
+ * The generated `.d.ts` types every evaluation result as `any` because the
+ * crate returns `JsValue`. What actually crosses the boundary is a JSON string
+ * in every case, so that is what is declared here: this file is the narrower,
+ * truthful statement of the same surface, and it is what lets the loader hold
+ * the module without an assertion.
+ */
+declare module '#dsl-wasm' {
+  /** A compiled expression, held on the WASM side. */
+  export interface WasmExpr {
+    /** Evaluate with a value, a record and the `ctx` bag. */
+    evalWithCtx(valueJson: string, rootJson: string, ctxJson: string): string;
+    eval(valueJson: string): string;
+    eval_batch(valuesJson: string): string;
+    eval_with_root(valueJson: string, rootJson: string): string;
+    eval_batch_with_root(pairsJson: string): string;
+    eval_in(ctx: WasmContext): string;
+    eval_batch_in(batch: WasmContextBatch): string;
+  }
+
+  /**
+   * A parsed `value`/`root` pair.
+   *
+   * Linear memory the JavaScript garbage collector does not reclaim: dropping
+   * the wrapper leaks it, so it has to be freed.
+   */
+  export interface WasmContext {
+    set_value(valueJson: string): void;
+    free(): void;
+  }
+
+  /** A parsed set of `[value, root]` rows. Freed like {@link WasmContext}. */
+  export interface WasmContextBatch {
+    readonly len: number;
+    free(): void;
+  }
+
+  /** Every function name the engine can resolve, as a JSON array. */
+  export function builtinNames(): string;
+  export function compile_expr(src: string): WasmExpr;
+  export function create_context(
+    valueJson: string,
+    rootJson: string,
+  ): WasmContext;
+  /** A context carrying the extra `ctx` bag as well as value and root. */
+  export function createContextWithCtx(
+    valueJson: string,
+    rootJson: string,
+    ctxJson: string,
+  ): WasmContext;
+  export function create_context_batch(pairsJson: string): WasmContextBatch;
+  /** A compiled multi-statement program. */
+  export class WasmProgram {
+    /**
+     * Run against a value and a record; answers `{ value, output }` as JSON.
+     *
+     * Declared `evalWithRoot` here once, which the binding never exported: a
+     * program run in a browser without a `ctx` threw instead of running.
+     */
+    eval_with_root(valueJson: string, rootJson: string): string;
+    /** As `evalWithRoot`, with the context bag the program reads as `ctx`. */
+    evalWithCtx(valueJson: string, rootJson: string, ctxJson: string): string;
+    free(): void;
+  }
+  /** Compile a multi-statement program. */
+  export function compile_program(src: string): WasmProgram;
+  export function eval_expr(src: string, valueJson: string): string;
+  export function expression_dependencies(src: string): string;
+  export function program_dependencies(src: string): string;
+  export function diagnose_expr(src: string): string;
+  export function diagnose_program(src: string): string;
+  export function diagnose_expr_with_fields(
+    src: string,
+    rootFieldsJson: string,
+  ): string;
+  export function diagnose_program_with_fields(
+    src: string,
+    rootFieldsJson: string,
+  ): string;
+  export function lex_expr(src: string): string;
+  export function debug_trace_expr(
+    src: string,
+    value_json: string,
+    root_json: string,
+  ): string;
+  export function diagnose_expr_with_shape(
+    src: string,
+    shape_json: string,
+  ): string;
+  export function is_program_source(src: string): boolean;
+  export function parse_expr(src: string): string;
+  export function parse_program(src: string): string;
+
+  /**
+   * Present only in a thread-pool build, so callers must check for it. The
+   * default build is single-threaded because SharedArrayBuffer and Atomics are
+   * not available in every browser context.
+   */
+  export function initThreadPool(numThreads: number): Promise<void>;
+
+  /** A program compiled to a WebAssembly module of its own. */
+  export class CompiledWasmProgram {
+    /** The module's bytes. */
+    readonly bytes: Uint8Array;
+    /** How many functions it exports, as `f0` onwards. */
+    readonly functionCount: number;
+    /**
+     * Run it, with `globalThis.__ascCallCompiled` calling the instantiated
+     * module's exports. `ctxJson` and `inputsJson` may be empty. Answers
+     * `{ value, output }` as JSON.
+     */
+    run(valueJson: string, rootJson: string, ctxJson: string, inputsJson: string): string;
+    free(): void;
+  }
+  /** Compile an expression or a program to its own WebAssembly module. */
+  export function compileToWasm(src: string): CompiledWasmProgram;
+
+  /** What an instantiated module exports directly, rather than through glue. */
+  export interface WasmExports {
+    /** The module's linear memory, which only ever grows. */
+    readonly memory: WebAssembly.Memory;
+    /** The engine's side of a compiled module's imports; frames are addresses. */
+    readonly asc_wasm_arg: (frame: number, i: number) => bigint;
+    readonly asc_wasm_push: (frame: number, v: bigint) => void;
+    readonly asc_wasm_exec: (frame: number, id: number) => bigint;
+    readonly asc_wasm_failed: (frame: number) => number;
+    readonly asc_wasm_truthy: (frame: number, v: bigint) => number;
+  }
+
+  /**
+   * wasm-bindgen's default export. Fetches `dsl_wasm_bg.wasm` from beside the
+   * glue and instantiates it; the binary is not inlined, so a bundler has to
+   * emit that asset. Answers the instance's own exports - the glue does not
+   * re-export them, so this is the only way to the module's memory.
+   */
+  export default function init(
+    input?: { module_or_path: RequestInfo | URL | BufferSource },
+  ): Promise<WasmExports>;
+}

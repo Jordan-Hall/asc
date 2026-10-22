@@ -1,0 +1,171 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { expect, test } from '@playwright/test';
+import { compareRow } from '../src/core/compare';
+import { toFormValues } from '../src/core/mapping';
+import { buildReport, reportFileStem, toText } from '../src/core/report';
+import { toXlsx } from '../src/core/report-xlsx';
+import { isPassing, type RowResult, type SourceRow } from '../src/core/types';
+import { changedNumbers, type Entered, NelaForm } from './helpers/nela-form';
+import {
+  captureFrame,
+  chunk,
+  emitReport,
+  emitRow,
+  liveTicker,
+  loadDeadline,
+  loadSelectedRows,
+  outDir,
+  perRowRecording,
+  saveRowVideo,
+  tolerance,
+} from './rows';
+
+const siteUrl = process.env.NELA_SITE_URL ?? '';
+const source = loadSelectedRows();
+const batches = chunk(source.rows, Number(process.env.BATCH ?? 50));
+const results: RowResult[] = [];
+
+function errorResult(row: SourceRow, message: string): RowResult {
+  return {
+    index: row.index,
+    mode: 'pre',
+    inputs: row.inputs,
+    request: null,
+    response: null,
+    expected: row.expected,
+    actual: null,
+    diff: null,
+    outcome: row.expected === null ? 'no-score-match' : 'error',
+    message,
+    intermediates: row.intermediates,
+  };
+}
+
+function firstLine(error: Error): string {
+  return error.message.split('\n')[0] ?? '';
+}
+
+async function checkRow(form: NelaForm, row: SourceRow): Promise<RowResult> {
+  const started = Date.now();
+  const { fields, errors } = toFormValues(row);
+  if (!fields) return errorResult(row, `not entered: ${errors.join('; ')}`);
+  let entered: Entered;
+  try {
+    await form.open();
+    entered = await form.fill(fields);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    return {
+      ...errorResult(row, firstLine(error)),
+      durationMs: Date.now() - started,
+    };
+  }
+  const { text, score } = await form.readScore();
+  const frame = await captureFrame(form.page, row.index);
+  const { outcome, diff } = compareRow(row.expected, score, tolerance());
+  const changed = changedNumbers(fields, entered);
+  return {
+    index: row.index,
+    mode: 'pre',
+    inputs: row.inputs,
+    request: { intended: fields, entered },
+    response: text,
+    expected: row.expected,
+    actual: score,
+    diff,
+    outcome,
+    message: changed.length > 0 ? changed.join('; ') : undefined,
+    durationMs: Date.now() - started,
+    frame,
+    intermediates: row.intermediates,
+  };
+}
+
+function screenshotDir(): string {
+  const dir = join(outDir(), 'screenshots');
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function describe(result: RowResult): string {
+  return `row ${result.index}: ${result.outcome} expected ${result.expected} got ${result.actual} ${result.message ?? ''}`.trim();
+}
+
+test.beforeAll(() => {
+  expect(siteUrl, 'NELA_SITE_URL is required').not.toBe('');
+});
+
+for (const batch of batches) {
+  const first = batch[0];
+  const last = batch[batch.length - 1];
+  if (!first || !last) continue;
+  test(`rows ${first.index} to ${last.index}`, async ({ context, page }) => {
+    const deadline = loadDeadline();
+    test.setTimeout(
+      deadline ? deadline - Date.now() + 180_000 : batch.length * 30_000,
+    );
+    const failures: string[] = [];
+    let shared: NelaForm | null = null;
+    let stopShared = async () => {};
+    if (!perRowRecording()) {
+      shared = new NelaForm(page);
+      stopShared = await liveTicker(page);
+    }
+    let pass = 0;
+    try {
+      do {
+        for (const row of batch) {
+          if (deadline && Date.now() > deadline) break;
+          const own = shared ? null : await context.newPage();
+          const form = shared ?? new NelaForm(own ?? page);
+          const stopOwn = own ? await liveTicker(own) : async () => {};
+          try {
+            const result = await checkRow(form, row);
+            results.push(result);
+            emitRow(result);
+            if (isPassing(result.outcome)) continue;
+            failures.push(describe(result));
+            const screenshot = join(screenshotDir(), `row-${row.index}.png`);
+            await form.page.screenshot({ path: screenshot, fullPage: true });
+            await test.info().attach(`row-${row.index}.png`, {
+              path: screenshot,
+              contentType: 'image/png',
+            });
+          } finally {
+            await stopOwn();
+            if (own) await saveRowVideo(own, row.index, pass);
+          }
+        }
+        pass += 1;
+      } while (deadline && Date.now() < deadline);
+    } finally {
+      await stopShared();
+    }
+    expect(failures).toEqual([]);
+  });
+}
+
+test.afterAll(() => {
+  if (results.length === 0) return;
+  const checked = new Set(results.map((result) => result.index));
+  const report = buildReport({
+    target: { kind: 'form', url: siteUrl, mode: 'pre' },
+    source: {
+      ...source,
+      rows: source.rows.filter((row) => checked.has(row.index)),
+    },
+    rows: results.sort((a, b) => a.index - b.index),
+    tolerance: tolerance(),
+    startedAt: new Date().toISOString(),
+  });
+  mkdirSync(outDir(), { recursive: true });
+  const stem = `${reportFileStem(report)}-w${process.env.TEST_WORKER_INDEX ?? '0'}`;
+  writeFileSync(
+    join(outDir(), `${stem}.json`),
+    JSON.stringify(report, null, 2),
+  );
+  writeFileSync(join(outDir(), `${stem}.xlsx`), toXlsx(report));
+  emitReport(report);
+  console.log(toText(report));
+});

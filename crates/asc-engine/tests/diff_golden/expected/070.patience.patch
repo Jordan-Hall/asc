@@ -1,0 +1,49 @@
+diff --git a/file b/file
+index 906af94..1b1e0ac 100644
+--- a/file
++++ b/file
+@@ -12,7 +12,7 @@
+  * unrecognised shape", with nothing to say which field.
+  */
+ import { describe, expect, it } from '@rstest/core';
+-import { historyRowSchema } from './entry-history';
++import { historyRowSchema, personSchema } from './entry-history';
+ 
+ /** Version 1, exactly as the create event writes it. */
+ const createdRow = {
+@@ -80,3 +80,35 @@ describe('a history row from the database', () => {
+     expect(historyRowSchema.safeParse(withoutState).success).toBe(false);
+   });
+ });
++
++/**
++ * A patient whose identifier this reader may not see.
++ *
++ * `identifier`, `forename` and `surname` are PID: somebody without
++ * patient-data read in that scope is served the record with those fields
++ * removed, which is the system working as designed. Requiring `identifier`
++ * turned that into a parse failure reported as "Person not found" - about a
++ * person who plainly exists and whose history the reader was entitled to see.
++ */
++describe('the person, as much of them as this reader is allowed', () => {
++  it('accepts a record with the PID fields stripped out', () => {
++    const parsed = personSchema.safeParse({ id: 'person:abc' });
++    expect(parsed.success).toBe(true);
++  });
++
++  it('keeps them when they are there', () => {
++    const parsed = personSchema.parse({
++      id: 'person:abc',
++      identifier: 'NHS-123',
++      forename: 'Ada',
++      surname: 'Lovelace',
++    });
++    expect(parsed.identifier).toBe('NHS-123');
++  });
++
++  it('still refuses a record with no id', () => {
++    expect(personSchema.safeParse({ identifier: 'NHS-123' }).success).toBe(
++      false,
++    );
++  });
++});

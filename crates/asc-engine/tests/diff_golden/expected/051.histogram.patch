@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index e8c94c1..ddcdf9c 100644
+--- a/file
++++ b/file
+@@ -14,6 +14,11 @@ export default defineConfig({
+       'import.meta.env.RISK_API_URL': JSON.stringify(
+         import.meta.env.RISK_API_URL ?? null,
+       ),
++      // The score comes from the model in the page; the service is asked as
++      // a check unless this is "false"
++      'import.meta.env.RISK_CHECK_WITH_API': JSON.stringify(
++        import.meta.env.RISK_CHECK_WITH_API ?? null,
++      ),
+       // Read at runtime by src/analytics.ts; without it here the flag is
+       // undefined in the bundle and the switch has nothing to read.
+       'import.meta.env.OPENPANEL_ENABLED': JSON.stringify(

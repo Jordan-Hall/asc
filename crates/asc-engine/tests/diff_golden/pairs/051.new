@@ -1,0 +1,65 @@
+import 'dotenv/config';
+import { defineConfig } from '@rsbuild/core';
+
+export default defineConfig({
+  source: {
+    entry: {
+      index: './src/client.ts',
+    },
+
+    define: {
+      'import.meta.env.NODE_ENV': JSON.stringify(
+        import.meta.env.NODE_ENV || 'production',
+      ),
+      'import.meta.env.RISK_API_URL': JSON.stringify(
+        import.meta.env.RISK_API_URL ?? null,
+      ),
+      // The score comes from the model in the page; the service is asked as
+      // a check unless this is "false"
+      'import.meta.env.RISK_CHECK_WITH_API': JSON.stringify(
+        import.meta.env.RISK_CHECK_WITH_API ?? null,
+      ),
+      // Read at runtime by src/analytics.ts; without it here the flag is
+      // undefined in the bundle and the switch has nothing to read.
+      'import.meta.env.OPENPANEL_ENABLED': JSON.stringify(
+        import.meta.env.OPENPANEL_ENABLED ?? null,
+      ),
+      'import.meta.env.OPENPANEL_CLIENT_ID': JSON.stringify(
+        import.meta.env.OPENPANEL_CLIENT_ID ?? null,
+      ),
+      'import.meta.env.OPENPANEL_API_URL': JSON.stringify(
+        import.meta.env.OPENPANEL_API_URL ?? null,
+      ),
+    },
+  },
+  html: {
+    template: './index.html',
+  },
+  /*
+   * The port is the app's address, not a preference. Without `strictPort`
+   * rsbuild answers a taken port by quietly moving to the next free one, and
+   * whatever tries to reach this app at its own address gets whichever app
+   * moved in - which is how the e2e suite came to measure the sign-in page and
+   * report it as the risk calculator.
+   */
+  server: {
+    port: parseInt(import.meta.env.NELA_RISK_CALCULATOR_APP_PORT || '5178'),
+    strictPort: true,
+    open: true,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
+    historyApiFallback: true,
+
+    publicDir: {
+      name: 'public',
+      watch: true,
+      copyOnBuild: true,
+    },
+  },
+  output: {
+    assetPrefix: '/',
+
+    cleanDistPath: true,
+  },
+});

@@ -1,0 +1,78 @@
+mod common;
+
+use serde_json::json;
+
+use common::{assert_json_eq, run_bare, run_root};
+
+#[test]
+fn now_returns_iso_like_string() {
+    let out = run_bare("now()").to_json().as_str().unwrap_or_default().to_string();
+    assert!(out.contains('T') && out.len() >= 19, "unexpected now() format: {out}");
+}
+
+#[test]
+fn years_between_behaves_like_typescript() {
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-01-15", "admission": "2025-01-15"})), json!(25));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-06-15", "admission": "2025-01-15"})), json!(24));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "invalid", "admission": "2025-01-15"})), json!(null));
+}
+
+/// What a browser puts in a `datetime-local` field: minute precision, no zone.
+#[test]
+fn date_arguments_accept_the_forms_a_form_submits() {
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-01-15", "admission": "2025-01-15T09:00"})), json!(25));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-01-15", "admission": "2025-01-15T09:00:30"})), json!(25));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-01-15", "admission": "2025-01-15T09:00:30.500"})), json!(25));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission)", json!({"dob": "2000-01-15", "admission": "2025-01-15 09:00:30"})), json!(25));
+}
+
+#[test]
+fn diff_days_and_days_between_match_expected_signs() {
+    assert_json_eq(&run_root("diffDays(root.date1, root.date2)", json!({"date1": "2025-01-15", "date2": "2025-01-10"})), json!(5));
+    assert_json_eq(&run_root("diffDays(root.date1, root.date2)", json!({"date1": "2025-01-10", "date2": "2025-01-15"})), json!(-5));
+    assert_json_eq(&run_root("daysBetween(root.start, root.end)", json!({"start": "2025-01-10", "end": "2025-01-15"})), json!(5));
+    assert_json_eq(&run_root("daysBetween(root.start, root.end)", json!({"start": "2025-01-15", "end": "2025-01-10"})), json!(-5));
+}
+
+#[test]
+fn within_hours_and_minutes_handle_invalid_dates_as_false() {
+    assert_json_eq(&run_root("withinHours(root.date1, root.date2, 3)", json!({"date1": "2025-01-15T10:00:00", "date2": "2025-01-15T12:00:00"})), json!(true));
+    assert_json_eq(&run_root("withinHours(root.date1, root.date2, 3)", json!({"date1": "invalid", "date2": "2025-01-15T10:00:00"})), json!(false));
+    assert_json_eq(&run_root("withinMinutes(root.date1, root.date2, 30)", json!({"date1": "2025-01-15T10:00:00", "date2": "2025-01-15T10:25:00"})), json!(true));
+    assert_json_eq(&run_root("withinMinutes(root.date1, root.date2, 30)", json!({"date1": "invalid", "date2": "2025-01-15T10:00:00"})), json!(false));
+}
+
+#[test]
+fn gte_date_only_and_months_between_work() {
+    assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-16T08:00:00", "date2": "2025-01-15T20:00:00"})), json!(true));
+    assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-15T08:00:00", "date2": "2025-01-15T20:00:00"})), json!(false));
+    assert_json_eq(&run_root("monthsBetween(root.start, root.end)", json!({"start": "2024-01-15", "end": "2025-04-15"})), json!(15));
+    assert_json_eq(&run_root("monthsBetween(root.start, root.end)", json!({"start": "invalid", "end": "2025-01-15"})), json!(null));
+}
+
+#[test]
+fn date_string_primitive_properties_work() {
+    assert_json_eq(&run_bare(r#"date("2024-03-15").year"#), json!(2024));
+    assert_json_eq(&run_bare(r#"date("2024-03-15").month"#), json!(3));
+    assert_json_eq(&run_bare(r#"date("2024-03-15").day"#), json!(15));
+    assert_json_eq(&run_root("root.dob.year", json!({"dob": "1993-09-05"})), json!(1993));
+    assert_json_eq(&run_root("root.ts.hours", json!({"ts": "2024-03-15T14:30:45Z"})), json!(14));
+}
+
+#[test]
+fn date_functions_integrate_with_nullish_and_comparisons() {
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission) ?? 0", json!({"dob": null, "admission": "2025-01-15"})), json!(0));
+    assert_json_eq(&run_root("yearsBetween(root.dob, root.admission) >= 18", json!({"dob": "2000-01-15", "admission": "2025-01-15"})), json!(true));
+}
+
+/// The NELA schema computes `age` with a `print` around the value.
+#[test]
+fn print_in_expression_position_passes_the_value_through() {
+    assert_json_eq(
+        &run_root(
+            "print('age:', yearsBetween(root.date_of_birth, root.admission_datetime))",
+            json!({"date_of_birth": "1965-03-15", "admission_datetime": "2025-06-01T09:00"}),
+        ),
+        json!(60),
+    );
+}

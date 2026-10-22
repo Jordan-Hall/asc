@@ -1,0 +1,48 @@
+diff --git a/file b/file
+index bd5c676..144fb10 100644
+--- a/file
++++ b/file
+@@ -25,6 +25,8 @@ export type AddFieldHandler = (
+   kind: 'string' | 'number' | 'boolean' | 'array' | 'object',
+   component?: FormComponentName,
+   template?: FieldTemplate,
++  /** Where in the section it lands; the end when nothing says otherwise. */
++  atIndex?: number,
+ ) => void;
+ 
+ declare global {
+@@ -47,6 +49,7 @@ export function useFieldOperations({
+       kind: 'string' | 'number' | 'boolean' | 'array' | 'object',
+       component?: FormComponentName,
+       template?: FieldTemplate,
++      atIndex?: number,
+     ) => {
+       onUpdate((s) => {
+         const newState = addField(
+@@ -54,6 +57,7 @@ export function useFieldOperations({
+           kind,
+           component,
+           selectedSectionId === 'unassigned' ? undefined : selectedSectionId,
++          atIndex,
+         );
+ 
+         if (template && newState.fields.length > s.fields.length) {
+@@ -101,9 +105,16 @@ export function useFieldOperations({
+ 
+   const handleReorderFields = useCallback(
+     (fromId: string, toId: string) => {
+-      onUpdate((s) => reorderFields(s, fromId, toId));
++      onUpdate((s) =>
++        reorderFields(
++          s,
++          fromId,
++          toId,
++          selectedSectionId === 'unassigned' ? undefined : selectedSectionId,
++        ),
++      );
+     },
+-    [onUpdate],
++    [selectedSectionId, onUpdate],
+   );
+ 
+   const handleConfigureField = useCallback((id: string) => {

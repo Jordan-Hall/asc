@@ -1,0 +1,30 @@
+diff --git a/file b/file
+index 1153fe5..80ed1fc 100644
+--- a/file
++++ b/file
+@@ -25,7 +25,24 @@ heads = 8
+ kv_heads = 2
+ window = 256
+ representation = "bytes"
+-cell = "cfc"
++# The cell in the odd layers. `liquid-scan`, not `cfc`, and the five-seed
++# finalists are why. The screen promoted cfc on the intelligence index, which
++# is aggregated over all three representations - but cfc's lead lives entirely
++# in byte-macro (1.9617 against 1.9758) and bpe (1.9645 against 1.9944), and
++# both of those were then rejected. On BYTES, which is what this model trains
++# on, liquid was ahead in the screen (1.8530 against 1.8645) and is ahead at
++# five seeds (1.8392 against 1.8512).
++#
++# It is NOT a significant lead: the gap is 0.0119 and the widest seed spread is
++# 0.0217, so at 0.55x the spread the two are indistinguishable and more seeds
++# rather than more argument is what would settle it. The choice between two
++# indistinguishable trunks is then made on cost, and liquid trains around
++# fifteen times faster for the same export and checkpoint status.
++#
++# Choosing a trunk on an index that averages over representations this model
++# does not use would be the same class of error as the metric faults that
++# index was built from.
++cell = "liquid-scan"
+ commons = true
+ canvas = true
+ 

@@ -1,0 +1,148 @@
+diff --git a/file b/file
+index dd060ae..a7902fe 100644
+--- a/file
++++ b/file
+@@ -1,85 +1,80 @@
+-# NELA risk model, in the browser
++# NELA risk model in WebAssembly
+ 
+ `risk-score-service/src/risk-calculator.R` is supplied to us and is not
+-edited. This package compiles it, unchanged, for the browser: R itself
+-compiled to WebAssembly (webR) runs it in a Web Worker, so an ASC Audit
+-page works the score out in the background with no request to the service.
++edited; it stays the specification of the model. R cannot be compiled to
++WebAssembly (it is interpreted; the only way to run it in a browser is to
++ship the R interpreter and its package filesystem), so this package keeps
++a **compiled translation** of that file - the same coefficients, the same
++winsorising, the same category mapping, R's rounding - in Rust, built to
++a 7.6 kB WebAssembly module with no runtime around it. What makes the
++translation safe is the parity test: every row the service was checked
++with is scored by both, and the build fails on any difference.
+ 
+-## How it is built
++## Proof
+ 
+-`build.sh`, with Docker:
++`bun run test` runs the Rust unit tests, then `parity.test.ts`, which
++scores every row of the reference sheet and both ASC Audit extracts and
++compares with the service's scores held in them, plus a fresh sample
++against the **live** service:
+ 
+-1. `risk-calculator.R` is copied from `risk-score-service` into
+-   `nelarisk/inst/` (`cmp` checks the copy is exact; the copy is ignored by
+-   git). `nelarisk` is a two-function R package around it:
+-   `risk_pre(data)` and `risk_post(data)` source the file on first use and
+-   call `calculate_risk_score()` / `calculate_risk_score_post()`, as the
+-   plumber service does.
+-2. [rwasm](https://github.com/r-wasm/rwasm) compiles `nelarisk` and `dplyr`
+-   (and its 14 dependencies) for WebAssembly and packs them into one
+-   filesystem image, `dist/model/vfs/library.data` (12 MB). rwasm runs
+-   inside `ghcr.io/r-wasm/webr:main`, the image its documentation
+-   prescribes, which carries the Emscripten and Flang toolchain.
+-3. The matching webR runtime is copied out of the same image to
+-   `dist/model/webr/` (46 MB on disk, ~12 MB compressed over the wire), so
+-   runtime and packages are the same R (4.6).
++| Sheet | Rows compared | Differ |
++| --- | --- | --- |
++| Reference sheet `sim_data_v4` (pre-op) | 4,940 | 0 |
++| ASC Audit extract, pre-op | 3,352 | 0 |
++| ASC Audit extract, post-op | 3,266 | 0 |
+ 
+-`bun run build` runs it. Everything in `dist/` is static files.
++Rows the service refuses (an input missing) are the rows with no expected
++score, and the module gives none there either. Rounding is R's
++(`round(x, 1)`, halves to even); `exp` and `log` are `libm`, so every
++browser gives the same number regardless of its own `Math`.
+ 
+-## Proof
++When the supplied R changes, `src/lib.rs` must change with it, and this
++test is what says so.
+ 
+-`bun run test` (Playwright, Chromium) serves `dist/` locally, starts R in
+-the page, and scores every row of the reference sheet and both ASC Audit
+-extracts in one `data.frame` each, against the scores the service gave:
++## Build
+ 
+-| Sheet | Rows scored | Differ | Time |
+-| --- | --- | --- | --- |
+-| `sim_data_v4` reference (pre-op) | 4,940 | 0 | 2.6 s |
+-| ASC Audit extract, pre-op | 3,352 | 0 | 1.0 s |
+-| ASC Audit extract, post-op | 3,266 | 0 | 0.9 s |
++    bun run build
+ 
+-Rows the service refuses (an input missing) are the rows with no expected
+-score, and are checked to be so. R starts in about 1.3 s.
++runs `cargo build --release --target wasm32-unknown-unknown` (Rust with
++the `wasm32-unknown-unknown` target) and writes `dist/nela_risk_wasm.wasm`
++and `dist/risk-wasm.bundle.js` - the plain-script wrapper with the module
++embedded as base64, which loads itself on arrival.
++
++## In the ASC Audit pages
+ 
+-## In a page
++Upload `dist/risk-wasm.bundle.js` to the database as a file resource and
++include it on each form before the page script:
+ 
+ ```html
+-<script src="https://nela-risk-model.example.org/risk-r.js"></script>
+-<script>
+-  riskR.start({ modelUrl: 'https://nela-risk-model.example.org/model/' })
+-  riskR.compute('pre', payload).then(function (score) { /* 13.9, or null */ })
+-</script>
++<script src="/RCOA/NELAUAT2.nsf/risk-wasm.bundle.js"></script>
+ ```
+ 
+-`payload` is what the page already posts to the service (`S01AgeOnArrival`,
+-`S03ASAScore`, … the `S03Ind_*` indications as 0/1, and the malignancy /
+-soiling / urgency fields of the score wanted). Values may be numbers or
+-strings. `compute` takes an array of payloads too and returns an array.
+-`start()` is called once, at page load, so the first score is ready sooner;
+-`compute()` waits for it when needed.
++The four pages (`docs/nela/old/EmLap-v12.js`, `EmLap-v13.js`, `NoLap-v3.js`,
++`NoLap-v2.js`) have
++
++```js
++var RISK = { engine: "wasm" }   // or "service"
++```
+ 
+-The ASC Audit pages (`docs/nela/old/EmLap-v12.js`, `EmLap-v13.js`,
+-`NoLap-v3.js`, `NoLap-v2.js`) have `RISK.engine` (`"r"` or `"service"`) and
+-`RISK.model` (this site's URL); their computed score fields call
+-`computeRisk()`, which uses R in the page when it is up and the service
+-otherwise - so the score is never simply absent. The computed field runs
+-it in the background either way: the page never waits, a newer set of
+-inputs abandons an older computation, and the value is posted with the
+-record and shared with a collaboration room like any other.
++and their computed score fields call `computeRisk(kind, payload, signal)`:
++`riskWasm.compute(kind, payload)` when the engine is `"wasm"` and the module
++has loaded, `requestRisk` (the service) otherwise and as the fallback. The
++computed field runs it in the background either way: the page never
++waits, a newer set of inputs abandons an older computation, and the value
++is posted with the record and shared with a collaboration room like any
++other. `RISK.engine = "service"` goes back to the request.
+ 
+-To put it on Domino: nothing to upload but the four page files; the model
+-is served from this site (Coolify app `nela-risk-model`, from the
+-Dockerfile here, which needs `dist/` built beforehand - `bun run build`,
+-then commit-free deploy of the built directory, or build on a runner with
+-Docker).
++`payload` is what the page already posts to the service (`S01AgeOnArrival`,
++`S03ASAScore`, …, the `S03Ind_*` indications as 0/1, and the malignancy /
++soiling / urgency fields of the score wanted). Values may be numbers or
++strings.
+ 
+ ## Files
+ 
+ | File | What |
+ | --- | --- |
+-| `build.sh` | copies the R file, runs rwasm, copies the runtime out |
+-| `nelarisk/` | the R package around the supplied file (`inst/` filled at build) |
+-| `risk-r.js` | the page wrapper: `riskR.start()`, `riskR.compute()` |
+-| `parity.spec.ts` | the proof above |
+-| `index.html`, `Dockerfile`, `Caddyfile` | the static site that serves it |
+-| `dist/model/` | build output (ignored): `vfs/` image, `webr/` runtime |
++| `src/lib.rs` | the translation of `risk-calculator.R`, with its own tests |
++| `risk-wasm.js` | the page wrapper: `riskWasm.load()`, `.score()`, `.compute()` |
++| `build.ts` | cargo build + the bundle |
++| `parity.test.ts` | the proof above |
++| `dist/` | build output (ignored) |

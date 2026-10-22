@@ -1,0 +1,17 @@
+diff --git a/file b/file
+index e5500a4..ea0b312 100644
+--- a/file
++++ b/file
+@@ -19,9 +19,9 @@
+     "@asc/router": "workspace:*",
+     "@asc/signal": "workspace:*",
+     "@asc/ui": "workspace:*",
+-    "better-auth": "^1.4.1",
+-    "@better-auth/core": "^1.4.1",
+-    "@better-auth/passkey": "^1.4.1",
++    "better-auth": "1.7.0-rc.6",
++    "@better-auth/core": "1.7.0-rc.6",
++    "@better-auth/passkey": "1.7.0-rc.6",
+     "dotenv": "^17.2.3",
+     "hono": "^4.10.6",
+     "nanoid": "^5.0.0",

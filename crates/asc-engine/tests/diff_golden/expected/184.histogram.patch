@@ -1,0 +1,18 @@
+diff --git a/file b/file
+index fcdbecb..fd2f164 100644
+--- a/file
++++ b/file
+@@ -9,7 +9,12 @@ describe('the corpus only teaches the language that exists', () => {
+     // parser rejects - which is worse than teaching it nothing. Checked against
+     // the grammar rather than against a list, because a list is exactly the
+     // thing that went stale.
+-    const legal = new Set(DSL_GRAMMAR.fieldOperations.map((operation) => operation.name));
++    // Widened deliberately. The grammar's names infer as a literal union, so a
++    // Set of them cannot be asked about a name the corpus emitted - and the
++    // whole point is to ask exactly that about names the grammar does not have.
++    const legal = new Set<string>(
++      DSL_GRAMMAR.fieldOperations.map((operation) => operation.name as string),
++    );
+ 
+     const emitted = new Set<string>();
+     for (const item of generateDslCorpus()) {

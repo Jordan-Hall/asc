@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index 5435203..ef5494c 100644
+--- a/file
++++ b/file
+@@ -96,3 +96,15 @@ describe('an ordered answer is graded in order', () => {
+     expect(valuesAgree('{3, 1, 2}', '{1, 2, 3}', 'set')).toBe(true);
+   });
+ });
++
++describe('what the corpus writes, the checker can read', () => {
++  test('complexity notation', () => {
++    expect(valuesAgree('n^3 log n', 'n^3 log n', 'expression')).toBe(true);
++    expect(valuesAgree('n^2 log n', 'n^3 log n', 'expression')).toBe(false);
++  });
++
++  test('an expression undefined at most points is still compared', () => {
++    expect(valuesAgree('28/sqrt(7 - 8*x)', '28/sqrt(7 - 8*x)', 'expression')).toBe(true);
++    expect(valuesAgree('28/sqrt(7 - 8*x)', '14/sqrt(7 - 8*x)', 'expression')).toBe(false);
++  });
++});

@@ -1,0 +1,161 @@
+import { test, expect, type Page } from '@playwright/test';
+import {
+  LoginPage,
+  PersonListPage,
+  PersonFormPage,
+  FormEntryPage,
+  TeamContextSwitcher,
+  TwoFactorSetupPage,
+} from '../pages';
+import { FIXED_TEST_DATA } from '../utils';
+import { URLS, urlPattern } from '../utils/urls';
+
+const AUDITS_URL = URLS.audits;
+const SCHEMA_SLUG_CANDIDATES = ['nela-v12', 'emlap-v12'];
+
+async function acceptPendingInvitationIfPresent(page: Page): Promise<void> {
+  const currentUrl = new URL(page.url());
+  const invitationId = currentUrl.searchParams.get('teamInvitationId');
+  const onAcceptInvitationPage = /accept-invitation/i.test(page.url())
+    || await page.getByRole('button', { name: /Accept Invitation/i }).isVisible({ timeout: 1000 }).catch(() => false);
+
+  if (!onAcceptInvitationPage || !invitationId) {
+    return;
+  }
+
+  const result = await page.evaluate(async ({ invitationId }) => {
+    const response = await fetch(`${URLS.authApi}/api/auth/workspace/accept-team-invitation`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ invitationId }),
+    });
+
+    let body: any = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+
+    return { ok: response.ok, status: response.status, body };
+  }, { invitationId });
+
+  if (!result.ok) {
+    throw new Error(`Direct team invitation acceptance failed (${result.status}): ${JSON.stringify(result.body)}`);
+  }
+}
+
+async function loginAndSwitchToEnglandTeam(page: Page) {
+  const { invitedUser, teams } = FIXED_TEST_DATA;
+  const loginPage = new LoginPage(page);
+
+  await page.goto(URLS.adminUi);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(1000);
+
+  const ownerSessionActive = !urlPattern(URLS.authUi).test(page.url());
+  if (ownerSessionActive) {
+    await loginPage.logout();
+  }
+
+  await loginPage.navigate();
+  await loginPage.login(invitedUser.email, invitedUser.password);
+  await loginPage.completeTwoFactorIfRequired(invitedUser.email);
+
+  await page.goto(`${URLS.authUi}/two-factor-setup.html?return_to=${encodeURIComponent(AUDITS_URL)}`);
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(1500);
+
+  const onTwoFactorSetupPage = /two-factor-setup/i.test(page.url())
+    || await page.getByRole('heading', { name: /Set Up Two-Factor Authentication/i }).isVisible({ timeout: 1000 }).catch(() => false);
+
+  if (onTwoFactorSetupPage) {
+    const setup = new TwoFactorSetupPage(page);
+    const methodSelectorVisible = await page.locator(setup.methodSelect).isVisible({ timeout: 3000 }).catch(() => false);
+    // selectMethod owns the whole email path: it answers the password prompt and
+    // waits for the flow to leave setup. The blocks that used to follow drove a
+    // separate "Enable Email 2FA" step and a backup-codes screen, neither of
+    // which this page shows for email OTP — they were guarded on visibility, so
+    // they cost five seconds each and never ran.
+    if (methodSelectorVisible) {
+      await setup.selectMethod('otp', invitedUser.password);
+    }
+  }
+
+  await acceptPendingInvitationIfPresent(page);
+  await page.waitForTimeout(1000);
+
+  await page.goto(`${AUDITS_URL}/persons`);
+  await page.waitForTimeout(3000);
+
+  const afterUrl = page.url();
+  if (!afterUrl.includes('5173') && !afterUrl.includes('persons')) {
+    await page.goto(AUDITS_URL);
+    await page.waitForTimeout(2000);
+    await page.goto(`${AUDITS_URL}/persons`);
+    await page.waitForTimeout(2000);
+  }
+
+  const teamSwitcher = new TeamContextSwitcher(page);
+  await teamSwitcher.switchTeam(teams.england.name);
+}
+
+async function openPersonlessNelaForm(page: Page): Promise<{ formEntry: FormEntryPage; slug: string }> {
+  const formEntry = new FormEntryPage(page);
+
+  for (const slug of SCHEMA_SLUG_CANDIDATES) {
+    await page.goto(`${AUDITS_URL}/form/new/${slug}`);
+    const loaded = await page.locator(formEntry.form).isVisible({ timeout: 5000 }).catch(() => false);
+    if (loaded) {
+      await formEntry.waitForLoad();
+      return { formEntry, slug };
+    }
+  }
+
+  throw new Error(`Unable to open person-less form for any candidate slug: ${SCHEMA_SLUG_CANDIDATES.join(', ')}`);
+}
+
+test.describe.serial('NHS number canonicalization regression', () => {
+  test('matches an existing patient when NHS number is entered without display spaces', async ({ browser }) => {
+    const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+    const page = await context.newPage();
+
+    await loginAndSwitchToEnglandTeam(page);
+
+    try {
+      const suffix = `${Date.now()}`;
+      const spacedIdentifier = `999 999 ${suffix.slice(-4)}`;
+      const canonicalIdentifier = spacedIdentifier.replace(/\s+/g, '');
+
+      const personList = new PersonListPage(page);
+      await personList.waitForLoad();
+      await personList.clickCreateNew();
+
+      const personForm = new PersonFormPage(page);
+      await personForm.createPatient({
+        identifier: spacedIdentifier,
+        dateOfBirth: '1965-03-15',
+        gender: 'Male',
+        forename: `Canon${suffix.slice(-4)}`,
+        surname: 'Match',
+        postcode: 'LS1 4HN',
+      });
+
+      await expect.poll(async () => personList.personExists(canonicalIdentifier), { timeout: 10000 }).toBe(true);
+
+      const { formEntry } = await openPersonlessNelaForm(page);
+
+      await formEntry.fillField('date_of_birth', '1965-03-15');
+      await formEntry.fillNhsNumber(canonicalIdentifier);
+
+      await expect.poll(async () => {
+        return await page.getByText(new RegExp(`Linked to .*${canonicalIdentifier}`)).isVisible().catch(() => false);
+      }, { timeout: 12000 }).toBe(true);
+    } finally {
+      await context.close();
+    }
+  });
+});

@@ -1,0 +1,124 @@
+"""Anvil — the bidirectional liquid-scan denoiser (the diffusion arm's backbone).
+
+A discrete-diffusion denoiser needs a whole-sequence, non-causal mixer. Loom's
+LiquidScan run in both directions is exactly that, and stays O(n):
+
+    h = LiquidScan_fwd(x) + flip(LiquidScan_bwd(flip(x)))
+
+Vocabulary is Soma's 260 plus one absorbing MASK token (id 260). Conditioning
+follows the design doc: the diffusion timestep rides an embedding added at the
+input (the intero-shaped pathway), and an optional per-byte DIAGNOSTICS channel
+(error-class ids from the exact checker) is summed the same way - the hook that
+makes oracle-conditioned denoising possible.
+
+Design: docs/superpowers/specs/2026-08-06-anvil-oracle-diffusion-concept.md
+Proof:  train/anvil_denoise_proof.py (mechanism existence, CPU-runnable)
+"""
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from soma import LiquidScan, RMSNorm, SwiGLU, VOCAB
+
+MASK = VOCAB          # 260 - the absorbing state
+ANVIL_VOCAB = VOCAB + 1
+
+#: Diagnostics classes for the oracle channel. 0 is always "no complaint".
+DIAG_CLASSES = 8
+
+
+class BiLiquidBlock(nn.Module):
+    """Two directions of liquid scan around a SwiGLU, pre-norm."""
+
+    def __init__(self, d: int):
+        super().__init__()
+        self.n1 = RMSNorm(d)
+        self.fwd = LiquidScan(d)
+        self.bwd = LiquidScan(d)
+        self.n2 = RMSNorm(d)
+        self.ffn = SwiGLU(d, 8 / 3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.n1(x)
+        mixed = self.fwd(h) + self.bwd(h.flip(1)).flip(1)
+        x = x + mixed
+        return x + self.ffn(self.n2(x))
+
+
+class AnvilDenoiser(nn.Module):
+    """Masked-byte denoiser: (noisy ids, timestep, diagnostics) -> byte logits."""
+
+    def __init__(self, d: int = 128, n_layers: int = 4, max_steps: int = 32):
+        super().__init__()
+        self.embed = nn.Embedding(ANVIL_VOCAB, d)
+        self.step_embed = nn.Embedding(max_steps, d)
+        self.diag_embed = nn.Embedding(DIAG_CLASSES, d)
+        self.blocks = nn.ModuleList(BiLiquidBlock(d) for _ in range(n_layers))
+        self.norm = RMSNorm(d)
+        self.head = nn.Linear(d, VOCAB, bias=False)   # never predicts MASK
+
+    def forward(self, ids: torch.Tensor, step: torch.Tensor,
+                diagnostics: torch.Tensor | None = None,
+                workspace=None, read_port=None) -> torch.Tensor:
+        """Trine hook: `workspace` + `read_port` condition the canvas on the
+        LiquidWorkspace - the single bridge carrying the member's own streamed
+        context, other members' thought (Plexus) and oracle verdicts. The
+        read enters through the port's zero-initialised gate, so a portless
+        denoiser is byte-identical to one grafted and untrained."""
+        x = self.embed(ids) + self.step_embed(step)[:, None, :]
+        if diagnostics is not None:
+            x = x + self.diag_embed(diagnostics)
+        if workspace is not None and read_port is not None:
+            x = x + read_port(x, workspace)
+        for block in self.blocks:
+            x = block(x)
+        return self.head(self.norm(x))
+
+
+def corrupt(ids: torch.Tensor, ratio: torch.Tensor,
+            generator: torch.Generator | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Absorbing-state corruption: each byte masked with prob `ratio` (per row)."""
+    noise = torch.rand(ids.shape, generator=generator, device=ids.device)
+    masked = noise < ratio[:, None]
+    noisy = ids.masked_fill(masked, MASK)
+    return noisy, masked
+
+
+@torch.no_grad()
+def generate(model: AnvilDenoiser, length: int, k_steps: int = 8,
+             batch: int = 1, diagnostics: torch.Tensor | None = None,
+             device: torch.device | str = "cpu",
+             temperature: float = 0.0,
+             canvas: torch.Tensor | None = None) -> torch.Tensor:
+    """MaskGIT-style iterative unmasking: all-MASK -> artefact in k steps,
+    revealing the most confident fraction each round. O(k * n) regardless of n."""
+    # `canvas` starts from a PARTIALLY masked artefact - the editing case.
+    # Unmasked positions are never written, which is the edit-lock guarantee.
+    ids = (torch.full((batch, length), MASK, dtype=torch.long, device=device)
+           if canvas is None else canvas.clone())
+    for k in range(k_steps):
+        step = torch.full((batch,), k, dtype=torch.long, device=device)
+        logits = model(ids, step, diagnostics)
+        probs = logits.softmax(-1)
+        if temperature > 0:
+            # A deterministic sampler returns the same artefact every call; it
+            # measures nothing about diversity. Categorical sampling at the
+            # given temperature is what a generation claim needs.
+            flat = (logits / temperature).softmax(-1).view(-1, logits.shape[-1])
+            guess = torch.multinomial(flat, 1).view(ids.shape)
+            confidence = probs.gather(-1, guess.unsqueeze(-1)).squeeze(-1)
+        else:
+            confidence, guess = probs.max(-1)
+        still_masked = ids.eq(MASK)
+        confidence = confidence.masked_fill(~still_masked, -1.0)
+        remaining = int(still_masked[0].sum())
+        reveal = max(1, remaining // max(1, (k_steps - k)))
+        threshold = confidence.topk(reveal, dim=-1).values[:, -1:]
+        take = still_masked & (confidence >= threshold)
+        ids = torch.where(take, guess, ids)
+    # Anything still masked on the last round takes its argmax.
+    final = model(ids, torch.full((batch,), k_steps - 1, dtype=torch.long,
+                                  device=device), diagnostics)
+    return torch.where(ids.eq(MASK), final.argmax(-1), ids)

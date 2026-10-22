@@ -1,0 +1,30 @@
+diff --git a/file b/file
+index 58b2c8a..7a3f62e 100644
+--- a/file
++++ b/file
+@@ -24,13 +24,17 @@ export const frameSchema = z.discriminatedUnion('kind', [
+       field: z.string().min(1),
+       value: z.unknown(),
+       at: z.number(),
++      user: z.string().optional(),
+     }),
+   }),
+   z.object({
+     kind: z.literal('presence'),
+     participant: z.object({
++      /** This connection: one per open tab, so two tabs of one person are two */
+       id: z.string().min(1),
+       name: z.string(),
++      /** Who the person is, when the page knows; the service overwrites it with Domino's answer */
++      user: z.string().optional(),
+       /** Editing, or only watching; the roster tells them apart */
+       mode: z.enum(['edit', 'view']).optional(),
+       field: z.string().optional(),
+@@ -43,6 +47,7 @@ export const frameSchema = z.discriminatedUnion('kind', [
+     kind: z.literal('saved'),
+     by: z.string().min(1),
+     name: z.string().optional(),
++    user: z.string().optional(),
+     at: z.number(),
+     /** For a draft room: where the record went, so the other draft can open it */
+     record: z

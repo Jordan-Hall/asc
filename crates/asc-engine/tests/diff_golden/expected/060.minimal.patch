@@ -1,0 +1,70 @@
+diff --git a/file b/file
+index 35eff75..08ec883 100644
+--- a/file
++++ b/file
+@@ -1,32 +1,45 @@
+ # ASC Admin UI
+ 
+-Web-based administration panel for managing organizations, workspaces, teams, users, and invitations.
++Administration for organisations, workspaces, teams, people, access and operations. Every tool is available from the grouped sidebar, the searchable overview and the command search (Ctrl+K or Cmd+K).
+ 
+-This replaces the `asccli` command-line tool, which has been removed.
++## Feature directory
+ 
+-## Features
++| Area | Tool | Existing functionality |
++| --- | --- | --- |
++| Organisation and teams | [Organisations](src/pages/organizations.ts) | Organisation creation, membership and settings; detail pages include workspaces and organisation administration. |
++| Organisation and teams | [Workspaces](src/pages/workspaces.ts) | Workspace hierarchy, creation and detail settings, membership and child teams. |
++| Organisation and teams | [Teams](src/pages/teams.ts) | Team creation, membership, invitations and settings. |
++| Organisation and teams | [Organisation directory](src/pages/external-structure.ts) | External organisational structures and directory mappings. |
++| People and access | [Users](src/pages/users.ts) | Search and filter accounts by role, status, verification and two-factor setup; review sessions and account security. |
++| People and access | [Invitations](src/pages/invitations.ts) | Personal invitations and organisation, workspace and team invitation management. |
++| People and access | [Permissions](src/pages/permissions.ts) | Member and team permissions, role assignments and access exceptions. |
++| People and access | [Custom roles](src/pages/custom-roles.ts) | Scoped custom role definitions and permission rules. |
++| People and access | [Permission presets](src/pages/permission-presets.ts) | Reusable permission configurations. |
++| People and access | [Built-in roles](src/pages/system-roles.ts) | Built-in role and permission reference. |
++| Operations | [Content](src/pages/cms.ts) | CMS content, menus and branding. |
++| Operations | Support tickets | Federated staff support desk from `@asc/support-host`: triage, assignment and ticket detail. |
++| Operations | [Plugin review](src/pages/plugin-review.ts) | Publisher and extension review, approval and platform controls. |
++| Operations | [System administration](src/pages/system-admin.ts) | System user administration, subject to the existing system access gate. |
+ 
+-- **Organizations**: Create and manage organizations with namespaces
+-- **Workspaces**: Create workspaces within organizations
+-- **Teams**: Create and manage teams within organizations
+-- **Users**: Manage user memberships across organizations, workspaces, and teams
+-- **Invitations**: Send, view, resend, and cancel organization invitations
+-- **System Admin**: Manage system administrators
++The overview shows organisation memberships and pending invitations for the signed-in person. A failed request appears as unavailable rather than zero. Refresh retries the summary. Scope links open the selected organisation, workspace or team; the account menu changes scope.
++
++Pins are stored per user in this browser and contain only tool identifiers. Search matches titles, descriptions and task keywords. The directory is also available as `@asc/ui/feature-directory` and the `FeatureDirectory` JSON-render component.
++
++## Access
++
++Navigation does not grant permissions. The Better Auth permission plugin, service checks and database row and field controls remain authoritative. System administration follows `canAccessHiddenSystemFeatures`; other tools apply their existing page and operation checks.
+ 
+ ## Development
+ 
+-```bash
+-bun install
+-bun dev
+-```
++Run the existing development stack from the repository root. The admin frontend is selected with `-F admin-ui`; it uses the authentication service and the services for the features being exercised. Support additionally needs its federated frontend. Do not start a second copy of a running stack.
+ 
+-The app will be available at http://localhost:3015
++The default development address is http://localhost:3015. The application reads its configured service URLs at boot; see [the build configuration](rsbuild.config.ts) and [environment example](.env.example).
+ 
+-## Environment
++From this directory:
+ 
+-Copy `.env.example` to `.env` and configure:
++```sh
++bun run check-types
++bun run build
++```
+ 
+-- `AUTH_BASE_URL`: Backend authentication service URL
+-- `SURREALDB_ENDPOINT`: SurrealDB connection URL
+-- `BACKEND_ORIGIN`: Backend service origin
+-- `JWKS_PATH`: JWKS endpoint for JWT validation
++The focused browser regression is [13-admin-overview.spec.ts](../../../e2e/specs/13-admin-overview.spec.ts). Run it from `e2e` using the repository's isolated test stack and authenticated setup. Shared UI builds must finish before starting browser tests.

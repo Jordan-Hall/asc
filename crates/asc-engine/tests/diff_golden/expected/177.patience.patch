@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index acdc60a..306a9bb 100644
+--- a/file
++++ b/file
+@@ -4,7 +4,7 @@
+  *
+  *   bun apps/ai-service/scripts/flows-check.ts
+  *
+- * Set LLM_MODEL=gemma4:e2b (the pulled model) since the .env default may point
++ * Set LLM_MODEL to a model you have pulled since the .env default may point
+  * at a model that isn't installed. The schema flow uses the REAL `schema`
+  * profile prompt (SCHEMA_SYSTEM, profiles.ts) — since the prompt diet
+  * (task-5) it's a lean instruction core plus retrieval-composed reference

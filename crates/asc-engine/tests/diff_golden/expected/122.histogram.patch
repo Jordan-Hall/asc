@@ -1,0 +1,42 @@
+diff --git a/file b/file
+index 205f132..4b0ee45 100644
+--- a/file
++++ b/file
+@@ -2,7 +2,15 @@ import { Table } from 'surrealdb';
+ import type { Surreal } from 'surrealdb';
+ import { recordId } from '@asc/database-types';
+ 
+-export type AccessLogAction = 'view' | 'edit' | 'print' | 'export' | 'history_view' | 'field_access';
++export type AccessLogAction =
++  | 'view'
++  | 'edit'
++  | 'print'
++  | 'export'
++  | 'history_view'
++  | 'field_access'
++  | 'create'
++  | 'delete';
+ 
+ interface AccessLogParams {
+   entryId: string;
+@@ -48,6 +56,19 @@ export async function logFormEntryAccess(db: Surreal, params: AccessLogParams):
+       created_at: new Date(),
+     } as Record<string, unknown>);
+   } catch (error) {
+-    console.warn('[AccessLog] Failed to record form entry access:', error);
++    // Compliance-logging failures must never pass unnoticed: a lost access-log
++    // row is a lost regulatory record. Surface loudly via console.error (picked
++    // up by the platform's log aggregation/alerting) and re-throw so the caller
++    // can decide whether the underlying operation should also fail. Callers that
++    // must not block the user-facing action on logging (e.g. best-effort browse
++    // logging) should catch this explicitly and decide their own fallback --
++    // silent swallow-and-continue is no longer the default behaviour here.
++    console.error('[AccessLog] FAILED to record form entry access (compliance log write failed):', {
++      action: params.action,
++      entryId: params.entryId,
++      userId: params.userId,
++      error,
++    });
++    throw error;
+   }
+ }

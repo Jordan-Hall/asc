@@ -1,0 +1,23 @@
+diff --git a/file b/file
+index 692f4d6..5a279ef 100644
+--- a/file
++++ b/file
+@@ -43,7 +43,17 @@ interface StubOptions {
+ function makeApp(opts: StubOptions) {
+   const userDb = {
+     query: async (sql: string) => {
+-      if (sql.startsWith('SELECT VALUE workspace')) return [['ws1']];
++      /*
++        The dataset gate, as `ownsDataset` asks it now.
++
++        It used to be `SELECT VALUE workspace`; the gate moved into
++        `@asc/ingest-core` and asks for the team as well, so this stub stopped
++        matching, answered nothing, and every case below failed as a 404 -
++        reading as a route that had lost its dataset rather than a stub that had
++        lost the query.
++      */
++      if (sql.startsWith('SELECT workspace, team'))
++        return [[{ workspace: 'workspace:ws1', team: null }]];
+       if (sql.startsWith('SELECT pid_fields, meta_schema')) {
+         return [
+           [{ pid_fields: opts.pidFields ?? [], meta_schema: opts.metaSchema }],

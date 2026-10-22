@@ -1,0 +1,72 @@
+{
+  "name": "@asc/soma",
+  "version": "0.0.1",
+  "private": true,
+  "sideEffects": false,
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "checker",
+    "models",
+    "python",
+    "serving-budgets.json"
+  ],
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./byte-decode": {
+      "types": "./src/contracts/byte-decode.ts",
+      "import": "./dist/byte-decode.js"
+    },
+    "./asc-dsl": {
+      "types": "./src/contracts/asc-dsl.ts",
+      "import": "./dist/asc-dsl.js"
+    },
+    "./dsl-web": {
+      "types": "./src/contracts/dsl-web.ts",
+      "import": "./dist/dsl-web.js"
+    },
+    "./checker/*": {
+      "types": "./checker/*.ts",
+      "import": "./checker/*.ts"
+    },
+    "./serving-budgets.json": "./serving-budgets.json",
+    "./embed": {
+      "types": "./src/embed.ts",
+      "import": "./dist/embed.js"
+    }
+  },
+  "scripts": {
+    "build": "rslib build",
+    "check-types": "tsc --noEmit",
+    "build:checker": "bun build checker/soma-server.ts --target=bun --outfile=dist/checker.bundle.js",
+    "test": "bun test checker src",
+    "dev": "rslib build --watch"
+  },
+  "dependencies": {
+    "@asc/form-fill": "workspace:*",
+    "@asc/nano-forge": "workspace:*",
+    "@asc/query-nl": "workspace:*",
+    "@asc/schema-dsl": "workspace:*",
+    "@asc/schema-meta-v2": "workspace:*",
+    "@soma/oracle": "workspace:*",
+    "@asc/harness": "workspace:*",
+    "@soma/inference": "workspace:*",
+    "@soma/budgets": "workspace:*"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@types/bun": "latest",
+    "onnxruntime-node": "^1.20.1",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+    "typescript": "7.0.2"
+  },
+  "description": "Soma in ASC: the specialist contracts, the checkers, the serving seam, and a project per model."
+}

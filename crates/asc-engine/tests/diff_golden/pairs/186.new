@@ -1,0 +1,18 @@
+/**
+ * Model-agnostic ASC task corpora.
+ *
+ * Consumers may train Soma, LoRA, or other fine-tuned models from the same
+ * validated generators. Generic corpus mechanics remain in @asc/nano-forge.
+ */
+export * from './meta-schema-corpus';
+export * from './spec-corpus';
+export * from './edit-corpus';
+export * from './apply-ops-corpus';
+export * from './incremental-authoring-corpus';
+export * from './real-schema-corpus';
+export * from './schema-gold-sources';
+export * from './search-trace-corpus';
+export * from './structured-repair-corpus';
+export * from './english-warmup-corpus';
+export * from './asc-paraphrase-corpus';
+export { corpusDataDir } from './paths';

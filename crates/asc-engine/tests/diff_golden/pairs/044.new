@@ -1,0 +1,134 @@
+import {
+  isPlatformAdmin,
+  normalizeWorkspaceRole,
+} from '@asc/better-auth-permissions';
+import type { DBAdapter } from 'better-auth';
+import type { UserTeamContext, WorkspaceAdapter } from './adapter.js';
+
+/**
+ * Whether the caller administers the organisation: a platform administrator, or a
+ * direct member holding the owner or admin role.
+ *
+ * Membership of a team in the organisation is NOT administration. It used to count
+ * here, which let any team member invite people into every workspace of the
+ * organisation and cancel invitations they never sent.
+ */
+export async function isSystemOrOrgAdmin(params: {
+  adapter: DBAdapter;
+  userId: string;
+  userRole?: string | null;
+  organizationId: string | null;
+}): Promise<boolean> {
+  const { adapter, userId, userRole, organizationId } = params;
+
+  // Check if user is a platform admin (owner or admin system role)
+  if (isPlatformAdmin(userRole)) {
+    return true;
+  }
+
+  if (!organizationId) {
+    return false;
+  }
+
+  const orgMember = (await adapter.findOne({
+    model: 'member',
+    where: [
+      { field: 'userId', value: userId },
+      { field: 'organizationId', value: organizationId },
+    ],
+  })) as { role: string } | null;
+
+  // member.role is comma-separated for multi-role members (same convention
+  // as workspaceMember/teamMember), so a direct `=== 'owner'` comparison
+  // silently denies a member whose role string is e.g. "owner,auditor".
+  const orgMemberRoles = normalizeWorkspaceRole(orgMember?.role);
+  return orgMemberRoles.includes('owner') || orgMemberRoles.includes('admin');
+}
+
+export async function getTeamContext(
+  adapter: DBAdapter,
+  userId: string,
+): Promise<UserTeamContext> {
+  const teamMemberships = (await adapter.findMany({
+    model: 'teamMember',
+    where: [{ field: 'userId', value: userId }],
+  })) as Array<{ teamId: string; userId: string; role?: string }>;
+
+  const teamIds = teamMemberships.map((tm) => tm.teamId);
+
+  if (teamIds.length === 0) {
+    return {
+      teamMemberships,
+      teamIds,
+      teams: [],
+      teamsByOrg: new Map(),
+    };
+  }
+
+  const teams = (await adapter.findMany({
+    model: 'team',
+    where: [{ field: 'id', value: teamIds, operator: 'in' }],
+  })) as Array<{ id: string; organizationId: string }>;
+
+  const teamsByOrg = new Map<
+    string,
+    Array<{ id: string; organizationId: string }>
+  >();
+  for (const team of teams) {
+    const existing = teamsByOrg.get(team.organizationId) || [];
+    existing.push(team);
+    teamsByOrg.set(team.organizationId, existing);
+  }
+
+  return { teamMemberships, teamIds, teams, teamsByOrg };
+}
+
+export async function hasOrganizationAccessViaTeam(params: {
+  adapter: DBAdapter;
+  userId: string;
+  organizationId: string;
+  teamContext?: UserTeamContext;
+}): Promise<boolean> {
+  const { adapter, userId, organizationId, teamContext } = params;
+
+  const ctx = teamContext ?? (await getTeamContext(adapter, userId));
+  const orgTeams = ctx.teamsByOrg.get(organizationId);
+
+  return orgTeams !== undefined && orgTeams.length > 0;
+}
+
+/**
+ * The role the caller acts with on a workspace, or `null` when they have none.
+ *
+ * A platform administrator and an organisation owner or admin reach every
+ * workspace beneath them, as an owner would; they need no membership row of their
+ * own, which is why a platform administrator who created the workspace could not
+ * then open or add anyone to it. Everyone else acts with their own membership,
+ * direct or through a team the workspace lists, or not at all.
+ */
+export async function effectiveWorkspaceRole(params: {
+  adapter: DBAdapter;
+  workspaceAdapter: WorkspaceAdapter;
+  userId: string;
+  userRole?: string | null;
+  workspaceId: string;
+}): Promise<string | null> {
+  const { adapter, workspaceAdapter, userId, userRole, workspaceId } = params;
+  const workspace = await workspaceAdapter.findWorkspaceById(workspaceId);
+  if (!workspace) return null;
+  if (
+    await isSystemOrOrgAdmin({
+      adapter,
+      userId,
+      userRole,
+      organizationId: workspace.organizationId,
+    })
+  ) {
+    return 'owner';
+  }
+  const member = await workspaceAdapter.findWorkspaceMemberWithInheritance(
+    workspaceId,
+    userId,
+  );
+  return member?.role ?? null;
+}

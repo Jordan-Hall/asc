@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 8371263..0608db2 100644
+--- a/file
++++ b/file
+@@ -99,12 +99,14 @@ export function relevantBuiltins(
+   const total = entries.length;
+   const scored: Array<{ score: number; entry: Entry }> = [];
+   entries.forEach((entry, index) => {
+-    const here = entryCounts[index]!;
++    const here = entryCounts[index];
++    if (here === undefined) return;
+     let score = 0;
+     for (const [word, times] of asked) {
+       const seen = here.get(word) ?? 0;
+       if (!seen) continue;
+-      const df = frequency.get(word)!;
++      // Counted from these same entries, so a word seen here is in the table.
++      const df = frequency.get(word) ?? 1;
+       const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
+       const norm =
+         (seen * (K1 + 1)) /

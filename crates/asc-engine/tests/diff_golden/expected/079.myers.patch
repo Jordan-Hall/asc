@@ -1,0 +1,60 @@
+diff --git a/file b/file
+index ab6b5b9..84db636 100644
+--- a/file
++++ b/file
+@@ -85,3 +85,55 @@ test('an expression that will not compile says so instead of showing nothing', (
+   expect(textOf(panel, '.dsl-debugger-status')).not.toBe('');
+   expect(textOf(panel, '.dsl-debugger-status')).not.toContain('Step 1 of');
+ });
++
++/**
++ * Stopping where the reader points.
++ *
++ * `Continue` ran only to somewhere the ENGINE marked, so a reader asking about
++ * one comparison in a long rule pressed Next until they reached it. They set
++ * the stop themselves now, on the source, the way they would in a debugger
++ * they already use.
++ */
++test('clicking the rule marks where to stop, and running on goes there', () => {
++  const panel = open(RULE, { age: 74 });
++  /*
++    The second comparison, clicked. Each step the trace covers is drawn as its
++    own element carrying the offset it starts at, so a reader points at the
++    part of their rule they are asking about and this points at the same thing.
++  */
++  const spans = [
++    ...panel.querySelectorAll<HTMLElement>('[data-offset]'),
++  ];
++  const second = spans.find((span) => span.textContent === 'root.age <= 65');
++  if (!second) throw new Error('the rule was not drawn as its own spans');
++  second.dispatchEvent(new MouseEvent('click', { bubbles: true }));
++
++  expect(panel.querySelector('.dsl-debugger-breakpoint')?.textContent).toBe(
++    'root.age <= 65',
++  );
++
++  press(panel, 'Run on to the next breakpoint or stopping point').click();
++  expect(textOf(panel, '.dsl-debugger-covered')).toBe('root.age <= 65');
++});
++
++test('clicking it again clears the breakpoint', () => {
++  const panel = open(RULE, { age: 74 });
++  const click = () => {
++    const span = [...panel.querySelectorAll<HTMLElement>('[data-offset]')].find(
++      (s) => s.textContent === 'root.age <= 65',
++    );
++    span?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
++  };
++  click();
++  click();
++  expect(panel.querySelector('.dsl-debugger-breakpoint')).toBeNull();
++});
++
++test('a reader can run back to where they stopped', () => {
++  const panel = open(RULE, { age: 74 });
++  press(panel, 'Last step').click();
++  press(panel, 'Run back to the previous breakpoint or stopping point').click();
++  // With nothing marked, running back reaches the beginning rather than
++  // sitting where it was.
++  expect(textOf(panel, '.dsl-debugger-covered')).toBe('root.age >= 18');
++});

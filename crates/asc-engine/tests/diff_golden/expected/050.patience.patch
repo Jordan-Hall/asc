@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index c142124..4efbd71 100644
+--- a/file
++++ b/file
+@@ -7,12 +7,16 @@ interface NelaFormElement extends JsonFormElement {
+   readonly runtime?: unknown;
+ }
+ 
+-/** Wait for the form element to have built its runtime. */
++/**
++ * Wait for the form element to have built its fields. The runtime handle it
++ * used to expose is private now; the fields on the page are what a test
++ * can see, and they are there once the runtime is.
++ */
+ export async function waitForFormRuntime(page: Page): Promise<void> {
+   await page.waitForFunction(
+     () =>
+-      (document.getElementById('nela-form') as NelaFormElement | null)
+-        ?.runtime != null,
++      document.querySelector('#nela-form [data-field-name="age"] input') !==
++      null,
+     { timeout: 30_000 },
+   );
+ }

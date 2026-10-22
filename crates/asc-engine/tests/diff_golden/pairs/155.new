@@ -1,0 +1,23 @@
+import { defineConfig } from '@rstest/core';
+
+export default defineConfig({
+  testEnvironment: 'happy-dom',
+  setupFiles: ['./test-setup.ts'],
+  // Playwright owns e2e/*.spec.ts and drives a real browser; collecting those here makes
+  // Playwright's own test() refuse to run. `include` is what rstest filters on.
+  include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
+  exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
+  plugins: [
+    {
+      // Keep the rstest server off the dev-stack ports (mirrors
+      // packages/ui/rstest.config.ts) so tests run while the app is running.
+      name: 'rstest-port-off-dev-stack',
+      setup(api: { modifyRsbuildConfig: (fn: (cfg: { server?: { port?: number } }) => void) => void }) {
+        api.modifyRsbuildConfig((cfg) => {
+          cfg.server ??= {};
+          cfg.server.port = 3107;
+        });
+      },
+    },
+  ],
+});

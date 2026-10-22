@@ -1,0 +1,152 @@
+/**
+ * The part of the language a request needs, put in front of asc-dsl.
+ *
+ * asc-dsl has 220 documented builtins, and a model that has to remember every
+ * one of them answers the rare ones worst. This finds, in the builtins' own
+ * documentation (`@asc/dsl/builtin-docs.json`, exported by `dsl docs` from
+ * the comments they are registered with), the few a request most likely needs
+ * and writes them as a turn ahead of the request: [reference, request].
+ *
+ * Training builds the same turn from the same request in asc-soma's
+ * packages/model-asc-dsl/corpus/dsl_reference.py - BM25 over each builtin's
+ * name, category and documentation, names split where their case changes - and
+ * a test on each side pins the text, because a model trained on one reference
+ * and served another is being asked something it was never taught.
+ */
+import docs from '@asc/dsl/builtin-docs.json' with { type: 'json' };
+
+/** How many builtins a reference turn lists. */
+export const REFERENCE_LISTED = 8;
+
+const K1 = 1.2;
+const B = 0.75;
+const STOP = new Set(
+  'a an and are as at be by for from if in is it its of on or the that this to with'.split(' '),
+);
+
+interface BuiltinDocRecord {
+  name: string;
+  category: string;
+  also?: string[];
+  kind: string;
+  signature: string;
+  docs: string;
+}
+
+interface Entry {
+  name: string;
+  signature: string;
+  summary: string;
+  words: string[];
+}
+
+/** Lower-case words, with a name split where its case changes. */
+export function referenceTokens(text: string): string[] {
+  const spaced = text.replace(/(?<=[a-z0-9])(?=[A-Z])/g, ' ');
+  return (spaced.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+    (word) => !STOP.has(word),
+  );
+}
+
+function summaryOf(text: string): string {
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.startsWith(' ') ? raw.slice(1) : raw;
+    if (!line.trim()) break;
+    lines.push(line.trim());
+  }
+  return lines.join(' ');
+}
+
+function counts(words: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const word of words) out.set(word, (out.get(word) ?? 0) + 1);
+  return out;
+}
+
+const entries: Entry[] = (docs as BuiltinDocRecord[])
+  // The calls over a list and a lambda - `where`, `map`, `summarise` - are
+  // documented with the builtins, and a request needs them as often.
+  .filter((doc) => (doc.kind === 'builtin' || doc.kind === 'higher-order') && doc.docs)
+  .map((doc) => ({
+    name: doc.name,
+    signature: doc.signature,
+    summary: summaryOf(doc.docs),
+    words: referenceTokens(
+      // The whole comment, `# Says` and `# Asked as` too: they are the
+      // words people use for a call, which is what a request is written in.
+      [doc.name, doc.category, ...(doc.also ?? []), doc.docs].join(' '),
+    ),
+  }));
+const frequency = new Map<string, number>();
+for (const entry of entries) {
+  for (const word of new Set(entry.words)) {
+    frequency.set(word, (frequency.get(word) ?? 0) + 1);
+  }
+}
+const average =
+  entries.reduce((sum, entry) => sum + entry.words.length, 0) /
+  Math.max(1, entries.length);
+const entryCounts = entries.map((entry) => counts(entry.words));
+
+/** The builtins a request most likely needs, best first; ties by name. */
+export function relevantBuiltins(
+  request: string,
+  listed: number = REFERENCE_LISTED,
+): Array<{ name: string; signature: string; summary: string }> {
+  const asked = counts(referenceTokens(request));
+  if (asked.size === 0) return [];
+  const total = entries.length;
+  const scored: Array<{ score: number; entry: Entry }> = [];
+  entries.forEach((entry, index) => {
+    const here = entryCounts[index]!;
+    let score = 0;
+    for (const [word, times] of asked) {
+      const seen = here.get(word) ?? 0;
+      if (!seen) continue;
+      const df = frequency.get(word)!;
+      const idf = Math.log(1 + (total - df + 0.5) / (df + 0.5));
+      const norm =
+        (seen * (K1 + 1)) /
+        (seen + K1 * (1 - B + (B * entry.words.length) / average));
+      score += idf * norm * times;
+    }
+    if (score > 0) scored.push({ score, entry });
+  });
+  const rounded = (value: number) => Math.round(value * 1e9) / 1e9;
+  scored.sort(
+    (a, b) =>
+      rounded(b.score) - rounded(a.score) ||
+      (a.entry.name < b.entry.name ? -1 : a.entry.name > b.entry.name ? 1 : 0),
+  );
+  return scored
+    .slice(0, listed)
+    .map(({ entry }) => ({
+      name: entry.name,
+      signature: entry.signature,
+      summary: entry.summary,
+    }));
+}
+
+/**
+ * The turn ahead of a request: the builtins it most likely needs. Empty when
+ * nothing in the request matches, and then no turn is sent.
+ */
+export function referenceTurn(
+  request: string,
+  listed: number = REFERENCE_LISTED,
+): string {
+  const found = relevantBuiltins(request, listed);
+  if (found.length === 0) return '';
+  return (
+    'Functions that may help:\n' +
+    found.map((entry) => `- ${entry.name}${entry.signature}: ${entry.summary}`).join('\n')
+  );
+}
+
+/** The turns asc-dsl is given for a request: [reference, request], or the
+ *  request alone when no builtin matches it. */
+export function ascDslTurns(request: string): string[] {
+  const reference = referenceTurn(request);
+  return reference ? [reference, request] : [request];
+}

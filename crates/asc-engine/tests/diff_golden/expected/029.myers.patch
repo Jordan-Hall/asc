@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index b360ce3..49eb708 100644
+--- a/file
++++ b/file
+@@ -4,6 +4,7 @@ members = [
+   "crates/dsl-core",
+   "crates/dsl-ir",
+   "crates/dsl-cranelift",
++  "crates/dsl-wasm-codegen",
+   "crates/dsl-wasm",
+   "crates/dsl-napi",
+   "crates/dsl-cli",

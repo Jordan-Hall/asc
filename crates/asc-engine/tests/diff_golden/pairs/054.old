@@ -1,0 +1,80 @@
+export interface Clip {
+  name: string;
+  blob: Blob;
+}
+
+const MIME = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+
+function mimeType(): string {
+  return MIME.find((type) => MediaRecorder.isTypeSupported(type)) ?? '';
+}
+
+export class TabRecorder {
+  private stream: MediaStream | null = null;
+  private recorder: MediaRecorder | null = null;
+  private chunks: Blob[] = [];
+  readonly clips: Clip[] = [];
+
+  get active(): boolean {
+    return this.stream !== null;
+  }
+
+  async start(): Promise<boolean> {
+    const options: DisplayMediaStreamOptions & {
+      preferCurrentTab: boolean;
+      selfBrowserSurface: string;
+      surfaceSwitching: string;
+    } = {
+      video: { frameRate: 30 },
+      audio: false,
+      preferCurrentTab: true,
+      selfBrowserSurface: 'include',
+      surfaceSwitching: 'exclude',
+    };
+    try {
+      this.stream = await navigator.mediaDevices.getDisplayMedia(options);
+    } catch {
+      this.stream = null;
+      return false;
+    }
+    this.stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+      this.stream = null;
+    });
+    return true;
+  }
+
+  begin(): void {
+    if (!this.stream || this.recorder) return;
+    this.chunks = [];
+    this.recorder = new MediaRecorder(this.stream, { mimeType: mimeType() });
+    this.recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) this.chunks.push(event.data);
+    };
+    this.recorder.start(1000);
+  }
+
+  async cut(name: string): Promise<Clip | null> {
+    const recorder = this.recorder;
+    if (!recorder) return null;
+    this.recorder = null;
+    await new Promise<void>((done) => {
+      recorder.onstop = () => done();
+      recorder.stop();
+    });
+    const clip = { name, blob: new Blob(this.chunks, { type: 'video/webm' }) };
+    this.chunks = [];
+    this.clips.push(clip);
+    return clip;
+  }
+
+  fork(): TabRecorder {
+    const other = new TabRecorder();
+    other.stream = this.stream;
+    return other;
+  }
+
+  stop(): void {
+    for (const track of this.stream?.getTracks() ?? []) track.stop();
+    this.stream = null;
+  }
+}

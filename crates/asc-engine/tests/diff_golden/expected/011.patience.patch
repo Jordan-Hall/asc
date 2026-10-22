@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 9b71b31..8aa9464 100644
+--- a/file
++++ b/file
+@@ -48,6 +48,9 @@ pub mod num;
+ pub mod parser;
+ /// The runtime value type.
+ pub mod value;
++/// Whether an answer being written can still be finished - what a decoder
++/// writing one a byte at a time may write next.
++pub mod viable;
+ /// What the operators do to values, shared by the interpreter and the builtins.
+ pub mod ops;
+ 

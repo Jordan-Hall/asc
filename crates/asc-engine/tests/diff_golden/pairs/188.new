@@ -1,0 +1,50 @@
+{
+  "name": "ai-service",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "build": "bun build src/index.ts src/workers/generative.worker.ts src/workers/embed.worker.ts --outdir dist --target bun --minify --define __ASC_BUNDLED__=true --external @huggingface/transformers --external dictionary-en --external nspell",
+    "start": "bun dist/index.js",
+    "check-types": "tsc --noEmit",
+    "evals": "bun evals/run.ts",
+    "evals:models": "bun evals/compare-models.ts",
+    "evals:quick": "bun evals/run.ts --mode quick --gate",
+    "evals:full": "bun evals/run.ts --mode full --suite all",
+    "telemetry": "bun scripts/telemetry-report.ts",
+    "triage": "bun scripts/triage-feedback.ts",
+    "soma:replay": "bun ../../packages/ai-corpus/scripts/build-soma-replay.ts",
+    "soma:split": "bun ../../packages/ai-corpus/scripts/prepare-soma-splits.ts",
+    "soma:qualify": "bun ../../packages/ai-corpus/scripts/soma-production-eval.ts --strict"
+  },
+  "dependencies": {
+    "@asc/agent-tools": "workspace:*",
+    "@asc/ai-corpus": "workspace:*",
+    "@asc/better-auth-permissions": "workspace:*",
+    "@asc/doc-extract": "workspace:*",
+    "@asc/form-fill": "workspace:*",
+    "@asc/harness": "workspace:*",
+    "@asc/llm": "workspace:*",
+    "@asc/query-nl": "workspace:*",
+    "@asc/schema-meta-v2": "workspace:*",
+    "@asc/soma": "workspace:*",
+    "@asc/soma": "workspace:*",
+    "@huggingface/transformers": "^4.2.0",
+    "ai": "^6.0.158",
+    "ajv": "^8.20.0",
+    "compromise": "^14.0.0",
+    "dictionary-en": "^4.0.0",
+    "hono": "^4.10.6",
+    "nspell": "^2.1.5",
+    "surrealdb": "^2.0.3",
+    "wink-eng-lite-web-model": "^1.8.1",
+    "wink-nlp": "^2.4.0",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/bun": "latest",
+    "typescript": "7.0.2"
+  }
+}

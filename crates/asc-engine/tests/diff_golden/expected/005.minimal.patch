@@ -1,0 +1,55 @@
+diff --git a/file b/file
+index 0e9f2e5..345176a 100644
+--- a/file
++++ b/file
+@@ -14,6 +14,8 @@
+  *   bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1] [--seed N] [--exclude <train.jsonl>]...
+  */
+ import { readFileSync, writeFileSync } from 'node:fs';
++import { init as initDsl } from '@asc/dsl-compiler';
++import { canVary, checkRule } from '@asc/soma/checker/rules';
+ import { generateBareComparisonCorpus } from './bare-comparison-corpus';
+ import { generateCompositionCorpus } from './expression-compose-corpus';
+ import { generateExpressionAdvancedCorpus } from './expression-advanced-corpus';
+@@ -78,9 +80,22 @@ const generators: Array<[string, () => Item[]]> = [
+   ['bare-comparison', () => generateBareComparisonCorpus(Math.round(400 * scale), seed + 6)],
+ ];
+ 
++await initDsl();
++
++/** Whether a target is a rule worth asking: it parses, runs on the checker's
++ *  probe records, and - when it reads a field - can change with them. A
++ *  composed `substring(x, 1, 3) == "discharged"` parses, runs and never
++ *  changes; it was in the fresh panel, unanswerable either way. */
++const sound = (target: string): boolean => {
++  const v = checkRule(target);
++  if (!v.parses || !v.executes) return false;
++  return v.outputVaries || !/\broot\.|\bvalue\b/.test(target) || canVary(target);
++};
++
+ const rows: string[] = [];
+ const seen = new Set<string>();
+ const counts: Record<string, [number, number]> = {};
++let unsound = 0;
+ for (const [name, generate] of generators) {
+   let kept = 0;
+   let asked = 0;
+@@ -93,6 +108,10 @@ for (const [name, generate] of generators) {
+       continue;
+     }
+     if (seen.has(request)) continue;
++    if (!sound(target)) {
++      unsound++;
++      continue;
++    }
+     seen.add(request);
+     rows.push(
+       JSON.stringify({
+@@ -108,6 +127,6 @@ for (const [name, generate] of generators) {
+   counts[name] = [kept, asked];
+ }
+ writeFileSync(out, `${rows.join('\n')}\n`);
+-console.log(`[gate-mix] ${rows.length} rows -> ${out}`);
++console.log(`[gate-mix] ${rows.length} rows -> ${out}; ${unsound} left out as rules that cannot change`);
+ for (const [name, [kept, asked]] of Object.entries(counts))
+   console.log(`  ${name}: ${kept} kept, ${asked} left out as held-out requests`);

@@ -1,0 +1,147 @@
+import * as XLSX from 'xlsx';
+import type { LoadReport } from './load';
+import type { Cell, RowResult, ValidationReport } from './types';
+import { isPassing } from './types';
+
+type SheetCells = Cell[][];
+
+function flatten(row: RowResult) {
+  return {
+    index: row.index,
+    mode: row.mode,
+    outcome: row.outcome,
+    expected: row.expected,
+    actual: row.actual,
+    diff: row.diff,
+    message: row.message ?? '',
+    frame: row.frame ?? '',
+    ...row.inputs,
+    request: JSON.stringify(row.request),
+    response: JSON.stringify(row.response),
+    ...row.intermediates,
+  };
+}
+
+function summaryRows(report: ValidationReport): SheetCells {
+  const rows: SheetCells = [
+    ['Target kind', report.target.kind],
+    ['Target URL', report.target.url],
+    ['Mode', report.target.mode],
+    ['Source', report.source.name],
+    ['Source rows', report.source.rowCount],
+    ['Started', report.startedAt],
+    ['Finished', report.finishedAt],
+    ['Tolerance', report.tolerance],
+    ['Total', report.summary.total],
+    ['Passed', report.summary.passed],
+    ['Failed', report.summary.failed],
+    ['Errors', report.summary.errors],
+    ...(report.timing
+      ? [
+          ['Rows per minute', report.timing.rowsPerMinute],
+          ['Browsers', report.timing.browsers],
+          ['Mean ms per row', report.timing.meanMs],
+          ['p50 ms', report.timing.p50Ms],
+          ['p95 ms', report.timing.p95Ms],
+          ['Max ms', report.timing.maxMs],
+        ]
+      : []),
+    ...(report.load ? [['Load seconds', report.load.seconds]] : []),
+    [],
+    ['Outcome', 'Count'],
+  ];
+  for (const [outcome, count] of Object.entries(report.summary.byOutcome))
+    rows.push([outcome, count]);
+  return rows;
+}
+
+function breakdownRows(report: ValidationReport): SheetCells {
+  const rows: SheetCells = [['Group', 'Value', 'Passed', 'Total']];
+  for (const [group, values] of Object.entries(report.breakdown.groups))
+    for (const [value, count] of Object.entries(values))
+      rows.push([group, value, count.passed, count.total]);
+  rows.push([]);
+  rows.push(['Field', 'Outside model range', 'Winsorised']);
+  for (const [field, hits] of Object.entries(report.breakdown.outOfRange))
+    rows.push([field, hits.outsideModel, hits.winsorised]);
+  return rows;
+}
+
+export function toXlsx(report: ValidationReport): Uint8Array<ArrayBuffer> {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(summaryRows(report)),
+    'Summary',
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(breakdownRows(report)),
+    'Breakdown',
+  );
+  const all = report.rows.map(flatten);
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(all), 'Rows');
+  const failures = report.rows
+    .filter((row) => !isPassing(row.outcome))
+    .map(flatten);
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(failures, { header: Object.keys(all[0] ?? {}) }),
+    'Failures',
+  );
+  const bytes: ArrayBuffer = XLSX.write(workbook, {
+    type: 'array',
+    bookType: 'xlsx',
+    compression: true,
+  });
+  return new Uint8Array(bytes);
+}
+
+export function loadToXlsx(report: LoadReport): Uint8Array<ArrayBuffer> {
+  const workbook = XLSX.utils.book_new();
+  const summary: SheetCells = [
+    ['Target URL', report.target.url],
+    ['Mode', report.target.mode],
+    ['Source', report.source.name],
+    ['Rows used', report.source.rows],
+    ['Concurrent users', report.concurrency],
+    ['Duration (ms)', report.durationMs],
+    ['Started', report.startedAt],
+    ['Finished', report.finishedAt],
+    ['Tolerance', report.tolerance],
+    ['Requests', report.summary.requests],
+    ['Requests per second', report.summary.requestsPerSecond],
+    ['Agreed', report.summary.agreed],
+    ['Disagreed', report.summary.disagreed],
+    ['Errors', report.summary.errors],
+    [],
+    ['Latency (ms)', 'Value'],
+    ['Mean', report.latency.mean],
+    ['p50', report.latency.p50],
+    ['p90', report.latency.p90],
+    ['p95', report.latency.p95],
+    ['p99', report.latency.p99],
+    ['Max', report.latency.max],
+  ];
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet(summary),
+    'Summary',
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(report.seconds),
+    'Per second',
+  );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.json_to_sheet(report.failures.map(flatten)),
+    'Failures',
+  );
+  const bytes: ArrayBuffer = XLSX.write(workbook, {
+    type: 'array',
+    bookType: 'xlsx',
+    compression: true,
+  });
+  return new Uint8Array(bytes);
+}

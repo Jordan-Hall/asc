@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 008e942..a34be0f 100644
+--- a/file
++++ b/file
+@@ -16,6 +16,8 @@
+ 
+ /// The syntax tree a source parses into.
+ pub mod ast;
++/// What an editor shows beyond errors: types, and warnings.
++pub mod analysis;
+ /// The syntax tree as JSON, for the editor across the binding boundary.
+ pub mod ast_json;
+ /// Every higher-order call the language has.

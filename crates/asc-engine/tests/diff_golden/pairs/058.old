@@ -1,0 +1,18 @@
+/**
+ * The layouts a workbook may have, in the order they are tried. The first
+ * whose `detect` says yes reads the rows. Add a new layout's file beside
+ * these and list it here, before `firstSheet`, which takes anything.
+ */
+import { extract } from './extract';
+import type { Layout, SheetSummary } from './layout';
+import { firstSheet, simulated } from './simulated';
+
+export type { Layout, SheetSummary } from './layout';
+export { numberOf, summarise } from './layout';
+
+export const LAYOUTS: readonly Layout[] = [simulated, extract, firstSheet];
+
+/** The layout for a workbook, or undefined when it has nothing to read */
+export function layoutFor(summary: SheetSummary): Layout | undefined {
+  return LAYOUTS.find((layout) => layout.detect(summary));
+}

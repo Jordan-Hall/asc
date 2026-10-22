@@ -1,0 +1,62 @@
+{
+  "name": "@asc/better-auth-external-structure",
+  "version": "0.1.0",
+  "description": "Better Auth plugin for hierarchical external organizational structures (e.g., Country \u2192 Region \u2192 ICS \u2192 Trust \u2192 Hospital \u2192 Service)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client/index.d.ts",
+        "default": "./dist/client/index.js"
+      },
+      "require": {
+        "types": "./dist/client/index.d.cts",
+        "default": "./dist/client/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rslib build",
+    "dev": "rslib build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@asc/auth-utils": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "peerDependencies": {
+    "better-auth": "^1.2.0"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.7.3",
+    "@rslib/core": "^0.23.2",
+    "@repo/typescript-config": "workspace:*",
+    "better-auth": "^1.2.0",
+    "typescript": "7.0.2"
+  },
+  "keywords": [
+    "better-auth",
+    "plugin",
+    "external-structure",
+    "hierarchy",
+    "nhs",
+    "organization"
+  ],
+  "license": "MIT"
+}

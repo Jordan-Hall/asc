@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index c58fd3b..22a519c 100644
+--- a/file
++++ b/file
+@@ -44,6 +44,23 @@ test('a lone checkbox is laid out as a grid, not a wrapping row', () => {
+   expect(control).not.toBeNull();
+ });
+ 
++test('every part of the field is a direct child, so the grid can place each one', () => {
++  // A two-column grid with nothing said about placement flows four children
++  // in source order: the explanation landed in the control's cell and pushed
++  // the box onto a row of its own above the question it belongs to.
++  const field = createField({
++    input: { id: 'c', name: 'c', type: 'checkbox', checked: false },
++    label: { for: 'c', text: LONG },
++    helpText: 'The patient will be advised to report any new symptoms.',
++    errorMessage: 'Required',
++  });
++  const children = [...field.children].map((child) => child.className);
++  expect(children.some((c) => c.includes('field-label'))).toBe(true);
++  expect(children.some((c) => c.includes('field-help'))).toBe(true);
++  expect(children.some((c) => c.includes('field-container'))).toBe(true);
++  expect(children.some((c) => c.includes('field-message'))).toBe(true);
++});
++
+ test('the question and the box are siblings, so one row can hold both', () => {
+   const field = checkboxField(LONG);
+   const label = field.querySelector('label');

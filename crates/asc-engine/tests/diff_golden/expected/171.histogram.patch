@@ -1,0 +1,41 @@
+diff --git a/file b/file
+index 95cba45..7a9ec4c 100644
+--- a/file
++++ b/file
+@@ -23,8 +23,8 @@
+   "GenderIDCode": {
+     "1": "Male",
+     "2": "Female",
+-    "3": "Non-binary",
+-    "4": "Other",
++    "3": "Not stated",
++    "4": "Not stated",
+     "5": "Not stated"
+   },
+   "GenderSameAtBirth": {
+@@ -104,12 +104,12 @@
+     "13": "Elective admission"
+   },
+   "ADMIMETH": {
+-    "1": "Elective — waiting list",
+-    "2": "Elective — booked",
+-    "3": "Elective — planned",
+-    "4": "Emergency — A&E",
+-    "5": "Emergency — GP referral",
+-    "8": "Emergency — other",
++    "1": "Elective \u2014 waiting list",
++    "2": "Elective \u2014 booked",
++    "3": "Elective \u2014 planned",
++    "4": "Emergency \u2014 A&E",
++    "5": "Emergency \u2014 GP referral",
++    "8": "Emergency \u2014 other",
+     "21": "Emergency admission",
+     "25": "Admission from another provider"
+   },
+@@ -268,4 +268,4 @@
+     "0": "No",
+     "1": "Yes"
+   }
+-}
++}
+\ No newline at end of file

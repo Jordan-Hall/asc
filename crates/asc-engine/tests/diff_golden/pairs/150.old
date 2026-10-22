@@ -1,0 +1,86 @@
+/**
+ * Routing.
+ *
+ * Five routes under a tenant base: the overview, a metric explorer, free-form
+ * explore, the dataset itself, and the about page. The base is `/:tenant`
+ * locally and `/` on a tenant's own domain, so one build serves both without
+ * any page knowing which it is.
+ */
+import { createRouter, defineComponent, type RouterInstance } from '@asc/router';
+import { renderOverview } from '../pages/overview.js';
+import { renderMetricPage } from '../pages/metric.js';
+import { renderExplorePage } from '../pages/explore.js';
+import { renderDesignerPage } from '../pages/designer.js';
+import { renderDashboardDesignerPage } from '../pages/dashboard-designer.js';
+import { renderDataPage, renderAboutPage } from '../pages/data.js';
+import { clearActivePage, setActivePage, type PageContext } from '../pages/render.js';
+
+export interface RouteDependencies {
+  /** Rebuilt per navigation so a page always sees the current identity and URL. */
+  context(): PageContext;
+}
+
+function page(render: (host: HTMLElement, ctx: PageContext) => () => void, deps: RouteDependencies) {
+  return defineComponent((_ctx, lifecycle) => {
+    const host = document.createElement('div');
+    host.className = 'report-page';
+    let cleanup = render(host, deps.context());
+    // Registered so a query-string change (a tab, a filter, a breakdown)
+    // repaints this page in place — the router only matches on path.
+    setActivePage(host, (target) => {
+      cleanup();
+      cleanup = render(target, deps.context());
+    });
+    lifecycle.onCleanup(() => {
+      clearActivePage(host);
+      cleanup();
+    });
+    return host;
+  });
+}
+
+function metricPage(deps: RouteDependencies) {
+  return defineComponent((ctx, lifecycle) => {
+    const host = document.createElement('div');
+    host.className = 'report-page';
+    const params = (ctx as { params?: { get?: () => Record<string, string> } }).params;
+    const idOf = (): string => {
+      const fromRoute = params?.get?.().id;
+      if (fromRoute) return String(fromRoute);
+      const segments = window.location.pathname.split('/').filter(Boolean);
+      return segments.at(-1) ?? '1';
+    };
+    let cleanup = renderMetricPage(host, deps.context(), idOf());
+    setActivePage(host, (target) => {
+      cleanup();
+      cleanup = renderMetricPage(target, deps.context(), idOf());
+    });
+    lifecycle.onCleanup(() => {
+      clearActivePage(host);
+      cleanup();
+    });
+    return host;
+  });
+}
+
+export function createReportingRouter(base: string, deps: RouteDependencies): RouterInstance {
+  return createRouter({
+    base: base || '/',
+    defaultRoute: '/',
+    routes: [
+      { path: '/', component: page(renderOverview, deps), title: 'Overview' },
+      { path: 'metric/:id', component: metricPage(deps), title: 'Measure' },
+      { path: 'explore', component: page(renderExplorePage, deps), title: 'Explore' },
+      // The designer runs against the REAL platform — ingested datasets, the
+      // live aggregation, a report that saves — while the routes above still
+      // read the bundled fixtures.
+      { path: 'designer', component: page(renderDesignerPage, deps), title: 'Build a report' },
+      // The dashboard designer builds a PAGE of blocks — the mini CMS surface.
+      // Same real platform, same live render path; the document is a
+      // DashboardDefinition instead of a ReportDefinition.
+      { path: 'dashboard', component: page(renderDashboardDesignerPage, deps), title: 'Build a dashboard' },
+      { path: 'data', component: page(renderDataPage, deps), title: 'The data' },
+      { path: 'about', component: page(renderAboutPage, deps), title: 'About this data' },
+    ],
+  }) as RouterInstance;
+}

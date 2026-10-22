@@ -1,0 +1,67 @@
+//! The ASC DSL's front end, and what every engine shares.
+//!
+//! Source text goes [`lexer`] to [`parser`] to [`ast`], and from there into
+//! `dsl-ir`, which lowers it to an SSA instruction set, optimises it and
+//! interprets that - the one engine every binding and the command line run.
+//!
+//! What lives here is everything that engine and the native compiler need: the
+//! tokens, the syntax tree, the value type, the number type, what the operators
+//! do to values ([`ops`]), the builtin functions, the diagnostics, and the
+//! modules a program can `use`. It used to hold a bytecode compiler and
+//! interpreter of its own as well; nothing had run them since the IR became
+//! the only engine, and they were removed.
+//!
+//! Numbers are decimal rather than binary floating point, so `0.1 + 0.2` is
+//! `0.3`, and the functions that cannot be exact are gathered in [`math`].
+
+/// The syntax tree a source parses into.
+pub mod ast;
+/// What an editor shows beyond errors: types, and warnings.
+pub mod analysis;
+/// The syntax tree as JSON, for the editor across the binding boundary.
+pub mod ast_json;
+/// Every higher-order call the language has.
+///
+/// They lower to their own instructions rather than to a builtin, so they are
+/// absent from the builtin table: anything deciding whether a name is callable
+/// has to ask here too, or it reports `map` as an unknown function.
+pub use ops::higher_order_names;
+pub mod context;
+/// Which fields an expression reads - what a form uses to know when to
+/// re-evaluate a rule.
+pub mod dependencies;
+pub mod diagnostics;
+pub mod error;
+pub mod explain;
+pub mod format;
+pub mod generate;
+pub mod imports;
+pub mod functions;
+pub mod lexer;
+/// The functions a decimal cannot compute exactly.
+pub mod math;
+/// The modules a program can `use`, and the grant that gates them.
+pub mod modules;
+/// The language's number type: decimal, not binary floating point.
+pub mod num;
+/// Tokens to a syntax tree, with error recovery for the editor.
+pub mod parser;
+/// The runtime value type.
+pub mod value;
+/// What the operators do to values, shared by the interpreter and the builtins.
+pub mod ops;
+
+pub use ast_json::{expr_json, parse_expr_json, parse_program_json, program_json, stmt_json};
+pub use context::{EvalContext, ProgramContext};
+pub use dependencies::{expression_dependencies, program_dependencies, program_source_dependencies, source_dependencies};
+pub use diagnostics::{
+    diagnose_expression, diagnose_expression_with, diagnose_program, diagnose_program_with,
+    Diagnostic, KnownShape,
+};
+pub use error::DslError;
+pub use parser::{parse_detailed, parse_program, parse_program_detailed, DetailedParseResult, ParseDiagnostic};
+pub use value::Value;
+
+/// Precision: 40 significant decimal digits.
+/// Exceeds Decimal.js (34), Python decimal default (28), and R double (15.9).
+pub const PRECISION: u64 = 40;

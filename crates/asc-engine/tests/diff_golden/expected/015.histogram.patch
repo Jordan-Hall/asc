@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 8170093..ec5d28d 100644
+--- a/file
++++ b/file
+@@ -1,7 +1,10 @@
+ import { addCatalogues, translate } from '@asc/ui/i18n';
++import ar from '../locales/ar.json';
+ import cy from '../locales/cy.json';
+ import enGB from '../locales/en-GB.json';
++import enUS from '../locales/en-US.json';
++import gd from '../locales/gd.json';
+ 
+-addCatalogues({ 'en-GB': enGB, cy });
++addCatalogues({ ar, cy, 'en-GB': enGB, 'en-US': enUS, gd });
+ 
+ export { translate };

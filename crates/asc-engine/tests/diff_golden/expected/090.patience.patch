@@ -1,0 +1,32 @@
+diff --git a/file b/file
+index 511928f..9c8de51 100644
+--- a/file
++++ b/file
+@@ -42,6 +42,27 @@ pub use dsl_core::ast_json::{parse_expr_json, parse_program_json};
+ 
+ /// Every diagnostic an expression source produces, across all stages: lex,
+ /// parse, unknown-function and compile. Spans are UTF-16 code-unit offsets.
++/// Whether a source carries program statements rather than one expression.
++///
++/// The distinction the caller has to make before every evaluation: a program
++/// has statements and needs its own run, an expression does not. It was
++/// decided by a second lexer written in TypeScript, on the hot path, for every
++/// evaluation a form performs. Answered here it is one call into the lexer
++/// that already owns the language, and no token stream crosses the bridge.
++///
++/// A source that will not lex is not a program: it is a broken expression, and
++/// reporting it as one gives the caller the error it expects.
++#[must_use]
++pub fn is_program_source(src: &str) -> bool {
++    const PROGRAM_KEYWORDS: [&str; 3] = ["use", "return", "when"];
++    dsl_core::lexer::lex_spanned(src).is_ok_and(|tokens| {
++        tokens.iter().any(|token| {
++            token.kind == dsl_core::lexer::TokenKind::Keyword
++                && PROGRAM_KEYWORDS.contains(&token.value.as_str())
++        })
++    })
++}
++
+ /// The token stream of an expression, comments included, as JSON.
+ ///
+ /// What an editor needs and the compiler does not: every token in source

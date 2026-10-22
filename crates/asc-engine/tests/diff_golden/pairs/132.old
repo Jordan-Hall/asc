@@ -1,0 +1,37 @@
+import { defineComponent } from '@asc/router';
+import { AUDIT_SECTION } from '../plugin-host/placements';
+
+/***
+ * The landing page for the reserved plugin route prefix.
+ *
+ * A plugin that ships a routed section registers its own routes underneath `plugins/`,
+ * so in normal use a visitor lands on one of those rather than here. This page exists
+ * for the case where the prefix itself is opened: either nothing is enabled, or a
+ * plugin route was withdrawn under the visitor's feet by a kill switch and the router
+ * sent them back to a real page.
+ *
+ * It also carries the route-area mount node, so a plugin that wants to contribute to
+ * the section index rather than a route of its own has somewhere to render.
+ */
+export const PluginSectionComponent = defineComponent(() => {
+	const container = document.createElement('div');
+	container.className = 'p-6 flex flex-col gap-6';
+
+	const heading = document.createElement('h1');
+	heading.className = 'text-xl font-semibold text-[rgb(var(--color-text-base))]';
+	heading.textContent = 'Plugins';
+	container.appendChild(heading);
+
+	const description = document.createElement('p');
+	description.className = 'text-sm text-[rgb(var(--color-text-muted))] max-w-prose';
+	description.textContent =
+		'Sections added by plugins appear here once an administrator has enabled them for this workspace.';
+	container.appendChild(description);
+
+	const mount = document.createElement('div');
+	mount.className = 'flex flex-col gap-6';
+	mount.dataset.pluginPlacement = AUDIT_SECTION;
+	container.appendChild(mount);
+
+	return container;
+});

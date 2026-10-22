@@ -1,0 +1,230 @@
+diff --git a/file b/file
+index e6af19e..23b1113 100644
+--- a/file
++++ b/file
+@@ -1,120 +1,43 @@
++/**
++ * Permission-checking logic now lives in `@asc/better-auth-permissions`
++ * (see packages/better-auth-permissions/src/role-permissions.ts). This
++ * module re-exports it for backwards compatibility with existing
++ * `@asc/auth-utils` consumers, adapting the two isSystemAdmin/isSupportRole
++ * checks that `@asc/better-auth-permissions` cannot itself depend on
++ * (they live in `./guards.ts`, which already imports from
++ * `@asc/better-auth-permissions` - keeping the dependency one-directional).
++ */
+ import {
+-  isSystemAdmin,
+-  isSupportRole,
+-  getEffectiveStructureRole,
+-} from './guards.js';
+-import {
+-  workspaceRoles,
+-  structureRoles,
+-  type WorkspacePermission,
+-  type StructurePermission,
+-} from './roles.js';
++  hasWorkspaceRolePermission,
++  hasStructureRolePermission,
++  checkWorkspaceRolePermissions,
++  checkStructureRolePermissions,
++  checkPermission as checkPermissionShared,
++  hasPermission as hasPermissionShared,
++  getWorkspaceMemberRole,
++  getOrganizationMemberRole,
++  type CheckPermissionParams as SharedCheckPermissionParams,
++} from '@asc/better-auth-permissions';
++import { isSystemAdmin, isSupportRole } from './guards.js';
+ import type { CheckPermissionParams, PermissionContext } from './types.js';
+ 
+-export function hasWorkspaceRolePermission(
+-  role: string,
+-  permission: WorkspacePermission,
+-  customRoles?: Record<string, readonly string[]>,
+-): boolean {
+-  const roles = customRoles ?? workspaceRoles;
+-  const rolePermissions = roles[role as keyof typeof roles];
+-  return rolePermissions
+-    ? (rolePermissions as readonly string[]).includes(permission)
+-    : false;
+-}
+-
+-export function hasStructureRolePermission(
+-  role: string,
+-  permission: StructurePermission,
+-  customRoles?: Record<string, readonly string[]>,
+-): boolean {
+-  const effectiveRole = getEffectiveStructureRole(role);
+-  const roles = customRoles ?? structureRoles;
+-  const rolePermissions = roles[effectiveRole as keyof typeof roles];
+-  return rolePermissions
+-    ? (rolePermissions as readonly string[]).includes(permission)
+-    : false;
+-}
+-
+-export function checkWorkspaceRolePermissions(params: {
+-  role: string;
+-  permissions: Partial<Record<string, string[]>>;
+-  customRoles?: Record<string, readonly string[]>;
+-}): boolean {
+-  const { role, permissions, customRoles } = params;
+-
+-  for (const [resource, actions] of Object.entries(permissions)) {
+-    if (!actions) continue;
+-    for (const action of actions) {
+-      const permission = `${resource}:${action}` as WorkspacePermission;
+-      if (!hasWorkspaceRolePermission(role, permission, customRoles)) {
+-        return false;
+-      }
+-    }
+-  }
+-
+-  return true;
+-}
+-
+-export function checkStructureRolePermissions(params: {
+-  role: string;
+-  permissions: Partial<Record<string, string[]>>;
+-  customRoles?: Record<string, readonly string[]>;
+-}): boolean {
+-  const { role, permissions, customRoles } = params;
+-
+-  for (const [resource, actions] of Object.entries(permissions)) {
+-    if (!actions) continue;
+-    for (const action of actions) {
+-      const permission = `${resource}:${action}` as StructurePermission;
+-      if (!hasStructureRolePermission(role, permission, customRoles)) {
+-        return false;
+-      }
+-    }
+-  }
+-
+-  return true;
+-}
++export {
++  hasWorkspaceRolePermission,
++  hasStructureRolePermission,
++  checkWorkspaceRolePermissions,
++  checkStructureRolePermissions,
++  getWorkspaceMemberRole,
++  getOrganizationMemberRole,
++};
+ 
+ export async function checkPermission(
+   params: CheckPermissionParams,
+ ): Promise<boolean> {
+-  const { ctx, entityType, entityId, permissions, customRoles } = params;
+-
+-  if (!ctx.session?.userId) return false;
+-
+-  const userRole = ctx.session.user?.role;
+-  if (isSystemAdmin(userRole)) return true;
+-
+-  if (isSupportRole(userRole)) {
+-    const isReadOnly = Object.values(permissions).every((actions) =>
+-      actions.every((action) => ['read', 'list'].includes(action)),
+-    );
+-    if (isReadOnly) return true;
+-  }
+-
+-  const memberModel =
+-    entityType === 'workspace' ? 'workspaceMember' : 'member';
+-  const entityField =
+-    entityType === 'workspace' ? 'workspaceId' : 'organizationId';
+-
+-  const member = await ctx.adapter.findOne({
+-    model: memberModel,
+-    where: [
+-      { field: 'userId', value: ctx.session.userId },
+-      { field: entityField, value: entityId },
+-    ],
+-  });
+-
+-  if (!member) return false;
+-
+-  const role = (member as { role: string }).role;
+-
+-  return checkWorkspaceRolePermissions({
+-    role,
+-    permissions,
+-    customRoles,
+-  });
++  return checkPermissionShared(
++    params as unknown as SharedCheckPermissionParams,
++    isSystemAdmin,
++    isSupportRole,
++  );
+ }
+ 
+ export async function requirePermission(
+@@ -136,64 +59,11 @@ export async function hasPermission(
+   entityId: string,
+   permission: string,
+ ): Promise<boolean> {
+-  if (!ctx.session?.userId) return false;
+-
+-  const userRole = ctx.session.user?.role;
+-  if (isSystemAdmin(userRole)) return true;
+-
+-  const memberModel =
+-    entityType === 'workspace' ? 'workspaceMember' : 'member';
+-  const entityField =
+-    entityType === 'workspace' ? 'workspaceId' : 'organizationId';
+-
+-  const member = await ctx.adapter.findOne({
+-    model: memberModel,
+-    where: [
+-      { field: 'userId', value: ctx.session.userId },
+-      { field: entityField, value: entityId },
+-    ],
+-  });
+-
+-  if (!member) return false;
+-
+-  const role = (member as { role: string }).role;
+-  return hasWorkspaceRolePermission(role, permission as WorkspacePermission);
+-}
+-
+-export async function getWorkspaceMemberRole(
+-  ctx: PermissionContext,
+-  workspaceId: string,
+-): Promise<string | null> {
+-  if (!ctx.session?.userId) return null;
+-
+-  const member = await ctx.adapter.findOne({
+-    model: 'workspaceMember',
+-    where: [
+-      { field: 'userId', value: ctx.session.userId },
+-      { field: 'workspaceId', value: workspaceId },
+-    ],
+-  });
+-
+-  if (!member) return null;
+-
+-  return (member as { role: string }).role;
+-}
+-
+-export async function getOrganizationMemberRole(
+-  ctx: PermissionContext,
+-  organizationId: string,
+-): Promise<string | null> {
+-  if (!ctx.session?.userId) return null;
+-
+-  const member = await ctx.adapter.findOne({
+-    model: 'member',
+-    where: [
+-      { field: 'userId', value: ctx.session.userId },
+-      { field: 'organizationId', value: organizationId },
+-    ],
+-  });
+-
+-  if (!member) return null;
+-
+-  return (member as { role: string }).role;
++  return hasPermissionShared(
++    ctx as unknown as Parameters<typeof hasPermissionShared>[0],
++    entityType,
++    entityId,
++    permission,
++    isSystemAdmin,
++  );
+ }

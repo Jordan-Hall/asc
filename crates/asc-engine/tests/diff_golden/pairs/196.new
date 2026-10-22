@@ -1,0 +1,67 @@
+{
+  "name": "@asc/soma-contracts",
+  "version": "0.0.1",
+  "private": true,
+  "sideEffects": false,
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "src",
+    "checker",
+    "serving-budgets.json"
+  ],
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./byte-decode": {
+      "types": "./src/byte-decode.ts",
+      "import": "./dist/byte-decode.js"
+    },
+    "./asc-dsl": {
+      "types": "./src/asc-dsl.ts",
+      "import": "./dist/asc-dsl.js"
+    },
+    "./dsl-web": {
+      "types": "./src/dsl-web.ts",
+      "import": "./dist/dsl-web.js"
+    },
+    "./checker/*": {
+      "types": "./checker/*.ts",
+      "import": "./checker/*.ts"
+    },
+    "./serving-budgets.json": "./serving-budgets.json"
+  },
+  "scripts": {
+    "build": "rslib build",
+    "check-types": "tsc --noEmit",
+    "build:checker": "bun build checker/server.ts --target=bun --outfile=../soma-harness/checker/checker.bundle.js",
+    "test": "bun test checker src"
+  },
+  "dependencies": {
+    "@asc/form-fill": "workspace:*",
+    "@asc/nano-forge": "workspace:*",
+    "@asc/query-nl": "workspace:*",
+    "@asc/schema-dsl": "workspace:*",
+    "@asc/schema-meta-v2": "workspace:*"
+  },
+  "peerDependencies": {
+    "onnxruntime-web": "*"
+  },
+  "peerDependenciesMeta": {
+    "onnxruntime-web": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@types/bun": "latest",
+    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "@asc/report-meta",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": "./schema/report-designer.schema.json"
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rslib build",
+    "dev": "rslib build --watch",
+    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "test": "bun test tests",
+    "schema": "bun run scripts/gen-report-schema.ts",
+    "schema:check": "bun run scripts/gen-report-schema.ts --check",
+    "check": "bun run scripts/gen-report-schema.ts --check"
+  },
+  "devDependencies": {
+    "@asc/ts-docs": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@typescript/native-preview": "latest",
+    "ajv": "^8.17.1",
+    "typescript": "7.0.2"
+  }
+}

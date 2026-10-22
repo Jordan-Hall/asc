@@ -1,0 +1,136 @@
+// Owned by @asc/soma-contracts; the asc checkers, served over the soma SDK.
+/**
+ * ASC's five checkers, declared to `@soma/oracle` and served by it.
+ *
+ * What is ASC's stays here: what counts as a correct DSL expression, a
+ * correct schema, a correct query, a correct extraction and a correct
+ * orchestration. Those are the questions only this repository can answer, and
+ * they are unchanged.
+ *
+ * What leaves is everything that was never ASC-specific. The line protocol,
+ * the caps on artefact and line size, the muzzling of stdout while a checker
+ * runs, the refusal to fall back to another checker for an unknown scenario -
+ * all of that belonged to a framework and was maintained here by hand. So did
+ * the reward bands, and that mattered more than it looks: when two checkers
+ * derived `quality` themselves they disagreed, and the disagreement was worth
+ * about 0.35 of reward to the wrong behaviour.
+ *
+ * So the checkers now return signals and the SDK derives the scalars. There is
+ * one definition of what a near-miss is worth, and it is not in this file.
+ *
+ * Two behaviours differ from `server.ts`, deliberately:
+ *
+ *  - The server announces itself. Before grading anything it writes a hello
+ *    line naming every scenario it serves, so a training run pointed at an
+ *    oracle that does not serve its task fails in a second rather than after a
+ *    night of reinforcement against meaningless reward.
+ *  - `processReward` is the SDK's weighted pipeline rather than an unweighted
+ *    mean of five stages. Parsing and executing are worth more than looking
+ *    structurally plausible, which is the ordering the bands already imply.
+ *
+ * `server.ts` is untouched and still serves the running trainer. This one is
+ * built to its own bundle until the cutover.
+ *
+ *   bun packages/soma-contracts/checker/soma-server.ts
+ */
+import { type CheckSignals, defineChecker, serve } from '@soma/oracle';
+import { checkRule } from './rules';
+import {
+  checkForm,
+  checkJsonRender,
+  checkOrchestrator,
+  checkQuery,
+  checkSchema,
+} from './scenarios';
+import { failurePoint, semanticFailurePoint } from './failure-point';
+import { analystChecker } from './analyst';
+import { mathsChecker } from './maths';
+import { statisticsChecker } from './statistics';
+import type { Verdict } from './types';
+
+/**
+ * An asc verdict, reduced to the signals the SDK scores.
+ *
+ * `quality` and `processReward` are dropped on purpose. A checker that reports
+ * its own scalar is a checker that can disagree with the gate about what its
+ * own verdict meant.
+ */
+function signals(
+  verdict: Verdict,
+  scenario: string,
+  target: string | undefined,
+): CheckSignals {
+  return {
+    parses: verdict.parses,
+    executes: verdict.executes,
+    outputVaries: verdict.outputVaries,
+    degeneracyScore: verdict.degeneracyScore,
+    structuralScore: verdict.structuralScore,
+    fidelity: verdict.fidelity,
+    reasons: verdict.reasons,
+    // Where the artefact broke. For a refused one, the byte the parser gave
+    // up at - and when the scan finds the structure sound (a checker refuses
+    // for reasons a JSON scan cannot see, an unknown enum value among them),
+    // the first byte at which it stops matching the target. For one that
+    // parsed and is not faithful, that same byte. A faithful artefact has none.
+    failureAt: !verdict.parses
+      ? (failurePoint(scenario, verdict.artifact) ??
+        semanticFailurePoint(scenario, verdict.artifact, target))
+      : verdict.fidelity != null && verdict.fidelity < 1
+        ? semanticFailurePoint(scenario, verdict.artifact, target)
+        : null,
+  };
+}
+
+const check =
+  (
+    scenario: string,
+    fn: (artifact: string, options: { target?: string }) => Verdict,
+  ) =>
+  (artifact: string, context: { target?: string }): CheckSignals =>
+    signals(fn(artifact, context), scenario, context.target);
+
+export const CHECKERS = [
+  defineChecker({
+    // The wire alias is served by the same checker rather than by a second
+    // registration, so the two can never drift into grading differently.
+    scenario: ['asc-dsl', 'rules-expressions'],
+    check: check('asc-dsl', checkRule),
+  }),
+  defineChecker({
+    scenario: ['schema', 'schema-author'],
+    check: check('schema-author', checkSchema),
+  }),
+  defineChecker({
+    scenario: ['json-render', 'render-json'],
+    check: check('json-render', checkJsonRender),
+  }),
+  defineChecker({ scenario: 'query', check: check('query', checkQuery) }),
+  defineChecker({
+    scenario: ['form', 'form-extract'],
+    check: check('form-extract', checkForm),
+  }),
+  defineChecker({
+    scenario: 'orchestrator',
+    check: check('orchestrator', checkOrchestrator),
+  }),
+  // Registered whole rather than through `check()`, which adapts an ASC
+  // validator's verdict. Statistics has no ASC validator - there is no ASC
+  // component whose job is to be right about a confidence interval - so it
+  // grades against ground truth the corpus builder recorded with each task and
+  // returns signals directly. It lived only in the training repository's copy
+  // of this file, which is how the served checker and this one drifted apart.
+  statisticsChecker,
+  mathsChecker,
+  analystChecker,
+];
+
+export const SCENARIOS = CHECKERS.flatMap(
+  (checker) => checker.scenarios,
+).sort();
+
+if (import.meta.main) {
+  await serve(CHECKERS, {
+    toolchain: { checker: '@asc/soma-contracts', runtime: 'bun' },
+  });
+}

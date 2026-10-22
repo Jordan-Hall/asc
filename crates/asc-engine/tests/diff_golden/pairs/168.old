@@ -1,0 +1,72 @@
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { authMiddleware, type AuthContextVariables } from './middleware/auth';
+import surgeonRouter from './routes/surgeon';
+import anaesthetistRouter from './routes/anaesthetist';
+
+const FRONTEND_ORIGIN = import.meta.env.NELA_SERVICE_FRONTEND_ORIGIN || '*';
+const PORT = import.meta.env.NELA_SERVICE_PORT || 3018;
+
+const app = new Hono<{ Variables: AuthContextVariables }>();
+
+app.use(
+  '*',
+  cors({
+    origin: FRONTEND_ORIGIN === '*' ? '*' : FRONTEND_ORIGIN.split(','),
+    allowHeaders: ['Content-Type', 'Authorization'],
+    allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    maxAge: 600,
+  })
+);
+
+app.get('/health', async (c) => {
+  const containerId = import.meta.env.HOSTNAME || 'unknown';
+  let imageSha = import.meta.env.IMAGE_SHA || 'unknown';
+  
+  if (imageSha === 'unknown' || imageSha === '') {
+    try {
+      const fs = await import('fs');
+      if (import.meta.env.IMAGE_ID) {
+        imageSha = import.meta.env.IMAGE_ID;
+      } else if (fs.existsSync('/proc/self/cgroup')) {
+        const cgroup = fs.readFileSync('/proc/self/cgroup', 'utf8');
+        const match = cgroup.match(/docker[/-]([a-f0-9]{64}|[a-f0-9]{12})/);
+        if (match && match[1]) imageSha = match[1].substring(0, 12);
+      }
+    } catch (e) {}
+  }
+  
+  return c.json({ 
+    status: 'ok', 
+    service: 'nela-service',
+    docker: {
+      container_id: containerId,
+      image_sha: imageSha,
+      image_name: import.meta.env.IMAGE_NAME || 'unknown',
+      image_tag: import.meta.env.IMAGE_TAG || 'unknown',
+      platform: process.platform,
+      bun_version: process.versions.bun || process.version,
+      uptime: Math.round(process.uptime()),
+      memory: {
+        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        unit: 'MB'
+      }
+    }
+  });
+});
+
+app.use('/api/*', authMiddleware);
+
+app.route('/api/surgeons', surgeonRouter);
+app.route('/api/anaesthetists', anaesthetistRouter);
+
+
+export default {
+  port: PORT,
+  fetch: app.fetch,
+  idleTimeout: 255,
+};
+
+export type AppType = typeof app;

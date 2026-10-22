@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index 10c27c5..093ecc8 100644
+--- a/file
++++ b/file
+@@ -101,6 +101,15 @@ export const pluginReviewApi = {
+ 			body: JSON.stringify({ reason }),
+ 		}),
+ 
++	/*** Every publisher, with whether the platform currently vouches for it. */
++	publishers: () => request<{ publishers: PublisherSummary[] }>('/api/publishers'),
++
++	unverifyPublisher: (slug: string, notes?: string) =>
++		request<{ publisher: PublisherSummary }>(`/api/review/publishers/${encodeURIComponent(slug)}/unverify`, {
++			method: 'POST',
++			body: JSON.stringify({ notes }),
++		}),
++
+ 	verifyPublisher: (slug: string, notes?: string) =>
+ 		request<{ publisher: PublisherSummary }>(`/api/review/publishers/${encodeURIComponent(slug)}/verify`, {
+ 			method: 'POST',

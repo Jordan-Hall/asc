@@ -1,0 +1,84 @@
+/**
+ * Form-Extract Nano — runtime accessor (backend-mode core), LOCAL-ONLY.
+ *
+ * Given the augmented forms message (a `### Context` form_fields block + a
+ * `### Attached file` document — the same input FormFillBackend receives), run
+ * the on-device Form-Extract Nano and return the validated values map, or null
+ * (escalate). Self-gating on `AI_FORM_EXTRACT` (default 'off').
+ *
+ * PID SAFETY: documents carry patient data → LOCAL-ONLY at runtime (in-process
+ * ONNX; no cloud path). This is the model-backed sibling of the deterministic
+ * field-mapper (form-fill-backend.ts): identical input and set_form_values output.
+ */
+
+import {
+  type FormValues,
+  formFillNano,
+  parseFormValues,
+} from '@asc/form-fill';
+import { lastUserText, somaAvailable, somaGenerate } from '@asc/soma';
+import {
+  createOnnxBackend,
+  type OnnxBackend,
+} from '../onnx-runtime/onnx-model';
+import { nanoOnnxFolder, somaScenarioEnabled } from './soma-config';
+
+export function formExtractNanoEnabled(): boolean {
+  return somaScenarioEnabled('form-extract');
+}
+
+let backend: OnnxBackend | null = null;
+function getBackend(): OnnxBackend {
+  if (!backend) {
+    backend = createOnnxBackend({
+      model: nanoOnnxFolder(formFillNano),
+      dtype: 'q4',
+      contextWindow: 32_768,
+      maxNewTokens: 512,
+    });
+  }
+  return backend;
+}
+
+export interface RunFormExtractOptions {
+  enabled?: boolean;
+  generate?: (
+    messages: Array<{ role: string; content: string }>,
+  ) => Promise<string>;
+}
+
+/**
+ * Extract a validated values map from the augmented forms `message`, or null to
+ * escalate. Null when disabled (self-gate), when the output isn't a well-formed
+ * set_form_values, or when the model is unavailable.
+ */
+export async function runFormExtract(
+  message: string,
+  opts: RunFormExtractOptions = {},
+): Promise<FormValues | null> {
+  const enabled = opts.enabled ?? formExtractNanoEnabled();
+  if (!enabled) return null;
+  const messages = [
+    { role: 'system', content: formFillNano.system },
+    { role: 'user', content: message },
+  ];
+  // Prefer the in-process byte-level Soma ONNX export when present (soma-onnx.ts),
+  // else the HF-transformers ONNX backend. AI_FORM_EXTRACT above still gates the
+  // Nano; this only selects the local serving backend.
+  const gen =
+    opts.generate ??
+    (somaAvailable('form-extract')
+      ? (m: Array<{ role: string; content: string }>) =>
+          somaGenerate('form-extract', lastUserText(m))
+      : (m: Array<{ role: string; content: string }>) =>
+          getBackend().generate(m, { maxNewTokens: 512, doSample: false }));
+  let completion: string;
+  try {
+    completion = await gen(messages);
+  } catch {
+    return null;
+  }
+  const target = formFillNano.extractTarget(completion);
+  if (!target || !formFillNano.validate(target)) return null;
+  return parseFormValues(target);
+}

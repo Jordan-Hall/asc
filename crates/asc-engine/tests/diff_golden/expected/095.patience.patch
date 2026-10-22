@@ -1,0 +1,69 @@
+diff --git a/file b/file
+index 75085d9..7a2ea5e 100644
+--- a/file
++++ b/file
+@@ -12,25 +12,33 @@ Analytics and reporting service for ASC. Provides:
+ ## Features
+ 
+ ### Query Builder
++
+ Type-safe query construction using schema metadata whitelist. All user inputs go through PreparedQuery.
+ 
+ ### Suppression
++
+ Configurable at org/workspace/schema levels. Default threshold: 5. Cascades: schema → workspace → org → system.
+ 
+ ### Real-time
++
+ Server-Sent Events for live updates using LIVE SELECT queries.
+ 
+ ### All-Workspaces Reporting
++
+ Pre-computed aggregates bypass RLS via SYSTEM events. Results are pre-suppressed.
+ 
+ ### Report Visibility
++
+ Three visibility levels:
++
+ - **Private**: Only creator can access
+ - **Workspace**: All workspace users can access
+ - **Public**: Anyone can access (optionally without authentication)
+ 
+ ### External Data Sources
++
+ Reports can fetch data from external sources:
++
+ - **n8n Webhooks**: Trigger n8n workflows
+ - **External APIs**: Fetch from allowed URLs
+ - **Custom Webhooks**: POST to custom endpoints
+@@ -41,6 +49,7 @@ External URLs are validated against an allowlist with domain security.
+ ## API Routes
+ 
+ ### Authenticated Routes
++
+ - `POST /api/query` - Execute analytics query
+ - `GET /api/query/live` - SSE stream for real-time updates
+ - `GET /api/reports` - List saved reports
+@@ -57,6 +66,7 @@ External URLs are validated against an allowlist with domain security.
+ - `POST /api/export` - Request data export
+ 
+ ### Public Routes (No Authentication Required)
++
+ - `GET /api/public` - List public reports
+ - `GET /api/public/:id` - Get public report by ID
+ - `POST /api/public/:id/run` - Execute public report query
+@@ -81,12 +91,14 @@ ALLOWED_EXTERNAL_DOMAINS=localhost:5678,api.example.com
+ ## External Source Security
+ 
+ External data sources are protected by:
++
+ 1. **URL Allowlist**: Only approved domains can be accessed
+ 2. **Response Caching**: Reduces load on external services
+ 3. **Rate Limiting**: Prevents abuse of external endpoints
+ 4. **Timeout Handling**: Graceful handling of slow responses
+ 
+ Configure allowed domains:
++
+ ```sql
+ INSERT INTO external_source_allowlist {
+   domain: 'n8n.internal.company.com',

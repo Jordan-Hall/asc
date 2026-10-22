@@ -1,0 +1,54 @@
+diff --git a/file b/file
+index 057c105..bfb59ea 100644
+--- a/file
++++ b/file
+@@ -6,6 +6,13 @@ description: >
+   — two copies would drift the moment a service is added.
+ 
+ inputs:
++  push:
++    description: >
++      Whether to sign in to the registry and push. Set to 'false' for a
++      pull-request build, which proves the images still compile without ever
++      being handed a registry credential.
++    required: false
++    default: 'true'
+   registry:
+     description: Container registry host.
+     required: false
+@@ -19,11 +26,13 @@ inputs:
+     required: false
+     default: monorepo
+   token:
+-    description: Registry password or token.
+-    required: true
++    description: Registry password or token. Not needed when push is 'false'.
++    required: false
++    default: ''
+   username:
+-    description: Registry user.
+-    required: true
++    description: Registry user. Not needed when push is 'false'.
++    required: false
++    default: ''
+ 
+ runs:
+   using: composite
+@@ -31,7 +40,8 @@ runs:
+     # Signing in BEFORE the build, so a misconfigured registry fails in one
+     # clear step rather than after twenty minutes of building.
+     - name: Sign in to the container registry
+-      uses: docker/login-action@v3
++      if: ${{ inputs.push == 'true' }}
++      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+       with:
+         registry: ${{ inputs.registry }}
+         username: ${{ inputs.username }}
+@@ -58,6 +68,7 @@ runs:
+     # names images after the compose project, so the rename to the registry path
+     # is explicit rather than assumed.
+     - name: Tag and push
++      if: ${{ inputs.push == 'true' }}
+       shell: bash
+       env:
+         REGISTRY: ${{ inputs.registry }}

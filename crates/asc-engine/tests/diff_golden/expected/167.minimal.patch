@@ -1,0 +1,19 @@
+diff --git a/file b/file
+index f65632d..f761d03 100644
+--- a/file
++++ b/file
+@@ -27,11 +27,14 @@ export {
+ } from './meta-schema';
+ export {
+   PidFieldError,
++  FieldRefError,
+   pidFieldNames,
+   pidFieldSet,
+   splitPid,
+   omitPid,
+   projectPidSafe,
+   assertNoPidField,
++  assertSafeFieldRef,
++  fieldPath,
+ } from './pid';
+ export { runGate, type GateInput } from './gate';

@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 9fd0a8e..bf1971e 100644
+--- a/file
++++ b/file
+@@ -64,6 +64,7 @@
+     "@repo/typescript-config": "workspace:*",
+     "@rslib/core": "^0.23.2",
+     "@types/bun": "latest",
++    "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+     "typescript": "7.0.2"
+   },
+   "description": "Soma in ASC: the specialist contracts, the checkers, the serving seam, and a project per model."

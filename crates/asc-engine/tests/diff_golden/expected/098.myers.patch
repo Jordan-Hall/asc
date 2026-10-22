@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 6550e90..e7aa9dc 100644
+--- a/file
++++ b/file
+@@ -19,6 +19,7 @@ TypeScript migration completed with unified structure matching `application-list
+ - src/pages/data/: typed data helpers (TypeScript)
+ 
+ Notes:
++
+ - Charts and COPD pages align with Highcharts v12 options (zooming, panning.enabled, dash styles) and use modular series types. Exporting can be lazy-loaded if needed.
+ - Router uses extensionless imports; Rspack resolves `.ts` first. Components/pages accept `ComponentDataContext<T>` and `ComponentLifecycleManager` from `@asc/router`.
+ 

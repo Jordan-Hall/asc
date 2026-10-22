@@ -1,0 +1,88 @@
+/***
+ * Boot configuration for the plugin registry.
+ *
+ * The application reads the environment exactly once, here, and passes plain values
+ * onward. Nothing deeper in the service reaches for import.meta.env, so every module
+ * below this one can be exercised in a test by handing it a config object.
+ */
+
+import { DEFAULT_BUNDLE_LIMITS, type BundleLimits } from './bundle-store';
+
+export interface RegistryConfig {
+	port: number;
+	/*** Directory holding content-addressed bundles, one subdirectory per sha256. */
+	bundleRoot: string;
+	/*** Directory used for verification before a bundle is promoted. */
+	stagingRoot: string;
+	/*** Path prefix under which bundle assets are served, matching the host origin route. */
+	assetBasePath: string;
+	bundleLimits: BundleLimits;
+	auth: {
+		jwksUrl: string;
+		issuer: string;
+		audience: string;
+		authServiceUrl: string;
+		surrealEndpoint: string;
+	};
+	corsOrigins: string[] | '*';
+	/***
+	 * Root credentials, used for exactly one operation. See lib/privileged-db.ts for why the
+	 * draft-to-submitted transition cannot run on the caller's own connection.
+	 */
+	privileged: {
+		endpoint: string;
+		namespace: string;
+		database: string;
+		username: string;
+		password: string;
+	};
+}
+
+function requireEnv(name: string): string {
+	const value = import.meta.env[name];
+	if (!value) throw new Error(`[plugin-registry] Required environment variable ${name} is not set.`);
+	return value;
+}
+
+function intFromEnv(name: string, fallback: number): number {
+	const raw = import.meta.env[name];
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		throw new Error(`[plugin-registry] ${name} must be a positive integer, received "${raw}".`);
+	}
+	return parsed;
+}
+
+export function loadConfig(): RegistryConfig {
+	const authServiceUrl = requireEnv('AUTH_SERVICE_URL');
+	const externalAuthUrl = import.meta.env.AUTH_SERVICE_EXTERNAL_URL || authServiceUrl;
+	const originList = import.meta.env.PLUGIN_REGISTRY_FRONTEND_ORIGIN;
+
+	return {
+		port: intFromEnv('PLUGIN_REGISTRY_PORT', 3096),
+		bundleRoot: import.meta.env.PLUGIN_BUNDLE_DIR || '/data/plugin-bundles',
+		stagingRoot: import.meta.env.PLUGIN_STAGING_DIR || '/data/plugin-staging',
+		assetBasePath: import.meta.env.PLUGIN_ASSET_BASE_PATH || '/plugin-assets',
+		bundleLimits: {
+			...DEFAULT_BUNDLE_LIMITS,
+			maxArchiveBytes: intFromEnv('PLUGIN_MAX_ARCHIVE_BYTES', DEFAULT_BUNDLE_LIMITS.maxArchiveBytes),
+			maxExpandedBytes: intFromEnv('PLUGIN_MAX_EXPANDED_BYTES', DEFAULT_BUNDLE_LIMITS.maxExpandedBytes),
+		},
+		auth: {
+			jwksUrl: `${authServiceUrl}/api/auth/jwks`,
+			issuer: externalAuthUrl,
+			audience: externalAuthUrl,
+			authServiceUrl,
+			surrealEndpoint: import.meta.env.SURREALDB_ENDPOINT || 'ws://localhost:8000/rpc',
+		},
+		corsOrigins: !originList || originList === '*' ? '*' : originList.split(',').map((o: string) => o.trim()),
+		privileged: {
+			endpoint: import.meta.env.SURREALDB_ENDPOINT || 'ws://localhost:8000/rpc',
+			namespace: import.meta.env.SURREALDB_NAMESPACE || 'asc',
+			database: import.meta.env.SURREALDB_DATABASE || 'asc',
+			username: requireEnv('SURREALDB_USERNAME'),
+			password: requireEnv('SURREALDB_PASSWORD'),
+		},
+	};
+}

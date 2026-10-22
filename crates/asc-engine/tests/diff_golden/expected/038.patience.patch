@@ -1,0 +1,46 @@
+diff --git a/file b/file
+index 38a5487..7c64be7 100644
+--- a/file
++++ b/file
+@@ -17,19 +17,14 @@ export interface Attachment {
+   file_name?: string;
+ }
+ 
+-/** Cap on inlined attachment text — the model can still read the rest via extract_document/read_document_chunk. */
+-const MAX_INLINE_ATTACHMENT_CHARS = 20_000;
+-const MAX_SCHEMA_SPEC_CHARS = 200_000;
+-const TRUNCATION_MARKER =
+-  '…[document truncated — full text available to tools]';
+-
+-/** Cap an attachment's extracted text so one huge upload can't blow the message. */
+-function capAttachmentText(
+-  text: string,
+-  limit = MAX_INLINE_ATTACHMENT_CHARS,
+-): string {
+-  return text.length > limit ? text.slice(0, limit) + TRUNCATION_MARKER : text;
+-}
++// No cap on the attachment text inlined here. It was 20,000 characters, set
++// when the specialists read a few hundred bytes; they now read up to 40,960,
++// and a fixed cut below that threw away document a model could have read.
++// Each model fits the message to its own window where it is served - the Soma
++// specialists cut the middle of an over-long upload (packages/soma/core/src/
++// fit-window.ts), keeping the form at the front and the request at the end -
++// and the rest of an upload is always reachable through extract_document and
++// read_document_chunk.
+ 
+ export interface AugmentMessageOptions {
+   /** Preserve table structure/full text for deterministic schema authoring. */
+@@ -76,12 +71,7 @@ export async function augmentMessage(
+     }
+     parts.push(
+       `### Attached file: ${att.file_name ?? docType} (${docType})\n` +
+-        capAttachmentText(
+-          text,
+-          options.schemaSpec
+-            ? MAX_SCHEMA_SPEC_CHARS
+-            : MAX_INLINE_ATTACHMENT_CHARS,
+-        ) +
++        text +
+         '\n### End attached file',
+     );
+   }

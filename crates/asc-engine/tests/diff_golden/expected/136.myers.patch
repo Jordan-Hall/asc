@@ -1,0 +1,33 @@
+diff --git a/file b/file
+index 3233017..bb36baa 100644
+--- a/file
++++ b/file
+@@ -72,6 +72,28 @@ describe('validatePluginConfig', () => {
+ 		expect(() => validatePluginConfig(huge, MANIFEST)).toThrow(ConfigRejected);
+ 	});
+ 
++	it('measures the cap in bytes, not UTF-16 code units', () => {
++		// Under `String.length` this passed: 40 000 code units against a 65 536 cap, while the
++		// UTF-8 encoding is 120 000 bytes. Non-Latin configuration could be nearly three times
++		// the documented limit.
++		const multibyte = { riskApiUrl: '中'.repeat(40_000) };
++		expect(new TextEncoder().encode(JSON.stringify(multibyte)).byteLength).toBeGreaterThan(MAX_CONFIG_BYTES);
++		expect(() => validatePluginConfig(multibyte, { configSchema: { riskApiUrl: { type: 'string' } } })).toThrow(
++			ConfigRejected,
++		);
++	});
++
++	it('rejects rather than throws when the object cannot be serialised', () => {
++		// A TypeError escaping the validator became an HTTP 500 on what is an ordinary
++		// rejection, with nothing telling the operator what was wrong.
++		const circular: Record<string, unknown> = {};
++		circular.self = circular;
++		expect(() => validatePluginConfig(circular, MANIFEST)).toThrow(ConfigRejected);
++
++		const throwing = { riskApiUrl: { toJSON() { throw new Error('no'); } } } as unknown as Record<string, unknown>;
++		expect(() => validatePluginConfig(throwing, MANIFEST)).toThrow(ConfigRejected);
++	});
++
+ 	it('names the offending field, so the message is actionable', () => {
+ 		try {
+ 			validatePluginConfig({ display: { colour: 'red' } }, MANIFEST);

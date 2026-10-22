@@ -1,0 +1,98 @@
+# collab-service
+
+Live collaboration rooms for records: what one person types appears on
+everybody else's copy, each field shows who is in it, and everybody with the
+record open is counted. One room per record; the server holds nothing but the
+open sockets, so a restart just makes every page reconnect.
+
+It speaks the protocol the new ASC system's forms already use
+(`apps/delta/records-service/src/features/collaboration`) plus one frame, so a
+ASC Audit page on Domino, running the old validation engine, can have the
+same feature.
+
+## Why
+
+Two people editing one ASC Audit record used to end with the risk score
+wrong: each saved the whole page, the last save won, and the score it carried
+was computed from that person's inputs, not from what both had entered. With
+a room, every change reaches every open copy as it is made, each copy
+recomputes its own score from the same inputs, and a save tells the others to
+reload. Whoever saves, the inputs and the score agree.
+
+## Rooms
+
+`GET /rooms/domino/:host/:database/:unid` upgrades to a WebSocket. The
+database segment is URL-encoded (`RCOA%2FNELAUAT2.nsf`); the UNID is the
+record's.
+
+Sign-in is Domino's own: the browser sends the session cookie with the upgrade
+because this service is served under the same site (`collab.example.org`
+is under `.example.org`, where `LtpaToken2` is scoped). The service cannot
+read that cookie, so it asks Domino the way a browser would - no agent, no
+design change:
+
+1. `GET https://<host>/<database>/0/<UNID>?EditDocument` with the session
+   cookies (nothing else from the header). The edit page comes back only to
+   somebody who may edit the record: `access = edit`, and the page's own
+   `uname` says who they are.
+2. A 401/403 or a "not authorized" page means signed in but not an editor, so
+   `?OpenDocument` is tried: the read page means `access = read`.
+3. A sign-in form (Domino serves it with 200), a redirect or anything else
+   means the session is not signed in: the socket is closed with 1008, which
+   the client does not retry.
+
+The answer is cached for `COLLAB_DOMINO_CACHE_SECONDS` per session and
+record. Somebody with `read` is counted and may announce where they are, but
+their changes and saves reach nobody.
+
+## Frames
+
+```
+{ "kind": "patch",    "patch": { "by", "field", "value", "at" } }
+{ "kind": "presence", "participant": { "id", "name", "mode"?, "field"?, "caret"?, "caretTo"? } }
+{ "kind": "left",     "id" }
+{ "kind": "saved",    "by", "at" }
+```
+
+Everything a member sends is relayed to everybody else in the room and never
+back to the sender. `saved` is the addition: a page that posts the whole
+record to its server sends it just before doing so, so idle copies reload and
+copies with unsaved changes know theirs are already in what was saved. Frames
+over 64 KB, or not of this shape, are dropped. When a socket closes, the
+server says `left` for it, because a closing tab does not always get its own
+farewell out.
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `COLLAB_SERVICE_PORT` | Port, default 3040 |
+| `COLLAB_DOMINO_HOSTS` | Comma-separated Domino hosts whose records may have rooms. Required; a host not listed is refused |
+| `COLLAB_ALLOWED_ORIGINS` | Comma-separated page origins allowed to open a room, e.g. `https://www.example.org` |
+| `COLLAB_DOMINO_CACHE_SECONDS` | How long an answer is kept, default 60 |
+| `COLLAB_DOMINO_TIMEOUT_SECONDS` | How long to wait for Domino, default 10 |
+
+`/health` reports open rooms and people.
+
+## The page side
+
+The validation engine (`packages/validation-engine` in the `asc` repo) joins
+a room when the page's spec says so; off otherwise:
+
+```js
+collaboration: {
+  enabled: true,
+  url: function () {
+    if (!window.docUnid) return ''   // a draft has no room until its first save
+    return 'wss://collab.example.org/rooms/domino/www.example.org/RCOA%2FNELAUAT2.nsf/' + window.docUnid
+  },
+  me: { id: window.uname, name: window.uname }
+}
+```
+
+## Not yet
+
+Rooms for the new system's entries (`bearer` sign-in with the ASC JWT) are
+still served by records-service. Moving them here is a change to that
+service's socket route and to the room map (a shared bus rather than a
+process-local map when there is more than one instance), not to the protocol.

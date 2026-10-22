@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 2cb7991..6df8b18 100644
+--- a/file
++++ b/file
+@@ -29,7 +29,7 @@
+     "@asc/query-nl": "workspace:*",
+     "@asc/schema-meta-v2": "workspace:*",
+     "@asc/soma": "workspace:*",
+-    "@asc/soma-contracts": "workspace:*",
++    "@asc/soma": "workspace:*",
+     "@huggingface/transformers": "^4.2.0",
+     "ai": "^6.0.158",
+     "ajv": "^8.20.0",

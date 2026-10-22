@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/schemas/form-field.schema.json",
+  "title": "Form field",
+  "description": "A CoreField (which carries conditions/controls) plus what a form needs: a widget to render it with, who may see it, its key-field / manual-number status. Composed against CoreField via allOf/$ref rather than restated.",
+  "allOf": [
+    {
+      "$ref": "https://example.org/schemas/core-field.schema.json#/$defs/CoreField"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "ui": {
+          "$ref": "https://example.org/schemas/form-ui-spec.schema.json"
+        },
+        "privacy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "enum": [
+                "public",
+                "restricted",
+                "sensitive"
+              ]
+            },
+            "mask": {
+              "type": "string"
+            }
+          }
+        },
+        "keyField": {
+          "type": "boolean"
+        },
+        "number": {
+          "type": "string"
+        }
+      }
+    }
+  ],
+  "unevaluatedProperties": false
+}

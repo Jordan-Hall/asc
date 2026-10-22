@@ -1,0 +1,15 @@
+import { describe, expect, test } from 'bun:test';
+import { auditAll, SOMA_CORPORA } from './capability-audit';
+
+describe('Soma corpus capability audit', () => {
+  test('audits all five non-empty corpora through their runtime gates', () => {
+    const results = auditAll();
+    expect(results.map((r) => r.corpus)).toEqual([...SOMA_CORPORA]);
+    for (const result of results) {
+      expect(result.samples).toBeGreaterThan(0);
+      expect(result.targets).toBeGreaterThan(0);
+      expect(result.valid + result.unsupported).toBeGreaterThanOrEqual(result.targets);
+      expect(result.executable).toBeLessThanOrEqual(result.valid);
+    }
+  }, 120_000); // corpus-scale campaign: the audit walks every sample of much larger corpora
+});

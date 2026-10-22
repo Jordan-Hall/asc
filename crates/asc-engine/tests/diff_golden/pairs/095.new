@@ -1,0 +1,108 @@
+# Analytics Service
+
+Analytics and reporting service for ASC. Provides:
+
+- Secure query builder with SQL injection prevention
+- Real-time analytics via SurrealDB changefeeds
+- All-workspaces aggregates with small-number suppression
+- Report scheduling and export
+- Public reports with optional authentication
+- External data source integration (n8n, webhooks, APIs)
+
+## Features
+
+### Query Builder
+
+Type-safe query construction using schema metadata whitelist. All user inputs go through PreparedQuery.
+
+### Suppression
+
+Configurable at org/workspace/schema levels. Default threshold: 5. Cascades: schema → workspace → org → system.
+
+### Real-time
+
+Server-Sent Events for live updates using LIVE SELECT queries.
+
+### All-Workspaces Reporting
+
+Pre-computed aggregates bypass RLS via SYSTEM events. Results are pre-suppressed.
+
+### Report Visibility
+
+Three visibility levels:
+
+- **Private**: Only creator can access
+- **Workspace**: All workspace users can access
+- **Public**: Anyone can access (optionally without authentication)
+
+### External Data Sources
+
+Reports can fetch data from external sources:
+
+- **n8n Webhooks**: Trigger n8n workflows
+- **External APIs**: Fetch from allowed URLs
+- **Custom Webhooks**: POST to custom endpoints
+- **Embedded Iframes**: Embed external dashboards
+
+External URLs are validated against an allowlist with domain security.
+
+## API Routes
+
+### Authenticated Routes
+
+- `POST /api/query` - Execute analytics query
+- `GET /api/query/live` - SSE stream for real-time updates
+- `GET /api/reports` - List saved reports
+- `POST /api/reports` - Create report definition
+- `GET /api/reports/:id` - Get report by ID
+- `PUT /api/reports/:id` - Update report
+- `DELETE /api/reports/:id` - Delete report
+- `POST /api/reports/:id/run` - Execute report query
+- `GET /api/national/:schemaId` - All-workspaces aggregates
+- `GET /api/search/schemas` - Search schema designs
+- `GET /api/search/entries` - Search form entries
+- `GET /api/search/persons` - Search people
+- `GET /api/search/reports` - Search reports
+- `POST /api/export` - Request data export
+
+### Public Routes (No Authentication Required)
+
+- `GET /api/public` - List public reports
+- `GET /api/public/:id` - Get public report by ID
+- `POST /api/public/:id/run` - Execute public report query
+
+## Environment Variables
+
+See `.env.example` for all configuration options:
+
+```env
+PORT=3006
+SURREALDB_URL=ws://localhost:8000/rpc
+SURREALDB_NAMESPACE=asc
+SURREALDB_DATABASE=main
+SURREALDB_USER=root
+SURREALDB_PASS=root
+AUTH_SERVICE_URL=http://localhost:3000
+FRONTEND_ORIGIN=http://localhost:5173
+N8N_WEBHOOK_BASE_URL=http://localhost:5678/webhook
+ALLOWED_EXTERNAL_DOMAINS=localhost:5678,api.example.com
+```
+
+## External Source Security
+
+External data sources are protected by:
+
+1. **URL Allowlist**: Only approved domains can be accessed
+2. **Response Caching**: Reduces load on external services
+3. **Rate Limiting**: Prevents abuse of external endpoints
+4. **Timeout Handling**: Graceful handling of slow responses
+
+Configure allowed domains:
+
+```sql
+INSERT INTO external_source_allowlist {
+  domain: 'n8n.internal.company.com',
+  created_by: type::record('user', $session.tk.sub),
+  is_active: true
+};
+```

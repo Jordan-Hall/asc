@@ -1,0 +1,29 @@
+diff --git a/file b/file
+index eac0cd1..a414d02 100644
+--- a/file
++++ b/file
+@@ -16,11 +16,13 @@ describe('Expression SQL translation', () => {
+ 
+     expect(result.adapter).toBe('postgres');
+     expect(result.supported).toBe(true);
++    // Every value is jsonb, read as the type the comparison needs, and every
++    // parameter is typed where it is bound.
+     expect(result.sql).toContain(
+-      "CAST((payload #>> '{age}') AS numeric) >= $1",
++      "CAST(((payload -> 'age') #>> '{}') AS numeric) >= CAST($1 AS numeric)",
+     );
+     expect(result.sql).toContain(
+-      "CAST((payload #>> '{age}') AS numeric) <= $2",
++      "CAST(((payload -> 'age') #>> '{}') AS numeric) <= CAST($2 AS numeric)",
+     );
+     expect(result.parameters).toEqual([18, 65]);
+   });
+@@ -46,7 +48,7 @@ describe('Expression SQL translation', () => {
+ 
+     expect(result.supported).toBe(true);
+     expect(result.sql).toContain(
+-      "CAST((payload #>> '{age}') AS numeric) >= $1",
++      "CAST(((payload -> 'age') #>> '{}') AS numeric) >= CAST($1 AS numeric)",
+     );
+     expect(result.parameters).toEqual([18]);
+   });

@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index fb5e332..b3e0bba 100644
+--- a/file
++++ b/file
+@@ -141,6 +141,6 @@ declare module '#dsl-wasm' {
+    * re-export them, so this is the only way to the module's memory.
+    */
+   export default function init(
+-    input?: RequestInfo | URL | BufferSource,
++    input?: { module_or_path: RequestInfo | URL | BufferSource },
+   ): Promise<WasmExports>;
+ }

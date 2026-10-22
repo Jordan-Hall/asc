@@ -1,0 +1,97 @@
+/**
+ * Keeping `ingest_dataset.public` true to what is actually published.
+ *
+ * The anonymous session's read branch on ingest_dataset and ingest_row is a
+ * column test — `public = true`, and `dataset.public = true` — rather than a
+ * subquery asking whether some public dashboard references this dataset. It has
+ * to be: that subquery would sit inside ingest_row's per-row select predicate,
+ * which is the hot path for every aggregation the public explorer runs.
+ *
+ * The cost of that choice is this module. The flag is DERIVED state, so it has
+ * to be recomputed whenever the thing it derives from changes — a dashboard
+ * being created, edited or deleted. Recompute is by definition, not by delta:
+ * we ask which datasets are referenced by a public dashboard right now, and make
+ * the flags match. That way a missed event self-heals on the next write rather
+ * than leaving a dataset publicly readable because an unpublish was not
+ * subtracted correctly.
+ *
+ * This runs on the ROOT connection deliberately. It is a system bookkeeping
+ * write across whatever workspaces the change touched, and the caller has
+ * already been authorised for the dashboard edit that triggered it.
+ */
+import type { Surreal } from 'surrealdb';
+import { idStr, rid } from './ids';
+
+/**
+ * Recompute the publication flag for a specific set of datasets, plus every
+ * dataset currently flagged public — so a dataset that has just LOST its last
+ * public dashboard is cleared, not just the ones named in the request.
+ *
+ * Returns the ids whose flag changed, for logging.
+ */
+export async function syncDatasetPublication(db: Surreal, touched: string[] = []): Promise<string[]> {
+  // Datasets that SHOULD be public: referenced by a public dashboard IN THEIR OWN
+  // WORKSPACE.
+  //
+  // The workspace match is the load-bearing part. `dataset_refs` is a free-form
+  // array on a row the caller authored, so without it this function would take a
+  // dashboard's word for what it publishes: create a public dashboard, list
+  // another tenant's dataset id, and this would flip that dataset's flag and
+  // hand it to the anonymous session. The route validates the refs too, but this
+  // runs on the ROOT connection with RLS out of the picture, so it does not rely
+  // on the route having done so — a derived-state writer that trusts its input is
+  // a privilege escalation with extra steps.
+  const refRes = (await db.query(
+    "SELECT dataset_refs, workspace FROM ingest_dashboard WHERE visibility = 'public'",
+  )) as Array<Array<{ dataset_refs?: unknown[]; workspace?: unknown }>>;
+
+  const claimed = new Map<string, Set<string>>(); // dataset id -> workspaces claiming it
+  for (const dash of refRes?.[0] ?? []) {
+    const ws = idStr(dash.workspace);
+    if (!ws) continue;
+    for (const ref of dash.dataset_refs ?? []) {
+      const id = bare(String(idStr(ref)));
+      if (!claimed.has(id)) claimed.set(id, new Set());
+      claimed.get(id)!.add(ws);
+    }
+  }
+
+  const shouldBePublic = new Set<string>();
+  if (claimed.size > 0) {
+    const owned = (await db.query('SELECT id, workspace FROM ingest_dataset WHERE id IN $ids', {
+      ids: [...claimed.keys()].map((id) => rid('ingest_dataset', id)),
+    })) as Array<Array<{ id?: unknown; workspace?: unknown }>>;
+    for (const ds of owned?.[0] ?? []) {
+      const id = bare(String(idStr(ds.id)));
+      const ws = idStr(ds.workspace);
+      // Published only by a dashboard that lives in the same workspace as the
+      // dataset. A cross-workspace reference publishes nothing.
+      if (ws && claimed.get(id)?.has(ws)) shouldBePublic.add(id);
+    }
+  }
+
+  // Datasets currently flagged public, so a revocation is caught even when the
+  // request that caused it named nothing.
+  const flaggedRes = (await db.query('SELECT VALUE id FROM ingest_dataset WHERE public = true')) as Array<unknown[]>;
+  const currentlyPublic = new Set<string>((flaggedRes?.[0] ?? []).map((id) => bare(String(idStr(id)))));
+
+  const candidates = new Set<string>([...shouldBePublic, ...currentlyPublic, ...touched.map((t) => bare(t))]);
+  const changed: string[] = [];
+
+  for (const id of candidates) {
+    const want = shouldBePublic.has(id);
+    const has = currentlyPublic.has(id);
+    if (want === has) continue;
+    await db.query('UPDATE type::thing("ingest_dataset", $id) SET public = $want', { id, want });
+    changed.push(id);
+  }
+
+  if (changed.length > 0) {
+    console.log(`[Insight] publication flags updated for ${changed.length} dataset(s)`);
+  }
+  return changed;
+}
+
+function bare(id: string): string {
+  return id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+}

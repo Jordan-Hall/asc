@@ -1,0 +1,30 @@
+diff --git a/file b/file
+index 36c85f7..502ff95 100644
+--- a/file
++++ b/file
+@@ -94,9 +94,16 @@ services:
+         - INGESTION_SERVICE_PORT=${INGESTION_SERVICE_PORT}
+     env_file:
+       - .env.verify
++    # Both conditions matter. The services check at boot that the asc access is
++    # TYPE RECORD and refuse to serve when it is not, because a database-level
++    # session bypasses every table permission. Migration 0206 is what makes it
++    # TYPE RECORD, so starting before the migrations finish is a guaranteed
++    # refusal — correct behaviour, wrong ordering.
+     depends_on:
+       auth-service:
+         condition: service_healthy
++      database-migrations:
++        condition: service_completed_successfully
+     ports:
+       - '${INGESTION_SERVICE_PORT}:${INGESTION_SERVICE_PORT}'
+     environment:
+@@ -113,6 +120,8 @@ services:
+     depends_on:
+       auth-service:
+         condition: service_healthy
++      database-migrations:
++        condition: service_completed_successfully
+     ports:
+       - '${INSIGHT_SERVICE_PORT}:${INSIGHT_SERVICE_PORT}'
+     environment:

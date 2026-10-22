@@ -1,0 +1,74 @@
+diff --git a/file b/file
+index c35720b..fbd51d0 100644
+--- a/file
++++ b/file
+@@ -28,45 +28,22 @@ record's.
+ Sign-in is Domino's own: the browser sends the session cookie with the upgrade
+ because this service is served under the same site (`collab.example.org`
+ is under `.example.org`, where `LtpaToken2` is scoped). The service cannot
+-read that cookie, so it asks Domino who it is with an agent in the database:
+-
+-```
+-GET https://<host>/<database>/agCollabWho?openagent&unid=<UNID>
+-Cookie: <the session cookies, nothing else>
+-
+-200 {"user":"CN=Jordan Upton/O=ASC","name":"Jordan Upton","access":"edit"}
+-```
+-
+-`access` is `edit`, `read` or `none`, from the record's readers and authors
+-fields and the database ACL. Anything that is not that JSON - a sign-in page,
+-an error - means the session is not signed in, and the socket is closed with
+-1008, which the client does not retry. The answer is cached for
+-`COLLAB_DOMINO_CACHE_SECONDS`. Somebody with `read` may announce where they
+-are and is counted, but their changes and saves reach nobody.
+-
+-A sketch of the agent, LotusScript:
+-
+-```
+-Sub Initialize
+-  Dim s As New NotesSession, db As NotesDatabase, doc As NotesDocument
+-  Dim ctx As NotesDocument, unid As String, access As String
+-  Set db = s.CurrentDatabase
+-  Set ctx = s.DocumentContext
+-  unid = Mid(StrRight(ctx.Query_String(0), "unid="), 1, 32)
+-  Set doc = db.GetDocumentByUNID(unid)
+-  If doc Is Nothing Then
+-    access = "none"
+-  ElseIf db.CurrentAccessLevel >= ACLLEVEL_AUTHOR And doc.Authors... Then
+-    access = "edit"
+-  ElseIf db.CurrentAccessLevel >= ACLLEVEL_READER Then
+-    access = "read"
+-  Else
+-    access = "none"
+-  End If
+-  Print "Content-Type: application/json"
+-  Print "{""user"":""" & s.UserName & """,""name"":""" & s.CommonUserName & """,""access"":""" & access & """}"
+-End Sub
+-```
++read that cookie, so it asks Domino the way a browser would - no agent, no
++design change:
++
++1. `GET https://<host>/<database>/0/<UNID>?EditDocument` with the session
++   cookies (nothing else from the header). The edit page comes back only to
++   somebody who may edit the record: `access = edit`, and the page's own
++   `uname` says who they are.
++2. A 401/403 or a "not authorized" page means signed in but not an editor, so
++   `?OpenDocument` is tried: the read page means `access = read`.
++3. A sign-in form (Domino serves it with 200), a redirect or anything else
++   means the session is not signed in: the socket is closed with 1008, which
++   the client does not retry.
++
++The answer is cached for `COLLAB_DOMINO_CACHE_SECONDS` per session and
++record. Somebody with `read` is counted and may announce where they are, but
++their changes and saves reach nobody.
+ 
+ ## Frames
+ 
+@@ -92,7 +69,6 @@ farewell out.
+ | `COLLAB_SERVICE_PORT` | Port, default 3040 |
+ | `COLLAB_DOMINO_HOSTS` | Comma-separated Domino hosts whose records may have rooms. Required; a host not listed is refused |
+ | `COLLAB_ALLOWED_ORIGINS` | Comma-separated page origins allowed to open a room, e.g. `https://www.example.org` |
+-| `COLLAB_DOMINO_WHO_AGENT` | The agent asked who a session is, default `agCollabWho` |
+ | `COLLAB_DOMINO_CACHE_SECONDS` | How long an answer is kept, default 60 |
+ | `COLLAB_DOMINO_TIMEOUT_SECONDS` | How long to wait for Domino, default 10 |
+ 

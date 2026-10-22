@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index 248ec94..4971e8d 100644
+--- a/file
++++ b/file
+@@ -7,9 +7,9 @@ name: CI — Intelligence (typecheck + unit + rust)
+ 
+ on:
+   push:
+-    branches: [feat/ingest-intelligence-phase1, main, develop]
++    branches: [master]
+   pull_request:
+-    branches: [feat/ingest-intelligence-phase1, main, develop]
++    branches: ['**']
+   workflow_dispatch:
+ 
+ jobs:

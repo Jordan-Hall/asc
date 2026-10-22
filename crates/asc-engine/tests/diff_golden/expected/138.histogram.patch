@@ -1,0 +1,42 @@
+diff --git a/file b/file
+index 9c67cd3..21ec4e5 100644
+--- a/file
++++ b/file
+@@ -1,7 +1,15 @@
+ import { AUTH_BASE_URL } from './auth-client';
+ 
+ export type BootstrapStatus = {
+-  hasAdmin: boolean;
++  /**
++   * Whether the platform already has an administrator — or `unknown` when the
++   * question could not be answered.
++   *
++   * Three states, not two. `false` is what puts the first-owner setup wizard on
++   * screen, so a failure that collapses to `false` offers account creation to
++   * whoever happens to reload during an outage.
++   */
++  hasAdmin: boolean | 'unknown';
+   error?: string;
+ };
+ 
+@@ -35,8 +43,10 @@ export async function fetchBootstrapStatus(): Promise<BootstrapStatus> {
+       if (!res.ok) {
+         lastError = `HTTP_${res.status}`;
+         console.warn(`[bootstrap] Status request failed (${lastError})`);
+-        // A served error is an answer, not a transport failure; do not retry it.
+-        return { hasAdmin: false, error: lastError };
++        // The server answered, but not with an answer to the question — it
++        // reports hasAdmin:false alongside a 500 when its own database read
++        // fails. Treat that as unknown rather than as "there is no admin".
++        return { hasAdmin: 'unknown', error: lastError };
+       }
+       const data = await res.json() as Partial<BootstrapStatus>;
+       return {
+@@ -50,5 +60,5 @@ export async function fetchBootstrapStatus(): Promise<BootstrapStatus> {
+   }
+ 
+   console.error(`[bootstrap] Failed to fetch status after ${attempts} attempts`);
+-  return { hasAdmin: false, error: lastError };
++  return { hasAdmin: 'unknown', error: lastError };
+ }
+\ No newline at end of file

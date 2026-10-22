@@ -1,0 +1,86 @@
+// Catalog
+export {
+  componentCatalog,
+  actionCatalog,
+  type ComponentType,
+  type ActionType,
+  validateComponentProps,
+  validateAction,
+  generatePromptContext,
+  // Individual prop schemas
+  StackProps,
+  RowProps,
+  GridProps,
+  TextProps,
+  CardProps,
+  MetricProps,
+  BadgeProps,
+  AlertProps,
+  SeparatorProps,
+  ChartProps,
+  DataTableProps,
+  PivotTableProps,
+  PictographProps,
+  GeoChartProps,
+  InfographicProps,
+  EmbedProps,
+  PatternCardProps,
+  InsightCardProps,
+  AlertBadgeProps,
+  SurvivalChartProps,
+  ClusterScatterProps,
+  TimelineProps,
+  GraphViewProps,
+  ButtonProps,
+  TabsProps,
+  ActionRef,
+  ascCatalog,
+  type ValidationIssue,
+  type ValidationOutcome,
+} from './catalog.js';
+
+// Registry
+export {
+  type ComponentFactory,
+  type Registry,
+  createRegistry,
+  registerDefaultComponents,
+} from './registry.js';
+
+// Schema (the core spec definition behind the catalog)
+export { ascSchema } from './schema.js';
+
+// Renderer
+export {
+  type SpecElement,
+  type NestedSpec,
+  type FlatSpec,
+  type FlatElement,
+  type Spec,
+  type RendererHandle,
+  isFlatSpec,
+  normaliseSpec,
+  renderSpec,
+} from './renderer.js';
+
+// Actions
+export {
+  type ActionHandler,
+  type ActionPayload,
+  registerActionHandler,
+  getActionHandler,
+  clearActionHandlers,
+  dispatchAction,
+} from './actions.js';
+
+// Stream Renderer
+export {
+  type StreamHandle,
+  createStreamRenderer,
+} from './stream-renderer.js';
+
+// State Store
+export {
+  type StateStore,
+  createStateStore,
+} from './state-store.js';

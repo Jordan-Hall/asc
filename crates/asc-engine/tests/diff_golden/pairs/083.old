@@ -1,0 +1,17 @@
+/**
+ * What the service's middleware has put on a request by the time a route runs.
+ *
+ * One definition, so a router mounted here and the socket registered beside it
+ * agree about what they can read.
+ */
+import type { Surreal } from 'surrealdb';
+
+export type AppContext = {
+  Variables: {
+    userDb: Surreal;
+    userId: string;
+    activeWorkspaceId: string;
+    activeTeamId: string;
+    activeOrganizationId: string;
+  };
+};

@@ -1,0 +1,18 @@
+diff --git a/file b/file
+index 727ac72..e05783e 100644
+--- a/file
++++ b/file
+@@ -29,11 +29,11 @@
+     "@repo/typescript-config": "workspace:*",
+     "@rslib/core": "^0.23.2",
+     "@typescript/native-preview": "latest",
+-    "ajv": "^8.20.0",
+     "typescript": "7.0.2"
+   },
+   "dependencies": {
+     "@asc/schema-core": "workspace:*",
+-    "@asc/severity-v3": "workspace:*"
++    "@asc/severity-v3": "workspace:*",
++    "ajv": "^8.20.0"
+   }
+ }

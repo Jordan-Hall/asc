@@ -1,0 +1,25 @@
+# Owned by packages/soma; applications consume exported artifacts, not trainer internals.
+"""schema-author-big — the one-shot tier (update_schema over whole schemas).
+
+A distinct capability, NOT a v3 graft: it emits an entire schema in one pass
+(490B-11KB targets) rather than incremental ops, so it is gated against its own
+corpus and tool and can never stand in for the incremental tier."""
+from . import Domain, register
+
+DOMAIN = register(Domain(
+    name="schema-author-big",
+    hooks={"coverage_axes": "coverage_axes:schema_author_big"},
+    preset=dict(d_model=512, n_layers=10, n_heads=8, n_kv_heads=2, window=256),
+    # The one-shot corpus is now the FOLD of the incremental corpus plus the
+    # authentic subset: 1,543 rows -> 49,132. Both tiers answer the same
+    # requests (see coverage_axes.py:157), so every incremental row's ops are
+    # EXECUTED and their resulting whole schema kept as an update_schema target.
+    # The ops themselves never reach this model - it would learn the wrong tool.
+    # See packages/ai-corpus/scripts/fold-oneshot-from-ops.ts.
+    source_corpus="schema-author-oneshot",
+    train_corpus="schema-author-oneshot",
+    heldout="schema-author-oneshot",
+    target_tool="update_schema",
+    size="big",
+    notes="one-shot whole-schema tier; no visible-reasoning graft",
+))

@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 37add08..4ab2dd9 100644
+--- a/file
++++ b/file
+@@ -2,6 +2,7 @@ import { hc } from 'hono/client';
+ import type { AppType as SupportAppType } from 'support-service';
+ import { authClient } from './auth-client';
+ import type { NotificationItem } from '@asc/ui';
++import { authedSocket } from '@asc/ui/realtime';
+ 
+ const SUPPORT_SERVICE_URL: string = import.meta.env.SUPPORT_SERVICE_URL || 'http://localhost:3099';
+ 
+@@ -55,7 +56,7 @@ export async function connectNotificationWebSocket(): Promise<WebSocket | null>
+     const token = session?.token || (session as any)?.jwt;
+     if (!token) return null;
+     const wsBase = SUPPORT_SERVICE_URL.replace(/^http/, 'ws');
+-    return new WebSocket(`${wsBase}/live/notifications/ws?token=${encodeURIComponent(token)}`);
++    return authedSocket(`${wsBase}/live/notifications/ws`, token);
+   } catch {
+     return null;
+   }

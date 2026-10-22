@@ -1,0 +1,10 @@
+diff --git a/file b/file
+index 0f350a5..dd5035e 100644
+--- a/file
++++ b/file
+@@ -11,4 +11,5 @@
+ export * from './config';
+ export * from './contracts/index';
+ export * from './embed';
++export * from './feedback';
+ export * from './serving';

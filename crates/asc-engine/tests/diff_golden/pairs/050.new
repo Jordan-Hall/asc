@@ -1,0 +1,162 @@
+import type { JsonFormElement } from '@asc/ui/json-render';
+import type { Page } from '@playwright/test';
+import type { NelaTestRow } from './test-data';
+
+/** The form element together with the runtime handle it sets once its fields are built. */
+interface NelaFormElement extends JsonFormElement {
+  readonly runtime?: unknown;
+}
+
+/**
+ * Wait for the form element to have built its fields. The runtime handle it
+ * used to expose is private now; the fields on the page are what a test
+ * can see, and they are there once the runtime is.
+ */
+export async function waitForFormRuntime(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      document.querySelector('#nela-form [data-field-name="age"] input') !==
+      null,
+    { timeout: 30_000 },
+  );
+}
+
+export class NelaPage {
+  private _ready = false;
+
+  constructor(private page: Page) {}
+
+  /** Navigate to the app and wait for the form to have mounted its document. */
+  async goto() {
+    if (!this._ready) {
+      await this.page.goto('/');
+      await waitForFormRuntime(this.page);
+      this._ready = true;
+    }
+  }
+
+  /** Build the form value object from a test row. */
+  static toFormValue(row: NelaTestRow): Record<string, unknown> {
+    return {
+      disclaimer_accepted: true,
+      age: row.age,
+      asa_grade: row.asa_grade,
+      gcs: row.gcs,
+      pulse: row.pulse,
+      systolic_bp: row.systolic_bp,
+      urea: row.urea,
+      white_cells: row.white_cells,
+      albumin: row.albumin,
+      respiratory_signs: row.respiratory_signs,
+      malignancy: row.malignancy,
+      urgency: row.urgency,
+      peritoneal_soiling: row.peritoneal_soiling,
+      surgical_indications: row.surgical_indications,
+    };
+  }
+
+  /** Set all form values and trigger validation via setValueAndTouch. */
+  async fillForm(row: NelaTestRow) {
+    await this.page.evaluate((val) => {
+      const form = document.getElementById(
+        'nela-form',
+      ) as JsonFormElement | null;
+      if (!form) throw new Error('nela-form element not found');
+      form.setValueAndTouch(val);
+    }, NelaPage.toFormValue(row));
+  }
+
+  /**
+   * Fill form for a noPred row - CSV has empty predicted_risk.
+   * The form may or may not pass validation:
+   *  - Valid form → API called → returns {} → UI shows no numeric score
+   *  - Invalid form → no API call → UI shows no numeric score
+   * Either way, verifies no numeric score is displayed (matches CSV).
+   */
+  async fillAndExpectNoScore(row: NelaTestRow): Promise<void> {
+    const val = NelaPage.toFormValue(row);
+
+    // Reset score text + fill form in ONE IPC call
+    await this.page.evaluate((v) => {
+      const el = document.getElementById('risk-score-value');
+      if (el) el.textContent = '--';
+      const form = document.getElementById(
+        'nela-form',
+      ) as JsonFormElement | null;
+      if (!form) throw new Error('nela-form element not found');
+      form.setValueAndTouch(v);
+    }, val);
+
+    // Wait for the debounce (50ms) + potential API call + Signal flush.
+    // Use a generous wait to cover both valid-form (API ~150ms) and invalid-form paths.
+    await this.page.waitForFunction(
+      () => {
+        const el = document.getElementById('risk-score-value');
+        if (!el) return false;
+        const text = el.textContent?.trim() ?? '';
+        // Settled = not still showing calculating spinner
+        return !text.includes('Calculating');
+      },
+      { timeout: 10_000 },
+    );
+
+    // Small extra wait for any late Signal effects
+    await this.page.waitForTimeout(100);
+
+    // Read the score - should NOT be a number (matches CSV empty predicted_risk)
+    const text = await this.page.locator('#risk-score-value').textContent();
+    const cleaned = (text ?? '').replace(/[^0-9.-]/g, '');
+    const num = parseFloat(cleaned);
+    if (Number.isFinite(num)) {
+      throw new Error(
+        `row ${row.rowIndex}: expected no score (CSV has no predicted_risk) but site shows ${num}% (text: "${text}")`,
+      );
+    }
+  }
+
+  /**
+   * Reset score, fill form, wait for real API response, then read displayed score.
+   * Optimised: fewer IPC round-trips and event-driven wait instead of DOM polling.
+   */
+  async fillAndGetScore(row: NelaTestRow): Promise<number | null> {
+    const val = NelaPage.toFormValue(row);
+
+    // Listen for the API response BEFORE triggering the form fill
+    const responsePromise = this.page.waitForResponse(
+      (resp) => resp.url().includes('/api/risk/pre') && resp.status() === 200,
+      { timeout: 30_000 },
+    );
+
+    // Reset score text + fill form in ONE IPC call
+    await this.page.evaluate((v) => {
+      const el = document.getElementById('risk-score-value');
+      if (el) el.textContent = '--';
+      const form = document.getElementById(
+        'nela-form',
+      ) as JsonFormElement | null;
+      if (!form) throw new Error('nela-form element not found');
+      form.setValueAndTouch(v);
+    }, val);
+
+    // Wait for real API response (event-driven, no polling)
+    await responsePromise;
+
+    // Brief wait for Signal effect to flush → DOM update
+    await this.page.waitForFunction(
+      () => {
+        const el = document.getElementById('risk-score-value');
+        if (!el) return false;
+        const text = el.textContent?.trim() ?? '';
+        return /\d/.test(text) && !text.includes('Calculating');
+      },
+      { timeout: 5_000 },
+    );
+
+    // Read displayed score
+    const text = await this.page.locator('#risk-score-value').textContent();
+    if (!text) return null;
+    const cleaned = text.replace(/[^0-9.-]/g, '');
+    const num = parseFloat(cleaned);
+    return Number.isFinite(num) ? num : null;
+  }
+}

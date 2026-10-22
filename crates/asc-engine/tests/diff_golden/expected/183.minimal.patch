@@ -1,0 +1,18 @@
+diff --git a/file b/file
+index d92907e..56c9262 100644
+--- a/file
++++ b/file
+@@ -11,5 +11,12 @@ describe('Soma corpus capability audit', () => {
+       expect(result.valid + result.unsupported).toBeGreaterThanOrEqual(result.targets);
+       expect(result.executable).toBeLessThanOrEqual(result.valid);
+     }
+-  }, 120_000); // corpus-scale campaign: the audit walks every sample of much larger corpora
++  // Corpus-scale campaign: the audit walks every sample of much larger
++  // corpora, and takes about two minutes doing it. The budget was 120s, which
++  // it met by roughly a tenth of a second on an idle machine and missed
++  // whenever anything else was running - so it failed for reasons that had
++  // nothing to do with the corpora. Headroom, not a higher bar: if this ever
++  // approaches 300s the audit has genuinely got slower and that is worth
++  // knowing rather than absorbing.
++  }, 300_000);
+ });

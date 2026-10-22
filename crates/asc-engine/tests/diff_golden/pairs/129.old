@@ -1,0 +1,122 @@
+# A throwaway stack for security verification, isolated from a running one.
+#
+# WHY THIS EXISTS. Row-level security is verified against a live database, not
+# reasoned about, and the migrations on this branch change it. Testing that on a
+# development stack means either polluting real data or stopping the services
+# somebody is using. This file starts a parallel copy: its own compose project,
+# its own volumes, its own port range, its own secrets, no Traefik and no fixed
+# container names, so nothing it does can reach or disturb the ordinary stack.
+#
+#   docker compose -p ascverify -f docker-compose.verify.yml --env-file .env.verify up -d --build
+#   docker compose -p ascverify -f docker-compose.verify.yml --env-file .env.verify down -v
+#
+# The `down -v` is the point: the volumes go with it. Nothing here is meant to
+# survive, and no data in it is real.
+#
+# Ports are the ordinary ones plus 100, so 3000 becomes 3100 and 5181 becomes
+# 5281. SurrealDB is on 8110 rather than 8010. Change a port here and change it
+# in .env.verify too — the services read their own port from the environment.
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.1
+    entrypoint:
+      - /surreal
+      - start
+      - rocksdb:/data/database.db
+      - --user
+      - ${SURREALDB_USERNAME}
+      - --pass
+      - ${SURREALDB_PASSWORD}
+      # The record access defined by migration 0206 fetches its JWKS from the
+      # auth service, so the database needs to be allowed to reach it.
+      - --allow-net
+      - auth-service:${AUTH_SERVICE_PORT}
+      - --log
+      - info
+    user: root
+    ports:
+      - '${SURREALDB_EXTERNAL_PORT}:8000'
+    environment:
+      - SURREAL_STRICT=false
+      - SURREAL_CAPS_ALLOW_NET=true
+    volumes:
+      - verify-surrealdb-data:/data
+    healthcheck:
+      test: ['CMD', '/surreal', 'is-ready', '--endpoint', 'http://localhost:8000']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  database-migrations:
+    build:
+      context: .
+      dockerfile: packages/database-migrations/Dockerfile
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    environment:
+      - SURREALDB_ENDPOINT=ws://surrealdb:8000/rpc
+      - SURREALDB_NAMESPACE=${SURREALDB_NAMESPACE}
+      - SURREALDB_DATABASE=${SURREALDB_DATABASE}
+      - SURREALDB_USERNAME=${SURREALDB_USERNAME}
+      - SURREALDB_PASSWORD=${SURREALDB_PASSWORD}
+      - AUTH_SERVICE_URL=http://auth-service:${AUTH_SERVICE_PORT}
+    restart: 'no'
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: apps/auth/Dockerfile
+      args:
+        - AUTH_SERVICE_PORT=${AUTH_SERVICE_PORT}
+        - NODE_ENV=production
+    env_file:
+      - .env.verify
+    depends_on:
+      surrealdb:
+        condition: service_healthy
+    ports:
+      - '${AUTH_SERVICE_PORT}:${AUTH_SERVICE_PORT}'
+    environment:
+      - SURREALDB_ENDPOINT=ws://surrealdb:8000/rpc
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:${AUTH_SERVICE_PORT}/health']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: apps/ingestion-service/Dockerfile
+      args:
+        - INGESTION_SERVICE_PORT=${INGESTION_SERVICE_PORT}
+    env_file:
+      - .env.verify
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    ports:
+      - '${INGESTION_SERVICE_PORT}:${INGESTION_SERVICE_PORT}'
+    environment:
+      - SURREALDB_ENDPOINT=ws://surrealdb:8000/rpc
+
+  insight-service:
+    build:
+      context: .
+      dockerfile: apps/insight-service/Dockerfile
+      args:
+        - INSIGHT_SERVICE_PORT=${INSIGHT_SERVICE_PORT}
+    env_file:
+      - .env.verify
+    depends_on:
+      auth-service:
+        condition: service_healthy
+    ports:
+      - '${INSIGHT_SERVICE_PORT}:${INSIGHT_SERVICE_PORT}'
+    environment:
+      - SURREALDB_ENDPOINT=ws://surrealdb:8000/rpc
+
+volumes:
+  verify-surrealdb-data:

@@ -1,0 +1,23 @@
+diff --git a/file b/file
+index 8f308ac..ebb9ed0 100644
+--- a/file
++++ b/file
+@@ -10,15 +10,16 @@
+     "preview": "rsbuild preview"
+   },
+   "dependencies": {
++    "@better-auth/passkey": "^1.4.1",
+     "@asc/better-auth-external-structure": "workspace:*",
+     "@asc/better-auth-organization-archive": "workspace:*",
+     "@asc/better-auth-permissions": "workspace:*",
+-    "@asc/database-migrations": "workspace:*",
+     "@asc/better-auth-workspace": "workspace:*",
++    "@asc/database-migrations": "workspace:*",
+     "@asc/router": "workspace:*",
++    "@asc/schema-meta-v2": "workspace:*",
+     "@asc/ui": "workspace:*",
+     "better-auth": "^1.4.1",
+-    "@better-auth/passkey": "^1.4.1",
+     "dotenv": "^17.2.3",
+     "hono": "^4.10.6",
+     "node-polyfill-webpack-plugin": "^4.1.0"

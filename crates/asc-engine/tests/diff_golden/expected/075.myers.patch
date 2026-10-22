@@ -1,0 +1,29 @@
+diff --git a/file b/file
+index d2c9fe1..006ebcb 100644
+--- a/file
++++ b/file
+@@ -75,7 +75,6 @@ test.describe.serial('the progress panel navigates', () => {
+     const sectionId = await target.getAttribute('data-section-id');
+     expect(sectionId, 'the panel lists sections by id').toBeTruthy();
+ 
+-    const panel = page.locator(`[data-section-id="${sectionId}"]`).last();
+     // Before the click it is in a panel nobody is looking at.
+     const tabPanel = page
+       .locator(`[role="tabpanel"]:has([data-section-id="${sectionId}"])`)
+@@ -87,7 +86,15 @@ test.describe.serial('the progress panel navigates', () => {
+     // The tab opened, so the section - and the first question in it - is on
+     // screen rather than hidden behind another tab.
+     await expect(tabPanel).toBeVisible({ timeout: 10000 });
+-    await expect(panel.locator('[data-field-name]').first()).toBeVisible({
++    /*
++      The first question in the panel that just opened.
++
++      Asked of the PANEL rather than of `[data-section-id=...]`: the progress
++      list carries that attribute too, and its entry for a section holds no
++      fields - so the assertion found the wrong element and waited ten seconds
++      for a question that was never going to be inside it.
++    */
++    await expect(tabPanel.locator('[data-field-name]').first()).toBeVisible({
+       timeout: 10000,
+     });
+   });

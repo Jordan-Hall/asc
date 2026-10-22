@@ -1,0 +1,25 @@
+diff --git a/file b/file
+index 5dd6a40..47ad010 100644
+--- a/file
++++ b/file
+@@ -91,3 +91,20 @@ def test_shape_count_stays_small() -> None:
+     window = 9344
+     widths = {bucket_width(r, window) for r in range(1, 2400)}
+     assert len(widths) <= 12, f"{len(widths)} distinct shapes is too many"
++
++
++def test_model_window_is_the_serving_contract_not_the_cache_width():
++    """encode trims the cache to the corpus's longest row; the MODEL must still
++    be built at the serving window, or the gate refuses the checkpoint with
++    "model max-seq does not match production" - which is exactly what blocked
++    query after it had passed Stage-B, competence and no-collapse."""
++    import re
++    from pathlib import Path
++    source = Path(__file__).resolve().parent.joinpath("pretrain.py").read_text(encoding="utf-8")
++
++    assert "model_seq = a.seq" in source, \
++        "the model window must come from the requested serving seq"
++    assert re.search(r"cfg\s*=\s*soma_config\(a\.scenario,\s*model_seq", source), \
++        "soma_config must be built at model_seq, not the trimmed data width"
++    assert re.search(r"seq\s*=\s*min\(a\.seq,\s*cache_width\)", source), \
++        "the DATA slice may be narrower than the model window"

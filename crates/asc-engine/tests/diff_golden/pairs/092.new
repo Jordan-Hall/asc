@@ -1,0 +1,143 @@
+import type { FormComponentName } from '@asc/form-schema';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  addField,
+  type DesignerField,
+  type DesignerState,
+  removeField,
+  reorderFields,
+} from '../schemaState';
+
+interface UseFieldOperationsProps {
+  state: DesignerState;
+  selectedSectionId: string | 'unassigned';
+  selectedFieldId?: string;
+  onUpdate: (fn: (s: DesignerState) => DesignerState) => void;
+  onSelectField: (id?: string) => void;
+}
+
+export type FieldTemplate = Partial<
+  Omit<DesignerField['field'], 'name' | 'kind'>
+>;
+
+/** How the field palette hands a dropped field to whichever designer owns the state. */
+export type AddFieldHandler = (
+  kind: 'string' | 'number' | 'boolean' | 'array' | 'object',
+  component?: FormComponentName,
+  template?: FieldTemplate,
+  /** Where in the section it lands; the end when nothing says otherwise. */
+  atIndex?: number,
+) => void;
+
+declare global {
+  interface Window {
+    __addField?: AddFieldHandler;
+  }
+}
+
+export function useFieldOperations({
+  state,
+  selectedSectionId,
+  selectedFieldId,
+  onUpdate,
+  onSelectField,
+}: UseFieldOperationsProps) {
+  const [configureFieldId, setConfigureFieldId] = useState<string>();
+
+  const handleAddField = useCallback(
+    (
+      kind: 'string' | 'number' | 'boolean' | 'array' | 'object',
+      component?: FormComponentName,
+      template?: FieldTemplate,
+      atIndex?: number,
+    ) => {
+      onUpdate((s) => {
+        const newState = addField(
+          s,
+          kind,
+          component,
+          selectedSectionId === 'unassigned' ? undefined : selectedSectionId,
+          atIndex,
+        );
+
+        if (template && newState.fields.length > s.fields.length) {
+          const newField = newState.fields[newState.fields.length - 1];
+          if (newField) {
+            newField.field = { ...newField.field, ...template };
+          }
+        }
+
+        return newState;
+      });
+    },
+    [selectedSectionId, onUpdate],
+  );
+
+  const handleDuplicateField = useCallback(
+    (id: string) => {
+      const field = state.fields.find((f) => f.id === id);
+      if (!field) return;
+
+      onUpdate((s) => ({
+        ...s,
+        fields: [
+          ...s.fields,
+          {
+            ...field,
+            id: `${field.id}_copy_${Date.now()}`,
+            name: `${field.name}_copy`,
+          },
+        ],
+      }));
+    },
+    [state.fields, onUpdate],
+  );
+
+  const handleDeleteField = useCallback(
+    (id: string) => {
+      onUpdate((s) => removeField(s, id));
+      if (selectedFieldId === id) {
+        onSelectField(undefined);
+      }
+    },
+    [selectedFieldId, onUpdate, onSelectField],
+  );
+
+  const handleReorderFields = useCallback(
+    (fromId: string, toId: string) => {
+      onUpdate((s) =>
+        reorderFields(
+          s,
+          fromId,
+          toId,
+          selectedSectionId === 'unassigned' ? undefined : selectedSectionId,
+        ),
+      );
+    },
+    [selectedSectionId, onUpdate],
+  );
+
+  const handleConfigureField = useCallback((id: string) => {
+    setConfigureFieldId(id);
+  }, []);
+
+  useEffect(() => {
+    window.__addField = handleAddField;
+    return () => {
+      delete window.__addField;
+    };
+  }, [handleAddField]);
+
+  const configureField = state.fields.find((f) => f.id === configureFieldId);
+
+  return {
+    configureFieldId,
+    configureField,
+    setConfigureFieldId,
+    handleAddField,
+    handleDuplicateField,
+    handleDeleteField,
+    handleReorderFields,
+    handleConfigureField,
+  };
+}

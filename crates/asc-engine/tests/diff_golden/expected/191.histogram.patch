@@ -1,0 +1,36 @@
+diff --git a/file b/file
+index fb27a7d..f3b8508 100644
+--- a/file
++++ b/file
+@@ -89,14 +89,28 @@ def corrupt(ids: torch.Tensor, ratio: torch.Tensor,
+ @torch.no_grad()
+ def generate(model: AnvilDenoiser, length: int, k_steps: int = 8,
+              batch: int = 1, diagnostics: torch.Tensor | None = None,
+-             device: torch.device | str = "cpu") -> torch.Tensor:
++             device: torch.device | str = "cpu",
++             temperature: float = 0.0,
++             canvas: torch.Tensor | None = None) -> torch.Tensor:
+     """MaskGIT-style iterative unmasking: all-MASK -> artefact in k steps,
+     revealing the most confident fraction each round. O(k * n) regardless of n."""
+-    ids = torch.full((batch, length), MASK, dtype=torch.long, device=device)
++    # `canvas` starts from a PARTIALLY masked artefact - the editing case.
++    # Unmasked positions are never written, which is the edit-lock guarantee.
++    ids = (torch.full((batch, length), MASK, dtype=torch.long, device=device)
++           if canvas is None else canvas.clone())
+     for k in range(k_steps):
+         step = torch.full((batch,), k, dtype=torch.long, device=device)
+         logits = model(ids, step, diagnostics)
+-        confidence, guess = logits.softmax(-1).max(-1)
++        probs = logits.softmax(-1)
++        if temperature > 0:
++            # A deterministic sampler returns the same artefact every call; it
++            # measures nothing about diversity. Categorical sampling at the
++            # given temperature is what a generation claim needs.
++            flat = (logits / temperature).softmax(-1).view(-1, logits.shape[-1])
++            guess = torch.multinomial(flat, 1).view(ids.shape)
++            confidence = probs.gather(-1, guess.unsqueeze(-1)).squeeze(-1)
++        else:
++            confidence, guess = probs.max(-1)
+         still_masked = ids.eq(MASK)
+         confidence = confidence.masked_fill(~still_masked, -1.0)
+         remaining = int(still_masked[0].sum())

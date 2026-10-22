@@ -1,0 +1,15 @@
+diff --git a/file b/file
+index 8294970..19d6130 100644
+--- a/file
++++ b/file
+@@ -45,7 +45,9 @@ fn within_hours_and_minutes_handle_invalid_dates_as_false() {
+ #[test]
+ fn gte_date_only_and_months_between_work() {
+     assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-16T08:00:00", "date2": "2025-01-15T20:00:00"})), json!(true));
+-    assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-15T08:00:00", "date2": "2025-01-15T20:00:00"})), json!(false));
++    // The same day is on or after it, whatever the times.
++    assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-15T08:00:00", "date2": "2025-01-15T20:00:00"})), json!(true));
++    assert_json_eq(&run_root("gteDateOnly(root.date1, root.date2)", json!({"date1": "2025-01-14T23:00:00", "date2": "2025-01-15T01:00:00"})), json!(false));
+     assert_json_eq(&run_root("monthsBetween(root.start, root.end)", json!({"start": "2024-01-15", "end": "2025-04-15"})), json!(15));
+     assert_json_eq(&run_root("monthsBetween(root.start, root.end)", json!({"start": "invalid", "end": "2025-01-15"})), json!(null));
+ }

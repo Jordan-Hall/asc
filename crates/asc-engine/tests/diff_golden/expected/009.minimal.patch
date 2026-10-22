@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 234839f..4b093b7 100644
+--- a/file
++++ b/file
+@@ -14,6 +14,7 @@ export default defineConfig({
+   ],
+   use: {
+     baseURL: process.env.NELA_SITE_URL,
++    launchOptions: { slowMo: Number(process.env.SLOW_MO_MS ?? 0) },
+     trace: process.env.TRACE ? 'retain-on-failure' : 'off',
+     screenshot: 'only-on-failure',
+     video: process.env.VIDEO ? 'on' : 'off',

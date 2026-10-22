@@ -1,0 +1,35 @@
+{
+  "comment": "SINGLE SOURCE OF TRUTH for per-scenario byte budgets, shared by TS serving (packages/soma/src/onnx.ts), the Python trainer CLI and the Python serving seam (infer_server.py). SIZED WITH DELIBERATE HEADROOM - roughly 3x the longest target each scenario has ever produced - and every scenario satisfies maxUser + maxNew + 2 <= maxSeq, so context and generation NEVER compete: no scenario squeezes, ever. This is a correction, not a preference. v3 put the model's reasoning inside the target, and the budgets had been measured before that reasoning existed, so every lane was training against a ceiling shorter than its own corpus: form-extract 4.7% of targets over budget, orchestrator 1.4% (max 4015 against a 1088 ceiling), asc-dsl 0.3%, schema-author 8.3%. The damage was not proportional to those percentages - under RL a truncated rollout scores as a failure, so the model was punished for answers that were on their way to being correct, and quality went BACKWARDS mid-run: schema-author -0.170 -> -0.268, form-extract +0.667 -> +0.039 with truncation climbing to 42%, orchestrator truncating 62% of rollouts. Headroom is cheap here and truncation is not: maxNew is a CAP, not a floor, and an EOS-stopped answer pays none of it. The only real cost is the training window, which the CfC scan walks sequentially - so maxSeq is chosen to fit the worst case and no larger. Corpus-measured tails at the time of sizing: asc-dsl max 939, form-extract max 1402, orchestrator max 4015, schema-author max 2863, schema-author-big one-shots whole 490B-11KB schemas. schema-author's budgets were widened again when the corpus grew to the platform's full authoring surface: update_form_config carrying personMapping arrays and API mapper definitions, computed specs, privacy and permission blocks, masks and option groups all produce targets several times longer than a bare add_field. maxNew 6144 (nano) and 12288 (big) sit past the longest of those with room to spare, and both still satisfy maxUser + maxNew + 2 <= maxSeq, so nothing squeezes.",
+  "budgets": {
+    "asc-dsl": {
+      "maxUser": 512,
+      "maxNew": 2048,
+      "maxSeq": 2688
+    },
+    "query": {
+      "maxUser": 512,
+      "maxNew": 2048,
+      "maxSeq": 2688
+    },
+    "form-extract": {
+      "maxUser": 2048,
+      "maxNew": 3072,
+      "maxSeq": 5248
+    },
+    "schema-author": {
+      "maxUser": 3072,
+      "maxNew": 6144,
+      "maxSeq": 9344
+    },
+    "schema-author-big": {
+      "maxUser": 4096,
+      "maxNew": 12288,
+      "maxSeq": 16512
+    },
+    "orchestrator": {
+      "maxUser": 1024,
+      "maxNew": 5120,
+      "maxSeq": 6272
+    }
+  }
+}

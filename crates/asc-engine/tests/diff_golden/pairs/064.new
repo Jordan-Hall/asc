@@ -1,0 +1,30 @@
+import { expect, test } from 'bun:test';
+import { selectRows } from './rows';
+import type { SourceRow } from './types';
+
+const rows: SourceRow[] = [1, 2, 3, 4, 5].map((index) => ({
+  index,
+  inputs: {},
+  expected: null,
+  expectedPost: null,
+  intermediates: {},
+}));
+
+test('all, count and range', () => {
+  expect(selectRows(rows, 'all').length).toBe(5);
+  expect(selectRows(rows, '2').map((row) => row.index)).toEqual([1, 2]);
+  expect(selectRows(rows, '2-4').map((row) => row.index)).toEqual([2, 3, 4]);
+});
+
+test('unknown spec is refused', () => {
+  expect(() => selectRows(rows, 'some')).toThrow(
+    'ROWS must be all, a count, a range like 10-20, or a list',
+  );
+});
+
+test('a comma list picks single rows and ranges in sheet order', () => {
+  expect(selectRows(rows, '5,2,3-4').map((row) => row.index)).toEqual([
+    2, 3, 4, 5,
+  ]);
+  expect(() => selectRows(rows, '1,x')).toThrow();
+});

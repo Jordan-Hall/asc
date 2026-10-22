@@ -1,0 +1,78 @@
+/**
+ * What crosses the wire between the forms in a room.
+ *
+ * The same frames the records-service collaboration socket carries (see
+ * `apps/delta/records-service/src/features/collaboration/relay.ts`), so a
+ * form built on the new system and a Domino page running the old validation
+ * engine can share a room, plus one more: `saved`, which a page that posts
+ * the whole record to its server sends just before doing so, so everybody
+ * else reloads rather than keeps a copy that will now conflict.
+ */
+import { z } from 'zod';
+
+/** A cursor position and one field's answer; the only cap on what one client can push */
+export const MAX_FRAME = 64 * 1024;
+
+/** Where in a text a cursor may claim to be: past any real answer is a mistake or an attack */
+const CARET = z.number().int().min(0).max(100_000);
+
+export const frameSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('patch'),
+    patch: z.object({
+      by: z.string().min(1),
+      field: z.string().min(1),
+      value: z.unknown(),
+      at: z.number(),
+      user: z.string().optional(),
+    }),
+  }),
+  z.object({
+    kind: z.literal('presence'),
+    participant: z.object({
+      /** This connection: one per open tab, so two tabs of one person are two */
+      id: z.string().min(1),
+      name: z.string(),
+      /** Who the person is, when the page knows; the service overwrites it with Domino's answer */
+      user: z.string().optional(),
+      /** Editing, or only watching; the roster tells them apart */
+      mode: z.enum(['edit', 'view']).optional(),
+      field: z.string().optional(),
+      caret: CARET.optional(),
+      caretTo: CARET.optional(),
+    }),
+  }),
+  z.object({ kind: z.literal('left'), id: z.string().min(1) }),
+  z.object({
+    kind: z.literal('saved'),
+    by: z.string().min(1),
+    name: z.string().optional(),
+    user: z.string().optional(),
+    at: z.number(),
+    /** For a draft room: where the record went, so the other draft can open it */
+    record: z
+      .object({
+        unid: z.string().regex(/^[0-9A-F]{32}$/i),
+        url: z.string().url().max(2_000),
+        label: z.string().max(80).optional(),
+      })
+      .optional(),
+  }),
+]);
+
+export type Frame = z.infer<typeof frameSchema>;
+
+/** The frame a message carries, if it is one this protocol could have sent */
+export function frameOf(text: string): Frame | undefined {
+  if (text.length > MAX_FRAME) return undefined;
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // Not JSON at all. There is nothing to pass on, and a room is not the
+    // place to report somebody else's bad frame.
+    return undefined;
+  }
+  const parsed = frameSchema.safeParse(json);
+  return parsed.success ? parsed.data : undefined;
+}

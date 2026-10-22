@@ -1,0 +1,33 @@
+diff --git a/file b/file
+index 3866a20..53aa826 100644
+--- a/file
++++ b/file
+@@ -11,8 +11,10 @@ function list(value: string | undefined): string[] {
+ }
+ 
+ const hosts = list(import.meta.env.COLLAB_DOMINO_HOSTS);
++// Development servers only: a host here is not asked who anybody is
++const openHosts = list(import.meta.env.COLLAB_DOMINO_OPEN_HOSTS);
+ const ticketSecret = import.meta.env.COLLAB_TICKET_SECRET || undefined;
+-if (hosts.length === 0 && !ticketSecret) {
++if (hosts.length === 0 && openHosts.length === 0 && !ticketSecret) {
+   throw new Error(
+     'Nothing to serve: set COLLAB_DOMINO_HOSTS (Domino hosts whose records may have rooms, e.g. www.example.org) and/or COLLAB_TICKET_SECRET (the secret records-service signs room tickets with)',
+   );
+@@ -23,6 +25,7 @@ const app = createApp({
+   ticketSecret,
+   domino: dominoAdmission({
+     hosts,
++    openHosts,
+     cacheMs: Number(import.meta.env.COLLAB_DOMINO_CACHE_SECONDS ?? 60) * 1000,
+     timeoutMs:
+       Number(import.meta.env.COLLAB_DOMINO_TIMEOUT_SECONDS ?? 10) * 1000,
+@@ -30,7 +33,7 @@ const app = createApp({
+ });
+ 
+ console.log(
+-  `collab service on http://localhost:${port}${hosts.length ? ` for ${hosts.join(', ')}` : ''}${ticketSecret ? ' and asc rooms by ticket' : ''}`,
++  `collab service on http://localhost:${port}${hosts.length ? ` for ${hosts.join(', ')}` : ''}${openHosts.length ? `, open to anybody on ${openHosts.join(', ')}` : ''}${ticketSecret ? ' and asc rooms by ticket' : ''}`,
+ );
+ 
+ export default { port, fetch: app.fetch, websocket, idleTimeout: 255 };

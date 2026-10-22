@@ -1,0 +1,96 @@
+import { describe, it, expect } from '@rstest/core';
+import { validatePluginConfig, ConfigRejected, MAX_CONFIG_BYTES } from '../lib/plugin-config';
+
+const MANIFEST = {
+	configSchema: {
+		riskApiUrl: { type: 'string', maxLength: 200 },
+		threshold: { type: 'number', min: 0, max: 100, integer: true },
+		enabled: { type: 'boolean' },
+		mode: { type: 'enum', options: [{ value: 'fast' }, { value: 'thorough' }] },
+		display: {
+			type: 'group',
+			properties: { title: { type: 'string', maxLength: 40 } },
+		},
+	},
+};
+
+describe('validatePluginConfig', () => {
+	it('accepts a configuration matching what the plugin declared', () => {
+		expect(() =>
+			validatePluginConfig(
+				{
+					riskApiUrl: 'https://risk.example.nhs.uk',
+					threshold: 5,
+					enabled: true,
+					mode: 'fast',
+					display: { title: 'Risk' },
+				},
+				MANIFEST,
+			),
+		).not.toThrow();
+	});
+
+	it('refuses a key the plugin never declared', () => {
+		// Refused rather than dropped: an operator who typed a key the plugin does not
+		// understand has made a mistake worth seeing, and silently discarding it leaves them
+		// looking at a setting that never took effect.
+		expect(() => validatePluginConfig({ apiKey: 'secret' }, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('enforces the declared type of each field', () => {
+		expect(() => validatePluginConfig({ threshold: 'five' }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ enabled: 'yes' }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ riskApiUrl: 42 }, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('enforces declared bounds rather than trusting the form that produced the value', () => {
+		expect(() => validatePluginConfig({ threshold: 999 }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ threshold: -1 }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ threshold: 1.5 }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ riskApiUrl: 'x'.repeat(500) }, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('restricts an enum to the options the plugin offered', () => {
+		expect(() => validatePluginConfig({ mode: 'thorough' }, MANIFEST)).not.toThrow();
+		expect(() => validatePluginConfig({ mode: 'other' }, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('validates inside a group as well as at the top level', () => {
+		expect(() => validatePluginConfig({ display: { title: 'ok' } }, MANIFEST)).not.toThrow();
+		expect(() => validatePluginConfig({ display: { title: 'x'.repeat(80) } }, MANIFEST)).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ display: { colour: 'red' } }, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('accepts nothing at all for a plugin that declares no configuration', () => {
+		expect(() => validatePluginConfig({}, { })).not.toThrow();
+		expect(() => validatePluginConfig({ anything: 1 }, {})).toThrow(ConfigRejected);
+		expect(() => validatePluginConfig({ anything: 1 }, null)).toThrow(ConfigRejected);
+	});
+
+	it('caps the whole object, because it is shipped to the browser', () => {
+		const huge = { riskApiUrl: 'x'.repeat(MAX_CONFIG_BYTES + 100) };
+		expect(() => validatePluginConfig(huge, MANIFEST)).toThrow(ConfigRejected);
+	});
+
+	it('names the offending field, so the message is actionable', () => {
+		try {
+			validatePluginConfig({ display: { colour: 'red' } }, MANIFEST);
+			throw new Error('expected a rejection');
+		} catch (error) {
+			expect(error).toBeInstanceOf(ConfigRejected);
+			expect((error as ConfigRejected).field).toBe('display.colour');
+		}
+	});
+
+	it('refuses names that resolve on Object.prototype', () => {
+		// These bypassed the validator entirely: `declared[key]` reaches the prototype, so
+		// `constructor` and `toString` looked declared and their values were stored in an
+		// object that ships to the browser. Enumerable own properties, as a hostile client
+		// would send them.
+		for (const key of ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+			const config: Record<string, unknown> = {};
+			Object.defineProperty(config, key, { value: 'x', enumerable: true, configurable: true, writable: true });
+			expect(() => validatePluginConfig(config, MANIFEST)).toThrow(ConfigRejected);
+		}
+	});
+});

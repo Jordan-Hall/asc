@@ -1,0 +1,101 @@
+import type { AscAction, AscSubject, Scope } from './types.js';
+
+export type SubjectMetadata = {
+  value: AscSubject;
+  label: string;
+  description: string;
+};
+
+export type ActionMetadata = {
+  value: AscAction;
+  label: string;
+  description: string;
+};
+
+export type ScopeMetadata = {
+  value: Scope;
+  label: string;
+  description: string;
+};
+
+export const permissionSubjects: SubjectMetadata[] = [
+  { value: 'formEntry', label: 'Form Entries', description: 'Patient forms and clinical data' },
+  { value: 'formSchema', label: 'Form Schemas', description: 'Form definitions' },
+  { value: 'person', label: 'Person Records', description: 'Patient demographics' },
+  { value: 'schemaDesign', label: 'Schema Design', description: 'Schema definitions' },
+  { value: 'sectionLibrary', label: 'Section Library', description: 'Reusable section blocks' },
+  { value: 'branchAnalytics', label: 'Branch Analytics', description: 'Branch analytics and exports' },
+  { value: 'orgBranchingConfig', label: 'Org Branching Config', description: 'Org branching configuration' },
+  { value: 'team', label: 'Teams', description: 'Team management' },
+  { value: 'workspace', label: 'Workspaces', description: 'Workspace settings' },
+  { value: 'organization', label: 'Organization', description: 'Organization settings' },
+  { value: 'user', label: 'Users', description: 'User accounts' },
+  { value: 'audit', label: 'Audit', description: 'Audit trail' },
+  { value: 'auditEntry', label: 'Audit Entries', description: 'Audit entry records' },
+  { value: 'customRole', label: 'Custom Roles', description: 'Role definitions' },
+  { value: 'permission', label: 'Permissions', description: 'Permission definitions' },
+  { value: 'role', label: 'Roles', description: 'Role management' },
+  { value: 'invitation', label: 'Invitations', description: 'Invite management' },
+  { value: 'apiKey', label: 'API Keys', description: 'API key management' },
+  { value: 'analytics', label: 'Analytics', description: 'Analytics data' },
+  { value: 'settings', label: 'Settings', description: 'System settings' },
+  { value: 'supportTicket', label: 'Support Tickets', description: 'Support cases and ticket lifecycle' },
+  { value: 'supportMessage', label: 'Support Messages', description: 'Support ticket conversation messages' },
+  { value: 'supportAttachment', label: 'Support Attachments', description: 'Files attached to support tickets/messages' },
+  { value: 'supportAnalytics', label: 'Support Analytics', description: 'Support dashboard stats and reporting' },
+  { value: 'ac', label: 'Access Control', description: 'Access control management' },
+  { value: 'all', label: 'All Resources', description: 'Everything' },
+];
+
+export const permissionActions: ActionMetadata[] = [
+  { value: 'read', label: 'Read', description: 'View data' },
+  { value: 'readDeleted', label: 'Read Deleted', description: 'View soft-deleted records' },
+  { value: 'create', label: 'Create', description: 'Add records' },
+  { value: 'update', label: 'Update', description: 'Modify records' },
+  { value: 'delete', label: 'Delete', description: 'Remove records' },
+  { value: 'manage', label: 'Manage (all)', description: 'Full control' },
+  { value: 'export', label: 'Export', description: 'Download data' },
+  { value: 'import', label: 'Import', description: 'Upload data' },
+  { value: 'share', label: 'Share', description: 'Share with others' },
+  { value: 'lock', label: 'Lock', description: 'Lock records' },
+  { value: 'unlock', label: 'Unlock', description: 'Unlock records' },
+  { value: 'archive', label: 'Archive', description: 'Archive records' },
+  { value: 'invite', label: 'Invite', description: 'Invite members' },
+  { value: 'approve', label: 'Approve', description: 'Approve submissions' },
+  { value: 'reject', label: 'Reject', description: 'Reject submissions' },
+  { value: 'assign', label: 'Assign', description: 'Assign to users/teams' },
+  { value: 'unassign', label: 'Unassign', description: 'Remove assignments' },
+  { value: 'review', label: 'Review', description: 'Mark reviewed' },
+  { value: 'audit', label: 'Audit', description: 'View audit trail' },
+  { value: 'use', label: 'Use', description: 'Use in operations' },
+  { value: 'promote', label: 'Promote', description: 'Promote to higher level' },
+];
+
+export const permissionScopes: ScopeMetadata[] = [
+  { value: 'organization', label: 'Organization', description: 'Organization level' },
+  { value: 'workspace', label: 'Workspace', description: 'Workspace level' },
+  { value: 'team', label: 'Team', description: 'Team level' },
+];
+
+export const commonFieldPaths: Record<'formEntry' | 'person', Array<{ value: string; label: string }>> = {
+  formEntry: [
+    { value: 'payload', label: 'payload (all data)' },
+    { value: 'payload.sensitive_clinical_data', label: 'payload.sensitive_clinical_data' },
+    { value: 'payload.patient_identifiable_info', label: 'payload.patient_identifiable_info' },
+    { value: 'payload.internal_notes', label: 'payload.internal_notes' },
+    { value: 'validation_summary', label: 'validation_summary' },
+    { value: 'severity_summary', label: 'severity_summary' },
+    { value: 'metadata', label: 'metadata' },
+    { value: 'state', label: 'state' },
+    { value: 'reviewed_at', label: 'reviewed_at' },
+    { value: 'reviewed_by', label: 'reviewed_by' },
+  ],
+  person: [
+    { value: 'identifier', label: 'identifier (NHS number)' },
+    { value: 'local_identifier', label: 'local_identifier' },
+    { value: 'date_of_birth', label: 'date_of_birth' },
+    { value: 'postcode', label: 'postcode' },
+    { value: 'gender', label: 'gender' },
+    { value: 'name', label: 'name' },
+  ],
+};

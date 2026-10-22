@@ -1,0 +1,62 @@
+{
+  "name": "@asc/private",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "check": "turbo run check",
+    "format": "turbo run format",
+    "preview": "turbo run preview",
+    "comments:prune": "bun scripts/prune-comments.ts",
+    "audit:repo": "bun packages/repo-audit/src/cli.ts",
+    "audit:repo:ai": "bun packages/repo-audit/src/cli.ts --graphify --review=ollama",
+    "audit:repo:ci": "bun packages/repo-audit/src/cli.ts --fail-on=error",
+    "audit:graph": "bun packages/repo-audit/src/cli.ts --graphify"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/bun": "latest",
+    "@types/quill": "^2.0.14",
+    "ajv": "^8.20.0",
+    "prettier": "^3.8.3",
+    "turbo": "^2.9.16",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": ">=1.2.22",
+    "node": ">=18"
+  },
+  "packageManager": "bun@1.2.22",
+  "workspaces": [
+    "packages/*",
+    "packages/soma-sdk/ts/*",
+    "apps/*"
+  ],
+  "overrides": {
+    "better-auth": "^1.4.1",
+    "error-ex": "1.3.2",
+    "zod": "^4",
+    "@hono/zod-validator": "^0.8.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0"
+  },
+  "patchedDependencies": {
+    "compromise@14.14.5": "patches/compromise@14.14.5.patch"
+  },
+  "trustedDependencies": [
+    "@biomejs/biome",
+    "@parcel/watcher",
+    "@swc/core",
+    "@tailwindcss/oxide",
+    "core-js",
+    "core-js-pure"
+  ],
+  "dependencies": {
+    "@rslib/core": "^0.23.2",
+    "quill": "^2.0.3"
+  }
+}

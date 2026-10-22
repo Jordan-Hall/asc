@@ -1,0 +1,77 @@
+name: CD — build and publish the platform images
+
+# Builds every platform image from a clean context and PUBLISHES it to the
+# Forgejo container registry, tagged with both the commit sha and the branch.
+# That is what makes a deploy possible: something has to exist to deploy, and a
+# build that proves an image compiles and then throws it away does not.
+#
+# Heavier and slower than ci.yml (a fresh monorepo `bun install` alone is
+# minutes), so it stays path-filtered with a long timeout and a buildx layer
+# cache. The fast typecheck/unit/rust gate is ci.yml; browser e2e is e2e.yml,
+# which pulls the images this workflow publishes.
+
+on:
+  push:
+    branches: [feat/ingest-intelligence-phase1, main, ai-service-custom-model]
+    paths:
+      - 'apps/ingestion-service/**'
+      - 'apps/insight-service/**'
+      - 'apps/intelligence-shell/**'
+      - 'apps/ingest-mfe/**'
+      - 'apps/reporting-mfe/**'
+      - 'apps/dashboards-mfe/**'
+      - 'rust/analysis-pipeline/**'
+      - 'packages/**'
+      - 'docker-compose.yml'
+      - '.forgejo/workflows/docker-intelligence.yml'
+  workflow_dispatch:
+
+jobs:
+  # This job holds the registry token, so it must never run on code a pull
+  # request controls: a PR can edit the Dockerfiles, docker-compose.yml, the MFE
+  # build scripts or the composite action below, all of which run here. Hence no
+  # `pull_request:` trigger above, and the guard below as well — either alone
+  # would be one edit away from leaking the token.
+  build-images:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.2.22
+
+      # The 3 federation REMOTE MFEs are built on the runner (their in-container
+      # rspack build hits a module-federation `data:`-URI bug specific to the linux
+      # container; `bun run build` is green on the host/runner). Their images then
+      # just package this prebuilt dist. URLs match docker-compose.yml's build args.
+      - name: Build remote MFE dists (built outside the container)
+        env:
+          NODE_ENV: production
+          AUTH_SERVICE_EXTERNAL_URL: http://localhost:3000
+          AUTH_LOGIN_URL: http://localhost:5175
+          APPLICATION_LIST_URL: http://localhost:5174
+          INGESTION_SERVICE_EXTERNAL_URL: http://localhost:3020
+          INSIGHT_SERVICE_EXTERNAL_URL: http://localhost:3023
+          INGEST_MFE_URL: http://localhost:5182
+          REPORTING_MFE_URL: http://localhost:5183
+          DASHBOARDS_MFE_URL: http://localhost:5184
+        run: |
+          bun install
+          bun run build --filter ingest-mfe --filter reporting-mfe --filter dashboards-mfe
+
+      - name: Build and publish
+        uses: ./.forgejo/actions/publish-images
+        with:
+          registry: ${{ vars.FORGEJO_REGISTRY || 'forge.example.org' }}
+          owner: ${{ vars.FORGEJO_REGISTRY_OWNER || 'asc' }}
+          project: ${{ vars.COMPOSE_PROJECT_NAME || 'monorepo' }}
+          username: ${{ github.actor }}
+          token: ${{ secrets.FORGEJO_REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}

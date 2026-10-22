@@ -1,0 +1,66 @@
+/**
+ * Keeping `ingest_dataset.public` true to what is actually published.
+ *
+ * The anonymous session's read branch on ingest_dataset and ingest_row is a
+ * column test — `public = true`, and `dataset.public = true` — rather than a
+ * subquery asking whether some public dashboard references this dataset. It has
+ * to be: that subquery would sit inside ingest_row's per-row select predicate,
+ * which is the hot path for every aggregation the public explorer runs.
+ *
+ * The cost of that choice is this module. The flag is DERIVED state, so it has
+ * to be recomputed whenever the thing it derives from changes — a dashboard
+ * being created, edited or deleted. Recompute is by definition, not by delta:
+ * we ask which datasets are referenced by a public dashboard right now, and make
+ * the flags match. That way a missed event self-heals on the next write rather
+ * than leaving a dataset publicly readable because an unpublish was not
+ * subtracted correctly.
+ *
+ * This runs on the ROOT connection deliberately. It is a system bookkeeping
+ * write across whatever workspaces the change touched, and the caller has
+ * already been authorised for the dashboard edit that triggered it.
+ */
+import type { Surreal } from 'surrealdb';
+import { idStr } from './ids';
+
+/**
+ * Recompute the publication flag for a specific set of datasets, plus every
+ * dataset currently flagged public — so a dataset that has just LOST its last
+ * public dashboard is cleared, not just the ones named in the request.
+ *
+ * Returns the ids whose flag changed, for logging.
+ */
+export async function syncDatasetPublication(db: Surreal, touched: string[] = []): Promise<string[]> {
+  // Datasets that SHOULD be public: referenced by at least one public dashboard.
+  const refRes = (await db.query(
+    "SELECT VALUE dataset_refs FROM ingest_dashboard WHERE visibility = 'public'",
+  )) as Array<unknown[][]>;
+  const shouldBePublic = new Set<string>();
+  for (const list of refRes?.[0] ?? []) {
+    for (const ref of list ?? []) shouldBePublic.add(bare(String(idStr(ref))));
+  }
+
+  // Datasets currently flagged public, so a revocation is caught even when the
+  // request that caused it named nothing.
+  const flaggedRes = (await db.query('SELECT VALUE id FROM ingest_dataset WHERE public = true')) as Array<unknown[]>;
+  const currentlyPublic = new Set<string>((flaggedRes?.[0] ?? []).map((id) => bare(String(idStr(id)))));
+
+  const candidates = new Set<string>([...shouldBePublic, ...currentlyPublic, ...touched.map((t) => bare(t))]);
+  const changed: string[] = [];
+
+  for (const id of candidates) {
+    const want = shouldBePublic.has(id);
+    const has = currentlyPublic.has(id);
+    if (want === has) continue;
+    await db.query('UPDATE type::thing("ingest_dataset", $id) SET public = $want', { id, want });
+    changed.push(id);
+  }
+
+  if (changed.length > 0) {
+    console.log(`[Insight] publication flags updated for ${changed.length} dataset(s)`);
+  }
+  return changed;
+}
+
+function bare(id: string): string {
+  return id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+}

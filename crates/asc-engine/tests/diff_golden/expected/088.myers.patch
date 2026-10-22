@@ -1,0 +1,38 @@
+diff --git a/file b/file
+index 8c85430..630e939 100644
+--- a/file
++++ b/file
+@@ -1,5 +1,5 @@
+ import {
+-  diagnosticsWithShape,
++  diagnosticsAgainstSchema,
+   parse as parseWithEngine,
+ } from '@asc/dsl-compiler';
+ import type {
+@@ -33,12 +33,14 @@ function parseSource(
+     it. Without this an editor accepts a wrong field name silently and the rule
+     quietly comes out false against every record.
+   */
+-  const shape = {
++  const declared = {
+     root: options.documentSchema,
+     ctx: options.contextSchema,
+   };
+-  const shapeDiagnostics =
+-    shape.root || shape.ctx ? diagnosticsWithShape(src, shape) : [];
++  const declaredDiagnostics =
++    declared.root || declared.ctx
++      ? diagnosticsAgainstSchema(src, declared)
++      : [];
+ 
+   // A diagnostic reported by both halves is one problem, not two.
+   const seen = new Set(
+@@ -46,7 +48,7 @@ function parseSource(
+   );
+   const diagnostics = [
+     ...parsed.diagnostics,
+-    ...shapeDiagnostics.filter(
++    ...declaredDiagnostics.filter(
+       (d) => !seen.has(`${d.index}:${d.length}:${d.message}`),
+     ),
+   ];

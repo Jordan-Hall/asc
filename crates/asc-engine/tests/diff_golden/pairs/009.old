@@ -1,0 +1,39 @@
+import os from 'node:os';
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  outputDir: process.env.PW_OUTPUT_DIR ?? 'test-results',
+  fullyParallel: true,
+  workers: process.env.WORKERS ? Number(process.env.WORKERS) : os.cpus().length,
+  retries: 0,
+  reporter: [
+    ['list'],
+    ['html', { open: 'never' }],
+    ['./e2e/ndjson-reporter.ts'],
+  ],
+  use: {
+    baseURL: process.env.NELA_SITE_URL,
+    trace: process.env.TRACE ? 'retain-on-failure' : 'off',
+    screenshot: 'only-on-failure',
+    video: process.env.VIDEO ? 'on' : 'off',
+    actionTimeout: 15_000,
+    navigationTimeout: 30_000,
+  },
+  timeout: 600_000,
+  expect: { timeout: 10_000 },
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // Browsers put a refreshed page back differently; the refresh suite runs in each
+    {
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'] },
+      testMatch: /restore\.spec\.ts/,
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'] },
+      testMatch: /restore\.spec\.ts/,
+    },
+  ],
+});

@@ -1,0 +1,132 @@
+//! The ASC DSL grammar, as a parser that can be run.
+//!
+//! [`AscGrammar`] is generated from `asc.pest`, the language's syntax
+//! stated once. It does not replace the engine's parser, which builds the
+//! syntax tree and reports diagnostics; it is what that parser is held to.
+//! `tests/differential.rs` gives both the same sources and requires the same
+//! verdict, and the reference's grammar chapter is rendered from the rules and
+//! their `///` documentation.
+
+use pest::Parser;
+use pest_derive::Parser;
+
+/// The grammar. `Rule::expression` is one rule's source; `Rule::program` a
+/// `.dsl` file's.
+#[derive(Parser)]
+#[grammar = "asc.pest"]
+pub struct AscGrammar;
+
+/// Remove formula wrappers, splicing their contents in place.
+///
+/// `@[1 + 2] * 3` is `1 + 2 * 3`: the wrapper is a lexical device, not a
+/// grouping, which is why it is here and not in the grammar. Brackets inside a
+/// wrapper nest. An unclosed wrapper is returned as written, for the grammar
+/// to refuse.
+pub fn unwrap_formulas(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    while i < chars.len() {
+        // Strings and templates are copied whole: an `@[` inside one is text.
+        if matches!(chars[i], '"' | '\'' | '`') {
+            let quote = chars[i];
+            out.push(quote);
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                out.push(c);
+                i += 1;
+                if c == '\\' && quote != '`' && i < chars.len() {
+                    out.push(chars[i]);
+                    i += 1;
+                } else if c == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+        if chars[i] == '@' && chars.get(i + 1) == Some(&'[') {
+            let mut depth = 1;
+            let mut j = i + 2;
+            let mut inner = String::new();
+            while j < chars.len() {
+                match chars[j] {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                inner.push(chars[j]);
+                j += 1;
+            }
+            if depth > 0 {
+                out.extend(&chars[i..]);
+                return out;
+            }
+            out.push(' ');
+            out.push_str(&unwrap_formulas(&inner));
+            out.push(' ');
+            i = j + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Whether `src` is one expression the language accepts.
+pub fn accepts_expression(src: &str) -> bool {
+    AscGrammar::parse(Rule::expression, &unwrap_formulas(src)).is_ok()
+}
+
+/// Whether `src` is a program the language accepts.
+///
+/// The grammar finds the statements; this also holds them to the rule about
+/// lines that `program` states: after a statement, the next is on a new line,
+/// after a `;`, or begins with a statement's own word. The grammar skips
+/// whitespace between every token - and at the end of most rules - so it
+/// cannot see a line break itself.
+pub fn accepts_program(src: &str) -> bool {
+    let text = unwrap_formulas(src);
+    match AscGrammar::parse(Rule::program, &text) {
+        Ok(pairs) => pairs.into_iter().all(|pair| statements_on_their_own_lines(pair, &text)),
+        Err(_) => false,
+    }
+}
+
+/// Where the last token a pair matched ends: its own end, less whatever
+/// whitespace and comments it skipped after that token.
+fn last_token_end(pair: &pest::iterators::Pair<'_, Rule>) -> usize {
+    let mut end = pair.as_span().start();
+    let mut leaves = 0;
+    for inner in pair.clone().into_inner() {
+        leaves += 1;
+        end = end.max(last_token_end(&inner));
+    }
+    if leaves == 0 { pair.as_span().end() } else { end }
+}
+
+const STATEMENT_WORDS: [&str; 6] = ["let", "print", "when", "return", "use", "foreach"];
+
+fn begins_with_statement_word(text: &str) -> bool {
+    let first: String = text.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    STATEMENT_WORDS.iter().any(|word| first.eq_ignore_ascii_case(word))
+}
+
+fn statements_on_their_own_lines(pair: pest::iterators::Pair<'_, Rule>, text: &str) -> bool {
+    let children: Vec<_> = pair.clone().into_inner().collect();
+    let apart = children.windows(2).all(|two| {
+        let (a, b) = (&two[0], &two[1]);
+        if a.as_rule() != Rule::statement || b.as_rule() != Rule::statement {
+            return true;
+        }
+        let between = &text[last_token_end(a)..b.as_span().start()];
+        between.contains('\n') || between.contains(';') || begins_with_statement_word(b.as_str())
+    });
+    apart && children.into_iter().all(|child| statements_on_their_own_lines(child, text))
+}

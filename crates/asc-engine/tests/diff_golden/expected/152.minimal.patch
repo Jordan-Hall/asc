@@ -1,0 +1,23 @@
+diff --git a/file b/file
+index 6aa412a..bd8616c 100644
+--- a/file
++++ b/file
+@@ -10,6 +10,7 @@ import { createRouter, defineComponent, type RouterInstance } from '@asc/route
+ import { renderOverview } from '../pages/overview.js';
+ import { renderMetricPage } from '../pages/metric.js';
+ import { renderExplorePage } from '../pages/explore.js';
++import { renderDesignerPage } from '../pages/designer.js';
+ import { renderDataPage, renderAboutPage } from '../pages/data.js';
+ import { clearActivePage, setActivePage, type PageContext } from '../pages/render.js';
+ 
+@@ -69,6 +70,10 @@ export function createReportingRouter(base: string, deps: RouteDependencies): Ro
+       { path: '/', component: page(renderOverview, deps), title: 'Overview' },
+       { path: 'metric/:id', component: metricPage(deps), title: 'Measure' },
+       { path: 'explore', component: page(renderExplorePage, deps), title: 'Explore' },
++      // The designer runs against the REAL platform — ingested datasets, the
++      // live aggregation, a report that saves — while the routes above still
++      // read the bundled fixtures.
++      { path: 'designer', component: page(renderDesignerPage, deps), title: 'Build a report' },
+       { path: 'data', component: page(renderDataPage, deps), title: 'The data' },
+       { path: 'about', component: page(renderAboutPage, deps), title: 'About this data' },
+     ],

@@ -1,0 +1,9 @@
+diff --git a/file b/file
+index 217fd6e..5e3d8c2 100644
+--- a/file
++++ b/file
+@@ -10,3 +10,4 @@
+ - [DSL Reference](../reference/dsl)
+ - [Natural Language Reference](../reference/natural-language)
+ - [SQL Translation](../reference/sql)
++- [Every compiler, what it serves, and what it lacks](./compilers)

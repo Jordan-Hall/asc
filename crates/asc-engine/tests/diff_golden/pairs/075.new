@@ -1,0 +1,119 @@
+/**
+ * Clicking a section in the progress panel goes there.
+ *
+ * It did nothing unless you were already looking at that section. Every
+ * section is in the document whichever tab is open - the others sit in panels
+ * marked `hidden` - so the navigation found the section, scrolled a hidden
+ * element into view and stopped. On NELA that is seven tabs where six of them
+ * could not be reached from the panel that lists them.
+ *
+ * A unit test can prove the tab opens. Only this can prove it opens in a
+ * browser, through a panel that lives in a shadow root, on the real document.
+ */
+import type { Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import {
+  FormEntryListPage,
+  FormEntryPage,
+  LoginPage,
+  PersonListPage,
+  TeamContextSwitcher,
+} from '../pages';
+import { FIXED_TEST_DATA } from '../utils';
+import { ensureInvitedUserInAllTeams } from '../utils/invited-user';
+import { appsOrPattern, URLS } from '../utils/urls';
+
+const AUDITS_URL = URLS.audits;
+
+test.beforeAll(async ({ request }) => {
+  await ensureInvitedUserInAllTeams(request, FIXED_TEST_DATA.invitedUser);
+});
+
+/** Open a form entry for the England patient the earlier specs create. */
+async function openEntry(page: Page): Promise<FormEntryPage> {
+  const { invitedUser, teams, patients } = FIXED_TEST_DATA;
+  const loginPage = new LoginPage(page);
+  await loginPage.navigate();
+  await loginPage.login(invitedUser.email, invitedUser.password);
+  await loginPage.completeTwoFactorIfRequired(invitedUser.email);
+  await page.waitForURL(appsOrPattern('dashboard', 'home', 'applications'), {
+    timeout: 15000,
+  });
+
+  await page.goto(AUDITS_URL);
+  await page.waitForTimeout(1500);
+  await new TeamContextSwitcher(page).switchTeam(teams.england.name);
+
+  const personList = new PersonListPage(page);
+  await personList.navigate();
+  await personList.openPatient(patients.england.surname);
+
+  const entries = new FormEntryListPage(page);
+  const existing = await entries.getExistingEntry(0);
+  if (existing) await existing.click();
+  else await entries.createNewEntry();
+
+  const entry = new FormEntryPage(page);
+  await entry.waitForLoad();
+  return entry;
+}
+
+test.describe.serial('the progress panel navigates', () => {
+  test('clicking a section opens its tab and shows its first question', async ({
+    page,
+  }) => {
+    await openEntry(page);
+
+    /*
+      The panel lives in a shadow root, which Playwright's selectors pierce.
+      Sections are listed in document order, so the second one is on a tab
+      that is not the one showing - which is the case that did nothing.
+    */
+    const sections = page.locator('.asc-form-progress-section');
+    await expect(sections.first()).toBeVisible({ timeout: 15000 });
+    const target = sections.nth(1);
+    const sectionId = await target.getAttribute('data-section-id');
+    expect(sectionId, 'the panel lists sections by id').toBeTruthy();
+
+    // Before the click it is in a panel nobody is looking at.
+    const tabPanel = page
+      .locator(`[role="tabpanel"]:has([data-section-id="${sectionId}"])`)
+      .first();
+    await expect(tabPanel).toBeHidden();
+
+    await target.click();
+
+    // The tab opened, so the section - and the first question in it - is on
+    // screen rather than hidden behind another tab.
+    await expect(tabPanel).toBeVisible({ timeout: 10000 });
+    /*
+      The first question in the panel that just opened.
+
+      Asked of the PANEL rather than of `[data-section-id=...]`: the progress
+      list carries that attribute too, and its entry for a section holds no
+      fields - so the assertion found the wrong element and waited ten seconds
+      for a question that was never going to be inside it.
+    */
+    await expect(tabPanel.locator('[data-field-name]').first()).toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  test('the tab strip agrees about which section is showing', async ({
+    page,
+  }) => {
+    // The tab is pressed rather than the panel un-hidden, so the strip cannot
+    // point at one section while another is on screen.
+    await openEntry(page);
+
+    const sections = page.locator('.asc-form-progress-section');
+    await expect(sections.first()).toBeVisible({ timeout: 15000 });
+    const sectionId = await sections.nth(1).getAttribute('data-section-id');
+    await sections.nth(1).click();
+
+    const selected = page.locator('[role="tab"][aria-selected="true"]');
+    await expect(selected).toHaveCount(1, { timeout: 10000 });
+    const controls = await selected.getAttribute('aria-controls');
+    expect(controls).toBe(`tabpanel-${sectionId}`);
+  });
+});

@@ -1,0 +1,23 @@
+import { buildProtectionIndex, type RouteConfig } from '../index';
+
+function expect(cond: any, msg: string) { if (!cond) throw new Error(msg); }
+
+export async function run() {
+  const routes: RouteConfig[] = [
+    { path: 'public' },
+    { path: 'secure', meta: { requiresAuth: true } },
+    { path: 'secure/:id', meta: { requiresAuth: true } },
+    { path: 'hooked', canActivate: async () => true },
+    { path: 'parent', children: [ { path: 'child', meta: { requiresAuth: true } } ] } as any
+  ];
+  const isProtected = buildProtectionIndex(routes);
+  expect(!isProtected('public').protected, 'public should be open');
+  expect(isProtected('secure').protected, 'secure should be protected');
+  expect(isProtected('secure/123').protected, 'secure/123 should be protected');
+  expect(isProtected('hooked').protected, 'hooked via canActivate');
+  expect(isProtected('parent/child').protected, 'nested child protected');
+  expect(!isProtected('unknown').protected, 'unknown route open');
+  return true;
+}
+
+export default run;

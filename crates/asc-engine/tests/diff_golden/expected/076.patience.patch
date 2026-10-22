@@ -1,0 +1,67 @@
+diff --git a/file b/file
+index c8729b2..4dc277f 100644
+--- a/file
++++ b/file
+@@ -6,7 +6,7 @@
+  * it, and they go back to filling in paper and entering it later - which is
+  * the thing this product exists to stop.
+  */
+-import { expect, test } from '@rstest/core';
++import { describe, expect, it, test } from '@rstest/core';
+ import type { DocumentValue } from './form-field-registry.js';
+ import { CollaborationSession } from './collaboration.js';
+ 
+@@ -112,3 +112,53 @@ test('the most recently heard from come first', () => {
+   session.saw({ id: 'user:b', name: 'B' }, 2_000);
+   expect(session.others(2_000).map((p) => p.name)).toEqual(['B', 'A']);
+ });
++
++/**
++ * The same person, with the entry open twice.
++ *
++ * The first thing anybody tries - a second tab, or a second screen - and it
++ * showed nothing at all, which read as a feature that did not work. A session
++ * ignores anything carrying its own id, and the id was the USER's: both tabs
++ * were the same participant, so each dropped the other's cursor and answers as
++ * an echo of itself.
++ *
++ * Identity here is a CONNECTION, not an account. Two tabs are two people as
++ * far as a shared form is concerned - each holds its own cursor and its own
++ * half-typed answer - and the host makes the id per tab.
++ */
++describe('two tabs belonging to one person', () => {
++  const FIRST = 'user:jordan#tab-a';
++  const SECOND = 'user:jordan#tab-b';
++
++  it('takes the other tab’s answer rather than dropping it as its own', () => {
++    const here = new CollaborationSession(FIRST);
++    const outcome = here.receive({
++      by: SECOND,
++      field: 'ward',
++      value: 'ASH',
++      at: 1,
++    });
++    expect(outcome.applied).toBe(true);
++  });
++
++  it('still refuses what it sent itself', () => {
++    // The echo suppression that made the two-tab case fail is the right rule
++    // for one connection: its own form already shows what it did.
++    const here = new CollaborationSession(FIRST);
++    const outcome = here.receive({
++      by: FIRST,
++      field: 'ward',
++      value: 'ASH',
++      at: 1,
++    });
++    expect(outcome.applied).toBe(false);
++    expect(outcome.reason).toBe('own');
++  });
++
++  it('shows the other tab as somebody in the room', () => {
++    const here = new CollaborationSession(FIRST);
++    here.saw({ id: SECOND, name: 'Jordan Upton', field: 'ward' }, 1000);
++    const others = here.others(1000);
++    expect(others.map((participant) => participant.id)).toEqual([SECOND]);
++  });
++});

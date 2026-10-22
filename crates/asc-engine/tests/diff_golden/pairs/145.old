@@ -1,0 +1,109 @@
+/***
+ * Plugin registry service.
+ *
+ * Publishing, signing, review, entitlement, enablement and bundle delivery for
+ * federated ASC plugins. The environment is read once here, in loadConfig, and
+ * everything below receives plain values.
+ *
+ * Every route runs behind the shared Surreal auth middleware and queries through the
+ * per-request user connection, so SurrealDB row-level security is the real enforcement.
+ * The ability and platform-permission checks inside the routers exist so that a refusal
+ * arrives as a 403 explaining itself rather than an empty result set.
+ */
+
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { logger } from 'hono/logger';
+import { loadConfig } from './lib/config';
+import type { AppContext } from './lib/app-context';
+import { surrealAuthMiddleware } from './middleware/surreal-auth';
+import { publishersRouter } from './routes/publishers';
+import { pluginsRouter } from './routes/plugins';
+import { versionsRouter } from './routes/versions';
+import { orgPluginsRouter } from './routes/org';
+import { workspacePluginsRouter } from './routes/workspace';
+import { reviewRouter } from './routes/review';
+import { adminRouter } from './routes/admin';
+import { usageRouter } from './routes/usage';
+import { assetsRouter } from './routes/assets';
+
+const config = loadConfig();
+
+export const app = new Hono<AppContext>();
+
+// Credentials are only ever granted to an explicit allowlist.
+//
+// Reflecting an arbitrary Origin back while sending Access-Control-Allow-Credentials
+// lets any site a signed-in user visits make credentialed calls here and read the
+// replies. That matters more in this service than most: the private bundle route
+// authorises purely on the session cookie, so a reflected origin would hand a hostile
+// page another tenant's plugin code. With no allowlist configured the service still
+// serves same-origin traffic, and cross-origin callers get no credentials rather than
+// silently getting all of them.
+const credentialedCors = config.corsOrigins !== '*';
+if (!credentialedCors) {
+	console.warn(
+		'[plugin-registry] PLUGIN_REGISTRY_FRONTEND_ORIGIN is unset or "*". Cross-origin requests ' +
+			'will be answered without credentials. Set an explicit origin list to allow them.',
+	);
+}
+
+app.use(
+	'*',
+	cors({
+		origin: config.corsOrigins === '*' ? '*' : config.corsOrigins,
+		credentials: credentialedCors,
+		allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+		allowHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+		maxAge: 600,
+	}),
+);
+
+app.use('*', logger());
+
+app.onError((error, c) => {
+	console.error('[plugin-registry] Unhandled error:', error);
+	return c.json({ error: 'Internal server error' }, 500);
+});
+
+app.get('/health', (c) =>
+	c.json({
+		status: 'ok',
+		service: 'plugin-registry',
+		docker: {
+			container_id: import.meta.env.HOSTNAME || 'unknown',
+			image_sha: import.meta.env.IMAGE_SHA || 'unknown',
+			image_name: import.meta.env.IMAGE_NAME || 'unknown',
+			image_tag: import.meta.env.IMAGE_TAG || 'unknown',
+			platform: process.platform,
+			bun_version: process.versions.bun || process.version,
+		},
+	}),
+);
+
+// Bundle assets are session-authenticated like everything else. A public plugin skips
+// the entitlement check and gets immutable caching; a private one is re-checked against
+// the caller's entitlement on every single request, because an unguessable content hash
+// in a URL is not authorisation.
+app.use('/plugin-assets/*', surrealAuthMiddleware);
+app.use('/api/*', surrealAuthMiddleware);
+
+const routes = app
+	.route('/plugin-assets', assetsRouter)
+	.route('/api/publishers', publishersRouter)
+	.route('/api/plugins', pluginsRouter)
+	.route('/api/versions', versionsRouter)
+	.route('/api/org-plugins', orgPluginsRouter)
+	.route('/api/workspace-plugins', workspacePluginsRouter)
+	.route('/api/review', reviewRouter)
+	.route('/api/admin', adminRouter)
+	.route('/api/usage', usageRouter);
+
+console.info(`Plugin registry listening on port ${config.port}`);
+
+export default {
+	port: config.port,
+	fetch: app.fetch,
+};
+
+export type AppType = typeof routes;

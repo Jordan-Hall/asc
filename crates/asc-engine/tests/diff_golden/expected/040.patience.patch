@@ -1,0 +1,20 @@
+diff --git a/file b/file
+index a2e8465..d8d4240 100644
+--- a/file
++++ b/file
+@@ -20,10 +20,12 @@ rounds halves to even, and so does `round_r`.
+ | ASC Audit extract, pre-op | 3,361 | 3,350 | 0 |
+ | ASC Audit extract, post-op | 5,154 | 3,232 | 0 |
+ | `risk-calculator.R` run by Rscript, synthetic edge cases (pre and post) | 40,000 | 17,710 | 0 |
++| The WebAssembly port, directly, every row of `sim_data_v4` (pre, and post with each row's S03 answers as its S06 ones - the same fields, answered at operation) | 10,206 | 8,198 | 0 |
+ 
+-`bun test` runs the first three: every row of the sheets the R service was
+-signed off against, with the service's scores held in them. `bun r-parity.ts
+-[cases]` runs the last against R itself, and needs `Rscript` and `dplyr`. Its
++`bun test` runs the sheets - every row the R service was signed off against,
++with the service's scores held in them - and the WebAssembly comparison.
++`bun r-parity.ts [cases]` runs the synthetic cases against R itself, and needs
++`Rscript` and `dplyr`. Its
+ cases sit on and either side of every validity bound, including the
+ winsorising limits, and include missing values, codes the R maps to `NA`, no
+ indication, and several indications at once. It is deterministic, so a

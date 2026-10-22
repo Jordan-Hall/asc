@@ -1,0 +1,107 @@
+import { expect, test } from '@rstest/core';
+import { loadDatasetSync } from './dataset.js';
+import { parseQuestion, suggestedQuestions, isRanking, isAmbiguous } from './nl.js';
+import type { ParsedQuestion } from './nl.js';
+
+const dataset = loadDatasetSync('naed');
+
+/** Parse and assert it came back as a plain query rather than a ranking. */
+function ask(question: string): ParsedQuestion | null {
+  const parsed = parseQuestion(dataset, question);
+  if (!parsed || isRanking(parsed) || isAmbiguous(parsed)) return null;
+  return parsed;
+}
+
+test('a breakdown question resolves the dimension', () => {
+  const parsed = ask('how many patients by region?');
+  expect(parsed?.query.groupBy).toEqual(['Region']);
+  expect(parsed?.query.measures[0]!.agg).toBe('count');
+});
+
+test('an average question resolves the measure and the dimension', () => {
+  const parsed = ask('average age by trust');
+  expect(parsed?.query.measures[0]).toMatchObject({ agg: 'mean', column: 'Age' });
+  expect(parsed?.query.groupBy).toEqual(['Trust_ID']);
+});
+
+test('median is not silently turned into a mean', () => {
+  const parsed = ask('median age by region');
+  expect(parsed?.query.measures[0]!.agg).toBe('median');
+});
+
+test('a value label becomes a filter', () => {
+  const parsed = ask('how many patients in London');
+  expect(parsed?.query.filters).toContainEqual({ column: 'Region', op: 'eq', value: 'London' });
+});
+
+test('a coded value label becomes its code', () => {
+  const parsed = ask('how many patients who are female by region');
+  expect(parsed?.query.filters).toContainEqual({ column: 'GenderIDCode', op: 'eq', value: '2' });
+});
+
+test('a metric name resolves to its metric query', () => {
+  const parsed = ask('show me self referrals by region');
+  expect(parsed?.metricId).toBe('3');
+  expect(parsed?.query.measures[0]!.agg).toBe('rate');
+  expect(parsed?.query.groupBy).toEqual(['Region']);
+});
+
+test('a trend question sets a time grain', () => {
+  const parsed = ask('referrals over time by month');
+  expect(parsed?.query.timeGrain).toBe('month');
+  expect(parsed?.intent).toBe('trend');
+});
+
+test('a quarterly question buckets by quarter', () => {
+  expect(ask('patients by quarter')?.query.timeGrain).toBe('quarter');
+});
+
+test('a map question carries the geography intent', () => {
+  expect(ask('show patients by region on a map')?.intent).toBe('geography');
+});
+
+test('the title reads back as English', () => {
+  expect(ask('average age by region')?.title).toBe('Mean Age by Region');
+});
+
+test('a question it cannot answer returns null rather than guessing', () => {
+  expect(ask('what is the capital of France')).toBeNull();
+  expect(ask('hello')).toBeNull();
+});
+
+test('the suggested questions come from the dataset, not a hardcoded list', () => {
+  const suggestions = suggestedQuestions(dataset);
+  expect(suggestions.length).toBeGreaterThan(2);
+  expect(suggestions.some((question) => question.includes('region'))).toBe(true);
+});
+
+// ── Superlatives and cross-metric rankings ──────────────────
+
+test('"worst performing ICB overall" is a ranking across every measure', () => {
+  const parsed = parseQuestion(dataset, 'worst performing ICB overall');
+  expect(isRanking(parsed)).toBe(true);
+  if (!isRanking(parsed)) return;
+  expect(parsed.dimension).toBe('ICB');
+  expect(parsed.direction).toBe('worst');
+  expect(parsed.metricIds).toEqual([]);
+});
+
+test('"best trust" ranks the other way round', () => {
+  const parsed = parseQuestion(dataset, 'which is the best trust');
+  expect(isRanking(parsed)).toBe(true);
+  if (!isRanking(parsed)) return;
+  expect(parsed.dimension).toBe('Trust_ID');
+  expect(parsed.direction).toBe('best');
+});
+
+test('a superlative naming one measure ranks on that measure alone', () => {
+  const parsed = parseQuestion(dataset, 'worst region for self referrals');
+  expect(isRanking(parsed)).toBe(true);
+  if (!isRanking(parsed)) return;
+  expect(parsed.dimension).toBe('Region');
+  expect(parsed.metricIds).toEqual(['3']);
+});
+
+test('a superlative about a person-level column is not a ranking', () => {
+  expect(isRanking(parseQuestion(dataset, 'worst patient'))).toBe(false);
+});

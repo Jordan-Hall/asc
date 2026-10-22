@@ -1,0 +1,25 @@
+import { describe, expect, test } from 'bun:test';
+import { DSL_GRAMMAR } from '@asc/schema-dsl';
+import { generateDslCorpus } from './dsl-corpus';
+
+describe('the corpus only teaches the language that exists', () => {
+  test('every operator it emits is one the DSL actually has', () => {
+    // A row emitted `field(x).equals(y)` for an operator the DSL has never had,
+    // so every sample built from it taught the model to write something the
+    // parser rejects - which is worse than teaching it nothing. Checked against
+    // the grammar rather than against a list, because a list is exactly the
+    // thing that went stale.
+    const legal = new Set(DSL_GRAMMAR.fieldOperations.map((operation) => operation.name));
+
+    const emitted = new Set<string>();
+    for (const item of generateDslCorpus()) {
+      const dsl = typeof item.meta.dsl === 'string' ? item.meta.dsl : '';
+      for (const match of dsl.matchAll(/field\('[^']*'\)\.([a-zA-Z]+)\s*\(/g)) {
+        emitted.add(match[1]!);
+      }
+    }
+
+    expect(emitted.size).toBeGreaterThan(0);
+    expect([...emitted].filter((name) => !legal.has(name))).toEqual([]);
+  });
+});

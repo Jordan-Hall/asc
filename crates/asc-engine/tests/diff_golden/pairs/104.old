@@ -1,0 +1,39 @@
+{
+  "name": "@asc/form-schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rslib build",
+    "dev": "rslib build --watch",
+    "typecheck": "tsgo -p tsconfig.tests.json --noEmit",
+    "test": "bun test tests",
+    "json-schema": "bun run scripts/gen-json-schema.ts",
+    "json-schema:check": "bun run scripts/gen-json-schema.ts --check",
+    "check": "bun run scripts/gen-json-schema.ts --check"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@rslib/core": "^0.23.2",
+    "@typescript/native-preview": "latest",
+    "ajv": "^8.20.0",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@asc/schema-core": "workspace:*",
+    "@asc/severity-v3": "workspace:*"
+  }
+}

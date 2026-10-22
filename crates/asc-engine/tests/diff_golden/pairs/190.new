@@ -1,0 +1,110 @@
+"""A batch is trimmed to its own content, never padded to the contract window.
+
+The window is the SERVING worst case; the corpus is far shorter than it.
+schema-author's rows reach 2,378 bytes against a 9,344-byte window, so three
+quarters of every forward pass was padding - and padding teaches nothing: the
+loss is masked past each row's real length, and because pads sit AFTER the
+content, causal attention means no real token ever attends to one.
+
+Trimming therefore changes what is COMPUTED, never what is learned. These tests
+hold it to that, because the moment it stops being true the model is quietly
+training on something other than the corpus.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import soma_paths  # noqa: E402
+
+soma_paths.bootstrap(require=("harness",))
+from configs import soma_config  # noqa: E402
+from soma import Soma  # noqa: E402
+
+PAD = 258
+BUCKET = 256
+
+
+def bucket_width(real: int, window: int) -> int:
+    return min(window, ((real + BUCKET - 1) // BUCKET) * BUCKET)
+
+
+def _run(row: torch.Tensor, width: int, lens: torch.Tensor,
+         starts: torch.Tensor) -> tuple[float, dict[str, torch.Tensor]]:
+    cfg = soma_config("schema-author", row.shape[1], "nano")
+    torch.manual_seed(0)
+    model = Soma(cfg).train()
+    batch = row[:, :width]
+    inp, lab = batch[:, :-1], batch[:, 1:].clone()
+    pos = torch.arange(width - 1).unsqueeze(0)
+    lab.masked_fill_(pos < (starts - 1).unsqueeze(1), PAD)
+    lab.masked_fill_(pos >= (lens - 1).unsqueeze(1), PAD)
+    loss = model(inp, labels=lab)["loss"].mean()
+    loss.backward()
+    return loss.item(), {n: p.grad.clone() for n, p in model.named_parameters()
+                         if p.grad is not None}
+
+
+def test_trimming_does_not_change_the_loss() -> None:
+    window, real = 2048, 300
+    torch.manual_seed(0)
+    row = torch.randint(0, 255, (1, window))
+    row[:, real:] = PAD
+    lens, starts = torch.tensor([real]), torch.tensor([40])
+
+    padded, _ = _run(row, window, lens, starts)
+    trimmed, _ = _run(row, bucket_width(real, window), lens, starts)
+    assert padded == trimmed, f"padding changed the loss: {padded} vs {trimmed}"
+
+
+def test_trimming_does_not_change_the_gradients() -> None:
+    window, real = 1536, 260
+    torch.manual_seed(0)
+    row = torch.randint(0, 255, (1, window))
+    row[:, real:] = PAD
+    lens, starts = torch.tensor([real]), torch.tensor([30])
+
+    _, full = _run(row, window, lens, starts)
+    _, trim = _run(row, bucket_width(real, window), lens, starts)
+    assert full.keys() == trim.keys()
+    worst = max((full[n] - trim[n]).abs().max().item() for n in full)
+    scale = max(full[n].abs().max().item() for n in full)
+    assert worst / scale < 1e-5, f"gradients diverged by {worst / scale:.2e} relative"
+
+
+def test_the_bucket_covers_the_row_and_never_exceeds_the_window() -> None:
+    """Trimming must never cut real content, and never exceed the contract."""
+    window = 9344
+    for real in (1, 255, 256, 257, 766, 2378, 9344):
+        w = bucket_width(real, window)
+        assert w >= real, f"bucket {w} would truncate a {real}-byte row"
+        assert w <= window, f"bucket {w} exceeds the {window} window"
+        assert w % BUCKET == 0 or w == window
+
+
+def test_shape_count_stays_small() -> None:
+    """The scan is TorchScript-compiled, so a fresh shape every step would
+    spend the saving on recompilation. Bucketing keeps it to a handful."""
+    window = 9344
+    widths = {bucket_width(r, window) for r in range(1, 2400)}
+    assert len(widths) <= 12, f"{len(widths)} distinct shapes is too many"
+
+
+def test_model_window_is_the_serving_contract_not_the_cache_width():
+    """encode trims the cache to the corpus's longest row; the MODEL must still
+    be built at the serving window, or the gate refuses the checkpoint with
+    "model max-seq does not match production" - which is exactly what blocked
+    query after it had passed Stage-B, competence and no-collapse."""
+    import re
+    from pathlib import Path
+    source = Path(__file__).resolve().parent.joinpath("pretrain.py").read_text(encoding="utf-8")
+
+    assert "model_seq = a.seq" in source, \
+        "the model window must come from the requested serving seq"
+    assert re.search(r"cfg\s*=\s*soma_config\(a\.scenario,\s*model_seq", source), \
+        "soma_config must be built at model_seq, not the trimmed data width"
+    assert re.search(r"seq\s*=\s*min\(a\.seq,\s*cache_width\)", source), \
+        "the DATA slice may be narrower than the model window"

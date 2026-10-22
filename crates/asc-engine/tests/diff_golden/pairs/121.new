@@ -1,0 +1,69 @@
+/**
+ * Permission-checking logic now lives in `@asc/better-auth-permissions`
+ * (see packages/better-auth-permissions/src/role-permissions.ts). This
+ * module re-exports it for backwards compatibility with existing
+ * `@asc/auth-utils` consumers, adapting the two isSystemAdmin/isSupportRole
+ * checks that `@asc/better-auth-permissions` cannot itself depend on
+ * (they live in `./guards.ts`, which already imports from
+ * `@asc/better-auth-permissions` - keeping the dependency one-directional).
+ */
+import {
+  hasWorkspaceRolePermission,
+  hasStructureRolePermission,
+  checkWorkspaceRolePermissions,
+  checkStructureRolePermissions,
+  checkPermission as checkPermissionShared,
+  hasPermission as hasPermissionShared,
+  getWorkspaceMemberRole,
+  getOrganizationMemberRole,
+  type CheckPermissionParams as SharedCheckPermissionParams,
+} from '@asc/better-auth-permissions';
+import { isSystemAdmin, isSupportRole } from './guards.js';
+import type { CheckPermissionParams, PermissionContext } from './types.js';
+
+export {
+  hasWorkspaceRolePermission,
+  hasStructureRolePermission,
+  checkWorkspaceRolePermissions,
+  checkStructureRolePermissions,
+  getWorkspaceMemberRole,
+  getOrganizationMemberRole,
+};
+
+export async function checkPermission(
+  params: CheckPermissionParams,
+): Promise<boolean> {
+  return checkPermissionShared(
+    params as unknown as SharedCheckPermissionParams,
+    isSystemAdmin,
+    isSupportRole,
+  );
+}
+
+export async function requirePermission(
+  params: CheckPermissionParams,
+): Promise<void> {
+  const hasAccess = await checkPermission(params);
+
+  if (!hasAccess) {
+    const { APIError } = await import('better-auth/api');
+    throw new APIError('FORBIDDEN', {
+      message: 'Insufficient permissions',
+    });
+  }
+}
+
+export async function hasPermission(
+  ctx: PermissionContext,
+  entityType: 'workspace' | 'organization',
+  entityId: string,
+  permission: string,
+): Promise<boolean> {
+  return hasPermissionShared(
+    ctx as unknown as Parameters<typeof hasPermissionShared>[0],
+    entityType,
+    entityId,
+    permission,
+    isSystemAdmin,
+  );
+}

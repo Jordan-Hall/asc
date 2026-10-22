@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index 55a3318..765d14b 100644
+--- a/file
++++ b/file
+@@ -105,3 +105,19 @@ test('a superlative naming one measure ranks on that measure alone', () => {
+ test('a superlative about a person-level column is not a ranking', () => {
+   expect(isRanking(parseQuestion(dataset, 'worst patient'))).toBe(false);
+ });
++
++// ── Display requests ────────────────────────────────────────
++
++test('"as a pie" carries the display choice through', () => {
++  const parsed = ask('how many patients by region as a pie');
++  expect(parsed?.display).toBe('pie');
++});
++
++test('"in a table" and "on a map" resolve too', () => {
++  expect(ask('how many patients by region in a table')?.display).toBe('table');
++  expect(ask('how many patients by region on a map')?.display).toBe('map');
++});
++
++test('no display request means no override', () => {
++  expect(ask('how many patients by region')?.display).toBeUndefined();
++});

@@ -1,0 +1,21 @@
+diff --git a/file b/file
+index 588bd35..be1a53b 100644
+--- a/file
++++ b/file
+@@ -46,10 +46,14 @@ export function outDir(): string {
+   return process.env.OUT_DIR ?? 'reports';
+ }
+ 
+-export async function captureFrame(page: Page, index: number): Promise<string> {
++export async function captureFrame(
++  page: Page,
++  index: number,
++  suffix = '',
++): Promise<string> {
+   const dir = join(outDir(), 'frames');
+   mkdirSync(dir, { recursive: true });
+-  const frame = join('frames', `row-${index}.jpg`);
++  const frame = join('frames', `row-${index}${suffix ? `-${suffix}` : ''}.jpg`);
+   await page.screenshot({
+     path: join(outDir(), frame),
+     type: 'jpeg',

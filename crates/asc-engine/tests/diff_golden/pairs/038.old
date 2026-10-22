@@ -1,0 +1,91 @@
+/**
+ * Attachment + context handling for the harness route.
+ *
+ * Documents/images uploaded with a harness request are extracted to text up
+ * front (via @asc/doc-extract) and prepended to the message, so the model
+ * sees their content (the model can also still call extract_document itself).
+ * Arbitrary `context` (e.g. the target form's field list, the current schema)
+ * is serialised in too. This is what makes the "process this document and fill
+ * the form" / "create a schema from this spec" flows work.
+ */
+import { detectDocType, extractText, runOcr } from '@asc/doc-extract';
+import { correctInstruction } from '../../platform/language-understanding/gec';
+
+export interface Attachment {
+  /** base64 data URL of the file. */
+  data_url: string;
+  file_name?: string;
+}
+
+/** Cap on inlined attachment text — the model can still read the rest via extract_document/read_document_chunk. */
+const MAX_INLINE_ATTACHMENT_CHARS = 20_000;
+const MAX_SCHEMA_SPEC_CHARS = 200_000;
+const TRUNCATION_MARKER =
+  '…[document truncated — full text available to tools]';
+
+/** Cap an attachment's extracted text so one huge upload can't blow the message. */
+function capAttachmentText(
+  text: string,
+  limit = MAX_INLINE_ATTACHMENT_CHARS,
+): string {
+  return text.length > limit ? text.slice(0, limit) + TRUNCATION_MARKER : text;
+}
+
+export interface AugmentMessageOptions {
+  /** Preserve table structure/full text for deterministic schema authoring. */
+  schemaSpec?: boolean;
+}
+
+/** Extract attachment text + serialise context into a single augmented message. */
+export async function augmentMessage(
+  message: string,
+  attachments?: Attachment[],
+  context?: Record<string, unknown>,
+  options: AugmentMessageOptions = {},
+): Promise<string> {
+  // Spell + grammar correct the user's INSTRUCTION up front so the deterministic
+  // NLP rules match despite typos. Document/attachment text and context JSON are
+  // left raw — we never "correct" the user's actual content.
+  const instruction = await correctInstruction(message);
+  const parts: string[] = [];
+
+  if (context && Object.keys(context).length > 0) {
+    parts.push(
+      `### Context\n\`\`\`json\n${JSON.stringify(context, null, 2)}\n\`\`\``,
+    );
+  }
+
+  for (const att of attachments ?? []) {
+    const mime = att.data_url.match(/^data:([^;]+);/)?.[1] ?? '';
+    const docType = detectDocType(mime, att.file_name);
+    let text = '';
+    try {
+      if (docType === 'image') {
+        const ocr = await runOcr(att.data_url);
+        text = ocr.text || '(no text recognised from image)';
+      } else {
+        const res = await extractText(att.data_url, att.file_name);
+        text = res.success
+          ? options.schemaSpec
+            ? res.tabularText || res.text
+            : res.text
+          : `(extraction failed: ${res.error ?? 'unknown'})`;
+      }
+    } catch (err) {
+      text = `(extraction error: ${err instanceof Error ? err.message : String(err)})`;
+    }
+    parts.push(
+      `### Attached file: ${att.file_name ?? docType} (${docType})\n` +
+        capAttachmentText(
+          text,
+          options.schemaSpec
+            ? MAX_SCHEMA_SPEC_CHARS
+            : MAX_INLINE_ATTACHMENT_CHARS,
+        ) +
+        '\n### End attached file',
+    );
+  }
+
+  if (parts.length === 0) return instruction;
+  return `${parts.join('\n\n')}\n\n---\n\n${instruction}`;
+}

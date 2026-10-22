@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/schemas/page-designer.schema.json",
+  "title": "ASC Reporting Page",
+  "description": "What an ASC reporting page may contain — prose, blocks bound to a dataset, and references to a governed metric or a saved report by key. The CMS half of the reporting content model. Generated from the TypeScript types in packages/report-meta/src — do not edit by hand.\n  bun run --cwd packages/report-meta schema",
+  "$ref": "#/$defs/PageDefinition",
+  "$defs": {
+    "PageDefinition": {
+      "type": "object",
+      "properties": {
+        "slug": {
+          "type": "string",
+          "description": "The URL segment. Author-chosen and stable, because a published page is something people link to and a slug that changes breaks those links."
+        },
+        "title": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string",
+          "description": "One or two sentences for a listing, and for a link preview."
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PageBlock"
+          }
+        },
+        "visibility": {
+          "$ref": "#/$defs/PageVisibility"
+        },
+        "reviewBy": {
+          "type": "string",
+          "description": "When this content should next be checked. Guidance nobody has reviewed for two years should say so rather than presenting itself as current."
+        },
+        "section": {
+          "type": "string",
+          "description": "Grouping in a navigation tree — \"Methodology\", \"About the data\"."
+        },
+        "dataset_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Derived from the blocks; see `pageDatasetRefs`."
+        }
+      },
+      "description": "A page, described. The document the page editor edits and insight stores.",
+      "required": [
+        "slug",
+        "title",
+        "blocks",
+        "visibility"
+      ],
+      "unevaluatedProperties": false
+    },
+    "PageBlock": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "$ref": "#/$defs/PageReference",
+          "description": "Resolved at render time. When present the block takes its data from the reference rather than from `datasetId` — a page never restates a definition that lives somewhere else."
+        }
+      },
+      "description": "One block on a page. A superset of a dashboard block: everything a dashboard can place, plus a reference to a governed metric or a saved report.",
+      "unevaluatedProperties": false
+    },
+    "PageVisibility": {
+      "type": "string",
+      "enum": [
+        "private",
+        "team",
+        "workspace",
+        "org",
+        "public"
+      ],
+      "description": "Where a page sits for a reader. Mirrors the dashboard visibility ladder."
+    },
+    "PageReference": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MetricReference"
+        },
+        {
+          "$ref": "#/$defs/ReportReference"
+        }
+      ],
+      "description": "What a page block points at, when it points at something rather than carrying its own binding.\n\n`metric` and `report` are references BY KEY, resolved when the page renders. A page that quotes a number has copied it and will drift; a page that names a metric cannot."
+    },
+    "MetricReference": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "metric"
+        },
+        "key": {
+          "type": "string"
+        },
+        "breakdown": {
+          "type": "string",
+          "description": "Show it split by this field instead of as a single figure."
+        }
+      },
+      "description": "A governed measure, named by key and evaluated when the page is read.",
+      "required": [
+        "kind",
+        "key"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ReportReference": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "report"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "description": "A saved report, named by key. The latest version is the one that renders.",
+      "required": [
+        "kind",
+        "key"
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

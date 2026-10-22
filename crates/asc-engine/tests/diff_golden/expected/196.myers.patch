@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index 5c16bd9..79ae1e9 100644
+--- a/file
++++ b/file
+@@ -39,7 +39,8 @@
+   "scripts": {
+     "build": "rslib build",
+     "check-types": "tsc --noEmit",
+-    "build:checker": "bun build checker/server.ts --target=bun --outfile=../soma-harness/checker/checker.bundle.js"
++    "build:checker": "bun build checker/server.ts --target=bun --outfile=../soma-harness/checker/checker.bundle.js",
++    "test": "bun test checker src"
+   },
+   "dependencies": {
+     "@asc/form-fill": "workspace:*",

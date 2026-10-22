@@ -1,0 +1,97 @@
+/**
+ * asc-dsl rows in the proportions the gate asks them.
+ *
+ * The training corpus caps every expression shape at 600 rows so its
+ * commonest structure cannot drown the rest, and the held-out panel the gate
+ * draws from is not capped: it is the generators' own mix. The two drifted
+ * apart - "Pin the entered value into the band 5 to 63." is 200 of the
+ * grounded panel's 6,511 rows and 42 of training's 217,807, and on
+ * 22 September the model answered all 17 the gate drew wrongly. This draws
+ * every deterministic generator again, with seeds training never used, in
+ * their own proportions, and never a request any held-out panel holds: a
+ * row the gate asks is not one training has seen.
+ *
+ *   bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1]
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { generateBareComparisonCorpus } from './bare-comparison-corpus';
+import { generateCompositionCorpus } from './expression-compose-corpus';
+import { generateExpressionAdvancedCorpus } from './expression-advanced-corpus';
+import { generateExpressionDepthCorpus } from './expression-depth-corpus';
+import { generateExpressionFormsCorpus } from './expression-forms-corpus';
+import { generateFunctionCoverageCorpus } from './expression-function-coverage-corpus';
+import { generatePairwiseCorpus } from './expression-pairwise-corpus';
+
+interface Item {
+  text: string;
+  meta: { generator?: string; category?: string; expression?: string };
+}
+
+const args = process.argv.slice(2);
+const scaleAt = args.indexOf('--scale');
+const scale = scaleAt >= 0 ? Number(args[scaleAt + 1]) : 1;
+const [out, ...heldoutFiles] = args.filter((_, i) => i !== scaleAt && i !== scaleAt + 1);
+if (!out || heldoutFiles.length === 0) {
+  console.error('usage: bun build-gate-mix.ts <out.jsonl> <heldout.jsonl>... [--scale 1]');
+  process.exit(2);
+}
+
+/** Every request any held-out panel asks, as it is written there. */
+const heldout = new Set<string>();
+for (const file of heldoutFiles)
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    const row = JSON.parse(line) as { messages: Array<{ role: string; content: string }> };
+    for (const m of row.messages)
+      if (m.role === 'user' && !m.content.startsWith('Functions that may help')) {
+        heldout.add(m.content.trim());
+        break;
+      }
+  }
+
+// Seeds that no committed corpus uses: each generator's default seed built
+// the training and held-out corpora.
+const seed = 0x6a7e_2026;
+const generators: Array<[string, () => Item[]]> = [
+  ['expression-depth', () => generateExpressionDepthCorpus(scale, seed)],
+  ['expression-function-coverage', () => generateFunctionCoverageCorpus(seed + 1)],
+  ['expression-pairwise', () => generatePairwiseCorpus(Math.round(14 * scale), seed + 2)],
+  ['expression-compose', () => generateCompositionCorpus(Math.round(520 * scale), seed + 3)],
+  ['expression-forms', () => generateExpressionFormsCorpus(Math.round(320 * scale), seed + 4)],
+  ['expression-advanced', () => generateExpressionAdvancedCorpus(Math.round(300 * scale), seed + 5)],
+  ['bare-comparison', () => generateBareComparisonCorpus(Math.round(400 * scale), seed + 6)],
+];
+
+const rows: string[] = [];
+const seen = new Set<string>();
+const counts: Record<string, [number, number]> = {};
+for (const [name, generate] of generators) {
+  let kept = 0;
+  let asked = 0;
+  for (const item of generate()) {
+    const request = item.text.trim();
+    const target = item.meta.expression?.trim();
+    if (!request || !target) continue;
+    if (heldout.has(request)) {
+      asked++;
+      continue;
+    }
+    if (seen.has(request)) continue;
+    seen.add(request);
+    rows.push(
+      JSON.stringify({
+        messages: [
+          { role: 'user', content: request },
+          { role: 'assistant', content: target },
+        ],
+        source: `gate-mix:${name}:${item.meta.category ?? ''}`,
+      }),
+    );
+    kept++;
+  }
+  counts[name] = [kept, asked];
+}
+writeFileSync(out, `${rows.join('\n')}\n`);
+console.log(`[gate-mix] ${rows.length} rows -> ${out}`);
+for (const [name, [kept, asked]] of Object.entries(counts))
+  console.log(`  ${name}: ${kept} kept, ${asked} left out as held-out requests`);

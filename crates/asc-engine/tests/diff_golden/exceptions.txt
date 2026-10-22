@@ -1,0 +1,2 @@
+# Known differences from git, one "<pair id> <algorithm>" per line.
+# SPEC 4.3 requires this list to be empty at the phase-1 exit.

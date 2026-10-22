@@ -1,0 +1,62 @@
+import { hc } from 'hono/client';
+import type { AppType as SupportAppType } from 'support-service';
+import { authClient } from './auth-client';
+import type { NotificationItem } from '@asc/ui';
+
+const SUPPORT_SERVICE_URL: string = import.meta.env.SUPPORT_SERVICE_URL || 'http://localhost:3099';
+
+const client = hc<SupportAppType>(SUPPORT_SERVICE_URL, {
+  init: { credentials: 'include' },
+});
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const result = await (authClient as any).token();
+  if (result.error) throw new Error('Not authenticated');
+  const session = result.data;
+  const token = (session?.token || (session as any)?.jwt);
+  if (!token) throw new Error('No auth token');
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+}
+
+export async function fetchNotifications(): Promise<NotificationItem[]> {
+  const headers = await getAuthHeaders();
+  const res = await client.notifications.$get({ query: { limit: '20', start: '0' } as any }, { headers });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return ((data as any).notifications || []).map((n: any) => ({
+    ...n,
+    id: String(n.id).includes(':') ? String(n.id).split(':')[1] : String(n.id),
+  }));
+}
+
+export async function fetchUnreadCount(): Promise<number> {
+  const headers = await getAuthHeaders();
+  const res = await client.notifications['unread-count'].$get({}, { headers });
+  if (!res.ok) return 0;
+  const data = await res.json();
+  return (data as any).count || 0;
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  const headers = await getAuthHeaders();
+  await client.notifications[':id'].read.$patch({ param: { id } }, { headers });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  const headers = await getAuthHeaders();
+  await client.notifications['read-all'].$patch({}, { headers });
+}
+
+export async function connectNotificationWebSocket(): Promise<WebSocket | null> {
+  try {
+    const result = await (authClient as any).token();
+    if (result.error) return null;
+    const session = result.data;
+    const token = session?.token || (session as any)?.jwt;
+    if (!token) return null;
+    const wsBase = SUPPORT_SERVICE_URL.replace(/^http/, 'ws');
+    return new WebSocket(`${wsBase}/live/notifications/ws?token=${encodeURIComponent(token)}`);
+  } catch {
+    return null;
+  }
+}

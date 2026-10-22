@@ -1,0 +1,121 @@
+import { existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import type { Page } from '@playwright/test';
+import { DEFAULT_FILE } from '../src/cli/args';
+import { selectRows } from '../src/core/rows';
+import type { RowResult, Source, ValidationReport } from '../src/core/types';
+import { readSourceFile } from '../src/core/workbook-file';
+
+export function loadSelectedRows(): Source {
+  const file = resolve(process.env.SOURCE_FILE ?? DEFAULT_FILE);
+  const source = readSourceFile(file);
+  return {
+    ...source,
+    rows: selectRows(source.rows, process.env.ROWS ?? 'all'),
+  };
+}
+
+export function tolerance(): number {
+  return Number(process.env.TOLERANCE ?? 0);
+}
+
+export function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size)
+    chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+export function emitRow(row: RowResult): void {
+  console.log(
+    `@@nela ${JSON.stringify({ type: 'row', ...row, worker: process.env.TEST_PARALLEL_INDEX ?? '0' })}`,
+  );
+}
+
+export function emitStage(message: string): void {
+  console.log(
+    `@@nela ${JSON.stringify({ type: 'stage', message, worker: process.env.TEST_PARALLEL_INDEX ?? '0' })}`,
+  );
+}
+
+export function emitReport(report: ValidationReport): void {
+  console.log(`@@nela ${JSON.stringify({ type: 'report', report })}`);
+}
+
+export function outDir(): string {
+  return process.env.OUT_DIR ?? 'reports';
+}
+
+export async function captureFrame(page: Page, index: number): Promise<string> {
+  const dir = join(outDir(), 'frames');
+  mkdirSync(dir, { recursive: true });
+  const frame = join('frames', `row-${index}.jpg`);
+  await page.screenshot({
+    path: join(outDir(), frame),
+    type: 'jpeg',
+    quality: 55,
+  });
+  return frame.split('\\').join('/');
+}
+
+export function stopRequested(): boolean {
+  const file = process.env.STOP_FILE;
+  return file !== undefined && file !== '' && existsSync(file);
+}
+
+export function loadDeadline(): number | null {
+  const seconds = Number(process.env.LOAD_SECONDS ?? 0);
+  return seconds > 0 ? Date.now() + seconds * 1000 : null;
+}
+
+export function perRowRecording(): boolean {
+  return process.env.VIDEO !== '' && process.env.RECORDING !== 'browser';
+}
+
+export async function saveRowVideo(
+  page: Page,
+  index: number,
+  pass = 0,
+): Promise<void> {
+  const video = page.video();
+  await page.close();
+  if (!video) return;
+  const dir = join(outDir(), 'videos');
+  mkdirSync(dir, { recursive: true });
+  const name =
+    pass === 0 ? `row-${index}.webm` : `row-${index}-pass-${pass}.webm`;
+  await video.saveAs(join(dir, name));
+}
+
+export async function liveTicker(page: Page): Promise<() => Promise<void>> {
+  const base = process.env.LIVE_WS_URL;
+  if (!base) return async () => {};
+  const socket = new WebSocket(
+    `${base}/${process.env.TEST_PARALLEL_INDEX ?? '0'}`,
+  );
+  await new Promise<void>((open, fail) => {
+    socket.addEventListener('open', () => open());
+    socket.addEventListener('error', () =>
+      fail(new Error('live stream refused')),
+    );
+  });
+  const cdp = await page.context().newCDPSession(page);
+  cdp.on('Page.screencastFrame', (frame) => {
+    if (socket.readyState === WebSocket.OPEN)
+      socket.send(Buffer.from(frame.data, 'base64'));
+    void cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId });
+  });
+  await cdp.send('Page.startScreencast', {
+    format: 'jpeg',
+    quality: 60,
+    maxWidth: 1280,
+    maxHeight: 900,
+    everyNthFrame: 1,
+  });
+  return async () => {
+    socket.close();
+    if (page.isClosed()) return;
+    await cdp.send('Page.stopScreencast');
+    await cdp.detach();
+  };
+}

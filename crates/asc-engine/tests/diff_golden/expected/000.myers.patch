@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index 4f2d9f1..df9d3db 100644
+--- a/file
++++ b/file
+@@ -49,6 +49,7 @@ pub mod modules;
+ pub mod num;
+ /// Tokens to a syntax tree, with error recovery for the editor.
+ pub mod parser;
++pub mod syntax;
+ /// The runtime value type.
+ pub mod value;
+ /// Whether an answer being written can still be finished - what a decoder

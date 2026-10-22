@@ -1,0 +1,80 @@
+# NELA risk model in WebAssembly
+
+`risk-score-service/src/risk-calculator.R` is supplied to us and is not
+edited; it stays the specification of the model. R cannot be compiled to
+WebAssembly (it is interpreted; the only way to run it in a browser is to
+ship the R interpreter and its package filesystem), so this package keeps
+a **compiled translation** of that file - the same coefficients, the same
+winsorising, the same category mapping, R's rounding - in Rust, built to
+a 7.6 kB WebAssembly module with no runtime around it. What makes the
+translation safe is the parity test: every row the service was checked
+with is scored by both, and the build fails on any difference.
+
+## Proof
+
+`bun run test` runs the Rust unit tests, then `parity.test.ts`, which
+scores every row of the reference sheet and both ASC Audit extracts and
+compares with the service's scores held in them, plus a fresh sample
+against the **live** service:
+
+| Sheet | Rows compared | Differ |
+| --- | --- | --- |
+| Reference sheet `sim_data_v4` (pre-op) | 4,940 | 0 |
+| ASC Audit extract, pre-op | 3,352 | 0 |
+| ASC Audit extract, post-op | 3,266 | 0 |
+
+Rows the service refuses (an input missing) are the rows with no expected
+score, and the module gives none there either. Rounding is R's
+(`round(x, 1)`, halves to even); `exp` and `log` are `libm`, so every
+browser gives the same number regardless of its own `Math`.
+
+When the supplied R changes, `src/lib.rs` must change with it, and this
+test is what says so.
+
+## Build
+
+    bun run build
+
+runs `cargo build --release --target wasm32-unknown-unknown` (Rust with
+the `wasm32-unknown-unknown` target) and writes `dist/nela_risk_wasm.wasm`
+and `dist/risk-wasm.bundle.js` - the plain-script wrapper with the module
+embedded as base64, which loads itself on arrival.
+
+## In the ASC Audit pages
+
+Upload `dist/risk-wasm.bundle.js` to the database as a file resource and
+include it on each form before the page script:
+
+```html
+<script src="/RCOA/NELAUAT2.nsf/risk-wasm.bundle.js"></script>
+```
+
+The four pages (`docs/nela/old/EmLap-v12.js`, `EmLap-v13.js`, `NoLap-v3.js`,
+`NoLap-v2.js`) have
+
+```js
+var RISK = { engine: "wasm" }   // or "service"
+```
+
+and their computed score fields call `computeRisk(kind, payload, signal)`:
+`riskWasm.compute(kind, payload)` when the engine is `"wasm"` and the module
+has loaded, `requestRisk` (the service) otherwise and as the fallback. The
+computed field runs it in the background either way: the page never
+waits, a newer set of inputs abandons an older computation, and the value
+is posted with the record and shared with a collaboration room like any
+other. `RISK.engine = "service"` goes back to the request.
+
+`payload` is what the page already posts to the service (`S01AgeOnArrival`,
+`S03ASAScore`, …, the `S03Ind_*` indications as 0/1, and the malignancy /
+soiling / urgency fields of the score wanted). Values may be numbers or
+strings.
+
+## Files
+
+| File | What |
+| --- | --- |
+| `src/lib.rs` | the translation of `risk-calculator.R`, with its own tests |
+| `risk-wasm.js` | the page wrapper: `riskWasm.load()`, `.score()`, `.compute()` |
+| `build.ts` | cargo build + the bundle |
+| `parity.test.ts` | the proof above |
+| `dist/` | build output (ignored) |

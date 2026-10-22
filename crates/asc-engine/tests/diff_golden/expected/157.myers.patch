@@ -1,0 +1,77 @@
+diff --git a/file b/file
+index 8791f8f..67e00ad 100644
+--- a/file
++++ b/file
+@@ -1,23 +1,50 @@
++import { describe, it, expect } from '@rstest/core';
+ import { buildProtectionIndex, type RouteConfig } from '../index';
+ 
+-function expect(cond: any, msg: string) { if (!cond) throw new Error(msg); }
+-
+-export async function run() {
+-  const routes: RouteConfig[] = [
+-    { path: 'public' },
+-    { path: 'secure', meta: { requiresAuth: true } },
+-    { path: 'secure/:id', meta: { requiresAuth: true } },
+-    { path: 'hooked', canActivate: async () => true },
+-    { path: 'parent', children: [ { path: 'child', meta: { requiresAuth: true } } ] } as any
+-  ];
+-  const isProtected = buildProtectionIndex(routes);
+-  expect(!isProtected('public').protected, 'public should be open');
+-  expect(isProtected('secure').protected, 'secure should be protected');
+-  expect(isProtected('secure/123').protected, 'secure/123 should be protected');
+-  expect(isProtected('hooked').protected, 'hooked via canActivate');
+-  expect(isProtected('parent/child').protected, 'nested child protected');
+-  expect(!isProtected('unknown').protected, 'unknown route open');
+-  return true;
+-}
+-
+-export default run;
+\ No newline at end of file
++/***
++ * The protection index decides, before any navigation happens, whether a path needs a
++ * session. Getting it wrong in the permissive direction means a guarded screen renders
++ * for a moment to somebody who should never see it.
++ *
++ * These assertions existed already but never ran: the file exported a `run()` function
++ * with its own local `expect`, which shadowed the real one, so no test runner ever
++ * collected it. The checks are unchanged; they are simply registered now.
++ */
++
++const routes: RouteConfig[] = [
++	{ path: 'public' },
++	{ path: 'secure', meta: { requiresAuth: true } },
++	{ path: 'secure/:id', meta: { requiresAuth: true } },
++	{ path: 'hooked', canActivate: async () => true },
++	{ path: 'parent', children: [{ path: 'child', meta: { requiresAuth: true } }] } as RouteConfig,
++];
++
++describe('buildProtectionIndex', () => {
++	const isProtected = buildProtectionIndex(routes);
++
++	it('leaves a route without a guard open', () => {
++		expect(isProtected('public').protected).toBe(false);
++	});
++
++	it('protects a route that requires authentication', () => {
++		expect(isProtected('secure').protected).toBe(true);
++	});
++
++	it('protects a parameterised route by its pattern rather than its literal path', () => {
++		expect(isProtected('secure/123').protected).toBe(true);
++	});
++
++	it('treats a canActivate hook as protection in its own right', () => {
++		// The hook may well allow the navigation, but the index cannot know that without
++		// running it, so a route carrying one counts as protected.
++		expect(isProtected('hooked').protected).toBe(true);
++	});
++
++	it('protects a nested child through its full path', () => {
++		expect(isProtected('parent/child').protected).toBe(true);
++	});
++
++	it('treats an unknown path as open rather than guessing', () => {
++		expect(isProtected('unknown').protected).toBe(false);
++	});
++});

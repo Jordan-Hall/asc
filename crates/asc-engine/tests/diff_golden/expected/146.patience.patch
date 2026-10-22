@@ -1,0 +1,24 @@
+diff --git a/file b/file
+index 148c666..d92abf6 100644
+--- a/file
++++ b/file
+@@ -1,6 +1,5 @@
+ import { createAuthEndpoint, createAuthMiddleware } from "better-auth/api";
+ import type { BetterAuthPlugin } from "better-auth";
+-import type { BetterAuthClientPlugin } from "better-auth/client";
+ 
+ /**
+  * ASC's two-factor preference, and the endpoint that reads it back before a
+@@ -112,12 +111,3 @@ export const twoFactorContext = () => {
+   } satisfies BetterAuthPlugin;
+ };
+ 
+-export const twoFactorContextClient = () => {
+-  return {
+-    id: "asc-two-factor-context",
+-    $InferServerPlugin: {} as ReturnType<typeof twoFactorContext>,
+-    pathMethods: {
+-      "/two-factor/context": "GET",
+-    },
+-  } satisfies BetterAuthClientPlugin;
+-};

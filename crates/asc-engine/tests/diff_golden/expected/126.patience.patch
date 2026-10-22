@@ -1,0 +1,17 @@
+diff --git a/file b/file
+index b7ac572..d7e67b5 100644
+--- a/file
++++ b/file
+@@ -201,8 +201,11 @@ services:
+       - '${SERVICE_USER_ROOT}'
+       - '--pass'
+       - '${SERVICE_PASSWORD_ROOT}'
++      # A --allow-net target list breaks JWKS-by-hostname (see docker-compose.yml).
++      # Denying http::* closes the SSRF vector without breaking the access layer.
+       - '--allow-net'
+-      - 'auth-service:3000'
++      - '--deny-funcs'
++      - 'http'
+       - '--log'
+       - 'tikv://pd0:2379'
+     healthcheck:

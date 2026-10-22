@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# The suite on a second set of addresses, so it can run beside a dev stack.
+#
+# Every port the suite uses is read from the environment first (see ports.ts),
+# and docker compose interpolates the same names, so exporting them here moves
+# the containers and the tests together. The compose project moves with them:
+# two stacks sharing a project name share containers, volumes and the run lock.
+set -euo pipefail
+
+# Backends. The dev stack holds 3000-3099; the default e2e stack holds 4000-4599.
+export E2E_AUTH_SERVICE_PORT=4700
+export E2E_FORMS_SERVICE_PORT=4795
+export E2E_PERSON_SERVICE_PORT=4703
+export E2E_AUDIT_SERVICE_PORT=4710
+export E2E_PLUGIN_REGISTRY_PORT=4796
+export E2E_INGESTION_SERVICE_PORT=4720
+export E2E_INSIGHT_SERVICE_PORT=4723
+export E2E_SUPPORT_SERVICE_PORT=4799
+export E2E_USER_ACTIVITY_SERVICE_PORT=4797
+export E2E_CMS_SERVICE_PORT=4798
+
+# Infrastructure. The dev database is on 8010, the default e2e one on 8020.
+export E2E_SURREAL_PORT=8320
+export E2E_TRAEFIK_PORT=8381
+export E2E_TRAEFIK_DASHBOARD_PORT=8390
+
+# Frontends. The dev servers hold 5173-5199; the default e2e stack holds 6173-6190.
+export E2E_AUDITS_PORT=6473
+export E2E_APPLICATION_LIST_PORT=6474
+export E2E_AUTH_UI_PORT=6475
+export E2E_SCHEMA_DESIGNER_PORT=6476
+export E2E_ADMIN_UI_PORT=6477
+export E2E_NELA_PORT=6478
+export E2E_PULSE_SHELL_PORT=6481
+export E2E_INGEST_MFE_PORT=6482
+export E2E_REPORTING_MFE_PORT=6483
+export E2E_DASHBOARDS_MFE_PORT=6484
+export E2E_SUPPORT_MFE_PORT=6489
+export E2E_AUTH_MFE_PORT=6490
+
+# Where the production builds are served for their Lighthouse audits.
+export E2E_LIGHTHOUSE_AUTH_UI_PORT=6491
+export E2E_LIGHTHOUSE_NELA_PORT=6492
+export E2E_LIGHTHOUSE_AUDITS_PORT=6493
+
+export E2E_COMPOSE_PROJECT=asc-e2e-alt
+
+# Anything left listening on these ports is a server from an aborted run, and
+# `reuseExistingServer` would adopt it - serving the bundle it built then.
+bun run scripts/free-e2e-ports.ts
+
+exec bunx playwright test "$@"

@@ -1,0 +1,28 @@
+diff --git a/file b/file
+index 2c04074..510092e 100644
+--- a/file
++++ b/file
+@@ -13,12 +13,19 @@ import {
+   validateCwnText,
+ } from './cwnValidation';
+ 
+-// Five levels up from `src/__tests__`, not four: the apps/ restructure added a
+-// directory (`apps/<group>/<app>`), so this pointed at `apps/nela-v12.cwn` and
+-// the test failed with ENOENT before it could assert anything.
++/*
++  The fixture lives beside the test that reads it.
++
++  It was counted out in `../` steps from the repository root - six of them,
++  after an earlier fix made it five - and then a cleanup commit deleted the
++  file at the end of that path. The suite failed with ENOENT naming a location
++  that said nothing about what was missing. A test that reaches outside its own
++  app for the thing it is about breaks whenever anything above it moves.
++*/
+ const cwnValidationFixturePath = resolve(
+   dirname(fileURLToPath(import.meta.url)),
+-  '../../../../../../nela-v12.cwn',
++  'fixtures',
++  'nela-v12.cwn',
+ );
+ 
+ describe('cwnValidation', () => {

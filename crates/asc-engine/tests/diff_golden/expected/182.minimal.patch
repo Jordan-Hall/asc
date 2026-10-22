@@ -1,0 +1,25 @@
+diff --git a/file b/file
+index 20cd2aa..1a02654 100644
+--- a/file
++++ b/file
+@@ -24,7 +24,19 @@ dev = [
+ ]
+ 
+ [tool.uv.sources]
+-soma = { path = "../../../../soma", editable = true }
++# Git, not a path. A relative path out of the repository resolves on a
++# developer's disk and nowhere else - a Docker build has no `../../../../soma`
++# in its context, so the image could not be built at all. Pinned to a revision
++# rather than a branch: an image that rebuilds against whatever master happens
++# to be is an image whose contents nobody can state.
++#
++# For local iteration on the SDK itself, override without editing this file:
++#
++#     uv pip install -e ../../../../soma
++#
++# which replaces the resolved package in the active environment and leaves the
++# manifest reproducible.
++soma = { git = "https://forge.example.org/asc/soma.git", rev = "9c754dc1de55d0626bb1788880ff51637682b3c5" }
+ 
+ [tool.hatch.build.targets.wheel]
+ packages = ["asc_soma"]

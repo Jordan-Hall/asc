@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 9e43fdd..7d50bbe 100644
+--- a/file
++++ b/file
+@@ -18,7 +18,7 @@
+     "build": {
+       "dependsOn": ["^build"],
+       "inputs": ["$TURBO_DEFAULT$", ".env*"],
+-      "outputs": ["dist/**", "src/database.ts"],
++      "outputs": ["dist/**", "js/dist/**", "src/database.ts"],
+       "env": ["*"]
+     },
+     "docs": {

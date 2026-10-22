@@ -1,0 +1,162 @@
+import { expect, test } from 'bun:test';
+import {
+  displayedScore,
+  type RawScore,
+  readingFrom,
+  reasonFrom,
+} from './score-reading';
+
+const MISSING =
+  'UNABLE TO CALCULATE PRE-OP SCORE (Missing value: 3.3 What was the ASA score) This patient does not have a formal NELA risk score calculable, because one or more parameters are unavailable.';
+
+function raw(over: Partial<RawScore> = {}): RawScore {
+  return {
+    stored: '',
+    check: '',
+    reason: '',
+    checkReason: '',
+    text: '',
+    checkText: '',
+    ...over,
+  };
+}
+
+test('the service score is the one the row is judged on when the page has it', () => {
+  const { reading, problems } = readingFrom(
+    raw({ stored: '4.1', check: '4.1', text: 'HIGH PRE-OP RISK SCORE 4.1%' }),
+    4.1,
+    1,
+  );
+  expect(reading.score).toBe(4.1);
+  expect(reading.from).toBe('service');
+  expect(reading.displayed).toBe(4.1);
+  expect(problems).toEqual([]);
+});
+
+test('the model in the page answers for a score the service did not store', () => {
+  const { reading, problems } = readingFrom(
+    raw({ check: '4.1', checkText: 'Model in the page: 4.1%' }),
+    null,
+    0,
+  );
+  expect(reading.score).toBe(4.1);
+  expect(reading.from).toBe('page');
+  expect(problems).toEqual([
+    'the risk service gave no score; the model in the page gives 4.1%',
+  ]);
+});
+
+test('the two models disagreeing is said, and the service is the one judged', () => {
+  const { reading, problems } = readingFrom(
+    raw({ stored: '4.1', check: '13.9', text: 'HIGH PRE-OP RISK SCORE 4.1%' }),
+    4.1,
+    1,
+  );
+  expect(reading.score).toBe(4.1);
+  expect(problems).toEqual([
+    'the model in the page gives 13.9% where the risk service gives 4.1%',
+  ]);
+});
+
+test('a card that shows a different number from the one stored is a fault', () => {
+  const { problems } = readingFrom(
+    raw({ stored: '4.1', text: 'HIGH PRE-OP RISK SCORE 13.9%' }),
+    4.1,
+    1,
+  );
+  expect(problems).toEqual(['the card shows 13.9% but the page stores 4.1%']);
+});
+
+test('a score on the card that the page never stored is still read, and said', () => {
+  const { reading, problems } = readingFrom(
+    raw({ text: 'HIGH PRE-OP RISK SCORE 4.1%' }),
+    4.1,
+    1,
+  );
+  expect(reading.score).toBe(4.1);
+  expect(reading.from).toBe('card');
+  expect(problems).toEqual([
+    'no score is stored on the page, but the card shows 4.1%',
+  ]);
+});
+
+test('a stored score the card refuses to show is a fault', () => {
+  const { problems } = readingFrom(
+    raw({ stored: '4.1', text: MISSING }),
+    4.1,
+    1,
+  );
+  expect(problems).toEqual([
+    'the page stores 4.1% but the card says the score cannot be calculated',
+  ]);
+});
+
+test('a page that stored something other than the answer it was given is a fault', () => {
+  const { problems } = readingFrom(
+    raw({ stored: '4.1', text: 'HIGH PRE-OP RISK SCORE 4.1%' }),
+    13.9,
+    1,
+  );
+  expect(problems).toEqual([
+    'the page stores 4.1% but the last risk response said 13.9%',
+  ]);
+});
+
+test('no score anywhere carries the reason the page gives', () => {
+  const { reading } = readingFrom(raw({ text: MISSING }), null, 0);
+  expect(reading.score).toBeNull();
+  expect(reading.from).toBe('none');
+  expect(reading.why).toBe('Missing value: 3.3 What was the ASA score');
+});
+
+test('the reason field the engine writes is preferred to the card', () => {
+  expect(
+    reasonFrom(
+      raw({
+        reason: 'risk service answered 400: Missing required fields',
+        text: MISSING,
+      }),
+    ),
+  ).toBe('risk service answered 400: Missing required fields');
+});
+
+test('the model in the page gives its reason when the service field has none', () => {
+  expect(
+    reasonFrom(raw({ checkReason: 'risk-wasm.bundle.js is not on this form' })),
+  ).toBe('risk-wasm.bundle.js is not on this form');
+});
+
+test('a zero is a score, not the absence of one', () => {
+  const { reading } = readingFrom(
+    raw({ stored: '0', text: 'LOW PRE-OP RISK SCORE 0%' }),
+    0,
+    1,
+  );
+  expect(reading.score).toBe(0);
+  expect(reading.from).toBe('service');
+});
+
+test('the card is read as a person reads it', () => {
+  expect(displayedScore('HIGH PRE-OP RISK SCORE 13.9%')).toBe(13.9);
+  expect(displayedScore(MISSING)).toBeNull();
+});
+
+test('the reason keeps the brackets inside the question it names', () => {
+  expect(
+    reasonFrom(
+      raw({
+        text: 'UNABLE TO CALCULATE PRE-OP SCORE(Missing value: 3.12 Systolic blood pressure (mmHg))This patient does not have a formal NELA risk score calculable.',
+      }),
+    ),
+  ).toBe('Missing value: 3.12 Systolic blood pressure (mmHg)');
+});
+
+test('a card with no reason does not borrow the one in its footer', () => {
+  expect(
+    reasonFrom(
+      raw({
+        text: 'UNABLE TO CALCULATE PRE-OP RISK SCOREThis patient does not have a formal NELA risk score calculable. Scored by the risk service (https://risk-score-service.example.org/api/risk/pre) in 3346 ms',
+      }),
+    ),
+  ).toBe('the card says the score cannot be calculated and gives no reason');
+});

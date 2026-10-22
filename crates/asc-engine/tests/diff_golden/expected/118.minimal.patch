@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index bf1971e..9c8be00 100644
+--- a/file
++++ b/file
+@@ -64,6 +64,7 @@
+     "@repo/typescript-config": "workspace:*",
+     "@rslib/core": "^0.23.2",
+     "@types/bun": "latest",
++    "onnxruntime-node": "^1.20.1",
+     "onnxruntime-web": "1.26.0-dev.20260416-b7804b056c",
+     "typescript": "7.0.2"
+   },

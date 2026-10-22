@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index fa8076f..63c32eb 100644
+--- a/file
++++ b/file
+@@ -48,7 +48,7 @@
+     "@rslib/core": "^0.23.2",
+     "@repo/typescript-config": "workspace:*",
+     "better-auth": "^1.2.0",
+-    "typescript": "^5.7.2"
++    "typescript": "7.0.2"
+   },
+   "keywords": [
+     "better-auth",

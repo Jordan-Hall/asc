@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "repo-audit": {
+      "type": "stdio",
+      "command": "repo-audit",
+      "args": [
+        "mcp"
+      ],
+      "env": {}
+    },
+    "asc-schema": {
+      "type": "stdio",
+      "command": "bun",
+      "args": [
+        "packages/schema-meta-v2/scripts/mcp-server.ts"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -1,0 +1,35 @@
+diff --git a/file b/file
+index 3be02d2..351109c 100644
+--- a/file
++++ b/file
+@@ -5,12 +5,14 @@ A modern, intuitive schema designer inspired by SurveyMonkey, JotForm, and Typef
+ ## Key Features
+ 
+ ### 🎨 Beautiful, Modern UI
++
+ - Clean, uncluttered interface
+ - Smooth animations and transitions
+ - Dark mode support
+ - Responsive design
+ 
+ ### 🎯 Intuitive UX
++
+ - Drag-and-drop field builder
+ - Live preview panel
+ - Visual field palette with icons
+@@ -18,6 +20,7 @@ A modern, intuitive schema designer inspired by SurveyMonkey, JotForm, and Typef
+ - Field templates for common patterns
+ 
+ ### ⚡ Powerful Features
++
+ - Real-time validation
+ - Advanced field configuration
+ - Section management
+@@ -27,6 +30,7 @@ A modern, intuitive schema designer inspired by SurveyMonkey, JotForm, and Typef
+ ## Architecture
+ 
+ ### Component Structure
++
+ ```
+ src/
+ ├── components/

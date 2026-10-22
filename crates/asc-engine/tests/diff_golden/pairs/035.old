@@ -1,0 +1,40 @@
+import { expect, test } from 'bun:test';
+import { Turns } from './turns';
+
+test('the first claim holds the turn and the rest wait in the order they came', () => {
+  const turns = new Turns();
+  expect(turns.claim('ann', 1)).toBe(true);
+  expect(turns.claim('tess', 2)).toBe(true);
+  expect(turns.claim('bob', 3)).toBe(true);
+  expect(turns.state()).toEqual({ holder: 'ann', claim: 1, queue: ['tess', 'bob'] });
+  // Claiming again changes nothing: one place each
+  expect(turns.claim('tess', 2)).toBe(false);
+  expect(turns.claim('ann', 1)).toBe(false);
+});
+
+test('giving the turn back passes it on; withdrawing a waiting claim leaves the line', () => {
+  const turns = new Turns();
+  turns.claim('ann', 1);
+  turns.claim('tess', 2);
+  turns.claim('bob', 3);
+  expect(turns.release('tess')).toBe(true);
+  expect(turns.state()).toEqual({ holder: 'ann', claim: 1, queue: ['bob'] });
+  expect(turns.release('ann')).toBe(true);
+  expect(turns.state()).toEqual({ holder: 'bob', claim: 3, queue: [] });
+  expect(turns.release('nobody')).toBe(false);
+  expect(turns.release('bob')).toBe(true);
+  expect(turns.idle).toBe(true);
+});
+
+test('claiming again keeps the place and moves it to the new claim, so the turn is given for the claim the page waits on', () => {
+  const turns = new Turns();
+  turns.claim('ann', 1);
+  turns.claim('bob', 2);
+  expect(turns.claim('ann', 5)).toBe(true);
+  expect(turns.state()).toEqual({ holder: 'ann', claim: 5, queue: ['bob'] });
+  expect(turns.claim('bob', 6)).toBe(true);
+  turns.release('ann');
+  expect(turns.state()).toEqual({ holder: 'bob', claim: 6, queue: [] });
+  // The same claim twice changes nothing
+  expect(turns.claim('bob', 6)).toBe(false);
+});

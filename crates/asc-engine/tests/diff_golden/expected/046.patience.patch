@@ -1,0 +1,32 @@
+diff --git a/file b/file
+index 73f7adb..073709d 100644
+--- a/file
++++ b/file
+@@ -1,7 +1,7 @@
+ # Response to the Soma review of 19 September 2026
+ 
+ Written 20 September 2026 against the live training tree (asc-soma
+-`543fc9ac3`, SDK `9d19326`) and this checkout.
++`ad9df6fe3`, SDK `21e6d85`) and this checkout.
+ 
+ The review examined the copy of the training pipeline under
+ `packages/soma/core/python`, which had fallen behind the tree the training
+@@ -19,7 +19,7 @@ review landed. Every finding below names what was done and where.
+ | F03 | Feedback persisted before schema-based PID checks | **Fixed.** The feedback log now holds a projection - rating, tool names, lengths, a message digest, a user hash and the run id - never the reply, the comment or tool arguments. The message is kept only when the single tool is not a PID-bearing route and the identifier scan is clean; the classifier's online learning admits under the same rule. The Soma intake no longer queues the query family at all. Replay admission already joined an event to a traced run with a matching successful tool call (`build-soma-replay.ts`). | `8b6972968` |
+ | F04 | Training and serving budgets disagree | **Fixed.** The serving contract is the one the training specifications are tested against, and the callers pass no generation cap of their own. | `8f889253e` |
+ | F05 | Reinforcement below the prompt floor | **Fixed.** Every specification reinforces on at least 100 prompts (form-extract was at 64). | asc-soma `543fc9ac3` |
+-| F06 | Chain not locally reproducible | **Closed in the live tree** (corpora in Garage with manifests, `asc_soma.corpus.pull`, preflights `check-budgets.py` and `check-stage-inputs.py`); this checkout's copy of the pipeline is stale and is the next sync. | asc-soma `scripts/` |
++| F06 | Chain not locally reproducible | **Fixed.** Corpora live in Garage with manifests and are pulled (`asc_soma.corpus.pull`); the preflights `scripts/soma/check-budgets.py` and `check-stage-inputs.py` refuse a chain and say what is missing without downloading. This checkout's copy of the pipeline is now produced by `scripts/soma/sync-training-tree.py` from the training tree - 139 mirrored specification tests pass here - and the SDK submodule is on the forge master. | `4b6ffeda4`, `48a3847a8` |
+ | F07 | Panels selected by the training seed | **Fixed.** The probe and the gate draw their panel with `PANEL_SEED`, independent of the training seed; the held-out content and panel seed are in the gate's key. A sealed confirmation set beyond the 500-case release panel is not yet declared. | asc-soma `543fc9ac3` |
+ | F08 | Warm start, validation, device, recovery unused | **Closed in the live tree** (trunk warm start by identity, epochs, held-out validation, CUDA, resume sidecar, continuation by content). Optimiser state is saved in the resume sidecar; scheduler and sampler state are not. | asc-soma `stages.py` |
+ | F09 | Composed loss is not the exported trunk's | **Fixed.** `train()` scores the model that will be kept, and the stages pass the trunk; with the surfaces off the two are the same model. | SDK `9d19326`; asc-soma `543fc9ac3` |
+@@ -47,9 +47,6 @@ prompts, without retraining.
+ 
+ ## Still to do from the review
+ 
+-- Sync this checkout's `packages/soma` copy of the pipeline and
+-  specifications with the training tree, and move the SDK submodule to
+-  `9d19326` (F06, F12's provenance).
+ - Declare a sealed confirmation panel per model beyond the release panel
+   (F07), and the per-route confidence intervals the review asks for.
+ - Persist scheduler and sampler state in the resume sidecar (F08).

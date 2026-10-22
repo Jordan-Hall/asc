@@ -1,0 +1,20 @@
+import { defineConfig } from '@rstest/core';
+
+export default defineConfig({
+  testEnvironment: 'happy-dom',
+  setupFiles: ['./test-setup.ts'],
+  testMatch: ['**/*.test.ts'],
+  plugins: [
+    {
+      // Keep the rstest server off the dev-stack ports (mirrors
+      // packages/ui/rstest.config.ts) so tests run while the app is running.
+      name: 'rstest-port-off-dev-stack',
+      setup(api: { modifyRsbuildConfig: (fn: (cfg: { server?: { port?: number } }) => void) => void }) {
+        api.modifyRsbuildConfig((cfg) => {
+          cfg.server ??= {};
+          cfg.server.port = 3107;
+        });
+      },
+    },
+  ],
+});

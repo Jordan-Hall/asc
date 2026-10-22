@@ -1,0 +1,178 @@
+import { ensureDb, initDb } from '../lib/db';
+
+const SNAPSHOT_INTERVAL_MS = (parseInt(import.meta.env.SNAPSHOT_INTERVAL_MINUTES || '10', 10)) * 60 * 1000;
+
+let snapshotInterval: ReturnType<typeof setInterval> | null = null;
+let pruneInterval: ReturnType<typeof setInterval> | null = null;
+let isRunning = false;
+
+async function takeHourlySnapshot(): Promise<void> {
+  try {
+    const db = await ensureDb();
+    
+    const aggregates = await db.query<[{ scope: string; scope_id?: string; metric: string; value: number }[]]>(`
+      SELECT scope, scope_id, metric, value FROM realtime_aggregate
+    `);
+    
+    const records = aggregates[0] || [];
+    
+    if (records.length === 0) {
+      console.log('[Snapshot] No aggregates to snapshot');
+      return;
+    }
+    
+    for (const record of records) {
+      const query = record.scope_id 
+        ? `CREATE stats_snapshot CONTENT { scope: $scope, scope_id: $scopeId, metric: $metric, value: $value, period_type: 'hourly' }`
+        : `CREATE stats_snapshot CONTENT { scope: $scope, scope_id: NONE, metric: $metric, value: $value, period_type: 'hourly' }`;
+      await db.query(query, {
+        scope: record.scope,
+        scopeId: record.scope_id,
+        metric: record.metric,
+        value: record.value,
+      });
+    }
+    
+    console.log(`[Snapshot] Created ${records.length} hourly snapshots`);
+    
+    await db.query(`
+      UPDATE realtime_aggregate SET value = 0 
+      WHERE metric = 'entries_today'
+    `);
+    
+  } catch (err) {
+    console.error('[Snapshot] Hourly snapshot failed:', err);
+  }
+}
+
+async function pruneOldSnapshots(): Promise<void> {
+  try {
+    const db = await ensureDb();
+    
+    const hourlyDeleted = await db.query<[{ count: number }[]]>(`
+      DELETE FROM stats_snapshot 
+      WHERE period_type = 'hourly' 
+        AND computed_at < time::now() - 7d
+      RETURN BEFORE
+    `);
+    
+    const dailyDeleted = await db.query<[{ count: number }[]]>(`
+      DELETE FROM stats_snapshot 
+      WHERE period_type = 'daily' 
+        AND computed_at < time::now() - 90d
+      RETURN BEFORE
+    `);
+    
+    const hourlyCount = Array.isArray(hourlyDeleted[0]) ? hourlyDeleted[0].length : 0;
+    const dailyCount = Array.isArray(dailyDeleted[0]) ? dailyDeleted[0].length : 0;
+    
+    if (hourlyCount > 0 || dailyCount > 0) {
+      console.log(`[Snapshot] Pruned ${hourlyCount} hourly and ${dailyCount} daily snapshots`);
+    }
+    
+  } catch (err) {
+    console.error('[Snapshot] Prune failed:', err);
+  }
+}
+
+async function createDailyRollup(): Promise<void> {
+  try {
+    const db = await ensureDb();
+    
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(0, 0, 0, 0);
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const hourlyData = await db.query<[{ scope: string; scope_id?: string; metric: string; avg_value: number }[]]>(`
+      SELECT 
+        scope, 
+        scope_id, 
+        metric, 
+        math::mean(value) as avg_value
+      FROM stats_snapshot
+      WHERE period_type = 'hourly'
+        AND computed_at >= $yesterday
+        AND computed_at < $today
+      GROUP BY scope, scope_id, metric
+    `, {
+      yesterday: yesterday.toISOString(),
+      today: today.toISOString(),
+    });
+    
+    const records = hourlyData[0] || [];
+    
+    for (const record of records) {
+      const query = record.scope_id 
+        ? `CREATE stats_snapshot CONTENT { scope: $scope, scope_id: $scopeId, metric: $metric, value: $value, period_type: 'daily' }`
+        : `CREATE stats_snapshot CONTENT { scope: $scope, scope_id: NONE, metric: $metric, value: $value, period_type: 'daily' }`;
+      await db.query(query, {
+        scope: record.scope,
+        scopeId: record.scope_id,
+        metric: record.metric,
+        value: Math.round(record.avg_value),
+      });
+    }
+    
+    if (records.length > 0) {
+      console.log(`[Snapshot] Created ${records.length} daily rollup records`);
+    }
+    
+  } catch (err) {
+    console.error('[Snapshot] Daily rollup failed:', err);
+  }
+}
+
+export async function startSnapshotJob(): Promise<void> {
+  if (isRunning) {
+    console.log('[Snapshot] Job already running');
+    return;
+  }
+  
+  try {
+    await initDb();
+    isRunning = true;
+    
+    snapshotInterval = setInterval(async () => {
+      await takeHourlySnapshot();
+      
+      const now = new Date();
+      if (now.getHours() === 0 && now.getMinutes() < 5) {
+        await createDailyRollup();
+      }
+    }, SNAPSHOT_INTERVAL_MS);
+    
+    pruneInterval = setInterval(pruneOldSnapshots, 24 * 60 * 60 * 1000);
+    
+    const intervalMinutes = SNAPSHOT_INTERVAL_MS / 60000;
+    console.log(`[Snapshot] Job started (${intervalMinutes}min snapshots, daily prune)`);
+    
+    await takeHourlySnapshot();
+    
+  } catch (err) {
+    console.error('[Snapshot] Failed to start job:', err);
+    isRunning = false;
+  }
+}
+
+export function stopSnapshotJob(): void {
+  isRunning = false;
+  
+  if (snapshotInterval) {
+    clearInterval(snapshotInterval);
+    snapshotInterval = null;
+  }
+  
+  if (pruneInterval) {
+    clearInterval(pruneInterval);
+    pruneInterval = null;
+  }
+  
+  console.log('[Snapshot] Job stopped');
+}
+
+export function isSnapshotRunning(): boolean {
+  return isRunning;
+}

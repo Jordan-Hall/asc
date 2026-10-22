@@ -1,0 +1,50 @@
+diff --git a/file b/file
+index f733d57..0b00c62 100644
+--- a/file
++++ b/file
+@@ -1,38 +1,13 @@
+ // Owned by @asc/form-schema; generates src/generated/form-widget-props.generated.ts
+ /**
+- * Turn each form widget's real Zod props schema — `@asc/ui`'s
+- * `componentCatalog` (`packages/ui/src/json-render/catalog.ts`) — into JSON
+- * Schema via zod's own `z.toJSONSchema`, and write the result as committed,
+- * generated data. `formUiSpecJsonSchema()` (`../src/json-schema.ts`) reads
+- * that generated file at runtime — never `@asc/ui` itself — so
+- * `@asc/form-schema` still carries no `@asc/ui` package/runtime
+- * dependency. This script is the one place in this package allowed to
+- * import `@asc/ui`, the same way `@asc/schema-core`'s
+- * `json-render-catalog.test.ts` is the one place allowed to read
+- * `@asc/ui` source off disk — both keep the coupling at generation/test
+- * time, never at runtime.
++ * Converts each form widget's real Zod props schema (`@asc/ui`'s
++ * `componentCatalog`) to JSON Schema via `z.toJSONSchema`, and writes the
++ * result as committed, generated data — the one place in this package
++ * allowed to import `@asc/ui` (by relative source path, to avoid a cyclic
++ * workspace dependency). `Composite` is excluded; `json-schema.ts` builds its
++ * schema by hand from the other widgets' generated schemas.
+  *
+- * `binding`/`value`/`label`/`required`/`disabled`/`error` are stripped from
+- * every widget's props before conversion: `compile-form-schema.ts`
+- * (`@asc/ui`) injects those onto a field's RENDERED props from the field
+- * itself and the live values, so they are never part of what a form author
+- * writes in `ui.props`. `Composite` is excluded — its authored shape
+- * (`primary`/`auxiliaries`) is a form-schema-only concept with no
+- * counterpart in `@asc/ui`'s `CompositeProps` (which describes the
+- * already-compiled, rendered props instead) — `json-schema.ts` builds its
+- * schema by hand, reusing the other 17 widgets' generated schemas for its
+- * `primary`/`auxiliaries` children.
+- *
+- * Imports `@asc/ui`'s catalog by RELATIVE SOURCE PATH, not the `@asc/ui`
+- * package — a real package/devDependency edge here would create a cyclic
+- * workspace dependency (`@asc/ui` already type-imports `@asc/form-schema`
+- * for `FormFieldSchema`), which turbo's build graph rejects outright. A
+- * relative import carries no package.json edge, needs no `@asc/ui` build
+- * step, and — like `json-render-catalog.test.ts`'s off-disk read — only
+- * ever runs at generation time, never shipped in this package's own build.
+- *
+- *   bun packages/form-schema/scripts/gen-widget-props.ts
+- *   bun packages/form-schema/scripts/gen-widget-props.ts --check
++ *   bun packages/form-schema/scripts/gen-widget-props.ts [--check]
+  */
+ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+ import { join } from 'node:path';

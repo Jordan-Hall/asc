@@ -1,0 +1,81 @@
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from collections import Counter
+
+from coverage import (Axis, covered, missing, report, required_cells,
+                      strength_report)
+
+AXES = {
+    "operator": Axis("operator", ("add_field", "add_rule"), why="two"),
+    "kind": Axis("kind", ("string", "number"), why="two"),
+    "register": Axis("register", ("imperative",), why="one"),
+    "hedge": Axis("hedge", ("bare",), why="one"),
+}
+
+
+def row(op, kind):
+    return {"operator": op, "kind": kind, "register": "imperative", "hedge": "bare"}
+
+
+def test_the_cover_is_the_full_product():
+    assert len(required_cells(AXES)) == 2 * 2 * 1 * 1
+
+
+def test_an_empty_corpus_covers_nothing():
+    assert len(missing(AXES, [])) == 4
+
+
+def test_a_complete_corpus_leaves_no_gap():
+    rows = [row(o, k) for o in ("add_field", "add_rule") for k in ("string", "number")]
+    assert missing(AXES, rows) == []
+
+
+def test_volume_does_not_substitute_for_coverage():
+    # A thousand rows of one cell is the failure this module exists to catch:
+    # a corpus that looks finished by count and is 75% absent by cover.
+    rows = [row("add_field", "string")] * 1000
+    assert len(missing(AXES, rows)) == 3
+
+
+def test_minimum_requires_mass_not_merely_presence():
+    rows = [row(o, k) for o in ("add_field", "add_rule") for k in ("string", "number")]
+    assert missing(AXES, rows, minimum=1) == []
+    assert len(missing(AXES, rows, minimum=2)) == 4
+
+
+def test_the_report_names_what_is_absent_by_axis_value():
+    text = report(AXES, [row("add_field", "string")])
+    assert "missing by operator" in text
+    assert "add_rule" in text
+
+
+def test_one_way_completeness_hides_interaction_holes():
+    # THE reason t-way exists. Two rows between them use every value of every
+    # axis once - the 1-way check calls that finished. The conjunctions our
+    # failures actually live on are three-quarters absent.
+    rows = [row("add_field", "string"), row("add_rule", "number")]
+    axes = {**AXES, "hedge": Axis("hedge", ("bare",), why="one")}
+    assert strength_report(axes, rows, 1)[0] == strength_report(axes, rows, 1)[1]
+    have, need, _ = strength_report(axes, rows, 2)
+    assert have < need
+
+
+def test_t_way_names_the_factor_values_that_are_short():
+    rows = [row("add_field", "string")]
+    _, _, by_value = strength_report(AXES, rows, 2)
+    assert any(k.startswith("operator=add_rule") for k in by_value)
+
+
+def test_a_complete_corpus_is_complete_at_every_strength():
+    rows = [row(o, k) for o in ("add_field", "add_rule") for k in ("string", "number")]
+    for t in (1, 2, 3, 4):
+        have, need, _ = strength_report(AXES, rows, t)
+        assert have == need, f"{t}-way incomplete"
+
+
+def test_strength_above_the_factor_count_is_not_an_error():
+    assert strength_report(AXES, [row("add_field", "string")], 99) == (0, 0, Counter())

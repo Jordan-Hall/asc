@@ -1,0 +1,101 @@
+/**
+ * A lone checkbox and its question stay on one row.
+ *
+ * The COPD eligibility confirmations are sentences - "I confirm the patient
+ * will be counselled regarding side effects including receiving a written
+ * patient information leaflet" - and the field was a WRAPPING FLEX ROW. A
+ * sentence that long cannot fit beside a 20px box, so it wrapped to the next
+ * line and left the box stranded above it: a column of loose ticks with the
+ * statements they belong to underneath.
+ *
+ * A wrapping row cannot express "these two are one thing"; a grid can. These
+ * check the structure that makes that true, because the failure was invisible
+ * to every test that only asked whether the control rendered.
+ */
+import { expect, test } from '@rstest/core';
+import { createField } from './index.js';
+
+/** A field built the way json-render builds a lone checkbox. */
+function checkboxField(label: string): HTMLElement {
+  return createField({
+    input: {
+      id: 'elig_counselled',
+      name: 'elig_counselled',
+      type: 'checkbox',
+      checked: false,
+    },
+    label: { for: 'elig_counselled', text: label },
+  });
+}
+
+const LONG =
+  'I confirm the patient will be counselled regarding side effects ' +
+  'including receiving a written patient information leaflet ' +
+  '(specifically eye symptoms)';
+
+test('a lone checkbox is laid out as a grid, not a wrapping row', () => {
+  const field = checkboxField(LONG);
+  expect(field.classList.contains('field-inline-variant')).toBe(true);
+  // The class is what carries the layout; the stylesheet is not loaded here,
+  // so the structure it needs is what this asserts.
+  const label = field.querySelector('label');
+  const control = field.querySelector('.field-container');
+  expect(label).not.toBeNull();
+  expect(control).not.toBeNull();
+});
+
+test('every part of the field is a direct child, so the grid can place each one', () => {
+  // A two-column grid with nothing said about placement flows four children
+  // in source order: the explanation landed in the control's cell and pushed
+  // the box onto a row of its own above the question it belongs to.
+  const field = createField({
+    input: { id: 'c', name: 'c', type: 'checkbox', checked: false },
+    label: { for: 'c', text: LONG },
+    helpText: 'The patient will be advised to report any new symptoms.',
+    errorMessage: 'Required',
+  });
+  const children = [...field.children].map((child) => child.className);
+  expect(children.some((c) => c.includes('field-label'))).toBe(true);
+  expect(children.some((c) => c.includes('field-help'))).toBe(true);
+  expect(children.some((c) => c.includes('field-container'))).toBe(true);
+  expect(children.some((c) => c.includes('field-message'))).toBe(true);
+});
+
+test('the question and the box are siblings, so one row can hold both', () => {
+  const field = checkboxField(LONG);
+  const label = field.querySelector('label');
+  const control = field.querySelector('.field-container');
+  // Nested, either would wrap independently of the other and no grid could
+  // place them on the same row.
+  expect(label?.parentElement).toBe(field);
+  expect(control?.parentElement).toBe(field);
+});
+
+test('the question comes first, whatever its length', () => {
+  for (const text of ['I agree', LONG]) {
+    const field = checkboxField(text);
+    const label = field.querySelector('label');
+    const control = field.querySelector('.field-container');
+    if (!label || !control) throw new Error('the field did not render');
+    const labelFirst = Boolean(
+      label.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(labelFirst).toBe(true);
+  }
+});
+
+test('the box keeps the 44px target its label shares', () => {
+  const field = checkboxField(LONG);
+  const label = field.querySelector('label');
+  // WCAG 2.5.5 measures a checkbox's target as the control together with the
+  // label that activates it, so the label carries the minimum.
+  expect(label?.classList.contains('field-checkbox-label')).toBe(true);
+});
+
+test('a text field is not laid out this way', () => {
+  const field = createField({
+    input: { id: 'nhs', name: 'nhs', type: 'text' },
+    label: { for: 'nhs', text: 'NHS number' },
+  });
+  expect(field.classList.contains('field-inline-variant')).toBe(false);
+});

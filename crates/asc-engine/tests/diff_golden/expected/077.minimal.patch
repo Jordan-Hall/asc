@@ -1,0 +1,30 @@
+diff --git a/file b/file
+index e747c9b..d8de2b6 100644
+--- a/file
++++ b/file
+@@ -6,17 +6,23 @@
+       "args": ["mcp"],
+       "env": {}
+     },
+-
+     "coolify": {
+       "type": "http",
+       "url": "https://coolify.example.org/mcp",
+-      "headers": { "Authorization": "Bearer ${COOLIFY_API_TOKEN}" }
++      "headers": {
++        "Authorization": "Bearer ${COOLIFY_API_TOKEN}"
++      }
+     },
+     "asc-schema": {
+       "type": "stdio",
+       "command": "bun",
+       "args": ["packages/schema/form/scripts/mcp-server.ts"],
+       "env": {}
++    },
++    "tracedecay": {
++      "type": "stdio",
++      "args": ["--no-env-file", "scripts/tracedecay.ts", "serve"],
++      "command": "bun"
+     }
+   }
+ }

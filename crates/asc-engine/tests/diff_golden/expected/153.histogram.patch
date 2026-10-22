@@ -1,0 +1,23 @@
+diff --git a/file b/file
+index 1240f10..3990503 100644
+--- a/file
++++ b/file
+@@ -10,7 +10,8 @@
+       "types": "./dist/index.d.ts",
+       "import": "./dist/index.js"
+     },
+-    "./schema": "./schema/report-designer.schema.json"
++    "./schema": "./schema/report-designer.schema.json",
++    "./dashboard-schema": "./schema/dashboard-designer.schema.json"
+   },
+   "files": [
+     "dist",
+@@ -33,5 +34,8 @@
+     "@typescript/native-preview": "latest",
+     "ajv": "^8.17.1",
+     "typescript": "7.0.2"
++  },
++  "dependencies": {
++    "@asc/ui": "workspace:*"
+   }
+ }

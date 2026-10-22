@@ -1,0 +1,112 @@
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { websocket } from 'hono/bun';
+import { surrealAuthMiddleware } from './middleware/surreal-auth';
+import { initDb, getDb } from './lib/db';
+import reportsRouter from './routes/reports';
+import reportJobsRouter from './routes/report-jobs';
+import schedulesRouter from './routes/schedules';
+import liveRouter from './routes/live';
+import dashboardsRouter from './routes/dashboards';
+import datasetsRouter from './routes/datasets';
+import metricsRouter from './routes/metrics';
+import analysisStatusRouter from './routes/analysis-status';
+import publicRouter from './routes/public';
+import { startReportJobRunner } from './lib/report-job-runner';
+import { startScheduleWorker } from './workers/schedule-worker';
+import type { AppContext } from './types';
+
+const FRONTEND_ORIGIN = import.meta.env.INSIGHT_SERVICE_FRONTEND_ORIGIN;
+const PORT = import.meta.env.INSIGHT_SERVICE_PORT || 3023;
+
+const app = new Hono<AppContext>();
+
+app.use(
+  '*',
+  cors({
+    origin: FRONTEND_ORIGIN ? FRONTEND_ORIGIN.split(',') : [],
+    allowHeaders: ['Content-Type', 'Authorization'],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    maxAge: 600,
+  }),
+);
+
+app.get('/health', (c) => c.json({ status: 'ok', service: 'insight-service' }));
+
+// Queue-depth + liveness scrape target (unauthenticated, like /health). Returns
+// only COUNTS — no row data, no PID — over the root connection: schedules currently
+// due, and report_job / analysis_job tallied by status. A growing `processing`
+// count signals a stuck/crashed worker (see RUNBOOK). Not part of AppType (it is a
+// plain ops endpoint, not consumed by the typed hc client).
+app.get('/health/queues', async (c) => {
+  // Platform-wide job tallies across every tenant are an operations signal, not
+  // a public one. This is the same shared service token analysis-pipeline-api
+  // uses; without it configured the endpoint is simply closed, because an ops
+  // endpoint nobody has set up is not a reason to publish the numbers.
+  const expected = import.meta.env.OPS_HEALTH_TOKEN ?? '';
+  const provided = c.req.header('x-internal-token') ?? '';
+  if (!expected || expected.length !== provided.length || expected !== provided) {
+    return c.json({ error: 'Not found' }, 404);
+  }
+  try {
+    const db = getDb();
+    const [dueRes, rjRes, ajRes] = await Promise.all([
+      db.query(
+        'SELECT count() AS n FROM ingest_scheduled_report WHERE enabled = true AND next_run != NONE AND next_run <= time::now() GROUP ALL',
+      ),
+      db.query('SELECT status, count() AS n FROM report_job GROUP BY status'),
+      db.query('SELECT status, count() AS n FROM analysis_job GROUP BY status'),
+    ]);
+    const byStatus = (res: unknown): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const row of ((res as Array<Array<{ status?: unknown; n?: number }>>)?.[0] ?? [])) {
+        if (row?.status != null) out[String(row.status)] = Number(row.n ?? 0);
+      }
+      return out;
+    };
+    const schedulesDue = (dueRes as Array<Array<{ n?: number }>>)?.[0]?.[0]?.n ?? 0;
+    return c.json({ schedulesDue: Number(schedulesDue), reportJobs: byStatus(rjRes), analysisJobs: byStatus(ajRes) });
+  } catch (err) {
+    return c.json({ error: 'queue health unavailable', message: err instanceof Error ? err.message : String(err) }, 503);
+  }
+});
+
+// The auth gate is PATH-SCOPED to /api/* only, so the /public surface below stays
+// unauthenticated regardless of mount order.
+app.use('/api/*', surrealAuthMiddleware);
+
+const routes = app
+  // Public, unauthenticated data-explorer surface — including the pre-auth dashboard
+  // share-link redemption at /public/dashboards/redeem (defined inside publicRouter,
+  // ahead of /dashboards/:id, so the static `redeem` segment is not shadowed by the
+  // by-id param). Chained into `routes` so AppType covers it for the hc client.
+  .route('/public', publicRouter)
+  // The async report-job router must mount BEFORE the reports router so its
+  // `/api/reports/jobs/*` paths are matched ahead of reports' `/:id` patterns.
+  .route('/api/reports/jobs', reportJobsRouter)
+  .route('/api/reports', reportsRouter)
+  .route('/api/schedules', schedulesRouter)
+  .route('/api/live', liveRouter)
+  .route('/api/dashboards', dashboardsRouter)
+  .route('/api/datasets', datasetsRouter)
+  // Governed metrics: definitions, and evaluation on demand.
+  .route('/api/metrics', metricsRouter)
+  .route('/api/analysis', analysisStatusRouter);
+
+await initDb().catch((err) => console.error('[Insight] DB init failed:', err));
+
+// Async report-build queue worker + scheduled-report worker (both root-connection,
+// idempotent, kill-switched). Started after DB init so the first claim has a conn.
+startReportJobRunner();
+startScheduleWorker();
+
+console.log(`🚀 Insight Service running on port ${PORT}`);
+
+export default {
+  port: PORT,
+  fetch: app.fetch,
+  websocket,
+};
+
+export type AppType = typeof routes;

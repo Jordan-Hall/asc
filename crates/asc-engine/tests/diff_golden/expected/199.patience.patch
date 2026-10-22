@@ -1,0 +1,16 @@
+diff --git a/file b/file
+index beb3527..0ca3429 100644
+--- a/file
++++ b/file
+@@ -30,6 +30,11 @@
+       "maxUser": 1024,
+       "maxNew": 5120,
+       "maxSeq": 6272
++    },
++    "nl-base": {
++      "maxUser": 4096,
++      "maxNew": 2048,
++      "maxSeq": 6272
+     }
+   }
+ }

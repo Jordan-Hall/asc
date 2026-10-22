@@ -1,0 +1,18 @@
+diff --git a/file b/file
+index 056b687..ade2320 100644
+--- a/file
++++ b/file
+@@ -104,8 +104,12 @@ export interface CoreFieldSchema {
+   /**
+    * A `@asc/ui` widget kind reference — e.g. `'select'`, `'nhsNumber'`. Not
+    * every consumer renders a field, so this is optional the way `title` is.
++   * Bare `string`, not a closed union: `@asc/ui` owns its widget registry, not schema-core.
+    */
+   widget?: string;
+-  /** How this field is matched during dedupe/linkage — e.g. `'exact'`, `'fuzzy'`. */
++  /**
++   * How this field is matched during dedupe/linkage — e.g. `'exact'`, `'fuzzy'`.
++   * Bare `string`, not a closed union: the linkage engine owns this vocabulary, not schema-core.
++   */
+   matchStrategy?: string;
+ }

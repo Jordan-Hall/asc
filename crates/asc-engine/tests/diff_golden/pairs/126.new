@@ -1,0 +1,240 @@
+version: '3.8'
+services:
+  pd0:
+    container_name: surrealdb-pd0
+    image: 'pingcap/pd:v6.1.0'
+    ports:
+      - '2379'
+    volumes:
+      - type: volume
+        source: pd0-data
+        target: /data
+      - type: volume
+        source: pd0-logs
+        target: /logs
+    command:
+      - '--name=pd0'
+      - '--client-urls=http://0.0.0.0:2379'
+      - '--peer-urls=http://0.0.0.0:2380'
+      - '--advertise-client-urls=http://pd0:2379'
+      - '--advertise-peer-urls=http://pd0:2380'
+      - '--initial-cluster=pd0=http://pd0:2380,pd1=http://pd1:2380,pd2=http://pd2:2380'
+      - '--data-dir=/data/pd0'
+      - '--log-file=/logs/pd0.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:2379/pd/api/v1/health'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+  pd1:
+    container_name: surrealdb-pd1
+    image: 'pingcap/pd:v6.1.0'
+    ports:
+      - '2379'
+    volumes:
+      - type: volume
+        source: pd1-data
+        target: /data
+      - type: volume
+        source: pd1-logs
+        target: /logs
+    command:
+      - '--name=pd1'
+      - '--client-urls=http://0.0.0.0:2379'
+      - '--peer-urls=http://0.0.0.0:2380'
+      - '--advertise-client-urls=http://pd1:2379'
+      - '--advertise-peer-urls=http://pd1:2380'
+      - '--initial-cluster=pd0=http://pd0:2380,pd1=http://pd1:2380,pd2=http://pd2:2380'
+      - '--data-dir=/data/pd1'
+      - '--log-file=/logs/pd1.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:2379/pd/api/v1/health'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+  pd2:
+    container_name: surrealdb-pd2
+    image: 'pingcap/pd:v6.1.0'
+    ports:
+      - '2379'
+    volumes:
+      - type: volume
+        source: pd2-data
+        target: /data
+      - type: volume
+        source: pd2-logs
+        target: /logs
+    command:
+      - '--name=pd2'
+      - '--client-urls=http://0.0.0.0:2379'
+      - '--peer-urls=http://0.0.0.0:2380'
+      - '--advertise-client-urls=http://pd2:2379'
+      - '--advertise-peer-urls=http://pd2:2380'
+      - '--initial-cluster=pd0=http://pd0:2380,pd1=http://pd1:2380,pd2=http://pd2:2380'
+      - '--data-dir=/data/pd2'
+      - '--log-file=/logs/pd2.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:2379/pd/api/v1/health'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: on-failure
+  tikv0:
+    container_name: surrealdb-tikv0
+    image: 'pingcap/tikv:v6.1.0'
+    volumes:
+      - type: volume
+        source: tikv0-data
+        target: /data
+      - type: volume
+        source: tikv0-logs
+        target: /logs
+    command:
+      - '--addr=0.0.0.0:20160'
+      - '--advertise-addr=tikv0:20160'
+      - '--data-dir=/data/tikv0'
+      - '--pd=pd0:2379,pd1:2379,pd2:2379'
+      - '--log-file=/logs/tikv0.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:20180/status'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      pd0:
+        condition: service_healthy
+      pd1:
+        condition: service_healthy
+      pd2:
+        condition: service_healthy
+    restart: on-failure
+  tikv1:
+    container_name: surrealdb-tikv1
+    image: 'pingcap/tikv:v6.1.0'
+    volumes:
+      - type: volume
+        source: tikv1-data
+        target: /data
+      - type: volume
+        source: tikv1-logs
+        target: /logs
+    command:
+      - '--addr=0.0.0.0:20160'
+      - '--advertise-addr=tikv1:20160'
+      - '--data-dir=/data/tikv1'
+      - '--pd=pd0:2379,pd1:2379,pd2:2379'
+      - '--log-file=/logs/tikv1.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:20180/status'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      pd0:
+        condition: service_healthy
+      pd1:
+        condition: service_healthy
+      pd2:
+        condition: service_healthy
+    restart: on-failure
+  tikv2:
+    container_name: surrealdb-tikv2
+    image: 'pingcap/tikv:v6.1.0'
+    volumes:
+      - type: volume
+        source: tikv2-data
+        target: /data
+      - type: volume
+        source: tikv2-logs
+        target: /logs
+    command:
+      - '--addr=0.0.0.0:20160'
+      - '--advertise-addr=tikv2:20160'
+      - '--data-dir=/data/tikv2'
+      - '--pd=pd0:2379,pd1:2379,pd2:2379'
+      - '--log-file=/logs/tikv2.log'
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - '-qO-'
+        - 'http://127.0.0.1:20180/status'
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      pd0:
+        condition: service_healthy
+      pd1:
+        condition: service_healthy
+      pd2:
+        condition: service_healthy
+    restart: on-failure
+  surrealdb:
+    image: 'surrealdb/surrealdb:v3'
+    container_name: surrealdb
+    command:
+      - start
+      - '--user'
+      - '${SERVICE_USER_ROOT}'
+      - '--pass'
+      - '${SERVICE_PASSWORD_ROOT}'
+      # A --allow-net target list breaks JWKS-by-hostname (see docker-compose.yml).
+      # Denying http::* closes the SSRF vector without breaking the access layer.
+      - '--allow-net'
+      - '--deny-funcs'
+      - 'http'
+      - '--log'
+      - 'tikv://pd0:2379'
+    healthcheck:
+      test:
+        - CMD
+        - /surreal
+        - isready
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      tikv0:
+        condition: service_healthy
+      tikv1:
+        condition: service_healthy
+      tikv2:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  pd0-data:
+  pd0-logs:
+  pd1-data:
+  pd1-logs:
+  pd2-data:
+  pd2-logs:
+  tikv0-data:
+  tikv0-logs:
+  tikv1-data:
+  tikv1-logs:
+  tikv2-data:
+  tikv2-logs:

@@ -1,0 +1,22 @@
+import { describe, expect, test } from 'bun:test';
+import { auditAll, SOMA_CORPORA } from './capability-audit';
+
+describe('Soma corpus capability audit', () => {
+  test('audits all five non-empty corpora through their runtime gates', () => {
+    const results = auditAll();
+    expect(results.map((r) => r.corpus)).toEqual([...SOMA_CORPORA]);
+    for (const result of results) {
+      expect(result.samples).toBeGreaterThan(0);
+      expect(result.targets).toBeGreaterThan(0);
+      expect(result.valid + result.unsupported).toBeGreaterThanOrEqual(result.targets);
+      expect(result.executable).toBeLessThanOrEqual(result.valid);
+    }
+  // Corpus-scale campaign: the audit walks every sample of much larger
+  // corpora, and takes about two minutes doing it. The budget was 120s, which
+  // it met by roughly a tenth of a second on an idle machine and missed
+  // whenever anything else was running - so it failed for reasons that had
+  // nothing to do with the corpora. Headroom, not a higher bar: if this ever
+  // approaches 300s the audit has genuinely got slower and that is worth
+  // knowing rather than absorbing.
+  }, 300_000);
+});

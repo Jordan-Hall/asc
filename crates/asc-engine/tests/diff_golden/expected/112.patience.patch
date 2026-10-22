@@ -1,0 +1,14 @@
+diff --git a/file b/file
+index e60804f..a22e74c 100644
+--- a/file
++++ b/file
+@@ -38,8 +38,7 @@
+   "workspaces": [
+     "packages/*",
+     "packages/soma-sdk/ts/*",
+-    "apps/*",
+-    "e2e"
++    "apps/*"
+   ],
+   "overrides": {
+     "better-auth": "1.7.0-rc.6",

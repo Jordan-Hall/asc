@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index b2cd2fe..13fb538 100644
+--- a/file
++++ b/file
+@@ -24,6 +24,7 @@ export const permissionSubjects: SubjectMetadata[] = [
+   { value: 'person', label: 'Person Records', description: 'Patient demographics' },
+   { value: 'schemaDesign', label: 'Schema Design', description: 'Schema definitions' },
+   { value: 'sectionLibrary', label: 'Section Library', description: 'Reusable section blocks' },
++  { value: 'plugin', label: 'Plugins', description: 'Federated plugins from the registry' },
+   { value: 'branchAnalytics', label: 'Branch Analytics', description: 'Branch analytics and exports' },
+   { value: 'orgBranchingConfig', label: 'Org Branching Config', description: 'Org branching configuration' },
+   { value: 'team', label: 'Teams', description: 'Team management' },

@@ -1,0 +1,13 @@
+diff --git a/file b/file
+index 1a26a17..552606f 100644
+--- a/file
++++ b/file
+@@ -35,7 +35,7 @@ let running = false;
+ 
+ /** Kill-switch, mirroring enqueue-analysis-job's ANALYSIS_ENABLED. Default ON. */
+ function workerEnabled(): boolean {
+-  const v = (process.env.REPORT_JOBS_ENABLED ?? '').trim().toLowerCase();
++  const v = (import.meta.env.REPORT_JOBS_ENABLED ?? '').trim().toLowerCase();
+   if (v === '') return true;
+   return !['false', '0', 'no', 'off'].includes(v);
+ }

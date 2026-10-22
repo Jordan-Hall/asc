@@ -1,0 +1,12 @@
+diff --git a/file b/file
+index f00ffb2..dc0abe1 100644
+--- a/file
++++ b/file
+@@ -32,6 +32,7 @@
+     "typescript": "7.0.2"
+   },
+   "dependencies": {
++    "@asc/schema-dsl": "workspace:*",
+     "@asc/severity-v3": "workspace:*",
+     "ajv": "^8.20.0"
+   }

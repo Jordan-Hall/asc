@@ -1,0 +1,27 @@
+diff --git a/file b/file
+index c3d752c..c850b0e 100644
+--- a/file
++++ b/file
+@@ -83,3 +83,22 @@ fn a_name_alone_in_a_match_arm_binds_the_value() {
+     assert_eq!(run("match root.score { n => n * 2 }", json!({ "score": 4 })), json!(8));
+     assert_eq!(run("match 3 { n if n > 1 => 1, _ => 0 }", json!({})), json!(1));
+ }
++
++#[test]
++fn a_read_off_a_stage_reads_what_the_stage_gives_back() {
++    // `xs |> first()?.t` handed xs to `first()?.t` whole, which is no function.
++    let root = json!({ "xs": [{ "t": 2 }, { "t": 1 }] });
++    assert_eq!(run("root.xs |> first()?.t", root.clone()), json!(2));
++    assert_eq!(run("[3, 1] |> sort()[0]", json!({})), json!(1));
++    assert_eq!(run("root.xs |> sort(_.t) |> first()?.t", root), json!(1));
++}
++
++#[test]
++fn a_sort_given_what_to_sort_by_sorts_by_it() {
++    // `sort` takes the list alone, and dropped a key without a word.
++    let root = json!({ "xs": [{ "t": 2 }, { "t": 1 }] });
++    assert_eq!(run("sort(root.xs, x => x.t)", root.clone()), json!([{ "t": 1 }, { "t": 2 }]));
++    assert_eq!(run("sort(root.xs, \"t\")", root.clone()), json!([{ "t": 1 }, { "t": 2 }]));
++    assert_eq!(run("sortDesc(root.xs, \"t\")", root), json!([{ "t": 2 }, { "t": 1 }]));
++    assert_eq!(run("sort([3, 1, 2])", json!({})), json!([1, 2, 3]));
++}

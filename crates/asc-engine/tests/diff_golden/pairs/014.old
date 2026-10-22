@@ -1,0 +1,141 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "react", "jsx-a11y", "import", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "perf": "warn"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true,
+    "node": true
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/*.generated.ts",
+    "**/generated/**",
+    "packages/database/types/src/database.ts",
+    "**/schema/*.schema.json",
+    "apps/docs-site/public/explorer/**",
+    ".claude/worktrees/**",
+    "packages/soma/sdk/**",
+    "**/target/**",
+    "**/playwright-report/**",
+    "**/test-results/**",
+    "**/.rstest-temp/**",
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    ".oxlint-plugins/**",
+    "tools/oxlint/anti-slop/**"
+  ],
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "typescript/no-unused-vars": "error",
+    "no-unused-vars": "off",
+    "no-control-regex": "off",
+    "react/react-in-jsx-scope": "off",
+    "no-underscore-dangle": "off",
+    "no-await-in-loop": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/prefer-add-event-listener": "off",
+    "import/no-unassigned-import": "off",
+    "no-shadow": "warn",
+    "react/no-array-index-key": "warn",
+    "anti-slop/no-chained-type-assertions": "warn",
+    "anti-slop/no-conditional-empty-object-spread": "warn",
+    "anti-slop/no-known-value-widening": "warn",
+    "anti-slop/no-module-mocking": "warn",
+    "anti-slop/no-object-parameters": "warn",
+    "anti-slop/no-reflect-apply": "warn",
+    "anti-slop/no-reflect-get": "warn",
+    "anti-slop/no-runtime-typeof": "warn",
+    "anti-slop/no-shape-in-symbol-names": "warn",
+    "anti-slop/no-unknown-parameters": "warn",
+    "anti-slop/no-unknown-returns": "warn",
+    "anti-slop/no-unknown-type-aliases": "warn",
+    "anti-slop/no-unsafe-dictionary-type": "warn",
+    "anti-slop/no-widen-then-assert": "warn",
+    "anti-slop/require-safety-comment-for-type-assertion": "warn",
+    "asc/no-discarded-check": "error",
+    "asc/no-process-env": "error",
+    "asc/no-silent-fallback": "error",
+    "asc/no-unjustified-double-assertion": "warn",
+    "react/refs": "off",
+    "react/preserve-manual-memoization": "off",
+    "asc/no-tailwind-palette": "error"
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/tests/**",
+        "**/__tests__/**",
+        "e2e/**"
+      ],
+      "rules": {
+        "typescript/no-explicit-any": "warn",
+        "typescript/no-non-null-assertion": "warn"
+      }
+    },
+    {
+      "files": ["scripts/**", "**/scripts/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      "files": [
+        "scripts/**",
+        "**/scripts/**",
+        "**/*.config.*",
+        "**/bin/**",
+        "e2e/**",
+        "**/*.test.ts",
+        "**/tests/**",
+        "**/e2e/**",
+        "packages/repo-audit/src/cli.ts",
+        "packages/dsl/core/rust/js/src/napi-loader.ts",
+        "packages/database/migrations/src/run.ts",
+        "packages/dsl/module-deploy/load.ts",
+        "packages/database/migrations/src/status.ts",
+        "packages/database/migrations/src/generate-role-seed.ts",
+        "**/conformance/**",
+        "**/benchmark-*",
+        "apps/delta/audits/config/env-define.ts",
+        "packages/dsl/core/src/expression/evaluator.ts"
+      ],
+      "rules": {
+        "asc/no-process-env": "off"
+      }
+    },
+    {
+      "files": ["e2e/**"],
+      "rules": {
+        "asc/no-silent-fallback": "off"
+      }
+    }
+  ],
+  "jsPlugins": [
+    {
+      "name": "anti-slop",
+      "specifier": "./tools/oxlint/anti-slop/index.ts"
+    },
+    {
+      "name": "asc",
+      "specifier": "./.oxlint-plugins/asc.mjs"
+    }
+  ]
+}
