@@ -9,9 +9,12 @@
 //!
 //! The mirror URL, the remote's refs and the webhook body are all untrusted: URLs are checked
 //! (no `-` options, no `ext::` helpers, a protocol allow-list), git runs without the host's
-//! config, output and run time are bounded, and ref counts are capped.
+//! config, output and run time are bounded, and ref counts are capped. A URL a client supplies
+//! (`RepoAdmin.init { mirror_url }`) may only name `https` or `ssh` on the configured Forgejo
+//! host or an operator-listed host; local paths and `file:` come from the server config only.
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
@@ -75,8 +78,10 @@ const REFSPECS: [&str; 3] = [
     "+refs/pull/*:refs/pull/*",
 ];
 const REF_PREFIXES: [&str; 3] = ["refs/heads/", "refs/tags/", "refs/pull/"];
-/// Protocols a mirror URL may use.
-const ALLOWED_PROTOCOLS: &str = "http:https:ssh:git:file";
+/// Protocols a fetch may use (`GIT_ALLOW_PROTOCOL`).
+const NETWORK_PROTOCOLS: &str = "https:ssh";
+/// As [`NETWORK_PROTOCOLS`], for an operator-configured local mirror.
+const LOCAL_PROTOCOLS: &str = "https:ssh:file";
 
 /// Why a mirror sync failed.
 #[derive(Debug, thiserror::Error)]
@@ -144,45 +149,187 @@ impl std::fmt::Debug for MirrorTarget {
     }
 }
 
-/// Mirror URLs: explicit entries (`RepoAdmin.init { mirror_url }` sets them), else
-/// `<forgejo.url>/<owner>/<repo>.git`.
+/// Who named a mirror URL. Only the operator may name local repositories or any host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    /// `RepoAdmin.init { mirror_url }`: untrusted.
+    Client,
+    /// The server config, or the default derived from `forgejo.url`.
+    Operator,
+}
+
+/// Mirror URLs: client entries (`RepoAdmin.init { mirror_url }` sets them through
+/// [`set`](Self::set)), operator entries ([`set_configured`](Self::set_configured)), else
+/// `<forgejo.url>/<owner>/<repo>.git`. The two kinds of entry are kept apart because they are
+/// checked differently.
 #[derive(Default)]
 pub struct MirrorSources {
-    explicit: RwLock<HashMap<String, MirrorTarget>>,
+    client: RwLock<HashMap<String, MirrorTarget>>,
+    configured: RwLock<HashMap<String, MirrorTarget>>,
     forgejo: Option<String>,
+    /// Hosts a client URL may name: the Forgejo host and the operator's list (normalised).
+    hosts: HashSet<String>,
 }
 
 impl MirrorSources {
-    /// Sources that fall back to the Forgejo at `forgejo_url`.
+    /// Sources that fall back to the Forgejo at `forgejo_url`, and accept client URLs only on
+    /// its host.
     pub fn with_forgejo(forgejo_url: Option<&str>) -> Self {
+        Self::with_policy(forgejo_url, &[])
+    }
+
+    /// As [`with_forgejo`](Self::with_forgejo), plus `allowed_hosts` (host names or IP literals;
+    /// an IPv6 literal in brackets) that client URLs may also name. With no Forgejo and an empty
+    /// list, every client URL is refused.
+    pub fn with_policy(forgejo_url: Option<&str>, allowed_hosts: &[String]) -> Self {
+        let mut hosts = HashSet::new();
+        if let Some(h) = forgejo_url
+            .and_then(|u| url::Url::parse(u).ok())
+            .and_then(|u| u.host().map(|h| h.to_string()))
+        {
+            hosts.insert(h);
+        }
+        for h in allowed_hosts {
+            match url::Host::parse(h.trim()) {
+                Ok(h) => {
+                    hosts.insert(h.to_string());
+                }
+                Err(_) => tracing::warn!(host = %h, "ignoring an unusable mirror host"),
+            }
+        }
         Self {
-            explicit: RwLock::default(),
+            client: RwLock::default(),
+            configured: RwLock::default(),
             forgejo: forgejo_url.map(|u| u.trim_end_matches('/').to_owned()),
+            hosts,
         }
     }
 
-    /// Sets the source of `repo`; the URL is checked on every use.
-    pub fn set(&self, repo: &RepoName, target: MirrorTarget) {
-        if let Ok(mut m) = self.explicit.write() {
+    /// Sets the source of `repo` from a client request. Refused unless the URL passes
+    /// [`check_client_url`](Self::check_client_url); it is checked again on every use.
+    pub fn set(&self, repo: &RepoName, target: MirrorTarget) -> Result<(), MirrorError> {
+        self.check_client_url(&target.url)?;
+        if let Ok(mut m) = self.client.write() {
             m.insert(repo.to_string(), target);
         }
+        Ok(())
     }
 
-    fn resolve(&self, repo: &RepoName) -> Option<MirrorTarget> {
-        if let Ok(m) = self.explicit.read()
-            && let Some(t) = m.get(repo.as_str())
-        {
-            return Some(t.clone());
+    /// Sets the source of `repo` from the server config: also a local path or `file:` URL, on
+    /// any host. Never call this with a value a client chose.
+    pub fn set_configured(&self, repo: &RepoName, target: MirrorTarget) -> Result<(), MirrorError> {
+        check_url(&target.url)?;
+        if let Ok(mut m) = self.configured.write() {
+            m.insert(repo.to_string(), target);
         }
-        self.forgejo.as_ref().map(|base| MirrorTarget {
-            url: format!("{base}/{repo}.git"),
-            token: None,
+        Ok(())
+    }
+
+    fn resolve(&self, repo: &RepoName) -> Option<(MirrorTarget, Origin)> {
+        for (map, origin) in [
+            (&self.configured, Origin::Operator),
+            (&self.client, Origin::Client),
+        ] {
+            if let Ok(m) = map.read()
+                && let Some(t) = m.get(repo.as_str())
+            {
+                return Some((t.clone(), origin));
+            }
+        }
+        self.forgejo.as_ref().map(|base| {
+            (
+                MirrorTarget {
+                    url: format!("{base}/{repo}.git"),
+                    token: None,
+                },
+                Origin::Operator,
+            )
         })
+    }
+
+    /// Checks `url` for `origin` and returns the protocols the fetch may use.
+    fn check(&self, url: &str, origin: Origin) -> Result<&'static str, MirrorError> {
+        match origin {
+            Origin::Client => self.check_client_url(url).map(|()| NETWORK_PROTOCOLS),
+            Origin::Operator => {
+                check_url(url)?;
+                Ok(if is_local(url) || url.starts_with("file:") {
+                    LOCAL_PROTOCOLS
+                } else {
+                    NETWORK_PROTOCOLS
+                })
+            }
+        }
+    }
+
+    /// The policy for a URL a client chose: `https` or `ssh` (no password in the URL) on the
+    /// Forgejo host or an operator-listed host. An IP literal in a loopback, private, link-local
+    /// or unspecified range needs an exact operator entry.
+    pub fn check_client_url(&self, url: &str) -> Result<(), MirrorError> {
+        let bad = MirrorError::BadUrl;
+        check_url(url)?;
+        if is_local(url) {
+            return Err(bad("local repositories cannot be named by a client"));
+        }
+        let parsed = url::Url::parse(url).map_err(|_| bad("not a url"))?;
+        if !matches!(parsed.scheme(), "https" | "ssh") {
+            return Err(bad("protocol not allowed for a client"));
+        }
+        if parsed.password().is_some() {
+            return Err(bad("credentials in the url are not allowed"));
+        }
+        let host = parsed.host().ok_or_else(|| bad("no host"))?;
+        let listed = self.hosts.contains(&host.to_string());
+        let internal = match host {
+            url::Host::Ipv4(ip) => is_internal(IpAddr::V4(ip)),
+            url::Host::Ipv6(ip) => is_internal(IpAddr::V6(ip)),
+            url::Host::Domain(_) => false,
+        };
+        if internal && !listed {
+            return Err(bad("internal addresses are not allowed"));
+        }
+        if !listed {
+            return Err(bad(
+                "host is not the forgejo host or an allowed mirror host",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// True for an absolute filesystem path (a local repository, or a UNC path on Windows).
+fn is_local(url: &str) -> bool {
+    Path::new(url).is_absolute() || url.starts_with(['/', '\\'])
+}
+
+/// Loopback, private, link-local, unspecified, multicast and shared-address-space addresses.
+fn is_internal(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(a) => {
+            a.is_loopback()
+                || a.is_private()
+                || a.is_link_local()
+                || a.is_unspecified()
+                || a.is_broadcast()
+                || a.is_multicast()
+                || (a.octets()[0] == 100 && (64..128).contains(&a.octets()[1]))
+        }
+        IpAddr::V6(a) => {
+            a.to_ipv4_mapped()
+                .is_some_and(|v4| is_internal(IpAddr::V4(v4)))
+                || a.is_loopback()
+                || a.is_unspecified()
+                || a.is_multicast()
+                || (a.segments()[0] & 0xfe00) == 0xfc00
+                || (a.segments()[0] & 0xffc0) == 0xfe80
+        }
     }
 }
 
 /// Refuses URLs git could be tricked by: option look-alikes, transport helpers (`ext::`), and
-/// protocols outside the allow-list. An absolute path is a local repository.
+/// protocols outside the allow-list (`https`, `ssh`, `file`, or an absolute path for a local
+/// repository). This is the check for an operator's URL; a client's also goes through
+/// [`MirrorSources::check_client_url`].
 pub fn check_url(url: &str) -> Result<(), MirrorError> {
     let bad = MirrorError::BadUrl;
     if url.is_empty() || url.len() > 4096 {
@@ -198,7 +345,7 @@ pub fn check_url(url: &str) -> Result<(), MirrorError> {
         return Ok(());
     }
     let parsed = url::Url::parse(url).map_err(|_| bad("not a url or absolute path"))?;
-    if matches!(parsed.scheme(), "http" | "https" | "ssh" | "git" | "file") {
+    if matches!(parsed.scheme(), "https" | "ssh" | "file") {
         Ok(())
     } else {
         Err(bad("protocol not allowed"))
@@ -215,6 +362,8 @@ pub struct MirrorConfig {
     /// The webhook secret; without it the webhook route is not served and only the poll runs.
     pub secret: Option<Vec<u8>>,
     pub forgejo_url: Option<String>,
+    /// Extra hosts a client-supplied mirror URL may name (besides the Forgejo host).
+    pub allowed_hosts: Vec<String>,
     pub interval: Duration,
     pub fetch_timeout: Duration,
 }
@@ -237,6 +386,7 @@ impl MirrorConfig {
             dir: disk.join("mirrors"),
             secret,
             forgejo_url: cfg.forgejo.as_ref().map(|f| f.url.clone()),
+            allowed_hosts: Vec::new(),
             interval: POLL_INTERVAL,
             fetch_timeout: FETCH_TIMEOUT,
         }))
@@ -323,7 +473,7 @@ impl Mirror {
         git: RealGit,
         cfg: MirrorConfig,
     ) -> Self {
-        let sources = MirrorSources::with_forgejo(cfg.forgejo_url.as_deref());
+        let sources = MirrorSources::with_policy(cfg.forgejo_url.as_deref(), &cfg.allowed_hosts);
         Self {
             registry,
             gc: hooks.gc().clone(),
@@ -376,11 +526,11 @@ impl Mirror {
     }
 
     async fn sync_locked(&self, entry: &Arc<RepoEntry>) -> Result<SyncReport, MirrorError> {
-        let target = self
+        let (target, origin) = self
             .sources
             .resolve(&entry.name)
             .ok_or_else(|| MirrorError::NoSource(entry.name.to_string()))?;
-        check_url(&target.url)?;
+        let protocols = self.sources.check(&target.url, origin)?;
         let pool = self.registry.pool();
         let refs = self.registry.refs();
         // The GC fence (SPEC §3.6) covers the import through the ref commit, like a push.
@@ -389,7 +539,7 @@ impl Mirror {
 
         let dir = self.cfg.dir.join(format!("{}.git", entry.key.0));
         self.ensure_repo(&dir).await?;
-        self.fetch(&dir, &target).await?;
+        self.fetch(&dir, &target, protocols).await?;
         let tips = self.list_refs(&dir).await?;
 
         let report = import_tips(entry.clone(), pool.clone(), dir, tips).await?;
@@ -457,7 +607,9 @@ impl Mirror {
             set += 1;
             updates.push(RefUpdate {
                 name: name.clone(),
-                expect: current.get(name).map_or(Expect::Absent, |t| Expect::Value(*t)),
+                expect: current
+                    .get(name)
+                    .map_or(Expect::Absent, |t| Expect::Value(*t)),
                 new: Some(*target),
                 expires_at: None,
             });
@@ -491,7 +643,7 @@ impl Mirror {
 
     // -------------------------------------------------------------------------- git
 
-    fn base(&self, dir: &Path) -> Result<tokio::process::Command, MirrorError> {
+    fn base(&self, dir: &Path, protocols: &str) -> Result<tokio::process::Command, MirrorError> {
         let mut cmd = tokio::process::Command::from(self.git.command()?);
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         cmd.arg("--git-dir")
@@ -500,8 +652,12 @@ impl Mirror {
             .env("GCM_INTERACTIVE", "never")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", null)
-            .env("GIT_ALLOW_PROTOCOL", ALLOWED_PROTOCOLS)
+            .env("GIT_ALLOW_PROTOCOL", protocols)
             .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_CONFIG_PARAMETERS")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -526,17 +682,29 @@ impl Mirror {
         Ok(())
     }
 
-    async fn fetch(&self, dir: &Path, target: &MirrorTarget) -> Result<(), MirrorError> {
-        let mut cmd = self.base(dir)?;
+    /// The `git fetch` command for `target`, with `protocols` as `GIT_ALLOW_PROTOCOL`.
+    fn fetch_command(
+        &self,
+        dir: &Path,
+        target: &MirrorTarget,
+        protocols: &str,
+    ) -> Result<tokio::process::Command, MirrorError> {
+        let mut cmd = self.base(dir, protocols)?;
         if let Some(token) = &target.token {
-            let basic = base64::engine::general_purpose::STANDARD
-                .encode(format!("x-access-token:{token}"));
+            let basic =
+                base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
             cmd.env("GIT_CONFIG_COUNT", "1")
                 .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-                .env("GIT_CONFIG_VALUE_0", format!("Authorization: Basic {basic}"));
+                .env(
+                    "GIT_CONFIG_VALUE_0",
+                    format!("Authorization: Basic {basic}"),
+                );
         }
         cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
             .args(["-c", "protocol.ext.allow=never"])
+            // A redirect must not carry the token, or the fetch, to a host the checks never saw.
+            .args(["-c", "http.followRedirects=false"])
+            .args(["-c", "credential.helper=", "-c", "core.askPass="])
             .args([
                 "fetch",
                 "--quiet",
@@ -548,12 +716,22 @@ impl Mirror {
             ])
             .arg(&target.url)
             .args(REFSPECS);
+        Ok(cmd)
+    }
+
+    async fn fetch(
+        &self,
+        dir: &Path,
+        target: &MirrorTarget,
+        protocols: &str,
+    ) -> Result<(), MirrorError> {
+        let mut cmd = self.fetch_command(dir, target, protocols)?;
         run_capped(&mut cmd, 1024, self.cfg.fetch_timeout).await?;
         Ok(())
     }
 
     async fn list_refs(&self, dir: &Path) -> Result<Vec<Tip>, MirrorError> {
-        let mut cmd = self.base(dir)?;
+        let mut cmd = self.base(dir, LOCAL_PROTOCOLS)?;
         cmd.args(["for-each-ref", "--format=%(objectname) %(refname)"])
             .args(REF_PREFIXES.map(|p| p.trim_end_matches('/')));
         let out = run_capped(&mut cmd, MAX_REF_LIST_BYTES, self.cfg.fetch_timeout).await?;
@@ -1067,6 +1245,7 @@ mod tests {
             dir: tmp.path().join("mirrors"),
             secret: Some(SECRET.to_vec()),
             forgejo_url: None,
+            allowed_hosts: Vec::new(),
             interval: POLL_INTERVAL,
             fetch_timeout: Duration::from_secs(120),
         };
@@ -1076,13 +1255,17 @@ mod tests {
             real,
             cfg,
         ));
-        mirror.sources().set(
-            &name,
-            MirrorTarget {
-                url: up.to_str().unwrap().to_owned(),
-                token: None,
-            },
-        );
+        // A local upstream is operator-sourced; a client could not name it.
+        mirror
+            .sources()
+            .set_configured(
+                &name,
+                MirrorTarget {
+                    url: up.to_str().unwrap().to_owned(),
+                    token: None,
+                },
+            )
+            .unwrap();
         Fixture {
             _tmp: tmp,
             up,
@@ -1172,6 +1355,8 @@ mod tests {
             "ext::sh -c id",
             "fd::7",
             "ftp://h/r.git",
+            "http://h/r.git",
+            "git://h/r.git",
             "relative/path",
             "https://h/r\n.git",
         ] {
@@ -1185,6 +1370,135 @@ mod tests {
         ] {
             assert!(check_url(good).is_ok(), "{good:?}");
         }
+    }
+
+    fn policy() -> MirrorSources {
+        MirrorSources::with_policy(
+            Some("https://Forgejo.example:3000/"),
+            &["extra.example".to_owned(), "10.1.2.3".to_owned()],
+        )
+    }
+
+    fn target(url: &str) -> MirrorTarget {
+        MirrorTarget {
+            url: url.to_owned(),
+            token: None,
+        }
+    }
+
+    #[test]
+    fn client_urls_are_refused_unless_https_or_ssh_on_an_allowed_host() {
+        let s = policy();
+        let name = RepoName::parse("o/r").unwrap();
+        let tmp = std::env::temp_dir();
+        for bad in [
+            tmp.to_str().unwrap(),
+            "/srv/r.git",
+            "file:///srv/r.git",
+            r"\\attacker\share\r.git",
+            "//attacker/share/r.git",
+            "http://forgejo.example/o/r.git",
+            "git://forgejo.example/o/r.git",
+            "https://elsewhere.example/o/r.git",
+            "https://forgejo.example.evil.test/o/r.git",
+            "https://127.0.0.1/o/r.git",
+            "https://[::1]/o/r.git",
+            "https://169.254.169.254/latest",
+            "https://192.168.0.5/o/r.git",
+            "https://0.0.0.0/o/r.git",
+            "https://2130706433/o/r.git",
+            "https://user:pw@forgejo.example/o/r.git",
+            "ssh://git:pw@forgejo.example/o/r.git",
+        ] {
+            assert!(s.check_client_url(bad).is_err(), "{bad:?}");
+            assert!(s.set(&name, target(bad)).is_err(), "{bad:?}");
+        }
+        assert!(s.resolve(&RepoName::parse("o/none").unwrap()).is_some());
+        // With no Forgejo and no allow-list, every client URL is refused.
+        let none = MirrorSources::with_forgejo(None);
+        assert!(
+            none.check_client_url("https://forgejo.example/o/r.git")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn client_urls_on_the_forgejo_host_or_the_allow_list_are_accepted() {
+        let s = policy();
+        for good in [
+            "https://forgejo.example/o/r.git",
+            "https://FORGEJO.example:8443/o/r.git",
+            "https://forgejo.example:3000/o/r.git",
+            "ssh://git@forgejo.example/o/r.git",
+            "https://extra.example/o/r.git",
+            // An operator-listed internal literal is allowed; an unlisted one is not.
+            "https://10.1.2.3/o/r.git",
+        ] {
+            assert!(s.check_client_url(good).is_ok(), "{good:?}");
+        }
+        assert!(s.check_client_url("https://10.1.2.4/o/r.git").is_err());
+        let name = RepoName::parse("o/r").unwrap();
+        s.set(&name, target("https://forgejo.example/o/r.git"))
+            .unwrap();
+        let (t, origin) = s.resolve(&name).unwrap();
+        assert_eq!(t.url, "https://forgejo.example/o/r.git");
+        assert_eq!(origin, Origin::Client);
+        assert_eq!(s.check(&t.url, origin).unwrap(), NETWORK_PROTOCOLS);
+    }
+
+    #[test]
+    fn operator_sources_may_be_local_and_choose_the_fetch_protocols() {
+        let s = policy();
+        let name = RepoName::parse("o/r").unwrap();
+        let local = std::env::temp_dir().to_str().unwrap().to_owned();
+        s.set_configured(&name, target(&local)).unwrap();
+        let (t, origin) = s.resolve(&name).unwrap();
+        assert_eq!((t.url.as_str(), origin), (local.as_str(), Origin::Operator));
+        assert_eq!(s.check(&t.url, origin).unwrap(), LOCAL_PROTOCOLS);
+        assert_eq!(
+            s.check("file:///srv/r.git", Origin::Operator).unwrap(),
+            LOCAL_PROTOCOLS
+        );
+        // The same path from a client is refused.
+        assert!(s.check(&local, Origin::Client).is_err());
+        // The default derived from the Forgejo URL is operator-sourced and https only.
+        let other = RepoName::parse("o/other").unwrap();
+        let (d, origin) = s.resolve(&other).unwrap();
+        assert_eq!(d.url, "https://Forgejo.example:3000/o/other.git");
+        assert_eq!(s.check(&d.url, origin).unwrap(), NETWORK_PROTOCOLS);
+        // The operator entry still goes through the syntax check.
+        assert!(s.set_configured(&name, target("-x")).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_fetch_command_refuses_redirects_and_prompts() {
+        let f = fixture().await;
+        let target = MirrorTarget {
+            url: "https://forgejo.example/o/r.git".into(),
+            token: Some("secret-token".into()),
+        };
+        let cmd = f
+            .mirror
+            .fetch_command(Path::new("m.git"), &target, NETWORK_PROTOCOLS)
+            .unwrap();
+        let cmd = cmd.as_std();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let has = |a: &str| args.iter().any(|x| x == a);
+        assert!(has("http.followRedirects=false"), "{args:?}");
+        assert!(has("credential.helper="), "{args:?}");
+        let env = |k: &str| {
+            cmd.get_envs()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env("GIT_ALLOW_PROTOCOL"), Some(Some("https:ssh".into())));
+        assert_eq!(env("GIT_TERMINAL_PROMPT"), Some(Some("0".into())));
+        assert_eq!(env("GIT_ASKPASS"), Some(None));
+        // The token travels in the environment, never on the command line.
+        assert!(args.iter().all(|a| !a.contains("secret-token")));
     }
 
     #[test]
@@ -1213,12 +1527,19 @@ mod tests {
         let mut want: Vec<_> = git_refs(&f.up)
             .into_iter()
             // An annotated tag's asc ref names its `TagRecord`, not a commit.
-            .map(|(n, o)| if n == "refs/tags/v1" { (n, String::new()) } else { (n, o) })
+            .map(|(n, o)| {
+                if n == "refs/tags/v1" {
+                    (n, String::new())
+                } else {
+                    (n, o)
+                }
+            })
             .collect();
         want.sort();
         assert_eq!(got, want);
         assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, 2);
-        let state = "SELECT COUNT(*) FROM mirror_state WHERE last_error IS NULL AND last_import > 0";
+        let state =
+            "SELECT COUNT(*) FROM mirror_state WHERE last_error IS NULL AND last_import > 0";
         assert_eq!(count(&f, state).await, 1);
         let logged = count(&f, "SELECT COUNT(*) FROM ref_log").await;
         assert_eq!(logged, 4);
@@ -1279,7 +1600,10 @@ mod tests {
         let f = fixture().await;
         let c1 = push(&f.up, None, "a", "x", "refs/heads/master");
         push(&f.up, Some(&c1), "b", "y", "refs/heads/master");
-        f.mirror.sync(&RepoName::parse("o/m").unwrap()).await.unwrap();
+        f.mirror
+            .sync(&RepoName::parse("o/m").unwrap())
+            .await
+            .unwrap();
 
         let client = f
             .registry
@@ -1323,16 +1647,20 @@ mod tests {
         assert!(report.skipped[0].contains("tree"));
         assert_eq!(asc_refs(&f).await.len(), 1);
 
-        f.mirror.sources().set(
-            &name,
-            MirrorTarget {
-                url: "ext::sh -c id".into(),
-                token: None,
-            },
-        );
+        let missing = f._tmp.path().join("gone.git");
+        f.mirror
+            .sources()
+            .set_configured(
+                &name,
+                MirrorTarget {
+                    url: missing.to_str().unwrap().to_owned(),
+                    token: None,
+                },
+            )
+            .unwrap();
         assert!(matches!(
             f.mirror.sync(&name).await,
-            Err(MirrorError::BadUrl(_))
+            Err(MirrorError::Git(_))
         ));
         let failed = "SELECT COUNT(*) FROM mirror_state WHERE last_error IS NOT NULL";
         assert_eq!(count(&f, failed).await, 1);
