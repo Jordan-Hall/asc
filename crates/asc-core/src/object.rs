@@ -23,6 +23,18 @@ pub enum ObjectError {
     GitlinkId,
     #[error("lfs ref on an entry that is not File or Exec")]
     LfsKind,
+    #[error("change write kind is not File, Exec or Symlink")]
+    WriteKind,
+    #[error("changeset parents contain a duplicate")]
+    DuplicateParent,
+    #[error("chunk list has no chunks")]
+    EmptyChunks,
+    #[error("chunk length is zero or above the 4 MiB maximum")]
+    ChunkLen,
+    #[error("chunk lengths do not sum to size")]
+    ChunkSum,
+    #[error("chunk list size is not above the 4 MiB threshold")]
+    ChunkSize,
 }
 
 // Name and RepoPath travel as plain byte strings and are validated on decode.
@@ -209,6 +221,7 @@ impl Enveloped for Tree {
 
 /// A leaf change relative to `parents[0]` (or the empty tree).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawChange")]
 pub enum Change {
     Write {
         /// File, Exec or Symlink.
@@ -223,7 +236,44 @@ pub enum Change {
     Delete,
 }
 
+/// Wire mirror of `Change`; variant order must match.
+#[derive(Deserialize)]
+enum RawChange {
+    Write { kind: Kind, file: FileId, size: u64, git: GitOid, lfs: Option<LfsRef>, copy_from: Option<RepoPath> },
+    Gitlink { commit: GitOid },
+    Delete,
+}
+
+impl TryFrom<RawChange> for Change {
+    type Error = ObjectError;
+
+    fn try_from(raw: RawChange) -> Result<Self, ObjectError> {
+        Ok(match raw {
+            RawChange::Write { kind, file, size, git, lfs, copy_from } => Change::write(kind, file, size, git, lfs, copy_from)?,
+            RawChange::Gitlink { commit } => Change::Gitlink { commit },
+            RawChange::Delete => Change::Delete,
+        })
+    }
+}
+
+impl Change {
+    /// Builds a `Write`: kind must be File, Exec or Symlink, and `lfs` is
+    /// allowed only for File or Exec.
+    pub fn write(kind: Kind, file: FileId, size: u64, git: GitOid, lfs: Option<LfsRef>, copy_from: Option<RepoPath>) -> Result<Self, ObjectError> {
+        if !matches!(kind, Kind::File | Kind::Exec | Kind::Symlink) {
+            return Err(ObjectError::WriteKind);
+        }
+        if lfs.is_some() && kind == Kind::Symlink {
+            return Err(ObjectError::LfsKind);
+        }
+        Ok(Change::Write { kind, file, size, git, lfs, copy_from })
+    }
+}
+
+/// Ancestor/descendant paths in `changes` are deliberately allowed (SPEC §2.6
+/// rule 3); full apply validation happens at ingest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawChangeset")]
 pub struct Changeset {
     pub parents: Vec<ChangesetId>,
     pub root: TreeId,
@@ -232,6 +282,31 @@ pub struct Changeset {
     pub message: Vec<u8>,
     pub extra: SortedMap<Vec<u8>, Vec<u8>>,
     pub changes: SortedMap<RepoPath, Change>,
+}
+
+#[derive(Deserialize)]
+struct RawChangeset {
+    parents: Vec<ChangesetId>,
+    root: TreeId,
+    author: Signature,
+    committer: Signature,
+    message: Vec<u8>,
+    extra: SortedMap<Vec<u8>, Vec<u8>>,
+    changes: SortedMap<RepoPath, Change>,
+}
+
+impl TryFrom<RawChangeset> for Changeset {
+    type Error = ObjectError;
+
+    fn try_from(r: RawChangeset) -> Result<Self, ObjectError> {
+        // `changes` order is enforced by `SortedMap`, each `Change` by its own decode.
+        let mut seen: Vec<&ChangesetId> = r.parents.iter().collect();
+        seen.sort();
+        if seen.windows(2).any(|w| w[0] == w[1]) {
+            return Err(ObjectError::DuplicateParent);
+        }
+        Ok(Changeset { parents: r.parents, root: r.root, author: r.author, committer: r.committer, message: r.message, extra: r.extra, changes: r.changes })
+    }
 }
 
 impl Changeset {
@@ -263,12 +338,45 @@ impl Enveloped for TagRecord {
     const KIND: EnvelopeKind = EnvelopeKind::TagRecord;
 }
 
+/// Files above this size are chunked (SPEC §2.5).
+const CHUNK_THRESHOLD: u64 = 4_194_304;
+/// FastCDC maximum chunk length.
+const MAX_CHUNK_LEN: u32 = 4_194_304;
+
 /// Chunks of a file larger than 4 MiB; each `u32` is a chunk length and they
 /// sum to `size`. Not identity-bearing: stored under the file's `FileId`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawChunkList")]
 pub struct ChunkList {
     pub size: u64,
     pub chunks: Vec<(ChunkId, u32)>,
+}
+
+#[derive(Deserialize)]
+struct RawChunkList {
+    size: u64,
+    chunks: Vec<(ChunkId, u32)>,
+}
+
+impl TryFrom<RawChunkList> for ChunkList {
+    type Error = ObjectError;
+
+    fn try_from(r: RawChunkList) -> Result<Self, ObjectError> {
+        if r.chunks.is_empty() {
+            return Err(ObjectError::EmptyChunks);
+        }
+        if r.chunks.iter().any(|&(_, n)| n == 0 || n > MAX_CHUNK_LEN) {
+            return Err(ObjectError::ChunkLen);
+        }
+        let sum = r.chunks.iter().try_fold(0u64, |acc, &(_, n)| acc.checked_add(u64::from(n)));
+        if sum != Some(r.size) {
+            return Err(ObjectError::ChunkSum);
+        }
+        if r.size <= CHUNK_THRESHOLD {
+            return Err(ObjectError::ChunkSize);
+        }
+        Ok(ChunkList { size: r.size, chunks: r.chunks })
+    }
 }
 
 impl Enveloped for ChunkList {
@@ -443,6 +551,67 @@ mod tests {
         }
     }
 
+    fn bare_changeset(parents: Vec<ChangesetId>, changes: Vec<(RepoPath, Change)>) -> Changeset {
+        Changeset {
+            parents,
+            root: Tree::new(vec![], true).unwrap().id(),
+            author: sig(1),
+            committer: sig(1),
+            message: vec![],
+            extra: SortedMap::default(),
+            changes: SortedMap::new(changes).unwrap(),
+        }
+    }
+
+    fn write(kind: Kind, lfs: Option<LfsRef>) -> Change {
+        Change::Write { kind, file: FileId::from_bytes([4; 32]), size: 1, git: GitOid::from_bytes([5; 20]), lfs, copy_from: None }
+    }
+
+    #[test]
+    fn rejects_bad_change_write() {
+        let lfs = Some(LfsRef { sha256: [6; 32], size: 9 });
+        let cs = |c: Change| bare_changeset(vec![], vec![(path("a"), c)]).to_envelope();
+        for bad in [write(Kind::Dir, None), write(Kind::Gitlink, None), write(Kind::Symlink, lfs)] {
+            assert!(decode_envelope::<Changeset>(&cs(bad)).is_err());
+        }
+        for good in [write(Kind::File, lfs), write(Kind::Exec, lfs), write(Kind::Symlink, None)] {
+            assert!(decode_envelope::<Changeset>(&cs(good)).is_ok());
+        }
+        let f = FileId::from_bytes([4; 32]);
+        let g = GitOid::from_bytes([5; 20]);
+        assert_eq!(Change::write(Kind::Dir, f, 1, g, None, None).unwrap_err(), ObjectError::WriteKind);
+        assert_eq!(Change::write(Kind::Symlink, f, 1, g, lfs, None).unwrap_err(), ObjectError::LfsKind);
+        assert!(Change::write(Kind::File, f, 1, g, lfs, None).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_parents_but_allows_ancestor_paths() {
+        let p = ChangesetId::from_bytes([1; 32]);
+        let changes = vec![(path("a"), Change::Delete), (path("a/b"), write(Kind::File, None))];
+        assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p, p], changes.clone()).to_envelope()).is_err());
+        assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p], changes).to_envelope()).is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_chunk_lists() {
+        let id = ChunkId::from_bytes([1; 32]);
+        let max = 4_194_304u32;
+        let cl = |size: u64, chunks: Vec<(ChunkId, u32)>| ChunkList { size, chunks }.to_envelope();
+        let bad = [
+            cl(5_000_000, vec![]),
+            cl(u64::from(max) + 1, vec![(id, max), (id, 0), (id, 1)]),
+            cl(u64::from(max) + 1, vec![(id, max + 1)]),
+            cl(u64::from(max) + 2, vec![(id, max), (id, 1)]),
+            cl(u64::from(max), vec![(id, max)]),
+            cl(100, vec![(id, 100)]),
+            cl(u64::MAX, vec![(id, max); 2]),
+        ];
+        for b in &bad {
+            assert!(decode_envelope::<ChunkList>(b).is_err());
+        }
+        assert!(decode_envelope::<ChunkList>(&cl(u64::from(max) + 1, vec![(id, max), (id, 1)])).is_ok());
+    }
+
     #[test]
     fn tree_new_checks_invariants() {
         let a = entry("a", Kind::File);
@@ -535,16 +704,22 @@ mod tests {
 
     fn arb_change() -> impl Strategy<Value = Change> {
         prop_oneof![
-            (arb_kind(), any::<[u8; 32]>(), any::<u64>(), any::<[u8; 20]>(), arb_lfs(), prop::option::of(arb_path())).prop_map(
-                |(kind, file, size, git, lfs, copy_from)| Change::Write {
+            (
+                prop_oneof![Just(Kind::File), Just(Kind::Exec), Just(Kind::Symlink)],
+                any::<[u8; 32]>(),
+                any::<u64>(),
+                any::<[u8; 20]>(),
+                arb_lfs(),
+                prop::option::of(arb_path()),
+            )
+                .prop_map(|(kind, file, size, git, lfs, copy_from)| Change::Write {
                     kind,
                     file: FileId::from_bytes(file),
                     size,
                     git: GitOid::from_bytes(git),
-                    lfs,
+                    lfs: if kind == Kind::Symlink { None } else { lfs },
                     copy_from,
-                }
-            ),
+                }),
             any::<[u8; 20]>().prop_map(|c| Change::Gitlink { commit: GitOid::from_bytes(c) }),
             Just(Change::Delete),
         ]
@@ -552,7 +727,7 @@ mod tests {
 
     fn arb_changeset() -> impl Strategy<Value = Changeset> {
         (
-            prop::collection::vec(any::<[u8; 32]>().prop_map(ChangesetId::from_bytes), 0..3),
+            prop::collection::btree_set(any::<[u8; 32]>(), 0..3),
             any::<[u8; 32]>(),
             arb_sig(),
             arb_sig(),
@@ -561,7 +736,7 @@ mod tests {
             prop::collection::btree_map(arb_path(), arb_change(), 0..4),
         )
             .prop_map(|(parents, root, author, committer, message, extra, changes)| Changeset {
-                parents,
+                parents: parents.into_iter().map(ChangesetId::from_bytes).collect(),
                 root: TreeId::from_bytes(root),
                 author,
                 committer,
@@ -584,8 +759,11 @@ mod tests {
     }
 
     fn arb_chunks() -> impl Strategy<Value = ChunkList> {
-        (any::<u64>(), prop::collection::vec((any::<[u8; 32]>().prop_map(ChunkId::from_bytes), any::<u32>()), 0..5))
-            .prop_map(|(size, chunks)| ChunkList { size, chunks })
+        prop::collection::vec((any::<[u8; 32]>().prop_map(ChunkId::from_bytes), 1..=MAX_CHUNK_LEN), 2..5)
+            .prop_filter_map("size above threshold", |chunks| {
+                let size: u64 = chunks.iter().map(|c| u64::from(c.1)).sum();
+                (size > CHUNK_THRESHOLD).then_some(ChunkList { size, chunks })
+            })
     }
 
     fn roundtrip<T: Enveloped + PartialEq + fmt::Debug>(x: &T) {
