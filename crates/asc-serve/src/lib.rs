@@ -12,7 +12,6 @@ pub mod idmode;
 pub mod ingest;
 pub mod land;
 pub mod limits;
-pub mod limits;
 pub mod mainline;
 pub mod migrate;
 pub mod outbox;
