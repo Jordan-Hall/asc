@@ -3,7 +3,7 @@
 //! Steps 1 to 5, 8 and 9 live here. Steps 6 and 7 (bridge quarantine, pre-receive) are the
 //! [`PushHooks`] extension point, a no-op until Forgejo arrives (U44). Step 4 runs under the
 //! shared GC lock, which is held until the step-8 transaction commits (SPEC §3.6). LAND mode is
-//! added by the land unit.
+//! the [`crate::land`] unit.
 
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
+use crate::land::{self, DisjointOnly, OverlapPolicy};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 
 /// Push options per request, and the longest one.
@@ -84,6 +85,12 @@ pub trait PushHooks: Send + Sync {
     /// The push did not commit after step 6; remove the quarantine.
     async fn abort(&self, _req: &HookRequest<'_>) {}
 
+    /// Whether `branch` requires signed commits for this caller (`branch_rules.require_signed`
+    /// from authz): a land that would rewrite a signed stack is then refused (SPEC §8.5 step 4).
+    async fn require_signed(&self, _ctx: &CallCtx, _branch: &str) -> bool {
+        false
+    }
+
     /// Effects the step-8 transaction queues in the outbox, in order.
     fn outbox_effects(&self) -> &'static [&'static str] {
         &["post_receive"]
@@ -115,6 +122,7 @@ impl GcLock {
 pub struct PipelineHooks {
     observer: OnceLock<Arc<dyn IngestObserver>>,
     push: OnceLock<Arc<dyn PushHooks>>,
+    overlap: OnceLock<Arc<dyn OverlapPolicy>>,
     gc: GcLock,
 }
 
@@ -127,6 +135,19 @@ impl PipelineHooks {
     /// Installs the Forgejo hooks (U44); fails (returning them) when some are set.
     pub fn set_push_hooks(&self, h: Arc<dyn PushHooks>) -> Result<(), Arc<dyn PushHooks>> {
         self.push.set(h)
+    }
+
+    /// Installs the land overlap policy (U68 content merge); fails (returning it) when one is set.
+    pub fn set_overlap_policy(
+        &self,
+        p: Arc<dyn OverlapPolicy>,
+    ) -> Result<(), Arc<dyn OverlapPolicy>> {
+        self.overlap.set(p)
+    }
+
+    /// How a land treats paths the stack shares with the branch (path-disjoint only by default).
+    pub fn overlap_policy(&self) -> &dyn OverlapPolicy {
+        self.overlap.get().map_or(&DisjointOnly, |p| &**p)
     }
 
     pub fn observer(&self) -> &dyn IngestObserver {
@@ -144,23 +165,23 @@ impl PipelineHooks {
 
 // ------------------------------------------------------------------------------ errors
 
-fn rpc(e: RpcError) -> Status {
+pub(crate) fn rpc(e: RpcError) -> Status {
     rpc_status(&e)
 }
 
-fn info(paths: Vec<String>) -> ErrorInfo {
+pub(crate) fn info(paths: Vec<String>) -> ErrorInfo {
     ErrorInfo {
         paths,
         ..ErrorInfo::default()
     }
 }
 
-fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
+pub(crate) fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
     tracing::error!(%context, error = %e, "internal error");
     Status::internal("internal error")
 }
 
-fn ingest_status(e: IngestError) -> Status {
+pub(crate) fn ingest_status(e: IngestError) -> Status {
     match e {
         IngestError::Missing(keys) => rpc(RpcError::MissingObjects(info(
             keys.iter().map(|k| k.path()).collect(),
@@ -185,7 +206,7 @@ fn registry_status(e: RegistryError) -> Status {
     }
 }
 
-fn conflict(c: asc_store::refs::RefConflict) -> Status {
+pub(crate) fn conflict(c: asc_store::refs::RefConflict) -> Status {
     rpc(RpcError::RefConflict(ErrorInfo {
         paths: vec![String::from_utf8_lossy(c.name.as_bytes()).into_owned()],
         actual: c
@@ -195,7 +216,7 @@ fn conflict(c: asc_store::refs::RefConflict) -> Status {
     }))
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
@@ -208,18 +229,18 @@ fn is_postgres(pool: &AnyPool) -> bool {
     )
 }
 
-fn target_hex(t: &RefTarget) -> String {
+pub(crate) fn target_hex(t: &RefTarget) -> String {
     t.to_bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 // ------------------------------------------------------------------------------ the request
 
 /// One validated update.
-struct Planned {
-    text: String,
-    name: RefName,
-    expect: Expect,
-    new: Option<RefTarget>,
+pub(crate) struct Planned {
+    pub(crate) text: String,
+    pub(crate) name: RefName,
+    pub(crate) expect: Expect,
+    pub(crate) new: Option<RefTarget>,
 }
 
 fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
@@ -268,19 +289,19 @@ fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
 }
 
 #[derive(Serialize)]
-struct EffectRef {
-    name: String,
-    old: Option<String>,
-    new: Option<String>,
+pub(crate) struct EffectRef {
+    pub(crate) name: String,
+    pub(crate) old: Option<String>,
+    pub(crate) new: Option<String>,
 }
 
 /// The `outbox.effects` document: the effects in order and what `post_receive` reports.
 #[derive(Serialize)]
-struct OutboxEffects<'a> {
-    effects: &'a [&'static str],
-    pusher: &'a str,
+pub(crate) struct OutboxEffects<'a> {
+    pub(crate) effects: &'a [&'static str],
+    pub(crate) pusher: &'a str,
     /// Targets are hex of the 33-byte wire form (kind byte, then the id).
-    refs: Vec<EffectRef>,
+    pub(crate) refs: Vec<EffectRef>,
 }
 
 // ------------------------------------------------------------------------------ the handler
@@ -288,8 +309,8 @@ struct OutboxEffects<'a> {
 /// The `Refs` handler group of the full server: `UpdateRefs` through the pipeline; `ListRefs`
 /// comes from the repository's engine until U47 replaces it.
 pub struct ServerRefs {
-    registry: Arc<Registry>,
-    hooks: Arc<PipelineHooks>,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) hooks: Arc<PipelineHooks>,
 }
 
 impl ServerRefs {
@@ -297,7 +318,7 @@ impl ServerRefs {
         Self { registry, hooks }
     }
 
-    async fn windows_safe(&self, entry: &RepoEntry) -> Result<bool, Status> {
+    pub(crate) async fn windows_safe(&self, entry: &RepoEntry) -> Result<bool, Status> {
         let row = sqlx::query(
             "SELECT CAST(CASE WHEN windows_safe THEN 1 ELSE 0 END AS BIGINT) AS ws FROM repos WHERE id = $1",
         )
@@ -312,7 +333,7 @@ impl ServerRefs {
     }
 
     /// Step 2: the response stored for `op_id`, if any.
-    async fn stored(
+    pub(crate) async fn stored(
         &self,
         entry: &RepoEntry,
         op_id: Uuid,
@@ -356,11 +377,11 @@ impl ServerRefs {
         let planned = plan(&req)?;
         let mode = wire::UpdateMode::try_from(req.mode)
             .map_err(|_| Status::invalid_argument("unknown update mode"))?;
-        if mode == wire::UpdateMode::Land {
-            return Err(Status::unimplemented(
-                "LAND is not available on this server yet",
-            ));
-        }
+        let pushed = if mode == wire::UpdateMode::Land {
+            Some(land::check_request(&planned, req.hooks)?)
+        } else {
+            None
+        };
         let hooks = self.hooks.push_hooks();
         if req.hooks == wire::HookMode::SkipPre as i32 && !hooks.may_skip_pre(ctx) {
             return Err(Status::permission_denied(
@@ -396,6 +417,10 @@ impl ServerRefs {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
 
+        if pushed.is_some() {
+            land::check_branch(self.registry.pool(), &entry, &planned[0].text).await?;
+        }
+
         // Step 4: ingest the closure of every new target, under the shared GC lock.
         let _gc = self.hooks.gc().shared().await;
         let targets: Vec<RefTarget> = planned.iter().filter_map(|p| p.new).collect();
@@ -410,12 +435,30 @@ impl ServerRefs {
         .await
         .map_err(ingest_status)?;
 
-        // Step 5: policy. FAST_FORWARD needs the new value to descend from the current one.
         let graph = Graph::new(SqlGraph::new(
             self.registry.pool().clone(),
             entry.ns,
             entry.backend.engine().clone(),
         ));
+        if let Some(pushed) = pushed {
+            let update = planned
+                .into_iter()
+                .next()
+                .expect("check_request admits one update");
+            let job = land::LandJob {
+                ctx,
+                req: &req,
+                op_id,
+                entry: &entry,
+                update,
+                pushed,
+                graph: &graph,
+                windows_safe,
+            };
+            return land::run(self, job).await;
+        }
+
+        // Step 5: policy. FAST_FORWARD needs the new value to descend from the current one.
         let mut updates = Vec::with_capacity(planned.len());
         let mut results = Vec::with_capacity(planned.len());
         let mut hook_updates = Vec::with_capacity(planned.len());
@@ -514,7 +557,7 @@ impl ServerRefs {
                 .collect(),
         })
         .map_err(|e| internal("outbox", &e))?;
-        match self.commit(&entry, &txn, &response, &outbox).await {
+        match self.commit(&entry, &txn, &response, &outbox, None).await {
             Ok(()) => Ok(response),
             Err(e) => {
                 hooks.abort(&hook_req).await;
@@ -528,12 +571,13 @@ impl ServerRefs {
     }
 
     /// The step-8 transaction: ref CAS and log, the op result, and the outbox row.
-    async fn commit(
+    pub(crate) async fn commit(
         &self,
         entry: &RepoEntry,
         txn: &RefTxn,
         response: &wire::UpdateRefsResponse,
         outbox: &[u8],
+        land: Option<&land::TxWrites<'_>>,
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
@@ -551,6 +595,9 @@ impl ServerRefs {
                 return Err(Status::invalid_argument(e.to_string()));
             }
             Err(e) => return Err(internal("refs", &e)),
+        }
+        if let Some(land) = land {
+            land.apply(&mut tx, entry).await?;
         }
         let at = now();
         sqlx::query("INSERT INTO op_results (op_id, repo_id, result, at) VALUES ($1, $2, $3, $4)")
