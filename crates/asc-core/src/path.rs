@@ -185,8 +185,9 @@ fn hfs_ignorable(c: char) -> bool {
     matches!(c as u32, 0x200C..=0x200F | 0x202A..=0x202E | 0x206A..=0x206F | 0xFEFF)
 }
 
-/// True when a single component names `.git` under NTFS or HFS rules.
-fn is_dotgit_alias(comp: &[u8]) -> bool {
+/// True when a single component names `name` (or its 8.3 short name `short`) under NTFS or HFS
+/// rules: case, trailing dots/spaces, an alternate-stream suffix and ignorable code points.
+fn is_alias(comp: &[u8], name: &str, short: Option<&str>) -> bool {
     // NTFS: ignore an alternate-stream suffix and trailing dots/spaces.
     let base = comp.split(|&c| c == b':').next().unwrap_or_default();
     let end = base
@@ -194,15 +195,28 @@ fn is_dotgit_alias(comp: &[u8]) -> bool {
         .rposition(|&c| c != b'.' && c != b' ')
         .map_or(0, |i| i + 1);
     let base = &base[..end];
-    if base.eq_ignore_ascii_case(b".git") || base.eq_ignore_ascii_case(b"git~1") {
+    if base.eq_ignore_ascii_case(name.as_bytes())
+        || short.is_some_and(|s| base.eq_ignore_ascii_case(s.as_bytes()))
+    {
         return true;
     }
     // HFS: drop ignorable code points, then compare.
     if let Ok(s) = std::str::from_utf8(comp) {
         let stripped: String = s.chars().filter(|&c| !hfs_ignorable(c)).collect();
-        return stripped.eq_ignore_ascii_case(".git");
+        return stripped.eq_ignore_ascii_case(name);
     }
     false
+}
+
+/// True when a single component names `.git` under NTFS or HFS rules.
+fn is_dotgit_alias(comp: &[u8]) -> bool {
+    is_alias(comp, ".git", Some("git~1"))
+}
+
+/// True when `first/second` name `.asc/info` (the never-tracked local state) under the same
+/// case and alias folding as `.git`, so no alias of it can be materialised or go unignored.
+pub fn is_asc_info(first: &[u8], second: &[u8]) -> bool {
+    is_alias(first, ".asc", Some("asc~1")) && is_alias(second, "info", None)
 }
 
 /// Port of git's `verify_path` with `core.protectNTFS` and `core.protectHFS`.
@@ -210,6 +224,12 @@ fn is_dotgit_alias(comp: &[u8]) -> bool {
 pub fn checkout_safe(path: &RepoPath) -> bool {
     // git with core.protectNTFS rejects any backslash outright (CVE-2019-1353/1354); ':' and drive
     // letters are rejected on Windows by `windows_valid`, which materialisation also applies.
+    let mut comps = path.components();
+    if let (Some(first), Some(second)) = (comps.next(), comps.next())
+        && is_asc_info(first, second)
+    {
+        return false;
+    }
     path.components()
         .all(|c| !c.contains(&b'\\') && !is_dotgit_alias(c) && c != b".." && c != b".")
 }
@@ -373,6 +393,12 @@ mod tests {
             ".git\u{feff}",
             "\u{202e}.git",
             ".\u{206b}GIT",
+            ".asc/info/exclude",
+            ".ASC/Info/exclude",
+            ".asc./info /exclude",
+            "ASC~1/info/exclude",
+            ".asc::$DATA/info",
+            ".c\u{200c}g/info/x",
         ];
         for s in bad {
             let rp = RepoPath::new(s).unwrap();
@@ -387,6 +413,9 @@ mod tests {
             "a/.gitmodules",
             "\u{e9}/x",
             ".gi/t",
+            ".asc/redirections",
+            "a/.asc/info/x",
+            ".asc",
         ] {
             assert!(checkout_safe(&p(s)), "{s}");
         }
