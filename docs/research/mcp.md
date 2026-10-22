@@ -1,6 +1,6 @@
 # Built-in MCP for asc
 
-Status: design for the checklist decision "MCP built in" (2026-10-22, `scion-checklist.md`, last sections). This file is not normative until it is folded into SPEC.md and PLAN.md. §9 lists the edits those files need.
+Status: design for the checklist decision "MCP built in" (2026-10-22, `scion-checklist.md`, last sections). **Folded into SPEC.md §22 and PLAN.md §M [audit: mcp-folded]**: SPEC §22 is now normative, and §22.(N+1) is this file's §N. This file stays as background and review history; where the two differ, SPEC wins. §9 lists the edits that were made.
 
 Inputs: the MCP specification 2026-07-28 (stateless protocol, `server/discover`, MRTR, `subscriptions/listen`, SEP-2243 headers, OAuth 2.1 with RFC 9728), rmcp 3.6.0, and the GitHub, GitLab, Gitea and Forgejo MCP servers (research of 2026-10-22). Background: SPEC §7 (RPC), §9.1 (daemon IPC), §11.2 (`--json`), §12A.8 (Projects), §13 (Forgejo), §15 (security), §16.3 (rate classes), §20 (stacks), `stacks.md` D1–D12, and `CARRY.md`.
 
@@ -103,7 +103,7 @@ Surface: L = `asc mcp`, S = `asc serve /mcp`. "L→S" means stdio routes to the 
 | `conflicts` | stack | L | `Workspace.Conflicts` | `{paths}` | `WsConflictsResponse` | R | 100 |
 | `worktrees` | stack | L | `Workspace.Worktrees` | `{}` | `WsWorktreesResponse` | R | 100 |
 | `project_graph` | projects | L→S, S | `Projects.ProjectGraph` | `ProjectGraphRequest` (`rev`, `types`, `select`) | `ProjectGraphResponse` | R | 500 projects |
-| `search` | search | L→S, S | code-intel `Search` RPC (pending; listed only when `Version.features` has `search.v1`) | `{query, mode: text\|regex\|symbol\|semantic, rev, paths, limit}` | `SearchResponse` | R | 50 / 200 |
+| `search` | search | L→S, S | code-intel `CodeIntel` service (`codeintel.md` §3.4): `mode: text\|regex` → `Search`, `symbol` → `Symbols`, `semantic` → `Semantic`; listed only when `Version.features` has `search.v1` | `{query, mode: text\|regex\|symbol\|semantic, rev, paths, limit}` plus the additive optional fields `change`, `stack`, `diff_only`, `op` (`def\|refs\|callers\|outline\|find`; `symbol` mode only), `k`, `context_lines`, `max_tokens`, `rerank`, `include_excluded` [audit: codeintel-fields] | `SearchResponse`, `SymbolsResponse` or `SemanticResponse`, each with `scope`, `coverage` and `est_tokens` | R | `limit` 50 / 200; `k` 10; `context_lines` 2; `max_tokens` 4,000 (still capped by `asc.mcp.maxTokens`) |
 
 Notes:
 - `read_file` with `start_line`/`end_line` streams `ReadFile` from offset 0 on the first call and stops after `end_line`, so memory is bounded by the budget, not by the file. Its `next_cursor` carries a byte offset (and the line number at it), so a continuation seeks to that offset and costs O(page), not a restream from 0 (§5.2). Binary content (by attributes or a NUL in the first 8 KiB) returns metadata only (`binary: true`, size, id). In L mode with no `rev`:
@@ -112,6 +112,7 @@ Notes:
   - an ignored path is refused, so `.env` files are never served. The same single ignore gate applies to `grep` (dirty files), `blame` (working copy), `stage` and the `asc://ws/…/file` resource.
 - `ls_tree` with `recursive: true` needs a non-root `path`. A root-recursive call returns `isError` with code `BUDGET` and suggests `grep`, `search` or a subdirectory.
 - `blame` and `line_history` without a line range use 1–200.
+- `search` adds no tool of its own to the code-intelligence design (`codeintel.md` §3.4; rule M-D1 holds). Its description carries the use policy: text and regex first for identifiers, strings and error messages (verified matches); `symbol` when a name is known (`refs` is name-based, so read `confidence`); `semantic` when the names are unknown or text search found nothing (ranked chunks, not every match). Result text is untrusted file content. Every result carries `scope.changeset`, so a follow-up call can pin the same revision. There is no `code_read` (use `read_file`) and no `code_index_status` (read `coverage`). Text and regex modes in `search` are the indexed counterpart of `grep`, which stays the streaming fallback.
 - `diff` keeps the `changes` list (paths and statuses) up to `max_files` = 300 and cuts patch text at hunk boundaries (§5.2). Files beyond 300 are counted in `omitted.files`, not listed; the cursor continues with the next 300.
 
 ### 2.3 Write tools (toolset `write`; listed only when enabled, M-D4)
@@ -368,7 +369,7 @@ These follow the PLAN conventions: small units, disjoint owned files, and one ac
 |---|---|---|
 | U41 `crates/asc-rpc/build.rs`, `lib.rs` | write the descriptor set; `pub const DESCRIPTOR_SET` | M01a |
 | U41 `proto/asc/v1/{repo,workspace,projects}.proto`; C17 `changes.proto`; U73 and C31 `workspace.proto` hunks | `(asc.v1.json)` options on `bytes` fields | M01b |
-| owner of `crates/asc/src/cli/json.rs` (U21a/U73) | print through `asc_rpc::json` | M01c |
+| U20 `crates/asc/src/cli/json.rs` (the shared `--json` writer; U21a, U24a, U24c, U28b and U73 call it) [audit: mcp-folded] | print through `asc_rpc::json` | M01c |
 | C07 `crates/asc/src/stack/json.rs`; C15 `op log` output | reconcile to the profile schemas: snake_case, `tz` on `Signature`, `op log` wrapped as `{ops: [...]}` | M02 |
 | U21a `asc status` text output | call the `asc-engine::render` porcelain v2 renderer | M04a |
 | U43a `crates/asc-serve/src/lib.rs` | one `HttpRoutes` registration line | M12a |
@@ -399,7 +400,7 @@ These follow the PLAN conventions: small units, disjoint owned files, and one ac
 | M13 | Server auth: PRM, 401/403, bearer validation (PAT and OAuth `aud` via K07), scope-filtered `tools/list`; flips `enabled` to true by default | asc-serve | M12b, U44, K07 | `crates/asc-serve/src/mcp/auth.rs`, `crates/asc-serve/tests/mcp_auth.rs` | `cargo test -p asc-serve --test mcp_auth` |
 | M18 | Server `Commit` writes a `ChangeMeta` (SPEC §8.7 gap) | asc-serve | U48a, C18 | `crates/asc-serve/tests/commit_change_meta.rs` (plus the U48a hunk) | `cargo test -p asc-serve --test commit_change_meta` |
 | M14 | Server write tools: `commit` (empty or `refs/for/*` only), `submit`, `rebase`, `restack` | asc-serve | M13, M06, M18, U48a, U68, C22, C24 | `crates/asc-serve/src/mcp/write.rs`, `crates/asc-serve/tests/mcp_write.rs` | `cargo test -p asc-serve --test mcp_write` (a `commit` with `update_ref = refs/heads/master` is refused; `refs/for/*` runs the §8.3 pipeline) |
-| M15 | `search` tool (listed when `search.v1` is advertised) | asc-mcp | M08, code-intel `Search` RPC (to be designed) | `tools.toml` row, `src/search.rs` | `cargo test -p asc-mcp search::` |
+| M15 | `search` tool (listed when `search.v1` is advertised): mode mapping onto the three `CodeIntel` RPCs, the additive fields, the use-policy description | asc-mcp | M08, I12 (`codeintel.proto`, from `codeintel.md`) | `tools.toml` row, `src/search.rs` | `cargo test -p asc-mcp search::` (a fake `CodeIntel` backend; the row is absent from `tools/list` unless `search.v1` is advertised; the real service is wired by I21) [audit: codeintel-fields] |
 | M16 | Budgets and conformance: RSS, latency, `tools/list` tokens; inspector CLI job | asc, bench | M10, M12b | `crates/asc/tests/mcp_budgets.rs`, `crates/asc/tests/inspector/{package.json,package-lock.json}`, `.forgejo/workflows/mcp-inspector.yml` | `cargo test -p asc --test mcp_budgets -- --ignored` (idle RSS ≤ 24 MiB; ≤ 64 MiB with 8 concurrent 25k-token diffs on the HUGE generator repo). The workflow has `on:` filters (`push` to `master` and `pull_request`, paths `crates/asc-mcp/**`, `crates/asc/src/mcp/**`, `crates/asc-serve/src/mcp/**`, `proto/**`), checks out with `asc ci checkout` (SPEC §12.7), and installs the inspector with `npm ci` from the committed lockfile (no floating `npx`) |
 | M17 | Generated tool reference `docs/mcp.md` (drift-checked, including the `AscHandles` schema hash) | asc-mcp | M03 | `crates/asc-mcp/src/bin/asc-mcp-docs.rs`, `docs/mcp.md` | `cargo run -p asc-mcp --bin asc-mcp-docs -- --check` |
 

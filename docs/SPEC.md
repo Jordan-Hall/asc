@@ -1,10 +1,10 @@
 # asc: final specification
 
-Status: **authoritative**, v1.5 (branchless by default and commit cloud folded in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.6 (built-in MCP folded in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
-Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
+Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
-**User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no IDE git-plumbing support**: there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52); (8) **branchless by default** (checklist decision of 2026-10-22, overriding the earlier "nothing is uploaded before `asc push`", "no write-behind" and "secrets in drafts never leave the machine" rules): shared refs are only `master`, release branches and tags; all other work is draft changes indexed by change id; a pushed branch becomes the pusher's user ref and submits its stack as draft changes; the daemon uploads new commits at once (the opt-out commit cloud) behind a pre-upload secret hold, with purge; off switches per repo and per user: specified in new §21 (decisions BD1–BD12 of `docs/research/branchless.md`, now normative; PLAN units B01–B28) [audit: branchless-folded].
+**User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no IDE git-plumbing support**: there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52); (8) **branchless by default** (checklist decision of 2026-10-22, overriding the earlier "nothing is uploaded before `asc push`", "no write-behind" and "secrets in drafts never leave the machine" rules): shared refs are only `master`, release branches and tags; all other work is draft changes indexed by change id; a pushed branch becomes the pusher's user ref and submits its stack as draft changes; the daemon uploads new commits at once (the opt-out commit cloud) behind a pre-upload secret hold, with purge; off switches per repo and per user: specified in new §21 (decisions BD1–BD12 of `docs/research/branchless.md`, now normative; PLAN units B01–B28) [audit: branchless-folded]; (9) **MCP is built in** (checklist decision of 2026-10-22): `asc mcp` (stdio), `asc serve /mcp` (Streamable HTTP) and the Forgejo fork's `/api/mcp`, all generated from the proto schemas, read-only by default and ACL-scoped: specified in new §22 (decisions M-D1–M-D10 of `docs/research/mcp.md`, now normative; PLAN units M01a–M28) [audit: mcp-folded].
 
 Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo at `D:\dev\monorepo` and its Forgejo at `https://forge.example.org`. Sizes are binary (KiB, MiB, GiB).
 
@@ -18,11 +18,11 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 
 | Deployable | What it is |
 |---|---|
-| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve` (`--role primary` or `--role cache`), and, by argv[0], `git` (the shim, §11.4). Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
+| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve` (`--role primary` or `--role cache`), `asc mcp` (§22), and, by argv[0], `git` (the shim, §11.4). Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
 | Forgejo fork | Forgejo v16.0.6 plus an ordered patch stack (seams, asc client, hooks, bridge). Go, separate repo, GPLv3. Talks to `asc serve` only over gRPC. |
 | `asc/actions` | Forked `checkout`, `cache`, `upload-artifact`, `download-artifact` (aliased from `actions/*`, §12.7) plus `asc/setup`, `asc/changed`, `asc/affected`, `asc/turbo-cache`, all calling `asc ci …` |
 
-**Thirteen decisions**
+**Fourteen decisions**
 
 1. **A remote is a store or a server.** `Objects` (immutable, content-addressed) and `Refs` (CAS). One `Engine` runs over the machine store, an S3/local bucket, or a gRPC client. Local-only, serverless-bucket, git-remote and client/server modes share one code path.
 2. **Identity is asc's.** BLAKE3 ids, typed per kind. Git SHA-1s are deterministic derived data. Import is lossless and canonical, so a commit exported from asc and re-imported has the same changeset id **[fix: determinism across modes]**.
@@ -37,6 +37,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 11. **Built-in project graph.** asc detects Cargo, Python (uv/pyproject/requirements), .NET (sln/slnx/csproj/fsproj) and Bun/Node workspaces itself, by parsing manifest and lockfile bytes. The graph is derived data per changeset. `asc affected` and the `Affected` RPC map a diff to the owning projects plus their reverse-dependency closure, with no checkout and no hydration. turbo and nx are optional consumers, never dependencies (§12A) **[audit: projgraph]**.
 12. **Scion-core efficiency is v1.** Want-only tree-then-blob fetch of stored bytes; a bounded local history window, with older history answered by the server (§6.3); tiers that speak the same RPCs (daemon cache → `asc serve --role cache` → primary); seed snapshots; generation numbers plus skip lists; explicit memory and storage budgets enforced by a benchmark gate in CI (§16.4) **[audit: user decision efficiency]**.
 13. **Branchless by default, with a commit cloud.** Shared refs are only `master`, `release/*`, `green/*` and tags (per-repo `shared_refs`). A draft is a non-immutable changeset with a `ChangeMeta`, named by change id; it needs no branch. Visibility is a set of draft heads (`draft_heads` locally, `cloud_heads` per user workspace on the server), not refs. A local branch is a real local ref and a label; a pushed non-shared branch is the pusher's user ref (`refs/users/<owner-id>/heads/<n>`, one CAS row, owner-only), and `git push origin feat` also submits the stack as draft PRs. While online, the daemon uploads new changesets asynchronously (want-only, idempotent) after a pre-upload ignore and secret hold, never on public repos, with owner purge and cache eviction. No local git command changes its output with the mode. Off switches: client `asc.branchless`, server `repos.branchless` and `repos.cloud` (§21) [audit: branchless-folded].
+14. **MCP is built in.** Three surfaces, one owner per fact: `asc mcp` (stdio: workspace and repo), `asc serve` `/mcp` (Streamable HTTP 2026-07-28: the repo without a checkout) and the Forgejo fork's `/api/mcp` (PRs, reviews, issues, Actions, inbox). Tool schemas are generated from the proto descriptors; CLI `--json` and MCP share one codec, the asc JSON profile `json.profile.v1`, while `asc api` keeps standard proto3 JSON. Calls are stateless and handle-based. The default is read-only and only the user's own config widens it; destructive actions are confirmed through MRTR elicitation; every result is bounded by a token budget; the SDK is rmcp 3.6.0. See §22 [audit: mcp-folded].
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
@@ -81,6 +82,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | Stack and review features in the Forgejo fork UI (stack navigator, per-change review, stack merge through the queue, commit graph, blame/file history, inbox, comparison, undo-aware operations) | §20.8, §13.3 C34–C48, §20.5 flows |
 | GitLens/GitKraken data features in core and the plugin API (blame, history, graph, worktrees, conflicts) | §20.6, §7 `workspace.proto` additions |
 | **Branchless by default** (decision 2026-10-22): shared refs are only `master` and release branches; other work is draft changes indexed by change id and visible at once; `git push origin feat` submits the stack as draft changes; the daemon uploads commits asynchronously; off switch per repo and per user; local-only mode still works | §21 (BD1–BD12), §0 decision 13, §6.1, §6.3, §6.4, §2.7, §3.5, §3.6, §8.2, §8.3, §9.1, §11.1, §11.2, §13.3, §15.2, §16.3, §17.1; PLAN units B01–B28 |
+| **MCP built in** (decision 2026-10-22): `asc mcp`, `asc serve /mcp` and Forgejo `/api/mcp`; schemas generated from proto; read-only by default; ACL-scoped; bounded results | §22 (M-D1–M-D10), §0 decision 14, §7 (`options.proto`, `cli.proto`, `/mcp`, the JSON profile), §8.1 `[mcp]`, §8.7, §11.2 `asc mcp`, §13.3 M20–M28, §15.1, §16.3, §16.4, §20.7 (`--json` shapes), §21.7; PLAN units M01a–M28 |
 
 ASC workload (from `asc-profile.md`): 4,543 files / 119 MiB at HEAD, 5,502 commits, 104,800 reachable objects (311 MiB packed), 113 historical LFS objects (25.6 GiB), one submodule `packages/soma/sdk`, 50 worktrees, 26 commits/day mean (303 peak), median 4 files per commit.
 
@@ -698,7 +700,7 @@ The default branch name is `master` everywhere asc chooses one. asc never choose
 
 ---
 
-## 7. RPC surface (`proto/asc/v1/repo.proto`, `workspace.proto`, `changes.proto`, `cloud.proto`)
+## 7. RPC surface (`proto/asc/v1/repo.proto`, `workspace.proto`, `changes.proto`, `cloud.proto`, `options.proto`, `cli.proto`)
 
 gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local sockets for the daemon. The Go fork generates stubs from the same files (`buf generate`). Objects travel as stored bytes (codec byte plus data).
 
@@ -708,11 +710,13 @@ gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local socket
 
 **Commit cloud:** the `Cloud` service (`proto/asc/v1/cloud.proto`, same port) and the additive `repo.proto` fields (`Version.features += "cloud.v1", "branchless.v1"`; `RepoConfigResponse += branchless, cloud, shared_refs, visibility`; `WatchEvent` kind `KIND_CLOUD`) are specified in §21.3.5 [audit: branchless-folded].
 
+**MCP and the JSON profile (§22) [audit: mcp-folded]:** `options.proto` holds the `(asc.v1.json)` field option and `cli.proto` the messages of asc-only verbs (`OpResult`, `OpLogResponse`, the `*Args` messages, `AscHandles`, `WorktreeAddResult`). `asc serve` also mounts `POST /mcp` (§22.2). CLI `--json` prints the versioned **asc JSON profile** `json.profile.v1` (§22.4.2): snake_case field names, lowercase hex ids (40 = git SHA, 64 = asc id), change ids as 32 letters `k`–`z`, paths and text as UTF-8 (otherwise `{"b64": …}`), enums as lowercase names without the type prefix, and 64-bit integers as JSON numbers. It differs from standard proto3 JSON, which `asc api` keeps (below). The two never mix, and `asc_rpc::json` is the profile's only codec.
+
 **Common metadata:** `authorization: Bearer <token>`; `x-asc-client: asc/<semver> <os>-<arch>`; `x-asc-op-id: <uuidv7>` on every mutating call (idempotency, §8.3); W3C `traceparent`.
 
 **Errors** use gRPC status codes with an `asc.v1.ErrorDetail { string code; repeated string paths; bytes actual; repeated Conflict conflicts; }` detail. `code` values: `REF_CONFLICT`, `NOT_FAST_FORWARD`, `LAND_CONFLICT`, `LAND_NEEDS_CLIENT_REBASE`, `MISSING_OBJECTS`, `INVALID_OBJECT`, `HOOK_REJECTED`, `MIRROR_MODE`, `CLIENT_TOO_OLD`, `PATH_POLICY`, `PROJECTS_CONFIG`, `RATE_LIMITED`, and for stacks (§20.5) `CHANGE_DIVERGED`, `CHANGE_FROZEN`, `CHANGE_NOT_ALLOWED`, `LAND_NEEDS_CONTENT_MERGE`, and for branchless (§21.3.5) `VERSION_CONFLICT`, `CLOUD_HEADS_LIMIT`, `CLOUD_WORKSPACES_LIMIT`, `USER_REFS_LIMIT`, `QUOTA_EXCEEDED`, `REF_NOT_SHARED`.
 
-**Public API contract [audit: 31-api-standardisation]:** `asc.v1` is the public, stable API for CI, tools, agents and ASC's IDE plugins. `docs/api.md` is generated from the proto comments (buf). For each RPC it lists the required permission (read, write, admin or internal), idempotency, pagination and rate-limit class (§16.3). Every list RPC paginates with an opaque `page_token`/`next_page_token`. `asc api <Rpc> [--json <request>|-]` calls any `Repo` or `Projects` RPC with the user's credentials and prints JSON (proto3 JSON mapping), so scripts need no stubs. The proto is forge-neutral: no Forgejo types appear in `repo.proto`, so another forge or a git server can implement the same service.
+**Public API contract [audit: 31-api-standardisation]:** `asc.v1` is the public, stable API for CI, tools, agents and ASC's IDE plugins. `docs/api.md` is generated from the proto comments (buf). For each RPC it lists the required permission (read, write, admin or internal), idempotency, pagination and rate-limit class (§16.3). Every list RPC paginates with an opaque `page_token`/`next_page_token`. `asc api <Rpc> [--json <request>|-]` calls any `Repo` or `Projects` RPC with the user's credentials and prints JSON (the standard proto3 JSON mapping, not the §22.4.2 profile), so scripts need no stubs. The proto is forge-neutral: no Forgejo types appear in `repo.proto`, so another forge or a git server can implement the same service.
 
 **Object tier contract [audit: 17-tier-contract, user decision efficiency]:**
 - The tier RPCs are `Version`, `HasObjects` and `GetObjects`. Any process that implements them for a namespace is a tier: the primary `asc serve`, `asc serve --role cache`, and the CI `Tiered` stack. Clients make no assumption about what is upstream.
@@ -954,7 +958,7 @@ message WsStageResponse { WsStatusResponse status = 1; }
 
 The plugin RPCs are additive like `asc.v1` (§7 Compatibility), and every one also has an `asc … --json` CLI form (§11.2: `status|diff|log|blame --json`, `asc affected --json`, `asc watch --json`; `asc add` for `Stage`), so plugins can use either.
 
-**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz`, `/readyz`, `/metrics`.
+**HTTP on the same port** (`axum`): `/v8/*` turbo remote cache (§12.4), `/actions/v1/*` Actions cache and artifact manifests (§12.7), `/hooks/forgejo` (mirror webhook), `/.well-known/asc`, `/mcp` (MCP Streamable HTTP, primary role only, §22.2) and `/.well-known/oauth-protected-resource/mcp` (RFC 9728 metadata), `/seeds/<owner>/<repo>/latest` (§12.3), `/healthz`, `/readyz`, `/metrics`.
 
 **Compatibility:** `asc.v1` evolves additively only (new fields, RPCs and enum values). A breaking change is `asc.v2`, served side by side. Envelope versions are independent: readers reject unknown versions with "upgrade asc".
 
@@ -982,6 +986,13 @@ repo_root = "/var/lib/forgejo/data/forgejo-repositories"   # needed from Stage 2
 trusted_tokens_file = "/etc/asc/turbo-trusted"   # Stage 1 only (§12.4)
 pr_retention_days = 14
 trusted_retention_days = 60
+[mcp]                      # §22.8; the /mcp endpoint
+enabled = false            # true by default once the auth layer exists (M13); true is refused before then
+write = false              # write tools also need the asc:write scope
+allowed_origins = []
+hmac_keys = []             # key files (32 random bytes each) shared by all replicas
+max_tokens = 6000
+max_inflight_per_principal = 8
 ```
 
 ### 8.2 SQL schema (`crates/asc-serve/migrations/{postgres,sqlite}`)
@@ -1058,6 +1069,7 @@ No queue and no leader: concurrent lands race on the CAS and retry (step 8). At 
 ### 8.7 Server-side mutations (`Commit`, `Merge`, `Apply`, `CopyClosure`, `RepoAdmin`)
 
 - `Commit` builds a changeset from `FileOp`s on `parent` (content inline or by `FileId`), then runs the full `UpdateRefs` pipeline on `update_ref` with `expect`.
+- **A server `Commit` writes a `ChangeMeta` [audit: mcp-folded].** The changeset it creates is a draft change (`op = New`, `preds = []`), written in pipeline step 4 through the `IngestObserver` hook (§20.4; unit M18). Changes created through MCP `commit` or Forgejo's web editor therefore get a change id. MCP `commit` accepts only an empty `update_ref` or `refs/for/*` (§22.3.3).
 - **Changesets without refs [audit: 9-ingest-without-ref]:** creating a changeset never requires a ref move (Scion).
   - `Commit` with an empty `update_ref` runs only pipeline step 4: closure check, §2.6 and §8.4 validation, path policy, eager derivation into `cs_graph`/`git_map`. It returns the id. No ref, hook, `ref_log` or outbox row is involved.
   - `Ingest` does the same for changesets already uploaded with `PutObjects`. It requires write permission.
@@ -1414,9 +1426,9 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 
 Until a command's unit lands, invoking it fails with exit 129 and `fatal: asc: '<cmd>' is not supported yet` **[audit: missing-cli-units]**.
 
-asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
+asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]` (§22.8), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
 
-asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the proto3 JSON of the matching `Ws*Response` (§7; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines.
+asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the matching `Ws*Response` in the asc JSON profile (§22.4.2; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines.
 
 ### 11.3 Cheat sheet (`asc help git`, also `docs/CHEATSHEET.md`)
 
@@ -1891,6 +1903,15 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 | C48 | "Revert landed stack" (`Apply(REVERT)` over `FindLanding`, newest first) | as C34 |
 | B17 | Branchless repo settings (branchless, cloud, `shared_refs`), no branch rows or push events for user refs, draft PRs by default, draft-PR `pull_request` trigger if spike S13 requires it (§21.5.2) | `storage_backend=asc`, per repo |
 | B23 | "Your drafts" page over `Cloud.GetWorkspace` (v1.x; labels escaped) | as B17 |
+| M20 | MCP framework [audit: mcp-folded]: `/api/mcp`, stateless Streamable HTTP 2026-07-28, `server/discover`, reuse of API auth, Origin check, `[mcp]` settings, read-only gate (write methods also need `lockdown`, M28), PRM document. SDK: the official `modelcontextprotocol/go-sdk` pinned to its first 2026-07-28 release, else a thin own POST transport with only the SDK's types | `[mcp] ENABLED = true`, `WRITE = false` |
+| M21 | `pr_read` (methods `get` with `AscHandles`, `list`, `search`, `reviews`, `review_comments`, `comments`, `checks`, `stack`); vendors `asc_handles.schema.json` | as M20 |
+| M22 | `pr_write` (stack-aware merge, 409 `stack-parent-unmerged` returned as `isError`, auto-merge) and `review_write` (confirmation on approve and dismiss) | writes behind `WRITE` |
+| M23 | `issue_read`, `issue_write` (confirmation on every method but `label`) | as M22 |
+| M24 | `actions_read` (ranged and tailed logs, 64 KiB cap) and `actions_write` | as M22 |
+| M25 | `inbox_read`, `inbox_write` | as M20 |
+| M26 | OAuth: RFC 8707 `resource`, `aud` in access tokens, RFC 9207 `iss`, the pre-registered public client `asc-mcp`, `aud` and scopes in the K07 authz answer | OAuth provider additions |
+| M27 | (v1.x) CIMD client registration | as M26 |
+| M28 | `lockdown` mode: hide content by authors without write access in `pr_read`, `issue_read` and `actions_read`; registers `lockdown.Available()` | as M20 |
 
 The ASC Actions fork (§12.7) needs no Forgejo patch: `[actions] DEFAULT_ACTIONS_URL` is an upstream setting. The runner fork (`forgejo-runner`, Go, separate repo) carries the alias table and the native checkout fast path (units R01–R02).
 
@@ -1977,6 +1998,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - `HOOK_MODE_SKIP_PRE` and `ImportGitPush` require Forgejo's internal token, over the private network or mTLS.
 - **CI:** a job's token is bound to its repo; reading a composed repo needs a composition grant (§15.5). With the host cache read-only and the job cache per job, cross-job poisoning is impossible. Every consuming tier verifies BLAKE3 (§3.2).
 - **Daemon:** a current-user-only pipe/socket. The daemon never serves another user.
+- **MCP [audit: mcp-folded]:** `asc serve` is an OAuth 2.1 resource server for `/mcp` (§22.7.3). A request without a token gets 401 with `WWW-Authenticate: Bearer resource_metadata=…, scope="asc:read"`. The scopes are `asc:read` and `asc:write`; too little scope gets 403 `insufficient_scope`. Forgejo is the authorisation server (M26), and asc checks that the token's `aud` equals its canonical `/mcp` URL through the K07 authz answer. Tokens are never passed through to another API. A Forgejo PAT is accepted as the bearer for headless agents and CI (`read:repository` maps to `asc:read`, `write:repository` to `asc:write`); it has no audience, because Forgejo issues it for its own resource set. Every call authorises `(principal, repo, read|write)` through the cache above, and an unreadable repo returns the same `NOT_FOUND` as a missing one. `asc mcp` over stdio uses the CLI credentials and no OAuth.
 
 ### 15.2 Integrity and policy
 
@@ -2043,6 +2065,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
   - `UpdateRefs`: 20 req/s per repo;
   - stacks (§20.5): `ResolveChanges`, `Stack`, `Versions`, `Overlaps` and `RepoConfig` are `cheap`; `InterDiff`, `Mergeability` (on a miss), `RestackChanges`, `RequestMerge`, `CommitGraph` with stats, `LineHistory` and pickaxe `Log` are `expensive`;
   - commit cloud (§21.3.5): `Cloud.GetWorkspace` and `ListWorkspaces` are `cheap`; `Cloud.UpdateWorkspace` and the uploader's `Ingest` run in a new class `background` that is shed first; `PutObjects` stays in `objects`;
+  - MCP (§22.5) [audit: mcp-folded]: each call is charged to the class of its backing RPC (`log` is `cheap` or `expensive`, a `diff` with a patch is `expensive`), plus at most 8 in-flight MCP calls per principal per `asc serve` instance (a gateway enforces cluster limits on `Mcp-Param-Repo`). Over the limit, the call returns `isError` with `RATE_LIMITED` and `retry_after_ms`;
   - the `service` class (Forgejo internal token, CI warmer) has its own limits. All values live in `asc-serve.toml [limits]`.
 - **Over limit:** gRPC `RESOURCE_EXHAUSTED` with `ErrorDetail.code = RATE_LIMITED` and trailer `retry-after-ms`; `/v8` and `/seeds` return 429 with `Retry-After`.
 - **Load shedding:** each replica caps in-flight requests (`limits.max_inflight`, default 1,024) and 64 in-flight RPCs per token. Requests beyond a cap are shed at once (`UNAVAILABLE` or `RESOURCE_EXHAUSTED` with `retry-after-ms`) and never queued for longer than 1 s. Bucket calls have a per-replica concurrency cap (`bucket.max_concurrency = 256`) and a 30 s timeout.
@@ -2054,6 +2077,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 ### 16.4 Resource budgets, cache SLOs and benchmarks [audit: 19-hit-rate-slo, user decisions efficiency and benchmarks]
 
 - **Memory budgets (enforced by tests and O05):** the daemon's idle RSS is ≤ 64 MiB and stays bounded under load (tree cache ≤ 32 MiB, journal queue ≤ 8 MiB, per-provider buffers pooled). The server and cache role stream every response and never buffer a whole response or tree set; their caches are size-capped by config. Whole-file buffering happens only where an algorithm needs it (line diff, merge, blame, classify, grep), and is gated by a per-replica byte semaphore `limits.text_memory` (default 2 GiB): a request waits ≤ 1 s for budget, then is shed with `RESOURCE_EXHAUSTED` (§16.3). Files above `core.bigFileThreshold` (default 512 MiB) are treated as binary, as git does **[audit: server-whole-file-buffer-cap]**. The CLI never loads the full tree: it walks lazily, by spine.
+- **`asc mcp` [audit: mcp-folded]:** idle RSS ≤ 24 MiB, and ≤ 64 MiB with 8 concurrent 25k-token diffs on the HUGE generator repo; at most 8 concurrent calls and a queue of 32 per process. The default `tools/list` estimates at most 6,000 tokens. Both are gated by M16 (§22.5).
 - **Cache SLOs:** every tier exports `asc_cache_requests_total{tier=client|host|job|cache_role|server_mem|server_disk, result=hit|miss}`. Targets: object hit rate ≥ 99% at the CI host cache and at the cache role, and ≥ 95% at the server memory plus disk cache, measured daily. Three consecutive days below target raise an alert.
 - **Every cache tier is disposable:** deleting the host cache, a cache role's disk, the server's `disk_dir` or a client's `cache/` loses no data and needs no repair. Only `store/`, `state.db`, server SQL and the bucket hold state.
 - **Benchmark gate (O05, in CI):** a head-to-head harness (`bench/`, hyperfine-driven, plus a criterion suite for internals) runs the same scenarios on git and asc: clone (git full, `--filter=blob:none`, `--depth 1`, sparse-checkout and scalar where they apply, against asc virtual and plain), `worktree add`, `status` clean and dirty, `switch` between tips, `diff` (HEAD, merge-base, `--stat`), path-limited `log`, `blame`, `merge-base`/`is-ancestor`, `commit`/`push`/`fetch`, CI checkout plus affected, and turbo `--dry` hashing.
@@ -2124,12 +2148,15 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 4 Server | 7–10 | U41–U51, U65–U71, U72, G09, G10 | `asc serve` (mirror, primary, land, reads, mutations, `/v8`, cache role, seeds, indexes, `Projects`) | M-meta passed; Stage 1 live for pilot; plan job < 10 s; compat suite green |
 | 4s Server stacks | 10–13 | C17–C32, C45, C49, C50, C52 (after U47/U66/U68); C33 is v1.x | `Changes` service, `asc submit/sync/stack get/stack merge/share/evolog`, `CommitGraph`, `LineHistory`, `Compare`, pickaxe, `RepoConfig`, stack plugin API | a 5-change stack submits as one `UpdateRefs`, lands 1..3 atomically and restacks 4..5; compat suite green |
 | 4b Branchless and commit cloud | 10–14 | B01–B19 (incl. B18a), B21, B22, B24–B26, B28 (B01–B06, B24 after C04/C05; the rest after U47/U48d/U53b/C24); B17, B23, B27 on the Forgejo and CI tracks | user refs and ref policy, commit-cloud upload and sync, `asc hide/unhide/cloud`, branchless `push`, `asc migrate branchless`, `asc serve admin branchless enable` | `push` of an already uploaded stack is one `HasObjects` batch plus one `UpdateRefs`; compat suite byte-identical in both modes; B25 budgets green; an ASC-shaped fixture (117 branches) migrates idempotently |
+| 4m Server MCP | 12–15 | M12a, M12b, M13, M14, M18 (after M05, U47, U69, C19, G09) | `asc serve /mcp`: stateless HTTP, OAuth resource server, read and write tools (§22) | `mcp_http`, `mcp_backend`, `mcp_auth` and `mcp_write` tests green; an unreadable repo answers like a missing one |
 | 5 Daemon and ProjFS | 8–12 | U52–U58, U73 | virtual worktrees on Windows; plugin API | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests; daemon idle RSS ≤ 64 MiB; compat suite green |
+| 5m Local MCP | 12–16 | M01a–M11, M15–M17 (after U73, C31, C24, C25) | the asc JSON profile for `--json`, `asc mcp` over stdio, `asc mcp install`, the generated tool reference | stdio acceptance tests green in local-only mode; default `tools/list` ≤ 6,000 tokens; idle RSS ≤ 24 MiB (M16) |
 | 6 CI | 10–12 | U61–U64, U75 | `asc/actions`, runner alias, host warmer, seeds | typical PR ≤ 8 runner-minutes; compat suite green |
 | 7 FUSE and submodules | 12–14 | U59–U60 | Linux virtual, sdk composition | WSL contract green; compat suite green |
 | 8 Forgejo Stage 2 | 8–15 | K01–K09 | asc is truth | rollback drill passed on staging; compat suite green |
 | 9 Forgejo Stage 3–5 | 15–22 | K10–K15, K17, R01–R02 | full storage replacement; relaxed approvals; runner fork | Forgejo suite green on `asc`; a dual week with 0 mismatches; compat suite green |
 | 9s Forgejo stacks | 18–24 | C34–C43, C46–C48 (after K17); C44 is v1.x | stacked PRs, stack panel, versions/interdiff, stack merge and queue, inbox, commit graph page, badges | `asc-sim` lands 20 stacks concurrently with no lost or duplicated change; Forgejo suite green |
+| 9m Forgejo MCP | 18–24 | M20–M26, M28 (after K07, K14, C34–C39); M27 is v1.x | `/api/mcp`: PRs, reviews, issues, Actions, inbox; OAuth with audience binding; `lockdown` | the Forgejo `go test` selectors green; an IDE or agent host signs in by OAuth or PAT |
 | Ops | ongoing | O01–O08, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
 
 G09–G10 ship with Phase 4, and U63 uses them in Phase 6.
@@ -2195,7 +2222,7 @@ Fixed rules: git commands keep git's exact semantics, output and exit codes (§1
 | D9 | **The asc server owns forge-neutral change facts** in a new `Changes` service: the index, versions, stack shape, mergeability, overlaps and interdiff. **Forgejo owns social state**: reviews, inbox and queue. Forgejo pushes a summary back to asc (`SetReviewState`). | Scion's API-first rule, and `repo.proto` stays forge-neutral (§7). The CLI and plugins never call a forge API for stack data. |
 | D10 | **A stack lands as one `UpdateRefs(LAND)` call with the prefix's top change as the new tip.** The land is atomic, is a pushrebase (§8.5) and takes no global lock. The "merge queue" is Forgejo's ordered merge-when-ready built on this primitive (§12.6). | Post-merge testing stays as in §12.6. No speculative CI and no batching. Revalidation runs only when the land needed a content merge. |
 | D11 | **After a parent lands, the server restacks open children (`RestackChanges`).** An approval survives when the change's own `changes` list is unchanged. | Graphite's server-side restack. The "patch unchanged" check is O(1) on Bonsai changesets. |
-| D12 | **GitLens/GitKraken features are delivered as data:** Workspace IPC plus `asc.v1` RPCs (`CommitGraph` with lanes, enriched `Blame`, `LineHistory`, `Compare`, `Worktrees`, `Stacks`, `Conflicts`), §20.6. ASC's plugins and the Forgejo fork render them. Everything is free, and AI features stay out of core. | The most-loved features (blame, history, graph) are served from derived data. |
+| D12 | **GitLens/GitKraken features are delivered as data:** Workspace IPC plus `asc.v1` RPCs (`CommitGraph` with lanes, enriched `Blame`, `LineHistory`, `Compare`, `Worktrees`, `Stacks`, `Conflicts`), §20.6. ASC's plugins and the Forgejo fork render them. Everything is free. AI review and chat features stay out of core; agent interfaces (MCP, §22) are core [audit: mcp-folded]. | The most-loved features (blame, history, graph) are served from derived data. |
 
 ### 20.2 Stable change identity
 
@@ -2463,7 +2490,7 @@ All additive; served by the daemon over IPC (`workspace.proto`), by the server w
 
 ### 20.7 Commands
 
-Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence applies (D5). Every verb takes `--json` (shapes below) and `-n/--dry-run` where it mutates. Exit codes: 0 done or nothing to do; 1 paused on a conflict (as `git rebase`); 2 ambiguous (a fork or several candidates, listed in `candidates` under `--json`); 128 fatal; 129 usage.
+Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence applies (D5). Every verb takes `--json` (shapes below) and `-n/--dry-run` where it mutates. Exit codes: 0 done or nothing to do; 1 paused on a conflict (as `git rebase`); 2 ambiguous (a fork or several candidates, listed in `candidates` under `--json`); 128 fatal; 129 usage. Under `--json` the exit codes do not change, and the printed result says `status: "paused"` (with `conflicts`) for 1 and `status: "ambiguous"` (with `candidates`) for 2; the MCP server returns both as ordinary results (§22.3.1) [audit: mcp-folded].
 
 | Verb and key flags | Does |
 |---|---|
@@ -2486,7 +2513,7 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
 | `asc stack rename <new>`, `asc stack delete [--upstack\|--downstack] [-c]`, `asc stack pop` | Branch lifecycle; children are restacked onto the parent; `-c` also closes the PRs |
 | `asc stack get <pr\|change\|branch> [-d] [-u] [--unfrozen] [--worktree <path>]` | Fetches a stack from the server, frozen by default. `--worktree` opens it in a new plain worktree (a virtual one once U57/U58 land). |
 | `asc stack freeze\|unfreeze [<change>]`, `asc stack trunk [--add\|--remove <b>]`, `asc stack info [<change>]`, `asc stack parent\|children` | Local protection; configuration and relationship reads |
-| `asc undo [-n] [-f]`, `asc redo`, `asc op log`, `asc op show <op>`, `asc op restore <op>` | §20.3 |
+| `asc undo [-n] [-f] [--op <id>]`, `asc redo [--op <id>]`, `asc op log`, `asc op show <op>`, `asc op restore <op>` | §20.3. `--op <id>` makes the call refuse (exit 128, `ErrorDetail.code = STALE_OP` under `--json`) unless that op is the latest in the op log (`undo`) or the latest undone op (`redo`), so an agent can revert only what it just did [audit: mcp-folded]. |
 | `asc evolog [<change>] [-p]`, `asc interdiff <change> [<v1> <v2>]` | The versions of a change (local and server) and the diff between versions |
 | `asc share [-m <msg>]` | Snapshots the working changes, `Ingest`s them (§8.7), writes `refs/snapshots/<id>` with an expiry (default 30 days, `UpdateRefs.ttl_seconds`, §8.8) and prints `asc:<id>` and a web link. Recipients run `asc stack get asc:<id>`. |
 | `asc stack exec [--revset <r>] -- <cmd>` (v1.x) | Runs a command on each change in an ephemeral worktree, results cached by `TreeId` |
@@ -2497,7 +2524,7 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
 
 **Stack awareness in existing git commands: none (D4).** `commit --amend`, `rebase`, `rebase -i`, `pull --rebase` and `rebase --update-refs` keep git's semantics and leave descendants untouched (run `asc restack`). Every ref-moving command is recorded in the op log invisibly, and every new commit gets a `ChangeMeta` invisibly (SHAs unchanged). `push`, `status`, `log`, `branch` and `rev-parse` are unchanged.
 
-**`--json` shapes** (every object carries `"version": 1`; ids are git SHA-1s, as in §11.1, plus the change id):
+**`--json` shapes** (every object carries `"version": 1`; ids are git SHA-1s, as in §11.1, plus the change id; field names, ids and enums follow the asc JSON profile of §22.4.2, and a result is always a JSON object, so a list is wrapped) [audit: mcp-folded]:
 
 ```jsonc
 // asc sl --json  ==  Workspace.Stacks
@@ -2507,7 +2534,7 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
     "changes": [   // topological, bottom → top; build the tree from parent_change
       { "change": "<32 k-z>", "short": "<12>", "commit": "<sha>", "asc": "<64 hex>",
         "parent_change": null, "branches": ["jordan/parser"], "subject": "…",
-        "author": { "name": "…", "email": "…", "time": 0 },
+        "author": { "name": "…", "email": "…", "time": 0, "tz": "+0000" },
         "state": "draft|landed|obsolete|divergent", "needs_restack": false, "frozen": false,
         "empty": false, "current": true, "worktree": null,
         "review": { "number": 42, "url": "…", "state": "draft|open|merged|closed",
@@ -2515,20 +2542,21 @@ Every verb is asc-only (§11.2). Under argv[0] `git` the §11.4 precedence appli
                     "queue": "none|queued|landing", "version": 3, "reviewed_version": 2 } } ] }] }
 
 // every mutating verb
-{ "version": 1, "op": "<op id>", "status": "ok|nothing|paused",
+{ "version": 1, "op": "<op id>", "status": "ok|nothing|paused|ambiguous",   // paused: conflicts; ambiguous: candidates
   "rewritten": [{ "change": "…", "old": "<sha>", "new": "<sha>" }],
   "refs": [{ "name": "refs/heads/…", "old": "<sha>", "new": "<sha>" }],
   "skipped": [{ "change": "…", "reason": "checked-out-elsewhere|frozen|conflict|merge|immutable" }],
   "conflicts": [{ "change": "…", "paths": ["…"] }],
+  "candidates": [{ "change": "…", "subject": "…" }],
   "reviews": [{ "change": "…", "number": 42, "url": "…", "created": false, "version": 4 }],
   "hints": ["…"] }
 
-// asc op log --json
-[{ "op": "…", "seq": 17, "at": 0, "ws": "…", "argv": ["git", "rebase", "master"],
-   "refs": [{ "name": "…", "old": "…", "new": "…" }], "snapshot": null, "undone": false }]
+// asc op log --json   (argv is already redacted, §20.3)
+{ "version": 1, "ops": [{ "op": "…", "seq": 17, "at": 0, "ws": "…", "argv": ["git", "rebase", "master"],
+   "refs": [{ "name": "…", "old": "…", "new": "…" }], "snapshot": null, "undone": false }] }
 
 // asc evolog --json
-[{ "version": 3, "commit": "<sha>", "op": "amend|rebase|…", "at": 0, "actor": "…", "preds": ["<sha>"], "published": true }]
+{ "version": 1, "versions": [{ "version": 3, "commit": "<sha>", "op": "amend|rebase|…", "at": 0, "actor": "…", "preds": ["<sha>"], "published": true }] }
 ```
 
 ### 20.8 Forgejo UI (rendered from the RPCs above; §13.3 C34–C48)
@@ -2886,7 +2914,7 @@ Deletions reach Forgejo through the outbox (`post_receive` with deletions), so i
 
 ### 21.7 MCP
 
-The checklist's built-in MCP decision covers this surface too. Tools are rows in `crates/asc-mcp/tools.toml` (mcp.md M03), reuse the `--json` shapes and RPC messages, are ACL-scoped and obey M-D4 and M-D9. Branchless adds no new toolset.
+The checklist's built-in MCP decision covers this surface too. Tools are rows in `crates/asc-mcp/tools.toml` (§22.7.2, unit M03), reuse the `--json` shapes and RPC messages, are ACL-scoped and obey M-D4 and M-D9 (§22.1). Branchless adds no new toolset.
 
 | Tool | Toolset (M-D9) | Shape | Mutating | Gate (M-D4) |
 |---|---|---|---|---|
@@ -2895,6 +2923,375 @@ The checklist's built-in MCP decision covers this surface too. Tools are rows in
 | `hide`, `unhide` | `write` | mutating-verb JSON (§20.7), undoable | yes | the same per-workspace rule as `create` and `modify`: `write=local` while the workspace does not upload (local-only, offline, or branchless upload off); `write=remote` with `openWorldHint: true` when the client is online in branchless mode with cloud on, because the daemon then updates the cloud head set |
 
 Tool names are short and unprefixed, as the MCP catalogue requires (hosts namespace them by server). There is no separate push tool: `submit` (always `write=remote`) is the mapping of `asc submit` and of a branchless `git push` of a stack. The default `core` set (11 read tools) is unchanged. `hide` and `unhide` run as child verbs through the local write path of the MCP server. Purge is not exposed over MCP.
+
+---
+
+## 22. MCP: the agent interface, built in [audit: mcp-built-in-missing, checklist-mcp-not-folded]
+
+Normative from v1.6 (checklist decision "MCP built in", 2026-10-22). This section folds `docs/research/mcp.md` (final, reviewed): its §N is §22.(N+1) here, its decisions M-D1–M-D10 are §22.1, and its units are PLAN §M. The research file stays as background and review history; where it and this section differ, this section wins. Related text: §21.7 (the branchless tools `drafts`, `cloud_status`, `hide`, `unhide`, which join the `stack` and `write` toolsets), §7 (`asc api` and the JSON profile), §15.1 (identity), §16.3 (rate classes). The code-intelligence `search` tool is row `search` of §22.3.2; its extra fields come from `docs/research/codeintel.md` §3.4.
+
+Fixed rules this section obeys:
+- git commands keep git's semantics, output and exit codes; MCP is a new surface and changes none of them;
+- the default branch is `master`;
+- there is no IDE git plumbing and no LFS;
+- efficiency is core: bounded memory, no whole-repo scans, everything served from derived data;
+- local-only mode keeps working (`asc mcp` with no server and no daemon).
+
+### 22.1 Decisions
+
+| # | Decision | Why |
+|---|---|---|
+| M-D1 | **Three surfaces with one owner per fact.** `asc mcp` (stdio) serves the workspace and the repo. `asc serve` `/mcp` (Streamable HTTP) serves the repo without a checkout. The Forgejo fork's `/api/mcp` serves social and CI state only (PRs, reviews, issues, Actions, inbox). Forgejo exposes no file, tree, commit, diff, blame, branch or tag tool. asc exposes no PR, review, issue or Actions tool. | Same split as stacks D9: asc owns forge-neutral change facts, Forgejo owns social state. No tool exists twice with two meanings. |
+| M-D2 | **Proto is the single schema source.** Tool input and output schemas are JSON Schema 2020-12, generated at build time from the `asc.v1` descriptor set. CLI `--json` output and MCP use one codec, `asc_rpc::json` (§22.4.2), the versioned "asc JSON profile" (`json.profile.v1`). `asc api` keeps standard proto3 JSON, as SPEC §7 promises, and is not affected. asc-only verbs that have no RPC get messages in a new `proto/asc/v1/cli.proto`. Every `structuredContent` is a JSON object, so a bare-array CLI shape is wrapped in a message (`asc op log --json` prints `{"ops": [...]}`). The C07 shapes are reconciled with these schemas before M02 (PLAN §M). | SPEC §11.2 said before v1.6 that `--json` is "the proto3 JSON of the matching `Ws*Response`". serde plus schemars would give a second source that drifts from the RPCs. The profile changes casing, ids and enums, so it is versioned and kept off `asc api`. |
+| M-D3 | **Stateless, handle-based.** There are no MCP sessions (2026-07-28). Every call names its target: `repo` (HTTP), the workspace (stdio, implicit from the launch directory, overridable with `worktree`), and revisions or change ids as ordinary arguments. Change ids and changeset ids are the handles. | Fits the spec's "explicit handles" guidance and branchless asc: a change needs no branch, and its id is stable across rewrites (SPEC §20.2). |
+| M-D4 | **Read-only by default, and only the user can widen it.** Write tools are not listed unless config enables them: `asc.mcp.write = local` for verbs with no network effect, and `remote` adds the verbs that upload or contact the network (§22.3.3 defines the split). The keys `asc.mcp.write` and `asc.mcp.confirm` are honoured only from user and system config, never from repo or worktree config. Flags (including those in a committed `.mcp.json`) can only narrow access below that ceiling: `--read-only`, a lower `--write`, fewer toolsets. On HTTP, writes also need the `asc:write` scope and `[mcp] write = true`. `--read-only` always wins. | A repository must not be able to switch on writes or switch off confirmation for the agent that opens it. GitHub, Gitea and the Forgejo community servers all ship a read-only mode. Remote effects (submit, land) cannot be undone (SPEC §20.3). |
+| M-D5 | **Destructive confirmation uses MRTR elicitation** (form mode) with a sealed `requestState` (rmcp `request-state`: HMAC, principal, 5 min TTL, request digest). A client without elicitation gets an `isError` result; only the user's own user or system config (`asc.mcp.confirm = never`, M-D4) skips the confirmation. Summaries are rendered from escaped, truncated fields (§22.5). | A model-controlled `confirm: true` argument is not a confirmation. |
+| M-D6 | **Every result is bounded.** A token budget (`max_tokens`, default 6,000, hard cap 25,000, the Claude Code default limit; estimated at 3 bytes per token, §22.6.2) applies to every call, with structure-preserving truncation and an opaque `next_cursor`. Streams are consumed under the budget and dropped (cancelled) when it runs out. | Agents pay per token; a 400k-file repo must not reach the model. |
+| M-D7 | **Reads go through the existing RPCs. Local writes run the CLI verb as a child `asc <verb> --json`.** The child is `std::env::current_exe()`, never `asc` from `PATH` (which may be the git shim). Its stdin is null and its stdout is captured (§22.5). | Reads reuse derived data with no new code path. A child process reuses the hooks, op log, ref chokepoint (SPEC §9.4.1) and locks exactly and bounds memory per write. Writes are rare, so a process spawn costs nothing that matters. Cancellation is graceful first (§22.5). |
+| M-D8 | **MCP inherits the branchless setting.** No tool creates, lists or switches branches, and `create` has no `branch` argument. `create` passes no branch flag: under branchless mode (the default, per repo or per user) the CLI default is `--no-branch`, and when a team or user has switched branchless off, the CLI names a branch from `asc.stack.branchTemplate` as it does for a human. The SPEC §20.7 edit that makes `--no-branch` the default under branchless mode is made in SPEC §20.7 (unit B01). Navigation and stacks use change ids. | This follows the checklist decision "branchless by default", including its per-repo and per-user opt-out. Git branch UX stays in the CLI. The server `commit` tool cannot move branches either (§22.3.3). |
+| M-D9 | **A small default toolset.** The default `core` set has 11 read tools. Other sets (`history`, `stack`, `projects`, `search`, `write`) are opt-in through `--toolsets`/`asc.mcp.toolsets`. `tools/list` order is fixed by the manifest, so prompt caches hit. | GitHub PR #1159: the default set was cut 53% by usage, with no loss of top-20 tools. |
+| M-D10 | **rmcp 3.6.0 without macros.** Tools are table-driven from the generated schemas: a manual `ServerHandler`, with no `#[tool]` and no schemars. | Schemas come from proto (M-D2), and macros would derive them from Rust types instead. |
+
+---
+
+### 22.2 Surfaces and placement
+
+| Surface | Transport | Process | Auth | Backend | Scope |
+|---|---|---|---|---|---|
+| `asc mcp` | stdio (newline-delimited JSON-RPC), logs to stderr | the `asc` binary, launched by the agent host in a workspace | none on the pipe; repo calls use the user's existing credentials (`ASC_TOKEN`, else `git credential fill`, SPEC §15.1). No OAuth on stdio | daemon IPC (`Workspace`; `asc mcp` starts the daemon on first need, as the CLI does), in-process only when `ASC_NO_DAEMON` is set (plain workspaces only, SPEC §9.1); the server's `Repo`/`Changes`/`Projects` when the remote is an asc server (same L/S routing as SPEC §11.2), else the local engine | one workspace and its repo |
+| `asc serve` `/mcp` | Streamable HTTP 2026-07-28 (POST only; GET and DELETE return 405) | in `asc serve` (primary role only; the cache role returns 404) | OAuth 2.1 resource server (RFC 9728) with Forgejo as the authorization server, or a Forgejo PAT as the bearer token | in-process `RepoHandlers`, `Changes` and `Projects` (no network hop) | any repo the principal can read, named per call |
+| Forgejo `/api/mcp` | Streamable HTTP 2026-07-28, stateless | in the Forgejo fork (Go), calling Forgejo services in-process (not REST) | Forgejo's API auth (PAT or OAuth2 token) and its scopes | Forgejo models and services | PRs, reviews, issues, Actions, inbox |
+
+**Placement rule.** If the answer comes from a changeset, tree, file, ref or derived data, the tool is asc's. If the answer comes from Forgejo's database (people, discussion, approvals, queue, runs), the tool is Forgejo's. Forgejo results carry the asc handles (`asc_change`, `head`, `merge_base`), so the agent calls asc tools for the code.
+
+| Need | Tool | Surface |
+|---|---|---|
+| PR diff, interdiff, versions, stack shape, mergeability | `diff`, `interdiff`, `change_versions`, `stack`, `change_info` | asc |
+| PR metadata, reviews, comments, checks summary, merge, queue | `pr_read`, `pr_write`, `review_write` | Forgejo |
+| Create or update a PR | `submit` (an AGit push of the change, SPEC §20.5 flow 1) | asc |
+| Merge or queue a stack | `pr_write {method: merge \| auto_merge}` (stack-aware, C36/C38/C39) | Forgejo |
+| Issues | `issue_read`, `issue_write` | Forgejo |
+| Actions runs, jobs, logs | `actions_read`, `actions_write` | Forgejo |
+| Inbox (whose turn) | `inbox_read`, `inbox_write` | Forgejo |
+| Affected projects of a PR | `affected` (with `base` = `asc_stack_parent_sha`) | asc |
+
+Which server to configure: a local agent uses `asc mcp` plus Forgejo `/api/mcp`. A remote agent with no checkout uses `asc serve` `/mcp` plus Forgejo. `asc mcp install` writes the first pair into `.mcp.json` (project) or the user config, and never adds the asc HTTP endpoint next to `asc mcp`, so an agent never sees the same tool twice.
+
+---
+
+### 22.3 Tool catalogue
+
+#### 22.3.1 Conventions
+
+- **Names** are short, without a prefix: hosts already namespace them by server (`mcp__asc__log`). The pattern is `[a-z_]+`.
+- **Input** is the RPC request message, projected:
+  - injected fields are removed (`repo` on stdio, `ws_id`);
+  - plumbing fields are hidden (`null_terminated`, `binary`, `id_mode`, `count_only`);
+  - MCP-only fields are added: `max_tokens`, `cursor`, `worktree` (stdio), and the convenience fields listed per tool.
+  - `worktree` must equal (after canonicalisation) one of the paths listed by `Workspace.Worktrees` for the launch workspace. Any other value is -32602. It is a selector, not a path to open.
+  
+  On HTTP, `repo` (`"owner/name"`) is required and carries `x-mcp-header: "Repo"`, so gateways can route and rate-limit on `Mcp-Param-Repo`.
+- **Revision arguments** accept a git revspec, a full or abbreviated git SHA, an asc hex id, a change id prefix (at least 4 letters `k`–`z`) and `asc:<snapshot>`. They resolve in SPEC §20.2 order.
+- **Output** (`structuredContent`) is the response message in the asc JSON profile (§22.4.2). A streamed RPC is folded into one message (proto merge: repeated fields concatenated). Two optional top-level fields are added: `truncated` (where the message lacks one) and `next_cursor`. The result is always a JSON object: a CLI shape that is a bare array is wrapped by its `cli.proto` message. `outputSchema` is generated, and the result always conforms.
+- **Text block** is the git-format rendering, not a second copy of the JSON: a patch for `diff`, `--oneline` for `log`, porcelain v2 for `status`, `path:line:text` for `grep`. `asc.mcp.textMode = json` switches it to serialized JSON for clients that ignore `structuredContent`.
+- **Annotations:** `R` = `readOnlyHint: true`. For writes, `d`/`i` = `destructiveHint`/`idempotentHint` true (otherwise explicitly false). Annotations are static per tool and cannot depend on arguments, so a tool that is destructive for some arguments is marked `d`. `openWorldHint` is false on asc tools that stay inside the closed system of server, cache and daemon, and true on `submit` and `sync` (they reach the network) and on any verb §22.3.3 classes as remote. `destructiveHint: true` means "not reversible with `undo`" or "may drop work".
+- **Errors:**
+  - an unknown tool or invalid arguments is JSON-RPC `-32602`;
+  - everything else is `isError: true` with `structuredContent.error = {code, message, paths, conflicts, retry_after_ms}`, where `code` is `ErrorDetail.code` (SPEC §7) or `NEEDS_CONFIRMATION`, `BUDGET`, `NOT_AVAILABLE`, `STALE_OP`;
+  - a child verb's exit code 1 (paused on a conflict) or 2 (ambiguous, with `candidates`) is not an error: the result is `isError: false` with `OpResult.status = "paused"` (and `conflicts`) or `"ambiguous"` (and `candidates`). Exit codes 128 and 129 are `isError`.
+
+#### 22.3.2 Read tools
+
+Surface: L = `asc mcp`, S = `asc serve /mcp`. "L→S" means stdio routes to the server when one is configured and to the local engine otherwise.
+
+| Tool | Set | Surf. | Backing call | Input (projection) | Output | Ann. | Default / max |
+|---|---|---|---|---|---|---|---|
+| `status` | core | L | `Workspace.Status` | `WsStatusRequest` − `ws_id`; `untracked` default true, `ignored` refused | `WsStatusResponse` | R | 500 files / 5,000 |
+| `diff` | core | L | `Workspace.Diff` | `WsDiffRequest` − `ws_id` (`from`/`to`: `index` \| `worktree` \| rev; default `HEAD`→`worktree`) | `DiffResponse` | R | `patch`, 6k tokens; `max_files` 300 (default and cap) |
+| `diff` | core | S | `Repo.Diff` | `DiffRequest` − `null_terminated`, `binary` | `DiffResponse` | R | `max_files` 300 (default and cap) |
+| `log` | core | L→S, S | `Workspace.Log` / `Repo.Log` | `LogRequest` (`include`, `exclude`, `paths`, `follow`, `first_parent`, `author`, `grep`, `since`, `until`, `pickaxe`, `with_stats`, `page_token`) | `LogResponse` | R | 20 / 200; scan budget 10,000 commits per page (hard cap 50,000) |
+| `show` | core | L→S, S | `Repo.ReadChangeset` | `ReadChangesetRequest` (`rev`) | `ReadChangesetResponse` − `raw_git_commit`, `extra["git.*"]` | R | changes 300 |
+| `read_file` | core | L, S | `Repo.ReadFile`; L with no `rev` = working copy | `ReadFileRequest` (`rev_path` split into `rev` + `path`, `offset`, `length`) + `start_line`, `end_line` | `ReadFileResponse` + `start_line`, `end_line`, `total_lines?`, `binary` | R | 400 lines, 256 KiB |
+| `ls_tree` | core | L→S, S | `Repo.ReadTree` | `ReadTreeRequest` (`rev`, `path`, `recursive`, `limit`, `after`) | `ReadTreeResponse` + `next_cursor` | R | 200 / 1,000 |
+| `grep` | core | L→S, S | `Repo.Grep` (clean files); local for dirty files (SPEC §11.2), through the path gate (§22.5) | `GrepRequest` (`rev`, `pattern`, `fixed`, `ignore_case`, `paths`, `max_results`) | `GrepResponse` | R | 100 / 1,000; scan budget 5,000 files and 64 MiB |
+| `blame` | core | L, S | `Workspace.Blame` / `Repo.Blame` | `WsBlameRequest` − `ws_id` (empty `rev` = working copy) / `BlameRequest` | `BlameResponse` | R | lines 1–200 / 2,000 |
+| `smartlog` | core | L | `Workspace.Stacks` (= `asc sl --json`, C31) | `{remote: bool, all: bool}` | `WsStacksResponse` | R | 50 changes |
+| `change_info` | core | L→S, S | `Changes.ResolveChanges` | `ResolveChangesRequest` (`changes`, `revs`) | `ResolveChangesResponse` | R | 50 |
+| `affected` | core | L, S | `Workspace.Affected` / `Projects.Affected` | `AffectedRequest` (+ `uncommitted` on L) | `AffectedResponse` | R | projects 500 |
+| `line_history` | history | L→S, S | `LineHistory` (C30a) | `LineHistoryRequest` (`rev`, `path`, `start`, `end`, `limit`, `scan_budget`, `page_token`) | `LogResponse` | R | 20; budget 10,000 |
+| `interdiff` | history | L→S, S | `Changes.InterDiff` | `InterDiffRequest` | `DiffResponse` | R | 6k tokens |
+| `compare` | history | L→S, S | `Compare` (C30b) | `CompareRequest` (`a`, `b`, `three_dot`, `limit`) | `CompareResponse` | R | 50 per side |
+| `stack` | stack | L→S, S | `Changes.Stack` | `StackRequest` | `StackResponse` | R | 100 |
+| `change_versions` | stack | L→S, S | `Changes.Versions` | `VersionsRequest` | `VersionsResponse` | R | 20 |
+| `op_log` | stack | L | child `asc op log --json -n` | `OpLogArgs {limit}` (cli.proto) | `OpLogResponse` (cli.proto; argv already redacted, SPEC §20.3) | R | 20 / 200 |
+| `conflicts` | stack | L | `Workspace.Conflicts` | `{paths}` | `WsConflictsResponse` | R | 100 |
+| `worktrees` | stack | L | `Workspace.Worktrees` | `{}` | `WsWorktreesResponse` | R | 100 |
+| `project_graph` | projects | L→S, S | `Projects.ProjectGraph` | `ProjectGraphRequest` (`rev`, `types`, `select`) | `ProjectGraphResponse` | R | 500 projects |
+| `search` | search | L→S, S | code-intel `CodeIntel` service (`codeintel.md` §3.4): `mode: text\|regex` → `Search`, `symbol` → `Symbols`, `semantic` → `Semantic`; listed only when `Version.features` has `search.v1` | `{query, mode: text\|regex\|symbol\|semantic, rev, paths, limit}` plus the additive optional fields `change`, `stack`, `diff_only`, `op` (`def\|refs\|callers\|outline\|find`; `symbol` mode only), `k`, `context_lines`, `max_tokens`, `rerank`, `include_excluded` [audit: codeintel-fields] | `SearchResponse`, `SymbolsResponse` or `SemanticResponse`, each with `scope`, `coverage` and `est_tokens` | R | `limit` 50 / 200; `k` 10; `context_lines` 2; `max_tokens` 4,000 (still capped by `asc.mcp.maxTokens`) |
+
+Notes:
+- `read_file` with `start_line`/`end_line` streams `ReadFile` from offset 0 on the first call and stops after `end_line`, so memory is bounded by the budget, not by the file. Its `next_cursor` carries a byte offset (and the line number at it), so a continuation seeks to that offset and costs O(page), not a restream from 0 (§22.6.2). Binary content (by attributes or a NUL in the first 8 KiB) returns metadata only (`binary: true`, size, id). In L mode with no `rev`:
+  - a clean tracked path is read from the object cache by `FileId`, so a virtual placeholder is never hydrated;
+  - a dirty or untracked path is read from disk, only through the path gate (§22.5): canonicalised, inside the worktree root, symlinks not followed (a symlink is reported as a link, with its target text, never read through);
+  - an ignored path is refused, so `.env` files are never served. The same single ignore gate applies to `grep` (dirty files), `blame` (working copy), `stage` and the `asc://ws/…/file` resource.
+- `ls_tree` with `recursive: true` needs a non-root `path`. A root-recursive call returns `isError` with code `BUDGET` and suggests `grep`, `search` or a subdirectory.
+- `blame` and `line_history` without a line range use 1–200.
+- `search` adds no tool of its own to the code-intelligence design (`codeintel.md` §3.4; rule M-D1 holds). Its description carries the use policy: text and regex first for identifiers, strings and error messages (verified matches); `symbol` when a name is known (`refs` is name-based, so read `confidence`); `semantic` when the names are unknown or text search found nothing (ranked chunks, not every match). Result text is untrusted file content. Every result carries `scope.changeset`, so a follow-up call can pin the same revision. There is no `code_read` (use `read_file`) and no `code_index_status` (read `coverage`). Text and regex modes in `search` are the indexed counterpart of `grep`, which stays the streaming fallback.
+- `diff` keeps the `changes` list (paths and statuses) up to `max_files` = 300 and cuts patch text at hunk boundaries (§22.6.2). Files beyond 300 are counted in `omitted.files`, not listed; the cursor continues with the next 300.
+
+#### 22.3.3 Write tools (toolset `write`; listed only when enabled, M-D4)
+
+Local writes run `asc <verb> --json` as a child process (M-D7; §22.5 covers spawning, the stdio channel and cancellation). The child gets `GIT_TERMINAL_PROMPT=0` and `GIT_EDITOR=false` (no editor; a message must be passed), and inherits the user's environment otherwise, so hooks run as they would for `git commit`. Inputs are `*Args` messages in `cli.proto` that mirror the CLI flags. Outputs are `OpResult` (the SPEC §20.7 "every mutating verb" shape).
+
+**What "local" means.** `write=local` lists only the verbs that never touch the network: `stage` and `worktree_create`. The verbs that create or rewrite changes (`create`, `modify`, `absorb`, `restack`, `undo`, `redo`) are local only while the workspace does not upload: local-only mode, no reachable server, or branchless upload switched off. When the client is online in branchless mode, those verbs upload the resulting drafts at once through the daemon (checklist, "branchless by default"), so they need `write=remote` and carry `openWorldHint: true`. The catalogue computes this per workspace when it builds `tools/list`. `sync` and `submit` always need `remote`.
+
+| Tool | Surf. | Backing call | Input | Ann. | Confirm (elicitation) | Needs |
+|---|---|---|---|---|---|---|
+| `stage` | L | `Workspace.Stage` | `WsStageRequest` − `ws_id`, `force` (hidden; ignored paths are never staged) | i | – | `write=local` |
+| `create` | L | `asc create --json` | `CreateArgs {message (required), all, onto?, insert}`; no branch flag (M-D8) | – | – | local or remote (above) |
+| `modify` | L | `asc modify --json` | `ModifyArgs {message?, all, into?, new_change}` | – | – | local or remote (above) |
+| `absorb` | L | `asc absorb --json` | `AbsorbArgs {apply (default false = preview), into?}` | – | – | local or remote (above) |
+| `restack` | L | `asc restack --json` | `RestackArgs {change?, scope: all\|downstack\|upstack\|only}` | i | – | local or remote (above) |
+| `undo` | L | `asc undo --json` | `UndoArgs {op (required), dry_run}`; `op` is the id from the agent's earlier `OpResult`; refused with `STALE_OP` unless that op is the latest in the op log | d | per `asc.mcp.confirm` | local or remote (above) |
+| `redo` | L | `asc redo --json` | `UndoArgs {op (required), dry_run}`; `op` must be the latest undone op | – | – | local or remote (above) |
+| `worktree_create` | L | `asc worktree add --json` | `WorktreeAddArgs {path, rev, ephemeral, ttl, mode}` | – | – | `write=local` |
+| `sync` | L | `asc sync --json` | `SyncArgs {fetch (true), restack (true), delete_merged (false)}` | open-world | when `delete_merged` | `write=remote` |
+| `submit` | L | `asc submit --json` | `SubmitArgs {change?, whole_stack, draft (default `asc.stack.submit.draft`, else true), reviewers, update_only, force}` | d, open-world | always | `write=remote` |
+| `commit` | S | `Repo.Commit` | `CommitRequest` − `author`, `committer`, `sign` (identity = the principal). `update_ref` must be empty (the changeset is ingested as a draft change, SPEC §8.7) or `refs/for/*`; any other value, including `master` and every branch, is -32602 | – | when `update_ref` is `refs/for/*` | `asc:write`, `[mcp] write` |
+| `submit` | S | `UpdateRefs` of `refs/for/<trunk>/asc-<change>` (SPEC §20.5 flow 1) | `{changes, draft, reviewers, force}` | d | always | `asc:write` |
+| `rebase` | S | `Repo.Rebase` (SPEC §8.11, agent conflict API) | `RebaseRequest` (`dry_run` default true); `update_ref` follows the same rule as `commit` | – | when `update_ref` set and not dry run | `asc:write` |
+| `restack` | S | `Changes.RestackChanges` | `RestackChangesRequest` − `committer_*` (`dry_run` default true) | – | – | `asc:write` |
+
+- `undo` is marked destructive because annotations are static (§22.3.1). It takes the explicit `op`, so an agent can revert only the operation it just made: a later operation by the user makes `undo` fail with `STALE_OP`. `redo` is a separate, non-destructive tool for the same reason.
+- A server `commit` or `rebase` with `refs/for/*` runs the SPEC §8.3 `UpdateRefs` pipeline, so protections, hooks, the Forgejo push event and Actions triggers fire exactly as for a push. An empty `update_ref` runs only pipeline step 4 (SPEC §8.7). Server `commit` writes a `ChangeMeta` for the changeset it creates (the SPEC §8.7 gap; unit M18, which M14 needs).
+
+Not exposed in v1: `abandon`, `split`, `squash`, `fold`, `move`, `reorder`, `reword` and every git command (the agent's shell has `git`/`asc`). Landing is Forgejo's `pr_write {method: merge}`, so policy and the queue stay in one place.
+
+#### 22.3.4 Forgejo tools (`/api/mcp`)
+
+These are consolidated read/write tools with a `method` parameter, following GitHub and gitea-mcp. Every result includes the asc handles.
+
+| Tool | Methods | Ann. |
+|---|---|---|
+| `pr_read` | `get` (includes `asc_change`, `head`, `merge_base`, `stack_parent`, `version`), `list`, `search`, `reviews`, `review_comments`, `comments`, `checks`, `stack` (the panel: PR numbers bottom to top) | R |
+| `pr_write` | `update` (title, body), `set_draft`, `request_reviewers`, `close`, `reopen`, `comment`, `merge` (stack prefix; 409 `stack-parent-unmerged` is returned as `isError`), `auto_merge`, `cancel_auto_merge` | `merge`: d, confirm |
+| `review_write` | `create_pending`, `add_comment`, `submit` (`approve` \| `request_changes` \| `comment`), `dismiss` | openWorld true (it notifies people); confirm on `submit` with `approve`, and on `dismiss` |
+| `issue_read` | `get`, `list`, `search`, `comments`, `labels` | R |
+| `issue_write` | `create`, `update`, `comment`, `close`, `reopen`, `label` | openWorld true; confirm on every method except `label` |
+| `actions_read` | `runs` (by PR, change or commit), `run`, `jobs`, `job_log` (`tail_lines` default 200; `start_line`/`end_line`; 64 KiB cap), `artifacts` (metadata only) | R |
+| `actions_write` | `rerun` (all or failed jobs), `cancel`, `dispatch` | – |
+| `inbox_read` | `list` (sections from C41b: needs review, returned, ready, blocked, waiting, drafts, queued) | R |
+| `inbox_write` | `pin`, `unpin`, `snooze` | i |
+
+The Forgejo endpoint is read-only unless `[mcp] WRITE = true`, and the token's scopes still apply (`read:issue`, `write:repository`, and so on). Write methods are also refused (`NOT_AVAILABLE`) until the `lockdown` mode (§22.5, unit M28) is available, so a build without it cannot enable them.
+
+**Handle fields.** `asc_change`, `head`, `merge_base`, `stack_parent` and `version` are one `AscHandles` message in `cli.proto` (M02). The asc-mcp build also writes it as a JSON Schema file, `crates/asc-mcp/schema/asc_handles.schema.json`, which M21 vendors into `routers/api/mcp/schema/` with a recorded hash; the Forgejo tools embed it in their `outputSchema`. M17 drift-checks the hash.
+
+#### 22.3.5 Resources
+
+The scheme is `asc://`. `resources/list` never enumerates repository content. It returns only the workspace's `status` and `smartlog` (L). Everything else comes from templates (RFC 6570, with argument completion for `rev` and `path` from `ReadTree`, limited to 50 entries).
+
+| URI template | Content | `ttlMs` | `cacheScope` |
+|---|---|---|---|
+| `asc://{owner}/{name}/blob/{rev}/{+path}{?start_line,end_line}` | file text (`read_file` rules, including binary refusal) | 86,400,000 if `rev` is a full id, else 5,000 | private |
+| `asc://{owner}/{name}/tree/{rev}/{+path}{?after}` | one `ls_tree` page (non-recursive) | as above | private |
+| `asc://{owner}/{name}/commit/{rev}` | `show` | as above | private |
+| `asc://{owner}/{name}/change/{change}` | `change_info` | 5,000 | private |
+| `asc://ws/{ws}/status`, `asc://ws/{ws}/smartlog` (L) | `status` / `smartlog` | 0 | private |
+| `asc://ws/{ws}/file/{+path}` (L) | working-copy file (tracked, or untracked and not ignored), through the path gate (§22.5) | 0 | private |
+
+Local-only repos use `owner = local` and `name` = the repo directory name. Resource annotations set `audience: ["assistant"]`.
+
+**Subscriptions (`subscriptions/listen`, L only in v1).** `resourceSubscriptions` on the `asc://ws/…` URIs are served from `Workspace.Watch`, including `KIND_STACK` (C49). Paths and HEAD events become `notifications/resources/updated`. A process has at most 2 listens with 64 URIs each. HTTP subscriptions (ref moves on the server) are v1.x. `toolsListChanged` fires when the server later advertises a feature, for example `search.v1`.
+
+#### 22.3.6 Prompts
+
+Each prompt is a short template that names the tools to call. None embeds repository content.
+
+| Prompt | Arguments | Does |
+|---|---|---|
+| `review_change` | `change` | `change_info` → `diff` (vs the parent) → `affected` → summarise risk by `Classify` class |
+| `resolve_conflicts` | – | `conflicts` → `read_file` per side → edit on disk → `stage` → `restack` |
+| `prepare_submit` | `change?` | `smartlog` → restack if needed → `affected` → `submit` (confirmed) |
+| `explain_lines` | `path`, `start`, `end` | `blame` → `line_history` → `show` of the origin commits |
+| `affected_tests` | `base?` | `affected --target test` → the commands to run |
+
+---
+
+### 22.4 Schemas and codec
+
+#### 22.4.1 Generation
+
+- U41's `crates/asc-rpc/build.rs` writes the `FileDescriptorSet` (`tonic-prost-build` `file_descriptor_set_path`) and exports `asc_rpc::DESCRIPTOR_SET` (a recorded amendment to U41, made by M01a, PLAN §M).
+- `crates/asc-mcp/build.rs` reads `tools.toml` (one row per tool: name, toolset, surfaces, RPC, request/response message, hidden fields, added fields, defaults, caps, annotations, confirm rule, description). Using `prost-reflect` (already pinned in U01b), it emits `tools_gen.rs`: a static table with each tool's inputSchema and outputSchema as `&'static str` JSON.
+- Field mapping:
+  - `repeated` → array;
+  - `oneof` → `oneOf`;
+  - enums → string enums (§22.4.2);
+  - 64-bit integers → `integer`;
+  - messages → `$defs` with `$ref`, one `$defs` per schema, so inputSchema stays self-contained.
+- Descriptions come from proto comments (the same source that produces `docs/api.md`, SPEC §7).
+- The same build writes `crates/asc-mcp/schema/asc_handles.schema.json` from `AscHandles` (shared with the Forgejo tools, §22.3.4).
+- A snapshot test (insta) freezes `tools/list` for each toolset. The default set must estimate at most 6,000 tokens.
+
+#### 22.4.2 The asc JSON profile (`asc_rpc::json`, used by `--json` and MCP)
+
+| Proto | JSON | Driven by |
+|---|---|---|
+| field names | `snake_case` (proto names) | profile default (matches SPEC §20.7 shapes) |
+| `bytes` id (20 or 32 bytes) | lowercase hex (40 = git SHA, 64 = asc id) | field option `(asc.v1.json) = HEX` |
+| `bytes` change id | 32 letters `k`–`z` (SPEC §20.2) | `CHANGE` |
+| `bytes` path, message, text | UTF-8 string; non-UTF-8 → `{"b64": "…"}` | `PATH` / `TEXT` |
+| `bytes` file data | as `TEXT`, plus `binary: true` and no data when binary | `DATA` |
+| enums | lowercase value without the type prefix (`DIFF_FORMAT_PATCH` → `"patch"`); input also accepts the full name | profile |
+| `int64`/`uint64` | JSON number (all asc values are below 2^53) | profile |
+| `Signature` | `{name, email, time, tz}` with `tz` as `+0530`, computed from the proto's `tz_min` (the SPEC §20.7 example gains `tz`) | profile |
+
+The option lives in a new `proto/asc/v1/options.proto` (`extend google.protobuf.FieldOptions { JsonKind json = 50101; }`). The annotations on existing fields are a recorded amendment to U41's proto files. Decoding uses the same table, so tool inputs accept exactly what outputs print.
+
+**Versioning.** The profile is named `json.profile.v1` and is advertised in `Version.features` and in `server/discover`. `asc api` is not affected and keeps standard proto3 JSON (SPEC §7). An incompatible profile change creates `v2` and `v1` stays for one major version. Before M02, the C07 `--json` types and the SPEC §20.7 shapes are reconciled to these schemas (casing, `tz`, the `op log` wrapper).
+
+---
+
+### 22.5 Safety
+
+| Concern | Rule |
+|---|---|
+| Default | Read-only. The write toolset is absent from `tools/list` unless `asc.mcp.write` is set in user or system config (stdio) or `[mcp] write = true` plus the `asc:write` scope (HTTP). Repo and worktree config cannot set `asc.mcp.write` or `asc.mcp.confirm`, and flags (a committed `.mcp.json` can carry any) can only narrow (M-D4). `--read-only` overrides everything. The Forgejo endpoint uses `[mcp] WRITE`. |
+| Path escape (stdio) | `worktree` is accepted only if it is a `Workspace.Worktrees` entry. Every path argument passes one path gate: it is canonicalised and refused if it is absolute, has `..`, a drive or UNC prefix, or resolves outside the worktree root; each component is checked without following symlinks (open with `O_NOFOLLOW`, or `FILE_FLAG_OPEN_REPARSE_POINT` on Windows), so a symlink or junction is reported as a link and never read through. Then the same ignore gate (`.gitignore`/`.ascignore`) applies to `read_file`, the `asc://ws/…/file` resource, `grep`, `blame` and `stage`. `stage --force` is not exposed. |
+| Protocol channel (stdio) | fd 1 carries only JSON-RPC. At startup `asc mcp` keeps a private handle to the real stdout for the transport and redirects fd 1 (and the Windows standard output handle) to stderr, so stray prints from hooks, the engine or libraries cannot corrupt the stream. Child verbs get stdin null and stdout piped (captured as the `--json` result); their stderr is captured and logged to stderr. In-process code writes to stderr only. A test runs a hook that prints to stdout. |
+| Annotations | Every tool sets all four hints explicitly (§22.3.1). Clients treat them as hints. The server enforces the same gates itself. |
+| Confirmation | Tools marked "confirm" return `resultType: input_required` with one `elicitation/create` (form: a boolean `confirm` plus a summary of the effect, for example "submit 3 changes to master: …"). The summary is rendered from escaped, truncated data fields (control characters and markup stripped, each commit subject cut to 80 characters, at most 10 listed, no message bodies), because commit subjects and titles are attacker-controlled. The retry must echo the sealed `requestState`, whose HMAC binds principal, tool, argument digest and a 5 min TTL. A replay with other arguments fails. Without the elicitation capability → `isError` `NEEDS_CONFIRMATION`. `asc.mcp.confirm = always \| destructive (default) \| never` is the user's switch. Elicitation never asks for secrets (form mode). |
+| Keys and sealing | Cursors and `requestState` are sealed with HMAC-SHA256. On stdio the key is random per process, so a cursor does not outlive the process (the client gets -32602 and starts again). On HTTP, `[mcp] hmac_keys` lists key files (32 random bytes each) shared by all `asc serve` replicas; a token carries its key id, the first key signs, all keys verify. Rotation: prepend a new key, drop the old one after the longest TTL (1 h for cursors). A missing or unreadable key file stops the endpoint from starting. |
+| Authorisation (HTTP) | Every call authorises `(principal, repo, read\|write)` through the SPEC §15.1 cache (60 s positive, 5 s negative). `tools/list` varies only by granted scopes, as the spec allows. A repository the principal cannot read returns the same `NOT_FOUND` (same message, same cost class) as a missing one. |
+| Directory ACLs | As SPEC §15.5. Read access is per repository, and a sensitive directory is its own repository composed at a gitlink. `ls_tree` shows an unreadable gitlink as `{restricted: true}`. `read_file`, `blame` and `grep` under it return `isError` `PATH_POLICY`. `grep`/`search` results only include namespaces the principal can read. Write path rules surface as `PATH_POLICY` from pre-receive. |
+| Secrets | No tool reads config, environment or credentials. Ignored files are never served. `op_log` argv is redacted (SPEC §20.3). Error text passes through the same redactor (URL credentials, `-c` values, `--token`). Cursors and `requestState` hold ids and offsets, never tokens. Tokens only travel in the `Authorization` header: a query-string token gets 400. stderr logs record tool names and durations, not arguments, unless `ASC_MCP_LOG=args`. |
+| HTTP transport | Validate `Origin` when present (allowlist: the server's own origin plus `[mcp] allowed_origins`; otherwise 403). An absent `Origin` is accepted, because non-browser clients send none and the endpoint takes bearer tokens only (no cookies). Validate `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` against the body (-32020 on mismatch). Request body ≤ 1 MiB (4 MiB for `commit`). `X-Accel-Buffering: no` on SSE. |
+| Untrusted content | File, PR, issue and log content is data. The server `instructions` say so, and resource annotations mark the audience. Forgejo `lockdown` (hide content by authors without write access, as GitHub `--lockdown-mode`) ships in v1 (unit M28), and Forgejo write methods are unavailable until it exists. Confirmation summaries never include raw untrusted text (see Confirmation). |
+| Hooks | `create`/`modify` run the repo's commit hooks, as `git commit` would for the same agent. There is no extra sandbox (SPEC §15.4: the workspace is the user's). |
+| Rate limits | Each MCP call is charged to the SPEC §16.3 class of its backing RPC (`log` → cheap or expensive, `diff` patch → expensive). In addition there are at most 8 in-flight MCP calls per principal per `asc serve` instance (not cluster-wide; a gateway enforces a cluster limit on `Mcp-Param-Repo`). `RATE_LIMITED` returns `isError` with `retry_after_ms`. |
+| Bounded memory | There are no sessions, so the bounds are per call and per process. Per call: the response buffer is at most `max_tokens × 3` bytes plus 64 KiB, and a stream is read until the budget is spent and then dropped. Per `asc mcp` process: 8 concurrent calls, a queue of 32, then `isError` "busy"; idle RSS ≤ 24 MiB, ≤ 64 MiB under load (bench-gated). Per HTTP principal and instance: 8 in-flight calls and 2 listens of at most 1 h each. No result is cached in asc-mcp; caching stays in the tiers. |
+| Cancellation | stdio: `notifications/cancelled` drops the RPC stream. A child verb is cancelled gracefully first: it runs in its own process group (Windows: a job object with a new process group), receives SIGTERM (Windows: `CTRL_BREAK_EVENT`), gets 3 s to finish, and is then killed (the whole group or job). After a kill, lock recovery runs: an `index.lock` or ref lock created after the child started and held by no live process is removed, so turbo's `git status` does not fail on a stale lock. The op log records an aborted op, and `undo` covers it. HTTP: closing the SSE stream drops the stream the same way. Progress: `sync`, `submit`, cold `affected` and `rebase` emit `notifications/progress` when a `progressToken` is set. |
+
+---
+
+### 22.6 Efficiency
+
+#### 22.6.1 Every tool is served from derived data
+
+| Tool | Data | Bound |
+|---|---|---|
+| `log`, `line_history`, `compare` | gen numbers, skip lists, `path_changes` (SPEC §5.1), page tokens | O(page + log n); scan budget 10,000 commits per page (hard cap 50,000) on `log`, pickaxe and line history |
+| `blame` | `blame.v1` memo | O(file) after the first derive; ranged output |
+| `diff`, `interdiff`, `show` | changeset `changes` lists (Bonsai), `leafdiff` with hash pruning | O(changed paths); patch text only for paths inside the budget |
+| `ls_tree`, `read_file` | trees and files by id, ranged `ReadFile` | O(page) / O(range) |
+| `grep` | server `Grep` at the base (no hydration); local for dirty files only | `max_results`, plus the scan budget of 5,000 files and 64 MiB per call; `search` uses the trigram index when present |
+| `affected`, `project_graph` | project graph derived data (SPEC §12A.5) | O(changed manifests) |
+| `smartlog`, `stack`, `change_info`, `change_versions` | the local change index / server `changes` and `change_versions` | O(heads × stack length × log n) |
+| `status` | the workspace journal | O(changed paths) |
+
+No tool walks a whole tree or the whole history. A request that would need to (root-recursive `ls_tree`, pickaxe without a path, a `log` page beyond its 10,000-commit `scan_budget`) returns `BUDGET` with the bounded alternative.
+
+#### 22.6.2 Token-aware truncation
+
+- **Estimate:** `tokens ≈ ceil(utf8_bytes / 3)`, computed while rendering. There is no tokenizer. Code averages about 3 bytes per token, so `bytes / 4` would overshoot the 25,000-token host limit; `bytes / 3` is the conservative estimate.
+- **Budget:** `min(max_tokens argument, asc.mcp.maxTokens (6,000), 25,000)`, shared by `structuredContent` and the text block. In git text mode the text block is the bigger part, and the JSON keeps its structure.
+- **Per-shape strategy:**
+
+| Shape | Keep first | Cut |
+|---|---|---|
+| diff | the file list with statuses and stats, up to 300 files | whole hunks, file by file in path order; omitted files and hunks counted in `omitted: {files, hunks, lines}` |
+| file | the requested range | trailing lines; `next_cursor` carries the byte offset and line of the next line |
+| log, grep, tree, lists | whole entries | the tail; `next_cursor` |
+| blame | whole hunks covering the range | the tail of the range |
+| status | conflicts, then staged, then unstaged | untracked paths (counted) |
+
+- **Cursors:** a tool backed by a paged RPC reuses its `page_token`/`after`, wrapped. For other tools the cursor is an HMAC-sealed `{tool, argument digest, position}` (file index, byte offset plus line number; key handling in §22.5). A cursor from another call returns -32602.
+
+---
+
+### 22.7 Crate and implementation
+
+#### 22.7.1 Dependencies
+
+`[workspace.dependencies]` gains one line:
+
+```toml
+rmcp = { version = "3.6.0", default-features = false, features = ["server", "base64", "transport-io", "transport-async-rw", "transport-streamable-http-server", "elicitation", "request-state"] }
+```
+
+- rmcp 3.6.0 (2026-10-20, Apache-2.0, MSRV 1.88, below the workspace's 1.95) implements 2026-07-28 and keeps 2025-11-25 compatibility, so older stdio hosts that still send `initialize` work.
+- Not enabled: `macros` and `schemars` (M-D10), `auth` (the server-side resource-server checks are a small axum layer of ours), and every client and reqwest feature.
+- Dev-dependencies of the test units add `client` and `transport-child-process`, which give the inspector-style harness.
+- M03 checks that rmcp's axum and tower match the workspace pins (`cargo tree -d` shows one axum), and that `cargo deny` passes.
+
+#### 22.7.2 Layout and reuse
+
+```
+crates/asc-mcp            protocol layer, no repo logic
+  build.rs               tools.toml + asc_rpc::DESCRIPTOR_SET → tools_gen.rs (schemas, table)
+  tools.toml             the catalogue (§22.3), one row per tool
+  src/catalogue.rs       toolsets, gating, deterministic tools/list
+  src/handler.rs         rmcp ServerHandler: server/discover, tools/*, resources/*, prompts/*, listen
+  src/backend.rs         trait McpBackend { async fn call(&self, rpc: Rpc, req: DynamicMessage, budget) -> Stream<DynamicMessage> }
+  src/rpc_backend.rs     McpBackend over asc-rpc RpcClient (Repo, Changes, Projects) and the IPC WorkspaceClient (U52)
+  src/shape.rs           stream folding, budget, truncation; text blocks come from asc-engine::render (M04a)
+  src/cursor.rs, confirm.rs   HMAC cursors; MRTR elicitation with sealed requestState
+  src/resources.rs, prompts.rs, config.rs
+crates/asc/src/mcp/       `asc mcp`, `asc mcp install`; LocalBackend (routing + child verbs), pathgate.rs
+crates/asc-engine/src/render/  porcelain v2 status, --oneline log, blame, grep text (shared by `asc` and `asc-mcp`)
+crates/asc-serve/src/mcp/ `/mcp` mount, auth layer, PRM document, ServeBackend over in-process handlers
+proto/asc/v1/options.proto, cli.proto
+```
+
+- **Dependency direction:** `asc-mcp` → `asc-rpc` (proto types, descriptors, JSON codec, client, IPC) → `asc-engine`; `asc-mcp` also uses `asc-engine::render` directly, so the CLI and MCP share one set of text renderers (M04a) and cannot drift. `asc` and `asc-serve` (feature `mcp`, on by default) depend on `asc-mcp`. `asc-mcp` never depends on `asc`, so the `asc` crate supplies `LocalBackend` through the trait (the `ext.rs` pattern).
+- **`LocalBackend` routing:**
+  - `Workspace.*` → daemon IPC. If no daemon runs, `asc mcp` starts it, as the CLI does (SPEC §9.1). Only when `ASC_NO_DAEMON` is set does it run in-process (plain workspaces only): the U73/C31 plugin service object is called directly as a trait object, `state.db` is opened per call (never held by the long-lived server), and the schema version is checked on every open. A mismatch returns `NOT_AVAILABLE` ("restart asc mcp") instead of racing a daemon or a migration.
+  - `Repo`/`Changes`/`Projects` → the server `RpcClient` when the remote is an asc server and `asc.serverHistory` routes there (U50's `HistorySelector`). Otherwise U42's `EngineBackend` over the local store, so local-only mode works.
+  - Change-service tools in local-only mode use the local change index (C02) through the same message types. Tools with no local answer (`change_versions` of other users, `stack --remote`) return `NOT_AVAILABLE`.
+  - Writes → child `asc <verb> --json` (M-D7), spawned from `current_exe()`.
+- **`ServeBackend`** calls `RepoHandlers`, `Changes` and `Projects` in-process with the principal from the auth layer. The id mode is always `GIT` at the MCP boundary (SPEC §11.1: git SHAs by default).
+- **HTTP mount:** `axum::Router::nest_service("/mcp", StreamableHttpService)` in stateless mode, inside the existing `HttpRoutes` registry (U43a), behind the auth layer and the SPEC §16.3 tower limits. The PRM document is served at `/.well-known/oauth-protected-resource/mcp`.
+
+#### 22.7.3 Auth (HTTP)
+
+| Item | Decision |
+|---|---|
+| Resource server | `asc serve` is an OAuth 2.1 resource server. Requests without a token get 401 with `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource/mcp", scope="asc:read"`. |
+| Authorization server | Forgejo's OAuth2 provider (fork unit M26: RFC 8707 `resource`, an `aud` claim in access tokens, RFC 9207 `iss`). asc checks `aud` = its canonical `/mcp` URL through the K07 authz answer. Tokens are never passed through to other APIs. |
+| Client registration | Pre-registered public client `asc-mcp` (PKCE, loopback redirects) in v1. CIMD in the Forgejo fork is v1.x (M27). DCR is not built (deprecated in 2026-07-28). |
+| Forgejo PAT | Accepted as the bearer for headless agents and CI. Its Forgejo scopes map to `asc:read` (`read:repository`) and `asc:write` (`write:repository`). It has no audience, which is acceptable because Forgejo issues it for Forgejo's own resource set. |
+| Scopes | `asc:read`, `asc:write`. Insufficient scope gets 403 `insufficient_scope`, so clients step up. |
+| stdio | No OAuth. The CLI credentials are used (SPEC §15.1). |
+
+---
+
+### 22.8 Configuration
+
+| Key | Default | Meaning |
+|---|---|---|
+| `asc.mcp.write` | `false` | `false` \| `local` \| `remote`. User and system config only; repo and worktree config is ignored. `remote` adds `submit`, `sync` and the verbs that upload (§22.3.3) |
+| `asc.mcp.toolsets` | `core` | comma list: `core,history,stack,projects,search,write`; `all` |
+| `asc.mcp.tools` | – | an explicit list; intersected with the toolsets and the write gate |
+| `asc.mcp.confirm` | `destructive` | `always` \| `destructive` \| `never`. User and system config only |
+| `asc.mcp.maxTokens` | `6000` | per-call budget (hard cap 25,000) |
+| `asc.mcp.textMode` | `git` | `git` \| `json` |
+| `asc-serve.toml [mcp]` | `enabled = false` until M13 (then `true`; `true` is refused while no auth layer exists), `write = false, allowed_origins = [], hmac_keys = [], max_tokens = 6000, max_inflight_per_principal = 8` (per instance) | the server endpoint |
+| Forgejo `app.ini [mcp]` | `ENABLED = true, WRITE = false` | the forge endpoint |
+
+CLI: `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]`. Flags override config only to narrow: they may lower `--write`, remove toolsets and set `--read-only`, never widen past the user or system ceiling (M-D4), even when a committed `.mcp.json` supplies them. `asc mcp install --scope user` therefore writes the user config keys instead of widening flags; a project-scope install writes only narrowing flags. `--read-only` overrides everything.
+
+---
+
+### 22.9 Rulings recorded at the fold [audit: mcp-folded]
+
+- **Decision D12 of §20.1** said AI features stay out of core. It now says that AI review and chat stay out and that agent interfaces (MCP) are core. `docs/research/stacks.md` row 114 ("MCP server: OUT") is superseded by this section.
+- **The audit's first proposal** (a tool table `MC01`–`MC03`, tools such as `search_text`, a Forgejo unit `K18`) is superseded by the reviewed design: the tools are those of §22.3, the units are M01a–M28 (PLAN §M), and `--allow-write` is `--write[=local|remote]` (§22.8).
+- **Owner of `crates/asc/src/cli/json.rs`:** `mcp.md` named "U21a/U73"; the file belongs to U20 (`cli/json.rs` is in U20's Owns). The hunk that prints through `asc_rpc::json` is made by M01c, as a recorded amendment to U20. `docs/research/mcp.md` is corrected.
+- **`--json` shapes:** §11.2 and §20.7 disagreed (proto3 JSON versus snake_case with hex ids). The asc JSON profile (§22.4.2) settles it for every `--json` output; `asc api` keeps standard proto3 JSON (§7). A bare-array shape is wrapped in an object, so `asc op log --json` prints `{"ops": [...]}` and `asc evolog --json` prints `{"versions": [...]}` (§20.7).
+- **Server `Commit` and `ChangeMeta`:** §20.4 already requires meta for every changeset the server creates, through `IngestObserver`; M18 is the unit that makes the `Commit` handler of U48a take that path (`op = New`, `preds = []`), so changes created through MCP `commit` get a change id.
+- **`search`:** the tool exists once (§22.3.2, rule M-D1). M15 depends on the `CodeIntel` proto unit I12 and is wired to the service by I21 of the code-intelligence design; until then the row is absent from `tools/list` because `Version.features` lacks `search.v1`.
+- **IDE plugins** register `asc mcp` and Forgejo `/api/mcp`, and never `/mcp` next to them (§22.2 placement rule), so an agent never sees a tool twice.
 
 ---
 
@@ -3054,3 +3451,16 @@ Tool names are short and unprefixed, as the MCP catalogue requires (hosts namesp
 | branchless vs MCP tool naming and write gate | §21.7: tools are `drafts`, `cloud_status`, `hide`, `unhide` (short names; no separate push tool, `submit` covers it); `hide` and `unhide` need `write=remote` when the workspace uploads, as `create` and `modify` do |
 | C01 is built; the migration-mode id tier | §21.6.2 and PLAN B18a: a new file and unit, C01 unchanged |
 | spec edits of branchless §8 | §3.5, §3.6, §6.3, §6.4, §7, §8.2, §8.3, §8.8, §9.1, §9.2, §11.1–§11.3, §13.3, §15.2, §16.3, §17.1, §18, §19 (decision 7, spike S13), §20.2, §20.3, §20.7 |
+
+**Round-6 fold (v1.6)** (changelog: v1.6 folds `docs/research/mcp.md` into §22 and the sections it amends)
+
+| Gap | Fix |
+|---|---|
+| mcp-built-in-missing, checklist-mcp-not-folded | New §22 (M-D1–M-D10; surfaces, tools, schemas and codec, safety, efficiency, crate layout, auth, configuration), §0 decision 14, §1 row; PLAN §M units M01a–M28 |
+| MCP versus stacks D12 ("AI features stay out of core") and stacks.md row 114 ("MCP server: OUT") | §20.1 D12 now makes agent interfaces core and keeps AI review and chat out; stacks.md row 114 is superseded by §22 |
+| `--json` "proto3 JSON" (§11.2) versus snake_case, hex-id shapes (§20.7) | The asc JSON profile `json.profile.v1` (§22.4.2) for every `--json` output; `asc api` keeps standard proto3 JSON (§7, §11.2); §20.7 shapes gain `tz`, `status: ambiguous`, `candidates`, and the `{"ops": [...]}` and `{"versions": [...]}` wrappers |
+| server `Commit` writes no `ChangeMeta` | §8.7 bullet and unit M18 (through the §20.4 `IngestObserver`) |
+| `cli/json.rs` owner named as U21a/U73 in mcp.md | U20 owns it; M01c makes the print-through-the-profile hunk (PLAN §M amendments) |
+| undo/redo cannot be limited to the agent's own operation | §20.7 `--op <id>` with `STALE_OP` |
+| spec edits of mcp.md §9 | §7, §8.1, §8.7, §11.2, §13.3 (M20–M28), §15.1, §16.3, §16.4, §18 (phases 4m, 5m, 9m), §20.1, §20.7, §21.7 |
+| codeintel.md §10 request for the `search` tool | §22.3.2 `search` row and note: additive fields `change`, `stack`, `diff_only`, `op`, `k`, `context_lines`, `max_tokens`, `rerank`, `include_excluded`; PLAN M15 (depends on I12) |
