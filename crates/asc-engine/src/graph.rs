@@ -5,7 +5,7 @@
 //! materialises a whole history.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +19,7 @@ use futures::stream::{self, Stream};
 
 use crate::Engine;
 use crate::commit;
+use crate::history::{LogEntry, PageToken};
 
 /// Graph walk failures.
 #[derive(Debug, thiserror::Error)]
@@ -31,6 +32,34 @@ pub enum Error {
     Query(&'static str),
     #[error("invalid grep pattern: {0}")]
     Grep(#[from] regex::Error),
+    /// A walk reached `id`, past the local history window, with no remote to continue it.
+    #[error("history past {id} is beyond the local window and needs the server ({op})")]
+    Boundary { id: ChangesetId, op: &'static str },
+    /// The remote is unreachable (SPEC §6.4); the CLI prefixes `fatal: ` and exits 128.
+    #[error("asc: offline ({remote} unreachable): {operation} needs {rpc}")]
+    Offline {
+        remote: String,
+        operation: &'static str,
+        rpc: &'static str,
+    },
+    /// The remote's history service failed.
+    #[error("remote history: {0}")]
+    Remote(String),
+    /// The history-boundary store failed.
+    #[error("history boundary store: {0}")]
+    BoundaryStore(String),
+    #[error("{0}")]
+    Unsupported(&'static str),
+}
+
+impl Error {
+    /// True when the failure is an absent changeset.
+    pub fn is_missing(&self) -> bool {
+        matches!(
+            self,
+            Self::Missing(_) | Self::Engine(commit::Error::MissingChangeset(_))
+        )
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -42,11 +71,68 @@ pub struct Node {
     pub parents: Vec<ChangesetId>,
 }
 
+/// A node, or a node whose parents lie beyond the local history window (SPEC §6.3).
+///
+/// A boundary's `generation` and `parents` are known (its body is local); its parents are not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NodeOrBoundary {
+    Node(Node),
+    Boundary(Node),
+}
+
+impl NodeOrBoundary {
+    pub fn into_node(self) -> Node {
+        match self {
+            Self::Node(n) | Self::Boundary(n) => n,
+        }
+    }
+
+    pub fn is_boundary(&self) -> bool {
+        matches!(self, Self::Boundary(_))
+    }
+}
+
+/// The remote half of a windowed walk: the server answers for history before the boundary.
+///
+/// A walk only ever passes ids the remote knows (boundary ids and their parents).
+#[async_trait]
+pub trait RemoteHistory: Send + Sync {
+    /// One page of a log; pass `next` back as `page` for the following page.
+    async fn log(
+        &self,
+        q: &LogQuery,
+        page: Option<&PageToken>,
+    ) -> Result<crate::history::LogEntries>;
+    async fn merge_base(
+        &self,
+        a: ChangesetId,
+        others: &[ChangesetId],
+        all: bool,
+    ) -> Result<Vec<ChangesetId>>;
+    async fn is_ancestor(&self, a: ChangesetId, b: ChangesetId) -> Result<bool>;
+}
+
 /// Where graph nodes and changeset headers come from.
 #[async_trait]
 pub trait GraphSource: Send + Sync {
     /// The node for `id`.
     async fn get(&self, id: ChangesetId) -> Result<Node>;
+
+    /// Like [`get`](Self::get), but says when `id` is a history boundary. Sources that have
+    /// boundaries override this and [`get_many_boundary`](Self::get_many_boundary).
+    async fn get_boundary(&self, id: ChangesetId) -> Result<NodeOrBoundary> {
+        Ok(NodeOrBoundary::Node(self.get(id).await?))
+    }
+
+    /// Batch form of [`get_boundary`](Self::get_boundary).
+    async fn get_many_boundary(&self, ids: &[ChangesetId]) -> Result<Vec<NodeOrBoundary>> {
+        Ok(self
+            .get_many(ids)
+            .await?
+            .into_iter()
+            .map(NodeOrBoundary::Node)
+            .collect())
+    }
 
     /// Nodes for `ids`, in order. Sources with a batch path override this.
     async fn get_many(&self, ids: &[ChangesetId]) -> Result<Vec<Node>> {
@@ -192,6 +278,55 @@ pub struct LogCursor {
     skip_left: usize,
 }
 
+impl LogCursor {
+    /// Serialises the cursor for a page token.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = (self.skip_left as u64).to_le_bytes().to_vec();
+        out.extend((self.frontier.len() as u32).to_le_bytes());
+        for p in &self.frontier {
+            out.extend(p.id.as_bytes());
+            out.push(u8::from(p.excluded) | (u8::from(p.path.is_some()) << 1));
+            if let Some(path) = &p.path {
+                out.extend((path.as_bytes().len() as u32).to_le_bytes());
+                out.extend(path.as_bytes());
+            }
+        }
+        out
+    }
+
+    /// Parses [`to_bytes`](Self::to_bytes) output; `None` when it is malformed.
+    pub fn from_bytes(mut b: &[u8]) -> Option<Self> {
+        fn take<'a>(b: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
+            let (head, tail) = b.split_at_checked(n)?;
+            *b = tail;
+            Some(head)
+        }
+        let skip_left =
+            usize::try_from(u64::from_le_bytes(take(&mut b, 8)?.try_into().ok()?)).ok()?;
+        let n = u32::from_le_bytes(take(&mut b, 4)?.try_into().ok()?) as usize;
+        let mut frontier = Vec::new();
+        for _ in 0..n {
+            let id = ChangesetId::from_bytes(take(&mut b, 32)?.try_into().ok()?);
+            let flags = take(&mut b, 1)?[0];
+            let path = if flags & 2 != 0 {
+                let len = u32::from_le_bytes(take(&mut b, 4)?.try_into().ok()?) as usize;
+                Some(RepoPath::new(take(&mut b, len)?).ok()?)
+            } else {
+                None
+            };
+            frontier.push(Pending {
+                id,
+                excluded: flags & 1 != 0,
+                path,
+            });
+        }
+        b.is_empty().then_some(Self {
+            frontier,
+            skip_left,
+        })
+    }
+}
+
 /// One page of a log.
 #[derive(Clone, Debug)]
 pub struct LogPage {
@@ -209,6 +344,10 @@ pub struct Graph<S, J = NoJump> {
     source: S,
     jump: J,
     nodes: Mutex<HashMap<ChangesetId, Arc<Node>>>,
+    /// Loaded nodes whose parents are beyond the local window.
+    boundaries: Mutex<HashSet<ChangesetId>>,
+    /// Continues walks that reach a boundary (SPEC §4.3).
+    remote: Option<Arc<dyn RemoteHistory>>,
 }
 
 impl<S: GraphSource> Graph<S> {
@@ -223,7 +362,15 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
             source,
             jump,
             nodes: Mutex::new(HashMap::new()),
+            boundaries: Mutex::new(HashSet::new()),
+            remote: None,
         }
+    }
+
+    /// Continues walks that reach a history boundary through `remote`.
+    pub fn with_remote(mut self, remote: Arc<dyn RemoteHistory>) -> Self {
+        self.remote = Some(remote);
+        self
     }
 
     /// Changesets the source has read so far.
@@ -231,14 +378,31 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
         self.source.reads()
     }
 
+    /// True when `id` was loaded as a history boundary.
+    pub fn is_boundary(&self, id: &ChangesetId) -> bool {
+        self.boundaries.lock().unwrap().contains(id)
+    }
+
+    fn remote_for(&self, id: ChangesetId, op: &'static str) -> Result<&Arc<dyn RemoteHistory>> {
+        self.remote.as_ref().ok_or(Error::Boundary { id, op })
+    }
+
+    fn store_node(&self, id: ChangesetId, n: NodeOrBoundary) -> Arc<Node> {
+        if n.is_boundary() {
+            self.boundaries.lock().unwrap().insert(id);
+        }
+        let n = Arc::new(n.into_node());
+        self.nodes.lock().unwrap().insert(id, n.clone());
+        n
+    }
+
     /// The node for `id`, loading it once.
     pub async fn node(&self, id: ChangesetId) -> Result<Arc<Node>> {
         if let Some(n) = self.nodes.lock().unwrap().get(&id) {
             return Ok(n.clone());
         }
-        let n = Arc::new(self.source.get(id).await?);
-        self.nodes.lock().unwrap().insert(id, n.clone());
-        Ok(n)
+        let n = self.source.get_boundary(id).await?;
+        Ok(self.store_node(id, n))
     }
 
     /// Nodes for `ids` in order, fetching the unknown ones as one batch.
@@ -253,10 +417,9 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
             }
         }
         if !missing.is_empty() {
-            let got = self.source.get_many(&missing).await?;
-            let mut cache = self.nodes.lock().unwrap();
+            let got = self.source.get_many_boundary(&missing).await?;
             for (id, n) in missing.into_iter().zip(got) {
-                cache.insert(id, Arc::new(n));
+                self.store_node(id, n);
             }
         }
         let cache = self.nodes.lock().unwrap();
@@ -268,8 +431,12 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
         if a == b {
             return Ok(true);
         }
-        let ga = self.node(a).await?.generation;
-        if self.node(b).await?.generation <= ga {
+        let (na, nb) = (self.local_node(a).await?, self.local_node(b).await?);
+        let (Some(na), Some(nb)) = (na, nb) else {
+            return self.ancestor_beyond_window(a, b).await;
+        };
+        let ga = na.generation;
+        if nb.generation <= ga {
             return Ok(false);
         }
         if self.jump.jump(b, ga) == Some(a) {
@@ -279,6 +446,14 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
         let mut stack = vec![b];
         while let Some(id) = stack.pop() {
             let node = self.node(id).await?;
+            if self.is_boundary(&id) {
+                // Its parents are beyond the window: the server answers for the rest.
+                let remote = self.remote_for(id, "is-ancestor")?;
+                if remote.is_ancestor(a, id).await? {
+                    return Ok(true);
+                }
+                continue;
+            }
             let parents = self.nodes(&node.parents).await?;
             for (&p, pn) in node.parents.iter().zip(parents) {
                 if p == a {
@@ -290,6 +465,55 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
             }
         }
         Ok(false)
+    }
+
+    /// The node for `id`, or `None` when it is not local and a remote can answer for it.
+    async fn local_node(&self, id: ChangesetId) -> Result<Option<Arc<Node>>> {
+        match self.node(id).await {
+            Err(e) if e.is_missing() && self.remote.is_some() => Ok(None),
+            other => other.map(Some),
+        }
+    }
+
+    /// `is_ancestor` when `a` or `b` is not local: the server knows every id a boundary
+    /// leads to, and every path out of the local set leaves through a boundary.
+    async fn ancestor_beyond_window(&self, a: ChangesetId, b: ChangesetId) -> Result<bool> {
+        let remote = self.remote_for(a, "is-ancestor")?;
+        if self.local_node(b).await?.is_none() {
+            return remote.is_ancestor(a, b).await;
+        }
+        let mut seen = HashSet::from([b]);
+        let mut stack = vec![b];
+        while let Some(id) = stack.pop() {
+            if self.is_boundary(&id) {
+                if remote.is_ancestor(a, id).await? {
+                    return Ok(true);
+                }
+                continue;
+            }
+            let node = self.node(id).await?;
+            for &p in &node.parents {
+                if p == a {
+                    return Ok(true);
+                }
+                if seen.insert(p) {
+                    stack.push(p);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// [`is_ancestor`](Self::is_ancestor), asking the remote when either id is not local
+    /// (a base found past the window).
+    async fn ancestor_or_remote(&self, a: ChangesetId, b: ChangesetId) -> Result<bool> {
+        match self.is_ancestor(a, b).await {
+            Err(e) if e.is_missing() => match &self.remote {
+                Some(r) => r.is_ancestor(a, b).await,
+                None => Err(e),
+            },
+            other => other,
+        }
     }
 
     /// Best common ancestors of `a` and the merge of `others` (git's `merge-base`).
@@ -308,7 +532,27 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
         for &o in others {
             *flags.entry(o).or_default() |= P2;
         }
-        let starts: Vec<ChangesetId> = flags.keys().copied().collect();
+        let mut starts: Vec<ChangesetId> = flags.keys().copied().collect();
+        starts.sort();
+        let (mut below_p1, mut below_p2) = (Vec::new(), Vec::new());
+        if self.remote.is_some() {
+            // Ids beyond the window start on the server's side of the boundary.
+            let mut local = Vec::new();
+            for id in starts {
+                if self.local_node(id).await?.is_some() {
+                    local.push(id);
+                } else {
+                    let f = flags.remove(&id).unwrap_or(0);
+                    if f & P1 != 0 {
+                        below_p1.push(id);
+                    }
+                    if f & P2 != 0 {
+                        below_p2.push(id);
+                    }
+                }
+            }
+            starts = local;
+        }
         for (&id, n) in starts.iter().zip(self.nodes(&starts).await?) {
             heap.push((n.generation, id));
             live += 1;
@@ -326,6 +570,19 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
                 flags.insert(id, f);
             }
             let node = self.node(id).await?;
+            if self.is_boundary(&id) {
+                // Its parents are beyond the window; the server finishes this side.
+                self.remote_for(id, "merge-base")?;
+                if f & STALE == 0 {
+                    if f & P1 != 0 {
+                        below_p1.push(id);
+                    }
+                    if f & P2 != 0 {
+                        below_p2.push(id);
+                    }
+                }
+                continue;
+            }
             let parents = self.nodes(&node.parents).await?;
             for (&p, pn) in node.parents.iter().zip(parents) {
                 let old = flags.get(&p).copied();
@@ -346,12 +603,24 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
                 }
             }
         }
+        if !below_p1.is_empty() && !below_p2.is_empty() {
+            // Common ancestors past the window: pair each boundary reached from `a` with the
+            // boundaries reached from `others`.
+            let remote = self.remote_for(below_p1[0], "merge-base")?;
+            for &x in &below_p1 {
+                for r in remote.merge_base(x, &below_p2, true).await? {
+                    if !found.contains(&r) {
+                        found.push(r);
+                    }
+                }
+            }
+        }
         if found.len() > 1 {
             let mut keep = Vec::new();
             for &r in &found {
                 let mut redundant = false;
                 for &s in &found {
-                    if s != r && self.is_ancestor(r, s).await? {
+                    if s != r && self.ancestor_or_remote(r, s).await? {
                         redundant = true;
                         break;
                     }
@@ -386,6 +655,7 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
     /// One page (at most `q.limit`) plus the cursor for the next, resumed without rescanning.
     pub async fn log_page(&self, q: LogQuery) -> Result<LogPage> {
         let mut walk = Walk::new(self, q).await?;
+        walk.paged = true;
         let mut ids = Vec::new();
         while let Some(id) = walk.next().await? {
             ids.push(id);
@@ -424,6 +694,38 @@ struct Walk<'g, S, J> {
     live: usize,
     skip_left: usize,
     limit_left: Option<usize>,
+    /// A page cannot continue past a history boundary; reaching one is an error.
+    paged: bool,
+    /// Boundaries met: id, excluded, and the path followed into their parents.
+    boundaries: Vec<(ChangesetId, bool, Option<RepoPath>)>,
+    /// Starts that are not local: id, excluded, followed path. Their history is the server's.
+    remote_starts: Vec<(ChangesetId, bool, Option<RepoPath>)>,
+    /// Set once a boundary is met: local results merged with the server's.
+    merged: Option<Merge>,
+}
+
+/// One popped walk entry.
+struct Step {
+    /// The id, when it matched the filters.
+    matched: Option<ChangesetId>,
+    generation: u32,
+    /// The entry is a history boundary: its parents were not queued.
+    boundary: bool,
+}
+
+/// The server's continuation of one group of boundaries.
+struct RemoteLog {
+    q: LogQuery,
+    token: Option<PageToken>,
+    buf: VecDeque<LogEntry>,
+    done: bool,
+}
+
+/// Local results below the first boundary, merged with the server's by `(generation, id)`.
+struct Merge {
+    local: VecDeque<(u32, ChangesetId)>,
+    remotes: Vec<RemoteLog>,
+    last: Option<ChangesetId>,
 }
 
 impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
@@ -456,7 +758,17 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
                 (f, q.skip)
             }
         };
-        let ids: Vec<ChangesetId> = frontier.iter().map(|p| p.id).collect();
+        // Starts beyond the window belong to the server; the rest load as one batch.
+        let mut local = Vec::new();
+        let mut remote_starts = Vec::new();
+        for p in frontier {
+            if graph.remote.is_some() && graph.local_node(p.id).await?.is_none() {
+                remote_starts.push((p.id, p.excluded, p.path));
+            } else {
+                local.push(p);
+            }
+        }
+        let ids: Vec<ChangesetId> = local.iter().map(|p| p.id).collect();
         let nodes = graph.nodes(&ids).await?;
         let mut w = Walk {
             graph,
@@ -467,8 +779,12 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
             queued: HashMap::new(),
             live: 0,
             skip_left,
+            paged: false,
+            boundaries: Vec::new(),
+            remote_starts,
+            merged: None,
         };
-        for (p, n) in frontier.into_iter().zip(nodes) {
+        for (p, n) in local.into_iter().zip(nodes) {
             w.heap.push((n.generation, Reverse(p.id)));
             w.live += usize::from(!p.excluded);
             w.queued.insert(p.id, p);
@@ -485,33 +801,82 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
         }
     }
 
-    /// Pops by descending generation, so every child is seen before its parents and exclusion
-    /// flags are final when a node is popped.
+    /// The next match after `skip` and `limit`, merging in the server's history past a boundary.
     async fn next(&mut self) -> Result<Option<ChangesetId>> {
-        if self.limit_left == Some(0) {
+        loop {
+            if self.limit_left == Some(0) {
+                return Ok(None);
+            }
+            let id = if self.merged.is_some() {
+                match self.merged_next().await? {
+                    Some(id) => id,
+                    None => return Ok(None),
+                }
+            } else {
+                if !self.remote_starts.is_empty() {
+                    // Starts past the window can outrank local results: merge from the start.
+                    self.enter_merge(None).await?;
+                    continue;
+                }
+                let Some(step) = self.step().await? else {
+                    return Ok(None);
+                };
+                if step.boundary {
+                    self.enter_merge(Some(step)).await?;
+                    continue;
+                }
+                match step.matched {
+                    Some(id) => id,
+                    None => continue,
+                }
+            };
+            if self.skip_left > 0 {
+                self.skip_left -= 1;
+                continue;
+            }
+            if let Some(n) = &mut self.limit_left {
+                *n -= 1;
+            }
+            return Ok(Some(id));
+        }
+    }
+
+    /// Pops by descending generation, so every child is seen before its parents and exclusion
+    /// flags are final when a node is popped. A boundary's parents are not queued.
+    async fn step(&mut self) -> Result<Option<Step>> {
+        if self.live == 0 {
             return Ok(None);
         }
-        while self.live > 0 {
-            let (_, Reverse(id)) = self.heap.pop().expect("live entries are queued");
-            let entry = self.queued.remove(&id).expect("queued with heap entry");
-            if !entry.excluded {
-                self.live -= 1;
+        let (_, Reverse(id)) = self.heap.pop().expect("live entries are queued");
+        let entry = self.queued.remove(&id).expect("queued with heap entry");
+        if !entry.excluded {
+            self.live -= 1;
+        }
+        let node = self.graph.node(id).await?;
+        let boundary = self.graph.is_boundary(&id);
+        if boundary {
+            if self.paged {
+                return Err(Error::Boundary { id, op: "log page" });
             }
-            let node = self.graph.node(id).await?;
-            let parents: &[ChangesetId] = if self.q.first_parent {
-                &node.parents[..node.parents.len().min(1)]
-            } else {
-                &node.parents
-            };
-            let header = if entry.excluded || !self.needs_header() {
-                None
-            } else {
-                Some(self.graph.source.changeset(id).await?)
-            };
-            let (matched, parent_path) = match &header {
-                Some(cs) => self.filter(cs, entry.path.as_ref()),
-                None => (!entry.excluded, entry.path.clone()),
-            };
+            self.graph.remote_for(id, "log")?;
+        }
+        let parents: &[ChangesetId] = if self.q.first_parent {
+            &node.parents[..node.parents.len().min(1)]
+        } else {
+            &node.parents
+        };
+        let header = if entry.excluded || !self.needs_header() {
+            None
+        } else {
+            Some(self.graph.source.changeset(id).await?)
+        };
+        let (matched, parent_path) = match &header {
+            Some(cs) => self.filter(cs, entry.path.as_ref()),
+            None => (!entry.excluded, entry.path.clone()),
+        };
+        if boundary {
+            self.boundaries.push((id, entry.excluded, parent_path));
+        } else {
             let pnodes = self.graph.nodes(parents).await?;
             for (&p, pn) in parents.iter().zip(pnodes) {
                 match self.queued.get_mut(&p) {
@@ -535,19 +900,122 @@ impl<'g, S: GraphSource, J: JumpIndex> Walk<'g, S, J> {
                     }
                 }
             }
-            if !matched {
-                continue;
-            }
-            if self.skip_left > 0 {
-                self.skip_left -= 1;
-                continue;
-            }
-            if let Some(n) = &mut self.limit_left {
-                *n -= 1;
-            }
-            return Ok(Some(id));
         }
-        Ok(None)
+        Ok(Some(Step {
+            matched: matched.then_some(id),
+            generation: node.generation,
+            boundary,
+        }))
+    }
+
+    /// Finishes the local part of the walk (boundaries unexpanded), then sets up the server's
+    /// continuation: one log per followed path, from the boundaries' parents.
+    async fn enter_merge(&mut self, first: Option<Step>) -> Result<()> {
+        if self.paged {
+            return Err(Error::Boundary {
+                id: self.remote_starts[0].0,
+                op: "log page",
+            });
+        }
+        let mut local = VecDeque::new();
+        let mut step = match first {
+            Some(s) => Some(s),
+            None => self.step().await?,
+        };
+        while let Some(s) = step {
+            if let Some(id) = s.matched {
+                local.push_back((s.generation, id));
+            }
+            step = self.step().await?;
+        }
+        type Group = (Vec<ChangesetId>, Vec<ChangesetId>);
+        let mut groups: BTreeMap<Option<RepoPath>, Group> = BTreeMap::new();
+        for (id, excluded, path) in std::mem::take(&mut self.remote_starts) {
+            let g = groups.entry(path).or_default();
+            let side = if excluded { &mut g.1 } else { &mut g.0 };
+            side.push(id);
+        }
+        for (id, excluded, path) in std::mem::take(&mut self.boundaries) {
+            let node = self.graph.node(id).await?;
+            let take = if self.q.first_parent {
+                1
+            } else {
+                node.parents.len()
+            };
+            let g = groups.entry(path).or_default();
+            let side = if excluded { &mut g.1 } else { &mut g.0 };
+            side.extend(node.parents.iter().take(take).copied());
+        }
+        let mut remotes = Vec::new();
+        for (path, (include, exclude)) in groups {
+            if include.is_empty() {
+                continue;
+            }
+            let q = LogQuery {
+                include,
+                exclude,
+                paths: path.map_or_else(|| self.q.paths.clone(), |p| vec![p]),
+                skip: 0,
+                limit: None,
+                cursor: None,
+                ..self.q.clone()
+            };
+            remotes.push(RemoteLog {
+                q,
+                token: None,
+                buf: VecDeque::new(),
+                done: false,
+            });
+        }
+        self.merged = Some(Merge {
+            local,
+            remotes,
+            last: None,
+        });
+        Ok(())
+    }
+
+    /// The next id of the merged local and server streams, each ordered by `(generation desc, id)`.
+    async fn merged_next(&mut self) -> Result<Option<ChangesetId>> {
+        let remote = self
+            .graph
+            .remote
+            .clone()
+            .expect("checked when the boundary was met");
+        let m = self.merged.as_mut().expect("merging");
+        loop {
+            for r in &mut m.remotes {
+                while r.buf.is_empty() && !r.done {
+                    let page = remote.log(&r.q, r.token.as_ref()).await?;
+                    r.buf.extend(page.entries);
+                    r.done = page.next.is_none();
+                    r.token = page.next;
+                }
+            }
+            let mut best: Option<(Reverse<u32>, ChangesetId, Option<usize>)> = None;
+            if let Some(&(g, id)) = m.local.front() {
+                best = Some((Reverse(g), id, None));
+            }
+            for (i, r) in m.remotes.iter().enumerate() {
+                if let Some(e) = r.buf.front() {
+                    let key = (Reverse(e.generation), e.id, Some(i));
+                    if best.as_ref().is_none_or(|b| (b.0, b.1) > (key.0, key.1)) {
+                        best = Some(key);
+                    }
+                }
+            }
+            let Some((_, id, from)) = best else {
+                return Ok(None);
+            };
+            match from {
+                None => m.local.pop_front(),
+                Some(i) => m.remotes[i].buf.pop_front().map(|e| (e.generation, e.id)),
+            };
+            if m.last != Some(id) {
+                m.last = Some(id);
+                return Ok(Some(id));
+            }
+        }
     }
 
     fn needs_header(&self) -> bool {

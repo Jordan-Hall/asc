@@ -21,9 +21,11 @@ quick_cache = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
 imara-diff.workspace = true
+uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+sqlx = { workspace = true }
