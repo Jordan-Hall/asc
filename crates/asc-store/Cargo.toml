@@ -9,5 +9,22 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Exposes `conformance` to other crates' tests.
+testkit = []
+
 [dependencies]
 asc-core = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+data-encoding = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+blake3 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
