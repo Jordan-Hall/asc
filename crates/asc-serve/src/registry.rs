@@ -117,6 +117,8 @@ pub struct RepoEntry {
     pub default_branch: String,
     /// The engine and its RPC handlers over this namespace.
     pub backend: Arc<EngineBackend<BucketObjects, SqlRefs>>,
+    /// The namespace's object store (ingest verification reads file bytes through it).
+    pub objects: Arc<BucketObjects>,
     /// Receives git-map rows into `git_map` for this namespace.
     pub git_map: Arc<SqlGitMap>,
 }
@@ -240,9 +242,10 @@ impl Registry {
             backend: Arc::new(EngineBackend::new(
                 name.clone(),
                 key,
-                objects,
+                objects.clone(),
                 self.refs.clone(),
             )),
+            objects,
             git_map: Arc::new(SqlGitMap::new(self.pool.clone(), ns)),
         }
     }
@@ -376,6 +379,8 @@ pub struct Extensions {
     pub http: HttpRoutes,
     pub grpc: GrpcServices,
     pub text_budget: crate::TextBudgetSlot,
+    /// Ingest and `UpdateRefs` hook points (U43b).
+    pub pipeline: Arc<crate::update::PipelineHooks>,
 }
 
 impl Extensions {
@@ -385,6 +390,7 @@ impl Extensions {
             http: HttpRoutes::new(),
             grpc: GrpcServices::new(),
             text_budget: crate::TextBudgetSlot::default(),
+            pipeline: Arc::default(),
         }
     }
 }

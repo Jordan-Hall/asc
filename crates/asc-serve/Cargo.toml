@@ -16,6 +16,10 @@ asc-git = { workspace = true }
 asc-store = { workspace = true }
 asc-engine = { workspace = true }
 async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+prost = { workspace = true }
+serde_json = { workspace = true }
 axum = { workspace = true }
 quick_cache = { workspace = true }
 serde = { workspace = true }

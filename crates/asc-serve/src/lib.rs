@@ -5,8 +5,11 @@
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
 pub mod config;
+pub mod graph_sql;
+pub mod ingest;
 pub mod migrate;
 pub mod registry;
+pub mod update;
 
 use std::future::Future;
 use std::path::Path as FsPath;
@@ -128,7 +131,9 @@ impl Authorizer for DenyAll {
 // ------------------------------------------------------------------------------ startup
 
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
-fn register_all(_ext: &Extensions, _registry: &Arc<Registry>) {}
+fn register_all(ext: &Extensions, registry: &Arc<Registry>) {
+    update::register(ext, registry);
+}
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
 pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
