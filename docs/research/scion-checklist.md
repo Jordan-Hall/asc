@@ -156,3 +156,11 @@ asc has no LFS support.
 - Large files are native chunked content in the CAS, with no setup needed.
 - Git import keeps LFS pointer files as ordinary small blobs, byte-exact, so git SHAs and the mirror stay identical. LFS content is never fetched or migrated. The 25.6 GiB LFS store is archived once to a cold S3 bucket, outside asc.
 - Removed: `Entry.lfs`/`Change.lfs`, the `x/sha256` alias, the SHA-256 computed during ingest, pointer parsing, Forgejo LFS API serving and the LFS copy job.
+
+## Decision: stacked commits and stacked PRs are core (2026-10-22)
+
+- Stacks are first-class in asc core, not a plugin. Model them on Graphite (gt create/submit/sync/restack, stacked PRs, merge queue for stacks), Sapling (smartlog, absorb, amend auto-restacks descendants, split/fold) and jj (stable change ids, auto-rebase of descendants, operation log/undo).
+- Bring the community-favourite features of GitLens and GitKraken into the core and the plugin API (blame/history/graph data, worktree management, and so on). There is still no IDE: asc exposes data through RPC, IPC and `--json`, and ASC's own plugins render it.
+- Git commands keep git semantics. Stack commands are additive (new verbs) and never change what an existing git command does.
+- The Forgejo fork supports stacked PRs natively: the PR base is the parent in the stack, it is retargeted automatically when the parent merges, the review UI is stack-aware, and the stack lands through the merge queue.
+- Design: docs/research/stacks.md (pending).
