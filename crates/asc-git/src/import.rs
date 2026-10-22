@@ -493,8 +493,6 @@ fn hash_blob(odb: &Odb, oid: GitOid) -> Result<(GitOid, Ingested)> {
     Ok((oid, got))
 }
 
-}
-
 /// Blob bytes buffered at once while hashing (each blob costs about twice its size in flight).
 const BATCH_BYTES: u64 = 32 << 20;
 /// Threads that read and chunk blobs at once. A packed blob can sit at the end of a delta chain
