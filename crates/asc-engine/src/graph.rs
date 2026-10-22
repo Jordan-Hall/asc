@@ -78,6 +78,40 @@ pub enum Ancestry {
     No,
     /// Bodies the walk needs before it can answer.
     NeedBodies(Vec<ChangesetId>),
+    /// The walk visited more changesets than its limit allows.
+    OverBudget,
+}
+
+/// The resumable state of an ancestry walk (see [`Graph::ancestry_step`]).
+#[derive(Debug)]
+pub struct AncestryWalk {
+    a: ChangesetId,
+    b: ChangesetId,
+    ga: Option<u32>,
+    /// Every id pushed so far, so a resumed walk never revisits.
+    seen: HashSet<ChangesetId>,
+    stack: Vec<(ChangesetId, Option<u32>)>,
+    /// Ids whose bodies the walk is waiting for, with their generation bounds.
+    need: Vec<(ChangesetId, Option<u32>)>,
+}
+
+impl AncestryWalk {
+    /// A walk asking whether `a` is `b` or an ancestor of `b`.
+    pub fn new(a: ChangesetId, b: ChangesetId) -> Self {
+        Self {
+            a,
+            b,
+            ga: None,
+            seen: HashSet::from([b]),
+            stack: vec![(b, None)],
+            need: Vec::new(),
+        }
+    }
+
+    /// Changesets visited so far.
+    pub fn visited(&self) -> usize {
+        self.seen.len()
+    }
 }
 
 /// A node, or a node whose parents lie beyond the local history window (SPEC §6.3).
@@ -483,46 +517,70 @@ impl<S: GraphSource, J: JumpIndex> Graph<S, J> {
     }
 
     /// Ancestry of `a` in `b` computed only from changeset bodies in the local store, never
-    /// from the remote: the safe basis for moving a ref.
-    ///
-    /// The walk goes from `b` through parents and is bounded by generation: a changeset whose
-    /// generation is at most that of `a` is not searched below. When a parent's body is not
-    /// local the walk cannot tell, and the answer is [`Ancestry::NeedBodies`] with the ids to
-    /// fetch (the caller verifies them against their ids and asks again). An `a` that is not
-    /// local is never found.
+    /// from the remote: the safe basis for moving a ref. One step of
+    /// [`ancestry_step`](Self::ancestry_step) with no limit.
     pub async fn ancestry_from_bodies(&self, a: ChangesetId, b: ChangesetId) -> Result<Ancestry> {
-        if a == b {
+        let mut walk = AncestryWalk::new(a, b);
+        self.ancestry_step(&mut walk, usize::MAX).await
+    }
+
+    /// Continues `walk` over local bodies, never asking the remote.
+    ///
+    /// The walk is bounded by generation: every pending id carries an upper bound on its
+    /// generation (its own when known, else its child's minus one), and nothing is searched
+    /// below a bound at or under that of `a`. When a body is not local the step ends with
+    /// [`Ancestry::NeedBodies`]; the ids stay in the walk, so after the caller stores the
+    /// verified bodies the next step continues from the same frontier and visited set. When
+    /// more than `limit` changesets have been visited the answer is [`Ancestry::OverBudget`].
+    /// An `a` that is not local is never found.
+    pub async fn ancestry_step(&self, walk: &mut AncestryWalk, limit: usize) -> Result<Ancestry> {
+        let a = walk.a;
+        if walk.b == a {
             return Ok(Ancestry::Yes);
         }
-        let ga = match self.body_walk_info(a).await? {
-            Some((g, _)) => g.unwrap_or(0),
-            None => return Ok(Ancestry::No),
+        let ga = match walk.ga {
+            Some(g) => g,
+            None => {
+                let g = match self.body_walk_info(a).await? {
+                    Some((g, _)) => g.unwrap_or(0),
+                    None => return Ok(Ancestry::No),
+                };
+                walk.ga = Some(g);
+                g
+            }
         };
-        let mut seen = HashSet::from([b]);
-        let mut stack = vec![b];
+        let mut stack = std::mem::take(&mut walk.stack);
+        stack.append(&mut walk.need);
         let mut need = Vec::new();
-        while let Some(id) = stack.pop() {
+        while let Some((id, bound)) = stack.pop() {
             let Some((gen_id, parents)) = self.body_walk_info(id).await? else {
-                need.push(id);
+                need.push((id, bound));
                 continue;
             };
-            if gen_id.is_some_and(|g| g <= ga) {
+            let bound = gen_id.or(bound);
+            if bound.is_some_and(|g| g <= ga) {
                 continue;
             }
+            let child_bound = bound.map(|g| g - 1);
             for p in parents {
                 if p == a {
                     return Ok(Ancestry::Yes);
                 }
-                if seen.insert(p) {
-                    stack.push(p);
+                if walk.seen.insert(p) {
+                    stack.push((p, child_bound));
                 }
             }
+            if walk.seen.len() > limit {
+                return Ok(Ancestry::OverBudget);
+            }
         }
-        Ok(if need.is_empty() {
-            Ancestry::No
+        if need.is_empty() {
+            Ok(Ancestry::No)
         } else {
-            Ancestry::NeedBodies(need)
-        })
+            let ids = need.iter().map(|n| n.0).collect();
+            walk.need = need;
+            Ok(Ancestry::NeedBodies(ids))
+        }
     }
 
     /// Generation (when derivable locally) and parents of `id` from its local body; `None`
