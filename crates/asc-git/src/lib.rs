@@ -6,3 +6,4 @@ pub mod import;
 pub mod index;
 pub mod odb;
 pub mod realgit;
+pub mod tree_override;

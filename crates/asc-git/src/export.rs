@@ -74,6 +74,11 @@ pub enum ExportError {
     MissingTag(TagId),
     #[error("git tree override {0} is missing")]
     MissingOverride(GitOid),
+    #[error("git tree override {oid} does not describe its tree: {source}")]
+    BadOverride {
+        oid: GitOid,
+        source: crate::tree_override::OverrideError,
+    },
     #[error("file {file} hashes to {actual}, recorded as {expected}")]
     BlobMismatch {
         file: FileId,
@@ -319,6 +324,8 @@ impl<'a, O: Objects, R: Refs> Exporter<'a, O, R> {
                     .get(&ObjKey::GitTreeOverride(want))
                     .await?
                     .ok_or(ExportError::MissingOverride(want))?;
+                crate::tree_override::verify(&body, &tree)
+                    .map_err(|source| ExportError::BadOverride { oid: want, source })?;
                 oid = want;
             }
             if !run.seen.insert(oid) || run.target.contains(oid) {
