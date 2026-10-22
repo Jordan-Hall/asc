@@ -6,8 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use prost::Message;
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
     let dir = root.join("asc/v1");
@@ -21,9 +19,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     files.sort();
-    let fds = protox::compile(&files, [&root])?;
+    let mut compiler = protox::Compiler::new([&root])?;
+    compiler.include_source_info(true).include_imports(true).open_files(&files)?;
     let out = PathBuf::from(std::env::var("OUT_DIR")?);
-    std::fs::write(out.join("asc_descriptor.bin"), fds.encode_to_vec())?;
+    // Encode from the compiler, not from `prost_types`, which drops the `(asc.v1.json)` options.
+    std::fs::write(out.join("asc_descriptor.bin"), compiler.encode_file_descriptor_set())?;
+    let fds = compiler.file_descriptor_set();
     tonic_prost_build::configure().bytes(".").compile_fds(fds)?;
     Ok(())
 }
