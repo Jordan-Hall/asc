@@ -134,7 +134,7 @@ fn size_from_db(size: i64) -> u64 {
     u64::from_ne_bytes(size.to_ne_bytes())
 }
 
-const COLS: &str ="path, stage, kind, file, size, git, intent_to_add";
+const COLS: &str = "path, stage, kind, file, size, git, intent_to_add";
 
 fn decode(row: &AnyRow) -> Result<StageRow> {
     let file: Option<Vec<u8>> = row.try_get("file")?;
@@ -157,7 +157,13 @@ fn decode(row: &AnyRow) -> Result<StageRow> {
     })
 }
 
+/// The highest conflict stage a row may hold (0 is a normal row).
+const MAX_STAGE: u8 = 3;
+
 async fn upsert_tx(tx: &mut Tx, ws: &str, set: i64, r: &StageRow) -> Result<()> {
+    if r.stage > MAX_STAGE {
+        return Err(Error::Corrupt("stage.stage"));
+    }
     let size = size_to_db(r.size);
     sqlx::query(
         "INSERT INTO stage (ws_id, set_id, path, stage, kind, file, size, git, intent_to_add) \
@@ -215,6 +221,28 @@ pub async fn overlay(db: &StateDb, ws: WorkspaceId, set: StageSet) -> Result<Vec
 pub async fn upsert(db: &StateDb, ws: WorkspaceId, set: StageSet, rows: &[StageRow]) -> Result<()> {
     let ws = ws.to_string();
     let mut tx = db.begin().await?;
+    for r in rows {
+        upsert_tx(&mut tx, &ws, set.raw(), r).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Replaces every row of the set with `rows` in one transaction. A failure leaves the old rows
+/// in place; `clear` followed by `upsert` would leave the set empty or partial instead.
+pub async fn replace(
+    db: &StateDb,
+    ws: WorkspaceId,
+    set: StageSet,
+    rows: &[StageRow],
+) -> Result<()> {
+    let ws = ws.to_string();
+    let mut tx = db.begin().await?;
+    sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = ?")
+        .bind(&ws)
+        .bind(set.raw())
+        .execute(&mut *tx)
+        .await?;
     for r in rows {
         upsert_tx(&mut tx, &ws, set.raw(), r).await?;
     }

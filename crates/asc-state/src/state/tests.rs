@@ -401,6 +401,46 @@ async fn temporary_set_never_touches_set_zero() {
 }
 
 #[tokio::test]
+async fn replace_is_atomic_and_rejects_bad_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = open(&dir).await;
+    let r = repo(&db, "r").await;
+    let ws = workspace(&db, r, "/a", "refs/heads/master").await;
+    stage::upsert(&db, ws, StageSet::Default, &[row("a", Some(&leaf(1)))])
+        .await
+        .unwrap();
+    let before = stage::overlay(&db, ws, StageSet::Default).await.unwrap();
+
+    // The second row fails after the delete ran: the old rows must survive.
+    let mut bad = row("z", Some(&leaf(3)));
+    bad.stage = 9;
+    let err = stage::replace(&db, ws, StageSet::Default, &[row("b", Some(&leaf(2))), bad]).await;
+    assert!(matches!(err, Err(Error::Corrupt(_))));
+    assert_eq!(
+        stage::overlay(&db, ws, StageSet::Default).await.unwrap(),
+        before
+    );
+
+    let new = vec![row("b", Some(&leaf(2))), row("c", None)];
+    stage::replace(&db, ws, StageSet::Default, &new)
+        .await
+        .unwrap();
+    assert_eq!(
+        stage::overlay(&db, ws, StageSet::Default).await.unwrap(),
+        new
+    );
+    stage::replace(&db, ws, StageSet::Default, &[])
+        .await
+        .unwrap();
+    assert!(
+        stage::overlay(&db, ws, StageSet::Default)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn snapshot_and_restore_set_zero() {
     let dir = tempfile::tempdir().unwrap();
     let db = open(&dir).await;
