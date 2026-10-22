@@ -11,3 +11,11 @@ workspace = true
 
 [dependencies]
 asc-core = { workspace = true }
+blake3.workspace = true
+globset.workspace = true
+postcard.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
