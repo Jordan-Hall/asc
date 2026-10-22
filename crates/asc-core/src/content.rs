@@ -8,8 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use bytes::Bytes;
 use fastcdc::v2020::{Error as CdcError, Normalization, StreamCDC};
-use sha1::Sha1;
-use sha2::{Digest, Sha256};
+use sha1::{Digest, Sha1};
 
 use crate::id::{ChunkId, FileHasher, FileId, GitOid};
 use crate::object::ChunkList;
@@ -65,28 +64,25 @@ pub struct Ingested {
     pub size: u64,
     /// Git blob SHA-1 (`"blob <size>\0" + content`).
     pub git: GitOid,
-    pub sha256: [u8; 32],
     pub body: Body,
 }
 
-/// The three whole-file digests, fed in one pass.
+/// The whole-file digests, fed in one pass.
 struct Digests {
     file: FileHasher,
     git: Sha1,
-    sha256: Sha256,
 }
 
 impl Digests {
     fn new(size: u64) -> Self {
         let mut git = Sha1::new();
         git.update(format!("blob {size}\0").as_bytes());
-        Self { file: FileHasher::new(), git, sha256: Sha256::new() }
+        Self { file: FileHasher::new(), git }
     }
 
     fn update(&mut self, bytes: &[u8]) {
         self.file.update(bytes);
         self.git.update(bytes);
-        self.sha256.update(bytes);
     }
 }
 
@@ -113,7 +109,6 @@ pub fn ingest<R: Read + Seek>(mut reader: R) -> Result<Ingested, ContentError> {
         file: d.file.finalize(),
         size,
         git: GitOid::from_bytes(d.git.finalize().into()),
-        sha256: d.sha256.finalize().into(),
         body,
     })
 }
@@ -225,8 +220,6 @@ mod tests {
         assert_eq!(i.git.to_string(), "ce013625030ba8dba906f756967f9e9ca394464a");
         assert_eq!(i.file, FileId::of(b"hello\n"));
         assert_eq!(i.size, 6);
-        let sha: [u8; 32] = Sha256::digest(b"hello\n").into();
-        assert_eq!(i.sha256, sha);
     }
 
     fn chunked(data: &[u8]) -> (Ingested, ChunkList, Vec<(ChunkId, Bytes)>) {
