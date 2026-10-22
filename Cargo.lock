@@ -547,6 +547,8 @@ dependencies = [
  "filetime",
  "futures",
  "object_store",
+ "postcard",
+ "serde",
  "sqlx",
  "tempfile",
  "thiserror",
