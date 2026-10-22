@@ -316,3 +316,51 @@ async fn empty_directory_is_reported() {
     let err = import(&e, &r, &r.tips()).await.expect_err("must fail");
     assert!(matches!(err, ImportError::EmptyDir(_)), "{err}");
 }
+
+/// A repo whose only commit has a chain of `levels` nested directories ending in one file.
+fn deep_repo(levels: usize) -> Repo {
+    let r = Repo::init();
+    let odb = Odb::open(r.path()).expect("odb");
+    let blob = odb.write_loose(ObjectKind::Blob, b"x").expect("blob");
+    let mut body = [b"100644 f\0".as_slice(), blob.as_bytes()].concat();
+    let mut oid = odb.write_loose(ObjectKind::Tree, &body).expect("tree");
+    for _ in 1..levels {
+        body = [b"40000 d\0".as_slice(), oid.as_bytes()].concat();
+        oid = odb.write_loose(ObjectKind::Tree, &body).expect("tree");
+    }
+    let c = r.commit(oid, &[], "deep\n");
+    r.set_ref("refs/heads/master", c);
+    r
+}
+
+/// Imports `repo` on a thread with a 256 KiB stack, where per-level recursion would overflow.
+fn import_on_small_stack(repo: Repo) -> Result<(), String> {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("runtime");
+            rt.block_on(async {
+                let e = env();
+                import(&e, &repo, &repo.tips())
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| format!("{err:?}"))
+            })
+        })
+        .expect("spawn")
+        .join()
+        .expect("no stack overflow")
+}
+
+#[test]
+fn a_2000_level_tree_imports_on_a_small_stack() {
+    import_on_small_stack(deep_repo(2000)).expect("import");
+}
+
+#[test]
+fn a_3000_level_tree_is_rejected_on_a_small_stack() {
+    let err = import_on_small_stack(deep_repo(3000)).expect_err("too deep");
+    assert!(err.contains("TreeTooDeep"), "{err}");
+}
