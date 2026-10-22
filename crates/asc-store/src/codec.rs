@@ -5,8 +5,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 const RAW: u8 = 0;
 const ZSTD: u8 = 1;
 const ZSTD_LEVEL: i32 = 3;
-/// Upper bound on a decoded value; guards against decompression bombs.
-const MAX_DECODED: u64 = 256 * 1024 * 1024;
 
 /// A stored value that cannot be decoded.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -17,6 +15,8 @@ pub enum CodecError {
     UnknownCodec(u8),
     #[error("zstd frame is invalid or lacks a sane content size")]
     BadFrame,
+    #[error("decoded size exceeds the {0} byte limit")]
+    TooLarge(u64),
 }
 
 /// Encodes `data` as stored bytes; zstd only when the frame is under 90% of raw.
@@ -44,18 +44,29 @@ pub fn check_codec(stored: &[u8]) -> Result<(), CodecError> {
     }
 }
 
-/// Decodes stored bytes to the original data. Raw values are sliced, not copied.
+/// Decodes with the loosest cap (256 MiB). Prefer [`decode_stored_capped`] with the class cap.
 pub fn decode_stored(stored: &Bytes) -> Result<Bytes, CodecError> {
+    decode_stored_capped(stored, 256 * 1024 * 1024)
+}
+
+/// Decodes stored bytes to the original data, rejecting values larger than `max_decoded`.
+/// Raw values are sliced, not copied; zstd frames must declare a content size within the limit.
+pub fn decode_stored_capped(stored: &Bytes, max_decoded: u64) -> Result<Bytes, CodecError> {
     check_codec(stored)?;
     let body = stored.slice(1..);
     if stored[0] == RAW {
+        if body.len() as u64 > max_decoded {
+            return Err(CodecError::TooLarge(max_decoded));
+        }
         return Ok(body);
     }
     let size = zstd::zstd_safe::get_frame_content_size(&body)
         .ok()
         .flatten()
-        .filter(|&n| n <= MAX_DECODED)
         .ok_or(CodecError::BadFrame)?;
+    if size > max_decoded {
+        return Err(CodecError::TooLarge(max_decoded));
+    }
     let out = zstd::bulk::decompress(&body, size as usize).map_err(|_| CodecError::BadFrame)?;
     if out.len() as u64 != size {
         return Err(CodecError::BadFrame);
@@ -67,13 +78,15 @@ pub fn decode_stored(stored: &Bytes) -> Result<Bytes, CodecError> {
 mod tests {
     use super::*;
 
+    const MAX: u64 = 256 * 1024 * 1024;
+
     #[test]
     fn compressible_uses_zstd() {
         let data = vec![7u8; 10_000];
         let s = encode_stored(&data);
         assert_eq!(s[0], ZSTD);
         assert!(s.len() < 1_000);
-        assert_eq!(decode_stored(&s).unwrap(), data);
+        assert_eq!(decode_stored_capped(&s, MAX).unwrap(), data);
     }
 
     #[test]
@@ -87,20 +100,35 @@ mod tests {
             let s = encode_stored(data);
             assert_eq!(s[0], RAW);
             assert_eq!(&s[1..], data);
-            assert_eq!(decode_stored(&s).unwrap(), data);
+            assert_eq!(decode_stored_capped(&s, MAX).unwrap(), data);
         }
     }
 
     #[test]
     fn rejects_bad_input() {
-        assert_eq!(decode_stored(&Bytes::new()), Err(CodecError::Empty));
         assert_eq!(
-            decode_stored(&Bytes::from_static(&[9, 1])),
+            decode_stored_capped(&Bytes::new(), MAX),
+            Err(CodecError::Empty)
+        );
+        assert_eq!(
+            decode_stored_capped(&Bytes::from_static(&[9, 1]), MAX),
             Err(CodecError::UnknownCodec(9))
         );
         assert_eq!(
-            decode_stored(&Bytes::from_static(&[1, 1, 2, 3])),
+            decode_stored_capped(&Bytes::from_static(&[1, 1, 2, 3]), MAX),
             Err(CodecError::BadFrame)
         );
+    }
+
+    #[test]
+    fn rejects_oversize() {
+        let s = encode_stored(&vec![7u8; 10_000]);
+        assert_eq!(
+            decode_stored_capped(&s, 9_999),
+            Err(CodecError::TooLarge(9_999))
+        );
+        assert!(decode_stored_capped(&s, 10_000).is_ok());
+        let raw = Bytes::from_static(&[0, 1, 2, 3]);
+        assert_eq!(decode_stored_capped(&raw, 2), Err(CodecError::TooLarge(2)));
     }
 }

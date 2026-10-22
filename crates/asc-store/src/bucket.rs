@@ -92,16 +92,36 @@ impl Objects for BucketObjects {
 
     async fn put(&self, key: &ObjKey, stored: Bytes) -> Result<()> {
         check_codec(&stored).map_err(|e| Error::Codec(*key, e))?;
+        // Never write bytes that do not match their key.
+        decode_verified(key, &stored)?;
+        let path = self.key_path(key);
         let opts = PutOptions {
             mode: PutMode::Create,
             ..Default::default()
         };
         match self
             .store
-            .put_opts(&self.key_path(key), PutPayload::from_bytes(stored), opts)
+            .put_opts(&path, PutPayload::from_bytes(stored.clone()), opts)
             .await
         {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => Ok(()),
+            Ok(_) => Ok(()),
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                // Readers verify, so a valid existing value stays. A corrupt or undecodable one is
+                // repaired: keys are content addresses, so a verified value is always correct.
+                let existing = self.get_stored(key).await?;
+                let damaged = existing.is_some_and(|e| {
+                    matches!(
+                        decode_verified(key, &e),
+                        Err(Error::Corrupt(_) | Error::Codec(..))
+                    )
+                });
+                if damaged {
+                    self.store
+                        .put(&path, PutPayload::from_bytes(stored))
+                        .await?;
+                }
+                Ok(())
+            }
             Err(e) => Err(e.into()),
         }
     }
