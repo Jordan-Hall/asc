@@ -24,6 +24,8 @@ data-encoding = { workspace = true }
 filetime = { workspace = true }
 futures = { workspace = true }
 object_store = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
