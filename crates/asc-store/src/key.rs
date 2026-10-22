@@ -27,8 +27,6 @@ pub enum ObjKey {
         version: u32,
         id: [u8; 32],
     },
-    /// `sha256 -> FileId` alias; the value is the 32 raw `FileId` bytes.
-    Sha256Alias([u8; 32]),
 }
 
 /// Top-level key directory, one per [`ObjKey`] variant.
@@ -42,7 +40,6 @@ pub enum KeyClass {
     Tag,
     GitTreeOverride,
     Derived,
-    Sha256Alias,
 }
 
 impl KeyClass {
@@ -57,7 +54,6 @@ impl KeyClass {
             Self::Tag => "g",
             Self::GitTreeOverride => "o",
             Self::Derived => "d",
-            Self::Sha256Alias => "x",
         }
     }
 }
@@ -119,7 +115,6 @@ impl ObjKey {
             Self::Tag(_) => KeyClass::Tag,
             Self::GitTreeOverride(_) => KeyClass::GitTreeOverride,
             Self::Derived { .. } => KeyClass::Derived,
-            Self::Sha256Alias(_) => KeyClass::Sha256Alias,
         }
     }
 
@@ -136,7 +131,6 @@ impl ObjKey {
             Self::Derived { name, version, id } => {
                 leaf(&format!("{dir}/{name}.v{version}"), &HEXLOWER.encode(id))
             }
-            Self::Sha256Alias(h) => format!("{dir}/sha256/{}", HEXLOWER.encode(h)),
         }
     }
 
@@ -155,7 +149,6 @@ impl ObjKey {
             "c" => Self::Changeset(ChangesetId::from_bytes(unhex(&sharded(rest)?)?)),
             "g" => Self::Tag(TagId::from_bytes(unhex(&sharded(rest)?)?)),
             "o" => Self::GitTreeOverride(GitOid::from_bytes(unhex(&sharded(rest)?)?)),
-            "x" => Self::Sha256Alias(unhex(rest.strip_prefix("sha256/")?)?),
             "d" => {
                 let (nv, rest) = rest.split_once('/')?;
                 let (name, version) = nv.rsplit_once(".v")?;
@@ -198,7 +191,6 @@ mod tests {
                 version: 3,
                 id: [0x5c; 32],
             },
-            ObjKey::Sha256Alias([0x11; 32]),
         ]
     }
 
@@ -218,10 +210,6 @@ mod tests {
             }
             .path(),
             format!("d/gen.v1/ab/{hex}")
-        );
-        assert_eq!(
-            ObjKey::Sha256Alias([0xab; 32]).path(),
-            format!("x/sha256/{hex}")
         );
     }
 
