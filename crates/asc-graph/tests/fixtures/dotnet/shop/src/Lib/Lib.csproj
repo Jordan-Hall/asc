@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\core\CORE.CSPROJ" />
+    <PackageReference Include="Serilog" VersionOverride="3.0.0" />
+  </ItemGroup>
+</Project>
