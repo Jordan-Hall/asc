@@ -109,6 +109,41 @@ impl Odb {
         Ok(Bytes::copy_from_slice(data.data))
     }
 
+    /// An independent handle onto the same database, for another thread.
+    pub fn fork(&self) -> Self {
+        Self {
+            handle: self.handle.clone(),
+        }
+    }
+
+    /// Reads any object and checks that its content hashes to `oid`.
+    pub fn read_object_verified(&self, oid: GitOid) -> Result<(ObjectKind, Vec<u8>), OdbError> {
+        let mut buf = Vec::new();
+        let data = self
+            .handle
+            .try_find(&to_gix(oid), &mut buf)
+            .map_err(|e| OdbError::Read {
+                oid,
+                message: e.to_string(),
+            })?
+            .ok_or(OdbError::NotFound(oid))?;
+        let kind = match data.kind {
+            gix::objs::Kind::Blob => ObjectKind::Blob,
+            gix::objs::Kind::Tree => ObjectKind::Tree,
+            gix::objs::Kind::Commit => ObjectKind::Commit,
+            gix::objs::Kind::Tag => ObjectKind::Tag,
+        };
+        let actual = object_oid(kind, data.data);
+        if actual != oid {
+            return Err(OdbError::Corrupt {
+                expected: oid,
+                actual,
+            });
+        }
+        let body = data.data.to_vec();
+        Ok((kind, body))
+    }
+
     /// Writes a loose object and returns its id.
     pub fn write_loose(&self, kind: ObjectKind, bytes: &[u8]) -> Result<GitOid, OdbError> {
         let id = self
