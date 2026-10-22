@@ -33,6 +33,7 @@ clap = { workspace = true }
 futures = { workspace = true }
 gix-attributes = { workspace = true }
 gix-config = { workspace = true }
+gix-sec = { workspace = true }
 prost-reflect = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }
@@ -46,6 +47,12 @@ tempfile = { workspace = true }
 # vfs-projfs is Windows-only, vfs-fuse is Linux-only; the dep is optional on both.
 [target.'cfg(windows)'.dependencies]
 asc-vfs = { workspace = true, optional = true }
+# Ownership check of the safe.directory gate (cli/safe_dir.rs).
+windows-sys = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 asc-vfs = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# Effective uid for the safe.directory gate (cli/safe_dir.rs).
+rustix = { workspace = true, features = ["process"] }

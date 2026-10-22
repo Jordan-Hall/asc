@@ -31,7 +31,8 @@ use asc_store::storeset::StoreSet;
 use asc_store::tiered::Tiered;
 use futures::stream::{BoxStream, StreamExt};
 
-use super::config::{ConfigSnapshot, LocalConfig};
+use super::config::{self, ConfigSnapshot, LocalConfig};
+use super::safe_dir::{self, OwnerProbe, SafeDirectory, owned_by_current_user};
 use super::output::OutputKind;
 use crate::dispatch::Program;
 use crate::env::GitEnv;
@@ -373,56 +374,133 @@ fn same_path(a: &Path, b: &Path) -> bool {
     norm(a) == norm(b)
 }
 
+/// What opening a workspace must pass (SPEC §11.4, "Trusted workspaces").
+pub struct Gate<'a> {
+    /// `safe.directory` from system, global and command-line config.
+    pub safe: &'a SafeDirectory,
+    /// The user's asc home, from their environment: never derived from a gitdir on disk.
+    pub home: &'a dyn Fn() -> Result<AscHome>,
+    /// Whether the current user owns a path.
+    pub owned: OwnerProbe<'a>,
+}
+
+fn canonical(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
+}
+
+/// Admits a discovered workspace or treats it as "not an asc repository" (`Ok(None)`), in the
+/// order that keeps non-asc directories out of the ownership error: (1) the gitdir is exactly
+/// `<home>/wc/<id>/git` and the common dir is inside `<home>/repos`, after canonicalisation;
+/// (2) the root, gitfile, gitdir and common dir are owned by the current user or listed in
+/// `safe.directory`, else git's "dubious ownership" error (exit 128); (3) the workspace id
+/// is registered in the home's `state.db` and the common dir is its repository's.
+async fn admit(p: Projection, gate: &Gate<'_>) -> Result<Option<Projection>> {
+    let home = (gate.home)()?;
+    let (Some(git_dir), Some(common), Some(home_root)) = (
+        canonical(p.git_dir()),
+        canonical(p.common_dir()),
+        canonical(home.root()),
+    ) else {
+        return Ok(None);
+    };
+    if canonical(&home.gitdir(p.workspace())).as_deref() != Some(git_dir.as_path())
+        || !common.starts_with(home_root.join("repos"))
+    {
+        return Ok(None);
+    }
+    let gitfile = p.toplevel().join(".git");
+    safe_dir::ensure_owned(
+        p.toplevel(),
+        &[p.toplevel(), &gitfile, p.git_dir(), p.common_dir()],
+        gate.safe,
+        gate.owned,
+    )
+    .map_err(|text| CliError::Raw(text, 128))?;
+    let db = StateDb::open(&home).await?;
+    let Some(row) = workspaces::get(&db, p.workspace()).await? else {
+        return Ok(None);
+    };
+    let Some(repo) = repos::get(&db, row.ws.repo).await? else {
+        return Ok(None);
+    };
+    if canonical(&home.common_dir(repo.repo.id)).as_deref() != Some(common.as_path()) {
+        return Ok(None);
+    }
+    Ok(Some(p))
+}
+
 /// Finds the workspace of `cwd` the way the shim does (SPEC §11.4): `GIT_DIR`, else the first
 /// `.git` entry walking up, stopping below `GIT_CEILING_DIRECTORIES`. A directory `.git` or a
-/// gitfile that is not an asc synthetic `.git` ends the walk: it is not an asc workspace.
-pub async fn discover(env: &GitEnv, cwd: &Path) -> Result<Option<Projection>> {
-    if let Some(git_dir) = &env.git_dir {
+/// gitfile that is not an asc synthetic `.git` ends the walk: it is not an asc workspace. A
+/// candidate must then pass [`admit`]; one that does not is not an asc workspace either.
+pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Option<Projection>> {
+    let candidate = if let Some(git_dir) = &env.git_dir {
         let git_dir = if git_dir.is_absolute() { git_dir.clone() } else { cwd.join(git_dir) };
         let Ok(marker) = std::fs::read_to_string(git_dir.join("asc-workspace")) else {
             return Ok(None);
         };
         if let Some(tree) = &env.work_tree {
             let tree = if tree.is_absolute() { tree.clone() } else { cwd.join(tree) };
-            return Ok(Projection::open(&tree).ok());
+            Projection::open(&tree).ok()
+        } else {
+            let id: WorkspaceId = marker
+                .trim()
+                .parse()
+                .map_err(|_| CliError::Fatal("asc: malformed asc-workspace marker".into()))?;
+            // The user's home answers; the gitdir that named the workspace does not.
+            let db = StateDb::open(&(gate.home)()?).await?;
+            match workspaces::get(&db, id).await? {
+                Some(w) => Projection::open(Path::new(&w.ws.path)).ok(),
+                None => None,
+            }
         }
-        let home = AscHome::for_workspace(&git_dir)?;
-        let db = StateDb::open(&home).await?;
-        let id: WorkspaceId = marker
-            .trim()
-            .parse()
-            .map_err(|_| CliError::Fatal("asc: malformed asc-workspace marker".into()))?;
-        let row = workspaces::get(&db, id).await?;
-        return Ok(match row {
-            Some(w) => Projection::open(Path::new(&w.ws.path)).ok(),
-            None => None,
-        });
-    }
-    for dir in cwd.ancestors() {
-        if dir != cwd && env.ceiling_dirs.iter().any(|c| same_path(c, dir)) {
+    } else {
+        let mut found = None;
+        for dir in cwd.ancestors() {
+            if dir != cwd && env.ceiling_dirs.iter().any(|c| same_path(c, dir)) {
+                break;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(dir.join(".git")) else {
+                continue;
+            };
+            if !meta.is_file() {
+                return Ok(None);
+            }
+            found = Projection::open(dir).ok();
             break;
         }
-        let Ok(meta) = std::fs::symlink_metadata(dir.join(".git")) else {
-            continue;
-        };
-        if !meta.is_file() {
-            return Ok(None);
-        }
-        return Ok(Projection::open(dir).ok());
+        found
+    };
+    match candidate {
+        Some(p) => admit(p, gate).await,
+        None => Ok(None),
     }
-    Ok(None)
 }
 
 impl Ctx {
     /// Builds the context for an invocation in `cwd`.
     pub async fn open(prog: Program, env: GitEnv, cwd: PathBuf) -> Result<Self> {
-        let projection = discover(&env, &cwd).await?;
+        let get = |k: &str| std::env::var_os(k);
+        let safe = config::safe_directories(&env, &get)?;
+        let home = || AscHome::locate().map_err(CliError::from);
+        let gate = Gate {
+            safe: &safe,
+            home: &home,
+            owned: &owned_by_current_user,
+        };
+        Self::open_with(prog, env, cwd, &gate).await
+    }
+
+    /// [`Ctx::open`] with the user's home, `safe.directory` list and ownership probe supplied
+    /// (tests; every other caller goes through [`Ctx::open`]).
+    pub async fn open_with(prog: Program, env: GitEnv, cwd: PathBuf, gate: &Gate<'_>) -> Result<Self> {
+        let projection = discover(&env, &cwd, gate).await?;
         let get = |k: &str| std::env::var_os(k);
         let local = projection.as_ref().map(|p| LocalConfig {
             common_dir: p.common_dir(),
             toplevel: p.toplevel(),
         });
-        let config = ConfigSnapshot::load(&env, &get, local.as_ref())?;
+        let config = ConfigSnapshot::load_with(&env, &get, local.as_ref(), gate.owned)?;
         let ws = match projection {
             Some(p) => Some(WsCtx::open(p, &config).await?),
             None => None,
@@ -661,7 +739,10 @@ mod tests {
 
     async fn ctx_of(f: &Fixture) -> Ctx {
         let env = GitEnv::from_vars(&|_| None);
-        Ctx::open(Program::Asc, env, f.root.clone()).await.unwrap()
+        let safe = SafeDirectory::default();
+        let home = || Ok(f.home.clone());
+        let gate = Gate { safe: &safe, home: &home, owned: &owned_by_current_user };
+        Ctx::open_with(Program::Asc, env, f.root.clone(), &gate).await.unwrap()
     }
 
     #[tokio::test]
@@ -769,5 +850,157 @@ mod tests {
         });
         let err = Refs::update(ws.refs.as_ref(), ws.repo.key, &t).await.unwrap_err();
         assert!(crate::refs_guard::ReadOnly::is(&err));
+    }
+}
+
+/// The workspace gate (SPEC §11.4, "Trusted workspaces"): ownership, `safe.directory`, and
+/// registration in the user's asc home.
+#[cfg(test)]
+mod gate_tests {
+    use std::ffi::OsString;
+
+    use asc_state::{RepoId, WorkspaceId};
+
+    use super::support::Fixture;
+    use super::*;
+    use crate::env::ConfigParam;
+
+    fn is_dubious(r: &Result<Option<Projection>>) -> bool {
+        matches!(r, Err(CliError::Raw(t, 128))
+            if t.starts_with("fatal: detected dubious ownership in repository at '")
+                && t.contains("git config --global --add safe.directory "))
+    }
+
+    /// Environment reading only `global` (no system config).
+    fn hermetic(global: &Path) -> impl Fn(&str) -> Option<OsString> {
+        let global = global.to_owned();
+        move |k| match k {
+            "GIT_CONFIG_NOSYSTEM" => Some("1".into()),
+            "GIT_CONFIG_GLOBAL" => Some(global.clone().into()),
+            _ => None,
+        }
+    }
+
+    async fn discover_in(
+        f: &Fixture,
+        cwd: &Path,
+        safe: &SafeDirectory,
+        owned: OwnerProbe<'_>,
+    ) -> Result<Option<Projection>> {
+        let home = || Ok(f.home.clone());
+        let gate = Gate { safe, home: &home, owned };
+        discover(&GitEnv::from_vars(&|_| None), cwd, &gate).await
+    }
+
+    const YES: &dyn Fn(&Path) -> std::io::Result<bool> = &|_| Ok(true);
+    const NO: &dyn Fn(&Path) -> std::io::Result<bool> = &|_| Ok(false);
+
+    #[tokio::test]
+    async fn a_normal_workspace_is_admitted_from_its_root_and_a_subdirectory() {
+        let f = Fixture::new().await;
+        let none = SafeDirectory::default();
+        let sub = f.root.join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        for dir in [&f.root, &sub] {
+            let p = discover_in(&f, dir, &none, &owned_by_current_user).await.unwrap();
+            assert_eq!(p.expect("workspace").workspace(), f.ws);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_planted_gitfile_pointing_outside_asc_home_is_refused() {
+        let f = Fixture::new().await;
+        let other = AscHome::open(f.sandbox.dir("attacker-home")).unwrap();
+        let planted = f.sandbox.dir("planted");
+        let (repo, ws) = (RepoId::new(), WorkspaceId::new());
+        let proj = Projection::create(&other, repo, ws, &planted).unwrap();
+        std::fs::write(
+            proj.common_dir().join("config"),
+            b"[asc]\n\trealGit = /tmp/evil\n[alias]\n\tx = !evil\n[safe]\n\tdirectory = *\n",
+        )
+        .unwrap();
+        let none = SafeDirectory::default();
+        // Even when every path is "ours" and the list says `*`.
+        for safe in [none.clone(), SafeDirectory::new(["*".to_owned()])] {
+            let got = discover_in(&f, &planted, &safe, YES).await.unwrap();
+            assert!(got.is_none(), "a workspace outside ASC_HOME is not an asc repository");
+        }
+        // The context never reads the planted config.
+        let home = || Ok(f.home.clone());
+        let gate = Gate { safe: &none, home: &home, owned: YES };
+        let env = GitEnv::from_vars(&|k| (k == "GIT_CONFIG_NOSYSTEM").then(|| "1".into()));
+        let ctx = Ctx::open_with(Program::Asc, env, planted, &gate).await.unwrap();
+        assert!(ctx.ws_opt().is_none());
+        assert_eq!(ctx.config.get("asc.realGit"), None);
+        assert_eq!(ctx.config.get("alias.x"), None);
+    }
+
+    #[tokio::test]
+    async fn a_gitdir_not_registered_in_state_db_is_refused() {
+        let f = Fixture::new().await;
+        let dir = f.sandbox.dir("unregistered");
+        // Inside the user's home, but no `workspaces` row.
+        Projection::create(&f.home, RepoId::new(), WorkspaceId::new(), &dir).unwrap();
+        let got = discover_in(&f, &dir, &SafeDirectory::default(), YES).await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_workspace_row_with_another_repositorys_common_dir_is_refused() {
+        let f = Fixture::new().await;
+        let proj = Projection::open(&f.root).unwrap();
+        // Repoint the workspace at a common dir of a repository the row does not name.
+        let stray = f.home.common_dir(RepoId::new());
+        std::fs::create_dir_all(&stray).unwrap();
+        let rel = format!("../../../repos/{}/.git\n", stray.parent().unwrap().file_name().unwrap().to_string_lossy());
+        std::fs::write(proj.git_dir().join("commondir"), rel).unwrap();
+        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES).await.unwrap();
+        assert!(got.is_none());
+    }
+
+    #[tokio::test]
+    async fn another_owner_is_refused_with_gits_message_unless_safe_directory_allows() {
+        let f = Fixture::new().await;
+        let none = SafeDirectory::default();
+        let got = discover_in(&f, &f.root, &none, NO).await;
+        assert!(is_dubious(&got), "{got:?}");
+        // The gitdir alone being foreign is enough.
+        let git_dir = Projection::open(&f.root).unwrap().git_dir().to_owned();
+        let only_gitdir = |p: &Path| Ok(!p.starts_with(std::fs::canonicalize(&git_dir).unwrap()));
+        assert!(is_dubious(&discover_in(&f, &f.root, &none, &only_gitdir).await));
+
+        let star = SafeDirectory::new(["*".to_owned()]);
+        assert!(discover_in(&f, &f.root, &star, NO).await.unwrap().is_some());
+        let exact = SafeDirectory::new([safe_dir::display_path(&std::fs::canonicalize(&f.root).unwrap())]);
+        assert!(discover_in(&f, &f.root, &exact, NO).await.unwrap().is_some());
+        let parent = f.root.parent().unwrap();
+        let prefix = SafeDirectory::new([format!("{}/*", safe_dir::display_path(&std::fs::canonicalize(parent).unwrap()))]);
+        assert!(discover_in(&f, &f.root, &prefix, NO).await.unwrap().is_some());
+        let elsewhere = SafeDirectory::new(["/somewhere/else".to_owned()]);
+        assert!(is_dubious(&discover_in(&f, &f.root, &elsewhere, NO).await));
+    }
+
+    #[tokio::test]
+    async fn safe_directory_comes_from_global_and_command_line_never_the_repo() {
+        let f = Fixture::new().await;
+        let proj = Projection::open(&f.root).unwrap();
+        // The repository vouches for itself, and so does a worktree-level file: ignored.
+        std::fs::write(proj.common_dir().join("config"), b"[safe]\n\tdirectory = *\n").unwrap();
+        std::fs::write(proj.git_dir().join("config.worktree"), b"[safe]\n\tdirectory = *\n").unwrap();
+        let global = f.sandbox.dir("g").join("gitconfig");
+        std::fs::write(&global, b"").unwrap();
+        let env = GitEnv::from_vars(&|_| None);
+        let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
+        assert!(is_dubious(&discover_in(&f, &f.root, &safe, NO).await), "repo-local safe.directory is ignored");
+
+        std::fs::write(&global, b"[safe]\n\tdirectory = *\n").unwrap();
+        let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
+        assert!(discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(), "global `*` works");
+
+        std::fs::write(&global, b"").unwrap();
+        let mut env = GitEnv::from_vars(&|_| None);
+        env.cli_config.push(ConfigParam::parse("safe.directory=*"));
+        let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
+        assert!(discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(), "-c works");
     }
 }
