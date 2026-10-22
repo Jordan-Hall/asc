@@ -13,7 +13,9 @@ pub mod derive;
 pub mod diff;
 pub mod graph;
 pub mod graph_skip;
+pub mod history;
 pub mod revspec;
+pub mod sync;
 pub mod tree;
 
 /// Number of decoded trees kept in memory per engine.
