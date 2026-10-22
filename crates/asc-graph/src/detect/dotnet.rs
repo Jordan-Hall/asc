@@ -9,6 +9,9 @@
 //! Extra-input globs fold ASCII case and escape glob syntax MSBuild lacks.
 //! Item and attribute names match in any case, `%` escapes are not evaluated,
 //! and an `Import` of a file the detector does not read is a gap.
+//! A property that chooses an imported file (`CustomAfterMicrosoftCommonTargets`,
+//! `DirectoryBuildTargetsPath`, `BaseIntermediateOutputPath`, ...) is a gap.
+//! Build files are found by directory in any case.
 //! Anything the detector cannot resolve to a known project or a repository
 //! path makes the project opaque.
 
@@ -55,6 +58,8 @@ const UNREADABLE_BUILD_FILE: &str =
     "Directory.Build file above the project is not a readable MSBuild file";
 const BUILD_SCAN_BUDGET: &str = "Directory.Build files above the project exceed the scan budget";
 const UNSCANNED_IMPORT: &str = "Import names a file the detector does not read";
+const REDIRECTED_IMPORT: &str =
+    "a property chooses a file MSBuild imports, which the detector does not read";
 const LONG_VALUE: &str = "reference, Import or item path is longer than the limit";
 
 /// The .NET detector.
@@ -460,13 +465,61 @@ enum PathItem {
     Import,
     /// `Compile`, `Content`, `None` or `EmbeddedResource`.
     Other,
+    /// A property that chooses a file MSBuild imports; see [`redirects_import`].
+    Redirect,
+}
+
+/// Properties that MSBuild or the .NET SDK read to choose an imported file, or
+/// the `obj` directory its auto-imports come from. The names are those used in
+/// the `Import` elements of SDK 9.0.319 plus the properties behind
+/// `MSBuildProjectExtensionsPath`. Setting one in a project or an applied build
+/// file moves an import out of sight (no `Import` element), so it is a gap.
+/// Names match in any case, because MSBuild property names do.
+fn redirects_import(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    const EXACT: [&str; 6] = [
+        "baseintermediateoutputpath",
+        "intermediateoutputpath",
+        "useartifactsoutput",
+        "usebundledfsharptargets",
+        "visualstudioversion",
+        "iscrosstargetingbuild",
+    ];
+    const PREFIX: [&str; 11] = [
+        "_",
+        "msbuild",
+        "custombefore",
+        "customafter",
+        "directorybuild",
+        "directorypackages",
+        "importdirectory",
+        "importbywildcard",
+        "artifacts",
+        "publishprofile",
+        "webpublishprofile",
+    ];
+    const SUFFIX: [&str; 8] = [
+        "targets",
+        "props",
+        "targetspath",
+        "propspath",
+        "targetsfile",
+        "propsfile",
+        "shim",
+        "targetsdir",
+    ];
+    EXACT.contains(&n.as_str())
+        || PREFIX.iter().any(|p| n.starts_with(p))
+        || SUFFIX.iter().any(|s| n.ends_with(s))
 }
 
 /// The kind of an element whose paths the detector follows. Names match in any
 /// case, because MSBuild item types do.
 fn path_item(name: &str) -> Option<PathItem> {
     let is = |n: &str| name.eq_ignore_ascii_case(n);
-    if is("ProjectReference") {
+    if redirects_import(name) {
+        Some(PathItem::Redirect)
+    } else if is("ProjectReference") {
         Some(PathItem::Reference)
     } else if is("Import") {
         Some(PathItem::Import)
@@ -535,8 +588,26 @@ enum Lookup {
     Missing,
 }
 
-/// File indices by directory (bytes, empty is the root): finds the files at or
-/// above a directory by walking its parents, not by scanning every file.
+/// A directory (bytes) as a key that is equal for every spelling the file
+/// system may treat as one directory: ASCII letters fold to lower case, and a
+/// run of non-ASCII bytes is one marker, since its case folding is not decided
+/// here. The key may join directories that differ, never split ones that do not.
+fn fold_dir(dir: &[u8]) -> Vec<u8> {
+    let mut o = Vec::with_capacity(dir.len());
+    for &b in dir {
+        if b.is_ascii() {
+            o.push(b.to_ascii_lowercase());
+        } else if o.last() != Some(&0xFF) {
+            o.push(0xFF);
+        }
+    }
+    o
+}
+
+/// File indices by directory (bytes, empty is the root, compared by
+/// [`fold_dir`]): finds the files at or above a directory by walking its
+/// parents, not by scanning every file. MSBuild finds `Directory.Build.props`
+/// by a file system lookup, which ignores case on Windows and macOS.
 #[derive(Default)]
 struct ByDir(BTreeMap<Vec<u8>, Vec<usize>>);
 
@@ -544,7 +615,7 @@ impl ByDir {
     fn new<'d>(dirs: impl Iterator<Item = &'d [u8]>) -> Self {
         let mut m: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
         for (i, d) in dirs.enumerate() {
-            m.entry(d.to_vec()).or_default().push(i);
+            m.entry(fold_dir(d)).or_default().push(i);
         }
         Self(m)
     }
@@ -553,6 +624,8 @@ impl ByDir {
     fn at_or_above(&self, dir: &[u8]) -> Vec<usize> {
         #[cfg(test)]
         tests::LOOKUPS.with(|c| c.set(c.get() + 1));
+        let dir = fold_dir(dir);
+        let dir = dir.as_slice();
         let mut v = Vec::new();
         let ends = std::iter::once(0)
             .chain(
@@ -638,10 +711,7 @@ impl<'c, 'a> Linker<'c, 'a> {
         let autos = eco_global(|p| !is_build_file(p.file_name().as_bytes()) && is_auto_import(p));
         let mut autos_by_dir: BTreeMap<Vec<u8>, Vec<usize>> = BTreeMap::new();
         for (j, m) in autos.iter().enumerate() {
-            autos_by_dir
-                .entry(m.dir.to_ascii_lowercase())
-                .or_default()
-                .push(j);
+            autos_by_dir.entry(fold_dir(&m.dir)).or_default().push(j);
         }
         let failed_props: Vec<&'a RepoPath> = cx
             .failed_manifests()
@@ -822,11 +892,16 @@ impl<'c, 'a> Linker<'c, 'a> {
             };
             let (raw, bases) = match kind {
                 PathItem::Import => (attr_ci(e, "Project"), &bases[..1]),
+                PathItem::Redirect => (None, bases),
                 _ => (attr_ci(e, "Include"), bases),
             };
             if counted && !self.charge(raw.map_or(0, str::len)) {
                 acc.gaps.insert(BUILD_SCAN_BUDGET);
                 return;
+            }
+            if kind == PathItem::Redirect {
+                acc.gaps.insert(REDIRECTED_IMPORT);
+                continue;
             }
             // An SDK import is found by the SDK resolver, not by path. An empty
             // name is no SDK to rely on (MSBuild fails to resolve it), so that
@@ -848,6 +923,7 @@ impl<'c, 'a> Linker<'c, 'a> {
                     PathItem::Reference => self.reference(i, &rs, acc),
                     PathItem::Import => self.import(i, &rs[0], applied, acc),
                     PathItem::Other => item(proj_dir, &rs, acc),
+                    PathItem::Redirect => {}
                 }
             }
         }
@@ -967,7 +1043,7 @@ impl<'c, 'a> Linker<'c, 'a> {
         let m = &self.projects[i];
         let proj_file = m.path.file_name();
         let proj_file = proj_file.as_bytes();
-        let dir = m.dir.to_ascii_lowercase();
+        let dir = fold_dir(&m.dir);
         let mut obj = dir.clone();
         if !obj.is_empty() {
             obj.push(b'/');
@@ -2115,5 +2191,130 @@ mod tests {
             let (g, _) = build(&t);
             assert!(project(&g, "A").opaque, "{sdk:?}");
         }
+    }
+
+    /// Properties MSBuild reads to choose a file to import (verified with
+    /// `dotnet msbuild -getItem` on SDK 9.0.319 for `CustomAfterMicrosoftCommonTargets`).
+    const REDIRECTING: [&str; 14] = [
+        "CustomAfterMicrosoftCommonTargets",
+        "CustomBeforeMicrosoftCommonProps",
+        "DirectoryBuildTargetsPath",
+        "DirectoryBuildPropsPath",
+        "DirectoryPackagesPropsPath",
+        "ImportDirectoryBuildProps",
+        "MSBuildProjectExtensionsPath",
+        "BaseIntermediateOutputPath",
+        "UseArtifactsOutput",
+        "ArtifactsPath",
+        "NuGetRestoreTargets",
+        "_SourceLinkSdkSubDir",
+        "customaftermicrosoftcommontargets",
+        "DIRECTORYBUILDTARGETSPATH",
+    ];
+
+    fn redirect(name: &str) -> String {
+        format!(
+            "<PropertyGroup><{name}>$(MSBuildThisFileDirectory)eng/refs.targets</{name}></PropertyGroup>"
+        )
+    }
+
+    #[test]
+    fn a_property_that_redirects_an_import_makes_the_project_opaque() {
+        for name in REDIRECTING {
+            // The exploit: no `Import`, and the target file holds a reference.
+            let mut t = with_build_file("Directory.Build.props", &props(""));
+            t.insert("src/A/A.csproj".into(), csproj(&redirect(name)));
+            t.insert(
+                "eng/refs.targets".into(),
+                props(
+                    "<ItemGroup><ProjectReference Include=\"$(MSBuildThisFileDirectory)../tools/Gen/Gen.csproj\" /></ItemGroup>",
+                ),
+            );
+            let (g, _) = build(&t);
+            assert!(
+                opaque_with_issue(&g, "src/A/A.csproj", REDIRECTED_IMPORT),
+                "{name}"
+            );
+            assert!(!project(&g, "B").opaque, "{name}");
+            // The same property in any file that applies to the project.
+            for file in [
+                "Directory.Build.props",
+                "src/Directory.Build.targets",
+                "Directory.Packages.props",
+                "src/A/A.csproj.user",
+                "src/A/obj/A.csproj.nuget.g.props",
+            ] {
+                let t = with_build_file(file, &props(&redirect(name)));
+                let (g, _) = build(&t);
+                assert!(project(&g, "A").opaque, "{name} in {file}");
+                assert!(
+                    g.issues
+                        .iter()
+                        .any(|i| i.message == REDIRECTED_IMPORT.as_bytes()),
+                    "{name} in {file}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_properties_do_not_make_a_project_opaque() {
+        let body = "<PropertyGroup><TargetFramework>net9.0</TargetFramework><OutputPath>out/</OutputPath><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup>";
+        let mut t = with_build_file("Directory.Build.props", &props(body));
+        t.insert("src/A/A.csproj".into(), csproj(body));
+        let (g, _) = build(&t);
+        assert!(g.projects.iter().all(|p| !p.opaque), "{:?}", g.issues);
+    }
+
+    #[test]
+    fn build_files_in_a_differently_cased_directory_apply() {
+        let gen_up =
+            "<ItemGroup><ProjectReference Include=\"../tools/Gen/Gen.csproj\" /></ItemGroup>";
+        // Both land in one directory on Windows and macOS.
+        for dir in ["SRC", "sRc"] {
+            let t = with_build_file(&format!("{dir}/Directory.Build.props"), &props(gen_up));
+            let (g, _) = build(&t);
+            assert_eq!(deps(&g, "A"), ["Normal:Gen"], "{dir}");
+            assert_eq!(
+                affected_ids(&t, GEN),
+                ["dotnet:A", "dotnet:B", "dotnet:Gen"],
+                "{dir}"
+            );
+            // A build file that cannot be read still makes the projects opaque.
+            let t = with_build_file(&format!("{dir}/Directory.Build.props"), "not xml");
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{dir}");
+            // So do Directory.Packages.props, readable or not.
+            let t = with_build_file(
+                &format!("{dir}/Directory.Packages.props"),
+                &props("<Import Project=\"eng/refs.props\" />"),
+            );
+            let (g, _) = build(&t);
+            assert!(project(&g, "A").opaque, "{dir}");
+            let big = props(&" ".repeat(MAX_MANIFEST_BYTES));
+            let (g, _) = build(&with_build_file(
+                &format!("{dir}/Directory.Packages.props"),
+                &big,
+            ));
+            assert!(project(&g, "A").opaque, "{dir}");
+            assert!(!project(&g, "Gen").opaque, "{dir}");
+        }
+    }
+
+    #[test]
+    fn non_ascii_directory_case_variants_apply_too() {
+        // The file system may fold the case of non-ASCII letters, which byte
+        // comparison does not decide; the directories are then treated as one.
+        let mut t = Tree::new();
+        t.insert(GEN.into(), csproj(""));
+        t.insert(
+            "\u{c9}/Directory.Build.props".into(),
+            props(
+                "<ItemGroup><ProjectReference Include=\"../tools/Gen/Gen.csproj\" /></ItemGroup>",
+            ),
+        );
+        t.insert("\u{e9}/A/A.csproj".into(), csproj(""));
+        let (g, _) = build(&t);
+        assert_eq!(deps(&g, "A"), ["Normal:Gen"]);
     }
 }
