@@ -25,6 +25,10 @@ pub use pathspec::{Pathspec, PathspecError};
 /// Child trees read concurrently ahead of use when a directory is rebuilt.
 pub const LOAD_WINDOW: usize = 16;
 
+/// Entries one `leafdiff` may visit. Trees are DAGs, so a few shared subtrees can expand to
+/// an unbounded number of leaves; past this the diff fails instead of exhausting memory.
+pub const MAX_DIFF_VISITS: usize = 4 << 20;
+
 /// Tree operation failures.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -38,6 +42,8 @@ pub enum Error {
     Path(#[from] PathError),
     #[error("tree nesting exceeds {MAX_TREE_DEPTH} levels")]
     TooDeep,
+    #[error("tree diff visits more than {0} entries")]
+    TooLarge(usize),
     #[error("tree {0} is missing")]
     MissingTree(TreeId),
     #[error("{0} is changed twice in one apply")]
@@ -422,9 +428,20 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         b: TreeId,
         spec: Option<&Pathspec>,
     ) -> Result<Vec<(RepoPath, Change)>> {
+        self.leafdiff_bounded(a, b, spec, MAX_DIFF_VISITS).await
+    }
+
+    /// [`Self::leafdiff`] that fails with [`Error::TooLarge`] after `budget` visited entries.
+    pub async fn leafdiff_bounded(
+        &self,
+        a: TreeId,
+        b: TreeId,
+        spec: Option<&Pathspec>,
+        budget: usize,
+    ) -> Result<Vec<(RepoPath, Change)>> {
         let mut out = Vec::new();
         if a != b {
-            self.diff_dir(a, b, spec, &mut out).await?;
+            self.diff_dir(a, b, spec, &mut out, budget).await?;
         }
         out.sort_by(|x, y| x.0.cmp(&y.0));
         Ok(out)
@@ -437,7 +454,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         b: TreeId,
         spec: Option<&Pathspec>,
         out: &mut Vec<(RepoPath, Change)>,
+        budget: usize,
     ) -> Result<()> {
+        let mut visits = 0usize;
         enum Frame {
             Diff {
                 ta: Arc<Tree>,
@@ -466,6 +485,10 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             loaded: HashMap::new(),
         }];
         while let Some(top) = stack.last_mut() {
+            visits += 1;
+            if visits > budget {
+                return Err(Error::TooLarge(budget));
+            }
             // Entries to report as one-sided: (entry, directory prefix, added).
             let one_sided: Vec<(Entry, Option<RepoPath>, bool)>;
             match top {
@@ -1164,6 +1187,47 @@ mod tests {
             ]
         );
         assert_eq!(e.apply(as_dir, &back).await.unwrap(), as_file);
+    }
+
+    #[tokio::test]
+    async fn shared_subtree_dag_diff_is_bounded() {
+        let e = engine();
+        let leaf = Tree::new(
+            vec![Entry {
+                name: Name::new("f").unwrap(),
+                kind: Kind::File,
+                id: *FileId::of(&[1]).as_bytes(),
+                size: 1,
+                git: blob_oid(&[1]),
+            }],
+            false,
+        )
+        .unwrap();
+        let mut child = e.put_tree(leaf).await.unwrap();
+        // 16 entries per level, all the same child: 16^8 leaves from nine small objects.
+        for level in 0..8 {
+            let entries = (0..16)
+                .map(|i| Entry {
+                    name: Name::new(format!("d{i:02}")).unwrap(),
+                    kind: Kind::Dir,
+                    id: *child.as_bytes(),
+                    size: 0,
+                    git: blob_oid(b""),
+                })
+                .collect();
+            child = e
+                .put_tree(Tree::new(entries, level == 7).unwrap())
+                .await
+                .unwrap();
+        }
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        let err = e.leafdiff(empty, child, None).await.unwrap_err();
+        assert!(matches!(err, Error::TooLarge(_)));
+        let err = e
+            .leafdiff_bounded(empty, child, None, 1000)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TooLarge(1000)));
     }
 
     #[tokio::test]
