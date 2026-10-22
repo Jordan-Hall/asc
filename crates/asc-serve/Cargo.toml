@@ -48,6 +48,7 @@ prometheus-client = { workspace = true }
 uuid = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

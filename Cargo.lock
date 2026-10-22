@@ -614,6 +614,7 @@ dependencies = [
  "asc-store",
  "futures",
  "gix-attributes",
+ "hmac",
  "http-body",
  "object_store",
  "prometheus-client",
