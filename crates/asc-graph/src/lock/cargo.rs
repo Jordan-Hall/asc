@@ -5,11 +5,12 @@
 //! fall back to the lockfile's content id. [`Lock::closure`] fingerprints the
 //! third-party packages one crate reaches.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::Deserialize;
 
 use crate::canon::Value;
+use crate::lock::MAX_LOCKFILE_EDGES;
 use crate::model::{Fingerprint, MAX_LOCKFILE_BYTES, MAX_LOCKFILE_PACKAGES, Parsed};
 
 /// Map key that marks a lockfile that could not be used, with the reason.
@@ -154,22 +155,52 @@ impl Lock {
         for (i, p) in pkgs.iter().enumerate() {
             by_name.entry(p.name.clone()).or_default().push(i as u32);
         }
+        let mut triples = HashSet::with_capacity(pkgs.len());
+        if !pkgs
+            .iter()
+            .all(|p| triples.insert((&p.name, &p.version, &p.source)))
+        {
+            return Err(LockError::Malformed);
+        }
+        drop(triples);
         let mut lock = Self {
             pkgs,
             deps: Vec::new(),
             by_name,
         };
-        lock.deps = refs
-            .into_iter()
-            .map(|deps| {
-                let mut out = Vec::new();
-                for d in deps {
-                    out.extend(lock.resolve(text(d).ok_or(LockError::Malformed)?));
+        // Running work counter: dependency strings and the candidates scanned
+        // for each, checked while resolving.
+        let mut work = 0usize;
+        let mut all = Vec::with_capacity(refs.len());
+        for deps in refs {
+            let mut entries = BTreeSet::new();
+            for d in deps {
+                entries.insert(text(d).ok_or(LockError::Malformed)?);
+            }
+            let mut out = BTreeSet::new();
+            for entry in entries {
+                work = work.saturating_add(1 + lock.candidates(entry));
+                if work > MAX_LOCKFILE_EDGES {
+                    return Err(LockError::Unusable(format!(
+                        "lockfile resolves more than {MAX_LOCKFILE_EDGES} dependency edges"
+                    )));
                 }
-                Ok(out)
-            })
-            .collect::<Result<_, LockError>>()?;
+                let hits = lock.resolve(entry);
+                if hits.len() > 1 {
+                    return Err(LockError::Malformed);
+                }
+                out.extend(hits);
+            }
+            all.push(out.into_iter().collect());
+        }
+        lock.deps = all;
         Ok(lock)
+    }
+
+    /// How many packages share the name of a `dependencies` entry.
+    fn candidates(&self, entry: &str) -> usize {
+        let name = entry.split(' ').next().unwrap_or_default();
+        self.by_name.get(name).map_or(0, Vec::len)
     }
 
     /// Resolves a `dependencies` entry: `name`, `name version` or
@@ -364,5 +395,74 @@ checksum = "cc"
             matches!(&e, LockError::Unusable(m) if m.contains("200000")),
             "{e:?}"
         );
+    }
+
+    #[test]
+    fn dependency_resolution_is_bounded_and_strict() {
+        // Name-only entry matching two packages is ambiguous.
+        let amb = r#"
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = ["dup"]
+[[package]]
+name = "dup"
+version = "1"
+[[package]]
+name = "dup"
+version = "2"
+"#;
+        assert_eq!(
+            Lock::from_parsed(&parse(amb.as_bytes())).unwrap_err(),
+            LockError::Malformed
+        );
+        // Duplicate triples are malformed.
+        let dup = "[[package]]
+name = \"a\"
+version = \"1\"
+[[package]]
+name = \"a\"
+version = \"1\"
+";
+        assert_eq!(
+            Lock::from_parsed(&parse(dup.as_bytes())).unwrap_err(),
+            LockError::Malformed
+        );
+        // Repeated strings are deduplicated.
+        let rep = "[[package]]
+name = \"a\"
+version = \"1\"
+dependencies = [\"b\", \"b\", \"b 1\"]
+[[package]]
+name = \"b\"
+version = \"1\"
+source = \"s\"
+";
+        let l = lock(rep);
+        assert_eq!(l.deps[0], [1]);
+        // Many references to a many-version name exceed the edge cap.
+        let n = 2_000;
+        let mut big = String::new();
+        for i in 0..n {
+            big.push_str(&format!(
+                "[[package]]
+name = \"d\"
+version = \"{i}\"
+"
+            ));
+        }
+        let refs: Vec<String> = (0..n).map(|i| format!("\"d {i}\"")).collect();
+        for k in 0..(MAX_LOCKFILE_EDGES / (n * n) + 1) * 2 {
+            big.push_str(&format!(
+                "[[package]]
+name = \"r{k}\"
+version = \"1\"
+dependencies = [{}]
+",
+                refs.join(",")
+            ));
+        }
+        let e = Lock::from_parsed(&parse(big.as_bytes())).unwrap_err();
+        assert!(matches!(e, LockError::Unusable(_)), "{e:?}");
     }
 }
