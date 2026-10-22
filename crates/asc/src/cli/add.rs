@@ -23,7 +23,7 @@ use asc_state::state::stage::Leaf;
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
-use asc_wc::plain::fs_path;
+use asc_wc::SafeRoot;
 
 use self::attrs::Attrs;
 use self::scan::{Op, Opts};
@@ -145,7 +145,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
 /// Ingests the planned paths and applies the staging in one step.
 async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Result<()> {
-    let root = ws.projection.toplevel();
+    let gate = SafeRoot::new(ws.projection.toplevel());
     let tmp = ws.home.tmp();
     let filemode = ctx.config.bool("core.filemode").unwrap_or(cfg!(unix));
     let core_symlinks = ctx.config.bool("core.symlinks").unwrap_or(cfg!(unix));
@@ -154,12 +154,15 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
         match op {
             Op::Remove(path) => edits.push(Edit::Drop(path)),
             Op::Add { path, attrs, ita, prev } => {
-                let abs = fs_path(root, &path);
                 let fail = |e: &dyn std::fmt::Display| {
                     eprintln!("error: open(\"{path}\"): {e}");
                     eprintln!("error: unable to index file '{path}'");
                     CliError::Fatal("adding files failed".into())
                 };
+                // The plan read this path already, but a link may have replaced a parent since.
+                let abs = gate.resolve(&path).ok_or_else(|| {
+                    fail(&"beyond a symbolic link or not a valid name here")
+                })?;
                 let meta = std::fs::symlink_metadata(&abs).map_err(|e| fail(&e))?;
                 let symlink = meta.file_type().is_symlink();
                 let got: Ingested = if ita {

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use asc_core::path::RepoPath;
 use asc_state::state::ws_ops::{self, Renames};
-use asc_wc::plain::fs_path;
+use asc_wc::SafeRoot;
 
 use super::add::spec::{Spec, repo_path};
 use super::add::target::{Edit, Staged, Target};
@@ -67,9 +67,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let root = ws.projection.toplevel();
     let prefix = cwd_prefix(ctx, ws);
+    let gate = SafeRoot::new(root);
     let (dest_arg, source_args) = a.paths.split_last().ok_or_else(|| CliError::Usage("usage: git mv [-v] [-f] [-n] [-k] <source> <destination>".into()))?;
     let dest = repo_path(dest_arg, &prefix, root)?;
-    let dest_is_dir = fs::metadata(fs_path_of(root, &dest)).is_ok_and(|m| m.is_dir());
+    let dest_is_dir = path_of(&gate, &dest).is_some_and(|p| fs::metadata(p).is_ok_and(|m| m.is_dir()));
     if source_args.len() > 1 && !dest_is_dir {
         return Err(CliError::Fatal(format!("destination '{}' is not a directory", text(&dest))));
     }
@@ -86,7 +87,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         if a.dry_run {
             println!("Checking rename of '{}' to '{}'", text(&src), text(&dst));
         }
-        let checked = check(ctx, &target, &src, &dst, a.force, &fail).await;
+        let checked = check(ctx, &gate, &target, &src, &dst, a.force, &fail).await;
         let tracked = match checked {
             Ok(t) => t,
             Err(_) if a.skip_errors => continue,
@@ -106,7 +107,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for (src, dst) in &moves {
-        fs::rename(fs_path_of(root, src), fs_path_of(root, dst)).map_err(|e| {
+        let renamed = match (path_of(&gate, src), path_of(&gate, dst)) {
+            (Some(from), Some(to)) => fs::rename(from, to),
+            // Behind a link, or a name this system cannot hold: outside the work tree.
+            _ => Err(std::io::ErrorKind::PermissionDenied.into()),
+        };
+        renamed.map_err(|e| {
             // git prints the C library's text, not Windows' own.
             let why = match e.kind() {
                 std::io::ErrorKind::NotFound => "No such file or directory".to_owned(),
@@ -132,16 +138,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn fs_path_of(root: &std::path::Path, repo: &[u8]) -> std::path::PathBuf {
-    match RepoPath::new(repo.to_vec()) {
-        Ok(p) => fs_path(root, &p),
-        Err(_) => root.join(text(repo)),
-    }
+/// The file system path of `repo`, or `None` when it is invalid, beyond a link or unrepresentable.
+fn path_of(gate: &SafeRoot, repo: &[u8]) -> Option<std::path::PathBuf> {
+    gate.resolve(&RepoPath::new(repo.to_vec()).ok()?)
 }
 
 /// Checks one rename; the tracked `(old, new)` file paths it moves.
 async fn check(
     ctx: &Ctx,
+    gate: &SafeRoot,
     target: &Target,
     src: &[u8],
     dst: &[u8],
@@ -150,7 +155,9 @@ async fn check(
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let ws = ctx.ws()?;
     let root = ws.projection.toplevel();
-    let meta = fs::symlink_metadata(fs_path_of(root, src)).map_err(|_| fail("bad source"))?;
+    let meta = path_of(gate, src)
+        .and_then(|p| fs::symlink_metadata(p).ok())
+        .ok_or_else(|| fail("bad source"))?;
     if src.is_empty() {
         return Err(fail("bad source"));
     }
@@ -184,7 +191,8 @@ async fn check(
             Staged::Absent => return Err(fail("not under version control")),
         }
     }
-    if fs::symlink_metadata(fs_path_of(root, dst)).is_ok() && !force {
+    let dst_abs = path_of(gate, dst).ok_or_else(|| fail("destination is beyond a symbolic link"))?;
+    if fs::symlink_metadata(dst_abs).is_ok() && !force {
         return Err(fail("destination exists"));
     }
     Ok(tracked)

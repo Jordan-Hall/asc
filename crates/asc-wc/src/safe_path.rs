@@ -9,6 +9,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 
 use asc_core::path::{RepoPath, casefold};
 
@@ -207,6 +208,128 @@ impl Verified {
     }
 }
 
+#[derive(Default)]
+struct Seen {
+    /// Ancestors verified to be real directories.
+    dirs: HashSet<RepoPath>,
+    /// Ancestors found to be a symlink, a reparse point or not a directory.
+    refused: HashSet<RepoPath>,
+}
+
+/// The one gate for touching a tracked path in a work tree (git's `has_symlink_leading_path`):
+/// a path under a symlinked or reparse-point ancestor, or with a name this OS cannot hold, is
+/// treated as missing and is never read, written or deleted. Every CLI and daemon access to a
+/// work tree file goes through [`SafeRoot::resolve`]; `build/lint/no-raw-worktree-fs.sh`
+/// enforces it. The verdict for each ancestor is cached for the life of the value, so make one
+/// per command, not per process.
+pub struct SafeRoot {
+    root: PathBuf,
+    seen: Mutex<Seen>,
+}
+
+impl SafeRoot {
+    /// A gate for the work tree at `root`, which is trusted itself.
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            seen: Mutex::new(Seen::default()),
+        }
+    }
+
+    /// The work tree root.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn seen(&self) -> std::sync::MutexGuard<'_, Seen> {
+        self.seen.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The file system path of `path`, or `None` when it must be treated as missing: a name
+    /// that is not valid on this OS (see [`try_fs_path`]), or an ancestor that is a symlink, a
+    /// junction or other reparse point, or not a directory, or cannot be examined. An ancestor
+    /// that does not exist is fine (the caller's own call then reports not-found). The last
+    /// component is not examined: callers inspect it with `symlink_metadata` and treat a link
+    /// there as the tracked entry itself.
+    pub fn resolve(&self, path: &RepoPath) -> Option<PathBuf> {
+        let abs = try_fs_path(&self.root, path)?;
+        let mut pending = Vec::new();
+        {
+            let seen = self.seen();
+            let mut cur = path.parent();
+            while let Some(dir) = cur {
+                if seen.refused.contains(&dir) {
+                    return None;
+                }
+                if seen.dirs.contains(&dir) {
+                    break;
+                }
+                cur = dir.parent();
+                pending.push(dir);
+            }
+        }
+        for dir in pending.into_iter().rev() {
+            let at = try_fs_path(&self.root, &dir)?;
+            match fs::symlink_metadata(&at) {
+                Ok(m) if !is_link(&m) && m.is_dir() => {
+                    self.seen().dirs.insert(dir);
+                }
+                Ok(_) => {
+                    self.seen().refused.insert(dir);
+                    return None;
+                }
+                // Nothing below a missing directory exists either.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => return Some(abs),
+                Err(_) => return None,
+            }
+        }
+        Some(abs)
+    }
+
+    /// Forgets `dir` and everything below it (it was removed or replaced).
+    pub fn forget(&self, dir: &RepoPath) {
+        let mut seen = self.seen();
+        seen.dirs.retain(|d| d != dir && !d.starts_with_dir(dir));
+        seen.refused.retain(|d| d != dir && !d.starts_with_dir(dir));
+    }
+
+    /// Removes the file or symlink at `path` itself, never through a linked ancestor. A path
+    /// that resolves to nothing, or does not exist, counts as already gone (`Ok(false)`).
+    pub fn remove_file(&self, path: &RepoPath) -> io::Result<bool> {
+        let Some(abs) = self.resolve(path) else {
+            return Ok(false);
+        };
+        match fs::symlink_metadata(&abs) {
+            Ok(m) if m.is_dir() && !is_link(&m) => Err(io::Error::other(format!(
+                "{} is a directory",
+                abs.display()
+            ))),
+            Ok(_) => remove_link(&abs).map(|()| true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Removes the directories `path` leaves empty, innermost first, as git does. Stops at the
+    /// first directory that is not a real directory, cannot be reached without crossing a link,
+    /// or is not empty.
+    pub fn remove_empty_parents(&self, path: &RepoPath) {
+        let mut cur = path.parent();
+        while let Some(dir) = cur {
+            let Some(abs) = self.resolve(&dir) else {
+                return;
+            };
+            if !fs::symlink_metadata(&abs).is_ok_and(|m| !is_link(&m) && m.is_dir())
+                || fs::remove_dir(&abs).is_err()
+            {
+                return;
+            }
+            self.forget(&dir);
+            cur = dir.parent();
+        }
+    }
+}
+
 /// Creates a directory symlink; false when the OS refuses (Windows without developer mode).
 #[cfg(test)]
 pub fn symlink_dir(target: &Path, link: &Path) -> bool {
@@ -288,5 +411,82 @@ mod tests {
         assert!(root.join("a/b").is_dir());
         assert!(!is_link(&fs::symlink_metadata(root.join("a")).unwrap()));
         assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod safe_root_tests {
+    use super::*;
+
+    fn p(s: &str) -> RepoPath {
+        RepoPath::new(s).unwrap()
+    }
+
+    /// `w/` (the root) holding a link `a` to the sibling `o/`, which holds `b` and an empty `e`.
+    fn linked() -> Option<(tempfile::TempDir, PathBuf, PathBuf)> {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("w");
+        let outside = dir.path().join("o");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(outside.join("e")).unwrap();
+        fs::write(outside.join("b"), b"secret").unwrap();
+        symlink_dir(&outside, &root.join("a")).then_some((dir, root, outside))
+    }
+
+    #[test]
+    fn resolve_refuses_a_linked_ancestor_and_allows_real_ones() {
+        let Some((_keep, root, _)) = linked() else { return };
+        fs::create_dir_all(root.join("real/sub")).unwrap();
+        let gate = SafeRoot::new(&root);
+        assert_eq!(gate.resolve(&p("a/b")), None);
+        assert_eq!(gate.resolve(&p("a/e/x")), None);
+        // The link itself is a tracked entry, so it resolves.
+        assert_eq!(gate.resolve(&p("a")), Some(root.join("a")));
+        assert_eq!(gate.resolve(&p("real/sub/f")), Some(root.join("real").join("sub").join("f")));
+        // A missing ancestor is not a refusal.
+        assert!(gate.resolve(&p("none/f")).is_some());
+        // A file in the way is not a directory.
+        fs::write(root.join("file"), b"").unwrap();
+        assert_eq!(gate.resolve(&p("file/f")), None);
+    }
+
+    #[test]
+    fn resolve_notices_a_directory_swapped_for_a_link_only_after_forget() {
+        let Some((_keep, root, outside)) = linked() else { return };
+        let gate = SafeRoot::new(&root);
+        fs::create_dir(root.join("d")).unwrap();
+        assert!(gate.resolve(&p("d/x")).is_some());
+        fs::remove_dir(root.join("d")).unwrap();
+        assert!(symlink_dir(&outside, &root.join("d")));
+        // Cached for the life of the command, until the caller says the directory changed.
+        assert!(gate.resolve(&p("d/x")).is_some());
+        gate.forget(&p("d"));
+        assert_eq!(gate.resolve(&p("d/x")), None);
+    }
+
+    #[test]
+    fn remove_file_never_goes_through_a_link() {
+        let Some((_keep, root, outside)) = linked() else { return };
+        let gate = SafeRoot::new(&root);
+        assert!(!gate.remove_file(&p("a/b")).unwrap());
+        assert!(outside.join("b").exists());
+        fs::write(root.join("f"), b"x").unwrap();
+        assert!(gate.remove_file(&p("f")).unwrap());
+        assert!(!gate.remove_file(&p("f")).unwrap());
+    }
+
+    #[test]
+    fn remove_empty_parents_stops_at_a_link_and_at_a_non_empty_dir() {
+        let Some((_keep, root, outside)) = linked() else { return };
+        let gate = SafeRoot::new(&root);
+        assert_eq!(gate.resolve(&p("a/e/x")), None);
+        gate.remove_empty_parents(&p("a/e/x"));
+        assert!(outside.join("e").is_dir());
+
+        fs::create_dir_all(root.join("p/q/r")).unwrap();
+        fs::write(root.join("p/keep"), b"").unwrap();
+        gate.remove_empty_parents(&p("p/q/r/f"));
+        assert!(!root.join("p/q").exists());
+        assert!(root.join("p").is_dir());
     }
 }

@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use bstr::ByteSlice;
 use asc_core::path::RepoPath;
+use asc_wc::SafeRoot;
 use asc_wc::status::{Eol, EolRules};
 use gix_attributes::glob::pattern::Case;
 use gix_attributes::search::{MetadataCollection, Outcome};
@@ -35,6 +36,7 @@ pub struct PathAttrs {
 /// Per-directory attribute searches, built on demand and cached.
 pub struct Attrs {
     root: PathBuf,
+    gate: SafeRoot,
     info: Option<PathBuf>,
     collection: MetadataCollection,
     outcome: Outcome,
@@ -53,6 +55,7 @@ impl Attrs {
         let info = common_dir.join("info").join("attributes");
         Ok(Self {
             root: root.to_owned(),
+            gate: SafeRoot::new(root),
             info: info.is_file().then_some(info),
             collection,
             outcome: Outcome::default(),
@@ -76,14 +79,15 @@ impl Attrs {
             }
             inherited
         };
-        let abs = if dir.is_empty() {
-            self.root.clone()
-        } else {
-            self.root.join(String::from_utf8_lossy(dir).as_ref())
+        // A directory behind a link is outside the work tree, and so is a linked attributes file.
+        let regular = |name: &str| -> Option<PathBuf> {
+            let rel = if dir.is_empty() { name.as_bytes().to_vec() } else { [dir, b"/", name.as_bytes()].concat() };
+            let abs = self.gate.resolve(&RepoPath::new(rel).ok()?)?;
+            std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()).then_some(abs)
         };
-        let asc = abs.join(".ascattributes");
-        let file = if asc.is_file() { asc } else { abs.join(".gitattributes") };
-        search.add_patterns_file(file, false, Some(&self.root), &mut self.buf, &mut self.collection, true)?;
+        if let Some(file) = regular(".ascattributes").or_else(|| regular(".gitattributes")) {
+            search.add_patterns_file(file, false, Some(&self.root), &mut self.buf, &mut self.collection, true)?;
+        }
         if let Some(info) = &self.info {
             search.add_patterns_file(info.clone(), false, None, &mut self.buf, &mut self.collection, true)?;
         }
