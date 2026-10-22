@@ -80,6 +80,32 @@ fn stored_limit(max: u64) -> u64 {
     max.saturating_add(max >> 8).saturating_add(4096)
 }
 
+/// Buffers a GET body, or `None` once it exceeds `cap` bytes. The declared size is only a fast
+/// first rejection: an untrusted store may send more than it declares.
+pub(crate) async fn read_capped(
+    r: object_store::GetResult,
+    cap: u64,
+) -> object_store::Result<Option<Bytes>> {
+    if r.meta.size > cap {
+        return Ok(None);
+    }
+    collect_capped(r.into_stream(), cap).await
+}
+
+async fn collect_capped(
+    mut body: BoxStream<'static, object_store::Result<Bytes>>,
+    cap: u64,
+) -> object_store::Result<Option<Bytes>> {
+    let mut buf = bytes::BytesMut::new();
+    while let Some(chunk) = body.try_next().await? {
+        if (buf.len() as u64).saturating_add(chunk.len() as u64) > cap {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(Some(buf.freeze()))
+}
+
 #[async_trait]
 impl Objects for BucketObjects {
     async fn get(&self, key: &ObjKey) -> Result<Option<Bytes>> {
@@ -92,12 +118,12 @@ impl Objects for BucketObjects {
     async fn get_stored(&self, key: &ObjKey) -> Result<Option<Bytes>> {
         match self.store.get(&self.key_path(key)).await {
             Ok(r) => {
-                // The bucket is untrusted: refuse an oversized body before buffering it.
+                // The bucket is untrusted: refuse an oversized body without buffering it.
                 let max = max_decoded(key.class());
-                if r.meta.size > stored_limit(max) {
-                    return Err(Error::Codec(*key, CodecError::TooLarge(max)));
+                match read_capped(r, stored_limit(max)).await? {
+                    Some(b) => Ok(Some(b)),
+                    None => Err(Error::Codec(*key, CodecError::TooLarge(max))),
                 }
-                Ok(Some(r.bytes().await?))
             }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(e) => Err(e.into()),
@@ -130,13 +156,16 @@ impl Objects for BucketObjects {
             Err(object_store::Error::AlreadyExists { .. }) => {
                 // Readers verify, so a valid existing value stays. A corrupt or undecodable one is
                 // repaired: keys are content addresses, so a verified value is always correct.
-                let existing = self.get_stored(key).await?;
-                let damaged = existing.is_some_and(|e| {
-                    matches!(
+                // An oversized existing value is damaged too.
+                let damaged = match self.get_stored(key).await {
+                    Ok(Some(e)) => matches!(
                         decode_verified(key, &e),
                         Err(Error::Corrupt(_) | Error::Codec(..))
-                    )
-                });
+                    ),
+                    Ok(None) => false,
+                    Err(Error::Codec(..)) => true,
+                    Err(e) => return Err(e),
+                };
                 if damaged {
                     self.store
                         .put(&path, PutPayload::from_bytes(stored))
@@ -226,6 +255,31 @@ mod tests {
         for r in [b.get_stored(&key).await, b.get(&key).await.map(|_| None)] {
             assert!(matches!(r, Err(Error::Codec(_, CodecError::TooLarge(_)))));
         }
+    }
+
+    #[tokio::test]
+    async fn put_repairs_an_oversized_existing_value() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let b = BucketObjects::new(store.clone(), Path::default());
+        let text = b"repair me".to_vec();
+        let key = ObjKey::File(FileId::of(&text));
+        let mut raw = vec![0u8];
+        raw.resize(1 + 4 * 1024 * 1024 + 1024 * 1024, 7);
+        tamper(store, Path::default(), key, Bytes::from(raw)).await;
+        b.put(&key, encode_stored(&text)).await.unwrap();
+        assert_eq!(b.get(&key).await.unwrap().unwrap(), text.as_slice());
+    }
+
+    #[tokio::test]
+    async fn body_longer_than_declared_is_cut_off() {
+        let chunks = (0..8).map(|_| Ok(Bytes::from(vec![1u8; 1024])));
+        let body = futures::stream::iter(chunks).boxed();
+        assert!(collect_capped(body, 4096).await.unwrap().is_none());
+        let body = futures::stream::iter([Ok(Bytes::from(vec![1u8; 4096]))]).boxed();
+        assert_eq!(
+            collect_capped(body, 4096).await.unwrap().unwrap().len(),
+            4096
+        );
     }
 
     #[tokio::test]
