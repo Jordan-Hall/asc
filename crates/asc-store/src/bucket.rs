@@ -47,9 +47,14 @@ impl BucketObjects {
 
     /// Opens `file:///…`, `memory:///` or any scheme `object_store` can build; the URL path is the root.
     pub fn from_url(url: &str) -> Result<Self> {
+        Self::from_url_with(url, None)
+    }
+
+    /// Like [`Bucket::from_url`], with optional static S3 credentials injected by the caller.
+    pub fn from_url_with(url: &str, credentials: Option<crate::s3::S3Credentials>) -> Result<Self> {
         let url = url::Url::parse(url).map_err(|e| Error::Url(e.to_string()))?;
         if url.scheme() == "s3" {
-            let (store, root) = crate::s3::open(&url)?;
+            let (store, root) = crate::s3::open_with(&url, credentials)?;
             return Ok(Self::new(store, root));
         }
         let (store, root) = object_store::parse_url(&url)?;
