@@ -30,7 +30,9 @@ use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
 use data_encoding::BASE64;
 
+use crate::import_change;
 use crate::odb::{Odb, OdbError};
+use asc_engine::change::ChangeRows;
 
 /// Entries kept in each of the in-memory blob and commit caches.
 const CACHE_ITEMS: usize = 65_536;
@@ -93,6 +95,8 @@ pub enum ImportError {
     Inconsistent(GitOid),
     #[error("stored object does not decode: {0}")]
     Codec(#[from] CodecError),
+    #[error(transparent)]
+    Meta(#[from] import_change::Error),
 }
 
 pub type Result<T, E = ImportError> = std::result::Result<T, E>;
@@ -490,6 +494,8 @@ fn hash_blob(odb: &Odb, oid: GitOid) -> Result<(GitOid, Ingested)> {
     Ok((oid, got))
 }
 
+}
+
 /// Runs `f` over `items` on one thread per fork; results keep the input order.
 fn par_map<T: Sync, R: Send>(
     forks: &mut [Odb],
@@ -548,6 +554,10 @@ pub struct Importer<'a, O: Objects, R: Refs> {
     blobs: quick_cache::sync::Cache<GitOid, (FileId, u64)>,
     /// Recently imported commits.
     commits: quick_cache::sync::Cache<GitOid, ChangesetId>,
+    /// Where `ChangeMeta` rows are indexed (SPEC §20.2); the meta objects are written either way.
+    rows: Option<&'a dyn ChangeRows>,
+    /// Names of the refs that reached commits in the current call, in sorted order.
+    scopes: Vec<Vec<u8>>,
 }
 
 impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
@@ -569,7 +579,16 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             policy,
             blobs: quick_cache::sync::Cache::new(CACHE_ITEMS),
             commits: quick_cache::sync::Cache::new(CACHE_ITEMS),
+            rows: None,
+            scopes: Vec::new(),
         }
+    }
+
+    /// Indexes the `ChangeMeta` of each imported commit in `rows` as well (C45).
+    #[must_use]
+    pub fn with_change_rows(mut self, rows: &'a dyn ChangeRows) -> Self {
+        self.rows = Some(rows);
+        self
     }
 
     /// Imports every commit reachable from `tips` that the git map does not know yet, then
@@ -578,10 +597,23 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         let mut report = ImportReport::default();
         let mut roots = Vec::new();
         let mut jobs = Vec::new();
+        let mut named: Vec<(Vec<u8>, GitOid)> = Vec::new();
         for tip in tips {
+            let before = roots.len();
             self.classify(tip, &mut roots, &mut jobs, &mut report)?;
+            named.extend(roots[before..].iter().map(|&r| (tip.name.clone(), r)));
         }
-        let order = self.discover(&roots).await?;
+        // A commit's scope is the first ref, in sorted name order, that reaches it (SPEC §20.2).
+        named.sort_by(|a, b| a.0.cmp(&b.0));
+        self.scopes.clear();
+        let mut scoped = Vec::with_capacity(named.len());
+        for (name, oid) in named {
+            if self.scopes.last() != Some(&name) {
+                self.scopes.push(name);
+            }
+            scoped.push((oid, self.scopes.len() - 1));
+        }
+        let order = self.discover(&scoped).await?;
         for window in order.chunks(self.policy.window.max(1)) {
             self.import_window(window, &mut report).await?;
         }
@@ -661,22 +693,24 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
     }
 
     /// Unknown commits reachable from `roots`, parents first (iterative post-order DFS).
-    async fn discover(&self, roots: &[GitOid]) -> Result<Vec<GitOid>> {
+    async fn discover(&self, roots: &[(GitOid, usize)]) -> Result<Vec<(GitOid, usize)>> {
         struct Frame {
             oid: GitOid,
+            scope: usize,
             parents: Vec<GitOid>,
             next: usize,
         }
         let mut seen: HashSet<GitOid> = HashSet::new();
         let mut order = Vec::new();
         let mut stack: Vec<Frame> = Vec::new();
-        for &root in roots {
+        for &(root, scope) in roots {
             if !seen.insert(root) || self.commit_id(root).await?.is_some() {
                 continue;
             }
             let raw = read_raw_commit(self.odb, root)?;
             stack.push(Frame {
                 oid: root,
+                scope,
                 parents: commit_links(&raw)?.1,
                 next: 0,
             });
@@ -687,12 +721,13 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
                         let raw = read_raw_commit(self.odb, p)?;
                         stack.push(Frame {
                             oid: p,
+                            scope,
                             parents: commit_links(&raw)?.1,
                             next: 0,
                         });
                     }
                 } else {
-                    order.push(top.oid);
+                    order.push((top.oid, top.scope));
                     stack.pop();
                 }
             }
@@ -700,13 +735,17 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         Ok(order)
     }
 
-    async fn import_window(&mut self, window: &[GitOid], report: &mut ImportReport) -> Result<()> {
-        let prepared = par_map(&mut self.forks, window, |odb, &oid| prepare(odb, oid))
+    async fn import_window(
+        &mut self,
+        window: &[(GitOid, usize)],
+        report: &mut ImportReport,
+    ) -> Result<()> {
+        let prepared = par_map(&mut self.forks, window, |odb, &(oid, _)| prepare(odb, oid))
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
         let hashed = self.hash_blobs(&prepared, report).await?;
-        for p in prepared {
-            self.build_commit(p, &hashed, report).await?;
+        for (p, &(_, scope)) in prepared.into_iter().zip(window) {
+            self.build_commit(p, scope, &hashed, report).await?;
         }
         Ok(())
     }
@@ -932,6 +971,7 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
     async fn build_commit(
         &self,
         p: Prepared,
+        scope: usize,
         hashed: &HashMap<GitOid, (FileId, u64)>,
         report: &mut ImportReport,
     ) -> Result<()> {
@@ -979,6 +1019,8 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
             .put(&ObjKey::Changeset(id), encode_stored(&envelope))
             .await?;
         self.derive_and_check(id, root, &p).await?;
+        let scope = self.scopes.get(scope).map_or(&[][..], Vec::as_slice);
+        import_change::write_meta(&*self.objects, self.rows, id, &p.raw, scope).await?;
         self.map.put(&built.rows).await?;
         self.map
             .put(&[GitMapRow {
