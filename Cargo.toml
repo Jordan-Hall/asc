@@ -120,6 +120,7 @@ testcontainers-modules = { version = "0.15.0", features = ["minio", "postgres"] 
 # additions (U01)
 gix-index      = "=0.57.0"     # gix 0.89 family
 gix-merge      = { version = "=0.22.0", default-features = false }
+gix-hash       = { version = "=0.28.1", features = ["sha1"] }  # gix 0.89 family; sha1 feature selects the hash
 async-trait    = "0.1.92"
 base64         = "0.23.1"
 regex          = "1.13.1"
