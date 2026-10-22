@@ -1,0 +1,7 @@
+tree 046e71a986ecebeb801720b1c8760b245c44788b
+parent 16dd2eb558c7b5f7e49f47b073bcf2a0c2e730f0
+author Ann Author <ann@example.com> 1700000000 +0000
+committer Corey Mitter <corey@example.com> 1700000100 +0000
+encoding ISO-8859-1
+
+latin1 é msg
