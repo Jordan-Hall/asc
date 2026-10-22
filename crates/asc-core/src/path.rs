@@ -159,10 +159,15 @@ pub fn windows_valid(name: &Name) -> bool {
 
 /// DOS device names, including `CONIN$`/`CONOUT$` and COM/LPT with superscript ¹²³.
 fn is_reserved_device(stem: &[u8]) -> bool {
-    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].iter().any(|r| stem.eq_ignore_ascii_case(r.as_bytes())) {
+    if ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        .iter()
+        .any(|r| stem.eq_ignore_ascii_case(r.as_bytes()))
+    {
         return true;
     }
-    if stem.len() < 4 || !(stem[..3].eq_ignore_ascii_case(b"COM") || stem[..3].eq_ignore_ascii_case(b"LPT")) {
+    if stem.len() < 4
+        || !(stem[..3].eq_ignore_ascii_case(b"COM") || stem[..3].eq_ignore_ascii_case(b"LPT"))
+    {
         return false;
     }
     matches!(&stem[3..], [b'1'..=b'9'] | [0xC2, 0xB9 | 0xB2 | 0xB3])
@@ -177,7 +182,10 @@ fn hfs_ignorable(c: char) -> bool {
 fn is_dotgit_alias(comp: &[u8]) -> bool {
     // NTFS: ignore an alternate-stream suffix and trailing dots/spaces.
     let base = comp.split(|&c| c == b':').next().unwrap_or_default();
-    let end = base.iter().rposition(|&c| c != b'.' && c != b' ').map_or(0, |i| i + 1);
+    let end = base
+        .iter()
+        .rposition(|&c| c != b'.' && c != b' ')
+        .map_or(0, |i| i + 1);
     let base = &base[..end];
     if base.eq_ignore_ascii_case(b".git") || base.eq_ignore_ascii_case(b"git~1") {
         return true;
@@ -195,7 +203,8 @@ fn is_dotgit_alias(comp: &[u8]) -> bool {
 pub fn checkout_safe(path: &RepoPath) -> bool {
     // git with core.protectNTFS rejects any backslash outright (CVE-2019-1353/1354); ':' and drive
     // letters are rejected on Windows by `windows_valid`, which materialisation also applies.
-    path.components().all(|c| !c.contains(&b'\\') && !is_dotgit_alias(c) && c != b".." && c != b".")
+    path.components()
+        .all(|c| !c.contains(&b'\\') && !is_dotgit_alias(c) && c != b".." && c != b".")
 }
 
 /// A ref name validated per `git check-ref-format`.
@@ -218,7 +227,9 @@ impl RefName {
         if b.is_empty() || b == b"@" {
             return Err(bad("empty or '@'"));
         }
-        if b.iter().any(|&c| c < 0x20 || c == 0x7f || b" ~^:?*[\\".contains(&c)) {
+        if b.iter()
+            .any(|&c| c < 0x20 || c == 0x7f || b" ~^:?*[\\".contains(&c))
+        {
             return Err(bad("forbidden character"));
         }
         if b.windows(2).any(|w| w == b".." || w == b"@{") {
@@ -276,7 +287,9 @@ mod tests {
 
     #[test]
     fn path_rules() {
-        for bad in ["", "/a", "a/", "a//b", "a/./b", "a/../b", "a/.git", ".git/x", "a/.GIT/b"] {
+        for bad in [
+            "", "/a", "a/", "a//b", "a/./b", "a/../b", "a/.git", ".git/x", "a/.GIT/b",
+        ] {
             assert!(RepoPath::new(bad).is_err(), "{bad}");
         }
         let x = p("a/b/c");
@@ -304,8 +317,25 @@ mod tests {
     fn windows_table() {
         let ok = ["a", "con1", "COM10", "LPT0", "COM", "a.b", ".x", "\u{e9}"];
         let bad = [
-            "a.", "a ", "a<", "a>", "a:b", "a\"", "a\\", "a|", "a?", "a*", "a\x01", "a\x1f", "CON", "con", "Prn.txt",
-            "aux.tar.gz", "NUL", "COM1", "lpt9.x",
+            "a.",
+            "a ",
+            "a<",
+            "a>",
+            "a:b",
+            "a\"",
+            "a\\",
+            "a|",
+            "a?",
+            "a*",
+            "a\x01",
+            "a\x1f",
+            "CON",
+            "con",
+            "Prn.txt",
+            "aux.tar.gz",
+            "NUL",
+            "COM1",
+            "lpt9.x",
         ];
         for s in ok {
             assert!(windows_valid(&Name::new(s).unwrap()), "{s}");
@@ -341,7 +371,16 @@ mod tests {
             let rp = RepoPath::new(s).unwrap();
             assert!(!checkout_safe(&rp), "{s:?}");
         }
-        for s in ["a/b", ".gitignore", ".github/x", "git~2", "gitx", "a/.gitmodules", "\u{e9}/x", ".gi/t"] {
+        for s in [
+            "a/b",
+            ".gitignore",
+            ".github/x",
+            "git~2",
+            "gitx",
+            "a/.gitmodules",
+            "\u{e9}/x",
+            ".gi/t",
+        ] {
             assert!(checkout_safe(&p(s)), "{s}");
         }
     }
@@ -350,14 +389,48 @@ mod tests {
     #[test]
     fn ref_format_table() {
         let ok = [
-            "foo/bar/baz", "heads/foo@bar", "heads/fu\u{df}", "foo/bar", "refs/heads/master", "heads/foo-bar",
-            "a/b@c", "a/b{", "foo.bar/baz", "refs/heads/@x", "refs/heads/-x",
+            "foo/bar/baz",
+            "heads/foo@bar",
+            "heads/fu\u{df}",
+            "foo/bar",
+            "refs/heads/master",
+            "heads/foo-bar",
+            "a/b@c",
+            "a/b{",
+            "foo.bar/baz",
+            "refs/heads/@x",
+            "refs/heads/-x",
         ];
         let bad = [
-            "", "/", "/foo", "foo/", "foo//bar", "refs///heads/foo", "heads/foo/", "heads/foo.", "heads/.foo",
-            "heads/foo..bar", "heads/foo?bar", "heads/foo\x7f", "heads/foo\tbar", "heads/foo bar", "heads/foo:bar",
-            "heads/foo^bar", "heads/foo~bar", "heads/foo*bar", "heads/foo[bar", "heads/foo\\bar", "heads/foo.lock",
-            "heads/foo.lock/bar", "heads/foo@{bar", "@", "foo", "refs/heads/@{", "foo/.bar", "a/.b/c", "a/b.lock",
+            "",
+            "/",
+            "/foo",
+            "foo/",
+            "foo//bar",
+            "refs///heads/foo",
+            "heads/foo/",
+            "heads/foo.",
+            "heads/.foo",
+            "heads/foo..bar",
+            "heads/foo?bar",
+            "heads/foo\x7f",
+            "heads/foo\tbar",
+            "heads/foo bar",
+            "heads/foo:bar",
+            "heads/foo^bar",
+            "heads/foo~bar",
+            "heads/foo*bar",
+            "heads/foo[bar",
+            "heads/foo\\bar",
+            "heads/foo.lock",
+            "heads/foo.lock/bar",
+            "heads/foo@{bar",
+            "@",
+            "foo",
+            "refs/heads/@{",
+            "foo/.bar",
+            "a/.b/c",
+            "a/b.lock",
         ];
         for s in ok {
             assert!(RefName::new(s).is_ok(), "{s:?}");
@@ -399,18 +472,35 @@ mod windows_hardening_tests {
 
     #[test]
     fn device_names_with_padding_and_variants_are_invalid() {
-        for s in ["CON .txt", "nul  .tar.gz", "CONIN$", "conout$.log", "COM\u{b9}", "lpt\u{b3}.x", "AUX "] {
-            assert!(!windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
+        for s in [
+            "CON .txt",
+            "nul  .tar.gz",
+            "CONIN$",
+            "conout$.log",
+            "COM\u{b9}",
+            "lpt\u{b3}.x",
+            "AUX ",
+        ] {
+            assert!(
+                !windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()),
+                "{s:?}"
+            );
         }
         for s in ["CONSOLE", "COM10", "LPT0", "nully.txt"] {
-            assert!(windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
+            assert!(
+                windows_valid(&Name::new(s.as_bytes().to_vec()).unwrap()),
+                "{s:?}"
+            );
         }
     }
 
     #[test]
     fn backslash_components_are_not_checkout_safe() {
         for s in [r"a\..\b", r"c:\x", r"dir\.git", r"x\\y"] {
-            assert!(!checkout_safe(&RepoPath::new(s.as_bytes().to_vec()).unwrap()), "{s:?}");
+            assert!(
+                !checkout_safe(&RepoPath::new(s.as_bytes().to_vec()).unwrap()),
+                "{s:?}"
+            );
         }
     }
 }

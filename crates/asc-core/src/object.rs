@@ -81,7 +81,10 @@ impl<K: Ord, V> SortedMap<K, V> {
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
-        self.0.binary_search_by(|e| e.0.cmp(key)).ok().map(|i| &self.0[i].1)
+        self.0
+            .binary_search_by(|e| e.0.cmp(key))
+            .ok()
+            .map(|i| &self.0[i].1)
     }
 }
 
@@ -107,7 +110,9 @@ impl<K, V> Default for SortedMap<K, V> {
 
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for SortedMap<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map().entries(self.0.iter().map(|(k, v)| (k, v))).finish()
+        f.debug_map()
+            .entries(self.0.iter().map(|(k, v)| (k, v)))
+            .finish()
     }
 }
 
@@ -162,7 +167,9 @@ impl TryFrom<RawTree> for Tree {
     /// The wire form cannot say whether a tree is the root, so emptiness is not checked.
     fn try_from(raw: RawTree) -> Result<Self, ObjectError> {
         Tree::check(&raw.entries)?;
-        Ok(Tree { entries: raw.entries })
+        Ok(Tree {
+            entries: raw.entries,
+        })
     }
 }
 
@@ -194,7 +201,10 @@ impl Tree {
     }
 
     pub fn get(&self, name: &Name) -> Option<&Entry> {
-        self.entries.binary_search_by(|e| e.name.cmp(name)).ok().map(|i| &self.entries[i])
+        self.entries
+            .binary_search_by(|e| e.name.cmp(name))
+            .ok()
+            .map(|i| &self.entries[i])
     }
 
     pub fn id(&self) -> TreeId {
@@ -218,15 +228,25 @@ pub enum Change {
         git: GitOid,
         copy_from: Option<RepoPath>,
     },
-    Gitlink { commit: GitOid },
+    Gitlink {
+        commit: GitOid,
+    },
     Delete,
 }
 
 /// Wire mirror of `Change`; variant order must match.
 #[derive(Deserialize)]
 enum RawChange {
-    Write { kind: Kind, file: FileId, size: u64, git: GitOid, copy_from: Option<RepoPath> },
-    Gitlink { commit: GitOid },
+    Write {
+        kind: Kind,
+        file: FileId,
+        size: u64,
+        git: GitOid,
+        copy_from: Option<RepoPath>,
+    },
+    Gitlink {
+        commit: GitOid,
+    },
     Delete,
 }
 
@@ -235,7 +255,13 @@ impl TryFrom<RawChange> for Change {
 
     fn try_from(raw: RawChange) -> Result<Self, ObjectError> {
         Ok(match raw {
-            RawChange::Write { kind, file, size, git, copy_from } => Change::write(kind, file, size, git, copy_from)?,
+            RawChange::Write {
+                kind,
+                file,
+                size,
+                git,
+                copy_from,
+            } => Change::write(kind, file, size, git, copy_from)?,
             RawChange::Gitlink { commit } => Change::Gitlink { commit },
             RawChange::Delete => Change::Delete,
         })
@@ -244,11 +270,23 @@ impl TryFrom<RawChange> for Change {
 
 impl Change {
     /// Builds a `Write`: kind must be File, Exec or Symlink.
-    pub fn write(kind: Kind, file: FileId, size: u64, git: GitOid, copy_from: Option<RepoPath>) -> Result<Self, ObjectError> {
+    pub fn write(
+        kind: Kind,
+        file: FileId,
+        size: u64,
+        git: GitOid,
+        copy_from: Option<RepoPath>,
+    ) -> Result<Self, ObjectError> {
         if !matches!(kind, Kind::File | Kind::Exec | Kind::Symlink) {
             return Err(ObjectError::WriteKind);
         }
-        Ok(Change::Write { kind, file, size, git, copy_from })
+        Ok(Change::Write {
+            kind,
+            file,
+            size,
+            git,
+            copy_from,
+        })
     }
 }
 
@@ -287,7 +325,15 @@ impl TryFrom<RawChangeset> for Changeset {
         if seen.windows(2).any(|w| w[0] == w[1]) {
             return Err(ObjectError::DuplicateParent);
         }
-        Ok(Changeset { parents: r.parents, root: r.root, author: r.author, committer: r.committer, message: r.message, extra: r.extra, changes: r.changes })
+        Ok(Changeset {
+            parents: r.parents,
+            root: r.root,
+            author: r.author,
+            committer: r.committer,
+            message: r.message,
+            extra: r.extra,
+            changes: r.changes,
+        })
     }
 }
 
@@ -350,14 +396,20 @@ impl TryFrom<RawChunkList> for ChunkList {
         if r.chunks.iter().any(|&(_, n)| n == 0 || n > MAX_CHUNK_LEN) {
             return Err(ObjectError::ChunkLen);
         }
-        let sum = r.chunks.iter().try_fold(0u64, |acc, &(_, n)| acc.checked_add(u64::from(n)));
+        let sum = r
+            .chunks
+            .iter()
+            .try_fold(0u64, |acc, &(_, n)| acc.checked_add(u64::from(n)));
         if sum != Some(r.size) {
             return Err(ObjectError::ChunkSum);
         }
         if r.size <= CHUNK_THRESHOLD {
             return Err(ObjectError::ChunkSize);
         }
-        Ok(ChunkList { size: r.size, chunks: r.chunks })
+        Ok(ChunkList {
+            size: r.size,
+            chunks: r.chunks,
+        })
     }
 }
 
@@ -406,34 +458,65 @@ mod tests {
     }
 
     fn entry(n: &str, kind: Kind) -> Entry {
-        let id = if kind == Kind::Gitlink { [0; 32] } else { [7; 32] };
-        Entry { name: name(n), kind, id, size: 5, git: GitOid::from_bytes([9; 20]) }
+        let id = if kind == Kind::Gitlink {
+            [0; 32]
+        } else {
+            [7; 32]
+        };
+        Entry {
+            name: name(n),
+            kind,
+            id,
+            size: 5,
+            git: GitOid::from_bytes([9; 20]),
+        }
     }
 
     // ---- golden samples ----
 
     fn samples() -> Vec<(&'static str, Vec<u8>)> {
         let tree = Tree::new(
-            vec![entry("big.bin", Kind::File), entry("link", Kind::Symlink), entry("run.sh", Kind::Exec), entry("sub", Kind::Dir), entry("vendor", Kind::Gitlink)],
+            vec![
+                entry("big.bin", Kind::File),
+                entry("link", Kind::Symlink),
+                entry("run.sh", Kind::Exec),
+                entry("sub", Kind::Dir),
+                entry("vendor", Kind::Gitlink),
+            ],
             true,
         )
         .unwrap();
         let changeset = Changeset {
-            parents: vec![ChangesetId::from_bytes([1; 32]), ChangesetId::from_bytes([2; 32])],
+            parents: vec![
+                ChangesetId::from_bytes([1; 32]),
+                ChangesetId::from_bytes([2; 32]),
+            ],
             root: tree.id(),
             author: sig(1_700_000_000),
             committer: sig(-1),
             message: b"subject\n\nbody\n".to_vec(),
-            extra: SortedMap::new(vec![(b"asc.snapshot".to_vec(), vec![]), (b"git.gpgsig".to_vec(), b"sig".to_vec())]).unwrap(),
+            extra: SortedMap::new(vec![
+                (b"asc.snapshot".to_vec(), vec![]),
+                (b"git.gpgsig".to_vec(), b"sig".to_vec()),
+            ])
+            .unwrap(),
             changes: SortedMap::new(vec![
-                (path("a/b"), Change::Write {
-                    kind: Kind::File,
-                    file: FileId::from_bytes([4; 32]),
-                    size: 300,
-                    git: GitOid::from_bytes([5; 20]),
-                    copy_from: Some(path("a/c")),
-                }),
-                (path("g"), Change::Gitlink { commit: GitOid::from_bytes([8; 20]) }),
+                (
+                    path("a/b"),
+                    Change::Write {
+                        kind: Kind::File,
+                        file: FileId::from_bytes([4; 32]),
+                        size: 300,
+                        git: GitOid::from_bytes([5; 20]),
+                        copy_from: Some(path("a/c")),
+                    },
+                ),
+                (
+                    path("g"),
+                    Change::Gitlink {
+                        commit: GitOid::from_bytes([8; 20]),
+                    },
+                ),
                 (path("z"), Change::Delete),
             ])
             .unwrap(),
@@ -445,8 +528,17 @@ mod tests {
             message: b"release".to_vec(),
             extra: SortedMap::new(vec![(b"git.tag".to_vec(), b"raw".to_vec())]).unwrap(),
         };
-        let chunks = ChunkList { size: 6_000_000, chunks: vec![(ChunkId::from_bytes([1; 32]), 4_194_304), (ChunkId::from_bytes([2; 32]), 1_805_696)] };
-        let extra = AscGitExtra { copies: SortedMap::new(vec![(path("x"), path("y"))]).unwrap(), snapshot: true };
+        let chunks = ChunkList {
+            size: 6_000_000,
+            chunks: vec![
+                (ChunkId::from_bytes([1; 32]), 4_194_304),
+                (ChunkId::from_bytes([2; 32]), 1_805_696),
+            ],
+        };
+        let extra = AscGitExtra {
+            copies: SortedMap::new(vec![(path("x"), path("y"))]).unwrap(),
+            snapshot: true,
+        };
         vec![
             ("tree", tree.to_envelope()),
             ("changeset", changeset.to_envelope()),
@@ -493,23 +585,43 @@ mod tests {
 
     #[test]
     fn rejects_malformed_envelopes() {
-        let good = Tree::new(vec![entry("a", Kind::File)], true).unwrap().to_envelope();
+        let good = Tree::new(vec![entry("a", Kind::File)], true)
+            .unwrap()
+            .to_envelope();
         let mut bad_magic = good.clone();
         bad_magic[0] = b'x';
-        assert_eq!(decode_envelope::<Tree>(&bad_magic), Err(CodecError::BadMagic));
+        assert_eq!(
+            decode_envelope::<Tree>(&bad_magic),
+            Err(CodecError::BadMagic)
+        );
         assert_eq!(decode_envelope::<Tree>(b"asc"), Err(CodecError::BadMagic));
         let mut kind = good.clone();
         kind[2] = 5;
-        assert_eq!(decode_envelope::<Tree>(&kind), Err(CodecError::UnknownKind(5)));
+        assert_eq!(
+            decode_envelope::<Tree>(&kind),
+            Err(CodecError::UnknownKind(5))
+        );
         kind[2] = 4;
-        assert!(matches!(decode_envelope::<Tree>(&kind), Err(CodecError::WrongKind { .. })));
+        assert!(matches!(
+            decode_envelope::<Tree>(&kind),
+            Err(CodecError::WrongKind { .. })
+        ));
         let mut ver = good.clone();
         ver[3] = 2;
-        assert!(matches!(decode_envelope::<Tree>(&ver), Err(CodecError::UnknownVersion { version: 2, .. })));
+        assert!(matches!(
+            decode_envelope::<Tree>(&ver),
+            Err(CodecError::UnknownVersion { version: 2, .. })
+        ));
         let mut trailing = good.clone();
         trailing.push(0);
-        assert_eq!(decode_envelope::<Tree>(&trailing), Err(CodecError::Trailing));
-        assert!(matches!(decode_envelope::<Tree>(&good[..good.len() - 1]), Err(CodecError::Payload(_))));
+        assert_eq!(
+            decode_envelope::<Tree>(&trailing),
+            Err(CodecError::Trailing)
+        );
+        assert!(matches!(
+            decode_envelope::<Tree>(&good[..good.len() - 1]),
+            Err(CodecError::Payload(_))
+        ));
     }
 
     #[test]
@@ -520,8 +632,14 @@ mod tests {
 
     #[test]
     fn rejects_unsorted_or_duplicate_map_keys() {
-        assert_eq!(SortedMap::new(vec![(1u8, ()), (1, ())]).unwrap_err(), ObjectError::UnsortedMap);
-        assert_eq!(SortedMap::new(vec![(2u8, ()), (1, ())]).unwrap().as_slice()[0].0, 1);
+        assert_eq!(
+            SortedMap::new(vec![(1u8, ()), (1, ())]).unwrap_err(),
+            ObjectError::UnsortedMap
+        );
+        assert_eq!(
+            SortedMap::new(vec![(2u8, ()), (1, ())]).unwrap().as_slice()[0].0,
+            1
+        );
         let enc = |v: Vec<(u8, u8)>| encode_envelope(EnvelopeKind::ChunkList, 1, &v);
         for v in [vec![(2u8, 0u8), (1, 0)], vec![(1, 0), (1, 1)]] {
             let bytes = enc(v);
@@ -543,7 +661,13 @@ mod tests {
     }
 
     fn write(kind: Kind) -> Change {
-        Change::Write { kind, file: FileId::from_bytes([4; 32]), size: 1, git: GitOid::from_bytes([5; 20]), copy_from: None }
+        Change::Write {
+            kind,
+            file: FileId::from_bytes([4; 32]),
+            size: 1,
+            git: GitOid::from_bytes([5; 20]),
+            copy_from: None,
+        }
     }
 
     #[test]
@@ -557,16 +681,29 @@ mod tests {
         }
         let f = FileId::from_bytes([4; 32]);
         let g = GitOid::from_bytes([5; 20]);
-        assert_eq!(Change::write(Kind::Dir, f, 1, g, None).unwrap_err(), ObjectError::WriteKind);
+        assert_eq!(
+            Change::write(Kind::Dir, f, 1, g, None).unwrap_err(),
+            ObjectError::WriteKind
+        );
         assert!(Change::write(Kind::Symlink, f, 1, g, None).is_ok());
     }
 
     #[test]
     fn rejects_duplicate_parents_but_allows_ancestor_paths() {
         let p = ChangesetId::from_bytes([1; 32]);
-        let changes = vec![(path("a"), Change::Delete), (path("a/b"), write(Kind::File))];
-        assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p, p], changes.clone()).to_envelope()).is_err());
-        assert!(decode_envelope::<Changeset>(&bare_changeset(vec![p], changes).to_envelope()).is_ok());
+        let changes = vec![
+            (path("a"), Change::Delete),
+            (path("a/b"), write(Kind::File)),
+        ];
+        assert!(
+            decode_envelope::<Changeset>(
+                &bare_changeset(vec![p, p], changes.clone()).to_envelope()
+            )
+            .is_err()
+        );
+        assert!(
+            decode_envelope::<Changeset>(&bare_changeset(vec![p], changes).to_envelope()).is_ok()
+        );
     }
 
     #[test]
@@ -586,20 +723,34 @@ mod tests {
         for b in &bad {
             assert!(decode_envelope::<ChunkList>(b).is_err());
         }
-        assert!(decode_envelope::<ChunkList>(&cl(u64::from(max) + 1, vec![(id, max), (id, 1)])).is_ok());
+        assert!(
+            decode_envelope::<ChunkList>(&cl(u64::from(max) + 1, vec![(id, max), (id, 1)])).is_ok()
+        );
     }
 
     #[test]
     fn tree_new_checks_invariants() {
         let a = entry("a", Kind::File);
         let b = entry("b", Kind::File);
-        assert_eq!(Tree::new(vec![b.clone(), a.clone()], false).unwrap_err(), ObjectError::UnsortedEntries);
-        assert_eq!(Tree::new(vec![a.clone(), a.clone()], false).unwrap_err(), ObjectError::UnsortedEntries);
-        assert_eq!(Tree::new(vec![], false).unwrap_err(), ObjectError::EmptyTree);
+        assert_eq!(
+            Tree::new(vec![b.clone(), a.clone()], false).unwrap_err(),
+            ObjectError::UnsortedEntries
+        );
+        assert_eq!(
+            Tree::new(vec![a.clone(), a.clone()], false).unwrap_err(),
+            ObjectError::UnsortedEntries
+        );
+        assert_eq!(
+            Tree::new(vec![], false).unwrap_err(),
+            ObjectError::EmptyTree
+        );
         assert!(Tree::new(vec![], true).is_ok());
         let mut g = entry("g", Kind::Gitlink);
         g.id = [1; 32];
-        assert_eq!(Tree::new(vec![g], true).unwrap_err(), ObjectError::GitlinkId);
+        assert_eq!(
+            Tree::new(vec![g], true).unwrap_err(),
+            ObjectError::GitlinkId
+        );
     }
 
     #[test]
@@ -631,7 +782,8 @@ mod tests {
     // ---- property tests ----
 
     fn arb_name() -> impl Strategy<Value = Name> {
-        prop::collection::vec(any::<u8>(), 1..8).prop_filter_map("invalid name", |b| Name::new(b).ok())
+        prop::collection::vec(any::<u8>(), 1..8)
+            .prop_filter_map("invalid name", |b| Name::new(b).ok())
     }
 
     fn arb_path() -> impl Strategy<Value = RepoPath> {
@@ -642,29 +794,58 @@ mod tests {
     }
 
     fn arb_kind() -> impl Strategy<Value = Kind> {
-        prop_oneof![Just(Kind::File), Just(Kind::Exec), Just(Kind::Symlink), Just(Kind::Dir), Just(Kind::Gitlink)]
+        prop_oneof![
+            Just(Kind::File),
+            Just(Kind::Exec),
+            Just(Kind::Symlink),
+            Just(Kind::Dir),
+            Just(Kind::Gitlink)
+        ]
     }
 
     fn arb_entry() -> impl Strategy<Value = Entry> {
-        (arb_name(), arb_kind(), any::<[u8; 32]>(), any::<u64>(), any::<[u8; 20]>()).prop_map(
-            |(name, kind, id, size, git)| {
-                let id = if kind == Kind::Gitlink { [0; 32] } else { id };
-                Entry { name, kind, id, size, git: GitOid::from_bytes(git) }
-            },
+        (
+            arb_name(),
+            arb_kind(),
+            any::<[u8; 32]>(),
+            any::<u64>(),
+            any::<[u8; 20]>(),
         )
+            .prop_map(|(name, kind, id, size, git)| {
+                let id = if kind == Kind::Gitlink { [0; 32] } else { id };
+                Entry {
+                    name,
+                    kind,
+                    id,
+                    size,
+                    git: GitOid::from_bytes(git),
+                }
+            })
     }
 
     fn arb_tree() -> impl Strategy<Value = Tree> {
         prop::collection::btree_map(arb_name(), arb_entry(), 0..6).prop_map(|m| {
-            let entries = m.into_iter().map(|(n, mut e)| { e.name = n; e }).collect();
+            let entries = m
+                .into_iter()
+                .map(|(n, mut e)| {
+                    e.name = n;
+                    e
+                })
+                .collect();
             Tree::new(entries, true).unwrap()
         })
     }
 
     fn arb_sig() -> impl Strategy<Value = Signature> {
-        let text = || prop::collection::vec(any::<u8>().prop_filter("ident byte", |c| !matches!(c, b'\n' | b'<' | b'>' | 0)), 0..12);
-        (text(), text(), any::<i64>(), any::<i16>())
-            .prop_map(|(name, email, time, tz_min)| Signature::new(name, email, time, tz_min).unwrap())
+        let text = || {
+            prop::collection::vec(
+                any::<u8>().prop_filter("ident byte", |c| !matches!(c, b'\n' | b'<' | b'>' | 0)),
+                0..12,
+            )
+        };
+        (text(), text(), any::<i64>(), any::<i16>()).prop_map(|(name, email, time, tz_min)| {
+            Signature::new(name, email, time, tz_min).unwrap()
+        })
     }
 
     fn arb_extra() -> impl Strategy<Value = SortedMap<Vec<u8>, Vec<u8>>> {
@@ -688,7 +869,9 @@ mod tests {
                     git: GitOid::from_bytes(git),
                     copy_from,
                 }),
-            any::<[u8; 20]>().prop_map(|c| Change::Gitlink { commit: GitOid::from_bytes(c) }),
+            any::<[u8; 20]>().prop_map(|c| Change::Gitlink {
+                commit: GitOid::from_bytes(c)
+            }),
             Just(Change::Delete),
         ]
     }
@@ -703,35 +886,48 @@ mod tests {
             arb_extra(),
             prop::collection::btree_map(arb_path(), arb_change(), 0..4),
         )
-            .prop_map(|(parents, root, author, committer, message, extra, changes)| Changeset {
-                parents: parents.into_iter().map(ChangesetId::from_bytes).collect(),
-                root: TreeId::from_bytes(root),
-                author,
-                committer,
-                message,
-                extra,
-                changes: SortedMap::new(changes.into_iter().collect()).unwrap(),
-            })
+            .prop_map(
+                |(parents, root, author, committer, message, extra, changes)| Changeset {
+                    parents: parents.into_iter().map(ChangesetId::from_bytes).collect(),
+                    root: TreeId::from_bytes(root),
+                    author,
+                    committer,
+                    message,
+                    extra,
+                    changes: SortedMap::new(changes.into_iter().collect()).unwrap(),
+                },
+            )
     }
 
     fn arb_tag() -> impl Strategy<Value = TagRecord> {
-        (any::<[u8; 32]>(), any::<Vec<u8>>(), prop::option::of(arb_sig()), any::<Vec<u8>>(), arb_extra()).prop_map(
-            |(t, name, tagger, message, extra)| TagRecord {
+        (
+            any::<[u8; 32]>(),
+            any::<Vec<u8>>(),
+            prop::option::of(arb_sig()),
+            any::<Vec<u8>>(),
+            arb_extra(),
+        )
+            .prop_map(|(t, name, tagger, message, extra)| TagRecord {
                 target: ChangesetId::from_bytes(t),
                 name,
                 tagger,
                 message,
                 extra,
-            },
-        )
+            })
     }
 
     fn arb_chunks() -> impl Strategy<Value = ChunkList> {
-        prop::collection::vec((any::<[u8; 32]>().prop_map(ChunkId::from_bytes), 1..=MAX_CHUNK_LEN), 2..5)
-            .prop_filter_map("size above threshold", |chunks| {
-                let size: u64 = chunks.iter().map(|c| u64::from(c.1)).sum();
-                (size > CHUNK_THRESHOLD).then_some(ChunkList { size, chunks })
-            })
+        prop::collection::vec(
+            (
+                any::<[u8; 32]>().prop_map(ChunkId::from_bytes),
+                1..=MAX_CHUNK_LEN,
+            ),
+            2..5,
+        )
+        .prop_filter_map("size above threshold", |chunks| {
+            let size: u64 = chunks.iter().map(|c| u64::from(c.1)).sum();
+            (size > CHUNK_THRESHOLD).then_some(ChunkList { size, chunks })
+        })
     }
 
     fn roundtrip<T: Enveloped + PartialEq + fmt::Debug>(x: &T) {

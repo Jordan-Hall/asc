@@ -49,7 +49,10 @@ pub enum CodecError {
     #[error("unknown envelope kind {0}")]
     UnknownKind(u8),
     #[error("envelope kind {got:?} where {expected:?} was expected")]
-    WrongKind { expected: EnvelopeKind, got: EnvelopeKind },
+    WrongKind {
+        expected: EnvelopeKind,
+        got: EnvelopeKind,
+    },
     #[error("unknown version {version} for kind {kind:?}")]
     UnknownVersion { kind: EnvelopeKind, version: u8 },
     #[error("unknown payload version {0}")]
@@ -78,10 +81,16 @@ pub fn decode_envelope<T: Enveloped>(bytes: &[u8]) -> Result<T, CodecError> {
     }
     let kind = EnvelopeKind::from_u8(*kind).ok_or(CodecError::UnknownKind(*kind))?;
     if kind != T::KIND {
-        return Err(CodecError::WrongKind { expected: T::KIND, got: kind });
+        return Err(CodecError::WrongKind {
+            expected: T::KIND,
+            got: kind,
+        });
     }
     if *version != T::VERSION {
-        return Err(CodecError::UnknownVersion { kind, version: *version });
+        return Err(CodecError::UnknownVersion {
+            kind,
+            version: *version,
+        });
     }
     let value = decode_payload::<T>(payload)?;
     if encode_envelope(T::KIND, T::VERSION, &value) != bytes {
@@ -93,7 +102,11 @@ pub fn decode_envelope<T: Enveloped>(bytes: &[u8]) -> Result<T, CodecError> {
 fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, CodecError> {
     let (value, rest) =
         postcard::take_from_bytes(payload).map_err(|e| CodecError::Payload(e.to_string()))?;
-    if rest.is_empty() { Ok(value) } else { Err(CodecError::Trailing) }
+    if rest.is_empty() {
+        Ok(value)
+    } else {
+        Err(CodecError::Trailing)
+    }
 }
 
 /// Encodes a non-envelope value: `version` || postcard(value) (SPEC §2.2a).

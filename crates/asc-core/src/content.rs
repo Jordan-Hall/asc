@@ -54,7 +54,10 @@ pub enum Body {
     /// The whole content, at most [`CHUNK_THRESHOLD`] bytes.
     Inline(Bytes),
     /// A chunk list plus its chunks in order.
-    Chunked { list: ChunkList, chunks: Vec<(ChunkId, Bytes)> },
+    Chunked {
+        list: ChunkList,
+        chunks: Vec<(ChunkId, Bytes)>,
+    },
 }
 
 /// Result of ingesting one file: identities plus the bytes to store.
@@ -77,7 +80,10 @@ impl Digests {
     fn new(size: u64) -> Self {
         let mut git = Sha1::new();
         git.update(format!("blob {size}\0").as_bytes());
-        Self { file: FileHasher::new(), git }
+        Self {
+            file: FileHasher::new(),
+            git,
+        }
     }
 
     fn update(&mut self, bytes: &[u8]) {
@@ -114,13 +120,7 @@ pub fn ingest<R: Read + Seek>(mut reader: R) -> Result<Ingested, ContentError> {
 }
 
 fn chunk_stream(r: impl Read, size: u64, d: &mut Digests) -> Result<Body, ContentError> {
-    let cdc = StreamCDC::with_level(
-        r,
-        CHUNK_MIN,
-        CHUNK_AVG,
-        CHUNK_MAX,
-        Normalization::Level1,
-    );
+    let cdc = StreamCDC::with_level(r, CHUNK_MIN, CHUNK_AVG, CHUNK_MAX, Normalization::Level1);
     let (mut entries, mut chunks, mut seen) = (Vec::new(), Vec::new(), 0u64);
     for c in cdc {
         let c = c.map_err(|e| match e {
@@ -136,7 +136,13 @@ fn chunk_stream(r: impl Read, size: u64, d: &mut Digests) -> Result<Body, Conten
     if seen != size {
         return Err(ContentError::ShortRead);
     }
-    Ok(Body::Chunked { list: ChunkList { size, chunks: entries }, chunks })
+    Ok(Body::Chunked {
+        list: ChunkList {
+            size,
+            chunks: entries,
+        },
+        chunks,
+    })
 }
 
 /// Verifies a chunked file while it is read back: each chunk against its
@@ -155,13 +161,22 @@ impl ChunkAssembler {
         if sum != list.size {
             return Err(ContentError::BadList);
         }
-        Ok(Self { list, want, next: 0, hasher: FileHasher::new() })
+        Ok(Self {
+            list,
+            want,
+            next: 0,
+            hasher: FileHasher::new(),
+        })
     }
 
     /// Verifies and absorbs the next chunk, in list order.
     pub fn push(&mut self, data: &[u8]) -> Result<(), ContentError> {
         let index = self.next;
-        let (id, len) = *self.list.chunks.get(index).ok_or(ContentError::ExtraChunk)?;
+        let (id, len) = *self
+            .list
+            .chunks
+            .get(index)
+            .ok_or(ContentError::ExtraChunk)?;
         if data.len() != len as usize || ChunkId::of(data) != id {
             return Err(ContentError::CorruptChunk { index });
         }
@@ -174,7 +189,10 @@ impl ChunkAssembler {
     pub fn finish(self) -> Result<FileId, ContentError> {
         let want = self.list.chunks.len();
         if self.next != want {
-            return Err(ContentError::MissingChunks { got: self.next, want });
+            return Err(ContentError::MissingChunks {
+                got: self.next,
+                want,
+            });
         }
         let got = self.hasher.finalize();
         if got != self.want {
@@ -211,20 +229,28 @@ mod tests {
         assert!(matches!(over.body, Body::Chunked { .. }));
         let empty = ingest(Cursor::new(Vec::new())).unwrap();
         assert!(matches!(&empty.body, Body::Inline(b) if b.is_empty()));
-        assert_eq!(empty.git.to_string(), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(
+            empty.git.to_string(),
+            "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+        );
     }
 
     #[test]
     fn inline_digests() {
         let i = ingest(Cursor::new(b"hello\n".to_vec())).unwrap();
-        assert_eq!(i.git.to_string(), "ce013625030ba8dba906f756967f9e9ca394464a");
+        assert_eq!(
+            i.git.to_string(),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
         assert_eq!(i.file, FileId::of(b"hello\n"));
         assert_eq!(i.size, 6);
     }
 
     fn chunked(data: &[u8]) -> (Ingested, ChunkList, Vec<(ChunkId, Bytes)>) {
         let i = ingest(Cursor::new(data.to_vec())).unwrap();
-        let Body::Chunked { list, chunks } = i.body.clone() else { panic!("not chunked") };
+        let Body::Chunked { list, chunks } = i.body.clone() else {
+            panic!("not chunked")
+        };
         (i, list, chunks)
     }
 
@@ -262,11 +288,17 @@ mod tests {
         let mut a = ChunkAssembler::new(list.clone(), i.file).unwrap();
         let mut bad = chunks[0].1.to_vec();
         bad[0] ^= 1;
-        assert!(matches!(a.push(&bad), Err(ContentError::CorruptChunk { index: 0 })));
+        assert!(matches!(
+            a.push(&bad),
+            Err(ContentError::CorruptChunk { index: 0 })
+        ));
 
         let mut a = ChunkAssembler::new(list.clone(), i.file).unwrap();
         a.push(&chunks[0].1).unwrap();
-        assert!(matches!(a.finish(), Err(ContentError::MissingChunks { .. })));
+        assert!(matches!(
+            a.finish(),
+            Err(ContentError::MissingChunks { .. })
+        ));
 
         let mut a = ChunkAssembler::new(list, FileId::of(b"other")).unwrap();
         for (_, b) in &chunks {
@@ -275,5 +307,8 @@ mod tests {
         assert!(matches!(a.finish(), Err(ContentError::FileMismatch)));
     }
 
-    const GOLDEN: (usize, &str) = (17, "62f06f3c56ae1227d6177886836100ce1acb42577282f36c32ab0b562a3277a3");
+    const GOLDEN: (usize, &str) = (
+        17,
+        "62f06f3c56ae1227d6177886836100ce1acb42577282f36c32ab0b562a3277a3",
+    );
 }

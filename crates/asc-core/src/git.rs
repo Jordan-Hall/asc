@@ -90,7 +90,11 @@ pub struct BlobOidHasher {
 
 impl BlobOidHasher {
     pub fn new(size: u64) -> Self {
-        Self { sha: start(ObjectKind::Blob, size), declared: size, seen: 0 }
+        Self {
+            sha: start(ObjectKind::Blob, size),
+            declared: size,
+            seen: 0,
+        }
     }
 
     pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
@@ -102,7 +106,10 @@ impl BlobOidHasher {
     /// Fails if the bytes fed in do not add up to the declared size.
     pub fn finalize(self) -> Result<GitOid, GitError> {
         if self.seen != self.declared {
-            return Err(GitError::BlobSize { declared: self.declared, hashed: self.seen });
+            return Err(GitError::BlobSize {
+                declared: self.declared,
+                hashed: self.seen,
+            });
         }
         Ok(finish(self.sha))
     }
@@ -123,7 +130,9 @@ fn mode(kind: Kind) -> &'static [u8] {
 /// Git tree body: entries in git order (directories compare as `name/`).
 pub fn render_tree(tree: &Tree) -> Vec<u8> {
     let mut order: Vec<_> = tree.entries().iter().collect();
-    order.sort_by(|a, b| sort_key(a.kind, a.name.as_bytes()).cmp(sort_key(b.kind, b.name.as_bytes())));
+    order.sort_by(|a, b| {
+        sort_key(a.kind, a.name.as_bytes()).cmp(sort_key(b.kind, b.name.as_bytes()))
+    });
     let mut out = Vec::new();
     for e in order {
         out.extend_from_slice(mode(e.kind));
@@ -136,7 +145,9 @@ pub fn render_tree(tree: &Tree) -> Vec<u8> {
 }
 
 fn sort_key(kind: Kind, name: &[u8]) -> impl Iterator<Item = u8> + '_ {
-    name.iter().copied().chain((kind == Kind::Dir).then_some(b'/'))
+    name.iter()
+        .copied()
+        .chain((kind == Kind::Dir).then_some(b'/'))
 }
 
 /// Git oid of the rendered tree.
@@ -155,7 +166,9 @@ pub fn tz_to_string(tz_min: i16) -> String {
 
 /// Inverse of [`tz_to_string`]; `None` unless exactly `[+-]HHMM` with MM < 60.
 pub fn parse_tz(s: &[u8]) -> Option<i16> {
-    let [sign @ (b'+' | b'-'), d @ ..] = s else { return None };
+    let [sign @ (b'+' | b'-'), d @ ..] = s else {
+        return None;
+    };
     if d.len() != 4 || !d.iter().all(u8::is_ascii_digit) {
         return None;
     }
@@ -182,7 +195,10 @@ fn parse_signature(b: &[u8], what: &'static str) -> Result<Signature, &'static s
     let name = name.strip_suffix(b" ").unwrap_or(name);
     let rest = b[gt + 1..].strip_prefix(b" ").ok_or(what)?;
     let sp = rest.iter().position(|&c| c == b' ').ok_or(what)?;
-    let time = std::str::from_utf8(&rest[..sp]).ok().and_then(|t| t.parse().ok()).ok_or(what)?;
+    let time = std::str::from_utf8(&rest[..sp])
+        .ok()
+        .and_then(|t| t.parse().ok())
+        .ok_or(what)?;
     let tz_min = parse_tz(&rest[sp + 1..]).ok_or(what)?;
     Signature::new(name.to_vec(), b[lt + 1..gt].to_vec(), time, tz_min).map_err(|_| what)
 }
@@ -208,7 +224,10 @@ fn split_headers(raw: &[u8]) -> (Headers<'_>, &[u8]) {
     let mut headers: Headers = Vec::new();
     let mut pos = 0;
     while pos < raw.len() {
-        let end = raw[pos..].iter().position(|&c| c == b'\n').map_or(raw.len(), |i| pos + i);
+        let end = raw[pos..]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(raw.len(), |i| pos + i);
         let line = &raw[pos..end];
         pos = (end + 1).min(raw.len());
         if line.is_empty() {
@@ -229,7 +248,10 @@ fn split_headers(raw: &[u8]) -> (Headers<'_>, &[u8]) {
 }
 
 fn parse_oid(v: &[u8], what: &'static str) -> Result<GitOid, &'static str> {
-    std::str::from_utf8(v).ok().and_then(|s| s.parse().ok()).ok_or(what)
+    std::str::from_utf8(v)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .ok_or(what)
 }
 
 fn oid_hex(oid: GitOid) -> Vec<u8> {
@@ -244,7 +266,10 @@ fn extra_of(cs: &Changeset) -> AscGitExtra {
         .as_slice()
         .iter()
         .filter_map(|(p, c)| match c {
-            Change::Write { copy_from: Some(from), .. } => Some((p.clone(), from.clone())),
+            Change::Write {
+                copy_from: Some(from),
+                ..
+            } => Some((p.clone(), from.clone())),
             _ => None,
         })
         .collect();
@@ -281,7 +306,12 @@ pub fn render_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -
 
 /// Checks that `raw` describes the same commit as `cs`: tree, parents (in order),
 /// author, committer, message, `gpgsig` and the `asc` header must all match.
-pub fn verify_raw_commit(raw: &[u8], cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Result<(), GitError> {
+pub fn verify_raw_commit(
+    raw: &[u8],
+    cs: &Changeset,
+    root_git: GitOid,
+    parent_gits: &[GitOid],
+) -> Result<(), GitError> {
     let p = parse_commit(raw)?;
     let bad = GitError::RawMismatch;
     if p.tree != root_git {
@@ -317,7 +347,11 @@ pub fn verify_raw_commit(raw: &[u8], cs: &Changeset, root_git: GitOid, parent_gi
 /// The `git.commit` and `git.tag` extras are only accepted on the import path
 /// ([`canonicalise_commit`], [`canonicalise_tag`]); rejecting them on native
 /// ingest is asc-engine's job, not enforced here.
-pub fn export_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Result<Vec<u8>, GitError> {
+pub fn export_commit(
+    cs: &Changeset,
+    root_git: GitOid,
+    parent_gits: &[GitOid],
+) -> Result<Vec<u8>, GitError> {
     match cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()) {
         Some(raw) => {
             verify_raw_commit(raw, cs, root_git, parent_gits)?;
@@ -364,18 +398,31 @@ pub fn parse_commit(raw: &[u8]) -> Result<ParsedCommit, GitError> {
     let (mut asc, mut gpgsig, mut encoding) = (None, None, false);
     for (k, v) in it {
         match *k {
-            b"tree" | b"parent" | b"author" | b"committer" => return Err(bad("duplicate or misplaced header")),
+            b"tree" | b"parent" | b"author" | b"committer" => {
+                return Err(bad("duplicate or misplaced header"));
+            }
             b"encoding" if !std::mem::replace(&mut encoding, true) => {}
             b"gpgsig" if gpgsig.is_none() => gpgsig = Some(v.clone()),
             b"asc" if asc.is_none() => {
-                let decoded = BASE64.decode(v).ok().and_then(|b| AscGitExtra::decode(&b).ok());
+                let decoded = BASE64
+                    .decode(v)
+                    .ok()
+                    .and_then(|b| AscGitExtra::decode(&b).ok());
                 asc = Some(decoded.ok_or(bad("bad asc header"))?);
             }
             b"encoding" | b"gpgsig" | b"asc" => return Err(bad("duplicate header")),
             _ => {}
         }
     }
-    Ok(ParsedCommit { tree, parents, author, committer, asc, gpgsig, message: message.to_vec() })
+    Ok(ParsedCommit {
+        tree,
+        parents,
+        author,
+        committer,
+        asc,
+        gpgsig,
+        message: message.to_vec(),
+    })
 }
 
 /// SPEC §2.9 import rule. Builds the canonical changeset from `raw` plus the
@@ -390,12 +437,17 @@ pub fn canonicalise_commit(
 ) -> Result<Changeset, GitError> {
     let p = parse_commit(raw)?;
     if parents.len() != p.parents.len() {
-        return Err(GitError::Parents { expected: parents.len(), found: p.parents.len() });
+        return Err(GitError::Parents {
+            expected: parents.len(),
+            found: p.parents.len(),
+        });
     }
     let mut extra = Vec::new();
     if let Some(asc) = &p.asc {
         for (path, from) in asc.copies.as_slice() {
-            if let Some((_, Change::Write { copy_from, .. })) = changes.iter_mut().find(|(q, _)| q == path) {
+            if let Some((_, Change::Write { copy_from, .. })) =
+                changes.iter_mut().find(|(q, _)| q == path)
+            {
                 *copy_from = Some(from.clone());
             }
         }
@@ -426,12 +478,20 @@ pub fn canonicalise_commit(
 // ----------------------------------------------------------------- tags
 
 /// Signature block markers git recognises at the end of a tag message.
-const SIG_MARKERS: [&[u8]; 3] =
-    [b"-----BEGIN PGP SIGNATURE-----", b"-----BEGIN SSH SIGNATURE-----", b"-----BEGIN SIGNED MESSAGE-----"];
+const SIG_MARKERS: [&[u8]; 3] = [
+    b"-----BEGIN PGP SIGNATURE-----",
+    b"-----BEGIN SSH SIGNATURE-----",
+    b"-----BEGIN SIGNED MESSAGE-----",
+];
 
 /// Splits a tag body after the headers into message and trailing signature block.
 fn split_tag_signature(body: &[u8]) -> (&[u8], Option<&[u8]>) {
-    let at_line_start = std::iter::once(0).chain(body.iter().enumerate().filter(|(_, c)| **c == b'\n').map(|(i, _)| i + 1));
+    let at_line_start = std::iter::once(0).chain(
+        body.iter()
+            .enumerate()
+            .filter(|(_, c)| **c == b'\n')
+            .map(|(i, _)| i + 1),
+    );
     for i in at_line_start {
         if SIG_MARKERS.iter().any(|m| body[i..].starts_with(m)) {
             return (&body[..i], Some(&body[i..]));
@@ -525,11 +585,20 @@ pub fn parse_tag(raw: &[u8]) -> Result<ParsedTag, GitError> {
     let name = next(b"tag", "missing tag name")?.clone();
     let tagger = match it.next() {
         None => None,
-        Some((k, v)) if *k == b"tagger" && it.next().is_none() => Some(parse_signature(v, "bad tagger").map_err(bad)?),
+        Some((k, v)) if *k == b"tagger" && it.next().is_none() => {
+            Some(parse_signature(v, "bad tagger").map_err(bad)?)
+        }
         Some(_) => return Err(bad("duplicate or unexpected header")),
     };
     let (message, gpgsig) = split_tag_signature(body);
-    Ok(ParsedTag { object, object_type, name, tagger, message: message.to_vec(), gpgsig: gpgsig.map(<[u8]>::to_vec) })
+    Ok(ParsedTag {
+        object,
+        object_type,
+        name,
+        tagger,
+        message: message.to_vec(),
+        gpgsig: gpgsig.map(<[u8]>::to_vec),
+    })
 }
 
 /// Tag counterpart of [`canonicalise_commit`]; stores `git.tag = raw` when the render differs.
@@ -565,7 +634,9 @@ mod tests {
     use crate::path::Name;
 
     fn golden(name: &str) -> Vec<u8> {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/git").join(name);
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/golden/git")
+            .join(name);
         std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
     }
 
@@ -601,7 +672,13 @@ mod tests {
     fn blob_hasher_checks_size() {
         let mut h = BlobOidHasher::new(5);
         h.update(b"abc");
-        assert_eq!(h.finalize(), Err(GitError::BlobSize { declared: 5, hashed: 3 }));
+        assert_eq!(
+            h.finalize(),
+            Err(GitError::BlobSize {
+                declared: 5,
+                hashed: 3
+            })
+        );
     }
 
     /// Reads a raw git tree back into a `Tree` with placeholder asc ids.
@@ -619,7 +696,13 @@ mod tests {
                 m => panic!("mode {m:?}"),
             };
             let git = GitOid::from_bytes(raw[nul + 1..nul + 21].try_into().unwrap());
-            entries.push(Entry { name: Name::new(&raw[sp + 1..nul]).unwrap(), kind, id: [0; 32], size: 0, git });
+            entries.push(Entry {
+                name: Name::new(&raw[sp + 1..nul]).unwrap(),
+                kind,
+                id: [0; 32],
+                size: 0,
+                git,
+            });
             raw = &raw[nul + 21..];
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -639,9 +722,18 @@ mod tests {
     #[test]
     fn dirs_sort_as_name_slash() {
         let raw = golden("tree_mixed.bin");
-        let names: Vec<_> = tree_from_git(&raw).entries().iter().map(|e| e.name.as_bytes().to_vec()).collect();
+        let names: Vec<_> = tree_from_git(&raw)
+            .entries()
+            .iter()
+            .map(|e| e.name.as_bytes().to_vec())
+            .collect();
         let rendered = render_tree(&tree_from_git(&raw));
-        let pos = |n: &[u8]| rendered.windows(n.len() + 1).position(|w| w[..n.len()] == *n && w[n.len()] == 0).unwrap();
+        let pos = |n: &[u8]| {
+            rendered
+                .windows(n.len() + 1)
+                .position(|w| w[..n.len()] == *n && w[n.len()] == 0)
+                .unwrap()
+        };
         assert!(names.contains(&b"foo".to_vec()));
         assert!(pos(b"foo-bar") < pos(b"foo.txt") && pos(b"foo.txt") < pos(b"foo"));
     }
@@ -664,8 +756,13 @@ mod tests {
             assert_eq!(object_oid(ObjectKind::Commit, &raw), sha, "{file}");
             let p = parse_commit(&raw).unwrap();
             let parents: Vec<_> = (1..).map(cid).take(p.parents.len()).collect();
-            let cs = canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), parents, write_a()).unwrap();
-            assert_eq!(cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()).is_some(), flag == "raw", "{file}");
+            let cs =
+                canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), parents, write_a()).unwrap();
+            assert_eq!(
+                cs.extra.get(&EXTRA_GIT_COMMIT.to_vec()).is_some(),
+                flag == "raw",
+                "{file}"
+            );
             let exported = export_commit(&cs, p.tree, &p.parents).unwrap();
             assert_eq!(exported, raw, "{file}");
             assert_eq!(object_oid(ObjectKind::Commit, &exported), sha, "{file}");
@@ -678,15 +775,32 @@ mod tests {
         assert_eq!(tz.author.tz_min(), 330);
         let neg = parse_commit(&golden("commit_tz_neg.bin")).unwrap();
         assert_eq!(neg.author.tz_min(), -(8 * 60 + 45));
-        assert_eq!(parse_commit(&golden("commit_merge.bin")).unwrap().parents.len(), 2);
+        assert_eq!(
+            parse_commit(&golden("commit_merge.bin"))
+                .unwrap()
+                .parents
+                .len(),
+            2
+        );
         let latin = parse_commit(&golden("commit_non_utf8.bin")).unwrap();
         assert_eq!(latin.author.name(), b"Jos\xe9");
         let signed = parse_commit(&golden("commit_signed.bin")).unwrap();
         let sig = signed.gpgsig.unwrap();
-        assert!(sig.starts_with(b"-----BEGIN SSH SIGNATURE-----\n") && sig.ends_with(b"-----END SSH SIGNATURE-----"));
-        let asc = canonicalise_commit(&golden("commit_asc.bin"), TreeId::from_bytes([9; 32]), vec![], write_a()).unwrap();
+        assert!(
+            sig.starts_with(b"-----BEGIN SSH SIGNATURE-----\n")
+                && sig.ends_with(b"-----END SSH SIGNATURE-----")
+        );
+        let asc = canonicalise_commit(
+            &golden("commit_asc.bin"),
+            TreeId::from_bytes([9; 32]),
+            vec![],
+            write_a(),
+        )
+        .unwrap();
         match &asc.changes.as_slice()[0].1 {
-            Change::Write { copy_from, .. } => assert_eq!(copy_from.as_ref().unwrap().as_bytes(), b"b"),
+            Change::Write { copy_from, .. } => {
+                assert_eq!(copy_from.as_ref().unwrap().as_bytes(), b"b")
+            }
             other => panic!("{other:?}"),
         }
     }
@@ -698,28 +812,50 @@ mod tests {
             assert_eq!(object_oid(ObjectKind::Tag, &raw), sha, "{file}");
             let p = parse_tag(&raw).unwrap();
             let tag = canonicalise_tag(&raw, cid(1)).unwrap();
-            assert_eq!(tag.extra.get(&EXTRA_GIT_TAG.to_vec()).is_some(), flag == "raw", "{file}");
+            assert_eq!(
+                tag.extra.get(&EXTRA_GIT_TAG.to_vec()).is_some(),
+                flag == "raw",
+                "{file}"
+            );
             assert_eq!(export_tag(&tag, p.object).unwrap(), raw, "{file}");
         }
         let signed = parse_tag(&golden("tag_signed.bin")).unwrap();
         assert_eq!(signed.message, b"v2 signed\n");
-        assert!(signed.gpgsig.unwrap().starts_with(b"-----BEGIN SSH SIGNATURE-----\n"));
+        assert!(
+            signed
+                .gpgsig
+                .unwrap()
+                .starts_with(b"-----BEGIN SSH SIGNATURE-----\n")
+        );
     }
 
     #[test]
     fn non_canonical_tag_keeps_raw() {
         let raw = b"object 1111111111111111111111111111111111111111\ntype commit\ntag t\ntagger A<a@x> 1 +0000\n\nmsg\n";
         let tag = canonicalise_tag(raw, cid(1)).unwrap();
-        assert_eq!(tag.extra.get(&EXTRA_GIT_TAG.to_vec()).map(Vec::as_slice), Some(&raw[..]));
+        assert_eq!(
+            tag.extra.get(&EXTRA_GIT_TAG.to_vec()).map(Vec::as_slice),
+            Some(&raw[..])
+        );
     }
 
     fn sample_commit() -> (Vec<u8>, GitOid, Vec<GitOid>, Changeset) {
-        let (t, p1, p2) = (GitOid::from_bytes([1; 20]), GitOid::from_bytes([2; 20]), GitOid::from_bytes([3; 20]));
+        let (t, p1, p2) = (
+            GitOid::from_bytes([1; 20]),
+            GitOid::from_bytes([2; 20]),
+            GitOid::from_bytes([3; 20]),
+        );
         let raw = format!(
             "tree {t}\nparent {p1}\nparent {p2}\nauthor A <a@x> 10 +0000\ncommitter C <c@x> 20 +0100\nencoding ISO-8859-1\n\nmsg\n"
         )
         .into_bytes();
-        let cs = canonicalise_commit(&raw, TreeId::from_bytes([9; 32]), vec![cid(1), cid(2)], write_a()).unwrap();
+        let cs = canonicalise_commit(
+            &raw,
+            TreeId::from_bytes([9; 32]),
+            vec![cid(1), cid(2)],
+            write_a(),
+        )
+        .unwrap();
         (raw, t, vec![p1, p2], cs)
     }
 
@@ -746,15 +882,27 @@ mod tests {
         let (raw, t, parents, cs) = sample_commit();
         assert!(verify_raw_commit(&raw, &cs, t, &parents).is_ok());
         let other = GitOid::from_bytes([7; 20]);
-        assert!(matches!(export_commit(&cs, other, &parents), Err(GitError::RawMismatch("tree"))));
+        assert!(matches!(
+            export_commit(&cs, other, &parents),
+            Err(GitError::RawMismatch("tree"))
+        ));
         let swapped = [parents[1], parents[0]];
-        assert!(matches!(export_commit(&cs, t, &swapped), Err(GitError::RawMismatch("parents"))));
+        assert!(matches!(
+            export_commit(&cs, t, &swapped),
+            Err(GitError::RawMismatch("parents"))
+        ));
         let mut edited = cs.clone();
         edited.message = b"other\n".to_vec();
-        assert!(matches!(export_commit(&edited, t, &parents), Err(GitError::RawMismatch("message"))));
+        assert!(matches!(
+            export_commit(&edited, t, &parents),
+            Err(GitError::RawMismatch("message"))
+        ));
         let mut who = cs;
         who.author = Signature::new(b"Eve".to_vec(), b"e@x".to_vec(), 10, 0).unwrap();
-        assert!(matches!(export_commit(&who, t, &parents), Err(GitError::RawMismatch("author"))));
+        assert!(matches!(
+            export_commit(&who, t, &parents),
+            Err(GitError::RawMismatch("author"))
+        ));
     }
 
     #[test]
@@ -776,7 +924,13 @@ mod tests {
     const C: &str = "committer C <c@x> 20 +0000\n";
 
     fn asc_header(snapshot: bool) -> String {
-        BASE64.encode(&AscGitExtra { copies: SortedMap::new(vec![]).unwrap(), snapshot }.encode())
+        BASE64.encode(
+            &AscGitExtra {
+                copies: SortedMap::new(vec![]).unwrap(),
+                snapshot,
+            }
+            .encode(),
+        )
     }
 
     #[test]
@@ -812,12 +966,28 @@ mod tests {
         let (raw, t, parents, cs) = sample_commit();
         let mut signed = cs.clone();
         signed.extra = SortedMap::new(vec![(EXTRA_GIT_GPGSIG.to_vec(), b"sig".to_vec())]).unwrap();
-        assert!(matches!(verify_raw_commit(&raw, &signed, t, &parents), Err(GitError::RawMismatch("gpgsig"))));
-        let with_sig = String::from_utf8(raw.clone()).unwrap().replacen("encoding", "gpgsig sig\nencoding", 1);
-        assert!(matches!(verify_raw_commit(with_sig.as_bytes(), &cs, t, &parents), Err(GitError::RawMismatch("gpgsig"))));
+        assert!(matches!(
+            verify_raw_commit(&raw, &signed, t, &parents),
+            Err(GitError::RawMismatch("gpgsig"))
+        ));
+        let with_sig =
+            String::from_utf8(raw.clone())
+                .unwrap()
+                .replacen("encoding", "gpgsig sig\nencoding", 1);
+        assert!(matches!(
+            verify_raw_commit(with_sig.as_bytes(), &cs, t, &parents),
+            Err(GitError::RawMismatch("gpgsig"))
+        ));
         assert!(verify_raw_commit(with_sig.as_bytes(), &signed, t, &parents).is_ok());
-        let with_asc = String::from_utf8(raw).unwrap().replacen("encoding", &format!("asc {}\nencoding", asc_header(true)), 1);
-        assert!(matches!(verify_raw_commit(with_asc.as_bytes(), &cs, t, &parents), Err(GitError::RawMismatch("asc"))));
+        let with_asc = String::from_utf8(raw).unwrap().replacen(
+            "encoding",
+            &format!("asc {}\nencoding", asc_header(true)),
+            1,
+        );
+        assert!(matches!(
+            verify_raw_commit(with_asc.as_bytes(), &cs, t, &parents),
+            Err(GitError::RawMismatch("asc"))
+        ));
         let mut snap = cs;
         snap.extra = SortedMap::new(vec![(EXTRA_SNAPSHOT.to_vec(), Vec::new())]).unwrap();
         assert!(verify_raw_commit(with_asc.as_bytes(), &snap, t, &parents).is_ok());
@@ -846,13 +1016,19 @@ mod tests {
         let target = GitOid::from_bytes([0x11; 20]);
         let tree_tag = format!("{o}type tree\n{tg}\nm");
         let rec = canonicalise_tag(tree_tag.as_bytes(), cid(1)).unwrap();
-        assert!(matches!(verify_raw_tag(tree_tag.as_bytes(), &rec, target), Err(GitError::RawMismatch("type"))));
+        assert!(matches!(
+            verify_raw_tag(tree_tag.as_bytes(), &rec, target),
+            Err(GitError::RawMismatch("type"))
+        ));
         let sig = "-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----\n";
         let raw = format!("{o}{ty}{tg}\nm\n{sig}");
         let mut rec = canonicalise_tag(raw.as_bytes(), cid(1)).unwrap();
         assert!(verify_raw_tag(raw.as_bytes(), &rec, target).is_ok());
         rec.extra = SortedMap::new(vec![]).unwrap();
-        assert!(matches!(verify_raw_tag(raw.as_bytes(), &rec, target), Err(GitError::RawMismatch("gpgsig"))));
+        assert!(matches!(
+            verify_raw_tag(raw.as_bytes(), &rec, target),
+            Err(GitError::RawMismatch("gpgsig"))
+        ));
     }
 
     #[test]
@@ -869,10 +1045,25 @@ mod tests {
     }
 
     fn arb_sig() -> impl Strategy<Value = Signature> {
-        let name = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
-        let email = prop::collection::vec(prop::sample::select((1u8..=255).filter(|c| !b"<>\n".contains(c)).collect::<Vec<_>>()), 0..12);
-        (name, email, any::<i64>(), -5999i16..=5999)
-            .prop_map(|(name, email, time, tz_min)| Signature::new(name, email, time, tz_min).unwrap())
+        let name = prop::collection::vec(
+            prop::sample::select(
+                (1u8..=255)
+                    .filter(|c| !b"<>\n".contains(c))
+                    .collect::<Vec<_>>(),
+            ),
+            0..12,
+        );
+        let email = prop::collection::vec(
+            prop::sample::select(
+                (1u8..=255)
+                    .filter(|c| !b"<>\n".contains(c))
+                    .collect::<Vec<_>>(),
+            ),
+            0..12,
+        );
+        (name, email, any::<i64>(), -5999i16..=5999).prop_map(|(name, email, time, tz_min)| {
+            Signature::new(name, email, time, tz_min).unwrap()
+        })
     }
 
     fn arb_path() -> impl Strategy<Value = RepoPath> {
@@ -881,7 +1072,10 @@ mod tests {
 
     fn arb_changeset() -> impl Strategy<Value = (Changeset, GitOid, Vec<GitOid>)> {
         let oid = any::<[u8; 20]>().prop_map(GitOid::from_bytes);
-        let sigblock = prop::option::of(prop::collection::vec(prop::collection::vec(any::<u8>().prop_filter("no LF", |c| *c != b'\n'), 0..20), 1..4));
+        let sigblock = prop::option::of(prop::collection::vec(
+            prop::collection::vec(any::<u8>().prop_filter("no LF", |c| *c != b'\n'), 0..20),
+            1..4,
+        ));
         (
             prop::collection::vec((arb_path(), prop::option::of(arb_path())), 0..5),
             arb_sig(),
@@ -893,33 +1087,51 @@ mod tests {
             prop::collection::vec(oid, 0..3),
             any::<[u8; 32]>(),
         )
-            .prop_map(|(files, author, committer, message, sig, snapshot, root_git, parent_gits, root)| {
-                let files: std::collections::BTreeMap<_, _> = files.into_iter().collect();
-                let changes = files
-                    .into_iter()
-                    .map(|(p, copy_from)| {
-                        let w = Change::Write { kind: Kind::File, file: crate::id::FileId::of(p.as_bytes()), size: 1, git: root_git, copy_from };
-                        (p, w)
-                    })
-                    .collect();
-                let mut extra = Vec::new();
-                if snapshot {
-                    extra.push((EXTRA_SNAPSHOT.to_vec(), Vec::new()));
-                }
-                if let Some(lines) = sig {
-                    extra.push((EXTRA_GIT_GPGSIG.to_vec(), lines.join(&b'\n')));
-                }
-                let cs = Changeset {
-                    parents: (0..parent_gits.len() as u8).map(cid).collect(),
-                    root: TreeId::from_bytes(root),
+            .prop_map(
+                |(
+                    files,
                     author,
                     committer,
                     message,
-                    extra: SortedMap::new(extra).unwrap(),
-                    changes: SortedMap::new(changes).unwrap(),
-                };
-                (cs, root_git, parent_gits)
-            })
+                    sig,
+                    snapshot,
+                    root_git,
+                    parent_gits,
+                    root,
+                )| {
+                    let files: std::collections::BTreeMap<_, _> = files.into_iter().collect();
+                    let changes = files
+                        .into_iter()
+                        .map(|(p, copy_from)| {
+                            let w = Change::Write {
+                                kind: Kind::File,
+                                file: crate::id::FileId::of(p.as_bytes()),
+                                size: 1,
+                                git: root_git,
+                                copy_from,
+                            };
+                            (p, w)
+                        })
+                        .collect();
+                    let mut extra = Vec::new();
+                    if snapshot {
+                        extra.push((EXTRA_SNAPSHOT.to_vec(), Vec::new()));
+                    }
+                    if let Some(lines) = sig {
+                        extra.push((EXTRA_GIT_GPGSIG.to_vec(), lines.join(&b'\n')));
+                    }
+                    let cs = Changeset {
+                        parents: (0..parent_gits.len() as u8).map(cid).collect(),
+                        root: TreeId::from_bytes(root),
+                        author,
+                        committer,
+                        message,
+                        extra: SortedMap::new(extra).unwrap(),
+                        changes: SortedMap::new(changes).unwrap(),
+                    };
+                    (cs, root_git, parent_gits)
+                },
+            )
     }
 
     proptest! {

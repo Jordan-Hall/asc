@@ -54,7 +54,12 @@ impl Signature {
         if !clean(&email) {
             return Err(SigError::Email);
         }
-        Ok(Self { name, email, time, tz_min })
+        Ok(Self {
+            name,
+            email,
+            time,
+            tz_min,
+        })
     }
 
     pub fn name(&self) -> &[u8] {
@@ -83,8 +88,14 @@ mod tests {
     #[test]
     fn rejects_injection_bytes() {
         for bad in [&b"a\nb"[..], b"a<b", b"a>b", b"a\0b"] {
-            assert_eq!(Signature::new(bad.to_vec(), b"e".to_vec(), 0, 0), Err(SigError::Name));
-            assert_eq!(Signature::new(b"n".to_vec(), bad.to_vec(), 0, 0), Err(SigError::Email));
+            assert_eq!(
+                Signature::new(bad.to_vec(), b"e".to_vec(), 0, 0),
+                Err(SigError::Name)
+            );
+            assert_eq!(
+                Signature::new(b"n".to_vec(), bad.to_vec(), 0, 0),
+                Err(SigError::Email)
+            );
         }
         assert!(Signature::new(b"Jos\xe9 A".to_vec(), b"a@b".to_vec(), 1, 60).is_ok());
     }
@@ -99,10 +110,19 @@ mod tests {
             tz_min: i16,
         }
         let wire = |name: &[u8]| {
-            postcard::to_allocvec(&Wire { name: name.to_vec(), email: b"e".to_vec(), time: 1, tz_min: 0 }).unwrap()
+            postcard::to_allocvec(&Wire {
+                name: name.to_vec(),
+                email: b"e".to_vec(),
+                time: 1,
+                tz_min: 0,
+            })
+            .unwrap()
         };
         let ok: Signature = postcard::from_bytes(&wire(b"n")).unwrap();
-        assert_eq!(ok, Signature::new(b"n".to_vec(), b"e".to_vec(), 1, 0).unwrap());
+        assert_eq!(
+            ok,
+            Signature::new(b"n".to_vec(), b"e".to_vec(), 1, 0).unwrap()
+        );
         assert!(postcard::from_bytes::<Signature>(&wire(b"n\nparent x")).is_err());
         assert_eq!(postcard::to_allocvec(&ok).unwrap(), wire(b"n"));
     }
