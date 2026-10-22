@@ -21,7 +21,7 @@ use asc_core::git::{
 };
 use asc_core::id::{ChangesetId, FileId, GitOid, TagId, TreeId};
 use asc_core::object::{AscGitExtra, Entry, Kind, ObjectError, Tree};
-use asc_core::path::{Name, PathError};
+use asc_core::path::{MAX_TREE_DEPTH, Name, PathError};
 use asc_engine::Engine;
 use asc_engine::commit::{self, PathPolicy};
 use asc_engine::derive::{self, Derived, Gen, GitCommit, GitMapRow, GitMapSink};
@@ -66,6 +66,13 @@ pub enum ImportError {
     BadTree(GitOid, &'static str),
     #[error("tree {0} has an entry name asc cannot hold: {1}")]
     BadName(GitOid, PathError),
+    #[error("tree {0} nests deeper than {MAX_TREE_DEPTH} levels")]
+    TreeTooDeep(GitOid),
+    #[error("git tree {oid} does not describe the asc tree built from it: {source}")]
+    BadOverride {
+        oid: GitOid,
+        source: crate::tree_override::OverrideError,
+    },
     #[error("tree {0} is an empty directory, which asc cannot represent")]
     EmptyDir(GitOid),
     #[error("commit {0} has an unknown asc header version {1}: upgrade asc")]
@@ -303,6 +310,13 @@ fn check_asc_version(oid: GitOid, raw: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// An override must list exactly the entries of the asc tree it is stored for (U33): a mismatch
+/// means the git tree does not describe the asc tree, which is a hard error.
+fn check_override(git: GitOid, raw: &[u8], tree: &Tree) -> Result<()> {
+    crate::tree_override::verify(raw, tree)
+        .map_err(|source| ImportError::BadOverride { oid: git, source })
+}
+
 // ----------------------------------------------------------------------- plan
 
 /// What a directory of the new tree needs, relative to the first parent's git tree.
@@ -323,6 +337,48 @@ enum Plan {
     Dir(Box<DirPlan>),
 }
 
+/// One directory being planned: its entries so far and the next one to look at.
+struct PlanFrame {
+    oid: GitOid,
+    new: GitTree,
+    old: Option<GitTree>,
+    next: usize,
+    entries: Vec<(Name, Plan)>,
+}
+
+/// Opens a directory for planning, or returns its finished plan when it equals the parent's.
+fn open_dir(
+    odb: &Odb,
+    oid: GitOid,
+    parent: Option<GitOid>,
+    is_root: bool,
+) -> Result<std::result::Result<PlanFrame, DirPlan>> {
+    if parent == Some(oid) {
+        return Ok(Err(DirPlan {
+            git: oid,
+            same: true,
+            raw_override: None,
+            entries: Vec::new(),
+        }));
+    }
+    let new = read_git_tree(odb, oid)?;
+    if new.tree.entries().is_empty() && !is_root {
+        return Err(ImportError::EmptyDir(oid));
+    }
+    let old = parent.map(|p| read_git_tree(odb, p)).transpose()?;
+    let entries = Vec::with_capacity(new.tree.entries().len());
+    Ok(Ok(PlanFrame {
+        oid,
+        new,
+        old,
+        next: 0,
+        entries,
+    }))
+}
+
+/// Plans a directory and those below it with an explicit stack, so a crafted deep tree cannot
+/// overflow the call stack. Nesting past [`MAX_TREE_DEPTH`] levels fails with `TreeTooDeep`.
+/// (`RepoPath` has no length limit that would bound the depth indirectly.)
 fn plan_dir(
     odb: &Odb,
     oid: GitOid,
@@ -330,44 +386,63 @@ fn plan_dir(
     is_root: bool,
     blobs: &mut Vec<GitOid>,
 ) -> Result<DirPlan> {
-    if parent == Some(oid) {
-        return Ok(DirPlan {
-            git: oid,
-            same: true,
-            raw_override: None,
-            entries: Vec::new(),
-        });
-    }
-    let new = read_git_tree(odb, oid)?;
-    if new.tree.entries().is_empty() && !is_root {
-        return Err(ImportError::EmptyDir(oid));
-    }
-    let old = parent.map(|p| read_git_tree(odb, p)).transpose()?;
-    let mut entries = Vec::with_capacity(new.tree.entries().len());
-    for e in new.tree.entries() {
-        let before = old.as_ref().and_then(|t| t.tree.get(&e.name));
-        let plan = match before {
-            Some(b) if b.kind == e.kind && b.git == e.git => Plan::Same,
+    let mut stack = match open_dir(odb, oid, parent, is_root)? {
+        Ok(frame) => vec![frame],
+        Err(done) => return Ok(done),
+    };
+    loop {
+        let Some(top) = stack.last_mut() else {
+            unreachable!("the loop returns when the last frame finishes")
+        };
+        let Some(e) = top.new.tree.entries().get(top.next) else {
+            let frame = stack.pop().ok_or(ImportError::Inconsistent(oid))?;
+            let done = DirPlan {
+                git: frame.oid,
+                same: false,
+                raw_override: frame.new.raw_if_odd,
+                entries: frame.entries,
+            };
+            match stack.last_mut() {
+                None => return Ok(done),
+                Some(parent_frame) => {
+                    let name = parent_frame.new.tree.entries()[parent_frame.next - 1]
+                        .name
+                        .clone();
+                    parent_frame.entries.push((name, Plan::Dir(Box::new(done))));
+                    continue;
+                }
+            }
+        };
+        top.next += 1;
+        let before = top.old.as_ref().and_then(|t| t.tree.get(&e.name));
+        match before {
+            Some(b) if b.kind == e.kind && b.git == e.git => {
+                top.entries.push((e.name.clone(), Plan::Same));
+            }
             _ => match e.kind {
                 Kind::Dir => {
                     let under = before.filter(|b| b.kind == Kind::Dir).map(|b| b.git);
-                    Plan::Dir(Box::new(plan_dir(odb, e.git, under, false, blobs)?))
+                    let child = e.git;
+                    if stack.len() > MAX_TREE_DEPTH {
+                        return Err(ImportError::TreeTooDeep(child));
+                    }
+                    match open_dir(odb, child, under, false)? {
+                        Ok(frame) => stack.push(frame),
+                        Err(done) => {
+                            let Some(f) = stack.last_mut() else { continue };
+                            let name = f.new.tree.entries()[f.next - 1].name.clone();
+                            f.entries.push((name, Plan::Dir(Box::new(done))));
+                        }
+                    }
                 }
-                Kind::Gitlink => Plan::Gitlink(e.git),
+                Kind::Gitlink => top.entries.push((e.name.clone(), Plan::Gitlink(e.git))),
                 kind => {
                     blobs.push(e.git);
-                    Plan::Blob(kind, e.git)
+                    top.entries.push((e.name.clone(), Plan::Blob(kind, e.git)));
                 }
             },
-        };
-        entries.push((e.name.clone(), plan));
+        }
     }
-    Ok(DirPlan {
-        git: oid,
-        same: false,
-        raw_override: new.raw_if_odd,
-        entries,
-    })
 }
 
 /// A commit read and planned, ready to build.
@@ -750,7 +825,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
                 entries.push(entry);
             }
             let size = entries.iter().fold(0u64, |s, e| s.saturating_add(e.size));
-            let id = self.engine.put_tree(Tree::new(entries, is_root)?).await?;
+            let tree = Tree::new(entries, is_root)?;
+            if let Some(raw) = &plan.raw_override {
+                check_override(plan.git, raw, &tree)?;
+            }
+            let id = self.engine.put_tree(tree).await?;
             if let Some(raw) = &plan.raw_override {
                 self.objects
                     .put(&ObjKey::GitTreeOverride(plan.git), encode_stored(raw))
@@ -912,4 +991,75 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
 struct TagJob {
     raw: Vec<u8>,
     target: GitOid,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asc_core::git::ObjectKind;
+
+    fn entry(name: &str, seed: u8) -> Entry {
+        Entry {
+            name: Name::new(name).unwrap(),
+            kind: Kind::File,
+            id: [seed; 32],
+            size: 1,
+            git: GitOid::from_bytes([seed; 20]),
+        }
+    }
+
+    #[test]
+    fn override_that_does_not_match_the_tree_is_a_hard_error() {
+        let tree = Tree::new(vec![entry("a", 1), entry("b", 2)], true).unwrap();
+        let other = Tree::new(vec![entry("a", 1), entry("c", 2)], true).unwrap();
+        let canon = render_tree(&tree);
+        check_override(GitOid::from_bytes([9; 20]), &canon, &tree).unwrap();
+        assert!(matches!(
+            check_override(GitOid::from_bytes([9; 20]), &canon, &other),
+            Err(ImportError::BadOverride { .. })
+        ));
+    }
+
+    /// Writes a chain of `levels` nested directories and returns the root tree oid.
+    fn chain(odb: &Odb, levels: usize) -> GitOid {
+        let blob = odb.write_loose(ObjectKind::Blob, b"x").unwrap();
+        let mut body = [b"100644 f ".as_slice(), blob.as_bytes()].concat();
+        let mut oid = odb.write_loose(ObjectKind::Tree, &body).unwrap();
+        for _ in 1..levels {
+            body = [b"40000 d ".as_slice(), oid.as_bytes()].concat();
+            oid = odb.write_loose(ObjectKind::Tree, &body).unwrap();
+        }
+        oid
+    }
+
+    fn plan_on_small_stack(levels: usize) -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let odb = Odb::open(dir.path()).unwrap();
+        let root = chain(&odb, levels);
+        std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || plan_dir(&odb, root, None, true, &mut Vec::new()).map(|_| ()))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn plan_rejects_3000_levels_without_overflowing() {
+        assert!(matches!(
+            plan_on_small_stack(3000),
+            Err(ImportError::TreeTooDeep(_))
+        ));
+    }
+
+    #[test]
+    fn plan_accepts_100_levels() {
+        plan_on_small_stack(100).unwrap();
+    }
 }

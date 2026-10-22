@@ -49,6 +49,13 @@ impl Name {
     }
 }
 
+/// Deepest tree nesting asc walks, in directory levels below the root.
+///
+/// Matches git's `core.maxTreeDepth` default on Windows. [`RepoPath`] has no length limit of its
+/// own, so this bound is what keeps every recursive tree walker (import, export, apply, diff)
+/// within the stack. A tree deeper than this is rejected, not truncated.
+pub const MAX_TREE_DEPTH: usize = 2048;
+
 /// One or more [`Name`]s joined by `/`; ordered by raw bytes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RepoPath(Vec<u8>);
