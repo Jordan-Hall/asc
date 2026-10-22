@@ -29,4 +29,6 @@ jobs:
       - run: bash build/lint/no-main.sh
       - run: bash build/lint/no-raw-git.sh --self-test
       - run: bash build/lint/no-raw-git.sh
+      - run: bash build/lint/no-raw-worktree-fs.sh --self-test
+      - run: bash build/lint/no-raw-worktree-fs.sh
       - run: cargo test --workspace

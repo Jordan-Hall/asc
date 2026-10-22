@@ -345,8 +345,9 @@ fn exec_path_dirs(ctx: &Ctx) -> Vec<PathBuf> {
     };
     let mut out = Vec::new();
     if let Some(root) = real.git_for_windows_root() {
-        out.push(root.join("mingw64").join("libexec").join("git-core"));
-        out.push(root.join("libexec").join("git-core"));
+        // The Git for Windows install, not a work tree.
+        out.push(root.join("mingw64").join("libexec").join("git-core")); // lint:allow-worktree-fs
+        out.push(root.join("libexec").join("git-core")); // lint:allow-worktree-fs
     }
     if let Some(prefix) = real.path().parent().and_then(Path::parent) {
         out.push(prefix.join("libexec").join("git-core"));
