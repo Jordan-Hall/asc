@@ -117,3 +117,11 @@ Scion's efficiency model is the core of asc, not an optional later step. The fol
 - **Commands:** `asc check-ignore -v` reports which file and line matched. `asc init` creates a `.ascignore`. `asc migrate ignore` renames or copies `.gitignore` to `.ascignore`.
 - **Git mirror export** carries both files as ordinary tracked content.
 - **Same pattern for attributes:** `.ascattributes` first, with `.gitattributes` as fallback.
+
+## Own Actions fork: CI uses asc, not git (user decision, 2026-10-22)
+- **Fork the core actions to speak asc:** `checkout`, `cache` and `upload/download-artifact`, mirrored under `asc/actions` on Forgejo, plus new `asc/setup`, `asc/affected` and `asc/turbo-cache`.
+  - `checkout` calls `asc ci checkout` with virtual, sparse or plain modes and falls back to git only for repos that are not asc.
+  - `cache` and artifacts store their data in the asc object store, so the CAS dedupes it.
+- **Transparent adoption.** Point the Forgejo fork's `[actions] DEFAULT_ACTIONS_URL` at the mirror, and add a runner-fork alias table: `actions/checkout@*` maps to `asc/actions/checkout`. Existing workflows then switch with no YAML edits.
+- **Runner-native fast path.** The runner fork recognises the checkout action and runs the asc checkout provider on the host, which shares the daemon cache, instead of running a node action in the container.
+- **Same inputs and outputs as upstream** (`ref`, `fetch-depth`, `path`, `submodules`, `lfs`, `sparse-checkout`), mapped to asc semantics. Upstream workflows keep working.
