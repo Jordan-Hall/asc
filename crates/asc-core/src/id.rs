@@ -111,23 +111,33 @@ fn derive(ctx: &str, bytes: &[u8]) -> [u8; 32] {
 
 impl FileId {
     /// Hashes a whole file held in memory.
-    pub fn of(bytes: &[u8]) -> Self { Self(derive(context::FILE, bytes)) }
+    pub fn of(bytes: &[u8]) -> Self {
+        Self(derive(context::FILE, bytes))
+    }
 }
 impl ChunkId {
     /// Hashes one chunk.
-    pub fn of(bytes: &[u8]) -> Self { Self(derive(context::CHUNK, bytes)) }
+    pub fn of(bytes: &[u8]) -> Self {
+        Self(derive(context::CHUNK, bytes))
+    }
 }
 impl TreeId {
     /// Hashes a canonical tree envelope.
-    pub fn of(envelope: &[u8]) -> Self { Self(derive(context::TREE, envelope)) }
+    pub fn of(envelope: &[u8]) -> Self {
+        Self(derive(context::TREE, envelope))
+    }
 }
 impl ChangesetId {
     /// Hashes a canonical changeset envelope.
-    pub fn of(envelope: &[u8]) -> Self { Self(derive(context::CHANGESET, envelope)) }
+    pub fn of(envelope: &[u8]) -> Self {
+        Self(derive(context::CHANGESET, envelope))
+    }
 }
 impl TagId {
     /// Hashes a canonical tag envelope.
-    pub fn of(envelope: &[u8]) -> Self { Self(derive(context::TAG, envelope)) }
+    pub fn of(envelope: &[u8]) -> Self {
+        Self(derive(context::TAG, envelope))
+    }
 }
 
 /// Streaming [`FileId`] hasher; constant memory regardless of file size.
@@ -135,18 +145,24 @@ pub struct FileHasher(blake3::Hasher);
 
 impl FileHasher {
     /// Starts a new file hash.
-    pub fn new() -> Self { Self(blake3::Hasher::new_derive_key(context::FILE)) }
+    pub fn new() -> Self {
+        Self(blake3::Hasher::new_derive_key(context::FILE))
+    }
     /// Feeds more content.
     pub fn update(&mut self, bytes: &[u8]) -> &mut Self {
         self.0.update(bytes);
         self
     }
     /// Finishes and returns the id.
-    pub fn finalize(&self) -> FileId { FileId(*self.0.finalize().as_bytes()) }
+    pub fn finalize(&self) -> FileId {
+        FileId(*self.0.finalize().as_bytes())
+    }
 }
 
 impl Default for FileHasher {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A hex prefix of at least 4 characters, for abbreviated id lookup.
@@ -192,7 +208,9 @@ impl HexPrefix {
 
 impl FromStr for HexPrefix {
     type Err = IdError;
-    fn from_str(s: &str) -> Result<Self, IdError> { Self::parse(s) }
+    fn from_str(s: &str) -> Result<Self, IdError> {
+        Self::parse(s)
+    }
 }
 
 /// What a ref points at; stored as 33 bytes, `kind ‖ id`.
@@ -278,7 +296,12 @@ mod tests {
         assert_eq!(s.to_uppercase().parse::<FileId>().unwrap(), id);
         assert_eq!(id.short(), &s[..12]);
         assert!("abcd".parse::<FileId>().is_err());
-        assert!(GitOid::from_bytes([7; 20]).to_string().parse::<GitOid>().is_ok());
+        assert!(
+            GitOid::from_bytes([7; 20])
+                .to_string()
+                .parse::<GitOid>()
+                .is_ok()
+        );
     }
 
     #[test]

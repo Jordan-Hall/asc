@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 596e06ac9d8165d9dc025547f2f510589c83692784d8b0e0495e24ec6d59c0af # shrinks to x = Changeset { parents: [], root: TreeId(000000000000), author: Signature { name: [], email: [], time: 0, tz_min: 0 }, committer: Signature { name: [], email: [], time: 0, tz_min: 0 }, message: [], extra: {}, changes: {RepoPath([1]): Write { kind: Symlink, file: FileId(000000000000), size: 0, git: GitOid(000000000000), lfs: Some(LfsRef { sha256: [129, 185, 124, 134, 53, 245, 253, 89, 136, 244, 212, 218, 220, 88, 170, 98, 232, 167, 20, 145, 242, 88, 194, 84, 221, 208, 64, 147, 88, 124, 69, 203], size: 15553255696782830969 }), copy_from: None }} }
