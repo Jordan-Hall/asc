@@ -70,12 +70,26 @@ impl TokenBucket {
         ))
     }
 
-    /// Charges `cost` tokens unconditionally. The balance may go negative (down to one burst of
-    /// debt), so later takes are refused until the debt has refilled. For bytes that already
-    /// exist and cannot be refused, such as a response that is being streamed.
-    pub fn debit(&mut self, cost: u64, now: Instant) {
+    /// Takes `cost` tokens with no clamp, for bytes whose size the caller does not choose, such
+    /// as the frames of a body. A `cost` within the burst needs the balance to cover it, as for
+    /// [`try_take`](Self::try_take). A larger one could never be covered, so it needs half a burst
+    /// instead. Either way the full `cost` is taken: the balance goes negative and the debt
+    /// is repaid at `rate` before the next take. Nothing is cheaper than its size.
+    pub fn take_overdraft(&mut self, cost: u64, now: Instant) -> Result<(), Shed> {
         self.refill(now);
-        self.tokens = (self.tokens - cost as f64).max(-self.capacity);
+        let need = if cost as f64 > self.capacity {
+            self.capacity / 2.0
+        } else {
+            cost as f64
+        };
+        if self.tokens >= need {
+            self.tokens -= cost as f64;
+            return Ok(());
+        }
+        let wait = (need - self.tokens) / self.rate;
+        Err(Shed::after(
+            Duration::from_secs_f64(wait).max(Duration::from_millis(1)),
+        ))
     }
 
     fn is_full(&mut self, now: Instant) -> bool {
@@ -144,10 +158,9 @@ impl<K: Hash + Eq + Clone> KeyedLimiter<K> {
         self.with_bucket(key, now, |b| b.try_take(cost, now))
     }
 
-    /// Charges `cost` to `key` even when that overdraws it (see [`TokenBucket::debit`]).
-    pub fn debit(&self, key: &K, cost: u64) {
-        let now = Instant::now();
-        self.with_bucket(key, now, |b| b.debit(cost, now));
+    /// As [`TokenBucket::take_overdraft`] for `key`: the full `cost` is charged, as debt if need be.
+    pub fn charge_at(&self, key: &K, cost: u64, now: Instant) -> Result<(), Shed> {
+        self.with_bucket(key, now, |b| b.take_overdraft(cost, now))
     }
 
     fn with_bucket<R>(&self, key: &K, now: Instant, f: impl FnOnce(&mut TokenBucket) -> R) -> R {
@@ -304,13 +317,33 @@ mod tests {
     }
 
     #[test]
-    fn debit_overdraws_and_refuses_until_repaid() {
+    fn an_oversized_cost_is_charged_in_full_as_debt() {
         let t0 = Instant::now();
-        let mut b = TokenBucket::new(10, 5, t0);
-        b.debit(1_000, t0);
-        assert!(b.try_take(1, t0).is_err());
-        // Debt is capped at one burst, so it is repaid within burst/rate plus the cost.
-        b.try_take(1, t0 + Duration::from_millis(600)).unwrap();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut b = TokenBucket::new(1000, 1000, t0);
+        // Three bursts at once: allowed from a full bucket, but it costs three bursts.
+        b.take_overdraft(3000, t0).unwrap();
+        assert!(b.try_take(1, at(1900)).is_err(), "2000 of debt needs 2 s");
+        assert!(b.take_overdraft(1, at(1900)).is_err());
+        b.try_take(1, at(2100)).unwrap();
+    }
+
+    #[test]
+    fn an_oversized_cost_needs_half_a_bucket() {
+        let t0 = Instant::now();
+        let mut b = TokenBucket::new(1000, 1000, t0);
+        b.try_take(600, t0).unwrap();
+        let shed = b.take_overdraft(3000, t0).unwrap_err();
+        assert!(shed.retry_after >= Duration::from_millis(90));
+    }
+
+    #[test]
+    fn an_overdraft_that_fits_costs_what_a_take_costs() {
+        let t0 = Instant::now();
+        let mut b = TokenBucket::new(1000, 1000, t0);
+        b.take_overdraft(600, t0).unwrap();
+        assert!(b.take_overdraft(600, t0).is_err());
+        b.take_overdraft(400, t0).unwrap();
     }
 
     #[test]
