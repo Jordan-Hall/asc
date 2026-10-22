@@ -15,3 +15,4 @@ These are requirements that fixes in earlier units created for later units. Ever
 - **`GitTreeOverride` value** is the git tree object body without the `tree <len>\0` header, verified by `object_oid(Tree, body) == oid`. SPEC §3.3 must say so.
 - **`canonicalise_tag`** must reject `type` other than `commit` at import, not only at export.
 - **`parse_tag` rejects unknown headers.** This is stricter than git. If an imported history tag has extra headers, keep it raw instead of failing the import.
+- **Import round-trip invariant (asc-git import, U33):** after building each changeset from a raw git commit or tag, call `export_commit`/`export_tag`. Store it only if the result equals the original raw bytes (same SHA-1). Otherwise fail the import of that object. An `asc` header whose copies do not map to `Change::Write` entries is rejected this way, so nothing unexportable is ever stored.
