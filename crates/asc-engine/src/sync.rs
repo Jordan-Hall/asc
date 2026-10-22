@@ -78,6 +78,12 @@ pub enum Error {
     Inconsistent(ChangesetId),
     #[error("remote: {0}")]
     Remote(String),
+    /// Deciding a fast-forward needed more history than `asc.fetch.ancestryBudget` allows.
+    #[error(
+        "cannot tell whether {name} fast-forwards: more than {budget} changesets of history \
+         would have to be fetched (raise asc.fetch.ancestryBudget or fetch with --unshallow)"
+    )]
+    AncestryBudget { name: String, budget: usize },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -280,7 +286,13 @@ pub struct SyncOptions<'a> {
     pub seed: Option<&'a dyn SeedUnpack>,
     /// Extension hook (C23); a no-op by default.
     pub ext: &'a dyn SyncExt,
+    /// Most changesets a fast-forward check may visit or fetch beyond the local window
+    /// (`asc.fetch.ancestryBudget`); beyond it the ref move fails with `AncestryBudget`.
+    pub ancestry_budget: usize,
 }
+
+/// Default for [`SyncOptions::ancestry_budget`].
+pub const DEFAULT_ANCESTRY_BUDGET: usize = 100_000;
 
 /// Extension point for sync (a no-op by default; C23 implements it).
 pub trait SyncExt: Send + Sync {
@@ -306,6 +318,7 @@ impl<'a> SyncOptions<'a> {
             demote: None,
             seed: None,
             ext: &NoSyncExt,
+            ancestry_budget: DEFAULT_ANCESTRY_BUDGET,
         }
     }
 }
@@ -563,18 +576,32 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         Ok((out, claims))
     }
 
-    /// The `gen.v1` memos already stored for `ids`.
-    async fn local_gens(&self, ids: &[ChangesetId]) -> Result<HashMap<ChangesetId, u32>> {
-        let mut out = HashMap::new();
-        for &id in ids {
+    /// The generations of `ids` that are known from local bodies, and the ids whose body is
+    /// local at all. A stored memo is used as is; a body without a memo has its generation
+    /// derived from the body (and its local ancestors) when that is possible.
+    async fn local_gens(
+        &self,
+        ids: &[ChangesetId],
+    ) -> Result<(HashMap<ChangesetId, u32>, HashSet<ChangesetId>)> {
+        let keys: Vec<ObjKey> = ids.iter().map(|&i| ObjKey::Changeset(i)).collect();
+        let has = self.local_has(&keys).await?;
+        let mut gens = HashMap::new();
+        let mut bodies = HashSet::new();
+        for (&id, present) in ids.iter().zip(has) {
+            if !present {
+                continue;
+            }
+            bodies.insert(id);
             if let Some(b) =
                 crate::derive::read_memo(&*self.objects, &derived_key::<Gen>(id)).await?
                 && let Ok(g) = Gen::decode(&b)
             {
-                out.insert(id, g.generation);
+                gens.insert(id, g.generation);
+            } else if let Ok(g) = self.get_derived::<Gen>(id).await {
+                gens.insert(id, g.generation);
             }
         }
-        Ok(out)
+        Ok((gens, bodies))
     }
 
     /// Checks remote generation claims against locally verified bodies and stores the ones
@@ -601,7 +628,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .filter(|p| !in_set.contains_key(p))
             .collect();
         dedup(&mut external);
-        let local = self.local_gens(&external).await?;
+        let (local, local_bodies) = self.local_gens(&external).await?;
         // Kahn's algorithm over the in-set edges: parents are checked before children.
         let mut waiting: Vec<usize> = vec![0; claims.len()];
         let mut children: Vec<Vec<usize>> = vec![Vec::new(); claims.len()];
@@ -639,7 +666,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             }
             let outside = parents
                 .iter()
-                .any(|p| !in_set.contains_key(p) && !local.contains_key(p));
+                .any(|p| !in_set.contains_key(p) && !local_bodies.contains(p));
             if !unknown {
                 if *claim == max.saturating_add(1) {
                     value[i] = Some(*claim);
@@ -777,7 +804,12 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         let graph = self.sync_graph(remote, opts.boundaries).await?;
         let mut txn = Vec::new();
         for (dst, old, new, force) in changed {
-            if !force && old.is_some() && !self.fast_forward(remote, &graph, old, new).await {
+            if !force
+                && old.is_some()
+                && !self
+                    .fast_forward(remote, &graph, &dst, old, new, opts)
+                    .await?
+            {
                 report.rejected.push(dst);
                 continue;
             }
@@ -814,44 +846,85 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 
     /// True when `old -> new` moves a changeset forward (a tag never fast-forwards).
-    /// Decided from locally verified bodies, never from the remote's answer.
+    /// Decided from locally verified bodies, never from the remote's answer. Fails with
+    /// `AncestryBudget` when the answer would cost more than the budget.
     async fn fast_forward<S: graph::GraphSource>(
         &self,
         remote: &dyn Remote,
         graph: &Graph<S>,
+        name: &RefName,
         old: Option<RefTarget>,
         new: RefTarget,
-    ) -> bool {
+        opts: &SyncOptions<'_>,
+    ) -> Result<bool> {
         match (old, new) {
-            (Some(RefTarget::Changeset(o)), RefTarget::Changeset(n)) => self
-                .local_ancestor(remote, graph, o, n)
-                .await
-                .unwrap_or(false),
-            _ => false,
+            (Some(RefTarget::Changeset(o)), RefTarget::Changeset(n)) => {
+                match self.local_ancestor(remote, graph, name, o, n, opts).await {
+                    Err(e @ Error::AncestryBudget { .. }) => Err(e),
+                    other => Ok(other.unwrap_or(false)),
+                }
+            }
+            _ => Ok(false),
         }
     }
 
     /// True when `a` is `b` or an ancestor of `b`, computed from verified changeset bodies.
     ///
-    /// Walks parents from `b`, pruned by generation. Bodies past the local history window are
-    /// fetched from `remote` (each verified against its id) and the walk resumes; the
-    /// remote's `IsAncestor` is never consulted, because this answer can move a ref.
+    /// One walk from `b`, resumed after each fetch (the visited set and frontier carry over),
+    /// pruned by generation. Bodies past the local history window are fetched from `remote`
+    /// (each verified against its id) and their generations stored where the parents allow.
+    /// The remote's `IsAncestor` is never consulted, because this answer can move a ref.
+    /// More than `opts.ancestry_budget` changesets visited or fetched, or as many rounds,
+    /// is `Error::AncestryBudget`.
     async fn local_ancestor<S: graph::GraphSource>(
         &self,
         remote: &dyn Remote,
         graph: &Graph<S>,
+        name: &RefName,
         a: ChangesetId,
         b: ChangesetId,
+        opts: &SyncOptions<'_>,
     ) -> Result<bool> {
+        let budget = opts.ancestry_budget;
+        let over = || Error::AncestryBudget {
+            name: String::from_utf8_lossy(name.as_bytes()).into_owned(),
+            budget,
+        };
+        let mut walk = graph::AncestryWalk::new(a, b);
+        let (mut fetched, mut rounds) = (0usize, 0usize);
         loop {
-            match graph.ancestry_from_bodies(a, b).await? {
+            match graph.ancestry_step(&mut walk, budget).await? {
                 graph::Ancestry::Yes => return Ok(true),
                 graph::Ancestry::No => return Ok(false),
+                graph::Ancestry::OverBudget => return Err(over()),
                 graph::Ancestry::NeedBodies(ids) => {
-                    self.fetch_bodies(remote, &ids, false).await?;
+                    rounds += 1;
+                    fetched += ids.len();
+                    if fetched > budget || rounds > budget {
+                        return Err(over());
+                    }
+                    let (bodies, _) = self.fetch_bodies(remote, &ids, false).await?;
+                    self.derive_local_gens(&bodies).await?;
                 }
             }
         }
+    }
+
+    /// Computes (from the bodies, never from a claim) the `gen` memo of every body whose
+    /// parents' generations are all local.
+    async fn derive_local_gens(&self, bodies: &[(ChangesetId, Changeset)]) -> Result<()> {
+        let mut parents: Vec<ChangesetId> = bodies
+            .iter()
+            .flat_map(|(_, cs)| cs.parents.iter().copied())
+            .collect();
+        dedup(&mut parents);
+        let known = self.local_gens(&parents).await?.0;
+        for (id, cs) in bodies {
+            if cs.parents.iter().all(|p| known.contains_key(p)) {
+                self.get_derived::<Gen>(*id).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn peel_to_changeset(&self, t: RefTarget) -> Result<Option<ChangesetId>> {
@@ -1200,7 +1273,12 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                     (u.expect, u.new)
                 {
                     // From verified bodies: the remote's answer never decides a ref move.
-                    let ff = self.local_ancestor(remote, &graph, old, new).await;
+                    let ff = self
+                        .local_ancestor(remote, &graph, &u.dst, old, new, opts)
+                        .await;
+                    if let Err(e @ Error::AncestryBudget { .. }) = ff {
+                        return Err(e);
+                    }
                     if !ff.unwrap_or(false) {
                         return Err(Error::Rejected {
                             name: u.dst.clone(),
@@ -2602,6 +2680,136 @@ mod tests {
             assert!(report.rejected.is_empty());
             apply(&client, &report.local_updates).await;
             assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(ids[119])));
+        }
+
+        async fn windowed_client(
+            dir: &std::path::Path,
+            server: &Arc<Eng>,
+            window: u32,
+        ) -> (Arc<Eng>, MockRemote, MemBoundaries) {
+            let client = engine(&sqlite(dir, "client.db").await, 2);
+            let remote = MockRemote::server(server);
+            let bounds = MemBoundaries::default();
+            let mut opts = SyncOptions::new(&bounds);
+            opts.window = Some(window);
+            client
+                .fetch(&remote, &Refspec::defaults("origin"), &opts)
+                .await
+                .unwrap();
+            (client, remote, bounds)
+        }
+
+        #[tokio::test]
+        async fn the_ancestry_walk_stops_at_its_budget_and_refuses_the_move() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 120).await;
+            let (client, remote, bounds) = windowed_client(dir.path(), &server, 20).await;
+            // A local root unrelated to the remote chain: the walk must go to the root to know.
+            let lone = commit(&client, &[], b"lone").await;
+            let graph = client.sync_graph(&remote, &bounds).await.unwrap();
+            let mut opts = SyncOptions::new(&bounds);
+            opts.ancestry_budget = 30;
+            let before = remote.trips.got_changesets.load(Ordering::SeqCst);
+            let err = client
+                .local_ancestor(&remote, &graph, &tracking(), lone, ids[119], &opts)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::AncestryBudget { budget: 30, .. }),
+                "{err}"
+            );
+            let got = remote.trips.got_changesets.load(Ordering::SeqCst) - before;
+            assert!(got <= 30, "{got} bodies fetched past the budget");
+
+            // The same check through a fetch refuses the ref move with the same error.
+            let plain = [Refspec::parse("refs/heads/*:refs/remotes/origin/*").unwrap()];
+            let tracking_txn = RefTxn {
+                updates: vec![RefUpdate {
+                    name: tracking(),
+                    expect: Expect::Absent,
+                    new: Some(RefTarget::Changeset(lone)),
+                    expires_at: None,
+                }],
+                ..empty_txn("test", "seed".into())
+            };
+            apply(&client, &tracking_txn).await;
+            let err = client.fetch(&remote, &plain, &opts).await.unwrap_err();
+            assert!(matches!(err, Error::AncestryBudget { .. }), "{err}");
+            assert_eq!(tracked(&client).await, Some(RefTarget::Changeset(lone)));
+
+            // With the default budget the answer is a plain "no".
+            let opts = SyncOptions::new(&bounds);
+            assert!(
+                !client
+                    .local_ancestor(&remote, &graph, &tracking(), lone, ids[119], &opts)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        #[tokio::test]
+        async fn the_ancestry_frontier_carries_across_fetch_rounds() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 120).await;
+            let (client, remote, bounds) = windowed_client(dir.path(), &server, 20).await;
+            let lone = commit(&client, &[], b"lone").await;
+            let graph = client.sync_graph(&remote, &bounds).await.unwrap();
+            let mut walk = graph::AncestryWalk::new(lone, ids[119]);
+            let (mut rounds, mut last) = (0, 0);
+            loop {
+                match graph.ancestry_step(&mut walk, usize::MAX).await.unwrap() {
+                    graph::Ancestry::No => break,
+                    graph::Ancestry::NeedBodies(need) => {
+                        rounds += 1;
+                        // The chain needs one new body per round: the visited set grew by
+                        // one and nothing was walked twice.
+                        assert_eq!(need.len(), 1);
+                        assert!(walk.visited() > last);
+                        last = walk.visited();
+                        client.fetch_bodies(&remote, &need, false).await.unwrap();
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+            assert_eq!(rounds, 100);
+            assert_eq!(walk.visited(), 120);
+        }
+
+        #[tokio::test]
+        async fn a_claim_is_checked_against_the_generation_of_a_local_body_without_a_memo() {
+            let dir = tempfile::tempdir().unwrap();
+            let (server, ids) = server_chain(dir.path(), 5).await;
+            let client = engine(&sqlite(dir.path(), "client.db").await, 2);
+            // The parents' bodies are local, but no memo is: only their bodies vouch for them.
+            for &id in &ids[..3] {
+                let key = ObjKey::Changeset(id);
+                let stored = server.objects.get_stored(&key).await.unwrap().unwrap();
+                client.objects.put(&key, stored).await.unwrap();
+            }
+            assert!(
+                has_memos::<Gen>(&client, &ids[..3])
+                    .await
+                    .iter()
+                    .all(|h| !*h)
+            );
+            let poisoned = [(ids[3], 99, vec![ids[2]])];
+            let err = client
+                .store_verified_gens(&poisoned, true, true)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::Inconsistent(_)), "{err}");
+            // Not strict: the claim is dropped, never stored.
+            client
+                .store_verified_gens(&poisoned, false, true)
+                .await
+                .unwrap();
+            assert!(!has_memos::<Gen>(&client, &ids[3..4]).await[0]);
+            // The true value passes.
+            client
+                .store_verified_gens(&[(ids[3], 4, vec![ids[2]])], true, true)
+                .await
+                .unwrap();
+            assert!(has_memos::<Gen>(&client, &ids[3..4]).await[0]);
         }
 
         #[tokio::test]
