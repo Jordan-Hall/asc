@@ -410,6 +410,7 @@ dependencies = [
  "asc-store",
  "data-encoding",
  "filetime",
+ "futures",
  "gix",
  "gix-hash",
  "gix-index",
