@@ -6,18 +6,25 @@ mod fixtures;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, FileId, GitOid, TreeId};
 use asc_core::object::{AscGitExtra, Kind, SortedMap};
 use asc_core::path::RepoPath;
 use asc_engine::Engine;
+use asc_git::import::Tip as ImportTip;
 use asc_git::import::{ImportError, ImportPolicy, ImportReport, Importer, SkippedRef, Tip};
 use asc_git::odb::Odb;
 use asc_store::bucket::BucketObjects;
+use asc_store::key::KeyPrefix;
 use asc_store::key::ObjKey;
+use asc_store::objects;
 use asc_store::objects::Objects;
 use data_encoding::BASE64;
 use fixtures::{Killer, MemMap, NoRefs, Repo, main_fixture, repo_key};
+use futures::stream::BoxStream;
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 struct Env {
     objects: Arc<BucketObjects>,
@@ -363,4 +370,123 @@ fn a_2000_level_tree_imports_on_a_small_stack() {
 fn a_3000_level_tree_is_rejected_on_a_small_stack() {
     let err = import_on_small_stack(deep_repo(3000)).expect_err("too deep");
     assert!(err.contains("TreeTooDeep"), "{err}");
+}
+
+/// Counts reads in flight on the wrapped store.
+struct Counting {
+    inner: Arc<BucketObjects>,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+}
+
+#[async_trait]
+impl Objects for Counting {
+    async fn get(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.max_in_flight.fetch_max(now, SeqCst);
+        tokio::task::yield_now().await;
+        let got = self.inner.get(key).await;
+        self.in_flight.fetch_sub(1, SeqCst);
+        got
+    }
+    async fn get_stored(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
+        self.inner.get_stored(key).await
+    }
+    async fn get_range(
+        &self,
+        key: &ObjKey,
+        r: std::ops::Range<u64>,
+    ) -> objects::Result<Option<Bytes>> {
+        self.inner.get_range(key, r).await
+    }
+    async fn put(&self, key: &ObjKey, stored: Bytes) -> objects::Result<()> {
+        self.inner.put(key, stored).await
+    }
+    async fn has_many(&self, keys: &[ObjKey]) -> objects::Result<Vec<bool>> {
+        self.inner.has_many(keys).await
+    }
+    async fn delete(&self, key: &ObjKey) -> objects::Result<()> {
+        self.inner.delete(key).await
+    }
+    fn list(
+        &self,
+        prefix: KeyPrefix,
+    ) -> BoxStream<'_, objects::Result<(ObjKey, std::time::SystemTime)>> {
+        self.inner.list(prefix)
+    }
+}
+
+#[tokio::test]
+async fn wide_import_loads_child_trees_concurrently_within_the_window() {
+    let r = Repo::init();
+    let one = r.blob(
+        b"1
+",
+    );
+    let two = r.blob(
+        b"2
+",
+    );
+    let names: Vec<String> = (0..40).map(|i| format!("d{i:02}")).collect();
+    let root = |with_y: bool| {
+        let dirs: Vec<(String, GitOid)> = names
+            .iter()
+            .map(|n| {
+                let mut files = vec![("100644", b"x".as_slice(), one)];
+                if with_y {
+                    files.push(("100644", b"y".as_slice(), two));
+                }
+                (n.clone(), r.tree(&files))
+            })
+            .collect();
+        let entries: Vec<(&str, &[u8], GitOid)> = dirs
+            .iter()
+            .map(|(n, t)| ("40000", n.as_bytes(), *t))
+            .collect();
+        r.tree(&entries)
+    };
+    let c1 = r.commit(
+        root(false),
+        &[],
+        "one
+",
+    );
+    let c2 = r.commit(
+        root(true),
+        &[c1],
+        "two
+",
+    );
+
+    let e = env();
+    let tip = |name: &str, oid| ImportTip {
+        name: name.as_bytes().to_vec(),
+        oid,
+    };
+    import(&e, &r, &[tip("refs/heads/a", c1)])
+        .await
+        .expect("first");
+
+    // A fresh engine over a counting store has to read every changed child directory.
+    let counting = Arc::new(Counting {
+        inner: e.objects.clone(),
+        in_flight: AtomicUsize::new(0),
+        max_in_flight: AtomicUsize::new(0),
+    });
+    let engine = Engine::new(counting.clone(), Arc::new(NoRefs), repo_key());
+    let odb = Odb::open(r.path()).expect("odb");
+    let mut importer = Importer::new(
+        &engine,
+        counting.clone(),
+        &odb,
+        &e.map,
+        ImportPolicy::default(),
+    );
+    importer
+        .import_commits(&[tip("refs/heads/b", c2)])
+        .await
+        .expect("second");
+    let max = counting.max_in_flight.load(SeqCst);
+    assert!(max > 1, "child loads ran one at a time");
+    assert!(max <= asc_engine::tree::LOAD_WINDOW, "{max} reads in flight");
 }

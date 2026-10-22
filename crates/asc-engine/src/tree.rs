@@ -216,8 +216,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
 
     /// Reads trees concurrently, in order, with at most [`LOAD_WINDOW`] reads in flight.
     pub async fn get_trees(&self, ids: &[TreeId]) -> Result<Vec<Arc<Tree>>> {
-        futures::stream::iter(ids)
-            .map(|&id| self.get_tree(id))
+        futures::stream::iter(ids.to_vec())
+            .map(|id| self.get_tree(id))
             .buffered(LOAD_WINDOW)
             .try_collect()
             .await
@@ -445,6 +445,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 i: usize,
                 j: usize,
                 prefix: Option<RepoPath>,
+                /// Child pairs fetched ahead of use, by tree id.
+                loaded: HashMap<TreeId, Arc<Tree>>,
             },
             /// All of a one-sided directory's entries, reported as added or deleted.
             Emit {
@@ -461,6 +463,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             i: 0,
             j: 0,
             prefix: None,
+            loaded: HashMap::new(),
         }];
         while let Some(top) = stack.last_mut() {
             // Entries to report as one-sided: (entry, directory prefix, added).
@@ -485,6 +488,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                     i,
                     j,
                     prefix,
+                    ..
                 } => {
                     let (ea, eb) = (ta.entries(), tb.entries());
                     if *i >= ea.len() && *j >= eb.len() {
@@ -514,22 +518,74 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                                 continue;
                             }
                             let prefix = prefix.clone();
+                            let ahead = (ta.clone(), tb.clone(), *i, *j);
                             if both_dirs {
                                 let path = child_path(prefix.as_ref(), &x.name);
                                 if spec.is_none_or(|s| s.may_contain_dir(&path)) {
                                     if stack.len() > MAX_TREE_DEPTH {
                                         return Err(Error::TooDeep);
                                     }
-                                    let (ta, tb) = futures::try_join!(
-                                        self.get_tree(TreeId::from_bytes(x.id)),
-                                        self.get_tree(TreeId::from_bytes(y.id))
-                                    )?;
+                                    let (xid, yid) =
+                                        (TreeId::from_bytes(x.id), TreeId::from_bytes(y.id));
+                                    let cached = match stack.last_mut() {
+                                        Some(Frame::Diff { loaded, .. }) => {
+                                            (loaded.remove(&xid), loaded.remove(&yid))
+                                        }
+                                        _ => (None, None),
+                                    };
+                                    let (ta, tb) = match cached {
+                                        (Some(ta), Some(tb)) => (ta, tb),
+                                        _ => {
+                                            // Read this pair and the next changed pairs of the
+                                            // frame together, at most LOAD_WINDOW trees.
+                                            let mut ids = vec![xid, yid];
+                                            let (ta0, tb0, mut a, mut b) = ahead;
+                                            let (ea, eb) = (ta0.entries(), tb0.entries());
+                                            while ids.len() + 2 <= LOAD_WINDOW
+                                                && a < ea.len()
+                                                && b < eb.len()
+                                            {
+                                                match ea[a].name.cmp(&eb[b].name) {
+                                                    Ordering::Less => a += 1,
+                                                    Ordering::Greater => b += 1,
+                                                    Ordering::Equal => {
+                                                        let (p, q) = (&ea[a], &eb[b]);
+                                                        a += 1;
+                                                        b += 1;
+                                                        if p.kind == Kind::Dir
+                                                            && q.kind == Kind::Dir
+                                                            && p.id != q.id
+                                                            && spec.is_none_or(|s| {
+                                                                s.may_contain_dir(&child_path(
+                                                                    prefix.as_ref(),
+                                                                    &p.name,
+                                                                ))
+                                                            })
+                                                        {
+                                                            ids.push(TreeId::from_bytes(p.id));
+                                                            ids.push(TreeId::from_bytes(q.id));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            let trees = self.get_trees(&ids).await?;
+                                            if let Some(Frame::Diff { loaded, .. }) =
+                                                stack.last_mut()
+                                            {
+                                                for (id, t) in ids.iter().zip(&trees).skip(2) {
+                                                    loaded.insert(*id, t.clone());
+                                                }
+                                            }
+                                            (trees[0].clone(), trees[1].clone())
+                                        }
+                                    };
                                     stack.push(Frame::Diff {
                                         ta,
                                         tb,
                                         i: 0,
                                         j: 0,
                                         prefix: Some(path),
+                                        loaded: HashMap::new(),
                                     });
                                 }
                                 continue;
@@ -1198,6 +1254,28 @@ mod tests {
         assert!(max > 1, "child loads ran one at a time");
         assert!(max <= LOAD_WINDOW, "{max} reads in flight");
         assert_eq!(all_leaves(&fresh, next, None).await.len(), 80);
+    }
+
+    #[tokio::test]
+    async fn wide_diff_loads_children_concurrently_within_the_window() {
+        let objs = counting();
+        let e = engine_on(objs.clone());
+        let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+        let leaves = |tag: u8| -> Vec<(RepoPath, Change)> {
+            (0..40)
+                .map(|i| (p(&format!("d{i:02}/x")), file(tag)))
+                .collect()
+        };
+        let a = e.apply(empty, &leaves(1)).await.unwrap();
+        let b = e.apply(empty, &leaves(2)).await.unwrap();
+
+        let fresh = engine_on(objs.clone());
+        objs.max_in_flight.store(0, SeqCst);
+        let changes = fresh.leafdiff(a, b, None).await.unwrap();
+        assert_eq!(changes.len(), 40);
+        let max = objs.max_in_flight.load(SeqCst);
+        assert!(max > 1, "child loads ran one at a time");
+        assert!(max <= LOAD_WINDOW, "{max} reads in flight");
     }
 
     fn deep_path(levels: usize) -> RepoPath {
