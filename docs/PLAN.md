@@ -135,8 +135,8 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 
 ### U04 Objects and canonical codec (`asc-core::object`, `codec`)
 - **Owns:** `crates/asc-core/src/{object.rs,codec.rs,sig.rs}`, `crates/asc-core/tests/golden/envelopes/*`
-- **Depends:** U02, U03. **Accept:** `cargo test -p asc-core object:: codec::`
-- **Brief:** The structs exactly as SPEC §2.4–§2.7 (`Tree`, `Entry`, `Kind`, `LfsRef`, `Changeset`, `Signature`, `Change`, `TagRecord`, `ChunkList`, `FileMeta`, `AscGitExtra`). `SortedMap<K, V>` (a `Vec<(K, V)>` whose constructor sorts, and whose deserialiser rejects unsorted or duplicate keys). `encode_envelope(kind, version, &T) -> Vec<u8>`; `decode_envelope::<T>(&[u8]) -> Result<T>` rejects bad magic, unknown kind/version and trailing bytes. `Tree::id()`, `Changeset::id()`, `TagRecord::id()`. `Tree` invariants checked in `Tree::new` (sorted, unique, non-empty unless root, Gitlink id zero, `lfs` only on File/Exec). Tests: proptest `decode(encode(x)) == x` and `encode(decode(b)) == b`; golden envelope bytes for one value of each type (frozen hex files); rejection tests for each malformed case.
+- **Depends:** U02, U03. **Accept:** `cargo test -p asc-core -- object:: codec::`
+- **Brief:** The structs exactly as SPEC §2.4–§2.7 (`Tree`, `Entry`, `Kind`, `LfsRef`, `Changeset`, `Signature`, `Change`, `TagRecord`, `ChunkList`, `AscGitExtra` (kind 5 is reserved; no `FileMeta`)). `SortedMap<K, V>` (a `Vec<(K, V)>` whose constructor sorts, and whose deserialiser rejects unsorted or duplicate keys). `encode_envelope(kind, version, &T) -> Vec<u8>`; `decode_envelope::<T>(&[u8]) -> Result<T>` rejects bad magic, unknown kind/version and trailing bytes. `Tree::id()`, `Changeset::id()`, `TagRecord::id()`. `Tree` invariants checked in `Tree::new` (sorted, unique, non-empty unless root, Gitlink id zero, `lfs` only on File/Exec). Tests: proptest `decode(encode(x)) == x` and `encode(decode(b)) == b`; golden envelope bytes for one value of each type (frozen hex files); rejection tests for each malformed case.
 
 ### U05 Git object rendering (`asc-core::git`)
 - **Owns:** `crates/asc-core/src/git.rs`, `crates/asc-core/tests/golden/git/*`
@@ -150,12 +150,12 @@ The **Forgejo track** K01–K05 needs nothing from asc and starts in week 1 if a
 
 ### U07 Objects trait, keys, bucket backend (`asc-store::{key,objects,bucket,conformance}`)
 - **Owns:** `crates/asc-store/src/{key.rs,objects.rs,bucket.rs,codec.rs,conformance.rs}`
-- **Depends:** U04, U06. **Accept:** `cargo test -p asc-store objects:: bucket::`
+- **Depends:** U04, U06. **Accept:** `cargo test -p asc-store -- objects:: bucket::`
 - **Brief:** `ObjKey` (SPEC §3.1) with `path(&self) -> String` producing the layout keys (`f/<h2>/<hex>`, …), and `KeyPrefix`. The `Objects` trait (SPEC §3.2). `codec::{encode_stored, decode_stored}` (codec byte; zstd level 3 only if < 90%). `verify(key, &data)` for verifiable kinds. `BucketObjects::new(store: Arc<dyn ObjectStore>, root: Path)` with `InMemory` and `LocalFileSystem` constructors (`from_url("file:///…")`, `memory()`). `put` = `PutMode::Create` with `AlreadyExists` → Ok (the S3 fallback is added in U29). `conformance::run_objects_suite(impl Objects)`, a public async fn behind feature `testkit`: put/get/has_many/range/idempotent put/verify-corrupt detection (tamper with the underlying store and expect `Error::Corrupt`).
 
 ### U08 CacheDir, StoreSet, Tiered (`asc-store::{cachedir,tiered}`)
 - **Owns:** `crates/asc-store/src/{cachedir.rs,tiered.rs,storeset.rs}`
-- **Depends:** U07. **Accept:** `cargo test -p asc-store cachedir:: tiered::`
+- **Depends:** U07. **Accept:** `cargo test -p asc-store -- cachedir:: tiered::`
 - **Brief:** `CacheDir::open(root, tmp)` stores **decoded** data at `<root>/<letter>/<h2>/<hex>`. Atomic write: temp file, fsync, rename; an existing destination counts as success. Opens with `FILE_SHARE_DELETE` on Windows (`std::os::windows::fs::OpenOptionsExt::share_mode`). `get` verifies and deletes corrupt files. Touches mtime on read if it is older than 24 h (`filetime`). `content_path(FileId) -> Option<PathBuf>` for reflink, ProjFS and passthrough. `evict_to(max_bytes)` evicts by oldest mtime down to 80%. `StoreSet { store: CacheDir, cache: CacheDir }`: reads store then cache, writes new objects to the store, `demote(keys)` renames store → cache. `Tiered<A, B>`: read-through with fill and write-to-A. Run the U07 conformance suite against `CacheDir` and `Tiered<CacheDir, InMemory>`. Tests: concurrent writers of the same key (16 tasks) all succeed with one final file; eviction keeps `store/` intact.
 
 ### U09 Refs trait and SqlRefs (`asc-store::{refs,sqlrefs}`)
