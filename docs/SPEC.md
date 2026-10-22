@@ -1,8 +1,8 @@
 # asc: final specification
 
-Status: **authoritative**, v1.6 (built-in MCP folded in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.7 (agentic code intelligence folded in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
-Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
+Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp,codeintel}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
 **User decisions applied in v1.1 (scion-checklist.md):** (1) the default branch is `master`, never `main`; (2) git-identical CLI, and asc can be installed as `git`; (3) **no IDE git-plumbing support**: there is no full `.git` projection, git's index is not the staging area, commits made by real git are not imported, and there is no `git-remote-asc` helper. Each workspace keeps a minimal synthetic `.git` for Turborepo only (§9.4), and ASC's IDE plugins use asc's API (§7, §9.1); (4) a built-in polyglot project graph and `asc affected` (§12A); (5) Scion-core memory and storage efficiency is a v1 requirement (§16.4); (6) later checklist decisions: `.ascignore` first (§2.4.2), an ASC Actions fork (§12.7), a benchmark gate against git with small/medium/HUGE workloads (§16.4), and no LFS support (§2.5); (7) stacked commits and stacked PRs are core: specified in new §20 (decisions D1–D12 of `docs/research/stacks.md`, now normative; PLAN units C01–C52); (8) **branchless by default** (checklist decision of 2026-10-22, overriding the earlier "nothing is uploaded before `asc push`", "no write-behind" and "secrets in drafts never leave the machine" rules): shared refs are only `master`, release branches and tags; all other work is draft changes indexed by change id; a pushed branch becomes the pusher's user ref and submits its stack as draft changes; the daemon uploads new commits at once (the opt-out commit cloud) behind a pre-upload secret hold, with purge; off switches per repo and per user: specified in new §21 (decisions BD1–BD12 of `docs/research/branchless.md`, now normative; PLAN units B01–B28) [audit: branchless-folded]; (9) **MCP is built in** (checklist decision of 2026-10-22): `asc mcp` (stdio), `asc serve /mcp` (Streamable HTTP) and the Forgejo fork's `/api/mcp`, all generated from the proto schemas, read-only by default and ACL-scoped: specified in new §22 (decisions M-D1–M-D10 of `docs/research/mcp.md`, now normative; PLAN units M01a–M28) [audit: mcp-folded].
 
@@ -18,11 +18,12 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 
 | Deployable | What it is |
 |---|---|
-| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve` (`--role primary` or `--role cache`), `asc mcp` (§22), and, by argv[0], `git` (the shim, §11.4). Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
+| `asc` | One Rust multi-call binary: CLI, `asc daemon`, `asc serve` (`--role primary`, `--role cache` or `--role indexer`, §23.10), `asc mcp` (§22), and, by argv[0], `git` (the shim, §11.4). Cargo features `serve`, `vfs-projfs`, `vfs-fuse` trim builds. |
 | Forgejo fork | Forgejo v16.0.6 plus an ordered patch stack (seams, asc client, hooks, bridge). Go, separate repo, GPLv3. Talks to `asc serve` only over gRPC. |
 | `asc/actions` | Forked `checkout`, `cache`, `upload-artifact`, `download-artifact` (aliased from `actions/*`, §12.7) plus `asc/setup`, `asc/changed`, `asc/affected`, `asc/turbo-cache`, all calling `asc ci …` |
+| `asc-embed` | The opt-in model helper (fastembed over ONNX Runtime), built for the server and downloaded by `asc codeintel enable-embed` for local semantic search; `asc.exe` never links ONNX Runtime (§23.10) |
 
-**Fourteen decisions**
+**Fifteen decisions**
 
 1. **A remote is a store or a server.** `Objects` (immutable, content-addressed) and `Refs` (CAS). One `Engine` runs over the machine store, an S3/local bucket, or a gRPC client. Local-only, serverless-bucket, git-remote and client/server modes share one code path.
 2. **Identity is asc's.** BLAKE3 ids, typed per kind. Git SHA-1s are deterministic derived data. Import is lossless and canonical, so a commit exported from asc and re-imported has the same changeset id **[fix: determinism across modes]**.
@@ -38,6 +39,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 12. **Scion-core efficiency is v1.** Want-only tree-then-blob fetch of stored bytes; a bounded local history window, with older history answered by the server (§6.3); tiers that speak the same RPCs (daemon cache → `asc serve --role cache` → primary); seed snapshots; generation numbers plus skip lists; explicit memory and storage budgets enforced by a benchmark gate in CI (§16.4) **[audit: user decision efficiency]**.
 13. **Branchless by default, with a commit cloud.** Shared refs are only `master`, `release/*`, `green/*` and tags (per-repo `shared_refs`). A draft is a non-immutable changeset with a `ChangeMeta`, named by change id; it needs no branch. Visibility is a set of draft heads (`draft_heads` locally, `cloud_heads` per user workspace on the server), not refs. A local branch is a real local ref and a label; a pushed non-shared branch is the pusher's user ref (`refs/users/<owner-id>/heads/<n>`, one CAS row, owner-only), and `git push origin feat` also submits the stack as draft PRs. While online, the daemon uploads new changesets asynchronously (want-only, idempotent) after a pre-upload ignore and secret hold, never on public repos, with owner purge and cache eviction. No local git command changes its output with the mode. Off switches: client `asc.branchless`, server `repos.branchless` and `repos.cloud` (§21) [audit: branchless-folded].
 14. **MCP is built in.** Three surfaces, one owner per fact: `asc mcp` (stdio: workspace and repo), `asc serve` `/mcp` (Streamable HTTP 2026-07-28: the repo without a checkout) and the Forgejo fork's `/api/mcp` (PRs, reviews, issues, Actions, inbox). Tool schemas are generated from the proto descriptors; CLI `--json` and MCP share one codec, the asc JSON profile `json.profile.v1`, while `asc api` keeps standard proto3 JSON. Calls are stateless and handle-based. The default is read-only and only the user's own config widens it; destructive actions are confirmed through MRTR elicitation; every result is bounded by a token budget; the SDK is rmcp 3.6.0. See §22 [audit: mcp-folded].
+15. **Agentic code intelligence is built in.** Exact (trigram) search, tree-sitter symbols and local-model vector search run on `asc serve` as derived data keyed by `FileId`, so an agent can query any revision, draft or stack with no checkout. Exact search and symbols come first; vectors are the third tool, fused by RRF. One engine (tantivy) holds the postings and BM25; embeddings run on the server CPU by default and no code leaves ASC. Indexes are per namespace and every result is read-ACL filtered inside the ANN traversal. The tools are `search` and `read_file` (§22), and Forgejo code search reads the same service. See §23 [audit: codeintel-folded].
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
@@ -83,6 +85,7 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 | GitLens/GitKraken data features in core and the plugin API (blame, history, graph, worktrees, conflicts) | §20.6, §7 `workspace.proto` additions |
 | **Branchless by default** (decision 2026-10-22): shared refs are only `master` and release branches; other work is draft changes indexed by change id and visible at once; `git push origin feat` submits the stack as draft changes; the daemon uploads commits asynchronously; off switch per repo and per user; local-only mode still works | §21 (BD1–BD12), §0 decision 13, §6.1, §6.3, §6.4, §2.7, §3.5, §3.6, §8.2, §8.3, §9.1, §11.1, §11.2, §13.3, §15.2, §16.3, §17.1; PLAN units B01–B28 |
 | **MCP built in** (decision 2026-10-22): `asc mcp`, `asc serve /mcp` and Forgejo `/api/mcp`; schemas generated from proto; read-only by default; ACL-scoped; bounded results | §22 (M-D1–M-D10), §0 decision 14, §7 (`options.proto`, `cli.proto`, `/mcp`, the JSON profile), §8.1 `[mcp]`, §8.7, §11.2 `asc mcp`, §13.3 M20–M28, §15.1, §16.3, §16.4, §20.7 (`--json` shapes), §21.7; PLAN units M01a–M28 |
+| **Agentic code intelligence built in** (decision 2026-10-22): trigram exact and regex search, tree-sitter symbols for Rust, TypeScript, Python, C# and Go, and local-model vector search with hybrid ranking; server-side derived data keyed by `FileId`, ACL-filtered, incremental per commit; exposed through MCP, RPC, IPC, `--json` and Forgejo search; offline queries from the daemon | §23 (CI-D1–CI-D8), §0 decision 15, §3.3, §5, §7, §8.1, §8.2, §9.1, §11.2, §13.3 I23–I26, §15, §16.1, §16.3, §16.4, §18 (phases 4c, 4c-MCP, 5c, 9c), §22.3.2; PLAN units I01–I31 |
 
 ASC workload (from `asc-profile.md`): 4,543 files / 119 MiB at HEAD, 5,502 commits, 104,800 reachable objects (311 MiB packed), 113 historical LFS objects (25.6 GiB), one submodule `packages/soma/sdk`, 50 worktrees, 26 commits/day mean (303 peak), median 4 files per commit.
 
@@ -433,7 +436,7 @@ pub enum Expect { Any, Absent, Value(RefTarget) }
 
 `<h2>` is the first two hex characters. `<ns>` is a 16-byte random id (hex) assigned at repo creation. A bucket remote URL (`s3://…`, `file://…`) addresses one namespace directly: its URL prefix plays the role of `<root>/ns/<ns>`. There are no packfiles. Every object can be fetched alone, so transfers resume by asking again for whatever is missing.
 
-**Namespaces and forks.** Objects are only ever read within the namespace of the repository named in the request. A Forgejo fork gets a new namespace. `Fork` copies the reachable closure server-side, using S3 `CopyObject` or a local reflink, as a background job. The fork is readable when the copy completes (minutes for ASC). Cross-namespace operations (PR merges from forks, `refs/pull/<n>/head`) first call `CopyClosure` (§7), authorised against both repositories. This closes the confirmation attack ("does this content exist in a private fork?"). Cross-fork dedup is therefore physical only: `CopyObject`/reflink copies, and Garage's block-level dedup. Logical dedup across a fork network is a measured v1.x item (ASC has one repository and no forks). This defers a checklist v1 item and is recorded as §19 decision 6 **[audit: fork-dedup-deviation-unsigned]**.
+**Namespaces and forks.** Objects are only ever read within the namespace of the repository named in the request. A Forgejo fork gets a new namespace. `Fork` copies the reachable closure server-side, using S3 `CopyObject` or a local reflink, as a background job. The fork is readable when the copy completes (minutes for ASC). Cross-namespace operations (PR merges from forks, `refs/pull/<n>/head`) first call `CopyClosure` (§7), authorised against both repositories. This closes the confirmation attack ("does this content exist in a private fork?"). Cross-fork dedup is therefore physical only: `CopyObject`/reflink copies, and Garage's block-level dedup. Logical dedup across a fork network is a measured v1.x item (ASC has one repository and no forks). This defers a checklist v1 item and is recorded as §19 decision 6 **[audit: fork-dedup-deviation-unsigned]** **Derived index data is never copied [audit: codeintel-folded]:** `Fork` and `CopyClosure` copy the reachable content closure only, never `d/tdocs.v1`, `d/tags.v1`, `d/chunks.v1`, `d/ciseg.v1`, `d/civec.v1`, `d/ciidx.v1` or any `ci_*` row (§23.2.4); a fork starts un-indexed and backfills its own heads.
 
 ### 3.4 Ref stores and their atomicity
 
@@ -600,10 +603,12 @@ pub trait DerivedKeyed: Sized + Send + Sync {
 | `blame.v1` (keyed by path) | no | line runs `(start, len, origin ChangesetId, orig_line)` | – |
 | `classify.v1` | no | §8.10 | – |
 | `diffstat.v1` | no | `Vec<(path, added, removed)>` against `parents[0]`; feeds `CommitGraph` stats, visual file history and `Log.with_stats` (§20.4) | – |
+| `tdocs.v1` (keyed by `TreeId`, per namespace) | no (`EAGER = false`; warmed for land tips, PR heads and drafts, §23.5) | roaring bitmap of the doc ordinals of every File/Exec entry in the subtree, plus `dups` counts (§23.2.3) | `d/` only |
 
 - Mergeability (§20.4) is deliberately **not** a keyed derived type: it is the plain SQL table `mergeable`, one overwritten row per open head, so it cannot grow with trunk history.
 
 - Content-keyed memos (`mset`, `parsed`, `pgraph`, `phash`, §12A.5) use `ObjKey::Derived` with the key given in §12A.5, like `blame.v1`.
+- **Code-intelligence objects [audit: codeintel-folded]:** `tdocs.v1` (key `TreeId`) and the per-file objects `tags.v1` and `chunks.v1` (key `blake3(FileId ‖ lang ‖ version)`), plus the immutable index files `ciseg.v1` (tantivy segments), `civec.v1` (vector segments) and `ciidx.v1` (indexed bitmaps) are `ObjKey::Derived` objects under `d/`: evictable, recomputable and per namespace (§23.2.1, §23.2.4). They are never copied across namespaces (§3.3).
 - **Named future types** (each is one impl plus registration, with no client change): `pathlog` (a per-path changeset list for non-land refs), `copies` (copy detection), `pathsearch`.
 - **Warm-ref rule:** `UpdateRefs`, local commits and imports derive every eager type for new changesets before a ref moves. Readers never wait.
 - On ingest the server also writes the **git map** for every new tree, file and changeset: `(git oid, kind) -> asc id`. Trees and files come from `Entry.git`. Changesets come from `gitcommit`.
@@ -711,6 +716,8 @@ gRPC over HTTP/2 (`tonic` 0.14), TLS on the network, `interprocess` local socket
 **Commit cloud:** the `Cloud` service (`proto/asc/v1/cloud.proto`, same port) and the additive `repo.proto` fields (`Version.features += "cloud.v1", "branchless.v1"`; `RepoConfigResponse += branchless, cloud, shared_refs, visibility`; `WatchEvent` kind `KIND_CLOUD`) are specified in §21.3.5 [audit: branchless-folded].
 
 **MCP and the JSON profile (§22) [audit: mcp-folded]:** `options.proto` holds the `(asc.v1.json)` field option and `cli.proto` the messages of asc-only verbs (`OpResult`, `OpLogResponse`, the `*Args` messages, `AscHandles`, `WorktreeAddResult`). `asc serve` also mounts `POST /mcp` (§22.2). CLI `--json` prints the versioned **asc JSON profile** `json.profile.v1` (§22.4.2): snake_case field names, lowercase hex ids (40 = git SHA, 64 = asc id), change ids as 32 letters `k`–`z`, paths and text as UTF-8 (otherwise `{"b64": …}`), enums as lowercase names without the type prefix, and 64-bit integers as JSON numbers. It differs from standard proto3 JSON, which `asc api` keeps (below). The two never mix, and `asc_rpc::json` is the profile's only codec.
+
+**Code intelligence (§23) [audit: codeintel-folded]:** the `CodeIntel` service (`proto/asc/v1/codeintel.proto`, same port: `Search` (streaming), `Symbols`, `Semantic`, `IndexStatus`; full messages in §23.4.1) and the same four RPCs on `workspace.proto` (workspace scope, IPC only). `Version.features += "search.v1"` when the service is enabled. A cache-role server serves none of them.
 
 **Common metadata:** `authorization: Bearer <token>`; `x-asc-client: asc/<semver> <os>-<arch>`; `x-asc-op-id: <uuidv7>` on every mutating call (idempotency, §8.3); W3C `traceparent`.
 
@@ -993,7 +1000,17 @@ allowed_origins = []
 hmac_keys = []             # key files (32 random bytes each) shared by all replicas
 max_tokens = 6000
 max_inflight_per_principal = 8
+[codeintel]                # §23.10; absent or enabled = false: no CodeIntel service
+enabled = false
+memory = "2GiB"
+workers = 4
+[codeintel.embed]
+model = "jina-embeddings-v2-base-code"
+device = "cpu"
+provider = "local"
 ```
+
+`--role indexer` [audit: codeintel-folded] runs only the codeintel workers (no RPC serving), for GPU hosts (§23.5).
 
 ### 8.2 SQL schema (`crates/asc-serve/migrations/{postgres,sqlite}`)
 
@@ -1015,6 +1032,7 @@ mainline, path_changes                           -- §5.1
 land_map, INDEX ref_log_by_ref                   -- §8.9
 changes, change_versions, review_state, open_paths, mergeable   -- §20.4 (stacked changes; change_versions are GC roots, §3.6)
 cloud_ws, cloud_heads, user_ref_meta, cloud_usage, gc_purge     -- §21.2.3 (commit cloud; cloud_heads are GC roots, §3.6)
+ci_docs, ci_doc_langs, ci_chunks, ci_jobs, ci_manifest   -- §23.2, §23.5 (code intelligence; per namespace, derived and rebuildable; migration 0301_codeintel)
 -- repos += branchless BOOL, cloud BOOL, shared_refs TEXT /*json*/, legacy_shared TEXT /*json*/; outbox effect kind cache_evict (§21.3.7)
 ```
 
@@ -1130,6 +1148,7 @@ One per user per machine. It exists because a virtual filesystem needs a long-li
 | Upload new drafts and sync cloud heads in the background, in branchless repos (§21.3) | |
 | Prefetch, GC the cache, dehydrate idle files, expire ephemeral worktrees | Run real git |
 | Serve the plugin API (`Status`, `Diff`, `Log`, `Blame`, `Affected`, `Watch`, `Stage`; §7) for ASC's IDE plugins | |
+| Serve the `CodeIntel` IPC from a lazily built overlay of dirty files; close local index readers after 5 min idle (§23.2.5) | Load an embedding model or build an index (the `asc codeintel worker` and `asc-embed` helpers do, in separate processes) |
 
 - **Mapping to Scion's per-node daemon [audit: 14-node-daemon-mapping]:**
   - On developer machines the per-user daemon plus the shared `$ASC_HOME/cache` play scion-daemon's role: every workspace and worktree of the user reads one cache.
@@ -1426,7 +1445,7 @@ Where: **L** local; **L+f** local, fetching missing objects; **S** server RPC wh
 
 Until a command's unit lands, invoking it fails with exit 129 and `fatal: asc: '<cmd>' is not supported yet` **[audit: missing-cli-units]**.
 
-asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]` (§22.8), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
+asc-only commands (no git equivalent, so they never change git behaviour): `asc daemon [start|stop|status]`, `asc serve`, `asc import`, `asc export`, `asc auth login|status|logout`, `asc doctor [--fix] [--store <url>] [--report-reclaimable]`, `asc prefetch`, `asc sparse dehydrate`, `asc debug stats|hydrations|trace`, `asc ci checkout|affected|changed|warm|cache|artifact`, `asc affected`, `asc projects`, `asc graph` (§12A.9), `asc landed` (§8.9), `asc api` (§7), `asc watch` (§7), `asc search`, `asc sym` and `asc semantic` (§23.4.2), `asc codeintel status|worker|enable-embed` (§23.4.2), `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tools <list>] [--worktree <path>]` and `asc mcp install [--scope project|user] [--no-forgejo]` (§22.8), `asc install-shim` (§11.4), `asc migrate ignore` (§2.4.2), `asc migrate branchless` (§21.6.2), `asc hide`, `asc unhide`, `asc cloud status|sync|join|list|release|purge` and `asc sl --cloud --user` (§21.3), `asc worktree convert --plain` (§9.1), `asc upgrade`, `asc internal …` (hooks, Claude Code hooks), and the stack verbs of §20.7: `asc create`, `modify`, `absorb`, `restack`, `continue`, `abort`, `sync`, `submit`, `sl`/`smartlog`, `up`/`down`/`top`/`bottom`/`next`/`prev`, `reword`, `uncommit`, `unamend`, `abandon`, `change-id`, `split`, `squash`, `fold`, `move`, `reorder`, `stack rename|delete|pop|get|freeze|unfreeze|trunk|info|parent|children|merge|exec`, `undo`, `redo`, `op log|show|restore`, `evolog`, `interdiff`, `share`. `asc stack merge` (asks the server to land a stack prefix) is distinct from `asc landed` (§8.9), which only reports.
 
 asc-only flags for the plugin API [audit: plugin-api-undefined]: `status|diff|log|blame --json` print the matching `Ws*Response` in the asc JSON profile (§22.4.2; one object per stream message, as JSON lines); `asc watch [--since <token>] --json` streams `WatchEvent`s as JSON lines.
 
@@ -1912,6 +1931,10 @@ At Stage 4 no bare git repository is a source of truth. The bridge becomes `lazy
 | M26 | OAuth: RFC 8707 `resource`, `aud` in access tokens, RFC 9207 `iss`, the pre-registered public client `asc-mcp`, `aud` and scopes in the K07 authz answer | OAuth provider additions |
 | M27 | (v1.x) CIMD client registration | as M26 |
 | M28 | `lockdown` mode: hide content by authors without write access in `pr_read`, `issue_read` and `actions_read`; registers `lockdown.Available()` | as M20 |
+| I23 | Code-indexer backend `asc` [audit: codeintel-folded]: `[indexer] REPO_INDEXER_TYPE = asc`; `modules/indexer/code/asc`; `Index` and `Delete` are no-ops, `Search` calls `CodeIntel.Search` at the default branch | `storage_backend=asc` |
+| I24 | Repo search page: mode tabs (exact, regex, symbols, semantic), scope selector, coverage note; shows server-redacted text only | as I23 |
+| I25 | File-view symbol panel and outline; PR "find usages in the base" | as I23 |
+| I26 | `/explore/code` fan-out (RRF across readable repos) and `/api/v1/repos/{owner}/{repo}/asc/search\|symbols\|semantic` (also the hook for the Forgejo MCP endpoint) | as I23 |
 
 The ASC Actions fork (§12.7) needs no Forgejo patch: `[actions] DEFAULT_ACTIONS_URL` is an upstream setting. The runner fork (`forgejo-runner`, Go, separate repo) carries the alias table and the native checkout fast path (units R01–R02).
 
@@ -2009,6 +2032,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **Drafts and secrets [audit: branchless-folded]:** drafts upload in the background only in a branchless, non-public repo whose server has `cloud` on (§21.3.3), and only after the pre-upload guard has held ignored and denied paths and changesets with a detected secret (§21.3.7); `push` and `submit` apply the same guard unless `--no-secret-check`. Uploaded draft objects are readable by id by every repo reader (the namespace rule, §15.1), while listing another user's workspace needs repo write (§21.2.5). An owner can purge their own unsubmitted drafts and a repo admin any; purge also queues `cache_evict` to every cache tier, and copies already fetched to client machines cannot be recalled. A per-user quota applies to cloud ingest and user-ref pushes. `asc.cloud=off` and `asc.branchless=false` disable upload.
 - Untrusted manifest and lockfile content from PR branches is parsed under the limits of §12A.10.
 - Supply chain: pinned crate versions, `cargo deny` (licences: MIT/Apache/BSD/ISC/Zlib/Unicode only; no GPL; Sapling, Mononoke and EdenFS are ideas only), `cargo audit` in CI, release binaries signed (Authenticode on Windows, minisign for `asc upgrade`).
+- **Code intelligence [audit: codeintel-folded]:** `usearch` (C++ FFI, cargo feature `ann`, off in `asc.exe`) is on the unsafe/FFI allow-list for `asc-codeintel::vectors` only, and `onig` (C, through fastembed's tokenizer) for `asc-embed`; both get an MSVC CI job. Model files are pinned by sha256 and minisign-verified (§16.2), model licences are checked against an allow-list (MIT, Apache-2.0), and indexes, secret handling and prompt-injection controls are in §23.7.
 - **Unsafe code [audit: unsafe-forbid-and-allowlist]:** the workspace lint is `unsafe_code = "deny"`. Only the modules listed in PLAN "Rules for implementers" may opt in with `#![allow(unsafe_code)]`, and each wraps its calls in a safe API. Prefer safe crates and tools: `same-file` for file identity, and `schtasks.exe /Create /XML` for the logon task.
 
 ### 15.3 Data at rest and backup/DR [fix: missing-from-all]
@@ -2029,6 +2053,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **Write:** path rules are Forgejo protected-file patterns plus path-scoped required approvals (K17). Pre-receive evaluates them on the changeset `changes` keys, which is metadata only (`Diff(NAMES)` from Stage 3). Violations return `PATH_POLICY` with the paths.
 - **Read:** asc does not filter objects by path inside a repository. A content-addressed object can appear under any path, so per-path checks on `GetObjects` would be unsound and costly; this is dropped deliberately. A sensitive directory is instead its own repository, composed at a gitlink (§10.6). The namespace rule (§15.1) then enforces read access for every RPC. When a user has no read access to the nested repo, the workspace projects the gitlink path as an empty read-only directory, and `asc status` prints `<path>: restricted (no access to <repo>)`.
 - **CI and composition:** a task token is bound to its repo, so reading a composed repo needs an explicit grant: `asc-serve.toml [[composition_grants]] parent = "asc/dds", child = "asc/soma"`. The grant gives the parent's Actions task tokens read-only access to the child for the token's lifetime. Without a grant, `asc ci checkout` fails with `PATH_POLICY: <path> needs read on <child>`.
+- **Code intelligence [audit: codeintel-folded]:** the read rule holds for derived data too. Each namespace has its own indexes, the server authorises read on a namespace before it opens that namespace's indexes, and a composed child is searched only when the caller can read it (§23.7). A future path-level deny rule would subtract the denied subtree in the same predicate.
 
 ---
 
@@ -2040,6 +2065,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 - **Metrics:** Prometheus. Server and cache role: `/metrics`. The daemon serves `--metrics-listen 127.0.0.1:<port>` (off by default; on for CI runner and agent-fleet hosts). The warmer writes its counters to the node-exporter textfile directory. The catalogue (names fixed, in `docs/metrics.md`):
   - **server/cache:** `asc_rpc_duration_seconds{rpc,code}`, `asc_store_op_seconds{op,backend}`, `asc_ref_cas_conflicts_total`, `asc_land_total{outcome}`, `asc_hook_seconds{hook,outcome}`, `asc_outbox_lag_seconds`, `asc_outbox_failures_total`, `asc_mirror_import_lag_seconds`, `asc_derive_lag_changesets`, `asc_changeset_reads{rpc}` (histogram, §5.1), `asc_graph_walk_nodes`, `asc_cache_requests_total{tier,result}`, `asc_rate_limited_total{class}`, `asc_inflight_requests`, `asc_shed_total{reason}`, `asc_coalesced_total`, `asc_turbo_hit_ratio{scope}`, `asc_rss_bytes`;
   - **daemon:** `asc_daemon_hydrations_total{process}`, `asc_daemon_hydration_seconds`, `asc_daemon_fetch_bytes_total`, `asc_daemon_cache_bytes{dir}`, `asc_daemon_journal_entries`, `asc_daemon_pending_paths`, `asc_daemon_reconcile_paths_total`, `asc_daemon_provider_errors_total{op}`, `asc_daemon_uptime_seconds`, `asc_rss_bytes`;
+  - **code intelligence [audit: codeintel-folded]:** `asc_ci_index_lag_seconds`, `asc_ci_jobs{kind,state}`, `asc_ci_query_seconds{rpc}`, `asc_ci_candidates_ratio`, `asc_ci_coverage` (I29, runbook `docs/runbooks/tier-codeintel.md`);
   - **client:** `asc_client_retries_total`;
   - **warmer:** `asc_warm_lag_seconds` (trunk tip age in the host cache), `asc_warm_objects_total`, `asc_warm_failures_total`;
   - **forgejo:** `forgejo_asc_rpc_seconds{method}`, `forgejo_asc_shadow_mismatch_total{method}`.
@@ -2066,6 +2092,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
   - stacks (§20.5): `ResolveChanges`, `Stack`, `Versions`, `Overlaps` and `RepoConfig` are `cheap`; `InterDiff`, `Mergeability` (on a miss), `RestackChanges`, `RequestMerge`, `CommitGraph` with stats, `LineHistory` and pickaxe `Log` are `expensive`;
   - commit cloud (§21.3.5): `Cloud.GetWorkspace` and `ListWorkspaces` are `cheap`; `Cloud.UpdateWorkspace` and the uploader's `Ingest` run in a new class `background` that is shed first; `PutObjects` stays in `objects`;
   - MCP (§22.5) [audit: mcp-folded]: each call is charged to the class of its backing RPC (`log` is `cheap` or `expensive`, a `diff` with a patch is `expensive`), plus at most 8 in-flight MCP calls per principal per `asc serve` instance (a gateway enforces cluster limits on `Mcp-Param-Repo`). Over the limit, the call returns `isError` with `RATE_LIMITED` and `retry_after_ms`;
+  - code intelligence (§23.4.1) [audit: codeintel-folded]: new class `codeintel`: `Search` and `Symbols` 50 req/s per principal (burst 100); `Semantic` 10 req/s per principal and 32 concurrent per replica (query embedding uses the CPU); `IndexStatus` is `cheap`; a search with no usable trigram counts as `expensive`. An MCP `search` call is charged to this class;
   - the `service` class (Forgejo internal token, CI warmer) has its own limits. All values live in `asc-serve.toml [limits]`.
 - **Over limit:** gRPC `RESOURCE_EXHAUSTED` with `ErrorDetail.code = RATE_LIMITED` and trailer `retry-after-ms`; `/v8` and `/seeds` return 429 with `Retry-After`.
 - **Load shedding:** each replica caps in-flight requests (`limits.max_inflight`, default 1,024) and 64 in-flight RPCs per token. Requests beyond a cap are shed at once (`UNAVAILABLE` or `RESOURCE_EXHAUSTED` with `retry-after-ms`) and never queued for longer than 1 s. Bucket calls have a per-replica concurrency cap (`bucket.max_concurrency = 256`) and a 30 s timeout.
@@ -2078,6 +2105,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 
 - **Memory budgets (enforced by tests and O05):** the daemon's idle RSS is ≤ 64 MiB and stays bounded under load (tree cache ≤ 32 MiB, journal queue ≤ 8 MiB, per-provider buffers pooled). The server and cache role stream every response and never buffer a whole response or tree set; their caches are size-capped by config. Whole-file buffering happens only where an algorithm needs it (line diff, merge, blame, classify, grep), and is gated by a per-replica byte semaphore `limits.text_memory` (default 2 GiB): a request waits ≤ 1 s for budget, then is shed with `RESOURCE_EXHAUSTED` (§16.3). Files above `core.bigFileThreshold` (default 512 MiB) are treated as binary, as git does **[audit: server-whole-file-buffer-cap]**. The CLI never loads the full tree: it walks lazily, by spine.
 - **`asc mcp` [audit: mcp-folded]:** idle RSS ≤ 24 MiB, and ≤ 64 MiB with 8 concurrent 25k-token diffs on the HUGE generator repo; at most 8 concurrent calls and a queue of 32 per process. The default `tools/list` estimates at most 6,000 tokens. Both are gated by M16 (§22.5).
+- **Code intelligence [audit: codeintel-folded]:** the gates of §23.9 (exact search p50/p99 ≤ 50/300 ms on HUGE, ≥ 10x faster than `git grep <rev>` and cold `rg` on medium and HUGE, median-commit index ≤ 2 s without and ≤ 10 s with CPU embeddings, grams plus symbols ≤ 0.4x of indexed text, hybrid NDCG@10 ≥ BM25-only + 5 points) run in `bench/codeintel` (I27, I28) under the O05 gate. The daemon limit stays idle RSS ≤ 64 MiB and ≤ 96 MiB while serving CodeIntel.
 - **Cache SLOs:** every tier exports `asc_cache_requests_total{tier=client|host|job|cache_role|server_mem|server_disk, result=hit|miss}`. Targets: object hit rate ≥ 99% at the CI host cache and at the cache role, and ≥ 95% at the server memory plus disk cache, measured daily. Three consecutive days below target raise an alert.
 - **Every cache tier is disposable:** deleting the host cache, a cache role's disk, the server's `disk_dir` or a client's `cache/` loses no data and needs no repair. Only `store/`, `state.db`, server SQL and the bucket hold state.
 - **Benchmark gate (O05, in CI):** a head-to-head harness (`bench/`, hyperfine-driven, plus a criterion suite for internals) runs the same scenarios on git and asc: clone (git full, `--filter=blob:none`, `--depth 1`, sparse-checkout and scalar where they apply, against asc virtual and plain), `worktree add`, `status` clean and dirty, `switch` between tips, `diff` (HEAD, merge-base, `--stat`), path-limited `log`, `blame`, `merge-base`/`is-ancestor`, `commit`/`push`/`fetch`, CI checkout plus affected, and turbo `--dry` hashing.
@@ -2149,15 +2177,19 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 4s Server stacks | 10–13 | C17–C32, C45, C49, C50, C52 (after U47/U66/U68); C33 is v1.x | `Changes` service, `asc submit/sync/stack get/stack merge/share/evolog`, `CommitGraph`, `LineHistory`, `Compare`, pickaxe, `RepoConfig`, stack plugin API | a 5-change stack submits as one `UpdateRefs`, lands 1..3 atomically and restacks 4..5; compat suite green |
 | 4b Branchless and commit cloud | 10–14 | B01–B19 (incl. B18a), B21, B22, B24–B26, B28 (B01–B06, B24 after C04/C05; the rest after U47/U48d/U53b/C24); B17, B23, B27 on the Forgejo and CI tracks | user refs and ref policy, commit-cloud upload and sync, `asc hide/unhide/cloud`, branchless `push`, `asc migrate branchless`, `asc serve admin branchless enable` | `push` of an already uploaded stack is one `HasObjects` batch plus one `UpdateRefs`; compat suite byte-identical in both modes; B25 budgets green; an ASC-shaped fixture (117 branches) migrates idempotently |
 | 4m Server MCP | 12–15 | M12a, M12b, M13, M14, M18 (after M05, U47, U69, C19, G09) | `asc serve /mcp`: stateless HTTP, OAuth resource server, read and write tools (§22) | `mcp_http`, `mcp_backend`, `mcp_auth` and `mcp_write` tests green; an unreadable repo answers like a missing one |
+| 4c Server code intelligence [audit: codeintel-folded] | 12–17 | I01–I17, I22, I29 (after U47, U43c, U69, U44, C19) | `CodeIntel` service: exact search, symbols, vectors, hybrid ranking; `asc search/sym/semantic`; metrics | `scope_oracle`, `ann_acl`, `codeintel_acl`, `codeintel_fork` and `codeintel_cli` tests green; gates of §23.9 measured by I27 |
+| 4c-MCP | 15–17 | I21 (after I16, M15, M08) | `search` tool backed by `CodeIntel`; `search.v1` advertised | `search_codeintel` test green |
 | 5 Daemon and ProjFS | 8–12 | U52–U58, U73 | virtual worktrees on Windows; plugin API | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests; daemon idle RSS ≤ 64 MiB; compat suite green |
 | 5m Local MCP | 12–16 | M01a–M11, M15–M17 (after U73, C31, C24, C25) | the asc JSON profile for `--json`, `asc mcp` over stdio, `asc mcp install`, the generated tool reference | stdio acceptance tests green in local-only mode; default `tools/list` ≤ 6,000 tokens; idle RSS ≤ 24 MiB (M16) |
+| 5c Daemon code intelligence | 13–18 | I18–I20 (after U53b, U73) | daemon overlay, degraded local index, opt-in local embeddings | idle RSS ≤ 64 MiB after the reader closes; search works with `--store` local-only |
 | 6 CI | 10–12 | U61–U64, U75 | `asc/actions`, runner alias, host warmer, seeds | typical PR ≤ 8 runner-minutes; compat suite green |
 | 7 FUSE and submodules | 12–14 | U59–U60 | Linux virtual, sdk composition | WSL contract green; compat suite green |
 | 8 Forgejo Stage 2 | 8–15 | K01–K09 | asc is truth | rollback drill passed on staging; compat suite green |
 | 9 Forgejo Stage 3–5 | 15–22 | K10–K15, K17, R01–R02 | full storage replacement; relaxed approvals; runner fork | Forgejo suite green on `asc`; a dual week with 0 mismatches; compat suite green |
 | 9s Forgejo stacks | 18–24 | C34–C43, C46–C48 (after K17); C44 is v1.x | stacked PRs, stack panel, versions/interdiff, stack merge and queue, inbox, commit graph page, badges | `asc-sim` lands 20 stacks concurrently with no lost or duplicated change; Forgejo suite green |
 | 9m Forgejo MCP | 18–24 | M20–M26, M28 (after K07, K14, C34–C39); M27 is v1.x | `/api/mcp`: PRs, reviews, issues, Actions, inbox; OAuth with audience binding; `lockdown` | the Forgejo `go test` selectors green; an IDE or agent host signs in by OAuth or PAT |
-| Ops | ongoing | O01–O08, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
+| 9c Forgejo code search | 18–24 | I23–I26 (after K10, I16) | search page, symbol panels, `/explore/code`, API | the Forgejo `go test` selectors green; fixture secrets absent from HTML and JSON |
+| Ops | ongoing | O01–O08, I27, I28, U30 | GC, release/MSI, runbooks, docs, benchmarks, observability, fuzzing, simulation; shared BucketRefs (deferred) | O05 benchmark gate green |
 
 G09–G10 ship with Phase 4, and U63 uses them in Phase 6.
 
@@ -2928,7 +2960,7 @@ Tool names are short and unprefixed, as the MCP catalogue requires (hosts namesp
 
 ## 22. MCP: the agent interface, built in [audit: mcp-built-in-missing, checklist-mcp-not-folded]
 
-Normative from v1.6 (checklist decision "MCP built in", 2026-10-22). This section folds `docs/research/mcp.md` (final, reviewed): its §N is §22.(N+1) here, its decisions M-D1–M-D10 are §22.1, and its units are PLAN §M. The research file stays as background and review history; where it and this section differ, this section wins. Related text: §21.7 (the branchless tools `drafts`, `cloud_status`, `hide`, `unhide`, which join the `stack` and `write` toolsets), §7 (`asc api` and the JSON profile), §15.1 (identity), §16.3 (rate classes). The code-intelligence `search` tool is row `search` of §22.3.2; its extra fields come from `docs/research/codeintel.md` §3.4.
+Normative from v1.6 (checklist decision "MCP built in", 2026-10-22). This section folds `docs/research/mcp.md` (final, reviewed): its §N is §22.(N+1) here, its decisions M-D1–M-D10 are §22.1, and its units are PLAN §M. The research file stays as background and review history; where it and this section differ, this section wins. Related text: §21.7 (the branchless tools `drafts`, `cloud_status`, `hide`, `unhide`, which join the `stack` and `write` toolsets), §7 (`asc api` and the JSON profile), §15.1 (identity), §16.3 (rate classes). The code-intelligence `search` tool is row `search` of §22.3.2; its extra fields are specified in §23.4.4.
 
 Fixed rules this section obeys:
 - git commands keep git's semantics, output and exit codes; MCP is a new surface and changes none of them;
@@ -3290,8 +3322,353 @@ CLI: `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tool
 - **Owner of `crates/asc/src/cli/json.rs`:** `mcp.md` named "U21a/U73"; the file belongs to U20 (`cli/json.rs` is in U20's Owns). The hunk that prints through `asc_rpc::json` is made by M01c, as a recorded amendment to U20. `docs/research/mcp.md` is corrected.
 - **`--json` shapes:** §11.2 and §20.7 disagreed (proto3 JSON versus snake_case with hex ids). The asc JSON profile (§22.4.2) settles it for every `--json` output; `asc api` keeps standard proto3 JSON (§7). A bare-array shape is wrapped in an object, so `asc op log --json` prints `{"ops": [...]}` and `asc evolog --json` prints `{"versions": [...]}` (§20.7).
 - **Server `Commit` and `ChangeMeta`:** §20.4 already requires meta for every changeset the server creates, through `IngestObserver`; M18 is the unit that makes the `Commit` handler of U48a take that path (`op = New`, `preds = []`), so changes created through MCP `commit` get a change id.
-- **`search`:** the tool exists once (§22.3.2, rule M-D1). M15 depends on the `CodeIntel` proto unit I12 and is wired to the service by I21 of the code-intelligence design; until then the row is absent from `tools/list` because `Version.features` lacks `search.v1`.
+- **`search`:** the tool exists once (§22.3.2, rule M-D1). M15 depends on the `CodeIntel` proto unit I12 and is wired to the service by I21 (§23.11); until then the row is absent from `tools/list` because `Version.features` lacks `search.v1`.
 - **IDE plugins** register `asc mcp` and Forgejo `/api/mcp`, and never `/mcp` next to them (§22.2 placement rule), so an agent never sees a tool twice.
+
+---
+
+## 23. Code intelligence: search, symbols and vectors, built in [audit: codeintel-folded]
+
+Normative from v1.7 (checklist decision "agentic code intelligence built in", 2026-10-22). This section folds `docs/research/codeintel.md` (final, reviewed): its §N is §23.(N+1) here, its decisions D1–D8 are CI-D1–CI-D8 (§23.1), and its units I01–I31 are PLAN §I. The research file stays as background and review history; where it and this section differ, this section wins. Related text: §22.3.2 (the `search` tool; this design adds no tool of its own, rule M-D1), §22.4.2 (the JSON profile), §5 (derived data), §7, §8, §15, §16.
+
+Fixed rules this section obeys:
+- no whole-repo scans, and indexing cost scales with change size;
+- every index is keyed by content id (`FileId`) and deduplicated across revisions;
+- read access holds inside every result list, ANN results included;
+- the daemon's idle RSS stays ≤ 64 MiB, so heavy indexes live on the server (or a cache-tier replica), and the daemon serves only a bounded local subset;
+- local-only mode works with a degraded local index;
+- the embedding model runs locally by default, so no code leaves ASC infrastructure;
+- `master`, not `main`. There is no IDE-specific surface: ASC's IDE plugins use the same RPC/IPC.
+
+### 23.1 Decisions: vector search as the third tool [audit: codeintel-folded]
+
+Should asc have vector search for agents? **Yes, but as the third of three tools. Exact search and symbols come first.** The point is that agents can query any revision, draft or stack **without a checkout**: all three indexes are server-side derived data that read blobs from the object store.
+
+| Evidence | Number | Consequence for asc |
+|---|---|---|
+| Anthropic, Agent SDK guidance (2025-09) | "start with agentic search; add semantic search only if you need faster results or more variations" | grep/glob-style tools are primary; semantic is additive |
+| Cursor, semantic search A/B (2025-11) | +12.5% Q&A accuracy (6.5–23.5%); +2.6% code retention on repos with > 1,000 files; grep-only had 2.2% more dissatisfied follow-ups | ASC has 4,543 files, above the threshold where vectors pay off |
+| Zilliz claude-context (vendor) | −39% tokens, −36% tool calls, equal F1 | the gain is mostly efficiency: fewer tokens and turns |
+| turbopuffer talk (vendor, 50 tasks) | file precision 65% → 87%; recall best with grep alone | agents need a **policy** for which tool to call (§23.4.4 tool descriptions) |
+| Sourcegraph Cody, Continue | both dropped embeddings for search plus code graph; BM25F alone gave +20% at Sourcegraph | a good lexical ranker is the baseline; vectors must never be the only path |
+| Cursor index sync (2026-01) | chunk embeddings cached by content hash; time to first query 7.87 s → 525 ms median | content addressing (our `FileId`) makes reuse free |
+
+Decisions CI-D1–CI-D8 (the research file calls them D1–D8; the prefix keeps them apart from the decisions of other sections):
+
+| # | Decision |
+|---|---|
+| CI-D1 | Three indexes, all derived data keyed by `FileId`: **grams** (doc-level trigram postings), **tags** (tree-sitter definitions and references), **chunks** (AST chunks plus embeddings). A revision is a set of `FileId`s, composed through `TreeId`-keyed doc sets (§23.2.3). |
+| CI-D2 | One engine for postings and BM25: **tantivy 0.27.0**. Segments, merges, FST term dictionary, bitpacked postings and mmap come from tantivy. asc writes only the trigram tokenizer, the regex-to-trigram planner and the scope filter. No custom posting store. |
+| CI-D3 | Cross-file navigation is **search-based**: reference names are joined to definition names, then ranked with import, project-graph and path signals. Stack graphs are archived and are not used. Compiler-grade SCIP is a v1.x upload path (I31). |
+| CI-D4 | The default embedding model is **jina-embeddings-v2-base-code** (Apache-2.0, 161M parameters, 768 dims, 8,192-token context). It runs on the CPU through **fastembed 7.2.0**. CodeRankEmbed (MIT, 137M) and Qwen3-Embedding-0.6B (Apache-2.0) are the bake-off candidates (I28). Changing the model is a config change plus a background re-embed. |
+| CI-D5 | ANN uses **usearch 2.26.5** HNSW over **i8** vectors on the server (4x smaller than f32, about 99% of quality with rescoring). Small scopes use exact brute force. The daemon's local index stores **b1** codes with i8 rescoring. |
+| CI-D6 | The ACL unit is the repository namespace (SPEC §15.1, §15.5). Each namespace has its own indexes, so no ANN graph ever contains another namespace's vectors. Within a namespace, every query is filtered by a scope bitmap **inside** the traversal. A path-level deny rule, if one is ever added, subtracts a subtree bitmap in the same predicate. |
+| CI-D7 | Indexing runs off the write path: an outbox effect enqueues a job, and workers drain the jobs. Readers report `coverage`. Exact search stays complete when the index lags, because the unindexed part of the scope is verified by streaming, within a budget. |
+| CI-D8 | Files that look like secrets are never embedded, never sent to an external provider, and are redacted in agent-facing snippets. Exact search still finds them, as `git grep` would for anyone with read access. |
+
+
+### 23.2 Architecture
+
+#### 23.2.1 Per-content units (computed once per `FileId`, never again)
+
+| Unit | Key | Content | Pure function of | Stored at |
+|---|---|---|---|---|
+| Doc row | `(ns, FileId)` → `ord: u32` | dense doc ordinal, size, flags that the bytes alone decide (`binary`, `invalid_utf8`, `too_large`, `long_line`, `too_many_grams`, `minified`, `secret`), per-index versions. No language, no attribute or config flag | file bytes only | SQL `ci_docs` |
+| Doc languages | `(ns, ord, lang)` | one row per distinct language that the extension or shebang of any path holding the `FileId` gives (usually one; ≤ 4) | bytes plus path | SQL `ci_doc_langs` |
+| Grams | doc `ord` in the `files` tantivy index | distinct ASCII-case-folded byte trigrams, as a multi-valued indexed `u64` field (24-bit value, doc-level, no positions) | bytes, `grams_ver` | tantivy segments (§23.2.4) |
+| Tags | `d/tags.v1/<blake3(FileId ‖ lang ‖ tags_ver)>`, one object per `(FileId, lang)` | postcard `Vec<Tag { name, kind, role: Def\|Ref, range, name_range, container: u32, sig: Vec<u8>, doc: Vec<u8> }>` | bytes, grammar version, query version | object store (`d/`, evictable, recomputable) |
+| Symbol terms | doc `ord` in `files` | `sym_def` and `sym_ref` raw terms; `ident` (camel/snake-split, lowercased, BM25 with frequencies); `doc` (comments and docstrings, BM25); `path_tok` (≤ 4 paths seen, ranking only); `lang` (multi-valued, from `ci_doc_langs`) | tags | tantivy segments |
+| Chunk map | `d/chunks.v1/<blake3(FileId ‖ lang ‖ chunker_ver)>` | `Vec<(start_line, end_line, symbol, ChunkTextId)>` | tags plus bytes | object store |
+| Chunk rows | `(ns, chunk_ord)` | `doc_ord`, `lang`, lines, `ChunkTextId = blake3::derive_key("asc v1 ci chunk", embed_text)` | chunk map | SQL `ci_chunks`; the `chunks` tantivy index (BM25 over `ident`, `doc`, `symbol`) |
+| Vectors | `(ns, model_gen, ChunkTextId)` | i8 × dims | chunk text, model | vector segments (§23.2.4) |
+
+- **Dedup:** a `FileId` gets one `ord` per namespace, however many paths and revisions hold it. An identical chunk text is embedded once per namespace and model generation (`ChunkTextId`). Embeddings are never shared across namespaces, so the rule of SPEC §3.3 against confirmation attacks also holds for indexes.
+- **Byte skip rules** (doc flags; the doc gets no grams, tags or chunks): a NUL byte; invalid UTF-8; size > 1 MiB; any line > 2,000 bytes; > 20,000 distinct trigrams; the secret scan (§23.7). Only these are stored per `FileId`, because only the bytes decide them. These are the codesearch and Zoekt constants.
+- **Path-dependent excludes are query-time, not stored per file:** `linguist-generated`, `linguist-vendored`, `-text`/`binary` attributes and the excludes of `.asc/codeintel.toml` depend on the path and the revision. The attribute files are read per directory with `.ascattributes` first and `.gitattributes` as the fallback (SPEC §2.4.1, checklist), never merged. The scope derivation (§23.2.3) computes the excluded bitmap `xdocs` per `(TreeId, rules digest)`, and every query uses `scope ∖ xdocs`. A file excluded at every path it has is indexed at backfill priority only; a query that sets `include_excluded` indexes it on demand. Indexing therefore never depends on ingest order, and the same `FileId` can be excluded at one path and included at another. On ASC they skip the 12 files holding 59% of the bytes (ONNX, WASM, jsonl corpora, `semantic-index.json`). Skipped and excluded files can still be found by path, and exact search verifies them by streaming when they are in scope and ≤ `core.bigFileThreshold`.
+- **Embedding text** = language + enclosing symbol signature + the chunk body. The path is left out, so renames and copies keep their vectors. The path is a BM25 field and a ranking feature instead.
+
+#### 23.2.2 Chunking (for embeddings and chunk BM25)
+
+The chunker splits the AST, then merges (cAST: +4.3 Recall@5 on RepoEval and +2.67 Pass@1 on SWE-bench against line chunking):
+1. Walk the tree-sitter tree. A node of ≤ 1,536 non-whitespace characters (about 512 tokens) is a chunk candidate.
+2. A larger class, impl or function node gets a **collapsed** chunk: its signature and member signatures with bodies replaced by `{ … }`, as Continue does. The walk then recurses into its children.
+3. Adjacent small siblings are merged greedily up to the budget.
+4. Files with no grammar get line windows of 60 lines with 10 lines of overlap.
+
+`text-splitter` 0.33.0 (`code` feature) was considered and rejected: it does not do the collapsed-signature step. The chunker is about 300 lines over tags plus the tree.
+
+#### 23.2.3 Revision → set of `FileId`s (the scope), without walking the repo
+
+| Piece | Definition | Cost |
+|---|---|---|
+| `tdocs.v1` (content-keyed derived value, like `mset.v1`) | key `TreeId`; value = roaring bitmap of the `ord`s of every File/Exec entry in the subtree, plus `dups`: a sorted list of `(ord, count)` for each ord that appears at ≥ 2 paths in the subtree (an ord that is not listed has count 1). Stored only for subtrees with ≥ 256 files. Smaller subtrees are expanded from their (cached) tree objects. | Derived from the children's `tdocs` plus the tree's own files. Unchanged subtrees are memo hits, so a new revision costs O(changed paths × depth) tree reads and bitmap unions. |
+| `scope(rev)` | `tdocs(rev.root)` | one memo read once derived |
+| Path filter | literal prefix `p` → `tdocs(lookup(rev.root, p))`; excludes subtract; globs are checked at locate time | O(depth) tree reads |
+| Historical revision with no derived root | Probe the ancestors at the `skip.v1` distances (4, 16, 64) with one `has_many` for a derived `tdocs`. If one is found within 64 first-parent steps, `scope = tdocs(A.root) ⊕ Δ`, where Δ is built from the `changes` lists between them (metadata only, no new objects). A roaring set has no counts, so Δ is applied with counts: start from the `dups` of `tdocs(A.root)`, add 1 for each added path and subtract 1 for each removed path, and drop an ord from the bitmap only when its count reaches 0. Deleting one of two paths that hold the same `FileId` keeps the file. Otherwise derive `tdocs` from the tree, reusing every shared subtree. | O(log n) probes plus O(Δ), or O(changed spine) |
+| `--stack` | scope = the top change's head (resolved through `ResolveChanges`) | as rev |
+| `--stack-diff` | scope ∧ the ords of `paths(base..top)` (SPEC §4.5), with base = `merge_base(top, trunk)` via skip lists (SPEC §4.3) | O(log n + stack paths) |
+| Workspace (daemon only) | server scope at `HEAD` minus dirty paths, plus the local overlay (§23.2.5) | O(dirty files) |
+| Locate (ord → paths) | descend from the root only into subtrees whose `tdocs` contains the ord | O(depth) bitmap probes per hit |
+
+- New `FileId`s met while deriving `tdocs` get an `ord` at once (one batched `INSERT … ON CONFLICT DO NOTHING`), and a file job is enqueued. An ord can exist before its content is indexed, so `coverage(scope, index) = |scope ∧ indexed[index]| / |scope|`.
+- **Where `indexed[index]` lives:** a roaring bitmap per index, stored as an immutable bucket object `d/ciidx.v1/<blake3>` (≈ 50 KiB at 400k docs). `ci_manifest` names it (`indexed_ref`), and every manifest generation writes a new one in the same CAS. A query reads the bitmap of the generation it pinned, so coverage never overstates what that generation holds.
+- The first `tdocs` of an imported head walks that head's tree once: O(files at the head), once per head ever, never per query. ASC: 4,543 files, 994 directories.
+- `xdocs` is derived from the same walk: a directory whose rule digest is unchanged reuses its memo, so the cost stays O(changed spine).
+- Sizes: ASC root bitmap ≈ 9 KiB. A HUGE root (400k files) ≈ 60 KiB, and a full spine ≈ 100 KiB per derived revision. Derivation is lazy (only revisions that are queried or warmed), and the values live in `d/` (evictable).
+
+#### 23.2.4 Where each piece lives, and budgets
+
+| Piece | Authoritative copy | Hot copy | Size (estimate; I27 measures) |
+|---|---|---|---|
+| `ci_docs`, `ci_chunks`, `ci_jobs`, `ci_manifest` | server SQL | – | about 60 B per doc row and 40 B per chunk row; ASC ≈ 4 MiB |
+| `files` and `chunks` tantivy indexes | immutable segment files in the bucket: `d/ciseg.v1/<blake3>`. `ci_manifest(ns, index, generation, segments, model_gen)` names the live set; a CAS on `generation` publishes a commit. | each replica's `disk_dir/ci/<ns>/`, mmapped; missing segments are downloaded on manifest change | grams ≈ 0.2x of indexed text; symbols and BM25 ≈ 0.1x. ASC HEAD text ≈ 45 MiB → ≈ 15 MiB. HUGE 25 GB → ≈ 7.5 GB |
+| Tags, chunk maps, `tdocs` | `d/…` objects | server cache | tags ≈ 5–10% of source |
+| Vector segments | bucket `d/civec.v1/<blake3>` (usearch index plus an ord map), named by `ci_manifest` | replica disk, opened with usearch `view` (mmap) | ≈ 0.9 KiB per chunk (768 B i8 + HNSW links, M = 16). ASC ≈ 30k chunks → ≈ 27 MiB. HUGE ≈ 3M chunks → ≈ 2.7 GB |
+| Server memory | `[codeintel] memory = "2GiB"` is one budget with fixed shares: tantivy writer heaps (`workers × 32 MiB` for `files` plus one 32 MiB writer for `chunks`; about 288 MiB at 8 workers), the vector-merge builder (≤ 512 MiB, §23.5), doc-store caches (256 MiB), the query-embedding LRU (64 MiB), verify buffers (`limits.text_memory`, SPEC §16.4), and the rest as headroom. Startup fails when the shares exceed `memory`. | page cache does the rest | – |
+| Daemon overlay | in memory, built on first query, dropped after 5 min idle | – | ≤ 16 MiB heap; ≤ 4,096 dirty files or ≤ 32 MiB text, otherwise streaming verify |
+| Local index (local-only or offline) | `$ASC_HOME/ci/<repo-id>/` (tantivy plus b1/i8 vector files under `vec/<model_gen>/`, each with a header holding the model id and calibration digest) | the daemon mmaps it on query and closes the reader after 5 min idle | capped by `codeintel.local.maxSize` (default 512 MiB); LRU by revision |
+
+- **Consistency:** a segment commit contains whole file jobs, and `indexed[index]` is read at the manifest generation a query pins. No query sees a half-indexed file, which gives Blackbird's commit-level consistency.
+- **Compaction:** tantivy's log merge policy, run by the indexing leader. Superseded segments are deleted from the bucket 10 minutes after the generation that dropped them, so pinned page tokens stay valid.
+- **One writer per namespace:** a SQL lease (`ci_manifest.leader`, `lease_until`). Any replica can index file jobs into new segments, and only the leader commits manifest generations and merges.
+- **Forks:** `tdocs.v1`, `tags.v1`, `chunks.v1`, `ciseg.v1`, `civec.v1`, `ciidx.v1` and all `ci_*` rows are per-namespace derived data. `Fork` and `CopyClosure` (SPEC §3.3, §7) copy the reachable content closure only and never these objects, because ords differ per namespace and a copy would carry an index into a namespace whose readers may differ. A fork starts un-indexed and backfills its own heads (I15).
+- **Cache-tier role:** `asc serve --role cache` serves no CodeIntel RPCs (SPEC §7: the tier RPCs only). A region that needs local query latency runs a read replica of `asc serve`, which syncs segments from the bucket.
+
+#### 23.2.5 Daemon and local-only
+
+| Mode | What answers | Coverage |
+|---|---|---|
+| Online, workspace scope | The server answers at `HEAD`'s server revision, with `exclude_paths` = dirty paths. The daemon answers the same query over the overlay (dirty and staged files from the journal) and merges the two. | full |
+| Online, any other scope | The server; the daemon only forwards | full |
+| Offline, or local-only repo | The local index: grams, tags and BM25 for every `FileId` of the active workspaces' `HEAD` whose content is in `store/` or `cache/`. Built by the helper `asc codeintel worker` (a separate process, never the daemon), incrementally per local commit with the same `asc-codeintel` code. The helper is limited to: RSS ≤ 256 MiB (tantivy writer heap 64 MiB), 2 threads at low priority, disk only inside `codeintel.local.maxSize`, no network, no model. It is started only when the workspace is idle and exits after 60 s with no job. | degraded: `coverage` says how much; vectors only when `codeintel.local.embed = true` |
+| Local semantic (opt-in) | The `asc-embed` helper binary, downloaded and minisign-verified by `asc codeintel enable-embed`, spawned on demand and exiting after 60 s idle. The daemon never loads a model, since a 161M-parameter model needs about 300–600 MiB. | as above |
+
+
+### 23.3 Query semantics
+
+| Query | Inputs (besides scope) | Plan | Output order |
+|---|---|---|---|
+| **search** literal / regex / word | `pattern`, `mode`, `case_sensitive`, `paths`, `exclude_paths`, `langs` | Port codesearch's `RegexpQuery` (exact/prefix/suffix/match sets, maxExact 7, maxSet 20, char class > 100 = any) to `regex-syntax` 0.8.11 HIR, using folded trigrams → tantivy `BooleanQuery` of `TermQuery` on `tri` → collector that keeps docs whose `ord` ∈ scope → verify each candidate with `regex` 1.13.1 over the bytes from `Objects::get` → locate. A query with no trigram (for example `.*`, or under 3 chars) is a streaming scan **of the scope**, allowed only with a path filter or a scope ≤ 2,000 files; otherwise `INVALID_ARGUMENT: pattern too broad`. | Ranked within a verified window of 2,000 files (features: symbol-definition hit, basename match, path depth, test or generated penalty), then by `ord`; cursor = last `(window, ord)` |
+| **symbols def** | `name` (exact, or `prefix*`, or fuzzy with distance ≤ 1 via the term FST), `kinds` | `sym_def` term ∩ scope → load tags → filter | exact > same project (G07 project graph) > importer-near > path distance |
+| **symbols refs** | `name`, optional `def` (path and line) | `sym_ref` term ∩ scope. Languages whose tags give no refs fall back to a word-boundary trigram search. When `def` is given, rank by import evidence (the ref file imports the def file's module or path) and project-graph reachability. | `confidence`: `import_match` > `name_match` |
+| **symbols callers** | as refs | refs with role `Ref/call`, grouped by `container` (the enclosing definition) | by caller |
+| **symbols outline** | `path` | tags of that one `FileId`; no index | source order |
+| **semantic** | `query`, `mode = hybrid\|vector`, `k` | Embed the query (server, LRU keyed by `(model_gen, calibration digest, blake3(text))`, ≈ 20 ms on CPU). Choose the path by **selectivity** `s = kept chunks / namespace chunks` (kept = Σ chunk counts of the docs in `scope ∖ xdocs ∖ secret`, from `ci_docs`). If `s < 3%` or kept ≤ 20,000, run exact brute force over the kept vectors. Otherwise run usearch `filtered_search` with predicate `doc_ord(chunk) ∈ kept`, with `ef_search = min(4096, max(64, ceil(4·k / s)))` and a visit bound of `16 × ef_search` nodes. If the bound is hit with fewer than `k` results, fall back to brute force when kept ≤ 200,000 chunks, otherwise return the partial list with `ann_exhausted = true`. Each vector segment (§23.5) is searched on its own and the lists are merged. In `hybrid`, also run tantivy BM25 over the `chunks` index (`symbol` ×3, `ident` ×1, `doc` ×1, `path_tok` ×2) in the same scope and fuse with **RRF, k = 60**. Exact `sym_def` hits on query identifiers are a third list. Optional cross-encoder rerank (`bge-reranker-base` via fastembed), off by default. | fused score |
+
+- **Every query takes a scope:** `rev` (any revspec, SPEC §4.2), `change` (a change id, resolved to its current head), `stack` (top change, with `diff_only`), or `workspace` (IPC only). The response echoes the resolved changeset and root `TreeId`, so agents can cite an immutable scope.
+- **Pagination:** opaque `page_token` = postcard of `(manifest generation, scope digest, stage, last ord)`, MACed with the server key. An expired generation returns `FAILED_PRECONDITION: stale page token`.
+- **Token-aware output:** the request carries `max_results`, `max_bytes` and `max_tokens`. Tokens are estimated as `ceil(bytes / 3)`, a conservative figure for code, with no tokenizer dependency. Results are grouped by file. A `FileId` at several paths is printed once with `also_at` (up to 5 paths). Long lines are cut at 300 bytes around the match. The response reports `est_tokens`, `truncated` and `next_page_token`.
+- **Completeness under lag (CI-D7):** exact search verifies the unindexed part of the scope by streaming, up to 2,000 files or 64 MiB, and sets `coverage = 1`. Above that it returns partial results with `coverage < 1` and enqueues the missing files at interactive priority. Symbols and semantic return `coverage` as it is.
+
+
+### 23.4 Interfaces
+
+#### 23.4.1 RPC: `proto/asc/v1/codeintel.proto` (same port, `service CodeIntel`)
+
+```proto
+message Scope { RepoRef repo = 1; oneof at { string rev = 2; bytes change = 3; bytes stack_top = 4; bool workspace = 5; }
+  bool stack_diff_only = 6; repeated string paths = 7; repeated string exclude_paths = 8; repeated string langs = 9; bool include_excluded = 10; }
+message ResolvedScope { bytes changeset = 1; bytes root = 2; uint64 generation = 3; float coverage = 4; }
+message Budget { uint32 max_results = 1; uint32 max_bytes = 2; uint32 max_tokens = 3; }
+enum SearchMode { SEARCH_MODE_LITERAL = 0; SEARCH_MODE_REGEX = 1; SEARCH_MODE_WORD = 2; }
+message SearchRequest { Scope scope = 1; string pattern = 2; SearchMode mode = 3; bool case_sensitive = 4;
+  uint32 context_lines = 5; Budget budget = 6; string page_token = 7; }
+message LineMatch { uint32 line = 1; repeated uint32 cols = 2; bytes text = 3; repeated bytes before = 4; repeated bytes after = 5; }
+message FileHit { bytes path = 1; bytes file_id = 2; string lang = 3; repeated bytes also_at = 4; repeated LineMatch matches = 5; bool redacted = 6; }
+message SearchResponse { ResolvedScope scope = 1; repeated FileHit files = 2; bool truncated = 3; string next_page_token = 4; uint32 est_tokens = 5; }
+enum SymbolOp { SYMBOL_OP_DEF = 0; SYMBOL_OP_REFS = 1; SYMBOL_OP_CALLERS = 2; SYMBOL_OP_OUTLINE = 3; SYMBOL_OP_FIND = 4; }
+message SymbolsRequest { Scope scope = 1; SymbolOp op = 2; string name = 3; bytes path = 4; repeated string kinds = 5;
+  bytes def_path = 6; uint32 def_line = 7; Budget budget = 8; string page_token = 9; }
+message Symbol { string name = 1; string kind = 2; bool is_def = 3; bytes path = 4; uint32 line = 5; uint32 end_line = 6;
+  bytes signature = 7; string container = 8; bytes doc = 9; string confidence = 10; }
+message SymbolsResponse { ResolvedScope scope = 1; repeated Symbol symbols = 2; bool truncated = 3; string next_page_token = 4; uint32 est_tokens = 5; }
+enum SemanticMode { SEMANTIC_MODE_HYBRID = 0; SEMANTIC_MODE_VECTOR = 1; }
+message SemanticRequest { Scope scope = 1; string query = 2; SemanticMode mode = 3; uint32 k = 4; Budget budget = 5; bool rerank = 6; }
+message Chunk { bytes path = 1; bytes file_id = 2; uint32 start_line = 3; uint32 end_line = 4; string symbol = 5;
+  double score = 6; repeated string sources = 7; bytes text = 8; bool redacted = 9; }
+message SemanticResponse { ResolvedScope scope = 1; repeated Chunk chunks = 2; string model = 3; uint32 est_tokens = 4; bool ann_exhausted = 5; }
+message IndexStatusRequest { Scope scope = 1; }
+message IndexStatus { string index = 1; float coverage = 2; int64 lag_seconds = 3; uint64 generation = 4; string version = 5; }
+message IndexStatusResponse { ResolvedScope scope = 1; repeated IndexStatus indexes = 2; }
+service CodeIntel {
+  rpc Search(SearchRequest) returns (stream SearchResponse);
+  rpc Symbols(SymbolsRequest) returns (SymbolsResponse);
+  rpc Semantic(SemanticRequest) returns (SemanticResponse);
+  rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);
+}
+```
+
+- **Rate class `codeintel`** (new, SPEC §16.3): `Search` and `Symbols` 50 req/s per principal (burst 100); `Semantic` 10 req/s per principal and 32 concurrent per replica (query embedding uses the CPU); `IndexStatus` is `cheap`. Search scans without trigrams count as `expensive`.
+- **Permission:** read on every namespace searched. `Repo.Grep` (U47) stays as it is and is the streaming fallback that CI-D7 reuses.
+- **Workspace IPC** (`workspace.proto`, U73 amendment): the same four RPCs; `scope.workspace = true` is accepted only over IPC.
+
+#### 23.4.2 CLI (asc-only verbs; no git command changes behaviour)
+
+| Command | Maps to |
+|---|---|
+| `asc search <pattern> [-F\|-E] [-i] [-w] [-C n] [--rev R\|--change C\|--stack [--diff-only]] [--lang L] [--json] [-- pathspec]` | `Search` (workspace scope by default inside a workspace, otherwise `master`) |
+| `asc sym def\|refs\|callers <name> [--kind k] [--at path:line]`, `asc sym outline <path>`, `asc sym find <prefix>` | `Symbols` |
+| `asc semantic "<query>" [--vector] [-k n] [--rerank]` | `Semantic` |
+| `asc codeintel status [--rev R]`, `asc codeintel worker` (internal), `asc codeintel enable-embed` | `IndexStatus`, the local helper, the embed opt-in |
+
+`--json` prints the response messages in the asc JSON profile `json.profile.v1` (§22.4.2: snake_case, lowercase hex ids, one JSON object per streamed message), the same shapes MCP returns; `asc api` keeps standard proto3 JSON (§7). `codeintel.proto` carries the `(asc.v1.json)` options (I12 depends on M01a). Human output follows `git grep -n` layout (`path:line:text`) with the scope header on stderr. `git grep` (U24b) is not changed. Accelerating `git grep <rev>` with the index, with byte-identical output, is the optional unit I30.
+
+#### 23.4.3 ASC IDE plugins
+
+The plugins call the same RPC/IPC through the generated TypeScript client (checklist, "IDE plugins"), over the daemon IPC (`Workspace`) and the server (`CodeIntel`). This design adds no separate surface.
+
+#### 23.4.4 MCP: the `search` tool of §22.3.2 (no tool of its own)
+
+§22 owns the MCP surface (rule M-D1: no tool exists twice). This design adds no tool name. The tools are `search` and `read_file`; the mapping onto §22.3:
+
+| §22.3 tool | Backed by | What this design adds |
+|---|---|---|
+| `search` (toolset `search`, unit M15, listed only when `Version.features` has `search.v1`) | `mode: text\|regex` → `Search`; `mode: symbol` → `Symbols`; `mode: semantic` → `Semantic` | Optional fields on the M15 row, additive: `change`, `stack`, `diff_only`, `op` (`def\|refs\|callers\|outline\|find`, for `symbol`), `k`, `context_lines`, `max_tokens`, `rerank`, `include_excluded`. The response is `SearchResponse`, `SymbolsResponse` or `SemanticResponse`, with `scope`, `coverage` and `est_tokens`. The §22.3.2 `search` row carries them. |
+| `read_file` (`core`) | `Repo.ReadFile` | Nothing. It expands a hit at the same revision. There is no `code_read`. |
+| `grep` (`core`) | `Repo.Grep` | Nothing. It stays the streaming fallback (CI-D7). |
+| index status | `ResolvedScope.coverage` in every response, and `asc codeintel status` | No `code_index_status` tool. |
+
+The server adds `search.v1` to `Version.features` when the `CodeIntel` service is enabled. The use policy goes into the `search` tool's description: text and regex first for identifiers, strings and error messages (results are verified matches); `symbol` when a name is known (`refs` is name-based, so read `confidence`); `semantic` when the names are unknown, or after text search finds nothing (ranked chunks, not every match). Result text is untrusted file content. Defaults: `max_tokens = 4000`, `context_lines = 2`, `k = 10`. Every result carries `scope.changeset`, so a follow-up call can pin the same revision.
+
+
+### 23.5 Indexing pipeline
+
+| Step | Trigger | Work | Idempotency |
+|---|---|---|---|
+| Enqueue | outbox effect `codeintel.enqueue(ns, changesets)` after `UpdateRefs`, `Ingest`, `Commit` and `RestackChanges` commit (U43c amendment). It is never on the write path. | For each new changeset: the `Write` `FileId`s of its `changes` → `has` check against `ci_docs` → `INSERT ci_jobs(kind='file')` for the unknown ones only. Cost is O(changed paths). | `ci_jobs` PK `(ns, kind, key, version)`, `ON CONFLICT DO NOTHING` |
+| File job | worker lease (`FOR UPDATE SKIP LOCKED` on Postgres; one in-process queue on SQLite) | read bytes once (`Objects::get`) → skip rules → secret scan → trigrams → tree-sitter tags (cancellation flag, 250 ms per file) → chunk map → write `d/tags.v1`, `d/chunks.v1` → add docs to the in-memory segment writer → enqueue an `embed` job for chunk texts not yet embedded | the outputs are pure functions of `(FileId, versions)`, so concurrent workers write identical bytes |
+| Segment commit | every 2 s or 5,000 docs | tantivy commit → upload the segment files → CAS `ci_manifest.generation` → set the `indexed` bits | the CAS loser re-bases its segment set onto the new generation |
+| Embed job | batches of 32 chunk texts | fastembed → i8 quantisation (per-dimension min/max, calibrated once per model on 10k ASC chunks; the table is stored in the model record with its blake3 digest) → add to the vector segment writer | key `(ns, model_gen, ChunkTextId)` |
+| Merge | leader, background | tantivy merge policy. Vector segments use **tiered merges**: only segments of similar size merge, 4 at a time, and no output exceeds 512 MiB (≈ 570k chunks). The merge reads its inputs through mmap and adds their vectors one by one to a new index, so peak memory is the output segment (≤ 512 MiB, the share in §23.2.4) and never the whole namespace. HUGE (≈ 2.7 GB) settles at 5–6 segments, which queries search separately and merge. One merge runs at a time per namespace. | new generation; old segments deleted 10 min later |
+| Sweep | leader, weekly | Live ords = union of `tdocs` of the warmed heads (land-branch tips, open PR heads, drafts touched in the last 30 days). An ord that has been dead for 14 days is tombstoned: deleted from the `files` and `chunks` tantivy indexes by ord, dropped from vector segments at their next merge, and its `d/tags.v1` and `d/chunks.v1` objects removed. Ords are never reused. Content that becomes reachable again is re-enqueued as new work. | idempotent; a new generation |
+| Scope warm | follows `ref_log`, like `projects_warm` (SPEC §12A.5) | derive `tdocs` for new land-branch tips, `refs/pull/*/head` and draft change heads | memo |
+
+- **Priorities:** interactive (a query met unindexed docs) > land-branch tips > PR and draft heads > backfill. Worker concurrency is `[codeintel] workers` (default: cores / 2), and workers run at lower priority (`nice` 10).
+- **Backfill on import (monorepo):** index only what is needed. U33/U45 import ends with `codeintel.enqueue` for the tips of `master`, the release branches and the open PR heads, not for every historical commit. ASC: about 4.5k `FileId`s at `master` and a few hundred more for PR heads, against 49,966 blobs ever. Older revisions are indexed on demand the first time someone queries them (CI-D7 keeps exact search complete while that happens). `asc serve admin codeintel backfill --refs <glob> [--since <date>]` exists for an explicit wider backfill.
+- **Model changes:** the model id is `name@<sha256 of the ONNX file>/<quantisation>/calib@<calibration digest>/<chunker_ver>`. A change to any part, including a new calibration, creates `model_gen + 1`. The reranker is pinned by sha256 in the model registry and is part of the `model` string that `SemanticResponse` echoes; it holds no vectors, so changing it needs no re-embed. The query-embedding LRU key includes `model_gen` and the calibration digest. Embed jobs for the chunks reachable from warmed heads (not history) are enqueued at backfill priority. Queries keep using the old generation until the new one reaches coverage ≥ 0.99 on every land-branch tip, then `ci_manifest.model_gen` flips atomically. The old vectors are deleted after 7 days. Vectors from two generations are never compared, and the query is always embedded with the generation it searches. **Local vectors (I20)** carry the model id and calibration digest in their file header and live under `vec/<model_gen>/`. When the server's `model_gen` (online) or the pinned local model id (offline) differs, the helper drops them and rebuilds them for the active workspace `HEAD`s; they are never migrated.
+- **Extractor versions** (`grams_ver`, `tags_ver`, `chunker_ver`) bump the same way: lazy re-extraction for warmed heads only.
+- **CPU path (default):** int8-quantised ONNX via ort, batch 32, threads = workers. Estimate: about 40 chunks/s per core for chunks of ≤ 512 tokens, to be measured by I27. ASC HEAD (≈ 30k chunks) on 16 cores ≈ 50 s, once. A median commit (4 files, ≈ 24 chunks) takes < 1 s.
+- **GPU (optional):** `[codeintel.embed] device = "cuda"` (ort CUDA EP), or run `asc serve --role indexer` on a GPU host. The indexer role runs only workers, with no RPC serving. The CPU path is always valid; the GPU only changes throughput.
+- **External providers:** opt-in only in `asc-serve.toml` (`provider = "openai-compatible"`, `url`, `allow_external = true`). `.asc/codeintel.toml` in a repo can never enable one. Secret-flagged chunks are never sent.
+
+
+### 23.6 Component choices
+
+| Need | Choice (version) | Rejected | Why, with numbers |
+|---|---|---|---|
+| Postings, segments, BM25 | **tantivy 0.27.0** (MIT, MSRV 1.88 ≤ our 1.95): indexed multi-valued `u64` trigram field (no positions) plus text fields | custom posting store; Zoekt-style positional trigrams; livegrep suffix arrays | Doc-level grams cost ≈ 0.2x of source (codesearch: Linux 420 MB → 77 MB); positional grams cost 3.5x (Zoekt) and suffix arrays 3–5x, and suffix arrays are hard to update incrementally. tantivy gives segment/merge/delete, an FST term dictionary and Lucene-equal BM25 for free. Its `RegexQuery` matches whole terms only, so the planner is ours. |
+| Regex planner | port of codesearch `index/regexp.go` (≈ 1k LoC) onto **regex-syntax 0.8.11** HIR; verification with **regex 1.13.1** (workspace) | `lera-trigram`, `ix`, `grix` (low adoption) | No Rust crate is widely used. The algorithm is small and is property-tested against brute force. |
+| Gram scheme | ASCII-case-folded **trigrams** v1 | sparse grams (Cursor, GitHub, ClickHouse) | Simplest correct choice. Sparse grams cut false positives (13-char `MAX_FILE_SIZE`: 17 grams at index time, a minimal covering set at query time) but need a bigram weight table. They become `grams.v2` only if I27 shows a candidates/matches ratio > 4 on HUGE. |
+| Bitmaps | `roaring` (MIT/Apache; pin the current 0.10.x at I05) | sorted `Vec<u32>` | scope ∧ postings ∧ ACL for 400k docs in microseconds; ≈ 60 KiB HUGE root |
+| Parsing and tags | **tree-sitter 0.27.1** and **tree-sitter-tags 0.27.1** (MSRV 1.90; both versions exist on crates.io); grammars: tree-sitter-rust 0.24.2, tree-sitter-typescript 0.23.2 (TS and TSX), tree-sitter-python 0.25.0, tree-sitter-c-sharp 0.23.5, tree-sitter-go 0.25.0, plus tree-sitter-javascript (pin at I03). All load through `tree-sitter-language` 0.1.9, within ABI 13–15. | stack-graphs 0.14.1 (archived 2025-09, pinned to tree-sitter 0.24, 4 languages); ast-grep as a resolver (no scopes or types) | Tags are a pure function of the file bytes, which suits caching by `FileId`. Parse plus query takes milliseconds per file. **Project-owned `tags.scm`** for all six languages, because upstream is thin (C# has about 12 patterns and no fields, properties or records; TS has 7 TS-specific patterns). A reported break of typescript 0.23.2 against core ≥ 0.25 is unconfirmed, so I03 tests it first and vendors the grammar if it fails. ASC mix: ts 2,616, tsx 84, rs 188, py 152; `surql` (287) gets grams only. |
+| Embedding runtime | **fastembed 7.2.0** (Apache-2.0, `default-features = false`, so no `hf-hub` download) over **ort =2.0.0-rc.15** (ONNX Runtime 1.31; pinned exactly, because it is an RC; checked on crates.io: fastembed 7.2.0 requires `=2.0.0-rc.15`). Models load through `UserDefinedEmbeddingModel` from bytes that `asc-embed` has verified against the registry sha256 and minisign (§23.7); fastembed never fetches. fastembed's own `tokenizers` dependency enables `onig` (C code). **Decision (2026-10-22): keep fastembed's `onig` tokenizer**, with an MSVC CI job and a C entry in the SPEC §15.2 allow-list. I09 bypasses it (calls `ort` and `tokenizers` with `fancy-regex` directly) only if the Windows build fails. candle-core 0.11.0 only if a candle-only model wins I28 | Python sidecar; text-embeddings-inference | in-process Rust, ships rerankers too, DirectML/CUDA EPs. The API churns between majors, so pin. |
+| Default model | **jina-embeddings-v2-base-code** (Apache-2.0, 161M, 768-d, 8k ctx, built into fastembed) | jina-code-embeddings 0.5B/1.5B (**CC-BY-NC**); nomic-embed-code (7B, GPU-class; it becomes an optional GPU-tier model) | Zero-effort, licence-clean and CPU-sized. **Bake-off (I28)** against CodeRankEmbed (MIT, 137M, CoIR 60.1, CSN MRR 77.9) and Qwen3-Embedding-0.6B (Apache-2.0, MRL 32–1024 dims). A candidate wins if it beats the default by ≥ 3 NDCG@10 on the ASC eval set within 2x embed time. Model licences are checked against an allow-list (MIT, Apache-2.0) in `asc-embed`, as cargo-deny does for crates. |
+| ANN | **usearch 2.26.5** (Apache-2.0; C++ FFI, so it needs the SPEC §15.2 unsafe/FFI allow-list entry for the vector module and an MSVC CI job, and sits behind the cargo feature `ann`, off in `asc.exe`): HNSW, i8 cosine, M = 16, ef_construction 128, `ef_search` by the formula of §23.3; `filtered_search` predicate; `view` mmap | hnsw_rs 0.3.5 (graph cannot be mmapped); arroy 0.9.0 (LMDB, Annoy trees); lancedb 0.40.0 (pulls in Arrow and DataFusion) | Filtering inside the traversal is how CI-D6 holds within ANN. mmap keeps RSS as page cache. Native i8/b1 support. One immutable file per segment fits the bucket-segment model. |
+| Quantisation | server **i8** (4x smaller, ≈ 97% raw and ≈ 99% with rescoring); daemon **b1** (32x, ≈ 92.5% raw and ≈ 96% with i8 rescoring of the top 200) | f32 everywhere | Augment: bit vectors plus rescoring gave 8x less memory, latency from > 2 s to < 200 ms and 99.9% parity at 100M LoC. The b1 loss depends on the model (e5-base-v2 kept only 75%), so I28 measures b1 retention for the chosen model, and the daemon uses i8-only if retention is < 93%. |
+| Fusion | **RRF, k = 60** (Cormack et al. 2009), about 10 lines | learned fusion; score normalisation | model-free; equal to or better than CombMNZ and Condorcet Fuse on TREC; LanceDB and Elasticsearch use it by default |
+
+`regex` 1.13.1 and `regex-syntax` 0.8.11 match `Cargo.lock`. All crates pass `cargo deny` as configured (MIT, Apache-2.0, Unlicense and others). Zoekt and ripgrep are **bench-only tools**, not dependencies.
+
+
+### 23.7 Security
+
+| Threat | Control |
+|---|---|
+| Reading another repository's code through search | Indexes are per namespace (CI-D6). The server authorises read on each namespace **before** opening its indexes. Composed repositories (gitlinks, SPEC §10.6) are searched only when the caller can read the child namespace; otherwise the gitlink subtree is not in scope and its results are absent, not redacted. Results from several namespaces are merged after each namespace has been filtered on its own. |
+| Leakage inside ANN results | The HNSW graph of a namespace holds only that namespace's vectors. `filtered_search` applies `scope ∧ ¬secret ∧ ¬deny` during traversal, so out-of-scope chunks never take a result slot. Brute force for small scopes uses the same predicate. Test (I16): a deny subtree never appears at any `k`, even with an exact-duplicate query. |
+| Path-level read rules (if SPEC ever adds them) | They subtract the denied subtree's `tdocs` in the same predicate. Locate skips denied subtrees, so a `FileId` that is also at an allowed path is shown only at the allowed path. |
+| Existence probing through timing or dedup | No cross-namespace dedup of docs, chunks or vectors. Page tokens are MACed and bound to a scope digest. |
+| Secrets in embeddings | Per-file secret scan at file-job time. Path rules: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `*credentials*`, `secrets.*`. Content rules: private-key headers, `AKIA[0-9A-Z]{16}`, JWT shape, GitHub/Forgejo/Slack token prefixes, and `(key\|secret\|token\|password)\s*[:=]\s*` followed by ≥ 20 chars of entropy ≥ 3.5 bits/char. A flagged **file** is never chunked or embedded. A flagged **line** is masked in chunk text before embedding and redacted (`[redacted: possible secret]`) in MCP and `--json` snippets (`redacted = true`). Exact search still matches it (git-grep parity). **One renderer (I22) runs inside the server for every surface except the local human CLI:** MCP, `--json`, the Forgejo search page (I24), the Forgejo API (I26), `/explore/code` and the symbol panels. A redacted line loses `text` and `cols`, and context lines are scanned too. The path and line number stay, because a reader of the repository can already list the tree (git-grep parity). A flagged file shows its path only, with `redacted = true`. `--no-redact` is a CLI-side re-read through `Repo.ReadFile`; the RPC has no such field. |
+| Prompt injection through indexed content | Results are data. MCP responses keep code in fields (`text`, `matches[].text`), never in the tool's prose. Control characters and ANSI escapes are stripped, lines are capped at 300 bytes, and every hit carries provenance (`repo`, `changeset`, `path`, lines, `file_id`) so the agent can cite it. Tools are read-only by default (checklist "MCP built in"), so an injected instruction cannot trigger a write through these tools. The tool descriptions tell the agent that result text is untrusted file content. |
+| Untrusted PR content (parser DoS) | Tree-sitter runs with a 250 ms cancellation flag and a 1 MiB file cap. Regex verification uses `regex` (linear time) with `size_limit` 10 MiB. Planner sets are capped (maxSet 20). The rate class limits abuse. |
+| Model supply chain | Model files and the reranker are pinned by sha256 in the model registry, with no runtime download by fastembed or `hf-hub` (§23.6). The client helper and the model are minisign-verified (SPEC §16.2). |
+
+
+### 23.8 Forgejo fork
+
+| Surface | Change | Data |
+|---|---|---|
+| Code-indexer backend `asc` (`[indexer] REPO_INDEXER_TYPE = asc`) | implements Forgejo's code-indexer interface under `modules/indexer/code/asc`. `Index` and `Delete` are no-ops, because the asc server indexes on ingest. `Search` calls `CodeIntel.Search` at the default branch. This replaces the git-grep fallback, which the asc backend cannot run (K05). | `Search` |
+| Repo search page `/{owner}/{repo}/search` | mode tabs (Exact, Regex, Symbols, Semantic), a branch/tag/PR/change selector (the scope), language and path filters, and a coverage note while indexing | `Search`, `Symbols`, `Semantic`, `IndexStatus` |
+| File view | click an identifier → side panel with the definition and references (with confidence), and "Outline" | `Symbols` |
+| PR files tab | "Find usages in the base" for changed symbols | `Symbols` with `scope.rev = base` |
+| Global `/explore/code` | fan-out over the repos the user can read, merged with RRF | `Search` per namespace |
+| API | `GET /api/v1/repos/{owner}/{repo}/asc/search\|symbols\|semantic` proxies with the user's token. This is the hook for the Forgejo MCP endpoint. Responses are the server-rendered (already redacted) messages as JSON; Forgejo never re-renders raw lines. | the same messages, as JSON |
+
+
+### 23.9 Benchmarks (`bench/codeintel/`, joins the O05 gate)
+
+| Scenario | asc | Compared with |
+|---|---|---|
+| Full index build of HEAD (cold) | `asc serve admin codeintel backfill` | `zoekt-git-index`; `git grep` needs no index (recorded as 0) |
+| Incremental index for a commit | ASC's commit sizes replayed (median 4 files, p95 35) | Zoekt delta build |
+| Literal rare / literal common (`for`) / regex `\bfoo\w+Bar\b` / case-insensitive / `-w` | `asc search` at `master`, no checkout | `rg` on a warm checkout; `git grep` (worktree); `git grep <rev>` (no checkout); `zoekt` |
+| Same query, scope = a draft stack | `asc search --stack` | `git grep <sha>` |
+| `def` / `refs` / `callers` / `outline` | `asc sym …` | `rg -w` (name match) as the baseline |
+| Semantic and hybrid | `asc semantic` | BM25-only (`chunks` index) as the baseline |
+
+**Workloads:** small (ASC), medium (linux kernel import), HUGE (`bench/gen` for grams and symbols; an optional chromium snapshot for semantic, because synthetic text is not real code). **Metrics:** index build time per GB, index bytes per GB of source, incremental latency p50/p99, query p50/p99 (server time and end-to-end), candidates/matches ratio, server RSS, daemon RSS idle and under load, tokens returned per query, and semantic NDCG@10 and Recall@10 on the eval set (I28: about 200 ASC queries labelled automatically from history, with the PR title as the query and the changed files as relevant).
+
+| Gate | Value |
+|---|---|
+| Exact search, HUGE, server p50 / p99 | ≤ 50 ms / ≤ 300 ms (the Zoekt design target is < 50 ms) |
+| Exact search vs `git grep <rev>` and cold `rg` | ≥ 10x faster on medium and HUGE; not slower on small |
+| Incremental index of a median ASC commit | grams and tags ≤ 2 s; with embeddings on CPU ≤ 10 s |
+| Index size | grams plus symbols ≤ 0.4x of indexed text |
+| Daemon | idle RSS ≤ 64 MiB with the overlay and the local reader closed; ≤ 96 MiB while serving |
+| Semantic | hybrid NDCG@10 ≥ BM25-only + 5 points on the ASC eval set; otherwise `search` with `mode = semantic` defaults to BM25 mode, and the result is recorded in `docs/BENCHMARKS.md` |
+
+### 23.10 Configuration and processes
+
+- **`asc-serve.toml`** (also shown in §8.1):
+
+```toml
+[codeintel]                 # absent or enabled = false: no CodeIntel service, and no search.v1 in Version.features
+enabled = false             # true by default once I21 has landed
+memory = "2GiB"             # one budget with fixed shares (§23.2.4); startup fails when the shares exceed it
+workers = 4                 # default: cores / 2; workers run at nice 10
+[codeintel.embed]
+model = "jina-embeddings-v2-base-code"
+device = "cpu"              # or "cuda" (ort CUDA EP)
+provider = "local"          # "openai-compatible" also needs url and allow_external = true
+```
+
+- **`asc serve --role indexer`** runs only the workers (GPU hosts), with no RPC serving. `--role cache` serves no CodeIntel RPCs (the tier RPCs only, §7); a region that needs local query latency runs a read replica of `asc serve`.
+- **Client config:** `codeintel.local.maxSize` (default 512 MiB) and `codeintel.local.embed` (default `false`). The repo file `.asc/codeintel.toml` holds path excludes and can never enable an external provider.
+- **Admin:** `asc serve admin codeintel backfill --refs <glob> [--since <date>]`.
+- **Helpers:** `asc codeintel worker` (the limited local indexer of §23.2.5) and `asc-embed` (the model helper, minisign-verified by `asc codeintel enable-embed`). `asc.exe` does not link ONNX Runtime.
+
+### 23.11 Crates, units and phases
+
+New crates: `asc-codeintel` (extraction, planner, tantivy schema, scope algebra, ranking, rendering; depends on `asc-engine`) and `asc-embed` (fastembed, the model registry and the helper binary; built only for the server and the opt-in helper). The units are I01–I31 in PLAN §I.
+
+**Phases (§18):** 4c after U47 (I01–I17, I22, I29); 4c-MCP after M15 (I21); 5c after U53b/U73 (I18–I20); 9c on the Go track after K10 (I23–I26); O-track (I27, I28); v1.x (I30, I31).
+
+**Recorded amendments** (a named hunk in a file another unit owns, made by the I unit): U43c outbox gains the `codeintel.enqueue` effect (I13); U73 `workspace.proto` gains the four CodeIntel RPCs (I18); U33/U45 import completion enqueues heads (I15); U69 gains the `codeintel` rate class (I16); the §22.3.2 `search` row is already extended (M15, I21 wires it).
+
+Required tests beyond each acceptance command:
+- **I02:** `/Google.*Search/` plans to the 8-trigram AND; case-folded plans; a class wider than 100 chars becomes match-all.
+- **I05:** a new revision derives at most `depth × changed paths` new `tdocs` objects; for a historical revision within 64 steps, scope = checkpoint ⊕ Δ with no tree reads. `tests/scope_oracle.rs` has a duplicate-path case: two paths hold one `FileId`, one is deleted and the file stays in scope; deleting both removes it. A file excluded by attributes at one path and not at another is in scope only at the second, and `.ascattributes` wins over `.gitattributes` in the same directory.
+- **I06/I10:** a merge of 20 vector segments stays within the 512 MiB merge share, and the writer heaps plus the merge fit `[codeintel] memory`.
+- **I10:** a filter that keeps 1% of a 3M-chunk fixture takes the brute-force path; a 30% filter takes HNSW and never exceeds the visit bound.
+- **I10/I16:** an ACL deny and a non-readable gitlink child are absent from `Semantic` at k = 1…1000; namespace A's queries never open namespace B's segments.
+- **I14:** a model change (including a new calibration) keeps serving the old generation until coverage ≥ 0.99, then flips once; the query LRU never returns an embedding from another `model_gen`; a sweep removes the ords of an abandoned draft after the grace period and keeps those reachable from an open PR head.
+- **I15:** `Fork` and `CopyClosure` copy no `tdocs`, `tags`, `chunks`, `ciseg`, `civec` or `ciidx` objects and no `ci_*` rows.
+- **I22:** a fixture file with an AWS key is never embedded, and its line is redacted in MCP output.
+
+### 23.12 Rulings recorded at the fold [audit: codeintel-folded]
+
+1. **Tokenizer:** fastembed's `onig` tokenizer is kept (MSVC CI job, C entry in the §15.2 allow-list). It is bypassed only if the Windows build fails (I09). The research critique that asked for `fancy-regex` is not applied, because fastembed 7.2.0 itself enables `tokenizers/onig`.
+2. **MCP tools:** the only tools are §22.3.2 `search` and §22.3's `read_file`. There is no `code_read` and no `code_index_status`.
+3. **`--json` shape (contradiction with the research file, resolved):** the research file said "proto3 JSON mapping". §22.4.2 makes the asc JSON profile the one `--json` codec, so `asc search|sym|semantic|codeintel status --json` print the profile. To make that possible `codeintel.proto` (I12) carries the `(asc.v1.json)` options and depends on M01a, and the CLI unit I17 depends on M01c. `asc api` keeps standard proto3 JSON (§7).
+4. **Fork copies:** §3.3 now says that `Fork` and `CopyClosure` copy the content closure only, never derived index data (test in I15).
+5. **Server role:** `asc serve --role indexer` joins `primary` and `cache` (§0, §8.1). The cache role serves no CodeIntel RPCs.
+6. **Redaction:** the path and line number of a redacted line stay visible, because read access to the repository already allows listing the tree (git-grep parity); `text`, `cols` and context are removed on every non-CLI surface.
+7. **Rate class:** `codeintel` is new (§16.3). An MCP `search` call is charged to the `codeintel` class (the rule of §22.5: the class of the backing RPC).
+8. **Superseded audit proposals:** the earlier audit text for `tri.v1`, `sym.v1`, `emb.v1`, `trisum.v1`, `symsum.v1`, a `Search` service in `search.proto`, units X01–X09 and spikes S13/S14 for this topic is replaced by this section; no such names exist. Embedding-model choice and ANN memory are measured by I27 and I28, not by spikes.
+9. **Naming:** the research decisions D1–D8 are CI-D1–CI-D8 here, so they do not collide with other sections' decision numbers.
+10. **Related designs:** `docs/research/mcp.md` (consistent: M15 depends on I12 and I21 wires it) and `docs/research/ide-plugins.md` (calls `CodeIntel.Search|Symbols|Semantic|IndexStatus` through the daemon IPC and the server; its `Hello.features` mirrors `Version.features`' `search.v1`). `docs/research/stacks.md` and `docs/research/branchless.md` do not touch this section: stack and draft scopes resolve through `ResolveChanges` and the cloud heads of §21 (`scope.change`, `scope.stack_top`).
+
 
 ---
 
@@ -3464,3 +3841,13 @@ CLI: `asc mcp [--read-only | --write[=local|remote]] [--toolsets <list>] [--tool
 | undo/redo cannot be limited to the agent's own operation | §20.7 `--op <id>` with `STALE_OP` |
 | spec edits of mcp.md §9 | §7, §8.1, §8.7, §11.2, §13.3 (M20–M28), §15.1, §16.3, §16.4, §18 (phases 4m, 5m, 9m), §20.1, §20.7, §21.7 |
 | codeintel.md §10 request for the `search` tool | §22.3.2 `search` row and note: additive fields `change`, `stack`, `diff_only`, `op`, `k`, `context_lines`, `max_tokens`, `rerank`, `include_excluded`; PLAN M15 (depends on I12) |
+
+**Round-7 fold (v1.7)** (changelog: v1.7 folds `docs/research/codeintel.md` into §23 and the sections it amends)
+
+| Gap | Fix |
+|---|---|
+| agentic-code-intelligence-missing, checklist-code-intelligence-missing | New §23 (CI-D1–CI-D8; architecture, queries, interfaces, indexing, components, security, Forgejo, benchmarks, configuration, rulings), §0 decision 15, §1 row; PLAN §I units I01–I31 (the audit's X01–X09 proposal is superseded, §23.12) |
+| codeintel.md "proto3 JSON" `--json` versus the asc JSON profile (§22.4.2) | §23.4.2 and §23.12 ruling 3: the profile is the one `--json` codec; I12 depends on M01a, I17 on M01c |
+| codeintel.md I09 (keep or bypass `onig`) | §23.6 and §23.12 ruling 1: keep; bypass only if the Windows build fails |
+| `Fork`/`CopyClosure` copy only "the reachable closure" (§3.3) | §3.3 states the content closure only, never derived index data; test in I15 |
+| spec edits of codeintel.md §10 | §3.3, §5, §7, §8.1 (`[codeintel]`, `--role indexer`), §8.2 (`ci_*`), §9.1, §11.2, §13.3 (I23–I26), §15.2, §15.5, §16.1, §16.3 (`codeintel` class), §16.4, §18 (phases 4c, 4c-MCP, 5c, 9c), §22.3.2 pointers |
