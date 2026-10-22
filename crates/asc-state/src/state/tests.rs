@@ -657,7 +657,7 @@ async fn workspace_bookkeeping_tables() {
 }
 
 #[tokio::test]
-async fn oversized_entry_size_is_rejected_and_leaves_stage_usable() {
+async fn entry_sizes_above_i64_max_round_trip_and_rebase_completes() {
     let dir = tempfile::tempdir().unwrap();
     let db = open(&dir).await;
     let r = repo(&db, "r").await;
@@ -665,16 +665,40 @@ async fn oversized_entry_size_is_rejected_and_leaves_stage_usable() {
     stage::upsert(&db, ws, StageSet::Default, &[row("ok", Some(&leaf(1)))])
         .await
         .unwrap();
+    // A hostile HEAD tree holds sizes the signed column cannot hold as a number.
     let mut big = leaf(2);
     big.size = 1 << 63;
-    let err = stage::upsert(&db, ws, StageSet::Default, &[row("big", Some(&big))]).await;
-    assert!(matches!(err, Err(Error::Corrupt("stage.size"))));
-    let delta = LeafDelta {
-        path: b"big".to_vec(),
-        from: Some(big),
-        to: None,
-    };
-    assert!(stage::rebase(&db, ws, &[delta]).await.is_err());
+    let mut max = leaf(3);
+    max.size = u64::MAX;
+    let deltas = [
+        LeafDelta {
+            path: b"big".to_vec(),
+            from: Some(big.clone()),
+            to: None,
+        },
+        LeafDelta {
+            path: b"max".to_vec(),
+            from: Some(max.clone()),
+            to: None,
+        },
+    ];
+    // The HEAD move changes both paths and has no staged row for them: it must not wedge.
+    stage::rebase(&db, ws, &deltas).await.unwrap();
     let rows = stage::overlay(&db, ws, StageSet::Default).await.unwrap();
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 3);
+    for (path, leaf) in [(&b"big"[..], &big), (&b"max"[..], &max)] {
+        let got = rows.iter().find(|r| r.path == path).unwrap();
+        assert_eq!(got.size, leaf.size);
+        assert_eq!(got.file, Some(leaf.file));
+    }
+    // A later move back onto the same leaf drops the row again: equality is exact.
+    let back = [LeafDelta {
+        path: b"big".to_vec(),
+        from: None,
+        to: Some(big),
+    }];
+    stage::rebase(&db, ws, &back).await.unwrap();
+    let rows = stage::overlay(&db, ws, StageSet::Default).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.path != b"big"));
 }
