@@ -22,6 +22,7 @@ use asc_core::git::{GitError, ObjectKind, blob_oid, export_commit, export_tag, o
 use asc_core::git::{render_tree, tree_oid};
 use asc_core::id::{ChangesetId, FileId, GitOid, TagId, TreeId};
 use asc_core::object::{Kind, TagRecord};
+use asc_core::path::MAX_TREE_DEPTH;
 use asc_engine::Engine;
 use asc_engine::{commit, derive, diff, tree};
 use asc_store::key::ObjKey;
@@ -74,6 +75,8 @@ pub enum ExportError {
     MissingTag(TagId),
     #[error("git tree override {0} is missing")]
     MissingOverride(GitOid),
+    #[error("tree {0} nests deeper than {MAX_TREE_DEPTH} levels")]
+    TreeTooDeep(TreeId),
     #[error("git tree override {oid} does not describe its tree: {source}")]
     BadOverride {
         oid: GitOid,
@@ -302,18 +305,23 @@ impl<'a, O: Objects, R: Refs> Exporter<'a, O, R> {
         run: &mut Run<'_>,
     ) -> Result<(), ExportError> {
         enum Work {
-            Visit(TreeId, Option<GitOid>),
+            Visit(TreeId, Option<GitOid>, usize),
             Emit(GitOid, Bytes),
         }
-        let mut stack = vec![Work::Visit(root, expected)];
+        let mut stack = vec![Work::Visit(root, expected, 0)];
         while let Some(work) = stack.pop() {
-            let (id, expected) = match work {
+            let (id, expected, depth) = match work {
                 Work::Emit(oid, body) => {
                     run.sink.push(ObjectKind::Tree, oid, body)?;
                     continue;
                 }
-                Work::Visit(id, expected) => (id, expected),
+                Work::Visit(id, expected, depth) => (id, expected, depth),
             };
+            // The walk is iterative, but the bound keeps the work stack and a corrupt store's
+            // pathological nesting finite.
+            if depth > MAX_TREE_DEPTH {
+                return Err(ExportError::TreeTooDeep(id));
+            }
             let tree = self.engine.get_tree(id).await?;
             let rendered = render_tree(&tree);
             let mut oid = object_oid(ObjectKind::Tree, &rendered);
@@ -335,7 +343,11 @@ impl<'a, O: Objects, R: Refs> Exporter<'a, O, R> {
             stack.push(Work::Emit(oid, body));
             for e in tree.entries() {
                 match e.kind {
-                    Kind::Dir => stack.push(Work::Visit(TreeId::from_bytes(e.id), Some(e.git))),
+                    Kind::Dir => stack.push(Work::Visit(
+                        TreeId::from_bytes(e.id),
+                        Some(e.git),
+                        depth + 1,
+                    )),
                     Kind::Gitlink => {}
                     Kind::File | Kind::Exec | Kind::Symlink => {
                         if !run.seen.insert(e.git) || run.target.contains(e.git) {

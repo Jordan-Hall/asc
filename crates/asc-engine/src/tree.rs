@@ -11,7 +11,7 @@ use asc_core::codec::{CodecError, Enveloped, decode_envelope};
 use asc_core::git::tree_oid;
 use asc_core::id::{FileId, TreeId};
 use asc_core::object::{Change, Entry, Kind, ObjectError, Tree};
-use asc_core::path::{Name, PathError, RepoPath};
+use asc_core::path::{MAX_TREE_DEPTH, Name, PathError, RepoPath};
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
@@ -37,6 +37,8 @@ pub enum Error {
     Object(#[from] ObjectError),
     #[error(transparent)]
     Path(#[from] PathError),
+    #[error("tree nesting exceeds {MAX_TREE_DEPTH} levels")]
+    TooDeep,
     #[error("tree {0} is missing")]
     MissingTree(TreeId),
     #[error("{0} is changed twice in one apply")]
@@ -76,7 +78,12 @@ fn build_trie(changes: &[(RepoPath, Change)]) -> Result<BTreeMap<Name, Node>> {
         let mut level = &mut root;
         let mut acc: Option<RepoPath> = None;
         let mut comps = path.components().peekable();
+        let mut depth = 0usize;
         while let Some(comp) = comps.next() {
+            depth += 1;
+            if depth > MAX_TREE_DEPTH {
+                return Err(Error::TooDeep);
+            }
             let name = Name::new(comp)?;
             let here = child_path(acc.as_ref(), &name);
             let node = level.entry(name).or_insert_with(|| Node::new(here.clone()));
@@ -321,7 +328,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     ) -> Result<Vec<(RepoPath, Change)>> {
         let mut out = Vec::new();
         if a != b {
-            self.diff_dir(a, b, None, spec, &mut out).await?;
+            self.diff_dir(a, b, None, 0, spec, &mut out).await?;
         }
         out.sort_by(|x, y| x.0.cmp(&y.0));
         Ok(out)
@@ -332,6 +339,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         a: TreeId,
         b: TreeId,
         prefix: Option<RepoPath>,
+        depth: usize,
         spec: Option<&'a Pathspec>,
         out: &'a mut Vec<(RepoPath, Change)>,
     ) -> BoxFuture<'a, Result<()>> {
@@ -347,11 +355,13 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 };
                 match order {
                     Ordering::Less => {
-                        self.emit(&ea[i], prefix.as_ref(), spec, false, out).await?;
+                        self.emit(&ea[i], prefix.as_ref(), depth, spec, false, out)
+                            .await?;
                         i += 1;
                     }
                     Ordering::Greater => {
-                        self.emit(&eb[j], prefix.as_ref(), spec, true, out).await?;
+                        self.emit(&eb[j], prefix.as_ref(), depth, spec, true, out)
+                            .await?;
                         j += 1;
                     }
                     Ordering::Equal => {
@@ -365,16 +375,22 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                         if both_dirs {
                             let path = child_path(prefix.as_ref(), &x.name);
                             if spec.is_none_or(|s| s.may_contain_dir(&path)) {
+                                if depth + 1 > MAX_TREE_DEPTH {
+                                    return Err(Error::TooDeep);
+                                }
                                 let ids = (TreeId::from_bytes(x.id), TreeId::from_bytes(y.id));
-                                self.diff_dir(ids.0, ids.1, Some(path), spec, out).await?;
+                                self.diff_dir(ids.0, ids.1, Some(path), depth + 1, spec, out)
+                                    .await?;
                             }
                         } else {
                             // A leaf replaced by a leaf is one `Write`; a directory on either
                             // side is expanded to leaves.
                             if x.kind == Kind::Dir || y.kind == Kind::Dir {
-                                self.emit(x, prefix.as_ref(), spec, false, out).await?;
+                                self.emit(x, prefix.as_ref(), depth, spec, false, out)
+                                    .await?;
                             }
-                            self.emit(y, prefix.as_ref(), spec, true, out).await?;
+                            self.emit(y, prefix.as_ref(), depth, spec, true, out)
+                                .await?;
                         }
                     }
                 }
@@ -388,6 +404,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         &'a self,
         e: &'a Entry,
         prefix: Option<&'a RepoPath>,
+        depth: usize,
         spec: Option<&'a Pathspec>,
         added: bool,
         out: &'a mut Vec<(RepoPath, Change)>,
@@ -410,9 +427,13 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             if spec.is_some_and(|s| !s.may_contain_dir(&path)) {
                 return Ok(());
             }
+            if depth + 1 > MAX_TREE_DEPTH {
+                return Err(Error::TooDeep);
+            }
             let tree = self.get_tree(TreeId::from_bytes(e.id)).await?;
             for child in tree.entries() {
-                self.emit(child, Some(&path), spec, added, out).await?;
+                self.emit(child, Some(&path), depth + 1, spec, added, out)
+                    .await?;
             }
             Ok(())
         })
@@ -455,6 +476,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 let path = child_path(top.prefix.as_ref(), &entry.name);
                 if entry.kind == Kind::Dir {
                     if spec.is_none_or(|s| s.may_contain_dir(&path)) {
+                        if stack.len() > MAX_TREE_DEPTH {
+                            return Err(Error::TooDeep);
+                        }
                         let tree = self.get_tree(TreeId::from_bytes(entry.id)).await?;
                         stack.push(Frame {
                             prefix: Some(path),
@@ -1005,6 +1029,45 @@ mod tests {
             e.get_tree(ghost).await,
             Err(Error::MissingTree(id)) if id == ghost
         ));
+    }
+
+    fn deep_path(levels: usize) -> RepoPath {
+        let mut s = "d/".repeat(levels - 1);
+        s.push('f');
+        RepoPath::new(s).unwrap()
+    }
+
+    /// Runs `f` on a 4 MiB stack, where unbounded recursion would overflow.
+    fn on_small_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn too_deep_apply_is_rejected_and_depth_100_works() {
+        on_small_stack(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let e = engine();
+                let empty = Engine::<Counting, NoRefs>::empty_tree_id();
+                let too_deep = [(deep_path(3000), file(1))];
+                assert!(matches!(
+                    e.apply(empty, &too_deep).await,
+                    Err(Error::TooDeep)
+                ));
+                let ok = [(deep_path(100), file(1))];
+                let root = e.apply(empty, &ok).await.unwrap();
+                let leaves = all_leaves(&e, root, None).await;
+                assert_eq!(leaves.len(), 1);
+                assert_eq!(e.leafdiff(empty, root, None).await.unwrap().len(), 1);
+            });
+        });
     }
 
     fn spec(items: &[&str]) -> Pathspec {

@@ -428,3 +428,14 @@ async fn non_canonical_tree_uses_its_override() {
         "the stored git body is written under the recorded oid"
     );
 }
+
+#[tokio::test]
+async fn deeply_nested_tree_exports() {
+    // Trees deeper than `MAX_TREE_DEPTH` cannot be built through the engine at all, so this
+    // covers the in-bounds case only.
+    let fx = Fixture::new();
+    let path = format!("{}f", "d/".repeat(99));
+    let a = fx.commit(&[], &[(&path, b"deep")], vec![], vec![]).await;
+    let report = fx.export(&[ExportRoot::Changeset(a)]).await;
+    assert_eq!(report.tips.len(), 1);
+}
