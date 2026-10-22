@@ -218,7 +218,20 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .get(&ObjKey::Tree(id))
             .await?
             .ok_or(Error::MissingTree(id))?;
-        let tree = Arc::new(decode_envelope::<Tree>(&data)?);
+        let tree = decode_envelope::<Tree>(&data)?;
+        // Stored trees are untrusted: a name past the path bound can never appear in a path
+        // asc builds, and diffing would otherwise copy and compare it once per directory pair.
+        if let Some(e) = tree
+            .entries()
+            .iter()
+            .find(|e| e.name.as_bytes().len() > MAX_WALK_PATH_BYTES)
+        {
+            return Err(Error::PathTooLong(format!(
+                "tree {id} (entry of {} bytes)",
+                e.name.as_bytes().len()
+            )));
+        }
+        let tree = Arc::new(tree);
         self.trees.insert(id, tree.clone());
         Ok(tree)
     }
@@ -565,13 +578,16 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                             *j += 1;
                         }
                         Ordering::Equal => {
-                            let (x, y) = (ea[*i].clone(), eb[*j].clone());
+                            // Compare in place: a skipped pair costs no copy.
+                            let (xr, yr) = (&ea[*i], &eb[*j]);
+                            let both_dirs = xr.kind == Kind::Dir && yr.kind == Kind::Dir;
+                            let same = xr == yr || (both_dirs && xr.id == yr.id);
+                            let pair = (!same).then(|| (xr.clone(), yr.clone()));
                             *i += 1;
                             *j += 1;
-                            let both_dirs = x.kind == Kind::Dir && y.kind == Kind::Dir;
-                            if x == y || (both_dirs && x.id == y.id) {
+                            let Some((x, y)) = pair else {
                                 continue;
-                            }
+                            };
                             let prefix = prefix.clone();
                             let ahead = (ta.clone(), tb.clone(), *i, *j);
                             if both_dirs {
@@ -1334,6 +1350,60 @@ mod tests {
         // The walker builds the same paths and refuses them too.
         let walked: Vec<_> = e.walk(root, None).collect().await;
         assert!(matches!(walked.last(), Some(Err(Error::PathTooLong(_)))));
+    }
+
+    /// A stored tree holding `entries`, written through `e` (so it is in the store, not only the
+    /// writer's cache).
+    async fn put(e: &Engine<Counting, NoRefs>, entries: Vec<Entry>, is_root: bool) -> TreeId {
+        e.put_tree(Tree::new(entries, is_root).unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// An oversized name that is skipped, not reported, must still be refused: the diff may not
+    /// copy or compare it once per directory pair.
+    #[tokio::test]
+    async fn an_oversized_name_in_a_skipped_pair_is_refused() {
+        let objs = counting();
+        let w = engine_on(objs.clone());
+        let e_tree = fan(&w, "f", 2, Kind::File, *FileId::of(&[1]).as_bytes()).await;
+        let big = Entry {
+            name: Name::new("b".repeat(MAX_WALK_PATH_BYTES * 64)).unwrap(),
+            kind: Kind::File,
+            id: *FileId::of(&[2]).as_bytes(),
+            size: 1,
+            git: blob_oid(b"big"),
+        };
+        let shared = |git: &[u8]| Entry {
+            name: Name::new("s").unwrap(),
+            kind: Kind::Dir,
+            id: *e_tree.as_bytes(),
+            size: 0,
+            git: blob_oid(git),
+        };
+        // The two trees differ (`git` of "s"), but the pair "s" is skipped on equal ids and the
+        // oversized entry is identical on both sides: nothing is ever reported.
+        let ta = put(&w, vec![big.clone(), shared(b"a")], false).await;
+        let tb = put(&w, vec![big, shared(b"b")], false).await;
+        let roots = |t: TreeId| {
+            (0..4)
+                .map(|i| Entry {
+                    name: Name::new(format!("d{i:03}")).unwrap(),
+                    kind: Kind::Dir,
+                    id: *t.as_bytes(),
+                    size: 0,
+                    git: blob_oid(b""),
+                })
+                .collect::<Vec<_>>()
+        };
+        let (ra, rb) = (
+            put(&w, roots(ta), true).await,
+            put(&w, roots(tb), true).await,
+        );
+        // A cold engine decodes the stored trees, as a server reading a hostile bucket would.
+        let cold = engine_on(objs);
+        let err = cold.leafdiff(ra, rb, None).await.unwrap_err();
+        assert!(matches!(err, Error::PathTooLong(_)), "{err}");
     }
 
     #[tokio::test]
