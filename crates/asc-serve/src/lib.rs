@@ -6,8 +6,11 @@
 
 pub mod config;
 pub mod graph_sql;
+pub mod http;
 pub mod ingest;
+pub mod mainline;
 pub mod migrate;
+pub mod outbox;
 pub mod registry;
 pub mod update;
 
@@ -139,12 +142,10 @@ fn register_all(ext: &Extensions, registry: &Arc<Registry>) {
 pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
     ext.grpc
         .register(RepoService::new(ext.handlers.clone(), authorizer, info).into_service());
-    let health = axum::Router::new().route("/healthz", axum::routing::get(|| async { "ok" }));
     let router = ext
         .grpc
         .routes()
         .into_axum_router()
-        .merge(health)
         .merge(ext.http.router());
     Routes::from(router)
 }
@@ -176,9 +177,23 @@ pub async fn serve(
     };
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
-    let registry = Arc::new(Registry::new(pool, store)?);
+    let registry = Arc::new(Registry::new(pool.clone(), store)?);
+    let metrics = Arc::new(http::Metrics::new());
+    let outbox = Arc::new(outbox::Outbox::new(
+        pool.clone(),
+        metrics.clone(),
+        outbox::OutboxConfig::default(),
+    ));
     let ext = Extensions::new();
     register_all(&ext, &registry);
+    let well_known = http::WellKnown {
+        server: cfg.public_url.clone(),
+        ..http::WellKnown::default()
+    };
+    http::register(
+        &ext,
+        http::HttpState::new(pool, outbox.clone(), metrics, well_known),
+    );
     let routes = build_routes(&ext, authorizer, ServerInfo::default());
 
     let mut server = Server::builder().accept_http1(true);
@@ -187,10 +202,14 @@ pub async fn serve(
         server = server.tls_config(ServerTlsConfig::new().identity(identity))?;
     }
     tracing::info!(listen = %cfg.listen, "asc serve listening");
-    server
+    let worker = tokio::spawn(outbox.run());
+    let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, shutdown)
-        .await?;
+        .await;
+    // Delivery is at least once, so stopping the worker mid-row is safe.
+    worker.abort();
+    served?;
     Ok(())
 }
 
@@ -267,6 +286,16 @@ mod tests {
         migrate::ensure_current(&pool).await.unwrap();
 
         let ext = Extensions::new();
+        let metrics = Arc::new(http::Metrics::new());
+        let outbox = Arc::new(outbox::Outbox::new(
+            pool.clone(),
+            metrics.clone(),
+            outbox::OutboxConfig::default(),
+        ));
+        http::register(
+            &ext,
+            http::HttpState::new(pool, outbox, metrics, http::WellKnown::default()),
+        );
         let routes = build_routes(&ext, Arc::new(DenyAll), ServerInfo::default());
         let app = routes.into_axum_router();
         let res = app
