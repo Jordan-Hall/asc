@@ -228,10 +228,6 @@ fn split_headers(raw: &[u8]) -> (Headers<'_>, &[u8]) {
     (headers, &[])
 }
 
-fn header<'a>(h: &'a Headers, key: &[u8]) -> Option<&'a [u8]> {
-    h.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_slice())
-}
-
 fn parse_oid(v: &[u8], what: &'static str) -> Result<GitOid, &'static str> {
     std::str::from_utf8(v).ok().and_then(|s| s.parse().ok()).ok_or(what)
 }
@@ -284,7 +280,7 @@ pub fn render_commit(cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -
 }
 
 /// Checks that `raw` describes the same commit as `cs`: tree, parents (in order),
-/// author, committer and message must all match.
+/// author, committer, message, `gpgsig` and the `asc` header must all match.
 pub fn verify_raw_commit(raw: &[u8], cs: &Changeset, root_git: GitOid, parent_gits: &[GitOid]) -> Result<(), GitError> {
     let p = parse_commit(raw)?;
     let bad = GitError::RawMismatch;
@@ -302,6 +298,15 @@ pub fn verify_raw_commit(raw: &[u8], cs: &Changeset, root_git: GitOid, parent_gi
     }
     if p.message != cs.message {
         return Err(bad("message"));
+    }
+    if p.gpgsig.as_deref() != cs.extra.get(&EXTRA_GIT_GPGSIG.to_vec()).map(Vec::as_slice) {
+        return Err(bad("gpgsig"));
+    }
+    let expected = extra_of(cs);
+    let want_asc = (!expected.copies.is_empty() || expected.snapshot).then_some(expected);
+    let got_asc = p.asc.filter(|c| !c.copies.is_empty() || c.snapshot);
+    if got_asc != want_asc {
+        return Err(bad("asc"));
     }
     Ok(())
 }
@@ -335,28 +340,42 @@ pub struct ParsedCommit {
     pub message: Vec<u8>,
 }
 
+/// Parses a commit following git fsck's grammar: one `tree`, a contiguous run of
+/// `parent`, one `author`, one `committer`, then optional headers. `encoding`,
+/// `gpgsig` and `asc` may appear once; other headers (`mergetag`, unknown) are skipped.
 pub fn parse_commit(raw: &[u8]) -> Result<ParsedCommit, GitError> {
     let (h, message) = split_headers(raw);
     let bad = GitError::Commit;
-    let sig = |key: &[u8], what| {
-        let v = header(&h, key).ok_or(bad(what))?;
-        parse_signature(v, what).map_err(bad)
+    let mut it = h.iter().peekable();
+    let tree = match it.next() {
+        Some((k, v)) if *k == b"tree" => parse_oid(v, "bad tree oid").map_err(bad)?,
+        _ => return Err(bad("missing tree")),
     };
-    Ok(ParsedCommit {
-        tree: parse_oid(header(&h, b"tree").ok_or(bad("missing tree"))?, "bad tree oid").map_err(bad)?,
-        parents: h
-            .iter()
-            .filter(|(k, _)| *k == b"parent")
-            .map(|(_, v)| parse_oid(v, "bad parent oid").map_err(bad))
-            .collect::<Result<_, _>>()?,
-        author: sig(b"author", "bad author")?,
-        committer: sig(b"committer", "bad committer")?,
-        asc: header(&h, b"asc")
-            .and_then(|v| BASE64.decode(v).ok())
-            .and_then(|b| AscGitExtra::decode(&b).ok()),
-        gpgsig: header(&h, b"gpgsig").map(<[u8]>::to_vec),
-        message: message.to_vec(),
-    })
+    let mut parents = Vec::new();
+    while let Some((_, v)) = it.next_if(|(k, _)| *k == b"parent") {
+        parents.push(parse_oid(v, "bad parent oid").map_err(bad)?);
+    }
+    let mut ident = |key: &[u8], missing, what| match it.next() {
+        Some((k, v)) if *k == key => parse_signature(v, what).map_err(bad),
+        _ => Err(bad(missing)),
+    };
+    let author = ident(b"author", "missing author", "bad author")?;
+    let committer = ident(b"committer", "missing committer", "bad committer")?;
+    let (mut asc, mut gpgsig, mut encoding) = (None, None, false);
+    for (k, v) in it {
+        match *k {
+            b"tree" | b"parent" | b"author" | b"committer" => return Err(bad("duplicate or misplaced header")),
+            b"encoding" if !std::mem::replace(&mut encoding, true) => {}
+            b"gpgsig" if gpgsig.is_none() => gpgsig = Some(v.clone()),
+            b"asc" if asc.is_none() => {
+                let decoded = BASE64.decode(v).ok().and_then(|b| AscGitExtra::decode(&b).ok());
+                asc = Some(decoded.ok_or(bad("bad asc header"))?);
+            }
+            b"encoding" | b"gpgsig" | b"asc" => return Err(bad("duplicate header")),
+            _ => {}
+        }
+    }
+    Ok(ParsedCommit { tree, parents, author, committer, asc, gpgsig, message: message.to_vec() })
 }
 
 /// SPEC §2.9 import rule. Builds the canonical changeset from `raw` plus the
@@ -441,10 +460,14 @@ pub fn render_tag(tag: &TagRecord, target_git: GitOid) -> Vec<u8> {
     out
 }
 
-/// Checks that `raw` describes the same tag as `tag`: target, name, tagger and message.
+/// Checks that `raw` describes the same tag as `tag`: commit type, target, name,
+/// tagger, message and trailing signature.
 pub fn verify_raw_tag(raw: &[u8], tag: &TagRecord, target_git: GitOid) -> Result<(), GitError> {
     let p = parse_tag(raw)?;
     let bad = GitError::RawMismatch;
+    if p.object_type != b"commit" {
+        return Err(bad("type"));
+    }
     if p.object != target_git {
         return Err(bad("target"));
     }
@@ -456,6 +479,9 @@ pub fn verify_raw_tag(raw: &[u8], tag: &TagRecord, target_git: GitOid) -> Result
     }
     if p.message != tag.message {
         return Err(bad("message"));
+    }
+    if p.gpgsig.as_deref() != tag.extra.get(&EXTRA_GIT_GPGSIG.to_vec()).map(Vec::as_slice) {
+        return Err(bad("gpgsig"));
     }
     Ok(())
 }
@@ -485,18 +511,25 @@ pub struct ParsedTag {
     pub gpgsig: Option<Vec<u8>>,
 }
 
+/// Parses a tag in git's order: `object`, `type`, `tag`, optional `tagger`; nothing else.
 pub fn parse_tag(raw: &[u8]) -> Result<ParsedTag, GitError> {
     let (h, body) = split_headers(raw);
     let bad = GitError::Tag;
+    let mut it = h.iter();
+    let mut next = |key: &[u8], missing| match it.next() {
+        Some((k, v)) if *k == key => Ok(v),
+        _ => Err(bad(missing)),
+    };
+    let object = parse_oid(next(b"object", "missing object")?, "bad object oid").map_err(bad)?;
+    let object_type = next(b"type", "missing type")?.clone();
+    let name = next(b"tag", "missing tag name")?.clone();
+    let tagger = match it.next() {
+        None => None,
+        Some((k, v)) if *k == b"tagger" && it.next().is_none() => Some(parse_signature(v, "bad tagger").map_err(bad)?),
+        Some(_) => return Err(bad("duplicate or unexpected header")),
+    };
     let (message, gpgsig) = split_tag_signature(body);
-    Ok(ParsedTag {
-        object: parse_oid(header(&h, b"object").ok_or(bad("missing object"))?, "bad object oid").map_err(bad)?,
-        object_type: header(&h, b"type").ok_or(bad("missing type"))?.to_vec(),
-        name: header(&h, b"tag").ok_or(bad("missing tag name"))?.to_vec(),
-        tagger: header(&h, b"tagger").map(|v| parse_signature(v, "bad tagger").map_err(bad)).transpose()?,
-        message: message.to_vec(),
-        gpgsig: gpgsig.map(<[u8]>::to_vec),
-    })
+    Ok(ParsedTag { object, object_type, name, tagger, message: message.to_vec(), gpgsig: gpgsig.map(<[u8]>::to_vec) })
 }
 
 /// Tag counterpart of [`canonicalise_commit`]; stores `git.tag = raw` when the render differs.
@@ -675,7 +708,7 @@ mod tests {
 
     #[test]
     fn non_canonical_tag_keeps_raw() {
-        let raw = b"object 1111111111111111111111111111111111111111\ntype tree\ntag t\n\nmsg\n";
+        let raw = b"object 1111111111111111111111111111111111111111\ntype commit\ntag t\ntagger A<a@x> 1 +0000\n\nmsg\n";
         let tag = canonicalise_tag(raw, cid(1)).unwrap();
         assert_eq!(tag.extra.get(&EXTRA_GIT_TAG.to_vec()).map(Vec::as_slice), Some(&raw[..]));
     }
@@ -727,7 +760,7 @@ mod tests {
     #[test]
     fn mismatched_raw_tag_rejected() {
         let target = GitOid::from_bytes([1; 20]);
-        let raw = format!("object {target}\ntype tree\ntag t\n\nmsg\n");
+        let raw = format!("object {target}\ntype commit\ntag t\ntagger A<a@x> 1 +0000\n\nmsg\n");
         let tag = canonicalise_tag(raw.as_bytes(), cid(1)).unwrap();
         assert_eq!(export_tag(&tag, target).unwrap(), raw.as_bytes());
         assert!(export_tag(&tag, GitOid::from_bytes([2; 20])).is_err());
@@ -737,6 +770,89 @@ mod tests {
         let mut edited = tag;
         edited.message = b"changed\n".to_vec();
         assert!(export_tag(&edited, target).is_err());
+    }
+
+    const A: &str = "author A <a@x> 10 +0000\n";
+    const C: &str = "committer C <c@x> 20 +0000\n";
+
+    fn asc_header(snapshot: bool) -> String {
+        BASE64.encode(&AscGitExtra { copies: SortedMap::new(vec![]).unwrap(), snapshot }.encode())
+    }
+
+    #[test]
+    fn strict_commit_grammar() {
+        let t = "tree 1111111111111111111111111111111111111111\n";
+        let p = "parent 2222222222222222222222222222222222222222\n";
+        let ok = format!("{t}{p}{A}{C}encoding x\n\nm");
+        assert!(parse_commit(ok.as_bytes()).is_ok());
+        let sig = "gpgsig a\n b\n";
+        let asc = format!("asc {}\n", asc_header(true));
+        let cases = [
+            format!("{p}{t}{A}{C}\nm"),
+            format!("{t}{t}{A}{C}\nm"),
+            format!("{t}{A}{p}{C}\nm"),
+            format!("{t}{A}{C}{p}\nm"),
+            format!("{t}{p}{A}{p}{C}\nm"),
+            format!("{t}{C}{A}\nm"),
+            format!("{t}{A}{A}{C}\nm"),
+            format!("{t}{A}{C}{C}\nm"),
+            format!("{t}{A}{C}{A}\nm"),
+            format!("{t}{A}{C}{t}\nm"),
+            format!("{t}{A}{C}encoding x\nencoding y\n\nm"),
+            format!("{t}{A}{C}{sig}{sig}\nm"),
+            format!("{t}{A}{C}{asc}{asc}\nm"),
+        ];
+        for c in &cases {
+            assert!(parse_commit(c.as_bytes()).is_err(), "{c}");
+        }
+    }
+
+    #[test]
+    fn verify_commit_checks_gpgsig_and_asc() {
+        let (raw, t, parents, cs) = sample_commit();
+        let mut signed = cs.clone();
+        signed.extra = SortedMap::new(vec![(EXTRA_GIT_GPGSIG.to_vec(), b"sig".to_vec())]).unwrap();
+        assert!(matches!(verify_raw_commit(&raw, &signed, t, &parents), Err(GitError::RawMismatch("gpgsig"))));
+        let with_sig = String::from_utf8(raw.clone()).unwrap().replacen("encoding", "gpgsig sig\nencoding", 1);
+        assert!(matches!(verify_raw_commit(with_sig.as_bytes(), &cs, t, &parents), Err(GitError::RawMismatch("gpgsig"))));
+        assert!(verify_raw_commit(with_sig.as_bytes(), &signed, t, &parents).is_ok());
+        let with_asc = String::from_utf8(raw).unwrap().replacen("encoding", &format!("asc {}\nencoding", asc_header(true)), 1);
+        assert!(matches!(verify_raw_commit(with_asc.as_bytes(), &cs, t, &parents), Err(GitError::RawMismatch("asc"))));
+        let mut snap = cs;
+        snap.extra = SortedMap::new(vec![(EXTRA_SNAPSHOT.to_vec(), Vec::new())]).unwrap();
+        assert!(verify_raw_commit(with_asc.as_bytes(), &snap, t, &parents).is_ok());
+    }
+
+    #[test]
+    fn strict_tag_grammar_and_checks() {
+        let o = "object 1111111111111111111111111111111111111111\n";
+        let ty = "type commit\n";
+        let tg = "tag t\n";
+        let tagger = "tagger A <a@x> 1 +0000\n";
+        assert!(parse_tag(format!("{o}{ty}{tg}{tagger}\nm").as_bytes()).is_ok());
+        let cases = [
+            format!("{ty}{o}{tg}\nm"),
+            format!("{o}{tg}{ty}\nm"),
+            format!("{o}{o}{ty}{tg}\nm"),
+            format!("{o}{ty}{ty}{tg}\nm"),
+            format!("{o}{ty}{tg}{tg}\nm"),
+            format!("{o}{ty}{tg}{tagger}{tagger}\nm"),
+            format!("{o}{ty}{tagger}{tg}\nm"),
+            format!("{o}{ty}{tg}{tagger}x y\n\nm"),
+        ];
+        for c in &cases {
+            assert!(parse_tag(c.as_bytes()).is_err(), "{c}");
+        }
+        let target = GitOid::from_bytes([0x11; 20]);
+        let tree_tag = format!("{o}type tree\n{tg}\nm");
+        let rec = canonicalise_tag(tree_tag.as_bytes(), cid(1)).unwrap();
+        assert!(matches!(verify_raw_tag(tree_tag.as_bytes(), &rec, target), Err(GitError::RawMismatch("type"))));
+        let sig = "-----BEGIN PGP SIGNATURE-----\nabc\n-----END PGP SIGNATURE-----\n";
+        let raw = format!("{o}{ty}{tg}\nm\n{sig}");
+        let mut rec = canonicalise_tag(raw.as_bytes(), cid(1)).unwrap();
+        assert!(verify_raw_tag(raw.as_bytes(), &rec, target).is_ok());
+        rec.extra = SortedMap::new(vec![]).unwrap();
+        assert!(matches!(verify_raw_tag(raw.as_bytes(), &rec, target), Err(GitError::RawMismatch("gpgsig"))));
     }
 
     #[test]
