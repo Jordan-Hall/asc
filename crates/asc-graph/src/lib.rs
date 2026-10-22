@@ -6,6 +6,7 @@ pub mod config;
 pub mod detect;
 pub mod jsonc;
 pub mod link;
+pub mod lock;
 pub mod model;
 pub mod own;
 pub mod pattern;

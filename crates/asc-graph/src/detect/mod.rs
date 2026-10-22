@@ -3,6 +3,8 @@
 //! A detector is one module that implements [`Detector`] plus one line in
 //! [`crate::registry::DETECTORS`]; there is no dynamic loading.
 
+pub mod rust;
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 

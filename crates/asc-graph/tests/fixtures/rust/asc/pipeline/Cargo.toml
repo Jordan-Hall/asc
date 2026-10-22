@@ -1,0 +1,5 @@
+[workspace]
+members = ["crates/core", "crates/util"]
+
+[profile.release]
+opt-level = 2

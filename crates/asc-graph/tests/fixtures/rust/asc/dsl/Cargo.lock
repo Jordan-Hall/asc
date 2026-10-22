@@ -1,0 +1,45 @@
+version = 4
+
+[[package]]
+name = "core"
+version = "0.3.0"
+dependencies = [
+ "extlib",
+ "ir",
+ "libc",
+ "serde",
+ "testkit",
+]
+
+[[package]]
+name = "extlib"
+version = "1.0.0"
+
+[[package]]
+name = "ir"
+version = "0.3.0"
+dependencies = [
+ "smallvec",
+]
+
+[[package]]
+name = "libc"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1"
+
+[[package]]
+name = "serde"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "s1"
+
+[[package]]
+name = "smallvec"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "v1"
+
+[[package]]
+name = "testkit"
+version = "0.3.0"
