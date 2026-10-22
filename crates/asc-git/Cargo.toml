@@ -21,6 +21,10 @@ bytes = { workspace = true }
 filetime = { workspace = true }
 sha1 = { workspace = true }
 same-file = { workspace = true }
+async-trait = { workspace = true }
+quick_cache = { workspace = true }
+data-encoding = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
