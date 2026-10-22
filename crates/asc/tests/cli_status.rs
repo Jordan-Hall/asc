@@ -648,3 +648,40 @@ fn b64(data: &[u8]) -> String {
     }
     out
 }
+
+/// Makes `link` a directory symlink (Unix) or a junction (Windows, where a symlink needs a
+/// privilege) to `target`; false when the OS refuses.
+fn link_dir(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link).is_ok();
+    #[cfg(windows)]
+    let made = Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success());
+    #[cfg(not(any(unix, windows)))]
+    let made = false;
+    made
+}
+
+/// A tracked path behind a linked directory is outside the work tree (git's
+/// has_symlink_leading_path): it reads as deleted and no mode is taken from beyond the link.
+#[tokio::test]
+async fn tracked_path_behind_a_linked_directory_reads_as_deleted() {
+    let f = Fixture::new().await;
+    let a = f.commit(&[], &[("d/e.txt", b"deep\n")]).await;
+    f.set_branch("master", a).await;
+    f.checkout_branch("master", Some(a)).await;
+    let outside = f.sandbox.dir("outside");
+    fs::write(outside.join("e.txt"), "deep\n").unwrap();
+    assert!(link_dir(&outside, &f.root.join("d")), "cannot make a directory link here");
+    let out = run(f.asc().args(["status", "--porcelain=v2"]));
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let line = out.stdout.lines().find(|l| l.ends_with(" d/e.txt")).expect("d/e.txt is listed");
+    let fields: Vec<&str> = line.split(' ').collect();
+    assert_eq!(fields[1], ".D", "{line}");
+    assert_eq!(fields[5], "000000", "no mode from beyond the link: {line}");
+    assert_eq!(fs::read(outside.join("e.txt")).unwrap(), b"deep\n");
+}
