@@ -189,7 +189,20 @@ pub fn symlink_dir(target: &Path, link: &Path) -> bool {
     #[cfg(unix)]
     let r = std::os::unix::fs::symlink(target, link);
     #[cfg(windows)]
-    let r = std::os::windows::fs::symlink_dir(target, link);
+    let r: io::Result<()> = std::os::windows::fs::symlink_dir(target, link).or_else(|_| {
+        // Without the symlink privilege a junction (a reparse point) stands in.
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    });
     #[cfg(not(any(unix, windows)))]
     let r: io::Result<()> = Err(io::ErrorKind::Unsupported.into());
     r.is_ok()

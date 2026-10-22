@@ -2,11 +2,13 @@
 //! directory, then the repo-local exclude, then the global excludes file.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use ::ignore::Match;
 use ::ignore::gitignore::{Gitignore, GitignoreBuilder};
+
+use crate::safe_path::is_link;
 
 /// Per-directory file read in preference to [`GITIGNORE`].
 pub const ASCIGNORE: &str = ".ascignore";
@@ -26,10 +28,20 @@ pub struct IgnoreSources {
     pub common_exclude: PathBuf,
 }
 
+/// Largest ignore file `differ` compares; a larger pair is reported as differing.
+const MAX_COMPARE: u64 = 1 << 20;
+
+/// Whether `path` is a regular file reached without a link at its end. Ignore files come from
+/// the repository, so a symlink or reparse point there (to a secret or a network share) is never
+/// followed.
+fn real_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| !is_link(&m) && m.is_file())
+}
+
 impl IgnoreSources {
     /// The repo-local exclude file in effect.
     pub fn local(&self) -> &Path {
-        if self.local_exclude.is_file() {
+        if real_file(&self.local_exclude) {
             &self.local_exclude
         } else {
             &self.common_exclude
@@ -105,10 +117,10 @@ impl IgnoreStack {
     pub fn push_dir(&mut self, dir: &Path) -> io::Result<bool> {
         let asc = dir.join(ASCIGNORE);
         let git = dir.join(GITIGNORE);
-        let (file, shadowed) = if asc.is_file() {
-            (Some(asc.clone()), git.is_file() && differ(&asc, &git)?)
+        let (file, shadowed) = if real_file(&asc) {
+            (Some(asc.clone()), real_file(&git) && differ(&asc, &git)?)
         } else {
-            (git.is_file().then_some(git), false)
+            (real_file(&git).then_some(git), false)
         };
         self.levels.push(build(dir, file.as_deref()));
         Ok(shadowed)
@@ -147,14 +159,28 @@ impl IgnoreStack {
         let mut c = rel.components().map(|c| c.as_os_str());
         match c.next() {
             Some(first) if first == ".git" => true,
-            Some(first) if first == ".asc" => c.next().is_some_and(|n| n == "info"),
-            _ => false,
+            Some(first) => c.next().is_some_and(|second| {
+                asc_core::path::is_asc_info(
+                    first.to_string_lossy().as_bytes(),
+                    second.to_string_lossy().as_bytes(),
+                )
+            }),
+            None => false,
         }
     }
 }
 
 fn differ(a: &Path, b: &Path) -> io::Result<bool> {
-    Ok(fs::read(a)? != fs::read(b)?)
+    let (la, lb) = (fs::metadata(a)?.len(), fs::metadata(b)?.len());
+    if la != lb || la > MAX_COMPARE {
+        return Ok(true);
+    }
+    let read = |p: &Path| {
+        let mut buf = Vec::new();
+        fs::File::open(p)?.take(MAX_COMPARE).read_to_end(&mut buf)?;
+        io::Result::Ok(buf)
+    };
+    Ok(read(a)? != read(b)?)
 }
 
 /// The SPEC §2.4.2 warning for directory `dir` (repository-relative, empty for the root).
@@ -173,6 +199,15 @@ pub fn shadow_warning(dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn symlink_file(target: &Path, link: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        return std::os::windows::fs::symlink_file(target, link);
+        #[cfg(not(any(unix, windows)))]
+        Err(io::ErrorKind::Unsupported.into())
+    }
 
     fn sources(root: &Path) -> IgnoreSources {
         IgnoreSources {
@@ -207,6 +242,81 @@ mod tests {
         assert!(s.is_ignored(&r.join(".asc/info/exclude"), false));
         assert!(!s.is_ignored(&r.join(".asc/redirections"), false));
         assert!(s.is_ignored(&r.join("scratch"), true));
+    }
+
+    #[test]
+    fn symlinked_ignore_files_are_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let secret = d.path().join("secret");
+        fs::write(
+            &secret, "*.leak
+",
+        )
+        .unwrap();
+        fs::create_dir_all(r.join(".asc/info")).unwrap();
+        let linked = [
+            (r.join(".gitignore"), "a.leak"),
+            (r.join(".asc/info/exclude"), "b.leak"),
+        ];
+        for (at, _) in &linked {
+            if symlink_file(&secret, at).is_err() {
+                return;
+            }
+        }
+        let mut s = IgnoreStack::new(r, &sources(r));
+        s.push_dir(r).unwrap();
+        for (_, name) in linked {
+            assert!(!s.is_ignored(&r.join(name), false), "{name}");
+            assert!(s.explain(&r.join(name), false).is_none());
+        }
+        assert_eq!(sources(r).local(), r.join("common-exclude"));
+    }
+
+    #[test]
+    fn symlinked_gitignore_does_not_shadow_or_load() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let secret = d.path().join("secret");
+        fs::write(
+            &secret, "x
+",
+        )
+        .unwrap();
+        fs::create_dir(r.join("w")).unwrap();
+        let w = r.join("w");
+        fs::write(
+            w.join(ASCIGNORE),
+            "y
+",
+        )
+        .unwrap();
+        if symlink_file(&secret, &w.join(GITIGNORE)).is_err() {
+            return;
+        }
+        let mut s = IgnoreStack::new(&w, &sources(r));
+        assert!(!s.push_dir(&w).unwrap());
+    }
+
+    #[test]
+    fn oversized_pair_is_reported_without_reading() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        let big = vec![b'x'; (MAX_COMPARE + 1) as usize];
+        fs::write(&a, &big).unwrap();
+        fs::write(&b, &big).unwrap();
+        assert!(differ(&a, &b).unwrap());
+    }
+
+    #[test]
+    fn asc_info_aliases_are_implicitly_ignored() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let s = IgnoreStack::new(r, &sources(r));
+        for p in [".ASC/info/exclude", "ASC~1/Info/x", ".asc./info"] {
+            assert!(s.is_ignored(&r.join(p), false), "{p}");
+        }
+        assert!(!s.is_ignored(&r.join(".asc/other"), false));
     }
 
     #[test]
