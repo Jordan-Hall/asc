@@ -32,7 +32,9 @@ pub enum LinkError {
     DuplicateRoot { line: u32, root: RepoPath },
     #[error("more than {MAX_PROJECTS} projects")]
     TooManyProjects,
-    #[error("opaque projects and implicit dependencies would add more than {MAX_IMPLICIT_EDGES} edges")]
+    #[error(
+        "opaque projects and implicit dependencies would add more than {MAX_IMPLICIT_EDGES} edges"
+    )]
     TooManyEdges,
 }
 
@@ -563,8 +565,10 @@ implicit_dependencies = ["rust:a"]
     #[test]
     fn implicit_edges_share_the_edge_budget() {
         let n = 5_000;
-        let mut cfg = String::from("version = 1
-");
+        let mut cfg = String::from(
+            "version = 1
+",
+        );
         for i in 0..n {
             cfg.push_str(&format!(
                 "[[project]]
@@ -612,8 +616,10 @@ implicit_dependencies = [\"eco:rust\", \"!eco:rust\"",
         for i in 1..n {
             cfg.push_str(&format!(", \"!rust:p{i}\""));
         }
-        cfg.push_str("]
-");
+        cfg.push_str(
+            "]
+",
+        );
         let start = std::time::Instant::now();
         let g = graph(&many(n), &cfg);
         assert!(edges(&g, "rust:p0").is_empty());
