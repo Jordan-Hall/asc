@@ -1026,6 +1026,34 @@ mod tests {
         assert_eq!(fx.read("ok"), b"1");
     }
 
+    /// A tree whose `.asc` is a symlink to `x` (holding `x/info/exclude` and `x/redirections`)
+    /// would redirect the local exclude and redirection reads; the `.asc` entry is skipped.
+    #[tokio::test]
+    async fn checkout_refuses_a_asc_symlink() {
+        let fx = Fixture::new();
+        let to = fx
+            .tree(&[
+                (".asc", Kind::Symlink, b"x"),
+                (".ASC", Kind::Symlink, b"x"),
+                ("x/info/exclude", F, b"*\n"),
+                ("x/redirections", F, b"src\n"),
+            ])
+            .await;
+        let r = checkout(&fx.wc(), fx.empty(), to, Mode::Safe)
+            .await
+            .unwrap();
+        let mut skipped: Vec<_> = r.skipped.iter().map(|p| p.to_string()).collect();
+        skipped.sort();
+        assert_eq!(skipped, [".ASC", ".asc"]);
+        assert!(fs::symlink_metadata(fx.root.join(".asc")).is_err());
+        assert!(
+            crate::redirect::Redirections::load(&fx.root)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(fx.ignore.local(&fx.root), fx.ignore.common_exclude);
+    }
+
     #[tokio::test]
     async fn deletes_do_not_go_through_a_symlinked_parent() {
         let fx = Fixture::new();

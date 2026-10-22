@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use ::ignore::Match;
 use ::ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::safe_path::is_link;
+use crate::safe_path::{is_link, parents_are_real_dirs};
 
 /// Per-directory file read in preference to [`GITIGNORE`].
 pub const ASCIGNORE: &str = ".ascignore";
@@ -31,17 +31,27 @@ pub struct IgnoreSources {
 /// Largest ignore file `differ` compares; a larger pair is reported as differing.
 const MAX_COMPARE: u64 = 1 << 20;
 
-/// Whether `path` is a regular file reached without a link at its end. Ignore files come from
-/// the repository, so a symlink or reparse point there (to a secret or a network share) is never
-/// followed.
+/// Largest ignore file read; a larger one is treated as absent rather than parsed.
+const MAX_IGNORE_FILE: u64 = 1 << 20;
+
+/// Whether `path` is a regular file of at most [`MAX_IGNORE_FILE`] bytes, reached without a link
+/// at its end. Ignore files come from the repository, so a symlink or reparse point there (to a
+/// secret or a network share) is never followed.
 fn real_file(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| !is_link(&m) && m.is_file())
+    fs::symlink_metadata(path)
+        .is_ok_and(|m| !is_link(&m) && m.is_file() && m.len() <= MAX_IGNORE_FILE)
+}
+
+/// [`real_file`] for a file below the work tree `root`: no directory above it, up to `root`, may
+/// be a link either (a tracked `.asc` symlink must not redirect `.asc/info/exclude`).
+fn real_file_under(root: &Path, path: &Path) -> bool {
+    parents_are_real_dirs(root, path) && real_file(path)
 }
 
 impl IgnoreSources {
-    /// The repo-local exclude file in effect.
-    pub fn local(&self) -> &Path {
-        if real_file(&self.local_exclude) {
+    /// The repo-local exclude file in effect for the work tree at `root`.
+    pub fn local(&self, root: &Path) -> &Path {
+        if real_file_under(root, &self.local_exclude) {
             &self.local_exclude
         } else {
             &self.common_exclude
@@ -107,7 +117,7 @@ impl IgnoreStack {
         Self {
             root: root.to_owned(),
             levels: Vec::new(),
-            local: build(root, Some(sources.local())),
+            local: build(root, Some(sources.local(root))),
             global: build(root, sources.global()),
         }
     }
@@ -117,10 +127,14 @@ impl IgnoreStack {
     pub fn push_dir(&mut self, dir: &Path) -> io::Result<bool> {
         let asc = dir.join(ASCIGNORE);
         let git = dir.join(GITIGNORE);
-        let (file, shadowed) = if real_file(&asc) {
-            (Some(asc.clone()), real_file(&git) && differ(&asc, &git)?)
+        // The walker never enters a link, but the chain is re-checked so a directory that was
+        // swapped for a link cannot feed its ignore files in.
+        let under = parents_are_real_dirs(&self.root, &asc);
+        let readable = |p: &Path| under && real_file(p);
+        let (file, shadowed) = if readable(&asc) {
+            (Some(asc.clone()), readable(&git) && differ(&asc, &git)?)
         } else {
-            (real_file(&git).then_some(git), false)
+            (readable(&git).then_some(git), false)
         };
         self.levels.push(build(dir, file.as_deref()));
         Ok(shadowed)
@@ -270,7 +284,7 @@ mod tests {
             assert!(!s.is_ignored(&r.join(name), false), "{name}");
             assert!(s.explain(&r.join(name), false).is_none());
         }
-        assert_eq!(sources(r).local(), r.join("common-exclude"));
+        assert_eq!(sources(r).local(r), r.join("common-exclude"));
     }
 
     #[test]
@@ -296,6 +310,64 @@ mod tests {
         }
         let mut s = IgnoreStack::new(&w, &sources(r));
         assert!(!s.push_dir(&w).unwrap());
+    }
+
+    /// A tracked `.asc` link to a directory holding `info/exclude` is not followed.
+    #[test]
+    fn exclude_behind_a_linked_asc_dir_is_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("w");
+        let x = d.path().join("x");
+        fs::create_dir_all(x.join("info")).unwrap();
+        fs::create_dir_all(&r).unwrap();
+        fs::write(x.join("info/exclude"), "*\n").unwrap();
+        if !crate::safe_path::symlink_dir(&x, &r.join(".asc")) {
+            return;
+        }
+        let src = sources(&r);
+        assert_eq!(src.local(&r), r.join("common-exclude"));
+        let s = IgnoreStack::new(&r, &src);
+        assert!(!s.is_ignored(&r.join("a.txt"), false));
+    }
+
+    /// A directory swapped for a link between the walk and `push_dir` loads no ignore files.
+    #[test]
+    fn ignore_files_behind_a_linked_dir_are_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("w");
+        let x = d.path().join("x");
+        fs::create_dir_all(&x).unwrap();
+        fs::create_dir_all(&r).unwrap();
+        fs::write(x.join(GITIGNORE), "*\n").unwrap();
+        fs::write(x.join(ASCIGNORE), "*\n").unwrap();
+        if !crate::safe_path::symlink_dir(&x, &r.join("sub")) {
+            return;
+        }
+        let mut s = IgnoreStack::new(&r, &sources(&r));
+        assert!(!s.push_dir(&r.join("sub")).unwrap());
+        assert!(!s.is_ignored(&r.join("sub/a.txt"), false));
+    }
+
+    #[test]
+    fn oversized_ignore_files_are_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let mut text = b"a.txt\n".to_vec();
+        text.resize((MAX_IGNORE_FILE + 1) as usize, b'#');
+        fs::write(r.join(GITIGNORE), &text).unwrap();
+        fs::create_dir_all(r.join(".asc/info")).unwrap();
+        fs::write(r.join(".asc/info/exclude"), &text).unwrap();
+        let src = sources(r);
+        assert_eq!(src.local(r), r.join("common-exclude"));
+        let mut s = IgnoreStack::new(r, &src);
+        s.push_dir(r).unwrap();
+        assert!(!s.is_ignored(&r.join("a.txt"), false));
+        // Control: the same file at the limit is read.
+        text.truncate(MAX_IGNORE_FILE as usize);
+        fs::write(r.join(GITIGNORE), &text).unwrap();
+        let mut s = IgnoreStack::new(r, &src);
+        s.push_dir(r).unwrap();
+        assert!(s.is_ignored(&r.join("a.txt"), false));
     }
 
     #[test]

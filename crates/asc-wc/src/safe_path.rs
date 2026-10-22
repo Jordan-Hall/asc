@@ -57,6 +57,30 @@ pub fn is_link(meta: &fs::Metadata) -> bool {
     }
 }
 
+/// Whether `path` lies below `root` and every directory between them is a real directory,
+/// examined without following links. Files under `.asc/` come from the repository, so a
+/// symlinked or reparse-point `.asc` (or `.asc/info`) must not redirect a read to a secret or a
+/// network share. Anything that cannot be examined counts as unsafe. `root` itself is trusted.
+pub fn parents_are_real_dirs(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let Some(parent) = rel.parent() else {
+        return false;
+    };
+    let mut cur = root.to_owned();
+    for c in parent.components() {
+        match c {
+            Component::Normal(n) => cur.push(n),
+            _ => return false,
+        }
+        if !fs::symlink_metadata(&cur).is_ok_and(|m| !is_link(&m) && m.is_dir()) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Removes a symlink or file without following it; Windows directory links need `remove_dir`.
 pub fn remove_link(path: &Path) -> io::Result<()> {
     fs::remove_file(path).or_else(|e| fs::remove_dir(path).map_err(|_| e))
