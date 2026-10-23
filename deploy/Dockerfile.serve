@@ -7,11 +7,9 @@
 # default features: `serve` and `git-compat` (SPEC 25) are on. `git-ssh` is not a Cargo feature
 # yet, so there is no SSH port. The vfs features compile on Linux but the daemon is not run here.
 #
-# Both bases are Debian 13 (trixie); bases are pinned by tag and digest, bump both together.
-# git is NOT trixie's 2.47 (and not the 2.39 of bookworm): the image carries the pinned git of
-# build/git-oracle/pins.env, built from its sha256-verified source tarball in the `git` stage, so the
-# server runs the git that the compat suite compares against (docs/git-fidelity.md, A-3). The floor of
-# asc-git's RealGit (crates/asc-git/src/realgit.rs) is 2.40; the pin is what is tested.
+# Both bases are Debian 13 (trixie): its git is 2.47, above the 2.40 floor of asc-git's RealGit
+# (crates/asc-git/src/realgit.rs); bookworm ships 2.39 and would disable the git routes. Bases are
+# pinned by tag and digest; bump both together.
 
 FROM rust:1.95.0-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS build
 WORKDIR /src
@@ -36,38 +34,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     CARGO_INCREMENTAL=0 CARGO_NET_RETRY=5 cargo build --release --locked -p asc -j "${CARGO_JOBS}" \
  && install -D -m 0755 target/release/asc /out/asc
 
-# The pinned git (build/git-oracle/pins.env): the tarball is downloaded over https, its sha256 is
-# checked before it is unpacked, and `verify` checks the built binary and its version. It builds in
-# parallel with the asc binary. The prefix is compiled into git, so the final stage copies the whole
-# cache directory to the same path.
-FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS git
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl build-essential libcurl4-openssl-dev zlib1g-dev xz-utils \
- && rm -rf /var/lib/apt/lists/*
-COPY build/git-oracle /oracle
-ENV ASC_ORACLE_CACHE=/opt/asc-oracle
-RUN bash /oracle/oracle.sh fetch \
- && bash /oracle/oracle.sh verify \
- && rm -f /opt/asc-oracle/*.tar.xz /opt/asc-oracle/*.part
-
 FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
-# git (the pinned build, copied below, not an apt package): RealGit runs `git upload-pack` and
-# `git receive-pack` for git smart-HTTP (SPEC 25.2).
+# git: RealGit runs `git upload-pack` and `git receive-pack` for git smart-HTTP (SPEC 25.2).
 # ca-certificates: HTTPS to the bucket, Forgejo and OIDC issuers. curl: the HEALTHCHECK.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl git \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system --gid 10001 asc \
  && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/asc --no-create-home --shell /usr/sbin/nologin asc \
  && install -d -o 10001 -g 10001 -m 0750 /var/lib/asc /etc/asc
 
 COPY --from=build /out/asc /usr/local/bin/asc
-COPY --from=git /opt/asc-oracle /opt/asc-oracle
-# One `git` on PATH for RealGit. The git stage verified the sha256 and the version; this prints the
-# version (the smoke test of the image reads the same line).
-RUN set -e; for g in /opt/asc-oracle/git-*/bin/git; do ln -s "$g" /usr/local/bin/git; done \
- && git --version
 
 # Mount asc-serve.toml at /etc/asc/asc-serve.toml (or set ASC_SERVE_CONFIG). Point every on-disk
 # path in it (cache disk_dir, git view_dir, a file:// store, a sqlite db) under /var/lib/asc.
