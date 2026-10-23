@@ -291,6 +291,9 @@ pub enum Change {
 5. `copy_from`, if present, names a path that exists in `tree(parents[0])`.
 6. Merge changesets record changes relative to `parents[0]` only (Scion/Bonsai).
 
+**`changes` is verified at ingest, never trusted.** Rules 2 and 3 are checked by the server for every changeset that arrives over the wire (`UpdateRefs` step 4, including the changesets a land rewrites): the stored `changes` must equal the diff of `tree(parents[0])` and `root`, up to `copy_from` annotations. A changeset that omits a changed path, lists a path that did not change, or differs in any `Change` is refused with `INVALID_OBJECT` (gRPC `InvalidArgument`) and nothing of it is indexed. Mirror import derives `changes` from the git trees itself, and asc's own `commit`, `rebase` and `land` build it with `leafdiff`. Consumers may therefore read `changes` of any changeset reachable from a ref (the mainline path index, blame, history path filters, land overlap, `manifests.v1`); consumers that decide authorisation, review or CI selection (`classify`, `affected`, `diffstat.v1`) re-derive the changed paths from the trees anyway. The check is bounded: the diff walk uses `leafdiff_limited` with at most `MAX_VERIFIED_CHANGES` (500,000) leaves and the usual visit budget. A changeset whose diff exceeds the cap is refused (fail closed), not accepted as unverified: the stored object has no "unverified" marker, so no consumer could tell the two apart.
+
+
 **`extra` keys** (others are rejected):
 
 | Key | Value | Meaning |
