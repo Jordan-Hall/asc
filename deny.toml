@@ -3,6 +3,11 @@ all-features = true
 
 [advisories]
 version = 2
+# RUSTSEC-2024-0436 (paste, unmaintained): a compile-time proc macro with no runtime code, reached only
+# through asc-embed -> fastembed 7.x -> tokenizers 0.23.2. No fix exists: tokenizers 0.23.x requires it,
+# fastembed 7.5.0 (latest) still pins tokenizers ^0.23.2, and only the 1.0.0-rc tokenizers drops it.
+# Remove this entry once fastembed accepts tokenizers 1.x.
+ignore = [{ id = "RUSTSEC-2024-0436", reason = "build-time proc macro only; blocked on fastembed -> tokenizers 1.x" }]
 
 [licenses]
 version = 2

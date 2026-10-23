@@ -1,0 +1,6 @@
+# cargo audit reads this file from the workspace .cargo directory; keep it in step with deny.toml.
+[advisories]
+# RUSTSEC-2024-0436 (paste, unmaintained): a compile-time proc macro with no runtime code, reached only
+# through asc-embed -> fastembed 7.x -> tokenizers 0.23.2. No fix exists: fastembed 7.5.0 (latest) pins
+# tokenizers ^0.23.2, and only the 1.0.0-rc tokenizers drops paste. Remove once fastembed accepts tokenizers 1.x.
+ignore = ["RUSTSEC-2024-0436"]
