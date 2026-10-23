@@ -320,6 +320,9 @@ fn repository_independent_commands_ignore_the_workspace() {
 /// A directory link: a junction on Windows, a symlink elsewhere.
 fn link_dir(link: &Path, target: &Path) -> bool {
     let _ = fs::remove_dir(link);
+    // A Unix symlink to a directory is removed as a file; a Windows junction as a directory.
+    #[cfg(unix)]
+    let _ = fs::remove_file(link);
     if cfg!(windows) {
         Command::new("cmd")
             .args(["/C", "mklink", "/J"])
