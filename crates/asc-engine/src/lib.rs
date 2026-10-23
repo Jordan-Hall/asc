@@ -10,6 +10,7 @@ use asc_store::refs::{Refs, RepoKey};
 pub mod blame;
 pub mod branchless;
 pub mod change;
+pub mod classify;
 pub mod commit;
 pub mod derive;
 pub mod diff;
