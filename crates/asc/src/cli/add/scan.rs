@@ -359,7 +359,8 @@ impl Walker<'_> {
                     continue; // outside the spec, or a gitlink
                 }
                 if self.ignored(&child_abs, true) {
-                    if self.spec.exact(key) {
+                    // git reports the ignored directory when a path inside it is named.
+                    if self.spec.exact(key) || self.spec.names_below(key) {
                         self.named_ignored(child);
                     }
                     continue;

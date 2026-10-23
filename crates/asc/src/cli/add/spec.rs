@@ -215,6 +215,14 @@ impl Spec {
         self.includes.iter().any(|i| i.exact(path)) && !self.excludes.iter().any(|e| e.matches(path))
     }
 
+    /// Whether a literal include names a path strictly below directory `dir`.
+    pub fn names_below(&self, dir: &[u8]) -> bool {
+        self.includes
+            .iter()
+            .any(|i| i.literal().is_some_and(|p| !p.is_empty() && under(p, dir)))
+            && !self.excludes.iter().any(|e| e.matches(dir))
+    }
+
     /// False only when nothing below directory `dir` can be selected.
     pub fn may_contain_dir(&self, dir: &[u8]) -> bool {
         let excluded = self
