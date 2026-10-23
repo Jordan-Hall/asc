@@ -30,8 +30,8 @@ fn shown(path: &Path) -> String {
 /// Every file below `dir`, by path relative to it.
 fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, PathBuf>) -> io::Result<()> {
     // `--no-index` walks paths given on the command line, outside the work tree.
-    for entry in fs::read_dir(dir)? {
-        // lint:allow-worktree-fs: --no-index walk, not the work tree
+    let entries = fs::read_dir(dir)?; // lint:allow-worktree-fs: --no-index walk, not the work tree
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
         let at = if rel.is_empty() {

@@ -547,9 +547,10 @@ pub fn dir_size(root: &Path) -> u64 {
     let (mut total, mut seen) = (0u64, 0u64);
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else {
+        let read = std::fs::read_dir(&dir); // lint:allow-worktree-fs: the cache, not a work tree
+        let Ok(read) = read else {
             continue;
-        }; // lint:allow-worktree-fs: the cache, not a work tree
+        };
         for entry in read.flatten() {
             seen += 1;
             if seen > MAX_WALK {
@@ -576,9 +577,10 @@ pub fn dir_size(root: &Path) -> u64 {
 fn has_files(root: &Path) -> bool {
     let (mut seen, mut stack) = (0u64, vec![root.to_owned()]);
     while let Some(dir) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else {
+        let read = std::fs::read_dir(&dir); // lint:allow-worktree-fs: the cache, not a work tree
+        let Ok(read) = read else {
             continue;
-        }; // lint:allow-worktree-fs: the cache, not a work tree
+        };
         for entry in read.flatten() {
             seen += 1;
             let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
