@@ -13,7 +13,7 @@
 //! access"). Everything a client sends is bounded: ids, token text, path counts and lengths,
 //! and the size of every answer.
 //!
-//! The plugin RPCs (`Status` … `Stage`) answer `UNIMPLEMENTED` until the plugin API (U73).
+//! The plugin RPCs (`Status` … `Stage`) are served by [`super::plugin_api`] (U73).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -32,7 +32,7 @@ use tokio::sync::Notify;
 use tonic::{Request, Response, Status};
 
 use super::metrics::{Collected, EventLog, Metrics, Source};
-use super::{Never, not_served};
+use super::plugin_api::{self, PluginStream};
 
 /// Longest id or token text accepted from a client.
 const MAX_TEXT: usize = 64;
@@ -227,14 +227,14 @@ pub struct State {
     mount_gate: tokio::sync::Mutex<()>,
 }
 
-fn parse_id(text: &str) -> Result<WorkspaceId, Status> {
+pub(super) fn parse_id(text: &str) -> Result<WorkspaceId, Status> {
     if text.len() > MAX_TEXT {
         return Err(Status::invalid_argument("workspace id too long"));
     }
     text.parse().map_err(|_| Status::invalid_argument("malformed workspace id"))
 }
 
-fn parse_paths(raw: &[bytes::Bytes]) -> Result<Vec<RepoPath>, Status> {
+pub(super) fn parse_paths(raw: &[bytes::Bytes]) -> Result<Vec<RepoPath>, Status> {
     if raw.len() > MAX_PATHSPECS {
         return Err(Status::invalid_argument(format!("more than {MAX_PATHSPECS} paths")));
     }
@@ -493,36 +493,43 @@ fn token_text(t: &Token) -> String {
 
 #[tonic::async_trait]
 impl WorkspaceRpc for Service {
-    async fn status(&self, _: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
-        not_served()
+    async fn status(&self, req: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
+        let state = self.state()?;
+        plugin_api::status(state, req.into_inner()).await.map(Response::new)
     }
 
-    type DiffStream = Never<wire::DiffResponse>;
-    async fn diff(&self, _: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
-        not_served()
+    type DiffStream = PluginStream<wire::DiffResponse>;
+    async fn diff(&self, req: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
+        let state = self.state()?;
+        plugin_api::diff(state, req.into_inner()).await.map(Response::new)
     }
 
-    type LogStream = Never<wire::LogResponse>;
-    async fn log(&self, _: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
-        not_served()
+    type LogStream = PluginStream<wire::LogResponse>;
+    async fn log(&self, req: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
+        let state = self.state()?;
+        plugin_api::log(state, req.into_inner()).await.map(Response::new)
     }
 
-    type BlameStream = Never<wire::BlameResponse>;
-    async fn blame(&self, _: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
-        not_served()
+    type BlameStream = PluginStream<wire::BlameResponse>;
+    async fn blame(&self, req: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
+        let state = self.state()?;
+        plugin_api::blame(state, req.into_inner()).await.map(Response::new)
     }
 
-    async fn affected(&self, _: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
-        not_served()
+    async fn affected(&self, req: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
+        let state = self.state()?;
+        plugin_api::affected(state, req.into_inner()).await.map(Response::new)
     }
 
-    type WatchStream = Never<wire::WatchEvent>;
-    async fn watch(&self, _: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
-        not_served()
+    type WatchStream = PluginStream<wire::WatchEvent>;
+    async fn watch(&self, req: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
+        let state = self.state()?;
+        plugin_api::watch(state, req.into_inner()).await.map(Response::new)
     }
 
-    async fn stage(&self, _: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
-        not_served()
+    async fn stage(&self, req: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
+        let state = self.state()?;
+        plugin_api::stage(state, req.into_inner()).await.map(Response::new)
     }
 
     async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
