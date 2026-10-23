@@ -9,7 +9,7 @@ on:
 
 jobs:
   replay:
-    runs-on: asc-build
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
@@ -19,7 +19,7 @@ jobs:
 
   pr:
     if: github.event_name == 'pull_request'
-    runs-on: asc-build
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -52,7 +52,7 @@ jobs:
 
   nightly:
     if: github.event_name == 'schedule'
-    runs-on: asc-build
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
     timeout-minutes: 720
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
