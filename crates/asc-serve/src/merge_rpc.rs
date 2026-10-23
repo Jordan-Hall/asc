@@ -1599,24 +1599,92 @@ mod tests {
 
     #[tokio::test]
     async fn a_head_in_another_repository_goes_through_copy_closure_first() {
+        use crate::ingest::{Ingestor, NoObserver};
+
+        let named = |n: &str| {
+            Some(wire::RepoRef {
+                name: n.into(),
+                id_mode: IdMode::Asc as i32,
+            })
+        };
         let f = fx().await;
         let other = f
             .registry
             .create(&RepoName::parse("o/other").unwrap(), &Default::default())
             .await
             .unwrap();
+        let ingest = |e: &Arc<crate::registry::RepoEntry>, ids: &[ChangesetId]| {
+            let e = e.clone();
+            let targets: Vec<RefTarget> = ids.iter().map(|&c| RefTarget::Changeset(c)).collect();
+            let registry = f.registry.clone();
+            async move {
+                Ingestor::new(registry.pool(), registry.refs(), &e, true)
+                    .ingest(&targets, &NoObserver)
+                    .await
+                    .unwrap();
+            }
+        };
         let r = root(&f).await;
-        let theirs = crate::ingest::testutil::commit(&other, &[], &[("z.txt", b"z\n")]).await;
-        let mut q = req(r, theirs, wire::MergeStyle::Merge);
+        ingest(&f.entry, &[r]).await;
+
+        // A head that the other repository never ingested is not copied from it, and nothing
+        // is written here.
+        let rows = graph_rows(&f).await;
+        let loose = crate::ingest::testutil::commit(&other, &[], &[("z.txt", b"z\n")]).await;
+        let mut q = req(r, loose, wire::MergeStyle::Merge);
         q.head_repo = Some(wire::RepoRef {
             name: "o/other".into(),
             id_mode: IdMode::Asc as i32,
         });
-        // `CopyClosure` (U48c) is not registered in this fixture: its refusal reaches the caller
-        // and nothing was written here.
         let e = f.m.merge_inner(&ctx(), q.clone()).await.unwrap_err();
-        assert_eq!(e.code(), tonic::Code::Unimplemented, "{e:?}");
-        assert_eq!(graph_rows(&f).await, 0);
+        assert_eq!(e.code(), tonic::Code::NotFound, "{e:?}");
+        assert_eq!(graph_rows(&f).await, rows);
+
+        // A head whose history shares nothing here is copied, then refused by the merge itself.
+        ingest(&other, &[loose]).await;
+        let e = f.m.merge_inner(&ctx(), q.clone()).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{e:?}");
+        assert!(graph_rows(&f).await > rows, "the closure was copied first");
+
+        // A head built on a changeset both repositories have: the closure is copied here and
+        // the merge uses the copy.
+        let other_ctx = CallCtx {
+            repo: RepoName::parse("o/other").unwrap(),
+            ..ctx()
+        };
+        crate::admin::copy_closure(
+            &f.registry,
+            &f.pipeline,
+            &other_ctx,
+            wire::CopyClosureRequest {
+                from: named("o/r"),
+                to: named("o/other"),
+                changesets: vec![Bytes::copy_from_slice(r.as_bytes())],
+            },
+        )
+        .await
+        .unwrap();
+        let theirs = crate::ingest::testutil::commit(&other, &[r], &[("z.txt", b"z\n")]).await;
+        ingest(&other, &[theirs]).await;
+        assert!(
+            f.entry
+                .backend
+                .engine()
+                .get_changeset(theirs)
+                .await
+                .is_err(),
+            "not here yet"
+        );
+        let mut q = req(r, theirs, wire::MergeStyle::FastForwardOnly);
+        q.head_repo = Some(wire::RepoRef {
+            name: "o/other".into(),
+            id_mode: IdMode::Asc as i32,
+        });
+        assert_eq!(
+            result_of(&f.m.merge_inner(&ctx(), q.clone()).await.unwrap()),
+            theirs
+        );
+        assert_eq!(cs(&f, theirs).await.parents, vec![r]);
 
         // A head that does not exist there, and a repository that does not exist.
         let mut q2 = q.clone();
