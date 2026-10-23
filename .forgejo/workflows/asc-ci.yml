@@ -56,6 +56,8 @@ jobs:
         include:
           - garage: v1.3.1
             sha256: 0441419f7c0b372d37e533a80e08367023d30fa56a56d1db3f8a2aff27e24c92
+          - garage: v2.3.0 # production (dxflrs/garage:v2.3.0)
+            sha256: f98d317942bb341151a2775162016bb50cf86b865d0108de03eb5db16e2120cd
           - garage: v2.4.1
             sha256: ae49f8de4aaee6b5ca305f7cbdccc8cd8a29b2804aac074649f18bfb83d0a2b6
     steps:
@@ -70,5 +72,5 @@ jobs:
           curl -fsSL -o "$HOME/garage-bin/garage" "https://garagehq.deuxfleurs.fr/_releases/${{ matrix.garage }}/x86_64-unknown-linux-musl/garage"
           echo "${{ matrix.sha256 }}  $HOME/garage-bin/garage" | sha256sum -c -
           chmod +x "$HOME/garage-bin/garage"
-      # Both versions ignore If-None-Match, so the probe must fail (BucketRefs refused); a change here is news.
+      # All three versions ignore If-None-Match, so the probe must fail (BucketRefs refused); a change here is news.
       - run: GARAGE_BIN="$HOME/garage-bin/garage" ASC_IT_GARAGE_EXPECT_EXCLUSIVE=false bash build/ci/garage-it.sh
