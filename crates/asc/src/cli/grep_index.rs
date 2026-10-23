@@ -41,7 +41,7 @@ pub trait IndexSource: Send + Sync {
 /// The index available to this process. The local helper (`asc codeintel worker`) is the only
 /// source; none is attached when it is not running, and the streaming path then runs.
 pub fn local_source() -> Option<Box<dyn IndexSource>> {
-    None
+    crate::codeintel_local::query::grep_source()
 }
 
 /// Whether a query is one the index can prefilter: a single positive pattern.

@@ -57,6 +57,9 @@ reqwest = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 zip = { workspace = true }
+roaring = { workspace = true }
+tantivy = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
