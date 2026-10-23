@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Linux gate: the #[cfg(unix)] code is never compiled on Windows, so every change must pass here too.
-# Needs git 2.55 on PATH (the tests compare against it); Ubuntu LTS ships 2.43, so use ppa:git-core/ppa.
+# The tests compare against the pinned git, v2.55.0 (docs/git-fidelity.md): build/git-oracle/oracle.sh
+# fetches it into ~/.cache/asc-oracle on the first run (a C compiler, make, curl, xz and the libcurl and
+# zlib headers are needed once) and this script exports ASC_GIT_ORACLE and ASC_REAL_GIT for it. Set
+# ASC_ORACLE_STRICT=0 to run against another git (the result then proves nothing about fidelity).
 # Usage: build/ci/linux-check.sh   (run from any directory on a Linux host; prefer an ext4 clone, not DrvFs)
 #
 # Runs check, clippy and test in turn, never stopping at the first failure, and ends with one line per
@@ -19,6 +22,18 @@ cd "$(dirname "$0")/../.."
 if [ "$(uname -s)" != "Linux" ]; then
   echo "linux-check.sh must run on Linux (uname: $(uname -s))" >&2
   exit 2
+fi
+
+export ASC_ORACLE_STRICT="${ASC_ORACLE_STRICT:-1}"
+if [ "$ASC_ORACLE_STRICT" != "0" ] && [ -z "${ASC_GIT_ORACLE:-}" ]; then
+  oracle="build/git-oracle/oracle.sh"
+  bash "$oracle" fetch && bash "$oracle" verify || {
+    echo "linux-check.sh: the pinned git is not available (see $oracle)" >&2
+    exit 2
+  }
+  while IFS= read -r line; do
+    export "$line"
+  done < <(bash "$oracle" env)
 fi
 
 ASC_TEST_TIMEOUT="${ASC_TEST_TIMEOUT:-120}"

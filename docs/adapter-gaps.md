@@ -10,7 +10,7 @@ Each gap has a **kind**:
 | `blind` | the harness cannot see a difference the product has, or does not run a case the SPEC requires. |
 | `drift` | the oracle is not one fixed git, so a result can change with the machine. |
 
-Seeded 2026-10-23 from `tests/compat/src/lib.rs`, `crates/asc-git/src/realgit.rs`, `build/ci/linux-check.sh`, `.forgejo/workflows/asc-ci.yml` and `deploy/Dockerfile.serve`. Counts: 5 gaps (`spurious` 0, `blind` 2, `drift` 3). Q03 adds the preflight that reports a failure it explains as `A-n`; Q02 closes the `drift` gaps.
+Seeded 2026-10-23 from `tests/compat/src/lib.rs`, `crates/asc-git/src/realgit.rs`, `build/ci/linux-check.sh`, `.forgejo/workflows/asc-ci.yml` and `deploy/Dockerfile.serve`. Counts: 5 gaps (`spurious` 0, `blind` 2, `drift` 3). Q03 adds the preflight that reports a failure it explains as `A-n`; Q02 closed A-3 and A-4 (the oracle is pinned and checked by hash).
 
 ### A-1 No "program name in hints" normalisation
 - **Kind:** blind
@@ -32,16 +32,16 @@ Seeded 2026-10-23 from `tests/compat/src/lib.rs`, `crates/asc-git/src/realgit.rs
 - **Kind:** drift
 - **Gap:** the git a run compares against is whatever `RealGit::resolve` finds: `ASC_REAL_GIT`, `asc.realGit`, the cache, `PATH`, then Git for Windows. Only the floor, 2.40, is checked, and only major and minor. The developer machine has 2.55.0.windows.5; the Linux CI job installs the newest from `ppa:git-core/ppa`; the Windows CI job uses the runner's; `deploy/Dockerfile.serve` has Debian trixie's 2.47. A suite result can change with the machine.
 - **Evidence:** `crates/asc-git/src/realgit.rs` (`MIN_VERSION`, `check_version`), `build/ci/linux-check.sh` line 3, `.forgejo/workflows/asc-ci.yml`, `deploy/Dockerfile.serve`.
-- **Closed by:** Q02 (the pinned oracle, `ASC_GIT_ORACLE`, CI images pinned by hash).
-- **Status:** open
+- **Closed by:** Q02. `build/git-oracle/pins.env` pins v2.55.0 (`git-2.55.0.tar.xz`, sha256-verified) and Git for Windows `v2.55.0.windows.5` (`MinGit-2.55.0.5-64-bit.zip`, sha256-verified); `build/git-oracle/oracle.sh` fetches it; the compat harness reads `ASC_GIT_ORACLE` first, and with `ASC_ORACLE_STRICT=1` (set in CI and by `build/ci/linux-check.sh`) `Tools::get` fails with `adapter gap A-3` for any other git; `deploy/Dockerfile.serve` builds the same pin.
+- **Status:** closed
 - **SPEC:** §0 item 6, §11.1, §17.1
 
 ### A-4 The version gate reads only major and minor
 - **Kind:** drift
 - **Gap:** a `2.55.x` that is not v2.55.0, or a Git for Windows build with its own patches, passes the gate. Even with `A-3` closed the harness would not notice an oracle that is the wrong build of the right minor version.
 - **Evidence:** `crates/asc-git/src/realgit.rs` `check_version`.
-- **Closed by:** Q02 (the compat harness compares the oracle's `git version --build-options` and the file hash with the pin; `RealGit` keeps its 2.40 floor for users).
-- **Status:** open
+- **Closed by:** Q02. `oracle.sh fetch` writes `.oracle-hash` (the source digest and the sha256 of the built `git`); with `ASC_ORACLE_STRICT=1` the harness checks `git --version` (A-3), then that the record is for the pinned source and that the binary hashes to the record (`adapter gap A-4`). `RealGit` keeps its 2.40 floor for users.
+- **Status:** closed
 - **SPEC:** §11.1
 
 ### A-5 The shell the scenarios run in is whatever the machine has
