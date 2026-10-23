@@ -36,6 +36,7 @@ use tonic::Status;
 
 use crate::history::compare_rpc::ServerCompare;
 use crate::history::linehist_rpc::ServerLineHistory;
+use crate::history::repo_config::ServerRepoConfig;
 use crate::idmode::{Eng, IdCodec};
 use crate::read::{LogEntryEnricher, ReadHooks};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
@@ -189,6 +190,8 @@ pub struct ServerCommitGraph {
     line_history: Option<ServerLineHistory>,
     /// The `Compare` method (PLAN C30b); `UNIMPLEMENTED` until set.
     compare: Option<ServerCompare>,
+    /// The `RepoConfig` method (PLAN C30d); `UNIMPLEMENTED` until set.
+    repo_config: Option<ServerRepoConfig>,
 }
 
 impl ServerCommitGraph {
@@ -197,6 +200,7 @@ impl ServerCommitGraph {
             registry,
             line_history: None,
             compare: None,
+            repo_config: None,
         }
     }
 
@@ -209,6 +213,12 @@ impl ServerCommitGraph {
     /// Serves `Compare` through `handler`.
     pub fn with_compare(mut self, handler: ServerCompare) -> Self {
         self.compare = Some(handler);
+        self
+    }
+
+    /// Serves `RepoConfig` through `handler`.
+    pub fn with_repo_config(mut self, handler: ServerRepoConfig) -> Self {
+        self.repo_config = Some(handler);
         self
     }
 
@@ -485,6 +495,17 @@ impl InsightsHandler for ServerCommitGraph {
         }
     }
 
+    async fn repo_config(
+        &self,
+        ctx: &CallCtx,
+        req: wire::RepoConfigRequest,
+    ) -> Result<wire::RepoConfigResponse, Status> {
+        match &self.repo_config {
+            Some(h) => h.repo_config(ctx, req).await,
+            None => Err(Status::unimplemented("RepoConfig is not available")),
+        }
+    }
+
     async fn line_history(
         &self,
         ctx: &CallCtx,
@@ -573,7 +594,8 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
         .set_insights(Arc::new(
             ServerCommitGraph::new(registry.clone())
                 .with_line_history(ServerLineHistory::new(registry.clone(), hooks.clone()))
-                .with_compare(ServerCompare::new(registry.clone())),
+                .with_compare(ServerCompare::new(registry.clone()))
+                .with_repo_config(ServerRepoConfig::new(registry.clone(), hooks.clone())),
         ))
         .expect("the insights handler group is registered once");
 }
