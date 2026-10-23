@@ -64,6 +64,8 @@ mod forgejo {
         ssh_keys: HashMap<String, Value>,
         /// K19: (key fingerprint, `owner/repo`, mode) -> the `ssh_key` variant of the authz answer.
         ssh_authz: HashMap<(String, String, String), Value>,
+        /// Overrides the status of the authz endpoint (with a body that would allow).
+        authz_status: Option<u16>,
     }
 
     #[derive(Clone, Default)]
@@ -87,6 +89,79 @@ mod forgejo {
 
     fn reply(status: u16, body: Value) -> (StatusCode, String) {
         (StatusCode::from_u16(status).unwrap(), body.to_string())
+    }
+
+    /// Forgejo's `decodeAscStrict`: the body is one JSON object whose fields are all known, and
+    /// the values have the Go field types. `None` is a 400 (`modules/private/asc.go`).
+    fn strict_fields(
+        json: &Value,
+        known: &[(&str, fn(&Value) -> bool)],
+    ) -> Option<serde_json::Map<String, Value>> {
+        let obj = json.as_object()?;
+        obj.iter()
+            .all(|(k, v)| known.iter().any(|(n, ok)| n == k && ok(v)))
+            .then(|| obj.clone())
+    }
+
+    fn is_str(v: &Value) -> bool {
+        v.is_string()
+    }
+
+    fn is_int(v: &Value) -> bool {
+        v.is_i64() || v.is_u64()
+    }
+
+    fn is_obj(v: &Value) -> bool {
+        v.is_object()
+    }
+
+    /// `AscSSHKeyRequest`: `{type, key, fingerprint}`.
+    fn strict_key(json: &Value) -> Option<serde_json::Map<String, Value>> {
+        let o = strict_fields(
+            json,
+            &[("type", is_str), ("key", is_str), ("fingerprint", is_str)],
+        )?;
+        let s = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("");
+        (!s("type").is_empty() && !s("key").is_empty()).then_some(o)
+    }
+
+    /// `AscAuthzRequest` and `validateAscAuthzRequest`. The error text is the fork's `user_msg`.
+    fn strict_authz(json: &Value) -> Result<(), &'static str> {
+        const BAD: &str = "invalid request body";
+        let o = strict_fields(
+            json,
+            &[
+                ("token", is_str),
+                ("user", is_str),
+                ("key_id", is_int),
+                ("ssh_key", is_obj),
+                ("owner", is_str),
+                ("repo", is_str),
+                ("mode", is_str),
+                ("ref", is_str),
+            ],
+        )
+        .ok_or(BAD)?;
+        let s = |k: &str| o.get(k).and_then(Value::as_str).unwrap_or("");
+        if !matches!(s("mode"), "read" | "write") {
+            return Err("mode must be read or write");
+        }
+        if s("owner").is_empty() || s("repo").is_empty() {
+            return Err("invalid owner or repo");
+        }
+        if let Some(k) = o.get("ssh_key") {
+            if ["token", "user", "key_id"].iter().any(|f| o.contains_key(*f)) {
+                return Err("ssh_key excludes token, user and key_id");
+            }
+            return strict_key(k).map(|_| ()).ok_or("invalid key");
+        }
+        if !s("user").is_empty() && s("token").is_empty() {
+            return Err("user needs a token");
+        }
+        if o.contains_key("key_id") && !s("token").is_empty() {
+            return Err("token and key_id are mutually exclusive");
+        }
+        Ok(())
     }
 
     async fn handle(
@@ -162,11 +237,24 @@ mod forgejo {
                 };
             }
             if path == "/api/internal/asc/ssh-key" {
+                if strict_key(&json).is_none() {
+                    return reply(400, json!({"user_msg": "invalid request body"}));
+                }
                 let fp = json["fingerprint"].as_str().unwrap_or("");
                 return match i.ssh_keys.get(fp) {
                     Some(v) => reply(200, v.clone()),
                     None => reply(200, json!({"known": false})),
                 };
+            }
+            if path == "/api/internal/asc/authz" {
+                // Like the fork: an unknown field or a wrong name is a 400, and a denial is a 200
+                // with `allowed: false`, never a 401 or 403.
+                if let Err(m) = strict_authz(&json) {
+                    return reply(400, json!({"user_msg": m}));
+                }
+                if let Some(st) = i.authz_status {
+                    return reply(st, json!({"allowed": true, "user_id": 1, "username": "x", "perm": "admin"}));
+                }
             }
             if path == "/api/internal/asc/authz" && json["ssh_key"].is_object() {
                 // K19: `{ssh_key, owner, repo, mode}`; the key excludes `token` and `user`.
@@ -185,15 +273,20 @@ mod forgejo {
                 };
             }
             if path == "/api/internal/asc/authz" {
+                // K07, K07b: `{token, user, owner, repo, mode}`.
                 let mut t = json["token"].as_str().unwrap_or("").to_owned();
-                if let Some(user) = json["user"].as_str() {
-                    // A Basic login: Forgejo refuses a wrong password outright.
+                if let Some(user) = json["user"].as_str().filter(|u| !u.is_empty()) {
+                    // A Basic login: a wrong password is `allowed: false`, as any other denial.
                     t = format!("basic/{user}:{t}");
                     if !i.users.contains_key(&t) {
-                        return reply(401, json!({}));
+                        return reply(200, json!({"allowed": false}));
                     }
                 }
-                let r = json["repo"].as_str().unwrap_or("").to_owned();
+                let r = format!(
+                    "{}/{}",
+                    json["owner"].as_str().unwrap_or(""),
+                    json["repo"].as_str().unwrap_or("")
+                );
                 return match i.authz.get(&(t, r)) {
                     Some(v) => reply(200, v.clone()),
                     None => reply(200, json!({"allowed": false})),
@@ -476,8 +569,10 @@ mod forgejo {
         // The request carried the internal token and the caller's token in the body.
         let calls = fake.calls("/api/internal/asc/authz");
         assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
-        assert_eq!(calls[0].body["token"], "pat");
-        assert_eq!(calls[0].body["access"], "write");
+        assert_eq!(
+            calls[0].body,
+            json!({"token": "pat", "owner": "o", "repo": "r", "mode": "write"})
+        );
         // Unknown repos and tokens are refused.
         assert_eq!(
             authz
@@ -493,6 +588,63 @@ mod forgejo {
                 .unwrap_err(),
             AuthError::Unauthenticated
         );
+    }
+
+    #[tokio::test]
+    async fn the_fake_refuses_the_old_request_shape_like_the_fork() {
+        let (_fake, url) = start().await;
+        let post = |body: Value| {
+            let url = format!("{url}api/internal/asc/authz");
+            async move {
+                reqwest::Client::new()
+                    .post(url)
+                    .bearer_auth(INTERNAL)
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .send()
+                    .await
+                    .unwrap()
+                    .status()
+                    .as_u16()
+            }
+        };
+        // The shape before K07: `repo: "o/r"` and `access`.
+        assert_eq!(
+            post(json!({"token": "t", "repo": "o/r", "access": "read"})).await,
+            400
+        );
+        // The right names with one unknown field, a bad mode, no owner, a bad type.
+        let good = json!({"token": "t", "owner": "o", "repo": "r", "mode": "read"});
+        assert_eq!(post(good.clone()).await, 200);
+        let with = |k: &str, v: Value| {
+            let mut b = good.clone();
+            b[k] = v;
+            b
+        };
+        assert_eq!(post(with("access", json!("read"))).await, 400);
+        assert_eq!(post(with("mode", json!("admin"))).await, 400);
+        assert_eq!(post(with("repo", json!(7))).await, 400);
+        let mut no_owner = good.clone();
+        no_owner.as_object_mut().unwrap().remove("owner");
+        assert_eq!(post(no_owner).await, 400);
+        assert_eq!(post(json!([1])).await, 400);
+    }
+
+    #[tokio::test]
+    async fn a_400_or_a_5xx_from_the_authz_endpoint_is_never_an_allow() {
+        let (fake, url) = start().await;
+        let authz = internal_authz(&url, Vec::new());
+        let t = tok("pat");
+        for status in [400, 404, 500, 502, 503] {
+            fake.with(|i| i.authz_status = Some(status));
+            assert!(
+                authz.decide(Some(&t), "o/r", Access::Read).await.is_err(),
+                "{status}"
+            );
+        }
+        fake.with(|i| i.authz_status = None);
+        // And the denial of the fork is a 200 with `allowed: false`.
+        assert!(authz.decide(Some(&t), "o/r", Access::Read).await.is_err());
     }
 
     #[tokio::test]
@@ -783,13 +935,13 @@ mod forgejo {
         let calls = fake.calls("/api/internal/asc/authz");
         assert_eq!(calls.len(), 3);
         assert!(calls[2].body.get("user").is_none(), "{:?}", calls[2].body);
-        // Forgejo refuses a wrong password with 401.
+        // Forgejo answers a wrong password as it answers any denial: 200 with `allowed: false`.
         assert_eq!(
             authz
                 .authorize_credential(Some(&basic("alice", "wrong")), "o/r", Access::Read)
                 .await
                 .unwrap_err(),
-            AuthError::Unauthenticated
+            AuthError::Forbidden
         );
     }
 
