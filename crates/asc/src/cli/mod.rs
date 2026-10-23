@@ -103,6 +103,7 @@ pub mod pull;
 pub mod push;
 pub mod range_diff;
 pub mod rebase;
+pub mod ref_filter;
 pub mod reflog;
 pub mod refs_plumbing;
 pub mod remote;
