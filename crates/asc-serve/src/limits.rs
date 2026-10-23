@@ -152,8 +152,10 @@ fn git_refusal(status: &Status) -> Response<Body> {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
-    let mut res = Response::new(Body::from("asc: too many git requests; retry later
-"));
+    let mut res = Response::new(Body::from(
+        "asc: too many git requests; retry later
+",
+    ));
     *res.status_mut() = code;
     res.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
@@ -998,7 +1000,10 @@ impl Admission {
                         .try_acquire(&slots, self.cfg.git.fetch_per_principal)
                         .map_err(|shed| Refusal::other(rate_limited(shed)))?,
                 ));
-                permit.hold(self.replica_slot(&self.git_replica).map_err(Refusal::other)?);
+                permit.hold(
+                    self.replica_slot(&self.git_replica)
+                        .map_err(Refusal::other)?,
+                );
             }
             _ => {}
         }

@@ -61,7 +61,10 @@ impl Acl {
     fn grants(token: &str) -> Option<(&'static str, Vec<(&'static str, Access)>)> {
         match token {
             READ => Some(("reader", vec![(WEB, Access::Read), (MIRROR, Access::Read)])),
-            WRITE => Some(("writer", vec![(WEB, Access::Write), (MIRROR, Access::Write)])),
+            WRITE => Some((
+                "writer",
+                vec![(WEB, Access::Write), (MIRROR, Access::Write)],
+            )),
             OUTSIDE => Some(("outsider", vec![])),
             _ => None,
         }
@@ -202,8 +205,7 @@ impl Env {
 
         let metrics = Arc::new(Metrics::new());
         let ext = Extensions::new();
-        let views =
-            GitViewService::start(&cfg, pool.clone(), Some(mirrors.clone())).unwrap();
+        let views = GitViewService::start(&cfg, pool.clone(), Some(mirrors.clone())).unwrap();
         let view_dir = dir.path().join("cache").join("gitview");
         if let Some(views) = views {
             git_http::register(&ext, views, registry.clone(), &metrics, &cfg);
@@ -255,21 +257,24 @@ impl Env {
         Change::write(Kind::File, got.file, got.size, got.git, None).unwrap()
     }
 
-    async fn commit(
-        &self,
-        parent: Option<ChangesetId>,
-        files: &[(&str, &[u8])],
-    ) -> ChangesetId {
+    async fn commit(&self, parent: Option<ChangesetId>, files: &[(&str, &[u8])]) -> ChangesetId {
         let repo = &self.web;
         let engine = repo.backend.engine();
         let mut changes = Vec::new();
         for (path, content) in files {
-            changes.push((RepoPath::new(*path).unwrap(), self.file(repo, content).await));
+            changes.push((
+                RepoPath::new(*path).unwrap(),
+                self.file(repo, content).await,
+            ));
         }
-        let base = match parent {
-            Some(p) => engine.get_changeset(p).await.unwrap().root,
-            None => asc_engine::Engine::<asc_store::bucket::BucketObjects, asc_store::sqlrefs::SqlRefs>::empty_tree_id(),
-        };
+        let base =
+            match parent {
+                Some(p) => engine.get_changeset(p).await.unwrap().root,
+                None => asc_engine::Engine::<
+                    asc_store::bucket::BucketObjects,
+                    asc_store::sqlrefs::SqlRefs,
+                >::empty_tree_id(),
+            };
         let root = engine.apply(base, &changes).await.unwrap();
         engine
             .create_changeset(
@@ -347,15 +352,22 @@ impl Env {
             .commit(Some(a), &[("README", b"two\n"), ("src/lib.txt", b"lib\n")])
             .await;
         let c = self
-            .commit(Some(b), &[("README", b"three\n"), ("src/lib.txt", b"lib2\n")])
+            .commit(
+                Some(b),
+                &[("README", b"three\n"), ("src/lib.txt", b"lib2\n")],
+            )
             .await;
-        self.set_ref("refs/heads/master", RefTarget::Changeset(c)).await;
-        self.set_ref("refs/heads/topic", RefTarget::Changeset(a)).await;
+        self.set_ref("refs/heads/master", RefTarget::Changeset(c))
+            .await;
+        self.set_ref("refs/heads/topic", RefTarget::Changeset(a))
+            .await;
         let tag = self.tag("v1", b).await;
         self.set_ref("refs/users/7/heads/private", RefTarget::Changeset(c))
             .await;
-        self.set_ref("refs/pull/1/head", RefTarget::Changeset(c)).await;
-        self.set_ref("refs/snapshots/s1", RefTarget::Changeset(c)).await;
+        self.set_ref("refs/pull/1/head", RefTarget::Changeset(c))
+            .await;
+        self.set_ref("refs/snapshots/s1", RefTarget::Changeset(c))
+            .await;
         Seed { a, b, c, tag }
     }
 
@@ -372,7 +384,14 @@ impl Env {
         run(&["init", "-q", "--bare", "."]);
         let tree = run(&["hash-object", "-t", "tree", "-w", "--stdin"]);
         let trunk = run(&["commit-tree", &tree, "-m", "trunk"]);
-        let hidden = run(&["commit-tree", &tree, "-p", &trunk, "-m", "only on a pull ref"]);
+        let hidden = run(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &trunk,
+            "-m",
+            "only on a pull ref",
+        ]);
         run(&["update-ref", "refs/heads/trunk", &trunk]);
         run(&["update-ref", "refs/pull/1/head", &hidden]);
         run(&["update-ref", "refs/users/9/heads/x", &hidden]);
@@ -515,7 +534,10 @@ async fn read_response(mut s: tokio::net::TcpStream) -> Raw {
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
     let mut body = buf[split..].to_vec();
-    if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+    if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         body = dechunk(&body);
     }
     Raw { status, head, body }
@@ -642,8 +664,14 @@ async fn clone_fetch_and_ls_remote_with_every_protocol_version() {
     let r = git.run(&clone, &["clone", "-q", &url, "c"]).await;
     assert!(r.ok, "clone: {}", r.stderr);
     let c = clone.join("c");
-    assert_eq!(std::fs::read_to_string(c.join("README")).unwrap(), "three\n");
-    assert_eq!(std::fs::read_to_string(c.join("src").join("lib.txt")).unwrap(), "lib2\n");
+    assert_eq!(
+        std::fs::read_to_string(c.join("README")).unwrap(),
+        "three\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(c.join("src").join("lib.txt")).unwrap(),
+        "lib2\n"
+    );
     let head = git.run(&c, &["rev-parse", "HEAD"]).await;
     assert_eq!(head.stdout.trim(), cc);
     assert!(git.run(&c, &["fsck", "--strict"]).await.ok);
@@ -656,22 +684,43 @@ async fn clone_fetch_and_ls_remote_with_every_protocol_version() {
         let r = git
             .run(
                 &dir,
-                &["-c", &format!("protocol.version={v}"), "clone", "-q", &url, "c"],
+                &[
+                    "-c",
+                    &format!("protocol.version={v}"),
+                    "clone",
+                    "-q",
+                    &url,
+                    "c",
+                ],
             )
             .await;
         assert!(r.ok, "clone v{v}: {}", r.stderr);
-        assert_eq!(git.run(&dir.join("c"), &["rev-parse", "HEAD"]).await.stdout.trim(), cc);
+        assert_eq!(
+            git.run(&dir.join("c"), &["rev-parse", "HEAD"])
+                .await
+                .stdout
+                .trim(),
+            cc
+        );
     }
     let d = env
         .commit(Some(s.c), &[("README", b"four\n"), ("new/file", b"n\n")])
         .await;
-    env.set_ref("refs/heads/master", RefTarget::Changeset(d)).await;
+    env.set_ref("refs/heads/master", RefTarget::Changeset(d))
+        .await;
     let r = git.run(&c, &["fetch", "-q", "origin"]).await;
     assert!(r.ok, "fetch: {}", r.stderr);
     let after = git.run(&c, &["rev-parse", "origin/master"]).await;
     assert_eq!(after.stdout.trim(), env.git_id(d).await);
-    assert!(git.run(&c, &["merge", "-q", "--ff-only", "origin/master"]).await.ok);
-    assert_eq!(std::fs::read_to_string(c.join("new").join("file")).unwrap(), "n\n");
+    assert!(
+        git.run(&c, &["merge", "-q", "--ff-only", "origin/master"])
+            .await
+            .ok
+    );
+    assert_eq!(
+        std::fs::read_to_string(c.join("new").join("file")).unwrap(),
+        "n\n"
+    );
     assert!(git.run(&c, &["fsck", "--strict"]).await.ok);
 
     // Private refs are never advertised: no `refs/users`, `refs/pull`, `refs/snapshots`.
@@ -692,7 +741,9 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
 
     // --depth 1
     let w = git.work("depth");
-    let r = git.run(&w, &["clone", "-q", "--depth", "1", &url, "c"]).await;
+    let r = git
+        .run(&w, &["clone", "-q", "--depth", "1", &url, "c"])
+        .await;
     assert!(r.ok, "depth 1: {}", r.stderr);
     let c = w.join("c");
     let count = git.run(&c, &["rev-list", "--count", "HEAD"]).await;
@@ -703,12 +754,24 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
     // --deepen
     let r = git.run(&c, &["fetch", "-q", "--deepen", "1"]).await;
     assert!(r.ok, "deepen: {}", r.stderr);
-    assert_eq!(git.run(&c, &["rev-list", "--count", "HEAD"]).await.stdout.trim(), "2");
+    assert_eq!(
+        git.run(&c, &["rev-list", "--count", "HEAD"])
+            .await
+            .stdout
+            .trim(),
+        "2"
+    );
 
     // --unshallow
     let r = git.run(&c, &["fetch", "-q", "--unshallow"]).await;
     assert!(r.ok, "unshallow: {}", r.stderr);
-    assert_eq!(git.run(&c, &["rev-list", "--count", "HEAD"]).await.stdout.trim(), "3");
+    assert_eq!(
+        git.run(&c, &["rev-list", "--count", "HEAD"])
+            .await
+            .stdout
+            .trim(),
+        "3"
+    );
     assert!(!c.join(".git").join("shallow").exists());
     assert!(git.run(&c, &["fsck", "--strict"]).await.ok);
 
@@ -724,14 +787,14 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
     assert!(r.ok, "shallow-since: {}", r.stderr);
     let w = git.work("exclude");
     let r = git
-        .run(
-            &w,
-            &["clone", "-q", "--shallow-exclude=v1", &url, "c"],
-        )
+        .run(&w, &["clone", "-q", "--shallow-exclude=v1", &url, "c"])
         .await;
     assert!(r.ok, "shallow-exclude: {}", r.stderr);
     assert_eq!(
-        git.run(&w.join("c"), &["rev-list", "--count", "HEAD"]).await.stdout.trim(),
+        git.run(&w.join("c"), &["rev-list", "--count", "HEAD"])
+            .await
+            .stdout
+            .trim(),
         "1",
         "history above the tag only"
     );
@@ -739,7 +802,17 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
     // --filter=blob:none, then the lazy fetch of the blobs a checkout needs
     let w = git.work("blobless");
     let r = git
-        .run(&w, &["clone", "-q", "--no-checkout", "--filter=blob:none", &url, "c"])
+        .run(
+            &w,
+            &[
+                "clone",
+                "-q",
+                "--no-checkout",
+                "--filter=blob:none",
+                &url,
+                "c",
+            ],
+        )
         .await;
     assert!(r.ok, "blob:none: {}", r.stderr);
     let c = w.join("c");
@@ -753,12 +826,18 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
     );
     let r = git.run(&c, &["checkout", "-q", "master"]).await;
     assert!(r.ok, "lazy blob fetch: {}", r.stderr);
-    assert_eq!(std::fs::read_to_string(c.join("README")).unwrap(), "three\n");
+    assert_eq!(
+        std::fs::read_to_string(c.join("README")).unwrap(),
+        "three\n"
+    );
 
     // --filter=tree:0, then trees and blobs on demand
     let w = git.work("treeless");
     let r = git
-        .run(&w, &["clone", "-q", "--no-checkout", "--filter=tree:0", &url, "c"])
+        .run(
+            &w,
+            &["clone", "-q", "--no-checkout", "--filter=tree:0", &url, "c"],
+        )
         .await;
     assert!(r.ok, "tree:0: {}", r.stderr);
     let c = w.join("c");
@@ -772,7 +851,10 @@ async fn shallow_and_partial_clones_and_the_lazy_fetch_that_follows() {
         .run(&w, &["clone", "-q", "--filter=blob:limit=2", &url, "c"])
         .await;
     assert!(r.ok, "blob:limit: {}", r.stderr);
-    assert_eq!(std::fs::read_to_string(w.join("c").join("README")).unwrap(), "three\n");
+    assert_eq!(
+        std::fs::read_to_string(w.join("c").join("README")).unwrap(),
+        "three\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -784,17 +866,32 @@ async fn include_tag_follows_an_annotated_tag_when_only_a_branch_is_fetched() {
     let r = git
         .run(
             &w,
-            &["clone", "-q", "--single-branch", "--branch", "master", &env.url(WEB), "c"],
+            &[
+                "clone",
+                "-q",
+                "--single-branch",
+                "--branch",
+                "master",
+                &env.url(WEB),
+                "c",
+            ],
         )
         .await;
     assert!(r.ok, "{}", r.stderr);
     let c = w.join("c");
     let tags = git.run(&c, &["tag"]).await;
-    assert_eq!(tags.stdout.trim(), "v1", "include-tag brought the tag along");
+    assert_eq!(
+        tags.stdout.trim(),
+        "v1",
+        "include-tag brought the tag along"
+    );
     let peeled = git.run(&c, &["rev-parse", "v1^{commit}"]).await;
     assert_eq!(peeled.stdout.trim(), env.git_id(s.b).await);
     let r = git
-        .run(&c, &["fetch", "-q", "origin", "refs/tags/v1:refs/tags/again"])
+        .run(
+            &c,
+            &["fetch", "-q", "origin", "refs/tags/v1:refs/tags/again"],
+        )
         .await;
     assert!(r.ok, "{}", r.stderr);
 }
@@ -874,7 +971,11 @@ async fn a_private_repo_challenges_then_the_credential_helper_works() {
         .run(&w, &["ls-remote", &env.url_with(WEB, "git", OUTSIDE)])
         .await;
     assert!(!r.ok);
-    assert!(r.stderr.contains("not found") || r.stderr.contains("404"), "{}", r.stderr);
+    assert!(
+        r.stderr.contains("not found") || r.stderr.contains("404"),
+        "{}",
+        r.stderr
+    );
     let missing = git
         .run(&w, &["ls-remote", &env.url_with("acme/ghost", "git", READ)])
         .await;
@@ -910,27 +1011,53 @@ async fn receive_pack_needs_write_and_a_mirror_is_read_only() {
     // A read deploy token clones and gets 403 on the receive-pack advertisement.
     let r = raw(
         env.addr,
-        request("GET", &adv(WEB), env.addr, Some(&basic("git", READ)), &[], b""),
+        request(
+            "GET",
+            &adv(WEB),
+            env.addr,
+            Some(&basic("git", READ)),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 403, "{}", r.head);
     assert!(r.text().contains("does not allow pushing"));
     let w = git.work("push");
-    assert!(git.run(&w, &["clone", "-q", &env.url_with(WEB, "git", READ), "c"]).await.ok);
+    assert!(
+        git.run(&w, &["clone", "-q", &env.url_with(WEB, "git", READ), "c"])
+            .await
+            .ok
+    );
     let c = w.join("c");
     let r = git.run(&c, &["push", "origin", "HEAD:refs/heads/x"]).await;
     assert!(!r.ok);
     assert!(r.stderr.contains("403"), "{}", r.stderr);
 
     // Anonymous: the challenge, so a helper is asked. No credential at all on a private repo.
-    let r = raw(env.addr, request("GET", &adv(WEB), env.addr, None, &[], b"")).await;
+    let r = raw(
+        env.addr,
+        request("GET", &adv(WEB), env.addr, None, &[], b""),
+    )
+    .await;
     assert_eq!(r.status, 401);
-    assert!(r.header("www-authenticate").unwrap().starts_with("Basic realm="));
+    assert!(
+        r.header("www-authenticate")
+            .unwrap()
+            .starts_with("Basic realm=")
+    );
 
     // No read access: the same 404 as a missing repo.
     let r = raw(
         env.addr,
-        request("GET", &adv(WEB), env.addr, Some(&basic("git", OUTSIDE)), &[], b""),
+        request(
+            "GET",
+            &adv(WEB),
+            env.addr,
+            Some(&basic("git", OUTSIDE)),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 404);
@@ -938,7 +1065,14 @@ async fn receive_pack_needs_write_and_a_mirror_is_read_only() {
     // A write token passes this gate; the push itself is served by U82.
     let r = raw(
         env.addr,
-        request("GET", &adv(WEB), env.addr, Some(&basic("git", WRITE)), &[], b""),
+        request(
+            "GET",
+            &adv(WEB),
+            env.addr,
+            Some(&basic("git", WRITE)),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 403, "{}", r.head);
@@ -948,7 +1082,14 @@ async fn receive_pack_needs_write_and_a_mirror_is_read_only() {
     for token in [READ, WRITE] {
         let r = raw(
             env.addr,
-            request("GET", &adv(MIRROR), env.addr, Some(&basic("git", token)), &[], b""),
+            request(
+                "GET",
+                &adv(MIRROR),
+                env.addr,
+                Some(&basic("git", token)),
+                &[],
+                b"",
+            ),
         )
         .await;
         assert_eq!(r.status, 403);
@@ -966,7 +1107,10 @@ async fn a_mirror_clones_and_its_hidden_refs_stay_hidden() {
 
     for v in ["0", "1", "2"] {
         let r = git
-            .run(&w, &["-c", &format!("protocol.version={v}"), "ls-remote", &url])
+            .run(
+                &w,
+                &["-c", &format!("protocol.version={v}"), "ls-remote", &url],
+            )
             .await;
         assert!(r.ok, "v{v}: {}", r.stderr);
         let refs = refs_of(&r.stdout);
@@ -977,7 +1121,10 @@ async fn a_mirror_clones_and_its_hidden_refs_stay_hidden() {
     let r = git.run(&w, &["clone", "-q", &url, "c"]).await;
     assert!(r.ok, "{}", r.stderr);
     let c = w.join("c");
-    assert_eq!(git.run(&c, &["rev-parse", "HEAD"]).await.stdout.trim(), ids.trunk);
+    assert_eq!(
+        git.run(&c, &["rev-parse", "HEAD"]).await.stdout.trim(),
+        ids.trunk
+    );
     // The commit only a pull ref reaches did not come along.
     let has = git.run(&c, &["cat-file", "-e", &ids.hidden]).await;
     assert!(!has.ok, "the hidden commit must not be in the clone");
@@ -1064,7 +1211,10 @@ async fn hostile_paths_are_404_and_start_no_child() {
         env.addr,
         request(
             "GET",
-            &format!("/acme/{}/info/refs?service=git-upload-pack", "n".repeat(100)),
+            &format!(
+                "/acme/{}/info/refs?service=git-upload-pack",
+                "n".repeat(100)
+            ),
             env.addr,
             Some(&auth),
             &[],
@@ -1105,7 +1255,14 @@ async fn hostile_paths_are_404_and_start_no_child() {
     // The wrong method on a route.
     let r = raw(
         env.addr,
-        request("POST", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&auth), &[], b""),
+        request(
+            "POST",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 405);
@@ -1113,7 +1270,10 @@ async fn hostile_paths_are_404_and_start_no_child() {
     let after: Vec<_> = std::fs::read_dir(&env.view_dir)
         .map(|d| d.flatten().map(|e| e.file_name()).collect())
         .unwrap_or_default();
-    assert_eq!(before, after, "no view was built or opened for a refused request");
+    assert_eq!(
+        before, after,
+        "no view was built or opened for a refused request"
+    );
     let rendered = env.metrics.render();
     assert!(
         rendered.contains("asc_git_rejected_total{reason=\"bad_path\"}"),
@@ -1136,7 +1296,14 @@ async fn request_bodies_are_bounded_typed_and_probed() {
     env.seed().await;
     let auth = basic("git", READ);
     let post = |extra: &[(&str, &str)], body: &[u8]| {
-        request("POST", "/acme/web.git/git-upload-pack", env.addr, Some(&auth), extra, body)
+        request(
+            "POST",
+            "/acme/web.git/git-upload-pack",
+            env.addr,
+            Some(&auth),
+            extra,
+            body,
+        )
     };
 
     // The bare `0000` probe is answered at once, without a child, and charges nothing to a view.
@@ -1148,14 +1315,21 @@ async fn request_bodies_are_bounded_typed_and_probed() {
         Some("application/x-git-upload-pack-result")
     );
     assert!(r.header("cache-control").unwrap().contains("no-cache"));
-    assert!(!env.view_dir.join(format!("{}.git", env.web.key.0)).exists(), "no view for a probe");
+    assert!(
+        !env.view_dir.join(format!("{}.git", env.web.key.0)).exists(),
+        "no view for a probe"
+    );
 
     // Content type and encoding.
     let r = raw(env.addr, post(&[("Content-Type", "text/plain")], b"0000")).await;
     assert_eq!(r.status, 415);
     let r = raw(env.addr, post(&[], b"0000")).await;
     assert_eq!(r.status, 415);
-    let r = raw(env.addr, post(&[UPLOAD_TYPE, ("Content-Encoding", "br")], b"0000")).await;
+    let r = raw(
+        env.addr,
+        post(&[UPLOAD_TYPE, ("Content-Encoding", "br")], b"0000"),
+    )
+    .await;
     assert_eq!(r.status, 415);
 
     // A huge `have` list: over the cap on the wire.
@@ -1168,9 +1342,17 @@ async fn request_bodies_are_bounded_typed_and_probed() {
 
     // A small gzip body that inflates to 128 MiB: cut at the cap, never inflated whole.
     let bomb = gzip_zeros(128);
-    assert!(bomb.len() < 256 * 1024, "the bomb is small on the wire: {}", bomb.len());
+    assert!(
+        bomb.len() < 256 * 1024,
+        "the bomb is small on the wire: {}",
+        bomb.len()
+    );
     let started = Instant::now();
-    let r = raw(env.addr, post(&[UPLOAD_TYPE, ("Content-Encoding", "gzip")], &bomb)).await;
+    let r = raw(
+        env.addr,
+        post(&[UPLOAD_TYPE, ("Content-Encoding", "gzip")], &bomb),
+    )
+    .await;
     assert_eq!(r.status, 413, "{}", r.head);
     assert!(started.elapsed() < Duration::from_secs(10));
     // Damaged gzip.
@@ -1185,8 +1367,14 @@ async fn request_bodies_are_bounded_typed_and_probed() {
     assert_eq!(r.status, 400);
 
     let rendered = env.metrics.render();
-    assert!(rendered.contains("asc_git_rejected_total{reason=\"body_size\"}"), "{rendered}");
-    assert!(rendered.contains("asc_git_rejected_total{reason=\"content_type\"}"), "{rendered}");
+    assert!(
+        rendered.contains("asc_git_rejected_total{reason=\"body_size\"}"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("asc_git_rejected_total{reason=\"content_type\"}"),
+        "{rendered}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1197,7 +1385,12 @@ async fn a_gzip_request_that_git_itself_sends_is_inflated_and_served() {
     let s = env.seed().await;
     let auth = basic("git", READ);
     let want = env.git_id(s.c).await;
-    let body = format!("{}{}0000{}", pkt(&format!("want {want} side-band-64k ofs-delta agent=t\n")), "", pkt("done\n"));
+    let body = format!(
+        "{}{}0000{}",
+        pkt(&format!("want {want} side-band-64k ofs-delta agent=t\n")),
+        "",
+        pkt("done\n")
+    );
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     e.write_all(body.as_bytes()).unwrap();
     let gz = e.finish().unwrap();
@@ -1219,12 +1412,20 @@ async fn a_gzip_request_that_git_itself_sends_is_inflated_and_served() {
         Some("application/x-git-upload-pack-result")
     );
     let text = String::from_utf8_lossy(&r.body).into_owned();
-    assert!(text.contains("PACK"), "a pack came back: {} bytes", r.body.len());
+    assert!(
+        text.contains("PACK"),
+        "a pack came back: {} bytes",
+        r.body.len()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stalled_client_is_cut_by_the_idle_and_wall_limits() {
-    let env = Env::start("[limits.git]\nrequest_timeout = \"6s\"\nidle_timeout = \"1s\"\n", &[]).await;
+    let env = Env::start(
+        "[limits.git]\nrequest_timeout = \"6s\"\nidle_timeout = \"1s\"\n",
+        &[],
+    )
+    .await;
     env.seed().await;
     let auth = basic("git", READ);
     let mut s = tokio::net::TcpStream::connect(env.addr).await.unwrap();
@@ -1251,7 +1452,14 @@ async fn the_fifth_concurrent_fetch_of_one_principal_is_429() {
     // One request first, so admission knows this token (it is charged by principal from then on).
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&auth), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 200);
@@ -1269,7 +1477,14 @@ async fn the_fifth_concurrent_fetch_of_one_principal_is_429() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let r = raw(
         env.addr,
-        request("POST", "/acme/web.git/git-upload-pack", env.addr, Some(&auth), &[UPLOAD_TYPE], b"0000"),
+        request(
+            "POST",
+            "/acme/web.git/git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[UPLOAD_TYPE],
+            b"0000",
+        ),
     )
     .await;
     assert_eq!(r.status, 429, "{}", r.head);
@@ -1277,7 +1492,14 @@ async fn the_fifth_concurrent_fetch_of_one_principal_is_429() {
     // Discovery is `cheap` and is not held back by the fetch slots.
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&auth), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 200);
@@ -1285,7 +1507,14 @@ async fn the_fifth_concurrent_fetch_of_one_principal_is_429() {
     let other = basic("git", WRITE);
     let r = raw(
         env.addr,
-        request("POST", "/acme/web.git/git-upload-pack", env.addr, Some(&other), &[UPLOAD_TYPE], b"0000"),
+        request(
+            "POST",
+            "/acme/web.git/git-upload-pack",
+            env.addr,
+            Some(&other),
+            &[UPLOAD_TYPE],
+            b"0000",
+        ),
     )
     .await;
     assert_eq!(r.status, 200);
@@ -1294,7 +1523,14 @@ async fn the_fifth_concurrent_fetch_of_one_principal_is_429() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     let r = raw(
         env.addr,
-        request("POST", "/acme/web.git/git-upload-pack", env.addr, Some(&auth), &[UPLOAD_TYPE], b"0000"),
+        request(
+            "POST",
+            "/acme/web.git/git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[UPLOAD_TYPE],
+            b"0000",
+        ),
     )
     .await;
     assert_eq!(r.status, 200);
@@ -1307,15 +1543,33 @@ async fn disabled_by_config_serves_the_stub_in_a_build_with_the_layer() {
     // Anonymous: the challenge, even for a repo the authorizer calls public.
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, None, &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            None,
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 401);
-    assert!(r.header("www-authenticate").unwrap().starts_with("Basic realm="));
+    assert!(
+        r.header("www-authenticate")
+            .unwrap()
+            .starts_with("Basic realm=")
+    );
     // Authenticated and allowed to read: 403 with the flag and the text.
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&basic("git", READ)), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&basic("git", READ)),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 403);
@@ -1324,7 +1578,14 @@ async fn disabled_by_config_serves_the_stub_in_a_build_with_the_layer() {
     // No read access: 404 as before.
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&basic("git", OUTSIDE)), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&basic("git", OUTSIDE)),
+            &[],
+            b"",
+        ),
     )
     .await;
     // `acme/web` is public in this table, so the outsider may read it; a repo that is not
@@ -1332,14 +1593,24 @@ async fn disabled_by_config_serves_the_stub_in_a_build_with_the_layer() {
     assert_eq!(r.status, 403);
     let r = raw(
         env.addr,
-        request("GET", "/acme/other.git/info/refs?service=git-upload-pack", env.addr, Some(&basic("git", OUTSIDE)), &[], b""),
+        request(
+            "GET",
+            "/acme/other.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&basic("git", OUTSIDE)),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 404);
     // Real git fails on it with the 403.
     let git = Git::new();
     let r = git
-        .run(&git.work("w"), &["ls-remote", &env.url_with(WEB, "git", READ)])
+        .run(
+            &git.work("w"),
+            &["ls-remote", &env.url_with(WEB, "git", READ)],
+        )
         .await;
     assert!(!r.ok);
     assert!(r.stderr.contains("403"), "{}", r.stderr);
@@ -1362,7 +1633,14 @@ async fn every_request_is_audited_and_counted_without_a_credential() {
     // The 404 and a refusal are audited too.
     let _ = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&basic("git", OUTSIDE)), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&basic("git", OUTSIDE)),
+            &[],
+            b"",
+        ),
     )
     .await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1375,10 +1653,15 @@ async fn every_request_is_audited_and_counted_without_a_credential() {
     assert!(!mine.is_empty());
     for rec in &mine {
         for v in rec.values() {
-            assert!(!v.contains(READ) && !v.contains(OUTSIDE), "credential in audit: {v}");
+            assert!(
+                !v.contains(READ) && !v.contains(OUTSIDE),
+                "credential in audit: {v}"
+            );
             assert!(!v.contains("Basic "), "{v}");
         }
-        assert!(rec.contains_key("op_id") && rec.contains_key("outcome") && rec.contains_key("peer"));
+        assert!(
+            rec.contains_key("op_id") && rec.contains_key("outcome") && rec.contains_key("peer")
+        );
     }
     let fetch = mine
         .iter()
@@ -1396,28 +1679,44 @@ async fn every_request_is_audited_and_counted_without_a_credential() {
     assert!(fetch["bytes_out"].parse::<u64>().unwrap() > 0);
     assert!(fetch["bytes_in"].parse::<u64>().unwrap() > 0);
     assert!(
-        mine.iter().any(|r| r.get("version").map(String::as_str) == Some("v0")),
+        mine.iter()
+            .any(|r| r.get("version").map(String::as_str) == Some("v0")),
         "the v0 listing is labelled v0"
     );
     assert!(
-        mine.iter()
-            .any(|r| r.get("outcome").map(String::as_str) == Some("rejected:no_read")
-                && r.get("principal").map(String::as_str) == Some("-")),
+        mine.iter().any(
+            |r| r.get("outcome").map(String::as_str) == Some("rejected:no_read")
+                && r.get("principal").map(String::as_str) == Some("-")
+        ),
         "the refused request is audited with its reason"
     );
 
     let metrics = env.metrics.render();
     assert!(
-        metrics.contains("asc_git_requests_total{service=\"git-upload-pack\",version=\"v2\",status=\"200\"}"),
+        metrics.contains(
+            "asc_git_requests_total{service=\"git-upload-pack\",version=\"v2\",status=\"200\"}"
+        ),
         "{metrics}"
     );
-    assert!(metrics.contains("asc_git_bytes_total{dir=\"out\"}"), "{metrics}");
+    assert!(
+        metrics.contains("asc_git_bytes_total{dir=\"out\"}"),
+        "{metrics}"
+    );
     assert!(metrics.contains("asc_git_child_seconds_count"), "{metrics}");
-    assert!(metrics.contains("asc_git_rejected_total{reason=\"no_read\"}"), "{metrics}");
+    assert!(
+        metrics.contains("asc_git_rejected_total{reason=\"no_read\"}"),
+        "{metrics}"
+    );
     assert!(!metrics.contains(READ));
 
     // The authorizer was asked with the repo name and read access for the fetch.
-    assert!(env.acl.log.lock().unwrap().contains(&(WEB.to_owned(), Access::Read)));
+    assert!(
+        env.acl
+            .log
+            .lock()
+            .unwrap()
+            .contains(&(WEB.to_owned(), Access::Read))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1442,7 +1741,14 @@ async fn a_large_repo_answers_503_with_retry_after_while_its_view_builds() {
     let auth = basic("git", READ);
     let r = raw(
         env.addr,
-        request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&auth), &[], b""),
+        request(
+            "GET",
+            "/acme/web.git/info/refs?service=git-upload-pack",
+            env.addr,
+            Some(&auth),
+            &[],
+            b"",
+        ),
     )
     .await;
     assert_eq!(r.status, 503, "{}", r.head);
@@ -1452,7 +1758,14 @@ async fn a_large_repo_answers_503_with_retry_after_while_its_view_builds() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         let r = raw(
             env.addr,
-            request("GET", "/acme/web.git/info/refs?service=git-upload-pack", env.addr, Some(&auth), &[], b""),
+            request(
+                "GET",
+                "/acme/web.git/info/refs?service=git-upload-pack",
+                env.addr,
+                Some(&auth),
+                &[],
+                b"",
+            ),
         )
         .await;
         if r.status == 200 {
