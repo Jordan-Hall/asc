@@ -79,7 +79,7 @@ mod tests {
     fn explicit_beats_discovery_and_none_disables() {
         let d = Some("https://seeds.example/acme/web/latest");
         let o = SeedOpts::default();
-        assert_eq!(o.choose(d).unwrap().explicit, false);
+        assert!(!o.choose(d).unwrap().explicit);
         assert!(o.choose(None).is_none());
         let o = SeedOpts {
             seed: Some("file:///s.tar.zst".into()),

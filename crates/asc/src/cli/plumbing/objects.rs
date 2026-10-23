@@ -120,7 +120,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// The object an entry of a tree is.
-    pub fn from_entry(&self, entry: &Entry) -> Option<Object> {
+    pub fn resolve_entry(&self, entry: &Entry) -> Option<Object> {
         match entry.kind {
             Kind::Dir => {
                 self.learn(entry.git, ObjectKind::Tree, entry.id);
@@ -200,16 +200,14 @@ impl<'a> Resolver<'a> {
     }
 
     async fn named(&self, base: &str) -> Result<Option<Object>> {
-        if let Some(oid) = parse_oid(base) {
-            if let Some(obj) = self.by_oid(oid).await? {
+        if let Some(oid) = parse_oid(base)
+            && let Some(obj) = self.by_oid(oid).await? {
                 return Ok(Some(obj));
             }
-        }
-        if !base.contains(['~', '^', '@']) {
-            if let Some(tag) = self.tag_by_name(base).await? {
+        if !base.contains(['~', '^', '@'])
+            && let Some(tag) = self.tag_by_name(base).await? {
                 return Ok(Some(tag));
             }
-        }
         match commit_of(self.ctx, base).await? {
             Some(id) => Ok(Some(self.commit(id).await?)),
             None => Ok(None),
@@ -256,7 +254,7 @@ impl<'a> Resolver<'a> {
             return Ok(Some(self.tree(root).await?));
         }
         let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else { return Ok(None) };
-        Ok(self.ws.engine.lookup(root, &repo_path).await?.and_then(|e| self.from_entry(&e)))
+        Ok(self.ws.engine.lookup(root, &repo_path).await?.and_then(|e| self.resolve_entry(&e)))
     }
 
     /// `:path` and `:<stage>:path`: what the index holds.

@@ -65,7 +65,7 @@ fn matches(q: &Query, patterns: &[String], name: &str) -> bool {
 
 fn listed(q: &Query, name: &str) -> bool {
     (q.patterns.is_empty() || matches(q, &q.patterns, name))
-        && !(!q.excludes.is_empty() && matches(q, &q.excludes, name))
+        && (q.excludes.is_empty() || !matches(q, &q.excludes, name))
 }
 
 /// The commit export of a changeset (git's raw bytes).
@@ -101,13 +101,12 @@ async fn root_refs(ws: &WsCtx) -> Result<Vec<(Item, Option<RefTarget>)>> {
     let mut out = Vec::new();
     if let Head::Branch(branch) = ws.projection.read_head()? {
         let full = format!("refs/heads/{branch}");
-        if let Ok(name) = asc_core::path::RefName::new(full.clone().into_bytes()) {
-            if let Some(entry) = ws.db.refs().get(ws.repo.key, &name).await? {
+        if let Ok(name) = asc_core::path::RefName::new(full.clone().into_bytes())
+            && let Some(entry) = ws.db.refs().get(ws.repo.key, &name).await? {
                 let mut item = Item::new("HEAD");
                 item.symref = Some(full);
                 out.push((item, Some(entry.target)));
             }
-        }
     } else if let Some(cs) = ws.head_commit().await? {
         out.push((Item::new("HEAD"), Some(RefTarget::Changeset(cs))));
     }
@@ -213,11 +212,10 @@ pub async fn collect(ws: &WsCtx, hist: &Hist, q: &Query, atoms: &[&Atom]) -> Res
     if q.filters.commit_filters() {
         let mut kept = Vec::with_capacity(cands.len());
         for c in cands {
-            if let Some(tip) = c.item.commit {
-                if passes(api, &q.filters, tip).await? {
+            if let Some(tip) = c.item.commit
+                && passes(api, &q.filters, tip).await? {
                     kept.push(c);
                 }
-            }
         }
         cands = kept;
     }
@@ -255,11 +253,10 @@ pub async fn collect(ws: &WsCtx, hist: &Hist, q: &Query, atoms: &[&Atom]) -> Res
         if let (Some(t), Some(o)) = (item.tag, &item.obj) {
             mapped.push(GitMapRow { git: o.oid, kind: ObjectKind::Tag, asc: *t.as_bytes() });
         }
-        if let (Some(c), Some(o)) = (item.commit, item.deref.as_ref().or(item.obj.as_ref())) {
-            if o.kind == ObjKind::Commit {
+        if let (Some(c), Some(o)) = (item.commit, item.deref.as_ref().or(item.obj.as_ref()))
+            && o.kind == ObjKind::Commit {
                 mapped.push(GitMapRow { git: o.oid, kind: ObjectKind::Commit, asc: *c.as_bytes() });
             }
-        }
         items.push(item);
     }
     if !mapped.is_empty() {

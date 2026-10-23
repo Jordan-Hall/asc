@@ -55,14 +55,13 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         's' => (Mode::Size, "-s"),
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     };
-                    if let Some(&before) = chosen.last() {
-                        if before != name {
+                    if let Some(&before) = chosen.last()
+                        && before != name {
                             return Err(CliError::Raw(
                                 format!("error: options '{name}' and '{before}' cannot be used together"),
                                 129,
                             ));
                         }
-                    }
                     chosen.push(name);
                     o.mode = Some(mode);
                 }
@@ -95,11 +94,10 @@ async fn find(r: &Resolver<'_>, name: &str) -> Result<Option<Object>> {
     if let Some(obj) = r.resolve(name).await? {
         return Ok(Some(obj));
     }
-    if let Some((rev, path)) = name.split_once(':').filter(|(rev, _)| !rev.is_empty()) {
-        if r.resolve(rev).await?.is_some() {
+    if let Some((rev, path)) = name.split_once(':').filter(|(rev, _)| !rev.is_empty())
+        && r.resolve(rev).await?.is_some() {
             return Err(CliError::Fatal(format!("path '{path}' does not exist in '{rev}'")));
         }
-    }
     Ok(None)
 }
 

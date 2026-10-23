@@ -159,7 +159,7 @@ fn parse_format(format: &str) -> Result<Vec<Piece>> {
                 let Some(end) = rest.iter().position(|&b| b == b')') else {
                     return Err(bad(format!(
                         "element '{}' does not end in ')'",
-                        String::from_utf8_lossy(&rest[..])
+                        String::from_utf8_lossy(rest)
                     )));
                 };
                 let atom = String::from_utf8_lossy(&rest[1..end]).into_owned();
@@ -373,9 +373,9 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         } else if o.tree_only {
             continue;
         }
-        let show = !(recurse && !o.show_trees);
+        let show = !recurse || o.show_trees;
         if show {
-            resolver.from_entry(&entry);
+            resolver.resolve_entry(&entry);
             printer.print(&mut out, &entry, &full).await?;
         }
         if recurse {

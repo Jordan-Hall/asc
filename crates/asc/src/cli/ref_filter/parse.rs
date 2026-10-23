@@ -504,13 +504,12 @@ fn push_literal(text: &[u8], out: &mut Vec<u8>) {
                 i += 2;
                 continue;
             }
-            if let (Some(&a), Some(&b)) = (text.get(i + 1), text.get(i + 2)) {
-                if let Some(byte) = hex_pair(a, b) {
+            if let (Some(&a), Some(&b)) = (text.get(i + 1), text.get(i + 2))
+                && let Some(byte) = hex_pair(a, b) {
                     out.push(byte);
                     i += 3;
                     continue;
                 }
-            }
         }
         out.push(text[i]);
         i += 1;

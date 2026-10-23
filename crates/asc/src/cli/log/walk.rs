@@ -244,7 +244,7 @@ enum Source<'a> {
     Ordered(Box<Ordered<'a>>),
     Paged {
         api: &'a dyn HistoryApi,
-        query: LogQuery,
+        query: Box<LogQuery>,
         page: Option<PageToken>,
         queue: VecDeque<LogEntry>,
         started: bool,
@@ -298,7 +298,7 @@ impl<'a> Walker<'a> {
             }
             Source::Paged {
                 api: hist.api(ws),
-                query,
+                query: Box::new(query),
                 page: None,
                 queue: VecDeque::new(),
                 started: false,
