@@ -27,7 +27,7 @@ env:
 
 jobs:
   image:
-    runs-on: asc-build
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
     timeout-minutes: 150
     steps:
       - name: Checkout
