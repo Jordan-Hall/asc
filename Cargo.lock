@@ -645,6 +645,7 @@ dependencies = [
  "asc-store",
  "data-encoding",
  "filetime",
+ "flate2",
  "futures",
  "gix",
  "gix-config",
