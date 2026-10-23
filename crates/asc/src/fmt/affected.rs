@@ -3,7 +3,10 @@
 //!
 //! Project names come from untrusted manifests: text formats escape control characters, and
 //! the `turbo`, `nx` and `gha` formats never emit a name that could split a filter or inject a
-//! line into `$GITHUB_OUTPUT`.
+//! line into `$GITHUB_OUTPUT`. Every name, root, workspace and id in a CI output (`turbo`, `nx`,
+//! `matrix`, `gha`) must match a strict ASCII allowlist (`[A-Za-z0-9@/._~-]`, no leading `-`);
+//! a row with any other value is left out and listed by `invisible_note`. Consumers should still
+//! pass these values through environment variables, never `${{ }}` interpolation.
 
 use serde_json::{Value, json};
 
@@ -101,26 +104,67 @@ pub fn json(r: &Report) -> Value {
     })
 }
 
-/// A name a turbo filter or an nx project list can carry.
-fn plain_name(name: &str) -> bool {
-    !name.is_empty() && !name.chars().any(|c| c.is_control() || c.is_whitespace() || c == ',')
+/// One name segment: ASCII `[A-Za-z0-9_.~-]`, starting with an alphanumeric or `~` (never `-`).
+/// The set is the union of the npm, crates.io, NuGet and PyPI safe sets.
+fn segment(s: &str) -> bool {
+    let mut cs = s.chars();
+    cs.next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '~')
+        && cs.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-'))
 }
 
-/// The names for `turbo` and `nx`, and the ids no Node package makes visible.
+/// A name every CI output can carry: `(@scope/)?segment`, at most 214 bytes. Fails closed.
+fn plain_name(name: &str) -> bool {
+    if name.len() > 214 {
+        return false;
+    }
+    match name.strip_prefix('@') {
+        Some(rest) => rest.split_once('/').is_some_and(|(sc, n)| segment(sc) && segment(n)),
+        None => segment(name),
+    }
+}
+
+/// A repository path every CI output can carry: `.`, or `/`-separated safe segments.
+fn plain_path(path: &str) -> bool {
+    path == "."
+        || (path.len() <= 4096 && path.split('/').all(|c| c != ".." && c != "." && segment(c)))
+}
+
+/// A display id `<ecosystem>:<rest>`, where `rest` is a name or a path.
+fn plain_id(id: &str) -> bool {
+    id.split_once(':').is_some_and(|(eco, rest)| {
+        !eco.is_empty()
+            && eco.chars().all(|c| c.is_ascii_lowercase())
+            && (plain_name(rest) || plain_path(rest))
+    })
+}
+
+/// Every value of the row that a CI output emits passes the allowlist.
+fn row_safe(p: &Row) -> bool {
+    plain_id(&p.id)
+        && plain_name(&p.name)
+        && plain_path(&p.root)
+        && plain_path(&p.workspace)
+        && plain_id(&p.workspace_id)
+}
+
+/// The names for `turbo` and `nx`, and the ids that CI output omits or turbo cannot see.
 fn visible(r: &Report) -> (Vec<&str>, Vec<&str>) {
     let (mut names, mut hidden) = (Vec::new(), Vec::new());
     for row in &r.rows {
-        if row.turbo_visible {
-            if plain_name(&row.name) {
-                names.push(row.name.as_str());
-            } else {
-                hidden.push(row.id.as_str());
-            }
+        if !row_safe(row) {
+            hidden.push(row.id.as_str());
+        } else if row.turbo_visible {
+            names.push(row.name.as_str());
         } else if row.ecosystem != "node" && !row.contained_by_node {
             hidden.push(row.id.as_str());
         }
     }
     (names, hidden)
+}
+
+/// The rows CI outputs may emit.
+fn safe_rows(r: &Report) -> impl Iterator<Item = &Row> {
+    r.rows.iter().filter(|p| row_safe(p))
 }
 
 /// The `asc: not visible to turbo: <ids>` line, or empty.
@@ -146,18 +190,17 @@ pub fn nx(r: &Report) -> String {
     format!("{}\n", names.join(","))
 }
 
-/// `matrix`: `{"include":[...]}`.
+/// `matrix`: `{"include":[...]}`. Rows with an unsafe value are left out (see `invisible_note`).
 pub fn matrix(r: &Report, by: MatrixBy) -> Value {
     let row = |p: &Row| {
         json!({"project": p.id, "name": p.name, "ecosystem": p.ecosystem, "root": p.root,
                "workspace": p.workspace})
     };
     let include: Vec<Value> = match by {
-        MatrixBy::Project => r.rows.iter().map(row).collect(),
+        MatrixBy::Project => safe_rows(r).map(row).collect(),
         MatrixBy::Workspace => {
             let mut seen = std::collections::BTreeSet::new();
-            r.rows
-                .iter()
+            safe_rows(r)
                 .filter(|p| seen.insert((p.ecosystem, p.workspace.clone())))
                 .map(|p| {
                     if p.workspace_head {
@@ -172,8 +215,7 @@ pub fn matrix(r: &Report, by: MatrixBy) -> Value {
         }
         MatrixBy::Ecosystem => {
             let mut seen = std::collections::BTreeSet::new();
-            r.rows
-                .iter()
+            safe_rows(r)
                 .filter(|p| seen.insert(p.ecosystem))
                 .map(|p| {
                     json!({"project": p.ecosystem, "name": p.ecosystem,
@@ -187,8 +229,9 @@ pub fn matrix(r: &Report, by: MatrixBy) -> Value {
 
 /// `gha`: lines for `$GITHUB_OUTPUT`.
 pub fn gha(r: &Report, by: MatrixBy) -> String {
-    let ids: Vec<&str> = r.rows.iter().map(|p| p.id.as_str()).collect();
-    let has = |eco: &str| r.all || r.rows.iter().any(|p| p.ecosystem == eco);
+    let ids: Vec<&str> = safe_rows(r).map(|p| p.id.as_str()).collect();
+    let ids_len = ids.len();
+    let has = |eco: &str| r.all || safe_rows(r).any(|p| p.ecosystem == eco);
     let (names, _) = visible(r);
     let filters: Vec<String> = names.iter().map(|n| format!("--filter={n}")).collect();
     let mut out = String::new();
@@ -199,7 +242,7 @@ pub fn gha(r: &Report, by: MatrixBy) -> String {
         out.push('\n');
     };
     line("affected", Value::from(ids).to_string());
-    line("count", r.rows.len().to_string());
+    line("count", ids_len.to_string());
     line("all", r.all.to_string());
     for eco in ["rust", "python", "dotnet", "node"] {
         line(eco, has(eco).to_string());
@@ -339,5 +382,53 @@ mod tests {
         assert_eq!(v["mergeBase"], "m");
         assert_eq!(v["projects"][0]["hash"], Value::Null);
         assert_eq!(v["unowned"][0], "x.md");
+    }
+
+    const HOSTILE: [&str; 8] = [
+        "$(curl x|sh)", "a;rm -rf ~", "a`id`", "a\"b", "a'b", "${{ secrets.X }}", "a%0Ab", "-rf",
+    ];
+
+    #[test]
+    fn hostile_names_never_reach_ci_outputs() {
+        let mut rows = vec![row("node", "@asc/web", "pkg/web"), row("node", "my_pkg.v2", "pkg/v2")];
+        for (i, h) in HOSTILE.iter().enumerate() {
+            rows.push(row("node", h, &format!("pkg/h{i}")));
+        }
+        let r = report(rows);
+        let out = gha(&r, MatrixBy::Project);
+        let mat = matrix(&r, MatrixBy::Project).to_string();
+        let all = format!("{out}
+{mat}
+{}
+{}", turbo(&r), nx(&r));
+        for h in HOSTILE {
+            assert!(!all.contains(h), "{h} leaked");
+            assert!(invisible_note(&r).contains(h), "{h} not hidden");
+        }
+        assert!(out.contains("turbo_filter=--filter=@asc/web --filter=my_pkg.v2
+"));
+        assert!(out.contains("nx_projects=@asc/web,my_pkg.v2
+"));
+        assert_eq!(matrix(&r, MatrixBy::Project)["include"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn hostile_roots_never_reach_ci_outputs() {
+        let r = report(vec![
+            row("node", "ok", "pkg/$(id)"),
+            row("rust", "fine", "a b/c"),
+            row("node", "good", "pkg/good"),
+        ]);
+        let out = gha(&r, MatrixBy::Project);
+        assert!(!out.contains("$(id)") && !out.contains("a b/c"));
+        assert!(out.contains("pkg/good"));
+        assert!(invisible_note(&r).contains("node:ok"));
+        assert!(invisible_note(&r).contains("rust:fine"));
+    }
+
+    #[test]
+    fn name_allowlist_edges() {
+        assert!(!plain_name("-x") && !plain_name("@s/") && !plain_name("a/b") && !plain_name("é"));
+        assert!(!plain_name(&"a".repeat(215)) && plain_name(&"a".repeat(214)));
     }
 }

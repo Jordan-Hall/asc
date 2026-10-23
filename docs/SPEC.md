@@ -1876,6 +1876,7 @@ asc graph    [--rev <rev>] [--type ...] [--format json|dot] [--hashes [--target 
   - `nx`: comma-separated names for `nx run-many --projects=`, same rules as `turbo`;
   - `matrix`: `{"include":[{"project","name","ecosystem","root","workspace"}]}`, where `workspace` is the root of the project's Workspace or Solution, else its own root. `--matrix-by workspace` emits one row per Workspace, Solution or standalone Package; `--matrix-by ecosystem` one row per ecosystem;
   - `gha`: lines for `$GITHUB_OUTPUT`: `affected=<JSON array of ids>`, `count=<n>`, `all=<bool>`, `rust=<bool>`, `python=<bool>`, `dotnet=<bool>`, `node=<bool>`, `turbo_filter=<turbo>`, `nx_projects=<nx>`, `matrix=<matrix JSON>`. It works on Forgejo Actions unchanged.
+  - CI output safety (`turbo`, `nx`, `matrix`, `gha`): project names come from manifests, so a pull request controls them. Every name, root, workspace and id in these outputs must match `[A-Za-z0-9@/._~-]` (name: `(@scope/)?segment`, at most 214 bytes; no segment starts with `-`). A project with any other value is left out of these outputs and listed on the `asc: not visible to turbo:` line. Consumers should pass the values through environment variables and never interpolate them with `${{ }}`.
 - These commands have no git equivalent (§11.2), so they never change git behaviour. With the shim, `git affected` dispatches by the §11.4 order, so a user alias or `git-affected` wins.
 
 ### 12A.10 Limits and trust [audit: limits-and-trust]
