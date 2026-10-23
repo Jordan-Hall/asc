@@ -6,6 +6,7 @@ pub mod cli;
 pub mod json;
 pub mod opstate;
 pub mod precedence;
+pub mod sinks;
 
 use asc_state::changes::StateChanges;
 

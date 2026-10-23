@@ -674,8 +674,14 @@ async fn run_inner(prog: Program, args: Vec<OsString>) -> Result<ExitCode> {
         return Ok(ExitCode::from(1));
     }
     let cwd = std::env::current_dir()?;
-    let ctx = Ctx::open(prog, env, cwd).await?;
-    dispatch(&ctx, rest).await
+    let ctx = std::sync::Arc::new(Ctx::open(prog, env, cwd).await?);
+    // The sinks (SPEC §20.3) see this invocation's workspace through the bound context.
+    crate::stack::sinks::bind(ctx.clone());
+    let op = crate::ext::op_sink().begin(&rest);
+    let result = dispatch(&ctx, rest).await;
+    crate::ext::op_sink().end(op);
+    crate::stack::sinks::unbind();
+    result
 }
 
 /// Resolves the command word, expands aliases and runs the command.
