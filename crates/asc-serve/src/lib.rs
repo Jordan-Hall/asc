@@ -39,6 +39,7 @@ pub mod outbox;
 pub mod projects;
 pub mod projects_warm;
 pub mod read;
+pub mod refauthz;
 pub mod refpolicy;
 pub mod registry;
 pub mod seeds;
@@ -46,7 +47,6 @@ pub mod seeds;
 pub mod ssh;
 pub mod turbo;
 pub mod update;
-pub mod watch_refs;
 
 use std::future::Future;
 use std::path::Path as FsPath;
@@ -194,7 +194,6 @@ fn register_all(
     );
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
-    watch_refs::register(ext, registry);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.

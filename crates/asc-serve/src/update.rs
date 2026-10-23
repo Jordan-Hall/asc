@@ -31,8 +31,8 @@ use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
 use crate::land::{self, DisjointOnly, OverlapPolicy};
-use crate::refpolicy;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
+use crate::{refauthz, refpolicy};
 
 /// Push options per request, and the longest one.
 const MAX_PUSH_OPTIONS: usize = 64;
@@ -92,6 +92,22 @@ pub trait PushHooks: Send + Sync {
     /// from authz): a land that would rewrite a signed stack is then refused (SPEC §8.5 step 4).
     async fn require_signed(&self, _ctx: &CallCtx, _branch: &str) -> bool {
         false
+    }
+
+    /// `[cloud] max_user_refs`: user refs per user per repository (`USER_REFS_LIMIT`).
+    fn max_user_refs(&self) -> usize {
+        crate::refauthz::DEFAULT_MAX_USER_REFS
+    }
+
+    /// Quota for a user-ref push (SPEC §21.3.7): user refs skip pre-receive, so this is their
+    /// size policy. `new_changesets` is how many changesets the push points user refs or other refs at.
+    async fn charge_user_refs(
+        &self,
+        _ctx: &CallCtx,
+        _owner: i64,
+        _new_changesets: usize,
+    ) -> Result<(), crate::refauthz::QuotaDenied> {
+        Ok(())
     }
 
     /// Effects the step-8 transaction queues in the outbox, in order.
@@ -492,6 +508,18 @@ impl ServerRefs {
                 }
             }
         }
+        let user_owner = refpolicy::owner_of(&ctx.principal);
+        let has_user = planned.iter().any(|p| p.user);
+        if has_user {
+            for p in planned.iter().filter(|p| p.user) {
+                let owned = refauthz::owns(user_owner, &String::from_utf8_lossy(p.name.as_bytes()));
+                if !owned {
+                    return Err(Status::permission_denied(
+                        "a user ref can only be changed by its owner",
+                    ));
+                }
+            }
+        }
 
         // Step 2: idempotency.
         if let Some(done) = self.stored(&entry, op_id).await? {
@@ -500,6 +528,30 @@ impl ServerRefs {
         // Step 3: a mirror takes no pushes.
         if entry.mode == RepoMode::Mirror {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
+        }
+
+        // Per-user ref cap (SPEC §21.3.2): count only the creations, before any ingest work.
+        if let (true, Some(owner)) = (has_user, user_owner) {
+            let mut creates = Vec::new();
+            for p in planned.iter().filter(|p| p.user && p.new.is_some()) {
+                let held = self
+                    .registry
+                    .refs()
+                    .get(entry.key, &p.name)
+                    .await
+                    .map_err(|e| internal("refs", &e))?;
+                if held.is_none() {
+                    creates.push(&p.name);
+                }
+            }
+            refauthz::check_cap(
+                &**self.registry.refs(),
+                entry.key,
+                owner,
+                hooks.max_user_refs(),
+                &creates,
+            )
+            .await?;
         }
 
         if pushed.is_some() && rewrites.is_some() {
@@ -526,6 +578,13 @@ impl ServerRefs {
         .ingest(&targets, self.hooks.observer())
         .await
         .map_err(ingest_status)?;
+        // Quota for user-ref pushes (SPEC §21.3.7): they skip pre-receive.
+        if let (true, Some(owner)) = (has_user, user_owner) {
+            hooks
+                .charge_user_refs(ctx, owner, targets.len())
+                .await
+                .map_err(|d| refauthz::quota_status(&d))?;
+        }
 
         let graph = Graph::new(SqlGraph::new(
             self.registry.pool().clone(),
