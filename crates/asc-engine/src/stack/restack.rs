@@ -177,7 +177,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     /// Stores `cs` without re-reading file content. Every caller derives `cs` from changesets
     /// that passed ingest validation, with `changes` copied or merge-checked, so the content
     /// check of `validate_changeset` would only repeat reads (SPEC §4.4: no content reads).
-    async fn store_rewrite(&self, cs: Changeset) -> Result<ChangesetId> {
+    pub(super) async fn store_rewrite(&self, cs: Changeset) -> Result<ChangesetId> {
         let envelope = cs.to_envelope();
         let id = ChangesetId::of(&envelope);
         self.objects
@@ -188,7 +188,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     }
 
     /// `cs` with a `gpgsig` made by `signer` over its canonical commit bytes.
-    async fn sign_changeset(
+    pub(super) async fn sign_changeset(
         &self,
         cs: &Changeset,
         signer: &dyn CommitSigner,

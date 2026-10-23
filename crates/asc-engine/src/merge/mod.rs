@@ -28,6 +28,7 @@ mod text;
 mod tree;
 
 pub use text::is_binary;
+pub(crate) use text::merge_text;
 
 #[cfg(test)]
 pub(crate) mod testutil;
