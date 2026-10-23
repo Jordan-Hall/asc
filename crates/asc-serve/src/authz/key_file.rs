@@ -33,6 +33,13 @@ pub(crate) fn open_private(path: &Path) -> io::Result<File> {
     imp::open_private(path)
 }
 
+/// Checks an already opened key file by its handle: `Ok` only when no one but the current user
+/// (and the system) can read it. For a caller that opened the file itself.
+#[cfg(feature = "git-ssh")]
+pub(crate) fn check_private(file: &File) -> io::Result<()> {
+    imp::check_private(file)
+}
+
 #[cfg(unix)]
 mod imp {
     use std::fs::{File, OpenOptions};
@@ -150,7 +157,7 @@ mod imp {
     fn denied(msg: &str) -> io::Error {
         io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{msg}; recreate it with `asc serve token create`"),
+            format!("{msg}; fix its permissions or recreate it"),
         )
     }
 

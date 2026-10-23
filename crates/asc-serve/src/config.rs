@@ -438,6 +438,207 @@ impl GitLimitsConfig {
     }
 }
 
+/// The default host key file of `[ssh] host_key_files` (SPEC §25.11.10).
+pub const DEFAULT_SSH_HOST_KEY: &str = "/etc/asc/ssh_host_ed25519_key";
+/// Most host key files `[ssh] host_key_files` may list.
+pub const MAX_SSH_HOST_KEYS: usize = 8;
+
+/// `[ssh]` (SPEC §25.11.10): honoured only in a build with the Cargo feature `git-ssh`, but
+/// parsed in every build, so one config file works with either.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SshConfig {
+    /// The runtime switch; needs `[git] enabled = true`.
+    pub enabled: bool,
+    pub listen: SocketAddr,
+    /// The only accepted SSH user name; empty accepts any.
+    pub user: String,
+    /// OpenSSH-format private host keys. A missing first file is generated once.
+    pub host_key_files: Vec<PathBuf>,
+    /// RSA user keys under this many bits are refused.
+    pub min_rsa_bits: u32,
+}
+
+impl Default for SshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            listen: SocketAddr::from(([0, 0, 0, 0], 2222)),
+            user: "git".into(),
+            host_key_files: vec![PathBuf::from(DEFAULT_SSH_HOST_KEY)],
+            min_rsa_bits: 2048,
+        }
+    }
+}
+
+impl SshConfig {
+    /// Smallest `min_rsa_bits` accepted: weaker keys are never allowed in.
+    pub const MIN_RSA_FLOOR: u32 = 1024;
+    /// Largest RSA key accepted (the same ceiling as the key store).
+    pub const MAX_RSA_BITS: u32 = 16_384;
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.user.len() > 64
+            || self
+                .user
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace())
+        {
+            return invalid("ssh.user must be at most 64 characters with no whitespace");
+        }
+        if self.host_key_files.is_empty() || self.host_key_files.len() > MAX_SSH_HOST_KEYS {
+            return invalid(format!(
+                "ssh.host_key_files must list 1 to {MAX_SSH_HOST_KEYS} files"
+            ));
+        }
+        if self.host_key_files.iter().any(|p| p.as_os_str().is_empty()) {
+            return invalid("ssh.host_key_files holds an empty path");
+        }
+        if !(Self::MIN_RSA_FLOOR..=Self::MAX_RSA_BITS).contains(&self.min_rsa_bits) {
+            return invalid(format!(
+                "ssh.min_rsa_bits must be between {} and {}",
+                Self::MIN_RSA_FLOOR,
+                Self::MAX_RSA_BITS
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// `[limits.ssh]` (SPEC §25.11.7). Defaults are the SPEC values.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SshLimitsConfig {
+    /// Connections per replica.
+    pub max_connections: u32,
+    /// Authenticated connections per principal.
+    pub max_connections_per_principal: u32,
+    /// Connections that have not authenticated yet, per replica and per peer.
+    pub max_unauthenticated: u32,
+    pub max_unauthenticated_per_peer: u32,
+    /// New connections per second per peer, and the burst.
+    pub new_connections_per_sec: u32,
+    pub new_connections_burst: u32,
+    pub auth_timeout: Secs,
+    /// Rejected authentication attempts before the server disconnects.
+    pub max_auth_tries: u32,
+    /// Every rejected attempt takes this long to answer, so that its timing says nothing.
+    pub reject_delay_ms: u64,
+    pub keepalive: Secs,
+    /// Unanswered keep-alives before the connection closes.
+    pub keepalive_max: u32,
+    /// Session channels per connection, and commands that may run at once.
+    pub max_channels: u32,
+    pub max_running_commands: u32,
+    /// What a channel may buffer: the window and the largest packet.
+    pub window_size: ByteSize,
+    pub packet_size: ByteSize,
+    /// A command's wall-clock limit, and how long one may sit without moving a byte.
+    pub request_timeout: Secs,
+    pub idle_timeout: Secs,
+}
+
+impl Default for SshLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 1024,
+            max_connections_per_principal: 16,
+            max_unauthenticated: 64,
+            max_unauthenticated_per_peer: 8,
+            new_connections_per_sec: 10,
+            new_connections_burst: 20,
+            auth_timeout: Secs(30),
+            max_auth_tries: 6,
+            reject_delay_ms: 500,
+            keepalive: Secs(30),
+            keepalive_max: 3,
+            max_channels: 4,
+            max_running_commands: 2,
+            window_size: ByteSize(2 * ByteSize::MIB),
+            packet_size: ByteSize(32 * ByteSize::KIB),
+            request_timeout: Secs(15 * 60),
+            idle_timeout: Secs(60),
+        }
+    }
+}
+
+impl SshLimitsConfig {
+    /// Positive values within their ceilings, and the tiers in order.
+    fn validate(&self) -> Result<(), ConfigError> {
+        let bounded = [
+            (
+                "max_connections",
+                u64::from(self.max_connections),
+                1_000_000,
+            ),
+            (
+                "max_connections_per_principal",
+                u64::from(self.max_connections_per_principal),
+                10_000,
+            ),
+            (
+                "max_unauthenticated",
+                u64::from(self.max_unauthenticated),
+                100_000,
+            ),
+            (
+                "max_unauthenticated_per_peer",
+                u64::from(self.max_unauthenticated_per_peer),
+                1_000,
+            ),
+            (
+                "new_connections_per_sec",
+                u64::from(self.new_connections_per_sec),
+                10_000,
+            ),
+            (
+                "new_connections_burst",
+                u64::from(self.new_connections_burst),
+                100_000,
+            ),
+            ("auth_timeout", self.auth_timeout.0, 300),
+            ("max_auth_tries", u64::from(self.max_auth_tries), 20),
+            ("keepalive", self.keepalive.0, 3600),
+            ("keepalive_max", u64::from(self.keepalive_max), 20),
+            ("max_channels", u64::from(self.max_channels), 64),
+            (
+                "max_running_commands",
+                u64::from(self.max_running_commands),
+                64,
+            ),
+            ("window_size", self.window_size.0, 64 * ByteSize::MIB),
+            ("packet_size", self.packet_size.0, 65_535),
+            ("request_timeout", self.request_timeout.0, 24 * 3600),
+            ("idle_timeout", self.idle_timeout.0, 24 * 3600),
+        ];
+        for (name, value, ceiling) in bounded {
+            if value == 0 || value > ceiling {
+                return invalid(format!("limits.ssh.{name} must be between 1 and {ceiling}"));
+            }
+        }
+        if self.reject_delay_ms > 5000 {
+            return invalid("limits.ssh.reject_delay_ms must be at most 5000");
+        }
+        if self.packet_size.0 < 1024 || self.window_size.0 < self.packet_size.0 {
+            return invalid("limits.ssh.packet_size must be at least 1 KiB and fit the window");
+        }
+        if self.max_unauthenticated_per_peer > self.max_unauthenticated
+            || self.max_unauthenticated > self.max_connections
+        {
+            return invalid(
+                "limits.ssh: max_unauthenticated_per_peer <= max_unauthenticated <= max_connections",
+            );
+        }
+        if self.max_running_commands > self.max_channels {
+            return invalid("limits.ssh.max_running_commands must not exceed max_channels");
+        }
+        if self.idle_timeout.0 > self.request_timeout.0 {
+            return invalid("limits.ssh.idle_timeout must not exceed request_timeout");
+        }
+        Ok(())
+    }
+}
+
 /// `[limits]`: admission control (SPEC §16.3). Defaults are the SPEC values.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -464,6 +665,8 @@ pub struct Limits {
     pub trusted_proxies: Vec<String>,
     /// `[limits.git]` (SPEC §25.5).
     pub git: GitLimitsConfig,
+    /// `[limits.ssh]` (SPEC §25.11.7); honoured only with the feature `git-ssh`.
+    pub ssh: SshLimitsConfig,
 }
 
 impl Default for Limits {
@@ -486,6 +689,7 @@ impl Default for Limits {
             service_burst: 2000,
             trusted_proxies: Vec::new(),
             git: GitLimitsConfig::default(),
+            ssh: SshLimitsConfig::default(),
         }
     }
 }
@@ -520,6 +724,7 @@ impl Limits {
         if self.text_memory.0 == 0 || self.objects_bytes_per_sec.0 == 0 {
             return invalid("limits.text_memory and limits.objects_bytes_per_sec must be positive");
         }
+        self.ssh.validate()?;
         self.git.validate()
     }
 }
@@ -579,6 +784,8 @@ pub struct ServeConfig {
     pub limits: Limits,
     /// `[git]` (SPEC §25.9); honoured only with the feature `git-compat`.
     pub git: GitConfig,
+    /// `[ssh]` (SPEC §25.11); honoured only with the feature `git-ssh`.
+    pub ssh: SshConfig,
     pub gc: crate::gc::GcSettings,
     pub composition_grants: Vec<CompositionGrant>,
 }
@@ -603,6 +810,7 @@ impl Default for ServeConfig {
             bucket: BucketConfig::default(),
             limits: Limits::default(),
             git: GitConfig::default(),
+            ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
             composition_grants: Vec::new(),
         }
@@ -697,6 +905,7 @@ impl ServeConfig {
         if self.cache.disk.0 > 0 && self.cache.disk_dir.is_none() {
             return invalid("cache.disk needs cache.disk_dir");
         }
+        self.ssh.validate()?;
         self.limits.validate()?;
         self.validate_grants()
     }
@@ -884,6 +1093,76 @@ child = "asc/soma"
             "[limits.git]\nmax_push_bytes = 0",
             "[limits.git]\nrequest_timeout = \"soon\"",
             "[limits.git]\nfetch_per_replica = 0",
+        ] {
+            assert!(
+                ServeConfig::parse(&format!("{base}{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_tables_parse_in_every_build_with_the_spec_defaults() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        let c = ServeConfig::parse(base).unwrap();
+        assert!(!c.ssh.enabled);
+        assert_eq!(c.ssh.listen, SocketAddr::from(([0, 0, 0, 0], 2222)));
+        assert_eq!(c.ssh.user, "git");
+        assert_eq!(c.ssh.min_rsa_bits, 2048);
+        assert_eq!(
+            c.ssh.host_key_files,
+            vec![PathBuf::from(DEFAULT_SSH_HOST_KEY)]
+        );
+        let l = &c.limits.ssh;
+        assert_eq!(
+            (l.max_connections, l.max_connections_per_principal),
+            (1024, 16)
+        );
+        assert_eq!(
+            (l.max_unauthenticated, l.max_unauthenticated_per_peer),
+            (64, 8)
+        );
+        assert_eq!(
+            (l.new_connections_per_sec, l.new_connections_burst),
+            (10, 20)
+        );
+        assert_eq!((l.auth_timeout, l.max_auth_tries), (Secs(30), 6));
+        assert_eq!((l.keepalive, l.keepalive_max), (Secs(30), 3));
+        assert_eq!((l.max_channels, l.max_running_commands), (4, 2));
+        assert_eq!(
+            (l.window_size, l.packet_size),
+            (ByteSize(2 * ByteSize::MIB), ByteSize(32 * ByteSize::KIB))
+        );
+        assert_eq!((l.request_timeout, l.idle_timeout), (Secs(900), Secs(60)));
+
+        let text = format!(
+            "{base}[ssh]\nenabled = true\nlisten = \"127.0.0.1:22\"\nuser = \"\"\nhost_key_files = [\"a\", \"b\"]\nmin_rsa_bits = 3072\n[limits.ssh]\nmax_auth_tries = 3\nauth_timeout = \"10s\"\n"
+        );
+        let c = ServeConfig::parse(&text).unwrap();
+        assert!(c.ssh.enabled);
+        assert_eq!(c.ssh.user, "");
+        assert_eq!(c.ssh.min_rsa_bits, 3072);
+        assert_eq!(c.limits.ssh.max_auth_tries, 3);
+        assert_eq!(c.limits.ssh.auth_timeout, Secs(10));
+    }
+
+    #[test]
+    fn ssh_settings_out_of_range_are_refused() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        for bad in [
+            "[ssh]\nbogus = 1",
+            "[ssh]\nmin_rsa_bits = 512",
+            "[ssh]\nmin_rsa_bits = 99999",
+            "[ssh]\nhost_key_files = []",
+            "[ssh]\nuser = \"a b\"",
+            "[limits.ssh]\nmax_auth_tries = 0",
+            "[limits.ssh]\nmax_auth_tries = 21",
+            "[limits.ssh]\nauth_timeout = \"1h\"",
+            "[limits.ssh]\nmax_unauthenticated = 2000",
+            "[limits.ssh]\nmax_running_commands = 5",
+            "[limits.ssh]\npacket_size = \"1MiB\"",
+            "[limits.ssh]\nidle_timeout = \"1h\"",
+            "[limits.ssh]\nreject_delay_ms = 60000",
         ] {
             assert!(
                 ServeConfig::parse(&format!("{base}{bad}")).is_err(),

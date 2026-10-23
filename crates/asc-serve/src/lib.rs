@@ -37,6 +37,8 @@ pub mod projects_warm;
 pub mod read;
 pub mod registry;
 pub mod seeds;
+#[cfg(feature = "git-ssh")]
+pub mod ssh;
 pub mod turbo;
 pub mod update;
 
@@ -77,6 +79,8 @@ pub enum ServeError {
     RoleUnavailable(Role),
     #[error("transport: {0}")]
     Transport(#[from] tonic::transport::Error),
+    #[error("ssh listener: {0}")]
+    Ssh(String),
 }
 
 // ------------------------------------------------------------------------------ text budget
@@ -292,18 +296,41 @@ pub async fn serve(
     let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known);
     http::register(&ext, http_state.clone());
     let turbo = Arc::new(
-        turbo::TurboState::open(&cfg, authorizer.clone(), metrics)
+        turbo::TurboState::open(&cfg, authorizer.clone(), metrics.clone())
             .map_err(|e| ConfigError::Invalid(e.to_string()))?,
     );
     turbo::register(&ext, turbo.clone());
     // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
     // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
+    // The SSH listener (SPEC §25.11): bound only when the feature, the switch and the git layer
+    // allow it; it asks the same authorizer and shares this admission controller.
+    #[cfg(feature = "git-ssh")]
+    let ssh = ssh::start(
+        &cfg,
+        git_live,
+        ssh::StartDeps {
+            authorizer: authorizer.clone(),
+            admission: admission.clone(),
+            metrics: metrics.clone(),
+            exec: Arc::new(ssh::Unavailable),
+        },
+    )
+    .await
+    .map_err(|e| ServeError::Ssh(e.to_string()))?;
+    #[cfg(not(feature = "git-ssh"))]
+    if cfg.ssh.enabled {
+        tracing::warn!("git-ssh is not compiled in; ssh listener not started");
+    }
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
     #[cfg(feature = "git-compat")]
     if git_live {
         features.push(git_http::FEATURE.to_owned());
+    }
+    #[cfg(feature = "git-ssh")]
+    if ssh.is_some() {
+        features.push(ssh::FEATURE.to_owned());
     }
     let info = ServerInfo {
         features,
@@ -339,6 +366,8 @@ pub async fn serve(
     let sweeper = turbo.spawn_sweeper();
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
+    #[cfg(feature = "git-ssh")]
+    let ssh_task = ssh.map(|server| tokio::spawn(server.run(std::future::pending())));
     // Expired agent refs and snapshots are deleted through the normal pipeline (SPEC §8.8).
     let expiry =
         Arc::new(expire::Expirer::new(registry.clone(), ext.pipeline.clone())).spawn_worker();
@@ -367,6 +396,10 @@ pub async fn serve(
     expiry.abort();
     if let Some(p) = poller {
         p.abort();
+    }
+    #[cfg(feature = "git-ssh")]
+    if let Some(t) = ssh_task {
+        t.abort();
     }
     if let Some(c) = collector {
         c.abort();
