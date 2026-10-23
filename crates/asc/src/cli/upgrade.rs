@@ -301,7 +301,7 @@ fn current_version(prefix: &Path) -> Option<Version> {
 
 /// Switches `<prefix>/current` to `<prefix>/<ver>`.
 fn switch_current(prefix: &Path, ver: Version) -> UResult<()> {
-    let (cur, target) = (prefix.join("current"), prefix.join(ver.to_string()));
+    let cur = prefix.join("current");
     #[cfg(unix)]
     {
         let tmp = prefix.join(format!(".current-{}", std::process::id()));
@@ -315,6 +315,7 @@ fn switch_current(prefix: &Path, ver: Version) -> UResult<()> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let target = prefix.join(ver.to_string());
         let (c, t) = (cur.to_string_lossy(), target.to_string_lossy());
         if c.contains(['%', '"', '^', '&']) || t.contains(['%', '"', '^', '&']) {
             return refuse("the install prefix has characters that cannot be used for a junction");
