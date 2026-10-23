@@ -1350,9 +1350,11 @@ fn stamp(meta: &std::fs::Metadata) -> (u64, u128) {
 fn walk(dir: &Path, rel: &[u8], ign: &mut asc_wc::ignore::IgnoreStack, out: &mut Snap) -> bool {
     use asc_wc::safe_path::is_link;
     // Metadata only: a link is recorded as itself and never entered.
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    // Only real directories below the mount root are entered, so no link is followed.
+    let entries = std::fs::read_dir(dir); // lint:allow-worktree-fs: links are never entered
+    let Ok(entries) = entries else {
         return true;
-    }; // lint:allow-worktree-fs
+    };
     let _ = ign.push_dir(dir);
     for entry in entries.flatten() {
         let name = entry
