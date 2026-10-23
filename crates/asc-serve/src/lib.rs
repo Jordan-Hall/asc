@@ -4,6 +4,7 @@
 //! handler group on `Extensions::handlers`, a router on `Extensions::http`, a service on
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
+pub mod actions_store;
 pub mod admin;
 pub mod alt_svc;
 pub mod authn;
@@ -315,6 +316,7 @@ pub async fn serve(
             .map_err(|e| ConfigError::Invalid(e.to_string()))?,
     );
     turbo::register(&ext, turbo.clone());
+    let actions = actions_store::register(&ext, &turbo, &registry);
     // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
     // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
@@ -381,6 +383,7 @@ pub async fn serve(
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();
+    let actions_sweeper = actions.spawn_sweeper();
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     let admin_worker = repo_admin.spawn_worker();
@@ -410,6 +413,7 @@ pub async fn serve(
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();
+    actions_sweeper.abort();
     warming.abort();
     expiry.abort();
     if let Some(p) = poller {

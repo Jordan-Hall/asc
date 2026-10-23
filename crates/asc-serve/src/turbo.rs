@@ -134,7 +134,7 @@ impl Slug {
         format!("{}/{}", self.owner, self.repo)
     }
 
-    fn dir(&self) -> String {
+    pub(crate) fn dir(&self) -> String {
         format!("{}.{}", self.owner, self.repo)
     }
 }
@@ -193,7 +193,7 @@ impl Scope {
         Self::Dev(format!("{clean}.{tag}"))
     }
 
-    fn dir(&self) -> String {
+    pub(crate) fn dir(&self) -> String {
         match self {
             Self::Trusted => "trusted".into(),
             Self::Pr(n) => format!("pr-{n}"),
@@ -422,6 +422,28 @@ impl TurboState {
             Some(_) => Scope::dev(&principal.id),
             None => Scope::Pr(0),
         }
+    }
+
+    /// The bucket, its root and the retention settings (shared with the Actions store, U75).
+    pub(crate) fn backing(&self) -> (Arc<dyn ObjectStore>, StorePath, &TurboConfig) {
+        (self.store.clone(), self.root.clone(), &self.cfg)
+    }
+
+    /// Authorises a call of another route family (the Actions store, U75) and works out its
+    /// scope exactly as the `/v8` routes do.
+    pub(crate) async fn gate_slug(
+        &self,
+        headers: &HeaderMap,
+        slug: &str,
+        access: Access,
+    ) -> Result<(Slug, Scope), TurboError> {
+        let q = RepoQuery {
+            slug: Some(slug.to_owned()),
+            size: None,
+            method: None,
+        };
+        let c = self.gate(headers, &q, access).await?;
+        Ok((c.slug, c.scope))
     }
 
     async fn read_meta(&self, p: &StorePath) -> Result<Option<Meta>, TurboError> {

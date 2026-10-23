@@ -1,5 +1,5 @@
 //! `ci <subcommand>` (SPEC §12): `checkout` is built (U62); `changed`, `affected` and `warm`
-//! (U63) and `cache` and `artifact` (U75) are stubs in their own files.
+//! (U63) and `cache` and `artifact` (U75) are built.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -37,6 +37,16 @@ pub const NATIVE: &[NativeSpec] = &[
         flags: warm::FLAGS,
         placeholders: &[],
     },
+    NativeSpec {
+        cmd: "ci",
+        flags: cache::FLAGS,
+        placeholders: &[],
+    },
+    NativeSpec {
+        cmd: "ci",
+        flags: artifact::FLAGS,
+        placeholders: &[],
+    },
 ];
 
 const USAGE: &str = "usage: asc ci <checkout|changed|affected|warm|cache|artifact> [<args>]";
@@ -50,8 +60,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some("changed") => changed::run(ctx, rest).await,
         Some("affected") => affected::run(ctx, rest).await,
         Some("warm") => warm::run(ctx, rest).await,
-        Some("cache") => cache::run(),
-        Some("artifact") => artifact::run(),
+        Some("cache") => cache::run(ctx, rest).await,
+        Some("artifact") => artifact::run(ctx, rest).await,
         _ => Err(CliError::Usage(USAGE.to_owned())),
     }
 }
