@@ -1,0 +1,8 @@
+def function add L2-4 in - | sig="function add(a, b)" | doc="Adds two numbers."
+def class Counter L6-11 in - | sig="class Counter"
+def property count L7-7 in Counter | sig="count = 0"
+def method inc L8-10 in Counter | sig="inc()"
+ref call add L9-9 in inc
+def function twice L13-13 in - | sig="twice = (x) =>"
+ref call add L13-13 in twice
+def variable legacy L14-14 in - | sig="legacy = 1"
