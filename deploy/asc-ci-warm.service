@@ -1,0 +1,30 @@
+# Host cache warmer (SPEC 12.3). Template: copy to /etc/systemd/system/, then set the
+# repository, the server and the token file. Run by asc-ci-warm.timer every minute.
+#
+# The user must own /var/cache/asc. Only this unit writes the host cache; job containers mount
+# the same directory read-only. asc-warm.env holds `ASC_TOKEN=<read token>` (mode 0600).
+[Unit]
+Description=asc host cache warmer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=asc
+Group=asc
+EnvironmentFile=/etc/asc/asc-warm.env
+# The timer adds 0-30 s of jitter (RandomizedDelaySec); the command's own jitter is off.
+ExecStart=/usr/local/bin/asc ci warm --repo asc/dds --ref master \
+  --server https://git.example.com \
+  --host-cache /var/cache/asc/cache \
+  --metrics-file /var/lib/node_exporter/textfile/asc_warm.prom \
+  --jitter 0
+# Seed a cold cache once (first run only), for example:
+#   --seed-from https://git.example.com/seeds/asc/dds/latest
+TimeoutStartSec=300
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/cache/asc /var/lib/node_exporter/textfile

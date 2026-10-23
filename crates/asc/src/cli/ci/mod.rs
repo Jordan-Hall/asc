@@ -21,11 +21,23 @@ pub struct Args {
     pub rest: Vec<OsString>,
 }
 
-pub const NATIVE: &[NativeSpec] = &[NativeSpec {
-    cmd: "ci",
-    flags: checkout::FLAGS,
-    placeholders: &[],
-}];
+pub const NATIVE: &[NativeSpec] = &[
+    NativeSpec {
+        cmd: "ci",
+        flags: checkout::FLAGS,
+        placeholders: &[],
+    },
+    NativeSpec {
+        cmd: "ci",
+        flags: changed::FLAGS,
+        placeholders: &[],
+    },
+    NativeSpec {
+        cmd: "ci",
+        flags: warm::FLAGS,
+        placeholders: &[],
+    },
+];
 
 const USAGE: &str = "usage: asc ci <checkout|changed|affected|warm|cache|artifact> [<args>]";
 
@@ -35,9 +47,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
     match sub.to_str() {
         Some("checkout") => checkout::run(ctx, rest).await,
-        Some("changed") => changed::run(),
-        Some("affected") => affected::run(),
-        Some("warm") => warm::run(),
+        Some("changed") => changed::run(ctx, rest).await,
+        Some("affected") => affected::run(ctx, rest).await,
+        Some("warm") => warm::run(ctx, rest).await,
         Some("cache") => cache::run(),
         Some("artifact") => artifact::run(),
         _ => Err(CliError::Usage(USAGE.to_owned())),
