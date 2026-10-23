@@ -491,7 +491,7 @@ pub(crate) async fn drive(
 }
 
 /// Whether the work tree or the stage differs from HEAD.
-async fn dirty(ctx: &Ctx, ws: &WsCtx, head_root: asc_core::id::TreeId) -> Result<bool> {
+pub(crate) async fn dirty(ctx: &Ctx, ws: &WsCtx, head_root: asc_core::id::TreeId) -> Result<bool> {
     let fresh = workspaces::get(&ws.db, ws.workspace.ws.id)
         .await?
         .ok_or_else(|| fatal("this workspace is not registered in state.db"))?;
@@ -501,7 +501,7 @@ async fn dirty(ctx: &Ctx, ws: &WsCtx, head_root: asc_core::id::TreeId) -> Result
     Ok(!st.unstaged.is_empty() || !unmerged.is_empty() || !st.unmerged.is_empty() || index != head_root)
 }
 
-fn refuse_dirty() -> CliError {
+pub(crate) fn refuse_dirty() -> CliError {
     CliError::Raw(
         "error: cannot restack: You have uncommitted changes.\nerror: Please commit or stash them.".into(),
         1,
