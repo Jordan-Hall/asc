@@ -49,6 +49,8 @@ use crate::mirror::{Mirror, MirrorError, MirrorTarget};
 use crate::registry::{Extensions, Ns, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::update::{PipelineHooks, ServerRefs, info, ingest_status, internal, rpc};
 
+pub mod branchless;
+
 /// Most changesets one `CopyClosure` may name.
 pub const MAX_COPY_CHANGESETS: usize = MAX_LIST;
 /// Most distinct objects one walk keeps track of. A walk past this fails instead of exhausting
