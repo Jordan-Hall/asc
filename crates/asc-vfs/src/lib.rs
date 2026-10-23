@@ -3,6 +3,7 @@
 //! The ProjFS and FUSE backends implement [`core::Provider`] and share [`core::CoreFs`] for path
 //! resolution, content streaming, name filtering, the hydration policy and the counters.
 
+pub mod compose;
 pub mod core;
 pub mod policy;
 pub mod stats;

@@ -1,5 +1,6 @@
 //! asc-wc.
 
+pub mod compose_plain;
 pub mod ignore;
 pub mod intent;
 pub mod journal;
