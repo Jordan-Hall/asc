@@ -48,7 +48,7 @@ use asc_store::objects::decode_verified;
 use futures::future::{BoxFuture, FutureExt};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use sha2::{Digest, Sha256};
-use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Identity, Server, ServerTlsConfig};
+use tonic::transport::{Channel, Identity, Server, ServerTlsConfig};
 use tonic::{Code, Status};
 
 use crate::config::{CacheConfig, ConfigError, Role, ServeConfig};
@@ -109,41 +109,18 @@ fn digest_of(token: Option<&BearerToken>) -> [u8; 32] {
 
 // ------------------------------------------------------------------------------ upstream
 
-/// Plaintext is allowed only for the local machine, because it would send tokens in the clear.
-fn loopback(host: &str) -> bool {
-    let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.eq_ignore_ascii_case("localhost")
-        || h.parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
-}
-
 /// One shared, lazily connected channel to the upstream server.
 pub struct Upstream {
     channel: Channel,
 }
 
 impl Upstream {
+    /// The upstream is https; plain http to the local machine needs the transport policy's
+    /// opt-in (U89), because it would send tokens in the clear.
     pub fn connect(url: &str) -> Result<Self, ClientError> {
-        let parsed = url::Url::parse(url).map_err(|_| ClientError::InvalidUrl(url.to_owned()))?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| ClientError::InvalidUrl(url.to_owned()))?;
-        let mut endpoint = Endpoint::from_shared(url.to_owned())?;
-        match parsed.scheme() {
-            "https" => {
-                endpoint = endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())?;
-            }
-            "http" if loopback(host) => {}
-            "http" => return Err(ClientError::Insecure(host.to_owned())),
-            _ => return Err(ClientError::InvalidUrl(url.to_owned())),
-        }
-        let channel = endpoint
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .tcp_nodelay(true)
-            .http2_keep_alive_interval(std::time::Duration::from_secs(30))
-            .keep_alive_while_idle(true)
-            .connect_lazy();
-        Ok(Self { channel })
+        Ok(Self {
+            channel: asc_rpc::client::connect_channel(url)?,
+        })
     }
 
     /// A client for `repo` that sends `token`.
@@ -1101,6 +1078,7 @@ pub async fn serve(cfg: ServeConfig, shutdown: impl Future<Output = ()>) -> Resu
         let identity = Identity::from_pem(crate::read_pem(&tls.cert)?, crate::read_pem(&tls.key)?);
         server = server.tls_config(ServerTlsConfig::new().identity(identity))?;
     }
+    let mut server = server.layer(crate::alt_svc::layer(cfg.http3_port));
     tracing::info!(listen = %cfg.listen, "asc serve (cache) listening");
     let served = server
         .add_routes(routes)
@@ -1200,6 +1178,8 @@ mod tests {
 
     /// A server that only knows `Fake` and accepts `TOKEN` for reading.
     async fn upstream(fake: Fake) -> Running {
+        // The fixtures serve plain http on the loopback interface (U89 opt-in).
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         let handlers = Arc::new(RepoHandlers::new());
         handlers.set_objects(Arc::new(fake)).ok().unwrap();
         let auth = StaticTokens::new().with_token(TOKEN, "alice", Access::Read);
@@ -1654,11 +1634,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_upstream_must_be_https_or_local() {
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         assert!(Upstream::connect("http://127.0.0.1:1").is_ok());
         assert!(Upstream::connect("https://primary.example").is_ok());
         assert!(matches!(
             Upstream::connect("http://primary.example"),
-            Err(ClientError::Insecure(_))
+            Err(ClientError::Refused(
+                asc_core::transport_policy::TransportError::PlainHttp { .. }
+            ))
         ));
         assert!(Upstream::connect("ftp://x").is_err());
     }

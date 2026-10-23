@@ -18,6 +18,7 @@ use bytes::Bytes;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::object::{Change, Kind};
 use asc_core::path::{RefName, RepoPath};
+use asc_core::transport_policy::{Policy, Transport as Wire, TransportError, require_network};
 use asc_engine::blame::{self, Blame, BlameApi};
 use asc_engine::derive::{self, DerivedKeyed};
 use asc_engine::graph::{self, LogQuery};
@@ -131,8 +132,9 @@ impl From<Status> for CallError {
 pub enum ClientError {
     #[error("invalid server url {0:?}")]
     InvalidUrl(String),
-    #[error("refusing to send credentials over plain http to {0}; use https")]
-    Insecure(String),
+    /// The URL is not one asc may use (plain http, an unknown scheme).
+    #[error(transparent)]
+    Refused(#[from] TransportError),
     #[error("invalid repository name")]
     InvalidRepo,
     #[error("transport: {0}")]
@@ -172,32 +174,29 @@ struct Inner {
     user_agent: String,
 }
 
-/// Plaintext is allowed only for `localhost` or a loopback IP literal; never another DNS name
-/// (`127.example.com` is not loopback).
-fn loopback(host: &str) -> bool {
-    let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.eq_ignore_ascii_case("localhost")
-        || h.parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
+/// A lazily connected channel. `https` uses the system and bundled roots. Plain `http` is
+/// refused unless the transport policy's loopback opt-in is set, and then only to the local
+/// machine, because it would send the token in the clear (U89).
+pub fn connect_channel(url: &str) -> Result<Channel, ClientError> {
+    channel_with(url, Policy::current())
 }
 
-/// A lazily connected channel. `https` uses the system and bundled roots; plain `http` is only
-/// allowed to the local machine, because it would send the token in the clear.
-fn channel(url: &str) -> Result<Channel, ClientError> {
+/// [`connect_channel`] under an explicit policy.
+pub fn channel_with(url: &str, policy: Policy) -> Result<Channel, ClientError> {
     let uri: Uri = url
         .parse()
-        .map_err(|_| ClientError::InvalidUrl(url.to_owned()))?;
-    let host = uri
-        .host()
-        .ok_or_else(|| ClientError::InvalidUrl(url.to_owned()))?;
+        .map_err(|_| ClientError::InvalidUrl(redacted(url)))?;
+    if uri.host().is_none() {
+        return Err(ClientError::InvalidUrl(redacted(url)));
+    }
+    let transport = require_network(url, policy)?;
     let mut endpoint = Endpoint::from_shared(url.to_owned())?;
-    match uri.scheme_str() {
-        Some("https") => {
+    match (transport, uri.scheme_str()) {
+        (Wire::Https, Some("https")) => {
             endpoint = endpoint.tls_config(ClientTlsConfig::new().with_enabled_roots())?
         }
-        Some("http") if loopback(host) => {}
-        Some("http") => return Err(ClientError::Insecure(host.to_owned())),
-        _ => return Err(ClientError::InvalidUrl(url.to_owned())),
+        (Wire::LoopbackHttp, Some("http")) => {}
+        _ => return Err(ClientError::InvalidUrl(redacted(url))),
     }
     Ok(endpoint
         .connect_timeout(Duration::from_secs(10))
@@ -205,6 +204,17 @@ fn channel(url: &str) -> Result<Channel, ClientError> {
         .http2_keep_alive_interval(Duration::from_secs(30))
         .keep_alive_while_idle(true)
         .connect_lazy())
+}
+
+/// The URL without userinfo, path, query or fragment, for an error message.
+fn redacted(url: &str) -> String {
+    match url.parse::<Uri>() {
+        Ok(u) => match (u.scheme_str(), u.host()) {
+            (Some(scheme), Some(host)) => format!("{scheme}://{host}"),
+            _ => "<unparsable>".to_owned(),
+        },
+        Err(_) => "<unparsable>".to_owned(),
+    }
 }
 
 impl RpcClient {
@@ -216,7 +226,7 @@ impl RpcClient {
         repo: &str,
         credential: Option<C>,
     ) -> Result<Self, ClientError> {
-        Self::from_channel(channel(url)?, repo, credential)
+        Self::from_channel(connect_channel(url)?, repo, credential)
     }
 
     /// A client over an existing channel.
@@ -264,7 +274,7 @@ impl RpcClient {
     pub fn with_object_tiers(&self, urls: &[&str]) -> Result<Self, ClientError> {
         let tiers = urls
             .iter()
-            .map(|u| channel(u))
+            .map(|u| connect_channel(u))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(self.rebuilt(|i| i.tiers = tiers))
     }
@@ -1335,6 +1345,9 @@ pub(crate) mod testkit {
             info: ServerInfo,
             register: impl FnOnce(&Arc<Backend>, &RepoHandlers),
         ) -> Self {
+            // The fixture serves plain http on the loopback interface, which the transport
+            // policy refuses unless asked (U89).
+            asc_core::transport_policy::set_config_allow_loopback_http(true);
             let dir = tempfile::tempdir().unwrap();
             let refs = sqlite(dir.path()).await;
             let objects = Arc::new(Counting {
@@ -1956,7 +1969,14 @@ mod tests {
         // Credentials are not sent over plain http to a remote host.
         assert!(matches!(
             RpcClient::connect("http://example.com", REPO, None::<Credential>),
-            Err(ClientError::Insecure(_))
+            Err(ClientError::Refused(TransportError::PlainHttp { .. }))
+        ));
+        // Plain http to the local machine needs the opt-in, which this fixture set.
+        assert!(matches!(
+            channel_with("http://127.0.0.1:1", Policy::STRICT),
+            Err(ClientError::Refused(
+                TransportError::LoopbackNotEnabled { .. }
+            ))
         ));
     }
 

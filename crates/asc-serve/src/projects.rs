@@ -450,6 +450,8 @@ mod tests {
                 .serve_with_incoming(incoming)
                 .await;
         });
+        // Plain http on the loopback interface needs the transport policy's opt-in (U89).
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         RpcClient::connect(
             &format!("http://127.0.0.1:{port}"),
             "o/r",
