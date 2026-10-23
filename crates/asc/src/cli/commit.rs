@@ -3,9 +3,9 @@
 //! in use; the stage is re-read after it; the message hooks run; the build reads no content; a
 //! failure before the ref moves restores set 0 from the snapshot, which is dropped in every case.
 
-mod ident;
+pub(crate) mod ident;
 pub(super) mod message;
-mod stagebuild;
+pub(crate) mod stagebuild;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -538,6 +538,15 @@ async fn flow(
         if !buf.is_empty() && !buf.ends_with(b"\n") {
             buf.push(b'\n');
         }
+        if !merge.is_empty() {
+            let c = comment as char;
+            buf.extend_from_slice(
+                format!(
+                    "{c}\n{c} It looks like you may be committing a merge.\n{c} If this is not correct, please run\n{c}\tgit update-ref -d MERGE_HEAD\n{c} and try again.\n\n"
+                )
+                .as_bytes(),
+            );
+        }
         buf.push(b'\n');
         let diff = if a.verbose {
             Some(staged_patch(ws, head_root, &rows).await?)
@@ -727,7 +736,7 @@ async fn flow(
         .on_commit(ws_id, id)
         .await
         .map_err(|e| fatal(e.to_string()))?;
-    for file in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "SQUASH_MSG"] {
+    for file in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "SQUASH_MSG", "AUTO_MERGE", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
         let _ = std::fs::remove_file(gitdir.join(file));
     }
     ws_ops::clear(&ws.db, ws_id).await?;
@@ -755,6 +764,7 @@ async fn flow(
             author_differs: ident::display(&idents.author) != ident::display(&idents.committer),
             author: ident::display(&idents.author),
             date: author_date_is_interesting(a).then(|| default_date(&idents.author)),
+            merge: parents.len() > 1,
         };
         print_summary(ws, &summary, first_parent_root, root).await?;
     }
@@ -892,6 +902,8 @@ struct Summary {
     author: String,
     /// The author date, when it is not simply now (amend, `--date`).
     date: Option<String>,
+    /// A merge commit: git prints no diffstat for it.
+    merge: bool,
 }
 
 /// `[branch abc1234] subject`, the author if it differs, the shortstat and the mode lines.
@@ -905,6 +917,10 @@ async fn print_summary(ws: &WsCtx, s: &Summary, parent_root: TreeId, root: TreeI
     }
     if let Some(date) = &s.date {
         writeln!(out, " Date: {date}")?;
+    }
+    if s.merge {
+        std::io::stdout().write_all(&out)?;
+        return Ok(());
     }
     // git hardcodes rename detection (limit 100) for the summary, whatever `diff.renames` says.
     let opts = DiffOptions {

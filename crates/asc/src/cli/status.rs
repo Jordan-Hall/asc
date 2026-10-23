@@ -1289,7 +1289,7 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
 
     if !staged.is_empty() {
         p.line("Changes to be committed:");
-        if o.hints && r.state.as_ref().is_none_or(|s| s.name() == "rebase" || s.name() == "bisect") {
+        if o.hints && r.state.as_ref().is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick") {
             if r.initial {
                 p.hint("  (use \"git rm --cached <file>...\" to unstage)");
             } else {
@@ -1313,6 +1313,13 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     }
     if !unmerged.is_empty() {
         p.line("Unmerged paths:");
+        if o.hints && r.state.as_ref().is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick") {
+            if r.initial {
+                p.hint("  (use \"git rm --cached <file>...\" to unstage)");
+            } else {
+                p.hint("  (use \"git restore --staged <file>...\" to unstage)");
+            }
+        }
         if o.hints {
             let removes = unmerged.iter().any(|x| matches!(&[x.x, x.y], b"DD" | b"UD" | b"DU"));
             if removes {
@@ -1503,6 +1510,9 @@ fn print_v2(p: &mut Printer<'_>, r: &Report) {
             stages: row.stages.map(|st| [side(st[0]), side(st[1]), side(st[2])]),
         })
         .collect();
+    // git prints the changed entries, then the unmerged ones.
+    let mut rows = rows;
+    rows.sort_by_key(|row| row.stages.is_some());
     let opts = rs::Opts {
         z: p.o.z,
         relative: p.o.relative,
