@@ -3,7 +3,7 @@ name: image
 #   push to master  ->  forge.example.org/asc/asc-serve:<sha12> and :master
 #   tag v*          ->  :<sha12> and :<version> (the tag without its leading v)
 #   pull_request    ->  build only: no sign-in, and the credential is never referenced
-# Needs the repository secret FORGEJO_PACKAGES_TOKEN (a token with write:package) and the
+# Needs the repository secret REGISTRY_TOKEN (a token with write:package) and the
 # repository variable REGISTRY_USER (the user the token belongs to).
 on:
   push:
@@ -12,7 +12,7 @@ on:
   pull_request:
 
 # Forgejo ignores `permissions:` (capabilities come from Authorized Integrations), so there is no
-# block here. The registry credential is the FORGEJO_REGISTRY_TOKEN secret (write:package only);
+# block here. The registry credential is the REGISTRY_TOKEN secret (write:package only);
 # the job token is only a fallback.
 
 concurrency:
@@ -38,9 +38,9 @@ jobs:
         uses: https://github.com/docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
-          # monorepo's convention: the org-level FORGEJO_REGISTRY_TOKEN when set.
+          # REGISTRY_TOKEN: a write:package-only token (Forgejo reserves the FORGEJO_ prefix).
           username: ${{ vars.REGISTRY_USER || github.actor }}
-          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN || secrets.FORGEJO_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build
         env:

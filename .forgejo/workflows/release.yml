@@ -131,7 +131,7 @@ jobs:
           cp packaging/linux/asc-daemon.service out/asc-daemon.service
       - name: Upload
         env:
-          TOKEN: ${{ secrets.FORGEJO_PACKAGES_TOKEN }}
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
         run: |
           ver="${GITHUB_REF_NAME#v}"
