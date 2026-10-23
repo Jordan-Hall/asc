@@ -311,7 +311,9 @@ pub(crate) async fn stage_from_tree(
         changed.push(path);
     }
     stage::upsert(&ws.db, id, StageSet::Default, &rows).await?;
-    ext::index_sink().on_stage_changed(id, &changed).await.map_err(fatal)?;
+    // The staged content comes from a tree, not from the files, so no stat may be trusted: the
+    // sink patches every changed entry (previously staged paths and the new rows) stat-dirty.
+    ext::index_sink().on_stage_changed(id, &[]).await.map_err(fatal)?;
     Ok(changed)
 }
 
