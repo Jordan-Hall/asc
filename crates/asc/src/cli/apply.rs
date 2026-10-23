@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use asc_core::content::ingest;
 use asc_core::git::{ObjectKind, blob_oid};
 use asc_core::object::Kind;
-use asc_core::path::RepoPath;
+use asc_core::path::{RepoPath, checkout_safe};
 use asc_engine::derive::GitMapRow;
 use asc_engine::diff::apply::{self, ApplyOptions, FilePatch, MAX_APPLY_BYTES, ParseOptions};
 use asc_state::state::git_map;
@@ -261,6 +261,16 @@ fn show(name: &[u8]) -> String {
     String::from_utf8_lossy(name).into_owned()
 }
 
+/// The path as a repository path, or the text after `error: ` when a patch must not write it.
+/// Every path the patch names passes `checkout_safe` before the work tree, the staged tree or
+/// the gate see it, so `.git` and `.asc/info` aliases never reach a file system call.
+fn checked(path: &[u8]) -> std::result::Result<RepoPath, String> {
+    RepoPath::new(path.to_vec())
+        .ok()
+        .filter(checkout_safe)
+        .ok_or_else(|| format!("invalid path '{}'", show(path)))
+}
+
 fn patch_name(fp: &FilePatch) -> String {
     match (&fp.old_path, &fp.new_path) {
         (Some(o), Some(n)) if o != n => format!("{} => {}", show(o), show(n)),
@@ -347,7 +357,7 @@ impl<'a> Applier<'a> {
                 None => Pre::NoWork,
             });
         }
-        let rp = RepoPath::new(path.to_vec()).map_err(|e| format!("{}: {e}", show(path)))?;
+        let rp = checked(path)?;
         let staged = match &self.target {
             Some(t) => Some(
                 t.staged(self.ws, &rp)
@@ -429,7 +439,7 @@ impl<'a> Applier<'a> {
         if let Some(slot) = self.overlay.get(path) {
             return Ok(here(slot.is_some()));
         }
-        let rp = RepoPath::new(path.to_vec()).map_err(|e| format!("{}: {e}", show(path)))?;
+        let rp = checked(path)?;
         if let Some(t) = &self.target
             && t.staged(self.ws, &rp)
                 .await
@@ -450,7 +460,7 @@ impl<'a> Applier<'a> {
     /// The blob a `--3way` merge starts from: the staged or HEAD entry of `path` whose id starts
     /// with the patch's `index` line.
     async fn base_blob(&self, path: &[u8], prefix: &[u8]) -> Option<Vec<u8>> {
-        let rp = RepoPath::new(path.to_vec()).ok()?;
+        let rp = checked(path).ok()?;
         let target = self.target.as_ref()?;
         let prefix = std::str::from_utf8(prefix).ok()?.to_ascii_lowercase();
         let mut candidates: Vec<Leaf> = Vec::new();
@@ -486,6 +496,11 @@ impl<'a> Applier<'a> {
         ) else {
             return Ok(false);
         };
+        for path in [src, Some(dest)].into_iter().flatten() {
+            if let Err(e) = checked(path) {
+                return Ok(fail(e));
+            }
+        }
         let modes = [fp.old_mode, fp.new_mode];
         if modes
             .iter()
@@ -668,11 +683,15 @@ impl<'a> Applier<'a> {
         let fatal = |path: &[u8], e: &dyn std::fmt::Display| {
             CliError::Fatal(format!("{}: {e}", show(path)))
         };
+        // Nothing is touched until every path is vetted.
+        for path in &pending {
+            checked(path).map_err(CliError::Fatal)?;
+        }
         let mut verified = Verified::default();
         let filemode = self.ctx.config.bool("core.filemode").unwrap_or(cfg!(unix));
         for path in &pending {
             if matches!(self.overlay.get(path), Some(None)) {
-                let rp = RepoPath::new(path.clone()).map_err(|e| fatal(path, &e))?;
+                let rp = checked(path).map_err(CliError::Fatal)?;
                 if self.gate.remove_file(&rp).map_err(|e| fatal(path, &e))? {
                     self.gate.remove_empty_parents(&rp);
                 }
@@ -682,7 +701,7 @@ impl<'a> Applier<'a> {
             let Some(Some(slot)) = self.overlay.get(path) else {
                 continue;
             };
-            let rp = RepoPath::new(path.clone()).map_err(|e| fatal(path, &e))?;
+            let rp = checked(path).map_err(CliError::Fatal)?;
             let abs = self
                 .gate
                 .resolve(&rp)
@@ -709,7 +728,7 @@ impl<'a> Applier<'a> {
         let mut edits = Vec::new();
         let mut mapped = Vec::new();
         for (path, slot) in &self.overlay {
-            let rp = RepoPath::new(path.clone()).map_err(|e| fatal(path, &e))?;
+            let rp = checked(path).map_err(CliError::Fatal)?;
             match slot {
                 None => {
                     if target.staged(self.ws, &rp).await? != Staged::Absent {
