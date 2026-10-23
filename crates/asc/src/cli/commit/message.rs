@@ -103,7 +103,8 @@ pub fn subject(message: &[u8]) -> String {
             }
             break;
         }
-        parts.push(line.trim());
+        // git's `format_subject` keeps leading blanks and drops trailing ones.
+        parts.push(line.trim_end());
     }
     parts.join(" ")
 }
@@ -208,5 +209,6 @@ mod tests {
     fn subject_is_the_first_paragraph_on_one_line() {
         assert_eq!(subject(b"one\ntwo\n\nbody\n"), "one two");
         assert_eq!(subject(b"\n\nonly\n"), "only");
+        assert_eq!(subject(b"  spaced   message  \n"), "  spaced   message");
     }
 }
