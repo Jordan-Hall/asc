@@ -4,6 +4,8 @@
 //! the server (RPC, `/v8`, `/seeds`, admin and `/mcp`) is handed that one value.
 
 mod key_file;
+#[cfg(feature = "git-ssh")]
+pub mod ssh_keys;
 pub mod token_cli;
 pub mod token_store;
 

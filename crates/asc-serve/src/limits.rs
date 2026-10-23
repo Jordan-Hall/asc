@@ -589,6 +589,24 @@ impl Authorizer for RecordingAuthorizer {
         }
         answer
     }
+
+    /// SSH keys are the inner authorizer's to recognise; the listener's own admission limits
+    /// them (U86), so this only forwards.
+    async fn identify_ssh_key(
+        &self,
+        key: &asc_rpc::auth::SshKey,
+    ) -> Result<Option<asc_rpc::auth::SshIdentity>, AuthError> {
+        self.inner.identify_ssh_key(key).await
+    }
+
+    async fn authorize_ssh_key(
+        &self,
+        key: &asc_rpc::auth::SshKey,
+        repo: &str,
+        access: Access,
+    ) -> Result<asc_rpc::auth::Decision, AuthError> {
+        self.inner.authorize_ssh_key(key, repo, access).await
+    }
 }
 
 /// A per-class limiter in two tiers, so that anonymous traffic cannot push out a verified caller.
