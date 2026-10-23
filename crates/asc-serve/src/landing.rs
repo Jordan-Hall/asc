@@ -1,8 +1,11 @@
 //! The landing map and the `FindLanding` RPC (PLAN U66, SPEC §8.9).
 //!
-//! `land_map` maps every changeset a land or a `Merge` rewrote to its replacement, together with
+//! `land_map_ref` maps every changeset a land or a `Merge` rewrote to its replacement, together with
 //! the ref and the `ref_log` entry of the update that made it. The map is keyed by
 //! `(ns, ref, old_cs)`, so a rewrite on one ref never changes or blocks the mapping of another.
+//! Migration 0106 added it beside the old `land_map` (keyed by `(ns, old_cs)`): [`record`] no
+//! longer writes `land_map`, and `mapped` still reads its older rows (by ref) until a contract
+//! migration backfills them into `land_map_ref` and drops it.
 //! [`record`] writes those rows inside the `UpdateRefs` step-8 transaction, only for a ref the
 //! updating actor may write. `FindLanding` maps a changeset through the table, looks
 //! up its `mainline` position, and binary-searches `ref_log_by_ref` for the first update of the
@@ -30,10 +33,10 @@ use crate::update::internal;
 
 /// Most `ref_log` probes of one search; a `seq` is 63 bits, so the search ends well before this.
 const MAX_PROBES: usize = 160;
-/// Rows per `land_map` insert statement.
+/// Rows per `land_map_ref` insert statement.
 const INSERT_BATCH: usize = 100;
 
-/// Writes the `land_map` rows for `pairs` (old, new), made by the update of `refname` with
+/// Writes the `land_map_ref` rows for `pairs` (old, new), made by the update of `refname` with
 /// `op_id`. Runs in the step-8 transaction after the ref update, so its `ref_log` row exists.
 /// A changeset already mapped on that ref keeps its first mapping. A user ref is written only for
 /// its owner: when the update's actor is not the ref's owner, nothing is recorded.
@@ -79,7 +82,7 @@ pub(crate) async fn record(
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) VALUES {rows} \
+            "INSERT INTO land_map_ref (ns, old_cs, new_cs, ref, ref_log_seq, op_id) VALUES {rows} \
              ON CONFLICT (ns, ref, old_cs) DO NOTHING"
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
@@ -150,23 +153,26 @@ impl LandingIndex {
         refname: &str,
         old: ChangesetId,
     ) -> Result<Option<ChangesetId>, Status> {
-        let row =
-            sqlx::query("SELECT new_cs FROM land_map WHERE ns = $1 AND ref = $2 AND old_cs = $3")
+        // `land_map` holds the rows written before 0106 (first mapping wins, so it is read first);
+        // every later row is in `land_map_ref`. Both are filtered by ref.
+        for table in ["land_map", "land_map_ref"] {
+            let q =
+                format!("SELECT new_cs FROM {table} WHERE ns = $1 AND ref = $2 AND old_cs = $3");
+            let row = sqlx::query(sqlx::AssertSqlSafe(q))
                 .bind(ns.as_bytes().to_vec())
                 .bind(refname.to_owned())
                 .bind(old.as_bytes().to_vec())
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| sql("land_map", e))?;
-        match row {
-            None => Ok(None),
-            Some(r) => {
-                let b: Vec<u8> = r.try_get("new_cs").map_err(|e| sql("land_map", e))?;
-                ChangesetId::from_slice(&b)
+                .map_err(|e| sql(table, e))?;
+            if let Some(r) = row {
+                let b: Vec<u8> = r.try_get("new_cs").map_err(|e| sql(table, e))?;
+                return ChangesetId::from_slice(&b)
                     .map(Some)
-                    .map_err(|e| internal("land_map", &e))
+                    .map_err(|e| internal(table, &e));
             }
         }
+        Ok(None)
     }
 
     fn entry(row: &AnyRow) -> Result<LogEntry, Status> {
@@ -811,70 +817,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_ref_key_migration_keeps_existing_rows() {
+    async fn rows_written_before_the_ref_key_migration_are_still_found_by_ref() {
         let f = setup().await;
         let pool = f.r.pool();
-        sqlx::query("DROP TABLE land_map")
-            .execute(pool)
-            .await
-            .unwrap();
-        let old = include_str!("../migrations/sqlite/0102_land_map.sql");
-        sqlx::raw_sql(sqlx::AssertSqlSafe(old.to_owned()))
-            .execute(pool)
-            .await
-            .unwrap();
-        for i in 0..5_u8 {
-            sqlx::query(
-                "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
-                 VALUES ($1, $2, $3, $4, $5, $6)",
-            )
-            .bind(f.e.ns.as_bytes().to_vec())
-            .bind(vec![i; 32])
-            .bind(vec![i + 100; 32])
-            .bind(format!("refs/heads/r{i}"))
-            .bind(i64::from(i) + 1)
-            .bind(vec![i; 16])
-            .execute(pool)
-            .await
-            .unwrap();
-        }
-        let new = include_str!("../migrations/sqlite/0106_land_map_ref_key.sql");
-        sqlx::raw_sql(sqlx::AssertSqlSafe(new.to_owned()))
-            .execute(pool)
-            .await
-            .unwrap();
-        let rows =
-            sqlx::query("SELECT old_cs, new_cs, ref, ref_log_seq FROM land_map ORDER BY ref")
-                .fetch_all(pool)
-                .await
-                .unwrap();
-        assert_eq!(rows.len(), 5);
-        for (i, row) in rows.iter().enumerate() {
-            let i = u8::try_from(i).unwrap();
-            assert_eq!(row.get::<Vec<u8>, _>("old_cs"), vec![i; 32]);
-            assert_eq!(row.get::<Vec<u8>, _>("new_cs"), vec![i + 100; 32]);
-            assert_eq!(row.get::<String, _>("ref"), format!("refs/heads/r{i}"));
-            assert_eq!(row.get::<i64, _>("ref_log_seq"), i64::from(i) + 1);
-        }
-        // The same changeset may now be mapped on two refs.
+        let (old, legacy, newer) = (vec![1_u8; 32], vec![2_u8; 32], vec![3_u8; 32]);
         sqlx::query(
-            "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
-             VALUES ($1, $2, $3, 'refs/heads/other', 1, $4)",
+            "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id)              VALUES ($1, $2, $3, 'refs/heads/master', 1, $4)",
         )
         .bind(f.e.ns.as_bytes().to_vec())
-        .bind(vec![0_u8; 32])
-        .bind(vec![7_u8; 32])
+        .bind(old.clone())
+        .bind(legacy.clone())
         .bind(vec![0_u8; 16])
         .execute(pool)
         .await
         .unwrap();
+        let (old, legacy, newer) = (
+            ChangesetId::from_slice(&old).unwrap(),
+            ChangesetId::from_slice(&legacy).unwrap(),
+            ChangesetId::from_slice(&newer).unwrap(),
+        );
+        let index = LandingIndex::new(pool.clone());
+        assert_eq!(
+            index
+                .mapped(f.e.ns, "refs/heads/master", old)
+                .await
+                .unwrap(),
+            Some(legacy)
+        );
+        // The key is the ref: another ref does not see the old row.
+        assert_eq!(
+            index.mapped(f.e.ns, "refs/heads/other", old).await.unwrap(),
+            None
+        );
+        // The same changeset may be mapped on another ref, in the new table.
+        sqlx::query(
+            "INSERT INTO land_map_ref (ns, old_cs, new_cs, ref, ref_log_seq, op_id)              VALUES ($1, $2, $3, 'refs/heads/other', 1, $4)",
+        )
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(old.as_bytes().to_vec())
+        .bind(newer.as_bytes().to_vec())
+        .bind(vec![0_u8; 16])
+        .execute(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            index.mapped(f.e.ns, "refs/heads/other", old).await.unwrap(),
+            Some(newer)
+        );
+        assert_eq!(
+            index
+                .mapped(f.e.ns, "refs/heads/master", old)
+                .await
+                .unwrap(),
+            Some(legacy)
+        );
     }
 
     #[tokio::test]
     async fn lookups_use_indexes_not_scans() {
         let f = setup().await;
         let queries = [
-            "SELECT new_cs FROM land_map WHERE ns = $1 AND ref = $2 AND old_cs = $3",
+            "SELECT new_cs FROM land_map_ref WHERE ns = $1 AND ref = $2 AND old_cs = $3",
             "SELECT seq, new, at, actor, via FROM ref_log \
              WHERE repo_id = $1 AND name = $2 AND seq >= $3 AND seq <= $4 \
              ORDER BY seq ASC LIMIT 1",
