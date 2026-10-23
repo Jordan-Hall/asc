@@ -294,7 +294,7 @@ pub(crate) struct Planned {
     pub(crate) name: RefName,
     pub(crate) expect: Expect,
     pub(crate) new: Option<RefTarget>,
-    /// A user ref (SPEC Â§21.5.1): `name` is the stored name, `text` the pushed one. It skips
+    /// A user ref (SPEC §21.5.1): `name` is the stored name, `text` the pushed one. It skips
     /// pre-receive, the bridge and the outbox `post_receive`.
     pub(crate) user: bool,
 }
@@ -478,7 +478,7 @@ impl ServerRefs {
             .await
             .map_err(registry_status)?;
 
-        // Step 1, classify (SPEC Â§21.5.1): a non-shared branch of a branchless repository is the
+        // Step 1, classify (SPEC §21.5.1): a non-shared branch of a branchless repository is the
         // pusher's user ref; a tag outside `shared_refs` is `REF_NOT_SHARED`. A LAND names a
         // shared branch and is checked by `land::check_branch`.
         if pushed.is_none() {
@@ -709,6 +709,9 @@ impl ServerRefs {
             }
             Err(e) => return Err(internal("refs", &e)),
         }
+        // User refs have no pre-receive, so the owner and the cap are checked here, in the same
+        // transaction as the write (SPEC §21.5.1).
+        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn).await?;
         if let Some(land) = land {
             land.apply(&mut tx, entry, txn).await?;
         }
@@ -1211,5 +1214,45 @@ mod tests {
         let b = commit(&e, &[a], &[("b", b"2")]).await;
         run(&s, create("refs/heads/master", b)).await.unwrap();
         assert_eq!(seen.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// U48c: a stale entry of a renamed or deleted repository cannot commit a ref update.
+    #[tokio::test]
+    async fn a_stale_entry_cannot_commit_a_ref_update() {
+        let (r, e, s) = setup().await;
+        let a = commit(&e, &[], &[("a", b"1")]).await;
+        let txn = || RefTxn {
+            updates: vec![RefUpdate {
+                name: master(),
+                expect: Expect::Absent,
+                new: Some(RefTarget::Changeset(a)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "alice".into(),
+                via: "test".into(),
+            },
+            reason: "UpdateRefs".into(),
+            op_id: Uuid::new_v4(),
+        };
+        let done = wire::UpdateRefsResponse::default();
+        // Renamed under the entry: the id still exists, the name is not the one authorised.
+        sqlx::query("UPDATE repos SET name = 'o/moved' WHERE id = $1")
+            .bind(e.key.0)
+            .execute(r.pool())
+            .await
+            .unwrap();
+        let err = s.commit(&e, &txn(), &done, b"{}", None).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        // Deleted under the entry.
+        sqlx::query("DELETE FROM repos WHERE id = $1")
+            .bind(e.key.0)
+            .execute(r.pool())
+            .await
+            .unwrap();
+        let err = s.commit(&e, &txn(), &done, b"{}", None).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        assert!(r.refs().get(e.key, &master()).await.unwrap().is_none());
+        assert_eq!(count(&r, "SELECT COUNT(*) FROM op_results").await, 0);
     }
 }

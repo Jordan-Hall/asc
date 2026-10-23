@@ -12,7 +12,11 @@
 //!   `refs/heads/<n>`. It reads only those prefixes, so it costs O(shared + own refs) however
 //!   many user refs other users hold.
 //!
-//! Owner-only enforcement, the per-user cap and the quota are B08b; this unit only names refs.
+//! Authorization of user refs (until B08b adds its own module): the owner comes from a verified
+//! Forgejo identity only ([`owner_of`]), the stored name is built from it, and the `UpdateRefs`
+//! transaction refuses a write whose owner segment is not the actor's and one that takes the owner
+//! past [`MAX_USER_REFS`] ([`check_user_ref_writes`]). Forgejo's pre-receive is not run for user
+//! refs (SPEC §21.5.1: no pre-receive). The byte quota stays B08b.
 
 use asc_rpc::auth::Principal;
 use asc_rpc::errors::RpcError;
@@ -33,14 +37,30 @@ const SHARED_ROOTS: [&str; 4] = ["refs/heads/", "refs/tags/", "refs/pull/", "ref
 const MAX_PATTERNS: usize = 256;
 const MAX_PATTERN_LEN: usize = 1024;
 
-/// The numeric owner id of a principal (a Forgejo identity, or a bare number); `None` for any
-/// other principal, which has no user refs.
+/// Most user refs one owner holds in one repository (SPEC §21.6 `[cloud] max_user_refs`).
+/// Enforced in the `UpdateRefs` transaction ([`check_user_ref_writes`]).
+pub const MAX_USER_REFS: i64 = 1000;
+
+/// The numeric owner id of a principal, taken only from a verified Forgejo identity: the
+/// authorizer encodes `<user_id>:<login>` there, and no other issuer (a token-store or SSH-key
+/// principal is `pat:<user>`, `deploy:<repo>` and so on) can produce that form. A bare number is
+/// not an identity. A deploy key acts for its repository, not for the user who owns it, so it has
+/// no user refs; neither has the anonymous caller, an Actions task, the internal principal or any
+/// other principal.
 pub fn owner_of(principal: &Principal) -> Option<i64> {
-    let id = match ForgejoIdentity::parse(&principal.id) {
-        Some(i) => i.user_id,
-        None => principal.id.parse().ok()?,
-    };
-    (id > 0).then_some(id)
+    let who = ForgejoIdentity::parse(&principal.id)?;
+    (who.user_id > 0 && who.deploy_key_id == 0).then_some(who.user_id)
+}
+
+/// The prefix of `owner`'s user refs, `refs/users/<owner>/`.
+pub fn user_prefix(owner: i64) -> String {
+    format!("{USER_NS}{owner}/")
+}
+
+/// Whether `refname` lies in `owner`'s user namespace. The one ownership test: `ListRefs`,
+/// the `UpdateRefs` transaction and `FindLanding` all use it.
+pub fn owns_user_ref(owner: i64, refname: &str) -> bool {
+    refname.starts_with(&user_prefix(owner))
 }
 
 /// The stored name of the user ref for `refs/heads/<n>`.
@@ -228,6 +248,66 @@ fn glob(pattern: &str, text: &str) -> bool {
     pi == p.len()
 }
 
+// ------------------------------------------------------------------------------ authorization
+
+/// Inside the `UpdateRefs` transaction, after the updates applied: every user ref the transaction
+/// writes (creates or moves) must belong to the actor, and the owner must not hold more than
+/// [`MAX_USER_REFS`] user refs in the repository afterwards (`USER_REFS_LIMIT`). Deleting never
+/// fails here, so an owner over the cap can always shrink. Fails closed: a write by an actor with
+/// no verified owner id is `permission_denied`.
+pub(crate) async fn check_user_ref_writes(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    repo: asc_store::refs::RepoKey,
+    txn: &asc_store::refs::RefTxn,
+) -> Result<(), Status> {
+    let actor = owner_of(&Principal {
+        id: txn.actor.id.clone(),
+    });
+    let mut owners: Vec<i64> = Vec::new();
+    for u in &txn.updates {
+        let Some(name) = std::str::from_utf8(u.name.as_bytes())
+            .ok()
+            .filter(|n| n.starts_with(USER_NS))
+        else {
+            continue;
+        };
+        if u.new.is_none() {
+            continue;
+        }
+        let Some((owner, _)) = parse_user_ref(name) else {
+            return Err(Status::invalid_argument("malformed user ref name"));
+        };
+        if !actor.is_some_and(|a| owns_user_ref(a, name)) {
+            return Err(Status::permission_denied(
+                "a user ref can be written only by its owner",
+            ));
+        }
+        if !owners.contains(&owner) {
+            owners.push(owner);
+        }
+    }
+    for owner in owners {
+        // `refs/users/<n>/heads/` .. `refs/users/<n>/heads0` ('0' follows '/'): this owner's rows.
+        let lo = format!("{USER_NS}{owner}/heads/");
+        let hi = format!("{USER_NS}{owner}/heads0");
+        let held: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM refs WHERE repo_id = $1 AND name >= $2 AND name < $3",
+        )
+        .bind(repo.0)
+        .bind(lo)
+        .bind(hi)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| internal("refs", &e))?;
+        if held > MAX_USER_REFS {
+            return Err(rpc(RpcError::UserRefsLimit(info(vec![format!(
+                "{USER_NS}{owner}/"
+            )]))));
+        }
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------------------ advertisement
 
 fn wire_ref(name: String, e: &RefEntry) -> wire::Ref {
@@ -284,7 +364,7 @@ pub async fn advertise<R: Refs + ?Sized>(
         let Some(owner) = owner else {
             return Err(Status::permission_denied("no user refs for this principal"));
         };
-        let own = format!("{USER_NS}{owner}/");
+        let own = user_prefix(owner);
         if !(own.starts_with(prefix) || prefix.starts_with(&own)) {
             return Err(Status::permission_denied(
                 "another user's refs are not listed to you",
@@ -394,10 +474,15 @@ mod tests {
     }
 
     #[test]
-    fn owner_comes_from_the_forgejo_identity_or_a_number() {
+    fn owner_comes_from_a_verified_forgejo_identity_only() {
         let p = |s: &str| Principal { id: s.into() };
         assert_eq!(owner_of(&p("42:alice")), Some(42));
-        assert_eq!(owner_of(&p("7")), Some(7));
+        // A bare number is not an identity, whoever issued it.
+        assert_eq!(owner_of(&p("7")), None);
+        assert_eq!(owner_of(&p("pat:7")), None);
+        assert_eq!(owner_of(&p("deploy:o/r")), None);
+        // A deploy key acts for its repository, not for the user who owns it.
+        assert_eq!(owner_of(&p("2:org:5")), None);
         assert_eq!(owner_of(&p("alice")), None);
         assert_eq!(owner_of(&p("0:root")), None);
         assert_eq!(owner_of(&p("forgejo-internal")), None);

@@ -556,3 +556,105 @@ async fn list_refs_for_one_user_reads_only_shared_plus_own_among_100k_user_refs(
         ["refs/heads/master", "refs/heads/mine"]
     );
 }
+
+// ------------------------------------------------------------------------------ authorization
+
+#[tokio::test]
+async fn a_numeric_id_that_is_not_a_forgejo_identity_cannot_write_user_refs() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+    let master = f.stored("refs/heads/master").await.unwrap();
+    // Alice (Forgejo user 42) holds a user ref.
+    f.git_push("42:alice", &[cmd("refs/heads/feat", None, Some(&c2))])
+        .await
+        .unwrap();
+    let alices = f.stored("refs/users/42/heads/feat").await.unwrap();
+    // A token-store, SSH or bare-number principal whose id reads as 42 has no user id.
+    for who in ["42", "pat:42", "deploy:o/r", "42:bob:9"] {
+        let e = f
+            .git_push(who, &[cmd("refs/heads/other", None, Some(&c2))])
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{who}");
+        let e = f.update(who, "refs/heads/other", master).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{who}");
+        // Nor can it list a user's refs as its own.
+        assert_eq!(
+            f.list(who, "").await.unwrap_or_default(),
+            ["refs/heads/master"],
+            "{who}"
+        );
+    }
+    assert!(f.stored("refs/users/42/heads/other").await.is_none());
+    assert_eq!(f.stored("refs/users/42/heads/feat").await, Some(alices));
+    // The Forgejo identity still can.
+    f.update("42:alice", "refs/heads/other", master)
+        .await
+        .unwrap();
+    assert!(f.stored("refs/users/42/heads/other").await.is_some());
+}
+
+#[tokio::test]
+async fn a_user_ref_over_the_per_owner_cap_is_refused_and_a_delete_always_works() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let master = f.stored("refs/heads/master").await.unwrap();
+    // Alice already holds the most user refs, written straight into the table.
+    sqlx::query(
+        "INSERT INTO refs (repo_id, name, target, version)          WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000)          SELECT $1, 'refs/users/42/heads/b' || i, $2, 1 FROM n",
+    )
+    .bind(f.entry.key.0)
+    .bind(master.to_bytes().to_vec())
+    .execute(f.registry.pool())
+    .await
+    .unwrap();
+    assert_eq!(refpolicy::MAX_USER_REFS, 1000);
+    let c2 = f.forge.commit(Some(&c1), "two");
+    // One more through UpdateRefs and through a plain git push: USER_REFS_LIMIT, nothing written.
+    let e = f
+        .update("42:alice", "refs/heads/one-too-many", master)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "USER_REFS_LIMIT");
+    let e = f
+        .git_push(
+            "42:alice",
+            &[cmd("refs/heads/one-too-many", None, Some(&c2))],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "USER_REFS_LIMIT");
+    assert!(f.stored("refs/users/42/heads/one-too-many").await.is_none());
+    // The cap is per owner.
+    f.update("43:bob", "refs/heads/one-too-many", master)
+        .await
+        .unwrap();
+    // A delete frees a slot.
+    f.refs
+        .update_refs(
+            &ctx("42:alice", IdMode::Asc),
+            wire::UpdateRefsRequest {
+                repo: Some(wire::RepoRef {
+                    name: "o/r".into(),
+                    id_mode: 0,
+                }),
+                updates: vec![wire::RefUpdate {
+                    name: "refs/heads/b1".into(),
+                    expect: Some(wire::ref_update::Expect::Value(wire::RefTarget::from(
+                        &master,
+                    ))),
+                    new: None,
+                    delete: true,
+                }],
+                mode: wire::UpdateMode::FastForward as i32,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(f.stored("refs/users/42/heads/b1").await.is_none());
+    f.update("42:alice", "refs/heads/one-too-many", master)
+        .await
+        .unwrap();
+}

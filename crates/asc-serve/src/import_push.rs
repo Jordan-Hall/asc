@@ -189,7 +189,7 @@ impl ImportPush {
         // The refs as git sees them must still be what the pusher saw (the `old` of each
         // command). Checked before the import, and pinned into the CAS below.
         let map = PushMap::new(self.registry.pool().clone(), &entry);
-        // A non-shared branch of a branchless repository is the pusher's user ref (SPEC Â§21.5.1):
+        // A non-shared branch of a branchless repository is the pusher's user ref (SPEC §21.5.1):
         // git saw it as `refs/heads/<n>`, the `refs` table holds it under `refs/users/`. `UpdateRefs`
         // classifies the same names again; this pass finds the stored value for the CAS.
         let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
@@ -2153,5 +2153,40 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// U48c: a stale entry of a renamed or deleted repository cannot record an import.
+    #[tokio::test]
+    async fn a_stale_entry_cannot_record_an_import() {
+        let f = fx().await;
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let commands = [cmd("refs/heads/master", None, Some(&c1))];
+        let map = PushMap::new(f.registry.pool().clone(), &f.entry);
+        let q = f.forge.whole();
+        sqlx::query("UPDATE repos SET name = 'o/moved' WHERE id = $1")
+            .bind(f.entry.key.0)
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let e = f
+            .push
+            .import(&f.entry, &map, &q, &commands, true, false)
+            .await
+            .err()
+            .expect("a stale entry is refused");
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        sqlx::query("DELETE FROM repos WHERE id = $1")
+            .bind(f.entry.key.0)
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let e = f
+            .push
+            .import(&f.entry, &map, &q, &commands, true, false)
+            .await
+            .err()
+            .expect("a stale entry is refused");
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        assert_eq!(f.count("SELECT COUNT(*) FROM cs_graph").await, 0);
     }
 }
