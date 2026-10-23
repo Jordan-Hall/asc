@@ -33,6 +33,7 @@ async fn main() -> ExitCode {
     let _ = ext::set_ref_txn_hook(Box::new(hooks_runner::RefTxnRunner::new()));
     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
     remote::bucket::register();
+    remote::server::register();
     let _ = ext::set_workspace_factory(Box::new(
         daemon::workspace_factory::DaemonWorkspaceFactory::system(),
     ));

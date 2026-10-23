@@ -282,6 +282,7 @@ impl WsCtx {
             kind: repo.repo.remote_kind,
             url: repo.repo.remote_url.clone(),
         };
+        crate::remote::server::bind(config.file(), &db);
         let remote = match spec.kind {
             RemoteKind::LocalOnly | RemoteKind::GitRemote => None,
             _ => ext::remote_objects(&spec),
