@@ -15,6 +15,8 @@ on:
 # all the job token needs.
 permissions:
   contents: read
+  # Only used when no registry secret is set: the job token then pushes the image.
+  packages: write
 
 concurrency:
   group: image-${{ github.ref }}
@@ -41,7 +43,7 @@ jobs:
           registry: ${{ env.REGISTRY }}
           # monorepo's convention: the org-level FORGEJO_REGISTRY_TOKEN when set.
           username: ${{ vars.REGISTRY_USER || github.actor }}
-          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN || secrets.FORGEJO_PACKAGES_TOKEN }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN || secrets.FORGEJO_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build
         env:
