@@ -3,15 +3,18 @@
 //! Pages come from [`asc_engine::commit_graph`]: generation-ordered, with server-computed
 //! `column` and `edges` (lanes capped at 256, the rest in one `overflow` column) and the lane
 //! state in the page token. A page costs O(rows): earlier pages are never read again. With
-//! `stats` each row carries its `diffstat.v1`, derived on demand; the registered
-//! [`StatsEnricher`] fills `LogEntry.stats` of other read RPCs from memos that already exist and
-//! never derives one itself.
+//! `stats` each row carries its `diffstat.v1`: rows with a memo get it, and at most
+//! [`MAX_STATS_DERIVE_PER_PAGE`] rows without one are derived by the call; the rest come back
+//! without `stats` (pending) and are filled by a later call, so a page of `limit` rows never
+//! forces `limit` diffs. The registered [`StatsEnricher`] fills `LogEntry.stats` of other read
+//! RPCs from memos that already exist and never derives one itself.
 //!
 //! Access is checked by the service (`Access::Read`) before the handler runs. Request sizes,
 //! the page token and the number of refs a preset expands to are bounded.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -41,6 +44,10 @@ const ROWS_PER_MESSAGE: usize = 100;
 const FANOUT: usize = 16;
 /// Concurrent stat derivations.
 const STAT_FANOUT: usize = 8;
+/// `diffstat.v1` derivations one `CommitGraph` call may start. A row past the cap without a
+/// memo is returned with no `stats` (pending), earliest rows first, and a repeat of the call
+/// finds the memos made by this one.
+const MAX_STATS_DERIVE_PER_PAGE: usize = 16;
 /// Longest accepted page token, base64 (a token is at most 3,073 bytes).
 const MAX_TOKEN_CHARS: usize = 8192;
 /// Refs a preset expands to, and refs read for labels.
@@ -334,22 +341,38 @@ struct Build {
     ids: IdCodec,
     lanes: bool,
     stats: bool,
+    /// Derivations the call may still start, shared by the messages of one response.
+    derive_left: AtomicUsize,
     labels: HashMap<ChangesetId, Vec<String>>,
 }
 
+/// What a row's stats come from.
+enum Stat {
+    /// Not asked for.
+    Off,
+    /// A memo that already exists.
+    Memo(diffstat::DiffStatV1),
+    /// Derive it now; the call's budget covers it.
+    Derive,
+    /// No memo and no budget left: the row goes out without `stats`.
+    Pending,
+}
+
 impl Build {
-    async fn row(&self, row: &lanes::Row) -> Result<wire::GraphRow, Status> {
+    async fn row(&self, row: &lanes::Row, stat: Stat) -> Result<wire::GraphRow, Status> {
         let cs = self
             .engine
             .get_changeset(row.id)
             .await
             .map_err(commit_status)?;
         let git = self.ids.git_of(row.id).await?;
-        let stats = if self.stats {
-            let s = self.engine.diffstat(row.id).await.map_err(derive_status)?;
-            Some(stat_wire(&s))
-        } else {
-            None
+        let stats = match stat {
+            Stat::Off | Stat::Pending => None,
+            Stat::Memo(s) => Some(stat_wire(&s)),
+            Stat::Derive => {
+                let s = self.engine.diffstat(row.id).await.map_err(derive_status)?;
+                Some(stat_wire(&s))
+            }
         };
         let entry = wire::LogEntry {
             id: self.ids.changeset_out(row.id).await?,
@@ -381,11 +404,43 @@ impl Build {
         })
     }
 
+    /// Decides each row's stat in row order, so the budget goes to the earliest rows: a memo
+    /// when one exists, else a derivation while the call's budget lasts, else pending.
+    async fn plan(&self, rows: &[lanes::Row]) -> Result<Vec<Stat>, Status> {
+        if !self.stats {
+            return Ok(rows.iter().map(|_| Stat::Off).collect());
+        }
+        let ids: Vec<ChangesetId> = rows.iter().map(|r| r.id).collect();
+        let memos = self
+            .engine
+            .diffstat_memos(&ids)
+            .await
+            .map_err(derive_status)?;
+        let claim = || {
+            self.derive_left
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                .is_ok()
+        };
+        Ok(memos
+            .into_iter()
+            .map(|m| match m {
+                Some(s) => Stat::Memo(s),
+                None if claim() => Stat::Derive,
+                None => Stat::Pending,
+            })
+            .collect())
+    }
+
     async fn message(&self, rows: &[lanes::Row]) -> Result<wire::CommitGraphResponse, Status> {
         let fanout = if self.stats { STAT_FANOUT } else { FANOUT };
+        let mut plan = self.plan(rows).await?.into_iter();
         let mut out = Vec::with_capacity(rows.len());
         for group in rows.chunks(fanout) {
-            out.extend(futures::future::try_join_all(group.iter().map(|r| self.row(r))).await?);
+            let jobs: Vec<_> = group.iter().zip(plan.by_ref()).collect();
+            out.extend(
+                futures::future::try_join_all(jobs.into_iter().map(|(r, s)| self.row(r, s)))
+                    .await?,
+            );
         }
         let rows = out;
         Ok(wire::CommitGraphResponse {
@@ -442,6 +497,7 @@ impl InsightsHandler for ServerCommitGraph {
             ids,
             lanes: req.lanes,
             stats: req.stats,
+            derive_left: AtomicUsize::new(MAX_STATS_DERIVE_PER_PAGE),
         });
         let next = page.next.map(|t| URL_SAFE_NO_PAD.encode(t));
         let rows = Arc::new(page.rows);
@@ -600,6 +656,48 @@ mod tests {
         assert_eq!(paths, [b"h".to_vec()]);
         let root = rs[3].entry.as_ref().unwrap().stats.as_ref().unwrap();
         assert_eq!((root.files[0].added, root.files[0].removed), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_page_derives_at_most_the_cap_and_later_calls_finish_the_rest() {
+        let f = fx().await;
+        let n = MAX_STATS_DERIVE_PER_PAGE + 8;
+        let mut tip = commit(&f.entry, &[], &[("f", b"0
+")]).await;
+        let mut chain = vec![tip];
+        for i in 1..n {
+            tip = commit(&f.entry, &[tip], &[("f", format!("{i}
+").as_bytes())]).await;
+            chain.push(tip);
+        }
+        set_ref(&f, "refs/heads/master", tip).await;
+        let engine = f.entry.backend.engine().clone();
+        let memos = || async {
+            let got = engine.diffstat_memos(&chain).await.unwrap();
+            got.iter().filter(|m| m.is_some()).count()
+        };
+        let with_stats = |got: &[wire::CommitGraphResponse]| {
+            rows(got)
+                .iter()
+                .filter(|r| r.entry.as_ref().unwrap().stats.is_some())
+                .count()
+        };
+        assert_eq!(memos().await, 0);
+        let mut r = req(IdMode::Asc);
+        r.stats = true;
+        let got = call(&f, IdMode::Asc, r.clone()).await.unwrap();
+        assert_eq!(rows(&got).len(), n, "every row is still returned");
+        assert_eq!(memos().await, MAX_STATS_DERIVE_PER_PAGE, "derivations are capped");
+        // The earliest rows get the stats; the rest are pending.
+        assert_eq!(with_stats(&got), MAX_STATS_DERIVE_PER_PAGE);
+        let shown = rows(&got);
+        assert!(shown[..MAX_STATS_DERIVE_PER_PAGE]
+            .iter()
+            .all(|r| r.entry.as_ref().unwrap().stats.is_some()));
+        // A repeat reuses those memos and derives the next batch.
+        let again = call(&f, IdMode::Asc, r).await.unwrap();
+        assert_eq!(memos().await, n);
+        assert_eq!(with_stats(&again), n);
     }
 
     #[tokio::test]
