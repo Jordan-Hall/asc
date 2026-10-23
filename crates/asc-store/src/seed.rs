@@ -463,6 +463,11 @@ fn check_url(url: &url::Url, origin: Origin) -> Result<()> {
             if url.host().is_some() {
                 return Err(refused("file: seed URL names a host (network share)"));
             }
+            // `file:////host/share` has no host but a `//host/share` path: a share on Windows,
+            // and an ambiguous path elsewhere.
+            if is_unc(url.path()) {
+                return Err(refused("file: seed URL names a network share"));
+            }
             Ok(())
         }
         ("file", Origin::Discovered) => Err(refused(
