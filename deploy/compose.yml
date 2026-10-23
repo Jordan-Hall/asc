@@ -1,0 +1,173 @@
+# The asc deploy bundle (U51): one command brings up everything `asc serve` needs, on this machine.
+#
+#   docker compose -f deploy/compose.yml up -d --wait
+#   cargo test -p asc --test deploy_smoke -- --ignored
+#   docker compose -f deploy/compose.yml down -v
+#
+# Local development and smoke testing only: the Garage key, the Postgres password, the admin token
+# and the Forgejo secrets below are public. Production uses deploy/asc-serve.toml.example and your
+# own secrets (see README.md).
+#
+# Transport rule: plain http appears only on loopback. asc-primary and asc-cache therefore share
+# Garage's network namespace (`network_mode: service:garage`), so Garage is http://127.0.0.1:3900
+# for them, the cache role reaches the primary at http://127.0.0.1:7890, and
+# ASC_ALLOW_LOOPBACK_HTTP=1 is the explicit opt-in. Published ports bind 127.0.0.1 on the host.
+#
+# Host ports: 17890 primary, 17891 cache role, 19464/19465 admin (/metrics), 13000 Forgejo.
+
+x-asc: &asc
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: asc-serve:deploy
+  pull_policy: build
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  environment: &asc-env
+    ASC_ALLOW_LOOPBACK_HTTP: '1'
+    AWS_ACCESS_KEY_ID: GK0123456789abcdef01234567
+    AWS_SECRET_ACCESS_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    AWS_REGION: garage
+    HOME: /var/lib/asc/home
+    RUST_LOG: info
+
+services:
+  garage:
+    image: dxflrs/garage:v1.0.1
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+    ports:
+      - '127.0.0.1:17890:7890'
+      - '127.0.0.1:17891:7891'
+      - '127.0.0.1:19464:9464'
+      - '127.0.0.1:19465:9465'
+    healthcheck:
+      test: ['CMD', '/garage', 'status']
+      interval: 3s
+      retries: 20
+
+  # Layout, the bucket `asc-it` and its key, through the admin API (garage-init.sh).
+  garage-init:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      garage: { condition: service_healthy }
+    volumes:
+      - ./garage-init.sh:/init.sh:ro
+    entrypoint: ['/bin/sh', '/init.sh']
+    restart: 'no'
+
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: asc
+      POSTGRES_PASSWORD: asc
+      POSTGRES_DB: asc
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U asc']
+      interval: 3s
+      retries: 20
+
+  asc-migrate:
+    <<: *asc
+    command: ['serve', 'migrate']
+    network_mode: 'service:garage'
+    restart: 'no'
+    configs:
+      - { source: primary_toml, target: /etc/asc/asc-serve.toml }
+    depends_on:
+      garage-init: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+
+  asc-primary:
+    <<: *asc
+    command: ['serve']
+    network_mode: 'service:garage'
+    restart: unless-stopped
+    volumes:
+      - asc-primary:/var/lib/asc
+    configs:
+      - { source: primary_toml, target: /etc/asc/asc-serve.toml }
+      - { source: admin_token, target: /etc/asc/admin-token }
+    depends_on:
+      asc-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
+      interval: 3s
+      retries: 30
+      start_period: 5s
+
+  # A cache-role replica (SPEC 7): serves only the object tier, no SQL, upstream is the primary.
+  asc-cache:
+    <<: *asc
+    command: ['serve']
+    network_mode: 'service:garage'
+    restart: unless-stopped
+    volumes:
+      - asc-cache:/var/lib/asc
+    configs:
+      - { source: cache_toml, target: /etc/asc/asc-serve.toml }
+      - { source: admin_token, target: /etc/asc/admin-token }
+    depends_on:
+      asc-primary: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7891/readyz']
+      interval: 3s
+      retries: 30
+      start_period: 5s
+
+  # Forgejo with new repositories on `master`, never `main`.
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:11
+    environment:
+      FORGEJO__repository__DEFAULT_BRANCH: master
+    volumes:
+      - ./forgejo/app.ini:/data/gitea/conf/app.ini:ro
+      - forgejo-data:/data
+    ports:
+      - '127.0.0.1:13000:3000'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3000/api/healthz']
+      interval: 5s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  asc-primary:
+  asc-cache:
+  forgejo-data:
+
+configs:
+  admin_token:
+    content: asc-deploy-admin-token-not-secret
+  primary_toml:
+    content: |
+      listen = "0.0.0.0:7890"
+      public_url = "http://127.0.0.1:17890"
+      store = "s3://asc-it?endpoint=http://127.0.0.1:3900&region=garage&path_style=true"
+      db = "postgres://asc_hub:asc@postgres:5432/asc_hub?sslmode=disable"
+      cache = { memory = "256MiB", disk_dir = "/var/lib/asc/cache", disk = "1GiB" }
+
+      [auth]
+      provider = "token_store"
+      token_key_file = "/var/lib/asc/token.key"
+
+      [admin]
+      listen = "0.0.0.0:9464"
+      token_file = "/etc/asc/admin-token"
+
+      [limits]
+      text_memory = "256MiB"
+  cache_toml:
+    content: |
+      role = "cache"
+      upstream = "http://127.0.0.1:7890"
+      listen = "0.0.0.0:7891"
+      public_url = "http://127.0.0.1:17891"
+      cache = { memory = "128MiB", disk_dir = "/var/lib/asc/cache", disk = "512MiB" }
+
+      [admin]
+      listen = "0.0.0.0:9465"
+      token_file = "/etc/asc/admin-token"
