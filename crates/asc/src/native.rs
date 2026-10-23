@@ -82,9 +82,13 @@ pub fn route_in(argv: &[OsString], table: &[&NativeSpec]) -> Route {
 pub fn not_served(cmd: &str) -> Msg {
     let planned = cli::is_registered(cmd) || dispatch::ASC_ONLY_VERBS.contains(&cmd);
     if planned && !dispatch::is_unavailable(cmd) {
-        Msg::AscNotYet { cmd: cmd.to_owned() }
+        Msg::AscNotYet {
+            cmd: cmd.to_owned(),
+        }
     } else {
-        Msg::AscNotInWorkspace { cmd: cmd.to_owned() }
+        Msg::AscNotInWorkspace {
+            cmd: cmd.to_owned(),
+        }
     }
 }
 
@@ -154,10 +158,10 @@ fn serves_token(spec: &NativeSpec, token: &str) -> bool {
     }
     if let Some(atom) = token.strip_prefix("%(") {
         let name = atom.split([':', ')']).next().unwrap_or(atom);
-        return spec
-            .placeholders
-            .iter()
-            .any(|p| p.strip_prefix("%(").is_some_and(|a| a.trim_end_matches(')') == name));
+        return spec.placeholders.iter().any(|p| {
+            p.strip_prefix("%(")
+                .is_some_and(|a| a.trim_end_matches(')') == name)
+        });
     }
     spec.placeholders
         .iter()
@@ -184,7 +188,10 @@ mod tests {
 
     #[test]
     fn served_invocations_are_native() {
-        assert_eq!(route_log(&["log", "--oneline", "-n", "3", "HEAD", "--", "-x"]), Route::Native);
+        assert_eq!(
+            route_log(&["log", "--oneline", "-n", "3", "HEAD", "--", "-x"]),
+            Route::Native
+        );
         assert_eq!(route_log(&["log", "-3"]), Route::Native);
         assert_eq!(route_log(&["log", "--format=%H %aN%n%%"]), Route::Native);
     }
@@ -193,11 +200,15 @@ mod tests {
     fn unknown_flag_is_named() {
         assert_eq!(
             route_log(&["log", "--bogus"]),
-            Route::Unsupported(Msg::AscOptionUnsupported { flag: "--bogus".into() })
+            Route::Unsupported(Msg::AscOptionUnsupported {
+                flag: "--bogus".into()
+            })
         );
         assert_eq!(
             route_log(&["log", "--bogus=1"]),
-            Route::Unsupported(Msg::AscOptionUnsupported { flag: "--bogus".into() })
+            Route::Unsupported(Msg::AscOptionUnsupported {
+                flag: "--bogus".into()
+            })
         );
         assert_eq!(
             route_log(&["log", "-pz"]),
@@ -209,12 +220,19 @@ mod tests {
     fn unknown_placeholder_is_named() {
         assert_eq!(
             route_log(&["log", "--format=%H%x00"]),
-            Route::Unsupported(Msg::AscOptionUnsupported { flag: "%x00".into() })
+            Route::Unsupported(Msg::AscOptionUnsupported {
+                flag: "%x00".into()
+            })
         );
-        assert_eq!(route_log(&["log", "--format=%(refname:short)"]), Route::Native);
+        assert_eq!(
+            route_log(&["log", "--format=%(refname:short)"]),
+            Route::Native
+        );
         assert_eq!(
             route_log(&["log", "--pretty=format:%(objectname)"]),
-            Route::Unsupported(Msg::AscOptionUnsupported { flag: "%(objectname)".into() })
+            Route::Unsupported(Msg::AscOptionUnsupported {
+                flag: "%(objectname)".into()
+            })
         );
     }
 

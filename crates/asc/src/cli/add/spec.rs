@@ -131,7 +131,9 @@ impl Spec {
             let mut body = raw.as_str();
             if let Some(after) = body.strip_prefix(":(") {
                 let close = after.find(')').ok_or_else(|| {
-                    CliError::Fatal(format!("Missing ')' at the end of pathspec magic in '{raw}'"))
+                    CliError::Fatal(format!(
+                        "Missing ')' at the end of pathspec magic in '{raw}'"
+                    ))
                 })?;
                 for word in after[..close].split(',') {
                     match word {
@@ -147,7 +149,8 @@ impl Spec {
                     }
                 }
                 body = &after[close + 1..];
-            } else if let Some(after) = body.strip_prefix(":!").or_else(|| body.strip_prefix(":^")) {
+            } else if let Some(after) = body.strip_prefix(":!").or_else(|| body.strip_prefix(":^"))
+            {
                 exclude = true;
                 body = after;
             } else if let Some(after) = body.strip_prefix(":/") {
@@ -174,8 +177,14 @@ impl Spec {
         }
         // The wildcard-free leading directory is resolved; the rest is the pattern as typed.
         let bytes = body.as_bytes();
-        let first = bytes.iter().position(|c| matches!(c, b'*' | b'?' | b'[' | b'\\')).unwrap_or(0);
-        let cut = bytes[..first].iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
+        let first = bytes
+            .iter()
+            .position(|c| matches!(c, b'*' | b'?' | b'[' | b'\\'))
+            .unwrap_or(0);
+        let cut = bytes[..first]
+            .iter()
+            .rposition(|&c| c == b'/')
+            .map_or(0, |i| i + 1);
         let dir = repo_path(OsStr::new(&body[..cut]), prefix, root)?;
         let mut pat = dir.clone();
         if !pat.is_empty() {
@@ -212,7 +221,8 @@ impl Spec {
 
     /// Whether an include names `path` itself (a literal equal to it, or a wildcard it matches).
     pub fn exact(&self, path: &[u8]) -> bool {
-        self.includes.iter().any(|i| i.exact(path)) && !self.excludes.iter().any(|e| e.matches(path))
+        self.includes.iter().any(|i| i.exact(path))
+            && !self.excludes.iter().any(|e| e.matches(path))
     }
 
     /// Whether a literal include names a path strictly below directory `dir`.
@@ -323,16 +333,25 @@ mod tests {
         let s = spec(&["src", "a.txt"], "");
         assert!(s.matches(b"src/x/y.rs") && s.matches(b"a.txt") && !s.matches(b"srcx/y"));
         assert_eq!(s.prefixes(), [b"src".to_vec(), b"a.txt".to_vec()]);
-        assert!(s.may_contain_dir(b"src/x") && s.may_contain_dir(b"") && !s.may_contain_dir(b"other"));
+        assert!(
+            s.may_contain_dir(b"src/x") && s.may_contain_dir(b"") && !s.may_contain_dir(b"other")
+        );
     }
 
     #[test]
     fn relative_to_the_current_directory() {
         let s = spec(&[".", "../x", "y/../z"], "a/b");
-        let got: Vec<_> = s.includes().iter().map(|i| i.literal().unwrap().to_vec()).collect();
+        let got: Vec<_> = s
+            .includes()
+            .iter()
+            .map(|i| i.literal().unwrap().to_vec())
+            .collect();
         assert_eq!(got, [b"a/b".to_vec(), b"a/x".to_vec(), b"a/b/z".to_vec()]);
         let err = Spec::parse(&["../../.."], "a/b", Path::new("/repo")).unwrap_err();
-        assert!(err.to_string().contains("is outside repository at '/repo'"), "{err}");
+        assert!(
+            err.to_string().contains("is outside repository at '/repo'"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -341,7 +360,9 @@ mod tests {
         assert!(s.matches(b"a.txt") && s.matches(b"d/e/a.txt") && !s.matches(b"a.rs"));
         assert!(s.includes()[0].is_wild() && s.prefixes().is_empty());
         let s = spec(&["lib/*.rs"], "pkg");
-        assert!(s.matches(b"pkg/lib/a.rs") && s.matches(b"pkg/lib/x/a.rs") && !s.matches(b"lib/a.rs"));
+        assert!(
+            s.matches(b"pkg/lib/a.rs") && s.matches(b"pkg/lib/x/a.rs") && !s.matches(b"lib/a.rs")
+        );
         assert_eq!(s.prefixes(), [b"pkg/lib".to_vec()]);
         assert!(wild(b"f[a-c]?", b"fbz") && !wild(b"f[!a-c]?", b"fbz") && wild(b"a\\*b", b"a*b"));
     }

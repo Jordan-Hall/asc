@@ -9,10 +9,39 @@ use crate::dispatch::{ASC_ONLY_VERBS, GIT_BUILTINS, is_unavailable};
 /// `dispatch::ASC_ONLY_VERBS`, which is what gives it D5 precedence and keeps it out of the
 /// autocorrect candidates.
 pub const STACK_VERBS: &[&str] = &[
-    "create", "modify", "absorb", "restack", "continue", "abort", "sync", "submit", "sl",
-    "smartlog", "up", "down", "top", "bottom", "next", "prev", "reword", "uncommit", "unamend",
-    "abandon", "change-id", "split", "squash", "fold", "move", "reorder", "stack", "undo", "redo",
-    "op", "evolog", "interdiff", "share",
+    "create",
+    "modify",
+    "absorb",
+    "restack",
+    "continue",
+    "abort",
+    "sync",
+    "submit",
+    "sl",
+    "smartlog",
+    "up",
+    "down",
+    "top",
+    "bottom",
+    "next",
+    "prev",
+    "reword",
+    "uncommit",
+    "unamend",
+    "abandon",
+    "change-id",
+    "split",
+    "squash",
+    "fold",
+    "move",
+    "reorder",
+    "stack",
+    "undo",
+    "redo",
+    "op",
+    "evolog",
+    "interdiff",
+    "share",
 ];
 
 /// Whether `name` is a stack verb word.
@@ -41,11 +70,17 @@ mod tests {
 
     impl Lookup for Fake {
         fn alias(&self, name: &str) -> Option<String> {
-            self.aliases.iter().find(|(n, _)| *n == name).map(|(_, v)| (*v).to_owned())
+            self.aliases
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (*v).to_owned())
         }
         fn external(&self, prefix: &str, name: &str) -> Option<PathBuf> {
             let file = format!("{prefix}{name}");
-            self.externals.iter().any(|e| *e == file).then(|| PathBuf::from(file))
+            self.externals
+                .iter()
+                .any(|e| *e == file)
+                .then(|| PathBuf::from(file))
         }
     }
 
@@ -65,14 +100,32 @@ mod tests {
 
     #[test]
     fn git_runs_a_stack_verb_only_where_git_would_fail() {
-        let bare = Fake { aliases: vec![], externals: vec![] };
-        let ext = Fake { aliases: vec![], externals: vec!["git-sync"] };
-        let alias = Fake { aliases: vec![("undo", "reset --soft HEAD~1")], externals: vec!["git-undo"] };
+        let bare = Fake {
+            aliases: vec![],
+            externals: vec![],
+        };
+        let ext = Fake {
+            aliases: vec![],
+            externals: vec!["git-sync"],
+        };
+        let alias = Fake {
+            aliases: vec![("undo", "reset --soft HEAD~1")],
+            externals: vec!["git-undo"],
+        };
         for v in STACK_VERBS {
-            assert_eq!(resolve(Program::Git, v, &bare), Resolved::Command((*v).to_owned()));
-            assert_eq!(resolve(Program::Asc, v, &ext), Resolved::Command((*v).to_owned()));
+            assert_eq!(
+                resolve(Program::Git, v, &bare),
+                Resolved::Command((*v).to_owned())
+            );
+            assert_eq!(
+                resolve(Program::Asc, v, &ext),
+                Resolved::Command((*v).to_owned())
+            );
         }
-        assert_eq!(resolve(Program::Git, "sync", &ext), Resolved::External(PathBuf::from("git-sync")));
+        assert_eq!(
+            resolve(Program::Git, "sync", &ext),
+            Resolved::External(PathBuf::from("git-sync"))
+        );
         assert_eq!(
             resolve(Program::Git, "undo", &alias),
             Resolved::Alias("reset --soft HEAD~1".to_owned())
@@ -83,7 +136,10 @@ mod tests {
     fn stack_verbs_are_never_autocorrect_candidates() {
         let git: Vec<&str> = GIT_BUILTINS.to_vec();
         // `comit` is a typo of `commit`; no stack verb is offered.
-        assert_eq!(similar("comit", git.iter().copied()), vec!["commit".to_owned()]);
+        assert_eq!(
+            similar("comit", git.iter().copied()),
+            vec!["commit".to_owned()]
+        );
         // A stack verb's own name matches nothing that is not a git command.
         for v in STACK_VERBS {
             assert!(!git.contains(v), "{v}");

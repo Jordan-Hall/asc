@@ -15,16 +15,31 @@ use super::revparse::commit_of;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "describe", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "describe",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Flags and commit-ishes.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
     pub rest: Vec<OsString>,
 }
 
-const FLAGS: &[&str] = &["--tags", "--long", "--always", "--abbrev", "--match", "--exclude"];
+const FLAGS: &[&str] = &[
+    "--tags",
+    "--long",
+    "--always",
+    "--abbrev",
+    "--match",
+    "--exclude",
+];
 
-pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "describe", flags: FLAGS, placeholders: &[] }];
+pub const NATIVE: &[NativeSpec] = &[NativeSpec {
+    cmd: "describe",
+    flags: FLAGS,
+    placeholders: &[],
+}];
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(e.to_string())
@@ -46,11 +61,16 @@ impl Opts {
         let mut o = Self::default();
         let mut it = args.iter().map(|a| a.to_string_lossy().into_owned());
         while let Some(arg) = it.next() {
-            let (name, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(n, v)| (n, Some(v.to_owned())));
+            let (name, inline) = arg
+                .split_once('=')
+                .map_or((arg.as_str(), None), |(n, v)| (n, Some(v.to_owned())));
             let mut value = |inline: Option<String>| {
-                inline
-                    .or_else(|| it.next())
-                    .ok_or_else(|| CliError::Usage(format!("error: option `{}' requires a value", name.trim_start_matches('-'))))
+                inline.or_else(|| it.next()).ok_or_else(|| {
+                    CliError::Usage(format!(
+                        "error: option `{}' requires a value",
+                        name.trim_start_matches('-')
+                    ))
+                })
             };
             match name {
                 "--tags" => o.tags = true,
@@ -58,7 +78,12 @@ impl Opts {
                 "--always" => o.always = true,
                 "--abbrev" => {
                     if let Some(v) = inline {
-                        o.abbrev = Some(v.parse::<usize>().map_err(|_| CliError::Raw(format!("fatal: '{v}': not an integer (for --abbrev)"), 128))?);
+                        o.abbrev = Some(v.parse::<usize>().map_err(|_| {
+                            CliError::Raw(
+                                format!("fatal: '{v}': not an integer (for --abbrev)"),
+                                128,
+                            )
+                        })?);
                     }
                 }
                 "--match" => o.matches.push(value(inline)?),
@@ -83,15 +108,24 @@ impl Opts {
 
 /// Whether `text` already ends in `-<n>-g<hex>`.
 fn has_distance(text: &str) -> bool {
-    let Some((head, hash)) = text.rsplit_once("-g") else { return false };
-    let Some((_, n)) = head.rsplit_once('-') else { return false };
-    !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()) && n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty()
+    let Some((head, hash)) = text.rsplit_once("-g") else {
+        return false;
+    };
+    let Some((_, n)) = head.rsplit_once('-') else {
+        return false;
+    };
+    !hash.is_empty()
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+        && n.bytes().all(|b| b.is_ascii_digit())
+        && !n.is_empty()
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let o = Opts::parse(&a.rest)?;
     if o.long && o.abbrev == Some(0) {
-        return Err(fatal("options '--long' and '--abbrev=0' cannot be used together"));
+        return Err(fatal(
+            "options '--long' and '--abbrev=0' cannot be used together",
+        ));
     }
     let ws = ctx.ws()?;
     let default = ctx
@@ -99,11 +133,17 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         .get("core.abbrev")
         .and_then(|v| v.parse::<usize>().ok())
         .map_or(7, |n| n.clamp(4, 40));
-    let abbrev = o.abbrev.map_or(default, |n| if n == 0 { 0 } else { n.clamp(4, 40) });
+    let abbrev = o
+        .abbrev
+        .map_or(default, |n| if n == 0 { 0 } else { n.clamp(4, 40) });
     let describer = Describer::load(ws, abbrev).await?;
     let mut out = Output::open(ctx, "describe", PagerWant::Never)?;
     let mut result = Ok(());
-    let words: Vec<String> = if o.commits.is_empty() { vec!["HEAD".into()] } else { o.commits.clone() };
+    let words: Vec<String> = if o.commits.is_empty() {
+        vec!["HEAD".into()]
+    } else {
+        o.commits.clone()
+    };
     for word in &words {
         result = describe_one(ctx, &o, &describer, abbrev, word, &mut out).await;
         if result.is_err() {
@@ -128,9 +168,16 @@ async fn describe_one(
     let id = commit_of(ctx, word)
         .await?
         .ok_or_else(|| fatal(format!("Not a valid object name {word}")))?;
-    let hex = ws.engine.git_commit_of(id).await.map_err(fatal)?.to_string();
+    let hex = ws
+        .engine
+        .git_commit_of(id)
+        .await
+        .map_err(fatal)?
+        .to_string();
     let hist = Hist::select(ws);
-    let found = describer.describe(hist.api(ws), id, &hex, &o.describer_options(abbrev)).await;
+    let found = describer
+        .describe(hist.api(ws), id, &hex, &o.describer_options(abbrev))
+        .await;
     let line = if found.is_empty() {
         if o.always {
             hex[..abbrev.clamp(4, 40)].to_owned()
@@ -189,11 +236,16 @@ async fn none_found(ws: &super::common::WsCtx, o: &Opts, hex: &str) -> Result<Cl
         CliError::Fatal("No names found, cannot describe anything.".into())
     } else if !o.tags && names.iter().all(|t| t.tag.is_none()) {
         CliError::Raw(
-            format!("fatal: No annotated tags can describe '{hex}'.\nHowever, there were unannotated tags: try --tags."),
+            format!(
+                "fatal: No annotated tags can describe '{hex}'.\nHowever, there were unannotated tags: try --tags."
+            ),
             128,
         )
     } else {
-        CliError::Raw(format!("fatal: No tags can describe '{hex}'.\nTry --always, or create some tags."), 128)
+        CliError::Raw(
+            format!("fatal: No tags can describe '{hex}'.\nTry --always, or create some tags."),
+            128,
+        )
     })
 }
 
@@ -211,14 +263,21 @@ mod tests {
 
     #[test]
     fn filters_apply_to_tag_names() {
-        let o = Opts { matches: vec!["v*".into()], excludes: vec!["v2".into()], ..Opts::default() };
+        let o = Opts {
+            matches: vec!["v*".into()],
+            excludes: vec!["v2".into()],
+            ..Opts::default()
+        };
         assert!(o.names("v1") && !o.names("v2") && !o.names("x1"));
         assert!(glob_matches("v[0-9]", "v7") && !glob_matches("v1.0", "v1x0"));
     }
 
     #[test]
     fn options_become_describer_text() {
-        let args: Vec<OsString> = ["--tags", "--match", "v*", "--exclude=x*", "HEAD~1"].iter().map(OsString::from).collect();
+        let args: Vec<OsString> = ["--tags", "--match", "v*", "--exclude=x*", "HEAD~1"]
+            .iter()
+            .map(OsString::from)
+            .collect();
         let o = Opts::parse(&args).unwrap();
         assert_eq!(o.describer_options(9), "abbrev=9,tags,match=v*,exclude=x*");
         assert_eq!(o.commits, ["HEAD~1"]);

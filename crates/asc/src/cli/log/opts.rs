@@ -119,7 +119,12 @@ fn color_when(value: Option<&str>) -> Result<ColorWhen> {
         None | Some("always" | "true" | "yes" | "on" | "1") => Ok(ColorWhen::Always),
         Some("never" | "false" | "no" | "off" | "0") => Ok(ColorWhen::Never),
         Some("auto") => Ok(ColorWhen::Auto),
-        Some(v) => Err(CliError::Raw(format!("error: option `color' expects \"always\", \"auto\", or \"never\"\nfatal: bad color value '{v}'"), 129)),
+        Some(v) => Err(CliError::Raw(
+            format!(
+                "error: option `color' expects \"always\", \"auto\", or \"never\"\nfatal: bad color value '{v}'"
+            ),
+            129,
+        )),
     }
 }
 
@@ -127,7 +132,10 @@ impl Opts {
     /// Parses `args` (the words after the command name). `--` starts the pathspecs.
     pub fn parse(args: &[OsString]) -> Result<Self> {
         let mut o = Self::default();
-        let mut it = args.iter().map(|a| a.to_string_lossy().into_owned()).peekable();
+        let mut it = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .peekable();
         let mut args_done = false;
         while let Some(arg) = it.next() {
             if args_done {
@@ -166,7 +174,11 @@ impl Opts {
             let rest = &cluster[at + c.len_utf8()..];
             match c {
                 'n' | 'U' => {
-                    let value = if rest.is_empty() { it.next().unwrap_or_default() } else { rest.to_owned() };
+                    let value = if rest.is_empty() {
+                        it.next().unwrap_or_default()
+                    } else {
+                        rest.to_owned()
+                    };
                     let n = number(&format!("-{c}"), value.trim_start_matches('='))?;
                     if c == 'n' {
                         self.max_count = Some(n);
@@ -258,7 +270,10 @@ impl Opts {
                     Some("full") => Decorate::Full,
                     Some("no") => Decorate::No,
                     Some(v) => {
-                        return Err(CliError::Raw(format!("fatal: invalid --decorate option: {v}"), 128));
+                        return Err(CliError::Raw(
+                            format!("fatal: invalid --decorate option: {v}"),
+                            128,
+                        ));
                     }
                 });
             }
@@ -312,19 +327,42 @@ mod tests {
 
     #[test]
     fn revisions_flags_and_paths_interleave() {
-        let o = parse(&["master", "--oneline", "^dev", "--not", "x", "--", "a.txt", "-weird"]);
+        let o = parse(&[
+            "master",
+            "--oneline",
+            "^dev",
+            "--not",
+            "x",
+            "--",
+            "a.txt",
+            "-weird",
+        ]);
         assert_eq!(
             o.revs,
-            vec![Tok::Rev("master".into()), Tok::Rev("^dev".into()), Tok::Not, Tok::Rev("x".into())]
+            vec![
+                Tok::Rev("master".into()),
+                Tok::Rev("^dev".into()),
+                Tok::Not,
+                Tok::Rev("x".into())
+            ]
         );
         assert_eq!(o.pretty.as_deref(), Some("oneline"));
-        assert_eq!(o.paths, vec![OsString::from("a.txt"), OsString::from("-weird")]);
+        assert_eq!(
+            o.paths,
+            vec![OsString::from("a.txt"), OsString::from("-weird")]
+        );
     }
 
     #[test]
     fn values_come_inline_or_next() {
-        assert_eq!(parse(&["--author", "bob", "--grep=fix"]).authors, vec!["bob"]);
-        assert_eq!(parse(&["--format=%H"]).pretty.as_deref(), Some("tformat:%H"));
+        assert_eq!(
+            parse(&["--author", "bob", "--grep=fix"]).authors,
+            vec!["bob"]
+        );
+        assert_eq!(
+            parse(&["--format=%H"]).pretty.as_deref(),
+            Some("tformat:%H")
+        );
         assert_eq!(parse(&["--pretty"]).pretty.as_deref(), Some("medium"));
         assert!(parse(&["-ps"]).diff.patch == Some(false));
     }

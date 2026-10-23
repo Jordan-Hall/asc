@@ -31,8 +31,8 @@ use asc_wc::SafeRoot;
 
 use super::lifecycle::{self, Probe};
 use crate::cli::common::{CliEngine, CliError, Ctx, Gate};
-use crate::cli::restore::{root_of, sync_worktree};
 use crate::cli::config;
+use crate::cli::restore::{root_of, sync_worktree};
 use crate::cli::safe_dir::owned_by_current_user;
 use crate::dispatch::Program;
 use crate::env::GitEnv;
@@ -77,7 +77,9 @@ impl Mounts for DaemonMounts {
             Probe::Hung => Err("the daemon does not answer; run 'asc daemon stop' and retry".into()),
             Probe::Up(_) => {
                 let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
-                let ask = wire::UnmountRequest { ws_id: ws.to_string() };
+                let ask = wire::UnmountRequest {
+                    ws_id: ws.to_string(),
+                };
                 match tokio::time::timeout(cfg.stop_wait, client.unmount(ask)).await {
                     Err(_) => Err("the daemon did not unmount the workspace in time".into()),
                     Ok(Ok(_)) => Ok(()),
@@ -118,7 +120,11 @@ impl WorkspaceFactory for DaemonWorkspaceFactory {
         }
         // The command layer's futures are not `Send`, so the conversion runs to completion on a
         // blocking thread of this runtime.
-        let (mounts, ws, runtime) = (self.mounts.clone(), ws.clone(), tokio::runtime::Handle::current());
+        let (mounts, ws, runtime) = (
+            self.mounts.clone(),
+            ws.clone(),
+            tokio::runtime::Handle::current(),
+        );
         tokio::task::spawn_blocking(move || {
             runtime.block_on(async move {
                 let get = |k: &str| std::env::var_os(k);
@@ -150,13 +156,17 @@ pub(crate) async fn convert(
     let root = PathBuf::from(&ws.ws.mount);
     restore_gitfile(&root, &home.gitdir(ws.ws.id))?;
     // The gate checks ownership, `safe.directory` and the registration before anything is read.
-    let ctx = Ctx::open_with(Program::Asc, env, root, gate).await.map_err(text)?;
+    let ctx = Ctx::open_with(Program::Asc, env, root, gate)
+        .await
+        .map_err(text)?;
     let opened = ctx.ws().map_err(text)?;
     if opened.workspace.ws.id != ws.ws.id {
         return Err("the directory belongs to another workspace".into());
     }
     materialise(&ctx).await.map_err(text)?;
-    workspaces::set_mode(&opened.db, ws.ws.id, Mode::Plain).await.map_err(|e| e.to_string())?;
+    workspaces::set_mode(&opened.db, ws.ws.id, Mode::Plain)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -176,15 +186,25 @@ fn restore_gitfile(root: &Path, gitdir: &Path) -> SinkResult {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(&gitfile)?;
-    std::io::Write::write_all(&mut out, format!("gitdir: {}\n", gitdir.display()).as_bytes())?;
+    let mut out = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&gitfile)?;
+    std::io::Write::write_all(
+        &mut out,
+        format!("gitdir: {}\n", gitdir.display()).as_bytes(),
+    )?;
     Ok(())
 }
 
 /// Whether the file at `path` holds content other than the tracked blob.
 fn modified(gate: &SafeRoot, path: &RepoPath, size: u64, git: &asc_core::id::GitOid) -> bool {
-    let Some(abs) = gate.resolve(path) else { return false };
-    let Ok(meta) = fs::symlink_metadata(&abs) else { return false };
+    let Some(abs) = gate.resolve(path) else {
+        return false;
+    };
+    let Ok(meta) = fs::symlink_metadata(&abs) else {
+        return false;
+    };
     if !meta.is_file() {
         return false;
     }
@@ -193,7 +213,9 @@ fn modified(gate: &SafeRoot, path: &RepoPath, size: u64, git: &asc_core::id::Git
         // placeholder.
         return fs::File::open(&abs).is_ok();
     }
-    let Ok(mut file) = fs::File::open(&abs) else { return false };
+    let Ok(mut file) = fs::File::open(&abs) else {
+        return false;
+    };
     let mut hasher = BlobOidHasher::new(size);
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -214,14 +236,22 @@ async fn materialise(ctx: &Ctx) -> Result<(), CliError> {
     let ws = ctx.ws()?;
     let head = ws.head_commit().await?;
     let tree = root_of(ws, head).await?;
-    let all = ws.engine.leafdiff(CliEngine::empty_tree_id(), tree, None).await?;
+    let all = ws
+        .engine
+        .leafdiff(CliEngine::empty_tree_id(), tree, None)
+        .await?;
     let gate = SafeRoot::new(ws.projection.toplevel());
     let mut write: Vec<RepoPath> = Vec::new();
     for (path, change) in &all {
         if gate.resolve(path).is_none() {
             continue; // Behind a link: outside the work tree.
         }
-        if let Change::Write { kind: Kind::File | Kind::Exec, size, git, .. } = change
+        if let Change::Write {
+            kind: Kind::File | Kind::Exec,
+            size,
+            git,
+            ..
+        } = change
             && modified(&gate, path, *size, git)
         {
             continue; // A local edit stays; its index entry stays stat-dirty.
@@ -269,12 +299,23 @@ mod tests {
     #[tokio::test]
     async fn converting_a_virtual_workspace_materialises_it_and_keeps_edits() {
         let f = Fixture::new().await;
-        let a = f.commit(&[], &[("a.txt", b"alpha"), ("keep.txt", b"original"), ("d/c.txt", b"deep")]).await;
+        let a = f
+            .commit(
+                &[],
+                &[
+                    ("a.txt", b"alpha"),
+                    ("keep.txt", b"original"),
+                    ("d/c.txt", b"deep"),
+                ],
+            )
+            .await;
         f.set_branch("master", a).await;
         f.checkout_branch("master", Some(a)).await;
         // A virtual workspace as the provider leaves it after unmount: no placeholders readable,
         // one hydrated file with a local edit, no gitfile.
-        workspaces::set_mode(&f.db, f.ws, Mode::Virtual).await.unwrap();
+        workspaces::set_mode(&f.db, f.ws, Mode::Virtual)
+            .await
+            .unwrap();
         fs::write(f.root.join("keep.txt"), b"edited by the user").unwrap();
         fs::remove_file(f.root.join(".git")).unwrap();
 
@@ -282,24 +323,46 @@ mod tests {
         let mounts = Recording::default();
         let safe = SafeDirectory::default();
         let home = || Ok(f.home.clone());
-        let gate = Gate { safe: &safe, home: &home, owned: &owned_by_current_user };
-        convert(&mounts, &ws, &f.home, GitEnv::from_vars(&|_| None), &gate).await.unwrap();
+        let gate = Gate {
+            safe: &safe,
+            home: &home,
+            owned: &owned_by_current_user,
+        };
+        convert(&mounts, &ws, &f.home, GitEnv::from_vars(&|_| None), &gate)
+            .await
+            .unwrap();
 
-        assert_eq!(*mounts.0.lock().unwrap(), [f.ws], "the workspace is unmounted first");
+        assert_eq!(
+            *mounts.0.lock().unwrap(),
+            [f.ws],
+            "the workspace is unmounted first"
+        );
         let ws = workspaces::get(&f.db, f.ws).await.unwrap().unwrap();
         assert_eq!(ws.ws.mode, Mode::Plain);
         assert_eq!(fs::read(f.root.join("a.txt")).unwrap(), b"alpha");
         assert_eq!(fs::read(f.root.join("d").join("c.txt")).unwrap(), b"deep");
-        assert_eq!(fs::read(f.root.join("keep.txt")).unwrap(), b"edited by the user");
+        assert_eq!(
+            fs::read(f.root.join("keep.txt")).unwrap(),
+            b"edited by the user"
+        );
 
         // The index carries real stat for what was written, so `status` has nothing to hash.
         let index = IndexFile::read_or_empty(&f.home.gitdir(f.ws).join("index")).unwrap();
-        let entry = |p: &str| index.entries.iter().find(|e| e.path.as_bytes() == p.as_bytes()).unwrap();
+        let entry = |p: &str| {
+            index
+                .entries
+                .iter()
+                .find(|e| e.path.as_bytes() == p.as_bytes())
+                .unwrap()
+        };
         assert_eq!(entry("a.txt").size, 5);
         assert_ne!(entry("a.txt").mtime, Default::default());
         assert_eq!(entry("d/c.txt").size, 4);
 
         // Converting again is a no-op for a plain workspace.
-        DaemonWorkspaceFactory::new(Arc::new(Recording::default())).convert_plain(&ws).await.unwrap();
+        DaemonWorkspaceFactory::new(Arc::new(Recording::default()))
+            .convert_plain(&ws)
+            .await
+            .unwrap();
     }
 }

@@ -147,14 +147,21 @@ impl Trace {
     }
 
     fn validate(&self) -> Result<(), String> {
-        for (what, v) in [("tool", &self.tool), ("version", &self.version), ("git", &self.git), ("driver", &self.driver)] {
+        for (what, v) in [
+            ("tool", &self.tool),
+            ("version", &self.version),
+            ("git", &self.git),
+            ("driver", &self.driver),
+        ] {
             if v.trim().is_empty() {
                 return Err(format!("`{what}` is empty"));
             }
         }
         match self.provenance {
             Provenance::Authored if self.recapture.is_none() => {
-                return Err("an authored trace names the spike that replaces it (`recapture`)".into());
+                return Err(
+                    "an authored trace names the spike that replaces it (`recapture`)".into(),
+                );
             }
             Provenance::Extracted if self.source.is_none() => {
                 return Err("an extracted trace names its `source` file".into());
@@ -162,10 +169,14 @@ impl Trace {
             _ => {}
         }
         if self.steps.is_empty() || self.steps.len() > MAX_STEPS {
-            return Err(format!("{} steps (1..={MAX_STEPS} allowed)", self.steps.len()));
+            return Err(format!(
+                "{} steps (1..={MAX_STEPS} allowed)",
+                self.steps.len()
+            ));
         }
         for (i, step) in self.steps.iter().enumerate() {
-            step.validate().map_err(|e| format!("step {}: {e}", i + 1))?;
+            step.validate()
+                .map_err(|e| format!("step {}: {e}", i + 1))?;
         }
         Ok(())
     }
@@ -173,7 +184,11 @@ impl Trace {
 
 impl Step {
     fn validate(&self) -> Result<(), String> {
-        let kinds = [self.git.is_some(), self.sh.is_some(), self.hook_event.is_some()];
+        let kinds = [
+            self.git.is_some(),
+            self.sh.is_some(),
+            self.hook_event.is_some(),
+        ];
         if kinds.iter().filter(|k| **k).count() != 1 {
             return Err("a step is exactly one of `git`, `sh`, `hook_event`".into());
         }
@@ -191,7 +206,11 @@ impl Step {
                 check_text(stdin)?;
             }
             check_routes(self.routes.as_deref())?;
-        } else if !self.hooks.is_empty() || self.exit.is_some() || self.routes.is_some() || !self.env.is_empty() {
+        } else if !self.hooks.is_empty()
+            || self.exit.is_some()
+            || self.routes.is_some()
+            || !self.env.is_empty()
+        {
             return Err("`hook`, `exit`, `routes` and `env` belong to git steps".into());
         }
         if let Some(sh) = &self.sh {
@@ -222,9 +241,13 @@ impl Step {
 impl Hook {
     fn validate(&self) -> Result<(), String> {
         if !HOOKS.contains(&self.name.as_str()) {
-            return Err(format!("hook {:?} is not a git hook (SPEC §9.4.1)", self.name));
+            return Err(format!(
+                "hook {:?} is not a git hook (SPEC §9.4.1)",
+                self.name
+            ));
         }
-        check_relative(self.path.strip_prefix("${GITDIR}/").unwrap_or(&self.path)).map_err(|e| format!("hook {} path: {e}", self.name))?;
+        check_relative(self.path.strip_prefix("${GITDIR}/").unwrap_or(&self.path))
+            .map_err(|e| format!("hook {} path: {e}", self.name))?;
         if !(0..=255).contains(&self.exit) {
             return Err(format!("hook {} exit {}", self.name, self.exit));
         }
@@ -242,7 +265,10 @@ impl Hook {
             if let Some(argv) = &call.git {
                 check_argv(argv)?;
                 if !matches!(call.exit, Some(0..=255)) {
-                    return Err(format!("hook {}: a git call needs `exit` 0..=255", self.name));
+                    return Err(format!(
+                        "hook {}: a git call needs `exit` 0..=255",
+                        self.name
+                    ));
                 }
                 check_routes(call.routes.as_deref())?;
             }
@@ -264,7 +290,9 @@ fn check_routes(routes: Option<&str>) -> Result<(), String> {
 fn check_env(env: &BTreeMap<String, String>) -> Result<(), String> {
     for (k, v) in env {
         if !ENV_ALLOWED.contains(&k.as_str()) {
-            return Err(format!("environment variable {k} is not allowed in a trace"));
+            return Err(format!(
+                "environment variable {k} is not allowed in a trace"
+            ));
         }
         check_text(v)?;
     }
@@ -273,7 +301,10 @@ fn check_env(env: &BTreeMap<String, String>) -> Result<(), String> {
 
 fn check_text(s: &str) -> Result<(), String> {
     if s.len() > MAX_TEXT {
-        return Err(format!("text of {} bytes exceeds the {MAX_TEXT} byte limit", s.len()));
+        return Err(format!(
+            "text of {} bytes exceeds the {MAX_TEXT} byte limit",
+            s.len()
+        ));
     }
     if s.contains('\0') {
         return Err("text holds a NUL".into());
@@ -286,7 +317,10 @@ fn check_text(s: &str) -> Result<(), String> {
 
 fn check_argv(argv: &[String]) -> Result<(), String> {
     if argv.is_empty() || argv.len() > MAX_ARGS {
-        return Err(format!("argv of {} words (1..={MAX_ARGS} allowed)", argv.len()));
+        return Err(format!(
+            "argv of {} words (1..={MAX_ARGS} allowed)",
+            argv.len()
+        ));
     }
     for arg in argv {
         check_text(arg)?;
@@ -298,7 +332,9 @@ fn check_argv(argv: &[String]) -> Result<(), String> {
 /// An argument must not name a host path: the fixture root is `${ROOT}`, and the only other
 /// place a trace may touch is a sibling bare repository, `../<name>.git`.
 fn check_arg_path(arg: &str) -> Result<(), String> {
-    let rooted = arg.strip_prefix("${ROOT}").or_else(|| arg.strip_prefix("${GITDIR}"));
+    let rooted = arg
+        .strip_prefix("${ROOT}")
+        .or_else(|| arg.strip_prefix("${GITDIR}"));
     if rooted.is_none() && (arg.starts_with('/') || arg.starts_with('\\') || has_drive(arg)) {
         return Err(format!("argument {arg:?} is a host path; use ${{ROOT}}"));
     }
@@ -320,7 +356,11 @@ fn has_drive(s: &str) -> bool {
 /// `../origin.git`: the one escape a trace may use, a bare repository next to the work tree.
 fn is_sibling_repo(path: &str) -> bool {
     path.strip_prefix("../").is_some_and(|name| {
-        name.ends_with(".git") && name.len() > 4 && name.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        name.ends_with(".git")
+            && name.len() > 4
+            && name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
     })
 }
 
@@ -328,7 +368,10 @@ fn check_relative(path: &str) -> Result<(), String> {
     if path.is_empty() || path.starts_with('/') || path.contains('\\') || has_drive(path) {
         return Err(format!("{path:?} is not a relative `/` path"));
     }
-    if path.split('/').any(|c| c.is_empty() || c == "." || c == "..") {
+    if path
+        .split('/')
+        .any(|c| c.is_empty() || c == "." || c == "..")
+    {
         return Err(format!("{path:?} has an empty, `.` or `..` component"));
     }
     Ok(())

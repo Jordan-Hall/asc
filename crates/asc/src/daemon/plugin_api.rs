@@ -49,7 +49,9 @@ use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use sqlx::Row as _;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, BufReader,
+};
 use tonic::Status;
 
 use super::service::{Mounted, State, parse_id, parse_paths};
@@ -140,12 +142,15 @@ fn path_args(raw: &[Bytes]) -> Result<Vec<OsString>, Status> {
     let mut out = Vec::with_capacity(paths.len());
     let mut total = 0usize;
     for p in &paths {
-        let text = std::str::from_utf8(p.as_bytes()).map_err(|_| bad("a path is not valid UTF-8"))?;
+        let text =
+            std::str::from_utf8(p.as_bytes()).map_err(|_| bad("a path is not valid UTF-8"))?;
         total += text.len() + 1;
         out.push(OsString::from(text));
     }
     if total > MAX_ARG_BYTES {
-        return Err(bad(format!("the paths exceed {MAX_ARG_BYTES} bytes; ask for the whole tree")));
+        return Err(bad(format!(
+            "the paths exceed {MAX_ARG_BYTES} bytes; ask for the whole tree"
+        )));
     }
     Ok(out)
 }
@@ -165,7 +170,8 @@ fn pool() -> &'static DescriptorPool {
 fn command(m: &Mounted, args: &[OsString]) -> Result<tokio::process::Command, Status> {
     let root = PathBuf::from(&m.row.ws.mount);
     super::service::check_mount_root(&root).map_err(Status::permission_denied)?;
-    let exe = std::env::current_exe().map_err(|e| internal(format!("cannot find the asc binary: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| internal(format!("cannot find the asc binary: {e}")))?;
     let mut c = tokio::process::Command::new(exe);
     c.args(args)
         .current_dir(&root)
@@ -194,15 +200,31 @@ async fn read_capped<R: AsyncRead + Unpin>(r: R, cap: usize) -> std::io::Result<
 fn failure(cmd: &str, code: Option<i32>, stderr: &[u8]) -> Status {
     let text = String::from_utf8_lossy(stderr);
     let text: String = text.trim().chars().take(512).collect();
-    Status::failed_precondition(format!("asc {cmd} failed ({}): {text}", code.map_or("signal".into(), |c| c.to_string())))
+    Status::failed_precondition(format!(
+        "asc {cmd} failed ({}): {text}",
+        code.map_or("signal".into(), |c| c.to_string())
+    ))
 }
 
 /// Runs a command to its end and returns its stdout.
-async fn run_collect(m: &Mounted, args: Vec<OsString>, stdin: Option<Vec<u8>>) -> Result<Vec<u8>, Status> {
-    let cmd = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+async fn run_collect(
+    m: &Mounted,
+    args: Vec<OsString>,
+    stdin: Option<Vec<u8>>,
+) -> Result<Vec<u8>, Status> {
+    let cmd = args
+        .first()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut c = command(m, &args)?;
-    c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-    let mut child = c.spawn().map_err(|e| internal(format!("cannot run asc {cmd}: {e}")))?;
+    c.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    let mut child = c
+        .spawn()
+        .map_err(|e| internal(format!("cannot run asc {cmd}: {e}")))?;
     let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(internal("the child has no pipes"));
     };
@@ -219,12 +241,17 @@ async fn run_collect(m: &Mounted, args: Vec<OsString>, stdin: Option<Vec<u8>>) -
     };
     let Ok((o, e)) = tokio::time::timeout(RUN_LIMIT, work).await else {
         let _ = child.kill().await;
-        return Err(Status::deadline_exceeded(format!("asc {cmd} ran longer than {} s", RUN_LIMIT.as_secs())));
+        return Err(Status::deadline_exceeded(format!(
+            "asc {cmd} ran longer than {} s",
+            RUN_LIMIT.as_secs()
+        )));
     };
     let ((stdout, over), (stderr, _)) = (o.map_err(internal)?, e.map_err(internal)?);
     if over {
         let _ = child.kill().await;
-        return Err(Status::resource_exhausted(format!("the answer of asc {cmd} exceeds {MAX_OUT} bytes")));
+        return Err(Status::resource_exhausted(format!(
+            "the answer of asc {cmd} exceeds {MAX_OUT} bytes"
+        )));
     }
     let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
         .await
@@ -238,9 +265,13 @@ async fn run_collect(m: &Mounted, args: Vec<OsString>, stdin: Option<Vec<u8>>) -
 
 /// One JSON line as a message of the given type.
 fn decode_line(name: &str, line: &[u8]) -> Result<DynamicMessage, Status> {
-    let value: Value = serde_json::from_slice(line.trim_ascii()).map_err(|e| internal(format!("asc printed bad JSON: {e}")))?;
-    let desc = pool().get_message_by_name(name).ok_or_else(|| internal(format!("missing message {name}")))?;
-    asc_rpc::json::decode(&desc, &value).map_err(|e| internal(format!("asc printed a bad {name}: {e}")))
+    let value: Value = serde_json::from_slice(line.trim_ascii())
+        .map_err(|e| internal(format!("asc printed bad JSON: {e}")))?;
+    let desc = pool()
+        .get_message_by_name(name)
+        .ok_or_else(|| internal(format!("missing message {name}")))?;
+    asc_rpc::json::decode(&desc, &value)
+        .map_err(|e| internal(format!("asc printed a bad {name}: {e}")))
 }
 
 fn first_line(out: &[u8]) -> Result<&[u8], Status> {
@@ -249,7 +280,10 @@ fn first_line(out: &[u8]) -> Result<&[u8], Status> {
         .ok_or_else(|| internal("asc printed nothing"))
 }
 
-async fn read_line_capped<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Result<usize, Status> {
+async fn read_line_capped<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+) -> Result<usize, Status> {
     let mut total = 0;
     loop {
         let chunk = r.fill_buf().await.map_err(internal)?;
@@ -261,7 +295,9 @@ async fn read_line_capped<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>)
             None => (chunk.len(), false),
         };
         if buf.len() + take > MAX_LINE {
-            return Err(Status::resource_exhausted(format!("a line of the answer exceeds {MAX_LINE} bytes")));
+            return Err(Status::resource_exhausted(format!(
+                "a line of the answer exceeds {MAX_LINE} bytes"
+            )));
         }
         buf.extend_from_slice(&chunk[..take]);
         r.consume(take);
@@ -282,7 +318,9 @@ async fn pump<T: Send + 'static>(
     tx: &tokio::sync::mpsc::Sender<Result<T, Status>>,
 ) -> Result<(), Status> {
     c.stdin(Stdio::null());
-    let mut child = c.spawn().map_err(|e| internal(format!("cannot run asc {cmd}: {e}")))?;
+    let mut child = c
+        .spawn()
+        .map_err(|e| internal(format!("cannot run asc {cmd}: {e}")))?;
     let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
         return Err(internal("the child has no pipes"));
     };
@@ -292,11 +330,15 @@ async fn pump<T: Send + 'static>(
     let (mut total, mut line) = (0usize, Vec::new());
     loop {
         line.clear();
-        let n = match tokio::time::timeout_at(deadline, read_line_capped(&mut out, &mut line)).await {
+        let n = match tokio::time::timeout_at(deadline, read_line_capped(&mut out, &mut line)).await
+        {
             Ok(n) => n?,
             Err(_) => {
                 let _ = child.kill().await;
-                return Err(Status::deadline_exceeded(format!("asc {cmd} ran longer than {} s", RUN_LIMIT.as_secs())));
+                return Err(Status::deadline_exceeded(format!(
+                    "asc {cmd} ran longer than {} s",
+                    RUN_LIMIT.as_secs()
+                )));
             }
         };
         if n == 0 {
@@ -305,7 +347,9 @@ async fn pump<T: Send + 'static>(
         total += n;
         if total > MAX_STREAM {
             let _ = child.kill().await;
-            return Err(Status::resource_exhausted(format!("the answer of asc {cmd} exceeds {MAX_STREAM} bytes")));
+            return Err(Status::resource_exhausted(format!(
+                "the answer of asc {cmd} exceeds {MAX_STREAM} bytes"
+            )));
         }
         if line.trim_ascii().is_empty() {
             continue;
@@ -319,7 +363,12 @@ async fn pump<T: Send + 'static>(
     }
     let status = child.wait().await.map_err(internal)?;
     if !status.success() {
-        let stderr = errors.await.ok().and_then(Result::ok).map(|(b, _)| b).unwrap_or_default();
+        let stderr = errors
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .map(|(b, _)| b)
+            .unwrap_or_default();
         return Err(failure(cmd, status.code(), &stderr));
     }
     Ok(())
@@ -332,7 +381,10 @@ fn stream_asc<T: Send + 'static>(
     message: &'static str,
     conv: Conv<T>,
 ) -> Result<PluginStream<T>, Status> {
-    let cmd = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+    let cmd = args
+        .first()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let c = command(m, &args)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<T, Status>>(4);
     tokio::spawn(async move {
@@ -340,7 +392,10 @@ fn stream_asc<T: Send + 'static>(
             let _ = tx.send(Err(status)).await;
         }
     });
-    Ok(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) }).boxed())
+    Ok(
+        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) })
+            .boxed(),
+    )
 }
 
 fn conv_diff(d: DynamicMessage) -> Result<wire::DiffResponse, Status> {
@@ -359,26 +414,42 @@ fn mounted(state: &State, ws_id: &str) -> Result<Arc<Mounted>, Status> {
 
 // ------------------------------------------------------------------------------ Status
 
-pub async fn status(state: &Arc<State>, r: wire::WsStatusRequest) -> Result<wire::WsStatusResponse, Status> {
+pub async fn status(
+    state: &Arc<State>,
+    r: wire::WsStatusRequest,
+) -> Result<wire::WsStatusResponse, Status> {
     let m = mounted(state, &r.ws_id)?;
     if r.ignored {
         return Err(bad("ignored files are not part of the JSON status"));
     }
-    let mut args = os(&["status", "--json", if r.untracked { "--untracked-files=all" } else { "--untracked-files=no" }, "--"]);
+    let mut args = os(&[
+        "status",
+        "--json",
+        if r.untracked {
+            "--untracked-files=all"
+        } else {
+            "--untracked-files=no"
+        },
+        "--",
+    ]);
     args.extend(path_args(&r.paths)?);
     // The token is taken first, so an event after the status is never lost.
     let token = current_pos(state, &m).await?.to_string();
     let out = run_collect(&m, args, None).await?;
-    let mut resp: wire::WsStatusResponse = decode_line("asc.v1.WsStatusResponse", first_line(&out)?)?
-        .transcode_to()
-        .map_err(internal)?;
+    let mut resp: wire::WsStatusResponse =
+        decode_line("asc.v1.WsStatusResponse", first_line(&out)?)?
+            .transcode_to()
+            .map_err(internal)?;
     resp.token = token;
     Ok(resp)
 }
 
 // -------------------------------------------------------------------------------- Diff
 
-pub async fn diff(state: &Arc<State>, r: wire::WsDiffRequest) -> Result<PluginStream<wire::DiffResponse>, Status> {
+pub async fn diff(
+    state: &Arc<State>,
+    r: wire::WsDiffRequest,
+) -> Result<PluginStream<wire::DiffResponse>, Status> {
     let m = mounted(state, &r.ws_id)?;
     let format = wire::DiffFormat::try_from(r.format).map_err(|_| bad("unknown diff format"))?;
     let mut args = os(&["diff", "--json"]);
@@ -397,7 +468,11 @@ pub async fn diff(state: &Arc<State>, r: wire::WsDiffRequest) -> Result<PluginSt
         args.push(format!("-U{}", r.context.min(MAX_CONTEXT)).into());
     }
     let side = |s: &str, default: &'static str| -> Result<String, Status> {
-        Ok(if s.is_empty() { default.to_owned() } else { text_arg(s, "a diff side", false)? })
+        Ok(if s.is_empty() {
+            default.to_owned()
+        } else {
+            text_arg(s, "a diff side", false)?
+        })
     };
     let (from, to) = (side(&r.from, "index")?, side(&r.to, "worktree")?);
     let named = |s: &str| matches!(s, "index" | "worktree");
@@ -409,7 +484,9 @@ pub async fn diff(state: &Arc<State>, r: wire::WsDiffRequest) -> Result<PluginSt
             args.push(text_arg(rev, "a diff side", true)?.into());
         }
         (a, b) if named(a) || named(b) => {
-            return Err(bad("'index' and 'worktree' only combine as index to work tree, or after a revision"));
+            return Err(bad(
+                "'index' and 'worktree' only combine as index to work tree, or after a revision",
+            ));
         }
         (a, b) => {
             args.push(text_arg(a, "a diff side", true)?.into());
@@ -423,11 +500,16 @@ pub async fn diff(state: &Arc<State>, r: wire::WsDiffRequest) -> Result<PluginSt
 
 // ---------------------------------------------------------------------------------- Log
 
-pub async fn log(state: &Arc<State>, r: wire::WsLogRequest) -> Result<PluginStream<wire::LogResponse>, Status> {
+pub async fn log(
+    state: &Arc<State>,
+    r: wire::WsLogRequest,
+) -> Result<PluginStream<wire::LogResponse>, Status> {
     let m = mounted(state, &r.ws_id)?;
     let q = r.query.unwrap_or_default();
     if q.count_only || !q.page_token.is_empty() || !q.resume_token.is_empty() {
-        return Err(bad("count_only and paging tokens are not served by the workspace log"));
+        return Err(bad(
+            "count_only and paging tokens are not served by the workspace log",
+        ));
     }
     if q.include.len() + q.exclude.len() > MAX_ITEMS || q.paths.len() > MAX_ITEMS {
         return Err(bad(format!("more than {MAX_ITEMS} revisions or paths")));
@@ -442,7 +524,11 @@ pub async fn log(state: &Arc<State>, r: wire::WsLogRequest) -> Result<PluginStre
     if q.skip > 0 {
         args.push(format!("--skip={}", q.skip).into());
     }
-    let limit = if q.limit == 0 { DEFAULT_LOG } else { q.limit.min(MAX_LOG) };
+    let limit = if q.limit == 0 {
+        DEFAULT_LOG
+    } else {
+        q.limit.min(MAX_LOG)
+    };
     args.push(format!("-n{limit}").into());
     if !q.author.is_empty() {
         args.push(format!("--author={}", text_arg(&q.author, "the author", false)?).into());
@@ -457,7 +543,8 @@ pub async fn log(state: &Arc<State>, r: wire::WsLogRequest) -> Result<PluginStre
         args.push(format!("--until={}", q.until).into());
     }
     if !q.pickaxe.is_empty() {
-        let text = std::str::from_utf8(&q.pickaxe).map_err(|_| bad("the pickaxe is not valid UTF-8"))?;
+        let text =
+            std::str::from_utf8(&q.pickaxe).map_err(|_| bad("the pickaxe is not valid UTF-8"))?;
         let text = text_arg(text, "the pickaxe", false)?;
         args.push(format!("{}{text}", if q.pickaxe_regex { "-G" } else { "-S" }).into());
     }
@@ -478,11 +565,18 @@ pub async fn log(state: &Arc<State>, r: wire::WsLogRequest) -> Result<PluginStre
 
 // -------------------------------------------------------------------------------- Blame
 
-pub async fn blame(state: &Arc<State>, r: wire::WsBlameRequest) -> Result<PluginStream<wire::BlameResponse>, Status> {
+pub async fn blame(
+    state: &Arc<State>,
+    r: wire::WsBlameRequest,
+) -> Result<PluginStream<wire::BlameResponse>, Status> {
     let m = mounted(state, &r.ws_id)?;
     let mut args = os(&["blame", "--json"]);
     if r.start_line > 0 {
-        let end = if r.end_line == 0 { String::new() } else { r.end_line.to_string() };
+        let end = if r.end_line == 0 {
+            String::new()
+        } else {
+            r.end_line.to_string()
+        };
         args.push(format!("-L{},{end}", r.start_line).into());
     } else if r.end_line > 0 {
         return Err(bad("end_line needs start_line"));
@@ -502,14 +596,16 @@ pub async fn blame(state: &Arc<State>, r: wire::WsBlameRequest) -> Result<Plugin
 // ----------------------------------------------------------------------------- Affected
 
 fn ecosystem_name(e: i32) -> Result<&'static str, Status> {
-    Ok(match wire::Ecosystem::try_from(e).map_err(|_| bad("unknown ecosystem"))? {
-        wire::Ecosystem::Rust => "rust",
-        wire::Ecosystem::Python => "python",
-        wire::Ecosystem::Dotnet => "dotnet",
-        wire::Ecosystem::Node => "node",
-        wire::Ecosystem::Declared => "declared",
-        wire::Ecosystem::Unspecified => return Err(bad("an unspecified ecosystem")),
-    })
+    Ok(
+        match wire::Ecosystem::try_from(e).map_err(|_| bad("unknown ecosystem"))? {
+            wire::Ecosystem::Rust => "rust",
+            wire::Ecosystem::Python => "python",
+            wire::Ecosystem::Dotnet => "dotnet",
+            wire::Ecosystem::Node => "node",
+            wire::Ecosystem::Declared => "declared",
+            wire::Ecosystem::Unspecified => return Err(bad("an unspecified ecosystem")),
+        },
+    )
 }
 
 fn ecosystem_of(name: &str) -> wire::Ecosystem {
@@ -528,14 +624,31 @@ fn unhex(text: &str) -> Bytes {
         return Bytes::new();
     }
     let digit = |b: u8| char::from(b).to_digit(16).unwrap_or(0) as u8;
-    text.as_bytes().chunks(2).map(|p| digit(p[0]) << 4 | digit(p[1])).collect::<Vec<u8>>().into()
+    text.as_bytes()
+        .chunks(2)
+        .map(|p| digit(p[0]) << 4 | digit(p[1]))
+        .collect::<Vec<u8>>()
+        .into()
 }
 
 /// The SPEC §12A.9 document that `asc affected --json` prints, as an `AffectedResponse`.
 fn affected_of(doc: &Value) -> wire::AffectedResponse {
-    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+    let text = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let list = |k: &str| -> Vec<String> {
-        doc.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default()
+        doc.get(k)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
     };
     let projects = doc
         .get("projects")
@@ -556,7 +669,16 @@ fn affected_of(doc: &Value) -> wire::AffectedResponse {
                         ..Default::default()
                     }),
                     direct: p.get("direct").and_then(Value::as_bool).unwrap_or(false),
-                    reasons: p.get("reasons").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default(),
+                    reasons: p
+                        .get("reasons")
+                        .and_then(Value::as_array)
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     input_hash: unhex(&text(p, "hash")),
                 })
                 .collect()
@@ -565,7 +687,14 @@ fn affected_of(doc: &Value) -> wire::AffectedResponse {
     let issues = doc
         .get("issues")
         .and_then(Value::as_array)
-        .map(|a| a.iter().map(|i| wire::DetectIssue { path: Bytes::from(text(i, "path")), message: text(i, "message") }).collect())
+        .map(|a| {
+            a.iter()
+                .map(|i| wire::DetectIssue {
+                    path: Bytes::from(text(i, "path")),
+                    message: text(i, "message"),
+                })
+                .collect()
+        })
         .unwrap_or_default();
     wire::AffectedResponse {
         base: unhex(&text(doc, "base")),
@@ -580,11 +709,16 @@ fn affected_of(doc: &Value) -> wire::AffectedResponse {
     }
 }
 
-pub async fn affected(state: &Arc<State>, r: wire::WsAffectedRequest) -> Result<wire::WsAffectedResponse, Status> {
+pub async fn affected(
+    state: &Arc<State>,
+    r: wire::WsAffectedRequest,
+) -> Result<wire::WsAffectedResponse, Status> {
     let m = mounted(state, &r.ws_id)?;
     let q = r.query.unwrap_or_default();
     if q.types.len() > MAX_ITEMS || q.select.len() > MAX_ITEMS {
-        return Err(bad(format!("more than {MAX_ITEMS} ecosystems or selectors")));
+        return Err(bad(format!(
+            "more than {MAX_ITEMS} ecosystems or selectors"
+        )));
     }
     let mut args = os(&["affected", "--json"]);
     if !q.base.is_empty() {
@@ -602,7 +736,11 @@ pub async fn affected(state: &Arc<State>, r: wire::WsAffectedRequest) -> Result<
         args.push("--uncommitted".into());
     }
     if !q.types.is_empty() {
-        let names = q.types.iter().map(|t| ecosystem_name(*t)).collect::<Result<Vec<_>, _>>()?;
+        let names = q
+            .types
+            .iter()
+            .map(|t| ecosystem_name(*t))
+            .collect::<Result<Vec<_>, _>>()?;
         args.push(format!("--type={}", names.join(",")).into());
     }
     if !q.target.is_empty() {
@@ -615,8 +753,11 @@ pub async fn affected(state: &Arc<State>, r: wire::WsAffectedRequest) -> Result<
         args.push("--hashes".into());
     }
     let out = run_collect(&m, args, None).await?;
-    let doc: Value = serde_json::from_slice(first_line(&out)?).map_err(|e| internal(format!("asc printed bad JSON: {e}")))?;
-    Ok(wire::WsAffectedResponse { result: Some(affected_of(&doc)) })
+    let doc: Value = serde_json::from_slice(first_line(&out)?)
+        .map_err(|e| internal(format!("asc printed bad JSON: {e}")))?;
+    Ok(wire::WsAffectedResponse {
+        result: Some(affected_of(&doc)),
+    })
 }
 
 // -------------------------------------------------------------------------------- Stage
@@ -644,16 +785,25 @@ async fn run_batches(m: &Mounted, base: &[&str], paths: Vec<OsString>) -> Result
     Ok(())
 }
 
-pub async fn stage(state: &Arc<State>, r: wire::WsStageRequest) -> Result<wire::WsStageResponse, Status> {
+pub async fn stage(
+    state: &Arc<State>,
+    r: wire::WsStageRequest,
+) -> Result<wire::WsStageResponse, Status> {
     let m = mounted(state, &r.ws_id)?;
     if r.patch.len() > MAX_PATCH {
-        return Err(Status::resource_exhausted(format!("the patch exceeds {MAX_PATCH} bytes")));
+        return Err(Status::resource_exhausted(format!(
+            "the patch exceeds {MAX_PATCH} bytes"
+        )));
     }
     let batch_of = |raw: &[Bytes]| -> Result<Vec<OsString>, Status> {
         let paths = parse_paths(raw)?;
         paths
             .iter()
-            .map(|p| std::str::from_utf8(p.as_bytes()).map(OsString::from).map_err(|_| bad("a path is not valid UTF-8")))
+            .map(|p| {
+                std::str::from_utf8(p.as_bytes())
+                    .map(OsString::from)
+                    .map_err(|_| bad("a path is not valid UTF-8"))
+            })
             .collect()
     };
     let (remove, add) = (batch_of(&r.remove)?, batch_of(&r.add)?);
@@ -668,10 +818,16 @@ pub async fn stage(state: &Arc<State>, r: wire::WsStageRequest) -> Result<wire::
     }
     let status = self::status(
         state,
-        wire::WsStatusRequest { ws_id: r.ws_id.clone(), untracked: true, ..Default::default() },
+        wire::WsStatusRequest {
+            ws_id: r.ws_id.clone(),
+            untracked: true,
+            ..Default::default()
+        },
     )
     .await?;
-    Ok(wire::WsStageResponse { status: Some(status) })
+    Ok(wire::WsStageResponse {
+        status: Some(status),
+    })
 }
 
 // ---------------------------------------------------------------------------------- Watch
@@ -689,7 +845,11 @@ struct Pos {
 
 impl std::fmt::Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "v1.{}.{}.{}.{}.{:016x}.{:016x}", self.epoch, self.journal, self.refs, self.ops, self.head, self.stage)
+        write!(
+            f,
+            "v1.{}.{}.{}.{}.{:016x}.{:016x}",
+            self.epoch, self.journal, self.refs, self.ops, self.head, self.stage
+        )
     }
 }
 
@@ -700,9 +860,23 @@ impl Pos {
             return Err(wrong());
         }
         let parts: Vec<&str> = text.split('.').collect();
-        let &[v, epoch, journal, refs, ops, head, stage] = parts.as_slice() else { return Err(wrong()) };
-        let dec = |s: &str| if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) { s.parse::<u64>().map_err(|_| wrong()) } else { Err(wrong()) };
-        let hex = |s: &str| if s.len() == 16 { u64::from_str_radix(s, 16).map_err(|_| wrong()) } else { Err(wrong()) };
+        let &[v, epoch, journal, refs, ops, head, stage] = parts.as_slice() else {
+            return Err(wrong());
+        };
+        let dec = |s: &str| {
+            if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+                s.parse::<u64>().map_err(|_| wrong())
+            } else {
+                Err(wrong())
+            }
+        };
+        let hex = |s: &str| {
+            if s.len() == 16 {
+                u64::from_str_radix(s, 16).map_err(|_| wrong())
+            } else {
+                Err(wrong())
+            }
+        };
         if v != "v1" {
             return Err(wrong());
         }
@@ -732,7 +906,9 @@ fn head_print(head: &str, base: Option<ChangesetId>) -> u64 {
 }
 
 async fn stage_print(state: &State, m: &Mounted) -> Result<u64, Status> {
-    let rows = stage::overlay(&state.db, m.id, StageSet::Default).await.map_err(unavailable)?;
+    let rows = stage::overlay(&state.db, m.id, StageSet::Default)
+        .await
+        .map_err(unavailable)?;
     if rows.len() > MAX_STAGE_ROWS {
         // Too many to hash every poll: the count stands in for the contents.
         return Ok(print_of(&(rows.len() as u64).to_be_bytes()));
@@ -745,13 +921,20 @@ async fn max_seq(state: &State, table: &'static str, repo: RepoKey) -> Result<i6
         "ref_log" => "SELECT COALESCE(MAX(seq), 0) FROM ref_log WHERE repo_id = ?",
         _ => "SELECT COALESCE(MAX(seq), 0) FROM op_log WHERE repo_id = ?",
     };
-    sqlx::query_scalar::<_, i64>(sql).bind(repo.0).fetch_one(state.db.pool()).await.map_err(unavailable)
+    sqlx::query_scalar::<_, i64>(sql)
+        .bind(repo.0)
+        .fetch_one(state.db.pool())
+        .await
+        .map_err(unavailable)
 }
 
 /// The position right now.
 async fn current_pos(state: &State, m: &Mounted) -> Result<Pos, Status> {
     let jt = m.journal.token().await.map_err(unavailable)?;
-    let row = workspaces::get(&state.db, m.id).await.map_err(unavailable)?.ok_or_else(|| Status::not_found("the workspace is gone"))?;
+    let row = workspaces::get(&state.db, m.id)
+        .await
+        .map_err(unavailable)?
+        .ok_or_else(|| Status::not_found("the workspace is gone"))?;
     Ok(Pos {
         epoch: jt.epoch,
         journal: jt.seq,
@@ -763,7 +946,11 @@ async fn current_pos(state: &State, m: &Mounted) -> Result<Pos, Status> {
 }
 
 fn event(kind: wire::watch_event::Kind, pos: &Pos) -> wire::WatchEvent {
-    wire::WatchEvent { kind: kind as i32, token: pos.to_string(), ..Default::default() }
+    wire::WatchEvent {
+        kind: kind as i32,
+        token: pos.to_string(),
+        ..Default::default()
+    }
 }
 
 async fn git_of(state: &State, repo: RepoKey, cs: ChangesetId) -> Bytes {
@@ -808,9 +995,20 @@ async fn poll(
         *overflowed = true;
         events.push(event(Kind::Resync, pos));
     }
-    let since = m.journal.since(Some(&Token { epoch: pos.epoch, seq: pos.journal })).await.map_err(unavailable)?;
+    let since = m
+        .journal
+        .since(Some(&Token {
+            epoch: pos.epoch,
+            seq: pos.journal,
+        }))
+        .await
+        .map_err(unavailable)?;
     if since.fresh {
-        *pos = Pos { epoch: since.token.epoch, journal: since.token.seq, ..*pos };
+        *pos = Pos {
+            epoch: since.token.epoch,
+            journal: since.token.seq,
+            ..*pos
+        };
         events.push(event(Kind::Resync, pos));
     } else if since.token.seq != pos.journal {
         let mut seen_paths = HashSet::new();
@@ -831,7 +1029,10 @@ async fn poll(
     }
 
     // 2. Refs and HEAD, from the ref log.
-    let row = workspaces::get(&state.db, m.id).await.map_err(unavailable)?.ok_or_else(|| Status::not_found("the workspace is gone"))?;
+    let row = workspaces::get(&state.db, m.id)
+        .await
+        .map_err(unavailable)?
+        .ok_or_else(|| Status::not_found("the workspace is gone"))?;
     let mut head_event = false;
     if max_seq(state, "ref_log", repo).await? > pos.refs {
         let rows = sqlx::query("SELECT seq, name, old, new FROM ref_log WHERE repo_id = ? AND seq > ? ORDER BY seq LIMIT ?")
@@ -842,8 +1043,14 @@ async fn poll(
             .await
             .map_err(unavailable)?;
         for r in &rows {
-            let (seq, name): (i64, String) = (r.try_get("seq").map_err(unavailable)?, r.try_get("name").map_err(unavailable)?);
-            let (old, new): (Option<Vec<u8>>, Option<Vec<u8>>) = (r.try_get("old").map_err(unavailable)?, r.try_get("new").map_err(unavailable)?);
+            let (seq, name): (i64, String) = (
+                r.try_get("seq").map_err(unavailable)?,
+                r.try_get("name").map_err(unavailable)?,
+            );
+            let (old, new): (Option<Vec<u8>>, Option<Vec<u8>>) = (
+                r.try_get("old").map_err(unavailable)?,
+                r.try_get("new").map_err(unavailable)?,
+            );
             pos.refs = seq;
             let is_head = name == row.ws.head;
             head_event |= is_head;
@@ -878,11 +1085,16 @@ async fn poll(
             events.push(e);
         }
     }
-    *seen = Some(Seen { head: row.ws.head.clone(), base: row.ws.base_cs });
+    *seen = Some(Seen {
+        head: row.ws.head.clone(),
+        base: row.ws.base_cs,
+    });
 
     // 4. Operations, from the op log.
     if max_seq(state, "op_log", repo).await? > pos.ops {
-        let mut ops = oplog::list(&state.db, repo, MAX_OP_ROWS).await.map_err(unavailable)?;
+        let mut ops = oplog::list(&state.db, repo, MAX_OP_ROWS)
+            .await
+            .map_err(unavailable)?;
         ops.reverse();
         let first_kept = ops.first().map(|o| o.seq.0);
         if first_kept.is_some_and(|f| f > pos.ops + 1) && pos.ops > 0 {
@@ -922,7 +1134,9 @@ impl WatchSlot {
     fn take() -> Result<Self, Status> {
         if WATCHERS.fetch_add(1, Ordering::SeqCst) >= MAX_WATCHERS {
             WATCHERS.fetch_sub(1, Ordering::SeqCst);
-            return Err(Status::resource_exhausted(format!("{MAX_WATCHERS} Watch streams are open already")));
+            return Err(Status::resource_exhausted(format!(
+                "{MAX_WATCHERS} Watch streams are open already"
+            )));
         }
         Ok(Self)
     }
@@ -934,13 +1148,23 @@ impl Drop for WatchSlot {
     }
 }
 
-pub async fn watch(state: &Arc<State>, r: wire::WatchRequest) -> Result<PluginStream<wire::WatchEvent>, Status> {
+pub async fn watch(
+    state: &Arc<State>,
+    r: wire::WatchRequest,
+) -> Result<PluginStream<wire::WatchEvent>, Status> {
     use wire::watch_event::Kind;
     let m = mounted(state, &r.ws_id)?;
-    let requested = if r.since_token.is_empty() { None } else { Some(Pos::parse(&r.since_token)?) };
+    let requested = if r.since_token.is_empty() {
+        None
+    } else {
+        Some(Pos::parse(&r.since_token)?)
+    };
     let slot = WatchSlot::take()?;
     let now = current_pos(state, &m).await?;
-    let row = workspaces::get(&state.db, m.id).await.map_err(unavailable)?.ok_or_else(|| Status::not_found("the workspace is gone"))?;
+    let row = workspaces::get(&state.db, m.id)
+        .await
+        .map_err(unavailable)?
+        .ok_or_else(|| Status::not_found("the workspace is gone"))?;
     let mut pos = requested.unwrap_or(now);
     let mut first = Vec::new();
     // A token from a log that is behind it (state reset) cannot be honoured.
@@ -952,7 +1176,10 @@ pub async fn watch(state: &Arc<State>, r: wire::WatchRequest) -> Result<PluginSt
         pos.ops = now.ops;
         first.push(event(Kind::Resync, &pos));
     }
-    let mut seen = requested.is_none().then(|| Seen { head: row.ws.head.clone(), base: row.ws.base_cs });
+    let mut seen = requested.is_none().then(|| Seen {
+        head: row.ws.head.clone(),
+        base: row.ws.base_cs,
+    });
     let guard = (m.row.ws.mode == Mode::Plain).then(|| attach_scanner(&m));
     if let Some((g, fresh)) = &guard {
         g.ctl.wait_ready().await;
@@ -982,8 +1209,22 @@ pub async fn watch(state: &Arc<State>, r: wire::WatchRequest) -> Result<PluginSt
                 () = tokio::time::sleep(POLL) => {}
             }
             // The stream ends when the workspace is unmounted (or replaced by a new mount).
-            let Some(m) = weak.upgrade().filter(|m| state.mounts.get(id).is_some_and(|c| Arc::ptr_eq(&c, m))) else { return };
-            match poll(&state, &m, &mut pos, &mut seen, guard.as_ref().map(|g| &*g.ctl), &mut overflowed).await {
+            let Some(m) = weak
+                .upgrade()
+                .filter(|m| state.mounts.get(id).is_some_and(|c| Arc::ptr_eq(&c, m)))
+            else {
+                return;
+            };
+            match poll(
+                &state,
+                &m,
+                &mut pos,
+                &mut seen,
+                guard.as_ref().map(|g| &*g.ctl),
+                &mut overflowed,
+            )
+            .await
+            {
                 Ok(events) => {
                     failures = 0;
                     for e in events {
@@ -1002,7 +1243,10 @@ pub async fn watch(state: &Arc<State>, r: wire::WatchRequest) -> Result<PluginSt
             }
         }
     });
-    Ok(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) }).boxed())
+    Ok(
+        futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|v| (v, rx)) })
+            .boxed(),
+    )
 }
 
 // -------------------------------------------------------------------------------- scanner
@@ -1035,7 +1279,8 @@ impl Drop for ScanGuard {
     }
 }
 
-static SCANNERS: LazyLock<Mutex<HashMap<WorkspaceId, Arc<ScanCtl>>>> = LazyLock::new(Mutex::default);
+static SCANNERS: LazyLock<Mutex<HashMap<WorkspaceId, Arc<ScanCtl>>>> =
+    LazyLock::new(Mutex::default);
 
 fn scanners() -> std::sync::MutexGuard<'static, HashMap<WorkspaceId, Arc<ScanCtl>>> {
     SCANNERS.lock().unwrap_or_else(|e| e.into_inner())
@@ -1066,18 +1311,30 @@ fn attach_scanner(m: &Arc<Mounted>) -> (ScanGuard, bool) {
 type Snap = HashMap<Vec<u8>, (u64, u128)>;
 
 fn stamp(meta: &std::fs::Metadata) -> (u64, u128) {
-    let nanos = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let nanos = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
     (meta.len(), nanos)
 }
 
 fn walk(dir: &Path, rel: &[u8], ign: &mut asc_wc::ignore::IgnoreStack, out: &mut Snap) -> bool {
     use asc_wc::safe_path::is_link;
     // Metadata only: a link is recorded as itself and never entered.
-    let Ok(entries) = std::fs::read_dir(dir) else { return true }; // lint:allow-worktree-fs
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return true;
+    }; // lint:allow-worktree-fs
     let _ = ign.push_dir(dir);
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned().into_bytes();
-        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+        let name = entry
+            .file_name()
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes();
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
         let path = entry.path();
         let is_dir = meta.is_dir() && !is_link(&meta);
         if name == b".git" || ign.is_ignored(&path, is_dir) {
@@ -1106,12 +1363,17 @@ fn walk(dir: &Path, rel: &[u8], ign: &mut asc_wc::ignore::IgnoreStack, out: &mut
 /// The files of the work tree at `root`, or `None` when there are too many.
 fn scan_tree(root: &Path) -> Option<Snap> {
     let sources = {
-        let common = asc_git::projection::Projection::open(root).ok().map(|p| p.common_dir().to_path_buf());
+        let common = asc_git::projection::Projection::open(root)
+            .ok()
+            .map(|p| p.common_dir().to_path_buf());
         asc_wc::ignore::IgnoreSources {
             asc_excludes: root.join(".asc").join("no-such-global-ignore"),
             core_excludes: None,
             local_exclude: root.join(".asc").join("info").join("exclude"),
-            common_exclude: common.map_or_else(|| root.join(".asc").join("info").join("exclude"), |c| c.join("info").join("exclude")),
+            common_exclude: common.map_or_else(
+                || root.join(".asc").join("info").join("exclude"),
+                |c| c.join("info").join("exclude"),
+            ),
         }
     };
     let mut ign = asc_wc::ignore::IgnoreStack::new(root, &sources);
@@ -1129,7 +1391,11 @@ fn changes(old: &Snap, new: &Snap) -> Vec<(Op, Vec<u8>)> {
             Some(_) => {}
         }
     }
-    out.extend(old.keys().filter(|p| !new.contains_key(*p)).map(|p| (Op::Deleted, p.clone())));
+    out.extend(
+        old.keys()
+            .filter(|p| !new.contains_key(*p))
+            .map(|p| (Op::Deleted, p.clone())),
+    );
     out.sort_by(|a, b| a.1.cmp(&b.1));
     out
 }
@@ -1148,7 +1414,12 @@ async fn run_scanner(m: Weak<Mounted>, id: WorkspaceId, ctl: Arc<ScanCtl>) {
         scanners().remove(&id);
         return;
     };
-    let scan = |root: PathBuf| async move { tokio::task::spawn_blocking(move || scan_tree(&root)).await.ok().flatten() };
+    let scan = |root: PathBuf| async move {
+        tokio::task::spawn_blocking(move || scan_tree(&root))
+            .await
+            .ok()
+            .flatten()
+    };
     let Some(mut last) = scan(root.clone()).await else {
         ctl.overflow.store(true, Ordering::SeqCst);
         ctl.ready.store(true, Ordering::SeqCst);
@@ -1186,9 +1457,23 @@ mod tests {
 
     #[test]
     fn tokens_round_trip_and_reject_junk() {
-        let p = Pos { epoch: 3, journal: 17, refs: 40, ops: 2, head: 0xdead_beef, stage: 7 };
+        let p = Pos {
+            epoch: 3,
+            journal: 17,
+            refs: 40,
+            ops: 2,
+            head: 0xdead_beef,
+            stage: 7,
+        };
         assert_eq!(Pos::parse(&p.to_string()).unwrap(), p);
-        for junk in ["", "v1", "v2.1.1.1.1.0000000000000000.0000000000000000", "v1.-1.1.1.1.0000000000000000.0000000000000000", "v1.1.1.1.1.zz.0000000000000000", &"1".repeat(300)] {
+        for junk in [
+            "",
+            "v1",
+            "v2.1.1.1.1.0000000000000000.0000000000000000",
+            "v1.-1.1.1.1.0000000000000000.0000000000000000",
+            "v1.1.1.1.1.zz.0000000000000000",
+            &"1".repeat(300),
+        ] {
             assert!(Pos::parse(junk).is_err(), "{junk}");
         }
     }
@@ -1209,7 +1494,9 @@ mod tests {
         assert!(path_args(&[Bytes::from_static(b"../x")]).is_err());
         assert!(path_args(&[Bytes::from_static(b"/abs")]).is_err());
         assert!(path_args(&[Bytes::from_static(&[0xff, 0xfe])]).is_err());
-        let many: Vec<Bytes> = (0..2000).map(|i| Bytes::from(format!("dir/file-{i:05}.txt"))).collect();
+        let many: Vec<Bytes> = (0..2000)
+            .map(|i| Bytes::from(format!("dir/file-{i:05}.txt")))
+            .collect();
         assert!(path_args(&many).is_err());
     }
 
@@ -1224,7 +1511,14 @@ mod tests {
         new.insert(b"b".to_vec(), (2, 1));
         new.insert(b"d".to_vec(), (1, 1));
         let got = changes(&old, &new);
-        assert_eq!(got, vec![(Op::Modified, b"b".to_vec()), (Op::Deleted, b"c".to_vec()), (Op::Created, b"d".to_vec())]);
+        assert_eq!(
+            got,
+            vec![
+                (Op::Modified, b"b".to_vec()),
+                (Op::Deleted, b"c".to_vec()),
+                (Op::Created, b"d".to_vec())
+            ]
+        );
     }
 
     #[test]
@@ -1239,8 +1533,14 @@ mod tests {
         assert_eq!(&r.head[..], &[0x0a_u8, 0x0b][..]);
         assert_eq!(r.projects.len(), 1);
         let p = r.projects[0].project.as_ref().unwrap();
-        assert_eq!((p.id.as_str(), p.ecosystem), ("node:a", wire::Ecosystem::Node as i32));
+        assert_eq!(
+            (p.id.as_str(), p.ecosystem),
+            ("node:a", wire::Ecosystem::Node as i32)
+        );
         assert!(r.projects[0].direct && r.projects[0].input_hash.is_empty());
-        assert_eq!((r.removed, r.unowned.len(), r.issues.len()), (vec!["x".to_string()], 1, 1));
+        assert_eq!(
+            (r.removed, r.unowned.len(), r.issues.len()),
+            (vec!["x".to_string()], 1, 1)
+        );
     }
 }

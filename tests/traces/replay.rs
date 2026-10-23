@@ -33,8 +33,12 @@ pub fn quote(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
     loop {
-        let root = rest.find("${ROOT}").map(|at| (at, "${ROOT}".len(), "\"$ROOT\""));
-        let gitdir = rest.find("${GITDIR}").map(|at| (at, "${GITDIR}".len(), GITDIR_LIVE));
+        let root = rest
+            .find("${ROOT}")
+            .map(|at| (at, "${ROOT}".len(), "\"$ROOT\""));
+        let gitdir = rest
+            .find("${GITDIR}")
+            .map(|at| (at, "${GITDIR}".len(), GITDIR_LIVE));
         let next = match (root, gitdir) {
             (Some(a), Some(b)) => Some(if a.0 < b.0 { a } else { b }),
             (a, b) => a.or(b),
@@ -78,7 +82,10 @@ pub fn expected_exits(trace: &Trace) -> Vec<(String, i32)> {
         for hook in &step.hooks {
             for (j, call) in hook.calls.iter().enumerate() {
                 if call.git.is_some() {
-                    out.push((format!("s{}.{}.{}", i + 1, hook.name, j + 1), call.exit.unwrap_or(0)));
+                    out.push((
+                        format!("s{}.{}.{}", i + 1, hook.name, j + 1),
+                        call.exit.unwrap_or(0),
+                    ));
                 }
             }
         }
@@ -108,7 +115,10 @@ pub fn real_routed(trace: &Trace) -> Vec<String> {
 
 pub fn script(trace: &Trace) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "ROOT=$(wpwd)\nLOG=\"$ROOT/../exits.log\"\nexport ROOT LOG\n: > \"$LOG\"\n{ASCS}");
+    let _ = writeln!(
+        out,
+        "ROOT=$(wpwd)\nLOG=\"$ROOT/../exits.log\"\nexport ROOT LOG\n: > \"$LOG\"\n{ASCS}"
+    );
     for (i, step) in trace.steps.iter().enumerate() {
         let n = i + 1;
         let _ = writeln!(out, "# step {n} from {}", step.from.replace('\n', " "));
@@ -118,7 +128,11 @@ pub fn script(trace: &Trace) -> String {
             for hook in &step.hooks {
                 out.push_str(&hook_install(n, hook));
             }
-            let _ = writeln!(out, "{}", git_line(&format!("s{n}"), argv, &step.env, step.stdin.as_deref()));
+            let _ = writeln!(
+                out,
+                "{}",
+                git_line(&format!("s{n}"), argv, &step.env, step.stdin.as_deref())
+            );
             for hook in &step.hooks {
                 let _ = writeln!(out, "rm -f {}", quote(&hook.path));
             }
@@ -128,13 +142,22 @@ pub fn script(trace: &Trace) -> String {
     out
 }
 
-fn git_line(label: &str, argv: &[String], env: &std::collections::BTreeMap<String, String>, stdin: Option<&str>) -> String {
+fn git_line(
+    label: &str,
+    argv: &[String],
+    env: &std::collections::BTreeMap<String, String>,
+    stdin: Option<&str>,
+) -> String {
     let call = format!("ascs {label} {}", words(argv));
     let piped = match stdin {
         Some(s) => format!("printf '%s' {} | {call}", quote(s)),
         None => call,
     };
-    if env.is_empty() { piped } else { format!("( {}{piped} )", exports(env)) }
+    if env.is_empty() {
+        piped
+    } else {
+        format!("( {}{piped} )", exports(env))
+    }
 }
 
 fn hook_install(n: usize, hook: &Hook) -> String {
@@ -156,7 +179,15 @@ fn hook_call(n: usize, hook: &Hook, j: usize, call: &Call) -> String {
     let argv = call.git.as_deref().unwrap_or_default();
     // The environment of a hook call is what git hands the hook; replaying it would mask a
     // difference, so it is not applied.
-    format!("{}\n", git_line(&format!("s{n}.{}.{j}", hook.name), argv, &Default::default(), None))
+    format!(
+        "{}\n",
+        git_line(
+            &format!("s{n}.{}.{j}", hook.name),
+            argv,
+            &Default::default(),
+            None
+        )
+    )
 }
 
 #[cfg(test)]
@@ -197,6 +228,9 @@ exit = 0
         let run = s.find("ascs s1 'commit'").unwrap();
         let remove = s.find("rm -f '.git/hooks/pre-commit'").unwrap();
         assert!(install < run && run < remove);
-        assert_eq!(expected_exits(&trace), [("s1.pre-commit.1".to_owned(), 0), ("s1".to_owned(), 0)]);
+        assert_eq!(
+            expected_exits(&trace),
+            [("s1.pre-commit.1".to_owned(), 0), ("s1".to_owned(), 0)]
+        );
     }
 }

@@ -29,11 +29,17 @@ pub struct Value {
 
 impl Value {
     fn text(text: impl Into<Vec<u8>>) -> Self {
-        Self { text: text.into(), num: 0 }
+        Self {
+            text: text.into(),
+            num: 0,
+        }
     }
 
     fn number(n: i64) -> Self {
-        Self { text: n.to_string().into_bytes(), num: n }
+        Self {
+            text: n.to_string().into_bytes(),
+            num: n,
+        }
     }
 }
 
@@ -54,7 +60,14 @@ impl Atom {
             self.kind,
             Kind::ObjectSize { .. }
                 | Kind::NumParent
-                | Kind::Person { part: Part::Date { formatted: false, .. }, bogus: false, .. }
+                | Kind::Person {
+                    part: Part::Date {
+                        formatted: false,
+                        ..
+                    },
+                    bogus: false,
+                    ..
+                }
         )
     }
 
@@ -152,7 +165,11 @@ fn trailers(options: &str, message: &[u8]) -> Vec<u8> {
     let Ok(who) = Signature::new(b"-".to_vec(), b"-".to_vec(), 0, 0) else {
         return Vec::new();
     };
-    let spec = if options.is_empty() { "%(trailers)".to_owned() } else { format!("%(trailers:{options})") };
+    let spec = if options.is_empty() {
+        "%(trailers)".to_owned()
+    } else {
+        format!("%(trailers:{options})")
+    };
     let zero = GitOid::from_bytes([0; 20]);
     let commit = format::Commit {
         id: zero,
@@ -260,9 +277,11 @@ fn of_object(atom: &Atom, obj: Option<&Obj>, env: &Env) -> Value {
         Kind::ObjectSize { .. } => Value::number(raw.len() as i64),
         Kind::ObjectName(how) => Value::text(abbreviate(&obj.oid.to_string(), *how, env)),
         Kind::DeltaBase => Value::text("0".repeat(40)),
-        Kind::Tree(how) if is_commit => {
-            Value::text(abbreviate(&String::from_utf8_lossy(object::header(raw, "tree")), *how, env))
-        }
+        Kind::Tree(how) if is_commit => Value::text(abbreviate(
+            &String::from_utf8_lossy(object::header(raw, "tree")),
+            *how,
+            env,
+        )),
         Kind::Parent(how) if is_commit => {
             let parents = object::header_values(raw, "parent");
             let shown: Vec<String> = parents
@@ -271,7 +290,9 @@ fn of_object(atom: &Atom, obj: Option<&Obj>, env: &Env) -> Value {
                 .collect();
             Value::text(shown.join(" "))
         }
-        Kind::NumParent if is_commit => Value::number(object::header_values(raw, "parent").len() as i64),
+        Kind::NumParent if is_commit => {
+            Value::number(object::header_values(raw, "parent").len() as i64)
+        }
         Kind::Object if !is_commit => Value::text(object::header(raw, "object")),
         Kind::Type if !is_commit => Value::text(object::header(raw, "type")),
         Kind::Tag if !is_commit => Value::text(object::header(raw, "tag")),
@@ -282,10 +303,15 @@ fn of_object(atom: &Atom, obj: Option<&Obj>, env: &Env) -> Value {
             let line = object::person_tail(raw, person(*who, obj.kind));
             match part {
                 Part::Line => Value::text(object::line_of(line)),
-                Part::Name { mailmap } => {
-                    Value::text(object::mapped_name(line, env.mailmap.as_ref().filter(|_| *mailmap)))
-                }
-                Part::Email { trim, localpart, mailmap } => Value::text(object::email_of(
+                Part::Name { mailmap } => Value::text(object::mapped_name(
+                    line,
+                    env.mailmap.as_ref().filter(|_| *mailmap),
+                )),
+                Part::Email {
+                    trim,
+                    localpart,
+                    mailmap,
+                } => Value::text(object::email_of(
                     line,
                     *trim,
                     *localpart,
@@ -358,7 +384,11 @@ pub fn value(atom: &Atom, item: &Item, env: &Env) -> Value {
         }
         Kind::Head => Value::text(if item.head { "*" } else { " " }),
         Kind::Flag => Value::default(),
-        Kind::Color(spec) => Value::text(if env.color { color::sgr(spec) } else { String::new() }),
+        Kind::Color(spec) => Value::text(if env.color {
+            color::sgr(spec)
+        } else {
+            String::new()
+        }),
         Kind::Upstream(_)
         | Kind::Push(_)
         | Kind::Worktreepath
@@ -373,7 +403,11 @@ pub fn value(atom: &Atom, item: &Item, env: &Env) -> Value {
         }
         Kind::Align { .. } | Kind::If(_) | Kind::Then | Kind::Else | Kind::End => Value::default(),
         _ => {
-            let obj = if atom.deref { item.deref.as_ref() } else { item.obj.as_ref() };
+            let obj = if atom.deref {
+                item.deref.as_ref()
+            } else {
+                item.obj.as_ref()
+            };
             of_object(atom, obj, env)
         }
     }

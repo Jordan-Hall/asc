@@ -42,11 +42,26 @@ fn fatal(e: impl std::fmt::Display) -> CliError {
 
 impl DiffSetup {
     /// `default_patch`: `show` prints the patch unless another format or `-s` is given.
-    pub fn new(ctx: &Ctx, o: &Opts, sel: &Selection, default_patch: bool, abbrev: usize) -> Result<Self> {
-        let mut opts = DiffOptions { renames: Some(RenameOptions::default()), abbrev, ..DiffOptions::default() };
+    pub fn new(
+        ctx: &Ctx,
+        o: &Opts,
+        sel: &Selection,
+        default_patch: bool,
+        abbrev: usize,
+    ) -> Result<Self> {
+        let mut opts = DiffOptions {
+            renames: Some(RenameOptions::default()),
+            abbrev,
+            ..DiffOptions::default()
+        };
         for key in KEYS {
             if let Some(v) = ctx.config.get(key) {
-                opts.apply_config(key, &v).map_err(|e| fatal(format!("bad config variable '{}' value '{}'", e.key, e.value)))?;
+                opts.apply_config(key, &v).map_err(|e| {
+                    fatal(format!(
+                        "bad config variable '{}' value '{}'",
+                        e.key, e.value
+                    ))
+                })?;
             }
         }
         opts.abbrev = abbrev;
@@ -76,7 +91,12 @@ impl DiffSetup {
         } else {
             Some(Pathspec::parse(sel.paths.iter().map(|p| p.as_bytes())).map_err(fatal)?)
         };
-        Ok(Self { opts, req, patch, spec })
+        Ok(Self {
+            opts,
+            req,
+            patch,
+            spec,
+        })
     }
 
     /// Whether the run prints diffs at all.
@@ -96,11 +116,19 @@ impl DiffSetup {
 
     /// The diff from `old` to `new`; `None` when the trees do not differ in the pathspec.
     pub async fn render(&self, ws: &WsCtx, old: TreeId, new: TreeId) -> Result<Option<Vec<u8>>> {
-        let changes = ws.engine.diff_trees(old, new, self.spec.as_ref(), &self.opts).await.map_err(fatal)?;
+        let changes = ws
+            .engine
+            .diff_trees(old, new, self.spec.as_ref(), &self.opts)
+            .await
+            .map_err(fatal)?;
         if changes.is_empty() {
             return Ok(None);
         }
-        let ctx = DiffCtx { opts: &self.opts, content: &ws.engine, attrs: &NoAttributes };
+        let ctx = DiffCtx {
+            opts: &self.opts,
+            content: &ws.engine,
+            attrs: &NoAttributes,
+        };
         let mut w: Vec<u8> = Vec::new();
         let mut separator = false;
         let r = &self.req;
@@ -125,7 +153,9 @@ impl DiffSetup {
             separator = true;
         }
         if r.shortstat {
-            write_shortstat(&mut w, &ctx, &changes).await.map_err(fatal)?;
+            write_shortstat(&mut w, &ctx, &changes)
+                .await
+                .map_err(fatal)?;
             separator = true;
         }
         if r.summary {

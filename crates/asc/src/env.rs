@@ -187,7 +187,8 @@ pub fn parse_config_parameters(raw: &str) -> Vec<ConfigParam> {
             }
             // Old format: the word was `key=value` quoted as a whole, so this is unreachable
             // unless the quote closed early; keep the remainder as the value.
-            let rest: String = std::iter::from_fn(|| chars.next_if(|c| !c.is_whitespace())).collect();
+            let rest: String =
+                std::iter::from_fn(|| chars.next_if(|c| !c.is_whitespace())).collect();
             out.push(ConfigParam {
                 key: first,
                 value: Some(rest),
@@ -275,8 +276,12 @@ impl GitEnv {
             })
             .unwrap_or_default();
         let trace = match get("GIT_TRACE").and_then(|v| v.into_string().ok()) {
-            Some(v) if matches!(v.as_str(), "1" | "2" | "true" | "yes" | "on") => TraceTarget::Stderr,
-            Some(v) if std::path::Path::new(&v).is_absolute() => TraceTarget::File(PathBuf::from(v)),
+            Some(v) if matches!(v.as_str(), "1" | "2" | "true" | "yes" | "on") => {
+                TraceTarget::Stderr
+            }
+            Some(v) if std::path::Path::new(&v).is_absolute() => {
+                TraceTarget::File(PathBuf::from(v))
+            }
             _ => TraceTarget::Off,
         };
         let pathspec = PathspecMode {
@@ -473,10 +478,7 @@ fn config_count_entries(get: &dyn Fn(&str) -> Option<OsString>) -> Vec<ConfigPar
 }
 
 /// `--config-env=<name>=<envvar>`.
-fn config_env(
-    spec: &str,
-    get: &dyn Fn(&str) -> Option<OsString>,
-) -> Result<ConfigParam, EnvError> {
+fn config_env(spec: &str, get: &dyn Fn(&str) -> Option<OsString>) -> Result<ConfigParam, EnvError> {
     let Some((name, var)) = spec.split_once('=') else {
         return Err(EnvError::ConfigEnv(Msg::ConfigEnvFormat {
             spec: spec.to_owned(),
@@ -576,8 +578,14 @@ mod tests {
     #[test]
     fn global_errors() {
         let mut e = env(&[]);
-        assert_eq!(e.parse_globals(&args(&["-C"]), &none), Err(EnvError::MissingDir));
-        assert_eq!(e.parse_globals(&args(&["-c"]), &none), Err(EnvError::MissingConfig));
+        assert_eq!(
+            e.parse_globals(&args(&["-C"]), &none),
+            Err(EnvError::MissingDir)
+        );
+        assert_eq!(
+            e.parse_globals(&args(&["-c"]), &none),
+            Err(EnvError::MissingConfig)
+        );
         assert_eq!(
             e.parse_globals(&args(&["--foo"]), &none),
             Err(EnvError::Unknown("--foo".into()))

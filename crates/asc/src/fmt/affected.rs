@@ -108,7 +108,8 @@ pub fn json(r: &Report) -> Value {
 /// The set is the union of the npm, crates.io, NuGet and PyPI safe sets.
 fn segment(s: &str) -> bool {
     let mut cs = s.chars();
-    cs.next().is_some_and(|c| c.is_ascii_alphanumeric() || c == '~')
+    cs.next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '~')
         && cs.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-'))
 }
 
@@ -118,7 +119,9 @@ fn plain_name(name: &str) -> bool {
         return false;
     }
     match name.strip_prefix('@') {
-        Some(rest) => rest.split_once('/').is_some_and(|(sc, n)| segment(sc) && segment(n)),
+        Some(rest) => rest
+            .split_once('/')
+            .is_some_and(|(sc, n)| segment(sc) && segment(n)),
         None => segment(name),
     }
 }
@@ -238,8 +241,10 @@ pub fn matrix(r: &Report, by: MatrixBy) -> Value {
     };
     let mut include = include;
     if unsafe_count(r) > 0 {
-        include.push(json!({"project": "all", "name": "all", "ecosystem": "all", "root": ".",
-                            "workspace": "."}));
+        include.push(
+            json!({"project": "all", "name": "all", "ecosystem": "all", "root": ".",
+                            "workspace": "."}),
+        );
     }
     json!({ "include": include })
 }
@@ -254,7 +259,14 @@ pub fn gha(r: &Report, by: MatrixBy) -> String {
     let (turbo_filter, nx_projects) = if hidden > 0 {
         ("--filter=*".to_string(), "*".to_string())
     } else {
-        (names.iter().map(|n| format!("--filter={n}")).collect::<Vec<_>>().join(" "), names.join(","))
+        (
+            names
+                .iter()
+                .map(|n| format!("--filter={n}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            names.join(","),
+        )
     };
     let mut out = String::new();
     let mut line = |k: &str, v: String| {
@@ -313,7 +325,10 @@ mod tests {
 
     #[test]
     fn list_and_explain() {
-        let r = report(vec![row("node", "a", "pkg/a"), row("rust", "b", "crates/b")]);
+        let r = report(vec![
+            row("node", "a", "pkg/a"),
+            row("rust", "b", "crates/b"),
+        ]);
         assert_eq!(list(&r, false), "node:a\nrust:b\n");
         assert_eq!(list(&r, true), "node:a\tfile:a,new\nrust:b\tfile:a,new\n");
     }
@@ -326,7 +341,11 @@ mod tests {
 
     #[test]
     fn turbo_and_nx_golden() {
-        let r = report(vec![row("node", "a", "pkg/a"), row("node", "@s/b", "pkg/b"), row("rust", "c", "c")]);
+        let r = report(vec![
+            row("node", "a", "pkg/a"),
+            row("node", "@s/b", "pkg/b"),
+            row("rust", "c", "c"),
+        ]);
         assert_eq!(turbo(&r), "--filter=a --filter=@s/b\n");
         assert_eq!(nx(&r), "a,@s/b\n");
         assert_eq!(invisible_note(&r), "asc: not visible to turbo: rust:c\n");
@@ -342,14 +361,23 @@ mod tests {
 
     #[test]
     fn names_that_split_filters_widen_to_everything() {
-        let r = report(vec![row("node", "a b", "pkg/a"), row("node", "x,y", "pkg/b")]);
+        let r = report(vec![
+            row("node", "a b", "pkg/a"),
+            row("node", "x,y", "pkg/b"),
+        ]);
         assert_eq!(turbo(&r), "--filter=*\n");
-        assert_eq!(invisible_note(&r), "asc: not visible to turbo: node:a b node:x,y\n");
+        assert_eq!(
+            invisible_note(&r),
+            "asc: not visible to turbo: node:a b node:x,y\n"
+        );
     }
 
     #[test]
     fn matrix_golden() {
-        let r = report(vec![row("node", "a", "pkg/a"), row("rust", "c", "crates/c")]);
+        let r = report(vec![
+            row("node", "a", "pkg/a"),
+            row("rust", "c", "crates/c"),
+        ]);
         assert_eq!(
             matrix(&r, MatrixBy::Project).to_string(),
             r#"{"include":[{"ecosystem":"node","name":"a","project":"node:a","root":"pkg/a","workspace":"pkg/a"},{"ecosystem":"rust","name":"c","project":"rust:c","root":"crates/c","workspace":"crates/c"}]}"#
@@ -408,12 +436,22 @@ mod tests {
     }
 
     const HOSTILE: [&str; 8] = [
-        "$(curl x|sh)", "a;rm -rf ~", "a`id`", "a\"b", "a'b", "${{ secrets.X }}", "a%0Ab", "-rf",
+        "$(curl x|sh)",
+        "a;rm -rf ~",
+        "a`id`",
+        "a\"b",
+        "a'b",
+        "${{ secrets.X }}",
+        "a%0Ab",
+        "-rf",
     ];
 
     #[test]
     fn hostile_names_never_reach_ci_outputs() {
-        let mut rows = vec![row("node", "@asc/web", "pkg/web"), row("node", "my_pkg.v2", "pkg/v2")];
+        let mut rows = vec![
+            row("node", "@asc/web", "pkg/web"),
+            row("node", "my_pkg.v2", "pkg/v2"),
+        ];
         for (i, h) in HOSTILE.iter().enumerate() {
             rows.push(row("node", h, &format!("pkg/h{i}")));
         }
@@ -448,9 +486,15 @@ mod tests {
 
     #[test]
     fn unsafe_row_widens_outputs_to_run_everything() {
-        let r = report(vec![row("node", "ok", "pkg/ok"), row("rust", "$(id)", "crates/x")]);
+        let r = report(vec![
+            row("node", "ok", "pkg/ok"),
+            row("rust", "$(id)", "crates/x"),
+        ]);
         let out = gha(&r, MatrixBy::Project);
-        assert!(out.contains("count=2\nall=true\nhidden=1\nrust=true\n"), "{out}");
+        assert!(
+            out.contains("count=2\nall=true\nhidden=1\nrust=true\n"),
+            "{out}"
+        );
         assert!(out.contains("turbo_filter=--filter=*\nnx_projects=*\n"));
         assert!(!out.contains("$(id)"));
         assert_eq!(turbo(&r), "--filter=*\n");

@@ -78,15 +78,23 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let graph = &*view.graph;
     let ids = graph.display_ids();
     let hashes = if a.hashes {
-        Some(ws.engine.input_hashes(cs, a.target.as_deref().unwrap_or("")).await.map_err(projects_err)?)
+        Some(
+            ws.engine
+                .input_hashes(cs, a.target.as_deref().unwrap_or(""))
+                .await
+                .map_err(projects_err)?,
+        )
     } else {
         None
     };
     let keep = |i: usize| eco.is_empty() || eco.contains(&graph.projects[i].key.eco);
-    let index = |k: &asc_graph::model::ProjectKey| graph.projects.binary_search_by(|p| p.key.cmp(k)).ok();
+    let index =
+        |k: &asc_graph::model::ProjectKey| graph.projects.binary_search_by(|p| p.key.cmp(k)).ok();
     let hash_of = |i: usize| {
         hashes.as_ref().and_then(|h| {
-            h.0.binary_search_by(|(k, _)| k.cmp(&graph.projects[i].key)).ok().map(|j| hex(&h.0[j].1))
+            h.0.binary_search_by(|(k, _)| k.cmp(&graph.projects[i].key))
+                .ok()
+                .map(|j| hex(&h.0[j].1))
         })
     };
     let mut out = Output::open(ctx, "graph", PagerWant::Never)?;
@@ -103,7 +111,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                     } else {
                         format!(" [label={}]", dot_quote(dep_name(*kind)))
                     };
-                    text.push_str(&format!("  {} -> {}{label};\n", dot_quote(&ids[i]), dot_quote(&ids[j])));
+                    text.push_str(&format!(
+                        "  {} -> {}{label};\n",
+                        dot_quote(&ids[i]),
+                        dot_quote(&ids[j])
+                    ));
                 }
             }
         }

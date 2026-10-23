@@ -5,7 +5,8 @@ use std::io::{self, Write};
 
 /// git's `quote_c_style`: the quoted form of `name`, or `None` when it prints as is.
 pub fn c_quote(name: &[u8], quote_high: bool) -> Option<Vec<u8>> {
-    let special = |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (quote_high && b >= 0x80);
+    let special =
+        |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (quote_high && b >= 0x80);
     if !name.iter().any(|&b| special(b)) {
         return None;
     }

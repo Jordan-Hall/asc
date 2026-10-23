@@ -27,9 +27,14 @@ struct Plan {
 fn plan(path: &Path, eol: Eol) -> io::Result<Plan> {
     let len = fs::metadata(path)?.len();
     if eol == Eol::Keep {
-        return Ok(Plan { convert: false, size: len, len });
+        return Ok(Plan {
+            convert: false,
+            size: len,
+            len,
+        });
     }
-    let (mut total, mut crlf, mut lone_cr, mut nul, mut pending_cr) = (0u64, 0u64, false, false, false);
+    let (mut total, mut crlf, mut lone_cr, mut nul, mut pending_cr) =
+        (0u64, 0u64, false, false, false);
     let mut buf = vec![0u8; 64 * 1024];
     let mut file = File::open(path)?.take(len);
     loop {
@@ -52,7 +57,11 @@ fn plan(path: &Path, eol: Eol) -> io::Result<Plan> {
     }
     lone_cr |= pending_cr;
     let convert = eol == Eol::Text || (!nul && !lone_cr);
-    Ok(Plan { convert, size: total - if convert { crlf } else { 0 }, len })
+    Ok(Plan {
+        convert,
+        size: total - if convert { crlf } else { 0 },
+        len,
+    })
 }
 
 /// Feeds the normalised content of `path` to `sink`.
@@ -203,6 +212,9 @@ mod tests {
         let got = ingest_file(&p, Eol::Text, &d.path().join("tmp")).unwrap();
         assert_eq!(got.git, blob_oid(&p, Eol::Text).unwrap());
         assert_eq!(got.size, 12);
-        assert!(!d.path().join("tmp").read_dir().unwrap().any(|_| true), "scratch removed");
+        assert!(
+            !d.path().join("tmp").read_dir().unwrap().any(|_| true),
+            "scratch removed"
+        );
     }
 }

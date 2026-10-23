@@ -33,7 +33,10 @@ const TEMP_SET_LIFETIME_SECS: i64 = 24 * 60 * 60;
 pub enum Staged {
     /// Not in the staged tree (never was, or a staged delete).
     Absent,
-    Leaf { leaf: Leaf, ita: bool },
+    Leaf {
+        leaf: Leaf,
+        ita: bool,
+    },
     /// Conflict stages 1-3.
     Unmerged,
 }
@@ -49,7 +52,11 @@ pub struct Tracked {
 #[derive(Clone, Debug)]
 pub enum Edit {
     /// Stage `leaf` (as intent-to-add when `ita`).
-    Put { path: RepoPath, leaf: Leaf, ita: bool },
+    Put {
+        path: RepoPath,
+        leaf: Leaf,
+        ita: bool,
+    },
     /// Remove the path from the staged tree.
     Drop(RepoPath),
 }
@@ -85,8 +92,20 @@ fn row_state(rows: &[StageRow]) -> Staged {
         return Staged::Unmerged;
     }
     match rows.iter().find(|r| r.stage == 0) {
-        Some(StageRow { file: Some(file), git: Some(git), kind, size, intent_to_add, .. }) => Staged::Leaf {
-            leaf: Leaf { kind: *kind, file: *file, size: *size, git: *git },
+        Some(StageRow {
+            file: Some(file),
+            git: Some(git),
+            kind,
+            size,
+            intent_to_add,
+            ..
+        }) => Staged::Leaf {
+            leaf: Leaf {
+                kind: *kind,
+                file: *file,
+                size: *size,
+                git: *git,
+            },
             ita: *intent_to_add,
         },
         _ => Staged::Absent,
@@ -96,20 +115,28 @@ fn row_state(rows: &[StageRow]) -> Staged {
 fn same_file(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
-        if cfg!(windows) { s.to_ascii_lowercase() } else { s }
+        if cfg!(windows) {
+            s.to_ascii_lowercase()
+        } else {
+            s
+        }
     };
     norm(a) == norm(b)
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 fn tree_spec(prefixes: &[Vec<u8>]) -> Result<Option<TreeSpec>> {
     if prefixes.is_empty() {
         return Ok(None);
     }
-    TreeSpec::parse(prefixes).map(Some).map_err(|e| CliError::Fatal(e.to_string()))
+    TreeSpec::parse(prefixes)
+        .map(Some)
+        .map_err(|e| CliError::Fatal(e.to_string()))
 }
 
 impl Target {
@@ -121,7 +148,11 @@ impl Target {
             None => CliEngine::empty_tree_id(),
         };
         let foreign = ctx.env.index_file.as_ref().map(|f| {
-            if f.is_absolute() { f.clone() } else { ctx.cwd.join(f) }
+            if f.is_absolute() {
+                f.clone()
+            } else {
+                ctx.cwd.join(f)
+            }
         });
         let foreign = foreign.filter(|f| !same_file(f, &ws.projection.git_dir().join("index")));
         let (set, file) = match foreign {
@@ -132,7 +163,12 @@ impl Target {
         for r in stage::overlay(&ws.db, ws.workspace.ws.id, set).await? {
             rows.entry(r.path.clone()).or_default().push(r);
         }
-        Ok(Self { set, file, root, rows })
+        Ok(Self {
+            set,
+            file,
+            root,
+            rows,
+        })
     }
 
     /// Whether this is the workspace staging (set 0).
@@ -179,10 +215,19 @@ impl Target {
                     seen.insert(key);
                     row_state(rows)
                 }
-                None => Staged::Leaf { leaf: head.clone(), ita: false },
+                None => Staged::Leaf {
+                    leaf: head.clone(),
+                    ita: false,
+                },
             };
             if staged != Staged::Absent {
-                f(&path, Tracked { staged, head: Some(head) })?;
+                f(
+                    &path,
+                    Tracked {
+                        staged,
+                        head: Some(head),
+                    },
+                )?;
             }
         }
         drop(walk);
@@ -190,7 +235,9 @@ impl Target {
             if seen.contains(key.as_slice()) || !spec.matches(key) {
                 continue;
             }
-            let Ok(path) = RepoPath::new(key.clone()) else { continue };
+            let Ok(path) = RepoPath::new(key.clone()) else {
+                continue;
+            };
             // A row over a path HEAD lacks, or over a directory that lost its files.
             let head = self.head_leaf(ws, &path).await?;
             let staged = row_state(rows);
@@ -266,9 +313,13 @@ impl Target {
         let mut conflicts = Vec::new();
         let mut intents: HashSet<&[u8]> = HashSet::new();
         for (key, rows) in &self.rows {
-            let Ok(path) = RepoPath::new(key.clone()) else { continue };
+            let Ok(path) = RepoPath::new(key.clone()) else {
+                continue;
+            };
             for r in rows {
-                let (Some(file_id), Some(git)) = (r.file, r.git) else { continue };
+                let (Some(file_id), Some(git)) = (r.file, r.git) else {
+                    continue;
+                };
                 if r.stage > 0 {
                     conflicts.push((path.clone(), r));
                     continue;
@@ -276,20 +327,31 @@ impl Target {
                 intents.extend(r.intent_to_add.then_some(key.as_slice()));
                 entries.push((
                     path.clone(),
-                    Entry { name: path.file_name(), kind: r.kind, id: *file_id.as_bytes(), size: r.size, git },
+                    Entry {
+                        name: path.file_name(),
+                        kind: r.kind,
+                        id: *file_id.as_bytes(),
+                        size: r.size,
+                        git,
+                    },
                 ));
             }
         }
         let mut out = index::render(
             entries.into_iter(),
             &ZeroStat,
-            &RenderOptions { cache_tree: false, ..RenderOptions::default() },
+            &RenderOptions {
+                cache_tree: false,
+                ..RenderOptions::default()
+            },
         );
         for e in &mut out.entries {
             e.flags.intent_to_add = intents.contains(e.path.as_bytes());
         }
         for (path, r) in conflicts {
-            let Some(mode) = mode_of(r.kind) else { continue };
+            let Some(mode) = mode_of(r.kind) else {
+                continue;
+            };
             out.entries.push(IndexEntry {
                 path,
                 mode,
@@ -311,7 +373,8 @@ impl Target {
                 },
             });
         }
-        out.entries.sort_by(|a, b| a.path.cmp(&b.path).then(a.flags.stage.cmp(&b.flags.stage)));
+        out.entries
+            .sort_by(|a, b| a.path.cmp(&b.path).then(a.flags.stage.cmp(&b.flags.stage)));
         index::write(file, &out).map_err(|e| CliError::Fatal(e.to_string()))
     }
 }
@@ -332,7 +395,10 @@ struct ZeroStat;
 
 impl StatSource for ZeroStat {
     fn stat(&self, _: &RepoPath, entry: &Entry) -> FileStat {
-        FileStat { size: entry.size as u32, ..FileStat::default() }
+        FileStat {
+            size: entry.size as u32,
+            ..FileStat::default()
+        }
     }
 }
 
@@ -343,7 +409,9 @@ async fn temp_set(ws: &WsCtx, root: TreeId, file: &Path) -> Result<SetId> {
     let id = ws.workspace.ws.id;
     if let Some(info) = stage_sets::lookup_by_path(&ws.db, &key).await? {
         if info.ws != id {
-            return Err(CliError::Fatal(format!("asc: '{key}' is the index of another workspace")));
+            return Err(CliError::Fatal(format!(
+                "asc: '{key}' is the index of another workspace"
+            )));
         }
         if file.exists() && now_secs() - info.created < TEMP_SET_LIFETIME_SECS {
             return Ok(info.set);
@@ -359,7 +427,8 @@ async fn temp_set(ws: &WsCtx, root: TreeId, file: &Path) -> Result<SetId> {
 
 /// The rows that make HEAD's tree the index in `file`.
 async fn import_rows(ws: &WsCtx, root: TreeId, file: &Path) -> Result<Vec<StageRow>> {
-    let index = IndexFile::read(file).map_err(|e| CliError::Fatal(format!("index file corrupt: {e}")))?;
+    let index =
+        IndexFile::read(file).map_err(|e| CliError::Fatal(format!("index file corrupt: {e}")))?;
     let mut head: HashMap<Vec<u8>, Leaf> = HashMap::new();
     let mut walk = ws.engine.walk(root, None);
     while let Some((path, entry)) = walk.try_next().await? {
@@ -390,7 +459,9 @@ async fn import_rows(ws: &WsCtx, root: TreeId, file: &Path) -> Result<Vec<StageR
             Stage::Theirs => 3,
         };
         present.insert(e.path.as_bytes());
-        let same = head.get(e.path.as_bytes()).is_some_and(|h| h.kind == kind && h.git == e.oid);
+        let same = head
+            .get(e.path.as_bytes())
+            .is_some_and(|h| h.kind == kind && h.git == e.oid);
         if stage == 0 && !e.flags.intent_to_add && same {
             continue;
         }
@@ -431,7 +502,10 @@ mod tests {
     #[test]
     fn row_states() {
         assert_eq!(row_state(&[row("a", None)]), Staged::Absent);
-        assert!(matches!(row_state(&[row("a", Some(1))]), Staged::Leaf { ita: false, .. }));
+        assert!(matches!(
+            row_state(&[row("a", Some(1))]),
+            Staged::Leaf { ita: false, .. }
+        ));
         let mut conflict = row("a", Some(1));
         conflict.stage = 2;
         assert_eq!(row_state(&[conflict]), Staged::Unmerged);
@@ -439,7 +513,10 @@ mod tests {
 
     #[test]
     fn foreign_index_comparison() {
-        assert!(same_file(Path::new("/g/index"), Path::new("/g//index".replace("//", "/").as_str())));
+        assert!(same_file(
+            Path::new("/g/index"),
+            Path::new("/g//index".replace("//", "/").as_str())
+        ));
         assert!(!same_file(Path::new("/g/index"), Path::new("/g/other")));
     }
 }

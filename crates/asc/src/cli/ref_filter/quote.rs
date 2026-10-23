@@ -64,7 +64,9 @@ impl Quote {
                 out.push(b'"');
                 for &b in value {
                     match b {
-                        b'[' | b']' | b'{' | b'}' | b'$' | b'\\' | b'"' => out.extend_from_slice(&[b'\\', b]),
+                        b'[' | b']' | b'{' | b'}' | b'$' | b'\\' | b'"' => {
+                            out.extend_from_slice(&[b'\\', b])
+                        }
                         0x0c => out.extend_from_slice(b"\\f"),
                         b'\r' => out.extend_from_slice(b"\\r"),
                         b'\n' => out.extend_from_slice(b"\\n"),

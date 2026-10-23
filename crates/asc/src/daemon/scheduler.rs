@@ -83,18 +83,25 @@ impl Default for Timing {
 pub fn parse_size(text: &str) -> Option<u64> {
     let t = text.trim();
     let (digits, unit) = match t.char_indices().last()? {
-        (i, c) if c.is_ascii_alphabetic() => (&t[..i], match c.to_ascii_lowercase() {
-            'k' => 1u64 << 10,
-            'm' => 1 << 20,
-            'g' => 1 << 30,
-            _ => return None,
-        }),
+        (i, c) if c.is_ascii_alphabetic() => (
+            &t[..i],
+            match c.to_ascii_lowercase() {
+                'k' => 1u64 << 10,
+                'm' => 1 << 20,
+                'g' => 1 << 30,
+                _ => return None,
+            },
+        ),
         _ => (t, 1),
     };
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    digits.parse::<u64>().ok()?.checked_mul(unit).filter(|n| *n > 0)
+    digits
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(unit)
+        .filter(|n| *n > 0)
 }
 
 /// What the built-in tasks need to know.
@@ -172,7 +179,10 @@ impl Scheduler {
     /// Adds a task. A name already taken is refused so two tasks cannot share counters.
     pub fn register(&mut self, spec: Spec, job: Arc<dyn Job>) -> Result<(), String> {
         if self.tasks.iter().any(|(s, _)| s.name == spec.name) {
-            return Err(format!("a task named '{}' is already registered", spec.name));
+            return Err(format!(
+                "a task named '{}' is already registered",
+                spec.name
+            ));
         }
         self.tasks.push((spec, job));
         Ok(())
@@ -188,7 +198,15 @@ impl Scheduler {
         let joins = self
             .tasks
             .into_iter()
-            .map(|(spec, job)| tokio::spawn(drive(spec, job, metrics.clone(), events.clone(), rx.clone())))
+            .map(|(spec, job)| {
+                tokio::spawn(drive(
+                    spec,
+                    job,
+                    metrics.clone(),
+                    events.clone(),
+                    rx.clone(),
+                ))
+            })
             .collect();
         Running { stop, joins }
     }
@@ -253,11 +271,23 @@ async fn drive(
         metrics.task_run(spec.name, outcome.is_ok(), took);
         match &outcome {
             Ok(note) if note.is_empty() => {}
-            Ok(note) => events.emit("info", "daemon.task", &[("task", spec.name), ("outcome", "ok"), ("note", note)]),
-            Err(why) => events.emit("error", "daemon.task", &[("task", spec.name), ("outcome", "failed"), ("error", why)]),
+            Ok(note) => events.emit(
+                "info",
+                "daemon.task",
+                &[("task", spec.name), ("outcome", "ok"), ("note", note)],
+            ),
+            Err(why) => events.emit(
+                "error",
+                "daemon.task",
+                &[("task", spec.name), ("outcome", "failed"), ("error", why)],
+            ),
         }
         let Some(every) = spec.every else { return };
-        failures = if outcome.is_ok() { 0 } else { failures.saturating_add(1) };
+        failures = if outcome.is_ok() {
+            0
+        } else {
+            failures.saturating_add(1)
+        };
         wait = backoff(every, failures);
     }
 }
@@ -265,48 +295,111 @@ async fn drive(
 // ---------------------------------------------------------------------------------- built-ins
 
 fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// The built-in tasks of SPEC §9.1.
 pub fn builtin(state: Arc<State>, settings: &Settings, hooks: &Hooks) -> Scheduler {
     let t = settings.timing;
     let mut s = Scheduler::new();
-    let mut add = |name: &'static str, every: Option<Duration>, first: Duration, timeout: Duration, job: Arc<dyn Job>| {
-        s.register(Spec { name, every, first, timeout }, job).expect("built-in task names are distinct");
+    let mut add = |name: &'static str,
+                   every: Option<Duration>,
+                   first: Duration,
+                   timeout: Duration,
+                   job: Arc<dyn Job>| {
+        s.register(
+            Spec {
+                name,
+                every,
+                first,
+                timeout,
+            },
+            job,
+        )
+        .expect("built-in task names are distinct");
     };
     let minutes = |m: u64| Duration::from_secs(m * 60);
 
-    add("reconcile_start", None, Duration::ZERO, minutes(30), Arc::new(Reconcile(state.clone())));
-    add("pending_retry", Some(t.pending_retry), t.pending_retry, minutes(1), Arc::new(PendingRetry(state.clone())));
-    add("cache_gc", Some(t.cache_gc), minutes(1).min(t.cache_gc), minutes(30), Arc::new(CacheGc {
-        state: state.clone(),
-        max: settings.cache_max_bytes,
-    }));
-    add("idle_dehydrate", Some(t.idle_dehydrate), t.idle_dehydrate, minutes(30), Arc::new(IdleDehydrate {
-        state: state.clone(),
-        idle_after: settings.idle_after,
-    }));
-    add("ephemeral_expiry", Some(t.ephemeral_expiry), t.ephemeral_expiry, minutes(5), Arc::new(EphemeralExpiry {
-        state: state.clone(),
-        asc_exe: settings.asc_exe.clone(),
-    }));
-    add("post_clone_prefetch", Some(t.prefetch), t.prefetch, minutes(30), Arc::new(PostCloneFetch {
-        state: state.clone(),
-        prefetcher: hooks.prefetch.clone(),
-    }));
-    if let Some(source) = &hooks.updates {
-        add("update_check", Some(t.update_check), minutes(10).min(t.update_check), minutes(2), Arc::new(UpdateCheck {
+    add(
+        "reconcile_start",
+        None,
+        Duration::ZERO,
+        minutes(30),
+        Arc::new(Reconcile(state.clone())),
+    );
+    add(
+        "pending_retry",
+        Some(t.pending_retry),
+        t.pending_retry,
+        minutes(1),
+        Arc::new(PendingRetry(state.clone())),
+    );
+    add(
+        "cache_gc",
+        Some(t.cache_gc),
+        minutes(1).min(t.cache_gc),
+        minutes(30),
+        Arc::new(CacheGc {
             state: state.clone(),
-            source: source.clone(),
-            period: t.update_check,
-        }));
+            max: settings.cache_max_bytes,
+        }),
+    );
+    add(
+        "idle_dehydrate",
+        Some(t.idle_dehydrate),
+        t.idle_dehydrate,
+        minutes(30),
+        Arc::new(IdleDehydrate {
+            state: state.clone(),
+            idle_after: settings.idle_after,
+        }),
+    );
+    add(
+        "ephemeral_expiry",
+        Some(t.ephemeral_expiry),
+        t.ephemeral_expiry,
+        minutes(5),
+        Arc::new(EphemeralExpiry {
+            state: state.clone(),
+            asc_exe: settings.asc_exe.clone(),
+        }),
+    );
+    add(
+        "post_clone_prefetch",
+        Some(t.prefetch),
+        t.prefetch,
+        minutes(30),
+        Arc::new(PostCloneFetch {
+            state: state.clone(),
+            prefetcher: hooks.prefetch.clone(),
+        }),
+    );
+    if let Some(source) = &hooks.updates {
+        add(
+            "update_check",
+            Some(t.update_check),
+            minutes(10).min(t.update_check),
+            minutes(2),
+            Arc::new(UpdateCheck {
+                state: state.clone(),
+                source: source.clone(),
+                period: t.update_check,
+            }),
+        );
     }
     if let Some(source) = &hooks.seeds {
-        add("seed_unpack", None, Duration::ZERO, minutes(60), Arc::new(SeedUnpack {
-            state: state.clone(),
-            source: source.clone(),
-        }));
+        add(
+            "seed_unpack",
+            None,
+            Duration::ZERO,
+            minutes(60),
+            Arc::new(SeedUnpack {
+                state: state.clone(),
+                source: source.clone(),
+            }),
+        );
     }
     s
 }
@@ -319,7 +412,9 @@ where
 {
     let (mut sum, mut errors) = (0, Vec::new());
     for m in state.mounts.all() {
-        let Ok(_held) = m.gate.try_lock() else { continue };
+        let Ok(_held) = m.gate.try_lock() else {
+            continue;
+        };
         match f(m.clone()).await {
             Ok(n) => sum += n,
             Err(e) => errors.push(format!("{}: {e}", m.id)),
@@ -329,7 +424,11 @@ where
 }
 
 fn verdict(done: String, errors: Vec<String>) -> Result<String, String> {
-    if errors.is_empty() { Ok(done) } else { Err(errors.join("; ")) }
+    if errors.is_empty() {
+        Ok(done)
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Reconcile at start (SPEC §9.1): compares disk with the journal for every mounted workspace.
@@ -388,13 +487,24 @@ impl Job for IdleDehydrate {
             return Ok(String::new());
         }
         let (files, errors) = each_idle_mount(state, async |m| {
-            m.hosted.dehydrate_idle().await.map(|(files, _)| files).map_err(|e| {
-                state.metrics.provider_error("dehydrate");
-                format!("{e:?}")
-            })
+            m.hosted
+                .dehydrate_idle()
+                .await
+                .map(|(files, _)| files)
+                .map_err(|e| {
+                    state.metrics.provider_error("dehydrate");
+                    format!("{e:?}")
+                })
         })
         .await;
-        verdict(if files == 0 { String::new() } else { format!("dehydrated {files} files") }, errors)
+        verdict(
+            if files == 0 {
+                String::new()
+            } else {
+                format!("dehydrated {files} files")
+            },
+            errors,
+        )
     }
 }
 
@@ -408,7 +518,8 @@ struct CacheGc {
 impl CacheGc {
     async fn evict(&self) -> Result<u64, String> {
         let home = &self.state.home;
-        let cache = asc_store::cachedir::CacheDir::open(home.cache(), home.tmp()).map_err(|e| e.to_string())?;
+        let cache = asc_store::cachedir::CacheDir::open(home.cache(), home.tmp())
+            .map_err(|e| e.to_string())?;
         cache.evict_to(self.max).await.map_err(|e| e.to_string())
     }
 }
@@ -422,7 +533,11 @@ impl Job for CacheGc {
             .await
             .map_err(|e| e.to_string())?;
         self.state.metrics.set_cache_bytes(left);
-        Ok(if freed == 0 { String::new() } else { format!("evicted {freed} bytes; {left} left") })
+        Ok(if freed == 0 {
+            String::new()
+        } else {
+            format!("evicted {freed} bytes; {left} left")
+        })
     }
 }
 
@@ -432,13 +547,17 @@ pub fn dir_size(root: &Path) -> u64 {
     let (mut total, mut seen) = (0u64, 0u64);
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else { continue }; // lint:allow-worktree-fs: the cache, not a work tree
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        }; // lint:allow-worktree-fs: the cache, not a work tree
         for entry in read.flatten() {
             seen += 1;
             if seen > MAX_WALK {
                 return total;
             }
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
             if asc_wc::safe_path::is_link(&meta) {
                 continue;
             }
@@ -457,10 +576,14 @@ pub fn dir_size(root: &Path) -> u64 {
 fn has_files(root: &Path) -> bool {
     let (mut seen, mut stack) = (0u64, vec![root.to_owned()]);
     while let Some(dir) = stack.pop() {
-        let Ok(read) = std::fs::read_dir(&dir) else { continue }; // lint:allow-worktree-fs: the cache, not a work tree
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        }; // lint:allow-worktree-fs: the cache, not a work tree
         for entry in read.flatten() {
             seen += 1;
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else { continue };
+            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
             if asc_wc::safe_path::is_link(&meta) {
                 continue;
             }
@@ -511,7 +634,10 @@ impl EphemeralExpiry {
             Ok(())
         } else {
             let text = String::from_utf8_lossy(&out.stderr);
-            Err(format!("worktree prune failed: {}", text.trim().chars().take(300).collect::<String>()))
+            Err(format!(
+                "worktree prune failed: {}",
+                text.trim().chars().take(300).collect::<String>()
+            ))
         }
     }
 }
@@ -520,7 +646,9 @@ impl EphemeralExpiry {
 impl Job for EphemeralExpiry {
     async fn run(&self) -> Result<String, String> {
         let now = unix_now();
-        let rows = workspaces::list(&self.state.db, None).await.map_err(|e| e.to_string())?;
+        let rows = workspaces::list(&self.state.db, None)
+            .await
+            .map_err(|e| e.to_string())?;
         let mut by_repo: HashMap<i64, Vec<&Workspace>> = HashMap::new();
         for r in &rows {
             by_repo.entry(r.ws.repo.0).or_default().push(r);
@@ -547,8 +675,19 @@ impl Job for EphemeralExpiry {
                 errors.push(e);
             }
         }
-        let gone = self.state.forget_unregistered().await.map_err(|e| format!("unmount: {e}"))?;
-        verdict(if asked == 0 && gone == 0 { String::new() } else { format!("pruned in {asked} repos; unmounted {gone}") }, errors)
+        let gone = self
+            .state
+            .forget_unregistered()
+            .await
+            .map_err(|e| format!("unmount: {e}"))?;
+        verdict(
+            if asked == 0 && gone == 0 {
+                String::new()
+            } else {
+                format!("pruned in {asked} repos; unmounted {gone}")
+            },
+            errors,
+        )
     }
 }
 
@@ -563,16 +702,27 @@ struct PostCloneFetch {
 impl Job for PostCloneFetch {
     async fn run(&self) -> Result<String, String> {
         let fresh = self.state.mounts.take_fresh();
-        let Some(prefetcher) = &self.prefetcher else { return Ok(String::new()) };
+        let Some(prefetcher) = &self.prefetcher else {
+            return Ok(String::new());
+        };
         let (mut done, mut errors) = (0, Vec::new());
         for id in fresh {
-            let Some(m) = self.state.mounts.get(id) else { continue };
+            let Some(m) = self.state.mounts.get(id) else {
+                continue;
+            };
             match prefetcher.prefetch(&m.row).await {
                 Ok(_) => done += 1,
                 Err(e) => errors.push(format!("{id}: {e}")),
             }
         }
-        verdict(if done == 0 { String::new() } else { format!("prefetched {done} workspaces") }, errors)
+        verdict(
+            if done == 0 {
+                String::new()
+            } else {
+                format!("prefetched {done} workspaces")
+            },
+            errors,
+        )
     }
 }
 
@@ -583,7 +733,10 @@ pub fn update_file(run_dir: &Path) -> PathBuf {
 
 /// A release version is plain text of digits, letters and `.+-`.
 fn valid_version(v: &str) -> bool {
-    !v.is_empty() && v.len() <= MAX_VERSION && v.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-'))
+    !v.is_empty()
+        && v.len() <= MAX_VERSION
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-'))
 }
 
 struct UpdateCheck {
@@ -661,7 +814,12 @@ mod tests {
     const FAST: Duration = Duration::from_millis(10);
 
     fn spec(name: &'static str, every: Option<Duration>, timeout: Duration) -> Spec {
-        Spec { name, every, first: Duration::ZERO, timeout }
+        Spec {
+            name,
+            every,
+            first: Duration::ZERO,
+            timeout,
+        }
     }
 
     async fn until(what: &str, mut ok: impl FnMut() -> bool) {
@@ -710,9 +868,21 @@ mod tests {
     async fn tasks_run_on_their_period_once_or_forever() {
         let (every, once) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         let mut s = Scheduler::new();
-        s.register(spec("every", Some(FAST), Duration::from_secs(5)), Arc::new(Count(every.clone()))).unwrap();
-        s.register(spec("once", None, Duration::from_secs(5)), Arc::new(Count(once.clone()))).unwrap();
-        assert!(s.register(spec("once", None, FAST), Arc::new(Count(once.clone()))).is_err(), "names are unique");
+        s.register(
+            spec("every", Some(FAST), Duration::from_secs(5)),
+            Arc::new(Count(every.clone())),
+        )
+        .unwrap();
+        s.register(
+            spec("once", None, Duration::from_secs(5)),
+            Arc::new(Count(once.clone())),
+        )
+        .unwrap();
+        assert!(
+            s.register(spec("once", None, FAST), Arc::new(Count(once.clone())))
+                .is_err(),
+            "names are unique"
+        );
         let metrics = Arc::new(Metrics::new());
         let running = s.start(metrics.clone(), Arc::new(EventLog::none()));
         until("three runs", || every.load(Ordering::SeqCst) >= 3).await;
@@ -720,7 +890,11 @@ mod tests {
         assert_eq!(once.load(Ordering::SeqCst), 1);
         let after = every.load(Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(60)).await;
-        assert_eq!(every.load(Ordering::SeqCst), after, "a stopped scheduler runs nothing");
+        assert_eq!(
+            every.load(Ordering::SeqCst),
+            after,
+            "a stopped scheduler runs nothing"
+        );
         assert!(metrics.task("every").runs >= 3 && metrics.task("every").failures == 0);
     }
 
@@ -728,13 +902,31 @@ mod tests {
     async fn a_panic_and_an_overrun_fail_one_run_not_the_scheduler() {
         let (boom, ok) = (Arc::new(AtomicU32::new(0)), Arc::new(AtomicU32::new(0)));
         let mut s = Scheduler::new();
-        s.register(spec("boom", Some(FAST), Duration::from_secs(5)), Arc::new(Boom(boom.clone()))).unwrap();
-        s.register(spec("slow", Some(FAST), Duration::from_millis(50)), Arc::new(Slow)).unwrap();
-        s.register(spec("ok", Some(FAST), Duration::from_secs(5)), Arc::new(Count(ok.clone()))).unwrap();
+        s.register(
+            spec("boom", Some(FAST), Duration::from_secs(5)),
+            Arc::new(Boom(boom.clone())),
+        )
+        .unwrap();
+        s.register(
+            spec("slow", Some(FAST), Duration::from_millis(50)),
+            Arc::new(Slow),
+        )
+        .unwrap();
+        s.register(
+            spec("ok", Some(FAST), Duration::from_secs(5)),
+            Arc::new(Count(ok.clone())),
+        )
+        .unwrap();
         let metrics = Arc::new(Metrics::new());
         let running = s.start(metrics.clone(), Arc::new(EventLog::none()));
-        until("the failures", || metrics.task("boom").failures >= 2 && metrics.task("slow").failures >= 1).await;
-        until("the healthy task to keep running", || ok.load(Ordering::SeqCst) >= 5).await;
+        until("the failures", || {
+            metrics.task("boom").failures >= 2 && metrics.task("slow").failures >= 1
+        })
+        .await;
+        until("the healthy task to keep running", || {
+            ok.load(Ordering::SeqCst) >= 5
+        })
+        .await;
         running.stop().await;
         assert_eq!(metrics.task("boom").runs, metrics.task("boom").failures);
     }
@@ -757,21 +949,40 @@ mod tests {
         assert_eq!(backoff(five, 1), Duration::from_secs(10));
         assert_eq!(backoff(five, 4), Duration::from_secs(80));
         assert_eq!(backoff(five, 30), Duration::from_secs(80));
-        assert_eq!(backoff(Duration::from_secs(3600), 3), Duration::from_secs(3600));
-        assert_eq!(backoff(Duration::from_secs(7200), 3), Duration::from_secs(7200));
+        assert_eq!(
+            backoff(Duration::from_secs(3600), 3),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            backoff(Duration::from_secs(7200), 3),
+            Duration::from_secs(7200)
+        );
     }
 
     #[test]
     fn the_builtin_tasks_are_the_spec_list() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let f = fixture(None).await;
             let settings = Settings::new(PathBuf::from("asc"));
             let bare = builtin(f.state.clone(), &settings, &Hooks::default()).names();
-            for name in ["reconcile_start", "pending_retry", "cache_gc", "idle_dehydrate", "ephemeral_expiry", "post_clone_prefetch"] {
+            for name in [
+                "reconcile_start",
+                "pending_retry",
+                "cache_gc",
+                "idle_dehydrate",
+                "ephemeral_expiry",
+                "post_clone_prefetch",
+            ] {
                 assert!(bare.contains(&name), "{name}");
             }
-            assert!(!bare.contains(&"update_check") && !bare.contains(&"seed_unpack"), "no source, no task");
+            assert!(
+                !bare.contains(&"update_check") && !bare.contains(&"seed_unpack"),
+                "no source, no task"
+            );
 
             struct Never;
             #[async_trait]
@@ -786,7 +997,11 @@ mod tests {
                     Err("offline".into())
                 }
             }
-            let hooks = Hooks { prefetch: None, updates: Some(Arc::new(Never)), seeds: Some(Arc::new(Never)) };
+            let hooks = Hooks {
+                prefetch: None,
+                updates: Some(Arc::new(Never)),
+                seeds: Some(Arc::new(Never)),
+            };
             let all = builtin(f.state.clone(), &settings, &hooks).names();
             assert!(all.contains(&"update_check") && all.contains(&"seed_unpack"));
             let t = Timing::default();
@@ -799,7 +1014,8 @@ mod tests {
     #[tokio::test]
     async fn cache_gc_evicts_the_oldest_down_to_eighty_percent() {
         let f = fixture(None).await;
-        let cache = asc_store::cachedir::CacheDir::open(f.state.home.cache(), f.state.home.tmp()).unwrap();
+        let cache =
+            asc_store::cachedir::CacheDir::open(f.state.home.cache(), f.state.home.tmp()).unwrap();
         let mut keys = Vec::new();
         for i in 0..10u8 {
             let data = vec![i; 100];
@@ -809,14 +1025,31 @@ mod tests {
             cache.put(&key, Bytes::from(stored)).await.unwrap();
             keys.push(key);
         }
-        let job = CacheGc { state: f.state.clone(), max: 500 };
+        let job = CacheGc {
+            state: f.state.clone(),
+            max: 500,
+        };
         let note = job.run().await.unwrap();
         assert!(note.contains("evicted"), "{note}");
         let left = dir_size(&f.state.home.cache());
         assert!(left <= 400, "{left}");
-        assert!(f.state.metrics.render(&Default::default()).contains(&format!("asc_daemon_cache_bytes{{dir=\"cache\"}} {left}")));
+        assert!(
+            f.state
+                .metrics
+                .render(&Default::default())
+                .contains(&format!("asc_daemon_cache_bytes{{dir=\"cache\"}} {left}"))
+        );
         // Within the limit nothing goes.
-        assert_eq!(CacheGc { state: f.state.clone(), max: 1_000_000 }.run().await.unwrap(), "");
+        assert_eq!(
+            CacheGc {
+                state: f.state.clone(),
+                max: 1_000_000
+            }
+            .run()
+            .await
+            .unwrap(),
+            ""
+        );
     }
 
     #[tokio::test]
@@ -830,7 +1063,8 @@ mod tests {
         #[cfg(unix)]
         let linked = std::os::unix::fs::symlink(outside.path(), dir.path().join("a/link")).is_ok();
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("a/link")).is_ok();
+        let linked =
+            std::os::windows::fs::symlink_dir(outside.path(), dir.path().join("a/link")).is_ok();
         // Without the symlink privilege there is no link to skip; the size is the same.
         let _ = linked;
         assert_eq!(dir_size(dir.path()), 15, "a link is not followed");
@@ -874,7 +1108,10 @@ mod tests {
 
     #[async_trait]
     impl VirtualBackend for SpyBackend {
-        async fn host(&self, _: super::super::service::HostContext) -> Result<Arc<dyn Hosted>, HostError> {
+        async fn host(
+            &self,
+            _: super::super::service::HostContext,
+        ) -> Result<Arc<dyn Hosted>, HostError> {
             Ok(Arc::new(self.0.clone()))
         }
     }
@@ -890,16 +1127,38 @@ mod tests {
         assert_eq!(PendingRetry(f.state.clone()).run().await.unwrap(), "");
         assert_eq!(spy.retries.load(Ordering::SeqCst), 1);
         assert_eq!(PendingRetry(f.state.clone()).run().await.unwrap(), "");
-        assert_eq!(spy.retries.load(Ordering::SeqCst), 1, "nothing pending, nothing retried");
+        assert_eq!(
+            spy.retries.load(Ordering::SeqCst),
+            1,
+            "nothing pending, nothing retried"
+        );
 
-        let busy = IdleDehydrate { state: f.state.clone(), idle_after: Duration::from_secs(3600) };
+        let busy = IdleDehydrate {
+            state: f.state.clone(),
+            idle_after: Duration::from_secs(3600),
+        };
         busy.run().await.unwrap();
-        assert_eq!(spy.idle.load(Ordering::SeqCst), 0, "a daemon that was just asked something is not idle");
-        let idle = IdleDehydrate { state: f.state.clone(), idle_after: Duration::ZERO };
+        assert_eq!(
+            spy.idle.load(Ordering::SeqCst),
+            0,
+            "a daemon that was just asked something is not idle"
+        );
+        let idle = IdleDehydrate {
+            state: f.state.clone(),
+            idle_after: Duration::ZERO,
+        };
         assert_eq!(idle.run().await.unwrap(), "dehydrated 3 files");
 
-        assert_eq!(Reconcile(f.state.clone()).run().await.unwrap(), "reconciled 7 paths");
-        assert!(f.state.metrics.render(&Default::default()).contains("asc_daemon_reconcile_paths_total 7"));
+        assert_eq!(
+            Reconcile(f.state.clone()).run().await.unwrap(),
+            "reconciled 7 paths"
+        );
+        assert!(
+            f.state
+                .metrics
+                .render(&Default::default())
+                .contains("asc_daemon_reconcile_paths_total 7")
+        );
 
         // A change in progress holds the workspace: background passes skip it.
         let held = f.state.mounted(ws.ws.id).unwrap();
@@ -939,11 +1198,17 @@ mod tests {
         f.state.mount(ws.ws.id).await.unwrap();
         f.state.mount(ws.ws.id).await.unwrap();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let job = PostCloneFetch { state: f.state.clone(), prefetcher: Some(Arc::new(Recorder(seen.clone()))) };
+        let job = PostCloneFetch {
+            state: f.state.clone(),
+            prefetcher: Some(Arc::new(Recorder(seen.clone()))),
+        };
         assert_eq!(job.run().await.unwrap(), "prefetched 1 workspaces");
         assert_eq!(job.run().await.unwrap(), "", "the queue is drained");
         assert_eq!(*seen.lock().unwrap(), vec![ws.ws.id.to_string()]);
-        let none = PostCloneFetch { state: f.state.clone(), prefetcher: None };
+        let none = PostCloneFetch {
+            state: f.state.clone(),
+            prefetcher: None,
+        };
         none.run().await.unwrap();
     }
 
@@ -967,16 +1232,30 @@ mod tests {
             period: Duration::from_secs(86_400),
         };
         let file = update_file(&f.state.home.run());
-        assert!(job(Ok("1.2.3\n<script>".into())).run().await.is_err(), "a hostile answer is refused");
+        assert!(
+            job(Ok("1.2.3\n<script>".into())).run().await.is_err(),
+            "a hostile answer is refused"
+        );
         assert!(!file.exists());
         assert!(job(Err("offline".into())).run().await.is_err());
-        assert!(job(Ok("1.2.3".into())).run().await.unwrap().contains("1.2.3"));
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(
+            job(Ok("1.2.3".into()))
+                .run()
+                .await
+                .unwrap()
+                .contains("1.2.3")
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(v["latest"], "1.2.3");
         assert_eq!(v["current"], super::super::VERSION);
         let before = asked.load(Ordering::SeqCst);
         job(Ok("9.9.9".into())).run().await.unwrap();
-        assert_eq!(asked.load(Ordering::SeqCst), before, "a fresh answer is not asked for again");
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            before,
+            "a fresh answer is not asked for again"
+        );
     }
 
     struct Seeds(Arc<AtomicU32>);
@@ -995,9 +1274,16 @@ mod tests {
         let f = fixture(None).await;
         std::fs::create_dir_all(f.state.home.cache()).unwrap();
         let calls = Arc::new(AtomicU32::new(0));
-        let job = SeedUnpack { state: f.state.clone(), source: Arc::new(Seeds(calls.clone())) };
+        let job = SeedUnpack {
+            state: f.state.clone(),
+            source: Arc::new(Seeds(calls.clone())),
+        };
         assert_eq!(job.run().await.unwrap(), "seeded");
-        assert_eq!(job.run().await.unwrap(), "", "a cache with content is left alone");
+        assert_eq!(
+            job.run().await.unwrap(),
+            "",
+            "a cache with content is left alone"
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -1018,22 +1304,35 @@ mod tests {
         // A stand-in for `asc`: records where it was run and what it was asked.
         let log = f.dir.path().join("ran.txt");
         let exe = fake_asc(f.dir.path(), &log);
-        let job = EphemeralExpiry { state: f.state.clone(), asc_exe: exe.clone() };
+        let job = EphemeralExpiry {
+            state: f.state.clone(),
+            asc_exe: exe.clone(),
+        };
         let note = job.run().await.unwrap();
         assert!(note.contains("pruned in 1 repos"), "{note}");
         let ran = std::fs::read_to_string(&log).unwrap();
         assert!(ran.contains("worktree prune"), "{ran}");
-        assert!(ran.contains(&anchor.ws.mount.replace('\\', "/")) || ran.to_lowercase().contains("wc-"), "{ran}");
+        assert!(
+            ran.contains(&anchor.ws.mount.replace('\\', "/")) || ran.to_lowercase().contains("wc-"),
+            "{ran}"
+        );
 
         // Locked: not asked.
         std::fs::remove_file(&log).unwrap();
-        workspaces::set_locked(&f.state.db, expired.id, Some("keep")).await.unwrap();
+        workspaces::set_locked(&f.state.db, expired.id, Some("keep"))
+            .await
+            .unwrap();
         job.run().await.unwrap();
         assert!(!log.exists(), "a locked worktree does not expire");
 
         // A failing prune is an error, not a hang.
-        workspaces::set_locked(&f.state.db, expired.id, None).await.unwrap();
-        let bad = EphemeralExpiry { state: f.state.clone(), asc_exe: f.dir.path().join("missing-asc") };
+        workspaces::set_locked(&f.state.db, expired.id, None)
+            .await
+            .unwrap();
+        let bad = EphemeralExpiry {
+            state: f.state.clone(),
+            asc_exe: f.dir.path().join("missing-asc"),
+        };
         assert!(bad.run().await.is_err());
     }
 
@@ -1041,16 +1340,27 @@ mod tests {
     fn fake_asc(dir: &Path, log: &Path) -> PathBuf {
         if cfg!(windows) {
             let exe = dir.join("fake-asc.cmd");
-            std::fs::write(&exe, format!("@echo %* in %CD%>> \"{}\"\r\n@exit /b 0\r\n", log.display())).unwrap();
+            std::fs::write(
+                &exe,
+                format!("@echo %* in %CD%>> \"{}\"\r\n@exit /b 0\r\n", log.display()),
+            )
+            .unwrap();
             exe
         } else {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 let exe = dir.join("fake-asc.sh");
-                std::fs::write(&exe, format!("#!/bin/sh
+                std::fs::write(
+                    &exe,
+                    format!(
+                        "#!/bin/sh
 echo \"$@ in $PWD\" >> '{}'
-", log.display())).unwrap();
+",
+                        log.display()
+                    ),
+                )
+                .unwrap();
                 std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
                 return exe;
             }

@@ -104,9 +104,19 @@ impl StackOp {
             follow: self
                 .follow
                 .iter()
-                .map(|f| WireFollow { name: String::from_utf8_lossy(f.name.as_bytes()).into_owned(), from: f.from.to_string() })
+                .map(|f| WireFollow {
+                    name: String::from_utf8_lossy(f.name.as_bytes()).into_owned(),
+                    from: f.from.to_string(),
+                })
                 .collect(),
-            done: self.done.iter().map(|(o, n)| WirePair { old: o.to_string(), new: n.to_string() }).collect(),
+            done: self
+                .done
+                .iter()
+                .map(|(o, n)| WirePair {
+                    old: o.to_string(),
+                    new: n.to_string(),
+                })
+                .collect(),
             at: self.at.to_string(),
             at_onto: self.at_onto.to_string(),
             rest: self.rest.iter().map(ToString::to_string).collect(),
@@ -128,11 +138,15 @@ impl StackOp {
         }
         let mut follow = Vec::with_capacity(w.follow.len());
         for f in &w.follow {
-            let name = RefName::new(f.name.clone().into_bytes()).map_err(|_| bad("bad ref name"))?;
+            let name =
+                RefName::new(f.name.clone().into_bytes()).map_err(|_| bad("bad ref name"))?;
             if !f.name.starts_with("refs/heads/") {
                 return Err(bad("a followed ref is not a branch"));
             }
-            follow.push(RefFollow { name, from: id(&f.from)? });
+            follow.push(RefFollow {
+                name,
+                from: id(&f.from)?,
+            });
         }
         let mut done = Vec::with_capacity(w.done.len());
         for p in &w.done {
@@ -218,7 +232,10 @@ mod tests {
             op_id: Uuid::nil(),
             head_branch: Some("feature".into()),
             head: cs(1),
-            follow: vec![RefFollow { name: RefName::new(b"refs/heads/feature".to_vec()).unwrap(), from: cs(1) }],
+            follow: vec![RefFollow {
+                name: RefName::new(b"refs/heads/feature".to_vec()).unwrap(),
+                from: cs(1),
+            }],
             done: vec![(cs(2), cs(3))],
             at: cs(4),
             at_onto: cs(3),
@@ -245,7 +262,11 @@ mod tests {
         std::fs::write(&p, b"not json").unwrap();
         assert!(load(d.path()).is_err());
         let good = serde_json::to_string(&sample().to_wire()).unwrap();
-        std::fs::write(&p, good.replace("\"sign\":true", "\"sign\":true,\"extra\":1")).unwrap();
+        std::fs::write(
+            &p,
+            good.replace("\"sign\":true", "\"sign\":true,\"extra\":1"),
+        )
+        .unwrap();
         assert!(load(d.path()).is_err());
         std::fs::write(&p, good.replacen(&cs(5).to_string(), "zz", 1)).unwrap();
         assert!(load(d.path()).is_err());

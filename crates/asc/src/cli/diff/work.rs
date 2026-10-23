@@ -35,21 +35,40 @@ pub struct LocalFiles<'a> {
 
 impl<'a> LocalFiles<'a> {
     pub fn new(engine: &'a CliEngine) -> Self {
-        Self { engine: Some(engine), files: Vec::new() }
+        Self {
+            engine: Some(engine),
+            files: Vec::new(),
+        }
     }
 
     /// Only files on disk (`--no-index` outside a repository).
     pub fn detached() -> Self {
-        Self { engine: None, files: Vec::new() }
+        Self {
+            engine: None,
+            files: Vec::new(),
+        }
     }
 
     /// An entry for the file at `abs`; its content is read from there on demand.
-    pub fn add(&mut self, path: &RepoPath, abs: PathBuf, kind: Kind, size: u64, git: GitOid) -> Entry {
+    pub fn add(
+        &mut self,
+        path: &RepoPath,
+        abs: PathBuf,
+        kind: Kind,
+        size: u64,
+        git: GitOid,
+    ) -> Entry {
         let mut id = [0u8; 32];
         id[..8].copy_from_slice(&(self.files.len() as u64).to_le_bytes());
         id[8..].copy_from_slice(&LOCAL_TAG);
         self.files.push(abs);
-        Entry { name: path.file_name(), kind, id, size, git }
+        Entry {
+            name: path.file_name(),
+            kind,
+            id,
+            size,
+            git,
+        }
     }
 
     fn slot(&self, entry: &Entry) -> Option<&Path> {
@@ -57,7 +76,9 @@ impl<'a> LocalFiles<'a> {
             return None;
         }
         let at = u64::from_le_bytes(entry.id[..8].try_into().ok()?);
-        self.files.get(usize::try_from(at).ok()?).map(PathBuf::as_path)
+        self.files
+            .get(usize::try_from(at).ok()?)
+            .map(PathBuf::as_path)
     }
 }
 
@@ -77,7 +98,10 @@ async fn read_local(abs: &Path) -> Result<Bytes, diff::Error> {
         return link_target(abs).map(Bytes::from).map_err(io_err);
     }
     if meta.len() > MAX_READ_FILE_BYTES {
-        return Err(io_err(io::Error::other(format!("{} is over the read limit", abs.display()))));
+        return Err(io_err(io::Error::other(format!(
+            "{} is over the read limit",
+            abs.display()
+        ))));
     }
     tokio::fs::read(abs).await.map(Bytes::from).map_err(io_err)
 }
@@ -102,7 +126,12 @@ pub enum Work {
     /// The path is the entry itself.
     Same,
     /// Different content, mode or type.
-    Changed { kind: Kind, size: u64, git: GitOid, abs: PathBuf },
+    Changed {
+        kind: Kind,
+        size: u64,
+        git: GitOid,
+        abs: PathBuf,
+    },
 }
 
 /// Compares tracked paths with the work tree.
@@ -117,10 +146,16 @@ pub struct WorkTree {
 impl WorkTree {
     pub fn new(root: &Path, index_path: &Path, symlinks: bool) -> io::Result<Self> {
         let index = IndexFile::read_or_empty(index_path).map_err(io::Error::other)?;
-        let cache = index.entries.into_iter().map(|e| (e.path.as_bytes().to_vec(), e)).collect();
+        let cache = index
+            .entries
+            .into_iter()
+            .map(|e| (e.path.as_bytes().to_vec(), e))
+            .collect();
         Ok(Self {
             gate: SafeRoot::new(root),
-            stat: PlainStat { root: root.to_owned() },
+            stat: PlainStat {
+                root: root.to_owned(),
+            },
             cache,
             index_mtime: index.mtime,
             symlinks,
@@ -129,7 +164,9 @@ impl WorkTree {
 
     /// Whether the stat data of the index entry for `path` vouches for the file at `abs`.
     fn vouched(&self, path: &RepoPath, entry: &Entry) -> bool {
-        let Some(e) = self.cache.get(path.as_bytes()) else { return false };
+        let Some(e) = self.cache.get(path.as_bytes()) else {
+            return false;
+        };
         if e.oid != entry.git || e.mtime.secs == 0 {
             return false;
         }
@@ -137,7 +174,9 @@ impl WorkTree {
         fresh.mtime == e.mtime
             && fresh.size == e.size
             && fresh.ino == e.ino
-            && self.index_mtime.is_none_or(|t| e.mtime.to_system_time() < t)
+            && self
+                .index_mtime
+                .is_none_or(|t| e.mtime.to_system_time() < t)
     }
 
     /// The path of `path` in the work tree, or `None` when it is outside it (a symlinked or
@@ -148,7 +187,9 @@ impl WorkTree {
 
     /// The work tree state of `path`, which the index holds as `entry`.
     pub fn probe(&self, path: &RepoPath, entry: &Entry) -> io::Result<Work> {
-        let Some(abs) = self.gate.resolve(path) else { return Ok(Work::Missing) };
+        let Some(abs) = self.gate.resolve(path) else {
+            return Ok(Work::Missing);
+        };
         let meta = match fs::symlink_metadata(&abs) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
@@ -163,7 +204,11 @@ impl WorkTree {
         }
         // Without symlink support a link is a regular file holding its target.
         let as_link = is_link || (entry.kind == Kind::Symlink && !self.symlinks);
-        let exec = if as_link { false } else { exec_bit(&meta).unwrap_or(entry.kind == Kind::Exec) };
+        let exec = if as_link {
+            false
+        } else {
+            exec_bit(&meta).unwrap_or(entry.kind == Kind::Exec)
+        };
         let kind = if as_link {
             Kind::Symlink
         } else if exec {
@@ -182,6 +227,11 @@ impl WorkTree {
         if kind == entry.kind && git == entry.git {
             return Ok(Work::Same);
         }
-        Ok(Work::Changed { kind, size: meta.len(), git, abs })
+        Ok(Work::Changed {
+            kind,
+            size: meta.len(),
+            git,
+            abs,
+        })
     }
 }

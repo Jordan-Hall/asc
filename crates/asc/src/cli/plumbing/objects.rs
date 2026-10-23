@@ -39,7 +39,10 @@ pub enum Object {
 impl Object {
     pub fn oid(&self) -> GitOid {
         match *self {
-            Self::Blob { oid, .. } | Self::Tree { oid, .. } | Self::Commit { oid, .. } | Self::Tag { oid, .. } => oid,
+            Self::Blob { oid, .. }
+            | Self::Tree { oid, .. }
+            | Self::Commit { oid, .. }
+            | Self::Tag { oid, .. } => oid,
         }
     }
 
@@ -85,7 +88,10 @@ fn fatal(e: impl std::fmt::Display) -> CliError {
 
 /// `^{tree}`, `^{commit}`, `^{}` and friends at the end of a revision.
 fn split_peel(rev: &str) -> (&str, Option<&str>) {
-    match rev.strip_suffix('}').and_then(|r| r.rfind("^{").map(|at| (r, at))) {
+    match rev
+        .strip_suffix('}')
+        .and_then(|r| r.rfind("^{").map(|at| (r, at)))
+    {
         Some((r, at)) => (&rev[..at], Some(&r[at + 2..])),
         None => (rev, None),
     }
@@ -100,7 +106,11 @@ pub struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     pub fn new(ctx: &'a Ctx, ws: &'a WsCtx) -> Self {
-        Self { ctx, ws, learned: Mutex::new(Vec::new()) }
+        Self {
+            ctx,
+            ws,
+            learned: Mutex::new(Vec::new()),
+        }
     }
 
     /// Records that `git` is `asc` (kept until [`flush`](Self::flush)).
@@ -112,7 +122,11 @@ impl<'a> Resolver<'a> {
 
     /// Writes the recorded git map rows.
     pub async fn flush(&self) -> Result<()> {
-        let rows = self.learned.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default();
+        let rows = self
+            .learned
+            .lock()
+            .map(|mut r| std::mem::take(&mut *r))
+            .unwrap_or_default();
         if !rows.is_empty() {
             git_map::insert_many(&self.ws.db, self.ws.repo.key, &rows).await?;
         }
@@ -124,11 +138,17 @@ impl<'a> Resolver<'a> {
         match entry.kind {
             Kind::Dir => {
                 self.learn(entry.git, ObjectKind::Tree, entry.id);
-                Some(Object::Tree { oid: entry.git, id: TreeId::from_bytes(entry.id) })
+                Some(Object::Tree {
+                    oid: entry.git,
+                    id: TreeId::from_bytes(entry.id),
+                })
             }
             Kind::File | Kind::Exec | Kind::Symlink => {
                 self.learn(entry.git, ObjectKind::Blob, entry.id);
-                Some(Object::Blob { oid: entry.git, file: FileId::from_bytes(entry.id) })
+                Some(Object::Blob {
+                    oid: entry.git,
+                    file: FileId::from_bytes(entry.id),
+                })
             }
             Kind::Gitlink => None,
         }
@@ -158,23 +178,56 @@ impl<'a> Resolver<'a> {
 
     /// A full git id the git map knows (or this command just learned).
     async fn by_oid(&self, oid: GitOid) -> Result<Option<Object>> {
-        let fresh = self.learned.lock().ok().and_then(|rows| rows.iter().find(|r| r.git == oid).map(|r| (r.kind, r.asc)));
+        let fresh = self
+            .learned
+            .lock()
+            .ok()
+            .and_then(|rows| rows.iter().find(|r| r.git == oid).map(|r| (r.kind, r.asc)));
         if let Some((kind, asc)) = fresh {
             return Ok(Some(match kind {
-                ObjectKind::Commit => Object::Commit { oid, id: ChangesetId::from_bytes(asc) },
-                ObjectKind::Tag => Object::Tag { oid, id: TagId::from_bytes(asc) },
-                ObjectKind::Tree => Object::Tree { oid, id: TreeId::from_bytes(asc) },
-                ObjectKind::Blob => Object::Blob { oid, file: FileId::from_bytes(asc) },
+                ObjectKind::Commit => Object::Commit {
+                    oid,
+                    id: ChangesetId::from_bytes(asc),
+                },
+                ObjectKind::Tag => Object::Tag {
+                    oid,
+                    id: TagId::from_bytes(asc),
+                },
+                ObjectKind::Tree => Object::Tree {
+                    oid,
+                    id: TreeId::from_bytes(asc),
+                },
+                ObjectKind::Blob => Object::Blob {
+                    oid,
+                    file: FileId::from_bytes(asc),
+                },
             }));
         }
         let (db, repo) = (&self.ws.db, self.ws.repo.key);
-        for kind in [ObjectKind::Commit, ObjectKind::Tag, ObjectKind::Tree, ObjectKind::Blob] {
+        for kind in [
+            ObjectKind::Commit,
+            ObjectKind::Tag,
+            ObjectKind::Tree,
+            ObjectKind::Blob,
+        ] {
             if let Some(asc) = git_map::git_to_asc(db, repo, oid, kind).await? {
                 return Ok(Some(match kind {
-                    ObjectKind::Commit => Object::Commit { oid, id: ChangesetId::from_bytes(asc) },
-                    ObjectKind::Tag => Object::Tag { oid, id: TagId::from_bytes(asc) },
-                    ObjectKind::Tree => Object::Tree { oid, id: TreeId::from_bytes(asc) },
-                    ObjectKind::Blob => Object::Blob { oid, file: FileId::from_bytes(asc) },
+                    ObjectKind::Commit => Object::Commit {
+                        oid,
+                        id: ChangesetId::from_bytes(asc),
+                    },
+                    ObjectKind::Tag => Object::Tag {
+                        oid,
+                        id: TagId::from_bytes(asc),
+                    },
+                    ObjectKind::Tree => Object::Tree {
+                        oid,
+                        id: TreeId::from_bytes(asc),
+                    },
+                    ObjectKind::Blob => Object::Blob {
+                        oid,
+                        file: FileId::from_bytes(asc),
+                    },
                 }));
             }
         }
@@ -184,7 +237,9 @@ impl<'a> Resolver<'a> {
     /// An annotated tag a plain name denotes.
     async fn tag_by_name(&self, name: &str) -> Result<Option<Object>> {
         for cand in dwim_candidates(name) {
-            let Ok(rn) = asc_core::path::RefName::new(cand.into_bytes()) else { continue };
+            let Ok(rn) = asc_core::path::RefName::new(cand.into_bytes()) else {
+                continue;
+            };
             if let Some(entry) = self.ws.db.refs().get(self.ws.repo.key, &rn).await? {
                 return match entry.target {
                     RefTarget::Tag(id) => {
@@ -201,13 +256,15 @@ impl<'a> Resolver<'a> {
 
     async fn named(&self, base: &str) -> Result<Option<Object>> {
         if let Some(oid) = parse_oid(base)
-            && let Some(obj) = self.by_oid(oid).await? {
-                return Ok(Some(obj));
-            }
+            && let Some(obj) = self.by_oid(oid).await?
+        {
+            return Ok(Some(obj));
+        }
         if !base.contains(['~', '^', '@'])
-            && let Some(tag) = self.tag_by_name(base).await? {
-                return Ok(Some(tag));
-            }
+            && let Some(tag) = self.tag_by_name(base).await?
+        {
+            return Ok(Some(tag));
+        }
         match commit_of(self.ctx, base).await? {
             Some(id) => Ok(Some(self.commit(id).await?)),
             None => Ok(None),
@@ -222,9 +279,12 @@ impl<'a> Resolver<'a> {
                 return Ok(Some(at));
             }
             at = match at {
-                Object::Tag { id, .. } => self.commit(tag_record(self.ws, id).await?.target).await?,
+                Object::Tag { id, .. } => {
+                    self.commit(tag_record(self.ws, id).await?.target).await?
+                }
                 Object::Commit { id, .. } if kind == ObjectKind::Tree => {
-                    self.tree(self.ws.engine.get_changeset(id).await?.root).await?
+                    self.tree(self.ws.engine.get_changeset(id).await?.root)
+                        .await?
                 }
                 _ => return Ok(None),
             };
@@ -253,25 +313,39 @@ impl<'a> Resolver<'a> {
         if path.is_empty() {
             return Ok(Some(self.tree(root).await?));
         }
-        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else { return Ok(None) };
-        Ok(self.ws.engine.lookup(root, &repo_path).await?.and_then(|e| self.resolve_entry(&e)))
+        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else {
+            return Ok(None);
+        };
+        Ok(self
+            .ws
+            .engine
+            .lookup(root, &repo_path)
+            .await?
+            .and_then(|e| self.resolve_entry(&e)))
     }
 
     /// `:path` and `:<stage>:path`: what the index holds.
     async fn in_index(&self, spec: &str) -> Result<Option<Object>> {
         let (stage, path) = match spec.split_once(':') {
-            Some((s, p)) if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => (s.as_bytes()[0] - b'0', p),
+            Some((s, p)) if s.len() == 1 && s.as_bytes()[0].is_ascii_digit() => {
+                (s.as_bytes()[0] - b'0', p)
+            }
             _ => (0, spec),
         };
         if stage != 0 {
             return Ok(None);
         }
-        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else { return Ok(None) };
+        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else {
+            return Ok(None);
+        };
         let target = Target::open(self.ctx).await?;
         Ok(match target.staged(self.ws, &repo_path).await? {
             Staged::Leaf { leaf, .. } if leaf.kind != Kind::Gitlink => {
                 self.learn(leaf.git, ObjectKind::Blob, *leaf.file.as_bytes());
-                Some(Object::Blob { oid: leaf.git, file: leaf.file })
+                Some(Object::Blob {
+                    oid: leaf.git,
+                    file: leaf.file,
+                })
             }
             _ => None,
         })
@@ -282,9 +356,14 @@ impl<'a> Resolver<'a> {
         if let Some(spec) = name.strip_prefix(':') {
             return self.in_index(spec).await;
         }
-        if let Some(at) = name.find(':').filter(|&at| at > 0 && !name[..at].contains("@{")) {
+        if let Some(at) = name
+            .find(':')
+            .filter(|&at| at > 0 && !name[..at].contains("@{"))
+        {
             let (rev, path) = (&name[..at], &name[at + 1..]);
-            let Some(base) = self.revision(rev).await? else { return Ok(None) };
+            let Some(base) = self.revision(rev).await? else {
+                return Ok(None);
+            };
             let Some(Object::Tree { id, .. }) = self.peel(base, ObjectKind::Tree).await? else {
                 return Ok(None);
             };
@@ -295,7 +374,9 @@ impl<'a> Resolver<'a> {
 
     async fn revision(&self, rev: &str) -> Result<Option<Object>> {
         let (base, peel) = split_peel(rev);
-        let Some(obj) = self.named(base).await? else { return Ok(None) };
+        let Some(obj) = self.named(base).await? else {
+            return Ok(None);
+        };
         match peel {
             Some(what) => self.peeled(obj, what).await,
             None => Ok(Some(obj)),
@@ -339,7 +420,9 @@ async fn stored(ws: &WsCtx, file: FileId) -> Result<Stored> {
         .get(&ObjKey::ChunkList(file))
         .await?
         .ok_or_else(|| CliError::Fatal(format!("unable to read blob {file}")))?;
-    Ok(Stored::Chunked(decode_envelope::<ChunkList>(&list).map_err(fatal)?))
+    Ok(Stored::Chunked(
+        decode_envelope::<ChunkList>(&list).map_err(fatal)?,
+    ))
 }
 
 /// The size of an object in bytes, as `cat-file -s` prints it.

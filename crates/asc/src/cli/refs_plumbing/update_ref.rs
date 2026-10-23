@@ -38,7 +38,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         'd' => o.delete = true,
                         'm' => {
                             let rest: String = chars.by_ref().collect();
-                            o.reason = Some(if rest.is_empty() { cur.value("m", None)? } else { rest });
+                            o.reason = Some(if rest.is_empty() {
+                                cur.value("m", None)?
+                            } else {
+                                rest
+                            });
                         }
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     }
@@ -77,7 +81,12 @@ fn failed(name: &str, why: impl std::fmt::Display) -> CliError {
 
 /// The "cannot lock ref" message for a failed compare-and-swap. `want` spells the expected id
 /// when the caller knows it better than the target (an id this repository has never seen).
-async fn lock_message(ws: &WsCtx, name: &RefName, expect: Option<Expect>, want: Option<&str>) -> String {
+async fn lock_message(
+    ws: &WsCtx,
+    name: &RefName,
+    expect: Option<Expect>,
+    want: Option<&str>,
+) -> String {
     let text = String::from_utf8_lossy(name.as_bytes()).into_owned();
     let now = current(ws, name).await.ok().flatten();
     let why = match (expect, now) {
@@ -99,7 +108,13 @@ async fn lock_message(ws: &WsCtx, name: &RefName, expect: Option<Expect>, want: 
 
 /// A failed compare-and-swap: a fatal `update_ref failed` for an update, a plain error (exit 1)
 /// for a delete, as git reports them.
-async fn lock_error(ws: &WsCtx, name: &RefName, expect: Option<Expect>, want: Option<&str>, delete: bool) -> CliError {
+async fn lock_error(
+    ws: &WsCtx,
+    name: &RefName,
+    expect: Option<Expect>,
+    want: Option<&str>,
+    delete: bool,
+) -> CliError {
     let message = lock_message(ws, name, expect, want).await;
     if delete {
         CliError::Raw(format!("error: {message}"), 1)
@@ -124,31 +139,49 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             ref_word = format!("refs/heads/{b}");
         }
     } else if ref_word == "HEAD"
-        && let Head::Branch(_) = ws.projection.read_head()? {
-            return Err(CliError::Fatal("asc: update-ref --no-deref HEAD on a branch is not supported yet".into()));
-        }
-    if ref_word != "HEAD" && !(ref_word.starts_with("refs/") && valid(&ref_word, Rules::default())) {
-        return Err(failed(&ref_word, format!("refusing to update ref with bad name '{ref_word}'")));
+        && let Head::Branch(_) = ws.projection.read_head()?
+    {
+        return Err(CliError::Fatal(
+            "asc: update-ref --no-deref HEAD on a branch is not supported yet".into(),
+        ));
+    }
+    if ref_word != "HEAD" && !(ref_word.starts_with("refs/") && valid(&ref_word, Rules::default()))
+    {
+        return Err(failed(
+            &ref_word,
+            format!("refusing to update ref with bad name '{ref_word}'"),
+        ));
     }
     let name = if ref_word == "HEAD" {
         RefName::new_onelevel(b"HEAD".to_vec())
     } else {
         RefName::new(ref_word.clone().into_bytes())
     }
-    .map_err(|_| failed(&ref_word, format!("refusing to update ref with bad name '{ref_word}'")))?;
+    .map_err(|_| {
+        failed(
+            &ref_word,
+            format!("refusing to update ref with bad name '{ref_word}'"),
+        )
+    })?;
 
     let zero = |w: &str| parse_oid(w).is_some_and(|o| o.as_bytes().iter().all(|&b| b == 0));
     let new = match new_word {
         Some(w) if !zero(w) => {
             let Some(target) = resolve_target(ctx, ws, w).await? else {
                 return Err(match parse_oid(w) {
-                    Some(_) => failed(&ref_word, format!("trying to write ref '{ref_word}' with nonexistent object {w}")),
+                    Some(_) => failed(
+                        &ref_word,
+                        format!("trying to write ref '{ref_word}' with nonexistent object {w}"),
+                    ),
                     None => bad_value(w),
                 });
             };
             if ref_word.starts_with("refs/heads/") && matches!(target, RefTarget::Tag(_)) {
                 let oid = object_oid_of(ws, target).await?;
-                return Err(failed(&ref_word, format!("trying to write non-commit object {oid} to branch '{ref_word}'")));
+                return Err(failed(
+                    &ref_word,
+                    format!("trying to write non-commit object {oid} to branch '{ref_word}'"),
+                ));
             }
             Some(target)
         }
@@ -166,19 +199,33 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             None => return Err(bad_value(w)),
         },
     };
-    if new.is_none() && expect == Expect::Any && current(ws, &name).await?.is_none() && ref_word != "HEAD" {
+    if new.is_none()
+        && expect == Expect::Any
+        && current(ws, &name).await?.is_none()
+        && ref_word != "HEAD"
+    {
         return Ok(ExitCode::SUCCESS);
     }
     let txn = RefTxn {
-        updates: vec![RefUpdate { name: name.clone(), expect, new, expires_at: None }],
+        updates: vec![RefUpdate {
+            name: name.clone(),
+            expect,
+            new,
+            expires_at: None,
+        }],
         actor: actor(),
         reason: String::new(),
         op_id: uuid::Uuid::now_v7(),
     };
     let message = o.reason.clone().unwrap_or_default();
-    match ctx.update_local_refs(txn, &message, StagingAfterMove::Keep).await {
+    match ctx
+        .update_local_refs(txn, &message, StagingAfterMove::Keep)
+        .await
+    {
         Ok(()) => Ok(ExitCode::SUCCESS),
-        Err(CliError::Refs(RefError::Conflict(_))) => Err(lock_error(ws, &name, Some(expect), None, o.delete).await),
+        Err(CliError::Refs(RefError::Conflict(_))) => {
+            Err(lock_error(ws, &name, Some(expect), None, o.delete).await)
+        }
         Err(other) => Err(other),
     }
 }

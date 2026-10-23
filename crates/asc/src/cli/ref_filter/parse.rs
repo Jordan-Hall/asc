@@ -36,10 +36,19 @@ pub enum Who {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Part {
     Line,
-    Name { mailmap: bool },
-    Email { trim: bool, localpart: bool, mailmap: bool },
+    Name {
+        mailmap: bool,
+    },
+    Email {
+        trim: bool,
+        localpart: bool,
+        mailmap: bool,
+    },
     /// `formatted` is set when the atom names a date format: sorting is then by the text.
-    Date { mode: date::Mode, formatted: bool },
+    Date {
+        mode: date::Mode,
+        formatted: bool,
+    },
 }
 
 /// `contents:<part>`.
@@ -101,7 +110,9 @@ pub enum IfCmp {
 pub enum Kind {
     Refname(Strip),
     ObjectType,
-    ObjectSize { disk: bool },
+    ObjectSize {
+        disk: bool,
+    },
     ObjectName(Abbrev),
     DeltaBase,
     Tree(Abbrev),
@@ -111,13 +122,21 @@ pub enum Kind {
     Type,
     Tag,
     /// `bogus` marks `author:x`-style spellings that git accepts and leaves empty.
-    Person { who: Who, part: Part, bogus: bool },
-    Subject { sanitize: bool },
+    Person {
+        who: Who,
+        part: Part,
+        bogus: bool,
+    },
+    Subject {
+        sanitize: bool,
+    },
     Body,
     Trailers(String),
     Contents(Contents),
     Signature(Sig),
-    Raw { size: bool },
+    Raw {
+        size: bool,
+    },
     Upstream(Remote),
     Push(Remote),
     Symref(Strip),
@@ -128,7 +147,10 @@ pub enum Kind {
     Describe(String),
     AheadBehind(String),
     IsBase(String),
-    Align { width: usize, position: Position },
+    Align {
+        width: usize,
+        position: Position,
+    },
     If(IfCmp),
     Then,
     Else,
@@ -181,8 +203,13 @@ fn strip_of(arg: &str, atom: &str) -> Result<Strip, Error> {
     }
     for (prefix, left) in [("lstrip=", true), ("strip=", true), ("rstrip=", false)] {
         if let Some(n) = arg.strip_prefix(prefix) {
-            let n = strtol(n).ok_or_else(|| fatal(format!("Integer value expected refname:{prefix}{n}")))?;
-            return Ok(if left { Strip::Lstrip(n) } else { Strip::Rstrip(n) });
+            let n = strtol(n)
+                .ok_or_else(|| fatal(format!("Integer value expected refname:{prefix}{n}")))?;
+            return Ok(if left {
+                Strip::Lstrip(n)
+            } else {
+                Strip::Rstrip(n)
+            });
         }
     }
     Err(unrecognized(atom, arg))
@@ -196,16 +223,20 @@ fn oid_of(arg: &str, atom: &str) -> Result<Abbrev, Error> {
         return Ok(Abbrev::Short(None));
     }
     if let Some(n) = arg.strip_prefix("short=") {
-        let len = n.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| {
-            fatal(format!("positive value expected '{n}' in %({atom}:{arg})"))
-        })?;
+        let len =
+            n.parse::<usize>().ok().filter(|&n| n > 0).ok_or_else(|| {
+                fatal(format!("positive value expected '{n}' in %({atom}:{arg})"))
+            })?;
         return Ok(Abbrev::Short(Some(len.max(4))));
     }
     Err(unrecognized(atom, arg))
 }
 
 fn remote_of(arg: &str, atom: &str) -> Result<Remote, Error> {
-    let mut remote = Remote { what: RemoteWhat::Ref(Strip::Whole), nobracket: false };
+    let mut remote = Remote {
+        what: RemoteWhat::Ref(Strip::Whole),
+        nobracket: false,
+    };
     if arg.is_empty() {
         return Ok(remote);
     }
@@ -234,7 +265,11 @@ fn email_of(arg: &str, atom: &str) -> Result<Part, Error> {
             }
         }
     }
-    Ok(Part::Email { trim, localpart, mailmap })
+    Ok(Part::Email {
+        trim,
+        localpart,
+        mailmap,
+    })
 }
 
 /// Splits a `%(trailers:…)` option text, naming the first piece git would not know.
@@ -243,7 +278,13 @@ fn check_trailers(options: &str) -> Result<(), Error> {
         let name = piece.split_once('=').map_or(piece, |(n, _)| n);
         let known = matches!(
             name,
-            "only" | "unfold" | "keyonly" | "valueonly" | "key" | "separator" | "key_value_separator"
+            "only"
+                | "unfold"
+                | "keyonly"
+                | "valueonly"
+                | "key"
+                | "separator"
+                | "key_value_separator"
         );
         if !known {
             return Err(fatal(format!("unknown %(trailers) argument: {piece}")));
@@ -285,7 +326,11 @@ fn describe_of(arg: &str) -> Result<(), Error> {
             return Err(unrecognized("describe", piece));
         };
         match name {
-            "tags" if matches!(value, "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0" | "") => {}
+            "tags"
+                if matches!(
+                    value,
+                    "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0" | ""
+                ) => {}
             "abbrev" => {
                 if value.parse::<u32>().is_err() {
                     return Err(fatal(format!("cannot fully parse describe:abbrev={value}")));
@@ -311,7 +356,10 @@ fn align_of(arg: &str) -> Result<Kind, Error> {
     }
     for piece in arg.split(',') {
         if let Some(w) = piece.strip_prefix("width=") {
-            width = Some(w.parse::<usize>().map_err(|_| fatal(format!("unrecognized width:{w}")))?);
+            width = Some(
+                w.parse::<usize>()
+                    .map_err(|_| fatal(format!("unrecognized width:{w}")))?,
+            );
         } else if let Some(p) = piece.strip_prefix("position=") {
             position = position_of(p).ok_or_else(|| fatal(format!("unrecognized position:{p}")))?;
         } else if let Ok(w) = piece.parse::<usize>() {
@@ -342,7 +390,11 @@ fn person_of(name: &str, arg: &str) -> Result<Option<Kind>, Error> {
     };
     let part = match rest {
         "" => {
-            return Ok(Some(Kind::Person { who, part: Part::Line, bogus: !arg.is_empty() }));
+            return Ok(Some(Kind::Person {
+                who,
+                part: Part::Line,
+                bogus: !arg.is_empty(),
+            }));
         }
         "name" if who != Who::Creator => match arg {
             "" => Part::Name { mailmap: false },
@@ -356,11 +408,18 @@ fn person_of(name: &str, arg: &str) -> Result<Option<Kind>, Error> {
             } else {
                 date::Mode::parse(arg).ok_or_else(|| fatal(format!("unknown date format {arg}")))?
             };
-            Part::Date { mode, formatted: !arg.is_empty() }
+            Part::Date {
+                mode,
+                formatted: !arg.is_empty(),
+            }
         }
         _ => return Ok(None),
     };
-    Ok(Some(Kind::Person { who, part, bogus: false }))
+    Ok(Some(Kind::Person {
+        who,
+        part,
+        bogus: false,
+    }))
 }
 
 /// Parses the text between `%(` and `)`. `allow_rest` admits `%(rest)` (`cat-file` only).
@@ -465,7 +524,11 @@ pub fn parse_atom(text: &str) -> Result<Atom, Error> {
                 if arg.is_empty() {
                     return Err(fatal(format!("expected format: %({name}:<committish>)")));
                 }
-                if name == "is-base" { Kind::IsBase(arg.to_owned()) } else { Kind::AheadBehind(arg.to_owned()) }
+                if name == "is-base" {
+                    Kind::IsBase(arg.to_owned())
+                } else {
+                    Kind::AheadBehind(arg.to_owned())
+                }
             }
             "align" => align_of(arg)?,
             "if" => Kind::If(match arg {
@@ -486,7 +549,11 @@ pub fn parse_atom(text: &str) -> Result<Atom, Error> {
     if matches!(kind, Kind::Then | Kind::Else | Kind::End) && has_arg {
         // git ignores a stray argument here; the structure error still applies.
     }
-    Ok(Atom { deref, kind, text: text.to_owned() })
+    Ok(Atom {
+        deref,
+        kind,
+        text: text.to_owned(),
+    })
 }
 
 fn hex_pair(a: u8, b: u8) -> Option<u8> {
@@ -505,11 +572,12 @@ fn push_literal(text: &[u8], out: &mut Vec<u8>) {
                 continue;
             }
             if let (Some(&a), Some(&b)) = (text.get(i + 1), text.get(i + 2))
-                && let Some(byte) = hex_pair(a, b) {
-                    out.push(byte);
-                    i += 3;
-                    continue;
-                }
+                && let Some(byte) = hex_pair(a, b)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
         }
         out.push(text[i]);
         i += 1;
@@ -538,7 +606,9 @@ pub fn parse_format(format: &[u8]) -> Result<Vec<Token>, Error> {
     let mut at = 0;
     while let Some(start) = find_next(format, at) {
         let Some(len) = format[start..].iter().position(|&b| b == b')') else {
-            return Err(Error::Malformed(String::from_utf8_lossy(&format[start..]).into_owned()));
+            return Err(Error::Malformed(
+                String::from_utf8_lossy(&format[start..]).into_owned(),
+            ));
         };
         if start > at {
             let mut lit = Vec::new();
@@ -571,14 +641,21 @@ pub fn parse_sort_key(text: &str) -> Result<SortKey, Error> {
         Some(r) => (true, r),
         None => (false, text),
     };
-    let (version, rest) = match rest.strip_prefix("version:").or_else(|| rest.strip_prefix("v:")) {
+    let (version, rest) = match rest
+        .strip_prefix("version:")
+        .or_else(|| rest.strip_prefix("v:"))
+    {
         Some(r) => (true, r),
         None => (false, rest),
     };
     if rest.is_empty() {
         return Err(fatal(format!("malformed field name: {rest}")));
     }
-    Ok(SortKey { atom: parse_atom(rest)?, reverse, version })
+    Ok(SortKey {
+        atom: parse_atom(rest)?,
+        reverse,
+        version,
+    })
 }
 
 #[cfg(test)]
@@ -613,10 +690,16 @@ mod tests {
             Error::Fatal(m) | Error::Malformed(m) => m,
         };
         assert_eq!(msg("%(foo)"), "unknown field name: foo");
-        assert_eq!(msg("%(refname:bogus)"), "unrecognized %(refname) argument: bogus");
+        assert_eq!(
+            msg("%(refname:bogus)"),
+            "unrecognized %(refname) argument: bogus"
+        );
         assert_eq!(msg("%(refname"), "%(refname");
         assert_eq!(msg("%(HEAD:x)"), "%(HEAD) does not take arguments");
-        assert_eq!(msg("%(objectname:short=x)"), "positive value expected 'x' in %(objectname:short=x)");
+        assert_eq!(
+            msg("%(objectname:short=x)"),
+            "positive value expected 'x' in %(objectname:short=x)"
+        );
     }
 
     #[test]

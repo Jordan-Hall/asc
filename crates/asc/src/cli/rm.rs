@@ -41,7 +41,15 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "rm",
     flags: &[
-        "-r", "-f", "--force", "-n", "--dry-run", "-q", "--quiet", "--cached", "--ignore-unmatch",
+        "-r",
+        "-f",
+        "--force",
+        "-n",
+        "--dry-run",
+        "-q",
+        "--quiet",
+        "--cached",
+        "--ignore-unmatch",
     ],
     placeholders: &[],
 }];
@@ -96,10 +104,21 @@ impl Refused {
 }
 
 /// Whether the work tree file at `path` differs from what is staged.
-fn locally_modified(gate: &SafeRoot, attrs: &mut Attrs, path: &RepoPath, t: &Tracked) -> io::Result<bool> {
-    let Staged::Leaf { leaf, .. } = &t.staged else { return Ok(false) };
-    let Some(abs) = gate.resolve(path) else { return Ok(false) };
-    let Ok(meta) = fs::symlink_metadata(&abs) else { return Ok(false) };
+fn locally_modified(
+    gate: &SafeRoot,
+    attrs: &mut Attrs,
+    path: &RepoPath,
+    t: &Tracked,
+) -> io::Result<bool> {
+    let Staged::Leaf { leaf, .. } = &t.staged else {
+        return Ok(false);
+    };
+    let Some(abs) = gate.resolve(path) else {
+        return Ok(false);
+    };
+    let Ok(meta) = fs::symlink_metadata(&abs) else {
+        return Ok(false);
+    };
     if meta.is_dir() {
         return Ok(false);
     }
@@ -123,7 +142,9 @@ fn remove_from_work_tree(gate: &SafeRoot, path: &RepoPath) -> io::Result<()> {
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if a.pathspec.is_empty() {
-        return Err(CliError::Fatal("No pathspec was given. Which files should I remove?".into()));
+        return Err(CliError::Fatal(
+            "No pathspec was given. Which files should I remove?".into(),
+        ));
     }
     let spec = Spec::parse(&a.pathspec, &cwd_prefix(ctx, ws), ws.projection.toplevel())?;
     let mut target = Target::open(ctx).await?;
@@ -140,15 +161,23 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if !a.ignore_unmatch
         && let Some((item, _)) = spec.includes().iter().zip(&seen).find(|(_, hit)| !**hit)
     {
-        return Err(CliError::Fatal(format!("pathspec '{}' did not match any files", item.raw())));
+        return Err(CliError::Fatal(format!(
+            "pathspec '{}' did not match any files",
+            item.raw()
+        )));
     }
     if !a.recursive {
         let below = |path: &RepoPath| {
             let key = path.as_bytes();
-            spec.includes().iter().find(|i| i.literal().is_some_and(|l| key != l && i.matches(key)))
+            spec.includes()
+                .iter()
+                .find(|i| i.literal().is_some_and(|l| key != l && i.matches(key)))
         };
         if let Some(dir) = hits.iter().find_map(|(p, _)| below(p)) {
-            return Err(CliError::Fatal(format!("not removing '{}' recursively without -r", dir.raw())));
+            return Err(CliError::Fatal(format!(
+                "not removing '{}' recursively without -r",
+                dir.raw()
+            )));
         }
     }
 
@@ -156,10 +185,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let mut attrs = workspace_attrs(ctx, ws)?;
         let mut refused = Refused::default();
         for (path, t) in &hits {
-            let Staged::Leaf { leaf, ita: false } = &t.staged else { continue };
+            let Staged::Leaf { leaf, ita: false } = &t.staged else {
+                continue;
+            };
             let local = locally_modified(&gate, &mut attrs, path, t)
                 .map_err(|e| CliError::Fatal(format!("{path}: {e}")))?;
-            let staged = t.head.as_ref().is_none_or(|h| h.git != leaf.git || h.kind != leaf.kind);
+            let staged = t
+                .head
+                .as_ref()
+                .is_none_or(|h| h.git != leaf.git || h.kind != leaf.kind);
             match (local, staged) {
                 (true, true) => refused.staged.push(path.clone()),
                 (false, true) if !a.cached => refused.cached.push(path.clone()),
@@ -187,6 +221,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 .map_err(|e| CliError::Fatal(format!("git rm: '{path}': {e}")))?;
         }
     }
-    target.apply(ctx, hits.into_iter().map(|(p, _)| Edit::Drop(p)).collect()).await?;
+    target
+        .apply(ctx, hits.into_iter().map(|(p, _)| Edit::Drop(p)).collect())
+        .await?;
     Ok(ExitCode::SUCCESS)
 }

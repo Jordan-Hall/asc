@@ -30,7 +30,10 @@ fn signature(desc: &MessageDescriptor, s: &Signature) -> Value {
 }
 
 fn log_entry(pool: &DescriptorPool, e: &Entry) -> Result<Value> {
-    let get = |n: &str| pool.get_message_by_name(n).ok_or_else(|| fatal(format!("asc: missing message {n}")));
+    let get = |n: &str| {
+        pool.get_message_by_name(n)
+            .ok_or_else(|| fatal(format!("asc: missing message {n}")))
+    };
     let mut m = DynamicMessage::new(get("asc.v1.LogEntry")?);
     let sig = get("asc.v1.Signature")?;
     m.set_field_by_name("id", bytes(e.id.as_bytes()));
@@ -49,7 +52,9 @@ fn log_entry(pool: &DescriptorPool, e: &Entry) -> Result<Value> {
 /// Streams `walker` as `LogResponse` lines of up to [`PAGE`] entries.
 pub async fn emit(_ws: &WsCtx, mut walker: Walker<'_>, reverse: bool) -> Result<()> {
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).map_err(fatal)?;
-    let resp = pool.get_message_by_name("asc.v1.LogResponse").ok_or_else(|| fatal("asc: missing message asc.v1.LogResponse"))?;
+    let resp = pool
+        .get_message_by_name("asc.v1.LogResponse")
+        .ok_or_else(|| fatal("asc: missing message asc.v1.LogResponse"))?;
     let stdout = std::io::stdout();
     let mut lines = JsonLines::new(std::io::BufWriter::new(stdout.lock()));
     let mut page: Vec<Value> = Vec::new();

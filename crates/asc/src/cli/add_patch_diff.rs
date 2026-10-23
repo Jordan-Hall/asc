@@ -157,7 +157,11 @@ fn quote(name: &[u8]) -> Vec<u8> {
 /// Hunk header range: `start[,count]`, where an empty range names the line before it.
 fn range_text(start: usize, count: usize) -> String {
     let first = if count == 0 { start } else { start + 1 };
-    if count == 1 { format!("{first}") } else { format!("{first},{count}") }
+    if count == 1 {
+        format!("{first}")
+    } else {
+        format!("{first},{count}")
+    }
 }
 
 fn abbrev(oid: Option<&GitOid>, digits: usize) -> String {
@@ -212,13 +216,22 @@ pub fn build(
     let modes = (old.as_ref().map(|x| x.mode), new.as_ref().map(|x| x.mode));
     let mode_change = matches!(modes, (Some(o), Some(n)) if o != n);
     if let (true, (Some(o), Some(n))) = (mode_change, modes) {
-        hunks.push(Hunk { part: Part::Mode { old: o, new: n }, decision: Decision::Undecided });
+        hunks.push(Hunk {
+            part: Part::Mode { old: o, new: n },
+            decision: Decision::Undecided,
+        });
     }
     let mut funcs = FuncTracker::new();
     for g in ld.groups(s.context, s.inter_hunk) {
         let extra = funcs.next(&ld.old, g.old.start).map(<[u8]>::to_vec);
         hunks.push(Hunk {
-            part: Part::Text { runs: g.hunks, old: g.old, new: g.new, extra, edited: None },
+            part: Part::Text {
+                runs: g.hunks,
+                old: g.old,
+                new: g.new,
+                extra,
+                edited: None,
+            },
             decision: Decision::Undecided,
         });
     }
@@ -231,13 +244,21 @@ pub fn build(
     header.push(b'\n');
     let mode = |m: Option<u32>| m.unwrap_or(0);
     match shape {
-        Shape::Added => header.extend_from_slice(format!("new file mode {:06o}\n", mode(modes.1)).as_bytes()),
-        Shape::Deleted => header.extend_from_slice(format!("deleted file mode {:06o}\n", mode(modes.0)).as_bytes()),
+        Shape::Added => {
+            header.extend_from_slice(format!("new file mode {:06o}\n", mode(modes.1)).as_bytes())
+        }
+        Shape::Deleted => header
+            .extend_from_slice(format!("deleted file mode {:06o}\n", mode(modes.0)).as_bytes()),
         Shape::Modified => {}
     }
-    let (og, ng) = (old.as_ref().and_then(|x| x.oid.as_ref()), new.as_ref().and_then(|x| x.oid.as_ref()));
+    let (og, ng) = (
+        old.as_ref().and_then(|x| x.oid.as_ref()),
+        new.as_ref().and_then(|x| x.oid.as_ref()),
+    );
     if og != ng {
-        header.extend_from_slice(format!("index {}..{}", abbrev(og, digits), abbrev(ng, digits)).as_bytes());
+        header.extend_from_slice(
+            format!("index {}..{}", abbrev(og, digits), abbrev(ng, digits)).as_bytes(),
+        );
         if modes.0 == modes.1 {
             header.extend_from_slice(format!(" {:06o}", mode(modes.1)).as_bytes());
         }
@@ -261,7 +282,16 @@ pub fn build(
         header.extend_from_slice(&label(new.is_some(), b));
         header.push(b'\n');
     }
-    FileDiff { shape, header, hunks, head: Decision::Undecided, path: Vec::new(), old: old_lines, new: new_lines, runs }
+    FileDiff {
+        shape,
+        header,
+        hunks,
+        head: Decision::Undecided,
+        path: Vec::new(),
+        old: old_lines,
+        new: new_lines,
+        runs,
+    }
 }
 
 impl FileDiff {
@@ -272,7 +302,13 @@ impl FileDiff {
 
     /// Whether the first hunk is the mode change.
     pub fn mode_change(&self) -> bool {
-        matches!(self.hunks.first(), Some(Hunk { part: Part::Mode { .. }, .. }))
+        matches!(
+            self.hunks.first(),
+            Some(Hunk {
+                part: Part::Mode { .. },
+                ..
+            })
+        )
     }
 
     /// Whether the file offers anything to stage: an empty file added or deleted is one prompt
@@ -284,7 +320,9 @@ impl FileDiff {
     /// How many hunks `splitting` hunk `h` gives: the number of change runs it holds.
     pub fn splittable(&self, h: usize) -> usize {
         match &self.hunks[h].part {
-            Part::Text { runs, edited: None, .. } => runs.len(),
+            Part::Text {
+                runs, edited: None, ..
+            } => runs.len(),
             _ => 1,
         }
     }
@@ -295,13 +333,29 @@ impl FileDiff {
     }
 
     pub fn is_edited(&self, h: usize) -> bool {
-        matches!(&self.hunks[h].part, Part::Text { edited: Some(_), .. })
+        matches!(
+            &self.hunks[h].part,
+            Part::Text {
+                edited: Some(_),
+                ..
+            }
+        )
     }
 
     /// Replaces hunk `h` by one hunk per change run; the context between two runs belongs to
     /// both, as in git. Returns how many hunks there are now.
     pub fn split(&mut self, h: usize) -> usize {
-        let Hunk { part: Part::Text { runs, old, new, extra, edited: None }, decision } = self.hunks[h].clone()
+        let Hunk {
+            part:
+                Part::Text {
+                    runs,
+                    old,
+                    new,
+                    extra,
+                    edited: None,
+                },
+            decision,
+        } = self.hunks[h].clone()
         else {
             return 1;
         };
@@ -311,10 +365,24 @@ impl FileDiff {
             .enumerate()
             .map(|(k, r)| {
                 let (first, last) = (k == 0, k + 1 == n);
-                let o = if first { old.start } else { self.runs[r - 1].before.end }
-                    ..if last { old.end } else { self.runs[r + 1].before.start };
-                let w = if first { new.start } else { self.runs[r - 1].after.end }
-                    ..if last { new.end } else { self.runs[r + 1].after.start };
+                let o = if first {
+                    old.start
+                } else {
+                    self.runs[r - 1].before.end
+                }..if last {
+                    old.end
+                } else {
+                    self.runs[r + 1].before.start
+                };
+                let w = if first {
+                    new.start
+                } else {
+                    self.runs[r - 1].after.end
+                }..if last {
+                    new.end
+                } else {
+                    self.runs[r + 1].after.start
+                };
                 Hunk {
                     part: Part::Text {
                         runs: r..r + 1,
@@ -333,18 +401,41 @@ impl FileDiff {
 
     /// The lines of hunk `h` with their markers.
     fn body(&self, h: usize) -> Vec<(u8, &[u8])> {
-        let Part::Text { runs, old, new: _, edited, .. } = &self.hunks[h].part else {
+        let Part::Text {
+            runs,
+            old,
+            new: _,
+            edited,
+            ..
+        } = &self.hunks[h].part
+        else {
             return Vec::new();
         };
         if let Some(e) = edited {
-            return e.lines.iter().map(|l| (l.marker, l.text.as_slice())).collect();
+            return e
+                .lines
+                .iter()
+                .map(|l| (l.marker, l.text.as_slice()))
+                .collect();
         }
         let mut out = Vec::new();
         let mut pos = old.start;
         for r in &self.runs[runs.clone()] {
-            out.extend(self.old[pos..r.before.start].iter().map(|l| (b' ', l.as_slice())));
-            out.extend(self.old[r.before.clone()].iter().map(|l| (b'-', l.as_slice())));
-            out.extend(self.new[r.after.clone()].iter().map(|l| (b'+', l.as_slice())));
+            out.extend(
+                self.old[pos..r.before.start]
+                    .iter()
+                    .map(|l| (b' ', l.as_slice())),
+            );
+            out.extend(
+                self.old[r.before.clone()]
+                    .iter()
+                    .map(|l| (b'-', l.as_slice())),
+            );
+            out.extend(
+                self.new[r.after.clone()]
+                    .iter()
+                    .map(|l| (b'+', l.as_slice())),
+            );
             pos = r.before.end;
         }
         out.extend(self.old[pos..old.end].iter().map(|l| (b' ', l.as_slice())));
@@ -354,9 +445,17 @@ impl FileDiff {
     /// `(old start, old count, new start, new count)` of the hunk header.
     fn ranges(&self, h: usize) -> (usize, usize, usize, usize) {
         match &self.hunks[h].part {
-            Part::Text { old, new, edited: None, .. } => (old.start, old.len(), new.start, new.len()),
-            Part::Text { edited: Some(e), .. } => {
-                let count = |keep: &[u8]| e.lines.iter().filter(|l| keep.contains(&l.marker)).count();
+            Part::Text {
+                old,
+                new,
+                edited: None,
+                ..
+            } => (old.start, old.len(), new.start, new.len()),
+            Part::Text {
+                edited: Some(e), ..
+            } => {
+                let count =
+                    |keep: &[u8]| e.lines.iter().filter(|l| keep.contains(&l.marker)).count();
                 (e.old_start, count(b" -"), e.new_start, count(b" +"))
             }
             Part::Mode { .. } => (0, 0, 0, 0),
@@ -368,11 +467,15 @@ impl FileDiff {
         let mut out = Vec::new();
         match &self.hunks[h].part {
             Part::Mode { old, new } => {
-                out.extend_from_slice(format!("old mode {old:06o}\nnew mode {new:06o}\n").as_bytes());
+                out.extend_from_slice(
+                    format!("old mode {old:06o}\nnew mode {new:06o}\n").as_bytes(),
+                );
             }
             Part::Text { extra, .. } => {
                 let (os, oc, ns, nc) = self.ranges(h);
-                out.extend_from_slice(format!("@@ -{} +{} @@", range_text(os, oc), range_text(ns, nc)).as_bytes());
+                out.extend_from_slice(
+                    format!("@@ -{} +{} @@", range_text(os, oc), range_text(ns, nc)).as_bytes(),
+                );
                 if let Some(x) = extra {
                     out.push(b' ');
                     out.extend_from_slice(x);
@@ -424,7 +527,10 @@ impl FileDiff {
         if text.len() > MAX_EDIT_BYTES {
             return Err(NoApply);
         }
-        let kept: Vec<&[u8]> = split_inclusive(text).into_iter().filter(|l| l.first() != Some(&b'#')).collect();
+        let kept: Vec<&[u8]> = split_inclusive(text)
+            .into_iter()
+            .filter(|l| l.first() != Some(&b'#'))
+            .collect();
         if kept.is_empty() {
             return Ok(EditResult::Abandoned);
         }
@@ -445,18 +551,35 @@ impl FileDiff {
     /// the edit's old side is not in the base where git would find it, or reaches into a change
     /// of another hunk.
     fn replacement(&self, h: usize) -> Option<(Range<usize>, Vec<Vec<u8>>)> {
-        let Part::Text { runs, edited: Some(e), .. } = &self.hunks[h].part else {
+        let Part::Text {
+            runs,
+            edited: Some(e),
+            ..
+        } = &self.hunks[h].part
+        else {
             return None;
         };
         let seq = |keep: &[u8]| -> Vec<&[u8]> {
-            e.lines.iter().filter(|l| keep.contains(&l.marker)).map(|l| l.text.as_slice()).collect()
+            e.lines
+                .iter()
+                .filter(|l| keep.contains(&l.marker))
+                .map(|l| l.text.as_slice())
+                .collect()
         };
         let (want, put) = (seq(b" -"), seq(b" +"));
-        let trailing = e.lines.iter().rev().take_while(|l| l.marker == b' ').count();
+        let trailing = e
+            .lines
+            .iter()
+            .rev()
+            .take_while(|l| l.marker == b' ')
+            .count();
         let hi = self.old.len();
         let fits = |p: usize| {
             p + want.len() <= hi
-                && self.old[p..p + want.len()].iter().zip(&want).all(|(a, b)| a.as_slice() == *b)
+                && self.old[p..p + want.len()]
+                    .iter()
+                    .zip(&want)
+                    .all(|(a, b)| a.as_slice() == *b)
                 && (!e.at_top || p == 0)
                 && (trailing != 0 || p + want.len() == hi)
         };
@@ -470,7 +593,11 @@ impl FileDiff {
         })?;
         let range = pos..pos + want.len();
         // The edit may not touch a change that belongs to another hunk.
-        let foreign = self.runs.iter().enumerate().filter(|(i, _)| !runs.contains(i));
+        let foreign = self
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !runs.contains(i));
         if foreign.into_iter().any(|(_, r)| overlap(&range, &r.before)) {
             return None;
         }
@@ -495,7 +622,9 @@ impl FileDiff {
     pub fn assemble(&self) -> Result<Vec<u8>, NoApply> {
         let mut edits: Vec<(Range<usize>, Vec<Vec<u8>>)> = Vec::new();
         for (i, h) in self.hunks.iter().enumerate() {
-            let Part::Text { runs, edited, .. } = &h.part else { continue };
+            let Part::Text { runs, edited, .. } = &h.part else {
+                continue;
+            };
             if h.decision != Decision::Use {
                 continue;
             }
@@ -565,8 +694,14 @@ fn parse_edit(lines: &[&[u8]]) -> Option<Edited> {
                     last.text.pop();
                 }
             }
-            Some(&m @ (b' ' | b'+' | b'-')) => body.push(EdLine { marker: m, text: raw[1..].to_vec() }),
-            Some(b'\n') => body.push(EdLine { marker: b' ', text: raw.to_vec() }),
+            Some(&m @ (b' ' | b'+' | b'-')) => body.push(EdLine {
+                marker: m,
+                text: raw[1..].to_vec(),
+            }),
+            Some(b'\n') => body.push(EdLine {
+                marker: b' ',
+                text: raw.to_vec(),
+            }),
             _ => return None,
         }
     }
@@ -576,7 +711,12 @@ fn parse_edit(lines: &[&[u8]]) -> Option<Edited> {
     let old_count = body.iter().filter(|l| l.marker != b'+').count();
     let new_count = body.iter().filter(|l| l.marker != b'-').count();
     let zero = |n: usize, count: usize| if count == 0 { n } else { n.saturating_sub(1) };
-    Some(Edited { old_start: zero(a, old_count), new_start: zero(c, new_count), at_top: a <= 1, lines: body })
+    Some(Edited {
+        old_start: zero(a, old_count),
+        new_start: zero(c, new_count),
+        at_top: a <= 1,
+        lines: body,
+    })
 }
 
 #[cfg(test)]
@@ -584,17 +724,32 @@ mod tests {
     use super::*;
 
     fn settings() -> Settings {
-        Settings { context: 3, inter_hunk: 0, algorithm: Algorithm::Myers, indent_heuristic: true }
+        Settings {
+            context: 3,
+            inter_hunk: 0,
+            algorithm: Algorithm::Myers,
+            indent_heuristic: true,
+        }
     }
 
     fn side(text: &str) -> Option<Side> {
         let oid = asc_core::git::blob_oid(text.as_bytes());
-        Some(Side { content: text.as_bytes().to_vec(), mode: 0o100644, oid: Some(oid) })
+        Some(Side {
+            content: text.as_bytes().to_vec(),
+            mode: 0o100644,
+            oid: Some(oid),
+        })
     }
 
     fn numbered(n: usize, change: &[usize]) -> String {
         (1..=n)
-            .map(|i| if change.contains(&i) { format!("new{i}\n") } else { format!("{i}\n") })
+            .map(|i| {
+                if change.contains(&i) {
+                    format!("new{i}\n")
+                } else {
+                    format!("{i}\n")
+                }
+            })
             .collect()
     }
 
@@ -610,7 +765,10 @@ mod tests {
         assert_eq!(String::from_utf8(d.render(0)).unwrap(), want);
         let header = String::from_utf8(d.header().to_vec()).unwrap();
         assert!(header.starts_with("diff --git a/f b/f\nindex "), "{header}");
-        assert!(header.ends_with(" 100644\n--- a/f\n+++ b/f\n") || header.ends_with("\n--- a/f\n+++ b/f\n"));
+        assert!(
+            header.ends_with(" 100644\n--- a/f\n+++ b/f\n")
+                || header.ends_with("\n--- a/f\n+++ b/f\n")
+        );
     }
 
     #[test]
@@ -621,8 +779,14 @@ mod tests {
         assert_eq!(d.hunks.len(), 2);
         let first = String::from_utf8(d.render(0)).unwrap();
         let second = String::from_utf8(d.render(1)).unwrap();
-        assert_eq!(first, "@@ -1,7 +1,7 @@\n 1\n 2\n 3\n-4\n+new4\n 5\n 6\n 7\n");
-        assert_eq!(second, "@@ -5,7 +5,7 @@\n 5\n 6\n 7\n-8\n+new8\n 9\n 10\n 11\n");
+        assert_eq!(
+            first,
+            "@@ -1,7 +1,7 @@\n 1\n 2\n 3\n-4\n+new4\n 5\n 6\n 7\n"
+        );
+        assert_eq!(
+            second,
+            "@@ -5,7 +5,7 @@\n 5\n 6\n 7\n-8\n+new8\n 9\n 10\n 11\n"
+        );
         assert_eq!(d.splittable(0), 1);
     }
 
@@ -632,9 +796,15 @@ mod tests {
         let mut d = diff(&old, &numbered(30, &[3, 25]));
         assert_eq!(d.hunks.len(), 2);
         d.hunks[1].decision = Decision::Use;
-        assert_eq!(String::from_utf8(d.assemble().unwrap()).unwrap(), numbered(30, &[25]));
+        assert_eq!(
+            String::from_utf8(d.assemble().unwrap()).unwrap(),
+            numbered(30, &[25])
+        );
         d.hunks[0].decision = Decision::Use;
-        assert_eq!(String::from_utf8(d.assemble().unwrap()).unwrap(), numbered(30, &[3, 25]));
+        assert_eq!(
+            String::from_utf8(d.assemble().unwrap()).unwrap(),
+            numbered(30, &[3, 25])
+        );
     }
 
     #[test]
@@ -642,7 +812,10 @@ mod tests {
         let mut d = diff(&numbered(14, &[]), &numbered(14, &[4, 8]));
         d.split(0);
         d.hunks[1].decision = Decision::Use;
-        assert_eq!(String::from_utf8(d.assemble().unwrap()).unwrap(), numbered(14, &[8]));
+        assert_eq!(
+            String::from_utf8(d.assemble().unwrap()).unwrap(),
+            numbered(14, &[8])
+        );
     }
 
     #[test]
@@ -651,7 +824,10 @@ mod tests {
         d.hunks[0].decision = Decision::Use;
         assert_eq!(d.assemble().unwrap(), b"one\ntwo\nthree");
         let text = String::from_utf8(d.render(0)).unwrap();
-        assert!(text.contains("-two\n\\ No newline at end of file\n+two\n+three\n\\ No newline"), "{text}");
+        assert!(
+            text.contains("-two\n\\ No newline at end of file\n+two\n+three\n\\ No newline"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -664,7 +840,11 @@ mod tests {
         d.hunks[0].decision = Decision::Use;
         let got = String::from_utf8(d.assemble().unwrap()).unwrap();
         assert_eq!(got, numbered(12, &[5]).replace("new5\n", "edited\nmore\n"));
-        assert!(String::from_utf8(d.render(0)).unwrap().starts_with("@@ -2,7 +2,8 @@\n"));
+        assert!(
+            String::from_utf8(d.render(0))
+                .unwrap()
+                .starts_with("@@ -2,7 +2,8 @@\n")
+        );
         // Context that is not in the file does not apply, and leaves the hunk as it was.
         let bad = edited.replace(" 3\n", " three\n");
         assert_eq!(d.set_edit(0, bad.as_bytes()), Err(NoApply));
@@ -674,7 +854,10 @@ mod tests {
     #[test]
     fn removing_every_line_abandons_the_edit() {
         let mut d = diff(&numbered(12, &[]), &numbered(12, &[5]));
-        assert_eq!(d.set_edit(0, b"# nothing left\n"), Ok(EditResult::Abandoned));
+        assert_eq!(
+            d.set_edit(0, b"# nothing left\n"),
+            Ok(EditResult::Abandoned)
+        );
         assert!(!d.is_edited(0));
     }
 
@@ -689,7 +872,10 @@ mod tests {
     #[test]
     fn summary_pads_the_header_and_names_the_first_change() {
         let d = diff(&numbered(12, &[]), &numbered(12, &[5]));
-        assert_eq!(String::from_utf8(d.summary(0)).unwrap(), " -2,7 +2,7          -5");
+        assert_eq!(
+            String::from_utf8(d.summary(0)).unwrap(),
+            " -2,7 +2,7          -5"
+        );
     }
 
     #[test]
@@ -697,8 +883,16 @@ mod tests {
         let mut d = build(
             b"a/f",
             b"b/f",
-            Some(Side { content: b"x\n".to_vec(), mode: 0o100755, oid: Some(asc_core::git::blob_oid(b"x\n")) }),
-            Some(Side { content: b"x\n".to_vec(), mode: 0o100644, oid: Some(asc_core::git::blob_oid(b"x\n")) }),
+            Some(Side {
+                content: b"x\n".to_vec(),
+                mode: 0o100755,
+                oid: Some(asc_core::git::blob_oid(b"x\n")),
+            }),
+            Some(Side {
+                content: b"x\n".to_vec(),
+                mode: 0o100644,
+                oid: Some(asc_core::git::blob_oid(b"x\n")),
+            }),
             7,
             &settings(),
         );
@@ -713,7 +907,10 @@ mod tests {
     fn empty_files_follow_git() {
         let added = build(b"a/f", b"b/f", None, side(""), 7, &settings());
         assert!(added.offered() && added.hunks.is_empty());
-        assert_eq!(added.header(), b"diff --git a/f b/f\nnew file mode 100644\nindex 0000000..e69de29\n");
+        assert_eq!(
+            added.header(),
+            b"diff --git a/f b/f\nnew file mode 100644\nindex 0000000..e69de29\n"
+        );
         let deleted = build(b"a/f", b"b/f", side(""), None, 7, &settings());
         assert!(deleted.offered() && deleted.hunks.is_empty());
     }

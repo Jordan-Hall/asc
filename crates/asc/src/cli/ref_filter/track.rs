@@ -31,7 +31,10 @@ impl<'a> RefSpec<'a> {
 }
 
 fn apply_all(specs: &[String], name: &str) -> Option<String> {
-    specs.iter().filter_map(|s| RefSpec::parse(s)).find_map(|s| s.apply(name))
+    specs
+        .iter()
+        .filter_map(|s| RefSpec::parse(s))
+        .find_map(|s| s.apply(name))
 }
 
 /// The tracking facts of one local branch.
@@ -54,12 +57,20 @@ pub fn upstream(config: &ConfigSnapshot, branch: &str) -> Tracking {
         (Some(r), Some(m)) => apply_all(&config.get_all(&format!("remote.{r}.fetch")), m),
         _ => None,
     };
-    Tracking { remote, merge, upstream }
+    Tracking {
+        remote,
+        merge,
+        upstream,
+    }
 }
 
 /// The remote a push of `branch` goes to, and whether config names it.
 pub fn push_remote(config: &ConfigSnapshot, branch: &str) -> (String, bool) {
-    for key in [format!("branch.{branch}.pushRemote"), "remote.pushDefault".to_owned(), format!("branch.{branch}.remote")] {
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".to_owned(),
+        format!("branch.{branch}.remote"),
+    ] {
         if let Some(r) = config.get(&key) {
             return (r, true);
         }
@@ -79,7 +90,8 @@ pub fn fetch_remote(config: &ConfigSnapshot, branch: &str) -> (String, bool) {
 pub fn push_target(config: &ConfigSnapshot, branch: &str) -> Option<String> {
     let (remote, _) = push_remote(config, branch);
     let full = format!("refs/heads/{branch}");
-    let destination = |dest: &str| apply_all(&config.get_all(&format!("remote.{remote}.fetch")), dest);
+    let destination =
+        |dest: &str| apply_all(&config.get_all(&format!("remote.{remote}.fetch")), dest);
     let dest = match apply_all(&config.get_all(&format!("remote.{remote}.push")), &full) {
         Some(d) => d,
         None => full.clone(),
@@ -100,7 +112,10 @@ pub fn push_target(config: &ConfigSnapshot, branch: &str) -> Option<String> {
 /// The branch on the remote that a push of `branch` updates, when config says it explicitly.
 pub fn push_remote_ref(config: &ConfigSnapshot, branch: &str) -> Option<String> {
     let (remote, _) = push_remote(config, branch);
-    apply_all(&config.get_all(&format!("remote.{remote}.push")), &format!("refs/heads/{branch}"))
+    apply_all(
+        &config.get_all(&format!("remote.{remote}.push")),
+        &format!("refs/heads/{branch}"),
+    )
 }
 
 #[cfg(test)]
@@ -110,10 +125,16 @@ mod tests {
     #[test]
     fn refspecs_map_names() {
         let spec = RefSpec::parse("+refs/heads/*:refs/remotes/origin/*").unwrap();
-        assert_eq!(spec.apply("refs/heads/a/b").as_deref(), Some("refs/remotes/origin/a/b"));
+        assert_eq!(
+            spec.apply("refs/heads/a/b").as_deref(),
+            Some("refs/remotes/origin/a/b")
+        );
         assert_eq!(spec.apply("refs/tags/x"), None);
         let exact = RefSpec::parse("refs/heads/m:refs/remotes/o/m").unwrap();
-        assert_eq!(exact.apply("refs/heads/m").as_deref(), Some("refs/remotes/o/m"));
+        assert_eq!(
+            exact.apply("refs/heads/m").as_deref(),
+            Some("refs/remotes/o/m")
+        );
         assert_eq!(exact.apply("refs/heads/n"), None);
     }
 }

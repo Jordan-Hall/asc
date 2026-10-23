@@ -11,17 +11,22 @@ use asc_graph::registry::DETECTORS;
 use asc_graph::select::select;
 use serde_json::json;
 
-use super::affected::{
-    MAX_ARGS, ecosystems, git_id, kind_name, projects_err, rev, select_err, selectors, usage, write_json,
-};
 use super::affected::fmt_affected::clean;
+use super::affected::{
+    MAX_ARGS, ecosystems, git_id, kind_name, projects_err, rev, select_err, selectors, usage,
+    write_json,
+};
 use super::common::{CliError, Ctx, Result};
 use super::output::Output;
 use super::pager::PagerWant;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "projects", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "projects",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Selectors (SPEC §12A.1); none selects every project.
     pub selectors: Vec<String>,
@@ -43,7 +48,12 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 
 /// The directory of `cwd` below `root` as a `/`-terminated byte string.
 fn cwd_prefix(root: &Path, cwd: &Path) -> String {
-    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_owned();
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_owned()
+    };
     let (r, c) = (norm(root), norm(cwd));
     let (r_cmp, c_cmp) = if cfg!(windows) {
         (r.to_ascii_lowercase(), c.to_ascii_lowercase())
@@ -81,7 +91,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         };
         chosen.retain(|&i| eco.is_empty() || eco.contains(&graph.projects[i].key.eco));
         if !wanted.is_empty() && chosen.is_empty() {
-            return Err(CliError::Raw("asc: the selectors match no project".into(), 1));
+            return Err(CliError::Raw(
+                "asc: the selectors match no project".into(),
+                1,
+            ));
         }
         if json_out {
             let projects: Vec<_> = chosen
@@ -108,16 +121,22 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             out.write_all(text.as_bytes()).map_err(CliError::from)
         }
     } else {
-        let own = Ownership::new(graph, DETECTORS).map_err(|e| CliError::Raw(format!("asc: {e}"), 1))?;
+        let own =
+            Ownership::new(graph, DETECTORS).map_err(|e| CliError::Raw(format!("asc: {e}"), 1))?;
         let prefix = cwd_prefix(ws.projection.toplevel(), &ctx.cwd);
         let mut lines = Vec::new();
         for raw in &a.owner {
             let text = raw.replace('\\', "/");
             let text = format!("{prefix}{}", text.trim_end_matches('/'));
-            let path = RepoPath::new(text.into_bytes()).map_err(|e| usage(format!("bad --owner path '{raw}': {e}")))?;
+            let path = RepoPath::new(text.into_bytes())
+                .map_err(|e| usage(format!("bad --owner path '{raw}': {e}")))?;
             let owners = own.owners(&path);
             let answer = if !owners.is_empty() {
-                owners.iter().map(|&i| clean(&ids[i])).collect::<Vec<_>>().join(",")
+                owners
+                    .iter()
+                    .map(|&i| clean(&ids[i]))
+                    .collect::<Vec<_>>()
+                    .join(",")
             } else if let Some((eco, _)) = claim_of(DETECTORS, &graph.config, &path) {
                 format!("claimed by {eco}")
             } else {
@@ -126,10 +145,16 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             lines.push((path.to_string(), answer));
         }
         if json_out {
-            let rows: Vec<_> = lines.iter().map(|(p, o)| json!({"path": p, "owner": o})).collect();
+            let rows: Vec<_> = lines
+                .iter()
+                .map(|(p, o)| json!({"path": p, "owner": o}))
+                .collect();
             write_json(&mut out, &json!({"version": 1, "owners": rows}))
         } else {
-            let text: String = lines.iter().map(|(p, o)| format!("{}\t{o}\n", clean(p))).collect();
+            let text: String = lines
+                .iter()
+                .map(|(p, o)| format!("{}\t{o}\n", clean(p)))
+                .collect();
             out.write_all(text.as_bytes()).map_err(CliError::from)
         }
     };

@@ -58,7 +58,12 @@ fn parse(args: &[OsString]) -> Result<Opts> {
             Word::Short(flags) => match flags.as_str() {
                 "s" => o.quote = Quote::Shell,
                 "p" => o.quote = Quote::Perl,
-                other => return Err(cur.usage_error(&format!("unknown switch `{}'", other.chars().next().unwrap_or('-')))),
+                other => {
+                    return Err(cur.usage_error(&format!(
+                        "unknown switch `{}'",
+                        other.chars().next().unwrap_or('-')
+                    )));
+                }
             },
             Word::Long(name, inline) => match name.as_str() {
                 "shell" | "perl" | "python" | "tcl" => {
@@ -66,7 +71,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                 }
                 "count" => {
                     let v = cur.value("count", inline)?;
-                    let n: i64 = v.parse().map_err(|_| cur.usage_error("option `count' expects a numerical value"))?;
+                    let n: i64 = v
+                        .parse()
+                        .map_err(|_| cur.usage_error("option `count' expects a numerical value"))?;
                     if n < 0 {
                         return Err(cur.usage_error(&format!("invalid --count argument: `{n}'")));
                     }
@@ -86,8 +93,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                 "stdin" => o.stdin = true,
                 "color" => {
                     let v = inline.unwrap_or_else(|| "always".to_owned());
-                    o.color = parse_color(&v)
-                        .ok_or_else(|| CliError::Fatal(format!("bad boolean config value '{v}' for 'color'")))?;
+                    o.color = parse_color(&v).ok_or_else(|| {
+                        CliError::Fatal(format!("bad boolean config value '{v}' for 'color'"))
+                    })?;
                 }
                 "no-color" => o.color = Some(false),
                 "start-after" => o.start_after = Some(cur.value("start-after", inline)?),
@@ -100,7 +108,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
 
 /// The commits `words` name. A bad `--merged` value is fatal (128); the other options only
 /// report it (129), as git's option callbacks do.
-async fn commits(ctx: &Ctx, words: &[String], fatal: bool) -> Result<Vec<asc_core::id::ChangesetId>> {
+async fn commits(
+    ctx: &Ctx,
+    words: &[String],
+    fatal: bool,
+) -> Result<Vec<asc_core::id::ChangesetId>> {
     let ws = ctx.ws()?;
     let mut out = Vec::new();
     for w in words {
@@ -126,21 +138,27 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let mut o = parse(&args)?;
     if o.stdin {
         if !o.patterns.is_empty() {
-            return Err(CliError::Fatal("unknown arguments supplied with --stdin".into()));
+            return Err(CliError::Fatal(
+                "unknown arguments supplied with --stdin".into(),
+            ));
         }
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text)?;
         o.patterns = text.lines().map(str::to_owned).collect();
     }
     if o.start_after.is_some() && (!o.sorts.is_empty() || o.stdin || !o.patterns.is_empty()) {
-        return Err(CliError::Fatal("cannot use --start-after with --sort, --stdin or patterns".into()));
+        return Err(CliError::Fatal(
+            "cannot use --start-after with --sort, --stdin or patterns".into(),
+        ));
     }
     let ws = ctx.ws()?;
     let text = o.format.as_deref().unwrap_or(DEFAULT_FORMAT);
-    let format = Format::parse(text.as_bytes(), o.quote).map_err(ref_filter::to_cli).map_err(|e| match e {
-        CliError::Usage(t) => CliError::Usage(format!("{t}\n{USAGE}")),
-        other => other,
-    })?;
+    let format = Format::parse(text.as_bytes(), o.quote)
+        .map_err(ref_filter::to_cli)
+        .map_err(|e| match e {
+            CliError::Usage(t) => CliError::Usage(format!("{t}\n{USAGE}")),
+            other => other,
+        })?;
     let sorts = o
         .sorts
         .iter()

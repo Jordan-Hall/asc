@@ -2,11 +2,11 @@
 //! run on a stack of output buffers exactly as git's `ref_formatting_stack` does, including
 //! which structure errors surface and when.
 
+use super::Error;
 use super::item::Item;
 use super::parse::{Atom, IfCmp, Kind, Position, Token};
 use super::quote::Quote;
 use super::value::{Env, value};
-use super::Error;
 use crate::cli::format::layout;
 
 #[derive(Clone)]
@@ -64,12 +64,18 @@ impl Stack {
     }
 
     fn open(&mut self, at_end: AtEnd) {
-        self.layers.push(Layer { out: Vec::new(), at_end: Some(at_end) });
+        self.layers.push(Layer {
+            out: Vec::new(),
+            at_end: Some(at_end),
+        });
     }
 
     fn atom(&mut self, atom: &Atom, item: &Item, env: &Env) -> Result<(), Error> {
         match &atom.kind {
-            Kind::Align { width, position } => self.open(AtEnd::Align { width: *width, position: *position }),
+            Kind::Align { width, position } => self.open(AtEnd::Align {
+                width: *width,
+                position: *position,
+            }),
             Kind::If(cmp) => self.open(AtEnd::If(IfState {
                 cmp: cmp.clone(),
                 then_seen: false,
@@ -125,7 +131,10 @@ impl Stack {
         }
         state.else_seen = true;
         let shared = state.clone();
-        self.layers.push(Layer { out: Vec::new(), at_end: Some(AtEnd::If(shared)) });
+        self.layers.push(Layer {
+            out: Vec::new(),
+            at_end: Some(AtEnd::If(shared)),
+        });
         Ok(())
     }
 
@@ -146,7 +155,11 @@ impl Stack {
                 if state.else_seen {
                     // The `%(then)` text sits in the layer below the `%(else)` layer.
                     let then_layer = self.layers.pop().expect("the layer of the %(if)");
-                    if state.satisfied { then_layer.out } else { layer.out }
+                    if state.satisfied {
+                        then_layer.out
+                    } else {
+                        layer.out
+                    }
                 } else if state.satisfied {
                     layer.out
                 } else {
@@ -168,7 +181,13 @@ impl Stack {
 
 /// The text of `tokens` for `item`.
 pub fn render(tokens: &[Token], item: &Item, env: &Env, quote: Quote) -> Result<Vec<u8>, Error> {
-    let mut stack = Stack { layers: vec![Layer { out: Vec::new(), at_end: None }], quote };
+    let mut stack = Stack {
+        layers: vec![Layer {
+            out: Vec::new(),
+            at_end: None,
+        }],
+        quote,
+    };
     for token in tokens {
         match token {
             Token::Lit(text) => stack.top().out.extend_from_slice(text),
@@ -189,24 +208,58 @@ mod tests {
     fn run(format: &str, quote: Quote) -> Result<String, Error> {
         let mut item = Item::new("refs/heads/master");
         item.head = true;
-        let env = Env { abbrev: 7, now: 0, color: false, mailmap: None };
+        let env = Env {
+            abbrev: 7,
+            now: 0,
+            color: false,
+            mailmap: None,
+        };
         let tokens = parse_format(format.as_bytes())?;
         render(&tokens, &item, &env, quote).map(|b| String::from_utf8(b).unwrap())
     }
 
     #[test]
     fn align_pads_and_if_chooses() {
-        assert_eq!(run("%(align:20,right)%(refname)%(end)|", Quote::None).unwrap(), "   refs/heads/master|");
-        assert_eq!(run("%(align:width=22,position=middle)%(refname)%(end)|", Quote::None).unwrap(), "  refs/heads/master   |");
-        assert_eq!(run("%(if)%(HEAD)%(then)on%(else)off%(end)", Quote::None).unwrap(), "on");
-        assert_eq!(run("%(if:equals=x)%(refname)%(then)a%(else)b%(end)", Quote::None).unwrap(), "b");
-        assert_eq!(run("%(if:notequals=x)%(refname)%(then)a%(end)z", Quote::None).unwrap(), "az");
+        assert_eq!(
+            run("%(align:20,right)%(refname)%(end)|", Quote::None).unwrap(),
+            "   refs/heads/master|"
+        );
+        assert_eq!(
+            run(
+                "%(align:width=22,position=middle)%(refname)%(end)|",
+                Quote::None
+            )
+            .unwrap(),
+            "  refs/heads/master   |"
+        );
+        assert_eq!(
+            run("%(if)%(HEAD)%(then)on%(else)off%(end)", Quote::None).unwrap(),
+            "on"
+        );
+        assert_eq!(
+            run(
+                "%(if:equals=x)%(refname)%(then)a%(else)b%(end)",
+                Quote::None
+            )
+            .unwrap(),
+            "b"
+        );
+        assert_eq!(
+            run("%(if:notequals=x)%(refname)%(then)a%(end)z", Quote::None).unwrap(),
+            "az"
+        );
     }
 
     #[test]
     fn quoting_applies_once_at_the_top() {
-        assert_eq!(run("%(refname) lit", Quote::Shell).unwrap(), "'refs/heads/master' lit");
-        assert_eq!(run("%(align:3)%(HEAD)%(refname:lstrip=2)%(end)", Quote::Shell).unwrap(), "'*master'");
+        assert_eq!(
+            run("%(refname) lit", Quote::Shell).unwrap(),
+            "'refs/heads/master' lit"
+        );
+        assert_eq!(
+            run("%(align:3)%(HEAD)%(refname:lstrip=2)%(end)", Quote::Shell).unwrap(),
+            "'*master'"
+        );
     }
 
     #[test]
@@ -214,11 +267,26 @@ mod tests {
         let msg = |f: &str| match run(f, Quote::None).unwrap_err() {
             Error::Fatal(m) | Error::Malformed(m) => m,
         };
-        assert_eq!(msg("%(end)"), "format: %(end) atom used without corresponding atom");
-        assert_eq!(msg("%(then)"), "format: %(then) atom used without a %(if) atom");
+        assert_eq!(
+            msg("%(end)"),
+            "format: %(end) atom used without corresponding atom"
+        );
+        assert_eq!(
+            msg("%(then)"),
+            "format: %(then) atom used without a %(if) atom"
+        );
         assert_eq!(msg("%(if)x"), "format: %(end) atom missing");
-        assert_eq!(msg("%(if)x%(then)%(then)"), "format: %(then) atom used more than once");
-        assert_eq!(msg("%(if)x%(end)"), "format: %(if) atom used without a %(then) atom");
-        assert_eq!(msg("%(if)x%(then)%(else)%(else)%(end)"), "format: %(else) atom used more than once");
+        assert_eq!(
+            msg("%(if)x%(then)%(then)"),
+            "format: %(then) atom used more than once"
+        );
+        assert_eq!(
+            msg("%(if)x%(end)"),
+            "format: %(if) atom used without a %(then) atom"
+        );
+        assert_eq!(
+            msg("%(if)x%(then)%(else)%(else)%(end)"),
+            "format: %(else) atom used more than once"
+        );
     }
 }

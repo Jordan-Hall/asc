@@ -19,9 +19,10 @@ use super::ref_filter::{self, Filters, Format, Query, Quote, Request, SortKey};
 use super::refs_plumbing::args::{Cursor, Word, resolve_oid, resolve_target};
 use super::restore::{actor, tool};
 use super::switch::{
-    Rev, RevKind, Saved, TrackOpt, abbrev_len, bad_branch_name, branch_tip, ensure_mapped, fatal, held_anywhere, held_elsewhere,
-    peel, point_head, ref_target, remove_branch_section, resolve_rev, restore_head, reverse_refspec, set_config,
-    track_start, unset_config, upstream_ref, valid_branch_name,
+    Rev, RevKind, Saved, TrackOpt, abbrev_len, bad_branch_name, branch_tip, ensure_mapped, fatal,
+    held_anywhere, held_elsewhere, peel, point_head, ref_target, remove_branch_section,
+    resolve_rev, restore_head, reverse_refspec, set_config, track_start, unset_config,
+    upstream_ref, valid_branch_name,
 };
 use crate::ext;
 use crate::native::NativeSpec;
@@ -52,11 +53,47 @@ impl Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "branch",
     flags: &[
-        "-a", "--all", "-r", "--remotes", "-v", "--verbose", "-q", "--quiet", "-f", "--force", "-d", "--delete",
-        "-D", "-m", "--move", "-M", "-c", "--copy", "-C", "-l", "--list", "-u", "--set-upstream-to",
-        "--unset-upstream", "-t", "--track", "--no-track", "--show-current", "--contains", "--no-contains",
-        "--merged", "--no-merged", "--points-at", "--format", "--sort", "--abbrev", "--no-abbrev", "--color",
-        "--no-color", "-i", "--ignore-case",
+        "-a",
+        "--all",
+        "-r",
+        "--remotes",
+        "-v",
+        "--verbose",
+        "-q",
+        "--quiet",
+        "-f",
+        "--force",
+        "-d",
+        "--delete",
+        "-D",
+        "-m",
+        "--move",
+        "-M",
+        "-c",
+        "--copy",
+        "-C",
+        "-l",
+        "--list",
+        "-u",
+        "--set-upstream-to",
+        "--unset-upstream",
+        "-t",
+        "--track",
+        "--no-track",
+        "--show-current",
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--format",
+        "--sort",
+        "--abbrev",
+        "--no-abbrev",
+        "--color",
+        "--no-color",
+        "-i",
+        "--ignore-case",
     ],
     placeholders: ref_filter::ATOMS,
 }];
@@ -70,7 +107,11 @@ struct Colors {
 
 impl Colors {
     fn code(&self, code: &str) -> String {
-        if self.on { format!("\x1b[{code}m") } else { String::new() }
+        if self.on {
+            format!("\x1b[{code}m")
+        } else {
+            String::new()
+        }
     }
     fn reset(&self) -> String {
         self.code("")
@@ -112,7 +153,11 @@ fn parse_color(value: &str) -> Result<Option<bool>> {
         "always" | "true" | "yes" | "on" | "1" | "" => Some(true),
         "never" | "false" | "no" | "off" | "0" => Some(false),
         "auto" => None,
-        _ => return Err(CliError::Fatal(format!("bad boolean config value '{value}' for 'color'"))),
+        _ => {
+            return Err(CliError::Fatal(format!(
+                "bad boolean config value '{value}' for 'color'"
+            )));
+        }
     })
 }
 
@@ -152,7 +197,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         'i' => o.ignore_case = true,
                         'u' => {
                             let rest: String = chars.by_ref().collect();
-                            o.set_upstream = Some(if rest.is_empty() { cur.value("u", None)? } else { rest });
+                            o.set_upstream = Some(if rest.is_empty() {
+                                cur.value("u", None)?
+                            } else {
+                                rest
+                            });
                         }
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     }
@@ -175,7 +224,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         None | Some("direct") => TrackOpt::Direct,
                         Some("inherit") => TrackOpt::Inherit,
                         Some(other) => {
-                            return Err(CliError::Fatal(format!("malformed value for --track: {other}")));
+                            return Err(CliError::Fatal(format!(
+                                "malformed value for --track: {other}"
+                            )));
                         }
                     };
                 }
@@ -209,7 +260,12 @@ fn parse(args: &[OsString]) -> Result<Opts> {
 
 /// The commits `words` name; a tag is peeled. `fatal` makes a bad name exit 128 (the options
 /// git reads with a callback exit 129).
-async fn commits(ctx: &Ctx, ws: &WsCtx, words: &[String], fatal_exit: bool) -> Result<Vec<ChangesetId>> {
+async fn commits(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    words: &[String],
+    fatal_exit: bool,
+) -> Result<Vec<ChangesetId>> {
     let mut out = Vec::new();
     for w in words {
         let found = match resolve_target(ctx, ws, w).await? {
@@ -230,10 +286,18 @@ async fn commits(ctx: &Ctx, ws: &WsCtx, words: &[String], fatal_exit: bool) -> R
 // ------------------------------------------------------------------------------------ listing
 
 /// The text of the detached-HEAD pseudo entry, `(HEAD detached at abc1234)`.
-async fn detached_description(ctx: &Ctx, ws: &WsCtx) -> Result<Option<(String, Option<ChangesetId>)>> {
-    let Head::Detached(oid) = ws.projection.read_head()? else { return Ok(None) };
+async fn detached_description(
+    ctx: &Ctx,
+    ws: &WsCtx,
+) -> Result<Option<(String, Option<ChangesetId>)>> {
+    let Head::Detached(oid) = ws.projection.read_head()? else {
+        return Ok(None);
+    };
     let text = oid.to_string();
-    Ok(Some((format!("(HEAD detached at {})", &text[..abbrev_len(ctx)]), ws.head_commit().await?)))
+    Ok(Some((
+        format!("(HEAD detached at {})", &text[..abbrev_len(ctx)]),
+        ws.head_commit().await?,
+    )))
 }
 
 fn width(text: &str) -> usize {
@@ -274,10 +338,12 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         no_contains: commits(ctx, ws, &o.no_contains, false).await?,
     };
     let mut out = Output::open(ctx, "branch", PagerWant::Auto)?;
-    let color = o.color.unwrap_or_else(|| match ctx.config.get("color.branch").as_deref() {
-        Some(v) => parse_color(v).ok().flatten().unwrap_or_else(|| out.color()),
-        None => out.color(),
-    });
+    let color = o
+        .color
+        .unwrap_or_else(|| match ctx.config.get("color.branch").as_deref() {
+            Some(v) => parse_color(v).ok().flatten().unwrap_or_else(|| out.color()),
+            None => out.color(),
+        });
     let colors = Colors { on: color };
     let remote_prefix = if o.all { "remotes/" } else { "" };
 
@@ -287,7 +353,11 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         Some(f) => (f.clone(), f.clone()),
         None => default_formats(o, &colors, remote_prefix, 0),
     };
-    let sorts: Vec<String> = if o.sorts.is_empty() { ctx.config.get_all("branch.sort") } else { o.sorts.clone() };
+    let sorts: Vec<String> = if o.sorts.is_empty() {
+        ctx.config.get_all("branch.sort")
+    } else {
+        o.sorts.clone()
+    };
     let sorts = sorts
         .iter()
         .map(|s| ref_filter::parse_sort_key(s).map_err(ref_filter::to_cli))
@@ -308,7 +378,10 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         color,
     };
     let (items, env) = ref_filter::list(ctx, ws, &req).await?;
-    let detached = if local && o.format.is_none() && (o.words.is_empty() || o.words.iter().any(|p| p == "HEAD")) {
+    let detached = if local
+        && o.format.is_none()
+        && (o.words.is_empty() || o.words.iter().any(|p| p == "HEAD"))
+    {
         detached_description(ctx, ws).await?
     } else {
         None
@@ -316,11 +389,19 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
 
     // Verbose lines align the names to the longest one.
     let maxwidth = if o.verbose > 0 && o.format.is_none() {
-        let names = items.iter().map(|i| match i.name.strip_prefix("refs/heads/") {
-            Some(n) => width(n),
-            None => width(i.name.strip_prefix("refs/remotes/").unwrap_or(&i.name)) + remote_prefix.len(),
-        });
-        names.chain(detached.iter().map(|(d, _)| width(d))).max().unwrap_or(0)
+        let names = items
+            .iter()
+            .map(|i| match i.name.strip_prefix("refs/heads/") {
+                Some(n) => width(n),
+                None => {
+                    width(i.name.strip_prefix("refs/remotes/").unwrap_or(&i.name))
+                        + remote_prefix.len()
+                }
+            });
+        names
+            .chain(detached.iter().map(|(d, _)| width(d)))
+            .max()
+            .unwrap_or(0)
     } else {
         0
     };
@@ -328,8 +409,10 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         Some(_) => (local_text, remote_text),
         None => default_formats(o, &colors, remote_prefix, maxwidth),
     };
-    let local_format = Format::parse(local_text.as_bytes(), Quote::None).map_err(ref_filter::to_cli)?;
-    let remote_format = Format::parse(remote_text.as_bytes(), Quote::None).map_err(ref_filter::to_cli)?;
+    let local_format =
+        Format::parse(local_text.as_bytes(), Quote::None).map_err(ref_filter::to_cli)?;
+    let remote_format =
+        Format::parse(remote_text.as_bytes(), Quote::None).map_err(ref_filter::to_cli)?;
 
     let result = (|| -> Result<()> {
         if let Some((desc, _)) = &detached {
@@ -357,7 +440,11 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     }
     let result = (|| -> Result<()> {
         for item in &items {
-            let f = if item.name.starts_with("refs/remotes/") { &remote_format } else { &local_format };
+            let f = if item.name.starts_with("refs/remotes/") {
+                &remote_format
+            } else {
+                &local_format
+            };
             let line = f.render(item, &env).map_err(ref_filter::to_cli)?;
             out.write_all(&line)?;
             out.write_all(b"\n")?;
@@ -374,13 +461,21 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
 
 /// git's `build_format` for local and remote branches.
 fn default_formats(o: &Opts, c: &Colors, remote_prefix: &str, maxwidth: usize) -> (String, String) {
-    let (green, red, blue, cyan, reset) = (c.code("32"), c.code("31"), c.code("34"), c.code("36"), c.reset());
+    let (green, red, blue, cyan, reset) = (
+        c.code("32"),
+        c.code("31"),
+        c.code("34"),
+        c.code("36"),
+        c.reset(),
+    );
     let head = format!(
         "%(if)%(HEAD)%(then)* {green}%(else)%(if)%(worktreepath)%(then)+ {cyan}%(else)  %(end)%(end)"
     );
     if o.verbose == 0 {
         let local = format!("{head}%(refname:lstrip=2){reset}");
-        let remote = format!("  {red}{remote_prefix}%(refname:lstrip=2){reset}%(if)%(symref)%(then) -> %(symref:short)%(end)");
+        let remote = format!(
+            "  {red}{remote_prefix}%(refname:lstrip=2){reset}%(if)%(symref)%(then) -> %(symref:short)%(end)"
+        );
         return (local, remote);
     }
     let obname = match o.abbrev {
@@ -388,8 +483,11 @@ fn default_formats(o: &Opts, c: &Colors, remote_prefix: &str, maxwidth: usize) -
         Some(0) => "%(objectname)".to_owned(),
         Some(n) => format!("%(objectname:short={n})"),
     };
-    let mut local = format!("{head}%(align:{maxwidth},left)%(refname:lstrip=2)%(end){reset} {obname} ");
-    let mut remote = format!("  {red}%(align:{maxwidth},left){remote_prefix}%(refname:lstrip=2)%(end){reset} {obname} ");
+    let mut local =
+        format!("{head}%(align:{maxwidth},left)%(refname:lstrip=2)%(end){reset} {obname} ");
+    let mut remote = format!(
+        "  {red}%(align:{maxwidth},left){remote_prefix}%(refname:lstrip=2)%(end){reset} {obname} "
+    );
     if o.verbose > 1 {
         local.push_str(&format!(
             "%(if:notequals=*)%(HEAD)%(then)%(if)%(worktreepath)%(then)({cyan}%(worktreepath){reset}) %(end)%(end)\
@@ -405,15 +503,27 @@ fn default_formats(o: &Opts, c: &Colors, remote_prefix: &str, maxwidth: usize) -
 // ------------------------------------------------------------------------- create and friends
 
 fn txn(updates: Vec<asc_store::refs::RefUpdate>) -> RefTxn {
-    RefTxn { updates, actor: actor(), reason: String::new(), op_id: ext::OpId::new().0 }
+    RefTxn {
+        updates,
+        actor: actor(),
+        reason: String::new(),
+        op_id: ext::OpId::new().0,
+    }
 }
 
 fn update(name: &str, expect: Expect, new: Option<RefTarget>) -> Result<asc_store::refs::RefUpdate> {
-    Ok(asc_store::refs::RefUpdate { name: super::switch::ref_name(name)?, expect, new, expires_at: None })
+    Ok(asc_store::refs::RefUpdate {
+        name: super::switch::ref_name(name)?,
+        expect,
+        new,
+        expires_at: None,
+    })
 }
 
 fn in_use(branch: &str, path: &str, what: &str) -> CliError {
-    CliError::Fatal(format!("cannot {what} the branch '{branch}' used by worktree at '{path}'"))
+    CliError::Fatal(format!(
+        "cannot {what} the branch '{branch}' used by worktree at '{path}'"
+    ))
 }
 
 fn current_branch(ws: &WsCtx) -> Result<Option<String>> {
@@ -435,7 +545,9 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     let existing = ref_target(ws, &format!("refs/heads/{name}")).await?;
     if existing.is_some() {
         if !o.force {
-            return Err(CliError::Fatal(format!("a branch named '{name}' already exists")));
+            return Err(CliError::Fatal(format!(
+                "a branch named '{name}' already exists"
+            )));
         }
         if let Some(path) = held_anywhere(ws, name).await? {
             return Err(in_use(name, &path, "force update"));
@@ -446,10 +558,16 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
             .await?
             .ok_or_else(|| CliError::Fatal(format!("not a valid object name: '{w}'")))?,
         None => match ws.head_commit().await? {
-            Some(commit) => Rev { label: "HEAD".into(), commit, kind: RevKind::Other },
+            Some(commit) => Rev {
+                label: "HEAD".into(),
+                commit,
+                kind: RevKind::Other,
+            },
             None => {
                 let shown = current_branch(ws)?.unwrap_or_else(|| "HEAD".into());
-                return Err(CliError::Fatal(format!("not a valid object name: '{shown}'")));
+                return Err(CliError::Fatal(format!(
+                    "not a valid object name: '{shown}'"
+                )));
             }
         },
     };
@@ -460,8 +578,13 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     } else {
         format!("branch: Created from {}", start.label)
     };
-    let u = update(&format!("refs/heads/{name}"), expect, Some(RefTarget::Changeset(start.commit)))?;
-    ctx.update_local_refs(txn(vec![u]), &reason, StagingAfterMove::Keep).await?;
+    let u = update(
+        &format!("refs/heads/{name}"),
+        expect,
+        Some(RefTarget::Changeset(start.commit)),
+    )?;
+    ctx.update_local_refs(txn(vec![u]), &reason, StagingAfterMove::Keep)
+        .await?;
     track_start(ctx, name, &start, o.track, o.quiet).await?;
     Ok(ExitCode::SUCCESS)
 }
@@ -479,7 +602,9 @@ async fn merged_for_delete(ctx: &Ctx, ws: &WsCtx, branch: &str, tip: ChangesetId
     };
     let reaches = |a: ChangesetId, b: Option<ChangesetId>| async move {
         match b {
-            Some(b) => HistoryApi::is_ancestor(&ws.engine, a, b).await.map_err(fatal),
+            Some(b) => HistoryApi::is_ancestor(&ws.engine, a, b)
+                .await
+                .map_err(fatal),
             None => Ok(false),
         }
     };
@@ -509,7 +634,11 @@ async fn delete(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     if o.words.is_empty() {
         return Err(CliError::Fatal("branch name required".into()));
     }
-    let prefix = if o.remotes { "refs/remotes/" } else { "refs/heads/" };
+    let prefix = if o.remotes {
+        "refs/remotes/"
+    } else {
+        "refs/heads/"
+    };
     let mut status = 0u8;
     for name in &o.words {
         let full = format!("{prefix}{name}");
@@ -521,7 +650,11 @@ async fn delete(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
             continue;
         }
         let Some(target) = ref_target(ws, &full).await? else {
-            let what = if o.remotes { "remote-tracking branch" } else { "branch" };
+            let what = if o.remotes {
+                "remote-tracking branch"
+            } else {
+                "branch"
+            };
             eprintln!("error: {what} '{name}' not found");
             status = 1;
             continue;
@@ -540,13 +673,23 @@ async fn delete(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
             continue;
         }
         let u = update(&full, Expect::Value(target), None)?;
-        ctx.update_local_refs(txn(vec![u]), "branch: Deleted", StagingAfterMove::Keep).await?;
+        ctx.update_local_refs(txn(vec![u]), "branch: Deleted", StagingAfterMove::Keep)
+            .await?;
         if !o.remotes {
             remove_branch_section(ctx, name).await;
         }
         if !o.quiet {
-            let git = ws.engine.git_commit_of(tip).await.map_err(fatal)?.to_string();
-            let what = if o.remotes { "remote-tracking branch" } else { "branch" };
+            let git = ws
+                .engine
+                .git_commit_of(tip)
+                .await
+                .map_err(fatal)?
+                .to_string();
+            let what = if o.remotes {
+                "remote-tracking branch"
+            } else {
+                "branch"
+            };
             println!("Deleted {what} {name} (was {}).", &git[..abbrev_len(ctx)]);
         }
     }
@@ -595,15 +738,15 @@ async fn rename_or_copy(ctx: &Ctx, ws: &WsCtx, o: &Opts, copy: bool) -> Result<E
     }
     if new_target.is_some() {
         if !o.force {
-            return Err(CliError::Fatal(format!("a branch named '{new}' already exists")));
+            return Err(CliError::Fatal(format!(
+                "a branch named '{new}' already exists"
+            )));
         }
         if let Some(path) = held_anywhere(ws, &new).await? {
             return Err(in_use(&new, &path, "force update"));
         }
     }
-    if !copy
-        && let Some(path) = held_elsewhere(ws, &old).await?
-    {
+    if !copy && let Some(path) = held_elsewhere(ws, &old).await? {
         return Err(in_use(&old, &path, "force update"));
     }
     let new_ref = format!("refs/heads/{new}");
@@ -617,7 +760,11 @@ async fn rename_or_copy(ctx: &Ctx, ws: &WsCtx, o: &Opts, copy: bool) -> Result<E
     let old_target = old_target.ok_or_else(|| fatal("asc: branch vanished"))?;
     let old_tip = peel(ws, old_target).await?;
     ensure_mapped(ws, old_tip).await?;
-    let mut updates = vec![update(&new_ref, new_target.map_or(Expect::Absent, Expect::Value), Some(old_target))?];
+    let mut updates = vec![update(
+        &new_ref,
+        new_target.map_or(Expect::Absent, Expect::Value),
+        Some(old_target),
+    )?];
     let follows_head = !copy && current.as_deref() == Some(old.as_str());
     let reason = if copy {
         format!("branch: Created from {old}")
@@ -629,7 +776,10 @@ async fn rename_or_copy(ctx: &Ctx, ws: &WsCtx, o: &Opts, copy: bool) -> Result<E
     if follows_head {
         point_head(ws, &Head::Branch(new.clone()), &new_ref, saved.base).await?;
     }
-    if let Err(e) = ctx.update_local_refs(txn(updates), &reason, StagingAfterMove::Keep).await {
+    if let Err(e) = ctx
+        .update_local_refs(txn(updates), &reason, StagingAfterMove::Keep)
+        .await
+    {
         if follows_head && branch_tip(ws, &new).await? != Some(old_tip) {
             restore_head(ws, &saved).await;
         }
@@ -661,7 +811,10 @@ async fn set_upstream(ctx: &Ctx, ws: &WsCtx, o: &Opts, upstream: &str) -> Result
         }
         _ => return Err(CliError::Usage(USAGE.to_owned())),
     };
-    if ref_target(ws, &format!("refs/heads/{branch}")).await?.is_none() {
+    if ref_target(ws, &format!("refs/heads/{branch}"))
+        .await?
+        .is_none()
+    {
         let unborn = current_branch(ws)?.as_deref() == Some(branch.as_str());
         return Err(CliError::Fatal(if unborn {
             format!("No commit on branch '{branch}' yet.")
@@ -672,7 +825,8 @@ async fn set_upstream(ctx: &Ctx, ws: &WsCtx, o: &Opts, upstream: &str) -> Result
     let start = match resolve_rev(ctx, ws, upstream).await? {
         Some(r) if matches!(r.kind, RevKind::Branch(_) | RevKind::Remote(_)) => r,
         _ => {
-            let mut text = format!("fatal: the requested upstream branch '{upstream}' does not exist");
+            let mut text =
+                format!("fatal: the requested upstream branch '{upstream}' does not exist");
             if ctx.config.bool("advice.setUpstreamFailure") != Some(false) {
                 let bin = tool(ctx);
                 text.push_str(&format!(
@@ -696,7 +850,9 @@ async fn set_upstream(ctx: &Ctx, ws: &WsCtx, o: &Opts, upstream: &str) -> Result
         RevKind::Remote(full) => {
             let rest = full.strip_prefix("refs/remotes/").unwrap_or(full);
             let Some((remote, short)) = rest.split_once('/') else {
-                return Err(CliError::Fatal(format!("the requested upstream branch '{upstream}' does not exist")));
+                return Err(CliError::Fatal(format!(
+                    "the requested upstream branch '{upstream}' does not exist"
+                )));
             };
             let merge = ctx
                 .config
@@ -707,7 +863,11 @@ async fn set_upstream(ctx: &Ctx, ws: &WsCtx, o: &Opts, upstream: &str) -> Result
             (remote.to_owned(), merge, rest.to_owned())
         }
         RevKind::Branch(local) => (".".to_owned(), format!("refs/heads/{local}"), local.clone()),
-        _ => return Err(CliError::Fatal(format!("the requested upstream branch '{upstream}' does not exist"))),
+        _ => {
+            return Err(CliError::Fatal(format!(
+                "the requested upstream branch '{upstream}' does not exist"
+            )));
+        }
     };
     set_config(ctx, &format!("branch.{branch}.remote"), &remote).await?;
     set_config(ctx, &format!("branch.{branch}.merge"), &merge).await?;
@@ -721,16 +881,25 @@ async fn unset_upstream(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     let branch = match (o.words.as_slice(), current_branch(ws)?) {
         ([b], _) => b.clone(),
         ([], Some(b)) => b,
-        ([], None) => return Err(CliError::Fatal("could not unset upstream of HEAD when it does not point to any branch.".into())),
+        ([], None) => {
+            return Err(CliError::Fatal(
+                "could not unset upstream of HEAD when it does not point to any branch.".into(),
+            ));
+        }
         _ => return Err(CliError::Usage(USAGE.to_owned())),
     };
-    if ref_target(ws, &format!("refs/heads/{branch}")).await?.is_none() {
+    if ref_target(ws, &format!("refs/heads/{branch}"))
+        .await?
+        .is_none()
+    {
         return Err(CliError::Fatal(format!("branch '{branch}' does not exist")));
     }
     let remote = ctx.config.get(&format!("branch.{branch}.remote"));
     let merge = ctx.config.get(&format!("branch.{branch}.merge"));
     if remote.is_none() && merge.is_none() {
-        return Err(CliError::Fatal(format!("branch '{branch}' has no upstream information")));
+        return Err(CliError::Fatal(format!(
+            "branch '{branch}' has no upstream information"
+        )));
     }
     unset_config(ctx, &format!("branch.{branch}.remote")).await;
     unset_config(ctx, &format!("branch.{branch}.merge")).await;
@@ -750,9 +919,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         o.list,
     ];
     if modes.iter().filter(|m| **m).count() > 1 {
-        return Err(CliError::Fatal("options are incompatible with each other".into()));
+        return Err(CliError::Fatal(
+            "options are incompatible with each other".into(),
+        ));
     }
-    let filtered = !(o.contains.is_empty() && o.no_contains.is_empty() && o.merged.is_empty() && o.no_merged.is_empty() && o.points_at.is_empty());
+    let filtered = !(o.contains.is_empty()
+        && o.no_contains.is_empty()
+        && o.merged.is_empty()
+        && o.no_merged.is_empty()
+        && o.points_at.is_empty());
     if o.delete > 0 {
         return delete(ctx, ws, &o).await;
     }
@@ -778,11 +953,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return list(ctx, ws, &o).await;
     }
     if o.all || o.remotes {
-        return Err(CliError::Fatal("the -a and -r options are only valid for listing".into()));
+        return Err(CliError::Fatal(
+            "the -a and -r options are only valid for listing".into(),
+        ));
     }
     create(ctx, ws, &o).await
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -806,18 +982,34 @@ mod tests {
     fn optional_values_default_to_head() {
         let o = opts(&["--merged=topic", "--no-merged", "--contains"]);
         assert_eq!(o.merged, ["topic"]);
-        assert_eq!(o.no_merged, ["--contains"], "a following word is the value, as in git");
+        assert_eq!(
+            o.no_merged,
+            ["--contains"],
+            "a following word is the value, as in git"
+        );
         let o = opts(&["--merged=topic", "--contains"]);
         assert_eq!(o.contains, ["HEAD"]);
         let o = opts(&["--contains", "v1", "-a"]);
-        assert_eq!((o.contains.as_slice(), o.all), (["v1".to_owned()].as_slice(), true));
+        assert_eq!(
+            (o.contains.as_slice(), o.all),
+            (["v1".to_owned()].as_slice(), true)
+        );
     }
 
     #[test]
     fn upstream_values_attach_or_follow() {
-        assert_eq!(opts(&["-uorigin/x"]).set_upstream.as_deref(), Some("origin/x"));
-        assert_eq!(opts(&["-u", "origin/x", "b"]).set_upstream.as_deref(), Some("origin/x"));
-        assert_eq!(opts(&["--set-upstream-to=o/y"]).set_upstream.as_deref(), Some("o/y"));
+        assert_eq!(
+            opts(&["-uorigin/x"]).set_upstream.as_deref(),
+            Some("origin/x")
+        );
+        assert_eq!(
+            opts(&["-u", "origin/x", "b"]).set_upstream.as_deref(),
+            Some("origin/x")
+        );
+        assert_eq!(
+            opts(&["--set-upstream-to=o/y"]).set_upstream.as_deref(),
+            Some("o/y")
+        );
         assert!(opts(&["--no-abbrev"]).abbrev == Some(0));
     }
 
@@ -832,7 +1024,10 @@ mod tests {
     #[test]
     fn the_default_format_pads_verbose_names() {
         let c = Colors { on: false };
-        let o = Opts { verbose: 1, ..Opts::default() };
+        let o = Opts {
+            verbose: 1,
+            ..Opts::default()
+        };
         let (local, remote) = default_formats(&o, &c, "remotes/", 12);
         assert!(local.contains("%(align:12,left)%(refname:lstrip=2)%(end)"));
         assert!(local.ends_with("%(contents:subject)"));

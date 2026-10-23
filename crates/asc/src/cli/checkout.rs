@@ -19,15 +19,19 @@ use futures::TryStreamExt;
 use super::common::{CliError, Ctx, Result, WsCtx};
 use super::restore::{Spec, index_tree, root_of, stage_from_tree, sync_worktree, worktree_paths};
 use super::switch::{
-    Cmd, Dest, Move, Opts, Rev, RevKind, abbrev_len, bad_branch_name, create_tracking, fatal, guess_remote, parse,
-    perform, report_tracking, resolve_rev, valid_branch_name,
+    Cmd, Dest, Move, Opts, Rev, RevKind, abbrev_len, bad_branch_name, create_tracking, fatal,
+    guess_remote, parse, perform, report_tracking, resolve_rev, valid_branch_name,
 };
 use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "checkout", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "checkout",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Every word before `--`, options included: the command reads its own flags.
     #[arg(allow_hyphen_values = true, num_args = 0..)]
@@ -52,8 +56,23 @@ impl Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "checkout",
     flags: &[
-        "-b", "-B", "-d", "--detach", "-f", "--force", "-q", "--quiet", "-t", "--track", "--no-track",
-        "--guess", "--no-guess", "--orphan", "--ignore-other-worktrees", "--progress", "--no-progress",
+        "-b",
+        "-B",
+        "-d",
+        "--detach",
+        "-f",
+        "--force",
+        "-q",
+        "--quiet",
+        "-t",
+        "--track",
+        "--no-track",
+        "--guess",
+        "--no-guess",
+        "--orphan",
+        "--ignore-other-worktrees",
+        "--progress",
+        "--no-progress",
     ],
     placeholders: &[],
 }];
@@ -64,7 +83,9 @@ const USAGE: &str = "usage: git checkout [<options>] <branch>\n   or: git checko
 fn change_of(e: &Entry) -> Result<Change> {
     Ok(match e.kind {
         Kind::Gitlink => Change::Gitlink { commit: e.git },
-        kind => Change::write(kind, FileId::from_bytes(e.id), e.size, e.git, None).map_err(fatal)?,
+        kind => {
+            Change::write(kind, FileId::from_bytes(e.id), e.size, e.git, None).map_err(fatal)?
+        }
     })
 }
 
@@ -75,8 +96,16 @@ async fn post_checkout_files(ctx: &Ctx, ws: &WsCtx) -> Result<ExitCode> {
         None => crate::hooks_runner::null_oid(),
     };
     let runner = Runner::for_ctx(ctx)?;
-    let hook = Hook::PostCheckout { old: head, new: head, branch: false };
-    match runner.run(hook, &HookEnv::of(ctx, "checkout")).await.map_err(fatal)? {
+    let hook = Hook::PostCheckout {
+        old: head,
+        new: head,
+        branch: false,
+    };
+    match runner
+        .run(hook, &HookEnv::of(ctx, "checkout"))
+        .await
+        .map_err(fatal)?
+    {
         Outcome::Exit(code) if code != 0 => Ok(ExitCode::from(u8::try_from(code).unwrap_or(1))),
         _ => Ok(ExitCode::SUCCESS),
     }
@@ -97,7 +126,12 @@ async fn checkout_paths(
     let head_root = root_of(ws, head).await?;
     let (index, unmerged) = index_tree(ws, head_root).await?;
     let spec = Spec::new(ctx, &items)?;
-    let unmatched = |bad: String| CliError::Raw(format!("error: pathspec '{bad}' did not match any file(s) known to git"), 1);
+    let unmatched = |bad: String| {
+        CliError::Raw(
+            format!("error: pathspec '{bad}' did not match any file(s) known to git"),
+            1,
+        )
+    };
     let mut code = 0u8;
     let (wanted, shown) = match source {
         Some(rev) => {
@@ -150,13 +184,20 @@ async fn checkout_paths(
         eprintln!("Updated {written} {noun} {shown}");
     }
     let hook = post_checkout_files(ctx, ws).await?;
-    Ok(if code != 0 { ExitCode::from(code) } else { hook })
+    Ok(if code != 0 {
+        ExitCode::from(code)
+    } else {
+        hook
+    })
 }
 
 /// Where HEAD goes for `rev`: its branch when it is one (unless `--detach`), else a detached HEAD.
 fn dest_of(rev: &Rev, detach: bool) -> Dest {
     match &rev.kind {
-        RevKind::Branch(name) if !detach => Dest::Existing { branch: name.clone(), tip: Some(rev.commit) },
+        RevKind::Branch(name) if !detach => Dest::Existing {
+            branch: name.clone(),
+            tip: Some(rev.commit),
+        },
         _ => Dest::Detach { commit: rev.commit },
     }
 }
@@ -165,14 +206,25 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let p = parse(&a.argv(), Cmd::Checkout, USAGE)?;
     let o: Opts = p.opts.clone();
-    let guess = o.guess.or_else(|| ctx.config.bool("checkout.guess")).unwrap_or(true);
-    let named = [o.create.as_ref(), o.force_create.as_ref(), o.orphan.as_ref()];
+    let guess = o
+        .guess
+        .or_else(|| ctx.config.bool("checkout.guess"))
+        .unwrap_or(true);
+    let named = [
+        o.create.as_ref(),
+        o.force_create.as_ref(),
+        o.orphan.as_ref(),
+    ];
     if named.iter().filter(|n| n.is_some()).count() > 1 {
-        return Err(CliError::Fatal("options '-b', '-B' and '--orphan' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '-b', '-B' and '--orphan' cannot be used together".into(),
+        ));
     }
     let new_branch = named.into_iter().flatten().next().cloned();
     if o.detach && new_branch.is_some() {
-        return Err(CliError::Fatal("options '--detach' and '-b' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '--detach' and '-b' cannot be used together".into(),
+        ));
     }
 
     // A new branch: `-b`, `-B` or `--orphan`, with at most a start point.
@@ -187,26 +239,53 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
         if o.orphan.is_some() {
             if !p.words.is_empty() {
-                return Err(CliError::Fatal("asc: 'checkout --orphan' with a start point is not supported".into()));
+                return Err(CliError::Fatal(
+                    "asc: 'checkout --orphan' with a start point is not supported".into(),
+                ));
             }
-            let mv = Move { dest: Dest::Orphan { branch: name.clone() }, opts: o, typed: name, keep_tree: true };
+            let mv = Move {
+                dest: Dest::Orphan {
+                    branch: name.clone(),
+                },
+                opts: o,
+                typed: name,
+                keep_tree: true,
+            };
             return perform(ctx, mv).await;
         }
         let force = o.force_create.is_some();
         let start = match p.words.first() {
             Some(w) => Some(resolve_rev(ctx, ws, w).await?.ok_or_else(|| {
-                CliError::Fatal(format!("'{w}' is not a commit and a branch '{name}' cannot be created from it"))
+                CliError::Fatal(format!(
+                    "'{w}' is not a commit and a branch '{name}' cannot be created from it"
+                ))
             })?),
-            None => ws.head_commit().await?.map(|c| Rev { label: "HEAD".into(), commit: c, kind: RevKind::Other }),
+            None => ws.head_commit().await?.map(|c| Rev {
+                label: "HEAD".into(),
+                commit: c,
+                kind: RevKind::Other,
+            }),
         };
-        let mv = Move { dest: Dest::Create { branch: name.clone(), start, force }, opts: o, typed: name, keep_tree: false };
+        let mv = Move {
+            dest: Dest::Create {
+                branch: name.clone(),
+                start,
+                force,
+            },
+            opts: o,
+            typed: name,
+            keep_tree: false,
+        };
         return perform(ctx, mv).await;
     }
 
     // Words around `--`.
     if let Some(after) = &p.after {
         if p.words.len() > 1 {
-            return Err(CliError::Fatal(format!("only one reference expected, {} given.", p.words.len())));
+            return Err(CliError::Fatal(format!(
+                "only one reference expected, {} given.",
+                p.words.len()
+            )));
         }
         let source = match p.words.first() {
             Some(w) => Some(
@@ -229,12 +308,20 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if o.detach {
         let word = p.words.first().map_or("HEAD", String::as_str);
         if p.words.len() > 1 {
-            return Err(CliError::Fatal(format!("only one reference expected, {} given.", p.words.len())));
+            return Err(CliError::Fatal(format!(
+                "only one reference expected, {} given.",
+                p.words.len()
+            )));
         }
         let rev = resolve_rev(ctx, ws, word)
             .await?
             .ok_or_else(|| CliError::Fatal(format!("invalid reference: {word}")))?;
-        let mv = Move { dest: Dest::Detach { commit: rev.commit }, opts: o, typed: word.to_owned(), keep_tree: false };
+        let mv = Move {
+            dest: Dest::Detach { commit: rev.commit },
+            opts: o,
+            typed: word.to_owned(),
+            keep_tree: false,
+        };
         return perform(ctx, mv).await;
     }
 
@@ -248,7 +335,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     // `checkout HEAD` stays where it is.
     if p.words.len() == 1
         && matches!(first.as_str(), "HEAD" | "@")
-        && matches!(ws.projection.read_head()?, asc_git::projection::Head::Branch(_))
+        && matches!(
+            ws.projection.read_head()?,
+            asc_git::projection::Head::Branch(_)
+        )
     {
         return Ok(ExitCode::SUCCESS);
     }
@@ -270,6 +360,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
 /// Switches to what `rev` names: its branch, or a detached HEAD at its commit.
 async fn switch_rev(ctx: &Ctx, rev: Rev, typed: String, o: Opts) -> Result<ExitCode> {
-    let mv = Move { dest: dest_of(&rev, o.detach), opts: o, typed, keep_tree: false };
+    let mv = Move {
+        dest: dest_of(&rev, o.detach),
+        opts: o,
+        typed,
+        keep_tree: false,
+    };
     perform(ctx, mv).await
 }

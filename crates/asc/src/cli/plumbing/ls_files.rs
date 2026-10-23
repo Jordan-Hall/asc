@@ -12,8 +12,8 @@ use asc_wc::ignore::{IgnoreSources, IgnoreStack};
 use super::index::Index;
 use super::quote::{Names, relative};
 use super::usage;
-use crate::cli::add::spec::Spec;
 use crate::cli::add::cwd_prefix;
+use crate::cli::add::spec::Spec;
 use crate::cli::common::{CliError, Ctx, Result, WsCtx};
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
@@ -36,7 +36,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
     let mut o = Opts::default();
     while let Some(word) = cur.next() {
         match word {
-            Word::End => o.pathspecs.extend(cur.rest().into_iter().map(OsString::from)),
+            Word::End => o
+                .pathspecs
+                .extend(cur.rest().into_iter().map(OsString::from)),
             Word::Operand(p) => o.pathspecs.push(p.into()),
             Word::Short(flags) => {
                 for c in flags.chars() {
@@ -79,7 +81,10 @@ pub(super) fn ignore_sources(ctx: &Ctx, ws: &WsCtx) -> IgnoreSources {
             .path("asc.excludesFile")
             .or_else(|| xdg("asc/ignore"))
             .unwrap_or_else(|| root.join(".asc/no-such-global-ignore")),
-        core_excludes: ctx.config.path("core.excludesFile").or_else(|| xdg("git/ignore")),
+        core_excludes: ctx
+            .config
+            .path("core.excludesFile")
+            .or_else(|| xdg("git/ignore")),
         local_exclude: root.join(".asc/info/exclude"),
         common_exclude: ws.projection.common_dir().join("info/exclude"),
     }
@@ -131,7 +136,8 @@ impl Others<'_> {
             if name == b".git" {
                 continue;
             }
-            let is_dir = entry.file_type()?.is_dir() && !asc_wc::safe_path::is_link(&entry.metadata()?);
+            let is_dir =
+                entry.file_type()?.is_dir() && !asc_wc::safe_path::is_link(&entry.metadata()?);
             items.push((name, is_dir, entry.path()));
         }
         // git's order: a directory sorts as its name followed by `/`.
@@ -147,7 +153,11 @@ impl Others<'_> {
         });
         for (name, is_dir, child_abs) in items {
             let path = join(rel, &name);
-            if self.ignore.as_ref().is_some_and(|s| s.is_ignored(&child_abs, is_dir)) {
+            if self
+                .ignore
+                .as_ref()
+                .is_some_and(|s| s.is_ignored(&child_abs, is_dir))
+            {
                 continue;
             }
             if !is_dir {
@@ -189,9 +199,20 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         terminator: if o.nul { 0 } else { b'\n' },
         quote_high: ctx.config.bool("core.quotePath").unwrap_or(true),
     };
-    let strip = if prefix.is_empty() || o.full_name { Vec::new() } else { format!("{prefix}/").into_bytes() };
+    let strip = if prefix.is_empty() || o.full_name {
+        Vec::new()
+    } else {
+        format!("{prefix}/").into_bytes()
+    };
     let show = |out: &mut Output, path: &[u8]| -> std::io::Result<()> {
-        names.write_bare(out, &if strip.is_empty() { path.to_vec() } else { relative(path, &strip) })
+        names.write_bare(
+            out,
+            &if strip.is_empty() {
+                path.to_vec()
+            } else {
+                relative(path, &strip)
+            },
+        )
     };
     let show_cached = o.cached || o.stage || !o.others;
     let mut matched = vec![false; spec.includes().len()];
@@ -209,7 +230,9 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             }
             tracked.insert(e.path.clone());
         }
-        let ignore = o.exclude_standard.then(|| IgnoreStack::new(root, &ignore_sources(ctx, ws)));
+        let ignore = o
+            .exclude_standard
+            .then(|| IgnoreStack::new(root, &ignore_sources(ctx, ws)));
         let mut walker = Others {
             root,
             spec: &spec,
@@ -244,7 +267,10 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         let mut missing = false;
         for (item, hit) in spec.includes().iter().zip(&matched) {
             if !hit {
-                eprintln!("error: pathspec '{}' did not match any file(s) known to git", item.raw());
+                eprintln!(
+                    "error: pathspec '{}' did not match any file(s) known to git",
+                    item.raw()
+                );
                 missing = true;
             }
         }

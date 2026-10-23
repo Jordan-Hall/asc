@@ -164,7 +164,13 @@ mod tests {
         assert_eq!(ensure_shim_dir(&exe).unwrap(), dir);
         let leftovers = std::fs::read_dir(t.path())
             .unwrap()
-            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".shim-"))
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".shim-")
+            })
             .count();
         assert_eq!(leftovers, 0);
     }

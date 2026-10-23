@@ -20,8 +20,8 @@ use crate::cli::commit::message;
 use crate::cli::commit::stagebuild;
 use crate::cli::common::{CliEngine, CliError, Ctx, Result, WsCtx};
 use crate::cli::conflict::{self, NewCommit, fatal};
-use crate::cli::seqstate;
 use crate::cli::restore::{Spec, WcParts, index_tree, root_of, stage_from_tree, sync_worktree};
+use crate::cli::seqstate;
 use crate::cli::status::expand_dir;
 use crate::ext;
 
@@ -81,14 +81,20 @@ async fn head_line(ctx: &Ctx, ws: &WsCtx, head: ChangesetId) -> Result<String> {
         .and_then(|v| v.parse::<usize>().ok())
         .map_or(7, |n| n.clamp(4, 40));
     let subject = message::subject(&ws.engine.get_changeset(head).await?.message);
-    Ok(format!("{branch}: {} {subject}", &git.to_string()[..abbrev]))
+    Ok(format!(
+        "{branch}: {} {subject}",
+        &git.to_string()[..abbrev]
+    ))
 }
 
 /// Writes the stash commits for the current state. `None` (after printing git's notice) when
 /// there is nothing to stash. Nothing outside the object store changes.
 pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Option<Made>> {
     let Some(head) = ws.head_commit().await? else {
-        return Err(CliError::Raw("You do not have the initial commit yet".into(), 1));
+        return Err(CliError::Raw(
+            "You do not have the initial commit yet".into(),
+            1,
+        ));
     };
     let head_root = root_of(ws, Some(head)).await?;
     let (index, unmerged) = index_tree(ws, head_root).await?;
@@ -98,14 +104,20 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         }
         return Err(CliError::Raw("error: could not write index".into(), 1));
     }
-    let spec = if o.paths.is_empty() { None } else { Some(Spec::new(ctx, &o.paths)?) };
+    let spec = if o.paths.is_empty() {
+        None
+    } else {
+        Some(Spec::new(ctx, &o.paths)?)
+    };
     let matches = |p: &RepoPath| spec.as_ref().is_none_or(|s| s.spec.matches(p));
 
     let fresh = workspaces::get(&ws.db, ws.workspace.ws.id)
         .await?
         .ok_or_else(|| fatal("asc: this workspace is not registered in state.db"))?;
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
-    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh).await.map_err(fatal)?;
+    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh)
+        .await
+        .map_err(fatal)?;
 
     // The work tree state of the changed tracked paths, on top of the index tree.
     let mut rows: Vec<StageRow> = Vec::new();
@@ -120,7 +132,10 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         rows.push(row);
         dirty.push(c.path.clone());
     }
-    let staged = ws.engine.leafdiff(head_root, index, spec.as_ref().map(|s| &s.spec)).await?;
+    let staged = ws
+        .engine
+        .leafdiff(head_root, index, spec.as_ref().map(|s| &s.spec))
+        .await?;
 
     let mut untracked: Vec<RepoPath> = Vec::new();
     if o.untracked {
@@ -183,7 +198,8 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         message: text.into_bytes(),
         root,
     };
-    let (i, _) = conflict::write_commit(ws, commit(vec![head], format!("index on {line}\n"), index)).await?;
+    let (i, _) =
+        conflict::write_commit(ws, commit(vec![head], format!("index on {line}\n"), index)).await?;
     let mut parents = vec![head, i];
     if !untracked.is_empty() {
         let mut urows = Vec::with_capacity(untracked.len());
@@ -192,8 +208,11 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         }
         let uchanges = stagebuild::rows_to_changes(ws, empty, &urows).await?;
         let u_tree = ws.engine.apply(empty, &uchanges).await?;
-        let (u, _) =
-            conflict::write_commit(ws, commit(Vec::new(), format!("untracked files on {line}\n"), u_tree)).await?;
+        let (u, _) = conflict::write_commit(
+            ws,
+            commit(Vec::new(), format!("untracked files on {line}\n"), u_tree),
+        )
+        .await?;
         parents.push(u);
     }
     let branch = line.split(':').next().unwrap_or_default().to_owned();
@@ -203,13 +222,26 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
         (None, _) => format!("WIP on {line}"),
     };
     let (w, _) = conflict::write_commit(ws, commit(parents, text.clone(), w_tree)).await?;
-    Ok(Some(Made { commit: w, message: text, head, head_root, index, spec, dirty, untracked }))
+    Ok(Some(Made {
+        commit: w,
+        message: text,
+        head,
+        head_root,
+        index,
+        spec,
+        dirty,
+        untracked,
+    }))
 }
 
 /// The length of the current directory below the work tree root, for git's pathspec message.
 fn cwd_prefix_len(ctx: &Ctx, ws: &WsCtx) -> usize {
     let prefix = crate::cli::add::cwd_prefix(ctx, ws);
-    if prefix.is_empty() { 0 } else { prefix.len() + 1 }
+    if prefix.is_empty() {
+        0
+    } else {
+        prefix.len() + 1
+    }
 }
 
 /// Removes what the stash took from the work tree and the index: `reset --hard` for the
@@ -238,11 +270,22 @@ pub async fn clean(ctx: &Ctx, ws: &WsCtx, o: &Opts, made: &Made) -> Result<()> {
         sync_worktree(ctx, made.head_root, &paths, true).await?;
         match &made.spec {
             Some(s) => {
-                stage_from_tree(ws, made.index, &Default::default(), made.head_root, made.head_root, s).await?;
+                stage_from_tree(
+                    ws,
+                    made.index,
+                    &Default::default(),
+                    made.head_root,
+                    made.head_root,
+                    s,
+                )
+                .await?;
             }
             None => {
                 stage::clear(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
-                ext::index_sink().on_stage_changed(ws.workspace.ws.id, &[]).await.map_err(fatal)?;
+                ext::index_sink()
+                    .on_stage_changed(ws.workspace.ws.id, &[])
+                    .await
+                    .map_err(fatal)?;
             }
         }
     }
@@ -268,7 +311,11 @@ pub async fn push(ctx: &Ctx, o: &Opts) -> Result<std::process::ExitCode> {
 /// `stash create [<message>]`: write the commit and print its id; nothing else changes.
 pub async fn create(ctx: &Ctx, message: Option<String>) -> Result<std::process::ExitCode> {
     let ws = ctx.ws()?;
-    let o = Opts { message, verbatim: true, ..Opts::default() };
+    let o = Opts {
+        message,
+        verbatim: true,
+        ..Opts::default()
+    };
     let Some(made) = make(ctx, ws, &o, false).await? else {
         return Ok(std::process::ExitCode::SUCCESS);
     };

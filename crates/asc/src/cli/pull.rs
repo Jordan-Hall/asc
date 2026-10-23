@@ -25,9 +25,32 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "pull",
     flags: &[
-        "-q", "--quiet", "-v", "--verbose", "-r", "--rebase", "--no-rebase", "--ff", "--ff-only", "--no-ff", "-p",
-        "--prune", "-t", "--tags", "-n", "--no-tags", "--no-verify", "--verify", "--no-edit", "--edit", "-e",
-        "--progress", "--no-progress", "--no-recurse-submodules", "--autostash", "--no-autostash",
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "-r",
+        "--rebase",
+        "--no-rebase",
+        "--ff",
+        "--ff-only",
+        "--no-ff",
+        "-p",
+        "--prune",
+        "-t",
+        "--tags",
+        "-n",
+        "--no-tags",
+        "--no-verify",
+        "--verify",
+        "--no-edit",
+        "--edit",
+        "-e",
+        "--progress",
+        "--no-progress",
+        "--no-recurse-submodules",
+        "--autostash",
+        "--no-autostash",
     ],
     placeholders: &[],
 }];
@@ -65,8 +88,12 @@ fn rebase_value(v: &str) -> Result<Rebase> {
         "true" | "yes" | "on" | "1" => Ok(Rebase::Yes),
         "false" | "no" | "off" | "0" | "" => Ok(Rebase::No),
         "merges" | "m" => Ok(Rebase::Merges),
-        "interactive" | "i" => Err(CliError::Fatal("asc: interactive pull --rebase is not supported".into())),
-        other => Err(CliError::Fatal(format!("invalid value for 'pull.rebase': '{other}'"))),
+        "interactive" | "i" => Err(CliError::Fatal(
+            "asc: interactive pull --rebase is not supported".into(),
+        )),
+        other => Err(CliError::Fatal(format!(
+            "invalid value for 'pull.rebase': '{other}'"
+        ))),
     }
 }
 
@@ -91,10 +118,22 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             "-t" | "--tags" => o.tags = Some(true),
             "-n" | "--no-tags" => o.tags = Some(false),
             "--no-verify" => o.no_verify = true,
-            "--verify" | "--no-edit" | "--edit" | "-e" | "--progress" | "--no-progress" | "--no-recurse-submodules"
+            "--verify"
+            | "--no-edit"
+            | "--edit"
+            | "-e"
+            | "--progress"
+            | "--no-progress"
+            | "--no-recurse-submodules"
             | "--no-autostash" => {}
-            "--autostash" => return Err(CliError::Fatal("asc: pull --autostash is not supported yet".into())),
-            w if w.starts_with("--rebase=") => o.rebase = Some(rebase_value(&w["--rebase=".len()..])?),
+            "--autostash" => {
+                return Err(CliError::Fatal(
+                    "asc: pull --autostash is not supported yet".into(),
+                ));
+            }
+            w if w.starts_with("--rebase=") => {
+                o.rebase = Some(rebase_value(&w["--rebase=".len()..])?)
+            }
             _ => return Err(CliError::Usage(USAGE.to_owned())),
         }
     }
@@ -158,20 +197,28 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         tags: o.tags,
         ..FetchOpts::default()
     };
-    let fetched_words: Vec<String> = words.iter().map(|w| w.strip_prefix("refs/heads/").unwrap_or(w).to_owned()).collect();
+    let fetched_words: Vec<String> = words
+        .iter()
+        .map(|w| w.strip_prefix("refs/heads/").unwrap_or(w).to_owned())
+        .collect();
     let fetched = fetch_one(ctx, ws, &remote_arg, &fetch_opts, &fetched_words).await?;
     let remote_name = fetched.opened.name.clone();
     let (tracking, branch_name) = target_ref(ctx, ws, &remote_name, &words)?;
     let Some(theirs) = tip_of(ws, &tracking).await? else {
         return Err(CliError::Raw(
-            format!("Your configuration specifies to merge with the ref 'refs/heads/{branch_name}'\nfrom the remote, but no such ref was fetched."),
+            format!(
+                "Your configuration specifies to merge with the ref 'refs/heads/{branch_name}'\nfrom the remote, but no such ref was fetched."
+            ),
             1,
         ));
     };
     let head = ws.head_commit().await?;
     let branch = current_branch(ws)?;
 
-    let configured_rebase = match branch.as_deref().and_then(|b| ctx.config.get(&format!("branch.{b}.rebase"))) {
+    let configured_rebase = match branch
+        .as_deref()
+        .and_then(|b| ctx.config.get(&format!("branch.{b}.rebase")))
+    {
         Some(v) => Some(rebase_value(&v)?),
         None => match ctx.config.get("pull.rebase") {
             Some(v) => Some(rebase_value(&v)?),
@@ -193,8 +240,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         && ff.is_none()
         && h != theirs
     {
-        let contained = HistoryApi::is_ancestor(&ws.engine, theirs, h).await.map_err(fatal)?;
-        let can_ff = HistoryApi::is_ancestor(&ws.engine, h, theirs).await.map_err(fatal)?;
+        let contained = HistoryApi::is_ancestor(&ws.engine, theirs, h)
+            .await
+            .map_err(fatal)?;
+        let can_ff = HistoryApi::is_ancestor(&ws.engine, h, theirs)
+            .await
+            .map_err(fatal)?;
         if !contained && !can_ff {
             return Err(divergent_hint(ctx.prog.name()));
         }
@@ -230,7 +281,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             argv.push("--no-verify".into());
         }
         argv.push("-m".into());
-        argv.push(format!("Merge branch '{branch_name}' of {}", display_from(&fetched.opened.url)).into());
+        argv.push(
+            format!(
+                "Merge branch '{branch_name}' of {}",
+                display_from(&fetched.opened.url)
+            )
+            .into(),
+        );
         argv.push(tracking.clone().into());
     }
     super::run_command(ctx, argv).await
@@ -251,7 +308,10 @@ mod tests {
 
     #[test]
     fn options_parse() {
-        let argv: Vec<OsString> = ["--rebase", "-q", "origin", "master"].iter().map(Into::into).collect();
+        let argv: Vec<OsString> = ["--rebase", "-q", "origin", "master"]
+            .iter()
+            .map(Into::into)
+            .collect();
         let o = parse(&argv).unwrap();
         assert_eq!(o.rebase, Some(Rebase::Yes));
         assert!(o.quiet);

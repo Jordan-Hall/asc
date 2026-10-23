@@ -18,7 +18,14 @@ use gix_attributes::search::{MetadataCollection, Outcome};
 use gix_attributes::{Search, StateRef};
 
 /// Attributes `add` reads.
-const SELECTED: [&str; 6] = ["text", "crlf", "eol", "ident", "filter", "working-tree-encoding"];
+const SELECTED: [&str; 6] = [
+    "text",
+    "crlf",
+    "eol",
+    "ident",
+    "filter",
+    "working-tree-encoding",
+];
 
 /// A path whose attributes `add` cannot honour.
 #[derive(Debug, thiserror::Error)]
@@ -72,7 +79,10 @@ impl Attrs {
         let mut search = if dir.is_empty() {
             self.base.clone()
         } else {
-            let parent = dir.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &dir[..i]);
+            let parent = dir
+                .iter()
+                .rposition(|&c| c == b'/')
+                .map_or(&[][..], |i| &dir[..i]);
             let mut inherited = (*self.search(parent)?).clone();
             if self.info.is_some() {
                 inherited.pop_pattern_list(); // `info/attributes` goes last again below
@@ -81,15 +91,35 @@ impl Attrs {
         };
         // A directory behind a link is outside the work tree, and so is a linked attributes file.
         let regular = |name: &str| -> Option<PathBuf> {
-            let rel = if dir.is_empty() { name.as_bytes().to_vec() } else { [dir, b"/", name.as_bytes()].concat() };
+            let rel = if dir.is_empty() {
+                name.as_bytes().to_vec()
+            } else {
+                [dir, b"/", name.as_bytes()].concat()
+            };
             let abs = self.gate.resolve(&RepoPath::new(rel).ok()?)?;
-            std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()).then_some(abs)
+            std::fs::symlink_metadata(&abs)
+                .is_ok_and(|m| m.is_file())
+                .then_some(abs)
         };
         if let Some(file) = regular(".ascattributes").or_else(|| regular(".gitattributes")) {
-            search.add_patterns_file(file, false, Some(&self.root), &mut self.buf, &mut self.collection, true)?;
+            search.add_patterns_file(
+                file,
+                false,
+                Some(&self.root),
+                &mut self.buf,
+                &mut self.collection,
+                true,
+            )?;
         }
         if let Some(info) = &self.info {
-            search.add_patterns_file(info.clone(), false, None, &mut self.buf, &mut self.collection, true)?;
+            search.add_patterns_file(
+                info.clone(),
+                false,
+                None,
+                &mut self.buf,
+                &mut self.collection,
+                true,
+            )?;
         }
         let search = Rc::new(search);
         self.dirs.insert(dir.to_vec(), search.clone());
@@ -99,12 +129,19 @@ impl Attrs {
     /// The attributes of `path`, or the first one `add` cannot honour.
     pub fn lookup(&mut self, path: &RepoPath) -> Result<PathAttrs, Unsupported> {
         let bytes = path.as_bytes();
-        let dir = bytes.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &bytes[..i]);
+        let dir = bytes
+            .iter()
+            .rposition(|&c| c == b'/')
+            .map_or(&[][..], |i| &bytes[..i]);
         // An unreadable attributes file reads as absent, like git.
         let Ok(search) = self.search(dir) else {
-            return Ok(PathAttrs { eol: Eol::Keep, lfs: false });
+            return Ok(PathAttrs {
+                eol: Eol::Keep,
+                lfs: false,
+            });
         };
-        self.outcome.initialize_with_selection(&self.collection, SELECTED);
+        self.outcome
+            .initialize_with_selection(&self.collection, SELECTED);
         search.pattern_matching_relative_path(
             path.as_bytes().as_bstr(),
             Case::Sensitive,
@@ -139,10 +176,16 @@ impl Attrs {
         };
         let action = from("text").or_else(|| from("crlf"));
         let mut eol = action.unwrap_or(Eol::Keep);
-        if action != Some(Eol::Keep) && matches!(value("eol").as_deref(), Some("lf" | "crlf")) && eol == Eol::Keep {
+        if action != Some(Eol::Keep)
+            && matches!(value("eol").as_deref(), Some("lf" | "crlf"))
+            && eol == Eol::Keep
+        {
             eol = Eol::Text;
         }
-        Ok(PathAttrs { eol, lfs: filter.is_some() })
+        Ok(PathAttrs {
+            eol,
+            lfs: filter.is_some(),
+        })
     }
 }
 
@@ -158,7 +201,10 @@ impl AttrEol {
 
 impl EolRules for AttrEol {
     fn eol(&self, path: &RepoPath) -> Eol {
-        self.0.borrow_mut().lookup(path).map_or(Eol::Keep, |a| a.eol)
+        self.0
+            .borrow_mut()
+            .lookup(path)
+            .map_or(Eol::Keep, |a| a.eol)
     }
 }
 
@@ -210,13 +256,24 @@ mod tests {
 
     #[test]
     fn deeper_files_override_and_info_wins() {
-        let (d, mut a) = attrs(&[(".gitattributes", "*.txt text\n"), ("sub/.gitattributes", "*.txt -text\n")]);
-        std::fs::write(d.path().join("common/info/attributes"), "special.txt text=auto\n").unwrap();
+        let (d, mut a) = attrs(&[
+            (".gitattributes", "*.txt text\n"),
+            ("sub/.gitattributes", "*.txt -text\n"),
+        ]);
+        std::fs::write(
+            d.path().join("common/info/attributes"),
+            "special.txt text=auto\n",
+        )
+        .unwrap();
         let mut a2 = Attrs::load(d.path(), &d.path().join("common"), None).unwrap();
         assert_eq!(a.lookup(&p("sub/a.txt")).unwrap().eol, Eol::Keep);
         assert_eq!(a2.lookup(&p("sub/a.txt")).unwrap().eol, Eol::Keep);
         assert_eq!(a2.lookup(&p("special.txt")).unwrap().eol, Eol::Auto);
-        assert_eq!(a2.lookup(&p("sub/special.txt")).unwrap().eol, Eol::Auto, "info beats the leaf file");
+        assert_eq!(
+            a2.lookup(&p("sub/special.txt")).unwrap().eol,
+            Eol::Auto,
+            "info beats the leaf file"
+        );
     }
 
     #[test]

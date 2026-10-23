@@ -12,15 +12,21 @@ pub struct Spec {
 }
 
 fn base_color(name: &str) -> Option<u8> {
-    ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
-        .iter()
-        .position(|c| *c == name)
-        .map(|p| p as u8)
+    [
+        "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    ]
+    .iter()
+    .position(|c| *c == name)
+    .map(|p| p as u8)
 }
 
 /// SGR parameters of one colour word; `foreground` picks 30/90/38 or 40/100/48.
 fn color_code(word: &str, foreground: bool) -> Option<Option<String>> {
-    let (base, bright, ext) = if foreground { (30, 90, 38) } else { (40, 100, 48) };
+    let (base, bright, ext) = if foreground {
+        (30, 90, 38)
+    } else {
+        (40, 100, 48)
+    };
     if word == "normal" {
         return Some(None);
     }
@@ -43,12 +49,24 @@ fn color_code(word: &str, foreground: bool) -> Option<Option<String>> {
     }
     let hex = word.strip_prefix('#').filter(|h| h.len() == 6)?;
     let v = u32::from_str_radix(hex, 16).ok()?;
-    Some(Some(format!("{ext};2;{};{};{}", v >> 16, (v >> 8) & 0xff, v & 0xff)))
+    Some(Some(format!(
+        "{ext};2;{};{};{}",
+        v >> 16,
+        (v >> 8) & 0xff,
+        v & 0xff
+    )))
 }
 
 /// Attribute words and their SGR numbers, in the order git emits them.
-const ATTRS: [(&str, u8); 7] =
-    [("bold", 1), ("dim", 2), ("italic", 3), ("ul", 4), ("blink", 5), ("reverse", 7), ("strike", 9)];
+const ATTRS: [(&str, u8); 7] = [
+    ("bold", 1),
+    ("dim", 2),
+    ("italic", 3),
+    ("ul", 4),
+    ("blink", 5),
+    ("reverse", 7),
+    ("strike", 9),
+];
 
 impl Spec {
     /// Parses `red`, `bold blue`, `reset`, `ul green black`… `None` for an invalid word.
@@ -63,9 +81,10 @@ impl Spec {
             }
             if let Some(&(_, n)) = ATTRS.iter().find(|(a, _)| *a == lower) {
                 spec.attrs.push(n);
-            } else if let Some(&(_, n)) = ATTRS.iter().find(|(a, _)| lower.strip_prefix("no").is_some_and(|r| r == *a)
-                || lower.strip_prefix("no-").is_some_and(|r| r == *a))
-            {
+            } else if let Some(&(_, n)) = ATTRS.iter().find(|(a, _)| {
+                lower.strip_prefix("no").is_some_and(|r| r == *a)
+                    || lower.strip_prefix("no-").is_some_and(|r| r == *a)
+            }) {
                 spec.attrs.push(20 + n + u8::from(n == 1));
             } else if !seen_fg {
                 spec.fg = color_code(&lower, true)?;
@@ -74,7 +93,8 @@ impl Spec {
                 spec.bg = color_code(&lower, false)?;
             }
         }
-        spec.attrs.sort_by_key(|n| ATTRS.iter().position(|(_, a)| a == n).unwrap_or(99));
+        spec.attrs
+            .sort_by_key(|n| ATTRS.iter().position(|(_, a)| a == n).unwrap_or(99));
         Some(spec)
     }
 

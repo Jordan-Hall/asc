@@ -57,9 +57,36 @@ impl Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "tag",
     flags: &[
-        "-a", "--annotate", "-s", "--sign", "-u", "--local-user", "-f", "--force", "-d", "--delete", "-n", "-l",
-        "--list", "--sort", "--format", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at",
-        "-i", "--ignore-case", "-m", "--message", "-F", "--file", "-e", "--edit", "--cleanup", "--color",
+        "-a",
+        "--annotate",
+        "-s",
+        "--sign",
+        "-u",
+        "--local-user",
+        "-f",
+        "--force",
+        "-d",
+        "--delete",
+        "-n",
+        "-l",
+        "--list",
+        "--sort",
+        "--format",
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "-i",
+        "--ignore-case",
+        "-m",
+        "--message",
+        "-F",
+        "--file",
+        "-e",
+        "--edit",
+        "--cleanup",
+        "--color",
         "--no-color",
     ],
     placeholders: ref_filter::ATOMS,
@@ -149,7 +176,11 @@ fn parse_color(value: &str) -> Result<Option<bool>> {
         "always" | "true" | "yes" | "on" | "1" | "" => Some(true),
         "never" | "false" | "no" | "off" | "0" => Some(false),
         "auto" => None,
-        _ => return Err(CliError::Fatal(format!("bad boolean config value '{value}' for 'color'"))),
+        _ => {
+            return Err(CliError::Fatal(format!(
+                "bad boolean config value '{value}' for 'color'"
+            )));
+        }
     })
 }
 
@@ -165,7 +196,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                 while let Some(c) = chars.next() {
                     let take = |name: &str, chars: &mut std::str::Chars<'_>, cur: &mut Cursor| {
                         let rest: String = chars.by_ref().collect();
-                        if rest.is_empty() { cur.value(name, None) } else { Ok(rest) }
+                        if rest.is_empty() {
+                            cur.value(name, None)
+                        } else {
+                            Ok(rest)
+                        }
                     };
                     match c {
                         'a' => o.annotate = true,
@@ -186,7 +221,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                             o.lines = Some(if rest.is_empty() {
                                 DEFAULT_LINES
                             } else {
-                                rest.parse().map_err(|_| cur.usage_error("switch `n' expects a numerical value"))?
+                                rest.parse().map_err(|_| {
+                                    cur.usage_error("switch `n' expects a numerical value")
+                                })?
                             });
                         }
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
@@ -224,7 +261,12 @@ fn parse(args: &[OsString]) -> Result<Opts> {
     Ok(o)
 }
 
-async fn commits(ctx: &Ctx, ws: &WsCtx, words: &[String], fatal_exit: bool) -> Result<Vec<ChangesetId>> {
+async fn commits(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    words: &[String],
+    fatal_exit: bool,
+) -> Result<Vec<ChangesetId>> {
     let mut out = Vec::new();
     for w in words {
         let found = match resolve_target(ctx, ws, w).await? {
@@ -246,7 +288,9 @@ async fn commits(ctx: &Ctx, ws: &WsCtx, words: &[String], fatal_exit: bool) -> R
 
 async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     if o.format.is_some() && o.lines.is_some() {
-        return Err(CliError::Fatal("options '--format' and '-n' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '--format' and '-n' cannot be used together".into(),
+        ));
     }
     let patterns: Vec<String> = if o.words.is_empty() {
         vec!["refs/tags/*".to_owned()]
@@ -259,7 +303,11 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         (None, None) => "%(refname:lstrip=2)".to_owned(),
     };
     let format = Format::parse(text.as_bytes(), Quote::None).map_err(ref_filter::to_cli)?;
-    let sorts: Vec<String> = if o.sorts.is_empty() { ctx.config.get_all("tag.sort") } else { o.sorts.clone() };
+    let sorts: Vec<String> = if o.sorts.is_empty() {
+        ctx.config.get_all("tag.sort")
+    } else {
+        o.sorts.clone()
+    };
     let sorts = sorts
         .iter()
         .map(|s| ref_filter::parse_sort_key(s).map_err(ref_filter::to_cli))
@@ -314,7 +362,12 @@ async fn list(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
 // ------------------------------------------------------------------------------------ delete
 
 fn txn(updates: Vec<RefUpdate>) -> RefTxn {
-    RefTxn { updates, actor: actor(), reason: String::new(), op_id: ext::OpId::new().0 }
+    RefTxn {
+        updates,
+        actor: actor(),
+        reason: String::new(),
+        op_id: ext::OpId::new().0,
+    }
 }
 
 async fn delete(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
@@ -337,7 +390,8 @@ async fn delete(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
             new: None,
             expires_at: None,
         };
-        ctx.update_local_refs(txn(vec![u]), "tag: Deleted", StagingAfterMove::Keep).await?;
+        ctx.update_local_refs(txn(vec![u]), "tag: Deleted", StagingAfterMove::Keep)
+            .await?;
         println!("Deleted tag '{name}' (was {})", &shown[..abbrev_len(ctx)]);
     }
     Ok(ExitCode::from(status))
@@ -365,10 +419,13 @@ fn tagger(ctx: &Ctx) -> Result<Signature> {
         return Err(CliError::Raw(UNKNOWN.to_owned(), 128));
     };
     let Some(name) = name.filter(|n| !n.is_empty()) else {
-        return Err(CliError::Fatal(format!("empty ident name (for <{email}>) not allowed")));
+        return Err(CliError::Fatal(format!(
+            "empty ident name (for <{email}>) not allowed"
+        )));
     };
     let time = match env.date.as_deref() {
-        Some(d) => gix_date::parse(d, None).map_err(|_| CliError::Fatal(format!("invalid date format: {d}")))?,
+        Some(d) => gix_date::parse(d, None)
+            .map_err(|_| CliError::Fatal(format!("invalid date format: {d}")))?,
         None => gix_date::Time::now_local_or_utc(),
     };
     let tz = i16::try_from(time.offset / 60).unwrap_or(0);
@@ -393,7 +450,8 @@ async fn message_of(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str) -> Result<Vec<u
         if f == "-" {
             std::io::stdin().read_to_end(&mut bytes)?;
         } else {
-            bytes = std::fs::read(f).map_err(|e| CliError::Fatal(format!("could not open or read '{f}': {e}")))?;
+            bytes = std::fs::read(f)
+                .map_err(|e| CliError::Fatal(format!("could not open or read '{f}': {e}")))?;
         }
         text.extend_from_slice(&bytes);
         if !text.ends_with(b"\n") {
@@ -403,7 +461,9 @@ async fn message_of(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str) -> Result<Vec<u
     let given = !o.messages.is_empty() || !o.files.is_empty();
     let comment = message::comment_char(ctx);
     let mode = match &o.cleanup {
-        Some(c) => Cleanup::parse(c).ok_or_else(|| CliError::Fatal(format!("Invalid cleanup mode {c}")))?,
+        Some(c) => {
+            Cleanup::parse(c).ok_or_else(|| CliError::Fatal(format!("Invalid cleanup mode {c}")))?
+        }
         None => Cleanup::Default,
     };
     let edit = o.edit || !given;
@@ -417,7 +477,9 @@ async fn message_of(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str) -> Result<Vec<u
         );
         std::fs::write(&file, content)?;
         if !message::edit(ctx, &file).await? {
-            return Err(CliError::Fatal("There was a problem with the editor".into()));
+            return Err(CliError::Fatal(
+                "There was a problem with the editor".into(),
+            ));
         }
         let edited = std::fs::read(&file)?;
         let cleaned = message::cleanup(&edited, mode, true, comment);
@@ -431,7 +493,10 @@ async fn message_of(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str) -> Result<Vec<u
 
 /// Signs `payload` with git's signing program (`gpg.program`, default `gpg`).
 async fn sign(ctx: &Ctx, payload: &[u8], key: Option<&str>, who: &str) -> Result<Vec<u8>> {
-    let program = ctx.config.get("gpg.program").unwrap_or_else(|| "gpg".to_owned());
+    let program = ctx
+        .config
+        .get("gpg.program")
+        .unwrap_or_else(|| "gpg".to_owned());
     let key = key
         .map(str::to_owned)
         .or_else(|| ctx.config.get("user.signingkey"))
@@ -460,7 +525,8 @@ async fn sign(ctx: &Ctx, payload: &[u8], key: Option<&str>, who: &str) -> Result
     }
     // The program must say it made a signature (`--status-fd`), as git insists.
     let status = String::from_utf8_lossy(&out.stderr).into_owned();
-    let created = status.starts_with("[GNUPG:] SIG_CREATED ") || status.contains("\n[GNUPG:] SIG_CREATED ");
+    let created =
+        status.starts_with("[GNUPG:] SIG_CREATED ") || status.contains("\n[GNUPG:] SIG_CREATED ");
     if !out.status.success() || sig.is_empty() || !created {
         let mut text = String::from("error: gpg failed to sign the data");
         if !status.trim().is_empty() {
@@ -474,7 +540,13 @@ async fn sign(ctx: &Ctx, payload: &[u8], key: Option<&str>, who: &str) -> Result
 }
 
 /// Stores an annotated tag of `target` and returns the ref value and the tag's git id.
-async fn annotate(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str, target: ChangesetId) -> Result<(RefTarget, GitOid)> {
+async fn annotate(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    o: &Opts,
+    name: &str,
+    target: ChangesetId,
+) -> Result<(RefTarget, GitOid)> {
     let message = message_of(ctx, ws, o, name).await?;
     let who = tagger(ctx)?;
     let target_git = ws.engine.git_commit_of(target).await.map_err(fatal)?;
@@ -499,9 +571,20 @@ async fn annotate(ctx: &Ctx, ws: &WsCtx, o: &Opts, name: &str, target: Changeset
     let raw = export_tag(&record, target_git).map_err(fatal)?;
     let envelope = record.to_envelope();
     let id = TagId::of(&envelope);
-    ws.objects.put(&ObjKey::Tag(id), encode_stored(&envelope)).await?;
+    ws.objects
+        .put(&ObjKey::Tag(id), encode_stored(&envelope))
+        .await?;
     let git = object_oid(ObjectKind::Tag, &raw);
-    git_map::insert_many(&ws.db, ws.repo.key, &[GitMapRow { git, kind: ObjectKind::Tag, asc: *id.as_bytes() }]).await?;
+    git_map::insert_many(
+        &ws.db,
+        ws.repo.key,
+        &[GitMapRow {
+            git,
+            kind: ObjectKind::Tag,
+            asc: *id.as_bytes(),
+        }],
+    )
+    .await?;
     Ok((RefTarget::Tag(id), git))
 }
 
@@ -513,7 +596,9 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     };
     let full = format!("refs/tags/{name}");
     if name.starts_with('-') || RefName::new(full.clone().into_bytes()).is_err() {
-        return Err(CliError::Fatal(format!("'{name}' is not a valid tag name.")));
+        return Err(CliError::Fatal(format!(
+            "'{name}' is not a valid tag name."
+        )));
     }
     let existing = ref_target(ws, &full).await?;
     if existing.is_some() && !o.force {
@@ -524,7 +609,8 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     } else {
         resolve_target(ctx, ws, object).await?
     };
-    let target = target.ok_or_else(|| CliError::Fatal(format!("Failed to resolve '{object}' as a valid ref.")))?;
+    let target = target
+        .ok_or_else(|| CliError::Fatal(format!("Failed to resolve '{object}' as a valid ref.")))?;
     let annotated = o.annotate
         || o.sign
         || !o.messages.is_empty()
@@ -534,7 +620,9 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
     ensure_mapped(ws, peel(ws, target).await?).await?;
     let value = if annotated {
         let RefTarget::Changeset(commit) = target else {
-            return Err(CliError::Fatal("asc: tagging a tag object is not supported".into()));
+            return Err(CliError::Fatal(
+                "asc: tagging a tag object is not supported".into(),
+            ));
         };
         annotate(ctx, ws, o, name, commit).await?.0
     } else {
@@ -550,7 +638,12 @@ async fn create(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<ExitCode> {
         new: Some(value),
         expires_at: None,
     };
-    ctx.update_local_refs(txn(vec![u]), &format!("tag: tagging {name}"), StagingAfterMove::Keep).await?;
+    ctx.update_local_refs(
+        txn(vec![u]),
+        &format!("tag: tagging {name}"),
+        StagingAfterMove::Keep,
+    )
+    .await?;
     if let Some(old) = was {
         println!("Updated tag '{name}' (was {})", &old[..abbrev_len(ctx)]);
     }
@@ -565,10 +658,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         && o.merged.is_empty()
         && o.no_merged.is_empty()
         && o.points_at.is_empty());
-    let creating = o.annotate || o.sign || !o.messages.is_empty() || !o.files.is_empty() || o.edit || o.force;
+    let creating =
+        o.annotate || o.sign || !o.messages.is_empty() || !o.files.is_empty() || o.edit || o.force;
     if o.delete {
         if o.list || creating {
-            return Err(CliError::Fatal("options '-d' and the listing and creating options are incompatible".into()));
+            return Err(CliError::Fatal(
+                "options '-d' and the listing and creating options are incompatible".into(),
+            ));
         }
         return delete(ctx, ws, &o).await;
     }
@@ -597,7 +693,10 @@ mod tests {
         assert_eq!(opts(&["-n"]).lines, Some(1));
         assert_eq!(opts(&["-n5", "-l"]).lines, Some(5));
         let o = opts(&["-n", "v1*"]);
-        assert_eq!((o.lines, o.words.as_slice()), (Some(1), ["v1*".to_owned()].as_slice()));
+        assert_eq!(
+            (o.lines, o.words.as_slice()),
+            (Some(1), ["v1*".to_owned()].as_slice())
+        );
         assert!(parse(&[OsString::from("-nx")]).is_err());
     }
 

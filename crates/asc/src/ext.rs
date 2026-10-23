@@ -241,10 +241,25 @@ macro_rules! slot {
 }
 
 slot!(INDEX_SINK, set_index_sink, index_sink, SyntheticIndexSink);
-slot!(HISTORY, set_history_selector, history_selector, HistorySelector);
-slot!(PROJECTS, set_projects_selector, projects_selector, ProjectsSelector);
+slot!(
+    HISTORY,
+    set_history_selector,
+    history_selector,
+    HistorySelector
+);
+slot!(
+    PROJECTS,
+    set_projects_selector,
+    projects_selector,
+    ProjectsSelector
+);
 slot!(REF_HOOK, set_ref_txn_hook, ref_txn_hook, RefTxnHook);
-slot!(FACTORY, set_workspace_factory, workspace_factory, WorkspaceFactory);
+slot!(
+    FACTORY,
+    set_workspace_factory,
+    workspace_factory,
+    WorkspaceFactory
+);
 slot!(REWRITES, set_rewrite_sink, rewrite_sink, RewriteSink);
 slot!(OPS, set_op_sink, op_sink, OpSink);
 
@@ -279,12 +294,7 @@ mod tests {
         let op = op_sink().begin(&[OsString::from("status")]);
         op_sink().end(op);
         op_sink().snapshot_wc();
-        rewrite_sink().record(
-            ChangesetId::from_bytes([1; 32]),
-            &[],
-            RewriteOp::New,
-            op,
-        );
+        rewrite_sink().record(ChangesetId::from_bytes([1; 32]), &[], RewriteOp::New, op);
         assert!(
             history_selector()
                 .select(&RemoteSpec {

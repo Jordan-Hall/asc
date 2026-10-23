@@ -9,9 +9,9 @@ use asc_core::path::RepoPath;
 use asc_state::state::ws_ops::{self, Renames};
 use asc_wc::SafeRoot;
 
+use super::add::cwd_prefix;
 use super::add::spec::{Spec, repo_path};
 use super::add::target::{Edit, Staged, Target};
-use super::add::cwd_prefix;
 use super::common::{CliError, Ctx, Result};
 use crate::dispatch::Program;
 use crate::native::NativeSpec;
@@ -45,11 +45,17 @@ fn text(p: &[u8]) -> String {
 }
 
 fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
-    if dir.is_empty() { name.to_vec() } else { [dir, b"/", name].concat() }
+    if dir.is_empty() {
+        name.to_vec()
+    } else {
+        [dir, b"/", name].concat()
+    }
 }
 
 fn base_name(path: &[u8]) -> &[u8] {
-    path.iter().rposition(|&c| c == b'/').map_or(path, |i| &path[i + 1..])
+    path.iter()
+        .rposition(|&c| c == b'/')
+        .map_or(path, |i| &path[i + 1..])
 }
 
 /// Records `from` -> `to`, folding a chain of renames into one.
@@ -69,13 +75,19 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let root = ws.projection.toplevel();
     let prefix = cwd_prefix(ctx, ws);
     let gate = SafeRoot::new(root);
-    let (dest_arg, source_args) = a.paths.split_last().ok_or_else(|| CliError::Usage("usage: git mv [-v] [-f] [-n] [-k] <source> <destination>".into()))?;
+    let (dest_arg, source_args) = a.paths.split_last().ok_or_else(|| {
+        CliError::Usage("usage: git mv [-v] [-f] [-n] [-k] <source> <destination>".into())
+    })?;
     let dest = repo_path(dest_arg, &prefix, root)?;
-    let dest_is_dir = path_of(&gate, &dest).is_some_and(|p| fs::metadata(p).is_ok_and(|m| m.is_dir()));
+    let dest_is_dir =
+        path_of(&gate, &dest).is_some_and(|p| fs::metadata(p).is_ok_and(|m| m.is_dir()));
     // A destination written as `dir/` must be an existing directory (git's `is_dir_sep` check).
     let dest_needs_dir = !dest_is_dir && dest_arg.to_string_lossy().ends_with(['/', '\\']);
     if source_args.len() > 1 && !dest_is_dir {
-        return Err(CliError::Fatal(format!("destination '{}' is not a directory", text(&dest))));
+        return Err(CliError::Fatal(format!(
+            "destination '{}' is not a directory",
+            text(&dest)
+        )));
     }
     let target = Target::open(ctx).await?;
     let mut edits = Vec::new();
@@ -83,14 +95,34 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut files: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for arg in source_args {
         let src = repo_path(arg, &prefix, root)?;
-        let dst = if dest_is_dir { join(&dest, base_name(&src)) } else { dest.clone() };
+        let dst = if dest_is_dir {
+            join(&dest, base_name(&src))
+        } else {
+            dest.clone()
+        };
         let fail = |what: &str| {
-            CliError::Fatal(format!("{what}, source={}, destination={}", text(&src), text(&dst)))
+            CliError::Fatal(format!(
+                "{what}, source={}, destination={}",
+                text(&src),
+                text(&dst)
+            ))
         };
         if a.dry_run {
             println!("Checking rename of '{}' to '{}'", text(&src), text(&dst));
         }
-        let checked = check(ctx, &gate, &target, &src, &dst, Dest { force: a.force, must_be_dir: dest_needs_dir }, &fail).await;
+        let checked = check(
+            ctx,
+            &gate,
+            &target,
+            &src,
+            &dst,
+            Dest {
+                force: a.force,
+                must_be_dir: dest_needs_dir,
+            },
+            &fail,
+        )
+        .await;
         let tracked = match checked {
             Ok(t) => t,
             Err(_) if a.skip_errors => continue,
@@ -130,9 +162,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let (Ok(old), Ok(new)) = (RepoPath::new(from.clone()), RepoPath::new(to.clone())) else {
             continue;
         };
-        let Staged::Leaf { leaf, ita } = target.staged(ws, &old).await? else { continue };
+        let Staged::Leaf { leaf, ita } = target.staged(ws, &old).await? else {
+            continue;
+        };
         edits.push(Edit::Drop(old));
-        edits.push(Edit::Put { path: new, leaf, ita });
+        edits.push(Edit::Put {
+            path: new,
+            leaf,
+            ita,
+        });
         // Only `asc mv` records the copy for the commit's `asc` header. Through the shim (`git mv`)
         // the commit must keep git's id, so nothing is recorded (SPEC §17.1).
         if ctx.prog == Program::Asc {
@@ -207,7 +245,8 @@ async fn check(
             Staged::Absent => return Err(fail("not under version control")),
         }
     }
-    let dst_abs = path_of(gate, dst).ok_or_else(|| fail("destination is beyond a symbolic link"))?;
+    let dst_abs =
+        path_of(gate, dst).ok_or_else(|| fail("destination is beyond a symbolic link"))?;
     if fs::symlink_metadata(&dst_abs).is_ok() && !dest.force {
         return Err(fail("destination exists"));
     }

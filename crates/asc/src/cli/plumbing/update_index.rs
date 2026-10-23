@@ -41,8 +41,17 @@ struct Opts {
 }
 
 enum Step {
-    Cacheinfo { mode: String, oid: String, path: String },
-    File { path: String, add: bool, remove: bool, force_remove: bool },
+    Cacheinfo {
+        mode: String,
+        oid: String,
+        path: String,
+    },
+    File {
+        path: String,
+        add: bool,
+        remove: bool,
+        force_remove: bool,
+    },
 }
 
 fn parse(args: &[OsString]) -> Result<Opts> {
@@ -52,11 +61,21 @@ fn parse(args: &[OsString]) -> Result<Opts> {
         match word {
             Word::End => {
                 for path in cur.rest() {
-                    o.steps.push(Step::File { path, add: o.add, remove: o.remove, force_remove: o.force_remove });
+                    o.steps.push(Step::File {
+                        path,
+                        add: o.add,
+                        remove: o.remove,
+                        force_remove: o.force_remove,
+                    });
                 }
             }
             Word::Operand(path) => {
-                o.steps.push(Step::File { path, add: o.add, remove: o.remove, force_remove: o.force_remove });
+                o.steps.push(Step::File {
+                    path,
+                    add: o.add,
+                    remove: o.remove,
+                    force_remove: o.force_remove,
+                });
             }
             Word::Short(flags) => {
                 for c in flags.chars() {
@@ -103,7 +122,10 @@ fn cannot_process(path: &str) -> CliError {
 async fn cacheinfo_leaf(ws: &WsCtx, mode: &str, oid: &str, path: &str) -> Result<Leaf> {
     let invalid = || {
         eprintln!("error: invalid object {mode} {oid} for '{path}'");
-        CliError::Raw(format!("fatal: git update-index: --cacheinfo cannot add {path}"), 128)
+        CliError::Raw(
+            format!("fatal: git update-index: --cacheinfo cannot add {path}"),
+            128,
+        )
     };
     let kind = match u32::from_str_radix(mode, 8) {
         Ok(0o100_644) | Ok(0o100_664) => Kind::File,
@@ -114,18 +136,39 @@ async fn cacheinfo_leaf(ws: &WsCtx, mode: &str, oid: &str, path: &str) -> Result
     };
     let git: GitOid = parse_oid(oid).ok_or_else(invalid)?;
     if kind == Kind::Gitlink {
-        return Ok(Leaf { kind, file: FileId::from_bytes([0; 32]), size: 0, git });
+        return Ok(Leaf {
+            kind,
+            file: FileId::from_bytes([0; 32]),
+            size: 0,
+            git,
+        });
     }
-    let asc = git_map::git_to_asc(&ws.db, ws.repo.key, git, ObjectKind::Blob).await?.ok_or_else(invalid)?;
+    let asc = git_map::git_to_asc(&ws.db, ws.repo.key, git, ObjectKind::Blob)
+        .await?
+        .ok_or_else(invalid)?;
     let file = FileId::from_bytes(asc);
-    let size = size(ws, Object::Blob { oid: git, file }).await.map_err(|_| invalid())?;
-    Ok(Leaf { kind, file, size, git })
+    let size = size(ws, Object::Blob { oid: git, file })
+        .await
+        .map_err(|_| invalid())?;
+    Ok(Leaf {
+        kind,
+        file,
+        size,
+        git,
+    })
 }
 
 /// Ingests the work tree file at `path` as `add` would; `None` when it does not exist.
-async fn stage_file(ctx: &Ctx, ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Result<Option<Leaf>> {
+async fn stage_file(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    path: &RepoPath,
+    prev: Option<Kind>,
+) -> Result<Option<Leaf>> {
     let gate = SafeRoot::new(ws.projection.toplevel());
-    let Some(abs) = gate.resolve(path) else { return Ok(None) };
+    let Some(abs) = gate.resolve(path) else {
+        return Ok(None);
+    };
     let meta = match std::fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -136,7 +179,10 @@ async fn stage_file(ctx: &Ctx, ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) 
         return Err(cannot_process(&path.to_string()));
     }
     let mut attrs = workspace_attrs(ctx, ws)?;
-    let eol = attrs.lookup(path).map_err(|e| CliError::Fatal(e.to_string()))?.eol;
+    let eol = attrs
+        .lookup(path)
+        .map_err(|e| CliError::Fatal(e.to_string()))?
+        .eol;
     let symlink = meta.file_type().is_symlink();
     let got = if symlink {
         ingest(std::io::Cursor::new(convert::link_target(&abs)?))
@@ -151,13 +197,22 @@ async fn stage_file(ctx: &Ctx, ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) 
         (true, ..) => Kind::Symlink,
         (false, _, Some(Kind::Symlink)) if !core_symlinks => Kind::Symlink,
         (false, Some(x), _) => {
-            if x { Kind::Exec } else { Kind::File }
+            if x {
+                Kind::Exec
+            } else {
+                Kind::File
+            }
         }
         (false, None, Some(Kind::Exec)) => Kind::Exec,
         (false, None, _) => Kind::File,
     };
     store(ws, &got).await?;
-    Ok(Some(Leaf { kind, file: got.file, size: got.size, git: got.git }))
+    Ok(Some(Leaf {
+        kind,
+        file: got.file,
+        size: got.size,
+        git: got.git,
+    }))
 }
 
 /// Tracked paths whose work tree content differs from the staged state.
@@ -182,7 +237,9 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         ignore: &sources,
         eol: &NoEol,
     };
-    let status = compute(&wc, &ws.db, &ws.workspace).await.map_err(|e| CliError::Fatal(e.to_string()))?;
+    let status = compute(&wc, &ws.db, &ws.workspace)
+        .await
+        .map_err(|e| CliError::Fatal(e.to_string()))?;
     Ok(status.unstaged.iter().map(|c| c.path.to_string()).collect())
 }
 
@@ -208,16 +265,34 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             Step::Cacheinfo { mode, oid, path } => {
                 let Ok(rp) = RepoPath::new(path.as_bytes().to_vec()) else {
                     eprintln!("error: Invalid path '{path}'");
-                    return Err(CliError::Raw(format!("fatal: git update-index: --cacheinfo cannot add {path}"), 128));
+                    return Err(CliError::Raw(
+                        format!("fatal: git update-index: --cacheinfo cannot add {path}"),
+                        128,
+                    ));
                 };
                 let leaf = cacheinfo_leaf(ws, mode, oid, path).await?;
                 if !o.add && matches!(index.staged(ws, &rp).await?, Staged::Absent) {
                     eprintln!("error: {path}: cannot add to the index - missing --add option?");
-                    return Err(CliError::Raw(format!("fatal: git update-index: --cacheinfo cannot add {path}"), 128));
+                    return Err(CliError::Raw(
+                        format!("fatal: git update-index: --cacheinfo cannot add {path}"),
+                        128,
+                    ));
                 }
-                edits.push((Edit::Put { path: rp, leaf, ita: false }, false));
+                edits.push((
+                    Edit::Put {
+                        path: rp,
+                        leaf,
+                        ita: false,
+                    },
+                    false,
+                ));
             }
-            Step::File { path, add, remove, force_remove } => {
+            Step::File {
+                path,
+                add,
+                remove,
+                force_remove,
+            } => {
                 let bytes = repo_path(OsStr::new(path), &prefix, ws.projection.toplevel())?;
                 let rp = RepoPath::new(bytes).map_err(|e| CliError::Fatal(e.to_string()))?;
                 let staged = index.staged(ws, &rp).await?;
@@ -235,10 +310,19 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
                 match stage_file(ctx, ws, &rp, prev).await? {
                     Some(leaf) => {
                         if !tracked && !add {
-                            eprintln!("error: {path}: cannot add to the index - missing --add option?");
+                            eprintln!(
+                                "error: {path}: cannot add to the index - missing --add option?"
+                            );
                             return Err(cannot_process(path));
                         }
-                        edits.push((Edit::Put { path: rp, leaf, ita: false }, true));
+                        edits.push((
+                            Edit::Put {
+                                path: rp,
+                                leaf,
+                                ita: false,
+                            },
+                            true,
+                        ));
                     }
                     None if *remove => {
                         if tracked {

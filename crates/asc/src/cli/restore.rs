@@ -25,9 +25,9 @@ use asc_store::cachedir::CacheDir;
 use asc_store::refs::Actor;
 use asc_store::sqlrefs::SqlRefs;
 use asc_store::storeset::StoreSet;
+use asc_wc::SafeRoot;
 use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{self, Mode, Sparse, Wc};
-use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::status::NoEol;
 use futures::TryStreamExt;
@@ -39,7 +39,11 @@ use crate::native::NativeSpec;
 use crate::refs_guard::ReadOnlyRefs;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "restore", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "restore",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Restore from this tree-ish instead of the index (or HEAD with `--staged`).
     #[arg(short = 's', long = "source")]
@@ -73,7 +77,11 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 
 /// The program name git-style messages use.
 pub(crate) fn tool(ctx: &Ctx) -> &'static str {
-    if ctx.prog == Program::Git { "git" } else { "asc" }
+    if ctx.prog == Program::Git {
+        "git"
+    } else {
+        "asc"
+    }
 }
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
@@ -93,7 +101,11 @@ pub(crate) async fn root_of(ws: &WsCtx, commit: Option<ChangesetId>) -> Result<T
 /// resolve (an unborn HEAD included).
 pub(crate) async fn resolve_commit(ctx: &Ctx, spec: &str) -> Result<Option<ChangesetId>> {
     let ws = ctx.ws()?;
-    let head_len = if spec.starts_with("HEAD") { 4 } else { usize::from(spec.starts_with('@')) };
+    let head_len = if spec.starts_with("HEAD") {
+        4
+    } else {
+        usize::from(spec.starts_with('@'))
+    };
     let rewritten = match (head_len, spec.as_bytes().get(head_len)) {
         (0, _) => spec.to_owned(),
         (_, None | Some(b'~' | b'^')) => match ws.head_commit().await? {
@@ -105,7 +117,9 @@ pub(crate) async fn resolve_commit(ctx: &Ctx, spec: &str) -> Result<Option<Chang
     let found = ws.engine.resolve(&[rewritten]).await;
     match found {
         Ok(mut v) => Ok(v.pop().flatten()),
-        Err(asc_engine::graph::Error::Engine(_)) | Err(asc_engine::graph::Error::Missing(_)) => Ok(None),
+        Err(asc_engine::graph::Error::Engine(_)) | Err(asc_engine::graph::Error::Missing(_)) => {
+            Ok(None)
+        }
         Err(e) => Err(fatal(e)),
     }
 }
@@ -121,7 +135,13 @@ fn leaf_of(e: &Entry) -> Leaf {
 
 fn leaf_of_change(change: &Change) -> Option<Leaf> {
     match change {
-        Change::Write { kind, file, size, git, .. } => Some(Leaf {
+        Change::Write {
+            kind,
+            file,
+            size,
+            git,
+            ..
+        } => Some(Leaf {
             kind: *kind,
             file: *file,
             size: *size,
@@ -139,7 +159,10 @@ fn leaf_of_change(change: &Change) -> Option<Leaf> {
 
 /// The tree the index holds: HEAD's tree with the stage-0 rows applied. Also returns the paths
 /// with conflict stages (they are not part of the tree).
-pub(crate) async fn index_tree(ws: &WsCtx, head_root: TreeId) -> Result<(TreeId, BTreeSet<Vec<u8>>)> {
+pub(crate) async fn index_tree(
+    ws: &WsCtx,
+    head_root: TreeId,
+) -> Result<(TreeId, BTreeSet<Vec<u8>>)> {
     let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
     let mut changes = Vec::new();
     let mut unmerged = BTreeSet::new();
@@ -154,7 +177,9 @@ pub(crate) async fn index_tree(ws: &WsCtx, head_root: TreeId) -> Result<(TreeId,
                 let _ = file;
                 Change::Gitlink { commit: git }
             }
-            (Some(file), Some(git)) => Change::write(r.kind, file, r.size, git, None).map_err(fatal)?,
+            (Some(file), Some(git)) => {
+                Change::write(r.kind, file, r.size, git, None).map_err(fatal)?
+            }
             _ => Change::Delete,
         };
         changes.push((path, change));
@@ -181,14 +206,23 @@ impl Spec {
         let mut everything = false;
         for item in items {
             let text = item.to_string_lossy().into_owned();
-            let (magic, rest, top) = if literal { (String::new(), text.as_str(), false) } else { split_magic(&text) };
+            let (magic, rest, top) = if literal {
+                (String::new(), text.as_str(), false)
+            } else {
+                split_magic(&text)
+            };
             let joined = join_prefix(if top { "" } else { &prefix }, rest).ok_or_else(|| {
                 CliError::Fatal(format!(
                     "{text}: '{text}' is outside repository at '{}'",
-                    ws.projection.toplevel().display().to_string().replace('\\', "/")
+                    ws.projection
+                        .toplevel()
+                        .display()
+                        .to_string()
+                        .replace('\\', "/")
                 ))
             })?;
-            let exclude = magic.contains("exclude") || magic.starts_with(":!") || magic.starts_with(":^");
+            let exclude =
+                magic.contains("exclude") || magic.starts_with(":!") || magic.starts_with(":^");
             if joined.is_empty() && !exclude {
                 everything = true;
                 continue;
@@ -197,15 +231,27 @@ impl Spec {
             resolved.push(format!("{magic}{joined}").into_bytes());
         }
         if everything {
-            resolved.retain(|r| r.starts_with(b":!") || r.starts_with(b":^") || r.windows(7).any(|w| w == b"exclude"));
+            resolved.retain(|r| {
+                r.starts_with(b":!")
+                    || r.starts_with(b":^")
+                    || r.windows(7).any(|w| w == b"exclude")
+            });
             originals.clear();
         }
         let spec = Pathspec::parse(&resolved).map_err(fatal)?;
-        Ok(Self { originals, resolved, spec })
+        Ok(Self {
+            originals,
+            resolved,
+            spec,
+        })
     }
 
     /// The first original item that selects nothing in any of `roots`.
-    pub(crate) async fn first_unmatched(&self, ws: &WsCtx, roots: &[TreeId]) -> Result<Option<String>> {
+    pub(crate) async fn first_unmatched(
+        &self,
+        ws: &WsCtx,
+        roots: &[TreeId],
+    ) -> Result<Option<String>> {
         for (orig, res) in self.originals.iter().zip(&self.resolved) {
             if res.starts_with(b":!") || res.starts_with(b":^") {
                 continue;
@@ -213,7 +259,13 @@ impl Spec {
             let one = Pathspec::parse([res]).map_err(fatal)?;
             let mut hit = false;
             for root in roots {
-                if ws.engine.walk(*root, Some(&one)).try_next().await?.is_some() {
+                if ws
+                    .engine
+                    .walk(*root, Some(&one))
+                    .try_next()
+                    .await?
+                    .is_some()
+                {
                     hit = true;
                     break;
                 }
@@ -303,7 +355,11 @@ pub(crate) async fn stage_from_tree(
     }
     let (id, mut rows, mut changed) = (ws.workspace.ws.id, Vec::new(), Vec::new());
     for (path, want) in desired {
-        let head = ws.engine.lookup(head_root, &path).await?.map(|e| leaf_of(&e));
+        let head = ws
+            .engine
+            .lookup(head_root, &path)
+            .await?
+            .map(|e| leaf_of(&e));
         stage::remove(&ws.db, id, StageSet::Default, path.as_bytes()).await?;
         if head != want {
             rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), want.as_ref()));
@@ -313,7 +369,10 @@ pub(crate) async fn stage_from_tree(
     stage::upsert(&ws.db, id, StageSet::Default, &rows).await?;
     // The staged content comes from a tree, not from the files, so no stat may be trusted: the
     // sink patches every changed entry (previously staged paths and the new rows) stat-dirty.
-    ext::index_sink().on_stage_changed(id, &[]).await.map_err(fatal)?;
+    ext::index_sink()
+        .on_stage_changed(id, &[])
+        .await
+        .map_err(fatal)?;
     Ok(changed)
 }
 
@@ -332,7 +391,10 @@ impl WcParts {
     /// The parts for the workspace, with `index` as the stat-cache file.
     pub(crate) fn new(ctx: &Ctx, ws: &WsCtx, index: PathBuf) -> Result<Self> {
         let root = ws.projection.toplevel().to_owned();
-        let cache = ctx.config.path("asc.cache.dir").unwrap_or_else(|| ws.home.cache());
+        let cache = ctx
+            .config
+            .path("asc.cache.dir")
+            .unwrap_or_else(|| ws.home.cache());
         let store = StoreSet {
             store: CacheDir::open(ws.home.store(), ws.home.tmp()).map_err(fatal)?,
             cache: CacheDir::open(cache, ws.home.tmp()).map_err(fatal)?,
@@ -403,7 +465,10 @@ pub(crate) async fn sync_worktree(
     let (index, _scratch) = if real_index {
         (real, None)
     } else {
-        let scratch = ws.home.tmp().join(format!("restore-index-{}", std::process::id()));
+        let scratch = ws
+            .home
+            .tmp()
+            .join(format!("restore-index-{}", std::process::id()));
         if real.exists() {
             fs::copy(&real, &scratch)?;
         }
@@ -411,8 +476,14 @@ pub(crate) async fn sync_worktree(
     };
     let parts = WcParts::new(ctx, ws, index)?;
     let wc = parts.wc(&ws.engine);
-    let sentinel = Change::write(Kind::File, FileId::from_bytes([0xA5; 32]), 0, GitOid::from_bytes([0xA5; 20]), None)
-        .map_err(fatal)?;
+    let sentinel = Change::write(
+        Kind::File,
+        FileId::from_bytes([0xA5; 32]),
+        0,
+        GitOid::from_bytes([0xA5; 20]),
+        None,
+    )
+    .map_err(fatal)?;
     let (mut gone, mut put, mut real_changes) = (Vec::new(), Vec::new(), Vec::new());
     for path in paths {
         match ws.engine.lookup(target, path).await? {
@@ -420,7 +491,8 @@ pub(crate) async fn sync_worktree(
             Some(e) => {
                 let change = match e.kind {
                     Kind::Gitlink => Change::Gitlink { commit: e.git },
-                    kind => Change::write(kind, FileId::from_bytes(e.id), e.size, e.git, None).map_err(fatal)?,
+                    kind => Change::write(kind, FileId::from_bytes(e.id), e.size, e.git, None)
+                        .map_err(fatal)?,
                 };
                 put.push((path.clone(), sentinel.clone()));
                 real_changes.push((path.clone(), change));
@@ -431,9 +503,14 @@ pub(crate) async fn sync_worktree(
     let empty = CliEngine::empty_tree_id();
     for (from, to) in [
         (ws.engine.apply(empty, &gone).await?, empty),
-        (ws.engine.apply(empty, &put).await?, ws.engine.apply(empty, &real_changes).await?),
+        (
+            ws.engine.apply(empty, &put).await?,
+            ws.engine.apply(empty, &real_changes).await?,
+        ),
     ] {
-        plain::checkout(&wc, from, to, Mode::Force).await.map_err(fatal)?;
+        plain::checkout(&wc, from, to, Mode::Force)
+            .await
+            .map_err(fatal)?;
     }
     Ok(())
 }
@@ -441,14 +518,20 @@ pub(crate) async fn sync_worktree(
 /// Whether the file at `path` differs from `entry` (size first, then the blob hash).
 fn differs(gate: &SafeRoot, path: &RepoPath, entry: &Entry) -> bool {
     // Beyond a link the file is outside the work tree: it reads as missing, so it differs.
-    let Some(abs) = gate.resolve(path) else { return true };
-    let Ok(meta) = fs::symlink_metadata(&abs) else { return true };
+    let Some(abs) = gate.resolve(path) else {
+        return true;
+    };
+    let Ok(meta) = fs::symlink_metadata(&abs) else {
+        return true;
+    };
     match entry.kind {
         Kind::Gitlink | Kind::Dir => false,
         Kind::Symlink => true,
         _ if !meta.is_file() || meta.len() != entry.size => true,
         _ => {
-            let Ok(mut file) = fs::File::open(&abs) else { return true };
+            let Ok(mut file) = fs::File::open(&abs) else {
+                return true;
+            };
             let mut hasher = BlobOidHasher::new(entry.size);
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -495,13 +578,18 @@ pub(crate) fn actor() -> Actor {
     let id = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "local".into());
-    Actor { id, via: "cli".into() }
+    Actor {
+        id,
+        via: "cli".into(),
+    }
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if a.paths.is_empty() {
-        return Err(CliError::Fatal("you must specify path(s) to restore".into()));
+        return Err(CliError::Fatal(
+            "you must specify path(s) to restore".into(),
+        ));
     }
     let worktree = a.worktree || !a.staged;
     let head = ws.head_commit().await?;
@@ -520,7 +608,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let wt_source = source.unwrap_or(if a.staged { head_root } else { index });
 
     let spec = Spec::new(ctx, &a.paths)?;
-    if let Some(bad) = spec.first_unmatched(ws, &[index, stage_source, wt_source]).await? {
+    if let Some(bad) = spec
+        .first_unmatched(ws, &[index, stage_source, wt_source])
+        .await?
+    {
         return Err(CliError::Raw(
             format!("error: pathspec '{bad}' did not match any file(s) known to git"),
             1,

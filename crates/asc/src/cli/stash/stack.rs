@@ -44,7 +44,11 @@ fn drop_index(reason: &str) -> Option<usize> {
 pub async fn load(ws: &WsCtx) -> Result<Vec<Entry>> {
     let name = ref_name()?;
     let current = ws.db.refs().get(ws.repo.key, &name).await?;
-    let Some(RefEntry { target: RefTarget::Changeset(top), .. }) = current else {
+    let Some(RefEntry {
+        target: RefTarget::Changeset(top),
+        ..
+    }) = current
+    else {
         return Ok(Vec::new());
     };
     let mut events = ws.db.refs().log(ws.repo.key, &name, MAX_EVENTS).await?;
@@ -63,32 +67,57 @@ pub async fn load(ws: &WsCtx) -> Result<Vec<Entry>> {
                     stack.remove(n);
                 }
             }
-            Some(RefTarget::Changeset(c)) => stack.insert(0, Entry { commit: *c, message: e.reason.clone() }),
+            Some(RefTarget::Changeset(c)) => stack.insert(
+                0,
+                Entry {
+                    commit: *c,
+                    message: e.reason.clone(),
+                },
+            ),
             Some(RefTarget::Tag(_)) => {}
         }
     }
     // A ref moved by other means (plumbing) still has its value at the top.
     if stack.first().map(|e| e.commit) != Some(top) {
-        stack.insert(0, Entry { commit: top, message: String::new() });
+        stack.insert(
+            0,
+            Entry {
+                commit: top,
+                message: String::new(),
+            },
+        );
     }
     Ok(stack)
 }
 
 /// The ref log `log -g` and `reflog` show for `name`: the replayed stack for `refs/stash`, as
 /// entries newest first. `None` for any other ref.
-pub async fn reflog_view(ws: &WsCtx, name: &RefName, limit: u32) -> Result<Option<Vec<RefLogEntry>>> {
+pub async fn reflog_view(
+    ws: &WsCtx,
+    name: &RefName,
+    limit: u32,
+) -> Result<Option<Vec<RefLogEntry>>> {
     if name.as_bytes() != REF.as_bytes() {
         return Ok(None);
     }
     let mut out = Vec::new();
     for (i, e) in load(ws).await?.into_iter().take(limit as usize).enumerate() {
-        let who = ws.engine.get_changeset(e.commit).await?.committer.name().to_vec();
+        let who = ws
+            .engine
+            .get_changeset(e.commit)
+            .await?
+            .committer
+            .name()
+            .to_vec();
         out.push(RefLogEntry {
             seq: i as i64,
             name: name.clone(),
             old: None,
             new: Some(RefTarget::Changeset(e.commit)),
-            actor: Actor { id: String::from_utf8_lossy(&who).into_owned(), via: "stash".into() },
+            actor: Actor {
+                id: String::from_utf8_lossy(&who).into_owned(),
+                via: "stash".into(),
+            },
             reason: e.message,
             op_id: Uuid::nil(),
             at: 0,
@@ -122,20 +151,43 @@ fn selector(text: &str) -> Option<usize> {
 /// The entry `arg` names (the top one when absent); git's refusals when there is none.
 pub async fn pick(ws: &WsCtx, stack: &[Entry], arg: Option<&str>) -> Result<Picked> {
     let Some(arg) = arg else {
-        let top = stack.first().ok_or_else(|| CliError::Raw("No stash entries found.".into(), 1))?;
-        return Ok(Picked { index: Some(0), commit: top.commit, text: "refs/stash@{0}".into() });
+        let top = stack
+            .first()
+            .ok_or_else(|| CliError::Raw("No stash entries found.".into(), 1))?;
+        return Ok(Picked {
+            index: Some(0),
+            commit: top.commit,
+            text: "refs/stash@{0}".into(),
+        });
     };
     let Some(n) = selector(arg) else {
-        return Err(CliError::Raw(format!("error: {arg} is not a valid reference"), 1));
+        return Err(CliError::Raw(
+            format!("error: {arg} is not a valid reference"),
+            1,
+        ));
     };
     let _ = ws;
     match stack.get(n) {
         Some(e) => {
-            let text = if arg.chars().all(|c| c.is_ascii_digit()) { format!("stash@{{{n}}}") } else { arg.to_owned() };
-            Ok(Picked { index: Some(n), commit: e.commit, text })
+            let text = if arg.chars().all(|c| c.is_ascii_digit()) {
+                format!("stash@{{{n}}}")
+            } else {
+                arg.to_owned()
+            };
+            Ok(Picked {
+                index: Some(n),
+                commit: e.commit,
+                text,
+            })
         }
-        None if stack.is_empty() => Err(CliError::Raw(format!("error: {arg} is not a valid reference"), 1)),
-        None => Err(CliError::Fatal(format!("log for 'stash' only has {} entries", stack.len()))),
+        None if stack.is_empty() => Err(CliError::Raw(
+            format!("error: {arg} is not a valid reference"),
+            1,
+        )),
+        None => Err(CliError::Fatal(format!(
+            "log for 'stash' only has {} entries",
+            stack.len()
+        ))),
     }
 }
 
@@ -156,11 +208,15 @@ pub async fn move_ref(
             new: new.map(RefTarget::Changeset),
             expires_at: None,
         }],
-        actor: Actor { id: actor().id, via: via.to_owned() },
+        actor: Actor {
+            id: actor().id,
+            via: via.to_owned(),
+        },
         reason: String::new(),
         op_id: Uuid::now_v7(),
     };
-    ctx.update_local_refs(txn, reason, StagingAfterMove::Keep).await
+    ctx.update_local_refs(txn, reason, StagingAfterMove::Keep)
+        .await
 }
 
 /// Pushes `commit` onto the stack with `message` as its reflog text.
@@ -170,7 +226,11 @@ pub async fn push(ctx: &Ctx, ws: &WsCtx, commit: ChangesetId, message: &str) -> 
 
 /// Removes the entry at `index`.
 pub async fn drop_at(ctx: &Ctx, ws: &WsCtx, stack: &[Entry], index: usize) -> Result<()> {
-    let new_top = if index == 0 { stack.get(1).map(|e| e.commit) } else { stack.first().map(|e| e.commit) };
+    let new_top = if index == 0 {
+        stack.get(1).map(|e| e.commit)
+    } else {
+        stack.first().map(|e| e.commit)
+    };
     move_ref(ctx, ws, new_top, VIA_DROP, &format!("drop {index}")).await
 }
 

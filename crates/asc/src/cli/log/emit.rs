@@ -52,7 +52,10 @@ fn pick_pretty(ctx: &Ctx, word: &str, depth: u8) -> Result<(Kind, bool)> {
         return Ok((Kind::Template(Template::parse(f.as_bytes())), true));
     }
     if word == "reference" {
-        return Ok((Kind::Template(Template::parse(b"%C(auto)%h (%s, %ad)")), true));
+        return Ok((
+            Kind::Template(Template::parse(b"%C(auto)%h (%s, %ad)")),
+            true,
+        ));
     }
     if let Some(b) = Builtin::named(word) {
         return Ok((Kind::Builtin(b), b == Builtin::Oneline));
@@ -65,11 +68,18 @@ fn pick_pretty(ctx: &Ctx, word: &str, depth: u8) -> Result<(Kind, bool)> {
     if word.contains('%') {
         return Ok((Kind::Template(Template::parse(word.as_bytes())), true));
     }
-    Err(CliError::Raw(format!("fatal: invalid --pretty format: {word}"), 128))
+    Err(CliError::Raw(
+        format!("fatal: invalid --pretty format: {word}"),
+        128,
+    ))
 }
 
 fn columns() -> usize {
-    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).filter(|&c| c > 0).unwrap_or(80)
+    std::env::var("COLUMNS")
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .filter(|&c| c > 0)
+        .unwrap_or(80)
 }
 
 /// The `encoding` header of the raw git commit kept with the changeset, if any.
@@ -146,7 +156,12 @@ impl<'a> Printer<'a> {
             .unwrap_or(false);
         let abbrev = o
             .abbrev
-            .or_else(|| ctx.config.get("core.abbrev").and_then(|v| v.parse::<usize>().ok()).map(|n| n.clamp(4, 40)))
+            .or_else(|| {
+                ctx.config
+                    .get("core.abbrev")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .map(|n| n.clamp(4, 40))
+            })
             .unwrap_or(7);
         let date_word = o.date.clone().or_else(|| ctx.config.get("log.date"));
         let date = match (&date_word, o.relative_date) {
@@ -186,9 +201,15 @@ impl<'a> Printer<'a> {
             g
         });
         let diff = DiffSetup::new(ctx, o, sel, cmd == Cmd::Show, abbrev)?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
         let wants_source = o.source || matches!(&kind, Kind::Template(t) if t.uses_source());
-        let sources = if wants_source { sel.tips.iter().map(|(id, n)| (*id, n.clone())).collect() } else { HashMap::new() };
+        let sources = if wants_source {
+            sel.tips.iter().map(|(id, n)| (*id, n.clone())).collect()
+        } else {
+            HashMap::new()
+        };
         Ok(Self {
             ws,
             hist,
@@ -234,7 +255,10 @@ impl<'a> Printer<'a> {
         };
         let mut p = 0;
         while p < text.len() {
-            let end = text[p..].iter().position(|&b| b == b'\n').map_or(text.len(), |i| p + i + 1);
+            let end = text[p..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(text.len(), |i| p + i + 1);
             out.write_all(&g.padding_line()).map_err(io)?;
             out.write_all(&text[p..end]).map_err(io)?;
             p = end;
@@ -244,7 +268,9 @@ impl<'a> Printer<'a> {
 
     /// `graph_show_commit`: the graph lines up to and including this commit's own.
     fn graph_commit_line<W: Write>(&mut self, out: &mut W) -> Result<()> {
-        let Some(g) = &mut self.graph else { return Ok(()) };
+        let Some(g) = &mut self.graph else {
+            return Ok(());
+        };
         if g.is_commit_finished() {
             out.write_all(&g.padding_line()).map_err(io)?;
             return Ok(());
@@ -274,7 +300,10 @@ impl<'a> Printer<'a> {
         };
         let mut p = 0;
         while p < msg.len() {
-            let end = msg[p..].iter().position(|&b| b == b'\n').map_or(msg.len(), |i| p + i + 1);
+            let end = msg[p..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(msg.len(), |i| p + i + 1);
             out.write_all(&msg[p..end]).map_err(io)?;
             if end < msg.len() {
                 out.write_all(&g.next_line().0).map_err(io)?;
@@ -304,7 +333,12 @@ impl<'a> Printer<'a> {
         if self.decorate == Decorate::No {
             return Vec::new();
         }
-        self.decor.get(id).map_or_else(Vec::new, |d| d.text(&Style::standard(self.decorate == Decorate::Full, self.color)))
+        self.decor.get(id).map_or_else(Vec::new, |d| {
+            d.text(&Style::standard(
+                self.decorate == Decorate::Full,
+                self.color,
+            ))
+        })
     }
 
     /// The git commit data the formats read.
@@ -318,7 +352,12 @@ impl<'a> Printer<'a> {
     }
 
     /// Prints one commit.
-    pub async fn print<W: Write>(&mut self, out: &mut W, e: &Entry, reflog: Option<&Reflog>) -> Result<()> {
+    pub async fn print<W: Write>(
+        &mut self,
+        out: &mut W,
+        e: &Entry,
+        reflog: Option<&Reflog>,
+    ) -> Result<()> {
         let (tree, parents) = self.commit_data(e).await?;
         let cs = &e.cs;
         if let Some(g) = &mut self.graph {
@@ -343,8 +382,16 @@ impl<'a> Printer<'a> {
             }
         }
 
-        let hash = if self.abbrev_commit { self.short(&e.git) } else { e.git.to_string() };
-        let mark = if self.graph.is_none() && self.left_right { if e.left { "< " } else { "> " } } else { "" };
+        let hash = if self.abbrev_commit {
+            self.short(&e.git)
+        } else {
+            e.git.to_string()
+        };
+        let mark = if self.graph.is_none() && self.left_right {
+            if e.left { "< " } else { "> " }
+        } else {
+            ""
+        };
         let encoding = encoding_of(cs);
         let commit = Commit {
             id: e.git,
@@ -361,7 +408,10 @@ impl<'a> Printer<'a> {
                 let mut describe = HashMap::new();
                 if let Some(d) = &self.describer {
                     for opt in t.describe_options() {
-                        describe.insert(opt.clone(), d.describe(self.hist, e.id, &e.git.to_string(), &opt).await);
+                        describe.insert(
+                            opt.clone(),
+                            d.describe(self.hist, e.id, &e.git.to_string(), &opt).await,
+                        );
                     }
                 }
                 let env = Env {
@@ -401,9 +451,15 @@ impl<'a> Printer<'a> {
                 let body = pretty::print(b, &view);
                 let mut head = Vec::new();
                 if b.is_mail() {
-                    head.extend_from_slice(format!("From {} Mon Sep 17 00:00:00 2001\n", e.git).as_bytes());
+                    head.extend_from_slice(
+                        format!("From {} Mon Sep 17 00:00:00 2001\n", e.git).as_bytes(),
+                    );
                 } else {
-                    let (open, close): (&[u8], &[u8]) = if self.color { (b"\x1b[33m", b"\x1b[m") } else { (b"", b"") };
+                    let (open, close): (&[u8], &[u8]) = if self.color {
+                        (b"\x1b[33m", b"\x1b[m")
+                    } else {
+                        (b"", b"")
+                    };
                     head.extend_from_slice(open);
                     if b != Builtin::Oneline {
                         head.extend_from_slice(b"commit ");
@@ -421,9 +477,17 @@ impl<'a> Printer<'a> {
                     if let Some(r) = reflog
                         && b != Builtin::Oneline
                     {
-                        head.extend_from_slice(format!("Reflog: {} ({})\nReflog message: {}\n",
-                            r.selector, String::from_utf8_lossy(&[r.name.as_slice(), b" <", r.email.as_slice(), b">"].concat()),
-                            String::from_utf8_lossy(&r.subject)).as_bytes());
+                        head.extend_from_slice(
+                            format!(
+                                "Reflog: {} ({})\nReflog message: {}\n",
+                                r.selector,
+                                String::from_utf8_lossy(
+                                    &[r.name.as_slice(), b" <", r.email.as_slice(), b">"].concat()
+                                ),
+                                String::from_utf8_lossy(&r.subject)
+                            )
+                            .as_bytes(),
+                        );
                     }
                 }
                 out.write_all(&head).map_err(io)?;
@@ -466,7 +530,9 @@ impl<'a> Printer<'a> {
             }
             _ => return Ok(()),
         };
-        let Some(text) = self.diff.render(self.ws, old, new).await? else { return Ok(()) };
+        let Some(text) = self.diff.render(self.ws, old, new).await? else {
+            return Ok(());
+        };
         let oneline = matches!(&self.kind, Kind::Builtin(Builtin::Oneline));
         if !oneline {
             if self.diff.stat_and_patch() {

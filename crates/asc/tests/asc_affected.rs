@@ -61,7 +61,12 @@ impl Refs for NoRefs {
     async fn update(&self, _: RepoKey, _: &RefTxn) -> asc_store::refs::Result<()> {
         Err(RefError::Corrupt("unused".into()))
     }
-    async fn log(&self, _: RepoKey, _: &RefName, _: u32) -> asc_store::refs::Result<Vec<RefLogEntry>> {
+    async fn log(
+        &self,
+        _: RepoKey,
+        _: &RefName,
+        _: u32,
+    ) -> asc_store::refs::Result<Vec<RefLogEntry>> {
         Ok(Vec::new())
     }
 }
@@ -95,7 +100,12 @@ impl GitMapSink for MemMap {
 #[async_trait]
 impl ImportMap for MemMap {
     async fn get(&self, git: GitOid, kind: ObjectKind) -> derive::Result<Option<[u8; 32]>> {
-        Ok(self.rows.lock().expect("map lock").get(&(git, kind_byte(kind))).copied())
+        Ok(self
+            .rows
+            .lock()
+            .expect("map lock")
+            .get(&(git, kind_byte(kind)))
+            .copied())
     }
 }
 
@@ -118,8 +128,16 @@ struct LogStore(Mutex<LogInner>);
 
 impl LogStore {
     fn create(path: &Path) -> std::io::Result<Self> {
-        let file = File::options().read(true).write(true).create_new(true).open(path)?;
-        Ok(Self(Mutex::new(LogInner { file, end: 0, index: HashMap::new() })))
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        Ok(Self(Mutex::new(LogInner {
+            file,
+            end: 0,
+            index: HashMap::new(),
+        })))
     }
 
     fn read(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
@@ -128,7 +146,10 @@ impl LogStore {
             return Ok(None);
         };
         let mut buf = vec![0; slot.len as usize];
-        let read = g.file.seek(SeekFrom::Start(slot.offset)).and_then(|_| g.file.read_exact(&mut buf));
+        let read = g
+            .file
+            .seek(SeekFrom::Start(slot.offset))
+            .and_then(|_| g.file.read_exact(&mut buf));
         read.map_err(|e| objects::Error::Url(e.to_string()))?;
         Ok(Some(Bytes::from(buf)))
     }
@@ -137,12 +158,18 @@ impl LogStore {
 #[async_trait]
 impl Objects for LogStore {
     async fn get(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
-        self.read(key)?.map(|stored| decode_verified(key, &stored)).transpose()
+        self.read(key)?
+            .map(|stored| decode_verified(key, &stored))
+            .transpose()
     }
     async fn get_stored(&self, key: &ObjKey) -> objects::Result<Option<Bytes>> {
         self.read(key)
     }
-    async fn get_range(&self, key: &ObjKey, r: std::ops::Range<u64>) -> objects::Result<Option<Bytes>> {
+    async fn get_range(
+        &self,
+        key: &ObjKey,
+        r: std::ops::Range<u64>,
+    ) -> objects::Result<Option<Bytes>> {
         Ok(self.get(key).await?.map(|data| slice_range(&data, r)))
     }
     async fn put(&self, key: &ObjKey, stored: Bytes) -> objects::Result<()> {
@@ -152,12 +179,19 @@ impl Objects for LogStore {
             return Ok(());
         }
         let offset = g.end;
-        let wrote = g.file.seek(SeekFrom::Start(offset)).and_then(|_| g.file.write_all(&stored));
+        let wrote = g
+            .file
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| g.file.write_all(&stored));
         wrote.map_err(|e| objects::Error::Url(e.to_string()))?;
         g.end += stored.len() as u64;
         g.index.insert(
             *key,
-            Slot { offset, len: stored.len() as u32, written: std::time::SystemTime::now() },
+            Slot {
+                offset,
+                len: stored.len() as u32,
+                written: std::time::SystemTime::now(),
+            },
         );
         Ok(())
     }
@@ -169,7 +203,10 @@ impl Objects for LogStore {
         self.0.lock().expect("store lock").index.remove(key);
         Ok(())
     }
-    fn list(&self, prefix: KeyPrefix) -> BoxStream<'_, objects::Result<(ObjKey, std::time::SystemTime)>> {
+    fn list(
+        &self,
+        prefix: KeyPrefix,
+    ) -> BoxStream<'_, objects::Result<(ObjKey, std::time::SystemTime)>> {
         let items: Vec<_> = self
             .0
             .lock()
@@ -187,14 +224,19 @@ impl Objects for LogStore {
 
 /// Runs `cmd` and returns its output, failing on a non-zero exit or output past the bound.
 fn run(what: &str, cmd: &mut Command) -> Output {
-    let out = cmd.output().unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"));
+    let out = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"));
     assert!(
         out.status.success(),
         "{what} failed ({}): {}",
         out.status,
         String::from_utf8_lossy(&out.stderr).trim()
     );
-    assert!(out.stdout.len() <= MAX_OUTPUT, "{what}: output past {MAX_OUTPUT} bytes");
+    assert!(
+        out.stdout.len() <= MAX_OUTPUT,
+        "{what}: output past {MAX_OUTPUT} bytes"
+    );
     out
 }
 
@@ -215,7 +257,9 @@ fn git_dir_of(path: &Path) -> PathBuf {
 }
 
 fn parse_oid(hex: &str) -> GitOid {
-    hex.trim().parse().unwrap_or_else(|e| panic!("bad oid {hex:?}: {e}"))
+    hex.trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("bad oid {hex:?}: {e}"))
 }
 
 /// The package paths `turbo ls --affected` reports for `base..head`, in the checked-out clone.
@@ -249,9 +293,13 @@ fn turbo_affected(clone: &Path, base: GitOid, head: GitOid) -> BTreeSet<String> 
 fn root_files_changed(real: &RealGit, clone: &Path, base: GitOid, head: GitOid) -> bool {
     let out = run(
         "git diff --name-only",
-        git(real, clone).args(["diff", "--name-only", "-z"]).arg(format!("{base}...{head}")),
+        git(real, clone)
+            .args(["diff", "--name-only", "-z"])
+            .arg(format!("{base}...{head}")),
     );
-    out.stdout.split(|&b| b == 0).any(|p| p == b"package.json" || p == b"bun.lock")
+    out.stdout
+        .split(|&b| b == 0)
+        .any(|p| p == b"package.json" || p == b"bun.lock")
 }
 
 /// Whether every project asc adds over turbo is explained by a documented difference: a gitlink
@@ -268,11 +316,18 @@ fn extras_explained(
 ) -> bool {
     use asc_graph::affected::Reason;
     let peer_only = |root: &str, dep: &str| -> bool {
-        let out = git(real, clone).args(["show", &format!("{head}:{root}/package.json")]).output();
+        let out = git(real, clone)
+            .args(["show", &format!("{head}:{root}/package.json")])
+            .output();
         let Ok(out) = out else { return false };
-        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return false };
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+            return false;
+        };
         let has = |t: &str| doc.get(t).and_then(|v| v.get(dep)).is_some();
-        has("peerDependencies") && !has("dependencies") && !has("devDependencies") && !has("optionalDependencies")
+        has("peerDependencies")
+            && !has("dependencies")
+            && !has("devDependencies")
+            && !has("optionalDependencies")
     };
     let mut ok: BTreeSet<String> = BTreeSet::new();
     loop {
@@ -284,7 +339,9 @@ fn extras_explained(
             let all = reasons.iter().all(|r| match r {
                 Reason::Gitlink(_) => true,
                 Reason::Lockfile => root_changed,
-                Reason::Dep(d) => ok.contains(d) || peer_only(root, d.strip_prefix("node:").unwrap_or(d)),
+                Reason::Dep(d) => {
+                    ok.contains(d) || peer_only(root, d.strip_prefix("node:").unwrap_or(d))
+                }
                 _ => false,
             });
             if all {
@@ -316,9 +373,15 @@ async fn affected_matches_turbo_on_asc() {
     // The last COMMITS first-parent steps of master: commit i has first parent i + 1.
     let listed = run(
         "git rev-list",
-        git(&real, asc).args(["rev-list", "--first-parent", "-n"]).arg((COMMITS + 1).to_string()).arg("refs/heads/master"),
+        git(&real, asc)
+            .args(["rev-list", "--first-parent", "-n"])
+            .arg((COMMITS + 1).to_string())
+            .arg("refs/heads/master"),
     );
-    let commits: Vec<GitOid> = String::from_utf8_lossy(&listed.stdout).lines().map(parse_oid).collect();
+    let commits: Vec<GitOid> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(parse_oid)
+        .collect();
     assert!(commits.len() > 1, "ASC master has no history");
     let steps = commits.len() - 1;
 
@@ -327,7 +390,10 @@ async fn affected_matches_turbo_on_asc() {
     let clone = scratch.path().join("clone");
     run(
         "git clone --shared",
-        git(&real, scratch.path()).args(["clone", "-q", "--shared", "--no-checkout"]).arg(asc).arg(&clone),
+        git(&real, scratch.path())
+            .args(["clone", "-q", "--shared", "--no-checkout"])
+            .arg(asc)
+            .arg(&clone),
     );
 
     // Import master into a temporary store.
@@ -335,16 +401,34 @@ async fn affected_matches_turbo_on_asc() {
     let engine = Engine::new(objects.clone(), Arc::new(NoRefs), RepoKey(1));
     let map = MemMap::default();
     let odb = Odb::open(&src).expect("open ASC odb");
-    let tips = [Tip { name: b"refs/heads/master".to_vec(), oid: commits[0] }];
+    let tips = [Tip {
+        name: b"refs/heads/master".to_vec(),
+        oid: commits[0],
+    }];
     let started = Instant::now();
-    let report = Importer::new(&engine, objects.clone(), &odb, &map, ImportPolicy::default())
-        .import_commits(&tips)
-        .await
-        .expect("import ASC master");
-    eprintln!("asc_affected: imported {} commits in {:.1}s", report.commits, started.elapsed().as_secs_f64());
+    let report = Importer::new(
+        &engine,
+        objects.clone(),
+        &odb,
+        &map,
+        ImportPolicy::default(),
+    )
+    .import_commits(&tips)
+    .await
+    .expect("import ASC master");
+    eprintln!(
+        "asc_affected: imported {} commits in {:.1}s",
+        report.commits,
+        started.elapsed().as_secs_f64()
+    );
 
     let cs = |oid: GitOid| -> ChangesetId {
-        let id = map.rows.lock().expect("map lock").get(&(oid, kind_byte(ObjectKind::Commit))).copied();
+        let id = map
+            .rows
+            .lock()
+            .expect("map lock")
+            .get(&(oid, kind_byte(ObjectKind::Commit)))
+            .copied();
         ChangesetId::from_bytes(id.unwrap_or_else(|| panic!("commit {oid} was not imported")))
     };
 
@@ -355,7 +439,12 @@ async fn affected_matches_turbo_on_asc() {
     let mut cold = None;
     for i in 0..steps {
         let (head, base) = (commits[i], commits[i + 1]);
-        run("git checkout", git(&real, &clone).args(["checkout", "-q", "--force", "--detach"]).arg(head.to_string()));
+        run(
+            "git checkout",
+            git(&real, &clone)
+                .args(["checkout", "-q", "--force", "--detach"])
+                .arg(head.to_string()),
+        );
         let want = turbo_affected(&clone, base, head);
 
         let query = AffectedQuery {
@@ -368,7 +457,10 @@ async fn affected_matches_turbo_on_asc() {
             with_hashes: false,
         };
         let t = Instant::now();
-        let result = engine.affected(&query).await.unwrap_or_else(|e| panic!("affected {head}: {e}"));
+        let result = engine
+            .affected(&query)
+            .await
+            .unwrap_or_else(|e| panic!("affected {head}: {e}"));
         let took = t.elapsed();
         if cold.is_none() {
             cold = Some((took, query.clone()));
@@ -379,7 +471,11 @@ async fn affected_matches_turbo_on_asc() {
             .projects
             .iter()
             .filter_map(|a| graph.graph.projects.iter().find(|p| p.key == a.project.key))
-            .filter_map(|p| p.root.as_ref().map(|r| String::from_utf8_lossy(r.as_bytes()).into_owned()))
+            .filter_map(|p| {
+                p.root
+                    .as_ref()
+                    .map(|r| String::from_utf8_lossy(r.as_bytes()).into_owned())
+            })
             .collect();
 
         let missing: Vec<&String> = want.difference(&got).collect();
@@ -389,14 +485,23 @@ async fn affected_matches_turbo_on_asc() {
             .projects
             .iter()
             .filter_map(|a| {
-                let p = graph.graph.projects.iter().find(|p| p.key == a.project.key)?;
+                let p = graph
+                    .graph
+                    .projects
+                    .iter()
+                    .find(|p| p.key == a.project.key)?;
                 let root = String::from_utf8_lossy(p.root.as_ref()?.as_bytes()).into_owned();
-                extra.iter().any(|e| **e == root).then(|| (root, (a.project.id.to_string(), a.reasons.clone())))
+                extra
+                    .iter()
+                    .any(|e| **e == root)
+                    .then(|| (root, (a.project.id.to_string(), a.reasons.clone())))
             })
             .collect();
         if missing.is_empty() && extra.is_empty() {
             equal += 1;
-        } else if missing.is_empty() && extras_explained(&real, &clone, head, &extras_by_root, root_changed) {
+        } else if missing.is_empty()
+            && extras_explained(&real, &clone, head, &extras_by_root, root_changed)
+        {
             // Equal up to the documented differences (gitlinks, peer edges, lockfile).
             equal += 1;
             explained += 1;
@@ -404,20 +509,30 @@ async fn affected_matches_turbo_on_asc() {
             let why: Vec<String> = result
                 .projects
                 .iter()
-                .filter(|a| graph.graph.projects.iter().any(|p| {
-                    p.key == a.project.key
-                        && p.root.as_ref().is_some_and(|r| extra.iter().any(|e| e.as_bytes() == r.as_bytes()))
-                }))
+                .filter(|a| {
+                    graph.graph.projects.iter().any(|p| {
+                        p.key == a.project.key
+                            && p.root
+                                .as_ref()
+                                .is_some_and(|r| extra.iter().any(|e| e.as_bytes() == r.as_bytes()))
+                    })
+                })
                 .map(|a| format!("{} {:?}", a.project.id, a.reasons))
                 .collect();
-            diffs.push(format!("{head}: asc misses {missing:?}, asc adds {extra:?} because {why:?}"));
+            diffs.push(format!(
+                "{head}: asc misses {missing:?}, asc adds {extra:?} because {why:?}"
+            ));
         }
         // SPEC §12A.4: a root `package.json` or `bun.lock` edit affects only the members whose
         // dependency closure it changes, where turbo marks every package (spike S10). Those
         // commits are an expected difference, not a superset failure.
         if root_changed {
             expected += 1;
-            eprintln!("asc_affected: root package.json or bun.lock changed at {head}: turbo {} packages, asc {}", want.len(), got.len());
+            eprintln!(
+                "asc_affected: root package.json or bun.lock changed at {head}: turbo {} packages, asc {}",
+                want.len(),
+                got.len()
+            );
             continue;
         }
         assert!(
@@ -434,7 +549,11 @@ async fn affected_matches_turbo_on_asc() {
         "asc_affected: equal on {equal} of {steps} commits ({:.1}%, {explained} of them only up to documented differences); {expected} root-file commits differ by design",
         share * 100.0
     );
-    assert!(share >= EQUAL_SHARE, "equal on only {equal} of {steps} commits ({:.1}%)", share * 100.0);
+    assert!(
+        share >= EQUAL_SHARE,
+        "equal on only {equal} of {steps} commits ({:.1}%)",
+        share * 100.0
+    );
 
     // Latency: the first query after the import is the cold one (it derives the manifest sets);
     // the same query again is warm.
@@ -444,6 +563,12 @@ async fn affected_matches_turbo_on_asc() {
     let warm_took = t.elapsed();
     eprintln!("asc_affected: cold {cold_took:?}, warm {warm_took:?}");
     let scale = if cfg!(debug_assertions) { 10 } else { 1 };
-    assert!(cold_took < COLD_MAX * scale, "cold Affected took {cold_took:?}");
-    assert!(warm_took < WARM_MAX * scale, "warm Affected took {warm_took:?}");
+    assert!(
+        cold_took < COLD_MAX * scale,
+        "cold Affected took {cold_took:?}"
+    );
+    assert!(
+        warm_took < WARM_MAX * scale,
+        "warm Affected took {warm_took:?}"
+    );
 }

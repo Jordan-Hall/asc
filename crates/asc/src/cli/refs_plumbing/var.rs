@@ -31,7 +31,9 @@ fn non_empty(v: Option<String>) -> Option<String> {
 
 /// The zone of the process in minutes east of UTC, from a `TZ` of the form `UTC±h[:m]`; UTC else.
 fn local_offset_min() -> i32 {
-    let Ok(tz) = std::env::var("TZ") else { return 0 };
+    let Ok(tz) = std::env::var("TZ") else {
+        return 0;
+    };
     let rest = tz.trim_start_matches(|c: char| c.is_ascii_alphabetic());
     let (sign, digits) = match rest.as_bytes().first() {
         Some(b'-') => (1, &rest[1..]),
@@ -56,7 +58,9 @@ fn ident(ctx: &Ctx, env: &IdentEnv, section: &str) -> Result<String> {
         .or_else(|| non_empty(std::env::var("EMAIL").ok()))
         .ok_or_else(|| CliError::Fatal("unable to auto-detect email address".into()))?;
     if name.is_empty() {
-        return Err(CliError::Fatal(format!("empty ident name (for <{email}>) not allowed")));
+        return Err(CliError::Fatal(format!(
+            "empty ident name (for <{email}>) not allowed"
+        )));
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -116,9 +120,17 @@ fn value(ctx: &Ctx, name: &str) -> Result<Option<String>> {
             .as_deref()
             .map(text)
             .or_else(|| non_empty(ctx.config.get("core.pager")))
-            .or_else(|| ctx.env.pager_fallback.as_deref().map(text).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                ctx.env
+                    .pager_fallback
+                    .as_deref()
+                    .map(text)
+                    .filter(|s| !s.is_empty())
+            })
             .or_else(|| Some("less".to_owned())),
-        "GIT_DEFAULT_BRANCH" => Some(non_empty(ctx.config.get("init.defaultBranch")).unwrap_or_else(|| "master".to_owned())),
+        "GIT_DEFAULT_BRANCH" => Some(
+            non_empty(ctx.config.get("init.defaultBranch")).unwrap_or_else(|| "master".to_owned()),
+        ),
         "GIT_SHELL_PATH" => Some(ctx.shell().to_string_lossy().replace('\\', "/")),
         _ => return Err(CliError::Usage(USAGE.to_owned())),
     })
@@ -151,7 +163,10 @@ fn config_lines(ctx: &Ctx) -> Vec<String> {
 }
 
 pub fn run(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
-    let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let mut out = std::io::stdout().lock();
     match args.as_slice() {
         [flag] if flag == "-l" => {

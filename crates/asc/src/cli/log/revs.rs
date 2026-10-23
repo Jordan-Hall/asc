@@ -79,7 +79,13 @@ impl Builder<'_> {
             && (suffix.is_empty() || suffix.starts_with(['~', '^']))
             && let Ok(oid) = base.parse::<asc_core::id::GitOid>()
         {
-            let row = asc_state::state::git_map::git_to_asc(&self.ws.db, self.ws.repo.key, oid, asc_core::git::ObjectKind::Commit).await?;
+            let row = asc_state::state::git_map::git_to_asc(
+                &self.ws.db,
+                self.ws.repo.key,
+                oid,
+                asc_core::git::ObjectKind::Commit,
+            )
+            .await?;
             if let Some(asc) = row {
                 return self.steps(ChangesetId::from_bytes(asc), suffix).await;
             }
@@ -92,17 +98,41 @@ impl Builder<'_> {
         while let Some(op) = rest.chars().next() {
             let digits: String = rest[1..].chars().take_while(char::is_ascii_digit).collect();
             rest = &rest[1 + digits.len()..];
-            let n: usize = if digits.is_empty() { 1 } else { digits.parse().unwrap_or(usize::MAX) };
+            let n: usize = if digits.is_empty() {
+                1
+            } else {
+                digits.parse().unwrap_or(usize::MAX)
+            };
             match op {
                 '~' => {
                     for _ in 0..n {
-                        let Some(p) = self.ws.engine.get_changeset(id).await?.parents.first().copied() else { return Ok(None) };
+                        let Some(p) = self
+                            .ws
+                            .engine
+                            .get_changeset(id)
+                            .await?
+                            .parents
+                            .first()
+                            .copied()
+                        else {
+                            return Ok(None);
+                        };
                         id = p;
                     }
                 }
                 '^' if n == 0 => {}
                 '^' => {
-                    let Some(p) = self.ws.engine.get_changeset(id).await?.parents.get(n - 1).copied() else { return Ok(None) };
+                    let Some(p) = self
+                        .ws
+                        .engine
+                        .get_changeset(id)
+                        .await?
+                        .parents
+                        .get(n - 1)
+                        .copied()
+                    else {
+                        return Ok(None);
+                    };
                     id = p;
                 }
                 _ => return Ok(None),
@@ -140,7 +170,9 @@ impl Builder<'_> {
             return Ok(true);
         }
         if let Some(base) = word.strip_suffix("^!") {
-            let Some(c) = self.named(base).await? else { return Ok(false) };
+            let Some(c) = self.named(base).await? else {
+                return Ok(false);
+            };
             let parents = self.ws.engine.get_changeset(c).await?.parents.clone();
             self.add(c, not, word);
             for p in parents {
@@ -149,13 +181,17 @@ impl Builder<'_> {
             return Ok(true);
         }
         if let Some(base) = word.strip_suffix("^@") {
-            let Some(c) = self.named(base).await? else { return Ok(false) };
+            let Some(c) = self.named(base).await? else {
+                return Ok(false);
+            };
             for p in self.ws.engine.get_changeset(c).await?.parents.clone() {
                 self.add(p, not, word);
             }
             return Ok(true);
         }
-        let Some(c) = self.named(word).await? else { return Ok(false) };
+        let Some(c) = self.named(word).await? else {
+            return Ok(false);
+        };
         self.add(c, not, word);
         Ok(true)
     }
@@ -171,7 +207,12 @@ impl Builder<'_> {
 /// Resolves the revision words and pathspecs of `opts`.
 pub async fn select(ctx: &Ctx, hist: &dyn HistoryApi, opts: &Opts) -> Result<Selection> {
     let ws = ctx.ws()?;
-    let mut b = Builder { ctx, ws, hist, sel: Selection::default() };
+    let mut b = Builder {
+        ctx,
+        ws,
+        hist,
+        sel: Selection::default(),
+    };
     let mut paths: Vec<OsString> = opts.paths.clone();
     let mut not = false;
     let mut words = opts.revs.iter().enumerate();
@@ -232,7 +273,10 @@ fn unborn(ws: &WsCtx) -> CliError {
         Ok(asc_git::projection::Head::Branch(b)) => b,
         _ => "HEAD".into(),
     };
-    CliError::Raw(format!("fatal: your current branch '{branch}' does not have any commits yet"), 128)
+    CliError::Raw(
+        format!("fatal: your current branch '{branch}' does not have any commits yet"),
+        128,
+    )
 }
 
 fn resolve_paths(ctx: &Ctx, ws: &WsCtx, items: &[OsString], sel: &mut Selection) -> Result<()> {

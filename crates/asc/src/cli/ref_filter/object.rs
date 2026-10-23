@@ -2,7 +2,6 @@
 //! (`grab_person`, `find_subpos`, `grab_date`). The object is exported once and every atom reads
 //! the same bytes, so what prints equals what `cat-file -p` shows.
 
-
 use crate::cli::format::date;
 use crate::cli::format::mailmap::Mailmap;
 
@@ -21,7 +20,10 @@ fn lines(raw: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
             return None;
         }
         let start = at;
-        let end = raw[at..].iter().position(|&b| b == b'\n').map_or(raw.len(), |p| at + p + 1);
+        let end = raw[at..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(raw.len(), |p| at + p + 1);
         at = end;
         Some((start, &raw[start..end]))
     })
@@ -34,7 +36,10 @@ pub fn header_values<'a>(raw: &'a [u8], name: &str) -> Vec<&'a [u8]> {
         if line == b"\n" {
             break;
         }
-        if let Some(rest) = line.strip_prefix(name.as_bytes()).and_then(|r| r.strip_prefix(b" ")) {
+        if let Some(rest) = line
+            .strip_prefix(name.as_bytes())
+            .and_then(|r| r.strip_prefix(b" "))
+        {
             out.push(rest.strip_suffix(b"\n").unwrap_or(rest));
         }
     }
@@ -63,19 +68,26 @@ pub fn person_tail<'a>(raw: &'a [u8], who: &str) -> &'a [u8] {
 
 /// The first line of `tail`, without its newline.
 pub fn line_of(tail: &[u8]) -> &[u8] {
-    tail.iter().position(|&b| b == b'\n').map_or(tail, |p| &tail[..p])
+    tail.iter()
+        .position(|&b| b == b'\n')
+        .map_or(tail, |p| &tail[..p])
 }
 
 /// The name before ` <` on the first line; empty when there is none.
 pub fn name_of(tail: &[u8]) -> &[u8] {
     let line = line_of(tail);
-    line.windows(2).position(|w| w == b" <").map_or(b"", |p| &line[..p])
+    line.windows(2)
+        .position(|w| w == b" <")
+        .map_or(b"", |p| &line[..p])
 }
 
 /// The address between the first `<` and the next `>`.
 fn address(tail: &[u8]) -> Option<&[u8]> {
     let open = tail.iter().position(|&b| b == b'<')?;
-    let close = tail[open..].iter().position(|&b| b == b'>').map(|p| open + p)?;
+    let close = tail[open..]
+        .iter()
+        .position(|&b| b == b'>')
+        .map(|p| open + p)?;
     Some(&tail[open + 1..close])
 }
 
@@ -99,7 +111,11 @@ pub fn email_of(tail: &[u8], trim: bool, localpart: bool, mailmap: Option<&Mailm
         (Some(map), Some(addr)) => {
             let mapped = map.lookup(name_of(tail), addr).1;
             if localpart {
-                mapped[..mapped.iter().position(|&b| b == b'@').unwrap_or(mapped.len())].to_vec()
+                mapped[..mapped
+                    .iter()
+                    .position(|&b| b == b'@')
+                    .unwrap_or(mapped.len())]
+                    .to_vec()
             } else if trim {
                 mapped
             } else {
@@ -124,8 +140,14 @@ pub fn mapped_name(tail: &[u8], mailmap: Option<&Mailmap>) -> Vec<u8> {
 pub fn when(tail: &[u8]) -> Option<(i64, i16)> {
     let at = tail.windows(2).position(|w| w == b"> ")? + 2;
     let rest = &tail[at..];
-    let digits = rest.iter().position(|b| !b.is_ascii_digit()).unwrap_or(rest.len());
-    let time = std::str::from_utf8(&rest[..digits]).ok()?.parse::<i64>().ok()?;
+    let digits = rest
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let time = std::str::from_utf8(&rest[..digits])
+        .ok()?
+        .parse::<i64>()
+        .ok()?;
     let zone = &rest[digits..];
     let zone = zone.strip_prefix(b" ").unwrap_or(zone);
     let (sign, zone) = match zone.first() {
@@ -133,8 +155,14 @@ pub fn when(tail: &[u8]) -> Option<(i64, i16)> {
         Some(b'+') => (1, &zone[1..]),
         _ => (1, zone),
     };
-    let len = zone.iter().position(|b| !b.is_ascii_digit()).unwrap_or(zone.len());
-    let hhmm: i64 = std::str::from_utf8(&zone[..len]).ok().and_then(|z| z.parse().ok()).unwrap_or(0);
+    let len = zone
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(zone.len());
+    let hhmm: i64 = std::str::from_utf8(&zone[..len])
+        .ok()
+        .and_then(|z| z.parse().ok())
+        .unwrap_or(0);
     Some((time, (sign * (hhmm / 100 * 60 + hhmm % 100)) as i16))
 }
 
@@ -145,7 +173,6 @@ pub fn date_of(tail: &[u8], mode: &date::Mode, now: i64) -> (Vec<u8>, i64) {
         None => (Vec::new(), 0),
     }
 }
-
 
 /// Where the parts of the message sit in the raw bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,28 +213,47 @@ pub fn layout(raw: &[u8]) -> Layout {
         at += 1;
     }
     let sub = at;
-    let para = raw[sub..].windows(2).position(|w| w == b"\n\n").map(|p| sub + p).filter(|&p| p < sig);
+    let para = raw[sub..]
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|p| sub + p)
+        .filter(|&p| p < sig);
     match para {
         Some(p) => {
             let mut body = p;
             while body < end && raw[body] == b'\n' {
                 body += 1;
             }
-            Layout { sub, sub_end: p, body, sig, end }
+            Layout {
+                sub,
+                sub_end: p,
+                body,
+                sig,
+                end,
+            }
         }
         None => {
             let mut sub_end = sig.max(sub);
             while sub_end > sub && raw[sub_end - 1] == b'\n' {
                 sub_end -= 1;
             }
-            Layout { sub, sub_end, body: sig.max(sub), sig, end }
+            Layout {
+                sub,
+                sub_end,
+                body: sig.max(sub),
+                sig,
+                end,
+            }
         }
     }
 }
 
 /// The subject paragraph on one line.
 pub fn subject(raw: &[u8], l: &Layout) -> Vec<u8> {
-    raw[l.sub..l.sub_end].iter().map(|&b| if b == b'\n' { b' ' } else { b }).collect()
+    raw[l.sub..l.sub_end]
+        .iter()
+        .map(|&b| if b == b'\n' { b' ' } else { b })
+        .collect()
 }
 
 /// The first `lines` lines of `text`, continuation lines indented four spaces.

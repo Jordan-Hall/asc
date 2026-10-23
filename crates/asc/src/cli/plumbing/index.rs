@@ -71,15 +71,28 @@ impl Index {
             StageSet::Default
         } else {
             // `Target::open` registered the set under the absolute path of `GIT_INDEX_FILE`.
-            let file = ctx.env.index_file.as_ref().map(|f| if f.is_absolute() { f.clone() } else { ctx.cwd.join(f) });
+            let file = ctx.env.index_file.as_ref().map(|f| {
+                if f.is_absolute() {
+                    f.clone()
+                } else {
+                    ctx.cwd.join(f)
+                }
+            });
             fresh = file.as_ref().is_some_and(|f| !f.exists());
-            let key = file.map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let key = file
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
             match stage_sets::lookup_by_path(&ws.db, &key).await? {
                 Some(info) => StageSet::Temp(info.set),
                 None => StageSet::Default,
             }
         };
-        let mut index = Self { target, set, root, fresh };
+        let mut index = Self {
+            target,
+            set,
+            root,
+            fresh,
+        };
         // A set that has rows already took its shape from a command that rendered the file.
         index.fresh = index.fresh && index.rows(ws).await?.is_empty();
         Ok(index)
@@ -87,7 +100,11 @@ impl Index {
 
     /// The tree the rows overlay when reading: nothing for an index that does not exist yet.
     pub fn base(&self) -> TreeId {
-        if self.fresh { CliEngine::empty_tree_id() } else { self.root }
+        if self.fresh {
+            CliEngine::empty_tree_id()
+        } else {
+            self.root
+        }
     }
 
     /// Applies `edits` whose staged content the work tree may not hold (`--cacheinfo`,
@@ -226,14 +243,20 @@ impl Entries<'_> {
     async fn enter(&mut self, prefix: Vec<u8>, id: TreeId) -> Result<()> {
         let tree = self.ws.engine.get_tree(id).await?;
         let entries: Vec<Entry> = git_order(&tree).into_iter().cloned().collect();
-        self.frames.push(Frame { prefix, entries, at: 0 });
+        self.frames.push(Frame {
+            prefix,
+            entries,
+            at: 0,
+        });
         Ok(())
     }
 
     /// The next leaf of HEAD's tree under the spec.
     async fn next_head(&mut self) -> Result<Option<(Vec<u8>, Entry)>> {
         loop {
-            let Some(frame) = self.frames.last_mut() else { return Ok(None) };
+            let Some(frame) = self.frames.last_mut() else {
+                return Ok(None);
+            };
             let Some(entry) = frame.entries.get(frame.at).cloned() else {
                 self.frames.pop();
                 continue;

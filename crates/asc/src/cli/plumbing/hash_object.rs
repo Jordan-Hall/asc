@@ -51,7 +51,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         'w' => o.write = true,
                         't' => {
                             let rest: String = chars.by_ref().collect();
-                            o.kind = Some(if rest.is_empty() { cur.value("t", None)? } else { rest });
+                            o.kind = Some(if rest.is_empty() {
+                                cur.value("t", None)?
+                            } else {
+                                rest
+                            });
                         }
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     }
@@ -67,8 +71,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
         }
     }
     if o.no_filters && o.path.is_some() {
-        return Err(CliError::Usage(format!("error: Can't use --path with --no-filters
-{}", usage::HASH_OBJECT)));
+        return Err(CliError::Usage(format!(
+            "error: Can't use --path with --no-filters
+{}",
+            usage::HASH_OBJECT
+        )));
     }
     Ok(o)
 }
@@ -100,20 +107,30 @@ fn normalize(bytes: Vec<u8>, eol: Eol) -> Vec<u8> {
 pub(super) async fn store(ws: &WsCtx, got: &Ingested) -> Result<()> {
     match &got.body {
         Body::Inline(bytes) => {
-            ws.objects.put(&ObjKey::File(got.file), encode_stored(bytes)).await?;
+            ws.objects
+                .put(&ObjKey::File(got.file), encode_stored(bytes))
+                .await?;
         }
         Body::Chunked { list, chunks } => {
             for (id, data) in chunks {
-                ws.objects.put(&ObjKey::Chunk(*id), encode_stored(data)).await?;
+                ws.objects
+                    .put(&ObjKey::Chunk(*id), encode_stored(data))
+                    .await?;
             }
             let envelope = Bytes::from(asc_core::codec::Enveloped::to_envelope(list));
-            ws.objects.put(&ObjKey::ChunkList(got.file), encode_stored(&envelope)).await?;
+            ws.objects
+                .put(&ObjKey::ChunkList(got.file), encode_stored(&envelope))
+                .await?;
         }
     }
     git_map::insert_many(
         &ws.db,
         ws.repo.key,
-        &[GitMapRow { git: got.git, kind: ObjectKind::Blob, asc: *got.file.as_bytes() }],
+        &[GitMapRow {
+            git: got.git,
+            kind: ObjectKind::Blob,
+            asc: *got.file.as_bytes(),
+        }],
     )
     .await?;
     Ok(())
@@ -151,7 +168,9 @@ fn eol_for(ctx: &Ctx, o: &Opts, repo_path: Option<RepoPath>) -> Result<Source> {
         return Ok(Source { eol: Eol::Keep });
     };
     let mut attrs = workspace_attrs(ctx, ws)?;
-    let found = attrs.lookup(&path).map_err(|e| CliError::Fatal(e.to_string()))?;
+    let found = attrs
+        .lookup(&path)
+        .map_err(|e| CliError::Fatal(e.to_string()))?;
     Ok(Source { eol: found.eol })
 }
 
@@ -162,7 +181,11 @@ async fn hash_stdin(ctx: &Ctx, o: &Opts, kind: ObjectKind) -> Result<GitOid> {
         (Some(p), Some(ws)) => repo_path_of(ws, &ctx.cwd.join(p)),
         _ => None,
     };
-    let source = if kind == ObjectKind::Blob && o.path.is_some() { eol_for(ctx, o, repo_path)? } else { Source { eol: Eol::Keep } };
+    let source = if kind == ObjectKind::Blob && o.path.is_some() {
+        eol_for(ctx, o, repo_path)?
+    } else {
+        Source { eol: Eol::Keep }
+    };
     let bytes = normalize(bytes, source.eol);
     finish(ctx, o, kind, bytes).await
 }
@@ -183,7 +206,10 @@ async fn finish(ctx: &Ctx, o: &Opts, kind: ObjectKind, bytes: Vec<u8>) -> Result
 async fn hash_file(ctx: &Ctx, o: &Opts, kind: ObjectKind, arg: &str) -> Result<GitOid> {
     let path = ctx.cwd.join(arg);
     let open_error = |e: std::io::Error| {
-        CliError::Fatal(format!("could not open '{arg}' for reading: {}", reason(&e)))
+        CliError::Fatal(format!(
+            "could not open '{arg}' for reading: {}",
+            reason(&e)
+        ))
     };
     let meta = std::fs::symlink_metadata(&path).map_err(open_error)?;
     if kind != ObjectKind::Blob {
@@ -195,13 +221,21 @@ async fn hash_file(ctx: &Ctx, o: &Opts, kind: ObjectKind, arg: &str) -> Result<G
         return finish(ctx, o, kind, bytes).await;
     }
     // `--path` names the location whose attributes apply, whatever the file is called.
-    let located = o.path.as_ref().map_or_else(|| path.clone(), |p| ctx.cwd.join(p));
-    let source = eol_for(ctx, o, ctx.ws_opt().and_then(|ws| repo_path_of(ws, &located)))?;
+    let located = o
+        .path
+        .as_ref()
+        .map_or_else(|| path.clone(), |p| ctx.cwd.join(p));
+    let source = eol_for(
+        ctx,
+        o,
+        ctx.ws_opt().and_then(|ws| repo_path_of(ws, &located)),
+    )?;
     if !o.write {
         return convert::blob_oid(&path, source.eol).map_err(open_error);
     }
     let ws = ctx.ws()?;
-    let got = convert::ingest_file(&path, source.eol, &ws.home.tmp()).map_err(|e| CliError::Fatal(e.to_string()))?;
+    let got = convert::ingest_file(&path, source.eol, &ws.home.tmp())
+        .map_err(|e| CliError::Fatal(e.to_string()))?;
     store(ws, &got).await?;
     Ok(got.git)
 }
@@ -210,7 +244,8 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let o = parse(&args)?;
     let kind = match o.kind.as_deref() {
         None => ObjectKind::Blob,
-        Some(name) => kind_named(name).ok_or_else(|| CliError::Fatal(format!("invalid object type \"{name}\"")))?,
+        Some(name) => kind_named(name)
+            .ok_or_else(|| CliError::Fatal(format!("invalid object type \"{name}\"")))?,
     };
     if o.write && ctx.ws_opt().is_none() {
         ctx.ws()?;

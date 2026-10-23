@@ -7,8 +7,18 @@ use crate::cli::format::color;
 
 /// `column_colors_ansi`, then the reset that marks "uncoloured".
 const COLORS: [&str; 12] = [
-    "red", "green", "yellow", "blue", "magenta", "cyan", "bold red", "bold green", "bold yellow",
-    "bold blue", "bold magenta", "bold cyan",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "bold red",
+    "bold green",
+    "bold yellow",
+    "bold blue",
+    "bold magenta",
+    "bold cyan",
 ];
 const COLORS_MAX: u16 = 12;
 
@@ -37,12 +47,17 @@ struct Line {
 
 impl Line {
     fn new(color: bool) -> Self {
-        Self { text: Vec::new(), width: 0, color }
+        Self {
+            text: Vec::new(),
+            width: 0,
+            color,
+        }
     }
 
     fn ch(&mut self, c: char) {
         let mut b = [0u8; 4];
-        self.text.extend_from_slice(c.encode_utf8(&mut b).as_bytes());
+        self.text
+            .extend_from_slice(c.encode_utf8(&mut b).as_bytes());
         self.width += 1;
     }
 
@@ -55,7 +70,8 @@ impl Line {
     fn column(&mut self, col: &Column, c: char) {
         let painted = self.color && col.color < COLORS_MAX;
         if painted {
-            self.text.extend_from_slice(color::sgr(COLORS[usize::from(col.color)]).as_bytes());
+            self.text
+                .extend_from_slice(color::sgr(COLORS[usize::from(col.color)]).as_bytes());
         }
         self.ch(c);
         if painted {
@@ -128,7 +144,11 @@ impl Graph {
     }
 
     fn current_color(&self) -> u16 {
-        if self.color { self.default_color } else { COLORS_MAX }
+        if self.color {
+            self.default_color
+        } else {
+            COLORS_MAX
+        }
     }
 
     fn increment_color(&mut self) {
@@ -136,7 +156,10 @@ impl Graph {
     }
 
     fn find_commit_color(&self, commit: &ChangesetId) -> u16 {
-        self.columns.iter().find(|c| &c.commit == commit).map_or_else(|| self.current_color(), |c| c.color)
+        self.columns
+            .iter()
+            .find(|c| &c.commit == commit)
+            .map_or_else(|| self.current_color(), |c| c.color)
     }
 
     fn find_new_column(&self, commit: &ChangesetId) -> Option<usize> {
@@ -150,7 +173,11 @@ impl Graph {
 
     /// The parents that count: the first only with `--first-parent`.
     fn interesting(&self) -> &[ChangesetId] {
-        let n = if self.first_parent_only { self.parents.len().min(1) } else { self.parents.len() };
+        let n = if self.first_parent_only {
+            self.parents.len().min(1)
+        } else {
+            self.parents.len()
+        };
         &self.parents[..n]
     }
 
@@ -192,7 +219,10 @@ impl Graph {
             self.edges_added = self.num_parents as i32 + self.merge_layout - 2;
             mapping_idx = (self.width as i64 + i64::from(self.merge_layout - 1) * shift) as usize;
             self.width += 2 * self.merge_layout as usize;
-        } else if self.edges_added > 0 && self.width >= 2 && self.mapping.get(self.width - 2) == Some(&(i as i32)) {
+        } else if self.edges_added > 0
+            && self.width >= 2
+            && self.mapping.get(self.width - 2) == Some(&(i as i32))
+        {
             // Columns added by a merge: the commit was found in the last existing column, so
             // the two edges join at once.
             mapping_idx = self.width - 2;
@@ -218,7 +248,9 @@ impl Graph {
         self.width = 0;
         self.edges_added = 0;
 
-        let commit = self.commit.unwrap_or_else(|| ChangesetId::from_bytes([0; 32]));
+        let commit = self
+            .commit
+            .unwrap_or_else(|| ChangesetId::from_bytes([0; 32]));
         let mut seen_this = false;
         let mut in_columns = true;
         let num_columns = self.columns.len();
@@ -252,7 +284,14 @@ impl Graph {
                 self.insert_into_new_columns(col_commit, None);
             }
         }
-        while self.mapping_size > 1 && self.mapping.get(self.mapping_size - 1).copied().unwrap_or(-1) < 0 {
+        while self.mapping_size > 1
+            && self
+                .mapping
+                .get(self.mapping_size - 1)
+                .copied()
+                .unwrap_or(-1)
+                < 0
+        {
             self.mapping_size -= 1;
         }
     }
@@ -398,7 +437,8 @@ impl Graph {
         let dashful = self.num_parents.saturating_sub(dashless);
         let added_cols = self.new_columns.len() as i64 - self.columns.len() as i64;
         let parent_in_old = self.num_parents as i64 - added_cols;
-        let first_col = (self.commit_index as i64 + dashless as i64 - parent_in_old).max(0) as usize;
+        let first_col =
+            (self.commit_index as i64 + dashless as i64 - parent_in_old).max(0) as usize;
         for i in 0..dashful {
             line.ch('-');
             let c = if i == dashful - 1 { '.' } else { '-' };
@@ -422,7 +462,10 @@ impl Graph {
             } else {
                 Some(self.columns[i].commit)
             };
-            let col = self.columns.get(i).copied().unwrap_or(Column { commit: col_commit.unwrap_or(ChangesetId::from_bytes([0; 32])), color: self.current_color() });
+            let col = self.columns.get(i).copied().unwrap_or(Column {
+                commit: col_commit.unwrap_or(ChangesetId::from_bytes([0; 32])),
+                color: self.current_color(),
+            });
             if col_commit == self.commit {
                 seen_this = true;
                 line.ch(self.commit_char());
@@ -476,7 +519,12 @@ impl Graph {
                 seen_this = true;
                 let mut idx = self.merge_layout.max(0) as usize;
                 for (n, p) in parents.iter().enumerate() {
-                    let Some(pc) = self.find_new_column(p).and_then(|k| self.new_columns.get(k).copied()) else { continue };
+                    let Some(pc) = self
+                        .find_new_column(p)
+                        .and_then(|k| self.new_columns.get(k).copied())
+                    else {
+                        continue;
+                    };
                     line.column(&pc, MERGE_CHARS[idx]);
                     if idx == 2 {
                         if self.edges_added > 0 || n + 1 < parents.len() {
@@ -490,11 +538,17 @@ impl Graph {
                     line.ch(' ');
                 }
             } else if seen_this {
-                let c = col.unwrap_or(Column { commit: ChangesetId::from_bytes([0; 32]), color: COLORS_MAX });
+                let c = col.unwrap_or(Column {
+                    commit: ChangesetId::from_bytes([0; 32]),
+                    color: COLORS_MAX,
+                });
                 line.column(&c, if self.edges_added > 0 { '\\' } else { '|' });
                 line.ch(' ');
             } else {
-                let c = col.unwrap_or(Column { commit: ChangesetId::from_bytes([0; 32]), color: COLORS_MAX });
+                let c = col.unwrap_or(Column {
+                    commit: ChangesetId::from_bytes([0; 32]),
+                    color: COLORS_MAX,
+                });
                 line.column(&c, '|');
                 if self.merge_layout != 0 || i + 1 != self.commit_index {
                     match &parent_col {
@@ -522,7 +576,8 @@ impl Graph {
         std::mem::swap(&mut self.mapping, &mut self.old_mapping);
         let size = self.mapping_size;
         self.mapping.clear();
-        self.mapping.resize(self.old_mapping.len().max(size + 4), -1);
+        self.mapping
+            .resize(self.old_mapping.len().max(size + 4), -1);
         for i in 0..size {
             let target = self.old_mapping.get(i).copied().unwrap_or(-1);
             if target < 0 {
@@ -558,7 +613,9 @@ impl Graph {
         }
         for i in 0..self.mapping_size {
             let target = self.mapping[i];
-            let col = (target >= 0).then(|| self.new_columns.get(target as usize).copied()).flatten();
+            let col = (target >= 0)
+                .then(|| self.new_columns.get(target as usize).copied())
+                .flatten();
             let paint = |line: &mut Line, ch: char| match &col {
                 Some(c) => line.column(c, ch),
                 None => line.ch(ch),
@@ -567,7 +624,8 @@ impl Graph {
                 line.ch(' ');
             } else if target as usize * 2 == i {
                 paint(line, '|');
-            } else if i64::from(target) == horizontal_edge_target && i as i64 != horizontal_edge - 1 {
+            } else if i64::from(target) == horizontal_edge_target && i as i64 != horizontal_edge - 1
+            {
                 // Only the first segment of a horizontal run continues into the next line.
                 if i != target as usize * 2 + 3 {
                     self.mapping[i] = -1;
@@ -622,23 +680,37 @@ mod tests {
 
     #[test]
     fn linear_history_is_a_star_per_line() {
-        assert_eq!(render(&[(3, &[2]), (2, &[1]), (1, &[])]), vec!["* c3", "* c2", "* c1"]);
+        assert_eq!(
+            render(&[(3, &[2]), (2, &[1]), (1, &[])]),
+            vec!["* c3", "* c2", "* c1"]
+        );
     }
 
     #[test]
     fn a_merge_forks_and_collapses() {
         // 4 merges 3 and 2; both lead to 1.
         let lines = render(&[(4, &[3, 2]), (3, &[1]), (2, &[1]), (1, &[])]);
-        assert_eq!(lines, vec!["*   c4", "|\\  ", "* | c3", "| * c2", "|/  ", "* c1"]);
+        assert_eq!(
+            lines,
+            vec!["*   c4", "|\\  ", "* | c3", "| * c2", "|/  ", "* c1"]
+        );
     }
 
     #[test]
     fn an_octopus_collapses_its_lanes() {
-        let lines = render(&[(5, &[4, 3, 1]), (1, &[0]), (3, &[2]), (2, &[0]), (4, &[0]), (0, &[])]);
+        let lines = render(&[
+            (5, &[4, 3, 1]),
+            (1, &[0]),
+            (3, &[2]),
+            (2, &[0]),
+            (4, &[0]),
+            (0, &[]),
+        ]);
         assert_eq!(
             lines,
             vec![
-                "*-.   c5", "|\\ \\  ", "| | * c1", "| * | c3", "| * | c2", "| |/  ", "* / c4", "|/  ", "* c0"
+                "*-.   c5", "|\\ \\  ", "| | * c1", "| * | c3", "| * | c2", "| |/  ", "* / c4",
+                "|/  ", "* c0"
             ]
         );
     }

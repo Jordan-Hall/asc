@@ -34,7 +34,10 @@ pub struct Filters {
 
 impl Filters {
     fn commit_filters(&self) -> bool {
-        !(self.merged.is_empty() && self.no_merged.is_empty() && self.contains.is_empty() && self.no_contains.is_empty())
+        !(self.merged.is_empty()
+            && self.no_merged.is_empty()
+            && self.contains.is_empty()
+            && self.no_contains.is_empty())
     }
 }
 
@@ -81,19 +84,36 @@ pub async fn commit_raw(ws: &WsCtx, cs: ChangesetId) -> Result<Vec<u8>> {
 
 async fn commit_obj(ws: &WsCtx, cs: ChangesetId, level: Level) -> Result<Obj> {
     let oid = ws.engine.git_commit_of(cs).await.map_err(fatal)?;
-    let raw = if level >= Level::Raw { commit_raw(ws, cs).await? } else { Vec::new() };
-    Ok(Obj { kind: ObjKind::Commit, oid, raw })
+    let raw = if level >= Level::Raw {
+        commit_raw(ws, cs).await?
+    } else {
+        Vec::new()
+    };
+    Ok(Obj {
+        kind: ObjKind::Commit,
+        oid,
+        raw,
+    })
 }
 
 async fn tag_obj(ws: &WsCtx, rec: &TagRecord) -> Result<Obj> {
     let target = ws.engine.git_commit_of(rec.target).await.map_err(fatal)?;
     let raw = export_tag(rec, target).map_err(fatal)?;
-    Ok(Obj { kind: ObjKind::Tag, oid: object_oid(ObjectKind::Tag, &raw), raw })
+    Ok(Obj {
+        kind: ObjKind::Tag,
+        oid: object_oid(ObjectKind::Tag, &raw),
+        raw,
+    })
 }
 
 /// The highest level any atom wants of the ref's object (`deref` false) or its peeled object.
 fn level_of(atoms: &[&Atom], deref: bool) -> Level {
-    atoms.iter().filter(|a| a.deref == deref).map(|a| a.level()).max().unwrap_or(Level::None)
+    atoms
+        .iter()
+        .filter(|a| a.deref == deref)
+        .map(|a| a.level())
+        .max()
+        .unwrap_or(Level::None)
 }
 
 /// The pseudorefs `--include-root-refs` adds, as far as asc keeps them.
@@ -102,20 +122,28 @@ async fn root_refs(ws: &WsCtx) -> Result<Vec<(Item, Option<RefTarget>)>> {
     if let Head::Branch(branch) = ws.projection.read_head()? {
         let full = format!("refs/heads/{branch}");
         if let Ok(name) = asc_core::path::RefName::new(full.clone().into_bytes())
-            && let Some(entry) = ws.db.refs().get(ws.repo.key, &name).await? {
-                let mut item = Item::new("HEAD");
-                item.symref = Some(full);
-                out.push((item, Some(entry.target)));
-            }
+            && let Some(entry) = ws.db.refs().get(ws.repo.key, &name).await?
+        {
+            let mut item = Item::new("HEAD");
+            item.symref = Some(full);
+            out.push((item, Some(entry.target)));
+        }
     } else if let Some(cs) = ws.head_commit().await? {
         out.push((Item::new("HEAD"), Some(RefTarget::Changeset(cs))));
     }
     let git_dir = ws.projection.git_dir().to_owned();
     for name in ["ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
-        let Ok(text) = std::fs::read_to_string(git_dir.join(name)) else { continue };
-        let Some(oid) = text.get(..40).and_then(|h| h.parse::<GitOid>().ok()) else { continue };
+        let Ok(text) = std::fs::read_to_string(git_dir.join(name)) else {
+            continue;
+        };
+        let Some(oid) = text.get(..40).and_then(|h| h.parse::<GitOid>().ok()) else {
+            continue;
+        };
         if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit).await? {
-            out.push((Item::new(name), Some(RefTarget::Changeset(ChangesetId::from_bytes(asc)))));
+            out.push((
+                Item::new(name),
+                Some(RefTarget::Changeset(ChangesetId::from_bytes(asc))),
+            ));
         }
     }
     Ok(out)
@@ -129,10 +157,19 @@ struct Candidate {
 
 async fn candidates(ws: &WsCtx, q: &Query) -> Result<Vec<Candidate>> {
     let mut entries: Vec<(String, RefTarget)> = Vec::new();
-    let prefixes = if q.ignore_case { vec!["refs/".to_owned()] } else { select::prefixes(&q.patterns) };
+    let prefixes = if q.ignore_case {
+        vec!["refs/".to_owned()]
+    } else {
+        select::prefixes(&q.patterns)
+    };
     for prefix in prefixes {
         let found: Vec<RefEntry> = ws.db.refs().list(ws.repo.key, &prefix).await?;
-        entries.extend(found.into_iter().map(|e| (String::from_utf8_lossy(e.name.as_bytes()).into_owned(), e.target)));
+        entries.extend(found.into_iter().map(|e| {
+            (
+                String::from_utf8_lossy(e.name.as_bytes()).into_owned(),
+                e.target,
+            )
+        }));
     }
     let mut roots = Vec::new();
     if q.include_root {
@@ -143,7 +180,10 @@ async fn candidates(ws: &WsCtx, q: &Query) -> Result<Vec<Candidate>> {
         Head::Detached(_) => None,
     };
     let mut out = Vec::new();
-    let all = entries.into_iter().map(|(n, t)| (Item::new(n), Some(t))).chain(roots);
+    let all = entries
+        .into_iter()
+        .map(|(n, t)| (Item::new(n), Some(t)))
+        .chain(roots);
     for (mut item, target) in all {
         if !listed(q, &item.name) {
             continue;
@@ -213,9 +253,10 @@ pub async fn collect(ws: &WsCtx, hist: &Hist, q: &Query, atoms: &[&Atom]) -> Res
         let mut kept = Vec::with_capacity(cands.len());
         for c in cands {
             if let Some(tip) = c.item.commit
-                && passes(api, &q.filters, tip).await? {
-                    kept.push(c);
-                }
+                && passes(api, &q.filters, tip).await?
+            {
+                kept.push(c);
+            }
         }
         cands = kept;
     }
@@ -245,18 +286,30 @@ pub async fn collect(ws: &WsCtx, hist: &Hist, q: &Query, atoms: &[&Atom]) -> Res
             (None, None) => {}
         }
         if points_at {
-            let hits = |o: &Option<Obj>| o.as_ref().is_some_and(|o| q.filters.points_at.contains(&o.oid));
+            let hits = |o: &Option<Obj>| {
+                o.as_ref()
+                    .is_some_and(|o| q.filters.points_at.contains(&o.oid))
+            };
             if !(hits(&item.obj) || (record.is_some() && hits(&item.deref))) {
                 continue;
             }
         }
         if let (Some(t), Some(o)) = (item.tag, &item.obj) {
-            mapped.push(GitMapRow { git: o.oid, kind: ObjectKind::Tag, asc: *t.as_bytes() });
+            mapped.push(GitMapRow {
+                git: o.oid,
+                kind: ObjectKind::Tag,
+                asc: *t.as_bytes(),
+            });
         }
         if let (Some(c), Some(o)) = (item.commit, item.deref.as_ref().or(item.obj.as_ref()))
-            && o.kind == ObjKind::Commit {
-                mapped.push(GitMapRow { git: o.oid, kind: ObjectKind::Commit, asc: *c.as_bytes() });
-            }
+            && o.kind == ObjKind::Commit
+        {
+            mapped.push(GitMapRow {
+                git: o.oid,
+                kind: ObjectKind::Commit,
+                asc: *c.as_bytes(),
+            });
+        }
         items.push(item);
     }
     if !mapped.is_empty() {
@@ -278,11 +331,23 @@ pub fn env(ctx: &Ctx, ws: &WsCtx, atoms: &[&Atom], color: bool) -> Env {
     let wants_map = atoms.iter().any(|a| {
         matches!(
             a.kind,
-            Kind::Person { part: Part::Name { mailmap: true } | Part::Email { mailmap: true, .. }, .. }
+            Kind::Person {
+                part: Part::Name { mailmap: true } | Part::Email { mailmap: true, .. },
+                ..
+            }
         )
     });
-    let mailmap = if wants_map { load_mailmap(ctx, ws) } else { None };
-    Env { abbrev, now, color, mailmap }
+    let mailmap = if wants_map {
+        load_mailmap(ctx, ws)
+    } else {
+        None
+    };
+    Env {
+        abbrev,
+        now,
+        color,
+        mailmap,
+    }
 }
 
 fn load_mailmap(ctx: &Ctx, ws: &WsCtx) -> Option<Mailmap> {

@@ -29,7 +29,11 @@ use super::restore::tool;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "rev-parse", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "rev-parse",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Flags and revisions, in git's order-sensitive grammar.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -38,14 +42,38 @@ pub struct Args {
 
 /// The flags `rev-parse` serves. `--git` and `--asc` are asc's additions (SPEC §11.2).
 const FLAGS: &[&str] = &[
-    "--git", "--asc", "--show-toplevel", "--git-dir", "--absolute-git-dir", "--git-common-dir",
-    "--abbrev-ref", "--verify", "-q", "--quiet", "--short", "--is-inside-work-tree",
-    "--is-inside-git-dir", "--is-bare-repository", "--is-shallow-repository", "--show-prefix",
-    "--show-cdup", "--show-object-format", "--symbolic", "--symbolic-full-name", "--all",
-    "--branches", "--tags", "--remotes", "--end-of-options",
+    "--git",
+    "--asc",
+    "--show-toplevel",
+    "--git-dir",
+    "--absolute-git-dir",
+    "--git-common-dir",
+    "--abbrev-ref",
+    "--verify",
+    "-q",
+    "--quiet",
+    "--short",
+    "--is-inside-work-tree",
+    "--is-inside-git-dir",
+    "--is-bare-repository",
+    "--is-shallow-repository",
+    "--show-prefix",
+    "--show-cdup",
+    "--show-object-format",
+    "--symbolic",
+    "--symbolic-full-name",
+    "--all",
+    "--branches",
+    "--tags",
+    "--remotes",
+    "--end-of-options",
 ];
 
-pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "rev-parse", flags: FLAGS, placeholders: &[] }];
+pub const NATIVE: &[NativeSpec] = &[NativeSpec {
+    cmd: "rev-parse",
+    flags: FLAGS,
+    placeholders: &[],
+}];
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(e.to_string())
@@ -70,14 +98,22 @@ fn upstream_of(ctx: &Ctx, ws: &WsCtx, name: &str) -> Result<String> {
     let branch = if name.is_empty() || name == "HEAD" {
         match ws.projection.read_head()? {
             Head::Branch(b) => b,
-            Head::Detached(_) => return Err(CliError::Fatal("HEAD does not point to a branch".into())),
+            Head::Detached(_) => {
+                return Err(CliError::Fatal("HEAD does not point to a branch".into()));
+            }
         }
     } else {
         name.to_owned()
     };
     let none = || CliError::Fatal(format!("no upstream configured for branch '{branch}'"));
-    let remote = ctx.config.get(&format!("branch.{branch}.remote")).ok_or_else(none)?;
-    let merge = ctx.config.get(&format!("branch.{branch}.merge")).ok_or_else(none)?;
+    let remote = ctx
+        .config
+        .get(&format!("branch.{branch}.remote"))
+        .ok_or_else(none)?;
+    let merge = ctx
+        .config
+        .get(&format!("branch.{branch}.merge"))
+        .ok_or_else(none)?;
     if remote == "." {
         return Ok(merge);
     }
@@ -107,7 +143,8 @@ async fn expand(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<String> {
         }
     }
     let lead = word.get(..40).filter(|l| is_oid(l));
-    if let Some(lead) = lead.filter(|_| word.len() == 40 || matches!(word.as_bytes()[40], b'~' | b'^'))
+    if let Some(lead) =
+        lead.filter(|_| word.len() == 40 || matches!(word.as_bytes()[40], b'~' | b'^'))
         && let Some(asc) = git_object(ws, lead, ObjectKind::Commit).await?
     {
         return Ok(format!("{}{}", ChangesetId::from_bytes(asc), &word[40..]));
@@ -117,7 +154,9 @@ async fn expand(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<String> {
 
 /// The asc id of the git object `hex` of `kind`, from the git map.
 async fn git_object(ws: &WsCtx, hex: &str, kind: ObjectKind) -> Result<Option<[u8; 32]>> {
-    let Ok(oid) = hex.parse::<GitOid>() else { return Ok(None) };
+    let Ok(oid) = hex.parse::<GitOid>() else {
+        return Ok(None);
+    };
     Ok(asc_state::state::git_map::git_to_asc(&ws.db, ws.repo.key, oid, kind).await?)
 }
 
@@ -127,7 +166,11 @@ pub(super) async fn commit_of(ctx: &Ctx, word: &str) -> Result<Option<ChangesetI
     let ws = ctx.ws()?;
     let word = expand(ctx, ws, word).await?;
     // `HEAD` and `@` name the workspace's HEAD, which the engine's refs do not hold.
-    let head_len = if word.starts_with("HEAD") { 4 } else { usize::from(word.starts_with('@')) };
+    let head_len = if word.starts_with("HEAD") {
+        4
+    } else {
+        usize::from(word.starts_with('@'))
+    };
     let spec = match (head_len, word.as_bytes().get(head_len)) {
         (0, _) => word,
         (_, None | Some(b'~' | b'^')) => match ws.head_commit().await? {
@@ -140,9 +183,11 @@ pub(super) async fn commit_of(ctx: &Ctx, word: &str) -> Result<Option<ChangesetI
         Ok(mut found) => Ok(found.pop().flatten()),
         // A revision that does not parse or exist (`HEAD~99`, `^2` of a non-merge) is the
         // engine's `Remote` error for the revspec failures: here that only means "not a revision".
-        Err(asc_engine::graph::Error::Engine(_) | asc_engine::graph::Error::Missing(_) | asc_engine::graph::Error::Remote(_)) => {
-            Ok(None)
-        }
+        Err(
+            asc_engine::graph::Error::Engine(_)
+            | asc_engine::graph::Error::Missing(_)
+            | asc_engine::graph::Error::Remote(_),
+        ) => Ok(None),
         Err(e) => Err(fatal(e)),
     }
 }
@@ -162,7 +207,9 @@ pub(super) async fn ref_of(ws: &WsCtx, name: &str) -> Result<Option<String>> {
 }
 
 async fn has_ref(ws: &WsCtx, full: &str) -> Result<bool> {
-    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else { return Ok(false) };
+    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else {
+        return Ok(false);
+    };
     Ok(ws.db.refs().get(ws.repo.key, &name).await?.is_some())
 }
 
@@ -179,7 +226,11 @@ async fn short_ref(ws: &WsCtx, full: &str) -> Result<String> {
     ];
     for i in (0..rules.len()).rev() {
         let (pre, post) = rules[i];
-        let Some(short) = full.strip_prefix(pre).and_then(|r| r.strip_suffix(post)).filter(|s| !s.is_empty()) else {
+        let Some(short) = full
+            .strip_prefix(pre)
+            .and_then(|r| r.strip_suffix(post))
+            .filter(|s| !s.is_empty())
+        else {
             continue;
         };
         let mut ambiguous = false;
@@ -196,7 +247,9 @@ async fn short_ref(ws: &WsCtx, full: &str) -> Result<String> {
 /// The annotated tag a plain name denotes, if it is one.
 async fn annotated_tag(ws: &WsCtx, name: &str) -> Result<Option<TagId>> {
     for cand in dwim_candidates(name) {
-        let Ok(rn) = RefName::new(cand.into_bytes()) else { continue };
+        let Ok(rn) = RefName::new(cand.into_bytes()) else {
+            continue;
+        };
         if let Some(e) = ws.db.refs().get(ws.repo.key, &rn).await? {
             return Ok(match e.target {
                 RefTarget::Tag(t) => Some(t),
@@ -234,7 +287,12 @@ impl Obj {
             };
         }
         Ok(match self {
-            Self::Commit(c) => ws.engine.git_commit_of(*c).await.map_err(fatal)?.to_string(),
+            Self::Commit(c) => ws
+                .engine
+                .git_commit_of(*c)
+                .await
+                .map_err(fatal)?
+                .to_string(),
             Self::Tag(t) => {
                 let rec = refs::tag_record(ws, *t).await?;
                 let target = ws.engine.git_commit_of(rec.target).await.map_err(fatal)?;
@@ -255,7 +313,11 @@ struct Item {
 }
 
 fn item(hidden: bool, obj: Obj, name: &str) -> Item {
-    Item { hidden, obj, name: name.to_owned() }
+    Item {
+        hidden,
+        obj,
+        name: name.to_owned(),
+    }
 }
 
 /// The objects and ranges a word stands for.
@@ -267,12 +329,20 @@ struct Resolver<'a> {
 impl Resolver<'_> {
     /// `word` as one object, with `^{tree}`/`^{commit}`/`^{}` and `<rev>:<path>`.
     async fn object(&self, word: &str) -> Result<Option<Obj>> {
-        if let Some(at) = word.find(':').filter(|&at| at > 0 && !word[..at].contains("@{")) {
+        if let Some(at) = word
+            .find(':')
+            .filter(|&at| at > 0 && !word[..at].contains("@{"))
+        {
             return self.path_object(&word[..at], &word[at + 1..]).await;
         }
         let (base, tree) = match word.strip_suffix("^{tree}") {
             Some(b) => (b, true),
-            None => (word.strip_suffix("^{commit}").or_else(|| word.strip_suffix("^{}")).unwrap_or(word), false),
+            None => (
+                word.strip_suffix("^{commit}")
+                    .or_else(|| word.strip_suffix("^{}"))
+                    .unwrap_or(word),
+                false,
+            ),
         };
         let plain = base == word && !word.contains(['^', '~']) && !word.contains("@{");
         if plain && let Some(tag) = annotated_tag(self.ws, base).await? {
@@ -302,14 +372,23 @@ impl Resolver<'_> {
     }
 
     async fn path_object(&self, rev: &str, path: &str) -> Result<Option<Obj>> {
-        let Some(commit) = commit_of(self.ctx, rev).await? else { return Ok(None) };
+        let Some(commit) = commit_of(self.ctx, rev).await? else {
+            return Ok(None);
+        };
         let root = self.ws.engine.get_changeset(commit).await?.root;
         let path = path.trim_end_matches('/');
         if path.is_empty() {
             return Ok(Some(Obj::Tree(root)));
         }
-        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else { return Ok(None) };
-        Ok(self.ws.engine.lookup(root, &repo_path).await?.map(|e| Obj::Entry(e.kind, e.id, e.git)))
+        let Ok(repo_path) = RepoPath::new(path.as_bytes().to_vec()) else {
+            return Ok(None);
+        };
+        Ok(self
+            .ws
+            .engine
+            .lookup(root, &repo_path)
+            .await?
+            .map(|e| Obj::Entry(e.kind, e.id, e.git)))
     }
 
     async fn commit(&self, word: &str) -> Result<Option<ChangesetId>> {
@@ -326,19 +405,38 @@ impl Resolver<'_> {
                 return self.symmetric(a, b).await;
             }
             if let Some((a, b)) = word.split_once("..") {
-                let (a, b) = (if a.is_empty() { "HEAD" } else { a }, if b.is_empty() { "HEAD" } else { b });
-                let (Some(x), Some(y)) = (self.object(a).await?, self.object(b).await?) else { return Ok(None) };
-                return Ok(Some(vec![item(false, y, b), item(true, x, a)]));            }
+                let (a, b) = (
+                    if a.is_empty() { "HEAD" } else { a },
+                    if b.is_empty() { "HEAD" } else { b },
+                );
+                let (Some(x), Some(y)) = (self.object(a).await?, self.object(b).await?) else {
+                    return Ok(None);
+                };
+                return Ok(Some(vec![item(false, y, b), item(true, x, a)]));
+            }
             if let Some(base) = word.strip_suffix("^@") {
-                let Some(c) = self.commit(base).await? else { return Ok(None) };
+                let Some(c) = self.commit(base).await? else {
+                    return Ok(None);
+                };
                 let parents = self.ws.engine.get_changeset(c).await?.parents.clone();
-                return Ok(Some(parents.into_iter().map(|p| item(false, Obj::Commit(p), word)).collect()));
+                return Ok(Some(
+                    parents
+                        .into_iter()
+                        .map(|p| item(false, Obj::Commit(p), word))
+                        .collect(),
+                ));
             }
             if let Some(base) = word.strip_suffix("^!") {
-                let Some(c) = self.commit(base).await? else { return Ok(None) };
+                let Some(c) = self.commit(base).await? else {
+                    return Ok(None);
+                };
                 let parents = self.ws.engine.get_changeset(c).await?.parents.clone();
                 let mut out = vec![item(false, Obj::Commit(c), base)];
-                out.extend(parents.into_iter().map(|p| item(true, Obj::Commit(p), base)));
+                out.extend(
+                    parents
+                        .into_iter()
+                        .map(|p| item(true, Obj::Commit(p), base)),
+                );
                 return Ok(Some(out));
             }
         }
@@ -346,12 +444,28 @@ impl Resolver<'_> {
     }
 
     async fn symmetric(&self, a: &str, b: &str) -> Result<Option<Vec<Item>>> {
-        let (a, b) = (if a.is_empty() { "HEAD" } else { a }, if b.is_empty() { "HEAD" } else { b });
-        let (Some(x), Some(y)) = (self.commit(a).await?, self.commit(b).await?) else { return Ok(None) };
+        let (a, b) = (
+            if a.is_empty() { "HEAD" } else { a },
+            if b.is_empty() { "HEAD" } else { b },
+        );
+        let (Some(x), Some(y)) = (self.commit(a).await?, self.commit(b).await?) else {
+            return Ok(None);
+        };
         let hist = Hist::select(self.ws);
-        let bases = hist.api(self.ws).merge_base(x, &[y], true).await.map_err(fatal)?;
-        let mut out = vec![item(false, Obj::Commit(y), b), item(false, Obj::Commit(x), a)];
-        out.extend(bases.into_iter().map(|c| item(true, Obj::Commit(c), "merge-base")));
+        let bases = hist
+            .api(self.ws)
+            .merge_base(x, &[y], true)
+            .await
+            .map_err(fatal)?;
+        let mut out = vec![
+            item(false, Obj::Commit(y), b),
+            item(false, Obj::Commit(x), a),
+        ];
+        out.extend(
+            bases
+                .into_iter()
+                .map(|c| item(true, Obj::Commit(c), "merge-base")),
+        );
         Ok(Some(out))
     }
 }
@@ -399,8 +513,14 @@ impl Printer<'_> {
             }
             Show::Symbolic => it.name.clone(),
             Show::ShortRef | Show::FullRef => {
-                let Some(full) = ref_of(self.ws, &it.name).await? else { return Ok(None) };
-                if self.show == Show::FullRef || full == "HEAD" { full } else { short_ref(self.ws, &full).await? }
+                let Some(full) = ref_of(self.ws, &it.name).await? else {
+                    return Ok(None);
+                };
+                if self.show == Show::FullRef || full == "HEAD" {
+                    full
+                } else {
+                    short_ref(self.ws, &full).await?
+                }
             }
         };
         Ok(Some(if it.hidden { format!("^{text}") } else { text }))
@@ -446,13 +566,19 @@ fn location(ctx: &Ctx, ws: &WsCtx, arg: &str, out: &mut Output) -> Result<bool> 
         "--show-toplevel" => display(p.toplevel()),
         "--git-dir" | "--absolute-git-dir" => display(p.git_dir()),
         "--git-common-dir" => display(p.common_dir()),
-        "--is-inside-work-tree" => (inside(ctx, p.toplevel()) && !inside(ctx, p.git_dir())).to_string(),
+        "--is-inside-work-tree" => {
+            (inside(ctx, p.toplevel()) && !inside(ctx, p.git_dir())).to_string()
+        }
         "--is-inside-git-dir" => inside(ctx, p.git_dir()).to_string(),
         "--is-bare-repository" | "--is-shallow-repository" => "false".into(),
         "--show-object-format" => "sha1".into(),
         "--show-prefix" => {
             let prefix = cwd_prefix(ctx, ws);
-            if prefix.is_empty() { prefix } else { format!("{prefix}/") }
+            if prefix.is_empty() {
+                prefix
+            } else {
+                format!("{prefix}/")
+            }
         }
         "--show-cdup" => {
             let prefix = cwd_prefix(ctx, ws);
@@ -465,7 +591,11 @@ fn location(ctx: &Ctx, ws: &WsCtx, arg: &str, out: &mut Output) -> Result<bool> 
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
-    let args: Vec<String> = a.rest.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = a
+        .rest
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
     let mut out = Output::open(ctx, "rev-parse", PagerWant::Never)?;
     let result = parse(ctx, &args, &mut out).await;
     let flushed = out.finish();
@@ -482,7 +612,13 @@ async fn parse(ctx: &Ctx, args: &[String], out: &mut Output) -> Result<ExitCode>
     let verify = args.iter().any(|a| a == "--verify");
     let quiet = args.iter().any(|a| a == "-q" || a == "--quiet");
     let resolver = Resolver { ctx, ws };
-    let mut p = Printer { ctx, ws, asc: false, show: Show::Id, short: None };
+    let mut p = Printer {
+        ctx,
+        ws,
+        asc: false,
+        show: Show::Id,
+        short: None,
+    };
     let mut single: Option<Vec<Item>> = None;
     let mut revs = 0usize;
     let (mut dashdash, mut literal) = (false, false);
@@ -536,15 +672,26 @@ async fn parse(ctx: &Ctx, args: &[String], out: &mut Output) -> Result<ExitCode>
 }
 
 /// Applies or prints one flag; `false` for a flag git would echo back.
-async fn flag(ctx: &Ctx, ws: &WsCtx, p: &mut Printer<'_>, arg: &str, out: &mut Output) -> Result<bool> {
-    let (name, value) = arg.split_once('=').map_or((arg, None), |(n, v)| (n, Some(v)));
+async fn flag(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    p: &mut Printer<'_>,
+    arg: &str,
+    out: &mut Output,
+) -> Result<bool> {
+    let (name, value) = arg
+        .split_once('=')
+        .map_or((arg, None), |(n, v)| (n, Some(v)));
     match name {
         "--git" => p.asc = false,
         "--asc" => p.asc = true,
         "--verify" | "-q" | "--quiet" => {}
         "--short" => {
             let n = match value {
-                Some(v) => v.parse::<usize>().map_err(|_| fatal(format!("'{v}': not an integer")))?.clamp(4, 40),
+                Some(v) => v
+                    .parse::<usize>()
+                    .map_err(|_| fatal(format!("'{v}': not an integer")))?
+                    .clamp(4, 40),
                 None if p.asc => 12,
                 None => p.default_abbrev(),
             };

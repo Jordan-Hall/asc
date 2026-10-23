@@ -46,10 +46,16 @@ impl Settings {
     fn load(env: &GitEnv) -> Self {
         let file = global_config(env);
         let value = |key: &str| {
-            let over = env.config_overrides().filter(|p| p.key.eq_ignore_ascii_case(key)).last();
+            let over = env
+                .config_overrides()
+                .filter(|p| p.key.eq_ignore_ascii_case(key))
+                .last();
             match over {
                 Some(p) => p.value.clone(),
-                None => file.as_ref().and_then(|f| f.string(key)).map(|v| v.to_string()),
+                None => file
+                    .as_ref()
+                    .and_then(|f| f.string(key))
+                    .map(|v| v.to_string()),
             }
         };
         Self {
@@ -62,22 +68,36 @@ impl Settings {
 
 /// The user-level config files, lowest precedence first.
 fn global_config(env: &GitEnv) -> Option<File> {
-    let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let var = |k: &str| {
+        std::env::var_os(k)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     let paths: Vec<PathBuf> = match &env.config_global {
         Some(p) => vec![p.clone()],
         None => {
             let home = std::env::home_dir();
             let xdg = var("XDG_CONFIG_HOME").or_else(|| home.as_ref().map(|h| h.join(".config")));
-            [xdg.map(|x| x.join("git").join("config")), home.map(|h| h.join(".gitconfig"))]
-                .into_iter()
-                .flatten()
-                .collect()
+            [
+                xdg.map(|x| x.join("git").join("config")),
+                home.map(|h| h.join(".gitconfig")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect()
         }
     };
     let mut merged: Option<File> = None;
     for path in paths {
-        let Ok(bytes) = std::fs::read(&path) else { continue };
-        let meta = Metadata { path: Some(path), source: Source::User, level: 0, trust: gix_sec::Trust::Full };
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let meta = Metadata {
+            path: Some(path),
+            source: Source::User,
+            level: 0,
+            trust: gix_sec::Trust::Full,
+        };
         let Ok(layer) = File::from_bytes_no_includes(&bytes, meta, init::Options::default()) else {
             continue;
         };
@@ -138,7 +158,13 @@ pub(crate) async fn run(args: Vec<OsString>) -> ExitCode {
 /// discovery found one.
 pub(crate) fn route(rest: &[OsString], cwd: &Path, root: Option<&Path>, s: &Settings) -> Route {
     let Some(word) = rest.first().and_then(|w| w.to_str()) else {
-        return if root.is_some() { Route::Asc } else { Route::Real { default_branch: false } };
+        return if root.is_some() {
+            Route::Asc
+        } else {
+            Route::Real {
+                default_branch: false,
+            }
+        };
     };
     let args = &rest[1..];
     let outside = match root {
@@ -153,8 +179,12 @@ pub(crate) fn route(rest: &[OsString], cwd: &Path, root: Option<&Path>, s: &Sett
         "version" if args.is_empty() => Route::Asc,
         "clone" if s.init_asc || asc_url => Route::Asc,
         "init" if s.init_asc => Route::Asc,
-        "clone" | "init" => Route::Real { default_branch: true },
-        _ => Route::Real { default_branch: false },
+        "clone" | "init" => Route::Real {
+            default_branch: true,
+        },
+        _ => Route::Real {
+            default_branch: false,
+        },
     }
 }
 
@@ -182,7 +212,14 @@ fn independent(word: &str, args: &[OsString], cwd: &Path, root: &Path) -> bool {
 
 /// The directory argument of `init`, skipping the options that take a value.
 fn init_target(args: &[OsString]) -> Option<&OsString> {
-    const WITH_VALUE: &[&str] = &["-b", "--initial-branch", "--separate-git-dir", "--object-format", "--ref-format", "--template"];
+    const WITH_VALUE: &[&str] = &[
+        "-b",
+        "--initial-branch",
+        "--separate-git-dir",
+        "--object-format",
+        "--ref-format",
+        "--template",
+    ];
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.to_str() {
@@ -220,7 +257,11 @@ fn config_is_external(args: &[OsString], cwd: &Path, root: &Path) -> bool {
 fn normal(p: &Path) -> String {
     let s = p.to_string_lossy().replace('\\', "/");
     let s = s.trim_end_matches('/').to_owned();
-    if cfg!(windows) { s.to_ascii_lowercase() } else { s }
+    if cfg!(windows) {
+        s.to_ascii_lowercase()
+    } else {
+        s
+    }
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -238,7 +279,10 @@ fn within(path: &Path, root: &Path) -> bool {
 pub(crate) fn find_workspace(env: &GitEnv, cwd: &Path) -> Option<PathBuf> {
     if let Some(git_dir) = &env.git_dir {
         let git_dir = cwd.join(git_dir);
-        let tree = env.work_tree.as_ref().map_or_else(|| cwd.to_owned(), |t| cwd.join(t));
+        let tree = env
+            .work_tree
+            .as_ref()
+            .map_or_else(|| cwd.to_owned(), |t| cwd.join(t));
         return git_dir.join(MARKER).is_file().then_some(tree);
     }
     for dir in cwd.ancestors() {
@@ -288,8 +332,15 @@ fn trace(args: &[OsString]) {
     let Some(file) = std::env::var_os("ASC_SHIM_TRACE").filter(|f| !f.is_empty()) else {
         return;
     };
-    let line: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+    let line: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+    {
         let _ = writeln!(f, "{}", line.join(" "));
     }
 }
@@ -301,8 +352,11 @@ fn exec_real(
     hide_repo: bool,
     configured: Option<PathBuf>,
 ) -> ExitCode {
-    let asc_home = std::env::var_os("ASC_HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
-    let command = RealGit::resolve(configured.clone(), asc_home.as_deref()).and_then(|g| g.command());
+    let asc_home = std::env::var_os("ASC_HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
+    let command =
+        RealGit::resolve(configured.clone(), asc_home.as_deref()).and_then(|g| g.command());
     let mut cmd = match command {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -349,7 +403,10 @@ fn run_child(mut cmd: std::process::Command) -> ExitCode {
 mod console {
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
     }
 
     const CTRL_C_EVENT: u32 = 0;
@@ -382,10 +439,18 @@ mod tests {
     #[test]
     fn outside_a_repository_everything_is_real_git() {
         let cwd = Path::new("/w");
-        let real = Route::Real { default_branch: false };
+        let real = Route::Real {
+            default_branch: false,
+        };
         assert_eq!(route(&words(&["status"]), cwd, None, &s()), real);
-        assert_eq!(route(&words(&["config", "--global", "a.b"]), cwd, None, &s()), real);
-        assert_eq!(route(&words(&["version", "--build-options"]), cwd, None, &s()), real);
+        assert_eq!(
+            route(&words(&["config", "--global", "a.b"]), cwd, None, &s()),
+            real
+        );
+        assert_eq!(
+            route(&words(&["version", "--build-options"]), cwd, None, &s()),
+            real
+        );
         assert_eq!(route(&words(&["version"]), cwd, None, &s()), Route::Asc);
         assert_eq!(route(&[], cwd, None, &s()), real);
     }
@@ -393,12 +458,26 @@ mod tests {
     #[test]
     fn init_and_clone_get_the_default_branch_unless_routed_to_asc() {
         let cwd = Path::new("/w");
-        let branch = Route::Real { default_branch: true };
+        let branch = Route::Real {
+            default_branch: true,
+        };
         assert_eq!(route(&words(&["init", "x"]), cwd, None, &s()), branch);
-        assert_eq!(route(&words(&["clone", "https://h/r"]), cwd, None, &s()), branch);
-        assert_eq!(route(&words(&["clone", "asc+https://h/r"]), cwd, None, &s()), Route::Asc);
-        assert_eq!(route(&words(&["clone", "s3://b/r"]), cwd, None, &s()), Route::Asc);
-        let asc = Settings { init_asc: true, ..Settings::default() };
+        assert_eq!(
+            route(&words(&["clone", "https://h/r"]), cwd, None, &s()),
+            branch
+        );
+        assert_eq!(
+            route(&words(&["clone", "asc+https://h/r"]), cwd, None, &s()),
+            Route::Asc
+        );
+        assert_eq!(
+            route(&words(&["clone", "s3://b/r"]), cwd, None, &s()),
+            Route::Asc
+        );
+        let asc = Settings {
+            init_asc: true,
+            ..Settings::default()
+        };
         assert_eq!(route(&words(&["init", "x"]), cwd, None, &asc), Route::Asc);
         assert_eq!(route(&words(&["clone", "u"]), cwd, None, &asc), Route::Asc);
     }
@@ -406,16 +485,31 @@ mod tests {
     #[test]
     fn inside_a_workspace_git_commands_are_asc() {
         let (cwd, root) = (Path::new("/w/sub"), Path::new("/w"));
-        for cmd in [&["status"][..], &["log", "-1"], &["init"], &["ls-remote", "origin"], &["config", "a.b", "c"], &["config", "--file", "/w/f", "a.b"]] {
-            assert_eq!(route(&words(cmd), cwd, Some(root), &s()), Route::Asc, "{cmd:?}");
+        for cmd in [
+            &["status"][..],
+            &["log", "-1"],
+            &["init"],
+            &["ls-remote", "origin"],
+            &["config", "a.b", "c"],
+            &["config", "--file", "/w/f", "a.b"],
+        ] {
+            assert_eq!(
+                route(&words(cmd), cwd, Some(root), &s()),
+                Route::Asc,
+                "{cmd:?}"
+            );
         }
     }
 
     #[test]
     fn repository_independent_commands_follow_their_target() {
         let (cwd, root) = (Path::new("/w"), Path::new("/w"));
-        let branch = Route::Real { default_branch: true };
-        let real = Route::Real { default_branch: false };
+        let branch = Route::Real {
+            default_branch: true,
+        };
+        let real = Route::Real {
+            default_branch: false,
+        };
         let r = |c: &[&str]| route(&words(c), cwd, Some(root), &s());
         assert_eq!(r(&["clone", "/src", "sub"]), branch);
         assert_eq!(r(&["init", "fixtures/tmp"]), branch);

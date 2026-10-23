@@ -117,7 +117,10 @@ pub async fn claim(url: &str, machine: [u8; 16]) -> Result<Holder, String> {
         .put_opts(
             &key,
             PutPayload::from_bytes(Bytes::copy_from_slice(&machine)),
-            PutOptions { mode: PutMode::Create, ..Default::default() },
+            PutOptions {
+                mode: PutMode::Create,
+                ..Default::default()
+            },
         )
         .await;
     match put {
@@ -137,7 +140,11 @@ mod tests {
     use super::*;
 
     fn file_url(dir: &std::path::Path) -> String {
-        url::Url::from_directory_path(dir).unwrap().to_string().trim_end_matches('/').to_owned()
+        url::Url::from_directory_path(dir)
+            .unwrap()
+            .to_string()
+            .trim_end_matches('/')
+            .to_owned()
     }
 
     #[tokio::test]

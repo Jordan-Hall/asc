@@ -56,7 +56,11 @@ mod real {
 
     /// The config with the command-line overrides applied and validated.
     fn config(a: &Args, ctx: &Ctx) -> Result<ServeConfig> {
-        let path = ctx.cwd.join(a.config.as_deref().unwrap_or_else(|| DEFAULT_CONFIG.as_ref()));
+        let path = ctx.cwd.join(
+            a.config
+                .as_deref()
+                .unwrap_or_else(|| DEFAULT_CONFIG.as_ref()),
+        );
         let mut cfg = ServeConfig::load(&path).map_err(fatal)?;
         if let Some(role) = a.role.as_deref() {
             cfg.role = match role {

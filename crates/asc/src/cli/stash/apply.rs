@@ -32,7 +32,11 @@ pub struct Opts {
 }
 
 fn labels() -> Labels {
-    Labels { base: "Stash base".into(), ours: "Updated upstream".into(), theirs: "Stashed changes".into() }
+    Labels {
+        base: "Stash base".into(),
+        ours: "Updated upstream".into(),
+        theirs: "Stashed changes".into(),
+    }
 }
 
 /// Whether `commit` has the shape of a stash: W with parents `[base, index]` or `[base, index,
@@ -46,7 +50,9 @@ async fn rows_against(ws: &WsCtx, head_root: TreeId, root: TreeId) -> Result<Vec
     let mut rows = Vec::new();
     for (path, _) in ws.engine.leafdiff(head_root, root, None).await? {
         match ws.engine.lookup(root, &path).await? {
-            Some(e) if e.kind != asc_core::object::Kind::Dir => rows.push(conflict::leaf_row(&path, 0, &e)),
+            Some(e) if e.kind != asc_core::object::Kind::Dir => {
+                rows.push(conflict::leaf_row(&path, 0, &e))
+            }
             Some(_) => {}
             None => rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), None)),
         }
@@ -62,7 +68,9 @@ async fn restore_untracked(ctx: &Ctx, ws: &WsCtx, u_root: TreeId) -> Result<bool
     let mut walk = ws.engine.walk(u_root, None);
     while let Some((path, _)) = walk.try_next().await? {
         // Behind a link the path is outside the work tree: never written.
-        let free = gate.resolve(&path).is_some_and(|abs| std::fs::symlink_metadata(abs).is_err());
+        let free = gate
+            .resolve(&path)
+            .is_some_and(|abs| std::fs::symlink_metadata(abs).is_err());
         if free {
             put.push(path);
         } else {
@@ -87,7 +95,10 @@ pub async fn apply(ctx: &Ctx, ws: &WsCtx, w: ChangesetId, o: Opts) -> Result<boo
     };
     let gitdir = ws.projection.git_dir().to_owned();
     if seqstate::exists(&gitdir, "MERGE_HEAD") {
-        return Err(CliError::Raw("error: Cannot apply a stash in the middle of a merge".into(), 1));
+        return Err(CliError::Raw(
+            "error: Cannot apply a stash in the middle of a merge".into(),
+            1,
+        ));
     }
     let b_tree = root_of(ws, Some(base)).await?;
     let i_tree = root_of(ws, Some(index_commit)).await?;
@@ -105,20 +116,39 @@ pub async fn apply(ctx: &Ctx, ws: &WsCtx, w: ChangesetId, o: Opts) -> Result<boo
     let use_index = o.index && !no_index_work;
 
     let idx_tree = if use_index {
-        let sides = Sides { base: b_tree, ours: c_tree, theirs: i_tree };
+        let sides = Sides {
+            base: b_tree,
+            ours: c_tree,
+            theirs: i_tree,
+        };
         let (opts, _) = conflict::merge_options(ctx, ws, &sides, Favor::None, labels()).await?;
-        let r = ws.engine.merge_trees(b_tree, c_tree, i_tree, &opts).await.map_err(fatal)?;
+        let r = ws
+            .engine
+            .merge_trees(b_tree, c_tree, i_tree, &opts)
+            .await
+            .map_err(fatal)?;
         if !r.is_clean() {
-            return Err(CliError::Raw("error: Conflicts in index. Try without --index.".into(), 1));
+            return Err(CliError::Raw(
+                "error: Conflicts in index. Try without --index.".into(),
+                1,
+            ));
         }
         Some(r.root)
     } else {
         None
     };
 
-    let sides = Sides { base: b_tree, ours: c_tree, theirs: w_tree };
+    let sides = Sides {
+        base: b_tree,
+        ours: c_tree,
+        theirs: w_tree,
+    };
     let (opts, differ) = conflict::merge_options(ctx, ws, &sides, Favor::None, labels()).await?;
-    let outcome = ws.engine.merge_trees(b_tree, c_tree, w_tree, &opts).await.map_err(fatal)?;
+    let outcome = ws
+        .engine
+        .merge_trees(b_tree, c_tree, w_tree, &opts)
+        .await
+        .map_err(fatal)?;
     conflict::refuse_unsupported(&outcome)?;
 
     let mut ok = true;
@@ -136,7 +166,12 @@ pub async fn apply(ctx: &Ctx, ws: &WsCtx, w: ChangesetId, o: Opts) -> Result<boo
         Ok(()) if nothing => {}
         Ok(()) => {
             seqstate::write_auto_merge(&gitdir, conflict::git_tree_id(ws, outcome.root).await?)?;
-            conflict::print_messages(&conflict::messages(&outcome, &differ, "Updated upstream", "Stashed changes"));
+            conflict::print_messages(&conflict::messages(
+                &outcome,
+                &differ,
+                "Updated upstream",
+                "Stashed changes",
+            ));
             if outcome.is_clean() {
                 settle_clean(ctx, ws, head_root, c_tree, &outcome, idx_tree).await?;
             } else {
@@ -195,6 +230,9 @@ async fn settle_clean(
         }
         stage::upsert(&ws.db, id, StageSet::Default, &rows).await?;
     }
-    ext::index_sink().on_stage_changed(id, &[]).await.map_err(fatal)?;
+    ext::index_sink()
+        .on_stage_changed(id, &[])
+        .await
+        .map_err(fatal)?;
     Ok(())
 }

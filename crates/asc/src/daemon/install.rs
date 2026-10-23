@@ -81,7 +81,10 @@ impl Runner for SystemRunner {
         let mut detail = String::from_utf8_lossy(&out.stderr).trim().to_owned();
         detail.truncate(detail.floor_char_boundary(512));
         Err(InstallError::Command {
-            cmd: format!("{program} {}", args.first().map(String::as_str).unwrap_or("")),
+            cmd: format!(
+                "{program} {}",
+                args.first().map(String::as_str).unwrap_or("")
+            ),
             detail: format!("{} {detail}", out.status),
         })
     }
@@ -92,10 +95,14 @@ fn path_text(p: &Path, what: &str) -> Result<String, InstallError> {
         .to_str()
         .ok_or_else(|| InstallError::Invalid(format!("{what} is not valid UTF-8")))?;
     if s.is_empty() || s.len() > MAX_PATH_LEN {
-        return Err(InstallError::Invalid(format!("{what} has an unusable length")));
+        return Err(InstallError::Invalid(format!(
+            "{what} has an unusable length"
+        )));
     }
     if s.chars().any(char::is_control) {
-        return Err(InstallError::Invalid(format!("{what} contains a control character")));
+        return Err(InstallError::Invalid(format!(
+            "{what} contains a control character"
+        )));
     }
     if !p.is_absolute() {
         return Err(InstallError::Invalid(format!("{what} is not absolute")));
@@ -223,18 +230,27 @@ fn write_unit(dir: &Path, text: &str) -> Result<PathBuf, InstallError> {
     // The unit directory is `<base>/systemd/user`; its two levels must not be symlinks.
     for p in dir.ancestors().take(3) {
         if is_symlink(p) {
-            return Err(InstallError::Invalid(format!("{} is a symlink", p.display())));
+            return Err(InstallError::Invalid(format!(
+                "{} is a symlink",
+                p.display()
+            )));
         }
     }
     fs::create_dir_all(dir)?;
     for p in dir.ancestors().take(3) {
         if is_symlink(p) {
-            return Err(InstallError::Invalid(format!("{} is a symlink", p.display())));
+            return Err(InstallError::Invalid(format!(
+                "{} is a symlink",
+                p.display()
+            )));
         }
     }
     let file = dir.join(UNIT_NAME);
     if is_symlink(&file) {
-        return Err(InstallError::Invalid(format!("{} is a symlink", file.display())));
+        return Err(InstallError::Invalid(format!(
+            "{} is a symlink",
+            file.display()
+        )));
     }
     let tmp = dir.join(format!(".{UNIT_NAME}.tmp"));
     let _ = fs::remove_file(&tmp);
@@ -276,25 +292,40 @@ pub fn install(
             let text = systemd_unit(t)?;
             write_unit(unit_dir, &text)?;
             run.run("systemctl", &["--user".into(), "daemon-reload".into()])?;
-            run.run("systemctl", &["--user".into(), "enable".into(), UNIT_NAME.into()])?;
+            run.run(
+                "systemctl",
+                &["--user".into(), "enable".into(), UNIT_NAME.into()],
+            )?;
             Ok(())
         }
     }
 }
 
 /// Remove the registration. Absence is success.
-pub fn uninstall(platform: Platform, unit_dir: &Path, run: &dyn Runner) -> Result<(), InstallError> {
+pub fn uninstall(
+    platform: Platform,
+    unit_dir: &Path,
+    run: &dyn Runner,
+) -> Result<(), InstallError> {
     match platform {
         Platform::WindowsTask => {
             if run
-                .run("schtasks.exe", &["/Query".into(), "/TN".into(), TASK_NAME.into()])
+                .run(
+                    "schtasks.exe",
+                    &["/Query".into(), "/TN".into(), TASK_NAME.into()],
+                )
                 .is_err()
             {
                 return Ok(());
             }
             run.run(
                 "schtasks.exe",
-                &["/Delete".into(), "/TN".into(), TASK_NAME.into(), "/F".into()],
+                &[
+                    "/Delete".into(),
+                    "/TN".into(),
+                    TASK_NAME.into(),
+                    "/F".into(),
+                ],
             )
             .map(|_| ())
         }
@@ -303,7 +334,10 @@ pub fn uninstall(platform: Platform, unit_dir: &Path, run: &dyn Runner) -> Resul
             if fs::symlink_metadata(&file).is_err() {
                 return Ok(());
             }
-            let _ = run.run("systemctl", &["--user".into(), "disable".into(), UNIT_NAME.into()]);
+            let _ = run.run(
+                "systemctl",
+                &["--user".into(), "disable".into(), UNIT_NAME.into()],
+            );
             fs::remove_file(&file)?;
             run.run("systemctl", &["--user".into(), "daemon-reload".into()])?;
             Ok(())
@@ -319,7 +353,9 @@ mod tests {
     struct Fake(RefCell<Vec<String>>, bool);
     impl Runner for Fake {
         fn run(&self, program: &str, args: &[String]) -> Result<String, InstallError> {
-            self.0.borrow_mut().push(format!("{program} {}", args.join(" ")));
+            self.0
+                .borrow_mut()
+                .push(format!("{program} {}", args.join(" ")));
             if self.1 && args.first().map(String::as_str) == Some("/Query") {
                 return Err(InstallError::Command {
                     cmd: "q".into(),
@@ -386,7 +422,10 @@ mod tests {
     fn unit_dir_prefers_xdg() {
         let abs = if cfg!(windows) { "C:\\x" } else { "/x" };
         let env = |k: &str| (k == "XDG_CONFIG_HOME").then(|| abs.into());
-        assert_eq!(unit_dir(&env).unwrap(), Path::new(abs).join("systemd").join("user"));
+        assert_eq!(
+            unit_dir(&env).unwrap(),
+            Path::new(abs).join("systemd").join("user")
+        );
         let none = |_: &str| None;
         assert!(unit_dir(&none).is_err());
         let rel = |_: &str| Some("rel".into());
@@ -409,8 +448,16 @@ mod tests {
         assert!(!dir.join(UNIT_NAME).exists());
         uninstall(Platform::SystemdUser, &dir, &f).unwrap();
         let calls = f.0.borrow();
-        assert!(calls.iter().any(|c| c == "systemctl --user enable asc-daemon.service"));
-        assert!(calls.iter().any(|c| c == "systemctl --user disable asc-daemon.service"));
+        assert!(
+            calls
+                .iter()
+                .any(|c| c == "systemctl --user enable asc-daemon.service")
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|c| c == "systemctl --user disable asc-daemon.service")
+        );
     }
 
     #[cfg(unix)]

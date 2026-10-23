@@ -23,7 +23,10 @@ pub struct Hist(Option<Arc<dyn HistoryApi>>);
 
 impl Hist {
     pub fn select(ws: &WsCtx) -> Self {
-        let spec = RemoteSpec { kind: ws.repo.repo.remote_kind, url: ws.repo.repo.remote_url.clone() };
+        let spec = RemoteSpec {
+            kind: ws.repo.repo.remote_kind,
+            url: ws.repo.repo.remote_url.clone(),
+        };
         Self(ext::history_selector().select(&spec).map(|(h, _)| h))
     }
 
@@ -62,11 +65,19 @@ fn fatal(e: impl std::fmt::Display) -> CliError {
 fn date_seconds(text: &str) -> Result<i64> {
     // git reads a bare date as that day at the current time of day.
     let b = text.as_bytes();
-    let bare = b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().filter(|c| c.is_ascii_digit()).count() == 8;
+    let bare = b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter().filter(|c| c.is_ascii_digit()).count() == 8;
     let filled;
     let text = if bare {
         let now = gix_date::Zoned::now();
-        filled = format!("{text} {:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+        filled = format!(
+            "{text} {:02}:{:02}:{:02}",
+            now.hour(),
+            now.minute(),
+            now.second()
+        );
         filled.as_str()
     } else {
         text
@@ -166,9 +177,17 @@ pub fn grep_pattern(opts: &Opts) -> Option<String> {
     let joined = if parts.len() == 1 {
         parts[0].clone()
     } else {
-        parts.iter().map(|p| format!("(?:{p})")).collect::<Vec<_>>().join("|")
+        parts
+            .iter()
+            .map(|p| format!("(?:{p})"))
+            .collect::<Vec<_>>()
+            .join("|")
     };
-    Some(if opts.icase { format!("(?i){joined}") } else { joined })
+    Some(if opts.icase {
+        format!("(?i){joined}")
+    } else {
+        joined
+    })
 }
 
 /// The per-commit filters.
@@ -185,11 +204,18 @@ struct Filter {
 impl Filter {
     fn new(opts: &Opts) -> Result<Self> {
         let grep = grep_pattern(opts)
-            .map(|g| regex::bytes::Regex::new(&g).map_err(|e| fatal(format!("invalid regular expression: {e}"))))
+            .map(|g| {
+                regex::bytes::Regex::new(&g)
+                    .map_err(|e| fatal(format!("invalid regular expression: {e}")))
+            })
             .transpose()?;
         Ok(Self {
             authors: opts.authors.iter().map(|a| a.as_bytes().to_vec()).collect(),
-            committers: opts.committers.iter().map(|c| c.as_bytes().to_vec()).collect(),
+            committers: opts
+                .committers
+                .iter()
+                .map(|c| c.as_bytes().to_vec())
+                .collect(),
             grep,
             invert: opts.invert_grep,
             until: opts.until.as_deref().map(date_seconds).transpose()?,
@@ -211,7 +237,9 @@ impl Filter {
 
     fn keeps(&self, cs: &Changeset) -> bool {
         let who = |s: &asc_core::sig::Signature| [s.name(), b" <", s.email(), b">"].concat();
-        let has = |hay: &[u8], needle: &[u8]| needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle);
+        let has = |hay: &[u8], needle: &[u8]| {
+            needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
+        };
         if !self.authors.is_empty() {
             let a = who(&cs.author);
             if !self.authors.iter().any(|n| has(&a, n)) {
@@ -263,12 +291,7 @@ pub struct Walker<'a> {
 }
 
 impl<'a> Walker<'a> {
-    pub async fn new(
-        ws: &'a WsCtx,
-        hist: &'a Hist,
-        sel: &Selection,
-        opts: &Opts,
-    ) -> Result<Self> {
+    pub async fn new(ws: &'a WsCtx, hist: &'a Hist, sel: &Selection, opts: &Opts) -> Result<Self> {
         let filter = Filter::new(opts)?;
         let since = opts.since.as_deref().map(date_seconds).transpose()?;
         let paged = !sel.paths.is_empty() || opts.follow || hist.is_remote();
@@ -278,7 +301,10 @@ impl<'a> Walker<'a> {
             ));
         }
         if opts.follow && sel.paths.len() != 1 {
-            return Err(CliError::Raw("fatal: --follow requires exactly one pathspec".into(), 128));
+            return Err(CliError::Raw(
+                "fatal: --follow requires exactly one pathspec".into(),
+                128,
+            ));
         }
         let (mut skip, mut limit) = (opts.skip, opts.max_count);
         let src = if paged {
@@ -310,12 +336,26 @@ impl<'a> Walker<'a> {
                 (None, true) => Sort::Topo,
                 (None, false) => Sort::Date,
             };
-            Source::Ordered(Box::new(Ordered::new(ws, sel, opts.first_parent, sort, since).await?))
+            Source::Ordered(Box::new(
+                Ordered::new(ws, sel, opts.first_parent, sort, since).await?,
+            ))
         };
-        Ok(Self { ws, src, filter, first_parent: opts.first_parent, skip, limit })
+        Ok(Self {
+            ws,
+            src,
+            filter,
+            first_parent: opts.first_parent,
+            skip,
+            limit,
+        })
     }
 
-    async fn load(&self, id: ChangesetId, git: Option<GitOid>, generation: u32) -> Result<(Arc<Changeset>, GitOid, u32)> {
+    async fn load(
+        &self,
+        id: ChangesetId,
+        git: Option<GitOid>,
+        generation: u32,
+    ) -> Result<(Arc<Changeset>, GitOid, u32)> {
         let cs = self.ws.engine.get_changeset(id).await?;
         let git = match git {
             Some(g) => g,
@@ -332,18 +372,30 @@ impl<'a> Walker<'a> {
             }
             let (id, git, generation, shown, left) = match &mut self.src {
                 Source::Ordered(o) => {
-                    let Some(item) = o.next().await? else { return Ok(None) };
+                    let Some(item) = o.next().await? else {
+                        return Ok(None);
+                    };
                     let shown = o.shown_parents(&item);
                     (item.id, None, 0, Some(shown), item.left)
                 }
-                Source::Paged { api, query, page, queue, started, exhausted } => {
+                Source::Paged {
+                    api,
+                    query,
+                    page,
+                    queue,
+                    started,
+                    exhausted,
+                } => {
                     let e = match queue.pop_front() {
                         Some(e) => e,
                         None => {
                             if *exhausted {
                                 return Ok(None);
                             }
-                            let got = api.log(query, if *started { page.as_ref() } else { None }).await.map_err(fatal)?;
+                            let got = api
+                                .log(query, if *started { page.as_ref() } else { None })
+                                .await
+                                .map_err(fatal)?;
                             *started = true;
                             *exhausted = got.next.is_none();
                             *page = got.next;
@@ -366,10 +418,21 @@ impl<'a> Walker<'a> {
                 *l -= 1;
             }
             let shown_parents = shown.unwrap_or_else(|| {
-                let take = if self.first_parent { 1 } else { cs.parents.len() };
+                let take = if self.first_parent {
+                    1
+                } else {
+                    cs.parents.len()
+                };
                 cs.parents[..take.min(cs.parents.len())].to_vec()
             });
-            return Ok(Some(Entry { id, git, generation, cs, shown_parents, left }));
+            return Ok(Some(Entry {
+                id,
+                git,
+                generation,
+                cs,
+                shown_parents,
+                left,
+            }));
         }
     }
 }
