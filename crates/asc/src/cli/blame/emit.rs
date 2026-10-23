@@ -54,6 +54,26 @@ fn summary_of(message: &[u8]) -> Vec<u8> {
     line[..end].to_vec()
 }
 
+/// git's `Version of <path> from <path>` summary for uncommitted lines. A path with control bytes
+/// is C-quoted, as the `filename` line is, so it cannot break out of the header line.
+fn dirty_summary(path: &[u8]) -> Vec<u8> {
+    let shown = c_quote(path, false).unwrap_or_else(|| path.to_vec());
+    let mut out = b"Version of ".to_vec();
+    out.extend_from_slice(&shown);
+    out.extend_from_slice(b" from ");
+    out.extend_from_slice(&shown);
+    out
+}
+
+/// Appends one single-line header (`tag value`, then LF). A line feed or carriage return in
+/// `value` would start a forged record, so each becomes a space.
+fn header(out: &mut Vec<u8>, tag: &str, value: &[u8]) {
+    out.extend_from_slice(tag.as_bytes());
+    out.push(b' ');
+    out.extend(value.iter().map(|&b| if b == b'\n' || b == b'\r' { b' ' } else { b }));
+    out.push(b'\n');
+}
+
 /// The local zone in minutes east of UTC, from `TZ` (`UTC`/`GMT` with an optional offset); UTC
 /// otherwise.
 fn local_tz_min() -> i16 {
@@ -107,12 +127,11 @@ impl Facts {
                     Origin::Dirty => {
                         let (mtime, tz) = (b.dirty.as_ref().map_or(0, |d| d.mtime), local_tz_min());
                         let who = sig(NOT_COMMITTED, NOT_COMMITTED_MAIL, mtime, tz)?;
-                        let file = String::from_utf8_lossy(p.orig_path.as_bytes()).into_owned();
                         Meta {
                             hex: "0".repeat(40),
                             author: who.clone(),
                             committer: who,
-                            summary: format!("Version of {file} from {file}").into_bytes(),
+                            summary: dirty_summary(p.orig_path.as_bytes()),
                             boundary: false,
                             time: i64::MAX,
                             first_line: p.start,
@@ -230,16 +249,14 @@ pub fn default_layout(
 fn details(w: &mut dyn Write, m: &Meta) -> Result<()> {
     let mut out = Vec::new();
     for (tag, s) in [("author", &m.author), ("committer", &m.committer)] {
-        out.extend_from_slice(tag.as_bytes());
-        out.push(b' ');
-        out.extend_from_slice(s.name());
-        out.extend_from_slice(format!("\n{tag}-mail <").as_bytes());
-        out.extend_from_slice(s.email());
-        out.extend_from_slice(format!(">\n{tag}-time {}\n{tag}-tz {}\n", s.time(), tz_text(s.tz_min())).as_bytes());
+        header(&mut out, tag, s.name());
+        let mut mail = b"<".to_vec();
+        mail.extend_from_slice(s.email());
+        mail.push(b'>');
+        header(&mut out, &format!("{tag}-mail"), &mail);
+        out.extend_from_slice(format!("{tag}-time {}\n{tag}-tz {}\n", s.time(), tz_text(s.tz_min())).as_bytes());
     }
-    out.extend_from_slice(b"summary ");
-    out.extend_from_slice(&m.summary);
-    out.push(b'\n');
+    header(&mut out, "summary", &m.summary);
     if m.boundary {
         out.extend_from_slice(b"boundary\n");
     }
@@ -402,6 +419,63 @@ mod tests {
         assert_eq!(summary_of(b"first  \nbody\n"), b"first");
         assert_eq!(summary_of(b"\n\nfirst\nbody"), b"first");
         assert_eq!(summary_of(b""), b"");
+    }
+
+    fn meta(author: &[u8], summary: Vec<u8>) -> Meta {
+        let who = sig(author, b"a@b", 5, 0).unwrap();
+        Meta {
+            hex: "0".repeat(40),
+            author: who.clone(),
+            committer: who,
+            summary,
+            boundary: false,
+            time: 0,
+            first_line: 0,
+        }
+    }
+
+    fn details_text(m: &Meta) -> String {
+        let mut out = Vec::new();
+        details(&mut out, m).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    const TAGS: [&str; 9] = [
+        "author",
+        "author-mail",
+        "author-time",
+        "author-tz",
+        "committer",
+        "committer-mail",
+        "committer-time",
+        "committer-tz",
+        "summary",
+    ];
+
+    #[test]
+    fn normal_dirty_summary_is_git_exact() {
+        assert_eq!(dirty_summary(b"dir/a b.txt"), b"Version of dir/a b.txt from dir/a b.txt");
+    }
+
+    #[test]
+    fn hostile_path_cannot_forge_records() {
+        let m = meta(b"Me", dirty_summary(b"a\nauthor evil\r\nfilename x"));
+        let text = details_text(&m);
+        let tags: Vec<&str> = text.lines().map(|l| l.split(' ').next().unwrap()).collect();
+        assert_eq!(tags, TAGS);
+        assert!(!text.contains('\r'));
+        assert!(text.contains("summary Version of \"a\\nauthor evil\\r\\nfilename x\" from "));
+    }
+
+    #[test]
+    fn hostile_author_cannot_forge_records() {
+        // `Signature::new` already refuses LF; CR is the byte that can still reach the writer.
+        let m = meta(b"Eve\rauthor-mail x\rsummary forged", b"s\r".to_vec());
+        let text = details_text(&m);
+        let tags: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).map(|l| l.split(' ').next().unwrap()).collect();
+        assert_eq!(tags, TAGS);
+        assert!(!text.contains('\r'));
+        assert!(text.starts_with("author Eve author-mail x summary forged\nauthor-mail <a@b>\n"));
     }
 
     #[test]
