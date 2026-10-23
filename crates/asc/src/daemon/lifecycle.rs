@@ -657,29 +657,32 @@ mod tests {
             not_served()
         }
 
-        async fn stacks(&self, _: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+        type SearchStream = Never<wire::SearchResponse>;
+        async fn search(
+            &self,
+            _: Request<wire::WsSearchRequest>,
+        ) -> Result<Response<Self::SearchStream>, Status> {
             not_served()
         }
 
-        async fn worktrees(
+        async fn symbols(
             &self,
-            _: Request<wire::WsWorktreesRequest>,
-        ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
+            _: Request<wire::WsSymbolsRequest>,
+        ) -> Result<Response<wire::SymbolsResponse>, Status> {
             not_served()
         }
 
-        async fn conflicts(
+        async fn semantic(
             &self,
-            _: Request<wire::WsConflictsRequest>,
-        ) -> Result<Response<wire::WsConflictsResponse>, Status> {
+            _: Request<wire::WsSemanticRequest>,
+        ) -> Result<Response<wire::SemanticResponse>, Status> {
             not_served()
         }
 
-        type CommitGraphStream = Never<wire::CommitGraphResponse>;
-        async fn commit_graph(
+        async fn index_status(
             &self,
-            _: Request<wire::WsCommitGraphRequest>,
-        ) -> Result<Response<Self::CommitGraphStream>, Status> {
+            _: Request<wire::WsIndexStatusRequest>,
+        ) -> Result<Response<wire::IndexStatusResponse>, Status> {
             not_served()
         }
 

@@ -486,6 +486,7 @@ dependencies = [
  "bstr",
  "bytes",
  "asc-ci",
+ "asc-codeintel",
  "asc-core",
  "asc-engine",
  "asc-git",
@@ -648,13 +649,11 @@ dependencies = [
  "gix-index",
  "gix-sec",
  "quick_cache",
- "rustix",
  "same-file",
  "sha1",
  "tempfile",
  "thiserror",
  "tokio",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -10,11 +10,11 @@
 //! DACL on the Windows pipe, uid check on the Unix socket), so each RPC is authorised by that
 //! check before it reaches [`Service`].
 
+pub mod codeintel_overlay;
 pub mod install;
 pub mod lifecycle;
 pub mod metrics;
 pub mod plugin_api;
-pub mod plugin_api_stack;
 pub mod scheduler;
 pub mod service;
 pub mod workspace_factory;

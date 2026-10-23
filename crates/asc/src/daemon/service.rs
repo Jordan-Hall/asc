@@ -31,9 +31,9 @@ use asc_wc::journal::{Journal, MAX_SINCE, Token};
 use tokio::sync::Notify;
 use tonic::{Request, Response, Status};
 
+use super::codeintel_overlay::{CodeIntel, ServerAnswer};
 use super::metrics::{Collected, EventLog, Metrics, Source};
 use super::plugin_api::{self, PluginStream};
-use super::plugin_api_stack;
 
 /// Longest id or token text accepted from a client.
 const MAX_TEXT: usize = 64;
@@ -452,11 +452,25 @@ pub struct Service {
     started: Instant,
     stop: Arc<Notify>,
     state: Option<Arc<State>>,
+    codeintel: CodeIntel,
 }
 
 impl Service {
     pub(super) fn new(version: String, stop: Arc<Notify>, state: Option<Arc<State>>) -> Self {
-        Self { version, started: Instant::now(), stop, state }
+        Self {
+            version,
+            started: Instant::now(),
+            stop,
+            state,
+            codeintel: CodeIntel::new(),
+        }
+    }
+
+    /// Lets the workspace-scope code intelligence RPCs ask an asc server for its part (SPEC §23.2.5).
+    #[must_use]
+    pub fn with_codeintel_server(mut self, server: Arc<dyn ServerAnswer>) -> Self {
+        self.codeintel.server = Some(server);
+        self
     }
 
     fn state(&self) -> Result<&Arc<State>, Status> {
@@ -533,34 +547,41 @@ impl WorkspaceRpc for Service {
         plugin_api::stage(state, req.into_inner()).await.map(Response::new)
     }
 
-    async fn stacks(&self, req: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+    type SearchStream = PluginStream<wire::SearchResponse>;
+    async fn search(
+        &self,
+        req: Request<wire::WsSearchRequest>,
+    ) -> Result<Response<Self::SearchStream>, Status> {
         let state = self.state()?;
-        plugin_api_stack::stacks(state, req.into_inner()).await.map(Response::new)
+        let s = self.codeintel.search(state, req.into_inner()).await?;
+        Ok(Response::new(s))
     }
 
-    async fn worktrees(
+    async fn symbols(
         &self,
-        req: Request<wire::WsWorktreesRequest>,
-    ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
+        req: Request<wire::WsSymbolsRequest>,
+    ) -> Result<Response<wire::SymbolsResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::worktrees(state, req.into_inner()).await.map(Response::new)
+        let r = self.codeintel.symbols(state, req.into_inner()).await?;
+        Ok(Response::new(r))
     }
 
-    async fn conflicts(
+    async fn semantic(
         &self,
-        req: Request<wire::WsConflictsRequest>,
-    ) -> Result<Response<wire::WsConflictsResponse>, Status> {
+        req: Request<wire::WsSemanticRequest>,
+    ) -> Result<Response<wire::SemanticResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::conflicts(state, req.into_inner()).await.map(Response::new)
+        let r = self.codeintel.semantic(state, req.into_inner()).await?;
+        Ok(Response::new(r))
     }
 
-    type CommitGraphStream = PluginStream<wire::CommitGraphResponse>;
-    async fn commit_graph(
+    async fn index_status(
         &self,
-        req: Request<wire::WsCommitGraphRequest>,
-    ) -> Result<Response<Self::CommitGraphStream>, Status> {
+        req: Request<wire::WsIndexStatusRequest>,
+    ) -> Result<Response<wire::IndexStatusResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::commit_graph(state, req.into_inner()).await.map(Response::new)
+        let r = self.codeintel.index_status(state, req.into_inner()).await?;
+        Ok(Response::new(r))
     }
 
     async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
