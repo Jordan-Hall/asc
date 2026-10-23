@@ -155,6 +155,25 @@ pub struct PackRequest {
     pub protocol: Option<GitProtocol>,
 }
 
+/// What a push's quarantine holds ([`ServerGit::quarantine_stats`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuarantineStats {
+    /// Objects in the quarantine; `u64::MAX` when the listing was too long to read.
+    pub objects: u64,
+    /// The inflated size of the largest one.
+    pub largest: u64,
+}
+
+/// Whether `name` may be added to a pack child's environment: `ASC_` and upper-case ASCII, digits
+/// and `_` only.
+fn valid_extra_env_name(name: &str) -> bool {
+    name.len() <= 64
+        && name.starts_with("ASC_")
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// One ref change for [`ServerGit::update_refs`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefUpdate {
@@ -471,6 +490,27 @@ impl ServerGit {
         view: &Path,
         req: &PackRequest,
     ) -> Result<ServerChild, ServerGitError> {
+        self.pack_with_env(service, view, req, &[])
+    }
+
+    /// [`ServerGit::pack`] with extra environment variables for the child and for the hook it
+    /// starts (git passes its environment on to `pre-receive`). Only names of the form
+    /// `ASC_[A-Z0-9_]+` are accepted, so a caller can never reach git's own `GIT_*` switches
+    /// (`GIT_CONFIG_COUNT`, `GIT_DIR`, `GIT_EXEC_PATH`, …) through this door.
+    pub fn pack_with_env(
+        &self,
+        service: PackService,
+        view: &Path,
+        req: &PackRequest,
+        env: &[(&str, &str)],
+    ) -> Result<ServerChild, ServerGitError> {
+        for (name, value) in env {
+            if !valid_extra_env_name(name) || value.contains('\0') {
+                return Err(ServerGitError::Config(
+                    "an extra environment name is not allowed",
+                ));
+            }
+        }
         require_absolute(view)?;
         check_repo_config(view)?;
         let l = &self.inner.limits;
@@ -490,7 +530,64 @@ impl ServerGit {
             cmd.arg("--advertise-refs");
         }
         cmd.arg(view);
+        for (name, value) in env {
+            cmd.env(name, value);
+        }
         spawn_supervised(cmd, &ChildLimits::request(l), true)
+    }
+
+    /// Counts the objects of a push's quarantine and finds the largest, without reading any
+    /// content into this process: `git cat-file --batch-all-objects --batch-check` on the
+    /// quarantine directory alone (SPEC §25.5: `max_push_objects` and `max_object_bytes` are
+    /// checked from the quarantine before import). A listing longer than
+    /// [`MAX_ADMIN_OUTPUT_BYTES`] is reported as more objects than any limit allows.
+    pub fn quarantine_stats(
+        &self,
+        view: &Path,
+        quarantine: &Path,
+    ) -> Result<QuarantineStats, ServerGitError> {
+        require_absolute(quarantine)?;
+        let mut cmd = self.view_command(
+            view,
+            &[
+                "cat-file",
+                "--batch-all-objects",
+                "--unordered",
+                "--batch-check=%(objectsize)",
+            ],
+        )?;
+        // Only the quarantine: the view's own objects are not part of the push.
+        cmd.env("GIT_OBJECT_DIRECTORY", quarantine);
+        let out = match self.run(
+            "cat-file",
+            cmd,
+            b"",
+            &ChildLimits::admin(&self.inner.limits),
+        ) {
+            Ok(out) => out,
+            Err(ServerGitError::OutputTooLarge { .. }) => {
+                return Ok(QuarantineStats {
+                    objects: u64::MAX,
+                    largest: 0,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        let bad = |what| ServerGitError::BadOutput {
+            command: "cat-file",
+            what,
+        };
+        let text = std::str::from_utf8(&out.stdout).map_err(|_| bad("not UTF-8"))?;
+        let mut stats = QuarantineStats::default();
+        for line in text.lines() {
+            let size: u64 = line
+                .trim()
+                .parse()
+                .map_err(|_| bad("a size that is not a number"))?;
+            stats.objects += 1;
+            stats.largest = stats.largest.max(size);
+        }
+        Ok(stats)
     }
 
     /// `git init --bare --template=` (an empty template: no sample hooks, no `info/exclude`).

@@ -99,6 +99,9 @@ pub struct ImportOptions {
     /// `repos.git_import_grade`: apply the import path rule (SPEC §2.8) instead of the native
     /// one. The first push to an empty repository gets the import rule as well.
     pub import_grade: bool,
+    /// The `via` of the ref log row (`git-push` for the git protocol layer); `None` is the RPC's
+    /// `asc-push`.
+    pub via: Option<&'static str>,
 }
 
 impl Quarantine {
@@ -264,7 +267,11 @@ impl ImportPush {
         };
         let mut asc_ctx = ctx.clone();
         asc_ctx.id_mode = IdMode::Asc;
-        match self.refs.update_refs(&asc_ctx, req).await {
+        let result = match opts.via {
+            Some(via) => self.refs.update_via(&asc_ctx, req, via).await,
+            None => self.refs.update_refs(&asc_ctx, req).await,
+        };
+        match result {
             Ok(done) => Ok(wire::ImportGitPushResponse {
                 results: done.results,
             }),

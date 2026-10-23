@@ -20,6 +20,14 @@
 //! 6. `GitViewService::ensure` (the view in step with the shared refs, `503` + `Retry-After`
 //!    while a large one builds), then `upload-pack` streamed to the client.
 //!
+//! Pushes (U82) take the same steps up to the view, with `write` access and these differences:
+//! `info/refs?service=git-receive-pack` is answered by `receive-pack --advertise-refs`; a
+//! `POST git-receive-pack` is the `0000` probe (answered before any child starts), or a push that
+//! holds a push slot (`429`/`503`) and passes the disk check (`503`), then streams the request
+//! body (never buffered, capped at `max_push_bytes` plus the command list) into `git
+//! receive-pack --stateless-rpc`. The only wait git has for asc is the `pre-receive` hook
+//! ([`crate::git_push`]).
+//!
 //! Refs advertised are the view's: shared branches and tags only, with the ids of `git_map`
 //! (the export's ids). `refs/pull`, `refs/users` and `refs/snapshots` are hidden by
 //! `transfer.hideRefs` as well as absent from the view.
@@ -32,24 +40,27 @@ use std::error::Error as StdError;
 use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::body::{Body, Bytes};
+use axum::body::{Body, BodyDataStream, Bytes};
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
+use asc_git::compat::pktline;
 use asc_git::compat::upload::{
     advertisement_prefix, advertisement_type, body_encoding, content_type_matches,
     prepare_upload_body, request_type, result_type,
 };
 use asc_git::compat::{
-    BodyError, Endpoint, GitLimits, GitProtocol, KillReason, PackRequest, PackService,
-    ProtocolVersion, RepoPath, ServerChild, Service, UploadBody, ViewError,
+    BodyEncoding, BodyError, Endpoint, GitLimits, GitProtocol, KillReason, PackRequest,
+    PackService, ProtocolVersion, RepoPath, ServerChild, Service, UploadBody, ViewError,
 };
+use asc_rpc::IdMode;
 use asc_rpc::auth::{Access, AuthError, Authorizer, Credential, Principal};
-use asc_rpc::server::RepoName;
+use asc_rpc::server::{CallCtx, RepoName};
 use futures::StreamExt;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
@@ -59,6 +70,7 @@ use uuid::Uuid;
 
 use crate::authn::{self, Surface};
 use crate::config::ServeConfig;
+use crate::git_push::{Busy, GitPush, HookProgram, PushPermit, PushSession};
 use crate::git_view::{GitViewError, GitViewService, ViewAnswer};
 use crate::http::{Labels, Metrics};
 use crate::registry::{Extensions, GitRouterFactory, Registry, RepoEntry, RepoMode};
@@ -74,8 +86,24 @@ const QUEUE: usize = 4;
 const SEND_POLL: Duration = Duration::from_millis(10);
 /// `Retry-After` while a view is missing or its mirror has not been fetched.
 const NOT_READY_RETRY: Duration = Duration::from_secs(5);
-/// The text of the receive-pack answer until U82 serves pushes.
-const PUSH_NOT_SERVED: &str = "asc: pushing over the git protocol is not available yet\n";
+/// The text when pushing is not served although the principal may write.
+const PUSH_DISABLED: &str = "asc: pushing over the git protocol is not available on this server\n";
+/// The text when a principal already has its pushes running (`429`).
+const PUSH_BUSY_PRINCIPAL: &str = "asc: too many pushes are running for your account; retry later\n";
+/// The text when the replica has all its push slots in use (`503`).
+const PUSH_BUSY_REPLICA: &str = "asc: the server is busy with other pushes; retry later\n";
+/// The text when the volume of the git views is nearly full (SPEC §25.5).
+const DISK_LOW: &str = "asc: server disk is low\n";
+/// `Retry-After` for a push that found no slot.
+const PUSH_RETRY: Duration = Duration::from_secs(5);
+/// Room the request body of a push has over `max_push_bytes`: the command list, push options and
+/// pkt-line framing (SPEC §25.5 passes the cap itself to git as `receive.maxInputSize`).
+const PUSH_BODY_SLACK: u64 = 8 * 1024 * 1024;
+/// Why a push body was cut short (stored in an `AtomicU8`; zero is "not cut").
+const CUT_TOO_LARGE: u8 = 1;
+const CUT_TIMEOUT: u8 = 2;
+const CUT_LIMITED: u8 = 3;
+const CUT_BROKEN: u8 = 4;
 /// The text for a principal that may read but not write.
 const NO_WRITE: &str = "asc: this credential does not allow pushing to the repository\n";
 /// The text for a mirror-mode repository (SPEC §25.6).
@@ -173,6 +201,10 @@ struct Audit {
     bytes_in: u64,
     op_id: Uuid,
     started: Instant,
+    /// Objects of a push (zero for a fetch).
+    objects: u64,
+    /// The refs a push updated, `name old new` for each (SPEC §25.8 item 9).
+    refs: String,
 }
 
 impl Audit {
@@ -187,6 +219,8 @@ impl Audit {
             peer = self.peer.map(|p| p.to_string()).unwrap_or_default(),
             bytes_in = self.bytes_in,
             bytes_out,
+            objects = self.objects,
+            refs = %self.refs,
             status = status.as_u16(),
             op_id = %self.op_id,
             outcome,
@@ -215,6 +249,8 @@ pub struct GitHttp {
     authorizer: Arc<dyn Authorizer>,
     metrics: Arc<GitMetrics>,
     limits: Arc<GitLimits>,
+    /// Receive-pack: the hook socket, tokens and push slots. `None` answers pushes with `403`.
+    push: Option<GitPush>,
 }
 
 /// A refused request: the status, the reason for metrics and audit, and the answer.
@@ -274,6 +310,92 @@ impl Refusal {
             reason,
             "asc: the git service failed\n",
         )
+    }
+}
+
+/// What a pack child reads on stdin.
+enum Input {
+    /// An advertisement reads nothing.
+    None,
+    /// A buffered fetch request.
+    Bytes(Vec<u8>),
+    /// A push: the first bytes already read and the rest of the body, streamed, at most `cap`.
+    Body {
+        first: Vec<u8>,
+        stream: BodyDataStream,
+        cap: u64,
+    },
+}
+
+/// One run of `upload-pack` or `receive-pack`.
+struct PackJob {
+    service: Service,
+    advertise: bool,
+    protocol: Option<GitProtocol>,
+    prefix: Vec<u8>,
+    input: Input,
+    content_type: String,
+    push: Option<PushRun>,
+}
+
+/// What a push holds for as long as its child runs: the hook session (its token dies with it) and
+/// the push slot.
+struct PushRun {
+    session: PushSession,
+    _permit: PushPermit,
+    entry: Arc<RepoEntry>,
+}
+
+/// The answer to the bare `0000` probe: an empty result, before any child starts.
+fn probe_response(service: Service) -> Response {
+    let mut res = Response::new(Body::empty());
+    let h = res.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&result_type(service)) {
+        h.insert(header::CONTENT_TYPE, v);
+    }
+    no_cache(h);
+    res
+}
+
+/// The refusal for a body that could not be read.
+fn body_refusal(f: BodyFail) -> Refusal {
+    match f {
+        BodyFail::TooLarge => Refusal::plain(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_size",
+            "asc: the request is too large\n",
+        ),
+        BodyFail::Timeout => Refusal::plain(
+            StatusCode::REQUEST_TIMEOUT,
+            "body_timeout",
+            "asc: the request body stalled\n",
+        ),
+        BodyFail::Limited => Refusal::retry(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate",
+            Duration::from_secs(1),
+            "asc: too many git requests; retry later\n",
+        ),
+        BodyFail::Broken => Refusal::empty(StatusCode::BAD_REQUEST, "body"),
+    }
+}
+
+/// The next chunk of a body within the idle limit and the deadline; `None` at its end.
+async fn next_chunk(
+    stream: &mut BodyDataStream,
+    idle: Duration,
+    deadline: tokio::time::Instant,
+) -> Result<Option<Bytes>, Refusal> {
+    let wait = (tokio::time::Instant::now() + idle).min(deadline);
+    match tokio::time::timeout_at(wait, stream.next()).await {
+        Err(_) => Err(body_refusal(BodyFail::Timeout)),
+        Ok(None) => Ok(None),
+        Ok(Some(Err(e))) => Err(body_refusal(if rate_limited(&e) {
+            BodyFail::Limited
+        } else {
+            BodyFail::Broken
+        })),
+        Ok(Some(Ok(chunk))) => Ok(Some(chunk)),
     }
 }
 
@@ -397,11 +519,21 @@ fn send_bounded(tx: &mpsc::Sender<Msg>, mut msg: Msg, idle: Duration, deadline: 
     }
 }
 
+/// What feeds a child's stdin.
+enum Feed {
+    /// An advertisement reads nothing: closing stdin lets the child see its end.
+    None,
+    /// A buffered request (a fetch's negotiation).
+    Bytes(Vec<u8>),
+    /// A push: the chunks of the request body as they arrive.
+    Stream(mpsc::Receiver<Bytes>),
+}
+
 /// Runs `child` on its own threads: one feeds `input` to its stdin, this one reads stdout to the
 /// HTTP body through `tx`, then waits for it and calls `finish`.
 fn drive(
     mut child: ServerChild,
-    input: Option<Vec<u8>>,
+    input: Feed,
     tx: mpsc::Sender<Msg>,
     limits: Arc<GitLimits>,
     finish: Finish,
@@ -412,7 +544,7 @@ fn drive(
         let deadline = Instant::now() + limits.request_timeout;
         let stdin = child.stdin.take();
         let writer = match (stdin, input) {
-            (Some(mut stdin), Some(body)) => {
+            (Some(mut stdin), Feed::Bytes(body)) => {
                 let act = activity.clone();
                 std::thread::Builder::new()
                     .name("asc-git-http-in".into())
@@ -426,7 +558,21 @@ fn drive(
                     })
                     .ok()
             }
-            // An advertisement reads nothing: closing stdin lets the child see its end.
+            (Some(mut stdin), Feed::Stream(mut rx)) => {
+                let act = activity.clone();
+                std::thread::Builder::new()
+                    .name("asc-git-http-in".into())
+                    .spawn(move || {
+                        while let Some(part) = rx.blocking_recv() {
+                            if stdin.write_all(&part).is_err() {
+                                // The child stopped reading: its exit status says why.
+                                return;
+                            }
+                            act.touch();
+                        }
+                    })
+                    .ok()
+            }
             _ => None,
         };
         let mut out_bytes = 0u64;
@@ -473,11 +619,139 @@ fn drive(
     }
 }
 
+/// What the body pump of a push learned, read by the audit record and the answer.
+#[derive(Default)]
+struct BodyState {
+    /// Why the body was cut short; zero if it was not.
+    cut: AtomicU8,
+    /// Bytes of the request body read so far, counted as they arrive.
+    bytes: AtomicU64,
+    /// The pump has ended: the body is read, cut or abandoned.
+    finished: std::sync::atomic::AtomicBool,
+    /// Wakes the one waiter on `finished`.
+    done: tokio::sync::Notify,
+}
+
+impl BodyState {
+    /// Waits until the pump has ended. The pump is bounded by the idle and request deadlines, so
+    /// this is too.
+    async fn wait_finished(&self) {
+        while !self.finished.load(Ordering::SeqCst) {
+            self.done.notified().await;
+        }
+    }
+}
+
+/// Copies a push's request body to the child's stdin in order, counting bytes as they arrive (never
+/// from `Content-Length`). A body that is over `cap`, stalls past `idle` or `deadline`, errs, or is
+/// rate-limited ends the push: the reason is recorded in `state` and the child's input ends, so
+/// git fails on the short pack and removes its quarantine itself. A request cut short is never
+/// executed: git checks the framing of the command list, the options and the pack's own length
+/// and checksum before it runs the hook.
+async fn pump_body(
+    first: Vec<u8>,
+    stream: BodyDataStream,
+    tx: mpsc::Sender<Bytes>,
+    state: Arc<BodyState>,
+    cap: u64,
+    idle: Duration,
+    deadline: tokio::time::Instant,
+) {
+    pump_body_inner(first, stream, tx, &state, cap, idle, deadline).await;
+    state.finished.store(true, Ordering::SeqCst);
+    state.done.notify_one();
+}
+
+/// A child that stops reading (git refused the pack at `receive.maxInputSize`, say) does not end
+/// the pump: the rest of the body is still read and counted, never forwarded, up to `cap`, `idle`
+/// and `deadline`. The client then gets the answer instead of a reset connection, and a body that
+/// is over the cap is a `413` whatever git did first.
+async fn pump_body_inner(
+    first: Vec<u8>,
+    mut stream: BodyDataStream,
+    tx: mpsc::Sender<Bytes>,
+    state: &BodyState,
+    cap: u64,
+    idle: Duration,
+    deadline: tokio::time::Instant,
+) {
+    let mut child_gone = false;
+    let stop = |why: u8| {
+        state.cut.store(why, Ordering::SeqCst);
+    };
+    let mut total = first.len() as u64;
+    state.bytes.store(total, Ordering::SeqCst);
+    if total > cap {
+        return stop(CUT_TOO_LARGE);
+    }
+    if !first.is_empty() && tx.send(Bytes::from(first)).await.is_err() {
+        child_gone = true;
+    }
+    loop {
+        let wait = (tokio::time::Instant::now() + idle).min(deadline);
+        match tokio::time::timeout_at(wait, stream.next()).await {
+            Err(_) => return stop(CUT_TIMEOUT),
+            // The whole body arrived; dropping `tx` lets the child see the end of its input.
+            Ok(None) => return,
+            Ok(Some(Err(e))) => {
+                return stop(if rate_limited(&e) {
+                    CUT_LIMITED
+                } else {
+                    CUT_BROKEN
+                });
+            }
+            Ok(Some(Ok(chunk))) => {
+                total = total.saturating_add(chunk.len() as u64);
+                state.bytes.store(total, Ordering::SeqCst);
+                if total > cap {
+                    return stop(CUT_TOO_LARGE);
+                }
+                if !child_gone && tx.send(chunk).await.is_err() {
+                    // The child stopped reading; it ends on its own.
+                    child_gone = true;
+                }
+            }
+        }
+    }
+}
+
+/// The status that a cut body maps to.
+fn cut_status(cut: u8) -> Option<(StatusCode, &'static str, &'static str)> {
+    match cut {
+        CUT_TOO_LARGE => Some((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "push_size",
+            "asc: the push is larger than this server accepts
+",
+        )),
+        CUT_TIMEOUT => Some((
+            StatusCode::REQUEST_TIMEOUT,
+            "body_timeout",
+            "asc: the request body stalled
+",
+        )),
+        CUT_LIMITED => Some((
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate",
+            "asc: too many git requests; retry later
+",
+        )),
+        CUT_BROKEN => Some((
+            StatusCode::BAD_REQUEST,
+            "body",
+            "asc: the request body broke
+",
+        )),
+        _ => None,
+    }
+}
+
 /// The body of a streaming answer: `head` first, then what the reader thread sends. A child that
 /// failed after the answer began ends the body with an error, so the client sees a broken
-/// transfer and never a clean end.
-fn stream_body(head: Vec<Bytes>, rx: mpsc::Receiver<Msg>) -> Body {
-    let state = (VecDeque::from(head), rx, false);
+/// transfer and never a clean end. `finished` says the child already ended well: `head` is then the
+/// whole body.
+fn stream_body(head: Vec<Bytes>, rx: mpsc::Receiver<Msg>, finished: bool) -> Body {
+    let state = (VecDeque::from(head), rx, finished);
     let stream = futures::stream::unfold(state, |(mut head, mut rx, done)| async move {
         if let Some(b) = head.pop_front() {
             return Some((Ok::<Bytes, std::io::Error>(b), (head, rx, done)));
@@ -575,39 +849,88 @@ impl GitHttp {
         })
     }
 
-    /// Starts `upload-pack` on the view and returns the streaming answer (or why it failed
-    /// before its first byte).
-    #[allow(clippy::too_many_arguments)]
-    async fn stream_upload(
+    /// Starts `upload-pack` or `receive-pack` on the view and returns the streaming answer (or
+    /// why it failed before its first byte).
+    async fn stream_pack(
         &self,
         view: asc_git::compat::GitView,
-        advertise: bool,
-        protocol: Option<GitProtocol>,
-        prefix: Vec<u8>,
-        input: Option<Vec<u8>>,
-        content_type: String,
+        job: PackJob,
         audit: Audit,
     ) -> Result<Response, Refusal> {
+        let PackJob {
+            service,
+            advertise,
+            protocol,
+            prefix,
+            input,
+            content_type,
+            push,
+        } = job;
         let req = PackRequest {
             advertise_refs: advertise,
             protocol,
         };
-        let spawned =
-            tokio::task::spawn_blocking(move || view.spawn_pack(PackService::UploadPack, &req))
-                .await;
+        let pack_service = match service {
+            Service::UploadPack => PackService::UploadPack,
+            Service::ReceivePack => PackService::ReceivePack,
+        };
+        let env: Vec<(&'static str, String)> = push
+            .as_ref()
+            .map(|p| p.session.env().map(|(k, v)| (k, v.to_owned())).to_vec())
+            .unwrap_or_default();
+        let spawned = tokio::task::spawn_blocking(move || {
+            let env_ref: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            view.spawn_pack_with_env(pack_service, &req, &env_ref)
+        })
+        .await;
         let child = match spawned {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
-                tracing::warn!(repo = %audit.repo, error = %e, "starting upload-pack");
+                tracing::warn!(repo = %audit.repo, error = %e, "starting a git pack child");
                 return Err(Refusal::internal("spawn"));
             }
             Err(_) => return Err(Refusal::internal("spawn")),
         };
+        let mut body_state: Option<Arc<BodyState>> = None;
+        let feed = match input {
+            Input::None => Feed::None,
+            Input::Bytes(b) => Feed::Bytes(b),
+            Input::Body { first, stream, cap } => {
+                let state = Arc::new(BodyState::default());
+                body_state = Some(state.clone());
+                let (btx, brx) = mpsc::channel::<Bytes>(QUEUE);
+                let deadline = tokio::time::Instant::now() + self.limits.request_timeout;
+                tokio::spawn(pump_body(
+                    first,
+                    stream,
+                    btx,
+                    state,
+                    cap,
+                    self.limits.idle_timeout,
+                    deadline,
+                ));
+                Feed::Stream(brx)
+            }
+        };
+        if let Some(p) = &push {
+            // The hook keeps the idle watchdog fed while it imports: git itself is silent.
+            p.session.set_activity(child.activity());
+        }
         let (tx, mut rx) = mpsc::channel::<Msg>(QUEUE);
         let metrics = self.metrics.clone();
-        let (service, version) = (audit.service, audit.version);
+        let (service_name, version) = (audit.service, audit.version);
+        let state = body_state.clone();
+        let handle = tokio::runtime::Handle::current();
+        let (views, registry) = (self.views.clone(), self.registry.clone());
         let finish: Finish = Box::new(move |report, sent_any, out_bytes| {
-            let status = if sent_any {
+            let cut_by = state.as_ref().map_or(0, |s| s.cut.load(Ordering::SeqCst));
+            let mut audit = audit;
+            if let Some(s) = &state {
+                audit.bytes_in = s.bytes.load(Ordering::SeqCst);
+            }
+            let status = if let Some((status, _, _)) = cut_status(cut_by) {
+                status
+            } else if sent_any {
                 StatusCode::OK
             } else if report.killed.is_some() {
                 StatusCode::GATEWAY_TIMEOUT
@@ -616,24 +939,70 @@ impl GitHttp {
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            let outcome = match (report.killed, report.ok) {
-                (Some(KillReason::Deadline | KillReason::Idle), _) => "killed",
-                (Some(KillReason::Requested), _) => "limit:client_gone",
-                (None, true) => "ok",
-                (None, false) => "rejected:child_failed",
+            let mut outcome = match (report.killed, report.ok) {
+                (Some(KillReason::Deadline | KillReason::Idle), _) => "killed".to_owned(),
+                (Some(KillReason::Requested), _) => "limit:client_gone".to_owned(),
+                (None, true) => "ok".to_owned(),
+                (None, false) => "rejected:child_failed".to_owned(),
             };
-            metrics.request(service, version, status);
+            if let Some((_, reason, _)) = cut_status(cut_by) {
+                outcome = if cut_by == CUT_TOO_LARGE {
+                    "limit:push_bytes".to_owned()
+                } else {
+                    format!("rejected:{reason}")
+                };
+            }
+            if let Some(p) = &push {
+                // What the hook decided is more precise than how the child ended.
+                let done = p.session.outcome();
+                audit.objects = done.objects;
+                let hook_ran = done.result != "rejected:no_hook";
+                if hook_ran && cut_by == 0 && report.killed.is_none() {
+                    outcome.clone_from(&done.result);
+                } else if !hook_ran && report.ok && cut_by == 0 {
+                    outcome = "noop".to_owned();
+                }
+                if done.result == "ok" {
+                    audit.refs = done
+                        .refs
+                        .iter()
+                        .map(|r| {
+                            format!(
+                                "{} {} {}",
+                                r.name,
+                                r.old.map_or_else(|| "-".to_owned(), |o| o.to_string()),
+                                r.new.map_or_else(|| "-".to_owned(), |o| o.to_string()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    // asc's refs are committed; bring the view in step (a user ref or a ref that
+                    // git set differently is removed or reset) so the next fetch finds it ready.
+                    let (views, registry, entry) =
+                        (views.clone(), registry.clone(), p.entry.clone());
+                    handle.spawn(async move {
+                        if let Err(e) = views.ensure(&entry, registry.refs()).await {
+                            tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
+                        }
+                    });
+                }
+                if outcome.starts_with("limit:") {
+                    metrics.reject("limit");
+                }
+            }
+            metrics.request(service_name, version, status);
             metrics.bytes("out", out_bytes);
             metrics.bytes("in", audit.bytes_in);
             metrics.child_seconds.observe(report.elapsed.as_secs_f64());
             if report.killed.is_some() {
                 metrics.reject("killed");
             }
-            audit.emit(outcome, status, out_bytes);
+            audit.emit(&outcome, status, out_bytes);
         });
-        drive(child, input, tx, self.limits.clone(), finish);
+        drive(child, feed, tx, self.limits.clone(), finish);
 
         let first = rx.recv().await;
+        let mut finished = false;
         let head = match first {
             Some(Msg::Data(b)) => {
                 let mut head = Vec::with_capacity(2);
@@ -644,6 +1013,7 @@ impl GitHttp {
                 head
             }
             Some(Msg::End(report)) if report.ok => {
+                finished = true;
                 if prefix.is_empty() {
                     Vec::new()
                 } else {
@@ -651,20 +1021,37 @@ impl GitHttp {
                 }
             }
             Some(Msg::End(report)) => {
-                let mut refusal = match report.killed {
-                    Some(KillReason::Deadline | KillReason::Idle) => Refusal::plain(
-                        StatusCode::GATEWAY_TIMEOUT,
-                        "timeout",
-                        "asc: the git request took too long\n",
-                    ),
-                    _ => Refusal::internal("child_failed"),
+                // A child that ended early leaves the rest of the body to the pump, which may
+                // still find it over the cap.
+                if let Some(s) = &body_state {
+                    s.wait_finished().await;
+                }
+                let cut_by = body_state
+                    .as_ref()
+                    .map_or(0, |s| s.cut.load(Ordering::SeqCst));
+                let mut refusal = if let Some((status, reason, body)) = cut_status(cut_by) {
+                    if status == StatusCode::TOO_MANY_REQUESTS {
+                        Refusal::retry(status, reason, Duration::from_secs(1), body)
+                    } else {
+                        Refusal::plain(status, reason, body)
+                    }
+                } else {
+                    match report.killed {
+                        Some(KillReason::Deadline | KillReason::Idle) => Refusal::plain(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            "timeout",
+                            "asc: the git request took too long
+",
+                        ),
+                        _ => Refusal::internal("child_failed"),
+                    }
                 };
                 refusal.recorded = true;
                 return Err(refusal);
             }
             None => return Err(Refusal::internal("child_lost")),
         };
-        let mut response = Response::new(stream_body(head, rx));
+        let mut response = Response::new(stream_body(head, rx, finished));
         let h = response.headers_mut();
         if let Ok(v) = HeaderValue::from_str(&content_type) {
             h.insert(header::CONTENT_TYPE, v);
@@ -739,6 +1126,7 @@ impl GitHttp {
 
         let entry = self.repo(&name).await?;
 
+        let mut protocol = protocol_of(&parts.headers);
         if service == Service::ReceivePack {
             if entry.mode == RepoMode::Mirror {
                 return Err(Refusal::plain(
@@ -755,15 +1143,22 @@ impl GitHttp {
                     }
                     other => Self::authorize_error(other),
                 })?;
-            // U82 serves pushes; until then a principal that may write is told so.
-            return Err(Refusal::plain(
-                StatusCode::FORBIDDEN,
-                "push_unavailable",
-                PUSH_NOT_SERVED,
-            ));
+            if self.push.is_none() {
+                return Err(Refusal::plain(
+                    StatusCode::FORBIDDEN,
+                    "push_unavailable",
+                    PUSH_DISABLED,
+                ));
+            }
+            // Git has no protocol v2 for pushes: a client that asks for it gets v0.
+            if protocol
+                .as_ref()
+                .is_some_and(|p| p.version() == ProtocolVersion::V2)
+            {
+                protocol = None;
+            }
         }
 
-        let mut protocol = protocol_of(&parts.headers);
         // A mirror holds its upstream's hidden refs (pull requests, …) with their objects. In
         // protocol v2 a client may `want` any object that exists, whatever was advertised; v0 and
         // v1 make git check each `want` against the visible refs. A mirror is therefore served
@@ -780,16 +1175,22 @@ impl GitHttp {
 
         match endpoint {
             Endpoint::InfoRefs => {
+                // A push advertisement: the same disk and view gates as the push itself would
+                // meet are not applied here (discovery is cheap); the view must be ready.
                 let view = self.ready_view(&entry).await?;
-                let prefix = advertisement_prefix(Service::UploadPack, protocol.as_ref());
+                let prefix = advertisement_prefix(service, protocol.as_ref());
                 let response = self
-                    .stream_upload(
+                    .stream_pack(
                         view,
-                        true,
-                        protocol,
-                        prefix,
-                        None,
-                        advertisement_type(Service::UploadPack),
+                        PackJob {
+                            service,
+                            advertise: true,
+                            protocol,
+                            prefix,
+                            input: Input::None,
+                            content_type: advertisement_type(service),
+                            push: None,
+                        },
                         audit.clone(),
                     )
                     .await?;
@@ -817,25 +1218,7 @@ impl GitHttp {
                 let deadline = tokio::time::Instant::now() + self.limits.request_timeout;
                 let raw = read_body(body, cap, self.limits.idle_timeout, deadline)
                     .await
-                    .map_err(|f| match f {
-                        BodyFail::TooLarge => Refusal::plain(
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            "body_size",
-                            "asc: the request is too large\n",
-                        ),
-                        BodyFail::Timeout => Refusal::plain(
-                            StatusCode::REQUEST_TIMEOUT,
-                            "body_timeout",
-                            "asc: the request body stalled\n",
-                        ),
-                        BodyFail::Limited => Refusal::retry(
-                            StatusCode::TOO_MANY_REQUESTS,
-                            "rate",
-                            Duration::from_secs(1),
-                            "asc: too many git requests; retry later\n",
-                        ),
-                        BodyFail::Broken => Refusal::empty(StatusCode::BAD_REQUEST, "body"),
-                    })?;
+                    .map_err(body_refusal)?;
                 audit.bytes_in = raw.len() as u64;
                 let body = prepare_upload_body(raw, encoding, cap).map_err(|e| match e {
                     BodyError::TooLarge => Refusal::plain(
@@ -854,34 +1237,160 @@ impl GitHttp {
                 })?;
                 let input = match body {
                     UploadBody::Probe => {
-                        // Answered before any child starts (SPEC §25.5).
-                        let mut res = Response::new(Body::empty());
-                        let h = res.headers_mut();
-                        if let Ok(v) = HeaderValue::from_str(&result_type(Service::UploadPack)) {
-                            h.insert(header::CONTENT_TYPE, v);
-                        }
-                        no_cache(h);
-                        return Ok(Reply::Done(res));
+                        return Ok(Reply::Done(probe_response(Service::UploadPack)));
                     }
                     UploadBody::Request(b) => b,
                 };
                 let view = self.ready_view(&entry).await?;
                 let response = self
-                    .stream_upload(
+                    .stream_pack(
                         view,
-                        false,
-                        protocol,
-                        Vec::new(),
-                        Some(input),
-                        result_type(Service::UploadPack),
+                        PackJob {
+                            service,
+                            advertise: false,
+                            protocol,
+                            prefix: Vec::new(),
+                            input: Input::Bytes(input),
+                            content_type: result_type(Service::UploadPack),
+                            push: None,
+                        },
                         audit.clone(),
                     )
                     .await?;
                 Ok(Reply::Streaming(response))
             }
-            // Returned above, with the receive-pack gate.
-            Endpoint::ReceivePack => Err(Refusal::internal("receive_pack")),
+            Endpoint::ReceivePack => {
+                self.receive(&entry, &principal, &parts.headers, body, protocol, audit)
+                    .await
+            }
         }
+    }
+
+    /// `POST git-receive-pack`: the probe, the push slot and disk gates, then the push streamed to
+    /// `git receive-pack --stateless-rpc` with a hook session (SPEC §25.2, §25.5).
+    async fn receive(
+        &self,
+        entry: &Arc<RepoEntry>,
+        principal: &Principal,
+        headers: &HeaderMap,
+        body: Body,
+        protocol: Option<GitProtocol>,
+        audit: &mut Audit,
+    ) -> Result<Reply, Refusal> {
+        let Some(push) = self.push.clone() else {
+            return Err(Refusal::internal("receive_pack"));
+        };
+        let wanted = request_type(Service::ReceivePack);
+        if !content_type_matches(header_str(headers, header::CONTENT_TYPE), &wanted) {
+            return Err(Refusal::plain(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "content_type",
+                "asc: unsupported content type\n",
+            ));
+        }
+        // Pushes are sent as they are (git compresses nothing around the pack); a transformed
+        // body would also defeat the byte count that bounds the push.
+        if !matches!(
+            body_encoding(header_str(headers, header::CONTENT_ENCODING)),
+            Ok(BodyEncoding::Identity)
+        ) {
+            return Err(Refusal::plain(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "content_encoding",
+                "asc: unsupported content encoding\n",
+            ));
+        }
+
+        // The head of the body decides between the probe and a push: read until four bytes are
+        // known, then, if they are `0000`, whether anything follows.
+        let mut stream = body.into_data_stream();
+        let (idle, deadline) = (
+            self.limits.idle_timeout,
+            tokio::time::Instant::now() + self.limits.request_timeout,
+        );
+        let mut first: Vec<u8> = Vec::new();
+        let mut ended = false;
+        while first.len() < 4 && !ended {
+            match next_chunk(&mut stream, idle, deadline).await? {
+                Some(chunk) => first.extend_from_slice(&chunk),
+                None => ended = true,
+            }
+        }
+        if first == pktline::FLUSH && !ended {
+            match next_chunk(&mut stream, idle, deadline).await? {
+                Some(chunk) => first.extend_from_slice(&chunk),
+                None => ended = true,
+            }
+        }
+        if first.is_empty() {
+            return Err(Refusal::empty(StatusCode::BAD_REQUEST, "body"));
+        }
+        if ended && first == pktline::FLUSH {
+            // Answered before any child starts (SPEC §25.5).
+            return Ok(Reply::Done(probe_response(Service::ReceivePack)));
+        }
+
+        // A push: a slot, then the disk, then the view.
+        let permit = push.acquire(&principal.id).map_err(|busy| match busy {
+            Busy::Principal => Refusal::retry(
+                StatusCode::TOO_MANY_REQUESTS,
+                "push_slots_principal",
+                PUSH_RETRY,
+                PUSH_BUSY_PRINCIPAL,
+            ),
+            Busy::Replica => Refusal::retry(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "push_slots_replica",
+                PUSH_RETRY,
+                PUSH_BUSY_REPLICA,
+            ),
+        })?;
+        if !push.disk_ok() {
+            return Err(Refusal::retry(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "disk_low",
+                PUSH_RETRY,
+                DISK_LOW,
+            ));
+        }
+        let view = self.ready_view(entry).await?;
+        let ctx = CallCtx {
+            repo: entry.name.clone(),
+            id_mode: IdMode::Asc,
+            principal: principal.clone(),
+            op_id: Some(audit.op_id),
+            client: None,
+        };
+        let session = push.begin(ctx, entry.clone(), view.clone()).map_err(|e| {
+            tracing::warn!(error = %e, "starting a push session");
+            Refusal::retry(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "push_sessions",
+                PUSH_RETRY,
+                PUSH_BUSY_REPLICA,
+            )
+        })?;
+        let cap = self.limits.max_push_bytes.saturating_add(PUSH_BODY_SLACK);
+        let response = self
+            .stream_pack(
+                view,
+                PackJob {
+                    service: Service::ReceivePack,
+                    advertise: false,
+                    protocol,
+                    prefix: Vec::new(),
+                    input: Input::Body { first, stream, cap },
+                    content_type: result_type(Service::ReceivePack),
+                    push: Some(PushRun {
+                        session,
+                        _permit: permit,
+                        entry: entry.clone(),
+                    }),
+                },
+                audit.clone(),
+            )
+            .await?;
+        Ok(Reply::Streaming(response))
     }
 
     async fn handle(
@@ -901,6 +1410,8 @@ impl GitHttp {
             bytes_in: 0,
             op_id: Uuid::new_v4(),
             started: Instant::now(),
+            objects: 0,
+            refs: String::new(),
         };
         let result = self.run(endpoint, &owner, &repo, req, &mut audit).await;
         match result {
@@ -973,7 +1484,44 @@ pub fn register(
     views: Arc<GitViewService>,
     registry: Arc<Registry>,
     metrics: &Arc<Metrics>,
+    cfg: &ServeConfig,
+) {
+    match HookProgram::current_asc() {
+        Ok(hook) => register_with_hook(ext, views, registry, metrics, cfg, &hook),
+        Err(e) => {
+            // Fetches still work; pushes answer `403` (the hook has no program to run).
+            tracing::warn!(error = %e, "cannot find this executable; git pushes are disabled");
+            register_routes(ext, views, registry, metrics, None);
+        }
+    }
+}
+
+/// [`register`] with the program the `pre-receive` hook runs: `asc serve git-hook pre-receive` for
+/// the real server, the test binary in the tests of this crate.
+pub fn register_with_hook(
+    ext: &Extensions,
+    views: Arc<GitViewService>,
+    registry: Arc<Registry>,
+    metrics: &Arc<Metrics>,
     _cfg: &ServeConfig,
+    hook: &HookProgram,
+) {
+    let push = match GitPush::start(views.clone(), registry.clone(), ext.pipeline.clone(), hook) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(error = %e, "the git push layer did not start; pushes are disabled");
+            None
+        }
+    };
+    register_routes(ext, views, registry, metrics, push);
+}
+
+fn register_routes(
+    ext: &Extensions,
+    views: Arc<GitViewService>,
+    registry: Arc<Registry>,
+    metrics: &Arc<Metrics>,
+    push: Option<GitPush>,
 ) {
     let limits = Arc::new(views.server().limits().clone());
     let metrics = GitMetrics::register(metrics);
@@ -984,6 +1532,7 @@ pub fn register(
             authorizer,
             metrics: metrics.clone(),
             limits: limits.clone(),
+            push: push.clone(),
         })
     });
     if ext.git.set(factory).is_err() {

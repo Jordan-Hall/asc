@@ -35,6 +35,8 @@ use crate::refpolicy::UserRefWriter;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::{refauthz, refpolicy};
 
+/// What the ref log records as `via` for a push through `UpdateRefs`.
+const DEFAULT_VIA: &str = "asc-push";
 /// Push options per request, and the longest one.
 const MAX_PUSH_OPTIONS: usize = 64;
 const MAX_PUSH_OPTION_LEN: usize = 1024;
@@ -456,6 +458,17 @@ impl ServerRefs {
         self.update_rewriting(ctx, req, None).await
     }
 
+    /// `update`, with the `via` the ref log records for the push (`git-push` for the git protocol
+    /// layer, SPEC §25.2); every other caller records `asc-push`.
+    pub(crate) async fn update_via(
+        &self,
+        ctx: &CallCtx,
+        req: wire::UpdateRefsRequest,
+        via: &'static str,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        self.update_rewriting_via(ctx, req, None, via).await
+    }
+
     /// `update`, for a server-side `Merge` that rewrote changesets: the step-8 transaction also
     /// tells the [`IngestObserver`] about `rewrites` and the response lists them. A LAND request
     /// finds its own rewrites, so it takes none.
@@ -464,6 +477,17 @@ impl ServerRefs {
         ctx: &CallCtx,
         req: wire::UpdateRefsRequest,
         rewrites: Option<Rewrites<'_>>,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        self.update_rewriting_via(ctx, req, rewrites, DEFAULT_VIA)
+            .await
+    }
+
+    async fn update_rewriting_via(
+        &self,
+        ctx: &CallCtx,
+        req: wire::UpdateRefsRequest,
+        rewrites: Option<Rewrites<'_>>,
+        via: &'static str,
     ) -> Result<wire::UpdateRefsResponse, Status> {
         // Step 1: the caller has write access (the service checked); validate the request.
         let op_id = ctx
@@ -710,7 +734,7 @@ impl ServerRefs {
             updates,
             actor: Actor {
                 id: ctx.principal.id.clone(),
-                via: "asc-push".into(),
+                via: via.into(),
             },
             reason: "UpdateRefs".into(),
             op_id,

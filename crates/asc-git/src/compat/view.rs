@@ -24,8 +24,8 @@ use futures::lock::Mutex;
 
 use super::limits::INLINE_BUILD_OBJECTS;
 use super::server_git::{
-    PackRequest, PackService, RefUpdate, ServerChild, ServerGit, ServerGitError, check_repo_config,
-    private_dir, valid_ref_name,
+    PackRequest, PackService, QuarantineStats, RefUpdate, ServerChild, ServerGit, ServerGitError,
+    check_repo_config, private_dir, valid_ref_name,
 };
 use crate::export::{ExportError, ExportReport, ExportRoot, Exporter};
 use crate::odb::{Odb, OdbError};
@@ -409,6 +409,32 @@ impl GitView {
         }
         self.verify_config()?;
         Ok(self.inner.server.pack(service, &self.inner.dir, req)?)
+    }
+
+    /// [`GitView::spawn_pack`] with extra `ASC_*` environment variables for the child and the
+    /// hook it starts ([`ServerGit::pack_with_env`]).
+    pub fn spawn_pack_with_env(
+        &self,
+        service: PackService,
+        req: &PackRequest,
+        env: &[(&str, &str)],
+    ) -> Result<ServerChild, ViewError> {
+        if self.inner.kind == ViewKind::Mirror && service == PackService::ReceivePack {
+            return Err(ViewError::ReadOnlyMirror);
+        }
+        self.verify_config()?;
+        Ok(self
+            .inner
+            .server
+            .pack_with_env(service, &self.inner.dir, req, env)?)
+    }
+
+    /// Counts and sizes the objects of a push's quarantine ([`ServerGit::quarantine_stats`]).
+    pub fn quarantine_stats(&self, quarantine: &Path) -> Result<QuarantineStats, ViewError> {
+        Ok(self
+            .inner
+            .server
+            .quarantine_stats(&self.inner.dir, quarantine)?)
     }
 
     /// Brings the view in step with `source`: exports the missing closure of the shared refs and
