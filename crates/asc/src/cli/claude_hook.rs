@@ -4,17 +4,23 @@
 //! on stdin. `worktree-create` makes the worktree `<repo-root>/.claude/worktrees/<name>` on the
 //! branch `agent/<name>` from the current HEAD, ephemeral for seven days, and prints its
 //! absolute path as the only thing on stdout. `worktree-remove` removes the worktree at the
-//! given path (`worktree remove --force`); the branch keeps any unpushed commits reachable.
+//! given path (`worktree remove --force`) when the hook made it; the branch keeps any unpushed
+//! commits reachable.
 //! Errors go to stderr with a non-zero exit.
 //!
 //! The JSON is untrusted: it is read with a size limit, the name must be one plain path
-//! component, and only a registered worktree is ever removed.
+//! component, and only a registered worktree is ever removed. The path is resolved through the
+//! trusted-workspace gate and looked up as a worktree row; it is force-removed only when it lies
+//! directly under `<main>/.claude/worktrees/<name>` and the row is the hook's (ephemeral, or on
+//! `agent/<name>`). A hand-made worktree there gets a plain `worktree remove`, which keeps a
+//! dirty one; anything else is refused. The JSON's `cwd` counts only as an ancestor of the path.
 
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 
+use asc_state::state::workspaces;
 use asc_wc::worktree as wt;
 
 use super::common::{CliError, Ctx, Result};
@@ -170,20 +176,171 @@ async fn create(ctx: &Ctx, input: &[u8]) -> Result<ExitCode> {
     Ok(ExitCode::from(done.hook_exit))
 }
 
+/// How the hook may remove a registered worktree.
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    /// The hook made it: `worktree remove --force`.
+    Force,
+    /// Hand-made, but in the agent directory: `worktree remove`, which keeps a dirty one.
+    Gentle,
+    Refuse(String),
+}
+
+/// What the hook may do to the worktree registered at `path`, given the main worktree's root
+/// and the row's head and ephemeral marker. The hook JSON is untrusted, so only a worktree that
+/// `worktree-create` made (directly below `<main>/.claude/worktrees/`, ephemeral or on
+/// `agent/<name>`) is ever force-removed.
+fn judge(main: &Path, path: &Path, head: &str, ephemeral: bool) -> Verdict {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| wt::valid_name(n));
+    let Some(name) = name else {
+        return Verdict::Refuse(format!("'{}' has no usable worktree name", path.display()));
+    };
+    if wt::path_key(path) != wt::path_key(&wt::agent_path(main, name)) {
+        return Verdict::Refuse(format!(
+            "'{}' is not directly under '{}'; remove it with `asc worktree remove`",
+            path.display(),
+            wt::agent_path(main, "").display()
+        ));
+    }
+    if ephemeral || head == format!("refs/heads/agent/{name}") {
+        Verdict::Force
+    } else {
+        Verdict::Gentle
+    }
+}
+
+/// Whether two paths name one directory: the same text, or the same canonical path (a nested
+/// worktree is reached through a link to its mount).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let plain = |p: &Path| wt::path_key(&wt::absolutize(Path::new("/"), p));
+    if plain(a) == plain(b) {
+        return true;
+    }
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(x), Ok(y)) if wt::path_key(&x) == wt::path_key(&y))
+}
+
+/// A context for the repository around `dir`, through the trusted-workspace gate, never from
+/// the environment's `GIT_DIR` and kin.
+async fn probe(ctx: &Ctx, dir: &Path) -> Option<Ctx> {
+    let mut env = ctx.env.clone();
+    env.git_dir = None;
+    env.work_tree = None;
+    env.common_dir = None;
+    env.index_file = None;
+    let opened = Ctx::open(ctx.prog, env, dir.to_owned()).await.ok()?;
+    opened.ws_opt().is_some().then_some(opened)
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+}
+
+/// Runs `asc <args>` in the worktree at `dir`, with the repository chosen by `dir` alone and a
+/// fixed identity; returns its trimmed stdout.
+fn run_asc(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = Command::new(std::env::current_exe()?)
+        .args(args)
+        .current_dir(dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_AUTHOR_NAME", "asc claude-hook")
+        .env("GIT_AUTHOR_EMAIL", "claude-hook@asc.invalid")
+        .env("GIT_COMMITTER_NAME", "asc claude-hook")
+        .env("GIT_COMMITTER_EMAIL", "claude-hook@asc.invalid")
+        .stdin(Stdio::null())
+        .output()?;
+    if !out.status.success() {
+        return Err(bad(format!(
+            "`asc {}` failed in '{}': {}",
+            args.join(" "),
+            dir.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+/// Before a worktree is force-removed, commits any modified or untracked files to
+/// `refs/asc/agent-trash/<name>/<unix time>` (on top of the worktree's HEAD) and says where on
+/// stderr. A failure aborts the removal: uncommitted work is never dropped silently.
+fn save_dirty(dir: &Path, name: &str) -> Result<()> {
+    if run_asc(dir, &["status", "--porcelain"])?.is_empty() {
+        return Ok(());
+    }
+    run_asc(dir, &["add", "-A"])?;
+    // Detached, so the agent branch itself does not move.
+    run_asc(dir, &["switch", "--detach"])?;
+    let message = format!("agent worktree '{name}' removed with uncommitted work");
+    run_asc(
+        dir,
+        &["-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", &message],
+    )?;
+    let commit = run_asc(dir, &["rev-parse", "HEAD"])?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let name_ref = format!("refs/asc/agent-trash/{name}/{secs}");
+    run_asc(dir, &["update-ref", &name_ref, &commit, ""])?;
+    eprintln!("asc: claude-hook: saved the uncommitted work of '{name}' as {name_ref} ({commit})");
+    Ok(())
+}
+
 async fn remove_one(ctx: &Ctx, input: &[u8]) -> Result<ExitCode> {
     let req = parse_remove(input).map_err(bad)?;
-    // The repository comes from the JSON's cwd, else the process's, else the worktree itself.
-    let opened = context(ctx, req.cwd.as_deref()).await?;
-    let ctx = opened.as_ref().unwrap_or(ctx);
-    let fallback;
-    let ctx = if ctx.ws_opt().is_some() {
-        ctx
-    } else {
-        fallback = Ctx::open(ctx.prog, ctx.env.clone(), req.path.clone()).await?;
-        &fallback
-    };
-    remove(ctx, &req.path.clone().into_os_string(), 1).await?;
-    Ok(ExitCode::SUCCESS)
+    let path = wt::absolutize(Path::new("/"), &req.path);
+    // Where to look the worktree up, best first: the repository at the JSON's cwd when that is
+    // an ancestor of the path, the process's own, then the repository around the path itself.
+    // Every one goes through the trusted-workspace gate, and a repository that does not list the
+    // path as a worktree is skipped, so a foreign cwd changes nothing.
+    let mut from_cwd = Vec::new();
+    if let Some(cwd) = req.cwd.as_deref().filter(|c| wt::is_inside(&path, c)) {
+        from_cwd.extend(probe(ctx, cwd).await);
+    }
+    let mut from_path = Vec::new();
+    if let Some(dir) = path.ancestors().find(|d| d.is_dir()) {
+        from_path.extend(probe(ctx, dir).await);
+    }
+    for c in from_cwd.iter().chain(std::iter::once(ctx)).chain(&from_path) {
+        let Some(ws) = c.ws_opt() else { continue };
+        let all = workspaces::list(&ws.db, Some(ws.repo.key)).await?;
+        let Some(row) = all
+            .iter()
+            .find(|r| same_dir(Path::new(&r.ws.path), &path))
+        else {
+            continue;
+        };
+        let Some(main) = all.first().filter(|m| m.ws.id != row.ws.id) else {
+            return Err(bad(format!("'{}' is the main working tree", path.display())));
+        };
+        let registered = Path::new(&row.ws.path);
+        let verdict = judge(
+            Path::new(&main.ws.path),
+            registered,
+            &row.ws.head,
+            row.ws.ephemeral_until.is_some(),
+        );
+        let force = match verdict {
+            Verdict::Force => 1,
+            Verdict::Gentle => 0,
+            Verdict::Refuse(why) => return Err(bad(why)),
+        };
+        if force > 0 {
+            save_dirty(Path::new(&row.ws.mount), &name_of(registered))?;
+        }
+        remove(c, &registered.as_os_str().to_owned(), force).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    Err(bad(format!(
+        "'{}' is not a registered worktree",
+        path.display()
+    )))
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
@@ -269,5 +426,33 @@ mod tests {
             wt::path_key(&p).ends_with("/repo/.claude/worktrees/bold-fox"),
             "{p:?}"
         );
+    }
+
+    #[test]
+    fn only_hook_made_worktrees_directly_in_the_agent_directory_are_forced() {
+        let main = Path::new(ABS);
+        let at = |tail: &str| PathBuf::from(format!("{ABS}/{tail}"));
+        let forced = |p: &Path, head: &str, eph: bool| judge(main, p, head, eph);
+        let ok = at(".claude/worktrees/bold-fox");
+        assert_eq!(forced(&ok, "refs/heads/agent/bold-fox", false), Verdict::Force);
+        assert_eq!(forced(&ok, "", true), Verdict::Force);
+        // Hand-made inside the directory: never forced.
+        assert_eq!(forced(&ok, "refs/heads/mine", false), Verdict::Gentle);
+        assert_eq!(forced(&ok, "refs/heads/agent/other", false), Verdict::Gentle);
+        // Elsewhere, marked or not: refused.
+        for tail in [
+            "elsewhere",
+            ".claude/worktrees",
+            ".claude/worktrees/a/b",
+            ".claude/other/bold-fox",
+            ".claude/worktrees/.hidden",
+        ] {
+            let got = forced(&at(tail), "refs/heads/agent/bold-fox", true);
+            assert!(matches!(got, Verdict::Refuse(_)), "{tail}: {got:?}");
+        }
+        assert!(matches!(
+            forced(Path::new("/other/.claude/worktrees/bold-fox"), "", true),
+            Verdict::Refuse(_)
+        ));
     }
 }
