@@ -1098,7 +1098,8 @@ mod tests {
 
     #[test]
     fn names_come_from_the_last_component() {
-        assert_eq!(name_of("D:\\a\\b\\wt"), "wt");
+        // A backslash separates path components on Windows only.
+        assert_eq!(name_of("D:\\a\\b\\wt"), if cfg!(windows) { "wt" } else { "D:\\a\\b\\wt" });
         assert_eq!(name_of("/a/b/c"), "c");
         assert_eq!(slashed("D:\\a\\b"), "D:/a/b");
     }
