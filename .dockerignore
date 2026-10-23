@@ -1,0 +1,23 @@
+# Keep the build context to what `cargo build -p asc` reads. deploy/Dockerfile.serve copies only
+# Cargo.toml, Cargo.lock, crates/ and proto/.
+.git
+.gitignore
+.forgejo
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+.turbo/
+bench/
+**/bench-out/
+**/*.bench.json
+asc-it-data/
+.env
+.env.*
+*.swp
+.DS_Store
+*.vsix
+docs/
+packaging/
+tests/
