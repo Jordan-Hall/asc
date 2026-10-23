@@ -46,7 +46,7 @@ pub const MAX_STACK: usize = 10_000;
 /// Most first-parent steps indexed when a branch's mainline has to be built from its root.
 pub const MAX_BACKFILL: usize = 200_000;
 /// Most conflicting paths named in one `LAND_CONFLICT`.
-const MAX_CONFLICT_PATHS: usize = 100;
+pub(crate) const MAX_CONFLICT_PATHS: usize = 100;
 
 type RepoEngine = Engine<BucketObjects, SqlRefs>;
 type RepoGraph = Graph<SqlGraph<BucketObjects, SqlRefs>>;
@@ -60,12 +60,15 @@ pub enum LandError {
     /// Paths the stack and the branch both changed (`LAND_CONFLICT`).
     #[error("land conflict on {} path(s)", .0.len())]
     Conflict(Vec<String>),
+    /// As [`Self::Conflict`], with the `Conflict` records of the content merge (SPEC §8.5 step 3).
+    #[error("land conflict on {} path(s)", .0.len())]
+    Conflicts(Vec<wire::Conflict>),
     #[error("land: {0}")]
     Internal(String),
 }
 
 impl LandError {
-    fn internal(e: impl std::fmt::Display) -> Self {
+    pub(crate) fn internal(e: impl std::fmt::Display) -> Self {
         Self::Internal(e.to_string())
     }
 }
@@ -78,6 +81,23 @@ impl From<LandError> for Status {
                 rpc(RpcError::LandNeedsClientRebase(info(Vec::new())))
             }
             LandError::Conflict(paths) => rpc(RpcError::LandConflict(info(paths))),
+            LandError::Conflicts(details) => {
+                let mut detail = info(
+                    details
+                        .iter()
+                        .map(|c| String::from_utf8_lossy(&c.path).into_owned())
+                        .collect(),
+                );
+                match details
+                    .iter()
+                    .map(asc_rpc::convert::Conflict::try_from)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(records) => detail.conflicts = records,
+                    Err(e) => return internal("land conflict", &e),
+                }
+                rpc(RpcError::LandConflict(detail))
+            }
             LandError::Internal(m) => internal("land", &m),
         }
     }
