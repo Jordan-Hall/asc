@@ -9,6 +9,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = ["git-compat"]
+# The git smart-HTTP compatibility layer (SPEC 25): `asc_git::compat`. Off, the module and its
+# platform dependencies do not exist.
+git-compat = ["dep:rustix", "dep:windows-sys"]
+
 [dependencies]
 asc-core = { workspace = true }
 asc-store = { workspace = true }
@@ -32,3 +38,11 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+# Child supervision of `compat::ServerGit`: a Job Object on Windows, a process group and rlimits on
+# Unix. Both are optional so that a build without `git-compat` never links them.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, optional = true, features = ["process"] }

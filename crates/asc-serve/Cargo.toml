@@ -10,6 +10,9 @@ publish = false
 workspace = true
 
 [features]
+default = ["git-compat"]
+# The git smart-HTTP layer (SPEC 25); forwards to `asc-git`.
+git-compat = ["asc-git/git-compat"]
 # Runs real `turbo` against the server (needs bunx and network).
 it-turbo = []
 

@@ -10,7 +10,9 @@ publish = false
 workspace = true
 
 [features]
-default = ["serve", "vfs-projfs", "vfs-fuse"]
+default = ["serve", "vfs-projfs", "vfs-fuse", "git-compat"]
+# The git smart-HTTP layer (SPEC 25); forwards to `asc-git` and, when `serve` is on, `asc-serve`.
+git-compat = ["asc-git/git-compat", "asc-serve?/git-compat"]
 serve = ["dep:asc-serve"]
 vfs-projfs = ["dep:asc-vfs", "asc-vfs/projfs"]
 vfs-fuse = ["dep:asc-vfs", "asc-vfs/fuse"]
