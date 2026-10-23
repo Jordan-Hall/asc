@@ -1,5 +1,5 @@
-//! Branchless mode (SPEC §21): the client switches and their effective-mode resolver (B01).
+//! Branchless mode (SPEC §21).
 //!
-//! Later branchless units add their own `pub mod` line here (PLAN, branchless track).
+//! Later branchless units add their own `pub mod` line here.
 
-pub mod mode;
+pub mod heads_sink;
