@@ -1024,7 +1024,7 @@ impl ServerMutations {
         let expect = if req.update_ref.is_empty() {
             wire::ref_update::Expect::Absent(true)
         } else {
-            self.ref_expectation(&o, &req.update_ref, onto).await?
+            self.ref_expectation(&o, ctx, &req.update_ref, onto).await?
         };
         self.publish(&o, ctx, id, &req.update_ref, expect).await?;
         Ok(wire::ApplyResponse {
@@ -1033,16 +1033,24 @@ impl ServerMutations {
         })
     }
 
-    /// `Apply` has no `expect`: an existing `update_ref` must still name `onto`, and an absent
-    /// one is created.
+    /// `Apply` and `Merge` have no `expect`: an existing `update_ref` must still name the
+    /// changeset the result was measured against, and an absent one is created. The value is
+    /// read under the name `UpdateRefs` will write (SPEC §21.5.1): in a branchless repository a
+    /// caller's `refs/heads/<n>` is stored as `refs/users/<owner>/heads/<n>`, so reading the
+    /// name as given would find nothing and the later compare-and-set would fail on an existing
+    /// ref. `classify` maps only into the caller's own prefix, so no other owner's ref is read.
     async fn ref_expectation(
         &self,
         o: &Opened,
+        ctx: &CallCtx,
         update_ref: &str,
         onto: ChangesetId,
     ) -> Result<wire::ref_update::Expect, Status> {
         use asc_store::refs::Refs;
-        let name = asc_core::path::RefName::new(update_ref.as_bytes())
+        let policy =
+            crate::refpolicy::RepoPolicy::load(self.registry.pool(), o.entry.key.0).await?;
+        let class = policy.classify(crate::refpolicy::owner_of(&ctx.principal), update_ref)?;
+        let name = asc_core::path::RefName::new(class.stored(update_ref).as_bytes())
             .map_err(|e| invalid(e.to_string()))?;
         let current = self
             .registry
@@ -1431,6 +1439,23 @@ mod fx {
             op_id: Some(Uuid::new_v4()),
             client: None,
         }
+    }
+
+    /// A call by `who` (a Forgejo identity, `<user_id>:<login>`) with a fresh op id.
+    pub fn ctx_as(who: &str) -> CallCtx {
+        CallCtx {
+            principal: Principal { id: who.into() },
+            op_id: Some(Uuid::new_v4()),
+            ..ctx()
+        }
+    }
+
+    /// Makes the repository branchless: a user's `refs/heads/<n>` is stored under `refs/users/`.
+    pub async fn make_branchless(f: &Fx) {
+        sqlx::query("UPDATE repos SET branchless = TRUE")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
     }
 
     pub fn repo_ref() -> Option<wire::RepoRef> {
@@ -1867,6 +1892,34 @@ mod commit_rpc {
             .await
             .unwrap();
         assert!(stored.parents.is_empty());
+    }
+
+    /// `Commit` takes the client's `expect`, which `UpdateRefs` compares against the stored user
+    /// ref: a second commit onto the caller's branch carrying the first one's value succeeds.
+    #[tokio::test]
+    async fn a_second_commit_onto_an_existing_user_branch_in_a_branchless_repo_succeeds() {
+        let f = fx().await;
+        make_branchless(&f).await;
+        let (alice, bob) = ("5:alice", "6:bob");
+        let (a_ref, b_ref) = ("refs/users/5/heads/feat", "refs/users/6/heads/feat");
+        let mut req = request("", vec![put("a", b"1\n")]);
+        req.update_ref = "refs/heads/feat".into();
+        let c1 = id(&f
+            .m
+            .commit_inner(&ctx_as(alice), req.clone())
+            .await
+            .unwrap()
+            .id);
+        let b1 = id(&f.m.commit_inner(&ctx_as(bob), req).await.unwrap().id);
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c1)));
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+
+        let mut next = request(&c1.to_string(), vec![put("b", b"2\n")]);
+        next.update_ref = "refs/heads/feat".into();
+        next.expect = expect_value(c1);
+        let c2 = id(&f.m.commit_inner(&ctx_as(alice), next).await.unwrap().id);
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c2)));
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
     }
 
     #[tokio::test]
@@ -2628,6 +2681,54 @@ new file mode 100644
             ref_target(&f, "refs/heads/topic").await,
             Some(RefTarget::Changeset(id(&second.result)))
         );
+    }
+
+    /// In a branchless repository a caller's `refs/heads/feat` is stored as
+    /// `refs/users/<owner>/heads/feat`. The compare-and-set must read that stored name, or a
+    /// second apply onto the existing branch looks absent and conflicts with itself.
+    #[tokio::test]
+    async fn apply_onto_an_existing_user_branch_in_a_branchless_repo_advances_it() {
+        let f = fx().await;
+        make_branchless(&f).await;
+        let base = lines(&f).await;
+        ingest_one(&f, base).await;
+        let (alice, bob) = ("5:alice", "6:bob");
+        let (a_ref, b_ref) = ("refs/users/5/heads/feat", "refs/users/6/heads/feat");
+
+        let mut req = patch_req(base, MODIFY);
+        req.update_ref = "refs/heads/feat".into();
+        let c1 = id(&f.m.apply_inner(&ctx_as(alice), req).await.unwrap().result);
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c1)));
+        assert_eq!(ref_target(&f, "refs/heads/feat").await, None);
+
+        // Bob's same-named branch is his own ref and starts absent.
+        let mut req = patch_req(base, MODIFY);
+        req.update_ref = "refs/heads/feat".into();
+        let b1 = id(&f.m.apply_inner(&ctx_as(bob), req).await.unwrap().result);
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+
+        // Alice applies onto her branch's value: the ref exists, so the expectation is that value.
+        let mut req = patch_req(
+            c1,
+            "diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-z\n+Z\n",
+        );
+        req.update_ref = "refs/heads/feat".into();
+        let c2 = id(&f.m.apply_inner(&ctx_as(alice), req).await.unwrap().result);
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c2)));
+        // Bob's ref did not move, and his expectation still reads his own value, not Alice's.
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+        let mut req = patch_req(
+            base,
+            "diff --git a/z.txt b/z.txt\n--- a/z.txt\n+++ b/z.txt\n@@ -1 +1 @@\n-z\n+Y\n",
+        );
+        req.update_ref = "refs/heads/feat".into();
+        let e = f.m.apply_inner(&ctx_as(bob), req).await.unwrap_err();
+        assert!(
+            matches!(code(&e).as_str(), "REF_CONFLICT" | "NOT_FAST_FORWARD"),
+            "{e:?}"
+        );
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c2)));
     }
 
     #[tokio::test]

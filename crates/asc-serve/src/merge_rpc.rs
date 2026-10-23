@@ -555,7 +555,7 @@ impl ServerMutations {
                 .map_err(|e| internal("on_rewritten", &e))?;
             return tx.commit().await.map_err(|e| internal("commit", &e));
         }
-        let expect = self.ref_expectation(o, &req.update_ref, base).await?;
+        let expect = self.ref_expectation(o, ctx, &req.update_ref, base).await?;
         let update = wire::UpdateRefsRequest {
             repo: Some(wire::RepoRef {
                 name: ctx.repo.to_string(),
@@ -1320,6 +1320,44 @@ mod tests {
     }
 
     // ------------------------------------------------------------------ refs, observer, replay
+
+    /// In a branchless repository the caller's `refs/heads/feat` is stored as
+    /// `refs/users/<owner>/heads/feat`; the merge's compare-and-set reads that stored name.
+    #[tokio::test]
+    async fn a_second_merge_onto_an_existing_user_branch_in_a_branchless_repo_advances_it() {
+        let f = fx().await;
+        make_branchless(&f).await;
+        let (alice, bob) = ("5:alice", "6:bob");
+        let (a_ref, b_ref) = ("refs/users/5/heads/feat", "refs/users/6/heads/feat");
+        let r = root(&f).await;
+        let ours = make(&f, &[r], "ours", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
+        let t1 = make(&f, &[r], "t1", &[("g.txt", Some("G\n"))]).await;
+        let t2 = make(&f, &[r], "t2", &[("h.txt", Some("h\n"))]).await;
+        let mut q = req(ours, t1, wire::MergeStyle::Squash);
+        q.update_ref = "refs/heads/feat".into();
+        let a1 = result_of(&f.m.merge_inner(&ctx_as(alice), q.clone()).await.unwrap());
+        let b1 = result_of(&f.m.merge_inner(&ctx_as(bob), q).await.unwrap());
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(a1)));
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+        assert_eq!(ref_target(&f, "refs/heads/feat").await, None);
+
+        // The ref exists, so the expectation is its value and the merge onto it advances it.
+        let mut next = req(a1, t2, wire::MergeStyle::Squash);
+        next.update_ref = "refs/heads/feat".into();
+        let a2 = result_of(&f.m.merge_inner(&ctx_as(alice), next).await.unwrap());
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(a2)));
+        // Bob's same-named branch is untouched, and a stale base is still refused for him.
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+        let mut stale = req(ours, t2, wire::MergeStyle::Squash);
+        stale.update_ref = "refs/heads/feat".into();
+        let e = f.m.merge_inner(&ctx_as(bob), stale).await.unwrap_err();
+        assert!(
+            matches!(code(&e).as_str(), "REF_CONFLICT" | "NOT_FAST_FORWARD"),
+            "{e:?}"
+        );
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(a2)));
+    }
 
     #[tokio::test]
     async fn with_a_ref_the_pipeline_moves_it_and_tells_the_observer_in_that_transaction() {
