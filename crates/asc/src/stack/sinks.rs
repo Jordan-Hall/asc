@@ -252,7 +252,11 @@ impl RewriteSink for Sinks {
         let recorder = Recorder::new(rows);
         // A rule violation (no predecessor for an amend, too many predecessors) is the
         // caller's bug; the command itself has already succeeded.
-        let _ = run_sync(|| recorder.record(new, preds, kind, change::OpId(op.0)));
+        run_sync(|| async {
+            if let Ok(meta) = recorder.record(new, preds, kind, change::OpId(op.0)).await {
+                crate::branchless::heads_sink::record(&ctx, new, meta.change, preds, kind).await;
+            }
+        });
     }
 }
 
