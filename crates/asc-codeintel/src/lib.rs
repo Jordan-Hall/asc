@@ -9,4 +9,5 @@ pub mod lang;
 pub mod plan;
 pub mod secrets;
 pub mod skip;
+pub mod scope;
 pub mod tags;
