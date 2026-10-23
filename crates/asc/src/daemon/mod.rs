@@ -13,6 +13,7 @@
 pub mod install;
 pub mod lifecycle;
 pub mod metrics;
+pub mod plugin_api;
 pub mod scheduler;
 pub mod service;
 pub mod workspace_factory;
@@ -29,8 +30,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use asc_rpc::ipc::{IpcEndpoint, IpcError, IpcListener, WorkspaceServer, serve_incoming};
+#[cfg(test)]
 use futures::stream::Empty;
 use tokio::sync::Notify;
+#[cfg(test)]
 use tonic::Status;
 
 /// The daemon's version: `Ping.version`, compared by the CLI (SPEC §9.1, "Version skew").
@@ -185,12 +188,15 @@ fn remove_own_pid(run_dir: &Path) {
 
 // ------------------------------------------------------------------------------ service
 
+#[cfg(test)]
 const NOT_SERVED: &str = "this daemon RPC is not served yet";
 
+#[cfg(test)]
 fn not_served<T>() -> Result<T, Status> {
     Err(Status::unimplemented(NOT_SERVED))
 }
 
+#[cfg(test)]
 type Never<T> = Empty<Result<T, Status>>;
 
 // ------------------------------------------------------------------------------ run

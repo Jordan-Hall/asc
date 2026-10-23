@@ -6,7 +6,6 @@
 
 use std::process::ExitCode;
 
-use asc_rpc::ipc::IpcEndpoint;
 use asc_state::AscHome;
 
 use super::common::{CliError, Ctx, Result};
@@ -141,7 +140,7 @@ pub async fn stop_skewed_daemon() {
     if lifecycle::disabled(&|k: &str| std::env::var_os(k)) {
         return;
     }
-    let Ok(endpoint) = IpcEndpoint::for_current_user() else { return };
+    let Ok(endpoint) = lifecycle::endpoint_for_current_user() else { return };
     let proc = SystemProcess {
         exe: std::path::PathBuf::new(),
         home: std::path::PathBuf::new(),

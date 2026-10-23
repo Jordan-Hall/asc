@@ -69,11 +69,21 @@ pub struct Config {
     pub poll: Duration,
 }
 
+/// The endpoint of the current user's daemon. `ASC_DAEMON_ENDPOINT` names another one (a pipe
+/// name or a socket path); the plugin API tests use it so a test daemon never meets the
+/// user's own. The variable is the user's own environment, like `ASC_HOME`.
+pub fn endpoint_for_current_user() -> Result<IpcEndpoint, IpcError> {
+    match std::env::var("ASC_DAEMON_ENDPOINT") {
+        Ok(name) if !name.is_empty() => Ok(IpcEndpoint::from_raw(name)),
+        _ => IpcEndpoint::for_current_user(),
+    }
+}
+
 impl Config {
     /// The configuration for the current user and `home`.
     pub fn for_home(home: &AscHome) -> Result<Self, IpcError> {
         Ok(Self {
-            endpoint: IpcEndpoint::for_current_user()?,
+            endpoint: endpoint_for_current_user()?,
             run_dir: home.run(),
             log_dir: home.log(),
             version: super::VERSION.to_owned(),
