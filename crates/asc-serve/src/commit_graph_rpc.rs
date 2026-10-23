@@ -34,6 +34,7 @@ use futures::stream::TryStreamExt;
 use futures::stream::{self, StreamExt};
 use tonic::Status;
 
+use crate::history::linehist_rpc::ServerLineHistory;
 use crate::idmode::{Eng, IdCodec};
 use crate::read::{LogEntryEnricher, ReadHooks};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
@@ -53,24 +54,24 @@ const MAX_TOKEN_CHARS: usize = 8192;
 /// Refs a preset expands to, and refs read for labels.
 const MAX_REFS: usize = MAX_LIST;
 
-fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
+pub(crate) fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
     tracing::error!(%context, error = %e, "internal error");
     Status::internal("internal error")
 }
 
-fn data_loss(context: &str, e: &dyn std::fmt::Display) -> Status {
+pub(crate) fn data_loss(context: &str, e: &dyn std::fmt::Display) -> Status {
     tracing::error!(%context, error = %e, "stored data is damaged or missing");
     Status::data_loss("stored object is corrupt or missing")
 }
 
-fn store_status(e: objects::Error) -> Status {
+pub(crate) fn store_status(e: objects::Error) -> Status {
     match e {
         objects::Error::Corrupt(_) | objects::Error::Codec(..) => data_loss("object", &e),
         e => internal("object store", &e),
     }
 }
 
-fn commit_status(e: commit::Error) -> Status {
+pub(crate) fn commit_status(e: commit::Error) -> Status {
     match e {
         commit::Error::MissingChangeset(id) => {
             Status::not_found(format!("changeset {id} is missing"))
@@ -115,7 +116,7 @@ fn page_status(e: commit_graph::Error) -> Status {
     }
 }
 
-fn registry_status(e: RegistryError) -> Status {
+pub(crate) fn registry_status(e: RegistryError) -> Status {
     match e {
         RegistryError::NotFound(_) => Status::not_found("no such repository"),
         e => internal("registry", &e),
@@ -183,11 +184,22 @@ impl LogEntryEnricher for StatsEnricher {
 /// The `commit_graph` method of the `insights` handler group.
 pub struct ServerCommitGraph {
     registry: Arc<Registry>,
+    /// The `LineHistory` method (PLAN C30a); `UNIMPLEMENTED` until set.
+    line_history: Option<ServerLineHistory>,
 }
 
 impl ServerCommitGraph {
     pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+        Self {
+            registry,
+            line_history: None,
+        }
+    }
+
+    /// Serves `LineHistory` through `handler`.
+    pub fn with_line_history(mut self, handler: ServerLineHistory) -> Self {
+        self.line_history = Some(handler);
+        self
     }
 
     async fn rev(
@@ -452,6 +464,17 @@ impl Build {
 
 #[async_trait]
 impl InsightsHandler for ServerCommitGraph {
+    async fn line_history(
+        &self,
+        ctx: &CallCtx,
+        req: wire::LineHistoryRequest,
+    ) -> Result<RpcStream<wire::LogResponse>, Status> {
+        match &self.line_history {
+            Some(h) => h.line_history(ctx, req).await,
+            None => Err(Status::unimplemented("LineHistory is not available")),
+        }
+    }
+
     async fn commit_graph(
         &self,
         ctx: &CallCtx,
@@ -526,7 +549,9 @@ impl InsightsHandler for ServerCommitGraph {
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHooks>) {
     hooks.add_enricher(Arc::new(StatsEnricher));
     ext.handlers
-        .set_insights(Arc::new(ServerCommitGraph::new(registry.clone())))
+        .set_insights(Arc::new(ServerCommitGraph::new(registry.clone()).with_line_history(
+            ServerLineHistory::new(registry.clone(), hooks.clone()),
+        )))
         .expect("the insights handler group is registered once");
 }
 
