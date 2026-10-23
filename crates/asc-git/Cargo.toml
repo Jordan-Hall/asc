@@ -18,6 +18,7 @@ gix = { workspace = true }
 gix-config = { workspace = true }
 gix-hash = { workspace = true }
 gix-index = { workspace = true }
+gix-sec = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 filetime = { workspace = true }
