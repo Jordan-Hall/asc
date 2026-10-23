@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod forgejo;
+pub mod gc;
 pub mod graph_sql;
 pub mod http;
 pub mod idmode;
@@ -264,6 +265,19 @@ pub async fn serve(
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
+    // Collection deletes data, so it runs only when `[gc] enabled` is set.
+    let collector = if cfg.gc.enabled {
+        let service = Arc::new(gc::GcService::new(
+            registry.clone(),
+            ext.pipeline.clone(),
+            cfg.gc.to_config()?,
+        ));
+        Some(service.spawn_worker(std::time::Duration::from_secs(
+            cfg.gc.interval_hours * 3600,
+        )))
+    } else {
+        None
+    };
     let served = server
         .add_routes(routes)
         .serve_with_shutdown(cfg.listen, async move {
@@ -276,6 +290,9 @@ pub async fn serve(
     sweeper.abort();
     if let Some(p) = poller {
         p.abort();
+    }
+    if let Some(c) = collector {
+        c.abort();
     }
     admin.abort();
     served?;

@@ -35,7 +35,7 @@ use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 const MAX_PUSH_OPTIONS: usize = 64;
 const MAX_PUSH_OPTION_LEN: usize = 1024;
 /// Advisory lock key of the GC fence (Postgres).
-const GC_LOCK_KEY: i64 = 0x0063_675f_6763;
+pub(crate) const GC_LOCK_KEY: i64 = 0x0063_675f_6763;
 /// Ref namespaces that are local to a client and never stored on a server (SPEC §2.7).
 const LOCAL_ONLY: &[&str] = &["refs/remotes/", "refs/stash", "refs/bisect/", "refs/for/"];
 
@@ -124,6 +124,7 @@ pub struct PipelineHooks {
     push: OnceLock<Arc<dyn PushHooks>>,
     overlap: OnceLock<Arc<dyn OverlapPolicy>>,
     gc: GcLock,
+    gc_roots: crate::gc::GcRoots,
 }
 
 impl PipelineHooks {
@@ -160,6 +161,11 @@ impl PipelineHooks {
 
     pub fn gc(&self) -> &GcLock {
         &self.gc
+    }
+
+    /// Where units register their `GcRootSource` (O01).
+    pub fn gc_roots(&self) -> &crate::gc::GcRoots {
+        &self.gc_roots
     }
 }
 

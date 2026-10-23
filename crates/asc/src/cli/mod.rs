@@ -77,6 +77,7 @@ pub mod format_patch;
 pub mod fsck;
 pub mod gc;
 pub mod graph;
+pub mod gc_store;
 pub mod grep;
 pub mod install_shim;
 pub mod help_git;
