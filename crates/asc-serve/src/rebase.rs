@@ -754,6 +754,35 @@ mod tests {
         assert_eq!(marked, want);
     }
 
+    /// `Rebase` takes the client's `expect`, which `UpdateRefs` compares against the stored user
+    /// ref: a second rebase onto the caller's branch carrying the first one's value succeeds.
+    #[tokio::test]
+    async fn a_second_rebase_onto_an_existing_user_branch_in_a_branchless_repo_succeeds() {
+        let f = fx().await;
+        make_branchless(&f).await;
+        let (alice, bob) = ("5:alice", "6:bob");
+        let (a_ref, b_ref) = ("refs/users/5/heads/feat", "refs/users/6/heads/feat");
+        let (base, mine, onto) = conflicting(&f).await;
+        let mut q = req(base, mine, onto);
+        q.update_ref = "refs/heads/feat".into();
+        q.resolutions = vec![resolution(mine, "f.txt", "resolved\n")];
+        let a1 = id(&f.m.rebase(&ctx_as(alice), q.clone()).await.unwrap().result);
+        let b1 = id(&f.m.rebase(&ctx_as(bob), q).await.unwrap().result);
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(a1)));
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+
+        // Rebase a new changeset onto the branch's tip, expecting the branch's value.
+        let extra = make(&f, &[base], "extra", &[("t.txt", Some("t\n"))]).await;
+        let mut next = req(base, extra, a1);
+        next.update_ref = "refs/heads/feat".into();
+        next.expect = expect_value(a1);
+        let a2 = id(&f.m.rebase(&ctx_as(alice), next).await.unwrap().result);
+        assert_ne!(a2, a1);
+        assert_eq!(read(&f, a2, "t.txt").await, Some(b"t\n".to_vec()));
+        assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(a2)));
+        assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
+    }
+
     #[tokio::test]
     async fn resolutions_settle_the_conflict_and_the_ref_moves_once() {
         let f = fx().await;
