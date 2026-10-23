@@ -718,14 +718,62 @@ mod forgejo {
             .await
             .unwrap();
         assert_eq!(own.principal.id, "-2:gitea-actions");
-        // Repository names compare case-insensitively, as Forgejo resolves them.
+        // Repository names compare exactly: the registry is case-sensitive, so another case
+        // is another repo even when Forgejo answers "allowed" for it.
+        for other in ["asc/DDS", "asc/dds", "asc/DDS"] {
+            fake.with(|i| {
+                i.authz
+                    .insert(("task".into(), other.into()), task("asc/dds"));
+            });
+            assert_eq!(
+                with.decide(Some(&t), other, Access::Write)
+                    .await
+                    .unwrap_err(),
+                AuthError::Forbidden,
+                "{other}"
+            );
+        }
         fake.with(|i| {
             i.authz
-                .insert(("task".into(), "asc/DDS".into()), task("asc/dds"));
+                .insert(("task".into(), "asc/asc".into()), task("asc/asc"));
+            for other in ["asc/ASC", "asc/ASC"] {
+                i.authz
+                    .insert(("task".into(), other.into()), task("asc/asc"));
+            }
         });
-        with.decide(Some(&t), "asc/DDS", Access::Write)
+        with.decide(Some(&t), "asc/asc", Access::Write)
             .await
             .unwrap();
+        for other in ["asc/ASC", "asc/ASC"] {
+            assert_eq!(
+                with.decide(Some(&t), other, Access::Read)
+                    .await
+                    .unwrap_err(),
+                AuthError::Forbidden,
+                "{other}"
+            );
+        }
+        // A composition grant matches both names exactly.
+        let folded = internal_authz(
+            &url,
+            vec![
+                CompositionGrant {
+                    parent: "asc/dds".into(),
+                    child: "asc/soma".into(),
+                },
+                CompositionGrant {
+                    parent: "asc/DDS".into(),
+                    child: "asc/soma".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            folded
+                .decide(Some(&t), "asc/soma", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Forbidden
+        );
         // Another repo the task cannot reach: Forgejo names the Actions user in the refusal.
         fake.with(|i| {
             i.authz.insert(
