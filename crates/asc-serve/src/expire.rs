@@ -74,6 +74,7 @@ pub struct Expirer {
     page: i64,
     batch: usize,
     max_per_run: usize,
+    landed_ref_days: u32,
 }
 
 impl Expirer {
@@ -85,7 +86,16 @@ impl Expirer {
             page: SCAN_PAGE,
             batch: DELETE_BATCH,
             max_per_run: MAX_PER_RUN,
+            landed_ref_days: crate::reftl::DEFAULT_LANDED_REF_DAYS,
         }
+    }
+
+    /// `[cloud] landed_ref_days`: a landed user ref is deleted this long after it landed
+    /// (SPEC §21.2.4); `0` disables.
+    #[must_use]
+    pub fn with_landed_ref_days(mut self, days: u32) -> Self {
+        self.landed_ref_days = days;
+        self
     }
 
     /// Smaller pages, so a test can cross a page boundary without hundreds of refs.
@@ -102,8 +112,25 @@ impl Expirer {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(EXPIRE_INTERVAL);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let reaper = crate::reftl::LandedReaper::new(
+                self.registry.clone(),
+                self.clone(),
+                self.landed_ref_days,
+            );
+            let mut n: u32 = 0;
             loop {
                 tick.tick().await;
+                // Landed user refs go hourly (SPEC §21.2.4), every sixth tick.
+                if n.is_multiple_of(6) {
+                    match reaper.run_once(now()).await {
+                        Ok(r) if r != crate::reftl::ReapReport::default() => {
+                            tracing::info!(?r, "expired landed user refs");
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "the landed-ref expiry failed"),
+                    }
+                }
+                n = n.wrapping_add(1);
                 match self.run_once(now()).await {
                     Ok(r) if r != ExpireReport::default() => {
                         tracing::info!(
@@ -256,6 +283,24 @@ impl Expirer {
                 }
             }
         }
+    }
+
+    /// Deletes one ref only if it still names `target` (`ABORTED` when it moved). A user ref
+    /// must carry `expires_at <= at` (the internal path refuses any other).
+    pub(crate) async fn delete_exact(
+        &self,
+        repo: &RepoName,
+        name: &str,
+        target: &RefTarget,
+        at: i64,
+    ) -> Result<(), tonic::Status> {
+        let due = Due {
+            repo: repo.to_string(),
+            name: name.to_owned(),
+            target: *target,
+        };
+        let user = crate::refpolicy::parse_user_ref(name).is_some();
+        self.delete_any(repo, &[&due], user, at).await
     }
 
     async fn delete_any(

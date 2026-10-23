@@ -404,6 +404,32 @@ impl TxWrites<'_> {
             mainline::apply(tx, entry.ns, &m.refname, m.base, &m.steps)
                 .await
                 .map_err(|e| internal("mainline", &e))?;
+            // The landing author's user refs whose stack has now landed get their marker
+            // (SPEC §21.2.4a); other users' refs are never read.
+            let steps: Vec<ChangesetId> = m.steps.iter().map(|s| s.cs).collect();
+            let old_tip = match txn.updates.as_slice() {
+                [
+                    RefUpdate {
+                        expect: Expect::Value(RefTarget::Changeset(c)),
+                        ..
+                    },
+                ] => Some(*c),
+                _ => None,
+            };
+            crate::reftl::mark_landed(
+                tx,
+                entry.ns,
+                entry.key.0,
+                &m.refname,
+                &txn.actor.id,
+                &steps,
+                old_tip,
+                self.pairs,
+                crate::update::now(),
+                crate::refauthz::DEFAULT_MAX_USER_REFS,
+            )
+            .await
+            .map_err(|e| internal("landed marker", &e))?;
         }
         Ok(())
     }
