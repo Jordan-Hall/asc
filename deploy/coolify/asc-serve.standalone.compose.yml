@@ -66,14 +66,16 @@ services:
       - >-
         set -eu;
         if [ -z "$$ADMIN_TOKEN" ]; then echo "no admin token: assuming already provisioned"; exit 0; fi;
-        H="Authorization: Bearer $$ADMIN_TOKEN";
-        curl -fsS -H "$$H" "$$ADMIN/v2/GetBucketInfo?globalAlias=$$BUCKET" -o /tmp/b 2>/dev/null
-        || curl -fsS -H "$$H" -X POST "$$ADMIN/v2/CreateBucket" -d "{\"globalAlias\":\"$$BUCKET\"}" -o /tmp/b;
+        umask 077; H=/tmp/h; printf 'Authorization: Bearer %s\n' "$$ADMIN_TOKEN" > $$H;
+        curl -fsS -H @$$H "$$ADMIN/v2/GetBucketInfo?globalAlias=$$BUCKET" -o /tmp/b 2>/dev/null
+        || curl -fsS -H @$$H -X POST "$$ADMIN/v2/CreateBucket" -d "{\"globalAlias\":\"$$BUCKET\"}" -o /tmp/b;
         BID=$$(grep -o '"id" *: *"[0-9a-f]\{64\}"' /tmp/b | head -n1 | grep -o '[0-9a-f]\{64\}');
         [ -n "$$BID" ] || { echo "no bucket id"; exit 1; };
-        curl -fsS -H "$$H" "$$ADMIN/v2/GetKeyInfo?id=$$KEY_ID" -o /dev/null 2>/dev/null
-        || curl -fsS -H "$$H" -X POST "$$ADMIN/v2/ImportKey" -d "{\"accessKeyId\":\"$$KEY_ID\",\"secretAccessKey\":\"$$KEY_SECRET\",\"name\":\"asc-staging\"}" -o /dev/null;
-        curl -fsS -H "$$H" -X POST "$$ADMIN/v2/AllowBucketKey" -d "{\"bucketId\":\"$$BID\",\"accessKeyId\":\"$$KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":false}}" -o /dev/null;
+        curl -fsS -H @$$H "$$ADMIN/v2/GetKeyInfo?id=$$KEY_ID" -o /dev/null 2>/dev/null
+        || printf '{"accessKeyId":"%s","secretAccessKey":"%s","name":"asc-staging"}' "$$KEY_ID" "$$KEY_SECRET"
+        | curl -fsS -H @$$H -X POST "$$ADMIN/v2/ImportKey" --data-binary @- -o /dev/null;
+        curl -fsS -H @$$H -X POST "$$ADMIN/v2/AllowBucketKey" -d "{\"bucketId\":\"$$BID\",\"accessKeyId\":\"$$KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":false}}" -o /dev/null;
+        rm -f $$H;
         echo "garage: bucket $$BUCKET ready, key granted read+write"
     tmpfs:
       - /tmp:size=1m,mode=1777
