@@ -254,7 +254,12 @@ impl Refusal {
         Self::empty(StatusCode::NOT_FOUND, reason)
     }
 
-    fn retry(status: StatusCode, reason: &'static str, after: Duration, body: &'static str) -> Self {
+    fn retry(
+        status: StatusCode,
+        reason: &'static str,
+        after: Duration,
+        body: &'static str,
+    ) -> Self {
         let mut r = Self::plain(status, reason, body);
         let secs = after.as_secs().max(1);
         r.response
@@ -375,12 +380,7 @@ enum Msg {
 type Finish = Box<dyn FnOnce(&ChildReport, bool, u64) + Send>;
 
 /// Sends `msg`, waiting while the client reads slowly, up to the child's idle and wall limits.
-fn send_bounded(
-    tx: &mpsc::Sender<Msg>,
-    mut msg: Msg,
-    idle: Duration,
-    deadline: Instant,
-) -> bool {
+fn send_bounded(tx: &mpsc::Sender<Msg>, mut msg: Msg, idle: Duration, deadline: Instant) -> bool {
     let stalled = Instant::now();
     loop {
         match tx.try_send(msg) {
@@ -502,7 +502,9 @@ fn stream_body(head: Vec<Bytes>, rx: mpsc::Receiver<Msg>) -> Body {
 impl GitHttp {
     fn authorize_error(e: AuthError) -> Refusal {
         match e {
-            AuthError::Unauthenticated => Refusal::empty(StatusCode::UNAUTHORIZED, "unauthenticated"),
+            AuthError::Unauthenticated => {
+                Refusal::empty(StatusCode::UNAUTHORIZED, "unauthenticated")
+            }
             AuthError::Malformed => Refusal::empty(StatusCode::BAD_REQUEST, "malformed"),
             AuthError::Forbidden => Refusal::not_found("no_read"),
         }
@@ -535,10 +537,7 @@ impl GitHttp {
     }
 
     /// Brings the view in step, or answers `503`/`500`.
-    async fn ready_view(
-        &self,
-        repo: &Arc<RepoEntry>,
-    ) -> Result<asc_git::compat::GitView, Refusal> {
+    async fn ready_view(&self, repo: &Arc<RepoEntry>) -> Result<asc_git::compat::GitView, Refusal> {
         match self.views.ensure(repo, self.registry.refs()).await {
             Ok(ViewAnswer::Ready(_)) => {}
             Ok(ViewAnswer::Building { retry_after }) => {
@@ -593,10 +592,9 @@ impl GitHttp {
             advertise_refs: advertise,
             protocol,
         };
-        let spawned = tokio::task::spawn_blocking(move || {
-            view.spawn_pack(PackService::UploadPack, &req)
-        })
-        .await;
+        let spawned =
+            tokio::task::spawn_blocking(move || view.spawn_pack(PackService::UploadPack, &req))
+                .await;
         let child = match spawned {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => {
@@ -627,9 +625,7 @@ impl GitHttp {
             metrics.request(service, version, status);
             metrics.bytes("out", out_bytes);
             metrics.bytes("in", audit.bytes_in);
-            metrics
-                .child_seconds
-                .observe(report.elapsed.as_secs_f64());
+            metrics.child_seconds.observe(report.elapsed.as_secs_f64());
             if report.killed.is_some() {
                 metrics.reject("killed");
             }
@@ -809,16 +805,14 @@ impl GitHttp {
                         "asc: unsupported content type\n",
                     ));
                 }
-                let encoding =
-                    body_encoding(header_str(&parts.headers, header::CONTENT_ENCODING)).map_err(
-                        |_| {
-                            Refusal::plain(
-                                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                                "content_encoding",
-                                "asc: unsupported content encoding\n",
-                            )
-                        },
-                    )?;
+                let encoding = body_encoding(header_str(&parts.headers, header::CONTENT_ENCODING))
+                    .map_err(|_| {
+                        Refusal::plain(
+                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                            "content_encoding",
+                            "asc: unsupported content encoding\n",
+                        )
+                    })?;
                 let cap = self.limits.fetch_body_bytes;
                 let deadline = tokio::time::Instant::now() + self.limits.request_timeout;
                 let raw = read_body(body, cap, self.limits.idle_timeout, deadline)
@@ -890,7 +884,13 @@ impl GitHttp {
         }
     }
 
-    async fn handle(&self, endpoint: Endpoint, owner: String, repo: String, req: Request) -> Response {
+    async fn handle(
+        &self,
+        endpoint: Endpoint,
+        owner: String,
+        repo: String,
+        req: Request,
+    ) -> Response {
         let mut audit = Audit {
             method: "-",
             principal: None,
@@ -916,11 +916,7 @@ impl GitHttp {
                     self.metrics.reject(refusal.reason);
                     self.metrics
                         .request(audit.service, audit.version, refusal.status);
-                    audit.emit(
-                        &format!("rejected:{}", refusal.reason),
-                        refusal.status,
-                        0,
-                    );
+                    audit.emit(&format!("rejected:{}", refusal.reason), refusal.status, 0);
                 }
                 let mut response = refusal.response;
                 // A 401's challenge is added by the credential edge (`authn::guard`).

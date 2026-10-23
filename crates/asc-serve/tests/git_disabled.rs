@@ -86,7 +86,10 @@ async fn send(method: &str, path: &str, auth: Option<&str>) -> Answer {
     if let Some(a) = auth {
         req = req.header(header::AUTHORIZATION, a);
     }
-    let res = app().oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+    let res = app()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     let status = res.status();
     let h = |n: &str| {
         res.headers()
@@ -102,7 +105,9 @@ async fn send(method: &str, path: &str, auth: Option<&str>) -> Answer {
         .iter()
         .filter_map(|v| v.to_str().ok().map(str::to_owned))
         .collect();
-    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
     Answer {
         status,
         flag,
@@ -141,7 +146,9 @@ async fn an_authenticated_reader_gets_403_and_the_flag_whatever_the_user_name() 
             assert_eq!(a.status, StatusCode::FORBIDDEN, "{method} {path} {user}");
             assert_eq!(a.flag.as_deref(), Some("disabled"));
             assert!(
-                a.content_type.as_deref().is_some_and(|c| c.starts_with("text/plain")),
+                a.content_type
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("text/plain")),
                 "{:?}",
                 a.content_type
             );
@@ -150,9 +157,15 @@ async fn an_authenticated_reader_gets_403_and_the_flag_whatever_the_user_name() 
     }
     // The write token and a Bearer or `token` credential are the same.
     let a = send("GET", PATHS[0].1, Some(&format!("Bearer {WRITER}"))).await;
-    assert_eq!((a.status, a.flag.as_deref()), (StatusCode::FORBIDDEN, Some("disabled")));
+    assert_eq!(
+        (a.status, a.flag.as_deref()),
+        (StatusCode::FORBIDDEN, Some("disabled"))
+    );
     let a = send("GET", PATHS[0].1, Some(&format!("token {WRITER}"))).await;
-    assert_eq!((a.status, a.flag.as_deref()), (StatusCode::FORBIDDEN, Some("disabled")));
+    assert_eq!(
+        (a.status, a.flag.as_deref()),
+        (StatusCode::FORBIDDEN, Some("disabled"))
+    );
 }
 
 #[tokio::test]
@@ -171,13 +184,23 @@ async fn a_repo_the_principal_cannot_read_is_404_and_a_bad_token_is_401() {
     assert_eq!(a.status, StatusCode::UNAUTHORIZED);
     assert!(a.challenges[0].starts_with("Basic "));
     // A name that cannot be a repository is 404 after a good credential, never a probe oracle.
-    let a = send("GET", "/acme/..%2fx/info/refs?service=git-upload-pack", Some(&basic("git", READER))).await;
+    let a = send(
+        "GET",
+        "/acme/..%2fx/info/refs?service=git-upload-pack",
+        Some(&basic("git", READER)),
+    )
+    .await;
     assert_eq!(a.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
 async fn a_token_in_the_query_and_a_malformed_header_are_400() {
-    let a = send("GET", "/acme/web/info/refs?service=git-upload-pack&token=abc", None).await;
+    let a = send(
+        "GET",
+        "/acme/web/info/refs?service=git-upload-pack&token=abc",
+        None,
+    )
+    .await;
     assert_eq!(a.status, StatusCode::BAD_REQUEST);
     let a = send("GET", PATHS[0].1, Some("Digest nope")).await;
     assert_eq!(a.status, StatusCode::BAD_REQUEST);
@@ -217,7 +240,10 @@ async fn real_git_is_told_the_protocol_is_disabled() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("403"), "{stderr}");
-    assert!(!stderr.contains(READER), "no secret on git's stderr: {stderr}");
+    assert!(
+        !stderr.contains(READER),
+        "no secret on git's stderr: {stderr}"
+    );
 }
 
 /// Without the feature the binary holds no `compat` code (SPEC §25.9: what compiles out).
