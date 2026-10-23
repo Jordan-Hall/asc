@@ -1094,13 +1094,66 @@ mod os {
         pgid: u32,
     }
 
+    /// The `RLIMIT_NPROC` value that lets one child tree fork `processes` more tasks.
+    ///
+    /// `RLIMIT_NPROC` is per real UID, not per process tree: on Linux the kernel compares the
+    /// number of tasks (threads included) owned by the UID, across every process of that UID,
+    /// with the limit. The server's own tokio and blocking threads therefore count, and an
+    /// absolute limit of `processes` (64) is already exceeded before git is spawned, so every
+    /// `fork` fails with `EAGAIN`. The cap is relative instead: the UID's tasks at spawn time
+    /// plus `processes`, and at least `current + 1` so that the child itself can start. A
+    /// fork bomb in a hook or a pack helper still hits the cap after `processes` tasks.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(super) fn relative_nproc(current: u64, processes: u64) -> u64 {
+        current.saturating_add(processes.max(1))
+    }
+
+    /// Tasks (threads included) owned by the real UID, from `/proc`. Fails closed: when the
+    /// count is unknown no cap can be derived, so the spawn is refused.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn uid_task_count() -> io::Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+
+        let uid = rustix::process::getuid().as_raw();
+        let mut tasks = 0u64;
+        for entry in std::fs::read_dir("/proc")? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name();
+            if !name
+                .to_str()
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            {
+                continue;
+            }
+            // A process that exits during the scan is simply gone.
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.uid() != uid {
+                continue;
+            }
+            if let Ok(threads) = std::fs::read_dir(entry.path().join("task")) {
+                tasks += threads.filter(Result::is_ok).count() as u64;
+            }
+        }
+        if tasks == 0 {
+            return Err(io::Error::other("cannot count the tasks of this user"));
+        }
+        Ok(tasks)
+    }
+
     pub fn spawn(mut cmd: Command, limits: &ChildLimits) -> io::Result<(Child, Group)> {
         cmd.process_group(0);
-        let (memory, cpu_secs, processes) = (
-            limits.memory,
-            limits.cpu.as_secs().max(1),
-            u64::from(limits.processes),
-        );
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let processes = {
+            // Counted here, before the fork: `pre_exec` must not allocate or read files.
+            let wanted = relative_nproc(uid_task_count()?, u64::from(limits.processes));
+            // A hard limit cannot be raised without privilege: stay within the one in force.
+            rustix::process::getrlimit(Resource::Nproc)
+                .maximum
+                .map_or(wanted, |hard| wanted.min(hard))
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let processes = u64::from(limits.processes);
+        let (memory, cpu_secs) = (limits.memory, limits.cpu.as_secs().max(1));
         // SAFETY: the closure only calls `setrlimit`, an async-signal-safe system call, and
         // allocates nothing.
         unsafe {
@@ -1522,5 +1575,58 @@ mod tests {
         ] {
             assert!(!MIGRATION_RELAXED.contains(&dangerous), "{dangerous}");
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_nproc_cap_is_relative_and_never_below_one_more_than_now() {
+        assert_eq!(os::relative_nproc(500, 64), 564);
+        assert_eq!(os::relative_nproc(500, 0), 501);
+        assert_eq!(os::relative_nproc(u64::MAX, 64), u64::MAX);
+    }
+
+    /// `RLIMIT_NPROC` counts every task of the UID, so a server with more threads than
+    /// `limits.processes` must still be able to start a child, and that child must still be
+    /// capped at `limits.processes` more tasks.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_starts_while_the_parent_holds_more_threads_than_the_cap_and_cannot_fork_past_it() {
+        use std::sync::mpsc;
+
+        let (release, parked) = mpsc::channel::<()>();
+        let parked = Arc::new(Mutex::new(parked));
+        let threads: Vec<_> = (0..100)
+            .map(|_| {
+                let parked = Arc::clone(&parked);
+                std::thread::spawn(move || {
+                    let _ = parked.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                })
+            })
+            .collect();
+
+        let mut lim = limits(60_000, 60_000);
+        lim.processes = 8;
+
+        let ok = spawn_supervised(shell("exit 0"), &lim, true).expect("spawn with 100+ threads");
+        assert!(ok.wait().unwrap().status.success());
+
+        // Each successful background fork appends a line; a failed fork ends the shell.
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("forks");
+        let bomb = shell(&format!(
+            "i=0; while [ $i -lt 100 ]; do sleep 30 & echo x >> '{}'; i=$((i+1)); done",
+            log.display()
+        ));
+        let child = spawn_supervised(bomb, &lim, true).unwrap();
+        let _ = child.wait().unwrap();
+        let forks = fs::read_to_string(&log).unwrap_or_default().lines().count();
+
+        drop(release);
+        for t in threads {
+            let _ = t.join();
+        }
+        // The cap is 8 tasks past the count at spawn; threads of other tests that exit meanwhile
+        // widen it a little, an unlimited child would reach 100.
+        assert!(forks >= 1, "the child forked nothing");
+        assert!(forks < 60, "the child forked {forks} times past a cap of 8");
     }
 }
