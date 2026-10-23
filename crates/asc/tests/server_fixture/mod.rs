@@ -135,16 +135,24 @@ impl Server {
                     "one objects group"
                 );
                 let _hooks = read::register(&ext, &registry);
-                let auth = StaticTokens::new()
-                    .with_token(WRITE, "alice", Access::Write)
-                    .with_token(READ, "bob", Access::Read);
-                let svc = Counting {
-                    inner: RepoService::new(
-                        ext.handlers.clone(),
-                        Arc::new(auth),
+                let _warmer = asc_serve::projects::register(&ext, &registry);
+                let auth = Arc::new(
+                    StaticTokens::new()
+                        .with_token(WRITE, "alice", Access::Write)
+                        .with_token(READ, "bob", Access::Read),
+                );
+                let projects = Counting {
+                    inner: asc_rpc::projects::ProjectsService::new(
+                        ext.projects.get().expect("projects handler").clone(),
+                        auth.clone(),
                         ServerInfo::default(),
                     )
                     .into_service(),
+                    log: log.clone(),
+                };
+                let svc = Counting {
+                    inner: RepoService::new(ext.handlers.clone(), auth, ServerInfo::default())
+                        .into_service(),
                     log,
                 };
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -159,6 +167,7 @@ impl Server {
                 });
                 let _ = tonic::transport::Server::builder()
                     .add_service(svc)
+                    .add_service(projects)
                     .serve_with_incoming_shutdown(incoming, async {
                         let _ = stop_rx.await;
                     })

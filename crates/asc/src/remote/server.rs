@@ -910,7 +910,7 @@ pub fn opened(
 // ------------------------------------------------------------------------------ selectors
 
 /// What the selectors need and a `Ctx` knows: the config and `state.db` of this invocation.
-struct Bound {
+pub(super) struct Bound {
     file: Config,
     db: StateDb,
 }
@@ -930,20 +930,20 @@ pub fn bind(file: &Config, db: &StateDb) {
     }
 }
 
-fn bound() -> Option<Arc<Bound>> {
+pub(super) fn bound() -> Option<Arc<Bound>> {
     bound_slot().lock().ok().and_then(|g| g.clone())
 }
 
 /// A server connection made on first use, because the selectors are synchronous and a
 /// connection needs discovery (network) and the credential resolver.
-struct Lazy {
+pub(super) struct Lazy {
     bound: Arc<Bound>,
     url: String,
     cell: tokio::sync::OnceCell<Result<RpcClient, String>>,
 }
 
 impl Lazy {
-    fn new(bound: Arc<Bound>, url: String) -> Self {
+    pub(super) fn new(bound: Arc<Bound>, url: String) -> Self {
         Self {
             bound,
             url,
@@ -951,7 +951,7 @@ impl Lazy {
         }
     }
 
-    async fn client(&self) -> Result<&RpcClient, String> {
+    pub(super) async fn client(&self) -> Result<&RpcClient, String> {
         let made = self
             .cell
             .get_or_init(|| async {

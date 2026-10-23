@@ -94,9 +94,8 @@ pub trait HistorySelector: Send + Sync {
     }
 }
 
-/// The project-graph API. G07 moves it to `asc_engine::projects`; the marker keeps the selector's
-/// shape until then.
-pub trait ProjectsApi: Send + Sync {}
+/// The project-graph API (SPEC §12A.8): the local engine, or the server's `RpcClient`.
+pub use asc_engine::projects::ProjectsApi;
 
 /// Where the project graph comes from (G10).
 pub trait ProjectsSelector: Send + Sync {
