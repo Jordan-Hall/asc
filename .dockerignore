@@ -18,10 +18,6 @@ asc-it-data/
 *.swp
 .DS_Store
 *.vsix
-docs/
-packaging/
-tests/
-# Exceptions the build reads (see deploy/Dockerfile.serve).
-!tests/turbo/
-!docs/CHEATSHEET.md
-!packaging/windows/
+# docs/, packaging/ and tests/ stay in the context: the build reads tests/turbo,
+# docs/CHEATSHEET.md and packaging/windows, and Dockerfile.serve copies only those.
+tests/compat/
