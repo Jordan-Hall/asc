@@ -11,14 +11,19 @@
 //! - A bounded pkt-line reader and writer for the advertisement prefix, the `0000` probe and the
 //!   v2 capability check ([`pktline`]).
 //! - The `[limits.git]` types ([`limits`]).
+//! - The receive-pack path (U82): the `pre-receive` hook protocol ([`hook`]) and the rules that
+//!   need no HTTP framework or database, the quarantine and its limits and the push options
+//!   ([`receive`]).
 //! - The upload-pack rules that need no HTTP framework: the repository path, the media types,
 //!   the bounded fetch body and the `0000` probe ([`upload`]).
 //!
 //! Nothing outside `asc-git` names this module except the feature-gated wiring of `asc-serve` and
 //! `asc`; `asc-engine`, `asc-rpc`, `asc-store` and `asc-core` never see it.
 
+pub mod hook;
 pub mod limits;
 pub mod pktline;
+pub mod receive;
 pub mod server_git;
 pub mod upload;
 pub mod view;
@@ -27,7 +32,8 @@ pub use limits::{GitLimits, INLINE_BUILD_OBJECTS, LimitError};
 pub use pktline::{GitProtocol, Packet, ProtocolVersion, Service};
 pub use server_git::{
     Activity, ChildExit, FsckMode, KillReason, MIGRATION_RELAXED, PackRequest, PackService,
-    RefUpdate, ServerChild, ServerGit, ServerGitConfig, ServerGitError, valid_ref_name,
+    QuarantineStats, RefUpdate, ServerChild, ServerGit, ServerGitConfig, ServerGitError,
+    valid_ref_name,
 };
 pub use upload::{
     BodyEncoding, BodyError, Endpoint, HIDDEN_REF_PREFIXES, PathError, RepoPath, UploadBody,

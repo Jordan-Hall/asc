@@ -1082,8 +1082,11 @@ async fn receive_pack_needs_write_and_a_mirror_is_read_only() {
         ),
     )
     .await;
-    assert_eq!(r.status, 403, "{}", r.head);
-    assert!(r.text().contains("not available yet"));
+    assert_eq!(r.status, 200, "{}", r.head);
+    assert_eq!(
+        r.header("content-type").as_deref(),
+        Some("application/x-git-receive-pack-advertisement")
+    );
 
     // A mirror says why, to a writer as well.
     for token in [READ, WRITE] {

@@ -60,6 +60,8 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 getrandom = "0.4"
+# Free space of the volume that holds the git views (`min_free_disk`, SPEC 25.5).
+fs4 = "0.13.1"
 # SSH keys (SPEC 25.11.2). `ring` keeps OpenSSL and a C toolchain out; `rsa` is needed to parse RSA
 # keys and check their size. No compression, no legacy parsers.
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }

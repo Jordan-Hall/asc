@@ -23,6 +23,8 @@ pub mod gc;
 #[cfg(feature = "git-compat")]
 pub mod git_http;
 #[cfg(feature = "git-compat")]
+pub mod git_push;
+#[cfg(feature = "git-compat")]
 pub mod git_view;
 pub mod graph_sql;
 pub mod history;

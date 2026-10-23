@@ -125,6 +125,8 @@ pub mod revlist;
 pub mod revparse;
 pub mod rm;
 pub mod serve;
+#[cfg(all(feature = "serve", feature = "git-compat"))]
+pub mod serve_git_hook;
 pub mod shortlog;
 pub mod show;
 pub mod sparse;

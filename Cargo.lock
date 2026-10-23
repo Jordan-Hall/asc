@@ -856,6 +856,7 @@ dependencies = [
  "asc-rpc",
  "asc-store",
  "flate2",
+ "fs4",
  "futures",
  "getrandom 0.4.3",
  "gix-attributes",
