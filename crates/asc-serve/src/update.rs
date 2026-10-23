@@ -31,6 +31,7 @@ use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
 use crate::land::{self, DisjointOnly, OverlapPolicy};
+use crate::refpolicy;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 
 /// Push options per request, and the longest one.
@@ -243,10 +244,6 @@ pub(crate) fn ingest_status(e: IngestError) -> Status {
             rpc(RpcError::PathPolicy(info(vec![path])))
         }
         IngestError::TooLarge => Status::resource_exhausted(e.to_string()),
-        IngestError::Stale { gone: true } => Status::not_found("no such repository"),
-        IngestError::Stale { gone: false } => {
-            Status::failed_precondition("the repository was renamed or replaced; retry")
-        }
         e => internal("ingest", &e),
     }
 }
@@ -293,6 +290,9 @@ pub(crate) struct Planned {
     pub(crate) name: RefName,
     pub(crate) expect: Expect,
     pub(crate) new: Option<RefTarget>,
+    /// A user ref (SPEC §21.5.1): `name` is the stored name, `text` the pushed one. It skips
+    /// pre-receive, the bridge and the outbox `post_receive`.
+    pub(crate) user: bool,
 }
 
 fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
@@ -335,6 +335,7 @@ fn plan(req: &wire::UpdateRefsRequest) -> Result<Vec<Planned>, Status> {
             name,
             expect,
             new,
+            user: false,
         });
     }
     Ok(out)
@@ -439,7 +440,7 @@ impl ServerRefs {
                 "git id mode is not served by UpdateRefs",
             ));
         }
-        let planned = plan(&req)?;
+        let mut planned = plan(&req)?;
         let mode = wire::UpdateMode::try_from(req.mode)
             .map_err(|_| Status::invalid_argument("unknown update mode"))?;
         let pushed = if mode == wire::UpdateMode::Land {
@@ -472,6 +473,21 @@ impl ServerRefs {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
+
+        // Step 1, classify (SPEC §21.5.1): a non-shared branch of a branchless repository is the
+        // pusher's user ref; a tag outside `shared_refs` is `REF_NOT_SHARED`. A LAND names a
+        // shared branch and is checked by `land::check_branch`.
+        if pushed.is_none() {
+            let policy = refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
+            let owner = refpolicy::owner_of(&ctx.principal);
+            for p in &mut planned {
+                if let refpolicy::Class::User { stored, .. } = policy.classify(owner, &p.text)? {
+                    p.name = RefName::new(stored.as_bytes())
+                        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+                    p.user = true;
+                }
+            }
+        }
 
         // Step 2: idempotency.
         if let Some(done) = self.stored(&entry, op_id).await? {
@@ -569,11 +585,13 @@ impl ServerRefs {
                 old: current.as_ref().map(wire::RefTarget::from),
                 new: p.new.as_ref().map(wire::RefTarget::from),
             });
-            hook_updates.push(HookUpdate {
-                name: p.text,
-                old: current,
-                new: p.new,
-            });
+            if !p.user {
+                hook_updates.push(HookUpdate {
+                    name: p.text,
+                    old: current,
+                    new: p.new,
+                });
+            }
             updates.push(RefUpdate {
                 name: p.name,
                 expect,
@@ -590,15 +608,19 @@ impl ServerRefs {
             updates: &hook_updates,
             push_options: &req.push_options,
         };
-        hooks
-            .bridge_quarantine(&hook_req)
-            .await
-            .map_err(|e| rpc(RpcError::HookRejected(info(vec![e.0]))))?;
-        if req.hooks != wire::HookMode::SkipPre as i32
-            && let Err(e) = hooks.pre_receive(&hook_req).await
-        {
-            hooks.abort(&hook_req).await;
-            return Err(rpc(RpcError::HookRejected(info(vec![e.0]))));
+        // User refs run no hook: a push of only user refs has nothing to bridge or reject.
+        let run_hooks = !hook_updates.is_empty();
+        if run_hooks {
+            hooks
+                .bridge_quarantine(&hook_req)
+                .await
+                .map_err(|e| rpc(RpcError::HookRejected(info(vec![e.0]))))?;
+            if req.hooks != wire::HookMode::SkipPre as i32
+                && let Err(e) = hooks.pre_receive(&hook_req).await
+            {
+                hooks.abort(&hook_req).await;
+                return Err(rpc(RpcError::HookRejected(info(vec![e.0]))));
+            }
         }
 
         // Step 8: one transaction.
@@ -629,7 +651,11 @@ impl ServerRefs {
             op_id,
         };
         let outbox = serde_json::to_vec(&OutboxEffects {
-            effects: hooks.outbox_effects(),
+            effects: if run_hooks {
+                hooks.outbox_effects()
+            } else {
+                &[]
+            },
             pusher: &ctx.principal.id,
             refs: hook_updates
                 .iter()
@@ -647,7 +673,9 @@ impl ServerRefs {
         {
             Ok(()) => Ok(response),
             Err(e) => {
-                hooks.abort(&hook_req).await;
+                if run_hooks {
+                    hooks.abort(&hook_req).await;
+                }
                 // A retry of the same op that committed in the meantime is not a conflict.
                 if let Some(done) = self.stored(&entry, op_id).await? {
                     return Ok(done);
@@ -668,7 +696,6 @@ impl ServerRefs {
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
-        self.registry.guard(&mut tx, entry).await?;
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
@@ -678,7 +705,7 @@ impl ServerRefs {
             Err(e) => return Err(internal("refs", &e)),
         }
         if let Some(land) = land {
-            land.apply(&mut tx, entry, txn).await?;
+            land.apply(&mut tx, entry).await?;
         }
         let at = now();
         sqlx::query("INSERT INTO op_results (op_id, repo_id, result, at) VALUES ($1, $2, $3, $4)")
@@ -722,7 +749,27 @@ impl RefsHandler for ServerRefs {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        entry.backend.list_refs(ctx, req).await
+        let policy = refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
+        if !policy.branchless() {
+            let mut listed = entry.backend.list_refs(ctx, req).await?;
+            listed
+                .refs
+                .retain(|r| !r.name.starts_with(refpolicy::USER_NS));
+            return Ok(listed);
+        }
+        if ctx.id_mode != IdMode::Asc {
+            return Err(Status::unimplemented(
+                "git id mode needs the git map index, which this backend does not keep",
+            ));
+        }
+        refpolicy::advertise(
+            &**self.registry.refs(),
+            entry.key,
+            &policy,
+            refpolicy::owner_of(&ctx.principal),
+            &req,
+        )
+        .await
     }
 
     async fn update_refs(

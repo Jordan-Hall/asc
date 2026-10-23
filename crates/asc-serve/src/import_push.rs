@@ -189,9 +189,18 @@ impl ImportPush {
         // The refs as git sees them must still be what the pusher saw (the `old` of each
         // command). Checked before the import, and pinned into the CAS below.
         let map = PushMap::new(self.registry.pool().clone(), &entry);
+        // A non-shared branch of a branchless repository is the pusher's user ref (SPEC §21.5.1):
+        // git saw it as `refs/heads/<n>`, the `refs` table holds it under `refs/users/`. `UpdateRefs`
+        // classifies the same names again; this pass finds the stored value for the CAS.
+        let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
+        let owner = crate::refpolicy::owner_of(&ctx.principal);
         let mut expects = Vec::with_capacity(commands.len());
         for c in commands {
-            expects.push(self.check_old(&entry, &map, c).await?);
+            let class = policy.classify(owner, &c.name)?;
+            expects.push(
+                self.check_old(&entry, &map, c, class.stored(&c.name))
+                    .await?,
+            );
         }
 
         let windows_safe = self.refs.windows_safe(&entry).await?;
@@ -248,9 +257,10 @@ impl ImportPush {
         entry: &RepoEntry,
         map: &PushMap,
         command: &PushCommand,
+        stored: &str,
     ) -> Result<Option<RefTarget>, Status> {
-        let name = RefName::new(command.name.as_bytes())
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let name =
+            RefName::new(stored.as_bytes()).map_err(|e| Status::invalid_argument(e.to_string()))?;
         let current = self
             .registry
             .refs()
@@ -330,7 +340,6 @@ impl ImportPush {
                 .await
                 .map_err(|e| internal("refs", &e))?,
         };
-        self.registry.guard(&mut tx, entry).await?;
         let rows: Vec<NewNode<'_>> = nodes
             .iter()
             .map(|n| NewNode {
