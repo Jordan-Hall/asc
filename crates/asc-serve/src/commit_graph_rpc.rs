@@ -34,6 +34,7 @@ use futures::stream::TryStreamExt;
 use futures::stream::{self, StreamExt};
 use tonic::Status;
 
+use crate::history::compare_rpc::ServerCompare;
 use crate::history::linehist_rpc::ServerLineHistory;
 use crate::idmode::{Eng, IdCodec};
 use crate::read::{LogEntryEnricher, ReadHooks};
@@ -186,6 +187,8 @@ pub struct ServerCommitGraph {
     registry: Arc<Registry>,
     /// The `LineHistory` method (PLAN C30a); `UNIMPLEMENTED` until set.
     line_history: Option<ServerLineHistory>,
+    /// The `Compare` method (PLAN C30b); `UNIMPLEMENTED` until set.
+    compare: Option<ServerCompare>,
 }
 
 impl ServerCommitGraph {
@@ -193,12 +196,19 @@ impl ServerCommitGraph {
         Self {
             registry,
             line_history: None,
+            compare: None,
         }
     }
 
     /// Serves `LineHistory` through `handler`.
     pub fn with_line_history(mut self, handler: ServerLineHistory) -> Self {
         self.line_history = Some(handler);
+        self
+    }
+
+    /// Serves `Compare` through `handler`.
+    pub fn with_compare(mut self, handler: ServerCompare) -> Self {
+        self.compare = Some(handler);
         self
     }
 
@@ -464,6 +474,17 @@ impl Build {
 
 #[async_trait]
 impl InsightsHandler for ServerCommitGraph {
+    async fn compare(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CompareRequest,
+    ) -> Result<wire::CompareResponse, Status> {
+        match &self.compare {
+            Some(h) => h.compare(ctx, req).await,
+            None => Err(Status::unimplemented("Compare is not available")),
+        }
+    }
+
     async fn line_history(
         &self,
         ctx: &CallCtx,
@@ -549,9 +570,11 @@ impl InsightsHandler for ServerCommitGraph {
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHooks>) {
     hooks.add_enricher(Arc::new(StatsEnricher));
     ext.handlers
-        .set_insights(Arc::new(ServerCommitGraph::new(registry.clone()).with_line_history(
-            ServerLineHistory::new(registry.clone(), hooks.clone()),
-        )))
+        .set_insights(Arc::new(
+            ServerCommitGraph::new(registry.clone())
+                .with_line_history(ServerLineHistory::new(registry.clone(), hooks.clone()))
+                .with_compare(ServerCompare::new(registry.clone())),
+        ))
         .expect("the insights handler group is registered once");
 }
 
