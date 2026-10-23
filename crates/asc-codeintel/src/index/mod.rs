@@ -1,6 +1,7 @@
 //! Tantivy indexes of code intelligence (SPEC §23.2.4): the `files` and `chunks` schemas,
-//! immutable segment packs in the bucket (`d/ciseg.v1/<blake3>`), and the `ci_manifest`
-//! generation CAS with its leader lease and `indexed` bitmaps (`d/ciidx.v1/<blake3>`).
+//! immutable segment packs in the bucket (`d/ciseg.v2/<scoped id>`), and the `ci_manifest`
+//! generation CAS with its leader lease and `indexed` bitmaps (`d/ciidx.v2/<scoped id>`).
+//! A scoped id hashes `(ns, kind, class, content hash)`, so no two indexes share an object.
 
 pub mod manifest;
 pub mod schema;
