@@ -2,9 +2,9 @@
 //!
 //! This unit (U53a) owns the process lifecycle: a single instance bound to the user's IPC
 //! endpoint, a pid file in `$ASC_HOME/run`, `Ping` and `Shutdown`, and the watchdog that aborts
-//! the process when a provider callback hangs. The remaining `Workspace` RPCs answer
-//! `UNIMPLEMENTED` until U53b (service and scheduler) replaces [`Service`]'s bodies. The client
-//! half (autostart, version skew, liveness) is in [`lifecycle`].
+//! the process when a provider callback hangs. The `Workspace` service is in [`service`] and the
+//! background tasks in [`scheduler`] (U53b); the observability endpoint and log are in
+//! [`metrics`]. The client half (autostart, version skew, liveness) is in [`lifecycle`].
 //!
 //! Every connection is local and already restricted to the current user by the transport (a
 //! DACL on the Windows pipe, uid check on the Unix socket), so each RPC is authorised by that
@@ -12,21 +12,26 @@
 
 pub mod install;
 pub mod lifecycle;
+pub mod metrics;
+pub mod scheduler;
+pub mod service;
 pub mod workspace_factory;
+
+pub use service::Service;
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use asc_rpc::ipc::{IpcEndpoint, IpcError, IpcListener, Workspace, WorkspaceServer, serve_incoming};
-use asc_rpc::server::wire;
+use asc_rpc::ipc::{IpcEndpoint, IpcError, IpcListener, WorkspaceServer, serve_incoming};
 use futures::stream::Empty;
 use tokio::sync::Notify;
-use tonic::{Request, Response, Status};
+use tonic::Status;
 
 /// The daemon's version: `Ping.version`, compared by the CLI (SPEC §9.1, "Version skew").
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -188,105 +193,6 @@ fn not_served<T>() -> Result<T, Status> {
 
 type Never<T> = Empty<Result<T, Status>>;
 
-/// The `Workspace` service of the daemon. `Ping` and `Shutdown` are served here (U53a); the
-/// rest is U53b.
-pub struct Service {
-    version: String,
-    started: Instant,
-    stop: Arc<Notify>,
-}
-
-impl Service {
-    fn new(version: String, stop: Arc<Notify>) -> Self {
-        Self {
-            version,
-            started: Instant::now(),
-            stop,
-        }
-    }
-}
-
-#[tonic::async_trait]
-impl Workspace for Service {
-    async fn status(&self, _: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
-        not_served()
-    }
-
-    type DiffStream = Never<wire::DiffResponse>;
-    async fn diff(&self, _: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
-        not_served()
-    }
-
-    type LogStream = Never<wire::LogResponse>;
-    async fn log(&self, _: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
-        not_served()
-    }
-
-    type BlameStream = Never<wire::BlameResponse>;
-    async fn blame(&self, _: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
-        not_served()
-    }
-
-    async fn affected(&self, _: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
-        not_served()
-    }
-
-    type WatchStream = Never<wire::WatchEvent>;
-    async fn watch(&self, _: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
-        not_served()
-    }
-
-    async fn stage(&self, _: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
-        not_served()
-    }
-
-    async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
-        Ok(Response::new(wire::PingResponse {
-            version: self.version.clone(),
-            pid: std::process::id(),
-            uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        }))
-    }
-
-    async fn mount(&self, _: Request<wire::MountRequest>) -> Result<Response<wire::MountResponse>, Status> {
-        not_served()
-    }
-
-    async fn unmount(&self, _: Request<wire::UnmountRequest>) -> Result<Response<wire::UnmountResponse>, Status> {
-        not_served()
-    }
-
-    async fn switch(&self, _: Request<wire::SwitchRequest>) -> Result<Response<wire::SwitchResponse>, Status> {
-        not_served()
-    }
-
-    async fn journal(&self, _: Request<wire::JournalRequest>) -> Result<Response<wire::JournalResponse>, Status> {
-        not_served()
-    }
-
-    async fn clear_journal(&self, _: Request<wire::ClearJournalRequest>) -> Result<Response<wire::ClearJournalResponse>, Status> {
-        not_served()
-    }
-
-    async fn dehydrate(&self, _: Request<wire::DehydrateRequest>) -> Result<Response<wire::DehydrateResponse>, Status> {
-        not_served()
-    }
-
-    async fn prefetch(&self, _: Request<wire::PrefetchRequest>) -> Result<Response<wire::PrefetchResponse>, Status> {
-        not_served()
-    }
-
-    async fn stats(&self, _: Request<wire::StatsRequest>) -> Result<Response<wire::StatsResponse>, Status> {
-        not_served()
-    }
-
-    async fn shutdown(&self, _: Request<wire::ShutdownRequest>) -> Result<Response<wire::ShutdownResponse>, Status> {
-        // `notify_one` keeps a permit, so a stop requested before the server awaits is not lost.
-        self.stop.notify_one();
-        Ok(Response::new(wire::ShutdownResponse::default()))
-    }
-}
-
 // ------------------------------------------------------------------------------ run
 
 /// What [`run`] needs.
@@ -298,14 +204,82 @@ pub struct RunConfig {
     pub version: String,
 }
 
+/// What a daemon that hosts workspaces needs on top of [`RunConfig`].
+pub struct Hosting {
+    /// The user's home: `state.db`, the cache and the logs are in it.
+    pub home: asc_state::AscHome,
+    /// `--metrics-listen`: a loopback address, or none (the default).
+    pub metrics_listen: Option<SocketAddr>,
+    /// The OS backend for virtual workspaces, when the build has one.
+    pub backend: Option<Arc<dyn service::VirtualBackend>>,
+    pub settings: scheduler::Settings,
+    pub hooks: scheduler::Hooks,
+    /// Tasks of later units (the uploader, the live subscription) added to the built-in ones.
+    pub extra_jobs: Vec<(scheduler::Spec, Arc<dyn scheduler::Job>)>,
+}
+
 /// Runs the daemon until `Shutdown` arrives or `interrupt` resolves. Fails with
 /// [`IpcError::InUse`] when another daemon already answers on the endpoint (single instance).
-/// The socket and the pid file are removed on the way out.
+/// The socket and the pid file are removed on the way out. This daemon hosts no workspaces; see
+/// [`run_hosting`].
 pub async fn run(cfg: RunConfig, interrupt: impl Future<Output = ()>) -> Result<(), DaemonError> {
+    run_with(cfg, None, interrupt).await
+}
+
+/// [`run`] for the real daemon: opens `state.db`, re-attaches the virtual workspaces, starts the
+/// scheduler and (when asked) the metrics endpoint, and stops all of it on the way out.
+pub async fn run_hosting(
+    cfg: RunConfig,
+    hosting: Hosting,
+    interrupt: impl Future<Output = ()>,
+) -> Result<(), DaemonError> {
+    run_with(cfg, Some(hosting), interrupt).await
+}
+
+async fn run_with(
+    cfg: RunConfig,
+    hosting: Option<Hosting>,
+    interrupt: impl Future<Output = ()>,
+) -> Result<(), DaemonError> {
     let listener = IpcListener::bind(&cfg.endpoint)?;
+    // Bind the metrics port before the daemon announces itself, so a bad port fails the start.
+    let metrics_listener = match hosting.as_ref().and_then(|h| h.metrics_listen) {
+        Some(addr) => Some(metrics::bind(addr).await?),
+        None => None,
+    };
     write_pid(&cfg.run_dir)?;
     let stop = Arc::new(Notify::new());
-    let service = Service::new(cfg.version, stop.clone());
+
+    let mut running = None;
+    let mut metrics_stop = None;
+    let state = match hosting {
+        None => None,
+        Some(h) => {
+            let db = asc_state::StateDb::open(&h.home).await.map_err(|e| io::Error::other(e.to_string()))?;
+            let events = Arc::new(
+                metrics::EventLog::open(&h.home.log()).unwrap_or_else(|_| metrics::EventLog::none()),
+            );
+            let meter = Arc::new(metrics::Metrics::new());
+            let state = service::State::new(db, h.home, h.backend, meter.clone(), events.clone());
+            state.restore().await;
+            let mut tasks = scheduler::builtin(state.clone(), &h.settings, &h.hooks);
+            for (spec, job) in h.extra_jobs {
+                if let Err(e) = tasks.register(spec, job) {
+                    events.emit("error", "daemon.task", &[("error", &e)]);
+                }
+            }
+            running = Some(tasks.start(meter.clone(), events.clone()));
+            if let Some(listener) = metrics_listener {
+                let (tx, rx) = tokio::sync::watch::channel(false);
+                tokio::spawn(metrics::serve(listener, meter, state.clone(), rx));
+                metrics_stop = Some(tx);
+            }
+            events.emit("info", "daemon.start", &[("version", &cfg.version)]);
+            Some(state)
+        }
+    };
+
+    let service = Service::new(cfg.version, stop.clone(), state.clone());
     let done = async {
         tokio::select! {
             () = stop.notified() => {}
@@ -317,6 +291,15 @@ pub async fn run(cfg: RunConfig, interrupt: impl Future<Output = ()>) -> Result<
         .add_service(WorkspaceServer::new(service))
         .serve_with_incoming_shutdown(serve_incoming(listener), done)
         .await;
+    if let Some(tx) = metrics_stop {
+        let _ = tx.send(true);
+    }
+    if let Some(running) = running {
+        running.stop().await;
+    }
+    if let Some(state) = &state {
+        state.shutdown().await;
+    }
     remove_own_pid(&cfg.run_dir);
     served.map_err(Into::into)
 }
