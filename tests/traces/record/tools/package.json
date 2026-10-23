@@ -1,0 +1,11 @@
+{
+  "name": "asc-trace-tools",
+  "private": true,
+  "description": "The pinned tools the trace recorder runs (tests/traces/record/README.md).",
+  "dependencies": {
+    "@commitlint/cli": "21.2.4",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
+    "turbo": "2.10.11"
+  }
+}
