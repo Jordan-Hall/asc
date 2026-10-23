@@ -28,6 +28,7 @@ pub mod idmode;
 pub mod import_push;
 pub mod ingest;
 pub mod land;
+pub mod landing;
 pub mod limits;
 pub mod mainline;
 pub mod migrate;
@@ -37,6 +38,7 @@ pub mod outbox;
 pub mod projects;
 pub mod projects_warm;
 pub mod read;
+pub mod refpolicy;
 pub mod registry;
 pub mod seeds;
 #[cfg(feature = "git-ssh")]
@@ -176,6 +178,7 @@ fn register_all(
 ) {
     limits::register(ext, limits);
     update::register(ext, registry);
+    landing::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
     let mutations = mutations::register(ext, registry, &hooks);
