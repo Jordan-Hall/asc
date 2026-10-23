@@ -11,7 +11,8 @@
 //!   `**/packages.lock.json`).
 //!
 //! With `land.contentMerge = false`, or a request with `no_content_merge`, the policy is
-//! [`DisjointOnly`]: any shared path is a conflict and nothing is merged. The conflicting
+//! [`DisjointOnly`]: any shared path is a conflict and nothing is merged (`LAND_NEEDS_CONTENT_MERGE`
+//! for the request flag, `LAND_CONFLICT` otherwise). The conflicting
 //! changeset is the first one in the stack that cannot be rewritten; later ones are not tried,
 //! because their parent would not exist.
 //!
@@ -380,7 +381,10 @@ mod tests {
         let theirs = commit(&w.entry, &[w.base], &[("f.txt", TEN)]).await;
         land(&w, theirs, false).await.unwrap();
         let err = land(&w, mine, true).await.unwrap_err();
-        assert_eq!(status_rpc_error(&err).unwrap().code(), "LAND_CONFLICT");
+        assert_eq!(
+            status_rpc_error(&err).unwrap().code(),
+            "LAND_NEEDS_CONTENT_MERGE"
+        );
     }
 
     #[test]
