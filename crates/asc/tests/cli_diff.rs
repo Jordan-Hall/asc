@@ -858,16 +858,10 @@ async fn json_lines_have_a_stable_shape() {
     let patch_a = p.git(&p.git_dir, &["diff", "--", "a.txt"]).stdout;
     let patch_b = p.git(&p.git_dir, &["diff", "--", "b.txt"]).stdout;
     let change = |i: usize| lines[i]["changes"][0].clone();
-    assert_eq!(
-        unbase64(lines[0]["text"].as_str().unwrap()),
-        patch_a.as_bytes()
-    );
-    assert_eq!(
-        unbase64(lines[1]["text"].as_str().unwrap()),
-        patch_b.as_bytes()
-    );
+    assert_eq!(lines[0]["text"].as_str().unwrap(), patch_a);
+    assert_eq!(lines[1]["text"].as_str().unwrap(), patch_b);
     assert_eq!(change(0)["status"], "M");
-    assert_eq!(unbase64(change(0)["path"].as_str().unwrap()), b"a.txt");
+    assert_eq!(change(0)["path"], "a.txt");
     assert_eq!(change(0)["old_mode"], 0o100644);
     assert_eq!(change(0)["new_mode"], 0o100644);
     assert_eq!(change(1)["status"], "D");
@@ -881,8 +875,8 @@ async fn json_lines_have_a_stable_shape() {
     let old_git = change(0)["old_git"].as_str().unwrap().to_owned();
     let new_git = change(0)["new_git"].as_str().unwrap().to_owned();
     let old_id = change(0)["old_id"].as_str().unwrap().to_owned();
-    assert_eq!(unbase64(&old_git).len(), 20);
-    assert_eq!(unbase64(&old_id).len(), 32);
+    assert_eq!(old_git.len(), 40, "lowercase hex git id");
+    assert_eq!(old_id.len(), 64, "lowercase hex asc id");
     assert!(
         change(0).get("new_id").is_none(),
         "a work tree side has no stored file id"
@@ -906,21 +900,4 @@ async fn json_lines_have_a_stable_shape() {
         serde_json::from_str::<serde_json::Value>(first).unwrap(),
         expected
     );
-}
-
-/// Standard base64, which is how the JSON profile prints `bytes` fields that are not ids.
-fn unbase64(text: &str) -> Vec<u8> {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::new();
-    let (mut acc, mut bits) = (0u32, 0);
-    for b in text.bytes().filter(|b| *b != b'=') {
-        acc = (acc << 6) | ALPHABET.iter().position(|a| *a == b).expect("base64") as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    out
 }
