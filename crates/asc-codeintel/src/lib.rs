@@ -9,6 +9,7 @@ pub mod grams;
 pub mod index;
 pub mod lang;
 pub mod plan;
+pub mod search;
 pub mod secrets;
 pub mod skip;
 pub mod scope;
