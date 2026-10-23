@@ -547,6 +547,7 @@ impl ServerMutations {
             }
             let refs = self.registry.refs();
             let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+            self.registry.guard(&mut tx, &o.entry).await?;
             self.pipeline
                 .observer()
                 .on_rewritten(&mut tx, o.entry.key, pairs, op)

@@ -368,6 +368,7 @@ impl SshRecord {
 #[derive(Clone)]
 pub struct SshCached {
     at: i64,
+    epoch: u64,
     rec: Option<Arc<SshRecord>>,
 }
 
@@ -649,7 +650,9 @@ impl TokenStore {
     ) -> Result<Option<Arc<SshRecord>>, AuthError> {
         let now = self.now();
         let fp = key.fingerprint();
+        let epoch = super::token_store::grant_epoch();
         if let Some(hit) = self.ssh_cache.get(fp.as_bytes())
+            && hit.epoch == epoch
             && now >= hit.at
             && now - hit.at < CACHE_TTL_SECS
         {
@@ -660,6 +663,7 @@ impl TokenStore {
             *fp.as_bytes(),
             SshCached {
                 at: now,
+                epoch,
                 rec: rec.clone(),
             },
         );

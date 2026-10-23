@@ -330,6 +330,7 @@ impl ImportPush {
                 .await
                 .map_err(|e| internal("refs", &e))?,
         };
+        self.registry.guard(&mut tx, entry).await?;
         let rows: Vec<NewNode<'_>> = nodes
             .iter()
             .map(|n| NewNode {

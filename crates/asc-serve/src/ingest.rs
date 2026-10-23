@@ -70,6 +70,10 @@ pub enum IngestError {
     Store(String),
     #[error("database: {0}")]
     Sql(#[from] sqlx::Error),
+    /// The repository was deleted (`gone`) or renamed since the request resolved it; nothing was
+    /// written.
+    #[error("the repository changed (gone: {gone})")]
+    Stale { gone: bool },
 }
 
 fn invalid(key: impl std::fmt::Display, why: impl Into<String>) -> IngestError {
@@ -449,6 +453,13 @@ impl<'a> Ingestor<'a> {
             .begin()
             .await
             .map_err(|e| IngestError::Store(e.to_string()))?;
+        crate::registry::guard_repo(&mut tx, self.entry)
+            .await
+            .map_err(|s| match s.code() {
+                tonic::Code::NotFound => IngestError::Stale { gone: true },
+                tonic::Code::FailedPrecondition => IngestError::Stale { gone: false },
+                _ => IngestError::Store(s.message().to_owned()),
+            })?;
         graph_sql::insert_nodes(&mut tx, self.entry.ns, &rows).await?;
         observer
             .on_ingested(&mut tx, self.entry.key, &order, &closure)

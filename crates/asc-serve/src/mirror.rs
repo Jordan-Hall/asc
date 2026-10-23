@@ -118,6 +118,9 @@ pub enum MirrorError {
     Refs(#[from] RefError),
     #[error("database: {0}")]
     Sql(#[from] sqlx::Error),
+    /// The repository was deleted or renamed during the sync; nothing was written.
+    #[error("the repository changed during the sync: {0}")]
+    Stale(String),
 }
 
 impl From<RegistryError> for MirrorError {
@@ -213,6 +216,30 @@ impl MirrorSources {
             m.insert(repo.to_string(), target);
         }
         Ok(())
+    }
+
+    /// Forgets the client-named source of `repo` (its repository was deleted). Operator entries
+    /// stay: they are configuration, not part of the repository.
+    pub fn remove(&self, repo: &RepoName) {
+        if let Ok(mut m) = self.client.write() {
+            m.remove(repo.as_str());
+        }
+    }
+
+    /// Moves the client-named source of `from` to `to` (the repository was renamed). A source
+    /// already recorded under `to` is replaced; one under `from` leaves nothing behind.
+    pub fn rename(&self, from: &RepoName, to: &RepoName) {
+        if let Ok(mut m) = self.client.write() {
+            m.remove(to.as_str());
+            if let Some(t) = m.remove(from.as_str()) {
+                m.insert(to.to_string(), t);
+            }
+        }
+    }
+
+    /// The client-named source of `repo`, if any.
+    pub fn client_target(&self, repo: &RepoName) -> Option<MirrorTarget> {
+        self.client.read().ok()?.get(repo.as_str()).cloned()
     }
 
     /// Sets the source of `repo` from the server config: also a local path or `file:` URL, on
@@ -552,6 +579,10 @@ impl Mirror {
             Some(t) => t,
             None => refs.begin().await?,
         };
+        self.registry
+            .guard(&mut tx, entry)
+            .await
+            .map_err(|s| MirrorError::Stale(s.message().to_owned()))?;
         let new_nodes: Vec<NewNode<'_>> = nodes
             .iter()
             .map(|n| NewNode {
