@@ -1,6 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 option go_package = "forgejo.org/modules/ascproto/ascv1";
+import "asc/v1/options.proto";
 
 import "asc/v1/repo.proto";
 
@@ -17,32 +18,32 @@ service Changes {
   rpc RequestMerge(RequestMergeRequest) returns (RequestMergeResponse);        // mutating; proxies to the forge's queue
 }
 
-message ChangeInfo { bytes change = 1; bytes head = 2; bytes git = 3; uint32 version = 4; bytes parent_change = 5;
-  bool parent_current = 6; bytes landed_as = 7; ReviewState review = 8; repeated bytes visible = 9; /* >1 = divergent */ }
-message ResolveChangesRequest { RepoRef repo = 1; repeated bytes changes = 2; repeated string revs = 3; }
+message ChangeInfo { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 3 [(asc.v1.json) = JSON_KIND_HEX]; uint32 version = 4; bytes parent_change = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bool parent_current = 6; bytes landed_as = 7 [(asc.v1.json) = JSON_KIND_HEX]; ReviewState review = 8; repeated bytes visible = 9 [(asc.v1.json) = JSON_KIND_CHANGE]; /* >1 = divergent */ }
+message ResolveChangesRequest { RepoRef repo = 1; repeated bytes changes = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated string revs = 3; }
 message ResolveChangesResponse { repeated ChangeInfo changes = 1; }
-message StackRequest { RepoRef repo = 1; string target = 2; oneof at { bytes change = 3; string rev = 4; uint64 review = 5; } }
-message StackResponse { string trunk = 1; bytes base = 2; repeated ChangeInfo changes = 3; /* bottom → top, forks included */ }
-message VersionsRequest { RepoRef repo = 1; bytes change = 2; string page_token = 3; }
-message Version { uint32 v = 1; bytes cs = 2; bytes git = 3; bytes parent_change = 4; int64 at = 5; string actor = 6; }
+message StackRequest { RepoRef repo = 1; string target = 2; oneof at { bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; string rev = 4; uint64 review = 5; } }
+message StackResponse { string trunk = 1; bytes base = 2 [(asc.v1.json) = JSON_KIND_HEX]; repeated ChangeInfo changes = 3; /* bottom → top, forks included */ }
+message VersionsRequest { RepoRef repo = 1; bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; string page_token = 3; }
+message Version { uint32 v = 1; bytes cs = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes git = 3 [(asc.v1.json) = JSON_KIND_HEX]; bytes parent_change = 4 [(asc.v1.json) = JSON_KIND_CHANGE]; int64 at = 5; string actor = 6; }
 message VersionsResponse { repeated Version versions = 1; string next_page_token = 2; }
-message InterDiffRequest { RepoRef repo = 1; bytes change = 2; uint32 from_v = 3; uint32 to_v = 4; DiffFormat format = 5;
+message InterDiffRequest { RepoRef repo = 1; bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; uint32 from_v = 3; uint32 to_v = 4; DiffFormat format = 5;
   repeated string paths = 6; }
-message MergeabilityRequest { RepoRef repo = 1; string target = 2; repeated bytes changes = 3; }
-message Mergeable { bytes change = 1; enum State { STATE_DISJOINT = 0; STATE_CLEAN_MERGE = 1; STATE_CONFLICTS = 2;
+message MergeabilityRequest { RepoRef repo = 1; string target = 2; repeated bytes changes = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; }
+message Mergeable { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; enum State { STATE_DISJOINT = 0; STATE_CLEAN_MERGE = 1; STATE_CONFLICTS = 2;
   STATE_NEEDS_RESTACK = 3; } State state = 2; repeated Conflict conflicts = 3; }
 message MergeabilityResponse { repeated Mergeable results = 1; }
-message OverlapsRequest { RepoRef repo = 1; string target = 2; bytes change = 3; repeated bytes paths = 4; }
-message Overlap { bytes change = 1; ReviewState review = 2; repeated bytes paths = 3; }   // never includes a change of the same stack
+message OverlapsRequest { RepoRef repo = 1; string target = 2; bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated bytes paths = 4 [(asc.v1.json) = JSON_KIND_PATH]; }
+message Overlap { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; ReviewState review = 2; repeated bytes paths = 3 [(asc.v1.json) = JSON_KIND_PATH]; }   // never includes a change of the same stack
 message OverlapsResponse { repeated Overlap overlaps = 1; }
-message RestackItem { bytes change = 1; string update_ref = 2; RefTarget expect = 3; }
+message RestackItem { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; string update_ref = 2; RefTarget expect = 3; }
 message RestackChangesRequest { RepoRef repo = 1; string onto = 2; repeated RestackItem items = 3; bool atomic = 4; bool dry_run = 5;
   string committer_name = 6; string committer_email = 7; int64 committer_time = 8; }   // defaults: the authenticated actor and the server clock
-message RestackChangesResponse { repeated Rewrite rewritten = 1; repeated Conflict conflicts = 2; repeated bytes patch_unchanged = 3; }
-message SetReviewStateRequest { RepoRef repo = 1; repeated bytes changes = 2; repeated ReviewState states = 3; }
+message RestackChangesResponse { repeated Rewrite rewritten = 1; repeated Conflict conflicts = 2; repeated bytes patch_unchanged = 3 [(asc.v1.json) = JSON_KIND_CHANGE]; }
+message SetReviewStateRequest { RepoRef repo = 1; repeated bytes changes = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated ReviewState states = 3; }
 message SetReviewStateResponse {}
-message RequestMergeRequest { RepoRef repo = 1; bytes change = 2; bool now = 3; }   // bottom..change
-message RequestMergeResponse { enum State { STATE_QUEUED = 0; STATE_LANDED = 1; STATE_REFUSED = 2; } State state = 1; repeated bytes pending = 2; string reason = 3; }
+message RequestMergeRequest { RepoRef repo = 1; bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; bool now = 3; }   // bottom..change
+message RequestMergeResponse { enum State { STATE_QUEUED = 0; STATE_LANDED = 1; STATE_REFUSED = 2; } State state = 1; repeated bytes pending = 2 [(asc.v1.json) = JSON_KIND_CHANGE]; string reason = 3; }
 // The server forwards RequestMerge to the forge through the internal channel that carries proc-receive (§13.5), in the
 // other direction, so the CLI never calls a forge API (D9). With no forge attached, now=true lands directly and
 // now=false is STATE_REFUSED.

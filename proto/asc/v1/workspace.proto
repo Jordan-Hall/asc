@@ -1,6 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 option go_package = "forgejo.org/modules/ascproto/ascv1";
+import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 import "asc/v1/projects.proto";
 import "asc/v1/codeintel.proto";
@@ -38,26 +39,26 @@ service Workspace {
 // Plugin messages [audit: plugin-api-undefined]. Ids are 20-byte git SHA-1s (§11.1). workspace.proto imports
 // asc/v1/repo.proto (DiffFormat, LogRequest, DiffResponse, LogResponse, BlameResponse) and asc/v1/projects.proto
 // (AffectedRequest, AffectedResponse, §12A.8).
-message WsStatusRequest { string ws_id = 1; repeated bytes paths = 2; bool untracked = 3; bool ignored = 4; }
-message WsFileStatus { bytes path = 1; string xy = 2; /* git porcelain v2 XY */ bytes orig_path = 3; uint32 mode_head = 4;
-  uint32 mode_index = 5; uint32 mode_worktree = 6; bytes git_head = 7; bytes git_index = 8; }
-message WsStatusResponse { string head_ref = 1; bytes head = 2; string upstream = 3; uint32 ahead = 4; uint32 behind = 5;
+message WsStatusRequest { string ws_id = 1; repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH]; bool untracked = 3; bool ignored = 4; }
+message WsFileStatus { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; string xy = 2; /* git porcelain v2 XY */ bytes orig_path = 3 [(asc.v1.json) = JSON_KIND_PATH]; uint32 mode_head = 4;
+  uint32 mode_index = 5; uint32 mode_worktree = 6; bytes git_head = 7 [(asc.v1.json) = JSON_KIND_HEX]; bytes git_index = 8 [(asc.v1.json) = JSON_KIND_HEX]; }
+message WsStatusResponse { string head_ref = 1; bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX]; string upstream = 3; uint32 ahead = 4; uint32 behind = 5;
   repeated WsFileStatus files = 6; string in_progress = 7; /* merge|rebase|cherry-pick|revert|bisect|empty */ string token = 8; }
 message WsDiffRequest { string ws_id = 1; string from = 2; string to = 3; /* "index" | "worktree" | revspec */
-  repeated bytes paths = 4; DiffFormat format = 5; uint32 context = 6; }
+  repeated bytes paths = 4 [(asc.v1.json) = JSON_KIND_PATH]; DiffFormat format = 5; uint32 context = 6; }
 message WsLogRequest { string ws_id = 1; LogRequest query = 2; }
-message WsBlameRequest { string ws_id = 1; string rev = 2; /* empty = working copy */ bytes path = 3; uint32 start_line = 4;
+message WsBlameRequest { string ws_id = 1; string rev = 2; /* empty = working copy */ bytes path = 3 [(asc.v1.json) = JSON_KIND_PATH]; uint32 start_line = 4;
   uint32 end_line = 5;
-  bytes buffer = 6; /* unsaved editor bytes; lines map to HEAD by one line diff (C31) */ bool ignore_whitespace = 7; }
+  bytes buffer = 6 [(asc.v1.json) = JSON_KIND_DATA]; /* unsaved editor bytes; lines map to HEAD by one line diff (C31) */ bool ignore_whitespace = 7; }
 message WsAffectedRequest { string ws_id = 1; AffectedRequest query = 2; bool uncommitted = 3; }
 message WsAffectedResponse { AffectedResponse result = 1; }
 message WatchRequest { string ws_id = 1; string since_token = 2; }
 message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KIND_STAGE = 3; KIND_OP_STARTED = 4;
   KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7;
   KIND_STACK = 8; /* C31; emitted by C49 */
-  KIND_CLOUD = 9; /* cloud events go to the workspace owner only (§21.3.7) */ } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
-  string token = 7; bytes change = 8; /* KIND_STACK: the change id (C31) */ }
-message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
+  KIND_CLOUD = 9; /* cloud events go to the workspace owner only (§21.3.7) */ } Kind kind = 1; repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH]; string ref = 3; bytes old = 4 [(asc.v1.json) = JSON_KIND_HEX]; bytes new = 5 [(asc.v1.json) = JSON_KIND_HEX]; string op = 6;
+  string token = 7; bytes change = 8 [(asc.v1.json) = JSON_KIND_CHANGE]; /* KIND_STACK: the change id (C31) */ }
+message WsStageRequest { string ws_id = 1; repeated bytes add = 2 [(asc.v1.json) = JSON_KIND_PATH]; repeated bytes remove = 3 [(asc.v1.json) = JSON_KIND_PATH]; bytes patch = 4 [(asc.v1.json) = JSON_KIND_TEXT]; /* git apply --cached format */ }
 message WsStageResponse { WsStatusResponse status = 1; }
 // The internal RPCs (Ping … Shutdown) carry the fields named in their comments; their messages are defined in U41
 // and are not part of the stable plugin API.
@@ -75,15 +76,15 @@ message MountResponse {}
 message UnmountRequest { string ws_id = 1; }
 message UnmountResponse {}
 enum SwitchMode { SWITCH_MODE_SAFE = 0; SWITCH_MODE_MERGE = 1; SWITCH_MODE_FORCE = 2; }
-message SwitchRequest { string ws_id = 1; bytes from_root = 2; bytes to_root = 3; SwitchMode mode = 4; }
-message SwitchResponse { repeated bytes conflicts = 1; }
+message SwitchRequest { string ws_id = 1; bytes from_root = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes to_root = 3 [(asc.v1.json) = JSON_KIND_HEX]; SwitchMode mode = 4; }
+message SwitchResponse { repeated bytes conflicts = 1 [(asc.v1.json) = JSON_KIND_PATH]; }
 message JournalRequest { string ws_id = 1; string since_token = 2; }
-message JournalResponse { repeated bytes paths = 1; string token = 2; bool fresh = 3; }
+message JournalResponse { repeated bytes paths = 1 [(asc.v1.json) = JSON_KIND_PATH]; string token = 2; bool fresh = 3; }
 message ClearJournalRequest { string ws_id = 1; string token = 2; }
 message ClearJournalResponse {}
-message DehydrateRequest { string ws_id = 1; repeated bytes pathspec = 2; }
+message DehydrateRequest { string ws_id = 1; repeated bytes pathspec = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 message DehydrateResponse { uint64 files = 1; uint64 bytes_freed = 2; }
-message PrefetchRequest { string ws_id = 1; repeated bytes pathspec = 2; }
+message PrefetchRequest { string ws_id = 1; repeated bytes pathspec = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
 message PrefetchResponse { uint64 files = 1; uint64 bytes_fetched = 2; }
 message StatsRequest { string ws_id = 1; }
 message HydrationCount { string key = 1; uint64 count = 2; uint64 bytes = 3; }
@@ -94,17 +95,17 @@ message ShutdownResponse {}
 
 // Plugin additions (SPEC 20.5, 20.6, C31). Ids are 20-byte git SHA-1s; `change` is a change id.
 message WsStacksRequest { string ws_id = 1; bool all = 2; bool remote = 3; string revset = 4; }
-message StackTrunk { string name = 1; bytes tip = 2; string remote = 3; }
-message StackEntry { bytes change = 1; bytes commit = 2; bytes asc = 3; bytes parent_change = 4; repeated string branches = 5;
-  bytes subject = 6; Signature author = 7; string state = 8; bool needs_restack = 9; bool frozen = 10; bool empty = 11;
+message StackTrunk { string name = 1; bytes tip = 2 [(asc.v1.json) = JSON_KIND_HEX]; string remote = 3; }
+message StackEntry { bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE]; bytes commit = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes asc = 3 [(asc.v1.json) = JSON_KIND_HEX]; bytes parent_change = 4 [(asc.v1.json) = JSON_KIND_CHANGE]; repeated string branches = 5;
+  bytes subject = 6 [(asc.v1.json) = JSON_KIND_TEXT]; Signature author = 7; string state = 8; bool needs_restack = 9; bool frozen = 10; bool empty = 11;
   bool current = 12; string worktree = 13; ReviewState review = 14; string short = 15; }
-message WsStack { string trunk = 1; bytes base = 2; uint32 behind = 3; repeated StackEntry changes = 4; }
+message WsStack { string trunk = 1; bytes base = 2 [(asc.v1.json) = JSON_KIND_HEX]; uint32 behind = 3; repeated StackEntry changes = 4; }
 message WsStacksResponse { uint32 version = 1; repeated StackTrunk trunks = 2; repeated WsStack stacks = 3; }
 message WsWorktreesRequest {}
-message WsWorktree { string ws_id = 1; string path = 2; string mount = 3; string mode = 4; string head_ref = 5; bytes head = 6;
+message WsWorktree { string ws_id = 1; string path = 2; string mount = 3; string mode = 4; string head_ref = 5; bytes head = 6 [(asc.v1.json) = JSON_KIND_HEX];
   uint32 dirty = 7; uint32 staged = 8; uint32 ahead = 9; uint32 behind = 10; int64 ephemeral_until = 11; string locked = 12; string in_progress = 13; }
 message WsWorktreesResponse { repeated WsWorktree worktrees = 1; }
 message WsConflictsRequest { string ws_id = 1; }
-message WsConflict { bytes path = 1; ConflictKind kind = 2; bytes base = 3; bytes ours = 4; bytes theirs = 5; bytes marked = 6; }
+message WsConflict { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; ConflictKind kind = 2; bytes base = 3 [(asc.v1.json) = JSON_KIND_HEX]; bytes ours = 4 [(asc.v1.json) = JSON_KIND_HEX]; bytes theirs = 5 [(asc.v1.json) = JSON_KIND_HEX]; bytes marked = 6 [(asc.v1.json) = JSON_KIND_DATA]; }
 message WsConflictsResponse { repeated WsConflict conflicts = 1; }
 message WsCommitGraphRequest { string ws_id = 1; CommitGraphRequest query = 2; bool wip_rows = 3; }

@@ -1,6 +1,7 @@
 syntax = "proto3";
 package asc.v1;
 option go_package = "forgejo.org/modules/ascproto/ascv1";
+import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 
 service Projects {
@@ -12,17 +13,17 @@ enum Ecosystem { ECOSYSTEM_UNSPECIFIED = 0; ECOSYSTEM_RUST = 1; ECOSYSTEM_PYTHON
                  ECOSYSTEM_NODE = 4; ECOSYSTEM_DECLARED = 5; }
 enum ProjectKind { PROJECT_KIND_PACKAGE = 0; PROJECT_KIND_WORKSPACE = 1; PROJECT_KIND_SOLUTION = 2; }
 message ProjectDep { string id = 1; string kind = 2; }   // normal|dev|build|peer|optional|implicit|contains|member
-message ProjectInfo { string id = 1; Ecosystem ecosystem = 2; bytes name = 3; bytes root = 4; bytes manifest = 5;
-  ProjectKind kind = 6; repeated ProjectDep deps = 7; repeated string tags = 8; bytes gitlink = 9; bool opaque = 10; }
-message DetectIssue { bytes path = 1; string message = 2; }
+message ProjectInfo { string id = 1; Ecosystem ecosystem = 2; bytes name = 3 [(asc.v1.json) = JSON_KIND_TEXT]; bytes root = 4 [(asc.v1.json) = JSON_KIND_PATH]; bytes manifest = 5 [(asc.v1.json) = JSON_KIND_PATH];
+  ProjectKind kind = 6; repeated ProjectDep deps = 7; repeated string tags = 8; bytes gitlink = 9 [(asc.v1.json) = JSON_KIND_HEX]; bool opaque = 10; }
+message DetectIssue { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; string message = 2; }
 message ProjectGraphRequest { RepoRef repo = 1; string rev = 2; repeated Ecosystem types = 3; repeated string select = 4; }
-message ProjectGraphResponse { bytes changeset = 1; bytes graph_id = 2; repeated ProjectInfo projects = 3;
+message ProjectGraphResponse { bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes graph_id = 2 [(asc.v1.json) = JSON_KIND_HEX]; repeated ProjectInfo projects = 3;
   repeated DetectIssue issues = 4; }
 message AffectedRequest { RepoRef repo = 1; string base = 2; string head = 3; bool no_merge_base = 4;
   repeated Ecosystem types = 5; string target = 6; repeated string select = 7; bool with_hashes = 8; }
-message AffectedProject { ProjectInfo project = 1; bool direct = 2; repeated string reasons = 3; bytes input_hash = 4; }
-message AffectedResponse { bytes base = 1; bytes head = 2; bytes merge_base = 3; bool all = 4;
-  repeated AffectedProject projects = 5; repeated string removed = 6; repeated bytes unowned = 7;
+message AffectedProject { ProjectInfo project = 1; bool direct = 2; repeated string reasons = 3; bytes input_hash = 4 [(asc.v1.json) = JSON_KIND_HEX]; }
+message AffectedResponse { bytes base = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes merge_base = 3 [(asc.v1.json) = JSON_KIND_HEX]; bool all = 4;
+  repeated AffectedProject projects = 5; repeated string removed = 6; repeated bytes unowned = 7 [(asc.v1.json) = JSON_KIND_PATH];
   repeated DetectIssue issues = 8; uint32 changed_paths = 9; }
 message ProjectHashesRequest { RepoRef repo = 1; string rev = 2; string target = 3; repeated string select = 4; }
-message ProjectHashesResponse { bytes graph_id = 1; map<string, bytes> by_project = 2; }
+message ProjectHashesResponse { bytes graph_id = 1 [(asc.v1.json) = JSON_KIND_HEX]; map<string, bytes> by_project = 2 [(asc.v1.json) = JSON_KIND_HEX]; }
