@@ -153,7 +153,9 @@ fn init_writes_a_ascignore_only_without_a_gitignore() {
     assert_eq!(asc(&sb, &has, &["init"]).code, 0);
     assert!(!has.join(".ascignore").exists(), "a .gitignore is kept as the ignore file");
 
-    // Invoked as `git` (argv[0]), init never adds asc-only files.
+    // Invoked as `git` (argv[0]), init never adds asc-only files. `git init` is real git unless
+    // the global config routes it to asc (SPEC §11.4).
+    append_global(&sb, "[asc \"shim\"]\n\tinit = asc\n");
     let as_git = sb.dir("as-git");
     let out = git(&sb, &as_git, &["init"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
