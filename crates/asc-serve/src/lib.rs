@@ -28,6 +28,7 @@ pub mod limits;
 pub mod mainline;
 pub mod migrate;
 pub mod mirror;
+pub mod mutations;
 pub mod outbox;
 pub mod projects;
 pub mod projects_warm;
@@ -164,6 +165,7 @@ fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Lim
     update::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
+    mutations::register(ext, registry, &hooks);
     commit_graph_rpc::register(ext, registry, &hooks);
 }
 
