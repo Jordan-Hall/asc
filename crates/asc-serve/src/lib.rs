@@ -207,6 +207,12 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
                 .into_service(),
         );
     }
+    if let Some(h) = ext.changes.get() {
+        ext.grpc.register(
+            changes::rpc::ChangesService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+    }
     // The live git routes when the layer runs (U81), else the disabled stub (U78, SPEC §25.9).
     let git_hosts = ext
         .git

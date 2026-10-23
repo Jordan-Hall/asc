@@ -529,6 +529,8 @@ pub struct Extensions {
     pub git: GitRoutesSlot,
     /// Ingest and `UpdateRefs` hook points (U43b).
     pub pipeline: Arc<crate::update::PipelineHooks>,
+    /// The `Changes` service handler (C19); `build_routes` serves it behind the authorizer.
+    pub changes: crate::changes::rpc::ChangesSlot,
 }
 
 impl Extensions {
@@ -541,6 +543,7 @@ impl Extensions {
             text_budget: crate::TextBudgetSlot::default(),
             git: GitRoutesSlot::default(),
             pipeline: Arc::default(),
+            changes: Default::default(),
         }
     }
 }
