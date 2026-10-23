@@ -4,6 +4,7 @@
 //! handler group on `Extensions::handlers`, a router on `Extensions::http`, a service on
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
+pub mod admin;
 pub mod authn;
 pub mod authz;
 pub mod cache_role;
@@ -275,6 +276,7 @@ pub async fn serve(
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror =
         mirror::register(&ext, &registry, &cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+    let repo_admin = admin::register(&ext, &registry, mirror.clone());
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
@@ -366,6 +368,7 @@ pub async fn serve(
     let sweeper = turbo.spawn_sweeper();
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
+    let admin_worker = repo_admin.spawn_worker();
     #[cfg(feature = "git-ssh")]
     let ssh_task = ssh.map(|server| tokio::spawn(server.run(std::future::pending())));
     // Expired agent refs and snapshots are deleted through the normal pipeline (SPEC §8.8).
@@ -397,6 +400,7 @@ pub async fn serve(
     if let Some(p) = poller {
         p.abort();
     }
+    admin_worker.abort();
     #[cfg(feature = "git-ssh")]
     if let Some(t) = ssh_task {
         t.abort();

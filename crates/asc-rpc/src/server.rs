@@ -788,6 +788,43 @@ repo_impl! {
             .map(Response::new)
     }
 
+    async fn repo_admin(
+        &self,
+        request: Request<pb::RepoAdminRequest>,
+    ) -> Result<Response<pb::RepoAdminResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Admin, true)
+            .await?;
+        // An operation that names a second repository needs rights on it before the handler
+        // looks at it: a fork reads its source (SPEC §3.3), a rename takes the new name over.
+        let other = match &msg.op {
+            Some(pb::repo_admin_request::Op::Fork(f)) => {
+                let from = f
+                    .from
+                    .as_ref()
+                    .ok_or_else(|| Status::invalid_argument("missing source"))?;
+                Some((RepoName::parse(&from.name)?, Access::Read))
+            }
+            Some(pb::repo_admin_request::Op::RenameTo(to)) => {
+                Some((RepoName::parse(to)?, Access::Admin))
+            }
+            _ => None,
+        };
+        if let Some((name, access)) = other
+            && name != ctx.repo
+        {
+            self.authorizer
+                .authorize_credential(ext.get::<Credential>(), name.as_str(), access)
+                .await?;
+        }
+        self.handlers
+            .admin()
+            .repo_admin(&ctx, msg)
+            .await
+            .map(Response::new)
+    }
+
     }
     unary {
         list_refs(ListRefsRequest) -> ListRefsResponse, refs, Access::Read, false;
@@ -802,7 +839,6 @@ repo_impl! {
         check_attr(CheckAttrRequest) -> CheckAttrResponse, reads, Access::Read, false;
         commit(CommitRequest) -> CommitResponse, mutations, Access::Write, true;
         apply(ApplyRequest) -> ApplyResponse, mutations, Access::Write, true;
-        repo_admin(RepoAdminRequest) -> RepoAdminResponse, admin, Access::Admin, true;
         import_git_push(ImportGitPushRequest) -> ImportGitPushResponse, import_push, Access::Admin, true;
         ingest(IngestRequest) -> IngestResponse, import_push, Access::Write, true;
         find_landing(FindLandingRequest) -> FindLandingResponse, landing, Access::Read, false;
@@ -1884,5 +1920,118 @@ mod tests {
             objects += m.objects.len();
         }
         assert_eq!((messages, objects), (2, 5));
+    }
+
+    /// Allows everything on `o/new` and `o/mine`, reads on `o/open`, and nothing else.
+    struct AdminOfMine;
+
+    #[async_trait]
+    impl Authorizer for AdminOfMine {
+        async fn authorize(
+            &self,
+            _: Option<&crate::auth::BearerToken>,
+            repo: &str,
+            access: Access,
+        ) -> Result<Principal, crate::auth::AuthError> {
+            let ok = match repo {
+                "o/new" | "o/mine" => true,
+                "o/open" => access == Access::Read,
+                _ => false,
+            };
+            if ok {
+                Ok(Principal { id: "alice".into() })
+            } else {
+                Err(crate::auth::AuthError::Forbidden)
+            }
+        }
+    }
+
+    /// Counts the `RepoAdmin` calls that reach the handler.
+    #[derive(Default)]
+    struct SpyAdmin(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl AdminHandler for SpyAdmin {
+        async fn repo_admin(
+            &self,
+            _: &CallCtx,
+            _: pb::RepoAdminRequest,
+        ) -> Result<pb::RepoAdminResponse, Status> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(pb::RepoAdminResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_admin_operation_on_a_second_repository_needs_rights_there() {
+        use pb::repo_admin_request::Op;
+        let spy = Arc::new(SpyAdmin::default());
+        let handlers = Arc::new(RepoHandlers::new());
+        handlers.set_admin(spy.clone()).unwrap();
+        let svc = RepoService::new(handlers, Arc::new(AdminOfMine), ServerInfo::default());
+        let call = |op: Option<Op>| {
+            let mut r = Request::new(pb::RepoAdminRequest {
+                repo: Some(pb::RepoRef {
+                    name: "o/new".into(),
+                    id_mode: 0,
+                }),
+                op,
+            });
+            r.metadata_mut()
+                .insert("x-asc-op-id", Uuid::new_v4().to_string().parse().unwrap());
+            r
+        };
+        let fork = |from: &str| {
+            Some(Op::Fork(pb::ForkOp {
+                from: Some(pb::RepoRef {
+                    name: from.into(),
+                    id_mode: 0,
+                }),
+            }))
+        };
+        let hits = || spy.0.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A fork reads its source: a private one is refused before the handler.
+        let denied = Repo::repo_admin(&svc, call(fork("o/secret")))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        assert_eq!(hits(), 0);
+        // A source with no name, or a malformed one, never reaches it either.
+        let none = Repo::repo_admin(&svc, call(Some(Op::Fork(pb::ForkOp::default()))))
+            .await
+            .unwrap_err();
+        assert_eq!(none.code(), tonic::Code::InvalidArgument);
+        let bad = Repo::repo_admin(&svc, call(fork("no-slash")))
+            .await
+            .unwrap_err();
+        assert_eq!(bad.code(), tonic::Code::InvalidArgument);
+        assert_eq!(hits(), 0);
+        // A repository the caller can read may be forked.
+        Repo::repo_admin(&svc, call(fork("o/open"))).await.unwrap();
+        assert_eq!(hits(), 1);
+
+        // A rename needs admin on the new name: read access is not enough, nor is none.
+        for to in ["o/open", "o/secret"] {
+            let e = Repo::repo_admin(&svc, call(Some(Op::RenameTo(to.into()))))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::PermissionDenied, "{to}");
+        }
+        let e = Repo::repo_admin(&svc, call(Some(Op::RenameTo("no-slash".into()))))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument);
+        assert_eq!(hits(), 1);
+        Repo::repo_admin(&svc, call(Some(Op::RenameTo("o/mine".into()))))
+            .await
+            .unwrap();
+        assert_eq!(hits(), 2);
+
+        // The other operations name no second repository.
+        Repo::repo_admin(&svc, call(Some(Op::Size(true))))
+            .await
+            .unwrap();
+        assert_eq!(hits(), 3);
     }
 }

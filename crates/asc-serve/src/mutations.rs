@@ -1261,6 +1261,14 @@ impl MutationsHandler for ServerMutations {
     ) -> Result<wire::MergeResponse, Status> {
         self.merge_inner(ctx, req).await
     }
+
+    async fn copy_closure(
+        &self,
+        ctx: &CallCtx,
+        req: wire::CopyClosureRequest,
+    ) -> Result<wire::CopyClosureResponse, Status> {
+        crate::admin::copy_closure(&self.registry, &self.pipeline, ctx, req).await
+    }
 }
 
 #[async_trait]
