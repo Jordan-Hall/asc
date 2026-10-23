@@ -21,3 +21,7 @@ asc-it-data/
 docs/
 packaging/
 tests/
+# Exceptions the build reads (see deploy/Dockerfile.serve).
+!tests/turbo/
+!docs/CHEATSHEET.md
+!packaging/windows/
