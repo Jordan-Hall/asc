@@ -9,11 +9,14 @@
 //! file unless `unidiff_zero` is set.
 //!
 //! The input is untrusted: sizes, counts and work are bounded (see the `MAX_*` constants), and
-//! every path a patch names is checked by [`safe_name`] (no `..`, no `.git`, nothing absolute).
+//! every path a patch names is checked by [`path_allowed`], which is `asc_core::path::checkout_safe` and
+//! nothing weaker (no `..`, no `.git` or `.asc/info` alias).
 //! Binary patches carry deflated data; the engine has no inflater, so [`apply_binary`] takes one
 //! from the caller.
 
 use std::borrow::Cow;
+
+use asc_core::path::{RepoPath, checkout_safe};
 
 /// Largest patch [`parse`] reads.
 pub const MAX_PATCH_BYTES: usize = 1 << 30;
@@ -25,6 +28,9 @@ pub const MAX_HUNKS: usize = 1_000_000;
 pub const MAX_APPLY_BYTES: usize = 1 << 30;
 /// Bound on `lines x hunks`, the cost of splicing hunks into a file's line list.
 const MAX_SPLICE_WORK: u128 = 4_000_000_000;
+/// Bound on the work of placing hunks: one unit per preimage line compared, plus one per 64
+/// bytes compared. This counts `lines x preimage length`, which `MAX_SPLICE_WORK` does not.
+pub const MAX_MATCH_WORK: u64 = 1 << 30;
 
 /// Why a patch could not be read or applied.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -220,22 +226,40 @@ impl Default for ParseOptions {
     }
 }
 
-/// A path a patch may name: relative, no `..` or `.git` component, no NUL, no backslash.
-pub fn safe_name(name: &[u8]) -> bool {
-    if name.is_empty() || name[0] == b'/' || name.contains(&0) || name.contains(&b'\\') {
+/// True when a patch may write `name`: it is a valid repository path and passes
+/// `asc_core::path::checkout_safe`, the one rule every checkout and import uses. There is no
+/// rule of our own here; `.git` and `.asc/info` aliases are refused by that function.
+pub fn path_allowed(name: &[u8]) -> bool {
+    RepoPath::new(name.to_vec()).is_ok_and(|p| checkout_safe(&p))
+}
+
+/// True when a symlink at `link` may point at `target`: relative, never above the top of the
+/// work tree, and naming no `.git` or `.asc/info` alias once the `.`/`..` components are folded.
+pub fn symlink_target_allowed(link: &[u8], target: &[u8]) -> bool {
+    if target.is_empty()
+        || target.contains(&0)
+        || target.contains(&92)
+        || target[0] == b'/'
+        || (target.len() >= 2 && target[1] == b':' && target[0].is_ascii_alphabetic())
+    {
         return false;
     }
-    // A drive letter such as `C:` would escape on Windows.
-    if name.len() >= 2 && name[1] == b':' && name[0].is_ascii_alphabetic() {
-        return false;
+    // Resolve against the directory that holds the link.
+    let mut stack: Vec<&[u8]> = link.split(|&b| b == b'/').collect();
+    stack.pop();
+    for c in target.split(|&b| b == b'/') {
+        match c {
+            b"" | b"." => {}
+            b".." => {
+                if stack.pop().is_none() {
+                    return false;
+                }
+            }
+            c => stack.push(c),
+        }
     }
-    name.split(|&b| b == b'/').all(|c| {
-        !c.is_empty()
-            && c != b".."
-            && c != b"."
-            && !c.eq_ignore_ascii_case(b".git")
-            && !c.iter().all(|&b| b == b'.' || b == b' ')
-    })
+    // A link to the top of the tree, or to an ancestor of the link, names no component.
+    stack.is_empty() || path_allowed(&stack.join(&b'/'))
 }
 
 struct Cur<'a> {
@@ -335,8 +359,36 @@ fn finish(fp: &mut FilePatch, line: usize) -> Result<()> {
         fp.is_delete = true;
     }
     for p in [&fp.old_path, &fp.new_path].into_iter().flatten() {
-        if !safe_name(p) {
+        if !path_allowed(p) {
             return Err(Error::UnsafePath(String::from_utf8_lossy(p).into_owned()));
+        }
+    }
+    // A symlink's content is its target: refuse one that leaves the tree or names a `.git` alias.
+    for (path, mode, ops) in [
+        (&fp.old_path, fp.old_mode, [LineOp::Context, LineOp::Del]),
+        (&fp.new_path, fp.new_mode, [LineOp::Context, LineOp::Add]),
+    ] {
+        let (Some(path), Some(m)) = (path, mode) else {
+            continue;
+        };
+        if m & 0o170000 != 0o120000 {
+            continue;
+        }
+        let mut target = Vec::new();
+        for l in fp.hunks.iter().flat_map(|h| &h.lines) {
+            if ops.contains(&l.op) {
+                target.extend_from_slice(&l.text);
+            }
+        }
+        if target.last() == Some(&10) {
+            target.pop();
+        }
+        if !symlink_target_allowed(path, &target) {
+            return Err(Error::UnsafePath(format!(
+                "{} -> {}",
+                String::from_utf8_lossy(path),
+                String::from_utf8_lossy(&target)
+            )));
         }
     }
     Ok(())
@@ -837,6 +889,37 @@ pub struct ApplyOptions {
 
 /// Applies the hunks of `fp` to `base`.
 pub fn apply_text(base: &[u8], fp: &FilePatch, opts: ApplyOptions) -> Result<Applied> {
+    apply_text_budget(base, fp, opts, &mut Work::new(MAX_MATCH_WORK))
+}
+
+/// The work left to place hunks, counted in line comparisons.
+#[derive(Debug)]
+struct Work {
+    limit: u64,
+    used: u64,
+}
+
+impl Work {
+    fn new(limit: u64) -> Self {
+        Self { limit, used: 0 }
+    }
+
+    /// Charges one comparison of lines `len` bytes long.
+    fn charge(&mut self, len: usize) -> Result<()> {
+        self.used = self.used.saturating_add(1 + (len as u64 >> 6));
+        if self.used > self.limit {
+            return Err(Error::TooExpensive);
+        }
+        Ok(())
+    }
+}
+
+fn apply_text_budget(
+    base: &[u8],
+    fp: &FilePatch,
+    opts: ApplyOptions,
+    work: &mut Work,
+) -> Result<Applied> {
     if base.len() > MAX_APPLY_BYTES {
         return Err(Error::FileTooLarge);
     }
@@ -864,11 +947,18 @@ pub fn apply_text(base: &[u8], fp: &FilePatch, opts: ApplyOptions) -> Result<App
             h.old_start as isize - 1
         } + delta;
         let want = want.max(0) as usize;
-        let at = find_pos(base, &arena, &lines, &pre, want, match_beginning, match_end)
-            .ok_or_else(|| Error::HunkFailed {
-                path: path(),
-                line: h.old_start,
-            })?;
+        let at = find_pos(
+            base,
+            &arena,
+            &lines,
+            &pre,
+            (want, match_beginning, match_end),
+            work,
+        )?
+        .ok_or_else(|| Error::HunkFailed {
+            path: path(),
+            line: h.old_start,
+        })?;
         let mut repl: Vec<Span> = Vec::with_capacity(h.new_len);
         let mut pre_i = 0usize;
         for l in &h.lines {
@@ -923,46 +1013,61 @@ fn span_bytes<'a>(base: &'a [u8], arena: &'a [u8], s: &Span) -> &'a [u8] {
     }
 }
 
-fn matches_at(base: &[u8], arena: &[u8], lines: &[Span], pre: &[&[u8]], at: usize) -> bool {
+fn matches_at(
+    base: &[u8],
+    arena: &[u8],
+    lines: &[Span],
+    pre: &[&[u8]],
+    at: usize,
+    work: &mut Work,
+) -> Result<bool> {
     if at + pre.len() > lines.len() {
-        return false;
+        return Ok(false);
     }
-    pre.iter()
-        .enumerate()
-        .all(|(i, p)| span_bytes(base, arena, &lines[at + i]) == *p)
+    for (i, p) in pre.iter().enumerate() {
+        work.charge(p.len())?;
+        if span_bytes(base, arena, &lines[at + i]) != *p {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// git's `find_pos`: the preimage must match in full; nearest to `want` wins, earlier lines
-/// before later ones at equal distance.
+/// before later ones at equal distance. `place` is `(want, match_beginning, match_end)`. The
+/// comparisons are charged to `work`; past its limit the search stops with `TooExpensive`.
 fn find_pos(
     base: &[u8],
     arena: &[u8],
     lines: &[Span],
     pre: &[&[u8]],
-    want: usize,
-    match_beginning: bool,
-    match_end: bool,
-) -> Option<usize> {
-    let max_start = lines.len().checked_sub(pre.len())?;
+    place: (usize, bool, bool),
+    work: &mut Work,
+) -> Result<Option<usize>> {
+    let (want, match_beginning, match_end) = place;
+    let Some(max_start) = lines.len().checked_sub(pre.len()) else {
+        return Ok(None);
+    };
     if match_beginning {
         // With match_end too, the preimage must be the whole file.
-        let ok = (!match_end || pre.len() == lines.len()) && matches_at(base, arena, lines, pre, 0);
-        return ok.then_some(0);
+        let ok = (!match_end || pre.len() == lines.len())
+            && matches_at(base, arena, lines, pre, 0, work)?;
+        return Ok(ok.then_some(0));
     }
     if match_end {
-        return matches_at(base, arena, lines, pre, max_start).then_some(max_start);
+        return Ok(matches_at(base, arena, lines, pre, max_start, work)?.then_some(max_start));
     }
     let start = want.min(max_start);
     let (mut back, mut fwd) = (start, start);
     loop {
-        if matches_at(base, arena, lines, pre, back) {
-            return Some(back);
+        if matches_at(base, arena, lines, pre, back, work)? {
+            return Ok(Some(back));
         }
-        if matches_at(base, arena, lines, pre, fwd) {
-            return Some(fwd);
+        if matches_at(base, arena, lines, pre, fwd, work)? {
+            return Ok(Some(fwd));
         }
         if back == 0 && fwd == max_start {
-            return None;
+            return Ok(None);
         }
         back = back.saturating_sub(1);
         if fwd < max_start {
@@ -1266,17 +1371,30 @@ new
         assert!(fp.hunks.is_empty());
     }
 
+    fn create(name: &str) -> String {
+        format!("--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+x\n")
+    }
+
+    const ALIASES: [&str; 13] = [
+        "../x",
+        "a/../x",
+        ".git/config",
+        "a/.GIT/x",
+        r"a\b",
+        ".git /config",
+        ".git./hooks/x",
+        "GIT~1/config",
+        "git~1/config",
+        "a/.git:stream",
+        ".git::$INDEX_ALLOCATION/x",
+        ".asc/info/x",
+        ".g\u{200c}it/config",
+    ];
+
     #[test]
     fn unsafe_paths_are_refused() {
-        for name in ["../x", "a/../x", ".git/config", "a/.GIT/x", "a\\b", "C:/x"] {
-            let p = format!(
-                "--- /dev/null
-+++ b/{name}
-@@ -0,0 +1 @@
-+x
-"
-            );
-            let r = parse(p.as_bytes(), &ParseOptions::default());
+        for name in ALIASES {
+            let r = parse(create(name).as_bytes(), &ParseOptions::default());
             assert!(matches!(r, Err(Error::UnsafePath(_))), "{name}: {r:?}");
         }
         let abs = "--- /dev/null
@@ -1292,7 +1410,100 @@ new
             },
         );
         assert!(matches!(r, Err(Error::UnsafePath(_))), "{r:?}");
-        assert!(safe_name(b"a/b.txt"));
+        let r = parse(create(".asc").as_bytes(), &ParseOptions::default());
+        assert!(matches!(r, Err(Error::UnsafePath(_))), "{r:?}");
+        assert!(path_allowed(b"a/b.txt"));
+        assert!(path_allowed(b"a/.gitignore"));
+    }
+
+    #[test]
+    fn every_name_a_patch_writes_is_checked() {
+        for name in ALIASES {
+            let shapes = [
+                // A rename into the alias, and out of it.
+                format!("diff --git a/x b/{name}\nrename from x\nrename to {name}\n"),
+                format!("diff --git a/{name} b/x\nrename from {name}\nrename to x\n"),
+                // A copy, a deletion, a mode change.
+                format!("diff --git a/x b/{name}\ncopy from x\ncopy to {name}\n"),
+                format!(
+                    "diff --git a/{name} b/{name}\ndeleted file mode 100644\n--- a/{name}\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+                ),
+                format!("diff --git a/{name} b/{name}\nold mode 100644\nnew mode 100755\n"),
+                // A later file of a patch that creates a directory first, and a file inside
+                // the directory the same patch creates.
+                format!("{}{}", create("d/e/f"), create(name)),
+                format!("{}{}", create("d/e/f"), create(&format!("{name}/g"))),
+                // A traditional diff, with no `diff --git` line.
+                format!("--- a/x\n+++ b/{name}\n@@ -1 +1 @@\n-x\n+y\n"),
+            ];
+            for p in shapes {
+                let r = parse(p.as_bytes(), &ParseOptions::default());
+                assert!(matches!(r, Err(Error::UnsafePath(_))), "{name}: {p}: {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn symlinks_may_not_leave_the_tree_or_name_dotgit() {
+        let link = |name: &str, target: &str| {
+            format!(
+                "diff --git a/{name} b/{name}\nnew file mode 120000\n--- /dev/null\n+++ b/{name}\n@@ -0,0 +1 @@\n+{target}\n\\ No newline at end of file\n"
+            )
+        };
+        for (name, target) in [
+            ("l", "../outside"),
+            ("a/l", "../../outside"),
+            ("l", "/etc/passwd"),
+            ("l", "C:/x"),
+            ("l", r"a\..\b"),
+            ("l", ".git/hooks"),
+            ("l", "d/.git /hooks"),
+            ("l", "GIT~1"),
+            ("a/l", "../.git/config"),
+            ("l", "a/../../x"),
+            ("l", ".asc/info/exclude"),
+            ("l", ""),
+        ] {
+            let r = parse(link(name, target).as_bytes(), &ParseOptions::default());
+            assert!(
+                matches!(r, Err(Error::UnsafePath(_))),
+                "{name} -> {target}: {r:?}"
+            );
+        }
+        for (name, target) in [
+            ("l", "x"),
+            ("a/l", "../x"),
+            ("a/b/l", "../../c/./d"),
+            ("l", "."),
+        ] {
+            let r = parse(link(name, target).as_bytes(), &ParseOptions::default());
+            assert!(r.is_ok(), "{name} -> {target}: {r:?}");
+        }
+    }
+
+    #[test]
+    fn a_large_preimage_over_a_large_file_is_too_expensive() {
+        // Every position matches `m - 2` lines and then fails: `n x m` work.
+        let (n, m) = (4_000usize, 2_000usize);
+        let base = "a\n".repeat(n).into_bytes();
+        let mut hunk = format!("--- a/f\n+++ b/f\n@@ -1000,{m} +1000,{m} @@\n");
+        for _ in 0..m - 2 {
+            hunk.push_str(" a\n");
+        }
+        hunk.push_str("-b\n+c\n a\n");
+        let fp = one(&hunk);
+        let mut work = Work::new(1_000_000);
+        let r = apply_text_budget(&base, &fp, ApplyOptions::default(), &mut work);
+        assert_eq!(r, Err(Error::TooExpensive));
+        // It stopped at the limit instead of doing the n x m comparisons.
+        assert!(work.used > work.limit, "{}", work.used);
+        assert!(work.used <= work.limit + 2, "{}", work.used);
+        assert!((work.used as usize) < n * m / 4);
+        // A patch that matches at once costs about its own length.
+        let ok = one("--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-a\n+b\n a\n");
+        let mut work = Work::new(1_000_000);
+        apply_text_budget(&base, &ok, ApplyOptions::default(), &mut work).unwrap();
+        assert!(work.used <= 4, "{}", work.used);
     }
 
     #[test]

@@ -88,6 +88,8 @@ scenarios! {
     remote_bucket = "remote-bucket",
     push_reject = "push-reject",
     fetch_agent_refs = "fetch-agent-refs",
+    apply_unsafe_paths = "apply-unsafe-paths",
+    apply_unsafe_asc = "apply-unsafe-asc",
 }
 
 #[test]
