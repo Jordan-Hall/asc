@@ -13,6 +13,7 @@ use super::add::spec::{Spec, repo_path};
 use super::add::target::{Edit, Staged, Target};
 use super::add::cwd_prefix;
 use super::common::{CliError, Ctx, Result};
+use crate::dispatch::Program;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
@@ -132,7 +133,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let Staged::Leaf { leaf, ita } = target.staged(ws, &old).await? else { continue };
         edits.push(Edit::Drop(old));
         edits.push(Edit::Put { path: new, leaf, ita });
-        record(&mut renames, from, to);
+        // Only `asc mv` records the copy for the commit's `asc` header. Through the shim (`git mv`)
+        // the commit must keep git's id, so nothing is recorded (SPEC §17.1).
+        if ctx.prog == Program::Asc {
+            record(&mut renames, from, to);
+        }
     }
     ws_ops::set_pending_renames(&ws.db, ws.workspace.ws.id, &renames).await?;
     let mut target = target;
