@@ -13,8 +13,8 @@ g commit -m first
 g hello
 g config alias.graph "log --oneline --decorate"
 g graph
-g config alias.shell "!echo shell-alias"
-g shell
+g config alias.shellalias "!echo shell-alias"
+g shellalias
 g frobnicate
 g config alias.loop "loop"
 g loop
