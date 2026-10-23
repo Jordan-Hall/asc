@@ -138,6 +138,8 @@ pub mod worktree;
 
 use common::{CliError, Ctx, Result};
 
+use crate::codeintel_local::cli as codeintel;
+
 /// The future a command returns.
 pub type BoxFut<'a> = Pin<Box<dyn Future<Output = Result<ExitCode>> + 'a>>;
 
@@ -260,6 +262,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("sparse", sparse),
     entry!("debug", debug),
     entry!("ci", ci),
+    entry!("codeintel", codeintel),
     entry!("affected", affected),
     entry!("projects", projects),
     entry!("graph", graph),

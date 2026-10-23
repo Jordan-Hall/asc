@@ -455,24 +455,54 @@ pub struct Service {
     stop: Arc<Notify>,
     state: Option<Arc<State>>,
     codeintel: CodeIntel,
+    /// No asc server is configured: the local index is the only index, so the daemon starts the
+    /// helper that builds it (SPEC §23.2.5).
+    local_only: bool,
 }
 
 impl Service {
     pub(super) fn new(version: String, stop: Arc<Notify>, state: Option<Arc<State>>) -> Self {
+        // Without an asc server the local index answers (SPEC §23.2.5).
+        let mut codeintel = CodeIntel::new();
+        codeintel.server =
+            crate::codeintel_local::query::system_answer().map(|l| l as Arc<dyn ServerAnswer>);
         Self {
             version,
             started: Instant::now(),
             stop,
             state,
-            codeintel: CodeIntel::new(),
+            codeintel,
+            local_only: true,
         }
     }
 
     /// Lets the workspace-scope code intelligence RPCs ask an asc server for its part (SPEC §23.2.5).
     #[must_use]
     pub fn with_codeintel_server(mut self, server: Arc<dyn ServerAnswer>) -> Self {
-        self.codeintel.server = Some(server);
+        // The server answers; when it cannot be reached, the local index does (SPEC §23.2.5).
+        self.codeintel.server = Some(match crate::codeintel_local::query::system_answer() {
+            Some(local) => Arc::new(crate::codeintel_local::routed::Routed::new(server, local)),
+            None => server,
+        });
+        self.local_only = false;
         self
+    }
+
+    /// Starts the local index helper for `ws_id` when it is due (SPEC §23.2.5): only without a
+    /// asc server, only when the workspace is idle, and never inside the daemon.
+    fn nudge_local_index(&self, state: &Arc<State>, ws_id: &str) {
+        if !self.local_only {
+            return;
+        }
+        if let Ok(id) = parse_id(ws_id)
+            && let Ok(m) = state.mounted(id)
+        {
+            crate::codeintel_local::start::nudge(
+                std::path::Path::new(&m.row.ws.mount),
+                &state.home.gitdir(id),
+                false,
+            );
+        }
     }
 
     fn state(&self) -> Result<&Arc<State>, Status> {
@@ -585,7 +615,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsSearchRequest>,
     ) -> Result<Response<Self::SearchStream>, Status> {
         let state = self.state()?;
-        let s = self.codeintel.search(state, req.into_inner()).await?;
+        let req = req.into_inner();
+        self.nudge_local_index(state, &req.ws_id);
+        let s = self.codeintel.search(state, req).await?;
         Ok(Response::new(s))
     }
 
@@ -594,7 +626,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsSymbolsRequest>,
     ) -> Result<Response<wire::SymbolsResponse>, Status> {
         let state = self.state()?;
-        let r = self.codeintel.symbols(state, req.into_inner()).await?;
+        let req = req.into_inner();
+        self.nudge_local_index(state, &req.ws_id);
+        let r = self.codeintel.symbols(state, req).await?;
         Ok(Response::new(r))
     }
 
@@ -612,7 +646,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsIndexStatusRequest>,
     ) -> Result<Response<wire::IndexStatusResponse>, Status> {
         let state = self.state()?;
-        let r = self.codeintel.index_status(state, req.into_inner()).await?;
+        let req = req.into_inner();
+        self.nudge_local_index(state, &req.ws_id);
+        let r = self.codeintel.index_status(state, req).await?;
         Ok(Response::new(r))
     }
 

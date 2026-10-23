@@ -6,6 +6,7 @@
 
 mod child;
 mod cli;
+mod codeintel_local;
 mod credential;
 mod daemon;
 mod dispatch;
