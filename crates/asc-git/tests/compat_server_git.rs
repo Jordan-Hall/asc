@@ -55,7 +55,7 @@ impl Env {
         self.dir.path().join("hooks")
     }
 
-    /// A bare view holding one commit on `refs/heads/main`; returns the view and the commit.
+    /// A bare view holding one commit on `refs/heads/master`; returns the view and the commit.
     fn view_with_commit(&self) -> (PathBuf, GitOid) {
         let view = self.dir.path().join("view.git");
         self.server.init_bare(&view).expect("init");
@@ -64,11 +64,11 @@ impl Env {
             .update_refs(
                 &view,
                 &[RefUpdate::Set {
-                    name: "refs/heads/main".into(),
+                    name: "refs/heads/master".into(),
                     oid: commit,
                 }],
             )
-            .expect("set main");
+            .expect("set master");
         (view, commit)
     }
 }
@@ -244,7 +244,7 @@ fn advertisement_hides_private_refs_and_names_asc_as_the_agent() {
         String::from_utf8_lossy(&exit.stderr)
     );
     let text = String::from_utf8_lossy(&out);
-    assert!(text.contains("refs/heads/main"), "{text}");
+    assert!(text.contains("refs/heads/master"), "{text}");
     for hidden in ["refs/pull", "refs/users", "refs/snapshots"] {
         assert!(!text.contains(hidden), "{hidden} is advertised: {text}");
     }
@@ -302,18 +302,18 @@ fn refs_round_trip_and_bad_names_never_reach_git() {
     let (view, commit) = env.view_with_commit();
     assert_eq!(
         env.server.list_refs(&view).unwrap(),
-        vec![("refs/heads/main".to_owned(), commit)]
+        vec![("refs/heads/master".to_owned(), commit)]
     );
-    env.server.set_head(&view, "refs/heads/main").unwrap();
+    env.server.set_head(&view, "refs/heads/master").unwrap();
     assert_eq!(
         env.server.read_head(&view).unwrap().as_deref(),
-        Some("refs/heads/main")
+        Some("refs/heads/master")
     );
     env.server
         .update_refs(
             &view,
             &[RefUpdate::Delete {
-                name: "refs/heads/main".into(),
+                name: "refs/heads/master".into(),
             }],
         )
         .unwrap();
@@ -346,13 +346,24 @@ fn refs_round_trip_and_bad_names_never_reach_git() {
     );
 }
 
+/// Writes a hook script; git only runs hooks that are executable on Unix.
+fn write_hook(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 #[test]
 fn an_old_or_unknown_git_is_refused() {
     // A program that is not git reports no version, which the gate treats as too old.
     let fake: PathBuf = if cfg!(windows) {
         PathBuf::from(std::env::var_os("COMSPEC").expect("COMSPEC"))
     } else {
-        PathBuf::from("/bin/sh")
+        // Not `sh`: dash rejects `--version`, which is an error, not "no version".
+        PathBuf::from("/bin/true")
     };
     let mut r = Resolver::from_process(None, None);
     r.env_override = Some(fake);
@@ -504,7 +515,7 @@ fn canary_child() {
         "post-receive",
         "update",
     ] {
-        fs::write(evil_hooks.join(hook), &evil_hook).unwrap();
+        write_hook(&evil_hooks.join(hook), &evil_hook);
     }
     fs::write(
         root.join("evil.gitconfig"),
@@ -521,26 +532,33 @@ fn canary_child() {
     )
     .unwrap();
 
-    let env = Env::new();
+    // RLIMIT_NPROC counts every task of the user, so the test host needs the largest valid grant
+    // for the hook to be able to fork.
+    let env = Env::with(
+        GitLimits {
+            child_processes: 4096,
+            ..GitLimits::default()
+        },
+        FsckMode::Strict,
+    );
     // The asc-owned hook dumps the environment git hands it.
-    fs::write(
-        env.hooks().join("reference-transaction"),
-        format!("#!/bin/sh\nenv > \"{}\"\ncat > /dev/null\n", fwd(&hook_out)),
-    )
-    .unwrap();
+    write_hook(
+        &env.hooks().join("reference-transaction"),
+        &format!("#!/bin/sh\nenv > \"{}\"\ncat > /dev/null\n", fwd(&hook_out)),
+    );
     // The view's own hooks directory is hostile too.
     let view = env.dir.path().join("view.git");
     env.server.init_bare(&view).unwrap();
     fs::create_dir_all(view.join("hooks")).unwrap();
     for hook in ["reference-transaction", "pre-receive", "post-receive"] {
-        fs::write(view.join("hooks").join(hook), &evil_hook).unwrap();
+        write_hook(&view.join("hooks").join(hook), &evil_hook);
     }
     let commit = write_commit(&view);
     env.server
         .update_refs(
             &view,
             &[RefUpdate::Set {
-                name: "refs/heads/main".into(),
+                name: "refs/heads/master".into(),
                 oid: commit,
             }],
         )

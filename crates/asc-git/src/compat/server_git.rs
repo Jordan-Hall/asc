@@ -499,7 +499,7 @@ impl ServerGit {
         let mut cmd = self.command(&[], None, true)?;
         cmd.args([
             "-c",
-            "init.defaultBranch=main",
+            "init.defaultBranch=master",
             "init",
             "--bare",
             "--quiet",
@@ -574,7 +574,7 @@ impl ServerGit {
         Ok(refs)
     }
 
-    /// The branch `HEAD` names, e.g. `refs/heads/main`.
+    /// The branch `HEAD` names, e.g. `refs/heads/master`.
     pub fn read_head(&self, view: &Path) -> Result<Option<String>, ServerGitError> {
         let cmd = self.view_command(view, &["symbolic-ref", "-q", "HEAD"])?;
         let out =
@@ -1459,7 +1459,7 @@ mod tests {
     #[test]
     fn ref_names_follow_check_ref_format() {
         for ok in [
-            "refs/heads/main",
+            "refs/heads/master",
             "refs/tags/v1.0",
             "refs/heads/a/b-c_d",
             "refs/heads/@x",
