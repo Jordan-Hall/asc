@@ -38,6 +38,30 @@ fn redacts_config_values() {
 }
 
 #[test]
+fn redacts_config_env_and_bare_config_keys() {
+    assert_eq!(
+        redact_argv(&args(&[
+            "--config-env",
+            "a.token=TOK",
+            "--config-env=b.c=D",
+            "x"
+        ])),
+        "--config-env a.token=*** --config-env=b.c=*** x"
+    );
+    assert_eq!(
+        redact_argv(&args(&[
+            "user.token=s3",
+            "db.password=p",
+            "credential.helper=!f",
+            "a.b=c"
+        ])),
+        "user.token=*** db.password=*** credential.helper=*** a.b=c"
+    );
+    let r = redact_argv(&args(&["url.https://u:p@h/.insteadOf=https://h/"]));
+    assert!(!r.contains("u:p"), "{r}");
+}
+
+#[test]
 fn drops_secret_option_values() {
     assert_eq!(
         redact_argv(&args(&[
