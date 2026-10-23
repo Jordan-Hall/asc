@@ -6,3 +6,8 @@
 pub mod core;
 pub mod policy;
 pub mod stats;
+
+/// Windows ProjFS backend (SPEC §10.2).
+#[cfg(all(feature = "projfs", windows))]
+#[allow(unsafe_code)] // the ProjFS FFI; every call is confined to this module tree.
+pub mod projfs;

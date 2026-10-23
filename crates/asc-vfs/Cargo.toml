@@ -12,14 +12,18 @@ workspace = true
 [dependencies]
 bytes = { workspace = true }
 asc-core = { workspace = true }
+asc-state = { workspace = true, optional = true }
 asc-store = { workspace = true }
 asc-wc = { workspace = true }
+libloading = { workspace = true, optional = true }
 quick_cache = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 tokio = { workspace = true }
 
 [features]
-projfs = []
+projfs = ["dep:asc-state", "dep:libloading", "dep:tokio"]
 fuse = []
