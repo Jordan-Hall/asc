@@ -24,22 +24,10 @@ reason = "init --bare for the origin (U20), remote add and push -u (U32)"
 unsupported = ["option '--bare' is not supported", "'remote' is not supported yet", "'push' is not supported yet"]
 
 [[pending]]
-trace = "claude-code/worktree-default"
-unit = "U54w"
-reason = "worktree add, list and remove"
-unsupported = ["'worktree' is not supported yet"]
-
-[[pending]]
 trace = "claude-code/worktree-git-hooks"
 unit = "U54w"
-reason = "worktree add, list and remove, with post-checkout in the new work tree"
-unsupported = ["'worktree' is not supported yet"]
-
-[[pending]]
-trace = "claude-code/worktree-hook-commands"
-unit = "U54w"
-reason = "the git calls of a WorktreeCreate and a WorktreeRemove hook script"
-unsupported = ["'worktree' is not supported yet"]
+reason = "the hook script is written to `rev-parse --absolute-git-dir`/hooks, which for asc is the synthetic wc/<id>/git, not the common dir asc reads hooks from, so post-checkout never fires on the asc side"
+differs = true
 
 [[pending]]
 trace = "asc-scripts/pr-pack-forge"

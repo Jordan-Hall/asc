@@ -167,6 +167,7 @@ async fn create(ctx: &Ctx, input: &[u8]) -> Result<ExitCode> {
             lock: None,
             quiet: true,
             start: Some("HEAD".to_owned()),
+            track: super::switch::TrackOpt::Auto,
             ephemeral_secs: Some(wt::DEFAULT_TTL_SECS),
             virtual_mode: false,
         },
