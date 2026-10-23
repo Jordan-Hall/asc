@@ -5,6 +5,7 @@
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
 pub mod cache_role;
+pub mod codeintel;
 pub mod classify;
 pub mod commit_graph_rpc;
 pub mod config;
