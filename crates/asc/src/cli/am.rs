@@ -31,6 +31,7 @@ use super::restore::{index_tree, root_of, sync_worktree};
 use super::seqstate;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner};
 use crate::native::NativeSpec;
+use asc_engine::diff::apply::Work;
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "am", disable_help_flag = true, disable_version_flag = true)]
@@ -669,6 +670,8 @@ async fn drive(
     fresh: bool,
 ) -> Result<ExitCode> {
     let _ = fresh;
+    // One budget for every patch of the mailbox.
+    let work = Work::default();
     let last = read_number(dir, "last")?;
     loop {
         let next = read_number(dir, "next")?;
@@ -737,7 +740,7 @@ async fn drive(
             index: true,
             ..Settings::default()
         };
-        if !apply_patches(ctx, ws, &patches, &settings).await? {
+        if !apply_patches(ctx, ws, &patches, &settings, &work).await? {
             return stopped(ctx, &next, &subject, true);
         }
         match commit(ctx, ws, gitdir, dir, run).await? {

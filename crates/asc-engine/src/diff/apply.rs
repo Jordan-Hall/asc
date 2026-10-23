@@ -15,6 +15,7 @@
 //! from the caller.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 
 use asc_core::path::{RepoPath, checkout_safe};
 
@@ -887,39 +888,59 @@ pub struct ApplyOptions {
     pub unidiff_zero: bool,
 }
 
-/// Applies the hunks of `fp` to `base`.
-pub fn apply_text(base: &[u8], fp: &FilePatch, opts: ApplyOptions) -> Result<Applied> {
-    apply_text_budget(base, fp, opts, &mut Work::new(MAX_MATCH_WORK))
+/// The work one apply session may spend placing hunks, counted in line comparisons. A session is
+/// one run of a command over all its inputs (`asc apply`, one `asc am` run, one server call): make
+/// one [`Work`] for it and pass it to every [`apply_text`] and [`apply_file`] call, including a
+/// retry, so that many file patches share one budget instead of each having their own.
+#[derive(Debug)]
+pub struct Work {
+    limit: u64,
+    used: Cell<u64>,
 }
 
-/// The work left to place hunks, counted in line comparisons.
-#[derive(Debug)]
-struct Work {
-    limit: u64,
-    used: u64,
+impl Default for Work {
+    /// A session budget of [`MAX_MATCH_WORK`].
+    fn default() -> Self {
+        Self::new(MAX_MATCH_WORK)
+    }
 }
 
 impl Work {
-    fn new(limit: u64) -> Self {
-        Self { limit, used: 0 }
+    /// A budget of `limit` units.
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            used: Cell::new(0),
+        }
     }
 
-    /// Charges one comparison of lines `len` bytes long.
-    fn charge(&mut self, len: usize) -> Result<()> {
-        self.used = self.used.saturating_add(1 + (len as u64 >> 6));
-        if self.used > self.limit {
+    /// Units spent so far.
+    pub fn used(&self) -> u64 {
+        self.used.get()
+    }
+
+    /// The most units the session may spend.
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    fn spend(&self, units: u64) -> Result<()> {
+        let used = self.used.get().saturating_add(units);
+        self.used.set(used);
+        if used > self.limit {
             return Err(Error::TooExpensive);
         }
         Ok(())
     }
+
+    /// Charges one comparison of lines `len` bytes long.
+    fn charge(&self, len: usize) -> Result<()> {
+        self.spend(1 + (len as u64 >> 6))
+    }
 }
 
-fn apply_text_budget(
-    base: &[u8],
-    fp: &FilePatch,
-    opts: ApplyOptions,
-    work: &mut Work,
-) -> Result<Applied> {
+/// Applies the hunks of `fp` to `base`, charging the session's `work`.
+pub fn apply_text(base: &[u8], fp: &FilePatch, opts: ApplyOptions, work: &Work) -> Result<Applied> {
     if base.len() > MAX_APPLY_BYTES {
         return Err(Error::FileTooLarge);
     }
@@ -983,6 +1004,8 @@ fn apply_text_budget(
             }
         }
         let new_len = repl.len();
+        // Moving the tail of the line list is work too.
+        work.spend(1 + (lines.len() as u64 >> 6))?;
         lines.splice(at..at + pre.len(), repl);
         delta += new_len as isize - pre.len() as isize;
         placements.push(Placement {
@@ -1019,7 +1042,7 @@ fn matches_at(
     lines: &[Span],
     pre: &[&[u8]],
     at: usize,
-    work: &mut Work,
+    work: &Work,
 ) -> Result<bool> {
     if at + pre.len() > lines.len() {
         return Ok(false);
@@ -1042,7 +1065,7 @@ fn find_pos(
     lines: &[Span],
     pre: &[&[u8]],
     place: (usize, bool, bool),
-    work: &mut Work,
+    work: &Work,
 ) -> Result<Option<usize>> {
     let (want, match_beginning, match_end) = place;
     let Some(max_start) = lines.len().checked_sub(pre.len()) else {
@@ -1086,7 +1109,12 @@ pub struct FileResult {
 
 /// Applies a text file patch to the file's current content (`None` when it does not exist),
 /// with git's existence rules: a new file must not exist, others must.
-pub fn apply_file(base: Option<&[u8]>, fp: &FilePatch, opts: ApplyOptions) -> Result<FileResult> {
+pub fn apply_file(
+    base: Option<&[u8]>,
+    fp: &FilePatch,
+    opts: ApplyOptions,
+    work: &Work,
+) -> Result<FileResult> {
     let name = || String::from_utf8_lossy(fp.target().unwrap_or_default()).into_owned();
     let src = String::from_utf8_lossy(fp.source().unwrap_or_default()).into_owned();
     match (fp.is_new, base) {
@@ -1094,7 +1122,7 @@ pub fn apply_file(base: Option<&[u8]>, fp: &FilePatch, opts: ApplyOptions) -> Re
         (false, None) => return Err(Error::Missing(src)),
         _ => {}
     }
-    let applied = apply_text(base.unwrap_or_default(), fp, opts)?;
+    let applied = apply_text(base.unwrap_or_default(), fp, opts, work)?;
     if fp.is_delete {
         if !applied.content.is_empty() {
             return Err(Error::RemovalLeavesContent);
@@ -1240,7 +1268,13 @@ mod tests {
         let fp = one(MODIFY);
         assert_eq!(fp.old_path.as_deref(), Some(&b"f"[..]));
         assert_eq!(fp.old_oid.as_deref(), Some(&b"1111111"[..]));
-        let r = apply_file(Some(b"a\nb\nc\n"), &fp, ApplyOptions::default()).unwrap();
+        let r = apply_file(
+            Some(b"a\nb\nc\n"),
+            &fp,
+            ApplyOptions::default(),
+            &Work::default(),
+        )
+        .unwrap();
         assert_eq!(r.content.unwrap(), b"a\nB\nc\n");
     }
 
@@ -1249,7 +1283,7 @@ mod tests {
         let patch = "--- a/f\n+++ b/f\n@@ -2,3 +2,3 @@\n x\n-y\n+Y\n z\n";
         let fp = one(patch);
         let base = b"0\n1\n2\n3\nx\ny\nz\n";
-        let r = apply_text(base, &fp, ApplyOptions::default()).unwrap();
+        let r = apply_text(base, &fp, ApplyOptions::default(), &Work::default()).unwrap();
         assert_eq!(r.content, b"0\n1\n2\n3\nx\nY\nz\n");
         assert_eq!(r.placements[0].offset, 3);
     }
@@ -1257,7 +1291,13 @@ mod tests {
     #[test]
     fn a_mismatch_fails_with_the_hunk_line() {
         let fp = one(MODIFY);
-        let e = apply_file(Some(b"a\nX\nc\n"), &fp, ApplyOptions::default()).unwrap_err();
+        let e = apply_file(
+            Some(b"a\nX\nc\n"),
+            &fp,
+            ApplyOptions::default(),
+            &Work::default(),
+        )
+        .unwrap_err();
         assert_eq!(
             e,
             Error::HunkFailed {
@@ -1274,14 +1314,14 @@ mod tests {
         );
         assert!(new.is_new);
         assert_eq!(
-            apply_file(None, &new, ApplyOptions::default())
+            apply_file(None, &new, ApplyOptions::default(), &Work::default())
                 .unwrap()
                 .content
                 .unwrap(),
             b"x\ny\n"
         );
         assert_eq!(
-            apply_file(Some(b"q"), &new, ApplyOptions::default()).unwrap_err(),
+            apply_file(Some(b"q"), &new, ApplyOptions::default(), &Work::default()).unwrap_err(),
             Error::Exists("n".into())
         );
         let del = one(
@@ -1289,13 +1329,24 @@ mod tests {
         );
         assert!(del.is_delete);
         assert_eq!(
-            apply_file(Some(b"x\ny\n"), &del, ApplyOptions::default())
-                .unwrap()
-                .content,
+            apply_file(
+                Some(b"x\ny\n"),
+                &del,
+                ApplyOptions::default(),
+                &Work::default()
+            )
+            .unwrap()
+            .content,
             None
         );
         assert_eq!(
-            apply_file(Some(b"x\ny\nz\n"), &del, ApplyOptions::default()).unwrap_err(),
+            apply_file(
+                Some(b"x\ny\nz\n"),
+                &del,
+                ApplyOptions::default(),
+                &Work::default()
+            )
+            .unwrap_err(),
             Error::HunkFailed {
                 path: "n".into(),
                 line: 1
@@ -1308,9 +1359,9 @@ mod tests {
         let fp = one(
             "--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+c\n\\ No newline at end of file\n",
         );
-        let r = apply_text(b"a\nb", &fp, ApplyOptions::default()).unwrap();
+        let r = apply_text(b"a\nb", &fp, ApplyOptions::default(), &Work::default()).unwrap();
         assert_eq!(r.content, b"a\nc");
-        assert!(apply_text(b"a\nb\n", &fp, ApplyOptions::default()).is_err());
+        assert!(apply_text(b"a\nb\n", &fp, ApplyOptions::default(), &Work::default()).is_err());
     }
 
     #[test]
@@ -1319,12 +1370,12 @@ mod tests {
         let base = b"1\n2\n3\n4\n";
         let z = ApplyOptions { unidiff_zero: true };
         assert_eq!(
-            apply_text(base, &fp, z).unwrap().content,
+            apply_text(base, &fp, z, &Work::default()).unwrap().content,
             b"1\n2\nnew\n3\n4\n"
         );
         // Without it a hunk with no trailing context is pinned to the end of the file.
         assert_eq!(
-            apply_text(base, &fp, ApplyOptions::default())
+            apply_text(base, &fp, ApplyOptions::default(), &Work::default())
                 .unwrap()
                 .content,
             b"1
@@ -1351,7 +1402,7 @@ new
         .remove(0);
         assert_eq!(fp.hunks[0].old_len, 3);
         assert_eq!(
-            apply_text(b"a\nb\nc\n", &fp, ApplyOptions::default())
+            apply_text(b"a\nb\nc\n", &fp, ApplyOptions::default(), &Work::default())
                 .unwrap()
                 .content,
             b"a\nB\nc\n"
@@ -1492,18 +1543,80 @@ new
         }
         hunk.push_str("-b\n+c\n a\n");
         let fp = one(&hunk);
-        let mut work = Work::new(1_000_000);
-        let r = apply_text_budget(&base, &fp, ApplyOptions::default(), &mut work);
+        let work = Work::new(1_000_000);
+        let r = apply_text(&base, &fp, ApplyOptions::default(), &work);
         assert_eq!(r, Err(Error::TooExpensive));
         // It stopped at the limit instead of doing the n x m comparisons.
-        assert!(work.used > work.limit, "{}", work.used);
-        assert!(work.used <= work.limit + 2, "{}", work.used);
-        assert!((work.used as usize) < n * m / 4);
+        assert!(work.used() > work.limit(), "{}", work.used());
+        assert!(work.used() <= work.limit() + 2, "{}", work.used());
+        assert!((work.used() as usize) < n * m / 4);
         // A patch that matches at once costs about its own length.
-        let ok = one("--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n-a\n+b\n a\n");
-        let mut work = Work::new(1_000_000);
-        apply_text_budget(&base, &ok, ApplyOptions::default(), &mut work).unwrap();
-        assert!(work.used <= 4, "{}", work.used);
+        let ok = one("--- a/f
++++ b/f
+@@ -1,3 +1,3 @@
+ a
+-a
++b
+ a
+");
+        let work = Work::new(1_000_000);
+        apply_text(&base, &ok, ApplyOptions::default(), &work).unwrap();
+        // Three comparisons, and moving the tail of the line list.
+        assert!(work.used() <= 3 + 1 + (n as u64 >> 6), "{}", work.used());
+    }
+
+    #[test]
+    fn many_files_share_one_budget() {
+        // A file patch that succeeds, but only after a long search: about `n x m` work.
+        let (n, m) = (3_000usize, 500usize);
+        let mut base = "a
+"
+        .repeat(n);
+        base.push_str(
+            "b
+a
+",
+        );
+        let mut hunk = format!(
+            "--- a/f
++++ b/f
+@@ -2,{0} +2,{0} @@
+",
+            m + 1
+        );
+        for _ in 0..m - 1 {
+            hunk.push_str(
+                " a
+",
+            );
+        }
+        hunk.push_str(
+            "-b
++c
+ a
+",
+        );
+        let fp = one(&hunk);
+        let opts = ApplyOptions::default();
+        let probe = Work::new(u64::MAX);
+        apply_text(base.as_bytes(), &fp, opts, &probe).unwrap();
+        let one_file = probe.used();
+        assert!(one_file > 100_000, "{one_file}");
+        // Room for two files and a half: each file is under the budget on its own.
+        let limit = one_file * 5 / 2;
+        for _ in 0..5 {
+            apply_text(base.as_bytes(), &fp, opts, &Work::new(limit)).unwrap();
+        }
+        // The same files in one session run out of budget at the third.
+        let session = Work::new(limit);
+        let mut results = Vec::new();
+        for _ in 0..3 {
+            results.push(apply_text(base.as_bytes(), &fp, opts, &session).map(|_| ()));
+        }
+        assert_eq!(results[0], Ok(()));
+        assert_eq!(results[1], Ok(()));
+        assert_eq!(results[2], Err(Error::TooExpensive));
+        assert!(session.used() <= limit + 2, "{}", session.used());
     }
 
     #[test]
@@ -1517,7 +1630,7 @@ new
     #[test]
     fn reversal_undoes_a_patch() {
         let fp = one(MODIFY).reversed().unwrap();
-        let r = apply_text(b"a\nB\nc\n", &fp, ApplyOptions::default()).unwrap();
+        let r = apply_text(b"a\nB\nc\n", &fp, ApplyOptions::default(), &Work::default()).unwrap();
         assert_eq!(r.content, b"a\nb\nc\n");
     }
 
@@ -1637,13 +1750,13 @@ new
             let mut patch = Vec::new();
             write_patch(&mut patch, &ctx, &[change]).await.unwrap();
             let fp = parse(&patch, &ParseOptions::default()).unwrap().remove(0);
-            let got = apply_file(Some(&old), &fp, ApplyOptions::default())
+            let got = apply_file(Some(&old), &fp, ApplyOptions::default(), &Work::default())
                 .unwrap()
                 .content
                 .unwrap();
             assert!(got == new, "{id}: round trip differs");
             let back = fp.reversed().unwrap();
-            let again = apply_file(Some(&new), &back, ApplyOptions::default())
+            let again = apply_file(Some(&new), &back, ApplyOptions::default(), &Work::default())
                 .unwrap()
                 .content
                 .unwrap();
