@@ -85,6 +85,44 @@ impl<'de> Deserialize<'de> for ByteSize {
     }
 }
 
+/// A duration written as `15m`, `60s`, `1h`, `2d` or a plain integer of seconds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Secs(pub u64);
+
+impl Secs {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        let (num, unit) = s.split_at(split);
+        let n: u64 = num.parse().map_err(|_| format!("bad duration {s:?}"))?;
+        let mult: u64 = match unit.trim() {
+            "" | "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            "d" => 86_400,
+            _ => return Err(format!("bad duration unit in {s:?}")),
+        };
+        n.checked_mul(mult)
+            .map(Self)
+            .ok_or_else(|| format!("duration {s:?} overflows"))
+    }
+}
+
+impl<'de> Deserialize<'de> for Secs {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Int(u64),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Int(n) => Ok(Self(n)),
+            Raw::Text(t) => Self::parse(&t).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
 /// What this process does (SPEC §7, §23.10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -249,6 +287,157 @@ impl Default for BucketConfig {
     }
 }
 
+/// How hard fsck is on pushed objects (SPEC §25.8 item 5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GitFsck {
+    /// Git's defaults for every check.
+    #[default]
+    Strict,
+    /// Old histories from other hosts: the harmless legacy classes are ignored.
+    Migration,
+}
+
+/// `[git]` (SPEC §25.9): honoured only in a build with the Cargo feature `git-compat`, but
+/// parsed in every build, so one config file works with either.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GitConfig {
+    /// The runtime switch; `false` serves the disabled stub of U78.
+    pub enabled: bool,
+    /// The git executable; empty means real git resolution (SPEC §11.4).
+    pub git_path: String,
+    /// Where the git views live; empty means `<cache disk_dir>/gitview`.
+    pub view_dir: String,
+    pub fsck: GitFsck,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            git_path: String::new(),
+            view_dir: String::new(),
+            fsck: GitFsck::Strict,
+        }
+    }
+}
+
+impl GitConfig {
+    /// `git_path` when set.
+    pub fn git_path(&self) -> Option<PathBuf> {
+        (!self.git_path.is_empty()).then(|| PathBuf::from(&self.git_path))
+    }
+
+    /// `view_dir` when set, else `<cache disk_dir>/gitview`.
+    pub fn view_dir(&self, cache: &CacheConfig) -> Option<PathBuf> {
+        if self.view_dir.is_empty() {
+            cache.disk_dir.as_ref().map(|d| d.join("gitview"))
+        } else {
+            Some(PathBuf::from(&self.view_dir))
+        }
+    }
+}
+
+/// `[limits.git]` (SPEC §25.5). Defaults are the SPEC values.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct GitLimitsConfig {
+    pub max_push_bytes: ByteSize,
+    pub max_push_objects: u64,
+    pub max_object_bytes: ByteSize,
+    pub request_timeout: Secs,
+    pub idle_timeout: Secs,
+    pub child_memory: ByteSize,
+    pub child_processes: u32,
+    pub pack_threads: u32,
+    pub min_free_disk: ByteSize,
+    pub fetch_body_bytes: ByteSize,
+    pub fetch_per_principal: u32,
+    pub fetch_per_replica: u32,
+    pub push_per_principal: u32,
+    pub push_per_replica: u32,
+    pub view_builds_per_replica: u32,
+}
+
+impl Default for GitLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_push_bytes: ByteSize(2 * ByteSize::GIB),
+            max_push_objects: 2_000_000,
+            max_object_bytes: ByteSize(512 * ByteSize::MIB),
+            request_timeout: Secs(15 * 60),
+            idle_timeout: Secs(60),
+            child_memory: ByteSize(2 * ByteSize::GIB),
+            child_processes: 64,
+            pack_threads: 2,
+            min_free_disk: ByteSize(10 * ByteSize::GIB),
+            fetch_body_bytes: ByteSize(16 * ByteSize::MIB),
+            fetch_per_principal: 4,
+            fetch_per_replica: 16,
+            push_per_principal: 2,
+            push_per_replica: 8,
+            view_builds_per_replica: 2,
+        }
+    }
+}
+
+impl GitLimitsConfig {
+    /// The values `asc-git` enforces; `asc-git` applies its own ceilings to them.
+    #[cfg(feature = "git-compat")]
+    pub fn to_limits(&self) -> asc_git::compat::GitLimits {
+        use std::time::Duration;
+        asc_git::compat::GitLimits {
+            max_push_bytes: self.max_push_bytes.0,
+            max_push_objects: self.max_push_objects,
+            max_object_bytes: self.max_object_bytes.0,
+            request_timeout: Duration::from_secs(self.request_timeout.0),
+            idle_timeout: Duration::from_secs(self.idle_timeout.0),
+            child_memory: self.child_memory.0,
+            child_processes: self.child_processes,
+            pack_threads: self.pack_threads,
+            min_free_disk: self.min_free_disk.0,
+            fetch_body_bytes: self.fetch_body_bytes.0,
+            fetch_per_principal: self.fetch_per_principal,
+            fetch_per_replica: self.fetch_per_replica,
+            push_per_principal: self.push_per_principal,
+            push_per_replica: self.push_per_replica,
+            view_builds_per_replica: self.view_builds_per_replica,
+        }
+    }
+
+    /// Positive values; with the feature on, `asc-git` applies its ceilings and ordering too.
+    fn validate(&self) -> Result<(), ConfigError> {
+        let positive = [
+            ("max_push_bytes", self.max_push_bytes.0),
+            ("max_push_objects", self.max_push_objects),
+            ("max_object_bytes", self.max_object_bytes.0),
+            ("request_timeout", self.request_timeout.0),
+            ("idle_timeout", self.idle_timeout.0),
+            ("child_memory", self.child_memory.0),
+            ("child_processes", self.child_processes.into()),
+            ("pack_threads", self.pack_threads.into()),
+            ("fetch_body_bytes", self.fetch_body_bytes.0),
+            ("fetch_per_principal", self.fetch_per_principal.into()),
+            ("fetch_per_replica", self.fetch_per_replica.into()),
+            ("push_per_principal", self.push_per_principal.into()),
+            ("push_per_replica", self.push_per_replica.into()),
+            (
+                "view_builds_per_replica",
+                self.view_builds_per_replica.into(),
+            ),
+        ];
+        if let Some((name, _)) = positive.iter().find(|(_, v)| *v == 0) {
+            return invalid(format!("limits.git.{name} must be greater than zero"));
+        }
+        #[cfg(feature = "git-compat")]
+        self.to_limits()
+            .validate()
+            .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+        Ok(())
+    }
+}
+
 /// `[limits]`: admission control (SPEC §16.3). Defaults are the SPEC values.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -273,6 +462,8 @@ pub struct Limits {
     /// from one of them may name the real client in `X-Forwarded-For`; any other peer's header is
     /// ignored. Empty by default.
     pub trusted_proxies: Vec<String>,
+    /// `[limits.git]` (SPEC §25.5).
+    pub git: GitLimitsConfig,
 }
 
 impl Default for Limits {
@@ -294,6 +485,7 @@ impl Default for Limits {
             service_rps: 1000,
             service_burst: 2000,
             trusted_proxies: Vec::new(),
+            git: GitLimitsConfig::default(),
         }
     }
 }
@@ -328,7 +520,7 @@ impl Limits {
         if self.text_memory.0 == 0 || self.objects_bytes_per_sec.0 == 0 {
             return invalid("limits.text_memory and limits.objects_bytes_per_sec must be positive");
         }
-        Ok(())
+        self.git.validate()
     }
 }
 
@@ -362,6 +554,8 @@ pub struct ServeConfig {
     pub codeintel: CodeIntelConfig,
     pub bucket: BucketConfig,
     pub limits: Limits,
+    /// `[git]` (SPEC §25.9); honoured only with the feature `git-compat`.
+    pub git: GitConfig,
     pub gc: crate::gc::GcSettings,
     pub composition_grants: Vec<CompositionGrant>,
 }
@@ -384,6 +578,7 @@ impl Default for ServeConfig {
             codeintel: CodeIntelConfig::default(),
             bucket: BucketConfig::default(),
             limits: Limits::default(),
+            git: GitConfig::default(),
             gc: crate::gc::GcSettings::default(),
             composition_grants: Vec::new(),
         }
@@ -610,6 +805,67 @@ child = "asc/soma"
         assert!(ServeConfig::parse("store = \"ftp://x\"\ndb = \"sqlite::memory:\"").is_err());
         assert!(ServeConfig::parse("role = \"cache\"").is_err());
         assert!(ServeConfig::parse("role = \"cache\"\nupstream = \"https://p.example\"").is_ok());
+    }
+
+    #[test]
+    fn git_tables_parse_in_every_build_with_the_spec_defaults() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        let c = ServeConfig::parse(base).unwrap();
+        assert!(c.git.enabled);
+        assert_eq!(c.git.fsck, GitFsck::Strict);
+        assert_eq!(c.git.git_path(), None);
+        assert_eq!(c.git.view_dir(&c.cache), None);
+        let g = &c.limits.git;
+        assert_eq!(g.max_push_bytes, ByteSize(2 * ByteSize::GIB));
+        assert_eq!(g.max_push_objects, 2_000_000);
+        assert_eq!(g.max_object_bytes, ByteSize(512 * ByteSize::MIB));
+        assert_eq!((g.request_timeout, g.idle_timeout), (Secs(900), Secs(60)));
+        assert_eq!(g.child_memory, ByteSize(2 * ByteSize::GIB));
+        assert_eq!(g.min_free_disk, ByteSize(10 * ByteSize::GIB));
+        assert_eq!((g.fetch_per_principal, g.fetch_per_replica), (4, 16));
+        assert_eq!((g.push_per_principal, g.push_per_replica), (2, 8));
+
+        let text = format!(
+            "{base}cache = {{ disk_dir = \"/var/cache/asc\", disk = \"1GiB\" }}\n[git]\nenabled = false\ngit_path = \"\"\nfsck = \"migration\"\n[limits.git]\nmax_push_bytes = \"4GiB\"\nrequest_timeout = \"30m\"\nidle_timeout = 90\n"
+        );
+        let c = ServeConfig::parse(&text).unwrap();
+        assert!(!c.git.enabled);
+        assert_eq!(c.git.fsck, GitFsck::Migration);
+        assert_eq!(
+            c.git.view_dir(&c.cache),
+            Some(PathBuf::from("/var/cache/asc").join("gitview"))
+        );
+        assert_eq!(c.limits.git.max_push_bytes, ByteSize(4 * ByteSize::GIB));
+        assert_eq!(c.limits.git.request_timeout, Secs(1800));
+        assert_eq!(c.limits.git.idle_timeout, Secs(90));
+        for bad in [
+            "[git]\nbogus = 1",
+            "[git]\nfsck = \"lax\"",
+            "[limits.git]\nmax_push_bytes = 0",
+            "[limits.git]\nrequest_timeout = \"soon\"",
+            "[limits.git]\nfetch_per_replica = 0",
+        ] {
+            assert!(
+                ServeConfig::parse(&format!("{base}{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[cfg(feature = "git-compat")]
+    #[test]
+    fn git_limits_above_the_ceilings_or_out_of_order_are_refused() {
+        let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
+        for bad in [
+            "[limits.git]\nmax_push_bytes = \"100TiB\"",
+            "[limits.git]\nidle_timeout = \"2h\"",
+            "[limits.git]\nmax_object_bytes = \"3GiB\"",
+        ] {
+            assert!(
+                ServeConfig::parse(&format!("{base}{bad}")).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

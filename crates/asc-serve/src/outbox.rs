@@ -159,6 +159,10 @@ impl Outbox {
         for kind in ["post_receive", "bridge_promote", crate::codeintel::queue::EFFECT] {
             outbox.effects.register(Arc::new(NoopEffect(kind)));
         }
+        #[cfg(feature = "git-compat")]
+        outbox
+            .effects
+            .register(Arc::new(NoopEffect(crate::git_view::EFFECT)));
         outbox
     }
 
