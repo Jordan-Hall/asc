@@ -731,6 +731,7 @@ dependencies = [
  "futures",
  "ignore",
  "reflink-copy",
+ "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
