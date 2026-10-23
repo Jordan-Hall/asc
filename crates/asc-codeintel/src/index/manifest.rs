@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
@@ -60,7 +61,7 @@ pub struct Manifest {
     pub index: IndexKind,
     pub generation: u64,
     pub segments: Vec<SegRef>,
-    /// `d/ciidx.v1/<hash>`: ords committed at this generation.
+    /// Content hash of the `d/ciidx.v2` bitmap object: ords committed at this generation.
     pub indexed: Option<Hash>,
     pub model_gen: u32,
     pub dropped: Vec<Dropped>,
@@ -246,7 +247,7 @@ impl Publisher<'_> {
             if p.kind != self.kind {
                 return Err(IndexError::BadPack("kind mismatch"));
             }
-            put_pack(self.objects, p).await?;
+            put_pack(self.objects, self.ns, p).await?;
         }
         let mut added = RoaringBitmap::new();
         for p in packs {
@@ -255,11 +256,11 @@ impl Publisher<'_> {
         let mut cur = self.manifests.load(self.ns, self.kind).await?;
         for _ in 0..=MAX_REBASES {
             let mut indexed = match cur.indexed {
-                Some(h) => get_indexed(self.objects, h).await?,
+                Some(h) => get_indexed(self.objects, self.ns, self.kind, h).await?,
                 None => RoaringBitmap::new(),
             };
             indexed |= &added;
-            let new_idx = put_indexed(self.objects, &indexed).await?;
+            let new_idx = put_indexed(self.objects, self.ns, self.kind, &indexed).await?;
             let mut next = cur.clone();
             next.generation = cur.generation + 1;
             for p in packs {
@@ -321,7 +322,15 @@ impl Publisher<'_> {
         }
         let mut inputs = Vec::with_capacity(picks.len());
         for s in &picks {
-            inputs.push(get_verified(self.objects, seg_key(s.hash), s.hash, MAX_PACK_BYTES).await?);
+            inputs.push(
+                get_verified(
+                    self.objects,
+                    seg_key(self.ns, self.kind, s.hash),
+                    s.hash,
+                    MAX_PACK_BYTES,
+                )
+                .await?,
+            );
         }
         let (kind, dir) = (self.kind, work_dir.to_owned());
         let merged = tokio::task::spawn_blocking(move || merge_packs(kind, &dir, &inputs))
@@ -330,7 +339,7 @@ impl Publisher<'_> {
         let Some(merged) = merged else {
             return Ok(None);
         };
-        put_pack(self.objects, &merged).await?;
+        put_pack(self.objects, self.ns, &merged).await?;
         for _ in 0..=MAX_REBASES {
             if !picks
                 .iter()
@@ -373,8 +382,14 @@ impl Publisher<'_> {
         Err(IndexError::Contended(MAX_REBASES))
     }
 
-    /// Deletes objects dropped at least [`DROP_GRACE_MS`] ago and removes them from the
-    /// manifest. Returns how many were deleted.
+    /// Removes objects dropped at least [`DROP_GRACE_MS`] ago. Returns how many were removed
+    /// from the dropped list.
+    ///
+    /// Object ids are scoped to this `(ns, kind)`, so deleting here cannot touch another
+    /// index. The list entries go first, by CAS: only the manifest that the CAS replaced is
+    /// trusted to say what is live, and a lost CAS deletes nothing. The bucket delete follows
+    /// a won CAS. A crash between the two leaks an unreferenced object; it never breaks a
+    /// referenced one.
     pub async fn sweep(&self, now_ms: u64) -> Result<usize> {
         let mut cur = self.manifests.load(self.ns, self.kind).await?;
         for _ in 0..=MAX_REBASES {
@@ -387,21 +402,17 @@ impl Publisher<'_> {
             if ripe.is_empty() {
                 return Ok(0);
             }
-            for d in &ripe {
-                let key = match d.kind {
-                    DropKind::Segment => seg_key(d.hash),
-                    DropKind::Indexed => idx_key(d.hash),
-                };
-                // A live reference must never be deleted, whatever the list says.
-                let live =
-                    cur.segments.iter().any(|s| s.hash == d.hash) || cur.indexed == Some(d.hash);
-                if !live {
-                    self.objects
-                        .delete(&key)
-                        .await
-                        .map_err(|e| IndexError::Store(e.to_string()))?;
-                }
-            }
+            // A live reference must never be deleted, whatever the list says.
+            let doomed: Vec<ObjKey> = ripe
+                .iter()
+                .filter(|d| {
+                    !cur.segments.iter().any(|s| s.hash == d.hash) && cur.indexed != Some(d.hash)
+                })
+                .map(|d| match d.kind {
+                    DropKind::Segment => seg_key(self.ns, self.kind, d.hash),
+                    DropKind::Indexed => idx_key(self.ns, self.kind, d.hash),
+                })
+                .collect();
             let mut next = cur.clone();
             next.generation = cur.generation + 1;
             next.dropped.retain(|d| !ripe.contains(d));
@@ -417,7 +428,15 @@ impl Publisher<'_> {
                 )
                 .await?
             {
-                Cas::Won(_) => return Ok(ripe.len()),
+                Cas::Won(_) => {
+                    for key in &doomed {
+                        self.objects
+                            .delete(key)
+                            .await
+                            .map_err(|e| IndexError::Store(e.to_string()))?;
+                    }
+                    return Ok(ripe.len());
+                }
                 Cas::Lost(m) => cur = m,
             }
         }

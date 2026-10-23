@@ -1,7 +1,7 @@
 //! Segment writer, pack format, bucket I/O and the replica-side reader (SPEC §23.2.4).
 //!
 //! A segment is one finished single-segment tantivy index, packed into one immutable bucket
-//! object `d/ciseg.v1/<blake3 of the pack>`. A writer builds a segment from whole file jobs
+//! object `d/ciseg.v2/<scoped id>`, where the id hashes the index identity with the pack hash. A writer builds a segment from whole file jobs
 //! and publishes nothing: only a manifest generation (see `manifest`) makes a pack live, so a
 //! reader never sees a half-indexed file. Packs are untrusted on read: the hash is checked
 //! against the manifest, sizes are capped, file names are checked against the segment id
@@ -32,7 +32,9 @@ pub type Hash = [u8; 32];
 
 pub const SEG_NAME: &str = "ciseg";
 pub const IDX_NAME: &str = "ciidx";
-pub const OBJ_VERSION: u32 = 1;
+/// Version of the object key scheme: v2 scopes every id to its `(ns, kind)` index.
+pub const OBJ_VERSION: u32 = 2;
+const KEY_CONTEXT: &str = "asc codeintel manifest object key v2";
 
 /// Largest decoded pack, equal to the store's cap for derived values.
 pub const MAX_PACK_BYTES: u64 = 256 * 1024 * 1024;
@@ -54,19 +56,36 @@ const MAX_PACK_FILES: usize = 64;
 
 const MAGIC: &[u8; 4] = b"CISG";
 
-pub fn seg_key(h: Hash) -> ObjKey {
+/// Bucket id of a manifest-owned object: blake3 over the index identity `(ns, kind)`, the
+/// object class and the content hash. Two indexes never share an object, even when their
+/// bytes are identical, so one manifest deleting its dropped objects cannot corrupt another.
+/// The reader recomputes this from its own `(ns, kind)`, then verifies the content hash.
+fn scoped_id(name: &str, ns: &str, kind: IndexKind, content: Hash) -> Hash {
+    let mut h = blake3::Hasher::new_derive_key(KEY_CONTEXT);
+    h.update(&(ns.len() as u64).to_le_bytes());
+    h.update(ns.as_bytes());
+    h.update(&[kind.code()]);
+    h.update(&(name.len() as u64).to_le_bytes());
+    h.update(name.as_bytes());
+    h.update(&content);
+    *h.finalize().as_bytes()
+}
+
+/// Key of a segment pack of index `(ns, kind)` whose content hashes to `h`.
+pub fn seg_key(ns: &str, kind: IndexKind, h: Hash) -> ObjKey {
     ObjKey::Derived {
         name: SEG_NAME,
         version: OBJ_VERSION,
-        id: h,
+        id: scoped_id(SEG_NAME, ns, kind, h),
     }
 }
 
-pub fn idx_key(h: Hash) -> ObjKey {
+/// Key of an `indexed` bitmap of index `(ns, kind)` whose content hashes to `h`.
+pub fn idx_key(ns: &str, kind: IndexKind, h: Hash) -> ObjKey {
     ObjKey::Derived {
         name: IDX_NAME,
         version: OBJ_VERSION,
-        id: h,
+        id: scoped_id(IDX_NAME, ns, kind, h),
     }
 }
 
@@ -562,10 +581,11 @@ pub fn merge_packs(
     Ok(Some(make_pack(kind, raw, docs, ords)))
 }
 
-/// Uploads a pack. Idempotent: the key is the hash of the content.
-pub async fn put_pack(objects: &dyn Objects, pack: &SegmentPack) -> Result<()> {
+/// Uploads a pack into the index `ns`. Idempotent: the key is scoped by the index and the
+/// hash of the content.
+pub async fn put_pack(objects: &dyn Objects, ns: &str, pack: &SegmentPack) -> Result<()> {
     objects
-        .put(&seg_key(pack.hash), pack.stored.clone())
+        .put(&seg_key(ns, pack.kind, pack.hash), pack.stored.clone())
         .await
         .map_err(|e| IndexError::Store(e.to_string()))
 }
@@ -603,7 +623,12 @@ pub fn hex(h: &Hash) -> String {
 }
 
 /// Serializes and uploads an `indexed` bitmap; returns its hash.
-pub async fn put_indexed(objects: &dyn Objects, bm: &RoaringBitmap) -> Result<Hash> {
+pub async fn put_indexed(
+    objects: &dyn Objects,
+    ns: &str,
+    kind: IndexKind,
+    bm: &RoaringBitmap,
+) -> Result<Hash> {
     let mut buf = Vec::with_capacity(bm.serialized_size());
     bm.serialize_into(&mut buf)?;
     if buf.len() as u64 > MAX_INDEXED_BYTES {
@@ -611,14 +636,19 @@ pub async fn put_indexed(objects: &dyn Objects, bm: &RoaringBitmap) -> Result<Ha
     }
     let hash = *blake3::hash(&buf).as_bytes();
     objects
-        .put(&idx_key(hash), encode_stored(&buf))
+        .put(&idx_key(ns, kind, hash), encode_stored(&buf))
         .await
         .map_err(|e| IndexError::Store(e.to_string()))?;
     Ok(hash)
 }
 
-pub async fn get_indexed(objects: &dyn Objects, hash: Hash) -> Result<RoaringBitmap> {
-    let raw = get_verified(objects, idx_key(hash), hash, MAX_INDEXED_BYTES).await?;
+pub async fn get_indexed(
+    objects: &dyn Objects,
+    ns: &str,
+    kind: IndexKind,
+    hash: Hash,
+) -> Result<RoaringBitmap> {
+    let raw = get_verified(objects, idx_key(ns, kind, hash), hash, MAX_INDEXED_BYTES).await?;
     RoaringBitmap::deserialize_from(&raw[..]).map_err(|_| IndexError::BadPack("indexed bitmap"))
 }
 
@@ -682,7 +712,7 @@ impl Replica {
                 segments.push(o);
                 continue;
             }
-            let raw = get_verified(objects, seg_key(hash), hash, MAX_PACK_BYTES).await?;
+            let raw = get_verified(objects, seg_key(ns, kind, hash), hash, MAX_PACK_BYTES).await?;
             let open = tokio::task::spawn_blocking(move || {
                 if std::fs::symlink_metadata(&dest).is_ok() {
                     // Present but damaged: replace it.
@@ -695,7 +725,7 @@ impl Replica {
             segments.push(open);
         }
         let indexed = match m.indexed {
-            Some(h) => get_indexed(objects, h).await?,
+            Some(h) => get_indexed(objects, ns, m.index, h).await?,
             None => RoaringBitmap::new(),
         };
         Ok(Snapshot {

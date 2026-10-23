@@ -242,7 +242,7 @@ async fn reader_never_sees_a_half_indexed_file() {
     let m1 = p.commit(&[first], T0).await.unwrap();
     // The next segment is uploaded but its generation is never published.
     let second = file_pack(dir.path(), &[(2, "gamma delta", "gamma")]);
-    put_pack(&objs, &second).await.unwrap();
+    put_pack(&objs, NS, &second).await.unwrap();
     let rep = Replica::new(dir.path().join("ci"));
     let cur = mans.load(NS, IndexKind::Files).await.unwrap();
     assert_eq!(cur, m1);
@@ -296,16 +296,23 @@ async fn damaged_or_forged_packs_are_refused() {
     let m = p.commit(&[pack], T0).await.unwrap();
     let rep = Replica::new(dir.path().join("ci"));
     // Wrong bytes under the right key.
-    objs.delete(&seg_key(hash)).await.unwrap();
-    objs.put(&seg_key(hash), encode_stored(b"CISGgarbage"))
+    objs.delete(&seg_key(NS, IndexKind::Files, hash))
         .await
         .unwrap();
+    objs.put(
+        &seg_key(NS, IndexKind::Files, hash),
+        encode_stored(b"CISGgarbage"),
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         rep.snapshot(&objs, NS, &m).await,
         Err(IndexError::HashMismatch(_))
     ));
     // Missing object.
-    objs.delete(&seg_key(hash)).await.unwrap();
+    objs.delete(&seg_key(NS, IndexKind::Files, hash))
+        .await
+        .unwrap();
     assert!(matches!(
         rep.snapshot(&objs, NS, &m).await,
         Err(IndexError::Missing(_))
@@ -372,7 +379,12 @@ async fn compaction_merges_and_the_sweep_waits_ten_minutes() {
     assert_eq!(old.visible_ords().unwrap().len(), 8);
     assert!(p.sweep(T0 + 1 + DROP_GRACE_MS).await.unwrap() >= 8);
     let h = first_hash.unwrap();
-    assert!(objs.get_stored(&seg_key(h)).await.unwrap().is_none());
+    assert!(
+        objs.get_stored(&seg_key(NS, IndexKind::Files, h))
+            .await
+            .unwrap()
+            .is_none()
+    );
     let after = mans.load(NS, IndexKind::Files).await.unwrap();
     assert!(after.dropped.is_empty());
     let fresh = Replica::new(dir.path().join("ci2"));
@@ -402,4 +414,187 @@ async fn symlinked_replica_root_is_refused() {
         .snapshot(&objs, NS, &Manifest::empty(IndexKind::Files))
         .await;
     assert!(matches!(r, Err(IndexError::Symlink(_))));
+}
+
+fn dup(p: &SegmentPack) -> SegmentPack {
+    SegmentPack {
+        hash: p.hash,
+        stored: p.stored.clone(),
+        kind: p.kind,
+        docs: p.docs,
+        bytes: p.bytes,
+        ords: p.ords.clone(),
+    }
+}
+
+fn publisher_of<'a>(
+    o: &'a BucketObjects,
+    m: &'a dyn ManifestStore,
+    ns: &'a str,
+    kind: IndexKind,
+) -> Publisher<'a> {
+    Publisher {
+        objects: o,
+        manifests: m,
+        ns,
+        kind,
+        holder: "a",
+    }
+}
+
+/// Eight one-document packs; the first one is returned a second time for sharing.
+fn eight_packs(work: &std::path::Path) -> Vec<SegmentPack> {
+    (0..8u32)
+        .map(|i| {
+            let text = format!("content number {i} uniqueword{i}");
+            file_pack(work, &[(i + 1, &text, "sym")])
+        })
+        .collect()
+}
+
+async fn compact_and_sweep(p: &Publisher<'_>, work: &std::path::Path) {
+    assert!(p.compact(work, T0 + 1).await.unwrap().is_some());
+    assert!(p.sweep(T0 + 1 + DROP_GRACE_MS).await.unwrap() >= 8);
+}
+
+#[tokio::test]
+async fn compaction_in_one_namespace_leaves_an_identical_object_of_another_readable() {
+    let (dir, objs, mans) = setup();
+    let a = publisher_of(&objs, &mans, "tenant-a", IndexKind::Files);
+    let b = publisher_of(&objs, &mans, "tenant-b", IndexKind::Files);
+    a.lease(T0, 3_600_000).await.unwrap();
+    b.lease(T0, 3_600_000).await.unwrap();
+    let packs = eight_packs(dir.path());
+    // Namespace b indexes byte-identical content: same pack, same `indexed` bitmap.
+    let mb = b.commit(&[dup(&packs[0])], T0).await.unwrap();
+    for p in &packs {
+        a.commit(&[dup(p)], T0).await.unwrap();
+    }
+    compact_and_sweep(&a, dir.path()).await;
+    let rep = Replica::new(dir.path().join("ci"));
+    let snap = rep.snapshot(&objs, "tenant-b", &mb).await.unwrap();
+    assert_eq!(
+        snap.visible_ords().unwrap().iter().collect::<Vec<_>>(),
+        vec![1]
+    );
+    let ma = mans.load("tenant-a", IndexKind::Files).await.unwrap();
+    let snap = rep.snapshot(&objs, "tenant-a", &ma).await.unwrap();
+    assert_eq!(snap.visible_ords().unwrap().len(), 8);
+}
+
+#[tokio::test]
+async fn compaction_of_one_kind_leaves_an_identical_bitmap_of_the_other_readable() {
+    let (dir, objs, mans) = setup();
+    let files = publisher_of(&objs, &mans, NS, IndexKind::Files);
+    let chunks = publisher_of(&objs, &mans, NS, IndexKind::Chunks);
+    files.lease(T0, 3_600_000).await.unwrap();
+    chunks.lease(T0, 3_600_000).await.unwrap();
+    let mut w = SegmentWriter::new(IndexKind::Chunks, dir.path(), WRITER_HEAP).unwrap();
+    w.add_chunk(&ChunkDoc {
+        ord: 1,
+        chunk: 0,
+        ident: "alpha",
+        doc: "",
+        symbol: "",
+    })
+    .unwrap();
+    let mc = chunks
+        .commit(&[w.finish().unwrap().unwrap()], T0)
+        .await
+        .unwrap();
+    for p in eight_packs(dir.path()) {
+        files.commit(&[p], T0).await.unwrap();
+    }
+    compact_and_sweep(&files, dir.path()).await;
+    let rep = Replica::new(dir.path().join("ci"));
+    let snap = rep.snapshot(&objs, NS, &mc).await.unwrap();
+    assert_eq!(snap.visible_ords().unwrap().len(), 1);
+}
+
+#[test]
+fn object_keys_are_scoped_to_the_index() {
+    let h = [7u8; 32];
+    let k = seg_key("a", IndexKind::Files, h);
+    assert_ne!(k, seg_key("b", IndexKind::Files, h));
+    assert_ne!(k, seg_key("a", IndexKind::Chunks, h));
+    assert_ne!(k, seg_key("ab", IndexKind::Files, h));
+    assert_ne!(
+        segments::idx_key("a", IndexKind::Files, h),
+        seg_key("a", IndexKind::Files, h)
+    );
+    assert!(k.path().starts_with("d/ciseg.v2/"));
+}
+
+/// Returns a stale row from `load` and publishes `pack` just after it, as a rival writer
+/// would between the sweep's read and its CAS.
+struct Resurrect {
+    inner: MemManifest,
+    pack: std::sync::Mutex<Option<SegmentPack>>,
+    objects: Arc<BucketObjects>,
+}
+
+#[async_trait]
+impl ManifestStore for Resurrect {
+    async fn load(&self, ns: &str, i: IndexKind) -> Result<Manifest> {
+        let stale = self.inner.load(ns, i).await?;
+        let rival = self.pack.lock().unwrap().take();
+        if let Some(pack) = rival {
+            let p = Publisher {
+                objects: &*self.objects,
+                manifests: &self.inner,
+                ns,
+                kind: i,
+                holder: "a",
+            };
+            p.commit(&[pack], T0 + 2).await.unwrap();
+        }
+        Ok(stale)
+    }
+    async fn cas(
+        &self,
+        ns: &str,
+        i: IndexKind,
+        expected: u64,
+        next: Manifest,
+        holder: &str,
+        now: u64,
+    ) -> Result<Cas> {
+        self.inner.cas(ns, i, expected, next, holder, now).await
+    }
+    async fn lease(
+        &self,
+        ns: &str,
+        i: IndexKind,
+        holder: &str,
+        now: u64,
+        ttl: u64,
+    ) -> Result<bool> {
+        self.inner.lease(ns, i, holder, now, ttl).await
+    }
+}
+
+#[tokio::test]
+async fn sweep_does_not_delete_an_object_a_concurrent_commit_just_referenced() {
+    let dir = tempfile::tempdir().unwrap();
+    let objs = Arc::new(BucketObjects::memory());
+    let mans = Resurrect {
+        inner: MemManifest::new(),
+        pack: std::sync::Mutex::new(None),
+        objects: objs.clone(),
+    };
+    let p = publisher_of(&objs, &mans, NS, IndexKind::Files);
+    p.lease(T0, 3_600_000).await.unwrap();
+    let packs = eight_packs(dir.path());
+    for pk in &packs {
+        p.commit(&[dup(pk)], T0).await.unwrap();
+    }
+    p.compact(dir.path(), T0 + 1).await.unwrap().unwrap();
+    // The dropped first pack is published again right after the sweep reads the manifest.
+    *mans.pack.lock().unwrap() = Some(dup(&packs[0]));
+    p.sweep(T0 + 1 + DROP_GRACE_MS).await.unwrap();
+    let cur = mans.load(NS, IndexKind::Files).await.unwrap();
+    assert!(cur.segments.iter().any(|s| s.hash == packs[0].hash));
+    let rep = Replica::new(dir.path().join("ci"));
+    let snap = rep.snapshot(&*objs, NS, &cur).await.unwrap();
+    assert_eq!(snap.visible_ords().unwrap().len(), 8);
 }
