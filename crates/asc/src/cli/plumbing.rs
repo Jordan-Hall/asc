@@ -8,7 +8,7 @@ mod hash_object;
 mod index;
 mod ls_files;
 mod ls_tree;
-mod objects;
+pub(crate) mod objects;
 mod quote;
 mod update_index;
 mod usage;

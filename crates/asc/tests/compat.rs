@@ -105,6 +105,15 @@ scenarios! {
     format_patch_files = "format-patch-files",
     format_patch_text = "format-patch-text",
     git_remote_roundtrip = "git-remote-roundtrip",
+    plumbing_write_commit_tree = "plumbing-write-commit-tree",
+    plumbing_write_mktree = "plumbing-write-mktree",
+    plumbing_write_merge_tree = "plumbing-write-merge-tree",
+    plumbing_write_trailers = "plumbing-write-trailers",
+    shortlog_basic = "shortlog-basic",
+    name_rev_basic = "name-rev-basic",
+    range_diff_basic = "range-diff-basic",
+    cherry_basic = "cherry-basic",
+    notes_show = "notes-show",
 }
 
 #[test]
