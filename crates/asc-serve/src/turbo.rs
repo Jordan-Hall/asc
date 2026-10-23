@@ -312,7 +312,7 @@ impl TurboState {
             .ok_or_else(|| TurboError::Config("`store` is required".into()))?;
         let url = url::Url::parse(url).map_err(|e| TurboError::Config(e.to_string()))?;
         let (store, root, signer) = if url.scheme() == "s3" {
-            let (store, root) = asc_store::s3::open_operator(&url, None)
+            let (store, root) = asc_store::s3::open_with(&url, None)
                 .map_err(|e| TurboError::Config(e.to_string()))?;
             (store, root, Some(s3_signer(&url)?))
         } else {
@@ -590,9 +590,9 @@ fn s3_signer(url: &url::Url) -> Result<Arc<dyn Signer>, TurboError> {
     for (k, v) in url.query_pairs() {
         match &*k {
             "endpoint" if !v.is_empty() => {
-                b = b
-                    .with_allow_http(v.starts_with("http://"))
-                    .with_endpoint(v.to_string());
+                let allow_http =
+                    asc_store::s3::endpoint_allows_http_now(&v).map_err(|e| bad(e.to_string()))?;
+                b = b.with_allow_http(allow_http).with_endpoint(v.to_string());
             }
             "region" if !v.is_empty() => region = Some(v.to_string()),
             "path_style" if !v.is_empty() => {
@@ -1475,5 +1475,23 @@ mod tests {
         std::fs::write(&p, "bad token\n").unwrap();
         assert!(load_trusted_tokens(&p).is_err());
         assert!(load_trusted_tokens(&dir.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_plain_http_store_endpoint_is_refused_for_the_cache_and_the_presigner() {
+        // U89c: the server's own S3 endpoint has no private-network http exception.
+        let cfg = ServeConfig {
+            store: Some("s3://b?endpoint=http://garage-abc:3900&region=garage".into()),
+            ..ServeConfig::default()
+        };
+        let err = TurboState::open(&cfg, Arc::new(tokens()), Arc::new(Metrics::new()))
+            .err()
+            .expect("plain http to a private host")
+            .to_string();
+        assert!(err.contains("http://garage-abc:3900"), "{err}");
+        let url = url::Url::parse("s3://b?endpoint=http://garage-abc:3900").unwrap();
+        assert!(s3_signer(&url).is_err());
+        let url = url::Url::parse("s3://b?endpoint=https://garage.example&region=garage").unwrap();
+        assert!(s3_signer(&url).is_ok());
     }
 }

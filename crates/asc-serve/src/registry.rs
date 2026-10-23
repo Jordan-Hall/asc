@@ -155,8 +155,7 @@ impl Registry {
     pub fn new(pool: AnyPool, store_url: &str) -> Result<Self, RegistryError> {
         let url = url::Url::parse(store_url).map_err(|e| RegistryError::Store(e.to_string()))?;
         let (store, root) = if url.scheme() == "s3" {
-            asc_store::s3::open_operator(&url, None)
-                .map_err(|e| RegistryError::Store(e.to_string()))?
+            asc_store::s3::open_with(&url, None).map_err(|e| RegistryError::Store(e.to_string()))?
         } else {
             let (store, root) =
                 object_store::parse_url(&url).map_err(|e| RegistryError::Store(e.to_string()))?;
@@ -664,5 +663,16 @@ mod tests {
         impl asc_rpc::server::LandingHandler for L {}
         ext.handlers.set_landing(Arc::new(L)).unwrap();
         assert!(ext.handlers.set_landing(Arc::new(L)).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_store_endpoint_is_refused() {
+        // U89c: the server's own bucket has no private-network http exception.
+        let pool = migrate::connect("sqlite::memory:", 1).await.unwrap();
+        let err = Registry::new(pool, "s3://b?endpoint=http://garage-abc:3900&region=garage")
+            .err()
+            .expect("plain http to a private host")
+            .to_string();
+        assert!(err.contains("http://garage-abc:3900"), "{err}");
     }
 }

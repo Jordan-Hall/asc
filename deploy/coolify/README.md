@@ -87,7 +87,7 @@ Copy `asc-serve.env.example` to a private file outside the repository and fill e
 |---|---|
 | `ASC_IMAGE_TAG` | the sha12 of the image you mean to run |
 | `ASC_DATABASE_URL` | step 2 |
-| `ASC_S3_ENDPOINT`, `ASC_S3_ACCESS_KEY_ID`, `ASC_S3_SECRET_ACCESS_KEY` | step 1; endpoint `http://garage-<service-uuid>:3900` |
+| `ASC_S3_ENDPOINT`, `ASC_S3_ACCESS_KEY_ID`, `ASC_S3_SECRET_ACCESS_KEY` | step 1; endpoint `https://garage.example.org` (https only; the server refuses plain http) |
 | `ASC_BACKEND_NETWORK` | `docker network ls` on the Coolify server: the network on which `garage-<service-uuid>` resolves |
 | `ASC_FORGEJO_INTERNAL_TOKEN` | Forgejo `app.ini` `[security] INTERNAL_TOKEN` |
 | `ASC_FORGEJO_WEBHOOK_SECRET` | `openssl rand -hex 32` |

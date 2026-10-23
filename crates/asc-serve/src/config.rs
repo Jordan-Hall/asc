@@ -856,6 +856,7 @@ impl ServeConfig {
             if !matches!(scheme, "s3" | "file" | "memory") {
                 return invalid("store must be an s3://, file:// or memory:// URL");
             }
+            check_store_endpoint(store, Policy::current())?;
         }
         if let Some(db) = &self.db
             && !matches!(url_scheme(db), "postgres" | "postgresql" | "sqlite")
@@ -996,6 +997,28 @@ fn check_server_url(field: &str, url: &str) -> Result<(), ConfigError> {
     }
 }
 
+/// The `endpoint` of an `s3://` `store` (which the turbo cache shares) follows the same rule as
+/// every client URL: https, or plain http to the local machine under the opt-in (U89c). The
+/// error names `scheme://host:port` only, never userinfo, a path or the rest of the query.
+fn check_store_endpoint(store: &str, policy: Policy) -> Result<(), ConfigError> {
+    let Ok(url) = url::Url::parse(store) else {
+        return Ok(());
+    };
+    if url.scheme() != "s3" {
+        return Ok(());
+    }
+    for (k, v) in url.query_pairs() {
+        if k == "endpoint" && !v.is_empty() {
+            return match require_network(&v, policy) {
+                Ok(Transport::Https | Transport::LoopbackHttp) => Ok(()),
+                Ok(_) => invalid("store endpoint must be an https URL"),
+                Err(why) => invalid(format!("store endpoint: {why}")),
+            };
+        }
+    }
+    Ok(())
+}
+
 fn url_scheme(s: &str) -> &str {
     s.split_once(':').map_or("", |(scheme, _)| scheme)
 }
@@ -1031,9 +1054,28 @@ mod tests {
         assert!(cache("https://primary.example:7890").is_ok());
         assert!(primary("memory:///", "public_url = \"https://asc.example.org\"").is_ok());
         assert!(primary("memory:///", "[forgejo]\nurl = \"https://forgejo.example\"").is_ok());
-        // The server's own store is the operator's: a Garage next to it may be plain http.
-        assert!(primary("s3://b?endpoint=http://garage-abc:3900", "").is_ok());
         assert!(primary("s3://b?endpoint=https://garage:3900", "").is_ok());
+    }
+
+    #[test]
+    fn the_store_endpoint_is_https_or_opted_in_loopback() {
+        // No exception for the server's own store: plain http to a private host is refused at
+        // load, and the error names the origin only.
+        let err = primary("s3://b?endpoint=http://u:hunter2@garage-abc:3900/x", "")
+            .expect_err("plain http to a private host")
+            .to_string();
+        assert!(err.contains("http://garage-abc:3900"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(primary("s3://b?endpoint=ftp://garage:3900", "").is_err());
+        let loopback = "s3://b?endpoint=http://127.0.0.1:3900";
+        assert!(check_store_endpoint(loopback, Policy::STRICT).is_err());
+        assert!(check_store_endpoint(loopback, Policy::LOOPBACK_HTTP).is_ok());
+        let private = "s3://b?endpoint=http://garage-abc:3900";
+        assert!(check_store_endpoint(private, Policy::LOOPBACK_HTTP).is_err());
+        assert!(
+            check_store_endpoint("s3://b?endpoint=https://garage:3900", Policy::STRICT).is_ok()
+        );
+        assert!(check_store_endpoint("memory:///", Policy::STRICT).is_ok());
     }
 
     #[test]
