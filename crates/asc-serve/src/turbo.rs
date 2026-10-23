@@ -18,6 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use asc_core::transport_policy::{Policy, Transport, require_network};
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path as StorePath;
@@ -580,6 +581,10 @@ impl TurboState {
 }
 
 fn s3_signer(url: &url::Url) -> Result<Arc<dyn Signer>, TurboError> {
+    s3_signer_under(url, Policy::current())
+}
+
+fn s3_signer_under(url: &url::Url, policy: Policy) -> Result<Arc<dyn Signer>, TurboError> {
     let bad = |m: String| TurboError::Config(m);
     let bucket = url
         .host_str()
@@ -590,9 +595,14 @@ fn s3_signer(url: &url::Url) -> Result<Arc<dyn Signer>, TurboError> {
     for (k, v) in url.query_pairs() {
         match &*k {
             "endpoint" if !v.is_empty() => {
-                b = b
-                    .with_allow_http(v.starts_with("http://"))
-                    .with_endpoint(v.to_string());
+                // https, or plain http to the local machine under the opt-in (U89).
+                let allow_http = match require_network(&v, policy) {
+                    Ok(Transport::Https) => false,
+                    Ok(Transport::LoopbackHttp) => true,
+                    Ok(_) => return Err(bad("s3 endpoint must be an http(s) url".into())),
+                    Err(why) => return Err(bad(format!("s3 endpoint: {why}"))),
+                };
+                b = b.with_allow_http(allow_http).with_endpoint(v.to_string());
             }
             "region" if !v.is_empty() => region = Some(v.to_string()),
             "path_style" if !v.is_empty() => {
@@ -946,6 +956,20 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn the_s3_endpoint_follows_the_transport_policy() {
+        let url = |e: &str| url::Url::parse(&format!("s3://b/p?region=r&endpoint={e}")).unwrap();
+        let strict = |e: &str| s3_signer_under(&url(e), Policy::STRICT).is_ok();
+        let dev = |e: &str| s3_signer_under(&url(e), Policy::LOOPBACK_HTTP).is_ok();
+        for e in ["http://minio.example:9000", "http://192.0.2.7:9000"] {
+            assert!(!strict(e) && !dev(e), "{e}");
+        }
+        assert!(strict("https://minio.example:9000"));
+        // Loopback http needs the opt-in.
+        assert!(!strict("http://127.0.0.1:9000"));
+        assert!(dev("http://127.0.0.1:9000"));
+    }
 
     #[test]
     fn dev_scopes_are_injective() {
