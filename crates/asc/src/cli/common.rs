@@ -662,6 +662,11 @@ impl Ctx {
             toplevel: a.projection.toplevel(),
         });
         let config = ConfigSnapshot::load_with(&env, &get, local.as_ref(), gate.owned)?;
+        // `asc.allowLoopbackHttp` is read once, here: every outbound check consults the process
+        // policy (U89), which is off unless this key or ASC_ALLOW_LOOPBACK_HTTP=1 says so.
+        asc_core::transport_policy::set_config_allow_loopback_http(
+            config.bool(asc_core::transport_policy::LOOPBACK_CONFIG_KEY) == Some(true),
+        );
         let ws = match admitted {
             Some(p) => Some(WsCtx::open(p, &config).await?),
             None => None,

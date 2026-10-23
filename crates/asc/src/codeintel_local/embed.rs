@@ -36,6 +36,7 @@ use asc_codeintel::vectors::{
     drop_stale_generations, generation_dir, load_local,
 };
 use asc_core::id::FileId;
+use asc_core::transport_policy::{Policy, Transport, require_network};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use roaring::RoaringBitmap;
@@ -379,8 +380,15 @@ pub enum Source {
 
 impl Source {
     pub fn url(base: &str) -> Result<Self> {
-        if !base.starts_with("https://") {
-            return Err(other("asc.releasesUrl must be an https URL"));
+        Self::url_under(base, Policy::current())
+    }
+
+    /// https; plain http to the local machine only under the transport policy's opt-in (U89).
+    fn url_under(base: &str, policy: Policy) -> Result<Self> {
+        match require_network(base, policy) {
+            Ok(Transport::Https | Transport::LoopbackHttp) => {}
+            Ok(_) => return Err(other("asc.releasesUrl must be an https URL")),
+            Err(why) => return Err(other(format!("asc.releasesUrl: {why}"))),
         }
         Ok(Self::Url(base.trim_end_matches('/').to_owned()))
     }
@@ -420,10 +428,18 @@ impl Source {
                 }
             }
             Self::Url(base) => {
+                // A plain-http source passed `url_under` as loopback: it follows no redirect.
+                let plain = base
+                    .get(..5)
+                    .is_some_and(|s| s.eq_ignore_ascii_case("http:"));
                 let client = reqwest::Client::builder()
                     .timeout(Duration::from_secs(1800))
-                    .https_only(true)
-                    .redirect(reqwest::redirect::Policy::limited(5))
+                    .https_only(!plain)
+                    .redirect(if plain {
+                        reqwest::redirect::Policy::none()
+                    } else {
+                        reqwest::redirect::Policy::limited(5)
+                    })
                     .build()
                     .map_err(|e| other(format!("http client: {e}")))?;
                 let mut resp = client
@@ -1845,6 +1861,11 @@ mod tests {
     fn the_source_is_https_and_names_are_plain() {
         assert!(Source::url("http://example.com").is_err());
         assert!(Source::url("https://example.com/r/").is_ok());
+        // Plain http, even to the local machine, needs the opt-in (U89).
+        let local = "http://127.0.0.1:8080/r";
+        assert!(Source::url_under(local, Policy::STRICT).is_err());
+        assert!(Source::url_under(local, Policy::LOOPBACK_HTTP).is_ok());
+        assert!(Source::url_under("http://example.com/r", Policy::LOOPBACK_HTTP).is_err());
         assert!(plain_name("a-b_c.1"));
         for bad in ["", ".x", "a/b", "a\\b", "..", "a b"] {
             assert!(!plain_name(bad), "{bad}");
