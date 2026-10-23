@@ -327,13 +327,13 @@ pub async fn enable(
             }
             continue;
         }
-        if !held.contains_key(&owner) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = held.entry(owner) {
             let n = refs
                 .list(entry.key, &refpolicy::user_prefix(owner))
                 .await
                 .map_err(|e| internal("refs", &e))?
                 .len();
-            held.insert(owner, n);
+            slot.insert(n);
         }
         let n = held
             .get_mut(&owner)
@@ -649,7 +649,7 @@ async fn fetch_nodes(
                     .map(ChangesetId::from_bytes)
                     .map_err(|_| Status::data_loss("damaged cs_graph row"))
             };
-            if blob.len() % 32 != 0 {
+            if !blob.len().is_multiple_of(32) {
                 return Err(Status::data_loss("damaged cs_graph parents"));
             }
             let parents = blob.chunks_exact(32).map(id).collect::<Result<_, _>>()?;
