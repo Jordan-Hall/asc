@@ -73,6 +73,7 @@ pub mod diff_tree;
 pub mod doctor;
 pub mod export;
 pub mod fetch;
+pub mod format;
 pub mod format_patch;
 pub mod fsck;
 pub mod gc;
