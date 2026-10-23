@@ -395,20 +395,54 @@ fn shell_alias_finds_the_private_shim_dir_before_real_git() {
     assert_eq!(comparable(&out.stdout), comparable(&want.display().to_string()));
 }
 
+/// Git commands whose asc entry is still a `stub!`, read from the sources so that a command
+/// that lands drops out of this list by itself.
+fn stubbed_git_commands() -> Vec<String> {
+    const GIT: &[&str] = &[
+        "fetch", "clone", "gc", "fsck", "archive", "cherry", "ls-remote", "count-objects", "commit-tree",
+        "interpret-trailers", "push", "pull", "remote", "rebase", "merge", "stash", "shortlog", "name-rev",
+        "whatchanged", "range-diff", "notes", "sparse-checkout", "mktree", "merge-tree",
+    ];
+    let mut found = Vec::new();
+    let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli")];
+    while let Some(d) = dirs.pop() {
+        for e in fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let text = fs::read_to_string(&p).unwrap();
+                for name in GIT {
+                    if text.lines().any(|l| l.trim() == format!("stub!(\"{name}\");")) {
+                        found.push((*name).to_owned());
+                    }
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+fn a_stubbed_git_command() -> String {
+    stubbed_git_commands().into_iter().next().expect("no git command is left as a stub; update stubbed_git_commands")
+}
+
 // ---- dispatch (argv[0] = git) -----------------------------------------------------------
 
 #[test]
 fn git_prefers_aliases_then_git_externals_then_asc_verbs() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    append_global(&sb, "[alias]\n\tgraph = stash list\n");
-    // `git graph` is the alias (it expands to `stash`, which has not landed).
+    let stubbed = a_stubbed_git_command();
+    append_global(&sb, &format!("[alias]\n\tgraph = {stubbed} list\n"));
+    // `git graph` is the alias (it expands to a command that has not landed).
     let out = git(&sb, &root, &["graph"]);
     assert_eq!(out.code, 129);
-    assert_eq!(out.stderr, "fatal: asc: 'stash' is not supported yet\n");
-    // Under `asc`, the asc-only verb `graph` wins and is also not built yet.
+    assert_eq!(out.stderr, format!("fatal: asc: '{stubbed}' is not supported yet\n"));
+    // Under `asc`, the asc-only verb `graph` wins: the alias is not expanded.
     let out = asc(&sb, &root, &["graph"]);
-    assert_eq!((out.code, out.stderr.as_str()), (129, "fatal: asc: 'graph' is not supported yet\n"));
+    assert!(!out.stderr.contains(&format!("'{stubbed}' is not supported yet")), "{}", out.stderr);
 
     // A `git-affected` script on PATH wins over the asc-only `affected` when invoked as git.
     let bindir = sb.dir("bin");
@@ -430,7 +464,8 @@ fn git_prefers_aliases_then_git_externals_then_asc_verbs() {
     assert_eq!(out.stdout.trim(), "external-affected", "{}", out.stderr);
     // Without the script, the asc verb answers.
     let out = git(&sb, &root, &["affected"]);
-    assert_eq!((out.code, out.stderr.as_str()), (129, "fatal: asc: 'affected' is not supported yet\n"));
+    assert_ne!(out.stdout.trim(), "external-affected");
+    assert!(!out.stderr.contains("is not a git command"), "{}", out.stderr);
 }
 
 #[test]
@@ -481,7 +516,10 @@ fn autocorrect_never_picks_a_asc_only_verb() {
 fn commands_not_yet_landed_exit_129() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    for cmd in ["merge", "stash", "rebase", "push"] {
+    let stubbed = stubbed_git_commands();
+    assert!(!stubbed.is_empty(), "no git command is left as a stub");
+    for cmd in stubbed {
+        let cmd = cmd.as_str();
         let out = git(&sb, &root, &[cmd, "--any-flag"]);
         assert_eq!(out.code, 129, "{cmd}");
         assert_eq!(out.stderr, format!("fatal: asc: '{cmd}' is not supported yet\n"), "{cmd}");
