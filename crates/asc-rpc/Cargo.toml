@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 asc-core = { workspace = true }
 asc-engine = { workspace = true }
+asc-graph = { workspace = true }
 asc-store = { workspace = true }
 bytes = { workspace = true }
 prost = { workspace = true }
@@ -28,6 +29,7 @@ tonic-prost = { workspace = true }
 prost-reflect = { workspace = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
+postcard = { workspace = true }
 interprocess = { workspace = true }
 tower = { workspace = true }
 hyper-util = { workspace = true }

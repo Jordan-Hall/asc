@@ -16,6 +16,7 @@ pub mod ipc;
 pub mod json;
 pub mod limits;
 pub mod log_meta;
+pub mod projects;
 pub mod retry;
 pub mod server;
 

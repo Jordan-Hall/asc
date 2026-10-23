@@ -19,6 +19,8 @@ pub mod mainline;
 pub mod migrate;
 pub mod mirror;
 pub mod outbox;
+pub mod projects;
+pub mod projects_warm;
 pub mod read;
 pub mod registry;
 pub mod seeds;
@@ -156,6 +158,12 @@ fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Lim
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
 pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
+    if let Some(h) = ext.projects.get() {
+        ext.grpc.register(
+            asc_rpc::projects::ProjectsService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+    }
     ext.grpc
         .register(RepoService::new(ext.handlers.clone(), authorizer, info).into_service());
     let router = ext
@@ -225,6 +233,7 @@ pub async fn serve(
     ));
     let ext = Extensions::new();
     register_all(&ext, &registry, &cfg.limits);
+    let warmer = projects::register(&ext, &registry);
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror = mirror::register(&ext, &registry, &cfg)
@@ -243,7 +252,11 @@ pub async fn serve(
     // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
     // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
-    let routes = limits::guarded_routes(&ext, authorizer, admission, ServerInfo::default());
+    let info = ServerInfo {
+        features: vec![projects::feature()],
+        ..ServerInfo::default()
+    };
+    let routes = limits::guarded_routes(&ext, authorizer, admission, info);
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {
@@ -271,6 +284,7 @@ pub async fn serve(
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();
+    let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     // Collection deletes data, so it runs only when `[gc] enabled` is set.
     let collector = if cfg.gc.enabled {
@@ -295,6 +309,7 @@ pub async fn serve(
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();
+    warming.abort();
     if let Some(p) = poller {
         p.abort();
     }

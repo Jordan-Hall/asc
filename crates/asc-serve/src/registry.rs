@@ -378,6 +378,8 @@ pub struct Extensions {
     pub handlers: Arc<RepoHandlers>,
     pub http: HttpRoutes,
     pub grpc: GrpcServices,
+    /// The `Projects` service handler (G09); `build_routes` serves it behind the authorizer.
+    pub projects: asc_rpc::projects::ProjectsSlot,
     pub text_budget: crate::TextBudgetSlot,
     /// Ingest and `UpdateRefs` hook points (U43b).
     pub pipeline: Arc<crate::update::PipelineHooks>,
@@ -389,6 +391,7 @@ impl Extensions {
             handlers: Arc::new(RepoHandlers::new()),
             http: HttpRoutes::new(),
             grpc: GrpcServices::new(),
+            projects: Default::default(),
             text_budget: crate::TextBudgetSlot::default(),
             pipeline: Arc::default(),
         }

@@ -289,6 +289,11 @@ impl RpcClient {
             .accept_compressed(CompressionEncoding::Zstd)
     }
 
+    /// The channel of the primary server, for the other services of `asc.v1`.
+    pub(crate) fn primary_channel(&self) -> &Channel {
+        &self.inner.primary
+    }
+
     pub(crate) fn primary(&self) -> RepoClient<Channel> {
         Self::stub(&self.inner.primary)
     }
@@ -327,7 +332,7 @@ impl RpcClient {
         e.is_unavailable()
     }
 
-    fn graph_err(&self, e: CallError, operation: &'static str, rpc: &'static str) -> graph::Error {
+    pub(crate) fn graph_err(&self, e: CallError, operation: &'static str, rpc: &'static str) -> graph::Error {
         if self.offline(&e) {
             graph::Error::Offline {
                 remote: self.inner.remote_name.clone(),
