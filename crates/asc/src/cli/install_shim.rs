@@ -67,8 +67,26 @@ fn path_line(dir: &Path) -> String {
     }
 }
 
+/// The running binary by the path it was started through. Windows keeps that path in
+/// `current_exe`; Linux resolves symlinks there, which would turn a stable `current` link into a
+/// version directory. The started-through path is used only when it names the same file.
+fn invoked_exe() -> std::io::Result<PathBuf> {
+    let real = std::env::current_exe()?;
+    #[cfg(unix)]
+    if let Some(arg0) = std::env::args_os().next().map(PathBuf::from) {
+        if arg0.components().count() > 1 {
+            let abs = if arg0.is_absolute() { arg0 } else { std::env::current_dir()?.join(arg0) };
+            let same = std::fs::canonicalize(&abs).ok().zip(std::fs::canonicalize(&real).ok());
+            if same.is_some_and(|(a, b)| a == b) {
+                return Ok(abs);
+            }
+        }
+    }
+    Ok(real)
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
-    let exe = std::env::current_exe()?;
+    let exe = invoked_exe()?;
     let dir = match &a.dir {
         Some(d) => ctx.cwd.join(d),
         None => child::shim_dir_of(&exe),
