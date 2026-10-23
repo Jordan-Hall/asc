@@ -401,11 +401,11 @@ fn shell_alias_finds_the_private_shim_dir_before_real_git() {
 fn git_prefers_aliases_then_git_externals_then_asc_verbs() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    append_global(&sb, "[alias]\n\tgraph = log --oneline --graph\n");
-    // `git graph` is the alias (it expands to `log`, which has not landed).
+    append_global(&sb, "[alias]\n\tgraph = tag --list\n");
+    // `git graph` is the alias (it expands to `tag`, which has not landed).
     let out = git(&sb, &root, &["graph"]);
     assert_eq!(out.code, 129);
-    assert_eq!(out.stderr, "fatal: asc: 'log' is not supported yet\n");
+    assert_eq!(out.stderr, "fatal: asc: 'tag' is not supported yet\n");
     // Under `asc`, the asc-only verb `graph` wins and is also not built yet.
     let out = asc(&sb, &root, &["graph"]);
     assert_eq!((out.code, out.stderr.as_str()), (129, "fatal: asc: 'graph' is not supported yet\n"));
@@ -464,7 +464,8 @@ fn autocorrect_never_picks_a_asc_only_verb() {
     let out = git(&sb, &root, &["-c", "help.autocorrect=immediate", "sttaus"]);
     assert!(out.stderr.contains("WARNING: You called a Git command named 'sttaus'"), "{}", out.stderr);
     assert!(out.stderr.contains("Continuing under the assumption that you meant 'status'."), "{}", out.stderr);
-    assert!(out.stderr.ends_with("fatal: asc: 'status' is not supported yet\n"), "{}", out.stderr);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.starts_with("On branch master\n"), "the corrected command ran: {}", out.stdout);
     // A near miss of an asc-only verb is not corrected to it.
     let out = git(&sb, &root, &["-c", "help.autocorrect=immediate", "projectz"]);
     assert_eq!(out.code, 1, "{}", out.stderr);
@@ -480,7 +481,7 @@ fn autocorrect_never_picks_a_asc_only_verb() {
 fn commands_not_yet_landed_exit_129() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    for cmd in ["status", "commit", "log", "diff", "ls-files", "branch"] {
+    for cmd in ["branch", "tag", "merge", "stash", "rebase", "push"] {
         let out = git(&sb, &root, &[cmd, "--any-flag"]);
         assert_eq!(out.code, 129, "{cmd}");
         assert_eq!(out.stderr, format!("fatal: asc: '{cmd}' is not supported yet\n"), "{cmd}");
