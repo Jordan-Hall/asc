@@ -170,19 +170,27 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The `dev-<name>` scope of a principal. Injective: a principal made only of `[A-Za-z0-9_-]`
+    /// and at most 64 bytes is its own name; any other (`pat:a.b` and `pat:a_b` would both clean to
+    /// `pat_a_b`, a long one would be cut) gets the cleaned prefix, a `.` and 16 hex digits of the
+    /// BLAKE3 hash of the whole principal. The `.` cannot occur in the first form, so the two
+    /// forms never meet.
     fn dev(principal: &str) -> Self {
+        let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-');
+        if !principal.is_empty() && principal.len() <= 64 && principal.chars().all(plain) {
+            return Self::Dev(principal.to_owned());
+        }
         let clean: String = principal
             .chars()
-            .take(64)
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
-                    c
-                } else {
-                    '_'
-                }
-            })
+            .take(32)
+            .map(|c| if plain(c) { c } else { '_' })
             .collect();
-        Self::Dev(if clean.is_empty() { "_".into() } else { clean })
+        let hash = blake3::hash(principal.as_bytes());
+        let tag: String = hash.as_bytes()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        Self::Dev(format!("{clean}.{tag}"))
     }
 
     fn dir(&self) -> String {
@@ -938,6 +946,43 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    #[test]
+    fn dev_scopes_are_injective() {
+        // Plain names are their own scope (unchanged for existing data).
+        assert_eq!(Scope::dev("alice"), Scope::Dev("alice".into()));
+        // Names that differ only in characters the cleaner replaces stay distinct.
+        let mut seen = std::collections::HashSet::new();
+        for p in [
+            "pat:a.b",
+            "pat:a_b",
+            "pat:a:b",
+            "deploy:acme/we_b",
+            "deploy:acme_we/b",
+            "deploy:acme/web",
+            "deploy_acme_web",
+            "pat:deploy_acme_web",
+            "a_b",
+            "a.b",
+            "",
+            "_",
+            &"x".repeat(64),
+            &"x".repeat(65),
+            &format!("{}y", "x".repeat(64)),
+            &format!("{}z", "x".repeat(64)),
+        ] {
+            let Scope::Dev(name) = Scope::dev(p) else {
+                unreachable!()
+            };
+            assert!(name.len() <= 64, "{p}: {name}");
+            assert!(
+                name.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')),
+                "{name}"
+            );
+            assert!(seen.insert(name), "collision for {p:?}");
+        }
+    }
 
     const SLUG: &str = "acme.web";
 

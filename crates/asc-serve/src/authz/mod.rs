@@ -3,6 +3,7 @@
 //! [`authorizer`] builds the one [`Authorizer`] the `[auth] provider` key names; every surface of
 //! the server (RPC, `/v8`, `/seeds`, admin and `/mcp`) is handed that one value.
 
+mod key_file;
 pub mod token_cli;
 pub mod token_store;
 

@@ -121,10 +121,10 @@ async fn create_use_expire_and_revoke() {
 
     // Use.
     let p = f.check(&pat, "acme/web", Access::Write).await.unwrap();
-    assert_eq!(p.id, "alice");
+    assert_eq!(p.id, "pat:alice");
     assert_eq!(
         f.check(&pat, "acme/web", Access::Read).await.unwrap().id,
-        "alice"
+        "pat:alice"
     );
 
     // Anonymous and unknown tokens are 401-class.
@@ -466,7 +466,7 @@ async fn one_token_authorises_rpc_v8_and_mcp_identically() {
             .authorize_credential(cred, "acme/web", Access::Write)
             .await
             .unwrap();
-        assert_eq!(p.id, "alice", "{h}");
+        assert_eq!(p.id, "pat:alice", "{h}");
     }
 
     // HTTP: `/v8`, `/seeds`, and a stand-in for `/mcp` behind the same edge.
@@ -752,6 +752,137 @@ fn the_key_file_is_private_and_never_overwritten() {
     assert!(TokenKey::load(&dir.path().join("missing")).is_err());
     std::fs::write(dir.path().join("short"), "abcd\n").unwrap();
     assert!(TokenKey::load(&dir.path().join("short")).is_err());
+}
+
+/// Windows: the key file's access list names only the current user and SYSTEM, and a file that
+/// grants anyone else access is refused.
+#[cfg(windows)]
+#[test]
+fn the_windows_key_file_allows_only_the_user_and_system() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("token.key");
+    TokenKey::load_or_create(&path).unwrap();
+    TokenKey::load(&path).unwrap();
+
+    // The list is protected (no inherited entries) and has two entries.
+    let shown = Command::new("icacls").arg(&path).output().unwrap();
+    let shown = String::from_utf8_lossy(&shown.stdout).into_owned();
+    for other in ["Everyone", "Users", "Administrators", "Authenticated"] {
+        assert!(!shown.contains(other), "{shown}");
+    }
+    assert!(shown.contains("SYSTEM"), "{shown}");
+    assert!(!shown.contains("(I)"), "no inherited entries: {shown}");
+
+    // Granting anyone else read access makes the key unusable.
+    for sid in ["*S-1-1-0", "*S-1-5-32-545", "*S-1-5-32-544"] {
+        let ok = Command::new("icacls")
+            .arg(&path)
+            .args(["/grant", &format!("{sid}:R")])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let err = TokenKey::load(&path).unwrap_err().to_string();
+        assert!(err.contains("grants access to"), "{sid}: {err}");
+        assert!(
+            Command::new("icacls")
+                .arg(&path)
+                .args(["/remove:g", sid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        TokenKey::load(&path).unwrap();
+    }
+
+    // A file with no protection of its own (it inherits the directory's list, which names
+    // Administrators or other accounts) is refused even though its text is a valid key.
+    let loose = dir.path().join("loose.key");
+    std::fs::write(
+        &loose,
+        format!(
+            "{}
+",
+            "ab".repeat(32)
+        ),
+    )
+    .unwrap();
+    let ok = Command::new("icacls")
+        .arg(&loose)
+        .args(["/grant", "*S-1-1-0:R"])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    assert!(TokenKey::load(&loose).is_err());
+}
+
+/// A PAT user named like another principal gets a distinct principal id and a distinct turbo
+/// scope: nothing one token writes is visible to a token of a look-alike principal.
+#[tokio::test]
+async fn look_alike_principals_have_distinct_ids_and_scopes() {
+    let f = fixture().await;
+    let app = routes(f.authz.clone());
+    let put = |hash: &str| format!("/v8/artifacts/{hash}?slug=acme.web&teamId=team_x");
+
+    // (user or None for a deploy token, repo grant)
+    let cases: [(Option<&str>, &str); 6] = [
+        (Some("deploy_acme_web"), "acme/web"), // cleaned like `deploy:acme/web`
+        (None, "acme/web"),                    // deploy:acme/web
+        (Some("a.b"), "acme/web"),             // cleaned like a_b
+        (Some("a_b"), "acme/web"),
+        (Some("forgejo-internal"), "acme/web"), // must not equal the forge's internal principal
+        (Some("alice"), "acme/web"),
+    ];
+    let mut tokens = Vec::new();
+    for (user, repo) in cases {
+        let kind = if user.is_some() {
+            TokenKind::Pat
+        } else {
+            TokenKind::Deploy
+        };
+        tokens.push(f.mint(kind, user, &[repo], Access::Write).await);
+    }
+    let mut ids = std::collections::HashSet::new();
+    for t in &tokens {
+        let id = f.check(t, "acme/web", Access::Write).await.unwrap().id;
+        assert_ne!(id, asc_serve::forgejo::INTERNAL_PRINCIPAL);
+        assert!(ids.insert(id));
+    }
+    // Each token writes its own artifact; no other token can read it back.
+    for (i, t) in tokens.iter().enumerate() {
+        let auth = format!("Bearer {t}");
+        let hash = format!("h{i}");
+        assert_eq!(
+            send(&app, "PUT", &put(&hash), &auth).await,
+            StatusCode::ACCEPTED
+        );
+        assert_eq!(send(&app, "GET", &put(&hash), &auth).await, StatusCode::OK);
+    }
+    for (i, _) in tokens.iter().enumerate() {
+        for (j, t) in tokens.iter().enumerate() {
+            if i != j {
+                let got = send(&app, "GET", &put(&format!("h{i}")), &format!("Bearer {t}")).await;
+                assert_eq!(
+                    got,
+                    StatusCode::NOT_FOUND,
+                    "token {j} saw the artifact of token {i}"
+                );
+            }
+        }
+    }
+
+    // Deploy tokens of repositories whose names clean to the same text stay apart too.
+    let a = f
+        .mint(TokenKind::Deploy, None, &["acme/we_b"], Access::Write)
+        .await;
+    let b = f
+        .mint(TokenKind::Deploy, None, &["acme_we/b"], Access::Write)
+        .await;
+    let pa = f.check(&a, "acme/we_b", Access::Write).await.unwrap().id;
+    let pb = f.check(&b, "acme_we/b", Access::Write).await.unwrap().id;
+    assert_ne!(pa, pb);
 }
 
 fn config(dir: &std::path::Path) -> ServeConfig {
