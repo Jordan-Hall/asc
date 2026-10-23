@@ -907,11 +907,12 @@ impl InternalAuthz {
             .await
     }
 
-    /// Repository names compare case-insensitively, as Forgejo resolves them.
+    /// Repository names compare exactly. The registry resolves names case-sensitively, so a
+    /// case-folded match would let a grant for `asc/asc` reach a distinct `asc/ASC`.
     fn granted(&self, parent: &str, child: &str) -> bool {
         self.grants
             .iter()
-            .any(|g| g.parent.eq_ignore_ascii_case(parent) && g.child.eq_ignore_ascii_case(child))
+            .any(|g| g.parent == parent && g.child == child)
     }
 
     async fn fetch(
@@ -984,7 +985,9 @@ impl InternalAuthz {
                 .as_ref()
                 .and_then(|t| t.repo.as_deref())
                 .ok_or_else(deny)?;
-            if !bound.eq_ignore_ascii_case(repo) {
+            // The fork reports the bound repo in Forgejo's canonical `owner/name`. Compare the
+            // bytes: a different case is a different registry entry, so it is another repo.
+            if bound != repo {
                 perm = if self.granted(bound, repo) {
                     Perm::Read
                 } else {
