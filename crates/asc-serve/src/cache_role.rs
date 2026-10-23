@@ -10,6 +10,15 @@
 //!   upstream that cannot answer refuses the caller and caches nothing.
 //! * **Namespaces** are kept apart: every cache entry is keyed by `(repo, key)`, so a caller who
 //!   may read one repository never gets another repository's object through a shared key.
+//! * **Presence is confirmed, never assumed.** A repository name is not a stable identity: the
+//!   repository can be deleted and recreated, renamed or transferred under the same name, and the
+//!   upstream exposes no repository id or generation. A cached object is therefore served only
+//!   after the upstream has confirmed, for the calling principal and repository, that it still has
+//!   the object, within the last [`POSITIVE_TTL`]. Confirmation is one batched `HasObjects` per
+//!   request window; an object the upstream no longer has is dropped from both tiers and reported
+//!   missing, and an upstream that cannot answer fails the request (fail closed). A fetch from the
+//!   upstream confirms the objects it returns. The disk layout carries a version marker, and a
+//!   directory written by an older layout is emptied at startup.
 //! * **Integrity:** an object fetched from the upstream, or read back from disk, is decoded and
 //!   hashed against its key before it is cached or served (a corrupt disk file is deleted and
 //!   fetched again). Object sizes, window sizes and the disk budget are bounded.
@@ -22,7 +31,7 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -66,6 +75,16 @@ const DISK_ENTRY_FRACTION: u64 = 4;
 const REPO_DIR_LEN: usize = 32;
 /// Directory (under the disk root) where writes are staged.
 const TMP_DIR: &str = "tmp";
+/// File (under the disk root) that names the layout of the entries below it.
+const LAYOUT_FILE: &str = "LAYOUT";
+/// The current disk layout. Entries written under any other layout are not trusted: they were
+/// cached without presence confirmation. Bump it when the meaning of an entry changes.
+const LAYOUT: &str = "asc-cache-role-disk 2\n";
+/// Domain separator of the repository directory name, so a directory from an older layout never
+/// has the name the current layout looks up.
+const REPO_DIR_DOMAIN: &[u8] = b"asc-cache-role/v2\0";
+/// Presence confirmations remembered at once.
+const CONFIRM_ENTRIES: usize = 131_072;
 
 /// Why the cache role could not start.
 #[derive(Debug, thiserror::Error)]
@@ -384,6 +403,7 @@ impl DiskCache {
             Err(e) if e.kind() == io::ErrorKind::NotFound => std::fs::create_dir_all(root)?,
             Err(e) => return Err(e),
         }
+        reset_foreign_layout(root)?;
         // Staged writes of a previous run are garbage.
         let tmp = root.join(TMP_DIR);
         if std::fs::symlink_metadata(&tmp).is_ok_and(|m| m.is_dir()) {
@@ -425,18 +445,16 @@ impl DiskCache {
     }
 
     fn rel(repo: &str, key: &ObjKey) -> String {
-        let dir = hex(&Sha256::digest(repo.as_bytes()));
+        let dir = hex(&Sha256::new()
+            .chain_update(REPO_DIR_DOMAIN)
+            .chain_update(repo.as_bytes())
+            .finalize());
         format!("{}/{}", &dir[..REPO_DIR_LEN], key.path())
     }
 
     /// Bytes in use.
     pub fn total(&self) -> u64 {
         self.lock().total
-    }
-
-    /// True when the entry is indexed (and marks it recently used). No file access.
-    fn contains(&self, rel: &str) -> bool {
-        self.lock().touch(rel)
     }
 
     async fn get(&self, rel: &str) -> Option<Bytes> {
@@ -463,6 +481,13 @@ impl DiskCache {
     async fn remove(&self, rel: &str) {
         self.lock().remove(rel);
         let _ = tokio::fs::remove_file(self.root.join(rel)).await;
+    }
+
+    /// Deletes the entry when it is indexed. No file access otherwise.
+    async fn evict(&self, rel: &str) {
+        if self.lock().remove(rel) {
+            let _ = tokio::fs::remove_file(self.root.join(rel)).await;
+        }
     }
 
     async fn put(&self, rel: &str, data: &Bytes) {
@@ -504,6 +529,25 @@ impl DiskCache {
     }
 }
 
+/// Empties `root` of entries unless its layout marker names the current layout, then writes the
+/// marker. Only repository-named directories are removed; a symlink is never followed. Blocking.
+fn reset_foreign_layout(root: &Path) -> io::Result<()> {
+    let marker = root.join(LAYOUT_FILE);
+    if std::fs::read_to_string(&marker).is_ok_and(|m| m == LAYOUT) {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type()?.is_dir() && name.len() == REPO_DIR_LEN {
+            std::fs::remove_dir_all(entry.path())?;
+        }
+    }
+    let staged = root.join(format!("{LAYOUT_FILE}.tmp"));
+    std::fs::write(&staged, LAYOUT)?;
+    std::fs::rename(&staged, &marker)
+}
+
 /// Collects the regular files below one repository directory. Symlinks and unknown names are
 /// ignored, never followed.
 fn scan(dir: &Path, rel: &str, depth: usize, out: &mut Vec<(String, u64, SystemTime)>) {
@@ -534,6 +578,8 @@ fn scan(dir: &Path, rel: &str, depth: usize, out: &mut Vec<(String, u64, SystemT
 // ------------------------------------------------------------------------------ objects
 
 type MemKey = (Arc<str>, ObjKey);
+/// `(principal id, repo, key)`: who the upstream confirmed the object for.
+type ConfirmKey = (Arc<str>, Arc<str>, ObjKey);
 
 #[derive(Clone)]
 struct ByteWeighter;
@@ -566,6 +612,10 @@ struct Inner {
     disk: Option<Arc<DiskCache>>,
     flights: Coalesce<MemKey, Resolved>,
     metrics: Arc<Metrics>,
+    /// When the upstream last confirmed that a repository has an object, per principal.
+    confirmed: quick_cache::sync::Cache<ConfirmKey, Instant>,
+    /// How long a confirmation lets cached bytes be served without asking the upstream again.
+    confirm_ttl: Duration,
 }
 
 impl Inner {
@@ -585,6 +635,47 @@ impl Inner {
         self.vault
             .get(&ctx.principal.id)
             .ok_or_else(|| Status::unavailable("credentials expired; retry"))
+    }
+
+    fn is_confirmed(&self, who: &Arc<str>, repo: &Arc<str>, key: ObjKey) -> bool {
+        self.confirmed
+            .get(&(who.clone(), repo.clone(), key))
+            .is_some_and(|at| at.elapsed() < self.confirm_ttl)
+    }
+
+    fn confirm(&self, who: &Arc<str>, repo: &Arc<str>, key: ObjKey) {
+        self.confirmed
+            .insert((who.clone(), repo.clone(), key), Instant::now());
+    }
+
+    /// Drops the cached copy of an object the upstream no longer has for this repository name.
+    async fn purge(&self, repo: &Arc<str>, key: ObjKey) {
+        if let Some(mem) = &self.mem {
+            mem.remove(&(repo.clone(), key));
+        }
+        if let Some(disk) = &self.disk {
+            disk.evict(&DiskCache::rel(repo, &key)).await;
+        }
+    }
+
+    /// Asks the upstream, with the caller's credential, which of `keys` the repository has.
+    async fn upstream_has(
+        &self,
+        repo: &Arc<str>,
+        token: Option<BearerToken>,
+        keys: &[ObjKey],
+    ) -> Result<Vec<bool>, Status> {
+        let client = self
+            .upstream
+            .client(repo, token)
+            .map_err(|_| Status::unavailable("upstream unavailable"))?;
+        let have = client.has_objects(keys).await.map_err(call_status)?;
+        if have.len() == keys.len() {
+            Ok(have)
+        } else {
+            tracing::warn!("cache role: upstream presence answer has the wrong length");
+            Err(Status::unavailable("upstream sent an invalid answer"))
+        }
     }
 
     fn mem_get(&self, repo: &Arc<str>, key: ObjKey) -> Option<Bytes> {
@@ -632,6 +723,7 @@ impl Inner {
     /// The stored bytes of each of `keys` (`None` when the upstream has none), in order.
     async fn resolve(
         self: &Arc<Self>,
+        who: &Arc<str>,
         repo: &Arc<str>,
         token: Option<BearerToken>,
         keys: &[ObjKey],
@@ -676,6 +768,33 @@ impl Inner {
             self.count("disk_hit", hits);
             need = still;
         }
+        // Cached bytes are served only once the upstream confirms that the repository, as it is
+        // now, still has them. One batched call covers the whole window.
+        let unconfirmed: Vec<usize> = (0..keys.len())
+            .filter(|&i| found[i].is_some() && !self.is_confirmed(who, repo, keys[i]))
+            .collect();
+        if !unconfirmed.is_empty() {
+            let mut seen = HashSet::new();
+            let asked: Vec<ObjKey> = unconfirmed
+                .iter()
+                .map(|&i| keys[i])
+                .filter(|k| seen.insert(*k))
+                .collect();
+            let have = self.upstream_has(repo, token.clone(), &asked).await?;
+            let present: HashMap<ObjKey, bool> = asked.into_iter().zip(have).collect();
+            for (&k, &h) in &present {
+                if h {
+                    self.confirm(who, repo, k);
+                } else {
+                    self.purge(repo, k).await;
+                }
+            }
+            for i in unconfirmed {
+                if !present[&keys[i]] {
+                    found[i] = None;
+                }
+            }
+        }
         if need.is_empty() {
             return Ok(found);
         }
@@ -711,6 +830,9 @@ impl Inner {
         }
         for i in need {
             found[i].clone_from(&by_key[&keys[i]]);
+            if found[i].is_some() {
+                self.confirm(who, repo, keys[i]);
+            }
         }
         Ok(found)
     }
@@ -772,16 +894,13 @@ impl ObjectsHandler for CacheObjects {
             .map(|k| ObjKey::try_from(k).map_err(|e| Status::invalid_argument(e.to_string())))
             .collect::<Result<Vec<_>, _>>()?;
         let repo: Arc<str> = Arc::from(ctx.repo.as_str());
+        let who: Arc<str> = Arc::from(ctx.principal.id.as_str());
         let mut present = vec![false; keys.len()];
         let mut unknown = Vec::new();
         for (i, k) in keys.iter().enumerate() {
-            // Objects are immutable, so a cached one is still there upstream.
-            let local = inner.mem_get(&repo, *k).is_some()
-                || inner
-                    .disk
-                    .as_ref()
-                    .is_some_and(|d| d.contains(&DiskCache::rel(&repo, k)));
-            if local {
+            // Holding an object is not proof that this repository has it (the name can be reused
+            // by a different repository), so only a recent upstream confirmation counts.
+            if inner.is_confirmed(&who, &repo, *k) {
                 present[i] = true;
             } else {
                 unknown.push(i);
@@ -790,14 +909,15 @@ impl ObjectsHandler for CacheObjects {
         inner.count("presence_hit", (keys.len() - unknown.len()) as u64);
         if !unknown.is_empty() {
             let token = inner.token_of(ctx)?;
-            let client = inner
-                .upstream
-                .client(&repo, token)
-                .map_err(|_| Status::unavailable("upstream unavailable"))?;
             let asked: Vec<ObjKey> = unknown.iter().map(|&i| keys[i]).collect();
-            let have = client.has_objects(&asked).await.map_err(call_status)?;
-            for (i, h) in unknown.into_iter().zip(have) {
+            let have = inner.upstream_has(&repo, token, &asked).await?;
+            for ((i, h), k) in unknown.into_iter().zip(have).zip(asked) {
                 present[i] = h;
+                if h {
+                    inner.confirm(&who, &repo, k);
+                } else {
+                    inner.purge(&repo, k).await;
+                }
             }
         }
         let mut bitmap = vec![0u8; keys.len().div_ceil(8)];
@@ -820,14 +940,16 @@ impl ObjectsHandler for CacheObjects {
             .map(|k| ObjKey::try_from(k).map_err(|e| Status::invalid_argument(e.to_string())))
             .collect::<Result<Vec<_>, _>>()?;
         let repo: Arc<str> = Arc::from(ctx.repo.as_str());
+        let who: Arc<str> = Arc::from(ctx.principal.id.as_str());
         let token = self.inner.token_of(ctx)?;
         let windows: Vec<Vec<ObjKey>> = keys.chunks(WINDOW).map(<[ObjKey]>::to_vec).collect();
         let inner = self.inner.clone();
         let out = stream::iter(windows)
             .map(move |window| {
-                let (inner, repo, token) = (inner.clone(), repo.clone(), token.clone());
+                let (inner, who, repo, token) =
+                    (inner.clone(), who.clone(), repo.clone(), token.clone());
                 async move {
-                    let got = inner.resolve(&repo, token, &window).await?;
+                    let got = inner.resolve(&who, &repo, token, &window).await?;
                     pack(window.into_iter().zip(got).collect())
                 }
             })
@@ -853,6 +975,15 @@ impl CacheRole {
         upstream_url: &str,
         cache: &CacheConfig,
         metrics: Arc<Metrics>,
+    ) -> Result<Self, CacheRoleError> {
+        Self::build(upstream_url, cache, metrics, POSITIVE_TTL)
+    }
+
+    fn build(
+        upstream_url: &str,
+        cache: &CacheConfig,
+        metrics: Arc<Metrics>,
+        confirm_ttl: Duration,
     ) -> Result<Self, CacheRoleError> {
         let upstream = Arc::new(Upstream::connect(upstream_url)?);
         let vault = Arc::new(Vault::new());
@@ -884,6 +1015,8 @@ impl CacheRole {
                 disk,
                 flights: Coalesce::new(),
                 metrics,
+                confirmed: quick_cache::sync::Cache::new(CONFIRM_ENTRIES),
+                confirm_ttl,
             }),
         });
         Ok(Self {
@@ -1032,7 +1165,7 @@ mod tests {
 
     /// An upstream tier with a fixed object set that counts its calls.
     struct Fake {
-        objects: HashMap<ObjKey, Bytes>,
+        objects: Arc<Mutex<HashMap<ObjKey, Bytes>>>,
         counters: Arc<Counters>,
         delay: Duration,
     }
@@ -1048,7 +1181,7 @@ mod tests {
             let mut bitmap = vec![0u8; req.keys.len().div_ceil(8)];
             for (i, k) in req.keys.iter().enumerate() {
                 let k = ObjKey::try_from(k).unwrap();
-                if self.objects.contains_key(&k) {
+                if self.objects.lock().unwrap().contains_key(&k) {
                     bitmap[i / 8] |= 1 << (i % 8);
                 }
             }
@@ -1067,7 +1200,7 @@ mod tests {
             let mut resp = pb::GetObjectsResponse::default();
             for k in &req.keys {
                 let key = ObjKey::try_from(k).unwrap();
-                match self.objects.get(&key) {
+                match self.objects.lock().unwrap().get(&key) {
                     Some(b) => resp.objects.push(pb::Object {
                         key: Some(k.clone()),
                         data: b.clone(),
@@ -1121,7 +1254,22 @@ mod tests {
     }
 
     async fn cache(upstream_url: &str, dir: Option<&Path>) -> (Running, CacheRole) {
-        let role = CacheRole::new(upstream_url, &settings(dir), Arc::new(Metrics::new())).unwrap();
+        cache_ttl(upstream_url, dir, POSITIVE_TTL).await
+    }
+
+    /// A cache server that trusts an upstream confirmation for `confirm_ttl`.
+    async fn cache_ttl(
+        upstream_url: &str,
+        dir: Option<&Path>,
+        confirm_ttl: Duration,
+    ) -> (Running, CacheRole) {
+        let role = CacheRole::build(
+            upstream_url,
+            &settings(dir),
+            Arc::new(Metrics::new()),
+            confirm_ttl,
+        )
+        .unwrap();
         let ext = role.extensions();
         let routes = crate::build_routes(&ext, role.authorizer(), ServerInfo::default());
         let (incoming, addr) = listen().await;
@@ -1151,15 +1299,25 @@ mod tests {
         Some(BearerToken::new(TOKEN).unwrap())
     }
 
+    type Objects = Arc<Mutex<HashMap<ObjKey, Bytes>>>;
+
     fn fake(objects: &[(ObjKey, Bytes)], delay: Duration) -> (Fake, Arc<Counters>) {
+        let (f, counters, _) = fake_mut(objects, delay);
+        (f, counters)
+    }
+
+    /// Like [`fake`], with a handle that changes the upstream's object set afterwards.
+    fn fake_mut(objects: &[(ObjKey, Bytes)], delay: Duration) -> (Fake, Arc<Counters>, Objects) {
         let counters = Arc::new(Counters::default());
+        let set: Objects = Arc::new(Mutex::new(objects.iter().cloned().collect()));
         (
             Fake {
-                objects: objects.iter().cloned().collect(),
+                objects: set.clone(),
                 counters: counters.clone(),
                 delay,
             },
             counters,
+            set,
         )
     }
 
@@ -1342,7 +1500,7 @@ mod tests {
             let p = e.path();
             if e.file_type().unwrap().is_dir() {
                 out.extend(walk_files(&p));
-            } else {
+            } else if e.file_name() != LAYOUT_FILE {
                 out.push(p);
             }
         }
@@ -1418,6 +1576,105 @@ mod tests {
             assert_eq!(fetch_all(&client, &[obj.0]).await.unwrap().len(), 1);
         }
         assert_eq!(counters.gets.load(Ordering::SeqCst), 2);
+    }
+
+    /// The upstream repository behind a name is replaced by one without `obj`.
+    fn recreate(set: &Objects) {
+        set.lock().unwrap().clear();
+    }
+
+    #[tokio::test]
+    async fn a_recreated_repository_is_not_served_the_old_ones_objects() {
+        let obj = object(&[5u8; 3000]);
+        let keep = object(&[6u8; 3000]);
+        let (f, _, set) = fake_mut(&[obj.clone(), keep.clone()], Duration::ZERO);
+        let up = upstream(f).await;
+        let dir = tempfile::tempdir().unwrap();
+        // Every request confirms with the upstream: the recreation happens between two requests.
+        let (cache, _role) = cache_ttl(&up.url, Some(dir.path()), Duration::ZERO).await;
+        let client = RpcClient::connect(&cache.url, REPO, token()).unwrap();
+        let keys = [obj.0, keep.0];
+        assert_eq!(fetch_all(&client, &keys).await.unwrap().len(), 2);
+        assert_eq!(client.has_objects(&keys).await.unwrap(), vec![true, true]);
+        assert_eq!(walk_files(dir.path()).len(), 2);
+
+        // Same name, new repository: it has `keep` again, but not `obj`.
+        recreate(&set);
+        set.lock().unwrap().insert(keep.0, keep.1.clone());
+        assert_eq!(client.has_objects(&keys).await.unwrap(), vec![false, true]);
+        let got = fetch_all(&client, &keys).await.unwrap();
+        assert_eq!(
+            got,
+            vec![keep.clone()],
+            "the old repository's object leaked"
+        );
+        let left = walk_files(dir.path());
+        assert_eq!(left.len(), 1, "the stale disk copy is dropped: {left:?}");
+
+        // A restart serves nothing from the disk tier that the upstream no longer has.
+        recreate(&set);
+        let (cache, _role) = cache_ttl(&up.url, Some(dir.path()), Duration::ZERO).await;
+        let client = RpcClient::connect(&cache.url, REPO, token()).unwrap();
+        assert!(fetch_all(&client, &keys).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cached_object_is_confirmed_once_per_window_and_fails_closed() {
+        let obj = object(&[3u8; 2000]);
+        let (f, counters, _) = fake_mut(std::slice::from_ref(&obj), Duration::ZERO);
+        let up = upstream(f).await;
+        let (cache, _role) = cache_ttl(&up.url, None, Duration::from_millis(300)).await;
+        let client = RpcClient::connect(&cache.url, REPO, token()).unwrap();
+        assert_eq!(fetch_all(&client, &[obj.0]).await.unwrap().len(), 1);
+        let has = counters.has.load(Ordering::SeqCst);
+        // Inside the window the fetch confirmed it: no upstream call at all.
+        assert_eq!(fetch_all(&client, &[obj.0]).await.unwrap().len(), 1);
+        assert_eq!(counters.has.load(Ordering::SeqCst), has);
+        assert_eq!(counters.gets.load(Ordering::SeqCst), 1);
+        // After it, one batched presence check, and no second download.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(fetch_all(&client, &[obj.0]).await.unwrap().len(), 1);
+        assert_eq!(counters.has.load(Ordering::SeqCst), has + 1);
+        assert_eq!(counters.gets.load(Ordering::SeqCst), 1);
+        // With the upstream gone the unconfirmed object is refused, not served.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        drop(up);
+        assert!(fetch_all(&client, &[obj.0]).await.is_err());
+        assert!(client.has_objects(&[obj.0]).await.is_err());
+    }
+
+    #[test]
+    fn a_disk_directory_of_another_layout_is_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        let obj = object(b"from the old layout");
+        // The old directory name was the bare digest of the repository name.
+        let old = hex(&Sha256::digest(REPO.as_bytes()));
+        let old_file = dir.path().join(&old[..REPO_DIR_LEN]).join(obj.0.path());
+        std::fs::create_dir_all(old_file.parent().unwrap()).unwrap();
+        std::fs::write(&old_file, &obj.1).unwrap();
+        assert_ne!(
+            &old[..REPO_DIR_LEN],
+            DiskCache::rel(REPO, &obj.0).split('/').next().unwrap()
+        );
+
+        let disk = DiskCache::open(dir.path(), 1 << 20).unwrap();
+        assert_eq!(disk.total(), 0);
+        assert!(!old_file.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(LAYOUT_FILE)).unwrap(),
+            LAYOUT
+        );
+        // The same layout is kept across a reopen.
+        let rel = DiskCache::rel(REPO, &obj.0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(disk.put(&rel, &obj.1));
+        drop(disk);
+        assert_eq!(
+            DiskCache::open(dir.path(), 1 << 20).unwrap().total(),
+            obj.1.len() as u64
+        );
     }
 
     #[tokio::test]
