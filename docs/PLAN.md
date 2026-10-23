@@ -190,6 +190,8 @@ Dependency direction (strict) **[audit: crate-cycle-statedb, historyapi-cycle]**
 | U86 | SSH listener and key authentication (`russh`, feature `git-ssh`, host keys, channel policy, limits, audit) | asc-serve, asc | U80, U78, M30, U44, U84, U69 | – |
 | U87 | Git over SSH: `git-upload-pack` and `git-receive-pack` on the SSH channel | asc-git, asc-serve | U81, U82, U86 | – |
 | U88 | SSH compatibility suite with real git and OpenSSH, and the no-weakening check | asc (tests) | U87, U85, U83, U79, U77 | – |
+| U89 | asc transport policy: https or ssh only, plain http refused everywhere unless the loopback opt-in is set (`asc.allowLoopbackHttp` / `ASC_ALLOW_LOOPBACK_HTTP=1`); `Alt-Svc` for an h3 proxy in front of `asc serve` | asc-core, asc-rpc, asc-store, asc-serve, asc | U50, U44, U86 | – |
+| U89b | HTTP/3: opportunistic h3 in the asc HTTPS client (on `Alt-Svc: h3=…`, fall back to h2 on any failure; plain HTTPS object, seed and release fetches only, tonic stays on h2) and an h3 listener in `asc serve` when `[tls]` is set (QUIC on UDP via `quinn` + `h3` + `h3-quinn`, ring only, behind the default-on feature `http3`, compiled out by `--no-default-features`); needs a `cargo deny` pass for the new crates and an h3 round-trip test against a self-signed cert | asc-serve, asc-store, asc | U89 | – |
 | U64 | Actions, ASC Actions fork and ASC workflows | actions | U62, U63, U49, U72, U75 | – |
 | U30 | BucketRefs and probe (deferred, off the critical path) | asc-store | U29 | P |
 | U38 | *(removed: `git-remote-asc` is not built, SPEC §9.6)* | – | – | – |
