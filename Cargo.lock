@@ -926,6 +926,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "asc-turbo-contract"
+version = "0.1.0"
+dependencies = [
+ "asc-git",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "asc-vfs"
 version = "0.1.0"
 dependencies = [
