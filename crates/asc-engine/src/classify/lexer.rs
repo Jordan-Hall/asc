@@ -112,6 +112,10 @@ impl Lang {
 }
 
 /// Comments that tools or compilers read are not droppable: a change to one is `LOGIC`.
+///
+/// Matched case-insensitively against the start of the comment's first line, after the comment
+/// markers (`/`, `*`, `#`) are stripped; so `//# sourceMappingURL=` is `sourcemappingurl` and
+/// `/*#__PURE__*/` is `__pure__`.
 const DIRECTIVES: &[&str] = &[
     "go:",
     "line ",
@@ -120,34 +124,69 @@ const DIRECTIVES: &[&str] = &[
     "@ts-",
     "<reference",
     "<amd",
-    "#",
     "-*-",
     "type:",
     "pragma",
     "noqa",
     "nolint",
+    "nosec",
+    "nosemgrep",
+    "lgtm",
+    "gitleaks",
     "shellcheck",
+    "hadolint",
     "fmt:",
     "fmt ",
     "eslint",
+    "oxlint",
+    "tslint",
+    "jshint",
+    "jscs",
+    "stylelint",
     "prettier",
+    "biome",
+    "rome-",
+    "deno-",
+    "dprint",
+    "markdownlint",
+    "mdformat",
+    "vale ",
+    "doctoc",
+    "global ",
+    "globals ",
+    "exported ",
     "istanbul",
     "c8 ",
+    "v8 ",
     "rustfmt",
     "clippy",
     "cspell",
     "isort",
     "pylint",
+    "flake8",
+    "ruff",
+    "yapf",
+    "pytype",
+    "pyre-",
     "mypy",
     "pyright",
     "yaml-language-server",
     "coding",
     "vim:",
+    // Source maps: `//# sourceMappingURL=`, `//# sourceURL=` and the old `//@` spelling.
     "sourcemappingurl",
+    "sourceurl",
+    "@ source",
     "lint:",
     "asc:",
-    "@vite",
     "webpack",
+    // Bundler and minifier annotations: `/*#__PURE__*/`, `/*@__NO_SIDE_EFFECTS__*/`.
+    "__",
+    "@__",
+    "@vite",
+    "@vitest",
+    "@jest",
+    "@refresh",
     "@jsx",
     "@flow",
     "@license",
@@ -157,15 +196,29 @@ const DIRECTIVES: &[&str] = &[
     "<![endif",
 ];
 
+/// Prefixes that count on any line of a multi-line comment (a JSDoc block).
+fn line_directive(p: &str) -> bool {
+    p.starts_with('@') || p.starts_with('<')
+}
+
+/// Words that make a comment a legal or minifier notice wherever they appear (terser's rule).
+const ANYWHERE: &[&str] = &["@preserve", "@license", "@lic", "@copyright", "@cc_on"];
+
 fn is_directive(body: &str, hash_style: bool, at_file_start: bool) -> bool {
     if hash_style && at_file_start && body.starts_with('!') {
         return true;
     }
-    let body = body.trim_start_matches(['/', '*', '#']).trim_start();
-    let b = body.as_bytes();
-    DIRECTIVES
-        .iter()
-        .any(|p| b.len() >= p.len() && b[..p.len()].eq_ignore_ascii_case(p.as_bytes()))
+    let lower = body.to_ascii_lowercase();
+    if ANYWHERE.iter().any(|w| lower.contains(w)) {
+        return true;
+    }
+    lower.lines().enumerate().any(|(n, line)| {
+        let line =
+            line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '/' | '*' | '#'));
+        DIRECTIVES
+            .iter()
+            .any(|p| (n == 0 || line_directive(p)) && line.starts_with(p))
+    })
 }
 
 // ------------------------------------------------------------------------------ token family
@@ -398,7 +451,9 @@ impl<'a> Scan<'a> {
     fn comment(&mut self, a: usize, z: usize, body_from: usize, first_line: bool) -> Res<()> {
         let text = self.s.get(a..z).ok_or(LexError)?;
         let body = text.get(body_from - a..).unwrap_or("");
-        let directive = is_directive(body, false, first_line);
+        // `/*! legal notice */` is kept by minifiers.
+        let directive = is_directive(body, false, first_line)
+            || (text.starts_with("/*") && body.trim_start_matches('*').starts_with('!'));
         if self.keep || directive {
             self.emit(Class::Comment, a, z)?;
         } else {
