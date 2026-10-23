@@ -130,16 +130,153 @@ fn link_binary(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The environment variable naming the pinned git (`bash build/git-oracle/oracle.sh env`).
+pub const ENV_GIT_ORACLE: &str = "ASC_GIT_ORACLE";
+/// With `1`, only the pinned git is accepted as the oracle (adapter gaps A-3 and A-4).
+pub const ENV_ORACLE_STRICT: &str = "ASC_ORACLE_STRICT";
+
+/// The `KEY=VALUE` lines of `build/git-oracle/pins.env`; comments and blank lines are skipped.
+fn parse_pins(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .collect()
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    Ok(hex_lower(&Sha256::digest(&bytes)))
+}
+
+/// The `.oracle-hash` record written by `oracle.sh fetch`, found above the git binary
+/// (`<root>/bin/git` on Linux, `<root>/cmd/git.exe` on Windows).
+fn oracle_record(git: &Path) -> Option<BTreeMap<String, String>> {
+    let text = git
+        .ancestors()
+        .skip(1)
+        .take(3)
+        .find_map(|d| fs::read_to_string(d.join(".oracle-hash")).ok())?;
+    Some(parse_pins(&text))
+}
+
+/// Checks that `git` (which printed `reported` for `--version`) is the pinned oracle of
+/// `pins_text` (the text of `pins.env`) for this platform. A wrong version is adapter gap A-3; a
+/// missing or disagreeing record, or a binary whose sha256 is not the recorded one, is A-4.
+pub fn check_oracle(
+    git: &Path,
+    reported: &str,
+    pins_text: &str,
+    windows: bool,
+) -> Result<(), String> {
+    let pins = parse_pins(pins_text);
+    let (version_key, sha_key) = if windows {
+        ("GFW_VERSION", "GFW_SHA256")
+    } else {
+        ("GIT_VERSION", "GIT_TARBALL_SHA256")
+    };
+    let pin = |key: &str| {
+        pins.get(key)
+            .cloned()
+            .ok_or_else(|| format!("adapter gap A-3: pins.env has no {key}"))
+    };
+    let (version, source_sha) = (pin(version_key)?, pin(sha_key)?);
+    let want = format!("git version {version}");
+    if reported.trim() != want {
+        return Err(format!(
+            "adapter gap A-3: the oracle {} is '{}', the pin is '{want}' (docs/git-fidelity.md); \
+             use `bash build/git-oracle/oracle.sh env`",
+            git.display(),
+            reported.trim()
+        ));
+    }
+    let record = oracle_record(git).ok_or_else(|| {
+        format!(
+            "adapter gap A-4: no .oracle-hash record above {}; fetch the oracle with \
+             `bash build/git-oracle/oracle.sh fetch`",
+            git.display()
+        )
+    })?;
+    let field = |k: &str| record.get(k).map(String::as_str).unwrap_or_default();
+    if field("version") != version || field("source_sha256") != source_sha {
+        return Err(format!(
+            "adapter gap A-4: the record above {} is for another source (version '{}', \
+             sha256 '{}'), not the pin ({version}, {source_sha})",
+            git.display(),
+            field("version"),
+            field("source_sha256")
+        ));
+    }
+    let got = sha256_file(git)?;
+    if got != field("git_sha256") {
+        return Err(format!(
+            "adapter gap A-4: {} has sha256 {got}, the record says {}; the oracle was changed \
+             after it was built",
+            git.display(),
+            field("git_sha256")
+        ));
+    }
+    Ok(())
+}
+
+/// The oracle git of this run: `ASC_GIT_ORACLE` first, then `RealGit::resolve` as before. With
+/// `ASC_ORACLE_STRICT=1` only the pinned build is accepted (`check_oracle`).
+fn resolve_oracle(repo: &Path) -> Result<PathBuf, String> {
+    let strict = std::env::var(ENV_ORACLE_STRICT).is_ok_and(|v| v == "1");
+    let git = match std::env::var_os(ENV_GIT_ORACLE).filter(|v| !v.is_empty()) {
+        Some(p) => {
+            let p = PathBuf::from(p);
+            if !p.is_absolute() || !p.is_file() {
+                return Err(format!(
+                    "{ENV_GIT_ORACLE} '{}' must be the absolute path of a git binary",
+                    p.display()
+                ));
+            }
+            p
+        }
+        None if strict => {
+            return Err(format!(
+                "adapter gap A-3: {ENV_ORACLE_STRICT}=1 needs {ENV_GIT_ORACLE}; run \
+                 `bash build/git-oracle/oracle.sh fetch` and export `oracle.sh env`"
+            ));
+        }
+        None => {
+            return asc_git::realgit::RealGit::resolve(None, None)
+                .map(|g| g.path().to_owned())
+                .map_err(|e| format!("real git: {e}"));
+        }
+    };
+    if strict {
+        let out = Command::new(&git)
+            .arg("--version")
+            .output()
+            .map_err(|e| format!("adapter gap A-3: cannot run {}: {e}", git.display()))?;
+        let reported = String::from_utf8_lossy(&out.stdout).into_owned();
+        let pins = fs::read_to_string(repo.join("build/git-oracle/pins.env"))
+            .map_err(|e| format!("adapter gap A-3: cannot read pins.env: {e}"))?;
+        check_oracle(&git, &reported, &pins, cfg!(windows))?;
+    }
+    Ok(git)
+}
+
 impl Tools {
     /// The tools for this test process; `asc` is the built binary.
     pub fn get(asc: &'static str) -> &'static Result<Tools, String> {
         static TOOLS: OnceLock<Result<Tools, String>> = OnceLock::new();
         TOOLS.get_or_init(|| {
             let asc = PathBuf::from(asc);
-            let real_git = asc_git::realgit::RealGit::resolve(None, None)
-                .map_err(|e| format!("real git: {e}"))?
-                .path()
-                .to_owned();
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let real_git = resolve_oracle(&repo)?;
             let sh = locate_sh(&real_git)?;
             let shim_dir = asc
                 .parent()
@@ -708,4 +845,107 @@ fn first_diff(git: &str, asc: &str) -> String {
         out.push_str("  ...\n");
     }
     out
+}
+
+#[cfg(test)]
+mod oracle_tests {
+    use super::*;
+
+    const PINS: &str = "# pins\nGIT_VERSION=2.55.0\nGIT_TARBALL_SHA256=aaaa\n\
+                        GFW_VERSION=2.55.0.windows.5\nGFW_SHA256=bbbb\n";
+
+    /// A fake oracle: `<dir>/bin/git` with `body`, and a record as `oracle.sh` writes it.
+    fn fixture(dir: &Path, body: &[u8], version: &str, source: &str) -> PathBuf {
+        let git = dir.join("bin").join("git");
+        fs::create_dir_all(git.parent().unwrap()).unwrap();
+        fs::write(&git, body).unwrap();
+        let record = format!(
+            "version={version}\nsource_sha256={source}\ngit_sha256={}\n",
+            sha256_file(&git).unwrap()
+        );
+        fs::write(dir.join(".oracle-hash"), record).unwrap();
+        git
+    }
+
+    #[test]
+    fn oracle_accepts_the_pinned_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = fixture(dir.path(), b"git bytes", "2.55.0", "aaaa");
+        check_oracle(&git, "git version 2.55.0\r\n", PINS, false).unwrap();
+        let win = fixture(dir.path(), b"git bytes", "2.55.0.windows.5", "bbbb");
+        check_oracle(&win, "git version 2.55.0.windows.5", PINS, true).unwrap();
+    }
+
+    #[test]
+    fn oracle_refuses_another_version_as_a3() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = fixture(dir.path(), b"git bytes", "2.55.0", "aaaa");
+        for reported in [
+            "git version 2.47.3",
+            "git version 2.55.1",
+            "git version 2.55.0.windows.5",
+        ] {
+            let e = check_oracle(&git, reported, PINS, false).unwrap_err();
+            assert!(e.starts_with("adapter gap A-3:"), "{e}");
+        }
+        let e = check_oracle(&git, "git version 2.55.0", PINS, true).unwrap_err();
+        assert!(e.starts_with("adapter gap A-3:"), "{e}");
+    }
+
+    #[test]
+    fn oracle_refuses_a_changed_binary_as_a4() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = fixture(dir.path(), b"git bytes", "2.55.0", "aaaa");
+        fs::write(&git, b"git bytez").unwrap();
+        let e = check_oracle(&git, "git version 2.55.0", PINS, false).unwrap_err();
+        assert!(e.starts_with("adapter gap A-4:"), "{e}");
+    }
+
+    #[test]
+    fn oracle_refuses_a_missing_or_foreign_record_as_a4() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = fixture(dir.path(), b"git bytes", "2.55.0", "aaaa");
+        fs::remove_file(dir.path().join(".oracle-hash")).unwrap();
+        let e = check_oracle(&git, "git version 2.55.0", PINS, false).unwrap_err();
+        assert!(
+            e.starts_with("adapter gap A-4:") && e.contains("no .oracle-hash"),
+            "{e}"
+        );
+        // A record for another tarball is refused even though the binary matches it.
+        let other = tempfile::tempdir().unwrap();
+        let git = fixture(other.path(), b"git bytes", "2.55.0", "cccc");
+        let e = check_oracle(&git, "git version 2.55.0", PINS, false).unwrap_err();
+        assert!(
+            e.starts_with("adapter gap A-4:") && e.contains("another source"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn oracle_pins_file_is_complete() {
+        let text = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../build/git-oracle/pins.env"),
+        )
+        .unwrap();
+        let pins = parse_pins(&text);
+        for key in [
+            "GIT_VERSION",
+            "GIT_TARBALL_SHA256",
+            "GFW_VERSION",
+            "GFW_ASSET",
+            "GFW_SHA256",
+        ] {
+            assert!(pins.contains_key(key), "pins.env lacks {key}");
+        }
+        for key in ["GIT_TARBALL_SHA256", "GFW_SHA256"] {
+            let v = &pins[key];
+            assert!(
+                v.len() == 64 && v.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{key}: {v}"
+            );
+        }
+        for key in ["GIT_TARBALL_URL", "GFW_URL"] {
+            assert!(pins[key].starts_with("https://"), "{key} must be https");
+        }
+    }
 }
