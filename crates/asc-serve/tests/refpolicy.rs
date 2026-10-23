@@ -658,3 +658,36 @@ async fn a_user_ref_over_the_per_owner_cap_is_refused_and_a_delete_always_works(
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn concurrent_creates_near_the_cap_never_leave_an_owner_over_it() {
+    let f = fx(true).await;
+    with_master(&f).await;
+    let master = f.stored("refs/heads/master").await.unwrap();
+    // Alice holds the cap minus three; eight creates race for the last three slots.
+    sqlx::query(
+        "INSERT INTO refs (repo_id, name, target, version)          WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 997)          SELECT $1, 'refs/users/42/heads/b' || i, $2, 1 FROM n",
+    )
+    .bind(f.entry.key.0)
+    .bind(master.to_bytes().to_vec())
+    .execute(f.registry.pool())
+    .await
+    .unwrap();
+    let names: Vec<String> = (0..8).map(|i| format!("refs/heads/race{i}")).collect();
+    let results =
+        futures::future::join_all(names.iter().map(|n| f.update("42:alice", n, master))).await;
+    let created = results.iter().filter(|r| r.is_ok()).count();
+    assert_eq!(created, 3);
+    for r in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(code(r), "USER_REFS_LIMIT");
+    }
+    let held: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM refs WHERE repo_id = $1 AND name LIKE 'refs/users/42/heads/%'",
+    )
+    .bind(f.entry.key.0)
+    .fetch_one(f.registry.pool())
+    .await
+    .unwrap();
+    assert!(held <= refpolicy::MAX_USER_REFS, "{held}");
+    assert_eq!(held, refpolicy::MAX_USER_REFS);
+}

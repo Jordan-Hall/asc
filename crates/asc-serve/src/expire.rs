@@ -9,6 +9,11 @@
 //! restrict which refs get an expiry, so the worker is the second line of defence: a writer who
 //! asked for `ttl_seconds` on `master` gets a ref that is never reaped.
 //!
+//! User refs (`refs/users/<owner-id>/heads/agent/*`, SPEC §21.5.1) are owner-only, so the worker
+//! cannot delete them as the owner. It deletes them through `ServerRefs::expire_user_refs`, an
+//! internal path no RPC reaches that may only delete expired user refs, in the same kind of
+//! transaction (CAS on the scanned target, repository guard, `ref_log`) as any other delete.
+//!
 //! Replicas may run the worker at the same time. Each deletion is a CAS on the ref's target, so
 //! the loser of a race finds the ref gone or moved and leaves it alone.
 
@@ -47,9 +52,8 @@ pub fn ttl_eligible(name: &str) -> bool {
     if tail("refs/heads/agent/", name) || tail("refs/snapshots/", name) {
         return true;
     }
-    name.strip_prefix("refs/users/")
-        .and_then(|rest| rest.split_once('/'))
-        .is_some_and(|(owner, rest)| !owner.is_empty() && tail("heads/agent/", rest))
+    // Only a well-formed user ref (a canonical numeric owner id) can be deleted by the worker.
+    crate::refpolicy::parse_user_ref(name).is_some_and(|(_, branch)| tail("agent/", branch))
 }
 
 /// What one run did.
@@ -214,14 +218,35 @@ impl Expirer {
                 }
             }
         }
+        let (users, live): (Vec<&Due>, Vec<&Due>) = live
+            .into_iter()
+            .partition(|d| d.name.starts_with(crate::refpolicy::USER_NS));
+        self.delete_chunks(&name, &users, true, at, report).await;
+        self.delete_chunks(&name, &live, false, at, report).await;
+    }
+
+    /// Deletes `live` in batches, `user` refs through the internal expiry path and the rest
+    /// through `UpdateRefs`.
+    async fn delete_chunks(
+        &self,
+        name: &RepoName,
+        live: &[&Due],
+        user: bool,
+        at: i64,
+        report: &mut ExpireReport,
+    ) {
+        let repo = name.to_string();
         for chunk in live.chunks(self.batch.max(1)) {
-            if self.delete(&name, chunk).await.is_ok() {
+            if self.delete_any(name, chunk, user, at).await.is_ok() {
                 report.deleted += chunk.len();
                 continue;
             }
             // One lost race must not keep the others alive: retry one by one.
             for d in chunk {
-                match self.delete(&name, std::slice::from_ref(d)).await {
+                match self
+                    .delete_any(name, std::slice::from_ref(d), user, at)
+                    .await
+                {
                     Ok(()) => report.deleted += 1,
                     Err(s) if s.code() == tonic::Code::Aborted => report.kept += 1,
                     Err(s) => {
@@ -231,6 +256,21 @@ impl Expirer {
                 }
             }
         }
+    }
+
+    async fn delete_any(
+        &self,
+        repo: &RepoName,
+        refs: &[&Due],
+        user: bool,
+        at: i64,
+    ) -> Result<(), tonic::Status> {
+        if !user {
+            return self.delete(repo, refs).await;
+        }
+        let named: Vec<(&str, RefTarget)> =
+            refs.iter().map(|d| (d.name.as_str(), d.target)).collect();
+        self.refs.expire_user_refs(repo, &named, ACTOR, at).await
     }
 
     /// One `UpdateRefs` call that deletes `refs`, each only if it still names the scanned target.
@@ -381,6 +421,8 @@ mod tests {
             "refs/snapshots/",
             "refs/users/7/heads/feat",
             "refs/users//heads/agent/x",
+            "refs/users/abc/heads/agent/x",
+            "refs/users/07/heads/agent/x",
             "refs/users/7/heads/agent/",
             "refs/pull/1/head",
         ] {
@@ -452,6 +494,68 @@ mod tests {
         f.put("refs/users/7/heads/agent/x", Some(NOW - 1)).await;
         assert_eq!(f.expirer.run_once(NOW).await.unwrap().deleted, 1);
         assert!(!f.exists("refs/users/7/heads/agent/x").await);
+    }
+
+    async fn expire_user(f: &Fx, name: &str, at: i64) -> Result<(), tonic::Status> {
+        let tip = RefTarget::Changeset(f.cs);
+        let repo = RepoName::parse("o/r").unwrap();
+        f.expirer
+            .refs
+            .expire_user_refs(&repo, &[(name, tip)], ACTOR, at)
+            .await
+    }
+
+    #[tokio::test]
+    async fn the_user_ref_path_deletes_only_expired_user_refs_and_logs_the_worker() {
+        let f = fx().await;
+        f.put("refs/users/7/heads/agent/old", Some(NOW - 1)).await;
+        f.put("refs/users/7/heads/agent/new", Some(NOW + 100)).await;
+        f.put("refs/users/7/heads/agent/forever", None).await;
+        f.put("refs/heads/agent/shared", Some(NOW - 1)).await;
+        // Not expired yet, expiry removed, or already gone: ABORTED, nothing deleted.
+        for name in [
+            "refs/users/7/heads/agent/new",
+            "refs/users/7/heads/agent/forever",
+            "refs/users/7/heads/agent/missing",
+        ] {
+            let e = expire_user(&f, name, NOW).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::Aborted, "{name}");
+        }
+        // Not a user ref, or a malformed one: refused, and the shared ref survives.
+        for name in ["refs/heads/agent/shared", "refs/users/abc/heads/agent/x"] {
+            let e = expire_user(&f, name, NOW).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::InvalidArgument, "{name}");
+        }
+        assert!(f.exists("refs/heads/agent/shared").await);
+        assert!(f.exists("refs/users/7/heads/agent/new").await);
+        // A target that moved is not deleted.
+        let other = commit(&f.entry, &[f.cs], &[("b", b"b")]).await;
+        let repo = RepoName::parse("o/r").unwrap();
+        let moved = f
+            .expirer
+            .refs
+            .expire_user_refs(
+                &repo,
+                &[("refs/users/7/heads/agent/old", RefTarget::Changeset(other))],
+                ACTOR,
+                NOW,
+            )
+            .await;
+        assert!(moved.is_err());
+        assert!(f.exists("refs/users/7/heads/agent/old").await);
+        expire_user(&f, "refs/users/7/heads/agent/old", NOW)
+            .await
+            .unwrap();
+        assert!(!f.exists("refs/users/7/heads/agent/old").await);
+        let name = RefName::new(&b"refs/users/7/heads/agent/old"[..]).unwrap();
+        let log = f.registry.refs().log(f.entry.key, &name, 10).await.unwrap();
+        assert_eq!(log[0].new, None);
+        assert_eq!(log[0].actor.id, ACTOR);
+        assert_eq!(log[0].actor.via, "asc-expiry");
+        // A user ref queues no post_receive.
+        let outbox = f.outbox().await;
+        assert_eq!(outbox.len(), 1);
+        assert!(outbox[0]["effects"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
