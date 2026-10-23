@@ -23,9 +23,12 @@ COPY proto ./proto
 COPY tests/turbo ./tests/turbo
 COPY docs/CHEATSHEET.md ./docs/CHEATSHEET.md
 COPY packaging/windows ./packaging/windows
+# Cache mounts persist on the CI docker daemon, so a later (or interrupted-then-retried) build
+# reuses every crate already compiled.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p asc \
+    CARGO_INCREMENTAL=0 CARGO_NET_RETRY=5 cargo build --release --locked -p asc \
  && install -D -m 0755 target/release/asc /out/asc
 
 FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
