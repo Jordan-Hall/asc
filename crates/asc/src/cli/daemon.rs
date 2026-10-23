@@ -11,7 +11,7 @@ use asc_state::AscHome;
 
 use super::common::{CliError, Ctx, Result};
 use crate::daemon::lifecycle::{self, Config, Probe, Stopped, SystemProcess};
-use crate::daemon::{self, RunConfig};
+use crate::daemon::{self, RunConfig, metrics, scheduler};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
@@ -30,13 +30,18 @@ pub enum Action {
     /// Say whether the daemon runs.
     Status,
     /// Run the daemon in the foreground.
-    Run,
+    Run {
+        /// Serve Prometheus metrics on this loopback address (`127.0.0.1:<port>`); off by
+        /// default. `ASC_METRICS_LISTEN` is the same for a daemon that the CLI starts.
+        #[arg(long = "metrics-listen", value_name = "ADDR")]
+        metrics_listen: Option<String>,
+    },
 }
 
-/// `daemon` serves no flags, only its four actions.
+/// `daemon` serves its four actions and `run --metrics-listen`.
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "daemon",
-    flags: &[],
+    flags: &["--metrics-listen"],
     placeholders: &[],
 }];
 
@@ -58,7 +63,7 @@ pub fn system() -> Result<(Config, SystemProcess)> {
     ))
 }
 
-pub async fn run(_ctx: &Ctx, args: Args) -> Result<ExitCode> {
+pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if lifecycle::disabled(&|k: &str| std::env::var_os(k)) && !matches!(args.action, Action::Status) {
         return Err(fatal("the daemon is disabled by ASC_NO_DAEMON"));
     }
@@ -90,14 +95,34 @@ pub async fn run(_ctx: &Ctx, args: Args) -> Result<ExitCode> {
                 }
             });
         }
-        Action::Run => {
+        Action::Run { metrics_listen } => {
             let run_dir = cfg.run_dir.clone();
+            let listen = metrics_listen
+                .or_else(|| std::env::var("ASC_METRICS_LISTEN").ok().filter(|v| !v.is_empty()))
+                .map(|text| metrics::parse_listen(&text))
+                .transpose()
+                .map_err(fatal)?;
+            let home = AscHome::locate()?;
+            let mut settings = scheduler::Settings::new(std::env::current_exe().map_err(fatal)?);
+            let size = ctx.config.get("asc.cache.maxsize").or_else(|| ctx.config.get("asc.cache.maxSize"));
+            if let Some(text) = size {
+                settings.cache_max_bytes = scheduler::parse_size(&text)
+                    .ok_or_else(|| fatal(format!("bad numeric config value '{text}' for 'asc.cache.maxsize'")))?;
+            }
             let _watchdog = daemon::Watchdog::abort_on_hang().map_err(fatal)?;
-            daemon::run(
+            daemon::run_hosting(
                 RunConfig {
                     endpoint: cfg.endpoint,
                     run_dir,
                     version: cfg.version,
+                },
+                daemon::Hosting {
+                    home,
+                    metrics_listen: listen,
+                    backend: None,
+                    settings,
+                    hooks: scheduler::Hooks::default(),
+                    extra_jobs: Vec::new(),
                 },
                 async {
                     let _ = tokio::signal::ctrl_c().await;
