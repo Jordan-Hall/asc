@@ -66,8 +66,23 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "add",
     flags: &[
-        "-u", "--update", "-A", "--all", "-N", "--intent-to-add", "-f", "--force", "-n",
-        "--dry-run", "-v", "--verbose", "-p", "--patch", "-U", "--unified", "--inter-hunk-context",
+        "-u",
+        "--update",
+        "-A",
+        "--all",
+        "-N",
+        "--intent-to-add",
+        "-f",
+        "--force",
+        "-n",
+        "--dry-run",
+        "-v",
+        "--verbose",
+        "-p",
+        "--patch",
+        "-U",
+        "--unified",
+        "--inter-hunk-context",
     ],
     placeholders: &[],
 }];
@@ -80,10 +95,17 @@ pub fn advice(ctx: &Ctx, key: &str) -> bool {
 /// The directory the command runs in, below the work tree root: `""` at the root.
 pub fn cwd_prefix(ctx: &Ctx, ws: &WsCtx) -> String {
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_owned());
-    let rel = canon(&ctx.cwd).strip_prefix(canon(ws.projection.toplevel())).map(Path::to_owned);
+    let rel = canon(&ctx.cwd)
+        .strip_prefix(canon(ws.projection.toplevel()))
+        .map(Path::to_owned);
     rel.map_or_else(
         |_| String::new(),
-        |r| r.to_string_lossy().replace('\\', "/").trim_matches('/').to_owned(),
+        |r| {
+            r.to_string_lossy()
+                .replace('\\', "/")
+                .trim_matches('/')
+                .to_owned()
+        },
     )
 }
 
@@ -113,21 +135,31 @@ pub fn print_hints(ctx: &Ctx, key: &str, lines: &[&str]) {
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if a.all && a.update {
-        return Err(CliError::Fatal("options '-A' and '-u' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '-A' and '-u' cannot be used together".into(),
+        ));
     }
     if a.patch {
         return add_patch::run(ctx, &a).await;
     }
     if a.pathspec.is_empty() && !a.all && !a.update {
         eprintln!("Nothing specified, nothing added.");
-        print_hints(ctx, "addEmptyPathspec", &["Maybe you wanted to say 'git add .'?"]);
+        print_hints(
+            ctx,
+            "addEmptyPathspec",
+            &["Maybe you wanted to say 'git add .'?"],
+        );
         return Ok(ExitCode::SUCCESS);
     }
     let prefix = cwd_prefix(ctx, ws);
     let spec = Spec::parse(&a.pathspec, &prefix, ws.projection.toplevel())?;
     let mut target = Target::open(ctx).await?;
     let mut attrs = workspace_attrs(ctx, ws)?;
-    let opts = Opts { update: a.update, intent: a.intent, force: a.force };
+    let opts = Opts {
+        update: a.update,
+        intent: a.intent,
+        force: a.force,
+    };
     let mut plan = scan::plan(ctx, &target, &spec, opts, &mut attrs).await?;
     plan.warn();
 
@@ -145,7 +177,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         for path in &plan.ignored {
             eprintln!("{path}");
         }
-        print_hints(ctx, "addIgnoredFile", &["Use -f if you really want to add them."]);
+        print_hints(
+            ctx,
+            "addIgnoredFile",
+            &["Use -f if you really want to add them."],
+        );
         code = ExitCode::from(1);
     }
     if a.dry_run || plan.ops.is_empty() {
@@ -165,22 +201,29 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
     for op in ops {
         match op {
             Op::Remove(path) => edits.push(Edit::Drop(path)),
-            Op::Add { path, attrs, ita, prev } => {
+            Op::Add {
+                path,
+                attrs,
+                ita,
+                prev,
+            } => {
                 let fail = |e: &dyn std::fmt::Display| {
                     eprintln!("error: open(\"{path}\"): {e}");
                     eprintln!("error: unable to index file '{path}'");
                     CliError::Fatal("adding files failed".into())
                 };
                 // The plan read this path already, but a link may have replaced a parent since.
-                let abs = gate.resolve(&path).ok_or_else(|| {
-                    fail(&"beyond a symbolic link or not a valid name here")
-                })?;
+                let abs = gate
+                    .resolve(&path)
+                    .ok_or_else(|| fail(&"beyond a symbolic link or not a valid name here"))?;
                 let meta = std::fs::symlink_metadata(&abs).map_err(|e| fail(&e))?;
                 let symlink = meta.file_type().is_symlink();
                 let got: Ingested = if ita {
                     ingest(Cursor::new(Vec::new()))
                 } else if symlink {
-                    ingest(Cursor::new(convert::link_target(&abs).map_err(|e| fail(&e))?))
+                    ingest(Cursor::new(
+                        convert::link_target(&abs).map_err(|e| fail(&e))?,
+                    ))
                 } else {
                     convert::ingest_file(&abs, attrs.eol, &tmp)
                 }
@@ -193,7 +236,12 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
                     kind: asc_core::git::ObjectKind::Blob,
                     asc: *got.file.as_bytes(),
                 });
-                let leaf = Leaf { kind, file: got.file, size: got.size, git: got.git };
+                let leaf = Leaf {
+                    kind,
+                    file: got.file,
+                    size: got.size,
+                    git: got.git,
+                };
                 edits.push(Edit::Put { path, leaf, ita });
             }
         }
@@ -204,11 +252,22 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
 
 /// The kind a work tree entry is staged as: `exec` is its exec bit where the file system has one,
 /// `prev` the kind it is staged as now (which decides where the work tree cannot say).
-pub(crate) fn staged_kind(symlink: bool, exec: Option<bool>, prev: Option<Kind>, core_symlinks: bool) -> Kind {
+pub(crate) fn staged_kind(
+    symlink: bool,
+    exec: Option<bool>,
+    prev: Option<Kind>,
+    core_symlinks: bool,
+) -> Kind {
     match (symlink, exec, prev) {
         (true, ..) => Kind::Symlink,
         (false, _, Some(Kind::Symlink)) if !core_symlinks => Kind::Symlink,
-        (false, Some(x), _) => if x { Kind::Exec } else { Kind::File },
+        (false, Some(x), _) => {
+            if x {
+                Kind::Exec
+            } else {
+                Kind::File
+            }
+        }
         (false, None, Some(Kind::Exec)) => Kind::Exec,
         (false, None, _) => Kind::File,
     }
@@ -218,14 +277,20 @@ pub(crate) fn staged_kind(symlink: bool, exec: Option<bool>, prev: Option<Kind>,
 pub(crate) async fn store(_ctx: &Ctx, ws: &WsCtx, got: &Ingested) -> Result<()> {
     match &got.body {
         Body::Inline(bytes) => {
-            ws.objects.put(&ObjKey::File(got.file), encode_stored(bytes)).await?;
+            ws.objects
+                .put(&ObjKey::File(got.file), encode_stored(bytes))
+                .await?;
         }
         Body::Chunked { list, chunks } => {
             for (id, data) in chunks {
-                ws.objects.put(&ObjKey::Chunk(*id), encode_stored(data)).await?;
+                ws.objects
+                    .put(&ObjKey::Chunk(*id), encode_stored(data))
+                    .await?;
             }
             let envelope = Bytes::from(list.to_envelope());
-            ws.objects.put(&ObjKey::ChunkList(got.file), encode_stored(&envelope)).await?;
+            ws.objects
+                .put(&ObjKey::ChunkList(got.file), encode_stored(&envelope))
+                .await?;
         }
     }
     Ok(())
@@ -252,8 +317,15 @@ mod tests {
 
     #[async_trait]
     impl SyntheticIndexSink for Log {
-        async fn on_stage_changed(&self, _: WorkspaceId, paths: &[asc_core::path::RepoPath]) -> SinkResult {
-            self.0.lock().unwrap().push(paths.iter().map(ToString::to_string).collect());
+        async fn on_stage_changed(
+            &self,
+            _: WorkspaceId,
+            paths: &[asc_core::path::RepoPath],
+        ) -> SinkResult {
+            self.0
+                .lock()
+                .unwrap()
+                .push(paths.iter().map(ToString::to_string).collect());
             Ok(())
         }
     }
@@ -303,16 +375,25 @@ mod tests {
     #[tokio::test]
     async fn every_change_to_set_zero_reaches_the_synthetic_index_sink() {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        assert!(ext::set_index_sink(Box::new(Log(calls.clone()))).is_ok(), "first registration");
+        assert!(
+            ext::set_index_sink(Box::new(Log(calls.clone()))).is_ok(),
+            "first registration"
+        );
         let tmp = tempfile::tempdir().unwrap();
         let (home, root) = workspace(tmp.path()).await;
         std::fs::write(root.join("a.txt"), b"a").unwrap();
         std::fs::write(root.join("b.txt"), b"b").unwrap();
         let safe = SafeDirectory::default();
         let home = || Ok(home.clone());
-        let gate = Gate { safe: &safe, home: &home, owned: &owned_by_current_user };
+        let gate = Gate {
+            safe: &safe,
+            home: &home,
+            owned: &owned_by_current_user,
+        };
         let env = GitEnv::from_vars(&|_| None);
-        let ctx = Ctx::open_with(Program::Asc, env, root.clone(), &gate).await.unwrap();
+        let ctx = Ctx::open_with(Program::Asc, env, root.clone(), &gate)
+            .await
+            .unwrap();
         let args = |paths: &[&str]| Args {
             update: false,
             all: false,
@@ -328,8 +409,20 @@ mod tests {
         run(&ctx, args(&["a.txt", "b.txt"])).await.unwrap();
         std::fs::remove_file(root.join("a.txt")).unwrap();
         run(&ctx, args(&["a.txt"])).await.unwrap();
-        run(&ctx, Args { dry_run: true, ..args(&["b.txt"]) }).await.unwrap();
+        run(
+            &ctx,
+            Args {
+                dry_run: true,
+                ..args(&["b.txt"])
+            },
+        )
+        .await
+        .unwrap();
         let log = calls.lock().unwrap().clone();
-        assert_eq!(log, [vec!["a.txt", "b.txt"], vec!["a.txt"]], "a dry run changes nothing");
+        assert_eq!(
+            log,
+            [vec!["a.txt", "b.txt"], vec!["a.txt"]],
+            "a dry run changes nothing"
+        );
     }
 }

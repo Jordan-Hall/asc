@@ -514,7 +514,11 @@ pub async fn run(repo: &Path) -> Result<Report, Error> {
 /// Logs peak RSS at a stage boundary (stderr), to find which stage owns the peak.
 fn stage(label: &str) {
     if let Some(rss) = peak_rss_bytes() {
-        eprintln!("roundtrip: peak RSS {:>5} MiB {label} (private peak {} MiB)", rss >> 20, peak_private_mib().unwrap_or(0));
+        eprintln!(
+            "roundtrip: peak RSS {:>5} MiB {label} (private peak {} MiB)",
+            rss >> 20,
+            peak_private_mib().unwrap_or(0)
+        );
     }
 }
 
@@ -523,7 +527,11 @@ fn peak_private_mib() -> Option<u64> {
     {
         let pid = std::process::id();
         let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &format!("(Get-Process -Id {pid}).PeakPagedMemorySize64")])
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!("(Get-Process -Id {pid}).PeakPagedMemorySize64"),
+            ])
             .output()
             .ok()?;
         let b: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;

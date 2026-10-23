@@ -332,7 +332,13 @@ mod tests {
     #[test]
     fn default_deny_names() {
         let d = DenyList::default_list().unwrap();
-        for n in ["a/server.pem", "k.key", "x/id_rsa", "aws-credentials.json", "d/.env/x"] {
+        for n in [
+            "a/server.pem",
+            "k.key",
+            "x/id_rsa",
+            "aws-credentials.json",
+            "d/.env/x",
+        ] {
             assert!(d.denies(&p(n)), "{n}");
         }
         for n in ["src/main.rs", "environment.md", "identity.rs"] {
@@ -346,7 +352,11 @@ mod tests {
         for n in ["app/.ENV", "KEY.PEM", "x/ID_RSA", "AWS-Credentials.json"] {
             assert!(d.denies(&p(n)), "{n}");
         }
-        assert!(DenyList::new(["secrets/*.txt"]).unwrap().denies(&p("SECRETS/a.TXT")));
+        assert!(
+            DenyList::new(["secrets/*.txt"])
+                .unwrap()
+                .denies(&p("SECRETS/a.TXT"))
+        );
     }
 
     #[test]
@@ -382,7 +392,10 @@ mod tests {
                 b"t: ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
                 SecretKind::GithubToken,
             ),
-            (b"-----BEGIN RSA PRIVATE KEY-----\nMII", SecretKind::PrivateKey),
+            (
+                b"-----BEGIN RSA PRIVATE KEY-----\nMII",
+                SecretKind::PrivateKey,
+            ),
             (b"xoxb-1234567890-abcdefghij", SecretKind::SlackToken),
             (
                 b"api_key = \"Zk3Qx9Lm2Vb7Nc4Rt8Yw1Ps6\"\n",

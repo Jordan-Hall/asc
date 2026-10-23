@@ -22,10 +22,10 @@ pub mod sort;
 pub mod value;
 
 pub use item::Item;
+pub use load::commit_raw as raw_commit;
 pub use load::{Filters, Query};
 pub use parse::{Atom, Kind, SortKey, parse_sort_key};
 pub use quote::Quote;
-pub use load::commit_raw as raw_commit;
 pub use value::Env;
 
 use super::common::{CliError, Result, WsCtx};
@@ -46,25 +46,115 @@ pub enum Error {
 /// Every placeholder `for-each-ref` serves, for the native table (SPEC §11.5): each atom and,
 /// for the object-sourced ones, its `*` form.
 pub const ATOMS: &[&str] = &[
-    "%(refname)", "%(objecttype)", "%(objectsize)", "%(objectname)", "%(deltabase)", "%(tree)",
-    "%(parent)", "%(numparent)", "%(object)", "%(type)", "%(tag)", "%(author)", "%(authorname)",
-    "%(authoremail)", "%(authordate)", "%(committer)", "%(committername)", "%(committeremail)",
-    "%(committerdate)", "%(tagger)", "%(taggername)", "%(taggeremail)", "%(taggerdate)",
-    "%(creator)", "%(creatordate)", "%(subject)", "%(body)", "%(trailers)", "%(contents)",
-    "%(signature)", "%(raw)", "%(upstream)", "%(push)", "%(symref)", "%(flag)", "%(HEAD)",
-    "%(color)", "%(worktreepath)", "%(align)", "%(end)", "%(if)", "%(then)", "%(else)",
-    "%(ahead-behind)", "%(is-base)", "%(describe)", "%(*refname)", "%(*objecttype)",
-    "%(*objectsize)", "%(*objectname)", "%(*deltabase)", "%(*tree)", "%(*parent)",
-    "%(*numparent)", "%(*object)", "%(*type)", "%(*tag)", "%(*author)", "%(*authorname)",
-    "%(*authoremail)", "%(*authordate)", "%(*committer)", "%(*committername)",
-    "%(*committeremail)", "%(*committerdate)", "%(*tagger)", "%(*taggername)",
-    "%(*taggeremail)", "%(*taggerdate)", "%(*creator)", "%(*creatordate)", "%(*subject)",
-    "%(*body)", "%(*trailers)", "%(*contents)", "%(*signature)", "%(*raw)", "%(*upstream)",
-    "%(*push)", "%(*symref)", "%(*flag)", "%(*HEAD)", "%(*color)", "%(*worktreepath)",
-    "%(*ahead-behind)", "%(*describe)",
+    "%(refname)",
+    "%(objecttype)",
+    "%(objectsize)",
+    "%(objectname)",
+    "%(deltabase)",
+    "%(tree)",
+    "%(parent)",
+    "%(numparent)",
+    "%(object)",
+    "%(type)",
+    "%(tag)",
+    "%(author)",
+    "%(authorname)",
+    "%(authoremail)",
+    "%(authordate)",
+    "%(committer)",
+    "%(committername)",
+    "%(committeremail)",
+    "%(committerdate)",
+    "%(tagger)",
+    "%(taggername)",
+    "%(taggeremail)",
+    "%(taggerdate)",
+    "%(creator)",
+    "%(creatordate)",
+    "%(subject)",
+    "%(body)",
+    "%(trailers)",
+    "%(contents)",
+    "%(signature)",
+    "%(raw)",
+    "%(upstream)",
+    "%(push)",
+    "%(symref)",
+    "%(flag)",
+    "%(HEAD)",
+    "%(color)",
+    "%(worktreepath)",
+    "%(align)",
+    "%(end)",
+    "%(if)",
+    "%(then)",
+    "%(else)",
+    "%(ahead-behind)",
+    "%(is-base)",
+    "%(describe)",
+    "%(*refname)",
+    "%(*objecttype)",
+    "%(*objectsize)",
+    "%(*objectname)",
+    "%(*deltabase)",
+    "%(*tree)",
+    "%(*parent)",
+    "%(*numparent)",
+    "%(*object)",
+    "%(*type)",
+    "%(*tag)",
+    "%(*author)",
+    "%(*authorname)",
+    "%(*authoremail)",
+    "%(*authordate)",
+    "%(*committer)",
+    "%(*committername)",
+    "%(*committeremail)",
+    "%(*committerdate)",
+    "%(*tagger)",
+    "%(*taggername)",
+    "%(*taggeremail)",
+    "%(*taggerdate)",
+    "%(*creator)",
+    "%(*creatordate)",
+    "%(*subject)",
+    "%(*body)",
+    "%(*trailers)",
+    "%(*contents)",
+    "%(*signature)",
+    "%(*raw)",
+    "%(*upstream)",
+    "%(*push)",
+    "%(*symref)",
+    "%(*flag)",
+    "%(*HEAD)",
+    "%(*color)",
+    "%(*worktreepath)",
+    "%(*ahead-behind)",
+    "%(*describe)",
     // `%xx`: the byte with that hex code.
-    "%0", "%1", "%2", "%3", "%4", "%5", "%6", "%7", "%8", "%9", "%a", "%b", "%c", "%d", "%e", "%f",
-    "%A", "%B", "%C", "%D", "%E", "%F",
+    "%0",
+    "%1",
+    "%2",
+    "%3",
+    "%4",
+    "%5",
+    "%6",
+    "%7",
+    "%8",
+    "%9",
+    "%a",
+    "%b",
+    "%c",
+    "%d",
+    "%e",
+    "%f",
+    "%A",
+    "%B",
+    "%C",
+    "%D",
+    "%E",
+    "%F",
 ];
 
 /// A parsed `--format`.
@@ -79,9 +169,13 @@ impl Format {
     pub fn parse(text: &[u8], quote: Quote) -> std::result::Result<Self, Error> {
         let tokens = parse::parse_format(text)?;
         if !matches!(quote, Quote::None | Quote::Perl)
-            && tokens.iter().any(|t| matches!(t, Token::Atom(a) if matches!(a.kind, Kind::Raw { size: false })))
+            && tokens
+                .iter()
+                .any(|t| matches!(t, Token::Atom(a) if matches!(a.kind, Kind::Raw { size: false })))
         {
-            return Err(Error::Fatal("--format=raw cannot be used with --python, --shell, --tcl".to_owned()));
+            return Err(Error::Fatal(
+                "--format=raw cannot be used with --python, --shell, --tcl".to_owned(),
+            ));
         }
         Ok(Self { tokens, quote })
     }
@@ -111,7 +205,11 @@ pub struct Request<'a> {
 
 /// The refs `req` selects, sorted and with every value the format reads loaded; `Env` evaluates
 /// them.
-pub async fn list(ctx: &super::common::Ctx, ws: &WsCtx, req: &Request<'_>) -> Result<(Vec<Item>, Env)> {
+pub async fn list(
+    ctx: &super::common::Ctx,
+    ws: &WsCtx,
+    req: &Request<'_>,
+) -> Result<(Vec<Item>, Env)> {
     let default_sort;
     let sorts: &[SortKey] = if req.sorts.is_empty() {
         default_sort = [parse_sort_key("refname").map_err(to_cli)?];
@@ -119,7 +217,11 @@ pub async fn list(ctx: &super::common::Ctx, ws: &WsCtx, req: &Request<'_>) -> Re
     } else {
         &req.sorts
     };
-    let atoms: Vec<&Atom> = req.format.atoms().chain(sorts.iter().map(|k| &k.atom)).collect();
+    let atoms: Vec<&Atom> = req
+        .format
+        .atoms()
+        .chain(sorts.iter().map(|k| &k.atom))
+        .collect();
     let hist = Hist::select(ws);
     let mut items = load::collect(ws, &hist, &req.query, &atoms).await?;
     let env = load::env(ctx, ws, &atoms, req.color);

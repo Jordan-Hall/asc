@@ -38,10 +38,19 @@ impl Repo {
     /// `master` has `f`; `feature` is checked out and empty.
     fn new() -> Self {
         let sb = Sandbox::new();
-        fs::write(sb.user.join(".gitconfig"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        fs::write(
+            sb.user.join(".gitconfig"),
+            "[user]\n\tname = T\n\temail = t@example.com\n",
+        )
+        .unwrap();
         let root = sb.dir("repo");
         let aux = sb.dir("aux");
-        let r = Self { log: aux.join("hooks.log"), reject: aux.join("reject"), sb, root };
+        let r = Self {
+            log: aux.join("hooks.log"),
+            reject: aux.join("reject"),
+            sb,
+            root,
+        };
         r.ok(&["init"]);
         r.write("f", "a\nb\nc\n");
         r.ok(&["add", "f"]);
@@ -60,7 +69,12 @@ impl Repo {
         fs::create_dir_all(&dir).unwrap();
         let (log, reject) = (Self::slash(&self.log), Self::slash(&self.reject));
         let scripts = [
-            ("pre-commit", format!("echo pre-commit >> '{log}'\nif [ -e '{reject}' ]; then echo 'husky: rejected' >&2; exit 1; fi\n")),
+            (
+                "pre-commit",
+                format!(
+                    "echo pre-commit >> '{log}'\nif [ -e '{reject}' ]; then echo 'husky: rejected' >&2; exit 1; fi\n"
+                ),
+            ),
             (
                 "commit-msg",
                 format!(
@@ -68,7 +82,10 @@ impl Repo {
                 ),
             ),
             ("post-commit", format!("echo post-commit >> '{log}'\n")),
-            ("post-rewrite", format!("echo \"post-rewrite $1 $(wc -l | tr -d ' ')\" >> '{log}'\n")),
+            (
+                "post-rewrite",
+                format!("echo \"post-rewrite $1 $(wc -l | tr -d ' ')\" >> '{log}'\n"),
+            ),
         ];
         for (name, body) in scripts {
             let path = dir.join(name);
@@ -79,7 +96,11 @@ impl Repo {
     }
 
     fn hook_log(&self) -> Vec<String> {
-        fs::read_to_string(&self.log).unwrap_or_default().lines().map(str::to_owned).collect()
+        fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn clear_log(&self) {
@@ -91,8 +112,18 @@ impl Repo {
     }
 
     fn asc(&self, args: &[&str]) -> Out {
-        let out = self.sb.asc(&self.root).args(args).stdin(std::process::Stdio::null()).output().expect("spawn");
-        Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+        let out = self
+            .sb
+            .asc(&self.root)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: text(&out.stdout),
+            stderr: text(&out.stderr),
+        }
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -106,11 +137,17 @@ impl Repo {
     }
 
     fn subjects(&self, rev: &str) -> Vec<String> {
-        self.ok(&["log", "--format=%s", rev]).lines().map(str::to_owned).collect()
+        self.ok(&["log", "--format=%s", rev])
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn branches(&self) -> Vec<String> {
-        self.ok(&["branch", "--format=%(refname:short)"]).lines().map(str::to_owned).collect()
+        self.ok(&["branch", "--format=%(refname:short)"])
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn show(&self, spec: &str) -> String {
@@ -122,7 +159,11 @@ impl Repo {
     }
 
     fn status(&self) -> String {
-        self.ok(&["status", "--porcelain"]).lines().filter(|l| *l != "?? .ascignore" && !l.starts_with("?? .husky")).map(|l| format!("{l}\n")).collect()
+        self.ok(&["status", "--porcelain"])
+            .lines()
+            .filter(|l| *l != "?? .ascignore" && !l.starts_with("?? .husky"))
+            .map(|l| format!("{l}\n"))
+            .collect()
     }
 
     /// Writes `name` and makes it a change `feat: <name>` with `asc create`.
@@ -224,13 +265,31 @@ fn modify_amends_the_change_and_restacks_the_descendants_with_one_post_rewrite()
     r.clear_log();
     let out = r.asc(&["modify", "-a"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.stdout.lines().filter(|l| l.starts_with("Restacked ")).count(), 2, "{}", out.stdout);
+    assert_eq!(
+        out.stdout
+            .lines()
+            .filter(|l| l.starts_with("Restacked "))
+            .count(),
+        2,
+        "{}",
+        out.stdout
+    );
     // The branch carries the amended change and the restacked descendants.
     assert_ne!(r.sha("feature"), old_tip);
-    assert_eq!(r.subjects("feature"), ["feat: three", "feat: two", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "feat: two", "feat: one", "base"]
+    );
     assert_eq!(r.show("feature~2:one"), "one-v2");
     assert_eq!(r.show("feature:one"), "one-v2");
-    assert_eq!((r.change("feature~2"), r.change("feature~1"), r.change("feature")), (c1, c2, c3));
+    assert_eq!(
+        (
+            r.change("feature~2"),
+            r.change("feature~1"),
+            r.change("feature")
+        ),
+        (c1, c2, c3)
+    );
     // HEAD is on the amended change, the work tree is clean.
     assert_eq!(r.sha("HEAD"), r.sha("feature~2"));
     assert_eq!(r.status(), "");
@@ -238,8 +297,20 @@ fn modify_amends_the_change_and_restacks_the_descendants_with_one_post_rewrite()
     let log = r.hook_log();
     assert!(log.contains(&"pre-commit".to_owned()), "{log:?}");
     assert!(log.contains(&"post-commit".to_owned()), "{log:?}");
-    assert_eq!(log.iter().filter(|l| l.starts_with("post-rewrite rebase")).collect::<Vec<_>>(), ["post-rewrite rebase 2"], "{log:?}");
-    assert_eq!(log.iter().filter(|l| l.starts_with("post-rewrite amend")).count(), 1, "{log:?}");
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("post-rewrite rebase"))
+            .collect::<Vec<_>>(),
+        ["post-rewrite rebase 2"],
+        "{log:?}"
+    );
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("post-rewrite amend"))
+            .count(),
+        1,
+        "{log:?}"
+    );
 }
 
 #[test]
@@ -260,10 +331,20 @@ fn modify_into_amends_a_change_below_head_without_checking_it_out() {
     r.write("one", "one-v2");
     let out = r.asc(&["modify", "--into", &c1, "-a"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(r.subjects("feature"), ["feat: three", "feat: two", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "feat: two", "feat: one", "base"]
+    );
     assert_eq!(r.show("feature~2:one"), "one-v2");
     assert_eq!(r.show("feature:one"), "one-v2");
-    assert_eq!((r.change("feature~2"), r.change("feature~1"), r.change("feature")), (c1, c2, c3));
+    assert_eq!(
+        (
+            r.change("feature~2"),
+            r.change("feature~1"),
+            r.change("feature")
+        ),
+        (c1, c2, c3)
+    );
     assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "feature");
     assert_eq!(fs::read_to_string(r.root.join("one")).unwrap(), "one-v2");
     assert_eq!(r.status(), "");
@@ -298,16 +379,36 @@ fn reword_edits_the_message_and_restacks() {
     r.clear_log();
     let out = r.asc(&["reword", "HEAD~1", "-m", "fix: second"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(r.subjects("feature"), ["feat: three", "fix: second", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "fix: second", "feat: one", "base"]
+    );
     // The tree of the reworded change is untouched; the change ids are kept.
     assert_eq!(r.sha("feature~1^{tree}"), tree);
-    assert_eq!((r.change("feature~2"), r.change("feature~1"), r.change("feature")), (c1, c2, c3));
+    assert_eq!(
+        (
+            r.change("feature~2"),
+            r.change("feature~1"),
+            r.change("feature")
+        ),
+        (c1, c2, c3)
+    );
     assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "feature");
     assert_eq!(r.status(), "");
     let log = r.hook_log();
-    assert_eq!(log.iter().filter(|l| *l == "commit-msg").count(), 1, "{log:?}");
+    assert_eq!(
+        log.iter().filter(|l| *l == "commit-msg").count(),
+        1,
+        "{log:?}"
+    );
     assert!(!log.contains(&"pre-commit".to_owned()), "{log:?}");
-    assert_eq!(log.iter().filter(|l| l.starts_with("post-rewrite rebase")).collect::<Vec<_>>(), ["post-rewrite rebase 1"], "{log:?}");
+    assert_eq!(
+        log.iter()
+            .filter(|l| l.starts_with("post-rewrite rebase"))
+            .collect::<Vec<_>>(),
+        ["post-rewrite rebase 1"],
+        "{log:?}"
+    );
 }
 
 #[test]
@@ -320,7 +421,10 @@ fn reword_rejected_by_commit_msg_moves_no_ref() {
     assert_eq!(out.code, 1);
     assert!(out.stderr.contains("commitlint"), "{}", out.stderr);
     assert_eq!(r.sha("feature"), tip);
-    assert_eq!(r.subjects("feature"), ["feat: three", "feat: two", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "feat: two", "feat: one", "base"]
+    );
 }
 
 #[test]
@@ -342,7 +446,10 @@ fn create_insert_reparents_the_children() {
     r.ok(&["add", "mid"]);
     let out = r.asc(&["create", "--insert", "-m", "feat: mid"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(r.subjects("feature"), ["feat: three", "feat: two", "feat: mid", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "feat: two", "feat: mid", "feat: one", "base"]
+    );
     assert_eq!((r.change("feature~1"), r.change("feature")), (c2, c3));
     assert_eq!(r.sha("HEAD"), r.sha("feature~2"));
     assert_eq!(r.show("feature:mid"), "mid");
@@ -358,5 +465,8 @@ fn create_onto_builds_on_another_revision() {
     r.ok(&["create", "--onto", "feature~2", "-m", "feat: side"]);
     assert_eq!(r.subjects("HEAD"), ["feat: side", "feat: one", "base"]);
     // The stack is untouched.
-    assert_eq!(r.subjects("feature"), ["feat: three", "feat: two", "feat: one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["feat: three", "feat: two", "feat: one", "base"]
+    );
 }

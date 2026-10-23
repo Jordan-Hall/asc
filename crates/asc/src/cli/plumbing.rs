@@ -22,7 +22,12 @@ use crate::native::NativeSpec;
 
 /// Serves seven commands: clap's multicall mode picks the subcommand from the command name.
 #[derive(clap::Parser, Debug)]
-#[command(multicall = true, disable_help_flag = true, disable_version_flag = true, disable_help_subcommand = true)]
+#[command(
+    multicall = true,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    disable_help_subcommand = true
+)]
 pub struct Args {
     #[command(subcommand)]
     which: Which,
@@ -30,19 +35,47 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Which {
-    #[command(name = "ls-files", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "ls-files",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     LsFiles(Rest),
-    #[command(name = "ls-tree", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "ls-tree",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     LsTree(Rest),
-    #[command(name = "cat-file", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "cat-file",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     CatFile(Rest),
-    #[command(name = "hash-object", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "hash-object",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     HashObject(Rest),
-    #[command(name = "update-index", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "update-index",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     UpdateIndex(Rest),
-    #[command(name = "write-tree", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "write-tree",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     WriteTree(Rest),
-    #[command(name = "read-tree", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "read-tree",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     ReadTree(Rest),
 }
 
@@ -56,7 +89,15 @@ pub const NATIVE: &[NativeSpec] = &[
     NativeSpec {
         cmd: "ls-files",
         flags: &[
-            "-c", "--cached", "-s", "--stage", "-o", "--others", "--exclude-standard", "-z", "--full-name",
+            "-c",
+            "--cached",
+            "-s",
+            "--stage",
+            "-o",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--full-name",
             "--error-unmatch",
         ],
         placeholders: &[],
@@ -64,28 +105,77 @@ pub const NATIVE: &[NativeSpec] = &[
     NativeSpec {
         cmd: "ls-tree",
         flags: &[
-            "-d", "-r", "-t", "-l", "--long", "-z", "--name-only", "--name-status", "--object-only", "--abbrev",
-            "--full-name", "--full-tree", "--format",
+            "-d",
+            "-r",
+            "-t",
+            "-l",
+            "--long",
+            "-z",
+            "--name-only",
+            "--name-status",
+            "--object-only",
+            "--abbrev",
+            "--full-name",
+            "--full-tree",
+            "--format",
         ],
-        placeholders: &["%(objectmode)", "%(objecttype)", "%(objectname)", "%(objectsize)", "%(path)", "%x"],
+        placeholders: &[
+            "%(objectmode)",
+            "%(objecttype)",
+            "%(objectname)",
+            "%(objectsize)",
+            "%(path)",
+            "%x",
+        ],
     },
     NativeSpec {
         cmd: "cat-file",
-        flags: &["-t", "-s", "-e", "-p", "--batch", "--batch-check", "--buffer"],
+        flags: &[
+            "-t",
+            "-s",
+            "-e",
+            "-p",
+            "--batch",
+            "--batch-check",
+            "--buffer",
+        ],
         placeholders: &[],
     },
     NativeSpec {
         cmd: "hash-object",
-        flags: &["-t", "-w", "--stdin", "--path", "--no-filters", "--literally"],
+        flags: &[
+            "-t",
+            "-w",
+            "--stdin",
+            "--path",
+            "--no-filters",
+            "--literally",
+        ],
         placeholders: &[],
     },
     NativeSpec {
         cmd: "update-index",
-        flags: &["--add", "--remove", "--force-remove", "--refresh", "--really-refresh", "--cacheinfo", "-q"],
+        flags: &[
+            "--add",
+            "--remove",
+            "--force-remove",
+            "--refresh",
+            "--really-refresh",
+            "--cacheinfo",
+            "-q",
+        ],
         placeholders: &[],
     },
-    NativeSpec { cmd: "write-tree", flags: &["--missing-ok", "--prefix"], placeholders: &[] },
-    NativeSpec { cmd: "read-tree", flags: &["-m", "-i", "--empty", "--prefix"], placeholders: &[] },
+    NativeSpec {
+        cmd: "write-tree",
+        flags: &["--missing-ok", "--prefix"],
+        placeholders: &[],
+    },
+    NativeSpec {
+        cmd: "read-tree",
+        flags: &["-m", "-i", "--empty", "--prefix"],
+        placeholders: &[],
+    },
 ];
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {

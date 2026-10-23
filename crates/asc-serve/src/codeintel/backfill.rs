@@ -95,7 +95,10 @@ pub fn parse_date(s: &str) -> Option<i64> {
     if it.next().is_some() || y.len() != 4 || m.len() != 2 || d.len() != 2 {
         return None;
     }
-    if ![y, m, d].iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())) {
+    if ![y, m, d]
+        .iter()
+        .all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+    {
         return None;
     }
     let (y, m, d): (i64, i64, i64) = (y.parse().ok()?, m.parse().ok()?, d.parse().ok()?);
@@ -609,10 +612,7 @@ mod tests {
         let r = bf.on_demand(1, NS, rev(9)).await.unwrap();
         assert_eq!(r.enqueued, 3);
         let q = Queue::new(pool.clone());
-        let leased = q
-            .lease(NS, 4, 60, crate::outbox::now() + 10)
-            .await
-            .unwrap();
+        let leased = q.lease(NS, 4, 60, crate::outbox::now() + 10).await.unwrap();
         assert_eq!(leased.len(), 4);
         assert!(
             leased[..3]

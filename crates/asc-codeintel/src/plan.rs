@@ -184,7 +184,12 @@ fn clean(set: &mut Set, suffix: bool) {
     let all: Vec<Vec<u8>> = set.iter().cloned().collect();
     set.retain(|s| {
         !all.iter().any(|t| {
-            t.len() < s.len() && if suffix { s.ends_with(t) } else { s.starts_with(t) }
+            t.len() < s.len()
+                && if suffix {
+                    s.ends_with(t)
+                } else {
+                    s.starts_with(t)
+                }
         })
     });
 }
@@ -208,7 +213,12 @@ fn single(s: &[u8]) -> Set {
 
 impl Info {
     fn with_exact(exact: Set) -> Info {
-        Info { exact: Some(exact), prefix: Set::new(), suffix: Set::new(), matched: Plan::All }
+        Info {
+            exact: Some(exact),
+            prefix: Set::new(),
+            suffix: Set::new(),
+            matched: Plan::All,
+        }
     }
 
     fn empty_string() -> Info {
@@ -221,7 +231,12 @@ impl Info {
 
     /// Matches anything: no information at all.
     fn any_match() -> Info {
-        Info { exact: None, prefix: single(b""), suffix: single(b""), matched: Plan::All }
+        Info {
+            exact: None,
+            prefix: single(b""),
+            suffix: single(b""),
+            matched: Plan::All,
+        }
     }
 
     fn is_dead(&self) -> bool {
@@ -242,11 +257,7 @@ impl Info {
         if let Some(e) = &self.exact {
             let min = min_len(e);
             let bytes: usize = e.iter().map(Vec::len).sum();
-            if e.len() > MAX_EXACT
-                || (min >= 3 && force)
-                || min >= 4
-                || bytes > MAX_EXACT_BYTES
-            {
+            if e.len() > MAX_EXACT || (min >= 3 && force) || min >= 4 || bytes > MAX_EXACT_BYTES {
                 self.add_exact();
                 for s in self.exact.take().unwrap_or_default() {
                     if s.len() < 3 {
@@ -266,7 +277,11 @@ impl Info {
     }
 
     fn simplify_set(&mut self, suffix: bool) {
-        let mut t = std::mem::take(if suffix { &mut self.suffix } else { &mut self.prefix });
+        let mut t = std::mem::take(if suffix {
+            &mut self.suffix
+        } else {
+            &mut self.prefix
+        });
         clean(&mut t, suffix);
         // Every match holds one of these strings, so their trigrams are required.
         if t.iter().any(|s| s.len() >= 3) {
@@ -295,7 +310,11 @@ impl Info {
         if t.len() > MAX_SET {
             t = single(b"");
         }
-        *(if suffix { &mut self.suffix } else { &mut self.prefix }) = t;
+        *(if suffix {
+            &mut self.suffix
+        } else {
+            &mut self.prefix
+        }) = t;
     }
 }
 
@@ -330,7 +349,12 @@ fn concat(x: Info, y: Info) -> Info {
             {
                 m = Plan::of_set(&cross(&x.suffix, &y.prefix));
             }
-            Info { exact: None, prefix, suffix, matched: m }
+            Info {
+                exact: None,
+                prefix,
+                suffix,
+                matched: m,
+            }
         }
     };
     r.matched = matched.and(std::mem::replace(&mut r.matched, Plan::All));
@@ -345,13 +369,23 @@ fn alternate(mut x: Info, mut y: Info) -> Info {
             let prefix = a.union(&y.prefix).cloned().collect();
             let suffix = a.union(&y.suffix).cloned().collect();
             x.add_exact();
-            Info { exact: None, prefix, suffix, matched: Plan::All }
+            Info {
+                exact: None,
+                prefix,
+                suffix,
+                matched: Plan::All,
+            }
         }
         (None, Some(b)) => {
             let prefix = x.prefix.union(b).cloned().collect();
             let suffix = x.suffix.union(b).cloned().collect();
             y.add_exact();
-            Info { exact: None, prefix, suffix, matched: Plan::All }
+            Info {
+                exact: None,
+                prefix,
+                suffix,
+                matched: Plan::All,
+            }
         }
         (None, None) => Info {
             exact: None,
@@ -379,7 +413,10 @@ fn class_info(class: &Class) -> Info {
     let mut set = Set::new();
     match class {
         Class::Unicode(c) => {
-            let n: u64 = c.iter().map(|r| u64::from(r.end() as u32 - r.start() as u32) + 1).sum();
+            let n: u64 = c
+                .iter()
+                .map(|r| u64::from(r.end() as u32 - r.start() as u32) + 1)
+                .sum();
             if n > MAX_CLASS {
                 return Info::any_match();
             }
@@ -428,9 +465,9 @@ fn analyze(hir: &Hir) -> Info {
                 plus(analyze(&r.sub))
             }
         }
-        HirKind::Concat(subs) => {
-            subs.iter().fold(Info::empty_string(), |acc, s| concat(acc, analyze(s)))
-        }
+        HirKind::Concat(subs) => subs
+            .iter()
+            .fold(Info::empty_string(), |acc, s| concat(acc, analyze(s))),
         HirKind::Alternation(subs) => {
             let mut it = subs.iter();
             match it.next() {
@@ -517,15 +554,24 @@ mod tests {
 
     #[test]
     fn empty_class_never_matches() {
-        assert_eq!(plan_regex("a[^\\x00-\\x{10FFFF}]b", false).unwrap(), Plan::None);
+        assert_eq!(
+            plan_regex("a[^\\x00-\\x{10FFFF}]b", false).unwrap(),
+            Plan::None
+        );
     }
 
     #[test]
     fn bounds_and_errors() {
-        assert_eq!(plan_regex(&"a".repeat(MAX_PATTERN + 1), false), Err(PlanError::TooLong));
+        assert_eq!(
+            plan_regex(&"a".repeat(MAX_PATTERN + 1), false),
+            Err(PlanError::TooLong)
+        );
         assert!(matches!(plan_regex("(", false), Err(PlanError::Syntax(_))));
         let deep = format!("{}a{}", "(".repeat(200), ")".repeat(200));
-        assert!(matches!(plan_regex(&deep, false), Err(PlanError::Syntax(_))));
+        assert!(matches!(
+            plan_regex(&deep, false),
+            Err(PlanError::Syntax(_))
+        ));
         let big = "(a|b|c|d|e|f|g|h|i|j){20}[a-c]{99}".repeat(100);
         assert!(plan_regex(&big, false).is_ok());
     }

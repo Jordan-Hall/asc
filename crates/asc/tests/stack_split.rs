@@ -35,7 +35,11 @@ struct Repo {
 impl Repo {
     fn new() -> Self {
         let sb = Sandbox::new();
-        fs::write(sb.user.join(".gitconfig"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        fs::write(
+            sb.user.join(".gitconfig"),
+            "[user]\n\tname = T\n\temail = t@example.com\n",
+        )
+        .unwrap();
         let root = sb.dir("repo");
         let r = Self { sb, root };
         r.ok(&["init"]);
@@ -65,8 +69,18 @@ impl Repo {
     }
 
     fn asc(&self, args: &[&str]) -> Out {
-        let out = self.sb.asc(&self.root).args(args).stdin(std::process::Stdio::null()).output().expect("spawn");
-        Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+        let out = self
+            .sb
+            .asc(&self.root)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: text(&out.stdout),
+            stderr: text(&out.stderr),
+        }
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -84,26 +98,44 @@ impl Repo {
     }
 
     fn subjects(&self, rev: &str) -> Vec<String> {
-        self.ok(&["log", "--format=%s", rev]).lines().map(str::to_owned).collect()
+        self.ok(&["log", "--format=%s", rev])
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn status(&self) -> String {
-        self.ok(&["status", "--porcelain"]).lines().filter(|l| *l != "?? .ascignore").map(|l| format!("{l}\n")).collect()
+        self.ok(&["status", "--porcelain"])
+            .lines()
+            .filter(|l| *l != "?? .ascignore")
+            .map(|l| format!("{l}\n"))
+            .collect()
     }
 
     fn index(&self, rev: &str, n: u8) {
         let sha = self.sha(rev);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
             let oid: GitOid = sha.parse().unwrap();
             let cs = ChangesetId::from_bytes(
-                git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit).await.unwrap().unwrap(),
+                git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
+                    .await
+                    .unwrap()
+                    .unwrap(),
             );
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
-            let row = ChangeRow { cs, change: change_id(n), meta: MetaId::from_bytes([n; 32]), op: RewriteOp::New };
+            let row = ChangeRow {
+                cs,
+                change: change_id(n),
+                meta: MetaId::from_bytes([n; 32]),
+                op: RewriteOp::New,
+            };
             rows.insert(&row, &[]).await.unwrap();
         });
     }
@@ -118,10 +150,21 @@ fn split_by_file_keeps_the_id_on_the_top_piece_and_restacks_the_children() {
     let r = Repo::new();
     let old_head_tree = r.tree("feature");
     let two_tree = r.tree("feature~1");
-    let out = r.asc(&["split", "--change", "feature~1", "--by-file", "t1", "-m", "only t1"]);
+    let out = r.asc(&[
+        "split",
+        "--change",
+        "feature~1",
+        "--by-file",
+        "t1",
+        "-m",
+        "only t1",
+    ]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(out.stdout.lines().count(), 2, "{}", out.stdout);
-    assert_eq!(r.subjects("feature"), ["three", "two", "only t1", "one", "base"]);
+    assert_eq!(
+        r.subjects("feature"),
+        ["three", "two", "only t1", "one", "base"]
+    );
     // The top piece has the original tree, so the children and the work tree are unchanged.
     assert_eq!(r.tree("feature~1"), two_tree);
     assert_eq!(r.tree("feature"), old_head_tree);
@@ -130,10 +173,18 @@ fn split_by_file_keeps_the_id_on_the_top_piece_and_restacks_the_children() {
     // The piece that keeps the message keeps the id; the other piece has a new one.
     assert_eq!(r.change("feature~1"), change_id(2).to_string());
     let lower = r.change("feature~2");
-    assert!(!lower.is_empty() && lower != change_id(2).to_string() && lower != change_id(1).to_string());
+    assert!(
+        !lower.is_empty() && lower != change_id(2).to_string() && lower != change_id(1).to_string()
+    );
     assert_eq!(r.change("feature~3"), change_id(1).to_string());
     assert_eq!(r.change("feature"), change_id(3).to_string());
-    assert_eq!(r.ok(&["ls-tree", "--name-only", "feature~2"]).lines().filter(|l| l.starts_with('t')).count(), 1);
+    assert_eq!(
+        r.ok(&["ls-tree", "--name-only", "feature~2"])
+            .lines()
+            .filter(|l| l.starts_with('t'))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -145,7 +196,11 @@ fn split_refuses_what_it_cannot_do_without_a_prompt() {
     assert_eq!(r.asc(&["split", "--by-commit"]).code, 1);
     // A pathspec the change does not touch, and one that covers everything.
     assert_eq!(r.asc(&["split", "--by-file", "nosuch"]).code, 1);
-    assert_eq!(r.asc(&["split", "--change", "feature~1", "--by-file", "."]).code, 1);
+    assert_eq!(
+        r.asc(&["split", "--change", "feature~1", "--by-file", "."])
+            .code,
+        1
+    );
     assert_eq!(r.sha("feature"), head);
 }
 
@@ -178,8 +233,12 @@ fn fold_stack_takes_everything_above_and_the_bottom_change_has_no_parent_to_fold
     let r = Repo::new();
     let tip_tree = r.tree("feature");
     assert_eq!(r.asc(&["fold", "feature~2"]).code, 1);
-    let v: Value = serde_json::from_str(&r.ok(&["fold", "--stack", "--json", "feature~1"])).unwrap();
-    assert_eq!((v["status"].as_str(), v["verb"].as_str()), (Some("complete"), Some("fold")));
+    let v: Value =
+        serde_json::from_str(&r.ok(&["fold", "--stack", "--json", "feature~1"])).unwrap();
+    assert_eq!(
+        (v["status"].as_str(), v["verb"].as_str()),
+        (Some("complete"), Some("fold"))
+    );
     assert_eq!(r.subjects("feature"), ["one", "base"]);
     assert_eq!(r.tree("feature"), tip_tree);
     assert_eq!(r.change("feature"), change_id(1).to_string());

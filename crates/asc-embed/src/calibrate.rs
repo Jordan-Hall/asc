@@ -36,7 +36,11 @@ impl Calibration {
     /// Quantise `v` to i8: each dimension maps `[min, max]` onto `[-127, 127]`, clamped.
     pub fn quantise(&self, v: &[f32]) -> Result<Vec<i8>, Error> {
         if v.len() != self.dims() {
-            return Err(Error::Calibration(format!("vector has {} dims, table {}", v.len(), self.dims())));
+            return Err(Error::Calibration(format!(
+                "vector has {} dims, table {}",
+                v.len(),
+                self.dims()
+            )));
         }
         Ok(v.iter()
             .zip(self.min.iter().zip(&self.max))
@@ -64,13 +68,18 @@ impl Calibration {
     /// Decode a table from untrusted bytes, checking length, bounds and finiteness.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let bad = |m: &str| Error::Calibration(m.to_owned());
-        let head: [u8; 4] = bytes.get(..4).and_then(|b| b.try_into().ok()).ok_or_else(|| bad("short table"))?;
+        let head: [u8; 4] = bytes
+            .get(..4)
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| bad("short table"))?;
         let dims = u32::from_le_bytes(head) as usize;
         if dims == 0 || dims > MAX_DIMS || bytes.len() != 4 + dims * 8 {
             return Err(bad("bad table size"));
         }
-        let floats: Vec<f32> =
-            bytes[4..].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let floats: Vec<f32> = bytes[4..]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
         if floats.iter().any(|x| !x.is_finite()) {
             return Err(bad("non-finite value"));
         }
@@ -78,7 +87,10 @@ impl Calibration {
         if min.iter().zip(max).any(|(lo, hi)| lo > hi) {
             return Err(bad("min above max"));
         }
-        Ok(Self { min: min.to_vec(), max: max.to_vec() })
+        Ok(Self {
+            min: min.to_vec(),
+            max: max.to_vec(),
+        })
     }
 
     /// blake3 digest of [`Self::to_bytes`].
@@ -110,7 +122,11 @@ impl Calibrator {
         if dims == 0 || dims > MAX_DIMS {
             return Err(Error::Calibration(format!("dims {dims} out of range")));
         }
-        Ok(Self { min: vec![f32::INFINITY; dims], max: vec![f32::NEG_INFINITY; dims], seen: 0 })
+        Ok(Self {
+            min: vec![f32::INFINITY; dims],
+            max: vec![f32::NEG_INFINITY; dims],
+            seen: 0,
+        })
     }
 
     /// Vectors observed so far.
@@ -136,11 +152,22 @@ impl Calibrator {
         if self.seen == 0 {
             return Err(Error::Calibration("no vectors observed".to_owned()));
         }
-        Ok(Calibration { min: self.min, max: self.max })
+        Ok(Calibration {
+            min: self.min,
+            max: self.max,
+        })
     }
 }
 
 /// Model id string of SPEC §23.7: `name@<onnx sha256>/i8/calib@<digest>/<chunker_ver>`.
-pub fn model_id(name: &str, onnx_sha256: &str, calib: &CalibrationDigest, chunker_ver: u32) -> String {
-    format!("{name}@{onnx_sha256}/i8/calib@{}/{chunker_ver}", calib.hex())
+pub fn model_id(
+    name: &str,
+    onnx_sha256: &str,
+    calib: &CalibrationDigest,
+    chunker_ver: u32,
+) -> String {
+    format!(
+        "{name}@{onnx_sha256}/i8/calib@{}/{chunker_ver}",
+        calib.hex()
+    )
 }

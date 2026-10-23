@@ -51,7 +51,14 @@ mod tests {
     #[test]
     fn distinct_sorted() {
         let v = distinct_trigrams(b"abcABCabc", 100).unwrap();
-        assert_eq!(v, vec![gram(b'a', b'b', b'c'), gram(b'b', b'c', b'a'), gram(b'c', b'a', b'b')]);
+        assert_eq!(
+            v,
+            vec![
+                gram(b'a', b'b', b'c'),
+                gram(b'b', b'c', b'a'),
+                gram(b'c', b'a', b'b')
+            ]
+        );
         assert!(distinct_trigrams(b"ab", 100).unwrap().is_empty());
     }
 

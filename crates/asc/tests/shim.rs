@@ -33,7 +33,11 @@ fn link_binary(target: &Path) {
 fn shim_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = bin().parent().unwrap().join("asc-test-shim").join(std::process::id().to_string());
+        let dir = bin()
+            .parent()
+            .unwrap()
+            .join("asc-test-shim")
+            .join(std::process::id().to_string());
         link_binary(&dir.join(GIT));
         dir
     })
@@ -41,7 +45,12 @@ fn shim_dir() -> &'static Path {
 
 fn real_git() -> &'static Path {
     static REAL: OnceLock<PathBuf> = OnceLock::new();
-    REAL.get_or_init(|| RealGit::resolve(None, None).expect("real git").path().to_owned())
+    REAL.get_or_init(|| {
+        RealGit::resolve(None, None)
+            .expect("real git")
+            .path()
+            .to_owned()
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -103,7 +112,13 @@ fn append_global(sb: &Sandbox, text: &str) {
 /// The synthetic gitdir of the workspace at `root`, from its gitfile.
 fn gitdir(root: &Path) -> PathBuf {
     let gitfile = fs::read_to_string(root.join(".git")).expect("gitfile");
-    PathBuf::from(gitfile.trim().strip_prefix("gitdir:").expect("gitdir:").trim())
+    PathBuf::from(
+        gitfile
+            .trim()
+            .strip_prefix("gitdir:")
+            .expect("gitdir:")
+            .trim(),
+    )
 }
 
 fn workspace(sb: &Sandbox, name: &str) -> PathBuf {
@@ -149,7 +164,9 @@ fn fall_through_is_traced_and_a_workspace_is_not() {
     ok(real(&sb, &plain, &["init", "-b", "master"]));
     let traced = |cwd: &Path, args: &[&str]| {
         let mut cmd = sb.command(shim_dir().join(GIT), cwd);
-        cmd.env("ASC_REAL_GIT", real_git()).env("ASC_SHIM_TRACE", &trace).args(args);
+        cmd.env("ASC_REAL_GIT", real_git())
+            .env("ASC_SHIM_TRACE", &trace)
+            .args(args);
         run(&mut cmd)
     };
     ok(traced(&plain, &["rev-parse", "--git-dir"]));
@@ -160,8 +177,16 @@ fn fall_through_is_traced_and_a_workspace_is_not() {
     assert_eq!(ok(traced(&ws, &["config", "demo.key"])).stdout, "value\n");
     let unknown = traced(&ws, &["frobnicate"]);
     assert_eq!(unknown.code, 1);
-    assert!(unknown.stderr.contains("'frobnicate' is not a git command"), "{}", unknown.stderr);
-    assert_eq!(trace_lines(&trace).len(), 1, "a workspace never reaches real git");
+    assert!(
+        unknown.stderr.contains("'frobnicate' is not a git command"),
+        "{}",
+        unknown.stderr
+    );
+    assert_eq!(
+        trace_lines(&trace).len(),
+        1,
+        "a workspace never reaches real git"
+    );
 }
 
 #[test]
@@ -199,7 +224,8 @@ fn a_real_git_that_is_the_shim_stops_at_the_depth_guard() {
     let sb = Sandbox::new();
     let cwd = sb.dir("none");
     let mut cmd = sb.command(shim_dir().join(GIT), &cwd);
-    cmd.env("ASC_REAL_GIT", shim_dir().join(GIT)).args(["status"]);
+    cmd.env("ASC_REAL_GIT", shim_dir().join(GIT))
+        .args(["status"]);
     let out = run(&mut cmd);
     assert_eq!(out.code, 128);
     assert!(out.stderr.contains("loop"), "{}", out.stderr);
@@ -210,7 +236,9 @@ fn the_depth_guard_fires() {
     let sb = Sandbox::new();
     let cwd = sb.dir("none");
     let mut cmd = sb.command(shim_dir().join(GIT), &cwd);
-    cmd.env("ASC_REAL_GIT", real_git()).env("ASC_SHIM_DEPTH", "5").args(["status"]);
+    cmd.env("ASC_REAL_GIT", real_git())
+        .env("ASC_SHIM_DEPTH", "5")
+        .args(["status"]);
     let out = run(&mut cmd);
     assert_eq!(out.code, 128);
     assert!(out.stderr.contains("loop"), "{}", out.stderr);
@@ -240,7 +268,10 @@ fn fall_through_overhead_is_small() {
     });
     // The SPEC §11.4 budget (p95 5 ms) is measured by O05; this guards against a gross slowdown.
     let extra_ms = shimmed.saturating_sub(direct) / 1000;
-    assert!(extra_ms < 100, "shim adds {extra_ms} ms to a {direct} us git call");
+    assert!(
+        extra_ms < 100,
+        "shim adds {extra_ms} ms to a {direct} us git call"
+    );
 }
 
 // ---- routing -----------------------------------------------------------------------------
@@ -250,10 +281,16 @@ fn init_gets_the_master_default_unless_configured() {
     let sb = Sandbox::new();
     let cwd = sb.dir("none");
     ok(shim(&sb, &cwd, &["init", "x"]));
-    assert_eq!(fs::read_to_string(cwd.join("x/.git/HEAD")).unwrap().trim(), "ref: refs/heads/master");
+    assert_eq!(
+        fs::read_to_string(cwd.join("x/.git/HEAD")).unwrap().trim(),
+        "ref: refs/heads/master"
+    );
     append_global(&sb, "[init]\n\tdefaultBranch = trunk\n");
     ok(shim(&sb, &cwd, &["init", "y"]));
-    assert_eq!(fs::read_to_string(cwd.join("y/.git/HEAD")).unwrap().trim(), "ref: refs/heads/trunk");
+    assert_eq!(
+        fs::read_to_string(cwd.join("y/.git/HEAD")).unwrap().trim(),
+        "ref: refs/heads/trunk"
+    );
 }
 
 #[test]
@@ -263,9 +300,15 @@ fn asc_shim_init_routes_init_to_a_asc_workspace_without_a_ascignore() {
     let cwd = sb.dir("none");
     ok(shim(&sb, &cwd, &["init", "x"]));
     let root = cwd.join("x");
-    assert!(root.join(".git").is_file(), "a gitfile, not a git directory");
+    assert!(
+        root.join(".git").is_file(),
+        "a gitfile, not a git directory"
+    );
     assert!(gitdir(&root).join("asc-workspace").is_file());
-    assert!(!root.join(".ascignore").exists(), "argv[0] = git never adds asc-only files");
+    assert!(
+        !root.join(".ascignore").exists(),
+        "argv[0] = git never adds asc-only files"
+    );
 }
 
 #[test]
@@ -275,20 +318,45 @@ fn real_git_clone_and_init_inside_a_workspace_make_nested_repositories() {
     ok(real(&sb, &src, &["init", "-b", "master"]));
     ok(real(&sb, &src, &["commit", "--allow-empty", "-m", "x"]));
     let bare = sb.tmp.path().join("bare.git");
-    ok(real(&sb, sb.tmp.path(), &["clone", "--bare", src.to_str().unwrap(), bare.to_str().unwrap()]));
+    ok(real(
+        &sb,
+        sb.tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            src.to_str().unwrap(),
+            bare.to_str().unwrap(),
+        ],
+    ));
 
     let ws = workspace(&sb, "ws");
     ok(shim(&sb, &ws, &["clone", bare.to_str().unwrap(), "sub"]));
     assert!(ws.join("sub/.git").is_dir(), "a real git directory");
     assert!(!ws.join("sub/.git/asc-workspace").exists());
-    assert_eq!(ok(shim(&sb, &ws, &["-C", "sub", "log", "-1", "--format=%s"])).stdout, "x\n");
+    assert_eq!(
+        ok(shim(&sb, &ws, &["-C", "sub", "log", "-1", "--format=%s"])).stdout,
+        "x\n"
+    );
 
     let tmp_bare = sb.tmp.path().join("scratch/x");
-    ok(shim(&sb, &ws, &["clone", "--bare", bare.to_str().unwrap(), tmp_bare.to_str().unwrap()]));
+    ok(shim(
+        &sb,
+        &ws,
+        &[
+            "clone",
+            "--bare",
+            bare.to_str().unwrap(),
+            tmp_bare.to_str().unwrap(),
+        ],
+    ));
     assert!(tmp_bare.join("HEAD").is_file());
 
     ok(shim(&sb, &ws, &["init", "fixtures/tmp"]));
-    ok(shim(&sb, &ws, &["-C", "fixtures/tmp", "commit", "--allow-empty", "-m", "x"]));
+    ok(shim(
+        &sb,
+        &ws,
+        &["-C", "fixtures/tmp", "commit", "--allow-empty", "-m", "x"],
+    ));
     assert!(ws.join("fixtures/tmp/.git").is_dir());
     // The parent sees the nested repositories as untracked directories (SPEC 9.3).
     let status = ok(shim(&sb, &ws, &["status", "--porcelain"]));
@@ -303,11 +371,19 @@ fn repository_independent_commands_ignore_the_workspace() {
     let trace = sb.tmp.path().join("trace.log");
     let traced = |args: &[&str]| {
         let mut cmd = sb.command(shim_dir().join(GIT), &ws);
-        cmd.env("ASC_REAL_GIT", real_git()).env("ASC_SHIM_TRACE", &trace).args(args);
+        cmd.env("ASC_REAL_GIT", real_git())
+            .env("ASC_SHIM_TRACE", &trace)
+            .args(args);
         run(&mut cmd)
     };
     let global = sb.user.join(".gitconfig");
-    ok(traced(&["config", "--file", global.to_str().unwrap(), "demo.k", "v"]));
+    ok(traced(&[
+        "config",
+        "--file",
+        global.to_str().unwrap(),
+        "demo.k",
+        "v",
+    ]));
     ok(traced(&["config", "--global", "demo.k2", "v2"]));
     let lines = trace_lines(&trace);
     assert_eq!(lines.len(), 2, "{lines:?}");
@@ -341,20 +417,43 @@ fn link_dir(link: &Path, target: &Path) -> bool {
 #[test]
 fn install_shim_writes_git_into_a_chosen_directory() {
     let sb = Sandbox::new();
-    let dir = bin().parent().unwrap().join("asc-test-install").join(format!("d{}", std::process::id()));
-    let out = ok(asc(&sb, sb.tmp.path(), &["install-shim", "--dir", dir.to_str().unwrap()]));
-    assert!(out.stdout.contains(dir.to_str().unwrap()), "the PATH line: {}", out.stdout);
+    let dir = bin()
+        .parent()
+        .unwrap()
+        .join("asc-test-install")
+        .join(format!("d{}", std::process::id()));
+    let out = ok(asc(
+        &sb,
+        sb.tmp.path(),
+        &["install-shim", "--dir", dir.to_str().unwrap()],
+    ));
+    assert!(
+        out.stdout.contains(dir.to_str().unwrap()),
+        "the PATH line: {}",
+        out.stdout
+    );
     let git = dir.join(GIT);
-    assert_eq!(fs::metadata(&git).unwrap().len(), fs::metadata(bin()).unwrap().len());
+    assert_eq!(
+        fs::metadata(&git).unwrap().len(),
+        fs::metadata(bin()).unwrap().len()
+    );
     // Running it again relinks without error.
-    ok(asc(&sb, sb.tmp.path(), &["install-shim", "--dir", dir.to_str().unwrap()]));
+    ok(asc(
+        &sb,
+        sb.tmp.path(),
+        &["install-shim", "--dir", dir.to_str().unwrap()],
+    ));
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn install_shim_relinks_through_the_current_junction() {
     let sb = Sandbox::new();
-    let prefix = bin().parent().unwrap().join("asc-test-prefix").join(format!("p{}", std::process::id()));
+    let prefix = bin()
+        .parent()
+        .unwrap()
+        .join("asc-test-prefix")
+        .join(format!("p{}", std::process::id()));
     let _ = fs::remove_dir_all(&prefix);
     for ver in ["v1", "v2"] {
         link_binary(&prefix.join(ver).join(EXE));
@@ -374,7 +473,10 @@ fn install_shim_relinks_through_the_current_junction() {
     assert!(link_dir(&current, &prefix.join("v2")));
     let line = run_install(&sb).stdout;
     assert!(prefix.join("v2/shim").join(GIT).is_file());
-    assert!(line.contains("current"), "the PATH line uses the stable path: {line}");
+    assert!(
+        line.contains("current"),
+        "the PATH line uses the stable path: {line}"
+    );
     let _ = fs::remove_dir(&current);
     let _ = fs::remove_dir_all(&prefix);
 }

@@ -530,18 +530,31 @@ mod tests {
             .collect();
         let ops: Vec<(&str, Option<&[u8]>)> = names
             .iter()
-            .map(|n| (n.as_str(), Some(&b"x
-"[..])))
+            .map(|n| {
+                (
+                    n.as_str(),
+                    Some(
+                        &b"x
+"[..],
+                    ),
+                )
+            })
             .collect();
         let a = mk(&e, None, &ops).await;
         let (all, all_visits) = stat_of(&e, a, 1000).await.unwrap();
         assert_eq!((all.files.len(), all.truncated), (200, false));
-        assert!(all_visits >= 200, "a full walk visits every file: {all_visits}");
+        assert!(
+            all_visits >= 200,
+            "a full walk visits every file: {all_visits}"
+        );
         let (cut, visits) = stat_of(&e, a, 10).await.unwrap();
         assert_eq!((cut.files.len(), cut.truncated), (10, true));
         // The walk ends at the 11th change inside the first directory; the other seven
         // directories are never opened.
-        assert!(visits < 30, "the walk went on past the cap: {visits} entries");
+        assert!(
+            visits < 30,
+            "the walk went on past the cap: {visits} entries"
+        );
     }
 
     #[tokio::test]
@@ -550,8 +563,15 @@ mod tests {
         let names: Vec<String> = (0..MAX_FILES + 5).map(|i| format!("f{i:05}")).collect();
         let ops: Vec<(&str, Option<&[u8]>)> = names
             .iter()
-            .map(|n| (n.as_str(), Some(&b"x
-"[..])))
+            .map(|n| {
+                (
+                    n.as_str(),
+                    Some(
+                        &b"x
+"[..],
+                    ),
+                )
+            })
             .collect();
         let a = mk(&e, None, &ops).await;
         let (s, visits) = stat_of(&e, a, MAX_FILES).await.unwrap();

@@ -11,9 +11,7 @@ use async_trait::async_trait;
 use asc_core::id::ChangesetId;
 use asc_engine::graph::Error as GraphError;
 use asc_engine::history::BoundaryStore;
-use asc_engine::sync::{
-    BucketRemote, DEFAULT_ANCESTRY_BUDGET, Demote, Remote, SyncOptions,
-};
+use asc_engine::sync::{BucketRemote, DEFAULT_ANCESTRY_BUDGET, Demote, Remote, SyncOptions};
 use asc_state::StateDb;
 use asc_state::state::{history_boundary, repos};
 use asc_store::bucket::BucketObjects;
@@ -34,7 +32,10 @@ pub struct StateBoundaries {
 
 impl StateBoundaries {
     pub fn new(ws: &WsCtx) -> Self {
-        Self { db: ws.db.clone(), repo: ws.repo.key }
+        Self {
+            db: ws.db.clone(),
+            repo: ws.repo.key,
+        }
     }
 }
 
@@ -45,19 +46,25 @@ fn store_err(e: asc_state::Error) -> GraphError {
 #[async_trait]
 impl BoundaryStore for StateBoundaries {
     async fn list(&self) -> asc_engine::graph::Result<Vec<ChangesetId>> {
-        history_boundary::list(&self.db, self.repo).await.map_err(store_err)
+        history_boundary::list(&self.db, self.repo)
+            .await
+            .map_err(store_err)
     }
 
     async fn add(&self, ids: &[ChangesetId]) -> asc_engine::graph::Result<()> {
         for id in ids {
-            history_boundary::insert(&self.db, self.repo, *id).await.map_err(store_err)?;
+            history_boundary::insert(&self.db, self.repo, *id)
+                .await
+                .map_err(store_err)?;
         }
         Ok(())
     }
 
     async fn remove(&self, ids: &[ChangesetId]) -> asc_engine::graph::Result<()> {
         for id in ids {
-            history_boundary::remove(&self.db, self.repo, *id).await.map_err(store_err)?;
+            history_boundary::remove(&self.db, self.repo, *id)
+                .await
+                .map_err(store_err)?;
         }
         Ok(())
     }
@@ -120,8 +127,16 @@ pub fn refs_mode(ctx: &Ctx, name: &str) -> RefsMode {
 /// The names of the configured remotes (those with a `url`), in file order.
 pub fn remote_names(ctx: &Ctx) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    for section in ctx.config.file().sections_by_name("remote").into_iter().flatten() {
-        let Some(sub) = section.header().subsection_name() else { continue };
+    for section in ctx
+        .config
+        .file()
+        .sections_by_name("remote")
+        .into_iter()
+        .flatten()
+    {
+        let Some(sub) = section.header().subsection_name() else {
+            continue;
+        };
         let name = sub.to_string();
         if !names.contains(&name) {
             names.push(name);
@@ -132,7 +147,11 @@ pub fn remote_names(ctx: &Ctx) -> Vec<String> {
 }
 
 fn looks_like_url(arg: &str) -> bool {
-    arg.contains("://") || arg.contains('/') || arg.contains('\\') || arg.starts_with('.') || arg.contains('@')
+    arg.contains("://")
+        || arg.contains('/')
+        || arg.contains('\\')
+        || arg.starts_with('.')
+        || arg.contains('@')
         || (arg.len() > 1 && arg.as_bytes()[1] == b':')
 }
 
@@ -147,7 +166,10 @@ pub fn no_such_remote(arg: &str) -> CliError {
 }
 
 fn not_yet(spec: &RemoteSpec) -> CliError {
-    CliError::Fatal(format!("asc: {} remotes are not supported yet (bucket remotes only)", spec.kind()))
+    CliError::Fatal(format!(
+        "asc: {} remotes are not supported yet (bucket remotes only)",
+        spec.kind()
+    ))
 }
 
 fn anon(url: &str) -> String {
@@ -174,7 +196,11 @@ pub async fn open(ctx: &Ctx, ws: &WsCtx, arg: &str, intent: Intent) -> Result<Op
         None if looks_like_url(arg) => ("url".to_owned(), arg.to_owned(), false),
         None => return Err(no_such_remote(arg)),
     };
-    let mode = if is_named { refs_mode(ctx, &name) } else { RefsMode::Local };
+    let mode = if is_named {
+        refs_mode(ctx, &name)
+    } else {
+        RefsMode::Local
+    };
     if let Ok(spec @ (RemoteSpec::Git { .. } | RemoteSpec::Discover { .. })) =
         url::parse(&stored, mode)
     {
@@ -193,41 +219,78 @@ pub async fn open_url(
     intent: Intent,
 ) -> Result<Opened> {
     let spec = url::parse(&stored, mode).map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
-    let RemoteSpec::Bucket { url: bucket_url, refs } = &spec else {
+    let RemoteSpec::Bucket {
+        url: bucket_url,
+        refs,
+    } = &spec
+    else {
         return Err(not_yet(&spec));
     };
     if intent == Intent::Write {
         bucket::ensure_local_dir(bucket_url)?;
     } else if !bucket::exists(bucket_url) {
-        return Err(CliError::Fatal(format!("asc: '{}' does not appear to be an asc bucket", anon(&stored))));
+        return Err(CliError::Fatal(format!(
+            "asc: '{}' does not appear to be an asc bucket",
+            anon(&stored)
+        )));
     }
-    let objects = Arc::new(BucketObjects::from_url(bucket_url).map_err(|e| bucket_err(bucket_url, e))?);
+    let objects =
+        Arc::new(BucketObjects::from_url(bucket_url).map_err(|e| bucket_err(bucket_url, e))?);
     let remote: Box<dyn Remote> = match refs {
         RefsMode::Local => {
             let machine = db.machine_id().await?;
-            match bucket::holder(bucket_url, machine).await.map_err(|e| bucket_err(bucket_url, e))? {
+            match bucket::holder(bucket_url, machine)
+                .await
+                .map_err(|e| bucket_err(bucket_url, e))?
+            {
                 bucket::Holder::Other => return Err(other_machine(bucket_url)),
                 bucket::Holder::Nobody | bucket::Holder::Me => {}
             }
             let key = repos::bucket_refs_row(db, bucket_url).await?;
-            Box::new(BucketRemote::new(name.clone(), objects, Arc::new(db.refs()), key))
+            Box::new(BucketRemote::new(
+                name.clone(),
+                objects,
+                Arc::new(db.refs()),
+                key,
+            ))
         }
         RefsMode::Shared => {
-            let (store, root) = bucket::open_store(bucket_url).map_err(|e| bucket_err(bucket_url, e))?;
-            let refs = BucketRefs::connect(store, root).await.map_err(|e| bucket_err(bucket_url, e))?;
-            Box::new(BucketRemote::new(name.clone(), objects, Arc::new(refs), RepoKey(0)))
+            let (store, root) =
+                bucket::open_store(bucket_url).map_err(|e| bucket_err(bucket_url, e))?;
+            let refs = BucketRefs::connect(store, root)
+                .await
+                .map_err(|e| bucket_err(bucket_url, e))?;
+            Box::new(BucketRemote::new(
+                name.clone(),
+                objects,
+                Arc::new(refs),
+                RepoKey(0),
+            ))
         }
     };
-    Ok(Opened { name, configured, url: stored, spec, remote })
+    Ok(Opened {
+        name,
+        configured,
+        url: stored,
+        spec,
+        remote,
+    })
 }
 
 /// The first push to a `--refs local` bucket writes the `refs-local` key (SPEC §3.4).
 pub async fn claim_local_refs(ws: &WsCtx, opened: &Opened) -> Result<()> {
-    let RemoteSpec::Bucket { url, refs: RefsMode::Local } = &opened.spec else {
+    let RemoteSpec::Bucket {
+        url,
+        refs: RefsMode::Local,
+    } = &opened.spec
+    else {
         return Ok(());
     };
     let machine = ws.db.machine_id().await?;
-    match bucket::claim(url, machine).await.map_err(|e| bucket_err(url, e))? {
+    match bucket::claim(url, machine)
+        .await
+        .map_err(|e| bucket_err(url, e))?
+    {
         bucket::Holder::Other => Err(other_machine(url)),
         _ => Ok(()),
     }
@@ -236,7 +299,11 @@ pub async fn claim_local_refs(ws: &WsCtx, opened: &Opened) -> Result<()> {
 /// Sync options from the `asc.fetch.*` keys.
 pub fn options<'a>(ctx: &Ctx, boundaries: &'a StateBoundaries) -> SyncOptions<'a> {
     let mut o = SyncOptions::new(boundaries);
-    if let Some(w) = ctx.config.get("asc.fetch.historyWindow").and_then(|v| v.parse::<u32>().ok()) {
+    if let Some(w) = ctx
+        .config
+        .get("asc.fetch.historyWindow")
+        .and_then(|v| v.parse::<u32>().ok())
+    {
         o.window = Some(w);
     }
     o.ancestry_budget = ctx

@@ -306,9 +306,7 @@ impl<T: ObjectStore> ObjectStore for Resilient<T> {
         payload: PutPayload,
         mut opts: PutOptions,
     ) -> object_store::Result<PutResult> {
-        if self.create_fallback
-            && matches!(opts.mode, PutMode::Create)
-            && self.create_unsupported()
+        if self.create_fallback && matches!(opts.mode, PutMode::Create) && self.create_unsupported()
         {
             opts.mode = PutMode::Overwrite;
         }

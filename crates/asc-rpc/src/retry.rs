@@ -133,7 +133,10 @@ impl RetryBudget {
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         Self::slot(&mut slots, sec); // reset a stale slot before summing
         let (mut requests, mut retries) = (0u64, 0u64);
-        for s in slots.iter().filter(|s| sec.saturating_sub(s.second) < WINDOW_SECS) {
+        for s in slots
+            .iter()
+            .filter(|s| sec.saturating_sub(s.second) < WINDOW_SECS)
+        {
             requests += u64::from(s.requests);
             retries += u64::from(s.retries);
         }
@@ -245,8 +248,14 @@ mod tests {
             jitter: || 0.0,
             ..RetryPolicy::default()
         };
-        assert_eq!(p.delay(1, Some(Duration::from_secs(2))), Duration::from_secs(2));
-        assert_eq!(p.delay(1, Some(Duration::from_secs(3600))), Duration::from_secs(10));
+        assert_eq!(
+            p.delay(1, Some(Duration::from_secs(2))),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            p.delay(1, Some(Duration::from_secs(3600))),
+            Duration::from_secs(10)
+        );
     }
 
     #[test]

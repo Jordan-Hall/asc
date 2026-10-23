@@ -302,7 +302,11 @@ fn run_asc(site: &Site<'_>, args: &[&str]) -> Result<String> {
     check_gitfile(site.mount, site.gitdir)?;
     let mut cmd = Command::new(std::env::current_exe()?);
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
             cmd.env_remove(key);
         }
     }
@@ -353,7 +357,14 @@ fn save_dirty(mount: &Path, gitdir: &Path, name: &str) -> Result<()> {
     let message = format!("agent worktree '{name}' removed with uncommitted work");
     run_asc(
         &site,
-        &["-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", &message],
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--no-verify",
+            "-m",
+            &message,
+        ],
     )?;
     let commit = run_asc(&site, &["rev-parse", "HEAD"])?;
     let secs = std::time::SystemTime::now()
@@ -380,17 +391,21 @@ async fn remove_one(ctx: &Ctx, input: &[u8]) -> Result<ExitCode> {
     if let Some(dir) = path.ancestors().find(|d| d.is_dir()) {
         from_path.extend(probe(ctx, dir).await);
     }
-    for c in from_cwd.iter().chain(std::iter::once(ctx)).chain(&from_path) {
+    for c in from_cwd
+        .iter()
+        .chain(std::iter::once(ctx))
+        .chain(&from_path)
+    {
         let Some(ws) = c.ws_opt() else { continue };
         let all = workspaces::list(&ws.db, Some(ws.repo.key)).await?;
-        let Some(row) = all
-            .iter()
-            .find(|r| same_dir(Path::new(&r.ws.path), &path))
-        else {
+        let Some(row) = all.iter().find(|r| same_dir(Path::new(&r.ws.path), &path)) else {
             continue;
         };
         let Some(main) = all.first().filter(|m| m.ws.id != row.ws.id) else {
-            return Err(bad(format!("'{}' is the main working tree", path.display())));
+            return Err(bad(format!(
+                "'{}' is the main working tree",
+                path.display()
+            )));
         };
         let registered = Path::new(&row.ws.path);
         let verdict = judge(
@@ -511,11 +526,17 @@ mod tests {
         let at = |tail: &str| PathBuf::from(format!("{ABS}/{tail}"));
         let forced = |p: &Path, head: &str, eph: bool| judge(main, p, head, eph);
         let ok = at(".claude/worktrees/bold-fox");
-        assert_eq!(forced(&ok, "refs/heads/agent/bold-fox", false), Verdict::Force);
+        assert_eq!(
+            forced(&ok, "refs/heads/agent/bold-fox", false),
+            Verdict::Force
+        );
         assert_eq!(forced(&ok, "", true), Verdict::Force);
         // Hand-made inside the directory: never forced.
         assert_eq!(forced(&ok, "refs/heads/mine", false), Verdict::Gentle);
-        assert_eq!(forced(&ok, "refs/heads/agent/other", false), Verdict::Gentle);
+        assert_eq!(
+            forced(&ok, "refs/heads/agent/other", false),
+            Verdict::Gentle
+        );
         // Elsewhere, marked or not: refused.
         for tail in [
             "elsewhere",

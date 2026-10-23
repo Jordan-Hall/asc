@@ -744,12 +744,30 @@ mod tests {
     async fn a_page_derives_at_most_the_cap_and_later_calls_finish_the_rest() {
         let f = fx().await;
         let n = MAX_STATS_DERIVE_PER_PAGE + 8;
-        let mut tip = commit(&f.entry, &[], &[("f", b"0
-")]).await;
+        let mut tip = commit(
+            &f.entry,
+            &[],
+            &[(
+                "f", b"0
+",
+            )],
+        )
+        .await;
         let mut chain = vec![tip];
         for i in 1..n {
-            tip = commit(&f.entry, &[tip], &[("f", format!("{i}
-").as_bytes())]).await;
+            tip = commit(
+                &f.entry,
+                &[tip],
+                &[(
+                    "f",
+                    format!(
+                        "{i}
+"
+                    )
+                    .as_bytes(),
+                )],
+            )
+            .await;
             chain.push(tip);
         }
         set_ref(&f, "refs/heads/master", tip).await;
@@ -769,13 +787,22 @@ mod tests {
         r.stats = true;
         let got = call(&f, IdMode::Asc, r.clone()).await.unwrap();
         assert_eq!(rows(&got).len(), n, "every row is still returned");
-        assert_eq!(memos().await, MAX_STATS_DERIVE_PER_PAGE, "derivations are capped");
+        assert_eq!(
+            memos().await,
+            MAX_STATS_DERIVE_PER_PAGE,
+            "derivations are capped"
+        );
         // The earliest rows get the stats; the rest are pending.
         assert_eq!(with_stats(&got), MAX_STATS_DERIVE_PER_PAGE);
         let shown = rows(&got);
-        assert!(shown[..MAX_STATS_DERIVE_PER_PAGE]
-            .iter()
-            .all(|r| r.entry.as_ref().unwrap().stats.is_some()));
+        assert!(
+            shown[..MAX_STATS_DERIVE_PER_PAGE].iter().all(|r| r
+                .entry
+                .as_ref()
+                .unwrap()
+                .stats
+                .is_some())
+        );
         // A repeat reuses those memos and derives the next batch.
         let again = call(&f, IdMode::Asc, r).await.unwrap();
         assert_eq!(memos().await, n);

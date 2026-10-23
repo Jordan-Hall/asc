@@ -163,7 +163,11 @@ impl Pair {
             }
         }
         s.edit(&git_dir);
-        Self { f, git_dir, head: a }
+        Self {
+            f,
+            git_dir,
+            head: a,
+        }
     }
 
     fn asc(&self, args: &[&str]) -> Out {
@@ -171,7 +175,11 @@ impl Pair {
     }
 
     fn git(&self, args: &[&str]) -> Out {
-        git(&self.git_dir, &self.f.sandbox.user, &[&["status"], args].concat())
+        git(
+            &self.git_dir,
+            &self.f.sandbox.user,
+            &[&["status"], args].concat(),
+        )
     }
 
     /// asc's output equals git's for `args`, hints naming `asc` instead of `git`.
@@ -180,7 +188,11 @@ impl Pair {
         let want = self.git(args);
         assert_eq!(got.code, 0, "asc status {args:?}: {}", got.stderr);
         let want_out = rename_hints(&want.stdout);
-        assert_eq!(got.stdout, want_out, "asc status {args:?}\n--- git:\n{}", want.stdout);
+        assert_eq!(
+            got.stdout, want_out,
+            "asc status {args:?}\n--- git:\n{}",
+            want.stdout
+        );
     }
 }
 
@@ -196,14 +208,20 @@ fn mixed() -> Scenario {
             ("b.txt", "two\n"),
             ("c.txt", "three\n"),
             ("d/e.txt", "deep\n"),
-            ("move-me.txt", "same content here\nsecond line\nthird line\n"),
+            (
+                "move-me.txt",
+                "same content here\nsecond line\nthird line\n",
+            ),
             ("gone.txt", "bye\n"),
         ],
         staged: vec![
             ("a.txt", Some("one staged\n")),
             ("new.txt", Some("brand new\n")),
             ("c.txt", None),
-            ("moved.txt", Some("same content here\nsecond line\nthird line\n")),
+            (
+                "moved.txt",
+                Some("same content here\nsecond line\nthird line\n"),
+            ),
             ("move-me.txt", None),
         ],
         work: vec![
@@ -325,7 +343,11 @@ async fn pathspec_limits_and_relative_paths_match_git() {
             &[&["status"], args].concat(),
         );
         assert_eq!(got.code, 0, "{}", got.stderr);
-        assert_eq!(got.stdout, rename_hints(&want.stdout), "from d/ with {args:?}");
+        assert_eq!(
+            got.stdout,
+            rename_hints(&want.stdout),
+            "from d/ with {args:?}"
+        );
     }
 }
 
@@ -356,7 +378,10 @@ async fn set_ref(f: &Fixture, name: &str, cs: Option<asc_core::id::ChangesetId>)
             new: cs.map(asc_core::id::RefTarget::Changeset),
             expires_at: None,
         }],
-        actor: Actor { id: "t".into(), via: "test".into() },
+        actor: Actor {
+            id: "t".into(),
+            via: "test".into(),
+        },
         reason: String::new(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -412,7 +437,11 @@ async fn upstream_lines_match_git() {
         git(&dir, home, &["reset", "-q", "--hard", git_local]);
         match git_remote {
             Some(r) => git(&dir, home, &["update-ref", "refs/remotes/origin/master", r]),
-            None => git(&dir, home, &["update-ref", "-d", "refs/remotes/origin/master"]),
+            None => git(
+                &dir,
+                home,
+                &["update-ref", "-d", "refs/remotes/origin/master"],
+            ),
         };
         for args in [
             &[][..],
@@ -473,9 +502,15 @@ async fn json_matches_the_golden_shape() {
 async fn unmerged_paths_match_git() {
     // Conflict stages are staged rows 1 to 3; the fixture builds them from three commits.
     let f = Fixture::new().await;
-    let base = f.commit(&[], &[("f", b"base\n"), ("g", b"base\n"), ("h", b"base\n")]).await;
-    let ours = f.commit(&[base], &[("f", b"ours\n"), ("k", b"ours\n")]).await;
-    let theirs = f.commit(&[base], &[("f", b"theirs\n"), ("k", b"theirs\n")]).await;
+    let base = f
+        .commit(&[], &[("f", b"base\n"), ("g", b"base\n"), ("h", b"base\n")])
+        .await;
+    let ours = f
+        .commit(&[base], &[("f", b"ours\n"), ("k", b"ours\n")])
+        .await;
+    let theirs = f
+        .commit(&[base], &[("f", b"theirs\n"), ("k", b"theirs\n")])
+        .await;
     f.set_branch("master", ours).await;
     f.checkout_branch("master", Some(ours)).await;
     let row = |path: &str, stage: u8, leaf: &asc_state::state::stage::Leaf| StageRow {
@@ -504,7 +539,12 @@ async fn unmerged_paths_match_git() {
         row("g", 2, &b_g),
     ])
     .await;
-    for (p, c) in [("f", "<<<<<<<\n"), ("g", "base\n"), ("h", "base\n"), ("k", "<<<<<<<\n")] {
+    for (p, c) in [
+        ("f", "<<<<<<<\n"),
+        ("g", "base\n"),
+        ("h", "base\n"),
+        ("k", "<<<<<<<\n"),
+    ] {
         put(&f.root, p, c);
     }
     let out = run(f.asc().arg("status"));
@@ -522,9 +562,18 @@ async fn unmerged_paths_match_git() {
     assert_eq!(short.stdout, "UU f\nUD g\nAA k\n");
     let v2 = run(f.asc().args(["status", "--porcelain=v2"]));
     let lines: Vec<_> = v2.stdout.lines().collect();
-    assert!(lines[0].starts_with("u UU N... 100644 100644 100644 100644 "), "{lines:?}");
-    assert!(lines[1].starts_with("u UD N... 100644 100644 000000 100644 "), "{lines:?}");
-    assert!(lines[2].starts_with("u AA N... 000000 100644 100644 100644 "), "{lines:?}");
+    assert!(
+        lines[0].starts_with("u UU N... 100644 100644 100644 100644 "),
+        "{lines:?}"
+    );
+    assert!(
+        lines[1].starts_with("u UD N... 100644 100644 000000 100644 "),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].starts_with("u AA N... 000000 100644 100644 100644 "),
+        "{lines:?}"
+    );
 }
 
 #[tokio::test]
@@ -550,7 +599,11 @@ async fn optional_locks_gate_the_stat_cache_refresh() {
         .unwrap();
     let leaf = {
         let root = p.f.engine.get_changeset(p.head).await.unwrap().root;
-        p.f.engine.lookup(root, &RepoPath::new("a.txt").unwrap()).await.unwrap().unwrap()
+        p.f.engine
+            .lookup(root, &RepoPath::new("a.txt").unwrap())
+            .await
+            .unwrap()
+            .unwrap()
     };
     let stale = IndexFile {
         entries: vec![IndexEntry {
@@ -575,17 +628,36 @@ async fn optional_locks_gate_the_stat_cache_refresh() {
 
     let out = run(p.f.asc().env("GIT_OPTIONAL_LOCKS", "0").arg("status"));
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stdout.contains("nothing to commit, working tree clean"), "{}", out.stdout);
-    assert_eq!(fs::read(&index_path).unwrap(), before, "GIT_OPTIONAL_LOCKS=0 leaves the index");
-    assert_eq!(fs::metadata(&index_path).unwrap().modified().unwrap(), before_mtime);
+    assert!(
+        out.stdout.contains("nothing to commit, working tree clean"),
+        "{}",
+        out.stdout
+    );
+    assert_eq!(
+        fs::read(&index_path).unwrap(),
+        before,
+        "GIT_OPTIONAL_LOCKS=0 leaves the index"
+    );
+    assert_eq!(
+        fs::metadata(&index_path).unwrap().modified().unwrap(),
+        before_mtime
+    );
 
     let out = run(p.f.asc().args(["--no-optional-locks", "status"]));
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(fs::read(&index_path).unwrap(), before, "--no-optional-locks leaves the index");
+    assert_eq!(
+        fs::read(&index_path).unwrap(),
+        before,
+        "--no-optional-locks leaves the index"
+    );
 
     let out = run(p.f.asc().arg("status"));
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_ne!(fs::read(&index_path).unwrap(), before, "the stat cache is refreshed");
+    assert_ne!(
+        fs::read(&index_path).unwrap(),
+        before,
+        "the stat cache is refreshed"
+    );
     let fresh = IndexFile::read(&index_path).unwrap();
     assert_eq!(fresh.entries[0].mtime.secs, 1_600_000_000);
 }
@@ -604,7 +676,8 @@ async fn shadowed_gitignore_warns_on_stderr() {
     let out = p.asc(&[]);
     assert_eq!(out.code, 0);
     assert!(
-        out.stderr.contains("warning: asc: .gitignore is not read because .ascignore exists"),
+        out.stderr
+            .contains("warning: asc: .gitignore is not read because .ascignore exists"),
         "{}",
         out.stderr
     );
@@ -612,7 +685,10 @@ async fn shadowed_gitignore_warns_on_stderr() {
 
 #[tokio::test]
 async fn unsupported_forms_are_refused_by_name() {
-    let s = Scenario { head: vec![("a.txt", "x\n")], ..Scenario::default() };
+    let s = Scenario {
+        head: vec![("a.txt", "x\n")],
+        ..Scenario::default()
+    };
     let p = Pair::new(&s).await;
     let out = p.asc(&["--ignored=matching"]);
     assert_ne!(out.code, 0);
@@ -637,7 +713,10 @@ fn b64(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in data.chunks(3) {
-        let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
         for i in 0..4 {
             if i <= chunk.len() {
                 out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
@@ -676,10 +755,17 @@ async fn tracked_path_behind_a_linked_directory_reads_as_deleted() {
     f.checkout_branch("master", Some(a)).await;
     let outside = f.sandbox.dir("outside");
     fs::write(outside.join("e.txt"), "deep\n").unwrap();
-    assert!(link_dir(&outside, &f.root.join("d")), "cannot make a directory link here");
+    assert!(
+        link_dir(&outside, &f.root.join("d")),
+        "cannot make a directory link here"
+    );
     let out = run(f.asc().args(["status", "--porcelain=v2"]));
     assert_eq!(out.code, 0, "{}", out.stderr);
-    let line = out.stdout.lines().find(|l| l.ends_with(" d/e.txt")).expect("d/e.txt is listed");
+    let line = out
+        .stdout
+        .lines()
+        .find(|l| l.ends_with(" d/e.txt"))
+        .expect("d/e.txt is listed");
     let fields: Vec<&str> = line.split(' ').collect();
     assert_eq!(fields[1], ".D", "{line}");
     assert_eq!(fields[5], "000000", "no mode from beyond the link: {line}");

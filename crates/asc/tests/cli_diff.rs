@@ -42,7 +42,14 @@ fn git(dir: &Path, home: &Path, args: &[&str]) -> Out {
         .env("GIT_COMMITTER_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_DATE", "1700000000 +0000")
         .env("GIT_PAGER", "cat")
-        .args(["-c", "core.autocrlf=false", "-c", "core.quotePath=true", "-c", "core.filemode=false"])
+        .args([
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.quotePath=true",
+            "-c",
+            "core.filemode=false",
+        ])
         .args(args))
 }
 
@@ -110,7 +117,10 @@ fn mixed() -> Scenario {
             ("d/e.txt", "deep\nfile\nmore\n"),
         ],
         staged: vec![
-            ("a.txt", Some("one\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n")),
+            (
+                "a.txt",
+                Some("one\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n"),
+            ),
             ("staged-new.txt", Some("staged\n")),
             ("c.txt", None),
             ("moved.txt", Some(MOVED)),
@@ -118,7 +128,10 @@ fn mixed() -> Scenario {
         ],
         work: vec![
             ("b.txt", Some("bee edited\n")),
-            ("a.txt", Some("ONE\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n")),
+            (
+                "a.txt",
+                Some("ONE\ntwo\nthree\nfour\nFIVE\nsix\nseven\neight\nnine\nTEN\n"),
+            ),
             ("gone.txt", None),
             ("bin.dat", Some("\u{0}\u{1}\u{2}binary work\u{0}")),
             ("noeol.txt", Some("no newline\nnow one\n")),
@@ -133,13 +146,19 @@ fn mixed() -> Scenario {
 impl Pair {
     async fn new(s: &Scenario) -> Self {
         let f = Fixture::new().await;
-        let bytes = |files: &Files| -> Vec<(&str, &[u8])> { files.iter().map(|(p, c)| (*p, c.as_bytes())).collect() };
+        let bytes = |files: &Files| -> Vec<(&str, &[u8])> {
+            files.iter().map(|(p, c)| (*p, c.as_bytes())).collect()
+        };
         let a = f.commit(&[], &bytes(&s.first)).await;
         let b = f.commit(&[a], &bytes(&s.second)).await;
         f.set_branch("master", b).await;
         f.checkout_branch("master", Some(b)).await;
 
-        let adds: Vec<(&str, &[u8])> = s.staged.iter().filter_map(|(p, c)| c.map(|c| (*p, c.as_bytes()))).collect();
+        let adds: Vec<(&str, &[u8])> = s
+            .staged
+            .iter()
+            .filter_map(|(p, c)| c.map(|c| (*p, c.as_bytes())))
+            .collect();
         let mut rows = Vec::new();
         if !adds.is_empty() {
             let side = f.commit(&[b], &adds).await;
@@ -203,13 +222,31 @@ impl Pair {
             put(&git_dir, p, c);
         }
         git(&git_dir, home, &["add", "-A"]);
-        let c = git(&git_dir, home, &["commit", "-q", "-m", &format!("commit of {} files", s.first.len())]);
+        let c = git(
+            &git_dir,
+            home,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                &format!("commit of {} files", s.first.len()),
+            ],
+        );
         assert_eq!(c.code, 0, "{}", c.stderr);
         for (p, c) in &s.second {
             put(&git_dir, p, c);
         }
         git(&git_dir, home, &["add", "-A"]);
-        let c = git(&git_dir, home, &["commit", "-q", "-m", &format!("commit of {} files", s.second.len())]);
+        let c = git(
+            &git_dir,
+            home,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                &format!("commit of {} files", s.second.len()),
+            ],
+        );
         assert_eq!(c.code, 0, "{}", c.stderr);
         for (p, c) in &s.staged {
             match c {
@@ -247,7 +284,11 @@ impl Pair {
         let got = self.asc(asc_cwd, args);
         let want = self.git(git_cwd, args);
         assert_eq!(got.code, want.code, "exit code of {args:?}: {}", got.stderr);
-        assert_eq!(got.stdout, want.stdout, "stdout of {args:?}\n--- stderr: {}", got.stderr);
+        assert_eq!(
+            got.stdout, want.stdout,
+            "stdout of {args:?}\n--- stderr: {}",
+            got.stderr
+        );
     }
 }
 
@@ -263,7 +304,12 @@ async fn patch_of_worktree_against_index_matches_git() {
 #[tokio::test]
 async fn output_forms_match_git() {
     let p = Pair::new(&mixed()).await;
-    for mode in [&["diff"][..], &["diff", "--cached"], &["diff", "HEAD"], &["diff", "HEAD~1", "HEAD"]] {
+    for mode in [
+        &["diff"][..],
+        &["diff", "--cached"],
+        &["diff", "HEAD"],
+        &["diff", "HEAD~1", "HEAD"],
+    ] {
         for form in [
             &["--stat"][..],
             &["--numstat"],
@@ -336,10 +382,19 @@ async fn context_algorithm_and_prefix_options_match_git() {
         &["--find-renames=90%"],
         &["--diff-filter=AD"],
         &["--diff-filter=d"],
-        &["--no-color", "--no-ext-diff", "--no-textconv", "--submodule=short"],
+        &[
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--submodule=short",
+        ],
         &["-a"],
     ] {
-        for mode in [&["diff"][..], &["diff", "--cached"], &["diff", "HEAD~1", "HEAD"]] {
+        for mode in [
+            &["diff"][..],
+            &["diff", "--cached"],
+            &["diff", "HEAD~1", "HEAD"],
+        ] {
             let args: Vec<&str> = mode.iter().chain(extra).copied().collect();
             p.same(&args);
         }
@@ -369,7 +424,16 @@ async fn binary_patches_match_git() {
             "a.txt",
             "bin.dat",
         ],
-        &["diff", "--cached", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--patch", "--submodule=short"],
+        &[
+            "diff",
+            "--cached",
+            "--binary",
+            "--unified=0",
+            "--no-color",
+            "--no-ext-diff",
+            "--patch",
+            "--submodule=short",
+        ],
     ] {
         p.same(args);
     }
@@ -395,13 +459,19 @@ fn applied(p: &Pair, patch: &str, base: &Files, want: &[&str]) -> Vec<String> {
     for (name, content) in base {
         put(&dir, name, content);
     }
-    let file = p.f.sandbox.tmp.path().join(format!("p{}.patch", patch.len()));
+    let file =
+        p.f.sandbox
+            .tmp
+            .path()
+            .join(format!("p{}.patch", patch.len()));
     fs::write(&file, patch.as_bytes()).unwrap();
     let check = p.git(&dir, &["apply", "--check", file.to_str().unwrap()]);
     assert_eq!(check.code, 0, "git apply --check: {}", check.stderr);
     let done = p.git(&dir, &["apply", file.to_str().unwrap()]);
     assert_eq!(done.code, 0, "git apply: {}", done.stderr);
-    want.iter().map(|n| fs::read_to_string(dir.join(n)).unwrap_or_default()).collect()
+    want.iter()
+        .map(|n| fs::read_to_string(dir.join(n)).unwrap_or_default())
+        .collect()
 }
 
 #[tokio::test]
@@ -426,7 +496,10 @@ async fn larger_binary_patches_apply_with_git() {
     let got = applied(&p, &backward.stdout, &second, &["big.bin", "fresh.bin"]);
     assert_eq!(got, vec![blob(1, 6000).to_owned(), String::new()]);
     // The stat forms need no deflate and match exactly.
-    for args in [&["diff", "--stat", "HEAD~1", "HEAD"][..], &["diff", "--numstat", "HEAD~1"]] {
+    for args in [
+        &["diff", "--stat", "HEAD~1", "HEAD"][..],
+        &["diff", "--numstat", "HEAD~1"],
+    ] {
         p.same(args);
     }
 }
@@ -439,7 +512,16 @@ async fn binary_patch_applies_with_git() {
     // Reverse-apply the patch to a copy of the second commit's tree: git accepts asc's text.
     let file = p.f.sandbox.tmp.path().join("bin.patch");
     fs::write(&file, patch.stdout.as_bytes()).unwrap();
-    let check = p.git(&p.git_dir, &["apply", "--check", "--reverse", "--cached", file.to_str().unwrap()]);
+    let check = p.git(
+        &p.git_dir,
+        &[
+            "apply",
+            "--check",
+            "--reverse",
+            "--cached",
+            file.to_str().unwrap(),
+        ],
+    );
     let _ = check;
     let first = p.git(&p.git_dir, &["apply", "--stat", file.to_str().unwrap()]);
     assert_eq!(first.code, 0, "{}", first.stderr);
@@ -468,7 +550,15 @@ async fn output_option_writes_the_file() {
     let p = Pair::new(&mixed()).await;
     let want = p.git(&p.git_dir, &["diff", "HEAD~1", "HEAD"]);
     let target = p.f.sandbox.tmp.path().join("out.patch");
-    let got = p.asc(&p.f.root, &["diff", "HEAD~1", "HEAD", &format!("--output={}", target.display())]);
+    let got = p.asc(
+        &p.f.root,
+        &[
+            "diff",
+            "HEAD~1",
+            "HEAD",
+            &format!("--output={}", target.display()),
+        ],
+    );
     assert_eq!(got.code, 0, "{}", got.stderr);
     assert_eq!(got.stdout, "");
     assert_eq!(text(&fs::read(&target).unwrap()), want.stdout);
@@ -480,7 +570,11 @@ async fn subdirectory_and_relative_match_git() {
     let (asc_d, git_d) = (p.f.root.join("d"), p.git_dir.join("d"));
     p.same_in(&asc_d, &git_d, &["diff"]);
     p.same_in(&asc_d, &git_d, &["diff", "--relative"]);
-    p.same_in(&asc_d, &git_d, &["diff", "HEAD~1", "--relative", "--name-only"]);
+    p.same_in(
+        &asc_d,
+        &git_d,
+        &["diff", "HEAD~1", "--relative", "--name-only"],
+    );
     p.same_in(&asc_d, &git_d, &["diff", "--cached", "--", "."]);
     p.same_in(&asc_d, &git_d, &["diff", "HEAD~1", "HEAD", "--", "e.txt"]);
 }
@@ -488,7 +582,11 @@ async fn subdirectory_and_relative_match_git() {
 #[tokio::test]
 async fn bad_revision_and_ambiguity_match_git() {
     let p = Pair::new(&mixed()).await;
-    for args in [&["diff", "no-such-rev"][..], &["diff", "HEAD", "no-such-path"], &["diff", "--cached", "HEAD", "HEAD~1"]] {
+    for args in [
+        &["diff", "no-such-rev"][..],
+        &["diff", "HEAD", "no-such-path"],
+        &["diff", "--cached", "HEAD", "HEAD~1"],
+    ] {
         let got = p.asc(&p.f.root, args);
         let want = p.git(&p.git_dir, args);
         assert_eq!(got.code, want.code, "{args:?}: {}", got.stderr);
@@ -518,7 +616,14 @@ async fn staged_renames_match_git() {
         ..Scenario::default()
     };
     let p = Pair::new(&s).await;
-    for args in [&["diff", "--cached"][..], &["diff", "--cached", "--summary"], &["diff", "--cached", "--stat"], &["diff", "--cached", "-M", "--raw"], &["diff", "--cached", "--no-renames"], &["diff", "HEAD", "--name-status"]] {
+    for args in [
+        &["diff", "--cached"][..],
+        &["diff", "--cached", "--summary"],
+        &["diff", "--cached", "--stat"],
+        &["diff", "--cached", "-M", "--raw"],
+        &["diff", "--cached", "--no-renames"],
+        &["diff", "HEAD", "--name-status"],
+    ] {
         p.same(args);
     }
 }
@@ -549,7 +654,10 @@ async fn intent_to_add_is_a_new_file_in_the_work_tree_only() {
 async fn diff_attribute_decides_text_or_binary_like_git() {
     let s = Scenario {
         first: vec![
-            (".gitattributes", "*.dat -diff\nforced.bin diff\nsub/*.log binary\n"),
+            (
+                ".gitattributes",
+                "*.dat -diff\nforced.bin diff\nsub/*.log binary\n",
+            ),
             ("x.dat", "one\ntwo\n"),
             ("forced.bin", "a\0b\nc\n"),
             ("sub/y.log", "log\n"),
@@ -565,7 +673,13 @@ async fn diff_attribute_decides_text_or_binary_like_git() {
         ..Scenario::default()
     };
     let p = Pair::new(&s).await;
-    for args in [&["diff"][..], &["diff", "--stat"], &["diff", "--numstat"], &["diff", "-a"], &["diff", "HEAD~1"]] {
+    for args in [
+        &["diff"][..],
+        &["diff", "--stat"],
+        &["diff", "--numstat"],
+        &["diff", "-a"],
+        &["diff", "HEAD~1"],
+    ] {
         p.same(args);
     }
 }
@@ -576,11 +690,21 @@ async fn deleted_and_added_files_and_mode_free_cases_match_git() {
         first: vec![("only.txt", "one\n")],
         second: vec![("two.txt", "two\n")],
         staged: vec![],
-        work: vec![("only.txt", None), ("two.txt", Some("")), ("tiny.txt", Some("x"))],
+        work: vec![
+            ("only.txt", None),
+            ("two.txt", Some("")),
+            ("tiny.txt", Some("x")),
+        ],
         ..Scenario::default()
     };
     let p = Pair::new(&s).await;
-    for args in [&["diff"][..], &["diff", "--stat"], &["diff", "--summary"], &["diff", "--raw"], &["diff", "HEAD~1"]] {
+    for args in [
+        &["diff"][..],
+        &["diff", "--stat"],
+        &["diff", "--summary"],
+        &["diff", "--raw"],
+        &["diff", "HEAD~1"],
+    ] {
         p.same(args);
     }
 }
@@ -652,9 +776,23 @@ async fn diff_files_matches_git() {
 
 #[tokio::test]
 async fn clean_tree_has_no_output_and_exit_zero() {
-    let s = Scenario { first: vec![("a.txt", "x\n")], second: vec![("b.txt", "y\n")], staged: vec![], work: vec![], intent: vec![] };
+    let s = Scenario {
+        first: vec![("a.txt", "x\n")],
+        second: vec![("b.txt", "y\n")],
+        staged: vec![],
+        work: vec![],
+        intent: vec![],
+    };
     let p = Pair::new(&s).await;
-    for args in [&["diff"][..], &["diff", "--cached"], &["diff", "HEAD"], &["diff", "--exit-code"], &["diff-files"], &["diff-index", "HEAD"], &["diff-index", "--cached", "HEAD"]] {
+    for args in [
+        &["diff"][..],
+        &["diff", "--cached"],
+        &["diff", "HEAD"],
+        &["diff", "--exit-code"],
+        &["diff-files"],
+        &["diff-index", "HEAD"],
+        &["diff-index", "--cached", "HEAD"],
+    ] {
         p.same(args);
     }
 }
@@ -663,7 +801,12 @@ async fn clean_tree_has_no_output_and_exit_zero() {
 
 #[tokio::test]
 async fn no_index_matches_git() {
-    let p = Pair::new(&Scenario { first: vec![("a.txt", "x\n")], second: vec![("b.txt", "y\n")], ..Scenario::default() }).await;
+    let p = Pair::new(&Scenario {
+        first: vec![("a.txt", "x\n")],
+        second: vec![("b.txt", "y\n")],
+        ..Scenario::default()
+    })
+    .await;
     let work = p.f.sandbox.dir("noindex");
     put(&work, "one.txt", "alpha\nbeta\ngamma\n");
     put(&work, "two.txt", "alpha\nBETA\ngamma\n");
@@ -705,20 +848,33 @@ async fn json_lines_have_a_stable_shape() {
     let p = Pair::new(&s).await;
     let got = p.asc(&p.f.root, &["diff", "--json"]);
     assert_eq!(got.code, 0, "{}", got.stderr);
-    let lines: Vec<serde_json::Value> = got.stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let lines: Vec<serde_json::Value> = got
+        .stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(lines.len(), 2, "{}", got.stdout);
 
     let patch_a = p.git(&p.git_dir, &["diff", "--", "a.txt"]).stdout;
     let patch_b = p.git(&p.git_dir, &["diff", "--", "b.txt"]).stdout;
     let change = |i: usize| lines[i]["changes"][0].clone();
-    assert_eq!(unbase64(lines[0]["text"].as_str().unwrap()), patch_a.as_bytes());
-    assert_eq!(unbase64(lines[1]["text"].as_str().unwrap()), patch_b.as_bytes());
+    assert_eq!(
+        unbase64(lines[0]["text"].as_str().unwrap()),
+        patch_a.as_bytes()
+    );
+    assert_eq!(
+        unbase64(lines[1]["text"].as_str().unwrap()),
+        patch_b.as_bytes()
+    );
     assert_eq!(change(0)["status"], "M");
     assert_eq!(unbase64(change(0)["path"].as_str().unwrap()), b"a.txt");
     assert_eq!(change(0)["old_mode"], 0o100644);
     assert_eq!(change(0)["new_mode"], 0o100644);
     assert_eq!(change(1)["status"], "D");
-    assert!(change(1).get("new_mode").is_none(), "zero values are left out");
+    assert!(
+        change(1).get("new_mode").is_none(),
+        "zero values are left out"
+    );
 
     // Golden: the exact bytes of the first line.
     let first = got.stdout.lines().next().unwrap();
@@ -727,7 +883,10 @@ async fn json_lines_have_a_stable_shape() {
     let old_id = change(0)["old_id"].as_str().unwrap().to_owned();
     assert_eq!(unbase64(&old_git).len(), 20);
     assert_eq!(unbase64(&old_id).len(), 32);
-    assert!(change(0).get("new_id").is_none(), "a work tree side has no stored file id");
+    assert!(
+        change(0).get("new_id").is_none(),
+        "a work tree side has no stored file id"
+    );
     let first_text = lines[0]["text"].as_str().unwrap().to_owned();
     let expected = serde_json::json!({
         "changes": [{
@@ -743,7 +902,10 @@ async fn json_lines_have_a_stable_shape() {
         }],
         "text": first_text,
     });
-    assert_eq!(serde_json::from_str::<serde_json::Value>(first).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(first).unwrap(),
+        expected
+    );
 }
 
 /// Standard base64, which is how the JSON profile prints `bytes` fields that are not ids.

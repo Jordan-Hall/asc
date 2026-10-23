@@ -13,14 +13,14 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use asc_core::codec::Enveloped as _;
 use asc_core::content::{Body, ingest};
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, RefTarget, TagId};
+use asc_core::object::SortedMap;
 use asc_core::object::{Change, Kind, TagRecord};
 use asc_core::path::{RefName, RepoPath};
-use asc_core::codec::Enveloped as _;
 use asc_core::sig::Signature;
-use asc_core::object::SortedMap;
 use asc_engine::Engine;
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::GitMapRow;
@@ -41,7 +41,11 @@ struct Out {
 
 fn run(cmd: &mut Command) -> Out {
     let out = cmd.output().expect("spawn");
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 /// Real git in `dir`: hermetic, UTC, no pager.
@@ -71,16 +75,32 @@ struct Who {
 
 impl Who {
     fn at(time: i64) -> Self {
-        Self { name: "Test", email: "test@example.com", time, tz: 0 }
+        Self {
+            name: "Test",
+            email: "test@example.com",
+            time,
+            tz: 0,
+        }
     }
 
     fn tz_text(&self) -> String {
         let a = self.tz.abs();
-        format!("{}{:02}{:02}", if self.tz < 0 { '-' } else { '+' }, a / 60, a % 60)
+        format!(
+            "{}{:02}{:02}",
+            if self.tz < 0 { '-' } else { '+' },
+            a / 60,
+            a % 60
+        )
     }
 
     fn sig(&self) -> Signature {
-        Signature::new(self.name.as_bytes().to_vec(), self.email.as_bytes().to_vec(), self.time, self.tz).unwrap()
+        Signature::new(
+            self.name.as_bytes().to_vec(),
+            self.email.as_bytes().to_vec(),
+            self.time,
+            self.tz,
+        )
+        .unwrap()
     }
 }
 
@@ -98,7 +118,10 @@ fn step(name: &str, parents: &[&str], files: &[(&str, &str)], time: i64, msg: &s
     Step {
         name: name.into(),
         parents: parents.iter().map(|p| (*p).to_owned()).collect(),
-        files: files.iter().map(|(p, c)| ((*p).to_owned(), (*c).to_owned())).collect(),
+        files: files
+            .iter()
+            .map(|(p, c)| ((*p).to_owned(), (*c).to_owned()))
+            .collect(),
         author: Who::at(time),
         committer: Who::at(time),
         msg: msg.into(),
@@ -122,7 +145,10 @@ async fn set_ref_asc(f: &Fixture, name: &str, target: RefTarget) {
             new: Some(target),
             expires_at: None,
         }],
-        actor: Actor { id: "fixture".into(), via: "test".into() },
+        actor: Actor {
+            id: "fixture".into(),
+            via: "test".into(),
+        },
         reason: "fixture".into(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -133,14 +159,23 @@ async fn asc_commit(f: &Fixture, s: &Step, parents: Vec<ChangesetId>) -> Changes
     let mut changes = Vec::new();
     for (path, content) in &s.files {
         let got = ingest(Cursor::new(content.as_bytes())).unwrap();
-        let Body::Inline(bytes) = got.body else { panic!("scenario files are small") };
-        f.objects.put(&ObjKey::File(got.file), encode_stored(&bytes)).await.unwrap();
+        let Body::Inline(bytes) = got.body else {
+            panic!("scenario files are small")
+        };
+        f.objects
+            .put(&ObjKey::File(got.file), encode_stored(&bytes))
+            .await
+            .unwrap();
         changes.push((
             RepoPath::new(path.as_str()).unwrap(),
             Change::write(Kind::File, got.file, got.size, got.git, None).unwrap(),
         ));
     }
-    let root = f.engine.apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes).await.unwrap();
+    let root = f
+        .engine
+        .apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes)
+        .await
+        .unwrap();
     f.engine
         .create_changeset(
             NewChangeset {
@@ -163,12 +198,18 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
     let init = run(git_cmd(dir, home).args(["init", "-q", "-b", "master"]));
     assert_eq!(init.code, 0, "{}", init.stderr);
     let mut stream: Vec<u8> = Vec::new();
-    let mark: HashMap<&str, usize> = steps.iter().enumerate().map(|(i, s)| (s.name.as_str(), i + 1)).collect();
+    let mark: HashMap<&str, usize> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.as_str(), i + 1))
+        .collect();
     for (i, s) in steps.iter().enumerate() {
         stream.extend_from_slice(b"commit refs/heads/work\n");
         stream.extend_from_slice(format!("mark :{}\n", i + 1).as_bytes());
         for (k, w) in [("author", s.author), ("committer", s.committer)] {
-            stream.extend_from_slice(format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes());
+            stream.extend_from_slice(
+                format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes(),
+            );
         }
         stream.extend_from_slice(format!("data {}\n{}\n", s.msg.len(), s.msg).as_bytes());
         if let Some(first) = s.parents.first() {
@@ -181,13 +222,23 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         }
         stream.extend_from_slice(b"deleteall\n");
         for (path, content) in &s.files {
-            stream.extend_from_slice(format!("M 100644 inline {path}\ndata {}\n{content}\n", content.len()).as_bytes());
+            stream.extend_from_slice(
+                format!(
+                    "M 100644 inline {path}\ndata {}\n{content}\n",
+                    content.len()
+                )
+                .as_bytes(),
+            );
         }
         stream.push(b'\n');
     }
     let marks = dir.join("marks.txt");
     let mut child = git_cmd(dir, home)
-        .args(["fast-import", "--quiet", &format!("--export-marks={}", marks.display())])
+        .args([
+            "fast-import",
+            "--quiet",
+            &format!("--export-marks={}", marks.display()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -195,7 +246,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         .unwrap();
     child.stdin.take().unwrap().write_all(&stream).unwrap();
     let done = child.wait_with_output().unwrap();
-    assert!(done.status.success(), "fast-import: {}", String::from_utf8_lossy(&done.stderr));
+    assert!(
+        done.status.success(),
+        "fast-import: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
     let table = fs::read_to_string(&marks).unwrap();
     let by_mark: HashMap<usize, String> = table
         .lines()
@@ -207,7 +262,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
     fs::remove_file(&marks).unwrap();
     let gone = run(git_cmd(dir, home).args(["update-ref", "-d", "refs/heads/work"]));
     assert_eq!(gone.code, 0, "{}", gone.stderr);
-    steps.iter().enumerate().map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone())).collect()
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone()))
+        .collect()
 }
 
 impl Built {
@@ -222,12 +281,26 @@ impl Built {
             let parents = s.parents.iter().map(|p| ids[p]).collect();
             let id = asc_commit(&f, s, parents).await;
             let git = f.engine.git_commit_of(id).await.unwrap();
-            assert_eq!(git.to_string(), shas[&s.name], "commit {} must have the same id in both repositories", s.name);
-            rows.push(GitMapRow { git, kind: ObjectKind::Commit, asc: *id.as_bytes() });
+            assert_eq!(
+                git.to_string(),
+                shas[&s.name],
+                "commit {} must have the same id in both repositories",
+                s.name
+            );
+            rows.push(GitMapRow {
+                git,
+                kind: ObjectKind::Commit,
+                asc: *id.as_bytes(),
+            });
             ids.insert(s.name.clone(), id);
         }
         git_map::insert_many(&f.db, f.repo, &rows).await.unwrap();
-        let b = Self { f, git_dir, ids, shas };
+        let b = Self {
+            f,
+            git_dir,
+            ids,
+            shas,
+        };
         b.branch("master", head).await;
         b.f.checkout_branch("master", Some(b.ids[head])).await;
         let r = b.git(&["symbolic-ref", "HEAD", "refs/heads/master"]);
@@ -266,7 +339,12 @@ impl Built {
 
     /// An annotated tag by the same tagger in both repositories.
     async fn annotated_tag(&self, name: &str, at: &str, message: &str, time: i64) {
-        let tagger = Who { name: "Tagger", email: "tagger@example.com", time, tz: 60 };
+        let tagger = Who {
+            name: "Tagger",
+            email: "tagger@example.com",
+            time,
+            tz: 60,
+        };
         let rec = TagRecord {
             target: self.ids[at],
             name: name.as_bytes().to_vec(),
@@ -275,7 +353,11 @@ impl Built {
             extra: SortedMap::new(vec![]).unwrap(),
         };
         let id: TagId = rec.id();
-        self.f.objects.put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope())).await.unwrap();
+        self.f
+            .objects
+            .put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope()))
+            .await
+            .unwrap();
         set_ref_asc(&self.f, &format!("refs/tags/{name}"), RefTarget::Tag(id)).await;
         let when = format!("{time} +0100");
         let r = self.git_env(
@@ -293,13 +375,21 @@ impl Built {
     fn same(&self, args: &[&str]) {
         let want = self.git(args);
         let got = self.asc(args);
-        assert_eq!(got.code, want.code, "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
+        assert_eq!(
+            got.code, want.code,
+            "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr, want.stderr
+        );
         let shape = if args.contains(&"--graph") {
             self.git(&["log", "--all", "--format=%h %p|%at"]).stdout
         } else {
             String::new()
         };
-        assert_eq!(got.stdout, want.stdout, "stdout of {args:?}\n--- asc stderr:\n{}\nSHAPE\n{shape}", got.stderr);
+        assert_eq!(
+            got.stdout, want.stdout,
+            "stdout of {args:?}\n--- asc stderr:\n{}\nSHAPE\n{shape}",
+            got.stderr
+        );
         if want.code != 0 {
             let normal = |s: &str| s.replace("'git <command>", "'asc <command>");
             assert_eq!(got.stderr, normal(&want.stderr), "stderr of {args:?}");
@@ -321,7 +411,12 @@ const DAY: i64 = 86_400;
 /// A history with a merge, a rename, tabs, trailers and several identities.
 fn history() -> Vec<Step> {
     let a = |s: &mut Step| {
-        s.author = Who { name: "Ann Author", email: "ann@example.org", time: s.author.time, tz: 0 };
+        s.author = Who {
+            name: "Ann Author",
+            email: "ann@example.org",
+            time: s.author.time,
+            tz: 0,
+        };
     };
     let mut c1 = step(
         "c1",
@@ -335,39 +430,74 @@ fn history() -> Vec<Step> {
     let mut c2 = step(
         "c2",
         &["c1"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + DAY,
         "Second change\n",
     );
-    c2.author = Who { name: "Bob Builder", email: "bob@example.com", time: T0 + DAY, tz: -300 };
-    c2.committer = Who { name: "Cy Committer", email: "cy@example.net", time: T0 + DAY + 600, tz: 330 };
+    c2.author = Who {
+        name: "Bob Builder",
+        email: "bob@example.com",
+        time: T0 + DAY,
+        tz: -300,
+    };
+    c2.committer = Who {
+        name: "Cy Committer",
+        email: "cy@example.net",
+        time: T0 + DAY + 600,
+        tz: 330,
+    };
     let mut c3 = step(
         "c3",
         &["c2"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 2 * DAY,
         "Side branch work\n\nSigned-off-by: Side <side@example.org>\n",
     );
-    c3.author = Who { name: "Side Dev", email: "side@example.org", time: T0 + 2 * DAY, tz: 120 };
+    c3.author = Who {
+        name: "Side Dev",
+        email: "side@example.org",
+        time: T0 + 2 * DAY,
+        tz: 120,
+    };
     c3.committer = c3.author;
     let c4 = step(
         "c4",
         &["c2"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 3 * DAY,
         "Main work\ncontinued subject line\n\nBody paragraph\n\n\nAfter blanks\twith a tab  \n  indented\n",
     );
     let c5 = step(
         "c5",
         &["c4", "c3"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 4 * DAY,
         "Merge branch 'side'\n",
     );
     let c6 = step(
         "c6",
         &["c5"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+        ],
         T0 + 5 * DAY,
         "Rename c to d\n\nBug: 42\nSigned-off-by: Cy <cy@example.net>\nReviewed-by: Dee <dee@example.org>\n",
     );
@@ -375,7 +505,12 @@ fn history() -> Vec<Step> {
     let c7 = step(
         "c7",
         &["c6"],
-        &[("a.txt", "ONE\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n"), ("big.txt", &big)],
+        &[
+            ("a.txt", "ONE\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+            ("big.txt", &big),
+        ],
         T0 + 6 * DAY,
         "Third: uppercase a, add big\n",
     );
@@ -387,7 +522,13 @@ async fn standard() -> Built {
     b.branch("side", "c3").await;
     b.tag("v1", "c2").await;
     b.reference("refs/remotes/origin/master", "c6").await;
-    b.annotated_tag("v2", "c4", "Release two\n\nWith notes.\n", T0 + 3 * DAY + 60).await;
+    b.annotated_tag(
+        "v2",
+        "c4",
+        "Release two\n\nWith notes.\n",
+        T0 + 3 * DAY + 60,
+    )
+    .await;
     b
 }
 
@@ -400,7 +541,12 @@ async fn ids_are_git_sha1_and_oneline_equals_git() {
     assert_eq!(got.code, 0, "{}", got.stderr);
     let lines: Vec<&str> = got.stdout.lines().collect();
     assert_eq!(lines.len(), 7);
-    assert!(lines.iter().all(|l| l.len() == 40 && l.bytes().all(|c| c.is_ascii_hexdigit())), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .all(|l| l.len() == 40 && l.bytes().all(|c| c.is_ascii_hexdigit())),
+        "{lines:?}"
+    );
     b.same_log(&[&["--format=%H"], &["--oneline"], &[]]);
 }
 
@@ -410,7 +556,11 @@ async fn full_git_ids_name_commits() {
     let sha = b.shas["c4"].clone();
     let parent = format!("{sha}~1");
     let not = format!("^{sha}");
-    b.same_log(&[&[sha.as_str(), "--oneline"], &[parent.as_str(), "--oneline"], &[not.as_str(), "master", "--oneline"]]);
+    b.same_log(&[
+        &[sha.as_str(), "--oneline"],
+        &[parent.as_str(), "--oneline"],
+        &[not.as_str(), "master", "--oneline"],
+    ]);
 }
 
 // ----------------------------------------------------------------------------- pretty formats
@@ -418,10 +568,27 @@ async fn full_git_ids_name_commits() {
 #[tokio::test]
 async fn builtin_pretty_formats_match_git() {
     let b = standard().await;
-    for fmt in ["oneline", "short", "medium", "full", "fuller", "raw", "email", "mboxrd", "reference"] {
-        b.same_log(&[&[&format!("--pretty={fmt}")], &["-3", &format!("--pretty={fmt}"), "--abbrev-commit"]]);
+    for fmt in [
+        "oneline",
+        "short",
+        "medium",
+        "full",
+        "fuller",
+        "raw",
+        "email",
+        "mboxrd",
+        "reference",
+    ] {
+        b.same_log(&[
+            &[&format!("--pretty={fmt}")],
+            &["-3", &format!("--pretty={fmt}"), "--abbrev-commit"],
+        ]);
     }
-    b.same_log(&[&["--abbrev=12", "--abbrev-commit", "--oneline"], &["--no-abbrev-commit"], &["--no-abbrev", "--oneline"]]);
+    b.same_log(&[
+        &["--abbrev=12", "--abbrev-commit", "--oneline"],
+        &["--no-abbrev-commit"],
+        &["--no-abbrev", "--oneline"],
+    ]);
 }
 
 #[tokio::test]
@@ -430,24 +597,127 @@ async fn every_placeholder_matches_git() {
     std::fs::write(b.f.root.join(".mailmap"), "Robert B <rob@new.example> <bob@example.com>\nCy Mapped <cy@mapped.example> Cy Committer <cy@example.net>\n").unwrap();
     std::fs::write(b.git_dir.join(".mailmap"), "Robert B <rob@new.example> <bob@example.com>\nCy Mapped <cy@mapped.example> Cy Committer <cy@example.net>\n").unwrap();
     let placeholders = [
-        "%H", "%h", "%T", "%t", "%P", "%p", "%an", "%aN", "%ae", "%aE", "%al", "%aL", "%ad", "%aD",
-        "%ar", "%at", "%ai", "%aI", "%as", "%ah", "%cn", "%cN", "%ce", "%cE", "%cl", "%cL", "%cd",
-        "%cD", "%cr", "%ct", "%ci", "%cI", "%cs", "%ch", "%d", "%D", "%S", "%e", "%s", "%f", "%b",
-        "%B", "%N", "%GG", "%G?", "%GS", "%GK", "%GF", "%GP", "%GT", "%gD", "%gd", "%gn", "%gN",
-        "%ge", "%gE", "%gs", "%m", "%n", "%%", "%x00", "%x41%x4a", "%(count)",
-        "%(total)", "%(trailers)", "%(trailers:only)", "%(trailers:key=Signed-off-by)",
-        "%(trailers:key=Bug,valueonly)", "%(trailers:keyonly,separator=%x2C )",
-        "%(trailers:unfold,only=false)", "%(trailers:key_value_separator=%x3D,only)",
-        "%(decorate)", "%(decorate:prefix=<,suffix=>,separator=;,pointer=@,tag=T:)",
-        "%(decorate:prefix=,suffix=)", "%(describe)", "%(describe:tags)", "%(describe:abbrev=10)",
-        "%(describe:tags,match=v*)", "%(describe:exclude=v*)",
-        "%Cred", "%Cgreen", "%Cblue", "%Creset", "%C(bold red)", "%C(auto)", "%C(always,blue)",
-        "%C(never,red)", "%C(reset)%s", "%+s", "%-s", "% s", "%+b", "%-b", "% b", "%+d", "%-d", "% d",
-        "a%-b|%n%n%-s", "%<(12)%an|", "%<(12,trunc)%an|", "%<(6,ltrunc)%an|", "%<(7,mtrunc)%an|",
-        "%>(12)%an|", "%>(6)%s|", "%><(30)%an|", "%<|(30)%an|", "%>|(30)%an|", "%>>|(14)%s|",
-        "[    %>>(6)%an]", "%<(5)%<(8)%an|", "%<(10)%Cred%an%Creset|", "%w(20,2,4)%B", "%w(0,0,0)%s",
-        "%w(30,1,3)%s %b|%w(0)%an", "%w(10)%an and others", "%w(,1,2)%an", "%<(0)%an", "%<(x)%an",
-        "%w(8,x)%an", "50% done", "%<(10 )%an|",
+        "%H",
+        "%h",
+        "%T",
+        "%t",
+        "%P",
+        "%p",
+        "%an",
+        "%aN",
+        "%ae",
+        "%aE",
+        "%al",
+        "%aL",
+        "%ad",
+        "%aD",
+        "%ar",
+        "%at",
+        "%ai",
+        "%aI",
+        "%as",
+        "%ah",
+        "%cn",
+        "%cN",
+        "%ce",
+        "%cE",
+        "%cl",
+        "%cL",
+        "%cd",
+        "%cD",
+        "%cr",
+        "%ct",
+        "%ci",
+        "%cI",
+        "%cs",
+        "%ch",
+        "%d",
+        "%D",
+        "%S",
+        "%e",
+        "%s",
+        "%f",
+        "%b",
+        "%B",
+        "%N",
+        "%GG",
+        "%G?",
+        "%GS",
+        "%GK",
+        "%GF",
+        "%GP",
+        "%GT",
+        "%gD",
+        "%gd",
+        "%gn",
+        "%gN",
+        "%ge",
+        "%gE",
+        "%gs",
+        "%m",
+        "%n",
+        "%%",
+        "%x00",
+        "%x41%x4a",
+        "%(count)",
+        "%(total)",
+        "%(trailers)",
+        "%(trailers:only)",
+        "%(trailers:key=Signed-off-by)",
+        "%(trailers:key=Bug,valueonly)",
+        "%(trailers:keyonly,separator=%x2C )",
+        "%(trailers:unfold,only=false)",
+        "%(trailers:key_value_separator=%x3D,only)",
+        "%(decorate)",
+        "%(decorate:prefix=<,suffix=>,separator=;,pointer=@,tag=T:)",
+        "%(decorate:prefix=,suffix=)",
+        "%(describe)",
+        "%(describe:tags)",
+        "%(describe:abbrev=10)",
+        "%(describe:tags,match=v*)",
+        "%(describe:exclude=v*)",
+        "%Cred",
+        "%Cgreen",
+        "%Cblue",
+        "%Creset",
+        "%C(bold red)",
+        "%C(auto)",
+        "%C(always,blue)",
+        "%C(never,red)",
+        "%C(reset)%s",
+        "%+s",
+        "%-s",
+        "% s",
+        "%+b",
+        "%-b",
+        "% b",
+        "%+d",
+        "%-d",
+        "% d",
+        "a%-b|%n%n%-s",
+        "%<(12)%an|",
+        "%<(12,trunc)%an|",
+        "%<(6,ltrunc)%an|",
+        "%<(7,mtrunc)%an|",
+        "%>(12)%an|",
+        "%>(6)%s|",
+        "%><(30)%an|",
+        "%<|(30)%an|",
+        "%>|(30)%an|",
+        "%>>|(14)%s|",
+        "[    %>>(6)%an]",
+        "%<(5)%<(8)%an|",
+        "%<(10)%Cred%an%Creset|",
+        "%w(20,2,4)%B",
+        "%w(0,0,0)%s",
+        "%w(30,1,3)%s %b|%w(0)%an",
+        "%w(10)%an and others",
+        "%w(,1,2)%an",
+        "%<(0)%an",
+        "%<(x)%an",
+        "%w(8,x)%an",
+        "50% done",
+        "%<(10 )%an|",
     ];
     for fmt in placeholders {
         for style in ["--format=", "--pretty=format:", "--pretty=tformat:"] {
@@ -460,26 +730,66 @@ async fn every_placeholder_matches_git() {
 #[tokio::test]
 async fn placeholders_with_dates_options_and_color() {
     let b = standard().await;
-    for date in ["default", "iso", "iso-strict", "rfc", "short", "raw", "unix", "relative", "human", "format:%Y/%m/%d %H:%M:%S %a %b %j %z", "iso8601", "local", "format-local:%H:%M"] {
+    for date in [
+        "default",
+        "iso",
+        "iso-strict",
+        "rfc",
+        "short",
+        "raw",
+        "unix",
+        "relative",
+        "human",
+        "format:%Y/%m/%d %H:%M:%S %a %b %j %z",
+        "iso8601",
+        "local",
+        "format-local:%H:%M",
+    ] {
         let arg = format!("--date={date}");
-        b.same_log(&[&[&arg], &[&arg, "--format=%ad|%cd"], &[&arg, "--pretty=fuller"]]);
+        b.same_log(&[
+            &[&arg],
+            &[&arg, "--format=%ad|%cd"],
+            &[&arg, "--pretty=fuller"],
+        ]);
     }
-    b.same_log(&[&["--relative-date"], &["--color=always", "--format=%C(yellow)%h%Creset %s"], &["--color=always", "--decorate", "--oneline"], &["--color=always"]]);
+    b.same_log(&[
+        &["--relative-date"],
+        &["--color=always", "--format=%C(yellow)%h%Creset %s"],
+        &["--color=always", "--decorate", "--oneline"],
+        &["--color=always"],
+    ]);
 }
 
 #[tokio::test]
 async fn padding_uses_display_width() {
     let steps = vec![
         {
-            let mut s = step("w1", &[], &[("a", "x\n")], T0, "Wide: \u{65e5}\u{672c}\u{8a9e} text\n");
+            let mut s = step(
+                "w1",
+                &[],
+                &[("a", "x\n")],
+                T0,
+                "Wide: \u{65e5}\u{672c}\u{8a9e} text\n",
+            );
             s.author.name = "\u{5ddd}\u{5d0e}";
             s.committer = s.author;
             s
         },
-        step("w2", &["w1"], &[("a", "y\n")], T0 + 10, "Combining accent\n"),
+        step(
+            "w2",
+            &["w1"],
+            &[("a", "y\n")],
+            T0 + 10,
+            "Combining accent\n",
+        ),
     ];
     let b = Built::new(steps, "w2").await;
-    b.same_log(&[&["--format=%<(10)%s|"], &["--format=%>(12)%an|"], &["--format=%<(8,ltrunc)%s|%<(6,trunc)%an|"], &["--format=%><(14)%s|"]]);
+    b.same_log(&[
+        &["--format=%<(10)%s|"],
+        &["--format=%>(12)%an|"],
+        &["--format=%<(8,ltrunc)%s|%<(6,trunc)%an|"],
+        &["--format=%><(14)%s|"],
+    ]);
 }
 
 // -------------------------------------------------------------------------- selection and order
@@ -540,8 +850,16 @@ async fn filters_match_git() {
         &["--grep=work", "--invert-grep", "--oneline"],
         &["--since=2020-09-15 00:00:00", "--oneline"],
         &["--until=2020-09-15 00:00:00", "--oneline"],
-        &["--after=2020-09-14 00:00:00", "--before=2020-09-18 00:00:00", "--oneline"],
-        &["--since=2020-09-15 00:00:00", "--until=2020-09-18 00:00:00", "--format=%ad"],
+        &[
+            "--after=2020-09-14 00:00:00",
+            "--before=2020-09-18 00:00:00",
+            "--oneline",
+        ],
+        &[
+            "--since=2020-09-15 00:00:00",
+            "--until=2020-09-18 00:00:00",
+            "--format=%ad",
+        ],
         &["--author=nobody"],
     ]);
 }
@@ -588,14 +906,21 @@ async fn graph_matches_git_on_the_merge_history() {
     ]);
     let r = b.asc(&["log", "--graph", "--reverse"]);
     assert_eq!(r.code, 128);
-    assert_eq!(r.stderr, "fatal: options '--reverse' and '--graph' cannot be used together\n");
+    assert_eq!(
+        r.stderr,
+        "fatal: options '--reverse' and '--graph' cannot be used together\n"
+    );
 }
 
 /// A random history: some roots, merges of two or three parents, equal and skewed timestamps.
 fn random_history(seed: u64, n: usize, skew: bool) -> Vec<Step> {
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     let mut next = move |bound: u64| {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) % bound
     };
     let mut steps: Vec<Step> = Vec::new();
@@ -603,7 +928,11 @@ fn random_history(seed: u64, n: usize, skew: bool) -> Vec<Step> {
         let mut parents: Vec<String> = Vec::new();
         if i > 0 && next(100) >= 4 {
             let pick = |next: &mut dyn FnMut(u64) -> u64| {
-                if next(100) < 55 { i - 1 } else { next(i as u64) as usize }
+                if next(100) < 55 {
+                    i - 1
+                } else {
+                    next(i as u64) as usize
+                }
             };
             parents.push(format!("n{}", pick(&mut next)));
             if next(100) < 28 {
@@ -623,7 +952,13 @@ fn random_history(seed: u64, n: usize, skew: bool) -> Vec<Step> {
         let jitter = if skew { next(250) as i64 - 120 } else { 0 };
         let time = T0 + steps.len() as i64 * 100 + tick + jitter;
         let body = format!("file {i}\n");
-        let mut s = step(&format!("n{i}"), &[], &[("f.txt", &body)], time.max(1), &format!("commit {i}\n"));
+        let mut s = step(
+            &format!("n{i}"),
+            &[],
+            &[("f.txt", &body)],
+            time.max(1),
+            &format!("commit {i}\n"),
+        );
         s.parents = parents;
         steps.push(s);
     }
@@ -659,7 +994,11 @@ async fn graph_and_order_match_git_on_random_histories() {
             &["--oneline", "--reverse", "--topo-order"],
         ]);
         if seed <= 3 {
-            b.same_log(&[&["--graph"], &["--graph", "--format=%h|%P%n%s"], &["--graph", "--pretty=fuller", "-6"]]);
+            b.same_log(&[
+                &["--graph"],
+                &["--graph", "--format=%h|%P%n%s"],
+                &["--graph", "--pretty=fuller", "-6"],
+            ]);
         }
     }
 }
@@ -690,8 +1029,13 @@ async fn decorations_match_git() {
     let sha = b.shas["c6"].clone();
     b.git(&["update-ref", "--no-deref", "HEAD", &sha]);
     let proj = asc_git::projection::Projection::open(&b.f.root).unwrap();
-    proj.write_head(&asc_git::projection::Head::Detached(b.f.engine.git_commit_of(b.ids["c6"]).await.unwrap())).unwrap();
-    asc_state::state::workspaces::update_head_base(&b.f.db, b.f.ws, "HEAD", Some(b.ids["c6"])).await.unwrap();
+    proj.write_head(&asc_git::projection::Head::Detached(
+        b.f.engine.git_commit_of(b.ids["c6"]).await.unwrap(),
+    ))
+    .unwrap();
+    asc_state::state::workspaces::update_head_base(&b.f.db, b.f.ws, "HEAD", Some(b.ids["c6"]))
+        .await
+        .unwrap();
     b.same_log(&[&["--decorate", "--oneline", "-3"]]);
 }
 
@@ -772,13 +1116,21 @@ async fn json_prints_log_response_lines() {
     let b = standard().await;
     let out = b.asc(&["log", "--json", "-n", "3"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    let lines: Vec<serde_json::Value> = out.stdout.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let lines: Vec<serde_json::Value> = out
+        .stdout
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
     assert_eq!(lines.len(), 1, "{}", out.stdout);
     let entries = lines[0]["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 3);
     assert_ne!(entries[0]["id"], entries[1]["id"]);
     assert_eq!(entries[0]["parents"][0], entries[1]["id"]);
-    assert!(entries[0]["git"].as_str().is_some_and(|g| g.len() == 28), "{}", entries[0]["git"]);
+    assert!(
+        entries[0]["git"].as_str().is_some_and(|g| g.len() == 28),
+        "{}",
+        entries[0]["git"]
+    );
     assert_eq!(entries[0]["author"]["name"].as_str().unwrap(), "VGVzdA==");
     // The walk order is git's; the JSON has no extra page when everything fits.
     let all = b.asc(&["log", "--json"]);
@@ -801,12 +1153,19 @@ async fn errors_match_git() {
         let want = b.git(args);
         let got = b.asc(args);
         assert_eq!(got.code, want.code, "{args:?}: {}", got.stderr);
-        assert_eq!(got.stderr.replace("'asc <command>", "'git <command>"), want.stderr, "{args:?}");
+        assert_eq!(
+            got.stderr.replace("'asc <command>", "'git <command>"),
+            want.stderr,
+            "{args:?}"
+        );
     }
     let unborn = Fixture::new().await;
     let r = run(unborn.asc().args(["log"]));
     assert_eq!(r.code, 128);
-    assert_eq!(r.stderr, "fatal: your current branch 'master' does not have any commits yet\n");
+    assert_eq!(
+        r.stderr,
+        "fatal: your current branch 'master' does not have any commits yet\n"
+    );
 }
 
 #[tokio::test]
@@ -824,5 +1183,12 @@ async fn walk_reflogs_lists_branch_moves() {
     let b = standard().await;
     let r = b.asc(&["log", "-g", "--format=%gd|%gs|%h"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
-    assert!(r.stdout.lines().next().is_some_and(|l| l.starts_with("HEAD@{0}|")), "{}", r.stdout);
+    assert!(
+        r.stdout
+            .lines()
+            .next()
+            .is_some_and(|l| l.starts_with("HEAD@{0}|")),
+        "{}",
+        r.stdout
+    );
 }

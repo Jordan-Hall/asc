@@ -173,5 +173,8 @@ async fn rerun_is_idempotent_and_keeps_the_first_scope() {
     // The commit is already in the git map, so a later import under another ref skips it.
     import(&e, &repo, &[tip("refs/heads/a", c)]).await;
     assert_eq!(meta_of(&e, c).await.expect("meta"), first);
-    assert_eq!(first.change, ChangeId::from_gerrit(b"refs/heads/m", b"Iabc"));
+    assert_eq!(
+        first.change,
+        ChangeId::from_gerrit(b"refs/heads/m", b"Iabc")
+    );
 }

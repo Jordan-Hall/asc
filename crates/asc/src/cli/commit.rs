@@ -31,9 +31,9 @@ use asc_state::state::{git_map, stage_sets};
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
 
 use self::message::Cleanup;
+use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::format::date::Mode as DateMode;
 use super::status;
-use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use crate::ext::{self, OpId};
 use crate::hooks_runner::{Gate, Hook, HookEnv, MsgSource, RewriteKind, Runner};
 use crate::native::NativeSpec;
@@ -555,7 +555,12 @@ async fn flow(
         };
         let status = status::long_text(ctx, ws, Some(comment)).await?;
         let idents_shown = template_idents(comment, &idents, author_date_is_interesting(a));
-        buf.extend_from_slice(&message::template(comment, &idents_shown, &status, diff.as_deref()));
+        buf.extend_from_slice(&message::template(
+            comment,
+            &idents_shown,
+            &status,
+            diff.as_deref(),
+        ));
     }
     std::fs::write(&edit_file, &buf)?;
     // git stops here, before prepare-commit-msg and the editor, when nothing would be committed.
@@ -736,7 +741,15 @@ async fn flow(
         .on_commit(ws_id, id)
         .await
         .map_err(|e| fatal(e.to_string()))?;
-    for file in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "SQUASH_MSG", "AUTO_MERGE", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+    for file in [
+        "MERGE_HEAD",
+        "MERGE_MSG",
+        "MERGE_MODE",
+        "SQUASH_MSG",
+        "AUTO_MERGE",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+    ] {
         let _ = std::fs::remove_file(gitdir.join(file));
     }
     ws_ops::clear(&ws.db, ws_id).await?;
@@ -788,10 +801,16 @@ fn template_idents(comment: u8, idents: &ident::Idents, date: bool) -> Vec<u8> {
     let c = comment as char;
     let mut out = String::new();
     if ident::display(&idents.author) != ident::display(&idents.committer) {
-        out.push_str(&format!("{c} Author:    {}\n", ident::display(&idents.author)));
+        out.push_str(&format!(
+            "{c} Author:    {}\n",
+            ident::display(&idents.author)
+        ));
     }
     if date {
-        out.push_str(&format!("{c} Date:      {}\n", default_date(&idents.author)));
+        out.push_str(&format!(
+            "{c} Date:      {}\n",
+            default_date(&idents.author)
+        ));
     }
     if !out.is_empty() {
         out.push_str(&format!("{c}\n"));
@@ -924,7 +943,10 @@ async fn print_summary(ws: &WsCtx, s: &Summary, parent_root: TreeId, root: TreeI
     }
     // git hardcodes rename detection (limit 100) for the summary, whatever `diff.renames` says.
     let opts = DiffOptions {
-        renames: Some(RenameOptions { limit: 100, ..RenameOptions::default() }),
+        renames: Some(RenameOptions {
+            limit: 100,
+            ..RenameOptions::default()
+        }),
         ..DiffOptions::default()
     };
     let changes = ws

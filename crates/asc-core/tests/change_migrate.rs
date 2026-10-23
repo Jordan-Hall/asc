@@ -8,8 +8,14 @@ fn cs(n: u8) -> ChangesetId {
 
 #[test]
 fn golden_import_id() {
-    assert_eq!(import_id(&cs(1)).to_string(), "znxotwlsqoknzwwzozsstznnlzrvoqxo");
-    assert_eq!(import_id(&cs(2)).to_string(), "unqwyourxlnwvpxtxvrzwuuqtyxlykyx");
+    assert_eq!(
+        import_id(&cs(1)).to_string(),
+        "znxotwlsqoknzwwzozsstznnlzrvoqxo"
+    );
+    assert_eq!(
+        import_id(&cs(2)).to_string(),
+        "unqwyourxlnwvpxtxvrzwuuqtyxlykyx"
+    );
 }
 
 #[test]
@@ -50,5 +56,8 @@ fn bad_jj_header_falls_through() {
 
 #[test]
 fn import_tier_when_nothing_else() {
-    assert_eq!(migration_id(&cs(3), None, None, b""), Some(import_id(&cs(3))));
+    assert_eq!(
+        migration_id(&cs(3), None, None, b""),
+        Some(import_id(&cs(3)))
+    );
 }

@@ -120,7 +120,13 @@ pub fn link_graph(
     prune_edges(&mut projects);
     add_contains(&mut projects);
     let used = add_opaque_edges(&mut projects)?;
-    apply_config(&config, &mut projects, &mut issues, used, MAX_IMPLICIT_EDGES)?;
+    apply_config(
+        &config,
+        &mut projects,
+        &mut issues,
+        used,
+        MAX_IMPLICIT_EDGES,
+    )?;
     for p in &mut projects {
         p.deps.sort();
         p.deps.dedup();

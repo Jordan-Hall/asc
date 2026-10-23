@@ -8,21 +8,20 @@
 
 mod support;
 
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use asc_core::codec::Enveloped as _;
 use asc_core::content::{Body, ingest};
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, RefTarget, TagId};
+use asc_core::object::SortedMap;
 use asc_core::object::{Change, Kind, TagRecord};
 use asc_core::path::{RefName, RepoPath};
-use asc_core::codec::Enveloped as _;
 use asc_core::sig::Signature;
-use asc_core::object::SortedMap;
 use asc_engine::Engine;
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::GitMapRow;
@@ -43,7 +42,11 @@ struct Out {
 
 fn run(cmd: &mut Command) -> Out {
     let out = cmd.output().expect("spawn");
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 /// Real git in `dir`: hermetic, UTC, no pager.
@@ -73,16 +76,32 @@ struct Who {
 
 impl Who {
     fn at(time: i64) -> Self {
-        Self { name: "Test", email: "test@example.com", time, tz: 0 }
+        Self {
+            name: "Test",
+            email: "test@example.com",
+            time,
+            tz: 0,
+        }
     }
 
     fn tz_text(&self) -> String {
         let a = self.tz.abs();
-        format!("{}{:02}{:02}", if self.tz < 0 { '-' } else { '+' }, a / 60, a % 60)
+        format!(
+            "{}{:02}{:02}",
+            if self.tz < 0 { '-' } else { '+' },
+            a / 60,
+            a % 60
+        )
     }
 
     fn sig(&self) -> Signature {
-        Signature::new(self.name.as_bytes().to_vec(), self.email.as_bytes().to_vec(), self.time, self.tz).unwrap()
+        Signature::new(
+            self.name.as_bytes().to_vec(),
+            self.email.as_bytes().to_vec(),
+            self.time,
+            self.tz,
+        )
+        .unwrap()
     }
 }
 
@@ -100,7 +119,10 @@ fn step(name: &str, parents: &[&str], files: &[(&str, &str)], time: i64, msg: &s
     Step {
         name: name.into(),
         parents: parents.iter().map(|p| (*p).to_owned()).collect(),
-        files: files.iter().map(|(p, c)| ((*p).to_owned(), (*c).to_owned())).collect(),
+        files: files
+            .iter()
+            .map(|(p, c)| ((*p).to_owned(), (*c).to_owned()))
+            .collect(),
         author: Who::at(time),
         committer: Who::at(time),
         msg: msg.into(),
@@ -124,7 +146,10 @@ async fn set_ref_asc(f: &Fixture, name: &str, target: RefTarget) {
             new: Some(target),
             expires_at: None,
         }],
-        actor: Actor { id: "fixture".into(), via: "test".into() },
+        actor: Actor {
+            id: "fixture".into(),
+            via: "test".into(),
+        },
         reason: "fixture".into(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -135,14 +160,23 @@ async fn asc_commit(f: &Fixture, s: &Step, parents: Vec<ChangesetId>) -> Changes
     let mut changes = Vec::new();
     for (path, content) in &s.files {
         let got = ingest(Cursor::new(content.as_bytes())).unwrap();
-        let Body::Inline(bytes) = got.body else { panic!("scenario files are small") };
-        f.objects.put(&ObjKey::File(got.file), encode_stored(&bytes)).await.unwrap();
+        let Body::Inline(bytes) = got.body else {
+            panic!("scenario files are small")
+        };
+        f.objects
+            .put(&ObjKey::File(got.file), encode_stored(&bytes))
+            .await
+            .unwrap();
         changes.push((
             RepoPath::new(path.as_str()).unwrap(),
             Change::write(Kind::File, got.file, got.size, got.git, None).unwrap(),
         ));
     }
-    let root = f.engine.apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes).await.unwrap();
+    let root = f
+        .engine
+        .apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes)
+        .await
+        .unwrap();
     f.engine
         .create_changeset(
             NewChangeset {
@@ -165,12 +199,18 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
     let init = run(git_cmd(dir, home).args(["init", "-q", "-b", "master"]));
     assert_eq!(init.code, 0, "{}", init.stderr);
     let mut stream: Vec<u8> = Vec::new();
-    let mark: HashMap<&str, usize> = steps.iter().enumerate().map(|(i, s)| (s.name.as_str(), i + 1)).collect();
+    let mark: HashMap<&str, usize> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.as_str(), i + 1))
+        .collect();
     for (i, s) in steps.iter().enumerate() {
         stream.extend_from_slice(b"commit refs/heads/work\n");
         stream.extend_from_slice(format!("mark :{}\n", i + 1).as_bytes());
         for (k, w) in [("author", s.author), ("committer", s.committer)] {
-            stream.extend_from_slice(format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes());
+            stream.extend_from_slice(
+                format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes(),
+            );
         }
         stream.extend_from_slice(format!("data {}\n{}\n", s.msg.len(), s.msg).as_bytes());
         if let Some(first) = s.parents.first() {
@@ -181,13 +221,23 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         }
         stream.extend_from_slice(b"deleteall\n");
         for (path, content) in &s.files {
-            stream.extend_from_slice(format!("M 100644 inline {path}\ndata {}\n{content}\n", content.len()).as_bytes());
+            stream.extend_from_slice(
+                format!(
+                    "M 100644 inline {path}\ndata {}\n{content}\n",
+                    content.len()
+                )
+                .as_bytes(),
+            );
         }
         stream.push(b'\n');
     }
     let marks = dir.join("marks.txt");
     let mut child = git_cmd(dir, home)
-        .args(["fast-import", "--quiet", &format!("--export-marks={}", marks.display())])
+        .args([
+            "fast-import",
+            "--quiet",
+            &format!("--export-marks={}", marks.display()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -195,7 +245,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         .unwrap();
     child.stdin.take().unwrap().write_all(&stream).unwrap();
     let done = child.wait_with_output().unwrap();
-    assert!(done.status.success(), "fast-import: {}", String::from_utf8_lossy(&done.stderr));
+    assert!(
+        done.status.success(),
+        "fast-import: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
     let table = fs::read_to_string(&marks).unwrap();
     let by_mark: HashMap<usize, String> = table
         .lines()
@@ -205,7 +259,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         })
         .collect();
     fs::remove_file(&marks).unwrap();
-    steps.iter().enumerate().map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone())).collect()
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone()))
+        .collect()
 }
 
 impl Built {
@@ -220,12 +278,26 @@ impl Built {
             let parents = s.parents.iter().map(|p| ids[p]).collect();
             let id = asc_commit(&f, s, parents).await;
             let git = f.engine.git_commit_of(id).await.unwrap();
-            assert_eq!(git.to_string(), shas[&s.name], "commit {} must have the same id in both repositories", s.name);
-            rows.push(GitMapRow { git, kind: ObjectKind::Commit, asc: *id.as_bytes() });
+            assert_eq!(
+                git.to_string(),
+                shas[&s.name],
+                "commit {} must have the same id in both repositories",
+                s.name
+            );
+            rows.push(GitMapRow {
+                git,
+                kind: ObjectKind::Commit,
+                asc: *id.as_bytes(),
+            });
             ids.insert(s.name.clone(), id);
         }
         git_map::insert_many(&f.db, f.repo, &rows).await.unwrap();
-        let b = Self { f, git_dir, ids, shas };
+        let b = Self {
+            f,
+            git_dir,
+            ids,
+            shas,
+        };
         b.branch("master", head).await;
         let r = b.git(&["update-ref", "-d", "refs/heads/work"]);
         assert_eq!(r.code, 0, "{}", r.stderr);
@@ -266,7 +338,12 @@ impl Built {
 
     /// An annotated tag by the same tagger in both repositories.
     async fn annotated_tag(&self, name: &str, at: &str, message: &str, time: i64) {
-        let tagger = Who { name: "Tagger", email: "tagger@example.com", time, tz: 60 };
+        let tagger = Who {
+            name: "Tagger",
+            email: "tagger@example.com",
+            time,
+            tz: 60,
+        };
         let rec = TagRecord {
             target: self.ids[at],
             name: name.as_bytes().to_vec(),
@@ -275,7 +352,11 @@ impl Built {
             extra: SortedMap::new(vec![]).unwrap(),
         };
         let id: TagId = rec.id();
-        self.f.objects.put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope())).await.unwrap();
+        self.f
+            .objects
+            .put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope()))
+            .await
+            .unwrap();
         set_ref_asc(&self.f, &format!("refs/tags/{name}"), RefTarget::Tag(id)).await;
         let when = format!("{time} +0100");
         let r = self.git_env(
@@ -293,8 +374,16 @@ impl Built {
     fn same(&self, args: &[&str]) {
         let want = self.git(args);
         let got = self.asc(args);
-        assert_eq!(got.code, want.code, "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
-        assert_eq!(got.stdout, want.stdout, "stdout of {args:?}\n--- asc stderr:\n{}", got.stderr);
+        assert_eq!(
+            got.code, want.code,
+            "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr, want.stderr
+        );
+        assert_eq!(
+            got.stdout, want.stdout,
+            "stdout of {args:?}\n--- asc stderr:\n{}",
+            got.stderr
+        );
         if want.code != 0 {
             let normal = |s: &str| s.replace("'git <command>", "'asc <command>");
             assert_eq!(got.stderr, normal(&want.stderr), "stderr of {args:?}");
@@ -304,7 +393,9 @@ impl Built {
     /// `same` for `command` with each argument list.
     fn same_all(&self, command: &str, lists: &[&[&str]]) {
         for list in lists {
-            let args: Vec<&str> = std::iter::once(command).chain(list.iter().copied()).collect();
+            let args: Vec<&str> = std::iter::once(command)
+                .chain(list.iter().copied())
+                .collect();
             self.same(&args);
         }
     }
@@ -313,7 +404,11 @@ impl Built {
     fn same_out(&self, args: &[&str]) {
         let want = self.git(args);
         let got = self.asc(args);
-        assert_eq!(got.code, want.code, "exit code of {args:?}\nasc stderr: {}", got.stderr);
+        assert_eq!(
+            got.code, want.code,
+            "exit code of {args:?}\nasc stderr: {}",
+            got.stderr
+        );
         assert_eq!(got.stdout, want.stdout, "stdout of {args:?}");
     }
 
@@ -329,7 +424,12 @@ const DAY: i64 = 86_400;
 /// A history with a merge, a rename, tabs, trailers and several identities.
 fn history() -> Vec<Step> {
     let a = |s: &mut Step| {
-        s.author = Who { name: "Ann Author", email: "ann@example.org", time: s.author.time, tz: 0 };
+        s.author = Who {
+            name: "Ann Author",
+            email: "ann@example.org",
+            time: s.author.time,
+            tz: 0,
+        };
     };
     let mut c1 = step(
         "c1",
@@ -343,39 +443,74 @@ fn history() -> Vec<Step> {
     let mut c2 = step(
         "c2",
         &["c1"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + DAY,
         "Second change\n",
     );
-    c2.author = Who { name: "Bob Builder", email: "bob@example.com", time: T0 + DAY, tz: -300 };
-    c2.committer = Who { name: "Cy Committer", email: "cy@example.net", time: T0 + DAY + 600, tz: 330 };
+    c2.author = Who {
+        name: "Bob Builder",
+        email: "bob@example.com",
+        time: T0 + DAY,
+        tz: -300,
+    };
+    c2.committer = Who {
+        name: "Cy Committer",
+        email: "cy@example.net",
+        time: T0 + DAY + 600,
+        tz: 330,
+    };
     let mut c3 = step(
         "c3",
         &["c2"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 2 * DAY,
         "Side branch work\n\nSigned-off-by: Side <side@example.org>\n",
     );
-    c3.author = Who { name: "Side Dev", email: "side@example.org", time: T0 + 2 * DAY, tz: 120 };
+    c3.author = Who {
+        name: "Side Dev",
+        email: "side@example.org",
+        time: T0 + 2 * DAY,
+        tz: 120,
+    };
     c3.committer = c3.author;
     let c4 = step(
         "c4",
         &["c2"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 3 * DAY,
         "Main work\ncontinued subject line\n\nBody paragraph\n\n\nAfter blanks\twith a tab  \n  indented\n",
     );
     let c5 = step(
         "c5",
         &["c4", "c3"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 4 * DAY,
         "Merge branch 'side'\n",
     );
     let c6 = step(
         "c6",
         &["c5"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+        ],
         T0 + 5 * DAY,
         "Rename c to d\n\nBug: 42\nSigned-off-by: Cy <cy@example.net>\nReviewed-by: Dee <dee@example.org>\n",
     );
@@ -383,7 +518,12 @@ fn history() -> Vec<Step> {
     let c7 = step(
         "c7",
         &["c6"],
-        &[("a.txt", "ONE\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n"), ("big.txt", &big)],
+        &[
+            ("a.txt", "ONE\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+            ("big.txt", &big),
+        ],
         T0 + 6 * DAY,
         "Third: uppercase a, add big\n",
     );
@@ -395,10 +535,15 @@ async fn standard() -> Built {
     b.branch("side", "c3").await;
     b.tag("v1", "c2").await;
     b.reference("refs/remotes/origin/master", "c6").await;
-    b.annotated_tag("v2", "c4", "Release two\n\nWith notes.\n", T0 + 3 * DAY + 60).await;
+    b.annotated_tag(
+        "v2",
+        "c4",
+        "Release two\n\nWith notes.\n",
+        T0 + 3 * DAY + 60,
+    )
+    .await;
     b
 }
-
 
 // ------------------------------------------------------------------------------- rev-parse
 
@@ -558,7 +703,11 @@ async fn rev_parse_unborn_head_matches_git() {
         let normal = |s: &str| s.replace("'git <command>", "'asc <command>");
         assert_eq!(
             (got.code, got.stdout.as_str(), got.stderr.as_str()),
-            (want.code, want.stdout.as_str(), normal(&want.stderr).as_str()),
+            (
+                want.code,
+                want.stdout.as_str(),
+                normal(&want.stderr).as_str()
+            ),
             "{args:?}"
         );
     }
@@ -570,9 +719,25 @@ async fn rev_parse_prints_asc_ids_on_request() {
     let head = b.asc(&["rev-parse", "--asc", "HEAD"]);
     assert_eq!(head.code, 0, "{}", head.stderr);
     assert_eq!(head.stdout.trim(), b.ids["c7"].to_string());
-    let both = b.asc(&["rev-parse", "--asc", "HEAD", "--git", "HEAD", "--asc", "--short", "HEAD~1"]);
+    let both = b.asc(&[
+        "rev-parse",
+        "--asc",
+        "HEAD",
+        "--git",
+        "HEAD",
+        "--asc",
+        "--short",
+        "HEAD~1",
+    ]);
     let lines: Vec<&str> = both.stdout.lines().collect();
-    assert_eq!(lines, [b.ids["c7"].to_string(), b.shas["c7"].clone(), b.ids["c6"].to_string()[..12].to_owned()]);
+    assert_eq!(
+        lines,
+        [
+            b.ids["c7"].to_string(),
+            b.shas["c7"].clone(),
+            b.ids["c6"].to_string()[..12].to_owned()
+        ]
+    );
     let tree = b.asc(&["rev-parse", "--asc", "HEAD^{tree}"]);
     assert_eq!(tree.stdout.trim().len(), 64, "{}", tree.stderr);
 }
@@ -581,14 +746,30 @@ async fn rev_parse_prints_asc_ids_on_request() {
 async fn rev_parse_locates_the_repository() {
     let b = standard().await;
     let root = b.f.root.canonicalize().unwrap();
-    let norm = |p: &Path| p.display().to_string().replace('\\', "/").trim_start_matches("//?/").to_owned();
+    let norm = |p: &Path| {
+        p.display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches("//?/")
+            .to_owned()
+    };
     let top = b.asc(&["rev-parse", "--show-toplevel"]);
     assert_eq!(top.stdout.trim(), norm(&root), "{}", top.stderr);
     let gitdir = b.asc(&["rev-parse", "--git-dir"]).stdout.trim().to_owned();
     assert!(Path::new(&gitdir).join("HEAD").is_file(), "{gitdir}");
-    assert_eq!(b.asc(&["rev-parse", "--absolute-git-dir"]).stdout.trim(), gitdir);
-    let common = b.asc(&["rev-parse", "--git-common-dir"]).stdout.trim().to_owned();
-    assert!(Path::new(&common).is_dir() && common.ends_with("/.git"), "{common}");
+    assert_eq!(
+        b.asc(&["rev-parse", "--absolute-git-dir"]).stdout.trim(),
+        gitdir
+    );
+    let common = b
+        .asc(&["rev-parse", "--git-common-dir"])
+        .stdout
+        .trim()
+        .to_owned();
+    assert!(
+        Path::new(&common).is_dir() && common.ends_with("/.git"),
+        "{common}"
+    );
     for (flag, want) in [
         ("--is-inside-work-tree", "true\n"),
         ("--is-inside-git-dir", "false\n"),
@@ -602,7 +783,16 @@ async fn rev_parse_locates_the_repository() {
     }
     let sub = b.f.root.join("sub").join("deep");
     fs::create_dir_all(&sub).unwrap();
-    let in_sub = |flag: &str| text(&b.f.sandbox.asc(&sub).args(["rev-parse", flag]).output().unwrap().stdout);
+    let in_sub = |flag: &str| {
+        text(
+            &b.f.sandbox
+                .asc(&sub)
+                .args(["rev-parse", flag])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+    };
     assert_eq!(in_sub("--show-prefix"), "sub/deep/\n");
     assert_eq!(in_sub("--show-cdup"), "../../\n");
     assert_eq!(in_sub("--show-toplevel").trim(), norm(&root));
@@ -615,7 +805,11 @@ async fn rev_parse_outside_a_repository_fails() {
     let dir = sandbox.dir("nowhere");
     let out = sandbox.run(&dir, &["rev-parse", "--show-toplevel"]);
     assert_eq!(out.status.code(), Some(128));
-    assert!(text(&out.stderr).starts_with("fatal: not a git repository"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).starts_with("fatal: not a git repository"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 // -------------------------------------------------------------------------------- rev-list
@@ -777,9 +971,20 @@ async fn describe_matches_git() {
 #[tokio::test]
 async fn describe_without_tags_matches_git() {
     let b = Built::new(history(), "c7").await;
-    b.same_all("describe", &[&[], &["--tags"], &["--always"], &["--always", "--abbrev=12"]]);
+    b.same_all(
+        "describe",
+        &[
+            &[],
+            &["--tags"],
+            &["--always"],
+            &["--always", "--abbrev=12"],
+        ],
+    );
     b.tag("light", "c2").await;
-    b.same_all("describe", &[&[], &["--tags"], &["--always"], &["HEAD~6", "--tags"]]);
+    b.same_all(
+        "describe",
+        &[&[], &["--tags"], &["--always"], &["HEAD~6", "--tags"]],
+    );
 }
 
 // ------------------------------------------------------------------------------------ reflog
@@ -811,16 +1016,36 @@ async fn reflog_lists_the_branch_log_newest_first() {
         short(1),
         short(0)
     );
-    for args in [&["reflog"][..], &["reflog", "show"], &["reflog", "show", "HEAD"], &["reflog", "HEAD"]] {
+    for args in [
+        &["reflog"][..],
+        &["reflog", "show"],
+        &["reflog", "show", "HEAD"],
+        &["reflog", "HEAD"],
+    ] {
         let out = run(f.asc().args(args));
-        assert_eq!((out.code, out.stdout.as_str()), (0, want.as_str()), "{args:?}: {}", out.stderr);
+        assert_eq!(
+            (out.code, out.stdout.as_str()),
+            (0, want.as_str()),
+            "{args:?}: {}",
+            out.stderr
+        );
     }
     let named = run(f.asc().args(["reflog", "master", "-n", "2"]));
-    assert_eq!(named.stdout, format!("{} master@{{0}}: fixture\n{} master@{{1}}: fixture\n", short(2), short(1)));
+    assert_eq!(
+        named.stdout,
+        format!(
+            "{} master@{{0}}: fixture\n{} master@{{1}}: fixture\n",
+            short(2),
+            short(1)
+        )
+    );
     let topic = run(f.asc().args(["reflog", "show", "topic"]));
     assert_eq!(topic.stdout, format!("{} topic@{{0}}: fixture\n", short(0)));
     let full = run(f.asc().args(["reflog", "refs/heads/topic", "-1"]));
-    assert_eq!(full.stdout, topic.stdout.replace("topic@", "refs/heads/topic@"));
+    assert_eq!(
+        full.stdout,
+        topic.stdout.replace("topic@", "refs/heads/topic@")
+    );
 }
 
 #[tokio::test]
@@ -833,7 +1058,12 @@ async fn reflog_exists_reports_through_the_exit_code() {
         (["reflog", "exists", "refs/heads/nothere"], 1),
     ] {
         let out = run(f.asc().args(args));
-        assert_eq!((out.code, out.stdout.as_str()), (code, ""), "{args:?}: {}", out.stderr);
+        assert_eq!(
+            (out.code, out.stdout.as_str()),
+            (code, ""),
+            "{args:?}: {}",
+            out.stderr
+        );
     }
     let expire = run(f.asc().args(["reflog", "expire", "--all"]));
     assert_eq!(expire.code, 129, "{}", expire.stderr);

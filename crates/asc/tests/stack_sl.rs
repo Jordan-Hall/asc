@@ -8,8 +8,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use asc_core::change::{ChangeId, MetaId, RewriteOp};
-use asc_core::id::{ChangesetId, GitOid};
 use asc_core::git::ObjectKind;
+use asc_core::id::{ChangesetId, GitOid};
 use asc_engine::change::{ChangeRow, ChangeRows};
 use asc_state::changes::StateChanges;
 use asc_state::state::{git_map, workspaces};
@@ -24,8 +24,17 @@ struct Out {
 }
 
 fn asc(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Out {
-    let out = sb.asc(cwd).args(args).stdin(std::process::Stdio::null()).output().expect("spawn");
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    let out = sb
+        .asc(cwd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("spawn");
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 fn ok(sb: &Sandbox, cwd: &Path, args: &[&str]) -> String {
@@ -47,7 +56,11 @@ impl Repo {
     /// `master` has one commit; `feature` adds two (`one`, `two`), checked out at `two`.
     fn new() -> Self {
         let sb = Sandbox::new();
-        fs::write(sb.user.join(".gitconfig"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        fs::write(
+            sb.user.join(".gitconfig"),
+            "[user]\n\tname = T\n\temail = t@example.com\n",
+        )
+        .unwrap();
         let root = sb.dir("repo");
         ok(&sb, &root, &["init"]);
         ok(&sb, &root, &["commit", "--allow-empty", "-m", "base"]);
@@ -72,13 +85,19 @@ impl Repo {
     /// Indexes `rev` as change number `n`.
     fn index(&self, rev: &str, n: u8) {
         let sha = self.sha(rev);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
             let oid: GitOid = sha.parse().unwrap();
-            let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit).await.unwrap().unwrap();
+            let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
+                .await
+                .unwrap()
+                .unwrap();
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
             let row = ChangeRow {
                 cs: ChangesetId::from_bytes(cs),
@@ -148,8 +167,14 @@ fn sl_text_lists_the_stack_top_down_with_the_current_marker() {
     let t = r.ok(&["sl"]);
     let lines: Vec<&str> = t.lines().collect();
     assert_eq!(lines.len(), 3, "{t}");
-    assert!(lines[0].starts_with(&format!("@  {} two (feature)", change_id(2).short())), "{t}");
-    assert!(lines[1].starts_with(&format!("o  {} one", change_id(1).short())), "{t}");
+    assert!(
+        lines[0].starts_with(&format!("@  {} two (feature)", change_id(2).short())),
+        "{t}"
+    );
+    assert!(
+        lines[1].starts_with(&format!("o  {} one", change_id(1).short())),
+        "{t}"
+    );
     assert!(lines[2].starts_with("~  on master "), "{t}");
     assert_eq!(r.ok(&["smartlog"]), t);
 }
@@ -208,10 +233,19 @@ fn change_id_prints_the_id_or_exits_one() {
     let r = Repo::new();
     r.stack();
     assert_eq!(r.ok(&["change-id"]), format!("{}\n", change_id(2)));
-    assert_eq!(r.ok(&["change-id", "--short", "HEAD~1"]), format!("{}\n", change_id(1).short()));
+    assert_eq!(
+        r.ok(&["change-id", "--short", "HEAD~1"]),
+        format!("{}\n", change_id(1).short())
+    );
     let none = r.asc(&["change-id", "master"]);
-    assert_eq!((none.code, none.stdout.as_str()), (1, ""), "{}", none.stderr);
-    let j: Value = serde_json::from_str(r.asc(&["change-id", "--json", "master"]).stdout.trim()).unwrap();
+    assert_eq!(
+        (none.code, none.stdout.as_str()),
+        (1, ""),
+        "{}",
+        none.stderr
+    );
+    let j: Value =
+        serde_json::from_str(r.asc(&["change-id", "--json", "master"]).stdout.trim()).unwrap();
     assert_eq!(j["change"], Value::Null);
     let bad = r.asc(&["change-id", "no-such-rev"]);
     assert_eq!(bad.code, 128, "{}", bad.stderr);
@@ -223,14 +257,23 @@ fn stack_parent_children_and_info() {
     r.stack();
     let (c1, c2) = (change_id(1).to_string(), change_id(2).to_string());
     assert_eq!(r.ok(&["stack", "parent"]), format!("{c1}\n"));
-    assert_eq!(r.ok(&["stack", "children", &change_id(1).short()[..6]]), format!("{c2}\n"));
+    assert_eq!(
+        r.ok(&["stack", "children", &change_id(1).short()[..6]]),
+        format!("{c2}\n")
+    );
     // The bottom change has no parent: exit 1, nothing printed.
     let bottom = r.asc(&["stack", "parent", &c1]);
-    assert_eq!((bottom.code, bottom.stdout.as_str()), (1, ""), "{}", bottom.stderr);
+    assert_eq!(
+        (bottom.code, bottom.stdout.as_str()),
+        (1, ""),
+        "{}",
+        bottom.stderr
+    );
     // The top change has no children: an empty list, exit 0.
     let top = r.asc(&["stack", "children"]);
     assert_eq!((top.code, top.stdout.as_str()), (0, ""), "{}", top.stderr);
-    let j: Value = serde_json::from_str(r.ok(&["stack", "children", "--json", &c1]).trim()).unwrap();
+    let j: Value =
+        serde_json::from_str(r.ok(&["stack", "children", "--json", &c1]).trim()).unwrap();
     assert_eq!(j["version"], 1);
     assert_eq!(j["changes"][0]["change"], c2);
 
@@ -273,7 +316,11 @@ fn stack_without_a_known_word_says_so() {
     assert_eq!(none.code, 129, "{}", none.stderr);
     let unknown = r.asc(&["stack", "nosuchword"]);
     assert_ne!(unknown.code, 0);
-    assert!(unknown.stderr.contains("not supported yet"), "{}", unknown.stderr);
+    assert!(
+        unknown.stderr.contains("not supported yet"),
+        "{}",
+        unknown.stderr
+    );
 }
 
 #[test]

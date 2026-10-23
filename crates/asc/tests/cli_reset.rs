@@ -48,8 +48,12 @@ fn read(root: &Path, rel: &str) -> String {
 /// tree are at `b`.
 async fn base() -> (Fixture, ChangesetId, ChangesetId) {
     let f = Fixture::new().await;
-    let a = f.commit(&[], &[("f.txt", b"one\n"), ("g.txt", b"keep\n")]).await;
-    let b = f.commit(&[a], &[("f.txt", b"two\n"), ("h.txt", b"new\n")]).await;
+    let a = f
+        .commit(&[], &[("f.txt", b"one\n"), ("g.txt", b"keep\n")])
+        .await;
+    let b = f
+        .commit(&[a], &[("f.txt", b"two\n"), ("h.txt", b"new\n")])
+        .await;
     f.set_branch("master", b).await;
     f.checkout_branch("master", Some(b)).await;
     put(&f.root, "f.txt", "two\n");
@@ -60,7 +64,12 @@ async fn base() -> (Fixture, ChangesetId, ChangesetId) {
 
 async fn branch(f: &Fixture) -> ChangesetId {
     let name = RefName::new(b"refs/heads/master".to_vec()).unwrap();
-    let entry = f.db.refs().get(f.repo, &name).await.unwrap().expect("master");
+    let entry =
+        f.db.refs()
+            .get(f.repo, &name)
+            .await
+            .unwrap()
+            .expect("master");
     match entry.target {
         RefTarget::Changeset(c) => c,
         RefTarget::Tag(_) => panic!("master is a tag"),
@@ -68,7 +77,9 @@ async fn branch(f: &Fixture) -> ChangesetId {
 }
 
 async fn staged(f: &Fixture) -> Vec<StageRow> {
-    stage::overlay(&f.db, f.ws, StageSet::Default).await.unwrap()
+    stage::overlay(&f.db, f.ws, StageSet::Default)
+        .await
+        .unwrap()
 }
 
 /// Real git in a directory, with hermetic configuration.
@@ -119,11 +130,21 @@ async fn soft_moves_the_branch_and_keeps_the_commit_staged() {
     assert_eq!(rows[0].git, Some(at_b.git));
 
     let orig = fs::read_to_string(
-        asc_git::projection::Projection::open(&f.root).unwrap().git_dir().join("ORIG_HEAD"),
+        asc_git::projection::Projection::open(&f.root)
+            .unwrap()
+            .git_dir()
+            .join("ORIG_HEAD"),
     )
     .unwrap();
-    assert_eq!(orig.trim(), f.engine.git_commit_of(b).await.unwrap().to_string());
-    assert_eq!(read(&f.root, "f.txt"), "two\n", "the working tree is untouched");
+    assert_eq!(
+        orig.trim(),
+        f.engine.git_commit_of(b).await.unwrap().to_string()
+    );
+    assert_eq!(
+        read(&f.root, "f.txt"),
+        "two\n",
+        "the working tree is untouched"
+    );
 }
 
 #[tokio::test]
@@ -133,7 +154,11 @@ async fn mixed_resets_the_index_and_reports_what_git_reports() {
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(branch(&f).await, a);
     assert!(staged(&f).await.is_empty(), "the index equals the new HEAD");
-    assert_eq!(read(&f.root, "f.txt"), "two\n", "the working tree is untouched");
+    assert_eq!(
+        read(&f.root, "f.txt"),
+        "two\n",
+        "the working tree is untouched"
+    );
 
     let dir = git_base(&f);
     let want = git(&dir, &f.sandbox.user, &["reset", "HEAD~1"]);
@@ -148,15 +173,23 @@ async fn hard_with_no_head_change_restores_modified_deleted_and_staged_files() {
     fs::remove_file(f.root.join("h.txt")).unwrap();
     put(&f.root, "added.txt", "staged only\n");
     let leaf = f.file_leaf(a, "f.txt").await;
-    f.stage(&[StageRow::from_leaf(b"added.txt".to_vec(), Some(&leaf))]).await;
+    f.stage(&[StageRow::from_leaf(b"added.txt".to_vec(), Some(&leaf))])
+        .await;
 
     let out = asc(&f, &["reset", "--hard"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(out.stdout.starts_with("HEAD is now at "), "{}", out.stdout);
-    assert!(out.stdout.ends_with(" commit of 2 files\n"), "{}", out.stdout);
+    assert!(
+        out.stdout.ends_with(" commit of 2 files\n"),
+        "{}",
+        out.stdout
+    );
     assert_eq!(read(&f.root, "f.txt"), "two\n");
     assert_eq!(read(&f.root, "h.txt"), "new\n");
-    assert!(!f.root.join("added.txt").exists(), "a staged-only file is removed");
+    assert!(
+        !f.root.join("added.txt").exists(),
+        "a staged-only file is removed"
+    );
     assert!(staged(&f).await.is_empty());
 
     // Same scenario in git.
@@ -170,9 +203,19 @@ async fn hard_with_no_head_change_restores_modified_deleted_and_staged_files() {
     for file in ["f.txt", "g.txt", "h.txt"] {
         assert_eq!(read(&f.root, file), read(&dir, file), "{file}");
     }
-    assert_eq!(f.root.join("added.txt").exists(), dir.join("added.txt").exists());
-    let tail = |s: &str| s.split_once(' ').map(|_| s.split(' ').skip(5).collect::<Vec<_>>().join(" "));
-    assert_eq!(tail(&out.stdout), tail(&want.stdout), "subject after the abbreviated id");
+    assert_eq!(
+        f.root.join("added.txt").exists(),
+        dir.join("added.txt").exists()
+    );
+    let tail = |s: &str| {
+        s.split_once(' ')
+            .map(|_| s.split(' ').skip(5).collect::<Vec<_>>().join(" "))
+    };
+    assert_eq!(
+        tail(&out.stdout),
+        tail(&want.stdout),
+        "subject after the abbreviated id"
+    );
 }
 
 #[tokio::test]
@@ -219,7 +262,11 @@ async fn restore_worktree_takes_the_index_version() {
     assert_eq!((out.code, out.stdout.as_str()), (0, ""), "{}", out.stderr);
     assert_eq!(read(&f.root, "f.txt"), "two\n");
     assert_eq!(read(&f.root, "g.txt"), "keep\n");
-    assert_eq!(read(&f.root, "h.txt"), "also scribbled\n", "unnamed paths are left alone");
+    assert_eq!(
+        read(&f.root, "h.txt"),
+        "also scribbled\n",
+        "unnamed paths are left alone"
+    );
     assert_eq!(asc(&f, &["restore", "."]).code, 0);
     assert_eq!(read(&f.root, "h.txt"), "new\n");
 }
@@ -230,11 +277,16 @@ async fn restore_staged_returns_the_index_to_head() {
     f.set_branch("master", a).await;
     f.checkout_branch("master", Some(a)).await;
     let leaf = f.file_leaf(b, "f.txt").await;
-    f.stage(&[StageRow::from_leaf(b"f.txt".to_vec(), Some(&leaf))]).await;
+    f.stage(&[StageRow::from_leaf(b"f.txt".to_vec(), Some(&leaf))])
+        .await;
     let out = asc(&f, &["restore", "--staged", "f.txt"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(staged(&f).await.is_empty());
-    assert_eq!(read(&f.root, "f.txt"), "two\n", "--staged leaves the working tree alone");
+    assert_eq!(
+        read(&f.root, "f.txt"),
+        "two\n",
+        "--staged leaves the working tree alone"
+    );
 }
 
 #[tokio::test]
@@ -243,7 +295,10 @@ async fn restore_source_rewrites_and_removes_files() {
     let out = asc(&f, &["restore", "--source=HEAD~1", "f.txt", "h.txt"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(read(&f.root, "f.txt"), "one\n");
-    assert!(!f.root.join("h.txt").exists(), "absent in the source: removed");
+    assert!(
+        !f.root.join("h.txt").exists(),
+        "absent in the source: removed"
+    );
 
     let out = asc(&f, &["restore", "-S", "-W", "--source=HEAD~1", "g.txt"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
@@ -252,7 +307,9 @@ async fn restore_source_rewrites_and_removes_files() {
 #[tokio::test]
 async fn restore_resolves_paths_from_the_current_directory() {
     let f = Fixture::new().await;
-    let a = f.commit(&[], &[("sub/a.txt", b"in sub\n"), ("a.txt", b"root\n")]).await;
+    let a = f
+        .commit(&[], &[("sub/a.txt", b"in sub\n"), ("a.txt", b"root\n")])
+        .await;
     f.set_branch("master", a).await;
     f.checkout_branch("master", Some(a)).await;
     put(&f.root, "sub/a.txt", "x\n");
@@ -272,27 +329,47 @@ async fn errors_match_git() {
     let (f, _, _) = base().await;
     let out = asc(&f, &["restore"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("fatal: you must specify path(s) to restore"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("fatal: you must specify path(s) to restore"),
+        "{}",
+        out.stderr
+    );
 
     let out = asc(&f, &["restore", "nosuch"]);
     assert_eq!(out.code, 1);
     assert!(
-        out.stderr.contains("error: pathspec 'nosuch' did not match any file(s) known to git"),
+        out.stderr
+            .contains("error: pathspec 'nosuch' did not match any file(s) known to git"),
         "{}",
         out.stderr
     );
 
     let out = asc(&f, &["reset", "--soft", "--", "f.txt"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("fatal: Cannot do soft reset with paths."), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("fatal: Cannot do soft reset with paths."),
+        "{}",
+        out.stderr
+    );
 
     let out = asc(&f, &["reset", "--hard", "HEAD", "--", "f.txt"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("fatal: Cannot do hard reset with paths."), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("fatal: Cannot do hard reset with paths."),
+        "{}",
+        out.stderr
+    );
 
     let out = asc(&f, &["reset", "nosuch"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("fatal: ambiguous argument 'nosuch'"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("fatal: ambiguous argument 'nosuch'"),
+        "{}",
+        out.stderr
+    );
 
     // Flags outside the native table are refused before anything runs.
     assert_eq!(asc(&f, &["reset", "--keep"]).code, 129);

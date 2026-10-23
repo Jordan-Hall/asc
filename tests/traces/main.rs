@@ -30,7 +30,14 @@ use regex::Regex;
 use serde::Deserialize;
 
 /// The tools in scope (SPEC §17.1). Each has a README and at least one trace.
-const TOOLS: &[&str] = &["claude-code", "husky", "lint-staged", "commitlint", "turbo", "asc-scripts"];
+const TOOLS: &[&str] = &[
+    "claude-code",
+    "husky",
+    "lint-staged",
+    "commitlint",
+    "turbo",
+    "asc-scripts",
+];
 
 fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/traces")
@@ -65,7 +72,11 @@ fn trace_names() -> Vec<String> {
 fn load(name: &str) -> Trace {
     let path = corpus().join(format!("{name}.trace"));
     let meta = fs::metadata(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    assert!(meta.len() <= MAX_TRACE_BYTES, "{name}: {} bytes exceeds the {MAX_TRACE_BYTES} byte limit", meta.len());
+    assert!(
+        meta.len() <= MAX_TRACE_BYTES,
+        "{name}: {} bytes exceeds the {MAX_TRACE_BYTES} byte limit",
+        meta.len()
+    );
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     Trace::parse(name, &text.replace("\r\n", "\n")).unwrap_or_else(|e| panic!("{e}"))
 }
@@ -116,8 +127,14 @@ fn pending() -> Vec<Pending> {
     let text = fs::read_to_string(corpus().join("pending.toml")).expect("pending.toml");
     let file: PendingFile = toml::from_str(&text).unwrap_or_else(|e| panic!("pending.toml: {e}"));
     for p in &file.pending {
-        assert!(!p.reason.trim().is_empty() && p.unit.starts_with('U'), "pending.toml: {p:?} needs a unit and a reason");
-        assert!(p.differs || !p.unsupported.is_empty(), "pending.toml: {p:?} lists nothing");
+        assert!(
+            !p.reason.trim().is_empty() && p.unit.starts_with('U'),
+            "pending.toml: {p:?} needs a unit and a reason"
+        );
+        assert!(
+            p.differs || !p.unsupported.is_empty(),
+            "pending.toml: {p:?} lists nothing"
+        );
     }
     file.pending
 }
@@ -142,14 +159,24 @@ fn every_tool_has_a_readme_and_a_trace() {
     let names = trace_names();
     for tool in TOOLS {
         let readme = corpus().join(tool).join("README.md");
-        let text = fs::read_to_string(&readme).unwrap_or_else(|e| panic!("{}: {e}", readme.display()));
-        assert!(text.contains("## Versions") && text.contains("## Provenance"), "{tool}/README.md lacks Versions or Provenance");
-        assert!(names.iter().any(|n| n.starts_with(&format!("{tool}/"))), "no trace for {tool}");
+        let text =
+            fs::read_to_string(&readme).unwrap_or_else(|e| panic!("{}: {e}", readme.display()));
+        assert!(
+            text.contains("## Versions") && text.contains("## Provenance"),
+            "{tool}/README.md lacks Versions or Provenance"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with(&format!("{tool}/"))),
+            "no trace for {tool}"
+        );
     }
     let known: BTreeSet<&str> = TOOLS.iter().copied().collect();
     for name in &names {
         let tool = name.split('/').next().unwrap_or_default();
-        assert!(known.contains(tool), "{name}: {tool} is not a tool in scope");
+        assert!(
+            known.contains(tool),
+            "{name}: {tool} is not a tool in scope"
+        );
     }
 }
 
@@ -157,26 +184,57 @@ fn every_tool_has_a_readme_and_a_trace() {
 fn traces_match_the_pinned_versions() {
     let pins = pins();
     for tool in TOOLS {
-        let pin = pins.tool.get(*tool).unwrap_or_else(|| panic!("pins.toml has no entry for {tool}"));
-        assert!(!pin.version.is_empty() && !pin.source.is_empty(), "pins.toml: {tool} needs a version and a source");
+        let pin = pins
+            .tool
+            .get(*tool)
+            .unwrap_or_else(|| panic!("pins.toml has no entry for {tool}"));
+        assert!(
+            !pin.version.is_empty() && !pin.source.is_empty(),
+            "pins.toml: {tool} needs a version and a source"
+        );
     }
     for name in trace_names() {
         let trace = load(&name);
-        let pin = pins.tool.get(&trace.tool).unwrap_or_else(|| panic!("{name}: no pin for {}", trace.tool));
-        assert_eq!(trace.version, pin.version, "{name}: version differs from pins.toml");
-        assert!(trace.git.starts_with(&pins.git), "{name}: recorded against git {}, pinned {}", trace.git, pins.git);
-        assert!(name.starts_with(&format!("{}/", trace.tool)), "{name}: sits under the wrong tool directory");
+        let pin = pins
+            .tool
+            .get(&trace.tool)
+            .unwrap_or_else(|| panic!("{name}: no pin for {}", trace.tool));
+        assert_eq!(
+            trace.version, pin.version,
+            "{name}: version differs from pins.toml"
+        );
+        assert!(
+            trace.git.starts_with(&pins.git),
+            "{name}: recorded against git {}, pinned {}",
+            trace.git,
+            pins.git
+        );
+        assert!(
+            name.starts_with(&format!("{}/", trace.tool)),
+            "{name}: sits under the wrong tool directory"
+        );
     }
 }
 
 #[test]
 fn recorded_traces_carry_no_machine_paths() {
-    let host = Regex::new(r#"(?i)(^|[^A-Za-z0-9])[a-z]:[\\/]|/users/|appdata|/tmp/|/home/|\btmp\.[A-Za-z0-9]{6}"#).unwrap();
+    let host = Regex::new(
+        r#"(?i)(^|[^A-Za-z0-9])[a-z]:[\\/]|/users/|appdata|/tmp/|/home/|\btmp\.[A-Za-z0-9]{6}"#,
+    )
+    .unwrap();
     for name in trace_names() {
         let text = fs::read_to_string(corpus().join(format!("{name}.trace"))).unwrap();
         // The header comment names the recorder script; the body is what a replay reads.
-        for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.starts_with('#')) {
-            assert!(!host.is_match(line), "{name}:{}: a host path in a trace: {line}", n + 1);
+        for (n, line) in text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| !l.starts_with('#'))
+        {
+            assert!(
+                !host.is_match(line),
+                "{name}:{}: a host path in a trace: {line}",
+                n + 1
+            );
         }
     }
 }
@@ -264,39 +322,103 @@ fn corpus_defines_the_forms_the_native_table_needs() {
             "lint-staged reset",
         ],
     );
-    need("turbo forms (spike S4)", &seen, &["turbo rev-parse", "turbo ls-files", "turbo --others", "turbo diff-tree", "turbo --merge-base", "turbo show", "turbo diff"]);
-    need("commitlint forms", &seen, &["commitlint log", "commitlint merge-base", "commitlint config"]);
+    need(
+        "turbo forms (spike S4)",
+        &seen,
+        &[
+            "turbo rev-parse",
+            "turbo ls-files",
+            "turbo --others",
+            "turbo diff-tree",
+            "turbo --merge-base",
+            "turbo show",
+            "turbo diff",
+        ],
+    );
+    need(
+        "commitlint forms",
+        &seen,
+        &[
+            "commitlint log",
+            "commitlint merge-base",
+            "commitlint config",
+        ],
+    );
     need(
         "Claude Code forms (SPEC §11.5)",
         &seen,
-        &["claude-code status", "claude-code diff", "claude-code log", "claude-code worktree", "claude-code branch", "claude-code push"],
+        &[
+            "claude-code status",
+            "claude-code diff",
+            "claude-code log",
+            "claude-code worktree",
+            "claude-code branch",
+            "claude-code push",
+        ],
     );
-    need("husky hooks (SPEC §17.1)", &hooks, &["husky pre-commit", "husky commit-msg", "husky post-checkout", "husky pre-push"]);
-    need("the GIT_INDEX_FILE flow of hook calls (SPEC §11.5)", &env, &["husky GIT_INDEX_FILE"]);
+    need(
+        "husky hooks (SPEC §17.1)",
+        &hooks,
+        &[
+            "husky pre-commit",
+            "husky commit-msg",
+            "husky post-checkout",
+            "husky pre-push",
+        ],
+    );
+    need(
+        "the GIT_INDEX_FILE flow of hook calls (SPEC §11.5)",
+        &env,
+        &["husky GIT_INDEX_FILE"],
+    );
     need("a stdin invocation", &seen, &["asc-scripts credential"]);
 }
 
 #[test]
 fn claude_code_worktrees_are_covered_with_and_without_hooks() {
     let names = trace_names();
-    for case in ["worktree-default", "worktree-git-hooks", "worktree-hook-commands"] {
-        assert!(names.iter().any(|n| n == &format!("claude-code/{case}")), "claude-code/{case} is missing");
+    for case in [
+        "worktree-default",
+        "worktree-git-hooks",
+        "worktree-hook-commands",
+    ] {
+        assert!(
+            names.iter().any(|n| n == &format!("claude-code/{case}")),
+            "claude-code/{case} is missing"
+        );
     }
     let hooked = load("claude-code/worktree-hook-commands");
-    let events: Vec<&str> = hooked.steps.iter().filter_map(|s| s.hook_event.as_deref()).collect();
+    let events: Vec<&str> = hooked
+        .steps
+        .iter()
+        .filter_map(|s| s.hook_event.as_deref())
+        .collect();
     assert_eq!(events, ["WorktreeCreate", "WorktreeRemove"]);
-    assert!(hooked.recapture.as_deref() == Some("S7"), "the hook contract stays authored until spike S7");
+    assert!(
+        hooked.recapture.as_deref() == Some("S7"),
+        "the hook contract stays authored until spike S7"
+    );
 }
 
 #[test]
 fn provenance_is_honest() {
     for name in trace_names() {
         let trace = load(&name);
-        let recorded = corpus().join("record").join("scenarios").join(format!("{name}.sh"));
+        let recorded = corpus()
+            .join("record")
+            .join("scenarios")
+            .join(format!("{name}.sh"));
         match trace.provenance {
-            Provenance::Recorded => assert!(recorded.is_file(), "{name}: recorded, but {} does not exist", recorded.display()),
+            Provenance::Recorded => assert!(
+                recorded.is_file(),
+                "{name}: recorded, but {} does not exist",
+                recorded.display()
+            ),
             Provenance::Authored | Provenance::Extracted => {
-                assert!(!recorded.exists(), "{name}: has a recorder scenario, so it is recorded");
+                assert!(
+                    !recorded.exists(),
+                    "{name}: has a recorder scenario, so it is recorded"
+                );
             }
         }
     }
@@ -321,20 +443,53 @@ mod validation {
     #[test]
     fn bad_traces_are_refused() {
         let cases: &[(&str, &str)] = &[
-            ("unknown key", "bogus = 1\n[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\n"),
+            (
+                "unknown key",
+                "bogus = 1\n[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\n",
+            ),
             ("no steps", ""),
-            ("two kinds", "[[step]]\ngit = [\"init\"]\nsh = \"true\"\nfrom = \"d\"\nexit = 0\n"),
+            (
+                "two kinds",
+                "[[step]]\ngit = [\"init\"]\nsh = \"true\"\nfrom = \"d\"\nexit = 0\n",
+            ),
             ("empty argv", "[[step]]\ngit = []\nfrom = \"d\"\nexit = 0\n"),
             ("missing exit", "[[step]]\ngit = [\"init\"]\nfrom = \"d\"\n"),
-            ("host path", "[[step]]\ngit = [\"add\", \"/etc/passwd\"]\nfrom = \"d\"\nexit = 0\n"),
-            ("drive path", "[[step]]\ngit = [\"add\", \"C:/x\"]\nfrom = \"d\"\nexit = 0\n"),
-            ("climbing path", "[[step]]\ngit = [\"add\", \"../../x\"]\nfrom = \"d\"\nexit = 0\n"),
-            ("PATH override", "[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\nenv = { PATH = \"/x\" }\n"),
-            ("exec path override", "[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\nenv = { GIT_EXEC_PATH = \"/x\" }\n"),
-            ("unknown hook", "[[step]]\ngit = [\"commit\"]\nfrom = \"d\"\nexit = 0\n[[step.hook]]\nname = \"pre-nothing\"\npath = \".git/hooks/x\"\nexit = 0\n[[step.hook.call]]\nsh = \"true\"\nfrom = \"t\"\n"),
-            ("hook path out of tree", "[[step]]\ngit = [\"commit\"]\nfrom = \"d\"\nexit = 0\n[[step.hook]]\nname = \"pre-commit\"\npath = \"../hooks/pre-commit\"\nexit = 0\n[[step.hook.call]]\nsh = \"true\"\nfrom = \"t\"\n"),
-            ("hook event without JSON", "[[step]]\nhook_event = \"WorktreeCreate\"\nfrom = \"c\"\n"),
-            ("NUL", "[[step]]\ngit = [\"commit\", \"-m\", \"a\\u0000b\"]\nfrom = \"d\"\nexit = 0\n"),
+            (
+                "host path",
+                "[[step]]\ngit = [\"add\", \"/etc/passwd\"]\nfrom = \"d\"\nexit = 0\n",
+            ),
+            (
+                "drive path",
+                "[[step]]\ngit = [\"add\", \"C:/x\"]\nfrom = \"d\"\nexit = 0\n",
+            ),
+            (
+                "climbing path",
+                "[[step]]\ngit = [\"add\", \"../../x\"]\nfrom = \"d\"\nexit = 0\n",
+            ),
+            (
+                "PATH override",
+                "[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\nenv = { PATH = \"/x\" }\n",
+            ),
+            (
+                "exec path override",
+                "[[step]]\ngit = [\"init\"]\nfrom = \"d\"\nexit = 0\nenv = { GIT_EXEC_PATH = \"/x\" }\n",
+            ),
+            (
+                "unknown hook",
+                "[[step]]\ngit = [\"commit\"]\nfrom = \"d\"\nexit = 0\n[[step.hook]]\nname = \"pre-nothing\"\npath = \".git/hooks/x\"\nexit = 0\n[[step.hook.call]]\nsh = \"true\"\nfrom = \"t\"\n",
+            ),
+            (
+                "hook path out of tree",
+                "[[step]]\ngit = [\"commit\"]\nfrom = \"d\"\nexit = 0\n[[step.hook]]\nname = \"pre-commit\"\npath = \"../hooks/pre-commit\"\nexit = 0\n[[step.hook.call]]\nsh = \"true\"\nfrom = \"t\"\n",
+            ),
+            (
+                "hook event without JSON",
+                "[[step]]\nhook_event = \"WorktreeCreate\"\nfrom = \"c\"\n",
+            ),
+            (
+                "NUL",
+                "[[step]]\ngit = [\"commit\", \"-m\", \"a\\u0000b\"]\nfrom = \"d\"\nexit = 0\n",
+            ),
         ];
         for (what, body) in cases {
             assert!(parse(body).is_err(), "{what} must be refused");
@@ -362,7 +517,9 @@ mod validation {
 /// The `asc: … is not supported` messages in asc's stderr, each with the `git` invocation that drew
 /// it, in order of appearance (one entry per message).
 fn unsupported_messages(stderr: &str) -> Vec<(String, String)> {
-    let re = Regex::new(r"asc: ((?:option )?'[^'\n]*' is not supported(?: yet| in an asc workspace)?)").unwrap();
+    let re =
+        Regex::new(r"asc: ((?:option )?'[^'\n]*' is not supported(?: yet| in an asc workspace)?)")
+            .unwrap();
     let mut seen: Vec<(String, String)> = Vec::new();
     let mut invocation = String::new();
     for line in stderr.lines() {
@@ -393,7 +550,9 @@ fn exits(base: &Path, side: Side) -> Vec<(String, i32)> {
 }
 
 fn text(bytes: Option<&Vec<u8>>) -> String {
-    bytes.map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default()
+    bytes
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
 }
 
 fn check_trace(name: &str) {
@@ -412,26 +571,46 @@ fn check_trace(name: &str) {
     let base = base.as_path();
 
     // Real git first: the recording must replay with the exit codes it was recorded with.
-    let git = tools.run_side(Side::Git, &script, base, false).unwrap_or_else(|e| panic!("{name}: git side: {e}"));
+    let git = tools
+        .run_side(Side::Git, &script, base, false)
+        .unwrap_or_else(|e| panic!("{name}: git side: {e}"));
     let want = replay::expected_exits(&trace);
     let got = exits(base, Side::Git);
-    assert_eq!(got, want, "{name}: real git replays with other exit codes than the recording\n{}", text(git.sections.get("stderr")));
+    assert_eq!(
+        got,
+        want,
+        "{name}: real git replays with other exit codes than the recording\n{}",
+        text(git.sections.get("stderr"))
+    );
 
-    let asc = tools.run_side(Side::Asc, &script, base, false).unwrap_or_else(|e| panic!("{name}: asc side: {e}"));
+    let asc = tools
+        .run_side(Side::Asc, &script, base, false)
+        .unwrap_or_else(|e| panic!("{name}: asc side: {e}"));
     let routed = replay::real_routed(&trace);
-    assert_eq!(asc.fall_through, routed, "{name}: the asc side fell through to real git for other invocations than the ones the trace routes there");
+    assert_eq!(
+        asc.fall_through, routed,
+        "{name}: the asc side fell through to real git for other invocations than the ones the trace routes there"
+    );
 
     let found = unsupported_messages(&text(asc.sections.get("stderr")));
     let gaps: Vec<String> = found.iter().map(|(msg, _)| msg.clone()).collect();
     let all = pending();
     let entry = all.iter().find(|p| p.trace == name);
     if strict() {
-        assert!(entry.is_none(), "{name}: strict mode refuses the pending entry {entry:?}");
+        assert!(
+            entry.is_none(),
+            "{name}: strict mode refuses the pending entry {entry:?}"
+        );
     }
-    let listed: Vec<&String> = entry.map(|p| p.unsupported.iter().collect()).unwrap_or_default();
+    let listed: Vec<&String> = entry
+        .map(|p| p.unsupported.iter().collect())
+        .unwrap_or_default();
     let new_gaps: Vec<&String> = gaps.iter().filter(|g| !listed.contains(g)).collect();
     if !new_gaps.is_empty() {
-        let drawn: String = found.iter().map(|(msg, cmd)| format!("  {msg}   <- git {cmd}\n")).collect();
+        let drawn: String = found
+            .iter()
+            .map(|(msg, cmd)| format!("  {msg}   <- git {cmd}\n"))
+            .collect();
         panic!(
             "{name}: invocations outside the native table (SPEC §11.5). Close them in the owning unit or list them in pending.toml:\n{drawn}\
              [[pending]]\ntrace = \"{name}\"\nunit = \"U??\"\nreason = \"…\"\nunsupported = {gaps:?}\n"
@@ -488,9 +667,18 @@ traces! {
 #[test]
 fn every_trace_has_a_test() {
     let names = trace_names();
-    let missing: Vec<_> = names.iter().filter(|n| !REGISTERED.contains(&n.as_str())).collect();
-    assert!(missing.is_empty(), "traces without a test in tests/traces/main.rs: {missing:?}");
-    let stale: Vec<_> = REGISTERED.iter().filter(|n| !names.iter().any(|m| m == *n)).collect();
+    let missing: Vec<_> = names
+        .iter()
+        .filter(|n| !REGISTERED.contains(&n.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "traces without a test in tests/traces/main.rs: {missing:?}"
+    );
+    let stale: Vec<_> = REGISTERED
+        .iter()
+        .filter(|n| !names.iter().any(|m| m == *n))
+        .collect();
     assert!(stale.is_empty(), "tests without a trace file: {stale:?}");
 }
 
@@ -498,7 +686,11 @@ fn every_trace_has_a_test() {
 fn pending_entries_name_real_traces() {
     let names = trace_names();
     for p in pending() {
-        assert!(names.contains(&p.trace), "pending.toml: {} is not a trace", p.trace);
+        assert!(
+            names.contains(&p.trace),
+            "pending.toml: {} is not a trace",
+            p.trace
+        );
     }
 }
 
@@ -510,9 +702,18 @@ fn unsupported_messages_name_the_invocation_that_drew_them() {
     assert_eq!(
         unsupported_messages(stderr),
         [
-            ("'stash' is not supported yet".to_owned(), "stash create".to_owned()),
-            ("option '--ita-visible-in-index' is not supported".to_owned(), "diff --ita-visible-in-index".to_owned()),
-            ("'worktree' is not supported in an asc workspace".to_owned(), "stash store".to_owned()),
+            (
+                "'stash' is not supported yet".to_owned(),
+                "stash create".to_owned()
+            ),
+            (
+                "option '--ita-visible-in-index' is not supported".to_owned(),
+                "diff --ita-visible-in-index".to_owned()
+            ),
+            (
+                "'worktree' is not supported in an asc workspace".to_owned(),
+                "stash store".to_owned()
+            ),
         ]
     );
     assert!(unsupported_messages("fatal: not a git repository\n").is_empty());

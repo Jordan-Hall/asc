@@ -2,8 +2,8 @@
 //! units add their own `pub mod` lines.
 
 pub mod backfill;
-pub mod queue;
 pub mod modelgen;
+pub mod queue;
 pub mod sweep;
 pub mod warm;
 pub mod worker;

@@ -38,7 +38,11 @@ fn run_with(cmd: &mut Command, input: &str) -> Out {
     let _ = stdin.write_all(input.as_bytes());
     drop(stdin);
     let out = child.wait_with_output().unwrap();
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 /// An asc workspace and a real git repository holding the same files.
@@ -52,7 +56,10 @@ impl Rig {
     async fn new() -> Self {
         let f = Fixture::new().await;
         let git = f.sandbox.dir("gitwork");
-        let git_bin = RealGit::resolve(None, None).expect("real git").path().to_owned();
+        let git_bin = RealGit::resolve(None, None)
+            .expect("real git")
+            .path()
+            .to_owned();
         let rig = Self { f, git, git_bin };
         for args in [
             &["init", "-q"][..],
@@ -104,16 +111,25 @@ impl Rig {
     }
 
     async fn asc_index(&self) -> Vec<String> {
-        let ws = workspaces::get(&self.f.db, self.f.ws).await.unwrap().unwrap();
+        let ws = workspaces::get(&self.f.db, self.f.ws)
+            .await
+            .unwrap()
+            .unwrap();
         let mut entries: BTreeMap<(Vec<u8>, u8), String> = BTreeMap::new();
         if let Some(cs) = ws.ws.base_cs {
             let root = self.f.engine.get_changeset(cs).await.unwrap().root;
             let mut walk = self.f.engine.walk(root, None);
             while let Some((path, e)) = walk.try_next().await.unwrap() {
-                entries.insert((path.as_bytes().to_vec(), 0), line(e.kind, &e.git.to_string()));
+                entries.insert(
+                    (path.as_bytes().to_vec(), 0),
+                    line(e.kind, &e.git.to_string()),
+                );
             }
         }
-        for r in stage::overlay(&self.f.db, self.f.ws, StageSet::Default).await.unwrap() {
+        for r in stage::overlay(&self.f.db, self.f.ws, StageSet::Default)
+            .await
+            .unwrap()
+        {
             if r.stage == 0 {
                 entries.remove(&(r.path.clone(), 0));
             }
@@ -121,13 +137,19 @@ impl Rig {
                 entries.insert((r.path, r.stage), line(r.kind, &git.to_string()));
             }
         }
-        entries.into_iter().map(|((path, _), l)| format!("{l}\t{}", String::from_utf8_lossy(&path))).collect()
+        entries
+            .into_iter()
+            .map(|((path, _), l)| format!("{l}\t{}", String::from_utf8_lossy(&path)))
+            .collect()
     }
 
     fn git_index(&self) -> Vec<String> {
         let out = self.git(&["ls-files", "-s"]);
         assert_eq!(out.code, 0, "{}", out.stderr);
-        out.stdout.lines().map(|l| l.replace(" 0\t", "\t")).collect()
+        out.stdout
+            .lines()
+            .map(|l| l.replace(" 0\t", "\t"))
+            .collect()
     }
 
     /// `add -p args…` fed `answers`, on both sides, with `env` set on both.
@@ -135,7 +157,14 @@ impl Rig {
         self.patch_in(&self.f.root, &self.git, args, answers, env)
     }
 
-    fn patch_in(&self, asc_cwd: &Path, git_cwd: &Path, args: &[&str], answers: &str, env: &[(&str, &str)]) -> (Out, Out) {
+    fn patch_in(
+        &self,
+        asc_cwd: &Path,
+        git_cwd: &Path,
+        args: &[&str],
+        answers: &str,
+        env: &[(&str, &str)],
+    ) -> (Out, Out) {
         let mut c = self.f.sandbox.asc(asc_cwd);
         c.arg("add").arg("-p").args(args);
         let mut g = self.git_cmd(git_cwd);
@@ -149,9 +178,17 @@ impl Rig {
 
     /// Both sides agree on the exit code, the dialogue and the staged tree.
     async fn agree(&self, what: &str, (c, g): &(Out, Out)) {
-        assert_eq!(c.code, g.code, "{what}: exit code\n{}\n{}", c.stderr, g.stderr);
+        assert_eq!(
+            c.code, g.code,
+            "{what}: exit code\n{}\n{}",
+            c.stderr, g.stderr
+        );
         assert_eq!(norm(&c.stdout), norm(&g.stdout), "{what}: dialogue");
-        assert_eq!(self.asc_index().await, self.git_index(), "{what}: staged tree");
+        assert_eq!(
+            self.asc_index().await,
+            self.git_index(),
+            "{what}: staged tree"
+        );
     }
 }
 
@@ -182,7 +219,13 @@ fn norm(s: &str) -> String {
 
 fn numbered(n: usize, change: &[usize]) -> Vec<u8> {
     (1..=n)
-        .map(|i| if change.contains(&i) { format!("new{i}\n") } else { format!("{i}\n") })
+        .map(|i| {
+            if change.contains(&i) {
+                format!("new{i}\n")
+            } else {
+                format!("{i}\n")
+            }
+        })
         .collect::<String>()
         .into_bytes()
 }
@@ -242,7 +285,8 @@ async fn split_and_edit_stage_what_git_stages() {
         r.write("f.txt", &numbered(14, &[4, 8]));
         let ed = editor(&r, "ed.sh", script);
         let got = r.patch(&[], answers, &[("GIT_EDITOR", ed.as_str())]);
-        r.agree(&format!("answers {answers:?}, editor {script:?}"), &got).await;
+        r.agree(&format!("answers {answers:?}, editor {script:?}"), &got)
+            .await;
     }
     // Every line removed: the edit is abandoned and the hunk stays undecided.
     let r = Rig::new().await;
@@ -278,7 +322,10 @@ async fn added_deleted_and_binary_files_follow_git() {
     let got = r.patch(&[], "y\ny\ny\ny\n", &[]);
     r.agree("every file offered", &got).await;
     assert!(got.0.stdout.contains("Stage deletion") && got.0.stdout.contains("Stage addition"));
-    assert!(!got.0.stdout.contains("bin.dat"), "binary files are skipped");
+    assert!(
+        !got.0.stdout.contains("bin.dat"),
+        "binary files are skipped"
+    );
 }
 
 #[tokio::test]
@@ -312,9 +359,18 @@ async fn dry_run_is_refused_like_git() {
 async fn crlf_work_tree_files_diff_and_stage_in_their_normalised_form() {
     let r = Rig::new().await;
     r.write(".gitattributes", b"*.txt text=auto\n");
-    r.seed(&[("a.txt", &numbered(30, &[])), (".gitattributes", b"*.txt text=auto\n")]).await;
+    r.seed(&[
+        ("a.txt", &numbered(30, &[])),
+        (".gitattributes", b"*.txt text=auto\n"),
+    ])
+    .await;
     // Same lines but CRLF: no difference at all after normalisation.
-    let crlf = |change: &[usize]| String::from_utf8(numbered(30, change)).unwrap().replace('\n', "\r\n").into_bytes();
+    let crlf = |change: &[usize]| {
+        String::from_utf8(numbered(30, change))
+            .unwrap()
+            .replace('\n', "\r\n")
+            .into_bytes()
+    };
     r.write("a.txt", &crlf(&[]));
     let got = r.patch(&[], "y\n", &[]);
     r.agree("line endings alone", &got).await;
@@ -323,7 +379,11 @@ async fn crlf_work_tree_files_diff_and_stage_in_their_normalised_form() {
     for answers in ["y\nn\n", "n\ny\n", "a\n"] {
         let r2 = Rig::new().await;
         r2.write(".gitattributes", b"*.txt text=auto\n");
-        r2.seed(&[("a.txt", &numbered(30, &[])), (".gitattributes", b"*.txt text=auto\n")]).await;
+        r2.seed(&[
+            ("a.txt", &numbered(30, &[])),
+            (".gitattributes", b"*.txt text=auto\n"),
+        ])
+        .await;
         r2.write("a.txt", &crlf(&[3, 25]));
         let got = r2.patch(&[], answers, &[]);
         r2.agree(&format!("CRLF, answers {answers:?}"), &got).await;
@@ -333,7 +393,13 @@ async fn crlf_work_tree_files_diff_and_stage_in_their_normalised_form() {
 #[tokio::test]
 async fn paths_are_chosen_relative_to_the_current_directory() {
     let r = Rig::new().await;
-    r.seed(&[("top.txt", b"t\n"), ("dir/a.txt", b"a\n"), ("dir/sub/b.txt", b"b\n"), ("other/c.txt", b"c\n")]).await;
+    r.seed(&[
+        ("top.txt", b"t\n"),
+        ("dir/a.txt", b"a\n"),
+        ("dir/sub/b.txt", b"b\n"),
+        ("other/c.txt", b"c\n"),
+    ])
+    .await;
     for p in ["top.txt", "dir/a.txt", "dir/sub/b.txt", "other/c.txt"] {
         r.write(p, b"changed\n");
     }
@@ -341,7 +407,11 @@ async fn paths_are_chosen_relative_to_the_current_directory() {
     // Without a path git offers the whole repository, whatever the directory.
     let got = r.patch_in(&asc_dir, &git_dir, &[], "n\nn\nn\nn\n", &[]);
     r.agree("no path", &got).await;
-    assert!(got.0.stdout.contains("dir/a.txt") && got.0.stdout.contains("top.txt"), "{}", got.0.stdout);
+    assert!(
+        got.0.stdout.contains("dir/a.txt") && got.0.stdout.contains("top.txt"),
+        "{}",
+        got.0.stdout
+    );
     let got = r.patch_in(&asc_dir, &git_dir, &["."], "y\nn\n", &[]);
     r.agree("the current directory", &got).await;
     assert!(!got.0.stdout.contains("top.txt"), "{}", got.0.stdout);
@@ -352,12 +422,23 @@ async fn paths_are_chosen_relative_to_the_current_directory() {
 #[tokio::test]
 async fn git_index_file_names_a_temporary_stage_set() {
     let r = Rig::new().await;
-    r.seed(&[("a.txt", &numbered(30, &[])), ("b.txt", b"b\n")]).await;
+    r.seed(&[("a.txt", &numbered(30, &[])), ("b.txt", b"b\n")])
+        .await;
     let tmp = r.f.sandbox.dir("tmpindex");
     let (asc_file, git_file) = (tmp.join("asc-x"), tmp.join("git-x"));
-    let c = run_with(r.f.asc().args(["add", "a.txt", "b.txt"]).env("GIT_INDEX_FILE", &asc_file), "");
+    let c = run_with(
+        r.f.asc()
+            .args(["add", "a.txt", "b.txt"])
+            .env("GIT_INDEX_FILE", &asc_file),
+        "",
+    );
     assert_eq!(c.code, 0, "{}", c.stderr);
-    let g = run_with(r.git_cmd(&r.git).args(["add", "a.txt", "b.txt"]).env("GIT_INDEX_FILE", &git_file), "");
+    let g = run_with(
+        r.git_cmd(&r.git)
+            .args(["add", "a.txt", "b.txt"])
+            .env("GIT_INDEX_FILE", &git_file),
+        "",
+    );
     assert_eq!(g.code, 0);
     r.write("a.txt", &numbered(30, &[3, 25]));
     let mut c = r.f.asc();
@@ -368,7 +449,11 @@ async fn git_index_file_names_a_temporary_stage_set() {
     assert_eq!(c.code, g.code, "{}", c.stderr);
     assert_eq!(norm(&c.stdout), norm(&g.stdout));
     assert_eq!(entries(&asc_file), entries(&git_file));
-    assert_eq!(r.asc_index().await, r.git_index(), "the default staging is unchanged");
+    assert_eq!(
+        r.asc_index().await,
+        r.git_index(),
+        "the default staging is unchanged"
+    );
 }
 
 fn entries(path: &Path) -> Vec<(String, String)> {
@@ -383,7 +468,10 @@ fn entries(path: &Path) -> Vec<(String, String)> {
                 FileMode::Symlink => "link",
                 FileMode::Gitlink => "gitlink",
             };
-            (String::from_utf8_lossy(e.path.as_bytes()).into_owned(), format!("{mode} {}", e.oid))
+            (
+                String::from_utf8_lossy(e.path.as_bytes()).into_owned(),
+                format!("{mode} {}", e.oid),
+            )
         })
         .collect()
 }
@@ -412,14 +500,24 @@ async fn patch_mode_does_not_read_through_a_linked_directory() {
     let outside = r.f.sandbox.dir("outside");
     fs::write(outside.join("b"), b"SECRET\n").unwrap();
     fs::remove_dir_all(r.f.root.join("a")).unwrap();
-    assert!(link_dir(&outside, &r.f.root.join("a")), "cannot make a directory link here");
+    assert!(
+        link_dir(&outside, &r.f.root.join("a")),
+        "cannot make a directory link here"
+    );
     fs::write(r.git.join("probe"), b"SECRET\n").unwrap();
     let secret = r.git(&["hash-object", "probe"]).stdout.trim().to_owned();
     let out = run_with(r.f.asc().args(["add", "-p"]), "y\ny\n");
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(!out.stdout.contains("SECRET"), "outside content was shown:\n{}", out.stdout);
+    assert!(
+        !out.stdout.contains("SECRET"),
+        "outside content was shown:\n{}",
+        out.stdout
+    );
     let index = r.asc_index().await.join("\n");
-    assert!(!index.contains(&secret), "outside content was staged:\n{index}");
+    assert!(
+        !index.contains(&secret),
+        "outside content was staged:\n{index}"
+    );
     assert_eq!(fs::read(outside.join("b")).unwrap(), b"SECRET\n");
 }
 
@@ -433,7 +531,11 @@ async fn a_file_over_the_inline_limit_is_not_offered() {
     assert_eq!(r.asc(&["add", "-N", "big.txt"]).code, 0);
     let out = run_with(r.f.asc().args(["add", "-p"]), "y\ny\n");
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stdout.contains("small.txt") && !out.stdout.contains("big.txt"), "{}", out.stdout);
+    assert!(
+        out.stdout.contains("small.txt") && !out.stdout.contains("big.txt"),
+        "{}",
+        out.stdout
+    );
 }
 
 #[tokio::test]
@@ -444,7 +546,11 @@ async fn a_file_of_too_many_lines_is_not_offered() {
     let out = run_with(r.f.asc().args(["add", "-p"]), "y\n");
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(out.stdout, "No changes.\n");
-    assert!(out.stderr.contains("many.txt") && out.stderr.contains("lines"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("many.txt") && out.stderr.contains("lines"),
+        "{}",
+        out.stderr
+    );
 }
 
 #[cfg(unix)]
@@ -469,7 +575,11 @@ async fn a_mode_change_is_its_own_hunk() {
     }
     let got = r.patch(&[], "y\n", &[]);
     r.agree("mode only", &got).await;
-    assert!(got.0.stdout.contains("Stage mode change"), "{}", got.0.stdout);
+    assert!(
+        got.0.stdout.contains("Stage mode change"),
+        "{}",
+        got.0.stdout
+    );
 }
 
 #[tokio::test]

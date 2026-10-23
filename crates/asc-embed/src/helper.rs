@@ -13,7 +13,9 @@ fn read(dir: &Path, name: &str) -> Result<Vec<u8>, Error> {
 fn run() -> Result<(), Error> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [name, dir] = args.as_slice() else {
-        return Err(Error::Protocol("usage: asc-embed <model-name> <model-dir>".to_owned()));
+        return Err(Error::Protocol(
+            "usage: asc-embed <model-name> <model-dir>".to_owned(),
+        ));
     };
     let record = Registry::builtin().get(name)?.clone();
     let dir = Path::new(dir);
@@ -25,7 +27,11 @@ fn run() -> Result<(), Error> {
         tokenizer_config: read(dir, "tokenizer_config.json")?,
     };
     let mut embedder = FastEmbedder::load(&record, files)?;
-    protocol::serve(&mut embedder, &mut std::io::stdin().lock(), &mut std::io::stdout().lock())
+    protocol::serve(
+        &mut embedder,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout().lock(),
+    )
 }
 
 fn main() {

@@ -65,7 +65,11 @@ fn check(name: &'static str, expected: &str, bytes: &[u8]) -> Result<(), Error> 
     if actual == expected {
         Ok(())
     } else {
-        Err(Error::Digest { name, expected: expected.to_owned(), actual })
+        Err(Error::Digest {
+            name,
+            expected: expected.to_owned(),
+            actual,
+        })
     }
 }
 
@@ -83,8 +87,16 @@ impl ModelRecord {
         check("onnx", self.onnx_sha256, &files.onnx)?;
         check("tokenizer", self.tokenizer_sha256, &files.tokenizer)?;
         check("config", self.config_sha256, &files.config)?;
-        check("special_tokens", self.special_tokens_sha256, &files.special_tokens)?;
-        check("tokenizer_config", self.tokenizer_config_sha256, &files.tokenizer_config)
+        check(
+            "special_tokens",
+            self.special_tokens_sha256,
+            &files.special_tokens,
+        )?;
+        check(
+            "tokenizer_config",
+            self.tokenizer_config_sha256,
+            &files.tokenizer_config,
+        )
     }
 }
 
@@ -111,16 +123,26 @@ pub struct Registry {
 impl Registry {
     /// The built-in registry.
     pub fn builtin() -> Self {
-        Self { records: vec![JINA_V2_BASE_CODE] }
+        Self {
+            records: vec![JINA_V2_BASE_CODE],
+        }
     }
 
     /// A registry of the given records, dropping any with a disallowed licence.
     pub fn new(records: Vec<ModelRecord>) -> Self {
-        Self { records: records.into_iter().filter(ModelRecord::licence_allowed).collect() }
+        Self {
+            records: records
+                .into_iter()
+                .filter(ModelRecord::licence_allowed)
+                .collect(),
+        }
     }
 
     /// Look a model up by name.
     pub fn get(&self, name: &str) -> Result<&ModelRecord, Error> {
-        self.records.iter().find(|r| r.name == name).ok_or_else(|| Error::UnknownModel(name.to_owned()))
+        self.records
+            .iter()
+            .find(|r| r.name == name)
+            .ok_or_else(|| Error::UnknownModel(name.to_owned()))
     }
 }

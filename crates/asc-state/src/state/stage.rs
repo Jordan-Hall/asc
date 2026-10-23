@@ -243,7 +243,12 @@ pub async fn replace(
 }
 
 /// [`replace`] inside the caller's transaction, so it commits or rolls back with a ref move.
-pub async fn replace_tx(tx: &mut Tx, ws: WorkspaceId, set: StageSet, rows: &[StageRow]) -> Result<()> {
+pub async fn replace_tx(
+    tx: &mut Tx,
+    ws: WorkspaceId,
+    set: StageSet,
+    rows: &[StageRow],
+) -> Result<()> {
     let ws = ws.to_string();
     sqlx::query("DELETE FROM stage WHERE ws_id = ? AND set_id = ?")
         .bind(&ws)

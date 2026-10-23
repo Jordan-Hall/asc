@@ -24,8 +24,16 @@ pub struct Line<'a> {
 #[must_use]
 pub fn render(lines: &[Line<'_>]) -> Vec<u8> {
     let cut = |a: &str| a.chars().take(MAX_AUTHOR).collect::<String>();
-    let width = lines.iter().map(|l| cut(l.author).chars().count()).max().unwrap_or(0);
-    let nwidth = lines.iter().map(|l| l.lineno.to_string().len()).max().unwrap_or(1);
+    let width = lines
+        .iter()
+        .map(|l| cut(l.author).chars().count())
+        .max()
+        .unwrap_or(0);
+    let nwidth = lines
+        .iter()
+        .map(|l| l.lineno.to_string().len())
+        .max()
+        .unwrap_or(1);
     let mut out = Vec::new();
     for l in lines {
         if l.boundary {
@@ -34,7 +42,9 @@ pub fn render(lines: &[Line<'_>]) -> Vec<u8> {
         out.extend_from_slice(l.abbrev.as_bytes());
         let author = cut(l.author);
         let pad = " ".repeat(width - author.chars().count());
-        out.extend_from_slice(format!(" ({author}{pad} {} {:>nwidth$}) ", l.date, l.lineno).as_bytes());
+        out.extend_from_slice(
+            format!(" ({author}{pad} {} {:>nwidth$}) ", l.date, l.lineno).as_bytes(),
+        );
         out.extend_from_slice(&clip_line(l.text));
         out.push(b'\n');
     }
@@ -46,12 +56,22 @@ mod tests {
     use super::*;
 
     fn line<'a>(author: &'a str, n: u32, text: &'a [u8], boundary: bool) -> Line<'a> {
-        Line { abbrev: "abc1234", author, date: "2026-01-02", lineno: n, text, boundary }
+        Line {
+            abbrev: "abc1234",
+            author,
+            date: "2026-01-02",
+            lineno: n,
+            text,
+            boundary,
+        }
     }
 
     #[test]
     fn pads_columns() {
-        let lines = [line("Al", 9, b"x", false), line("Barbara", 10, b"y\r\n", true)];
+        let lines = [
+            line("Al", 9, b"x", false),
+            line("Barbara", 10, b"y\r\n", true),
+        ];
         let text = String::from_utf8(render(&lines)).unwrap();
         assert_eq!(
             text,

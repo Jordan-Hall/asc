@@ -36,20 +36,39 @@ mod tests {
     #[test]
     fn layout() {
         let hits = [
-            Hit { path: b"src/a.rs", lineno: 3, text: b"fn main() {}\n" },
-            Hit { path: b"we ird\n", lineno: 12, text: b"x:y" },
+            Hit {
+                path: b"src/a.rs",
+                lineno: 3,
+                text: b"fn main() {}\n",
+            },
+            Hit {
+                path: b"we ird\n",
+                lineno: 12,
+                text: b"x:y",
+            },
         ];
         assert_eq!(
             render(&hits, None, true),
             b"src/a.rs:3:fn main() {}\n\"we ird\\n\":12:x:y\n".to_vec()
         );
-        assert_eq!(render(&hits[..1], Some("HEAD"), true), b"HEAD:src/a.rs:3:fn main() {}\n");
+        assert_eq!(
+            render(&hits[..1], Some("HEAD"), true),
+            b"HEAD:src/a.rs:3:fn main() {}\n"
+        );
     }
 
     #[test]
     fn long_lines_are_bounded() {
         let big = vec![b'z'; 100_000];
-        let out = render(&[Hit { path: b"f", lineno: 1, text: &big }], None, true);
+        let out = render(
+            &[Hit {
+                path: b"f",
+                lineno: 1,
+                text: &big,
+            }],
+            None,
+            true,
+        );
         assert!(out.len() < 9000);
     }
 }

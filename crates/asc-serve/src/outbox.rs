@@ -156,7 +156,11 @@ impl Outbox {
             wake: Notify::new(),
         };
         // Until U44 and the bridge arrive, `UpdateRefs` rows list only these.
-        for kind in ["post_receive", "bridge_promote", crate::codeintel::queue::EFFECT] {
+        for kind in [
+            "post_receive",
+            "bridge_promote",
+            crate::codeintel::queue::EFFECT,
+        ] {
             outbox.effects.register(Arc::new(NoopEffect(kind)));
         }
         #[cfg(feature = "git-compat")]

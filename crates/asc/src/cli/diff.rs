@@ -24,8 +24,8 @@ use asc_engine::diff::{Attributes, ContentSource, NoAttributes, SideKind};
 use asc_engine::history::HistoryApi;
 use asc_engine::tree::Pathspec;
 
-use self::opts::{Common, Formats, RawArgs, apply_config, parse};
 use self::attrs::DiffAttrs;
+use self::opts::{Common, Formats, RawArgs, apply_config, parse};
 use self::render::{JsonShape, Target, render};
 use self::sides::Built;
 use self::work::LocalFiles;
@@ -69,7 +69,9 @@ pub(crate) fn fatal(text: impl Into<String>) -> CliError {
 }
 
 pub(crate) fn unsupported(flag: &str) -> CliError {
-    CliError::Msg(Msg::AscOptionUnsupported { flag: flag.to_owned() })
+    CliError::Msg(Msg::AscOptionUnsupported {
+        flag: flag.to_owned(),
+    })
 }
 
 /// Hands back the flags of `c.extra` that `allowed` does not name.
@@ -117,13 +119,21 @@ pub(crate) async fn finish(
     mut built: Built,
     emit: Emit<'_>,
 ) -> Result<ExitCode> {
-    let Emit { pager, header, plumbing, attrs } = emit;
+    let Emit {
+        pager,
+        header,
+        plumbing,
+        attrs,
+    } = emit;
     if let Some(filter) = &c.filter {
         built.changes.retain(|ch| filter.keeps(ch.status));
     }
     let differs = !built.changes.is_empty() || !built.unmerged.is_empty();
     if !c.quiet {
-        let level = binary::zlib_level(ctx.config.get("core.looseCompression").as_deref(), ctx.config.get("core.compression").as_deref());
+        let level = binary::zlib_level(
+            ctx.config.get("core.looseCompression").as_deref(),
+            ctx.config.get("core.compression").as_deref(),
+        );
         let loaded = match ctx.ws_opt().filter(|_| attrs) {
             Some(ws) => Some(DiffAttrs::load(ctx, ws)?),
             None => None,
@@ -132,7 +142,11 @@ pub(crate) async fn finish(
             Some(a) => a,
             None => &NoAttributes,
         };
-        let raw_abbrev = if plumbing && !c.abbrev_given { 40 } else { c.opts.abbrev };
+        let raw_abbrev = if plumbing && !c.abbrev_given {
+            40
+        } else {
+            c.opts.abbrev
+        };
         let target = Target {
             fmt,
             opts: &c.opts,
@@ -143,7 +157,11 @@ pub(crate) async fn finish(
             raw_abbrev,
             zlib_level: level,
         };
-        let json = if c.json { Some(JsonShape::load()?) } else { None };
+        let json = if c.json {
+            Some(JsonShape::load()?)
+        } else {
+            None
+        };
         let written = match &c.output {
             Some(path) => {
                 let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -163,7 +181,11 @@ pub(crate) async fn finish(
             other => other?,
         }
     }
-    Ok(if c.exit_code && differs { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(if c.exit_code && differs {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 async fn write_all<W: Write>(
@@ -176,7 +198,9 @@ async fn write_all<W: Write>(
     match json {
         Some(shape) => shape.emit(w, t, &built.changes, &built.unmerged).await,
         None => {
-            if let Some(line) = header.filter(|_| !built.changes.is_empty() || !built.unmerged.is_empty()) {
+            if let Some(line) =
+                header.filter(|_| !built.changes.is_empty() || !built.unmerged.is_empty())
+            {
                 w.write_all(line)?;
             }
             render(w, t, &built.changes, &built.unmerged).await
@@ -205,7 +229,11 @@ async fn side_commit(ctx: &Ctx, spec: &str) -> Result<ChangesetId> {
 
 /// The revisions and paths among the arguments before `--`: revisions first, then the first
 /// argument that is no revision starts the paths, which must exist unless `--` was given.
-pub(crate) async fn split_args(ctx: &Ctx, c: &Common, limit: usize) -> Result<(Vec<String>, Vec<OsString>)> {
+pub(crate) async fn split_args(
+    ctx: &Ctx,
+    c: &Common,
+    limit: usize,
+) -> Result<(Vec<String>, Vec<OsString>)> {
     let mut revs = Vec::new();
     let mut paths: Vec<OsString> = Vec::new();
     for arg in &c.positional {
@@ -247,12 +275,20 @@ async fn range(ctx: &Ctx, ws: &WsCtx, text: &str) -> Result<(ChangesetId, Change
             (l, r, false)
         }
     };
-    let (a, b) = (side_commit(ctx, left).await?, side_commit(ctx, right).await?);
+    let (a, b) = (
+        side_commit(ctx, left).await?,
+        side_commit(ctx, right).await?,
+    );
     if !merge_base {
         return Ok((a, b));
     }
-    let bases = HistoryApi::merge_base(&ws.engine, a, &[b], false).await.map_err(|e| fatal(e.to_string()))?;
-    let base = bases.first().copied().ok_or_else(|| fatal(format!("{text}: no merge base")))?;
+    let bases = HistoryApi::merge_base(&ws.engine, a, &[b], false)
+        .await
+        .map_err(|e| fatal(e.to_string()))?;
+    let base = bases
+        .first()
+        .copied()
+        .ok_or_else(|| fatal(format!("{text}: no merge base")))?;
     Ok((base, b))
 }
 
@@ -278,11 +314,17 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let (built, sides) = match (cached, revs.as_slice()) {
         (true, []) => {
             let base = sides::head_root(ws).await?;
-            (sides::cached(ws, base, spec.as_ref(), &c.opts).await?, (SideKind::Commit, SideKind::Index))
+            (
+                sides::cached(ws, base, spec.as_ref(), &c.opts).await?,
+                (SideKind::Commit, SideKind::Index),
+            )
         }
         (true, [rev]) => {
             let base = root_of(ws, Some(commit_of(ctx, rev).await?)).await?;
-            (sides::cached(ws, base, spec.as_ref(), &c.opts).await?, (SideKind::Commit, SideKind::Index))
+            (
+                sides::cached(ws, base, spec.as_ref(), &c.opts).await?,
+                (SideKind::Commit, SideKind::Index),
+            )
         }
         (false, []) => {
             let built = sides::worktree(ctx, ws, &mut local, None, spec.as_ref()).await?;
@@ -293,7 +335,11 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             let built = sides::worktree(ctx, ws, &mut local, Some(base), spec.as_ref()).await?;
             (built, (SideKind::Commit, SideKind::Worktree))
         }
-        (true, _) => return Err(CliError::Usage("error: --cached takes at most one revision".into())),
+        (true, _) => {
+            return Err(CliError::Usage(
+                "error: --cached takes at most one revision".into(),
+            ));
+        }
         (false, revs) => {
             let (a, b) = match revs {
                 [one] => range(ctx, ws, one).await?,
@@ -301,7 +347,10 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                 _ => return Err(CliError::Usage("error: too many revisions".into())),
             };
             let (ra, rb) = (root_of(ws, Some(a)).await?, root_of(ws, Some(b)).await?);
-            (sides::trees(ws, ra, rb, spec.as_ref(), &c.opts).await?, (SideKind::Commit, SideKind::Commit))
+            (
+                sides::trees(ws, ra, rb, spec.as_ref(), &c.opts).await?,
+                (SideKind::Commit, SideKind::Commit),
+            )
         }
     };
     c.opts.sides = sides;
@@ -309,13 +358,28 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if sides.1 == SideKind::Worktree {
         built.changes = sides::detect_renames(built.changes, &local, &c.opts).await?;
     }
-    finish(ctx, &c, fmt, &local, built, Emit { pager: PagerWant::Auto, header: None, plumbing: false, attrs: true }).await
+    finish(
+        ctx,
+        &c,
+        fmt,
+        &local,
+        built,
+        Emit {
+            pager: PagerWant::Auto,
+            header: None,
+            plumbing: false,
+            attrs: true,
+        },
+    )
+    .await
 }
 
 async fn run_no_index(ctx: &Ctx, mut c: Common, fmt: Formats) -> Result<ExitCode> {
     let mut args = c.positional.iter().chain(c.paths.iter());
     let (Some(a), Some(b), None) = (args.next(), args.next(), args.next()) else {
-        return Err(CliError::Usage("usage: git diff --no-index [<options>] <path> <path>".into()));
+        return Err(CliError::Usage(
+            "usage: git diff --no-index [<options>] <path> <path>".into(),
+        ));
     };
     c.exit_code = true;
     c.opts.sides = (SideKind::Object, SideKind::Object);
@@ -324,5 +388,21 @@ async fn run_no_index(ctx: &Ctx, mut c: Common, fmt: Formats) -> Result<ExitCode
         None => LocalFiles::detached(),
     };
     let changes = noindex::changes(&mut local, &ctx.cwd, Path::new(a), Path::new(b))?;
-    finish(ctx, &c, fmt, &local, Built { changes, unmerged: Vec::new() }, Emit { pager: PagerWant::Auto, header: None, plumbing: false, attrs: false }).await
+    finish(
+        ctx,
+        &c,
+        fmt,
+        &local,
+        Built {
+            changes,
+            unmerged: Vec::new(),
+        },
+        Emit {
+            pager: PagerWant::Auto,
+            header: None,
+            plumbing: false,
+            attrs: false,
+        },
+    )
+    .await
 }

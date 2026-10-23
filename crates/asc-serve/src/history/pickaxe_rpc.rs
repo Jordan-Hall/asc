@@ -95,8 +95,9 @@ impl ServerPickaxe {
                     "a pickaxe search needs a path (paths); it cannot walk every file",
                 ));
             }
-            [p] if p.len() <= MAX_PATH_BYTES => RepoPath::new(p.as_bytes())
-                .map_err(|e| Status::invalid_argument(e.to_string()))?,
+            [p] if p.len() <= MAX_PATH_BYTES => {
+                RepoPath::new(p.as_bytes()).map_err(|e| Status::invalid_argument(e.to_string()))?
+            }
             [_] => return Err(Status::invalid_argument("path is too long")),
             _ => {
                 return Err(Status::invalid_argument(

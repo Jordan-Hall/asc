@@ -101,7 +101,13 @@ pub fn text(bytes: &[u8]) -> String {
 }
 
 fn sig() -> Signature {
-    Signature::new(b"Test".to_vec(), b"test@example.com".to_vec(), 1_700_000_000, 0).unwrap()
+    Signature::new(
+        b"Test".to_vec(),
+        b"test@example.com".to_vec(),
+        1_700_000_000,
+        0,
+    )
+    .unwrap()
 }
 
 /// A local-only repository with one plain workspace, as `asc init` would make it.

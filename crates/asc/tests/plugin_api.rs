@@ -49,7 +49,11 @@ macro_rules! js {
 }
 
 fn lines(out: &[u8]) -> Vec<Value> {
-    text(out).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+    text(out)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 
 /// A daemon on a private endpoint; killed on drop.
@@ -81,7 +85,10 @@ async fn set_ref(f: &Fixture, name: &str, cs: ChangesetId) {
             new: Some(RefTarget::Changeset(cs)),
             expires_at: None,
         }],
-        actor: Actor { id: "fixture".into(), via: "test".into() },
+        actor: Actor {
+            id: "fixture".into(),
+            via: "test".into(),
+        },
         reason: "fixture".into(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -119,9 +126,22 @@ fn ok(f: &Fixture, ep: &str, args: &[&str]) -> String {
 
 fn endpoint_name(f: &Fixture) -> String {
     if cfg!(windows) {
-        format!("asc-u73-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
+        format!(
+            "asc-u73-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
     } else {
-        f.sandbox.tmp.path().join("ipc").join("d.sock").to_string_lossy().into_owned()
+        f.sandbox
+            .tmp
+            .path()
+            .join("ipc")
+            .join("d.sock")
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -162,17 +182,41 @@ async fn rig() -> Rig {
     }
     assert!(up, "the daemon did not come up");
     let ws = f.ws.to_string();
-    client.mount(wire::MountRequest { ws_id: ws.clone() }).await.unwrap();
-    let rig = Rig { f, ep, client, ws, c0, _daemon: daemon };
+    client
+        .mount(wire::MountRequest { ws_id: ws.clone() })
+        .await
+        .unwrap();
+    let rig = Rig {
+        f,
+        ep,
+        client,
+        ws,
+        c0,
+        _daemon: daemon,
+    };
     // The fixture is clean before anything changes.
-    let status = ok(&rig.f, &rig.ep, &["status", "--json", "--untracked-files=all"]);
-    assert_eq!(lines(status.as_bytes())[0]["files"].as_array().map_or(0, Vec::len), 0, "{status}");
+    let status = ok(
+        &rig.f,
+        &rig.ep,
+        &["status", "--json", "--untracked-files=all"],
+    );
+    assert_eq!(
+        lines(status.as_bytes())[0]["files"]
+            .as_array()
+            .map_or(0, Vec::len),
+        0,
+        "{status}"
+    );
     rig
 }
 
 async fn collect<T>(mut s: tonic::Streaming<T>) -> Vec<T> {
     let mut v = Vec::new();
-    while let Some(m) = tokio::time::timeout(Duration::from_secs(60), s.message()).await.expect("stream stalled").unwrap() {
+    while let Some(m) = tokio::time::timeout(Duration::from_secs(60), s.message())
+        .await
+        .expect("stream stalled")
+        .unwrap()
+    {
         v.push(m);
     }
     v
@@ -200,7 +244,12 @@ async fn until(
                     return seen;
                 }
             }
-            other => panic!("the wanted event did not arrive ({other:?}); saw {:?}", seen.iter().map(|e| (kind(e), e.r#ref.clone())).collect::<Vec<_>>()),
+            other => panic!(
+                "the wanted event did not arrive ({other:?}); saw {:?}",
+                seen.iter()
+                    .map(|e| (kind(e), e.r#ref.clone()))
+                    .collect::<Vec<_>>()
+            ),
         }
     }
 }
@@ -214,27 +263,58 @@ async fn status_equals_the_json_cli() {
     write(&r.f.root, "new.txt", b"new\n");
     let mut got = r
         .client
-        .status(wire::WsStatusRequest { ws_id: r.ws.clone(), untracked: true, ..Default::default() })
+        .status(wire::WsStatusRequest {
+            ws_id: r.ws.clone(),
+            untracked: true,
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner();
     assert!(got.token.starts_with("v1."), "{}", got.token);
     got.token.clear();
-    let cli = lines(ok(&r.f, &r.ep, &["status", "--json", "--untracked-files=all", "--"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["status", "--json", "--untracked-files=all", "--"],
+        )
+        .as_bytes(),
+    );
     assert_eq!(cli.len(), 1);
     assert_eq!(js!("asc.v1.WsStatusResponse", got), cli[0]);
     let files = cli[0]["files"].as_array().unwrap();
-    assert!(files.iter().any(|f| f["xy"] == ".M") && files.iter().any(|f| f["xy"] == "??"), "{files:?}");
+    assert!(
+        files.iter().any(|f| f["xy"] == ".M") && files.iter().any(|f| f["xy"] == "??"),
+        "{files:?}"
+    );
 
     // A pathspec limits the answer the same way, and untracked files can be left out.
     let mut one = r
         .client
-        .status(wire::WsStatusRequest { ws_id: r.ws.clone(), paths: vec!["pkgs/a/src/index.js".into()], ..Default::default() })
+        .status(wire::WsStatusRequest {
+            ws_id: r.ws.clone(),
+            paths: vec!["pkgs/a/src/index.js".into()],
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner();
     one.token.clear();
-    let cli = lines(ok(&r.f, &r.ep, &["status", "--json", "--untracked-files=no", "--", "pkgs/a/src/index.js"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &[
+                "status",
+                "--json",
+                "--untracked-files=no",
+                "--",
+                "pkgs/a/src/index.js",
+            ],
+        )
+        .as_bytes(),
+    );
     assert_eq!(js!("asc.v1.WsStatusResponse", one), cli[0]);
     assert_eq!(one.files.len(), 1);
 }
@@ -247,7 +327,11 @@ async fn diff_equals_the_json_cli() {
 
     let got = collect(
         r.client
-            .diff(wire::WsDiffRequest { ws_id: r.ws.clone(), format: patch, ..Default::default() })
+            .diff(wire::WsDiffRequest {
+                ws_id: r.ws.clone(),
+                format: patch,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner(),
@@ -255,7 +339,12 @@ async fn diff_equals_the_json_cli() {
     .await;
     let cli = lines(ok(&r.f, &r.ep, &["diff", "--json", "-p", "--"]).as_bytes());
     assert!(!cli.is_empty());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.DiffResponse", *m)).collect::<Vec<_>>(), cli);
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.DiffResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
 
     let got = collect(
         r.client
@@ -272,33 +361,90 @@ async fn diff_equals_the_json_cli() {
             .into_inner(),
     )
     .await;
-    let cli = lines(ok(&r.f, &r.ep, &["diff", "--json", "-p", "master", "feat", "--", "pkgs/a/src/index.js"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &[
+                "diff",
+                "--json",
+                "-p",
+                "master",
+                "feat",
+                "--",
+                "pkgs/a/src/index.js",
+            ],
+        )
+        .as_bytes(),
+    );
     assert!(!cli.is_empty());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.DiffResponse", *m)).collect::<Vec<_>>(), cli);
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.DiffResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
 
     // The staged side: a revision against the index.
     ok(&r.f, &r.ep, &["add", "pkgs/a/src/index.js"]);
     let got = collect(
         r.client
-            .diff(wire::WsDiffRequest { ws_id: r.ws.clone(), from: "HEAD".into(), to: "index".into(), format: patch, ..Default::default() })
+            .diff(wire::WsDiffRequest {
+                ws_id: r.ws.clone(),
+                from: "HEAD".into(),
+                to: "index".into(),
+                format: patch,
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_inner(),
     )
     .await;
-    let cli = lines(ok(&r.f, &r.ep, &["diff", "--json", "-p", "--cached", "HEAD", "--"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["diff", "--json", "-p", "--cached", "HEAD", "--"],
+        )
+        .as_bytes(),
+    );
     assert!(!cli.is_empty());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.DiffResponse", *m)).collect::<Vec<_>>(), cli);
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.DiffResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
 }
 
 #[tokio::test]
 async fn log_equals_the_json_cli() {
     let mut r = rig().await;
-    let query = wire::LogRequest { include: vec!["feat".into()], limit: 10, ..Default::default() };
-    let got = collect(r.client.log(wire::WsLogRequest { ws_id: r.ws.clone(), query: Some(query) }).await.unwrap().into_inner()).await;
+    let query = wire::LogRequest {
+        include: vec!["feat".into()],
+        limit: 10,
+        ..Default::default()
+    };
+    let got = collect(
+        r.client
+            .log(wire::WsLogRequest {
+                ws_id: r.ws.clone(),
+                query: Some(query),
+            })
+            .await
+            .unwrap()
+            .into_inner(),
+    )
+    .await;
     let cli = lines(ok(&r.f, &r.ep, &["log", "--json", "-n10", "feat", "--"]).as_bytes());
     assert!(!cli.is_empty());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.LogResponse", *m)).collect::<Vec<_>>(), cli);
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.LogResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
     assert_eq!(got.iter().map(|m| m.entries.len()).sum::<usize>(), 2);
 
     // Exclusion and a path limit.
@@ -309,9 +455,31 @@ async fn log_equals_the_json_cli() {
         limit: 10,
         ..Default::default()
     };
-    let got = collect(r.client.log(wire::WsLogRequest { ws_id: r.ws.clone(), query: Some(query) }).await.unwrap().into_inner()).await;
-    let cli = lines(ok(&r.f, &r.ep, &["log", "--json", "-n10", "feat", "^master", "--", "pkgs/a"]).as_bytes());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.LogResponse", *m)).collect::<Vec<_>>(), cli);
+    let got = collect(
+        r.client
+            .log(wire::WsLogRequest {
+                ws_id: r.ws.clone(),
+                query: Some(query),
+            })
+            .await
+            .unwrap()
+            .into_inner(),
+    )
+    .await;
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["log", "--json", "-n10", "feat", "^master", "--", "pkgs/a"],
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.LogResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
     assert_eq!(got.iter().map(|m| m.entries.len()).sum::<usize>(), 1);
 }
 
@@ -319,11 +487,27 @@ async fn log_equals_the_json_cli() {
 async fn blame_equals_the_json_cli_including_uncommitted_lines() {
     let mut r = rig().await;
     write(&r.f.root, "pkgs/a/src/index.js", b"2\nuncommitted\n");
-    let req = wire::WsBlameRequest { ws_id: r.ws.clone(), path: "pkgs/a/src/index.js".into(), ..Default::default() };
+    let req = wire::WsBlameRequest {
+        ws_id: r.ws.clone(),
+        path: "pkgs/a/src/index.js".into(),
+        ..Default::default()
+    };
     let got = collect(r.client.blame(req).await.unwrap().into_inner()).await;
-    let cli = lines(ok(&r.f, &r.ep, &["blame", "--json", "--", "pkgs/a/src/index.js"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["blame", "--json", "--", "pkgs/a/src/index.js"],
+        )
+        .as_bytes(),
+    );
     assert!(!cli.is_empty());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.BlameResponse", *m)).collect::<Vec<_>>(), cli);
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.BlameResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
     // The last line has no commit.
     let last = got.iter().flat_map(|m| m.hunks.iter()).last().unwrap();
     assert!(last.origin.is_empty());
@@ -338,27 +522,69 @@ async fn blame_equals_the_json_cli_including_uncommitted_lines() {
         ..Default::default()
     };
     let got = collect(r.client.blame(req).await.unwrap().into_inner()).await;
-    let cli = lines(ok(&r.f, &r.ep, &["blame", "--json", "-L1,1", "master", "--", "pkgs/a/src/index.js"]).as_bytes());
-    assert_eq!(got.iter().map(|m| js!("asc.v1.BlameResponse", *m)).collect::<Vec<_>>(), cli);
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &[
+                "blame",
+                "--json",
+                "-L1,1",
+                "master",
+                "--",
+                "pkgs/a/src/index.js",
+            ],
+        )
+        .as_bytes(),
+    );
+    assert_eq!(
+        got.iter()
+            .map(|m| js!("asc.v1.BlameResponse", *m))
+            .collect::<Vec<_>>(),
+        cli
+    );
 }
 
 #[tokio::test]
 async fn affected_equals_the_json_cli() {
     let mut r = rig().await;
-    let query = wire::AffectedRequest { base: "refs/remotes/origin/master".into(), ..Default::default() };
+    let query = wire::AffectedRequest {
+        base: "refs/remotes/origin/master".into(),
+        ..Default::default()
+    };
     let got = r
         .client
-        .affected(wire::WsAffectedRequest { ws_id: r.ws.clone(), query: Some(query), uncommitted: false })
+        .affected(wire::WsAffectedRequest {
+            ws_id: r.ws.clone(),
+            query: Some(query),
+            uncommitted: false,
+        })
         .await
         .unwrap()
         .into_inner()
         .result
         .unwrap();
-    let cli = lines(ok(&r.f, &r.ep, &["affected", "--json", "--base", "refs/remotes/origin/master"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["affected", "--json", "--base", "refs/remotes/origin/master"],
+        )
+        .as_bytes(),
+    );
     let doc = &cli[0];
-    let want: Vec<&str> = doc["projects"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    let want: Vec<&str> = doc["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
     assert_eq!(want, ["node:a"]);
-    let have: Vec<&str> = got.projects.iter().map(|p| p.project.as_ref().unwrap().id.as_str()).collect();
+    let have: Vec<&str> = got
+        .projects
+        .iter()
+        .map(|p| p.project.as_ref().unwrap().id.as_str())
+        .collect();
     assert_eq!(have, want);
     assert!(got.projects[0].direct);
     assert_eq!(got.projects[0].reasons, ["file:pkgs/a/src/index.js"]);
@@ -368,19 +594,44 @@ async fn affected_equals_the_json_cli() {
 
     // Uncommitted edits count when asked.
     write(&r.f.root, "pkgs/b/src/index.js", b"edited\n");
-    let query = wire::AffectedRequest { base: "feat".into(), ..Default::default() };
+    let query = wire::AffectedRequest {
+        base: "feat".into(),
+        ..Default::default()
+    };
     let got = r
         .client
-        .affected(wire::WsAffectedRequest { ws_id: r.ws.clone(), query: Some(query), uncommitted: true })
+        .affected(wire::WsAffectedRequest {
+            ws_id: r.ws.clone(),
+            query: Some(query),
+            uncommitted: true,
+        })
         .await
         .unwrap()
         .into_inner()
         .result
         .unwrap();
-    let cli = lines(ok(&r.f, &r.ep, &["affected", "--json", "--base", "feat", "--uncommitted"]).as_bytes());
-    let want: Vec<&str> = cli[0]["projects"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["affected", "--json", "--base", "feat", "--uncommitted"],
+        )
+        .as_bytes(),
+    );
+    let want: Vec<&str> = cli[0]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
     assert_eq!(want, ["node:b"]);
-    assert_eq!(got.projects.iter().map(|p| p.project.as_ref().unwrap().id.clone()).collect::<Vec<_>>(), want);
+    assert_eq!(
+        got.projects
+            .iter()
+            .map(|p| p.project.as_ref().unwrap().id.clone())
+            .collect::<Vec<_>>(),
+        want
+    );
 }
 
 fn hex(b: &[u8]) -> String {
@@ -395,50 +646,99 @@ async fn stage_adds_removes_and_applies_patches() {
 
     let mut got = r
         .client
-        .stage(wire::WsStageRequest { ws_id: r.ws.clone(), add: vec!["new.txt".into()], ..Default::default() })
+        .stage(wire::WsStageRequest {
+            ws_id: r.ws.clone(),
+            add: vec!["new.txt".into()],
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner()
         .status
         .unwrap();
     got.token.clear();
-    let cli = lines(ok(&r.f, &r.ep, &["status", "--json", "--untracked-files=all", "--"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["status", "--json", "--untracked-files=all", "--"],
+        )
+        .as_bytes(),
+    );
     assert_eq!(js!("asc.v1.WsStatusResponse", got), cli[0]);
-    let xy = |name: &str| got.files.iter().find(|f| &f.path[..] == name.as_bytes()).map(|f| f.xy.clone());
+    let xy = |name: &str| {
+        got.files
+            .iter()
+            .find(|f| &f.path[..] == name.as_bytes())
+            .map(|f| f.xy.clone())
+    };
     assert_eq!(xy("new.txt").as_deref(), Some("A."));
     assert_eq!(xy("pkgs/a/src/index.js").as_deref(), Some(".M"));
 
     // Unstage it again.
     let mut got = r
         .client
-        .stage(wire::WsStageRequest { ws_id: r.ws.clone(), remove: vec!["new.txt".into()], ..Default::default() })
+        .stage(wire::WsStageRequest {
+            ws_id: r.ws.clone(),
+            remove: vec!["new.txt".into()],
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner()
         .status
         .unwrap();
     got.token.clear();
-    let cli = lines(ok(&r.f, &r.ep, &["status", "--json", "--untracked-files=all", "--"]).as_bytes());
+    let cli = lines(
+        ok(
+            &r.f,
+            &r.ep,
+            &["status", "--json", "--untracked-files=all", "--"],
+        )
+        .as_bytes(),
+    );
     assert_eq!(js!("asc.v1.WsStatusResponse", got), cli[0]);
-    assert_eq!(got.files.iter().find(|f| &f.path[..] == b"new.txt").map(|f| f.xy.clone()).as_deref(), Some("??"));
+    assert_eq!(
+        got.files
+            .iter()
+            .find(|f| &f.path[..] == b"new.txt")
+            .map(|f| f.xy.clone())
+            .as_deref(),
+        Some("??")
+    );
 
     // A patch stages a hunk (`git apply --cached`).
     let patch = "diff --git a/pkgs/a/src/index.js b/pkgs/a/src/index.js\n--- a/pkgs/a/src/index.js\n+++ b/pkgs/a/src/index.js\n@@ -1 +1 @@\n-2\n+3\n";
     let got = r
         .client
-        .stage(wire::WsStageRequest { ws_id: r.ws.clone(), patch: patch.into(), ..Default::default() })
+        .stage(wire::WsStageRequest {
+            ws_id: r.ws.clone(),
+            patch: patch.into(),
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner()
         .status
         .unwrap();
-    assert_eq!(got.files.iter().find(|f| &f.path[..] == b"pkgs/a/src/index.js").map(|f| f.xy.clone()).as_deref(), Some("M."));
+    assert_eq!(
+        got.files
+            .iter()
+            .find(|f| &f.path[..] == b"pkgs/a/src/index.js")
+            .map(|f| f.xy.clone())
+            .as_deref(),
+        Some("M.")
+    );
 
     // A patch that does not apply is refused and stages nothing.
     let bad = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-nothing like this\n+x\n";
     let e = r
         .client
-        .stage(wire::WsStageRequest { ws_id: r.ws.clone(), patch: bad.into(), ..Default::default() })
+        .stage(wire::WsStageRequest {
+            ws_id: r.ws.clone(),
+            patch: bad.into(),
+            ..Default::default()
+        })
         .await
         .unwrap_err();
     assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{e}");
@@ -453,26 +753,88 @@ async fn requests_are_authorised_and_bounded() {
 
     // Only a mounted workspace is served.
     let other = support::Fixture::new().await;
-    let e = r.client.status(wire::WsStatusRequest { ws_id: other.ws.to_string(), ..Default::default() }).await.unwrap_err();
+    let e = r
+        .client
+        .status(wire::WsStatusRequest {
+            ws_id: other.ws.to_string(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
     assert_eq!(code(e), tonic::Code::FailedPrecondition);
-    let e = r.client.status(wire::WsStatusRequest { ws_id: "../../x".into(), ..Default::default() }).await.unwrap_err();
+    let e = r
+        .client
+        .status(wire::WsStatusRequest {
+            ws_id: "../../x".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
     assert_eq!(code(e), tonic::Code::InvalidArgument);
 
     // A revision is never an option, and a path stays inside the work tree.
-    let bad = wire::WsDiffRequest { ws_id: ws.clone(), from: "--output=evil".into(), to: "feat".into(), ..Default::default() };
-    assert_eq!(code(r.client.diff(bad).await.unwrap_err()), tonic::Code::InvalidArgument);
-    let query = wire::LogRequest { include: vec!["--all".into()], ..Default::default() };
-    assert_eq!(code(r.client.log(wire::WsLogRequest { ws_id: ws.clone(), query: Some(query) }).await.unwrap_err()), tonic::Code::InvalidArgument);
-    let req = wire::WsStatusRequest { ws_id: ws.clone(), paths: vec!["../outside".into()], ..Default::default() };
-    assert_eq!(code(r.client.status(req).await.unwrap_err()), tonic::Code::InvalidArgument);
-    let req = wire::WsStageRequest { ws_id: ws.clone(), add: vec!["/etc/passwd".into()], ..Default::default() };
-    assert_eq!(code(r.client.stage(req).await.unwrap_err()), tonic::Code::InvalidArgument);
-    let req = wire::WatchRequest { ws_id: ws.clone(), since_token: "not-a-token".into() };
-    assert_eq!(code(r.client.watch(req).await.unwrap_err()), tonic::Code::InvalidArgument);
+    let bad = wire::WsDiffRequest {
+        ws_id: ws.clone(),
+        from: "--output=evil".into(),
+        to: "feat".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        code(r.client.diff(bad).await.unwrap_err()),
+        tonic::Code::InvalidArgument
+    );
+    let query = wire::LogRequest {
+        include: vec!["--all".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        code(
+            r.client
+                .log(wire::WsLogRequest {
+                    ws_id: ws.clone(),
+                    query: Some(query)
+                })
+                .await
+                .unwrap_err()
+        ),
+        tonic::Code::InvalidArgument
+    );
+    let req = wire::WsStatusRequest {
+        ws_id: ws.clone(),
+        paths: vec!["../outside".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        code(r.client.status(req).await.unwrap_err()),
+        tonic::Code::InvalidArgument
+    );
+    let req = wire::WsStageRequest {
+        ws_id: ws.clone(),
+        add: vec!["/etc/passwd".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        code(r.client.stage(req).await.unwrap_err()),
+        tonic::Code::InvalidArgument
+    );
+    let req = wire::WatchRequest {
+        ws_id: ws.clone(),
+        since_token: "not-a-token".into(),
+    };
+    assert_eq!(
+        code(r.client.watch(req).await.unwrap_err()),
+        tonic::Code::InvalidArgument
+    );
 
     // A bad revision is the CLI's error, not a crash.
-    let query = wire::LogRequest { include: vec!["no-such-rev".into()], ..Default::default() };
-    let bad = wire::WsLogRequest { ws_id: ws.clone(), query: Some(query) };
+    let query = wire::LogRequest {
+        include: vec!["no-such-rev".into()],
+        ..Default::default()
+    };
+    let bad = wire::WsLogRequest {
+        ws_id: ws.clone(),
+        query: Some(query),
+    };
     let e = match r.client.log(bad).await {
         Ok(s) => collect_err(s.into_inner()).await,
         Err(e) => e,
@@ -481,7 +843,12 @@ async fn requests_are_authorised_and_bounded() {
 
     // Files named like options stay literal.
     write(&r.f.root, "-rf", b"x\n");
-    let req = wire::WsStatusRequest { ws_id: ws, untracked: true, paths: vec!["-rf".into()], ..Default::default() };
+    let req = wire::WsStatusRequest {
+        ws_id: ws,
+        untracked: true,
+        paths: vec!["-rf".into()],
+        ..Default::default()
+    };
     let got = r.client.status(req).await.unwrap().into_inner();
     assert_eq!(got.files.len(), 1);
     assert_eq!(&got.files[0].path[..], b"-rf");
@@ -503,13 +870,24 @@ async fn collect_err<T>(mut s: tonic::Streaming<T>) -> tonic::Status {
 async fn watch_reports_an_edit_a_commit_and_a_switch() {
     use wire::watch_event::Kind;
     let mut r = rig().await;
-    let mut s = r.client.watch(wire::WatchRequest { ws_id: r.ws.clone(), since_token: String::new() }).await.unwrap().into_inner();
+    let mut s = r
+        .client
+        .watch(wire::WatchRequest {
+            ws_id: r.ws.clone(),
+            since_token: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
 
     // An edit.
     write(&r.f.root, "pkgs/a/src/index.js", b"3\n");
     let seen = until(&mut s, 30, |e| kind(e) == Kind::Paths).await;
     let paths = &seen.last().unwrap().paths;
-    assert!(paths.iter().any(|p| &p[..] == b"pkgs/a/src/index.js"), "{paths:?}");
+    assert!(
+        paths.iter().any(|p| &p[..] == b"pkgs/a/src/index.js"),
+        "{paths:?}"
+    );
     assert!(seen.last().unwrap().token.starts_with("v1."));
 
     // Staging, then a commit that moves the branch.
@@ -533,7 +911,12 @@ async fn watch_reports_an_edit_a_commit_and_a_switch() {
     // A switch.
     ok(&r.f, &r.ep, &["switch", "other"]);
     let seen = until(&mut s, 30, |e| kind(e) == Kind::SwitchDone).await;
-    assert!(seen.iter().any(|e| kind(e) == Kind::Head && e.r#ref == "refs/heads/other"), "{:?}", seen.iter().map(kind).collect::<Vec<_>>());
+    assert!(
+        seen.iter()
+            .any(|e| kind(e) == Kind::Head && e.r#ref == "refs/heads/other"),
+        "{:?}",
+        seen.iter().map(kind).collect::<Vec<_>>()
+    );
 }
 
 struct Watcher {
@@ -555,7 +938,10 @@ impl Watcher {
             args.extend(["--since", t]);
         }
         let mut c = asc_command(&r.f, &r.ep, &args);
-        c.env_remove("ASC_NO_DAEMON").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+        c.env_remove("ASC_NO_DAEMON")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         let mut child = c.spawn().unwrap();
         let out = child.stdout.take().unwrap();
         let (tx, rx) = mpsc::channel();
@@ -575,7 +961,10 @@ impl Watcher {
         let mut seen = Vec::new();
         loop {
             let left = end.saturating_duration_since(Instant::now());
-            let line = self.rx.recv_timeout(left).unwrap_or_else(|_| panic!("no {kind} event; saw {seen:?}"));
+            let line = self
+                .rx
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("no {kind} event; saw {seen:?}"));
             let v: Value = serde_json::from_str(&line).unwrap();
             let hit = v["kind"] == kind;
             seen.push(v);
@@ -593,7 +982,16 @@ async fn asc_watch_since_resumes_without_loss() {
 
     // The position before anything happens, as `Status` reports it.
     let mut r = r;
-    let start = r.client.status(wire::WsStatusRequest { ws_id: r.ws.clone(), ..Default::default() }).await.unwrap().into_inner().token;
+    let start = r
+        .client
+        .status(wire::WsStatusRequest {
+            ws_id: r.ws.clone(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .token;
 
     // First run: see the staging, keep its token.
     ok(&r.f, &r.ep, &["add", "new.txt"]);
@@ -612,11 +1010,18 @@ async fn asc_watch_since_resumes_without_loss() {
     let mut all = w.until("head", 30);
     all.extend(w.until("stage", 30));
     let kinds: Vec<&str> = all.iter().map(|e| e["kind"].as_str().unwrap()).collect();
-    assert_eq!(kinds.iter().filter(|k| **k == "head").count(), 1, "{kinds:?}");
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "head").count(),
+        1,
+        "{kinds:?}"
+    );
     let head = all.iter().find(|e| e["kind"] == "head").unwrap();
     assert_eq!(head["ref"], "refs/heads/feat");
     // Edits made while nobody watched cannot be replayed; the stream says so.
     assert!(kinds.contains(&"resync"), "{kinds:?}");
     // Every event carries a token that parses and a later one resumes after it.
-    assert!(all.iter().all(|e| e["token"].as_str().is_some_and(|t| t.starts_with("v1."))));
+    assert!(
+        all.iter()
+            .all(|e| e["token"].as_str().is_some_and(|t| t.starts_with("v1.")))
+    );
 }

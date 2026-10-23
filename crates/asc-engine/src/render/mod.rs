@@ -12,7 +12,8 @@ pub mod status;
 /// and `quote_high` quotes bytes of 0x80 and above (`core.quotePath`).
 #[must_use]
 pub fn quote_path(path: &[u8], quote_space: bool, quote_high: bool) -> Vec<u8> {
-    let needs = |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (b >= 0x80 && quote_high);
+    let needs =
+        |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (b >= 0x80 && quote_high);
     if !path.iter().any(|&b| needs(b) || (quote_space && b == b' ')) {
         return path.to_vec();
     }
@@ -43,11 +44,26 @@ pub fn relativize(path: &[u8], prefix: &[u8]) -> Vec<u8> {
     if prefix.is_empty() {
         return path.to_vec();
     }
-    let dirs: Vec<&[u8]> = prefix.split(|&b| b == b'/').filter(|p| !p.is_empty()).collect();
+    let dirs: Vec<&[u8]> = prefix
+        .split(|&b| b == b'/')
+        .filter(|p| !p.is_empty())
+        .collect();
     let is_dir = path.ends_with(b"/");
-    let comps: Vec<&[u8]> = path.split(|&b| b == b'/').filter(|p| !p.is_empty()).collect();
-    let usable = if is_dir { comps.len() } else { comps.len().saturating_sub(1) };
-    let common = dirs.iter().zip(&comps).take(usable).take_while(|(a, b)| a == b).count();
+    let comps: Vec<&[u8]> = path
+        .split(|&b| b == b'/')
+        .filter(|p| !p.is_empty())
+        .collect();
+    let usable = if is_dir {
+        comps.len()
+    } else {
+        comps.len().saturating_sub(1)
+    };
+    let common = dirs
+        .iter()
+        .zip(&comps)
+        .take(usable)
+        .take_while(|(a, b)| a == b)
+        .count();
     let mut out = b"../".repeat(dirs.len() - common);
     out.extend_from_slice(&comps[common..].join(&b'/'));
     if is_dir && common < comps.len() {
