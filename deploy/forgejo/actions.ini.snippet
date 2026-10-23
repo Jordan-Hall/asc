@@ -1,0 +1,11 @@
+; ASC Actions mirror (SPEC 12.7, unit A01). Merge into app.ini.
+; The asc/actions repository on this Forgejo instance holds checkout, cache,
+; upload-artifact, download-artifact, asc/setup, asc/changed, asc/affected and asc/turbo-cache.
+; "self" resolves short action references against this instance, so the runner's alias table
+; (actions/checkout@* -> asc/actions/checkout) finds the mirror with no workflow edits.
+; Use an https:// URL instead only for a mirror on another host; plain http is not accepted.
+; After publishing the mirror, verify it:
+;   bash actions/test/selftest.sh --mirror https://<forgejo-host>/asc/actions/raw/branch/master
+[actions]
+ENABLED = true
+DEFAULT_ACTIONS_URL = self

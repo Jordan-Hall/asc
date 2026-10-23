@@ -124,6 +124,12 @@ grep -q ':ro' "$repo/deploy/runner/runner-config-snippet.yaml"
 "$py" -I -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$repo/deploy/runner/runner-config-snippet.yaml"
 ok "runner units"
 
+# 4b. The Forgejo snippet points DEFAULT_ACTIONS_URL at the mirror and never at plain http.
+snippet="$repo/deploy/forgejo/actions.ini.snippet"
+grep -Eq '^DEFAULT_ACTIONS_URL = (self|https://[^ ]+)$' "$snippet"
+if grep -Eq '^DEFAULT_ACTIONS_URL *= *http://' "$snippet"; then echo "snippet uses plain http" >&2; exit 1; fi
+ok "forgejo actions snippet"
+
 # 5. Optional mirror check.
 if [ -n "$mirror" ]; then
   case "$mirror" in https://*) ;; *) echo "mirror must be https" >&2; exit 1 ;; esac
