@@ -15,6 +15,7 @@ mod msg;
 mod native;
 mod refs_guard;
 mod shim;
+mod stack;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
