@@ -6,6 +6,7 @@
 
 pub mod cache_role;
 pub mod classify;
+pub mod commit_graph_rpc;
 pub mod config;
 pub mod forgejo;
 pub mod gc;
@@ -154,6 +155,7 @@ fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Lim
     update::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
+    commit_graph_rpc::register(ext, registry, &hooks);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.

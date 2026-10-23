@@ -18,6 +18,7 @@ use asc_store::refs::Refs;
 
 use crate::{Engine, commit, tree};
 
+pub mod diffstat;
 pub mod generation;
 pub mod gitcommit;
 pub mod keyed;
@@ -43,6 +44,8 @@ pub enum Error {
     Tree(#[from] tree::Error),
     #[error(transparent)]
     Git(#[from] GitError),
+    #[error(transparent)]
+    Diff(#[from] crate::diff::Error),
     #[error("stored {name} value does not decode")]
     BadValue { name: &'static str },
     #[error("git map sink: {0}")]
