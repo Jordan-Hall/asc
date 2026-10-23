@@ -16,6 +16,7 @@ use asc_core::id::ChangesetId;
 use crate::change::{self, ChangeRow, ChangeRows};
 use crate::graph::{self, Graph, GraphSource, JumpIndex};
 
+pub mod absorb;
 pub mod restack;
 pub mod revset;
 
