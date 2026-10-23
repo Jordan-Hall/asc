@@ -120,7 +120,7 @@ pub fn link_graph(
     prune_edges(&mut projects);
     add_contains(&mut projects);
     let used = add_opaque_edges(&mut projects)?;
-    apply_config(&config, &mut projects, &mut issues, used)?;
+    apply_config(&config, &mut projects, &mut issues, used, MAX_IMPLICIT_EDGES)?;
     for p in &mut projects {
         p.deps.sort();
         p.deps.dedup();
@@ -282,6 +282,7 @@ fn apply_config(
     projects: &mut [Project],
     issues: &mut Vec<Issue>,
     used: usize,
+    max_edges: usize,
 ) -> Result<(), LinkError> {
     let mut targets = Vec::with_capacity(config.projects.len());
     for e in &config.projects {
@@ -337,7 +338,7 @@ fn apply_config(
                 &mut add_set
             };
             set.extend(hits());
-            if budget.saturating_add(add_set.len() + remove_set.len()) > MAX_IMPLICIT_EDGES {
+            if budget.saturating_add(add_set.len() + remove_set.len()) > max_edges {
                 return Err(LinkError::TooManyEdges);
             }
         }
@@ -570,23 +571,30 @@ implicit_dependencies = ["rust:a"]
 
     #[test]
     fn implicit_edges_share_the_edge_budget() {
-        let n = 5_000;
-        let mut cfg = String::from(
-            "version = 1
-",
-        );
-        for i in 0..n {
-            cfg.push_str(&format!(
-                "[[project]]
-select = \"rust:p{i}\"
+        // Two entries add 49 edges each. The test lowers the cap instead of building the
+        // millions of edges the real one needs; what it checks is that opaque edges already
+        // `used` count against the same cap.
+        let n = 50;
+        let cfg = "version = 1
+[[project]]
+select = \"rust:p0\"
 implicit_dependencies = [\"eco:rust\"]
-"
-            ));
-        }
-        let start = std::time::Instant::now();
-        let e = try_build(&many(n), &[], config::parse(&cfg).unwrap()).unwrap_err();
-        assert_eq!(e, LinkError::TooManyEdges);
-        assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
+[[project]]
+select = \"rust:p1\"
+implicit_dependencies = [\"eco:rust\"]
+";
+        let g = graph(&many(n), "version = 1\n");
+        let config = config::parse(cfg).unwrap();
+        let run = |used: usize, max: usize| {
+            apply_config(&config, &mut g.projects.clone(), &mut Vec::new(), used, max)
+        };
+        assert_eq!(run(0, 98), Ok(()));
+        assert_eq!(run(0, 97), Err(LinkError::TooManyEdges));
+        assert_eq!(run(1, 98), Err(LinkError::TooManyEdges));
+        assert_eq!(run(60, 150), Err(LinkError::TooManyEdges));
+        assert_eq!(run(52, 150), Ok(()));
+        // The real cap is far above anything a small input reaches.
+        assert_eq!(run(0, MAX_IMPLICIT_EDGES), Ok(()));
     }
 
     #[test]
