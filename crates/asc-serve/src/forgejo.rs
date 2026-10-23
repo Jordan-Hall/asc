@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use asc_core::id::RefTarget;
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
+use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal, Scheme};
 use asc_rpc::server::{CallCtx, MAX_REF_UPDATES, RepoName};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -389,12 +389,55 @@ impl Decision {
 
 // ------------------------------------------------------------------------------ cache
 
-/// Cache key: `(sha256(token), repo, mode)` (SPEC §15.1).
+/// What the caller presented, as Forgejo must see it. A Basic credential with a user name goes to
+/// Forgejo as HTTP Basic `user:secret`, so Forgejo decides as it does for a git client: a personal
+/// access token or an account password, and no password when two-factor is on. Every other
+/// credential (`Bearer`, `token`, and Basic without a user name) goes as a Bearer token. There is
+/// deliberately no `Debug`: the secret must not reach a log.
+#[derive(Clone, Copy)]
+struct Login<'a> {
+    user: Option<&'a str>,
+    secret: &'a BearerToken,
+}
+
+impl<'a> Login<'a> {
+    fn bearer(secret: &'a BearerToken) -> Self {
+        Self { user: None, secret }
+    }
+
+    fn of(credential: &'a Credential) -> Self {
+        let user = match credential.scheme() {
+            Scheme::Basic => credential.user().filter(|u| !u.is_empty()),
+            Scheme::Bearer | Scheme::Token => None,
+        };
+        Self {
+            user,
+            secret: credential.secret(),
+        }
+    }
+
+    /// Adds the `Authorization` header (marked sensitive by reqwest).
+    fn apply(self, req: RequestBuilder) -> RequestBuilder {
+        match self.user {
+            Some(user) => req.basic_auth(user, Some(self.secret.expose())),
+            None => req.bearer_auth(self.secret.expose()),
+        }
+    }
+}
+
+/// Cache key: `(sha256(user NUL secret), repo, mode)` (SPEC §15.1). The user is empty for every
+/// non-Basic credential, so only a Basic user name separates two entries: the same password under
+/// another user name never shares an answer. Only the digest is kept, never the secret.
 type CacheKey = ([u8; 32], String, Access);
 
-fn cache_key(token: Option<&BearerToken>, repo: &str, access: Access) -> CacheKey {
-    let digest: [u8; 32] = Sha256::digest(token.map_or("", BearerToken::expose).as_bytes()).into();
-    (digest, repo.to_owned(), access)
+fn cache_key(login: Option<Login<'_>>, repo: &str, access: Access) -> CacheKey {
+    let mut h = Sha256::new();
+    if let Some(l) = login {
+        h.update(l.user.unwrap_or("").as_bytes());
+        h.update([0u8]);
+        h.update(l.secret.expose().as_bytes());
+    }
+    (h.finalize().into(), repo.to_owned(), access)
 }
 
 /// Why a lookup produced no decision.
@@ -447,7 +490,7 @@ impl AuthzCore {
 
     async fn resolve<Fut>(
         &self,
-        token: Option<&BearerToken>,
+        login: Option<Login<'_>>,
         repo: &str,
         access: Access,
         fetch: impl FnOnce() -> Fut,
@@ -455,12 +498,12 @@ impl AuthzCore {
     where
         Fut: Future<Output = Result<Decision, Fetch>>,
     {
-        if let (Some(t), Some(i)) = (token, &self.internal)
-            && i.matches(t)
+        if let (Some(l), Some(i)) = (login, &self.internal)
+            && i.matches(l.secret)
         {
             return Ok(Arc::new(Decision::internal()));
         }
-        let key = cache_key(token, repo, access);
+        let key = cache_key(login, repo, access);
         if let Some(hit) = self.cache.get(&key) {
             let ttl = if hit.answer.is_ok() {
                 self.cfg.positive
@@ -491,8 +534,8 @@ fn parse_repo(repo: &str) -> Result<RepoName, AuthError> {
     RepoName::parse(repo).map_err(|_| AuthError::Forbidden)
 }
 
-fn denied_for(token: Option<&BearerToken>) -> AuthError {
-    if token.is_some() {
+fn denied_for(login: Option<Login<'_>>) -> AuthError {
+    if login.is_some() {
         AuthError::Forbidden
     } else {
         AuthError::Unauthenticated
@@ -550,34 +593,56 @@ impl PublicApiAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_login(token.map(Login::bearer), repo, access)
+            .await
+    }
+
+    /// [`decide`](Self::decide) for a parsed credential: Basic `user:password` is forwarded to
+    /// Forgejo as Basic.
+    pub async fn decide_credential(
+        &self,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_login(credential.map(Login::of), repo, access)
+            .await
+    }
+
+    async fn decide_login(
+        &self,
+        login: Option<Login<'_>>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Arc<Decision>, AuthError> {
         let name = parse_repo(repo)?;
         self.core
-            .resolve(token, repo, access, || self.fetch(token, &name, access))
+            .resolve(login, repo, access, || self.fetch(login, &name, access))
             .await
     }
 
     async fn get(
         &self,
         segments: &[&str],
-        token: Option<&BearerToken>,
+        login: Option<Login<'_>>,
     ) -> Result<(StatusCode, Vec<u8>), Fetch> {
         let mut req = self.client.http.get(self.client.url(segments));
-        if let Some(t) = token {
-            req = req.bearer_auth(t.expose());
+        if let Some(l) = login {
+            req = l.apply(req);
         }
         ForgejoClient::send(req).await.map_err(|e| unavailable(&e))
     }
 
     async fn fetch(
         &self,
-        token: Option<&BearerToken>,
+        login: Option<Login<'_>>,
         repo: &RepoName,
         access: Access,
     ) -> Result<Decision, Fetch> {
-        let identity = match token {
+        let identity = match login {
             None => ForgejoIdentity::anonymous(),
             Some(_) => {
-                let (status, body) = self.get(&["api", "v1", "user"], token).await?;
+                let (status, body) = self.get(&["api", "v1", "user"], login).await?;
                 match status {
                     StatusCode::OK => {
                         let user: ApiUser = decode(&body).map_err(|e| unavailable(&e))?;
@@ -596,13 +661,13 @@ impl PublicApiAuthz {
         };
         let (owner, name) = repo.as_str().split_once('/').unwrap_or_default();
         let (status, body) = self
-            .get(&["api", "v1", "repos", owner, name], token)
+            .get(&["api", "v1", "repos", owner, name], login)
             .await?;
         match status {
             StatusCode::OK => {}
             StatusCode::UNAUTHORIZED => return Err(Fetch::Denied(AuthError::Unauthenticated)),
             StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-                return Err(Fetch::Denied(denied_for(token)));
+                return Err(Fetch::Denied(denied_for(login)));
             }
             _ => return Err(Fetch::Unavailable),
         }
@@ -612,7 +677,7 @@ impl PublicApiAuthz {
             Perm::Admin
         } else if p.push {
             Perm::Write
-        } else if p.pull || token.is_none() {
+        } else if p.pull || login.is_none() {
             // An anonymous 200 means a public repository.
             Perm::Read
         } else {
@@ -622,8 +687,8 @@ impl PublicApiAuthz {
         // push rights must not write, so Write and Admin stand only when the token's scope is
         // proven to allow a write; any other answer caps the token at Read.
         if perm > Perm::Read {
-            let proven = match token {
-                Some(t) if access != Access::Read => self.token_may_write(t, owner, name).await?,
+            let proven = match login {
+                Some(l) if access != Access::Read => self.token_may_write(l, owner, name).await?,
                 _ => false,
             };
             if !proven {
@@ -633,7 +698,7 @@ impl PublicApiAuthz {
         if perm.allows(access) {
             Ok(Decision::for_identity(identity, perm))
         } else {
-            Err(Fetch::Denied(denied_for(token)))
+            Err(Fetch::Denied(denied_for(login)))
         }
     }
 
@@ -644,21 +709,22 @@ impl PublicApiAuthz {
     /// first by `modules/web/route.go` `wrapMiddlewareAndHandler`), and a POST needs the write level.
     /// A token without the scope gets 403 there. Tokens without scopes (Actions task tokens) skip the
     /// check; their write power is already in `permissions` (`permissions/repo_access.go`). Only
-    /// a 200 counts as proof, so a missing route, a 5xx or any other answer fails closed.
+    /// a 200 counts as proof, so a missing route, a 5xx or any other answer fails closed. A Basic
+    /// login is sent as Basic like every other call, so a password login (full user scope, no
+    /// token scope to check) passes exactly when Forgejo says so.
     async fn token_may_write(
         &self,
-        token: &BearerToken,
+        login: Login<'_>,
         owner: &str,
         name: &str,
     ) -> Result<bool, Fetch> {
-        let req = self
-            .client
-            .http
-            .post(
-                self.client
-                    .url(&["api", "v1", "repos", owner, name, "markdown"]),
+        let req = login
+            .apply(
+                self.client.http.post(
+                    self.client
+                        .url(&["api", "v1", "repos", owner, name, "markdown"]),
+                ),
             )
-            .bearer_auth(token.expose())
             .header("content-type", "application/json")
             .body(r#"{"Text":"x","Mode":"markdown"}"#);
         let (status, _) = ForgejoClient::send(req)
@@ -684,13 +750,31 @@ impl Authorizer for PublicApiAuthz {
     ) -> Result<Principal, AuthError> {
         Ok(self.decide(token, repo, access).await?.principal.clone())
     }
+
+    async fn authorize_credential(
+        &self,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Principal, AuthError> {
+        Ok(self
+            .decide_credential(credential, repo, access)
+            .await?
+            .principal
+            .clone())
+    }
 }
 
 // ------------------------------------------------------------------------------ stage 2+
 
 #[derive(Serialize)]
 struct AuthzRequest<'a> {
+    /// The secret: a token, or the password of a Basic login.
     token: Option<&'a str>,
+    /// The Basic user name, present only for a Basic login with one. Forgejo then checks
+    /// `user:token` as it checks a git client's HTTP Basic credentials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<&'a str>,
     repo: &'a str,
     access: &'static str,
 }
@@ -750,9 +834,31 @@ impl InternalAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_login(token.map(Login::bearer), repo, access)
+            .await
+    }
+
+    /// [`decide`](Self::decide) for a parsed credential: a Basic login is forwarded with its user
+    /// name, which Forgejo checks as HTTP Basic `user:secret`.
+    pub async fn decide_credential(
+        &self,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Arc<Decision>, AuthError> {
+        self.decide_login(credential.map(Login::of), repo, access)
+            .await
+    }
+
+    async fn decide_login(
+        &self,
+        login: Option<Login<'_>>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Arc<Decision>, AuthError> {
         parse_repo(repo)?;
         self.core
-            .resolve(token, repo, access, || self.fetch(token, repo, access))
+            .resolve(login, repo, access, || self.fetch(login, repo, access))
             .await
     }
 
@@ -764,12 +870,13 @@ impl InternalAuthz {
 
     async fn fetch(
         &self,
-        token: Option<&BearerToken>,
+        login: Option<Login<'_>>,
         repo: &str,
         access: Access,
     ) -> Result<Decision, Fetch> {
         let body = AuthzRequest {
-            token: token.map(BearerToken::expose),
+            token: login.map(|l| l.secret.expose()),
+            user: login.and_then(|l| l.user),
             repo,
             access: match access {
                 Access::Read => "read",
@@ -790,22 +897,22 @@ impl InternalAuthz {
             StatusCode::OK => {}
             StatusCode::UNAUTHORIZED => return Err(Fetch::Denied(AuthError::Unauthenticated)),
             StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-                return Err(Fetch::Denied(denied_for(token)));
+                return Err(Fetch::Denied(denied_for(login)));
             }
             _ => return Err(Fetch::Unavailable),
         }
         let a: AuthzAnswer = decode(&bytes).map_err(|e| unavailable(&e))?;
-        self.judge(a, token, repo, access)
+        self.judge(a, login, repo, access)
     }
 
     fn judge(
         &self,
         a: AuthzAnswer,
-        token: Option<&BearerToken>,
+        login: Option<Login<'_>>,
         repo: &str,
         access: Access,
     ) -> Result<Decision, Fetch> {
-        let deny = || Fetch::Denied(denied_for(token));
+        let deny = || Fetch::Denied(denied_for(login));
         let mut perm = if a.allowed {
             Perm::parse(&a.perm)
         } else {
@@ -830,7 +937,7 @@ impl InternalAuthz {
         if !perm.allows(access) {
             return Err(deny());
         }
-        let identity = if token.is_none() && a.user_id == 0 && a.username.is_empty() {
+        let identity = if login.is_none() && a.user_id == 0 && a.username.is_empty() {
             ForgejoIdentity::anonymous()
         } else {
             ForgejoIdentity::new(a.user_id, &a.username, a.deploy_key_id).ok_or_else(deny)?
@@ -852,6 +959,19 @@ impl Authorizer for InternalAuthz {
         access: Access,
     ) -> Result<Principal, AuthError> {
         Ok(self.decide(token, repo, access).await?.principal.clone())
+    }
+
+    async fn authorize_credential(
+        &self,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Principal, AuthError> {
+        Ok(self
+            .decide_credential(credential, repo, access)
+            .await?
+            .principal
+            .clone())
     }
 }
 
