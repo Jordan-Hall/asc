@@ -347,8 +347,12 @@ impl Verified {
     }
 
     fn live(&self, e: &VerifiedEntry, now: Instant) -> bool {
-        now.saturating_duration_since(e.used) < self.ttl
-            && now.saturating_duration_since(e.accepted) < self.max_age
+        Self::is_live(e, now, self.ttl, self.max_age)
+    }
+
+    fn is_live(e: &VerifiedEntry, now: Instant, ttl: Duration, max_age: Duration) -> bool {
+        now.saturating_duration_since(e.used) < ttl
+            && now.saturating_duration_since(e.accepted) < max_age
     }
 
     /// The authorizer accepted `token` for `principal`.
@@ -362,13 +366,8 @@ impl Verified {
                 .is_none_or(|p| now.saturating_duration_since(p) >= Duration::from_secs(1));
             if due {
                 g.last_prune = Some(now);
-                let live: Vec<_> = g
-                    .tokens
-                    .iter()
-                    .filter(|(_, e)| self.live(e, now))
-                    .map(|(k, _)| *k)
-                    .collect();
-                g.tokens.retain(|k, _| live.contains(k));
+                let (ttl, max_age) = (self.ttl, self.max_age);
+                g.tokens.retain(|_, e| Self::is_live(e, now, ttl, max_age));
             }
             if g.tokens.len() >= self.max {
                 return;
@@ -724,23 +723,22 @@ impl Admission {
             let bytes = value.as_bytes();
             let cut = bytes.len() > XFF_MAX_BYTES;
             let tail = &bytes[bytes.len().saturating_sub(XFF_MAX_BYTES)..];
-            let Ok(text) = std::str::from_utf8(tail) else {
-                return tcp;
-            };
-            let mut parts: Vec<&str> = text.split(',').collect();
-            if cut {
-                // The first part may be the end of a longer hop; never read it.
-                parts.remove(0);
-            }
-            for part in parts.into_iter().rev() {
+            // Split the raw bytes and decode only the hops that are examined: junk to the left of
+            // the deciding hop, whatever its encoding, is never looked at. When the value was
+            // cut, its first segment may be the end of a longer hop and is never read.
+            let segments: Vec<&[u8]> = tail.split(|b| *b == b',').collect();
+            for segment in segments[usize::from(cut)..].iter().rev() {
                 seen += 1;
                 if seen > XFF_MAX_HOPS {
                     return tcp;
                 }
-                match part.trim().parse::<IpAddr>() {
-                    Ok(ip) if !trusted(ip) => return ip,
-                    Ok(_) => {}
-                    Err(_) => return tcp,
+                let hop = std::str::from_utf8(segment)
+                    .ok()
+                    .and_then(|t| t.trim().parse::<IpAddr>().ok());
+                match hop {
+                    Some(ip) if !trusted(ip) => return ip,
+                    Some(_) => {}
+                    None => return tcp,
                 }
             }
         }
@@ -2254,5 +2252,53 @@ mod tests {
             })
             .count();
         assert_eq!(admitted, BOOTSTRAP_ALLOWANCE as usize);
+    }
+
+    #[test]
+    fn junk_bytes_left_of_the_client_hop_are_never_decoded() {
+        let a = with_proxies(&["10.0.0.0/24"]);
+        let proxy: IpAddr = "10.0.0.1".parse().unwrap();
+        let client: IpAddr = "203.0.113.9".parse().unwrap();
+        let header = |bytes: &[u8]| {
+            let mut h = axum::http::HeaderMap::new();
+            h.insert(
+                "x-forwarded-for",
+                axum::http::HeaderValue::from_bytes(bytes).unwrap(),
+            );
+            h
+        };
+        // Not UTF-8 at all, left of the client.
+        let h = header(b"\xff\xfe, 203.0.113.9");
+        assert_eq!(a.client_ip(proxy, &h), client);
+        // A multi-byte character cut in half by the 2 KiB window.
+        let long = format!("{}, 203.0.113.9", "\u{e9}".repeat(2000));
+        let h = header(long.as_bytes());
+        assert_eq!(a.client_ip(proxy, &h), client);
+        let odd = format!("x{}, 203.0.113.9", "\u{e9}".repeat(2000));
+        let h = header(odd.as_bytes());
+        assert_eq!(a.client_ip(proxy, &h), client);
+        // Junk right of the client is still adjacent to the proxy.
+        let h = header(b"203.0.113.9, \xff");
+        assert_eq!(a.client_ip(proxy, &h), proxy);
+    }
+
+    #[test]
+    fn pruning_a_full_verified_table_is_linear() {
+        let max = 100_000;
+        let v = Verified::new(Duration::from_secs(60), VERIFIED_MAX_AGE, max);
+        for n in 0..max {
+            v.record(&format!("token-{n}"), "alice");
+        }
+        // The table is full of live entries: recording one more prunes, finds nothing to drop,
+        // and refuses. That has to be a single pass.
+        let start = Instant::now();
+        v.record("one-more", "bob");
+        let took = start.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "pruning {max} entries took {took:?}"
+        );
+        assert!(v.lookup(&token_hash("one-more")).is_none());
+        assert!(v.lookup(&token_hash("token-7")).is_some());
     }
 }
