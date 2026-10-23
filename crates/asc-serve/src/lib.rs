@@ -12,6 +12,8 @@ pub mod commit_graph_rpc;
 pub mod config;
 pub mod forgejo;
 pub mod gc;
+#[cfg(feature = "git-compat")]
+pub mod git_view;
 pub mod graph_sql;
 pub mod history;
 pub mod http;
@@ -246,6 +248,9 @@ pub async fn serve(
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror = mirror::register(&ext, &registry, &cfg)
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+    // The git protocol layer's views (SPEC §25); the git routes receive this service.
+    #[cfg(feature = "git-compat")]
+    let _git_views = git_view::register(&registry, &outbox, &cfg);
     let well_known = http::WellKnown {
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
