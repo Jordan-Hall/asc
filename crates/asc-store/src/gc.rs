@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use std::fmt::{self, Write as _};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -31,7 +32,7 @@ use asc_core::id::{ChangesetId, FileId, GitOid, RefTarget, TreeId};
 use asc_core::object::{Change, Changeset, ChunkList, Kind, TagRecord, Tree};
 use futures::{StreamExt, TryStreamExt, stream};
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use uuid::Uuid;
 
 use crate::bucket::BucketObjects;
@@ -64,6 +65,8 @@ const PART_KEYS: usize = 65_536;
 const MAX_PART_BYTES: u64 = 16 * 1024 * 1024;
 /// Longest `gc/lock` or `gc/freeze` body read.
 const MAX_LOCK_BYTES: u64 = 256;
+/// Listed or deleted objects between lease checks.
+const KEEPALIVE_EVERY: usize = 256;
 /// A stale run directory listing is never longer than this many entries.
 const MAX_RUNS: usize = 4096;
 
@@ -207,6 +210,18 @@ pub trait MarkStore: Send + Sync {
 pub trait Fence: Send + Sync {
     /// Returns once no ref update can be between its ingest and its commit; the guard keeps it so.
     async fn enter(&self) -> Result<Box<dyn Send>>;
+
+    /// Called often during marking and sweeping: extends whatever lease the run holds when it is
+    /// due, and fails when the run no longer holds it. Cheap when nothing is due.
+    async fn keepalive(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Confirms now, not when due, that the run still holds its exclusion. Called after the
+    /// final re-mark and before anything is deleted; an error abandons the batch.
+    async fn confirm(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// A fence that fences nothing (dry runs and tests).
@@ -342,9 +357,11 @@ fn has_children(key: &ObjKey) -> bool {
     )
 }
 
-/// Marks everything reachable from `roots` at `tier`, stopping at keys already seen.
+/// Marks everything reachable from `roots` at `tier`, stopping at keys already seen. `keep` is
+/// kept alive once per round of fetches.
 async fn walk(
     objects: &dyn Objects,
+    keep: &dyn Fence,
     seen: &mut Seen<'_>,
     roots: impl IntoIterator<Item = ObjKey>,
     tier: Tier,
@@ -356,6 +373,7 @@ async fn walk(
         }
     }
     while !frontier.is_empty() {
+        keep.keepalive().await?;
         let take = frontier.split_off(frontier.len().saturating_sub(FETCH_WINDOW));
         let fetched: Vec<(ObjKey, _)> = stream::iter(take)
             .map(|k| async move { (k, objects.get(&k).await) })
@@ -495,7 +513,7 @@ impl Collector<'_> {
         dry_run: bool,
         fence: &dyn Fence,
     ) -> Result<GcReport> {
-        let mark = self.mark(now).await?;
+        let mark = self.mark_fenced(now, fence).await?;
         let sweep = self.sweep(&mark, now, dry_run, fence).await?;
         self.prune(mark.run, now).await?;
         Ok(GcReport { mark, sweep })
@@ -526,12 +544,17 @@ impl Collector<'_> {
     }
 
     /// Changesets and tags stored at or after `since`.
-    async fn recent_roots(&self, since: SystemTime) -> Result<Vec<ObjKey>> {
+    async fn recent_roots(&self, since: SystemTime, keep: &dyn Fence) -> Result<Vec<ObjKey>> {
         let mut out = Vec::new();
         for class in [KeyClass::Changeset, KeyClass::Tag] {
             let mut s = self.objects.list(KeyPrefix::class(class));
+            let mut listed = 0usize;
             while let Some(item) = s.next().await {
                 let (key, modified) = item?;
+                listed += 1;
+                if listed.is_multiple_of(KEEPALIVE_EVERY) {
+                    keep.keepalive().await?;
+                }
                 if modified >= since {
                     if out.len() >= self.cfg.max_marks {
                         return Err(GcError::TooManyMarks(self.cfg.max_marks));
@@ -543,15 +566,20 @@ impl Collector<'_> {
         Ok(out)
     }
 
-    /// Takes and stores one mark.
+    /// Takes and stores one mark, with nothing to keep alive.
     pub async fn mark(&self, now: SystemTime) -> Result<MarkReport> {
+        self.mark_fenced(now, &NoFence).await
+    }
+
+    /// Takes and stores one mark, keeping `keep`'s lease alive while it runs.
+    pub async fn mark_fenced(&self, now: SystemTime, keep: &dyn Fence) -> Result<MarkReport> {
         let run = unix(now);
         let pitr_since = run.saturating_sub(secs(self.cfg.pitr));
         let mut seen = Seen::new(None, self.cfg.max_marks);
         let strict = self.strict_roots(pitr_since).await?;
-        walk(self.objects, &mut seen, strict, Tier::Strict).await?;
-        let recent = self.recent_roots(now - self.cfg.min_age).await?;
-        walk(self.objects, &mut seen, recent, Tier::Recent).await?;
+        walk(self.objects, keep, &mut seen, strict, Tier::Strict).await?;
+        let recent = self.recent_roots(now - self.cfg.min_age, keep).await?;
+        walk(self.objects, keep, &mut seen, recent, Tier::Recent).await?;
 
         let mut report = MarkReport {
             run,
@@ -569,9 +597,11 @@ impl Collector<'_> {
                 Tier::Recent => report.recent = keys.len() as u64,
             }
             for part in keys.chunks(PART_KEYS) {
+                keep.keepalive().await?;
                 self.marks.append(run, tier, part).await?;
             }
         }
+        keep.keepalive().await?;
         self.marks.complete(run).await?;
         Ok(report)
     }
@@ -620,6 +650,9 @@ impl Collector<'_> {
             while let Some(item) = listing.next().await {
                 let (key, modified) = item?;
                 report.scanned += 1;
+                if report.scanned.is_multiple_of(KEEPALIVE_EVERY as u64) {
+                    fence.keepalive().await?;
+                }
                 let purged = purge.contains(&key);
                 let old_enough = now
                     .duration_since(modified)
@@ -699,10 +732,10 @@ impl Collector<'_> {
         // Everything below sees refs and storage as no push can change them until the guard drops.
         let mut again = Seen::new(Some(n), self.cfg.max_marks);
         let strict = self.strict_roots(mark.run).await?;
-        walk(self.objects, &mut again, strict, Tier::Strict).await?;
+        walk(self.objects, fence, &mut again, strict, Tier::Strict).await?;
         let since = at_unix(mark.run.saturating_sub(5));
-        let recent = self.recent_roots(since).await?;
-        walk(self.objects, &mut again, recent, Tier::Recent).await?;
+        let recent = self.recent_roots(since, fence).await?;
+        walk(self.objects, fence, &mut again, recent, Tier::Recent).await?;
 
         let mut doomed = Vec::with_capacity(batch.len());
         for c in batch {
@@ -719,10 +752,16 @@ impl Collector<'_> {
                 doomed.push(c.key);
             }
         }
+        // The re-mark can be long. Nothing is deleted unless the run still holds its exclusion
+        // now; a run whose lease was taken over stops here.
+        fence.confirm().await?;
         if let Some(o) = self.observer {
             o.before_delete(&doomed).await?;
         }
-        for key in &doomed {
+        for (i, key) in doomed.iter().enumerate() {
+            if i % KEEPALIVE_EVERY == KEEPALIVE_EVERY - 1 {
+                fence.keepalive().await?;
+            }
             self.objects.delete(key).await?;
             report.deleted += 1;
         }
@@ -964,33 +1003,122 @@ pub fn rfc3339(secs: i64) -> String {
     )
 }
 
-/// The `gc/lock` lease: create-only, so two collections never run at once.
+/// Unix seconds now. Production reads the run's start plus the time elapsed since, so that
+/// lease times stay on the run's own timeline; tests drive it by hand.
+pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+fn elapsed_clock(start: i64) -> Clock {
+    let began = std::time::Instant::now();
+    Arc::new(move || start.saturating_add(i64::try_from(began.elapsed().as_secs()).unwrap_or(0)))
+}
+
+/// An object read together with the version a conditional write can name.
+struct Held {
+    body: Bytes,
+    version: UpdateVersion,
+}
+
+async fn read_held(store: &dyn ObjectStore, path: &Path) -> Result<Option<Held>> {
+    match store.get(path).await {
+        Ok(got) => {
+            let version = UpdateVersion {
+                e_tag: got.meta.e_tag.clone(),
+                version: got.meta.version.clone(),
+            };
+            let body = crate::bucket::read_capped(got, MAX_LOCK_BYTES)
+                .await?
+                .ok_or_else(|| GcError::Marks(format!("{path} is too large")))?;
+            Ok(Some(Held { body, version }))
+        }
+        Err(object_store::Error::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// How a write conditional on a version ended.
+enum Guarded {
+    Written,
+    /// The object changed (or went) since it was read.
+    Changed,
+    /// The store has no conditional writes, or gave no version to condition on.
+    Unsupported,
+}
+
+async fn put_if(
+    store: &dyn ObjectStore,
+    path: &Path,
+    version: &UpdateVersion,
+    body: Bytes,
+) -> Result<Guarded> {
+    if version.e_tag.is_none() && version.version.is_none() {
+        return Ok(Guarded::Unsupported);
+    }
+    let opts = PutOptions {
+        mode: PutMode::Update(version.clone()),
+        ..PutOptions::default()
+    };
+    match store
+        .put_opts(path, PutPayload::from_bytes(body), opts)
+        .await
+    {
+        Ok(_) => Ok(Guarded::Written),
+        Err(
+            object_store::Error::Precondition { .. }
+            | object_store::Error::NotFound { .. }
+            | object_store::Error::AlreadyExists { .. },
+        ) => Ok(Guarded::Changed),
+        Err(object_store::Error::NotImplemented { .. }) => Ok(Guarded::Unsupported),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The `gc/lock` lease. It is created with a create-only put, and taken over and renewed only
+/// with a put conditional on the version that was read, so two runs never both believe they hold
+/// it. A store without conditional writes cannot take over an expired lease (the operator
+/// removes `gc/lock` by hand); it can still renew its own.
 struct BucketLock<'a> {
     store: &'a dyn ObjectStore,
     path: Path,
     run: i64,
+    /// Tells this run's lock from another run that started in the same second.
+    token: String,
+    lease: i64,
+    clock: Clock,
+    last_renewed: AtomicI64,
+}
+
+/// A parsed `gc/lock` body: `<run> <expires> [<token>]`.
+struct LockBody {
+    run: i64,
+    expires: i64,
+    token: Option<String>,
 }
 
 impl BucketLock<'_> {
-    fn body(run: i64, expires: i64) -> Bytes {
-        Bytes::from(format!("{run} {expires}\n"))
+    fn body(&self, expires: i64) -> Bytes {
+        Bytes::from(format!("{} {expires} {}\n", self.run, self.token))
     }
 
-    fn parse(body: &[u8]) -> Option<(i64, i64)> {
+    fn parse(body: &[u8]) -> Option<LockBody> {
         let text = std::str::from_utf8(body).ok()?;
-        let (run, expires) = text.trim().split_once(' ')?;
-        Some((run.parse().ok()?, expires.parse().ok()?))
+        let mut parts = text.split_whitespace();
+        let run = parts.next()?.parse().ok()?;
+        let expires = parts.next()?.parse().ok()?;
+        let token = parts.next().map(str::to_owned);
+        parts.next().is_none().then_some(LockBody {
+            run,
+            expires,
+            token,
+        })
     }
 
-    async fn read(store: &dyn ObjectStore, path: &Path) -> Result<Option<Bytes>> {
-        match store.get(path).await {
-            Ok(got) => crate::bucket::read_capped(got, MAX_LOCK_BYTES)
-                .await?
-                .map(Some)
-                .ok_or_else(|| GcError::Marks(format!("{path} is too large"))),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+    /// The name a freeze carries so its owner can tell it from another run's.
+    fn owner(&self) -> String {
+        format!("{}-{}", self.run, self.token)
+    }
+
+    fn ours(&self, body: &[u8]) -> bool {
+        Self::parse(body).is_some_and(|b| b.token.as_deref() == Some(self.token.as_str()))
     }
 
     async fn create(&self, expires: i64) -> Result<bool> {
@@ -1000,11 +1128,7 @@ impl BucketLock<'_> {
         };
         match self
             .store
-            .put_opts(
-                &self.path,
-                PutPayload::from_bytes(Self::body(self.run, expires)),
-                opts,
-            )
+            .put_opts(&self.path, PutPayload::from_bytes(self.body(expires)), opts)
             .await
         {
             Ok(_) => Ok(true),
@@ -1021,31 +1145,55 @@ impl BucketLock<'_> {
         now: i64,
         lease: i64,
     ) -> Result<BucketLock<'a>> {
+        Self::acquire_with(store, root, run, lease, elapsed_clock(now)).await
+    }
+
+    async fn acquire_with<'a>(
+        store: &'a dyn ObjectStore,
+        root: &Path,
+        run: i64,
+        lease: i64,
+        clock: Clock,
+    ) -> Result<BucketLock<'a>> {
+        let now = clock();
         let lock = BucketLock {
             store,
             path: gc_dir(root).join("lock"),
             run,
+            token: Uuid::new_v4().simple().to_string(),
+            lease,
+            clock,
+            last_renewed: AtomicI64::new(now),
         };
         for _ in 0..2 {
             if lock.create(now.saturating_add(lease)).await? {
                 return Ok(lock);
             }
-            let held = Self::read(store, &lock.path).await?;
-            match held.as_deref().and_then(Self::parse) {
-                Some((other, expires)) if expires > now => {
-                    return Err(GcError::Busy(format!(
-                        "run {other} holds gc/lock until {}",
-                        rfc3339(expires)
-                    )));
-                }
-                _ => {
-                    // Expired or unreadable: the holder died. Remove it and try once more.
-                    match store.delete(&lock.path).await {
-                        Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
+            let Some(held) = read_held(store, &lock.path).await? else {
+                continue; // released between the create and the read: try the create again
+            };
+            if let Some(b) = Self::parse(&held.body)
+                && b.expires > now
+            {
+                return Err(GcError::Busy(format!(
+                    "run {} holds gc/lock until {}",
+                    b.run,
+                    rfc3339(b.expires)
+                )));
             }
+            // Expired or unreadable: the holder died. Take it over, but only if nobody else has.
+            let body = lock.body(now.saturating_add(lease));
+            return match put_if(store, &lock.path, &held.version, body).await? {
+                Guarded::Written => Ok(lock),
+                Guarded::Changed => Err(GcError::Busy(
+                    "gc/lock changed while it was being taken".into(),
+                )),
+                Guarded::Unsupported => Err(GcError::Busy(
+                    "gc/lock has expired, but this store has no conditional writes to take it \
+                     over safely; remove gc/lock by hand once no collection is running"
+                        .into(),
+                )),
+            };
         }
         Err(GcError::Busy(
             "gc/lock changed while it was being taken".into(),
@@ -1053,25 +1201,43 @@ impl BucketLock<'_> {
     }
 
     async fn is_ours(&self) -> Result<bool> {
-        let held = Self::read(self.store, &self.path).await?;
-        Ok(held
-            .as_deref()
-            .and_then(Self::parse)
-            .is_some_and(|(r, _)| r == self.run))
+        let held = read_held(self.store, &self.path).await?;
+        Ok(held.is_some_and(|h| self.ours(&h.body)))
     }
 
-    /// Extends the lease; fails if the lock was lost.
-    async fn renew(&self, now: i64, lease: i64) -> Result<()> {
-        if !self.is_ours().await? {
-            return Err(GcError::Busy("gc/lock was lost".into()));
+    /// Confirms the lease is still this run's and extends it from the current clock, with a write
+    /// conditional on the version just read. Fails with `Busy` if another run holds it.
+    async fn confirm(&self) -> Result<()> {
+        let lost = |why: &str| GcError::Busy(format!("gc/lock was lost: {why}"));
+        let held = read_held(self.store, &self.path)
+            .await?
+            .ok_or_else(|| lost("it is gone"))?;
+        if !self.ours(&held.body) {
+            let other = Self::parse(&held.body).map_or(0, |b| b.run);
+            return Err(lost(&format!("run {other} took it over")));
         }
-        self.store
-            .put(
-                &self.path,
-                PutPayload::from_bytes(Self::body(self.run, now.saturating_add(lease))),
-            )
-            .await?;
+        let now = (self.clock)();
+        let body = self.body(now.saturating_add(self.lease));
+        match put_if(self.store, &self.path, &held.version, body.clone()).await? {
+            Guarded::Written => {}
+            Guarded::Changed => return Err(lost("it changed while it was being renewed")),
+            // No conditional writes: the lock was just read as ours and, on such a store, nobody
+            // can take it over.
+            Guarded::Unsupported => {
+                self.store
+                    .put(&self.path, PutPayload::from_bytes(body))
+                    .await?;
+            }
+        }
+        self.last_renewed.store(now, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// [`confirm`](Self::confirm), when a sixth of the lease has passed since the last one.
+    async fn keepalive(&self) -> Result<()> {
+        let due = (self.clock)().saturating_sub(self.last_renewed.load(Ordering::Relaxed))
+            >= (self.lease / 6).max(1);
+        if due { self.confirm().await } else { Ok(()) }
     }
 
     async fn release(&self) -> Result<()> {
@@ -1086,8 +1252,8 @@ impl BucketLock<'_> {
 }
 
 /// The bucket-mode fence: `gc/freeze` stands while a sweep runs. The first batch creates it and
-/// waits `freeze_wait` for pushes that read the key before it appeared; every batch renews the
-/// lock lease.
+/// waits `freeze_wait` for pushes that read the key before it appeared; every batch confirms
+/// and renews the lock lease. The freeze names its owner, and only its owner removes it.
 struct FreezeFence<'a> {
     store: &'a dyn ObjectStore,
     root: &'a Path,
@@ -1097,24 +1263,65 @@ struct FreezeFence<'a> {
     frozen: tokio::sync::OnceCell<()>,
 }
 
+/// The `run=` owner a freeze body names.
+fn freeze_owner(body: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(body).ok()?;
+    text.split_whitespace().find_map(|w| w.strip_prefix("run="))
+}
+
 impl FreezeFence<'_> {
     fn freeze_path(&self) -> Path {
         gc_dir(self.root).join("freeze")
     }
 
+    fn freeze_body(&self) -> Bytes {
+        Bytes::from(format!(
+            "{} run={}",
+            rfc3339(unix(self.now)),
+            self.lock.owner()
+        ))
+    }
+
+    /// Removes a freeze left by a run that died. Allowed only while this run holds `gc/lock`,
+    /// because only the lock holder creates a freeze.
     async fn lift_stale(&self) -> Result<()> {
+        self.lock.confirm().await?;
         match self.store.delete(&self.freeze_path()).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(e.into()),
         }
     }
 
+    /// Removes this run's freeze. A freeze that names another owner is left alone, and so is
+    /// ours once `gc/lock` has passed to another run, whose own start lifts it.
     async fn thaw(&self) -> Result<()> {
-        if self.frozen.initialized() {
-            match self.store.delete(&self.freeze_path()).await {
-                Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                Err(e) => return Err(e.into()),
-            }
+        if !self.frozen.initialized() {
+            return Ok(());
+        }
+        let Some(held) = read_held(self.store, &self.freeze_path()).await? else {
+            return Ok(());
+        };
+        if freeze_owner(&held.body) != Some(self.lock.owner().as_str()) {
+            return Ok(());
+        }
+        if !self.lock.is_ours().await? {
+            return Ok(());
+        }
+        match self.store.delete(&self.freeze_path()).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Sleeps `freeze_wait` in slices, keeping the lease alive.
+    async fn wait(&self) -> Result<()> {
+        let slice = Duration::from_secs(u64::try_from((self.lock.lease / 6).max(1)).unwrap_or(1));
+        let mut left = self.cfg.freeze_wait;
+        while !left.is_zero() {
+            let step = left.min(slice);
+            tokio::time::sleep(step).await;
+            left -= step;
+            self.lock.keepalive().await?;
         }
         Ok(())
     }
@@ -1123,16 +1330,11 @@ impl FreezeFence<'_> {
 #[async_trait]
 impl Fence for FreezeFence<'_> {
     async fn enter(&self) -> Result<Box<dyn Send>> {
-        self.lock
-            .renew(unix(self.now), secs(self.cfg.lease))
-            .await?;
+        self.lock.confirm().await?;
         self.frozen
             .get_or_try_init(|| async {
                 // We hold gc/lock, so a leftover freeze belongs to a dead run.
-                match self.store.delete(&self.freeze_path()).await {
-                    Ok(()) | Err(object_store::Error::NotFound { .. }) => {}
-                    Err(e) => return Err(GcError::from(e)),
-                }
+                self.lift_stale().await?;
                 let opts = PutOptions {
                     mode: PutMode::Create,
                     ..PutOptions::default()
@@ -1140,15 +1342,22 @@ impl Fence for FreezeFence<'_> {
                 self.store
                     .put_opts(
                         &self.freeze_path(),
-                        PutPayload::from_bytes(Bytes::from(rfc3339(unix(self.now)))),
+                        PutPayload::from_bytes(self.freeze_body()),
                         opts,
                     )
                     .await?;
-                tokio::time::sleep(self.cfg.freeze_wait).await;
-                Ok(())
+                self.wait().await
             })
             .await?;
         Ok(Box::new(()))
+    }
+
+    async fn keepalive(&self) -> Result<()> {
+        self.lock.keepalive().await
+    }
+
+    async fn confirm(&self) -> Result<()> {
+        self.lock.confirm().await
     }
 }
 
@@ -1752,6 +1961,238 @@ mod tests {
         let runs = marks.runs().await.unwrap();
         assert!(runs.len() <= 3, "{runs:?}");
         assert!(runs.iter().all(|r| r.complete));
+    }
+
+    // ---- lease and freeze ownership
+
+    /// A clock the test moves by hand.
+    fn manual(at: i64) -> (Arc<AtomicI64>, Clock) {
+        let cell = Arc::new(AtomicI64::new(at));
+        let c = cell.clone();
+        (cell, Arc::new(move || c.load(Ordering::Relaxed)))
+    }
+
+    async fn lock_body(e: &Env) -> String {
+        let got = e.store.get(&Path::from("ns/x/gc/lock")).await.unwrap();
+        String::from_utf8(got.bytes().await.unwrap().to_vec()).unwrap()
+    }
+
+    fn lock_expires(body: &str) -> i64 {
+        body.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    fn freeze_fence<'a>(
+        e: &'a Env,
+        lock: &'a BucketLock<'a>,
+        config: &'a GcConfig,
+        now: SystemTime,
+    ) -> FreezeFence<'a> {
+        FreezeFence {
+            store: &*e.store,
+            root: &e.root,
+            lock,
+            cfg: config,
+            now,
+            frozen: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn renewal_extends_from_the_current_clock() {
+        let e = env().await;
+        let (cell, clock) = manual(1000);
+        let lock = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, clock)
+            .await
+            .unwrap();
+        assert_eq!(lock_expires(&lock_body(&e).await), 1000 + 3600);
+        // The run started at 1000 and has been going for 2000 s.
+        cell.store(3000, Ordering::Relaxed);
+        let config = cfg();
+        let fence = freeze_fence(&e, &lock, &config, at_unix(1000));
+        drop(fence.enter().await.unwrap());
+        assert_eq!(
+            lock_expires(&lock_body(&e).await),
+            3000 + 3600,
+            "the lease runs from now, not from the start of the run"
+        );
+        fence.thaw().await.unwrap();
+        lock.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thaw_leaves_another_runs_freeze_alone() {
+        let e = env().await;
+        let (_, clock) = manual(1000);
+        let lock = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, clock)
+            .await
+            .unwrap();
+        let config = cfg();
+        let fence = freeze_fence(&e, &lock, &config, at_unix(1000));
+        drop(fence.enter().await.unwrap());
+        let freeze = Path::from("ns/x/gc/freeze");
+        let mine = e.store.get(&freeze).await.unwrap().bytes().await.unwrap();
+        assert!(String::from_utf8_lossy(&mine).contains(&format!("run={}", lock.owner())));
+
+        // Another run took the lock and froze the bucket itself.
+        let theirs = "2026-01-01T00:00:00Z run=77-other";
+        e.store
+            .put(&freeze, PutPayload::from_static(theirs.as_bytes()))
+            .await
+            .unwrap();
+        fence.thaw().await.unwrap();
+        let left = e.store.get(&freeze).await.unwrap().bytes().await.unwrap();
+        assert_eq!(&left[..], theirs.as_bytes(), "not ours: not removed");
+
+        // Our own is removed.
+        e.store
+            .put(&freeze, PutPayload::from_bytes(mine))
+            .await
+            .unwrap();
+        fence.thaw().await.unwrap();
+        assert!(e.store.head(&freeze).await.is_err());
+        lock.release().await.unwrap();
+    }
+
+    /// Refs that, on their second read (the sweep's re-mark), let another run take the lock.
+    struct TakeoverRoots {
+        inner: BucketRefRoots,
+        calls: AtomicI64,
+        store: Arc<dyn ObjectStore>,
+        root: Path,
+        lease: i64,
+        takes_over_at: i64,
+    }
+
+    #[async_trait]
+    impl RefRoots for TakeoverRoots {
+        async fn current(&self) -> Result<Vec<RefTarget>> {
+            if self.calls.fetch_add(1, Ordering::Relaxed) == 1 {
+                BucketLock::acquire(&*self.store, &self.root, 77, self.takes_over_at, self.lease)
+                    .await
+                    .unwrap();
+            }
+            self.inner.current().await
+        }
+        async fn logged_since(&self, since: i64) -> Result<Vec<RefTarget>> {
+            self.inner.logged_since(since).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_whose_lease_was_taken_over_stops_before_deleting() {
+        let e = env().await;
+        let (old, _, _) = commit(&e, &[], "old", b"old body").await;
+        let t1 = SystemTime::now() + D15;
+        e.gc.run(t1, false, &cfg(), &[]).await.unwrap();
+
+        let config = cfg();
+        let (_, clock) = manual(1000);
+        let lock = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, clock)
+            .await
+            .unwrap();
+        let t2 = t1 + H25;
+        let fence = freeze_fence(&e, &lock, &config, t2);
+        let marks = BucketMarks::new(e.store.clone(), e.root.clone());
+        let roots = TakeoverRoots {
+            inner: BucketRefRoots::new(e.refs.clone(), e.store.clone(), e.root.clone(), 1000),
+            calls: AtomicI64::new(0),
+            store: e.store.clone(),
+            root: e.root.clone(),
+            lease: 3600,
+            // This run's lease (1000 + 3600) is long expired by then.
+            takes_over_at: 1000 + 3600 + 1,
+        };
+        let c = Collector {
+            ns: b"",
+            objects: &e.objects,
+            refs: &roots,
+            extra: &[],
+            marks: &marks,
+            observer: None,
+            cfg: &config,
+        };
+        let err = c.collect(t2, false, &fence).await.unwrap_err();
+        assert!(
+            matches!(err, GcError::Busy(ref m) if m.contains("run 77")),
+            "{err}"
+        );
+        assert!(
+            has(&e, ObjKey::Changeset(old)).await,
+            "the batch was abandoned before any delete"
+        );
+        // The loser leaves the new holder's lock and nothing else of its own behind.
+        fence.thaw().await.unwrap();
+        lock.release().await.unwrap();
+        assert!(lock_body(&e).await.starts_with("77 "));
+    }
+
+    /// Refs that make the clock jump when read, as a long mark does.
+    struct SlowRoots {
+        inner: BucketRefRoots,
+        cell: Arc<AtomicI64>,
+    }
+
+    #[async_trait]
+    impl RefRoots for SlowRoots {
+        async fn current(&self) -> Result<Vec<RefTarget>> {
+            self.cell.fetch_add(2000, Ordering::Relaxed);
+            self.inner.current().await
+        }
+        async fn logged_since(&self, since: i64) -> Result<Vec<RefTarget>> {
+            self.inner.logged_since(since).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_long_mark_renews_the_lease() {
+        let e = env().await;
+        let (a, _, _) = commit(&e, &[], "a", b"body a").await;
+        set_ref(&e, "refs/heads/master", Some(a)).await;
+        let config = cfg();
+        let (cell, clock) = manual(1000);
+        let lock = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, clock)
+            .await
+            .unwrap();
+        let fence = freeze_fence(&e, &lock, &config, at_unix(1000));
+        let marks = BucketMarks::new(e.store.clone(), e.root.clone());
+        let roots = SlowRoots {
+            inner: BucketRefRoots::new(e.refs.clone(), e.store.clone(), e.root.clone(), 1000),
+            cell: cell.clone(),
+        };
+        let c = Collector {
+            ns: b"",
+            objects: &e.objects,
+            refs: &roots,
+            extra: &[],
+            marks: &marks,
+            observer: None,
+            cfg: &config,
+        };
+        c.mark_fenced(SystemTime::now(), &fence).await.unwrap();
+        let expires = lock_expires(&lock_body(&e).await);
+        assert!(
+            expires >= 3000 + 3600,
+            "marking renewed from the clock it had reached: {expires}"
+        );
+        lock.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_run_from_the_same_second_is_not_mistaken_for_ours() {
+        let e = env().await;
+        let (_, clock) = manual(1000);
+        let first = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, clock.clone())
+            .await
+            .unwrap();
+        // The lease runs out; a second run with the same run id takes over.
+        let (_, later) = manual(1000 + 3601);
+        let second = BucketLock::acquire_with(&*e.store, &e.root, 1000, 3600, later)
+            .await
+            .unwrap();
+        assert!(first.confirm().await.is_err(), "the first run lost it");
+        assert!(!first.is_ours().await.unwrap());
+        assert!(second.is_ours().await.unwrap());
+        second.release().await.unwrap();
     }
 
     #[test]

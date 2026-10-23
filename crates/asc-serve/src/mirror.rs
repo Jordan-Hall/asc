@@ -534,7 +534,8 @@ impl Mirror {
         let pool = self.registry.pool();
         let refs = self.registry.refs();
         // The GC fence (SPEC §3.6) covers the import through the ref commit, like a push.
-        let _gc = self.gc.shared().await;
+        self.gc.attach_pool(pool);
+        let _gc = self.gc.shared().await?;
         let lock_tx = import_lock(pool, entry.key.0).await?;
 
         let dir = self.cfg.dir.join(format!("{}.git", entry.key.0));
