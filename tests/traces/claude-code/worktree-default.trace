@@ -1,0 +1,77 @@
+# Authored from the git calls EnterWorktree and ExitWorktree make in Claude Code 2.1.296 when no
+# WorktreeCreate or WorktreeRemove hook is configured. Recapture under spike S7.
+tool = "claude-code"
+version = "2.1.296"
+provenance = "authored"
+git = "2.55.0"
+recapture = "S7"
+driver = "Claude Code enters a worktree named feature-x (a new branch worktree-feature-x under .claude/worktrees), edits and commits there, then leaves it with the remove action: it checks the work tree for changes and the branch for commits not on master, lists the worktrees, removes the work tree and deletes the branch."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "alpha\nbeta\n" > notes.txt; printf ".claude/worktrees/\n" > .gitignore'
+from = "driver"
+
+[[step]]
+git = ["add", "notes.txt", ".gitignore"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["worktree", "add", "--no-track", "-B", "worktree-feature-x", ".claude/worktrees/feature-x", "HEAD"]
+env = { LC_ALL = "C" }
+from = "claude-code"
+exit = 0
+
+[[step]]
+sh = 'printf "gamma\n" >> .claude/worktrees/feature-x/notes.txt'
+from = "claude-code"
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "add", "notes.txt"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "commit", "-qm", "feat: add gamma"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "--no-optional-locks", "status", "--porcelain"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "rev-list", "--count", "master..HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["worktree", "list", "--porcelain", "-z"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["worktree", "remove", "--force", ".claude/worktrees/feature-x"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["branch", "-D", "worktree-feature-x"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["worktree", "list"]
+from = "driver"
+exit = 0

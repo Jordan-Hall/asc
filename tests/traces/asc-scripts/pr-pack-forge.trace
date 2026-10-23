@@ -1,0 +1,33 @@
+# Extracted from ASC scripts/pr-pack.ts (monorepo at dbeeef348). The script reads the origin
+# URL with `git remote get-url origin` and asks git's credential machinery for the forge token
+# with `git credential fill`, feeding the request on stdin. `credential` is repository-independent,
+# so the shim hands it to real git (SPEC §11.4); the case pins the routing. No credential helper is
+# configured, so the fill fails without prompting.
+tool = "asc-scripts"
+version = "dbeeef348"
+provenance = "extracted"
+git = "2.55.0"
+source = "monorepo scripts/pr-pack.ts:53-65"
+driver = "A developer runs bun scripts/pr-pack.ts to pack the state of the open pull request. The script resolves the forge host from origin and fetches a token before it calls the forge API."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["remote", "add", "origin", "https://forge.example.test/asc/asc.git"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["remote", "get-url", "origin"]
+from = "asc-scripts"
+exit = 0
+
+[[step]]
+git = ["credential", "fill"]
+stdin = "protocol=https\nhost=forge.example.test\n\n"
+routes = "real"
+from = "asc-scripts"
+exit = 128

@@ -1,0 +1,152 @@
+# Recorded by tests/traces/record/record.sh from record/scenarios/lint-staged/add-delete-rename.sh
+tool = "lint-staged"
+version = "17.6.0"
+provenance = "recorded"
+git = "2.55.0"
+driver = "A user stages a new file, a deleted file and a renamed file together with a modified one, and runs lint-staged. Its task touches only the files it is given, so a deletion is never passed to it and the rename shows as an added path."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = '''
+mkdir -p src; printf "old one\n" > src/old.js; printf "gone\n" > src/gone.js; printf "mod\nmod two\n" > src/mod.js
+cat > .lintstagedrc.json <<"CFG"
+{"*.js": "asc-act --file .semi.sh"}
+CFG
+cat > .semi.sh <<"TASK"
+for f in "$@"; do sed -i "1s/\$/;/" "$f"; done
+TASK
+'''
+from = "driver"
+
+[[step]]
+git = ["add", "-A"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = "printf \"fresh\\n\" > src/new.js; sed -i \"1s/mod/MOD/\" src/mod.js"
+from = "driver"
+
+[[step]]
+git = ["mv", "src/old.js", "src/renamed.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["rm", "-q", "src/gone.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["add", "src/new.js", "src/mod.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "version", "--build-options"]
+from = "lint-staged"
+routes = "real"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--show-cdup", "--show-toplevel", "--absolute-git-dir"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "log", "-1"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--ita-visible-in-index", "--raw", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-visible-in-index", "--name-only", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-invisible-in-index", "--name-only", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "ls-files", "-z", "--full-name", "-t", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/package.json", ":(glob)**/package.yaml", ":(glob)**/package.yml", ":(glob)**/.lintstagedrc", ":(glob)**/.lintstagedrc.json", ":(glob)**/.lintstagedrc.yaml", ":(glob)**/.lintstagedrc.yml", ":(glob)**/.lintstagedrc.mjs", ":(glob)**/.lintstagedrc.mts", ":(glob)**/.lintstagedrc.js", ":(glob)**/.lintstagedrc.ts", ":(glob)**/.lintstagedrc.cjs", ":(glob)**/.lintstagedrc.cts", ":(glob)**/lint-staged.config.mjs", ":(glob)**/lint-staged.config.mts", ":(glob)**/lint-staged.config.js", ":(glob)**/lint-staged.config.ts", ":(glob)**/lint-staged.config.cjs", ":(glob)**/lint-staged.config.cts"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "status", "-z", "--untracked-files=no"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "create"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (1effcacb)", "55691b5d391db0ac082c20a16da41851aa23e210"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "55691b5d391db0ac082c20a16da41851aa23e210"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+sh = "set -- \"${ROOT}/src/mod.js\" \"${ROOT}/src/new.js\" \"${ROOT}/src/renamed.js\"; for f in \"$@\"; do sed -i \"1s/\\$/;/\" \"$f\"; done"
+from = "lint-staged"
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "add", "--", "${ROOT}/src/mod.js", "${ROOT}/src/new.js", "${ROOT}/src/renamed.js"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--name-only", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "list", "--format=\"%H %s\"", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "drop", "--quiet", "0"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["status", "--porcelain=v1"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["diff", "--cached", "--name-status"]
+from = "driver"
+exit = 0

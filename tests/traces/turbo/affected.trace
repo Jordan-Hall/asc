@@ -1,0 +1,142 @@
+# Recorded by tests/traces/record/record.sh from record/scenarios/turbo/affected.sh
+tool = "turbo"
+version = "2.10.11"
+provenance = "recorded"
+git = "2.55.0"
+driver = "A user branches from master, edits one package and the lockfile, and asks turbo what changed with --affected, with a --filter on a git range and with turbo ls --affected. turbo diffs the branch against its base and reads the base lockfile with git show."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = "mkdir -p packages/a packages/b; printf \"{\\\"name\\\":\\\"fx\\\",\\\"private\\\":true,\\\"packageManager\\\":\\\"bun@1.2.22\\\",\\\"workspaces\\\":[\\\"packages/*\\\"]}\\n\" > package.json; printf \"{\\\"tasks\\\":{\\\"build\\\":{\\\"dependsOn\\\":[\\\"^build\\\"],\\\"outputs\\\":[\\\"dist/**\\\"]}}}\\n\" > turbo.json; printf \"{\\\"name\\\":\\\"@fx/a\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"scripts\\\":{\\\"build\\\":\\\"echo a\\\"}}\\n\" > packages/a/package.json; printf \"{\\\"name\\\":\\\"@fx/b\\\",\\\"version\\\":\\\"1.0.0\\\",\\\"scripts\\\":{\\\"build\\\":\\\"echo b\\\"},\\\"dependencies\\\":{\\\"@fx/a\\\":\\\"workspace:*\\\"}}\\n\" > packages/b/package.json; printf \"export const a = 1;\\n\" > packages/a/index.ts; printf \"export const b = 2;\\n\" > packages/b/index.ts; printf \"node_modules\\n.turbo\\n\" > .gitignore"
+from = "driver"
+
+[[step]]
+sh = "printf \"{\\n  \\\"lockfileVersion\\\": 1,\\n  \\\"workspaces\\\": {\\n    \\\"\\\": { \\\"name\\\": \\\"fx\\\" },\\n    \\\"packages/a\\\": { \\\"name\\\": \\\"@fx/a\\\", \\\"version\\\": \\\"1.0.0\\\" },\\n    \\\"packages/b\\\": { \\\"name\\\": \\\"@fx/b\\\", \\\"version\\\": \\\"1.0.0\\\", \\\"dependencies\\\": { \\\"@fx/a\\\": \\\"workspace:*\\\" } },\\n  },\\n  \\\"packages\\\": {\\n    \\\"@fx/a\\\": [\\\"@fx/a@workspace:packages/a\\\"],\\n    \\\"@fx/b\\\": [\\\"@fx/b@workspace:packages/b\\\"],\\n  }\\n}\\n\" > bun.lock"
+from = "driver"
+
+[[step]]
+git = ["add", "-A"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["checkout", "-q", "-b", "topic"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = '''
+printf "export const a = 3;
+" > packages/a/index.ts; printf "
+" >> bun.lock
+'''
+from = "driver"
+
+[[step]]
+git = ["commit", "-qam", "feat: change a"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["diff-tree", "-r", "--name-only", "--no-commit-id", "-z", "--merge-base", "--end-of-options", "master", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["ls-files", "--others", "--modified", "--exclude-standard", "-z"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["diff", "--name-only", "--cached", "-z"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["show", "--end-of-options", "master:bun.lock"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD^{tree}"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["branch", "--show-current"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["diff-tree", "-r", "--name-only", "--no-commit-id", "-z", "--merge-base", "--end-of-options", "master", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["show", "--end-of-options", "master:bun.lock"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD^{tree}"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["branch", "--show-current"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["diff-tree", "-r", "--name-only", "--no-commit-id", "-z", "--merge-base", "--end-of-options", "master", "HEAD"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["ls-files", "--others", "--modified", "--exclude-standard", "-z"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["diff", "--name-only", "--cached", "-z"]
+from = "turbo"
+exit = 0
+
+[[step]]
+git = ["show", "--end-of-options", "master:bun.lock"]
+from = "turbo"
+exit = 0

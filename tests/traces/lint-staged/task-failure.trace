@@ -1,0 +1,169 @@
+# Recorded by tests/traces/record/record.sh from record/scenarios/lint-staged/task-failure.sh
+tool = "lint-staged"
+version = "17.6.0"
+provenance = "recorded"
+git = "2.55.0"
+driver = "A user stages a change next to an unstaged one, and the lint-staged task rewrites the file and then fails. lint-staged restores the index and the work tree from its backup stash, so the user's staged and unstaged edits both come back unchanged."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = '''
+printf "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\n" > a.js; printf "keep\n" > b.js
+cat > .lintstagedrc.json <<"CFG"
+{"*.js": "asc-act --file .fail.sh"}
+CFG
+cat > .fail.sh <<"TASK"
+echo broken >> "$1"
+exit 1
+TASK
+'''
+from = "driver"
+
+[[step]]
+git = ["add", "-A"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = "sed -i \"1s/alpha/ALPHA/\" a.js; printf \"new line\\n\" >> b.js"
+from = "driver"
+
+[[step]]
+git = ["add", "a.js", "b.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = "sed -i \"8s/theta/THETA/\" a.js"
+from = "driver"
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "version", "--build-options"]
+from = "lint-staged"
+routes = "real"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--show-cdup", "--show-toplevel", "--absolute-git-dir"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "log", "-1"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--ita-visible-in-index", "--raw", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-visible-in-index", "--name-only", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-invisible-in-index", "--name-only", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "ls-files", "-z", "--full-name", "-t", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/package.json", ":(glob)**/package.yaml", ":(glob)**/package.yml", ":(glob)**/.lintstagedrc", ":(glob)**/.lintstagedrc.json", ":(glob)**/.lintstagedrc.yaml", ":(glob)**/.lintstagedrc.yml", ":(glob)**/.lintstagedrc.mjs", ":(glob)**/.lintstagedrc.mts", ":(glob)**/.lintstagedrc.js", ":(glob)**/.lintstagedrc.ts", ":(glob)**/.lintstagedrc.cjs", ":(glob)**/.lintstagedrc.cts", ":(glob)**/lint-staged.config.mjs", ":(glob)**/lint-staged.config.mts", ":(glob)**/lint-staged.config.js", ":(glob)**/lint-staged.config.ts", ":(glob)**/lint-staged.config.cjs", ":(glob)**/lint-staged.config.cts"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "status", "-z", "--untracked-files=no"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+sh = "mkdir -p \"$(dirname \"${GITDIR}/lint-staged/885fd145/unstaged.patch\")\""
+from = "lint-staged"
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--output", "${GITDIR}/lint-staged/885fd145/unstaged.patch", "--", "a.js"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "create"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (885fd145)", "930471d8313aaa6a5439e513c2a8ab153cadeeb8"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "930471d8313aaa6a5439e513c2a8ab153cadeeb8"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "restore", "--worktree", "--", "a.js"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+sh = '''
+set -- "${ROOT}/a.js" "${ROOT}/b.js"; echo broken >> "$1"
+exit 1
+'''
+from = "lint-staged"
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "reset", "--hard", "HEAD"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "apply", "--quiet", "--index", "930471d8313aaa6a5439e513c2a8ab153cadeeb8"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "list", "--format=\"%H %s\"", "-z"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["-c", "submodule.recurse=false", "stash", "drop", "--quiet", "0"]
+from = "lint-staged"
+exit = 0
+
+[[step]]
+git = ["status", "--porcelain=v1"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["diff", "--cached", "--stat"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["diff", "--stat"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["stash", "list"]
+from = "driver"
+exit = 0

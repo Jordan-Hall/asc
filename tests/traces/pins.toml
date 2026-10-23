@@ -1,0 +1,28 @@
+# The pinned versions of the tools whose git use the corpus records (docs/SPEC.md §17.1). A trace
+# names its tool's version in its header; `cargo test -p asc --test traces` fails when the two
+# differ. Re-record (record/README.md) when a pin moves.
+git = "2.55"
+
+[tool.claude-code]
+version = "2.1.296"
+source = "the Claude Code build whose `claude --version` prints 2.1.296 (spike S7 re-records the hook cases against it)"
+
+[tool.husky]
+version = "9.1.7"
+source = "npm husky@9.1.7 (record/tools/package-lock.json)"
+
+[tool.lint-staged]
+version = "17.6.0"
+source = "npm lint-staged@17.6.0 (record/tools/package-lock.json)"
+
+[tool.commitlint]
+version = "21.2.4"
+source = "npm @commitlint/cli@21.2.4 (record/tools/package-lock.json)"
+
+[tool.turbo]
+version = "2.10.11"
+source = "npm turbo@2.10.11, the version ASC pins (record/tools/package-lock.json)"
+
+[tool.asc-scripts]
+version = "dbeeef348"
+source = "the monorepo commit the scripts were read at"
