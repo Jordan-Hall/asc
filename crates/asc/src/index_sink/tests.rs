@@ -99,6 +99,13 @@ impl World {
         }
     }
 
+    /// The file system path of the tracked `path` in the work tree, through the one gate.
+    fn at(&self, path: &str) -> PathBuf {
+        asc_wc::SafeRoot::new(self.root.clone())
+            .resolve(&RepoPath::new(path).unwrap())
+            .unwrap()
+    }
+
     fn sink(&self) -> IndexSink {
         IndexSink::with_home(self.home.clone())
     }
@@ -123,7 +130,7 @@ impl World {
                 RepoPath::new(*path).unwrap(),
                 Change::write(Kind::File, got.file, got.size, got.git, None).unwrap(),
             ));
-            let on_disk = self.root.join(path);
+            let on_disk = self.at(path);
             std::fs::create_dir_all(on_disk.parent().unwrap()).unwrap();
             std::fs::write(on_disk, content).unwrap();
         }
@@ -241,7 +248,7 @@ async fn commit_head_move_and_staging_keep_the_export_in_step() {
     // hashes nothing, and no entry is racy.
     for e in &idx.entries {
         let name = String::from_utf8_lossy(e.path.as_bytes()).into_owned();
-        let meta = std::fs::metadata(w.root.join(name)).unwrap();
+        let meta = std::fs::metadata(w.at(&name)).unwrap();
         assert_eq!(u64::from(e.size), meta.len());
         assert_eq!(
             e.mtime,
@@ -333,7 +340,7 @@ async fn an_unverified_file_is_never_recorded_as_stat_clean() {
         .commit(None, &[("a.txt", b"one"), ("b.txt", b"two")])
         .await;
     // The file now differs from HEAD with the same size and nothing has hashed it.
-    std::fs::write(w.root.join("b.txt"), b"twp").unwrap();
+    std::fs::write(w.at("b.txt"), b"twp").unwrap();
     sink.on_head_moved(w.ws, None, Some(c1)).await.unwrap();
     let idx = w.index().expect("exported");
     assert_eq!(
