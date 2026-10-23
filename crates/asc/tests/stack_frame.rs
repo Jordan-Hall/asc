@@ -98,8 +98,8 @@ fn stack_verbs_are_asc_verbs_under_both_programs() {
     let root = init_repo(&sb);
     for verb in VERBS {
         for out in [asc(&sb, &root, &[verb]), git(&sb, &root, &[verb])] {
-            // Never "not a git command": the verb is known, served or not yet.
-            assert_ne!(out.code, 1, "{verb}: {}", out.stderr);
+            // Never "not a git command": the verb is known. A served verb may still fail
+            // on this empty repository (for example "HEAD is not on a change", exit 1).
             assert!(!out.stderr.contains("is not a git command"), "{verb}: {}", out.stderr);
         }
     }
