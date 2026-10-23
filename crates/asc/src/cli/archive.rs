@@ -609,7 +609,7 @@ impl<W: Write> TarSink<W> {
         if link.len() > 100 {
             pax.extend(pax_record("linkpath", link));
         }
-        let size_field = if size > 0o7777_7777_777 {
+        let size_field = if size > 0o77_777_777_777 {
             pax.extend(pax_record("size", size.to_string().as_bytes()));
             0
         } else {
