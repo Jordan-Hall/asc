@@ -745,15 +745,27 @@ impl OverlayCache {
 
     /// Drops the overlay of `id` (the workspace was unmounted).
     pub fn forget(&self, id: WorkspaceId) {
-        self.slots().remove(&id);
+        let gone = self.slots().remove(&id);
+        if gone.is_some() {
+            drop(gone);
+            super::metrics::release_freed_memory();
+        }
     }
 
     /// Drops every overlay unused for the idle time as of `now`; answers how many.
     pub fn sweep(&self, now: Instant) -> usize {
-        let mut s = self.slots();
-        let before = s.len();
-        s.retain(|_, slot| now.saturating_duration_since(slot.last_used) < self.idle);
-        before - s.len()
+        let dropped = {
+            let mut s = self.slots();
+            let before = s.len();
+            s.retain(|_, slot| now.saturating_duration_since(slot.last_used) < self.idle);
+            before - s.len()
+        };
+        if dropped > 0 {
+            // The overlay's text was many small allocations; the allocator keeps them mapped
+            // until told to give them back, and the idle daemon must stay within its budget.
+            super::metrics::release_freed_memory();
+        }
+        dropped
     }
 
     fn start_sweeper(self: &Arc<Self>) {

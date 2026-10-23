@@ -318,6 +318,32 @@ pub fn rss_bytes() -> Option<u64> {
     imp::rss_bytes()
 }
 
+/// Hands freed heap pages back to the OS, so a drop shows in the resident set. Only glibc keeps
+/// freed memory in per-thread arenas until trimmed; other targets return it on free.
+pub fn release_freed_memory() {
+    trim::release();
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)] // one glibc call without arguments that point at memory.
+mod trim {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+
+    pub fn release() {
+        // SAFETY: `malloc_trim` is thread-safe and only returns free pages to the kernel.
+        unsafe {
+            malloc_trim(0);
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+mod trim {
+    pub fn release() {}
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     pub fn rss_bytes() -> Option<u64> {
