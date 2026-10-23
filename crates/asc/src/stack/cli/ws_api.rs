@@ -112,6 +112,8 @@ const MAX_TOKEN: usize = 8192;
 const MAX_REVS: usize = 64;
 /// Most refs a preset expands to.
 const MAX_REFS: usize = 100_000;
+/// Most `ref_markers` of one first page.
+const MAX_MARKERS: usize = 5_000;
 /// Rows per `CommitGraphResponse` line.
 const ROWS_PER_LINE: usize = 100;
 
@@ -632,6 +634,25 @@ async fn graph<W: Write>(
             ..wire::GraphRow::default()
         });
     }
+    // The minimap header (SPEC §24.8.2, A2): first page only. Row indexes count the WIP rows,
+    // which come first. The total is known only when no later page exists.
+    let (total, ref_markers) = if token.is_none() {
+        let markers: Vec<wire::RefMarker> = messages
+            .iter()
+            .enumerate()
+            .flat_map(|(i, m)| {
+                m.refs.iter().map(move |name| wire::RefMarker {
+                    name: name.clone(),
+                    row: i as u64,
+                })
+            })
+            .take(MAX_MARKERS)
+            .collect();
+        let total = if page.next.is_none() { messages.len() as u64 } else { 0 };
+        (total, markers)
+    } else {
+        (0, Vec::new())
+    };
     let next = page.next.as_deref().map(hex_of).unwrap_or_default();
     let chunks = messages.len().div_ceil(ROWS_PER_LINE).max(1);
     for (i, group) in messages.chunks(ROWS_PER_LINE).enumerate().chain(
@@ -645,6 +666,8 @@ async fn graph<W: Write>(
             } else {
                 String::new()
             },
+            total: if i == 0 { total } else { 0 },
+            ref_markers: if i == 0 { ref_markers.clone() } else { Vec::new() },
         };
         put!(out, pool, "asc.v1.CommitGraphResponse", resp);
     }

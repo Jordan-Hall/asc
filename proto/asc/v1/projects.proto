@@ -21,7 +21,11 @@ message ProjectGraphResponse { bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HE
   repeated DetectIssue issues = 4; }
 message AffectedRequest { RepoRef repo = 1; string base = 2; string head = 3; bool no_merge_base = 4;
   repeated Ecosystem types = 5; string target = 6; repeated string select = 7; bool with_hashes = 8; }
-message AffectedProject { ProjectInfo project = 1; bool direct = 2; repeated string reasons = 3; bytes input_hash = 4 [(asc.v1.json) = JSON_KIND_HEX]; }
+// A command an IDE may run for a target; from `argv = { <target> = [...] }` of a [[project]] (SPEC §24.8.2, A4).
+// asc stores and serves it and never runs it.
+message TargetCmd { repeated string argv = 1; }
+message AffectedProject { ProjectInfo project = 1; bool direct = 2; repeated string reasons = 3; bytes input_hash = 4 [(asc.v1.json) = JSON_KIND_HEX];
+  map<string, TargetCmd> targets = 5; }
 message AffectedResponse { bytes base = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX]; bytes merge_base = 3 [(asc.v1.json) = JSON_KIND_HEX]; bool all = 4;
   repeated AffectedProject projects = 5; repeated string removed = 6; repeated bytes unowned = 7 [(asc.v1.json) = JSON_KIND_PATH];
   repeated DetectIssue issues = 8; uint32 changed_paths = 9; }

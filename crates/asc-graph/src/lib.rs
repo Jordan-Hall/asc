@@ -12,3 +12,4 @@ pub mod own;
 pub mod pattern;
 pub mod registry;
 pub mod select;
+pub mod targets;

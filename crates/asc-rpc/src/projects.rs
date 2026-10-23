@@ -415,7 +415,16 @@ pub fn affected_project(p: &AffectedProject, info: pb::ProjectInfo) -> pb::Affec
             .input_hash
             .map(|h| Bytes::copy_from_slice(h.as_bytes()))
             .unwrap_or_default(),
+        targets: HashMap::new(),
     }
+}
+
+/// The `argv` table of a project as `AffectedProject.targets` (SPEC §24.8.2, A4).
+pub fn target_cmds(table: &BTreeMap<String, Vec<String>>) -> HashMap<String, pb::TargetCmd> {
+    table
+        .iter()
+        .map(|(t, argv)| (t.clone(), pb::TargetCmd { argv: argv.clone() }))
+        .collect()
 }
 
 /// An issue as a wire message.

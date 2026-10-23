@@ -31,6 +31,8 @@ pub struct Row {
     pub workspace_id: String,
     /// A Workspace, a Solution or a standalone Package (one `--matrix-by workspace` row).
     pub workspace_head: bool,
+    /// The project's `argv` table (SPEC §24.8.2, A4): target to command. Printed by `json` only.
+    pub targets: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// The data of an `affected` run.
@@ -87,10 +89,19 @@ pub fn json(r: &Report) -> Value {
         .rows
         .iter()
         .map(|p| {
-            json!({
+            let mut row = json!({
                 "id": p.id, "ecosystem": p.ecosystem, "name": p.name, "root": p.root,
                 "kind": p.kind, "direct": p.direct, "reasons": p.reasons, "hash": p.hash,
-            })
+            });
+            if !p.targets.is_empty() {
+                let targets: serde_json::Map<String, Value> = p
+                    .targets
+                    .iter()
+                    .map(|(t, argv)| (t.clone(), json!({ "argv": argv })))
+                    .collect();
+                row["targets"] = Value::Object(targets);
+            }
+            row
         })
         .collect();
     let issues: Vec<Value> = r
@@ -307,6 +318,7 @@ mod tests {
             workspace: root.into(),
             workspace_id: format!("{eco}:{name}"),
             workspace_head: true,
+            targets: Default::default(),
         }
     }
 
