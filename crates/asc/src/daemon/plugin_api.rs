@@ -167,7 +167,7 @@ pub(super) fn pool() -> &'static DescriptorPool {
 }
 
 /// The command that runs `asc <args>` in the workspace root. The root is verified first.
-fn command(m: &Mounted, args: &[OsString]) -> Result<tokio::process::Command, Status> {
+pub(super) fn command(m: &Mounted, args: &[OsString]) -> Result<tokio::process::Command, Status> {
     let root = PathBuf::from(&m.row.ws.mount);
     super::service::check_mount_root(&root).map_err(Status::permission_denied)?;
     let exe =

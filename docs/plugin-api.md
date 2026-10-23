@@ -32,6 +32,7 @@ the same answer, so a plugin without a daemon, and every test, can use the CLI i
 | `Blame` | `ws_id`, `rev`, `path`, `start_line`, `end_line` | stream of `BlameResponse` (an empty `origin` is an uncommitted line) | `asc blame --json [-L<s>,<e>] [<rev>] -- <path>` |
 | `Affected` | `ws_id`, `query` (`AffectedRequest`), `uncommitted` | `WsAffectedResponse` | `asc affected --json [--base …] [--uncommitted] …` (SPEC §12A.9 document) |
 | `Stage` | `ws_id`, `add`, `remove`, `patch` | `WsStageResponse` (the new status) | `asc restore --staged -- <remove>`, then `asc add -A -- <add>`, then `asc apply --cached -` (the patch) |
+| `ReadFile` | `ws_id`, `rev_path` (`rev`, `path`) \| `file_id` \| `stage` (0-3, `path`), `offset`, `length` | stream of `ReadFileResponse` (64 KiB of `data` per message, `total_size` of the file) | `asc ws-api read`; for a revision `asc cat-file blob <rev>:<path>`. Reads the object store and the staging rows, never the work tree, so it works offline; a missing object is hydrated through the tiers. An empty `rev` is `HEAD`; `length` 0 reads to the end; a call streams at most 256 MiB (continue with `offset`); a missing path, stage or object is `NOT_FOUND` |
 | `Watch` | `ws_id`, `since_token` | stream of `WatchEvent` | `asc watch [--since <token>] --json` |
 
 Details that are not obvious from the proto:

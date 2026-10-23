@@ -712,6 +712,14 @@ mod tests {
             not_served()
         }
 
+        type ReadFileStream = Never<wire::ReadFileResponse>;
+        async fn read_file(
+            &self,
+            _: Request<wire::WsReadFileRequest>,
+        ) -> Result<Response<Self::ReadFileStream>, Status> {
+            not_served()
+        }
+
         async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
             Ok(Response::new(wire::PingResponse {
                 version: self.version.clone(),

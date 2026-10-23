@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
-use asc_core::id::{ChangesetId, RefTarget};
+use asc_core::id::{ChangesetId, FileId, RefTarget};
+use asc_core::object::Kind;
 use asc_core::path::{RefName, RepoPath};
 use asc_engine::commit_graph::{DEFAULT_PAGE, MAX_PAGE, Start};
 use asc_engine::graph::{EngineSource, Graph, LogQuery};
@@ -25,6 +26,7 @@ use asc_wc::SafeRoot;
 use futures::TryStreamExt;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 
+use crate::cli::add::target::{Staged, Target};
 use crate::cli::common::{CliError, Ctx, Result, WsCtx};
 use crate::cli::json::JsonLines;
 use crate::native::NativeSpec;
@@ -32,7 +34,7 @@ use crate::native::NativeSpec;
 #[derive(clap::Parser, Debug)]
 #[command(name = "ws-api", disable_help_flag = true, disable_version_flag = true)]
 pub struct Args {
-    /// `worktrees`, `conflicts` or `graph`.
+    /// `worktrees`, `conflicts`, `graph` or `read`.
     pub what: String,
     #[arg(long, action = clap::ArgAction::Append)]
     pub include: Vec<String>,
@@ -53,6 +55,24 @@ pub struct Args {
     /// Add a WIP row per worktree with uncommitted work (first page only).
     #[arg(long)]
     pub wip: bool,
+    /// `read`: the revision (default `HEAD`).
+    #[arg(long)]
+    pub rev: Option<String>,
+    /// `read`: the repository path (with `--rev` or `--stage`).
+    #[arg(long, allow_hyphen_values = true)]
+    pub path: Option<String>,
+    /// `read`: a `FileId`, 64 hex digits.
+    #[arg(long)]
+    pub file_id: Option<String>,
+    /// `read`: a stage, 0 to 3 (with `--path`).
+    #[arg(long)]
+    pub stage: Option<u8>,
+    /// `read`: the first byte.
+    #[arg(long, default_value_t = 0)]
+    pub offset: u64,
+    /// `read`: the most bytes; 0 reads to the end.
+    #[arg(long, default_value_t = 0)]
+    pub length: u64,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -66,6 +86,12 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--limit",
         "--page-token",
         "--wip",
+        "--rev",
+        "--path",
+        "--file-id",
+        "--stage",
+        "--offset",
+        "--length",
     ],
     placeholders: &[],
 }];
@@ -129,6 +155,9 @@ macro_rules! put {
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
+    if a.what == "read" {
+        return read(ctx, ws, &a).await;
+    }
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).map_err(fatal)?;
     let stdout = std::io::stdout();
     let mut out = JsonLines::new(std::io::BufWriter::new(stdout.lock()));
@@ -618,6 +647,163 @@ async fn graph<W: Write>(
             },
         };
         put!(out, pool, "asc.v1.CommitGraphResponse", resp);
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------ read
+
+/// The `read` query behind `Workspace.ReadFile` (P02): the total size of the file as 8 big-endian
+/// bytes, then the range `offset..offset+length` (`length` 0 is to the end) as raw bytes. The file
+/// is read from the object store (hydrated through the tiers when an object is missing), never
+/// from the work tree. A missing path, stage or object prints `not found:` and fails before any
+/// byte is written. Hashes are checked: a whole read through the file hash, a range through the
+/// hash of each chunk it touches.
+async fn read(ctx: &Ctx, ws: &WsCtx, a: &Args) -> Result<ExitCode> {
+    let (file, known) = read_target(ctx, ws, a).await?;
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    read_range(ws, file, known, a.offset, a.length, &mut out).await?;
+    out.flush().map_err(fatal)?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn not_found(what: impl std::fmt::Display) -> CliError {
+    CliError::Fatal(format!("asc: not found: {what}"))
+}
+
+fn read_path(a: &Args) -> Result<RepoPath> {
+    let p = a.path.as_deref().ok_or_else(|| usage("read needs --path"))?;
+    RepoPath::new(p.as_bytes().to_vec()).map_err(|_| usage(format!("bad path {p:?}")))
+}
+
+fn blob_of(kind: Kind) -> bool {
+    matches!(kind, Kind::File | Kind::Exec | Kind::Symlink)
+}
+
+/// The file to read and, when the entry told, its size.
+async fn read_target(ctx: &Ctx, ws: &WsCtx, a: &Args) -> Result<(FileId, Option<u64>)> {
+    if let Some(id) = &a.file_id {
+        let id: FileId = id.parse().map_err(|_| usage("bad file id"))?;
+        return Ok((id, None));
+    }
+    if let Some(stage_no) = a.stage {
+        let path = read_path(a)?;
+        if stage_no > 3 {
+            return Err(usage("a stage is 0 to 3"));
+        }
+        if stage_no == 0 {
+            let target = Target::open(ctx).await?;
+            return match target.staged(ws, &path).await? {
+                Staged::Leaf { leaf, .. } if blob_of(leaf.kind) => Ok((leaf.file, Some(leaf.size))),
+                Staged::Leaf { .. } => Err(CliError::Fatal(format!("asc: {path} is not a file"))),
+                Staged::Absent | Staged::Unmerged => Err(not_found(format!("{path} at stage 0"))),
+            };
+        }
+        let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
+        return rows
+            .into_iter()
+            .find(|r| r.stage == stage_no && r.path == path.as_bytes())
+            .and_then(|r| r.file.filter(|_| blob_of(r.kind)).map(|f| (f, Some(r.size))))
+            .ok_or_else(|| not_found(format!("{path} at stage {stage_no}")));
+    }
+    let path = read_path(a)?;
+    let spec = a.rev.as_deref().unwrap_or("");
+    let cs = rev(ws, spec).await?;
+    let root = ws.engine.get_changeset(cs).await.map_err(fatal)?.root;
+    let entry = ws
+        .engine
+        .lookup(root, &path)
+        .await
+        .map_err(fatal)?
+        .ok_or_else(|| not_found(format!("{path} at {}", if spec.is_empty() { "HEAD" } else { spec })))?;
+    if !blob_of(entry.kind) {
+        return Err(CliError::Fatal(format!("asc: {path} is not a file")));
+    }
+    Ok((FileId::from_bytes(entry.id), Some(entry.size)))
+}
+
+async fn read_range(
+    ws: &WsCtx,
+    file: FileId,
+    known: Option<u64>,
+    offset: u64,
+    length: u64,
+    out: &mut dyn Write,
+) -> Result<()> {
+    use asc_core::codec::decode_envelope;
+    use asc_core::content::ChunkAssembler;
+    use asc_core::id::ChunkId;
+    use asc_core::object::ChunkList;
+    use asc_store::key::ObjKey;
+    use asc_store::objects::Objects as _;
+
+    let missing = || not_found(format!("object {file}"));
+    let window = |total: u64| {
+        let start = offset.min(total);
+        let end = if length == 0 {
+            total
+        } else {
+            offset.saturating_add(length).min(total)
+        };
+        (start, end.max(start))
+    };
+    if let Some(bytes) = ws.objects.get(&ObjKey::File(file)).await? {
+        if FileId::of(&bytes) != file {
+            return Err(CliError::Fatal(format!("asc: blob {file} is corrupt")));
+        }
+        let total = bytes.len() as u64;
+        let (start, end) = window(total);
+        out.write_all(&total.to_be_bytes()).map_err(fatal)?;
+        out.write_all(&bytes[start as usize..end as usize]).map_err(fatal)?;
+        return Ok(());
+    }
+    let raw = ws
+        .objects
+        .get(&ObjKey::ChunkList(file))
+        .await?
+        .ok_or_else(missing)?;
+    let list = decode_envelope::<ChunkList>(&raw).map_err(fatal)?;
+    if known.is_some_and(|k| k != list.size) {
+        return Err(CliError::Fatal(format!("asc: blob {file} is corrupt")));
+    }
+    let total = list.size;
+    let (start, end) = window(total);
+    let whole = start == 0 && end == total;
+    let chunks = list.chunks.clone();
+    let mut assembler = if whole {
+        Some(ChunkAssembler::new(list, file).map_err(fatal)?)
+    } else {
+        None
+    };
+    out.write_all(&total.to_be_bytes()).map_err(fatal)?;
+    let mut pos = 0u64;
+    for (id, len) in &chunks {
+        let (c_start, c_end) = (pos, pos + u64::from(*len));
+        pos = c_end;
+        if c_end <= start || c_start >= end {
+            if c_start >= end && assembler.is_none() {
+                break;
+            }
+            continue;
+        }
+        let chunk = ws
+            .objects
+            .get(&ObjKey::Chunk(*id))
+            .await?
+            .ok_or_else(missing)?;
+        if chunk.len() != *len as usize || ChunkId::of(&chunk) != *id {
+            return Err(CliError::Fatal(format!("asc: blob {file} is corrupt")));
+        }
+        if let Some(asm) = assembler.as_mut() {
+            asm.push(&chunk).map_err(fatal)?;
+        }
+        let from = start.saturating_sub(c_start) as usize;
+        let to = (end.min(c_end) - c_start) as usize;
+        out.write_all(&chunk[from..to]).map_err(fatal)?;
+    }
+    if let Some(asm) = assembler {
+        asm.finish().map_err(fatal)?;
     }
     Ok(())
 }
