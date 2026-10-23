@@ -257,7 +257,7 @@ impl ServerMutations {
         }
         let windows_safe = self.refs.windows_safe(&entry).await?;
         Ok(Opened {
-            ids: IdCodec::new(ctx.id_mode, &self.registry, &entry),
+            ids: IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal),
             engine: entry.backend.engine().clone(),
             entry,
             windows_safe,
@@ -1456,6 +1456,26 @@ mod fx {
             .execute(f.registry.pool())
             .await
             .unwrap();
+    }
+
+    /// Points `name` at `cs`, whatever it held.
+    pub async fn set_ref(f: &Fx, name: &str, cs: ChangesetId) {
+        use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
+        let txn = RefTxn {
+            updates: vec![RefUpdate {
+                name: RefName::new(name.as_bytes().to_vec()).unwrap(),
+                expect: Expect::Any,
+                new: Some(RefTarget::Changeset(cs)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "t".into(),
+                via: "test".into(),
+            },
+            reason: "test".into(),
+            op_id: Uuid::new_v4(),
+        };
+        f.registry.refs().update(f.entry.key, &txn).await.unwrap();
     }
 
     pub fn repo_ref() -> Option<wire::RepoRef> {

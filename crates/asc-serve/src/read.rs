@@ -318,7 +318,7 @@ impl Core {
             .await
             .map_err(registry_status)?;
         Ok(Arc::new(Call {
-            ids: IdCodec::new(ctx.id_mode, &self.registry, &entry),
+            ids: IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal),
             engine: entry.backend.engine().clone(),
             entry,
             hooks: self.hooks.clone(),
@@ -338,9 +338,11 @@ impl Call {
         }
         let spec = if spec.is_empty() { "HEAD" } else { spec };
         let spec = self.ids.rev_in(spec, &self.entry.default_branch).await?;
+        // The codec refused other users' names above; the resolver is told the same rule, so a
+        // ref it reaches some other way (a reflog, a tip) is held to it too.
         let got = self
             .engine
-            .resolve(std::slice::from_ref(&spec))
+            .resolve_visible(std::slice::from_ref(&spec), &self.ids.ref_visible())
             .await
             .map_err(graph_status)?;
         got.into_iter()
@@ -4542,5 +4544,174 @@ mod tests {
                 }))))
                 .is_err()
         );
+    }
+
+    // ------------------------------------------------------------------------ user refs
+
+    fn ctx_as(mode: IdMode, who: &str) -> CallCtx {
+        CallCtx {
+            principal: Principal { id: who.into() },
+            ..ctx(mode)
+        }
+    }
+
+    fn ids_of(f: &Fx, mode: IdMode) -> IdCodec {
+        IdCodec::new(mode, &f.reg, &f.entry)
+    }
+
+    /// What `Resolve` answers for `name`; empty when it names nothing.
+    async fn resolved(f: &Fx, c: &CallCtx, name: &str) -> Bytes {
+        let res = f
+            .hist
+            .resolve(
+                c,
+                wire::ResolveRequest {
+                    repo: repo_ref(c.id_mode),
+                    revspecs: vec![name.into()],
+                },
+            )
+            .await
+            .unwrap();
+        res.ids[0].clone()
+    }
+
+    /// The status of a `Log` of `rev` that fails, whether the call or its stream does.
+    async fn log_err(f: &Fx, c: &CallCtx, rev: &str) -> Status {
+        let req = wire::LogRequest {
+            repo: repo_ref(c.id_mode),
+            include: vec![rev.into()],
+            ..Default::default()
+        };
+        match f.hist.log(c, req).await {
+            Err(e) => e,
+            Ok(s) => all_err(s).await,
+        }
+    }
+
+    async fn cat(f: &Fx, c: &CallCtx, rev_path_spec: &str) -> Result<Vec<u8>, Status> {
+        let s = f
+            .reads
+            .read_file(
+                c,
+                wire::ReadFileRequest {
+                    repo: repo_ref(c.id_mode),
+                    at: Some(rev_path(rev_path_spec)),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let mut data = Vec::new();
+        for m in s.try_collect::<Vec<_>>().await? {
+            data.extend_from_slice(&m.data);
+        }
+        Ok(data)
+    }
+
+    #[tokio::test]
+    async fn another_users_refs_do_not_resolve() {
+        let f = fx().await;
+        let shared = mk(
+            &f.entry,
+            &[],
+            &[w("a.txt", b"shared\n")],
+            "shared\n",
+            1_700_000_000,
+        )
+        .await;
+        let mine = mk(
+            &f.entry,
+            &[],
+            &[w("a.txt", b"private\n")],
+            "private\n",
+            1_700_000_100,
+        )
+        .await;
+        index(&f.entry, shared).await;
+        index(&f.entry, mine).await;
+        set_ref(&f, "refs/heads/master", shared).await;
+        set_ref(&f, "refs/users/42/heads/x", mine).await;
+        let names = [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+            "refs/users/42/heads/x@{0}",
+            "users/42/heads/x^{commit}",
+        ];
+        for mode in [IdMode::Asc, IdMode::Git] {
+            let want = ids_of(&f, mode).changeset_out(mine).await.unwrap();
+            // A verified user who does not own the ref, and a caller with no user id.
+            for who in ["43:bob", "alice"] {
+                let c = ctx_as(mode, who);
+                for name in names {
+                    assert!(resolved(&f, &c, name).await.is_empty(), "{who} {name}");
+                    let err = log_err(&f, &c, name).await;
+                    assert_eq!(err.code(), tonic::Code::NotFound, "{who} log {name}");
+                    let err = cat(&f, &c, &format!("{name}:a.txt")).await.unwrap_err();
+                    assert_eq!(err.code(), tonic::Code::NotFound, "{who} cat {name}");
+                }
+                // Shared refs are unaffected.
+                let shared_id = ids_of(&f, mode).changeset_out(shared).await.unwrap();
+                assert_eq!(resolved(&f, &c, "master").await, shared_id);
+            }
+            // The owner reads her own ref by every spelling.
+            // A reflog takes the full ref name, so `users/42/heads/x@{0}` names nothing for anyone.
+            let c = ctx_as(mode, "42:alice");
+            for name in names.into_iter().filter(|n| *n != "users/42/heads/x@{0}") {
+                assert_eq!(resolved(&f, &c, name).await, want, "owner {name}");
+                let req = wire::LogRequest {
+                    repo: repo_ref(mode),
+                    include: vec![name.into()],
+                    ..Default::default()
+                };
+                let logs = all(f.hist.log(&c, req).await.unwrap()).await;
+                assert_eq!(logs[0].entries[0].id, want, "owner log {name}");
+                let got = cat(&f, &c, &format!("{name}:a.txt")).await.unwrap();
+                assert_eq!(got, b"private\n", "owner cat {name}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_callers_branch_is_their_own_user_ref_and_a_shared_ref_wins() {
+        let f = fx().await;
+        let shared = mk(
+            &f.entry,
+            &[],
+            &[w("a.txt", b"shared\n")],
+            "shared\n",
+            1_700_000_000,
+        )
+        .await;
+        let mine = mk(
+            &f.entry,
+            &[],
+            &[w("a.txt", b"private\n")],
+            "private\n",
+            1_700_000_100,
+        )
+        .await;
+        let theirs = mk(
+            &f.entry,
+            &[],
+            &[w("a.txt", b"theirs\n")],
+            "theirs\n",
+            1_700_000_200,
+        )
+        .await;
+        set_ref(&f, "refs/heads/master", shared).await;
+        set_ref(&f, "refs/users/42/heads/x", mine).await;
+        set_ref(&f, "refs/users/42/heads/y", mine).await;
+        set_ref(&f, "refs/heads/y", theirs).await;
+        let alice = ctx_as(IdMode::Asc, "42:alice");
+        let bob = ctx_as(IdMode::Asc, "43:bob");
+        let mine_id = Bytes::copy_from_slice(mine.as_bytes());
+        let theirs_id = Bytes::copy_from_slice(theirs.as_bytes());
+        for name in ["x", "refs/heads/x", "heads/x", "x@{0}"] {
+            assert_eq!(resolved(&f, &alice, name).await, mine_id, "owner {name}");
+            assert!(resolved(&f, &bob, name).await.is_empty(), "bob {name}");
+        }
+        // A shared branch of the same name answers first, to the owner too.
+        assert_eq!(resolved(&f, &alice, "y").await, theirs_id);
+        assert_eq!(resolved(&f, &bob, "y").await, theirs_id);
     }
 }

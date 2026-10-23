@@ -14,6 +14,7 @@ use asc_core::object::Entry;
 use asc_engine::Engine;
 use asc_engine::revspec::{Peel, RevExpr};
 use asc_rpc::IdMode;
+use asc_rpc::auth::Principal;
 use asc_rpc::convert::WireId;
 use asc_store::bucket::BucketObjects;
 use asc_store::refs::{Refs, RepoKey};
@@ -22,6 +23,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use sqlx::{AnyPool, Row};
 use tonic::Status;
 
+use crate::refpolicy::{self, USER_NS};
 use crate::registry::{Ns, Registry, RepoEntry};
 
 /// The engine type the server runs per repository.
@@ -51,6 +53,9 @@ pub struct IdCodec {
     repo: RepoKey,
     refs: Arc<SqlRefs>,
     engine: Arc<Eng>,
+    /// The user whose `refs/users/<id>/` refs the call may name. `None` sees no user refs, so a
+    /// codec that is not told its caller fails closed.
+    viewer: Option<i64>,
 }
 
 fn internal(context: &str, e: &dyn std::fmt::Display) -> Status {
@@ -194,6 +199,24 @@ impl IdCodec {
             repo: entry.key,
             refs: registry.refs().clone(),
             engine: entry.backend.engine().clone(),
+            viewer: None,
+        }
+    }
+
+    /// The same codec for a call by `principal`: its own user refs resolve, no other user's do.
+    #[must_use]
+    pub fn for_viewer(mut self, principal: &Principal) -> Self {
+        self.viewer = refpolicy::owner_of(principal);
+        self
+    }
+
+    /// Whether a ref stored under `name` may be read by this call: everything outside
+    /// `refs/users/`, and the viewer's own user refs. A predicate for the engine's resolver,
+    /// which knows nothing of ownership.
+    pub fn ref_visible(&self) -> impl Fn(&str) -> bool + Send + Sync + 'static {
+        let viewer = self.viewer;
+        move |name| {
+            !name.starts_with(USER_NS) || viewer.is_some_and(|o| refpolicy::owns_user_ref(o, name))
         }
     }
 
@@ -327,14 +350,74 @@ impl IdCodec {
         Ok(out)
     }
 
+    /// Refuses a name that can resolve to another user's ref, whichever dwim form reaches it
+    /// (`refs/users/..`, `users/..`, with or without `@{n}`). `not_found`, the same answer as
+    /// for a ref that does not exist, so the refusal does not say whether the ref is there.
+    fn guard_user_refs(&self, name: &str) -> Result<(), Status> {
+        let foreign = asc_engine::revspec::dwim_candidates(name)
+            .iter()
+            .any(|c| c.starts_with(USER_NS) && !self.ref_visible()(c));
+        if foreign {
+            return Err(Status::not_found(format!("unknown revision {name:?}")));
+        }
+        Ok(())
+    }
+
+    /// The viewer's own user ref for the branch `name` names, if there is one and no shared ref
+    /// answers to `name` first. In a branchless repository the caller's `refs/heads/<n>` is
+    /// stored as `refs/users/<id>/heads/<n>`; a shared ref wins, as in `ListRefs`.
+    async fn own_branch(&self, name: &str) -> Result<Option<String>, Status> {
+        let Some(owner) = self.viewer else {
+            return Ok(None);
+        };
+        let branch = match name.strip_prefix("refs/heads/") {
+            Some(b) => b,
+            None if name.starts_with("refs/") => return Ok(None),
+            None => name.strip_prefix("heads/").unwrap_or(name),
+        };
+        let Some(stored) = refpolicy::user_ref_name(owner, &format!("refs/heads/{branch}")) else {
+            return Ok(None);
+        };
+        let Ok(stored_name) = asc_core::path::RefName::new(stored.as_bytes()) else {
+            return Ok(None);
+        };
+        if !self.ref_exists(&stored_name).await? {
+            return Ok(None);
+        }
+        for cand in asc_engine::revspec::dwim_candidates(name) {
+            if let Ok(n) = asc_core::path::RefName::new_onelevel(cand)
+                && self.ref_exists(&n).await?
+            {
+                return Ok(None);
+            }
+        }
+        Ok(Some(stored))
+    }
+
+    async fn ref_exists(&self, name: &asc_core::path::RefName) -> Result<bool, Status> {
+        Ok(self
+            .refs
+            .get(self.repo, name)
+            .await
+            .map_err(|e| internal("refs", &e))?
+            .is_some())
+    }
+
     /// The asc-space spelling of one name of a revision.
     async fn name_in(&self, leaf: &Leaf, default_branch: &str) -> Result<String, Status> {
         let head = leaf.name.as_str();
         if head == "HEAD" || head == "@" {
             return Ok(format!("refs/heads/{default_branch}"));
         }
-        if !is_hex(head.as_bytes()) || head.len() < 4 || (head.len() == 64 && leaf.rev) {
+        self.guard_user_refs(head)?;
+        if is_hex(head.as_bytes()) && head.len() == 64 && leaf.rev {
             return Ok(head.to_owned());
+        }
+        if !is_hex(head.as_bytes()) || head.len() < 4 {
+            return Ok(self
+                .own_branch(head)
+                .await?
+                .unwrap_or_else(|| head.to_owned()));
         }
         if leaf.rev && head.len() == 40 && self.mode == IdMode::Git {
             let mut raw = [0u8; 20];
@@ -357,6 +440,9 @@ impl IdCodec {
             if found.is_some() {
                 return Ok(head.to_owned());
             }
+        }
+        if let Some(own) = self.own_branch(head).await? {
+            return Ok(own);
         }
         Err(Status::invalid_argument(
             "abbreviated ids are not supported; use a full id or a ref name",
@@ -609,5 +695,55 @@ mod tests {
         let g = git.tree_git(root).await.unwrap();
         assert_eq!(&git.tree_out(root, g)[..], g.as_bytes());
         assert_eq!(git.tree_in(g.as_bytes()).await.unwrap(), root);
+    }
+
+    fn principal(id: &str) -> Principal {
+        Principal { id: id.into() }
+    }
+
+    #[tokio::test]
+    async fn another_users_refs_are_not_found_in_any_spelling() {
+        let (r, e, _c) = setup().await;
+        let specs = [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+            "refs/users/42/heads/x@{3}",
+            "users/42/heads/x~2",
+            "users/42/heads/x^{tree}",
+            "users/42/heads/x:a.txt",
+            "master..users/42/heads/x",
+            "users/42/heads/x...master",
+            "^users/42/heads/x",
+        ];
+        for mode in [IdMode::Git, IdMode::Asc] {
+            // Another verified user, a caller with no user id, and a codec told nothing.
+            let strangers = [
+                IdCodec::new(mode, &r, &e).for_viewer(&principal("43:bob")),
+                IdCodec::new(mode, &r, &e).for_viewer(&principal("alice")),
+                IdCodec::new(mode, &r, &e).for_viewer(&principal("pat:42")),
+                IdCodec::new(mode, &r, &e),
+            ];
+            for codec in &strangers {
+                for spec in specs {
+                    let err = codec
+                        .rev_in(spec, "master")
+                        .await
+                        .expect_err(&format!("{mode:?} {spec} must be refused"));
+                    assert_eq!(err.code(), tonic::Code::NotFound, "{spec}");
+                }
+                assert!(!codec.ref_visible()("refs/users/42/heads/x"));
+                assert!(codec.ref_visible()("refs/heads/x"));
+            }
+            // The owner's own spelling goes through untouched, and 421 is not 42.
+            let owner = IdCodec::new(mode, &r, &e).for_viewer(&principal("42:alice"));
+            for spec in specs {
+                assert_eq!(owner.rev_in(spec, "master").await.unwrap(), spec);
+            }
+            assert!(owner.ref_visible()("refs/users/42/heads/x"));
+            let err = owner.rev_in("users/421/heads/x", "master").await;
+            assert_eq!(err.unwrap_err().code(), tonic::Code::NotFound);
+            assert!(!owner.ref_visible()("refs/users/421/heads/x"));
+        }
     }
 }

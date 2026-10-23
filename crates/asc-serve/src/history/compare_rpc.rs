@@ -175,7 +175,7 @@ impl ServerCompare {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let a = Self::rev(&entry, &engine, &ids, &req.a).await?;
         let b = Self::rev(&entry, &engine, &ids, &req.b).await?;
