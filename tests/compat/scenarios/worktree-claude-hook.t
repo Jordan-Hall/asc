@@ -79,10 +79,47 @@ test ! -e "$far"
 near="$(hook_create near-fox)"
 hook_remove "$near" "$here/keep"
 test ! -e "$near"
+# A gitfile an agent repointed at another repository is refused: nothing runs there, and the
+# worktree and its work stay.
+echo o > ../other-repo/o.txt
+git -C ../other-repo add o.txt
+git -C ../other-repo commit -m other
+echo more > ../other-repo/untracked.txt
+test -f ../other-repo/.git
+mkdir ../other-hooks
+for h in post-commit post-checkout; do
+  printf '#!/bin/sh
+echo ran > "%s/other-ran-%s.txt"
+' "$here" "$h" > ../other-hooks/$h
+  chmod +x ../other-hooks/$h
+done
+git -C ../other-repo config core.hooksPath "$(cd ../other-hooks && wpwd)"
+evil="$(hook_create evil-fox)"
+echo mine > "$evil/work.txt"
+cp "$evil/.git" evil-git.bak
+cp ../other-repo/.git "$evil/.git"
+if hook_remove "$evil" "$here"; then exit 1; fi
+test "$(cat "$evil/work.txt")" = "mine"
+test ! -e other-ran-post-commit.txt
+test ! -e other-ran-post-checkout.txt
+test -z "$(git -C ../other-repo for-each-ref refs/asc/)"
+# With the gitfile put back, the same request works.
+cp evil-git.bak "$evil/.git"
+hook_remove "$evil" "$here"
+test ! -e "$evil"
+git worktree remove --force ../outside-wt
 # A dirty hook-created worktree is saved on refs/asc/agent-trash before it is force-removed.
 dirty="$(hook_create dirty-fox)"
 echo mine > "$dirty/work.txt"
 echo changed > "$dirty/a.txt"
+mkdir -p .hooks
+for h in post-commit post-checkout; do
+  printf '#!/bin/sh
+echo ran > "%s/snap-ran-%s.txt"
+' "$here" "$h" > .hooks/$h
+  chmod +x .hooks/$h
+done
+git config core.hooksPath "$here/.hooks"
 hook_remove "$dirty" "$here"
 test ! -e "$dirty"
 grep -q 'refs/asc/agent-trash/dirty-fox/' hook-err.txt
@@ -91,3 +128,6 @@ test -n "$snap"
 test "$(git show "$snap:work.txt")" = "mine"
 test "$(git show "$snap:a.txt")" = "changed"
 test "$(git show "agent/dirty-fox:a.txt")" = "one"
+# No repository hook runs during the snapshot.
+test ! -e snap-ran-post-commit.txt
+test ! -e snap-ran-post-checkout.txt

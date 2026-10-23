@@ -240,16 +240,80 @@ fn name_of(path: &Path) -> String {
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
-/// Runs `asc <args>` in the worktree at `dir`, with the repository chosen by `dir` alone and a
-/// fixed identity; returns its trimmed stdout.
-fn run_asc(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new(std::env::current_exe()?)
+/// Checks that the worktree at `mount` is still the one registered: a real directory whose `.git`
+/// is a regular file (not a link) naming `gitdir`, the gitdir registered for its row. An agent
+/// can rewrite that file, and a subprocess started there would follow it to another repository.
+fn check_gitfile(mount: &Path, gitdir: &Path) -> Result<()> {
+    let refuse = |why: &str| bad(format!("'{}' {why}; leaving it in place", mount.display()));
+    if !std::fs::symlink_metadata(mount).is_ok_and(|m| m.is_dir()) {
+        return Err(refuse("is not a plain directory"));
+    }
+    let file = mount.join(".git");
+    if !std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) {
+        return Err(refuse("has no regular .git file"));
+    }
+    let text = std::fs::read_to_string(&file).map_err(|_| refuse("has an unreadable .git file"))?;
+    let named = text
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("gitdir:"))
+        .map(str::trim)
+        .ok_or_else(|| refuse("has a malformed .git file"))?;
+    let named = mount.join(named);
+    match (std::fs::canonicalize(&named), std::fs::canonicalize(gitdir)) {
+        (Ok(x), Ok(y)) if wt::path_key(&x) == wt::path_key(&y) => Ok(()),
+        _ => Err(refuse("has a .git file that names another gitdir")),
+    }
+}
+
+/// An empty directory to use as `core.hooksPath`, removed on drop.
+struct NoHooks(PathBuf);
+
+impl NoHooks {
+    fn make() -> Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir = std::env::temp_dir().join(format!("asc-no-hooks-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for NoHooks {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The trusted places a snapshot step works in.
+struct Site<'a> {
+    mount: &'a Path,
+    gitdir: &'a Path,
+    no_hooks: &'a NoHooks,
+}
+
+/// Runs `asc <args>` in the worktree after checking its gitfile again, with the repository named
+/// by `GIT_DIR` and `GIT_WORK_TREE` (never found again from the directory), every other `GIT_*`
+/// variable dropped, no hooks and a fixed identity; returns its trimmed stdout.
+fn run_asc(site: &Site<'_>, args: &[&str]) -> Result<String> {
+    // Before every step, so a swap of the gitfile between steps is caught too.
+    check_gitfile(site.mount, site.gitdir)?;
+    let mut cmd = Command::new(std::env::current_exe()?);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
+            cmd.env_remove(key);
+        }
+    }
+    let out = cmd
+        .arg("-c")
+        .arg(format!("core.hooksPath={}", site.no_hooks.0.display()))
         .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
+        .current_dir(site.mount)
+        .env("GIT_DIR", site.gitdir)
+        .env("GIT_WORK_TREE", site.mount)
+        // No system config: nothing outside the user's own files and the registered repository.
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "asc claude-hook")
         .env("GIT_AUTHOR_EMAIL", "claude-hook@asc.invalid")
         .env("GIT_COMMITTER_NAME", "asc claude-hook")
@@ -260,7 +324,7 @@ fn run_asc(dir: &Path, args: &[&str]) -> Result<String> {
         return Err(bad(format!(
             "`asc {}` failed in '{}': {}",
             args.join(" "),
-            dir.display(),
+            site.mount.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -269,25 +333,33 @@ fn run_asc(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// Before a worktree is force-removed, commits any modified or untracked files to
 /// `refs/asc/agent-trash/<name>/<unix time>` (on top of the worktree's HEAD) and says where on
-/// stderr. A failure aborts the removal: uncommitted work is never dropped silently.
-fn save_dirty(dir: &Path, name: &str) -> Result<()> {
-    if run_asc(dir, &["status", "--porcelain"])?.is_empty() {
+/// stderr. The worktree's `.git` must still name its registered `gitdir`, and no hook runs. A
+/// failure aborts the removal: uncommitted work is never dropped silently.
+fn save_dirty(mount: &Path, gitdir: &Path, name: &str) -> Result<()> {
+    check_gitfile(mount, gitdir)?;
+    let no_hooks = NoHooks::make()?;
+    let site = Site {
+        mount,
+        gitdir,
+        no_hooks: &no_hooks,
+    };
+    if run_asc(&site, &["status", "--porcelain"])?.is_empty() {
         return Ok(());
     }
-    run_asc(dir, &["add", "-A"])?;
+    run_asc(&site, &["add", "-A"])?;
     // Detached, so the agent branch itself does not move.
-    run_asc(dir, &["switch", "--detach"])?;
+    run_asc(&site, &["switch", "--detach"])?;
     let message = format!("agent worktree '{name}' removed with uncommitted work");
     run_asc(
-        dir,
+        &site,
         &["-c", "commit.gpgsign=false", "commit", "--no-verify", "-m", &message],
     )?;
-    let commit = run_asc(dir, &["rev-parse", "HEAD"])?;
+    let commit = run_asc(&site, &["rev-parse", "HEAD"])?;
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let name_ref = format!("refs/asc/agent-trash/{name}/{secs}");
-    run_asc(dir, &["update-ref", &name_ref, &commit, ""])?;
+    run_asc(&site, &["update-ref", &name_ref, &commit, ""])?;
     eprintln!("asc: claude-hook: saved the uncommitted work of '{name}' as {name_ref} ({commit})");
     Ok(())
 }
@@ -332,7 +404,11 @@ async fn remove_one(ctx: &Ctx, input: &[u8]) -> Result<ExitCode> {
             Verdict::Refuse(why) => return Err(bad(why)),
         };
         if force > 0 {
-            save_dirty(Path::new(&row.ws.mount), &name_of(registered))?;
+            save_dirty(
+                Path::new(&row.ws.mount),
+                &c.ws()?.home.gitdir(row.ws.id),
+                &name_of(registered),
+            )?;
         }
         remove(c, &registered.as_os_str().to_owned(), force).await?;
         return Ok(ExitCode::SUCCESS);
