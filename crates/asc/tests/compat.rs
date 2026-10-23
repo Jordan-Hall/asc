@@ -51,6 +51,7 @@ scenarios! {
     merge_lintstaged = "merge-lintstaged",
     merge_driver = "merge-driver",
     pick_basic = "pick-basic",
+    grep_rev = "grep-rev",
     pick_sequence = "pick-sequence",
     pick_empty = "pick-empty",
     rebase_basic = "rebase-basic",

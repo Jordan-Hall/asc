@@ -85,6 +85,7 @@ pub mod gc;
 pub mod gc_store;
 pub mod graph;
 pub mod grep;
+pub mod grep_index;
 pub mod help_git;
 pub mod import;
 pub mod install_shim;

@@ -9,7 +9,10 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::process::ExitCode;
 
+use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::Kind;
+use asc_engine::tree::Pathspec as TreeSpec;
+use futures::TryStreamExt;
 use asc_core::path::RepoPath;
 use asc_wc::SafeRoot;
 use regex::bytes::{Regex, RegexBuilder};
@@ -18,7 +21,9 @@ use super::add::cwd_prefix;
 use super::add::spec::Spec;
 use super::add::target::{Staged, Target};
 use super::check_ignore::relative;
-use super::common::{CliError, Ctx, Result};
+use super::common::{CliError, Ctx, Result, WsCtx};
+use super::grep_index;
+use super::restore::resolve_commit;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
@@ -63,6 +68,8 @@ struct Opts {
     paths: Vec<OsString>,
     /// A `--` was typed: the arguments after it are paths, never revisions.
     dashes: bool,
+    /// With a `--`: how many of `paths` stood before it (they are revisions).
+    revs_before_dashes: usize,
 }
 
 fn bad_option(name: &str, short: bool) -> CliError {
@@ -73,6 +80,7 @@ fn bad_option(name: &str, short: bool) -> CliError {
 fn parse(rest: &[OsString]) -> Result<Opts> {
     let mut o = Opts::default();
     let mut positional: Vec<OsString> = Vec::new();
+    let mut before_dashes = 0usize;
     let mut i = 0;
     while i < rest.len() {
         let arg = &rest[i];
@@ -84,6 +92,7 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
         }
         if text == "--" {
             o.dashes = true;
+            before_dashes = positional.len();
             continue;
         }
         if let Some(long) = text.strip_prefix("--") {
@@ -152,10 +161,14 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
     let mut positional = positional.into_iter();
     if o.patterns.is_empty() {
         match positional.next() {
-            Some(p) => o.patterns.push(p),
+            Some(p) => {
+                o.patterns.push(p);
+                before_dashes = before_dashes.saturating_sub(1);
+            }
             None => return Err(CliError::Fatal("no pattern given".into())),
         }
     }
+    o.revs_before_dashes = before_dashes;
     o.paths = positional.collect();
     Ok(o)
 }
@@ -335,7 +348,7 @@ impl Search<'_> {
     /// says stop. Returns how many lines were selected, or why the file was given up on.
     fn file(
         &self,
-        file: fs::File,
+        file: impl Read,
         emit: &mut dyn FnMut(usize, &[u8], bool) -> bool,
     ) -> io::Result<std::result::Result<usize, &'static str>> {
         let mut reader = BufReader::with_capacity(64 << 10, file);
@@ -368,16 +381,156 @@ impl Search<'_> {
     }
 }
 
+/// Writes the result of each searched file in git's formats.
+struct Sink<'a> {
+    out: io::BufWriter<io::StdoutLock<'static>>,
+    search: Search<'a>,
+    any: bool,
+    failed: Option<io::Error>,
+}
+
+impl Sink<'_> {
+    /// Searches one file whose name is shown as `shown`. Returns false once the run is over
+    /// (`-q` matched, or the output failed).
+    fn file(&mut self, shown: &[u8], content: impl Read) -> bool {
+        let o = self.search.o;
+        let Sink { out, search, any, failed } = self;
+        let mut emit = |number: usize, line: &[u8], binary: bool| -> bool {
+            *any = true;
+            if o.quiet {
+                return false;
+            }
+            if o.files_only || o.count {
+                return !o.files_only;
+            }
+            let written = if binary {
+                [&b"Binary file "[..], shown, &b" matches"[..], LF].iter().try_for_each(|p| out.write_all(p))
+            } else {
+                (|| {
+                    out.write_all(shown)?;
+                    out.write_all(b":")?;
+                    if o.line_number {
+                        out.write_all(number.to_string().as_bytes())?;
+                        out.write_all(b":")?;
+                    }
+                    out.write_all(line)?;
+                    out.write_all(LF)
+                })()
+            };
+            match written {
+                Ok(()) => !binary,
+                Err(e) => {
+                    *failed = Some(e);
+                    false
+                }
+            }
+        };
+        match search.file(content, &mut emit) {
+            Err(e) => {
+                let name = String::from_utf8_lossy(shown);
+                eprintln!("warning: asc: grep: {name}: {e}; the file was not searched completely");
+            }
+            Ok(Err(why)) => {
+                let name = String::from_utf8_lossy(shown);
+                eprintln!("warning: asc: grep: {name}: {why}; the file was not searched");
+            }
+            Ok(Ok(count)) if count > 0 && !o.quiet && (o.files_only || o.count) => {
+                let written = if o.files_only {
+                    out.write_all(shown).and_then(|()| out.write_all(LF))
+                } else {
+                    out.write_all(shown)
+                        .and_then(|()| out.write_all(format!(":{count}").as_bytes()))
+                        .and_then(|()| out.write_all(LF))
+                };
+                if let Err(e) = written {
+                    *failed = Some(e);
+                }
+            }
+            Ok(Ok(_)) => {}
+        }
+        self.failed.is_none() && !(o.quiet && self.any)
+    }
+
+    fn finish(self) -> Result<ExitCode> {
+        let Sink { mut out, any, failed, .. } = self;
+        let flushed = match failed {
+            None => out.flush(),
+            Some(e) => Err(e),
+        };
+        match flushed {
+            Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e.into()),
+            _ => Ok(ExitCode::from(u8::from(!any))),
+        }
+    }
+}
+
+/// Most bytes of one blob read for a revision search; a larger blob is reported and skipped.
+const MAX_BLOB: u64 = 1 << 30;
+
+/// The revisions named before the paths: `(as typed, commit)`. Removes them from `o.paths`.
+async fn take_revs(ctx: &Ctx, ws: &WsCtx, o: &mut Opts) -> Result<Vec<(OsString, ChangesetId)>> {
+    let mut revs = Vec::new();
+    if o.dashes {
+        let n = o.revs_before_dashes.min(o.paths.len());
+        for arg in o.paths.drain(..n) {
+            let text = arg.to_string_lossy().into_owned();
+            match resolve_commit(ctx, &text).await? {
+                Some(c) => revs.push((arg, c)),
+                None => return Err(CliError::Fatal(format!("unable to resolve revision: {text}"))),
+            }
+        }
+        return Ok(revs);
+    }
+    let gate = SafeRoot::new(ws.projection.toplevel());
+    let mut taken = 0;
+    for arg in &o.paths {
+        let text = arg.to_string_lossy();
+        // A name that is a file of the work tree is a path (git would call it ambiguous).
+        let exists = RepoPath::new(text.as_bytes().to_vec())
+            .ok()
+            .and_then(|rp| gate.resolve(&rp))
+            .is_some_and(|abs| fs::symlink_metadata(abs).is_ok());
+        if text.is_empty() || exists {
+            break;
+        }
+        match resolve_commit(ctx, &text).await? {
+            Some(c) => revs.push((arg.clone(), c)),
+            None => break,
+        }
+        taken += 1;
+    }
+    o.paths.drain(..taken);
+    Ok(revs)
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut o = parse(&a.rest)?;
     let ws = ctx.ws()?;
     let root = ws.projection.toplevel();
     let prefix = cwd_prefix(ctx, ws);
     let re = compile(&o)?;
+    let revs = take_revs(ctx, ws, &mut o).await?;
     if o.paths.is_empty() && !prefix.is_empty() {
         o.paths.push(OsString::from("."));
     }
     let spec = Spec::parse(&o.paths, &prefix, root)?;
+    let strip = if prefix.is_empty() { Vec::new() } else { format!("{prefix}/").into_bytes() };
+    let mut sink = Sink {
+        out: io::BufWriter::new(io::stdout().lock()),
+        search: Search { re: &re, o: &o },
+        any: false,
+        failed: None,
+    };
+    if !revs.is_empty() {
+        let source = grep_index::local_source();
+        for (label, commit) in &revs {
+            let proceed = grep_rev(ws, &o, &spec, &strip, source.as_deref(), label, *commit, &mut sink).await?;
+            if !proceed {
+                break;
+            }
+        }
+        return sink.finish();
+    }
     let gate = SafeRoot::new(root);
     let target = Target::open(ctx).await?;
     let mut seen = vec![false; spec.includes().len()];
@@ -410,11 +563,6 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
-    let strip = if prefix.is_empty() { Vec::new() } else { format!("{prefix}/").into_bytes() };
-    let search = Search { re: &re, o: &o };
-    let mut out = io::BufWriter::new(io::stdout().lock());
-    let mut any = false;
-    let mut failed: Option<io::Error> = None;
     for path in &files {
         let Some(abs) = gate.resolve(path) else { continue };
         let Ok(meta) = fs::symlink_metadata(&abs) else { continue };
@@ -423,67 +571,81 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
         let Ok(file) = fs::File::open(&abs) else { continue };
         let shown = relative(path.as_bytes(), &strip);
-        let mut emit = |number: usize, line: &[u8], binary: bool| -> bool {
-            any = true;
-            if o.quiet {
-                return false;
-            }
-            if o.files_only || o.count {
-                return !o.files_only;
-            }
-            let written = if binary {
-                [&b"Binary file "[..], &shown, &b" matches"[..], LF].iter().try_for_each(|p| out.write_all(p))
-            } else {
-                (|| {
-                    out.write_all(&shown)?;
-                    out.write_all(b":")?;
-                    if o.line_number {
-                        out.write_all(number.to_string().as_bytes())?;
-                        out.write_all(b":")?;
-                    }
-                    out.write_all(line)?;
-                    out.write_all(LF)
-                })()
-            };
-            match written {
-                Ok(()) => !binary,
-                Err(e) => {
-                    failed = Some(e);
-                    false
-                }
-            }
-        };
-        match search.file(file, &mut emit) {
-            Err(e) => {
-                let name = String::from_utf8_lossy(&shown);
-                eprintln!("warning: asc: grep: {name}: {e}; the file was not searched completely");
-            }
-            Ok(Err(why)) => {
-                let name = String::from_utf8_lossy(&shown);
-                eprintln!("warning: asc: grep: {name}: {why}; the file was not searched");
-            }
-            Ok(Ok(count)) if count > 0 && !o.quiet && (o.files_only || o.count) => {
-                let count_text = format!(":{count}");
-                let (name, tail): (&[u8], &[u8]) =
-                    if o.files_only { (&shown, LF) } else { (&shown, count_text.as_bytes()) };
-                if let Err(e) = out.write_all(name).and_then(|()| out.write_all(tail)).and_then(|()| if o.files_only { Ok(()) } else { out.write_all(LF) }) {
-                    failed = Some(e);
-                }
-            }
-            Ok(Ok(_)) => {}
-        }
-        if failed.is_some() || (o.quiet && any) {
+        if !sink.file(&shown, file) {
             break;
         }
     }
-    let flushed = match failed {
-        None => out.flush(),
-        Some(e) => Err(e),
+    sink.finish()
+}
+
+/// Searches the files of `commit`'s tree under `spec`, naming each `<label>:<path>` as git does.
+/// Returns false once the run is over.
+#[allow(clippy::too_many_arguments)]
+async fn grep_rev(
+    ws: &WsCtx,
+    o: &Opts,
+    spec: &Spec,
+    strip: &[u8],
+    source: Option<&dyn grep_index::IndexSource>,
+    label: &OsString,
+    commit: ChangesetId,
+    sink: &mut Sink<'_>,
+) -> Result<bool> {
+    let tree_root = ws.engine.get_changeset(commit).await?.root;
+    let prefixes = spec.prefixes();
+    let tree_spec = if prefixes.is_empty() {
+        None
+    } else {
+        Some(TreeSpec::parse(&prefixes).map_err(|e| CliError::Fatal(e.to_string()))?)
     };
-    match flushed {
-        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e.into()),
-        _ => Ok(ExitCode::from(u8::from(!any))),
+    let mut entries: Vec<(RepoPath, FileId, u64)> = Vec::new();
+    let mut walk = ws.engine.walk(tree_root, tree_spec.as_ref());
+    while let Some((path, entry)) = walk.try_next().await? {
+        if matches!(entry.kind, Kind::Dir | Kind::Gitlink) || !spec.matches(path.as_bytes()) {
+            continue;
+        }
+        entries.push((path, FileId::from_bytes(entry.id), entry.size));
     }
+    drop(walk);
+    entries.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+    if grep_index::prefilterable(o.patterns.len(), o.invert) {
+        let pattern = o.patterns[0].to_string_lossy();
+        let q = grep_index::Query {
+            rev: commit,
+            pattern: &pattern,
+            fixed: o.fixed,
+            ignore_case: o.ignore_case,
+            word: o.word,
+        };
+        let names: Vec<RepoPath> = entries.iter().map(|e| e.0.clone()).collect();
+        let kept = grep_index::narrow(source, &q, names);
+        if kept.len() != entries.len() {
+            let keep: std::collections::HashSet<&[u8]> = kept.iter().map(RepoPath::as_bytes).collect();
+            entries.retain(|e| keep.contains(e.0.as_bytes()));
+        }
+    }
+    let label = label.to_string_lossy().into_owned().into_bytes();
+    for (path, id, size) in entries {
+        let shown = relative(path.as_bytes(), strip);
+        let mut named = label.clone();
+        named.push(b':');
+        named.extend_from_slice(&shown);
+        if size > MAX_BLOB {
+            eprintln!(
+                "warning: asc: grep: {}: the blob is larger than 1 GiB; the file was not searched",
+                String::from_utf8_lossy(&named)
+            );
+            continue;
+        }
+        let Ok(bytes) = ws.engine.read_file(id, size).await else {
+            eprintln!("warning: asc: grep: {}: the blob could not be read", String::from_utf8_lossy(&named));
+            continue;
+        };
+        if !sink.file(&named, io::Cursor::new(&bytes[..])) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
