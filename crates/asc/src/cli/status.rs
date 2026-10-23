@@ -375,20 +375,6 @@ impl Row {
             stages: None,
         }
     }
-
-    fn submodule(&self) -> bool {
-        [self.head, self.index].iter().flatten().any(|s| s.mode == 0o160000)
-            || self.work == 0o160000
-    }
-
-    /// The `<sub>` field of porcelain v2.
-    fn sub(&self) -> String {
-        if !self.submodule() {
-            return "N...".into();
-        }
-        let commit = self.head.is_some() && self.index.is_some() && self.head != self.index;
-        format!("S{}..", if commit { 'C' } else { '.' })
-    }
 }
 
 /// How HEAD is attached.
@@ -1102,53 +1088,12 @@ fn in_progress(git_dir: &Path) -> Option<State> {
 
 // ---------------------------------------------------------------- formatting
 
-/// git's `quote_path`: C-style quoting when a byte needs it.
 fn quote(path: &[u8], quote_space: bool, quote_high: bool) -> Vec<u8> {
-    let needs = |b: u8| {
-        b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (b >= 0x80 && quote_high)
-    };
-    if !path.iter().any(|&b| needs(b) || (quote_space && b == b' ')) {
-        return path.to_vec();
-    }
-    let mut out = vec![b'"'];
-    for &b in path {
-        match b {
-            7 => out.extend_from_slice(b"\\a"),
-            8 => out.extend_from_slice(b"\\b"),
-            9 => out.extend_from_slice(b"\\t"),
-            10 => out.extend_from_slice(b"\\n"),
-            11 => out.extend_from_slice(b"\\v"),
-            12 => out.extend_from_slice(b"\\f"),
-            13 => out.extend_from_slice(b"\\r"),
-            b'"' => out.extend_from_slice(b"\\\""),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            b if needs(b) => out.extend_from_slice(format!("\\{b:03o}").as_bytes()),
-            b => out.push(b),
-        }
-    }
-    out.push(b'"');
-    out
+    asc_engine::render::quote_path(path, quote_space, quote_high)
 }
 
-/// `path` relative to the directory `prefix` (`""` or `a/b/`), with `../` where needed.
 fn relativize(path: &[u8], prefix: &[u8]) -> Vec<u8> {
-    if prefix.is_empty() {
-        return path.to_vec();
-    }
-    let dirs: Vec<&[u8]> = prefix.split(|&b| b == b'/').filter(|p| !p.is_empty()).collect();
-    let is_dir = path.ends_with(b"/");
-    let comps: Vec<&[u8]> = path.split(|&b| b == b'/').filter(|p| !p.is_empty()).collect();
-    let usable = if is_dir { comps.len() } else { comps.len().saturating_sub(1) };
-    let common = dirs.iter().zip(&comps).take(usable).take_while(|(a, b)| a == b).count();
-    let mut out = b"../".repeat(dirs.len() - common);
-    out.extend_from_slice(&comps[common..].join(&b'/'));
-    if is_dir && common < comps.len() {
-        out.push(b'/');
-    }
-    if out.is_empty() {
-        out.extend_from_slice(b"./");
-    }
-    out
+    asc_engine::render::relativize(path, prefix)
 }
 
 struct Printer<'a> {
@@ -1521,89 +1466,44 @@ fn print_short(p: &mut Printer<'_>, r: &Report) {
 }
 
 fn print_v2(p: &mut Printer<'_>, r: &Report) {
-    if p.o.branch {
-        let b = &r.branch;
-        let header = |s: String, p: &mut Printer<'_>| {
-            p.text(&s);
-            p.term();
-        };
-        header(
-            format!("# branch.oid {}", b.oid.map_or("(initial)".to_owned(), |o| o.to_string())),
-            p,
-        );
-        header(
-            format!(
-                "# branch.head {}",
-                match &b.head {
-                    HeadKind::Branch(n) => n.as_str(),
-                    HeadKind::Detached => "(detached)",
-                }
-            ),
-            p,
-        );
-        if let Some(up) = &b.upstream {
-            header(format!("# branch.upstream {}", up.name), p);
-            match up.track {
-                Track::Gone => {}
-                Track::Different => header("# branch.ab +? -?".into(), p),
-                Track::Counts { ahead, behind } => header(format!("# branch.ab +{ahead} -{behind}"), p),
-            }
-        }
-    }
-    for row in &r.rows {
-        let xy = format!("{}{}", row.x as char, row.y as char);
-        let path = p.path(&row.path, false);
-        let tail = |p: &mut Printer<'_>| p.out.extend_from_slice(&path);
-        if let Some(st) = &row.stages {
-            p.text(&format!(
-                "u {xy} {} {:06o} {:06o} {:06o} {:06o} {} {} {} ",
-                row.sub(),
-                mode_of(st[0]),
-                mode_of(st[1]),
-                mode_of(st[2]),
-                row.work,
-                oid_of(st[0]),
-                oid_of(st[1]),
-                oid_of(st[2]),
-            ));
-            tail(p);
-            p.term();
-            continue;
-        }
-        let common = format!(
-            "{xy} {} {:06o} {:06o} {:06o} {} {}",
-            row.sub(),
-            mode_of(row.head),
-            mode_of(row.index),
-            row.work,
-            oid_of(row.head),
-            oid_of(row.index),
-        );
-        match &row.orig {
-            Some((orig, score)) => {
-                p.text(&format!("2 {common} R{score} "));
-                tail(p);
-                p.out.push(if p.o.z { 0 } else { b'\t' });
-                let o = p.path(orig, false);
-                p.out.extend_from_slice(&o);
-                p.term();
-            }
-            None => {
-                p.text(&format!("1 {common} "));
-                tail(p);
-                p.term();
-            }
-        }
-    }
-    for (mark, items) in [("?", &r.untracked), ("!", &r.ignored)] {
-        for item in items {
-            p.text(mark);
-            p.out.push(b' ');
-            let path = p.path(item, false);
-            p.out.extend_from_slice(&path);
-            p.term();
-        }
-    }
+    use asc_engine::render::status as rs;
+    let side = |s: Option<Side>| s.map(|s| rs::Side { mode: s.mode, oid: s.oid });
+    let branch = p.o.branch.then(|| rs::Branch {
+        head: match &r.branch.head {
+            HeadKind::Branch(n) => rs::Head::Branch(n.clone()),
+            HeadKind::Detached => rs::Head::Detached,
+        },
+        oid: r.branch.oid,
+        upstream: r.branch.upstream.as_ref().map(|u| rs::Upstream {
+            name: u.name.clone(),
+            track: match u.track {
+                Track::Gone => rs::Track::Gone,
+                Track::Different => rs::Track::Different,
+                Track::Counts { ahead, behind } => rs::Track::Counts { ahead, behind },
+            },
+        }),
+    });
+    let rows: Vec<rs::Row> = r
+        .rows
+        .iter()
+        .map(|row| rs::Row {
+            path: row.path.clone(),
+            orig: row.orig.clone(),
+            x: row.x,
+            y: row.y,
+            head: side(row.head),
+            index: side(row.index),
+            work: row.work,
+            stages: row.stages.map(|st| [side(st[0]), side(st[1]), side(st[2])]),
+        })
+        .collect();
+    let opts = rs::Opts {
+        z: p.o.z,
+        relative: p.o.relative,
+        prefix: p.o.prefix.clone(),
+        quote_high: p.o.quote_high,
+    };
+    p.out.extend_from_slice(&rs::porcelain_v2(branch.as_ref(), &rows, &r.untracked, &r.ignored, &opts));
 }
 
 // ---------------------------------------------------------------------- json

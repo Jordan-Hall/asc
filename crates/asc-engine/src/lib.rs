@@ -22,6 +22,7 @@ pub mod land;
 pub mod merge;
 pub mod projects;
 pub mod rebase;
+pub mod render;
 pub mod revspec;
 pub mod stack;
 pub mod sync;
