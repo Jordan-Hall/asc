@@ -1230,6 +1230,10 @@ fn revert_message(original: &[u8], id: ChangesetId) -> Vec<u8> {
     out
 }
 
+// `Merge` (PLAN U48b) shares this module's helpers: it is a child, so it sees what is private here.
+#[path = "merge_rpc.rs"]
+pub mod merge_rpc;
+
 // ------------------------------------------------------------------------------ handlers
 
 #[async_trait]
@@ -1248,6 +1252,14 @@ impl MutationsHandler for ServerMutations {
         req: wire::ApplyRequest,
     ) -> Result<wire::ApplyResponse, Status> {
         self.apply_inner(ctx, req).await
+    }
+
+    async fn merge(
+        &self,
+        ctx: &CallCtx,
+        req: wire::MergeRequest,
+    ) -> Result<wire::MergeResponse, Status> {
+        self.merge_inner(ctx, req).await
     }
 }
 

@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use asc_core::id::RefTarget;
+use asc_core::change::RewriteOp;
+use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RefName;
 use asc_engine::graph::Graph;
 use asc_rpc::IdMode;
@@ -413,6 +414,18 @@ impl ServerRefs {
         ctx: &CallCtx,
         req: wire::UpdateRefsRequest,
     ) -> Result<wire::UpdateRefsResponse, Status> {
+        self.update_rewriting(ctx, req, None).await
+    }
+
+    /// `update`, for a server-side `Merge` that rewrote changesets: the step-8 transaction also
+    /// tells the [`IngestObserver`] about `rewrites` and the response lists them. A LAND request
+    /// finds its own rewrites, so it takes none.
+    pub(crate) async fn update_rewriting(
+        &self,
+        ctx: &CallCtx,
+        req: wire::UpdateRefsRequest,
+        rewrites: Option<Rewrites<'_>>,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
         // Step 1: the caller has write access (the service checked); validate the request.
         let op_id = ctx
             .op_id
@@ -465,6 +478,9 @@ impl ServerRefs {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
 
+        if pushed.is_some() && rewrites.is_some() {
+            return Err(Status::invalid_argument("a land finds its own rewrites"));
+        }
         if pushed.is_some() {
             land::check_branch(self.registry.pool(), &entry, &planned[0].text).await?;
         }
@@ -584,9 +600,21 @@ impl ServerRefs {
         // Step 8: one transaction.
         let response = wire::UpdateRefsResponse {
             results,
-            rewritten: Vec::new(),
+            rewritten: rewrites.as_ref().map_or_else(Vec::new, |r| {
+                r.pairs
+                    .iter()
+                    .map(|(old, new)| wire::Rewrite {
+                        old: Bytes::copy_from_slice(old.as_bytes()),
+                        new: Bytes::copy_from_slice(new.as_bytes()),
+                    })
+                    .collect()
+            }),
             message: String::new(),
         };
+        let writes = rewrites
+            .as_ref()
+            .filter(|r| !r.pairs.is_empty())
+            .map(|r| land::TxWrites::rewrites(self.hooks.observer(), r.pairs, r.op));
         let txn = RefTxn {
             updates,
             actor: Actor {
@@ -609,7 +637,10 @@ impl ServerRefs {
                 .collect(),
         })
         .map_err(|e| internal("outbox", &e))?;
-        match self.commit(&entry, &txn, &response, &outbox, None).await {
+        match self
+            .commit(&entry, &txn, &response, &outbox, writes.as_ref())
+            .await
+        {
             Ok(()) => Ok(response),
             Err(e) => {
                 hooks.abort(&hook_req).await;
@@ -665,6 +696,13 @@ impl ServerRefs {
         .map_err(|e| internal("outbox", &e))?;
         tx.commit().await.map_err(|e| internal("commit", &e))
     }
+}
+
+/// Changesets a `Merge` rewrote, for the step-8 transaction of the `UpdateRefs` that moves its ref.
+pub(crate) struct Rewrites<'a> {
+    /// `(old, new)`.
+    pub(crate) pairs: &'a [(ChangesetId, ChangesetId)],
+    pub(crate) op: RewriteOp,
 }
 
 #[async_trait]
