@@ -146,6 +146,7 @@ async fn gcm_style_helper_answers_with_authtype_and_credential() {
 /// A credential the host refuses is erased. git then stops: `Authentication failed`. asc asks
 /// once more without a prompt (SPEC §15.6.1: non-interactive, one re-ask), erases that too,
 /// and ends with git's own message. That one extra `get` is the documented difference.
+// fidelity: D-4
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_credential_is_erased_and_the_failure_reads_like_gits() {
     let p = pair(
@@ -474,6 +475,7 @@ async fn extra_header_for_another_url_is_not_sent() {
 
 /// `https://user:token@host/...`: Basic on the wire from both. git also reports it to the
 /// helpers (`store`); asc never passes URL userinfo to `approve` (SPEC §15.6.1 step 2).
+// fidelity: Q-6
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn url_userinfo_is_basic_and_asc_never_approves_it() {
     let p = pair(accept_alice, |s| {
@@ -705,6 +707,7 @@ async fn no_terminal_inner() {
 /// A 302 to a second host receives no `Authorization` from real git or from asc. libcurl still
 /// forwards a non-sensitive `http.extraHeader` to the new host; asc forwards none (SPEC
 /// §15.6.4 item 3): the documented difference.
+// fidelity: U-1
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_redirect_to_another_host_carries_no_credential() {
     let mut results = Vec::new();

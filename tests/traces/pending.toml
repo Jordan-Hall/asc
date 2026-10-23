@@ -28,6 +28,7 @@ trace = "claude-code/worktree-git-hooks"
 unit = "U54w"
 reason = "the hook script is written to `rev-parse --absolute-git-dir`/hooks, which for asc is the synthetic wc/<id>/git, not the common dir asc reads hooks from, so post-checkout never fires on the asc side"
 differs = true
+register = "D-7"
 
 [[pending]]
 trace = "asc-scripts/pr-pack-forge"

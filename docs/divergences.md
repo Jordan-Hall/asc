@@ -20,10 +20,10 @@ One bullet per `refuse` or `idealize` decision. The lint (Q01) checks that each 
 - **Q-1** (idealize) `git foo` runs the alias `alias.foo` before an external `git-foo` on `PATH`; git 2.55 runs the external first. Expected line drop: `tests/compat/allowed.toml` entry `external-commands`. SPEC §11.4.
 - **Q-3** (refuse) `update-index --cacheinfo` with an object id asc has never seen exits 128 with `invalid object ... (git-fidelity Q-3)`; git writes the entry. SPEC §11.5.
 - **Q-6** (refuse) asc never calls `approve` (credential `store`) for a credential taken from URL userinfo; git does. No error is printed (it is an omission); the test asserts no helper calls. SPEC §15.6.1.
-- **Q-7** (refuse) Every spelling of `.git` is refused on every platform; git refuses the HFS-ignorable spellings only where `core.protectHFS` is on. The error names the path and `(git-fidelity Q-7)`. SPEC §2.8.
+- **Q-7** (refuse) Every spelling of `.git` is refused on every platform; git refuses the HFS-ignorable spellings only where `core.protectHFS` is on. The error names the path and `(git-fidelity Q-7)`: from `asc apply` for an HFS-ignorable spelling (git refuses the NTFS spellings too, with the same message, so no note there) and from ingest. SPEC §2.8.
 - **Q-8** (refuse) `parse_tag` refuses a tag with a header beyond `tagger`; import keeps the raw tag, so the id is unchanged. Error `(git-fidelity Q-8)`. SPEC §2.9.
 - **U-1** (refuse) asc forwards no `http.extraHeader` to another origin after a redirect; libcurl forwards the non-sensitive ones. Omission, asserted by test. SPEC §15.6.4 item 3.
-- **U-2** (refuse) A patch that names a `.git` alias only as the source of a rename, deletion or mode change is refused up front as unsafe; git reports a missing file. Error `(git-fidelity U-2)`. SPEC §2.8.
+- **U-2** (refuse) A patch that names a `.git` alias only as the source of a rename, deletion or mode change is refused up front as unsafe; git reports a missing file. Error `(git-fidelity U-2)`, from `asc apply`. SPEC §2.8.
 
 Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 

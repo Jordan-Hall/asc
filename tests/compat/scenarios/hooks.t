@@ -1,3 +1,4 @@
+# fidelity: D-1, D-2
 g init
 hooks="$PWD/.hooks"
 mkdir -p "$hooks"

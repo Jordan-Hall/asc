@@ -111,6 +111,8 @@ Markers the lint reads (Q01):
 
 ## The checks
 
+Run the lint with `cargo test -p asc --test fidelity`. A default run lists the `pending` and `open` entries and passes; `ASC_FIDELITY_STRICT=1` fails on any of them, as `ASC_TRACES_STRICT=1` does for the traces. The lint code is `tests/compat/src/fidelity.rs`.
+
 - Lint (Q01): every id cited by `allowed.toml`, a scenario, a test, a trace or an upstream bullet exists; every `proven` entry is cited by a file that exists; every entry has one decision (or class, kind); every refuse has a bullet under `## Upstream` and a `Refusal` kind; the text `git-fidelity <id>` occurs in a non-test source file under `crates/` for every refuse whose kind is `error`; every `## Upstream` bullet cites a quirk or defect whose decision is refuse or idealize.
 - Oracle (Q02): the compat suite and the traces run against the pinned build through `ASC_GIT_ORACLE`, and the suite fails if the oracle is not 2.55.0 by hash.
 - Preflight (Q03): adapter gaps are reported as `A-n` before the product is blamed.
@@ -118,4 +120,4 @@ Markers the lint reads (Q01):
 
 ## Not covered here
 
-The harness shape (`tests/compat/src/lib.rs`, scenarios, `allowed.toml`) stays as SPEC §17.1 describes it. The SPEC edits this method implies (an amendment to §17.1 for the register, the lint, the oracle and the preflight) belong to the Q units; they are listed in PLAN Q01 to Q03 and not made here.
+The harness shape (`tests/compat/src/lib.rs`, scenarios, `allowed.toml`) stays as SPEC §17.1 describes it. SPEC §17.1 names the registers and the lint (Q01); its remaining edits (the oracle and the preflight) belong to Q02 and Q03.
