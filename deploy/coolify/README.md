@@ -111,11 +111,19 @@ Coolify UI and apply:
 
 ```sh
 export COOLIFY_PROJECT_UUID=... COOLIFY_SERVER_UUID=... COOLIFY_ENVIRONMENT_NAME=...
+# later runs update the same application: export COOLIFY_APP_UUID=<uuid printed by the first run>
 deploy/coolify/coolify-apply.sh --apply --env-file /path/to/private.env
 ```
 
-It looks the application up by name (`asc-serve-staging`), creates it when absent, sets the compose
-file and the domain, and stores the environment. Open the application in the Coolify UI and use
+It never selects an application by name. With `COOLIFY_APP_UUID` unset it **creates**: it reads the
+application list only to refuse when `asc-serve-staging` already exists in that project and
+environment (it prints that uuid), then creates the application. With `COOLIFY_APP_UUID` set it
+**updates**. In both cases it reads the application back and requires the project, environment and
+server Coolify reports to equal `COOLIFY_PROJECT_UUID`, `COOLIFY_ENVIRONMENT_NAME` and
+`COOLIFY_SERVER_UUID`; a mismatch, or a field Coolify does not report, stops it before the compose
+file or any secret is sent. To check a saved `GET /api/v1/applications/<uuid>` answer offline, run
+`coolify-apply.sh --check-app-json answer.json`. Then it sets the compose file and the domain and
+stores the environment. Open the application in the Coolify UI and use
 **Preview compose** to confirm that the `configs` and the `backend` network survived Coolify's
 rewrite; then deploy from the UI, or re-run with `--apply --deploy`. The `asc-migrate` service runs
 `asc serve migrate` first and `ascserve` starts only after it succeeds.
