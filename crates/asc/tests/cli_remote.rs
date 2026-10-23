@@ -241,14 +241,16 @@ fn clone_failures_leave_nothing_behind() {
     );
     assert!(!cwd.join("dst").exists());
 
-    let other = asc(
-        &sb,
-        &cwd,
-        &["clone", "https://example.invalid/o/r.git", "dst2"],
-    );
-    assert_eq!(other.status.code(), Some(128));
+    // A git-http clone of a port nothing listens on fails at connect time.
+    let closed_port = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let refused = format!("http://127.0.0.1:{closed_port}/o/r.git");
+    let other = asc(&sb, &cwd, &["clone", &refused, "dst2"]);
+    assert_eq!(other.status.code(), Some(128), "{}", text(&other.stderr));
     assert!(
-        text(&other.stderr).contains("not supported yet"),
+        text(&other.stderr).contains("fatal:"),
         "{}",
         text(&other.stderr)
     );
