@@ -91,6 +91,10 @@ async fn garage_probe_is_reported() {
     let r = probe(&*s, &root).await;
     eprintln!("garage probe: {} {}", r.create_exclusive, r.detail);
     assert!(!r.detail.is_empty());
+    // CI pins the measured outcome per Garage version (docs/garage-compat.md) so a change is noticed.
+    if let Ok(want) = std::env::var("ASC_IT_GARAGE_EXPECT_EXCLUSIVE") {
+        assert_eq!(r.create_exclusive.to_string(), want, "{}", r.detail);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

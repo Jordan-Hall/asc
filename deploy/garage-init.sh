@@ -1,4 +1,6 @@
 #!/bin/sh
+# Admin API v1 only (Garage v1.x, the image pinned in docker-compose.it.yml). Not verified against Garage v2:
+# build/ci/garage-it.sh sets up either version with the `garage` CLI instead (see docs/garage-compat.md).
 # One-shot Garage setup for integration tests: layout, bucket `asc-it`, and a fixed key.
 # Idempotent enough for a fresh CI run; the key matches the defaults in crates/asc-store/tests/it_s3.rs.
 set -eu
