@@ -51,6 +51,8 @@ tonic = { workspace = true }
 minisign-verify = { workspace = true }
 sha2 = { workspace = true }
 reqwest = { workspace = true }
+object_store = { workspace = true }
+url = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]

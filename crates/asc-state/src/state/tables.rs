@@ -91,6 +91,22 @@ pub mod history_boundary {
         Ok(n > 0)
     }
 
+    /// Every boundary changeset of `repo`, in id order.
+    pub async fn list(db: &StateDb, repo: RepoKey) -> Result<Vec<ChangesetId>> {
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT cs FROM history_boundary WHERE repo_id = ? ORDER BY cs")
+                .bind(repo.0)
+                .fetch_all(db.pool())
+                .await?;
+        rows.into_iter()
+            .map(|b| {
+                <[u8; 32]>::try_from(b.as_slice())
+                    .map(ChangesetId::from_bytes)
+                    .map_err(|_| super::Error::Corrupt("history_boundary.cs"))
+            })
+            .collect()
+    }
+
     pub async fn remove(db: &StateDb, repo: RepoKey, cs: ChangesetId) -> Result<()> {
         sqlx::query("DELETE FROM history_boundary WHERE repo_id = ? AND cs = ?")
             .bind(repo.0)

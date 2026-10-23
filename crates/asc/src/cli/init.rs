@@ -29,14 +29,20 @@ pub struct Args {
     pub branch: Option<String>,
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
+    /// A bucket URL to keep objects in (SPEC §6.2); the first remote, `origin`.
+    #[arg(long = "store")]
+    pub store: Option<String>,
+    /// Who holds the bucket's refs: `local` (default) or `shared` (SPEC §3.4).
+    #[arg(long = "refs")]
+    pub refs: Option<String>,
     /// The directory to initialise; the current directory by default.
     pub dir: Option<PathBuf>,
 }
 
-/// `init` serves its own flags only; `--store` and `--bare` are not in the table.
+/// `init` serves its own flags only; `--bare` is not in the table.
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "init",
-    flags: &["-b", "--initial-branch", "-q", "--quiet"],
+    flags: &["-b", "--initial-branch", "-q", "--quiet", "--store", "--refs"],
     placeholders: &[],
 }];
 
@@ -112,6 +118,25 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             (home, db)
         }
     };
+    let store = match (&a.store, &a.refs) {
+        (None, None) => None,
+        (None, Some(_)) => return Err(CliError::Fatal("asc: --refs needs --store".into())),
+        (Some(typed), refs) => {
+            let mode = match refs.as_deref() {
+                None | Some("local") => crate::remote::url::RefsMode::Local,
+                Some("shared") => crate::remote::url::RefsMode::Shared,
+                Some(other) => return Err(CliError::Fatal(format!("asc: --refs takes local or shared, not '{other}'"))),
+            };
+            let spec = crate::remote::url::parse(typed, mode).map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+            let crate::remote::url::RemoteSpec::Bucket { url, .. } = &spec else {
+                return Err(CliError::Fatal("asc: --store needs a bucket URL (s3:// or file://)".into()));
+            };
+            let stored = super::clone::stored_form(typed, &spec);
+            // Reach the bucket (and probe a shared one) before anything is created.
+            crate::remote::open_url(&db, "origin".into(), stored.clone(), true, mode, crate::remote::Intent::Write).await?;
+            Some((url.clone(), stored, mode))
+        }
+    };
     let (repo_id, ws_id) = (RepoId::new(), WorkspaceId::new());
     let projection = Projection::create(&home, repo_id, ws_id, &root).map_err(|e| match e {
         ProjectionError::RealGitDir(p) => CliError::Fatal(format!(
@@ -130,8 +155,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             id: repo_id,
             name,
             ns: uuid::Uuid::new_v4().as_bytes().to_vec(),
-            remote_url: None,
-            remote_kind: RemoteKind::LocalOnly,
+            remote_url: store.as_ref().map(|(url, _, _)| url.clone()),
+            remote_kind: if store.is_some() { RemoteKind::Bucket } else { RemoteKind::LocalOnly },
             default_branch: branch.clone(),
             windows_safe: true,
         },
@@ -154,6 +179,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     )
     .await?;
     write_ascignore(&root, ctx.prog)?;
+    if let Some((_, stored, mode)) = &store {
+        let fresh = super::clone::open_at(ctx, root.clone()).await?;
+        super::clone::write_remote_config(&fresh, "origin", stored, *mode).await?;
+    }
     say(Msg::InitializedEmpty {
         path: format!("{}/", display(&root.join(".git"))),
     });
