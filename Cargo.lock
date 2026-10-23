@@ -603,6 +603,7 @@ dependencies = [
  "prost",
  "prost-reflect",
  "protox",
+ "rustix",
  "serde_json",
  "sqlx",
  "tempfile",

@@ -6,6 +6,15 @@
 //! socket connection to tonic ([`Connected`]); [`serve_incoming`] feeds a listener to
 //! `Server::serve_with_incoming`, and [`connect`] builds a [`Channel`] over the same endpoint.
 //! The generated `Workspace` service traits are re-exported here.
+//!
+//! **Trust runs both ways.** The listener admits only this user (pipe DACL, created as the
+//! first instance of its name so nobody can pre-create it; socket in a private directory with
+//! an euid check per peer). The dialling side does not trust the name either: every connection
+//! made by [`connect_stream`], [`connect`] or [`connect_verified`] asks the OS who the server
+//! process is (`GetNamedPipeServerProcessId` plus the process token's user SID on Windows,
+//! `SO_PEERCRED` euid on Unix) and is refused with [`io::ErrorKind::PermissionDenied`] unless
+//! that process runs as the current user. Nothing is sent to a refused server. A pid that the
+//! server only *claims* (for example in `Ping`) is never evidence of anything.
 
 use std::io;
 use std::pin::Pin;
@@ -14,6 +23,7 @@ use std::task::{Context, Poll};
 use futures::stream::{self, BoxStream};
 use hyper_util::rt::TokioIo;
 use interprocess::local_socket::tokio::{Listener, Stream};
+use interprocess::local_socket::traits::StreamCommon as _;
 use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
 use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -172,9 +182,60 @@ pub fn serve_incoming(listener: IpcListener) -> BoxStream<'static, io::Result<Ip
     }))
 }
 
-/// Dials the endpoint once; the raw connection (no gRPC).
+/// Dials the endpoint once; the raw connection (no gRPC). The server is verified first: see
+/// [`connect_verified`].
 pub async fn connect_stream(endpoint: &IpcEndpoint) -> io::Result<IpcStream> {
-    Ok(IpcStream(Stream::connect(endpoint.name()?).await?))
+    connect_verified(endpoint).await.map(|(stream, _)| stream)
+}
+
+/// Dials the endpoint and returns the connection with the OS-reported pid of the server process
+/// (`None` only where the OS cannot report one; the user check has still passed).
+///
+/// Fails with [`io::ErrorKind::PermissionDenied`] when the server cannot be shown to run as the
+/// current user (another user's process, or one that cannot be inspected: fail closed). Only a
+/// pid returned here may be used to signal or kill the daemon.
+pub async fn connect_verified(endpoint: &IpcEndpoint) -> io::Result<(IpcStream, Option<u32>)> {
+    connect_checked(endpoint, os_verify_server).await
+}
+
+/// The pid of the process serving `endpoint`, verified as in [`connect_verified`].
+pub async fn verified_server_pid(endpoint: &IpcEndpoint) -> io::Result<u32> {
+    let (_, pid) = connect_verified(endpoint).await?;
+    pid.ok_or_else(|| untrusted("the OS did not report the server's pid"))
+}
+
+/// Dials, then lets `verify` (the OS check in production) vet the server before the connection
+/// is handed out.
+async fn connect_checked(
+    endpoint: &IpcEndpoint,
+    verify: impl FnOnce(&Stream) -> io::Result<Option<u32>>,
+) -> io::Result<(IpcStream, Option<u32>)> {
+    let stream = Stream::connect(endpoint.name()?).await?;
+    let pid = verify(&stream)?;
+    Ok((IpcStream(stream), pid))
+}
+
+fn untrusted(why: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, why)
+}
+
+/// Asks the OS who is on the other end of `stream`; Ok only for this user's process.
+fn os_verify_server(stream: &Stream) -> io::Result<Option<u32>> {
+    let creds = stream.peer_creds()?;
+    #[cfg(windows)]
+    {
+        let pid = creds
+            .pid()
+            .ok_or_else(|| untrusted("the OS did not report the server's pid"))?;
+        win::require_current_user(pid)?;
+        Ok(Some(pid))
+    }
+    #[cfg(unix)]
+    {
+        unix::require_current_user(creds.euid())?;
+        // `pid_t` is signed; a pid that does not fit `u32` is no pid.
+        Ok(creds.pid().and_then(|p| u32::try_from(p).ok()))
+    }
 }
 
 /// A lazily connecting gRPC [`Channel`] over the endpoint.
@@ -193,24 +254,45 @@ mod unix {
     use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
     use std::path::Path;
 
-    /// Creates the 0700 directory, refuses a foreign one, and removes a stale socket.
-    /// Returns this user's uid (the owner of the directory it just verified).
+    /// This process's effective uid.
+    pub(super) fn own_euid() -> u32 {
+        rustix::process::geteuid().as_raw()
+    }
+
+    /// Ok when a peer's euid, as the kernel reports it, is ours; anything else (including no
+    /// report) is refused.
+    pub(super) fn require_current_user(peer_euid: Option<u32>) -> std::io::Result<()> {
+        match peer_euid {
+            Some(uid) if uid == own_euid() => Ok(()),
+            _ => Err(super::untrusted(
+                "the server does not run as the current user",
+            )),
+        }
+    }
+
+    /// Creates the 0700 directory, refuses one that is not ours, and removes a stale socket.
+    /// Returns this user's uid.
     pub(super) fn prepare(endpoint: &IpcEndpoint) -> Result<u32, IpcError> {
         let path = Path::new(endpoint.as_str());
         let dir = path.parent().ok_or_else(|| IpcError::NoRuntimeDir(endpoint.as_str().into()))?;
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        let own = own_euid();
+        // Never chmod or bind inside a link, or a directory that is not ours: a directory owned
+        // by someone else could be swapped under us, and its owner could replace the socket.
         let meta = std::fs::symlink_metadata(dir)?;
-        if !meta.is_dir() || meta.mode() & 0o077 != 0 {
+        if !meta.is_dir() || meta.uid() != own {
+            return Err(IpcError::UnsafeDir(dir.display().to_string()));
+        }
+        if meta.mode() & 0o077 != 0 {
             // Tighten our own directory; refuse if that does not make it private.
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let meta = std::fs::symlink_metadata(dir)?;
-        if !meta.is_dir() || meta.mode() & 0o077 != 0 {
+        if !meta.is_dir() || meta.uid() != own || meta.mode() & 0o077 != 0 {
             return Err(IpcError::UnsafeDir(dir.display().to_string()));
         }
-        let uid = meta.uid();
         match std::fs::symlink_metadata(path) {
-            Ok(m) if m.file_type().is_socket() => {
+            Ok(m) if m.file_type().is_socket() && m.uid() == own => {
                 match std::os::unix::net::UnixStream::connect(path) {
                     Ok(_) => return Err(IpcError::InUse(endpoint.as_str().into())),
                     Err(_) => std::fs::remove_file(path)?,
@@ -220,7 +302,7 @@ mod unix {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        Ok(uid)
+        Ok(own)
     }
 }
 
@@ -231,14 +313,16 @@ mod win {
     use interprocess::os::windows::security_descriptor::{BorrowedSecurityDescriptor, SecurityDescriptor};
     use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt as _;
     use std::ffi::c_void;
-    use windows::Win32::Foundation::{HANDLE, HLOCAL, LocalFree};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows::Win32::Security::{
         GetTokenInformation, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows::core::{PCWSTR, PWSTR};
 
     fn wide(s: &str) -> Vec<u16> {
@@ -249,18 +333,25 @@ mod win {
         IpcError::Io(std::io::Error::other(e))
     }
 
-    /// The string SID of the process token's user.
-    pub(super) fn user_sid() -> Result<String, IpcError> {
-        // SAFETY: plain Win32 calls with correctly sized buffers; every allocation is freed.
+    /// The string SID of the user of `token`.
+    ///
+    /// # Safety
+    /// `token` must be a valid token handle opened with `TOKEN_QUERY`.
+    unsafe fn token_user_sid(token: HANDLE) -> Result<String, IpcError> {
+        // SAFETY: the caller vouches for the handle; buffers are sized by the first call and
+        // every allocation is freed.
         unsafe {
-            let mut token = HANDLE::default();
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(os)?;
             let mut len = 0u32;
             let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
             let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-            let got = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast::<c_void>()), len, &mut len);
-            let _ = windows::Win32::Foundation::CloseHandle(token);
-            got.map_err(os)?;
+            GetTokenInformation(
+                token,
+                TokenUser,
+                Some(buf.as_mut_ptr().cast::<c_void>()),
+                len,
+                &mut len,
+            )
+            .map_err(os)?;
             let user = &*(buf.as_ptr().cast::<TOKEN_USER>());
             let mut out = PWSTR::null();
             ConvertSidToStringSidW(user.User.Sid, &mut out).map_err(os)?;
@@ -268,6 +359,55 @@ mod win {
             let _ = LocalFree(Some(HLOCAL(out.0.cast())));
             s
         }
+    }
+
+    /// The string SID of the process token's user.
+    pub(super) fn user_sid() -> Result<String, IpcError> {
+        // SAFETY: plain Win32 calls; the token handle is closed on every path.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(os)?;
+            let sid = token_user_sid(token);
+            let _ = CloseHandle(token);
+            sid
+        }
+    }
+
+    /// The string SID of the user that process `pid` runs as. Fails when the process is gone or
+    /// cannot be inspected (another user's process normally cannot be opened at all).
+    pub(super) fn process_user_sid(pid: u32) -> Result<String, IpcError> {
+        // SAFETY: plain Win32 calls; both handles are closed on every path.
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(os)?;
+            let mut token = HANDLE::default();
+            let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+            let _ = CloseHandle(process);
+            opened.map_err(os)?;
+            let sid = token_user_sid(token);
+            let _ = CloseHandle(token);
+            sid
+        }
+    }
+
+    /// Ok only when process `pid` runs as the same user as this process (fail closed: any error
+    /// is a refusal).
+    pub(super) fn require_current_user(pid: u32) -> std::io::Result<()> {
+        let ours = user_sid().map_err(|e| refuse(pid, e.to_string()))?;
+        require_user(pid, &ours)
+    }
+
+    /// Ok only when process `pid` runs as the user whose string SID is `sid`.
+    pub(super) fn require_user(pid: u32, sid: &str) -> std::io::Result<()> {
+        let theirs = process_user_sid(pid).map_err(|e| refuse(pid, e.to_string()))?;
+        if theirs == sid {
+            Ok(())
+        } else {
+            Err(refuse(pid, "it does not run as the current user".into()))
+        }
+    }
+
+    fn refuse(pid: u32, why: String) -> std::io::Error {
+        super::untrusted(format!("server process {pid}: {why}"))
     }
 
     /// The SDDL granting full access to `sid` and SYSTEM only, with inheritance blocked.
@@ -439,6 +579,111 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let ep = IpcEndpoint::from_raw(if cfg!(windows) { format!("asc-absent-{}", unique()) } else { "/nonexistent/asc.sock".into() });
         assert!(rt.block_on(connect_stream(&ep)).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_verified_server_pid_is_the_os_reported_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        let _listener = IpcListener::bind(&ep).unwrap();
+        // The listener lives in this process, so the OS must name this process.
+        assert_eq!(
+            verified_server_pid(&ep).await.unwrap(),
+            std::process::id()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_fails_verification_is_refused_and_gets_no_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ep = test_endpoint(dir.path());
+        let listener = IpcListener::bind(&ep).unwrap();
+        let server = tokio::spawn(async move {
+            let mut s = listener.accept().await.unwrap();
+            let mut rest = Vec::new();
+            let _ = s.read_to_end(&mut rest).await;
+            rest
+        });
+        let refused = connect_checked(&ep, |_| Err(untrusted("not our user"))).await;
+        assert_eq!(
+            refused.err().map(|e| e.kind()),
+            Some(io::ErrorKind::PermissionDenied)
+        );
+        // The refused connection was dropped before anything was written to it.
+        assert!(server.await.unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_user_check_accepts_our_processes_and_refuses_the_rest() {
+        win::require_current_user(std::process::id()).unwrap();
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let ours = win::require_current_user(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        ours.unwrap();
+        // A process of ours, tested against another user's SID (SYSTEM): the comparison refuses.
+        let mismatch = win::require_user(std::process::id(), "S-1-5-18").unwrap_err();
+        assert_eq!(mismatch.kind(), io::ErrorKind::PermissionDenied, "{mismatch}");
+        // pid 4 is the System process: another user, and not openable without privilege.
+        let system = win::require_current_user(4).unwrap_err();
+        assert_eq!(system.kind(), io::ErrorKind::PermissionDenied, "{system}");
+        // A pid nobody holds is refused too.
+        let gone = win::require_current_user(0x7fff_fff0).unwrap_err();
+        assert_eq!(gone.kind(), io::ErrorKind::PermissionDenied, "{gone}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_pipe_name_cannot_be_taken_by_another_creator() {
+        use tokio::net::windows::named_pipe::ServerOptions;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Our listener holds the name: a second daemon cannot bind it.
+        let ep = test_endpoint(dir.path());
+        let _first = IpcListener::bind(&ep).unwrap();
+        assert!(IpcListener::bind(&ep).is_err());
+
+        // A squatter that created the pipe first (an ordinary server with the default DACL)
+        // keeps the name: our bind must not join it as one more instance. That needs
+        // FILE_FLAG_FIRST_PIPE_INSTANCE on our first instance.
+        let squatted = test_endpoint(dir.path());
+        let _squatter = ServerOptions::new()
+            .create(format!(r"\\.\pipe\{}", squatted.as_str()))
+            .unwrap();
+        assert!(
+            IpcListener::bind(&squatted).is_err(),
+            "bind joined a pipe that someone else created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_peer_check_accepts_only_our_euid() {
+        let own = unix::own_euid();
+        unix::require_current_user(Some(own)).unwrap();
+        for other in [Some(own.wrapping_add(1)), None] {
+            let e = unix::require_current_user(other).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_run_dir_that_is_a_link_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("asc")).unwrap();
+        let ep = test_endpoint(dir.path());
+        assert!(matches!(
+            IpcListener::bind(&ep),
+            Err(IpcError::UnsafeDir(_))
+        ));
     }
 
     #[cfg(windows)]
