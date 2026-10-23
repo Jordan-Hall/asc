@@ -87,6 +87,20 @@ scenarios! {
     remote_bucket = "remote-bucket",
     push_reject = "push-reject",
     fetch_agent_refs = "fetch-agent-refs",
+    apply_basic = "apply-basic",
+    apply_offset = "apply-offset",
+    apply_errors = "apply-errors",
+    apply_rename = "apply-rename",
+    format_patch_basic = "format-patch-basic",
+    format_patch_files = "format-patch-files",
+    format_patch_text = "format-patch-text",
+    am_basic = "am-basic",
+    am_conflict = "am-conflict",
+    am_hooks = "am-hooks",
+    bisect_basic = "bisect-basic",
+    bisect_skip = "bisect-skip",
+    bisect_run = "bisect-run",
+    bisect_merge = "bisect-merge",
 }
 
 #[test]
