@@ -204,6 +204,7 @@ const REGEX_KEYWORDS: &[&str] = &[
     "else",
     "yield",
     "await",
+    "default",
 ];
 
 /// Characters that can combine with a neighbour into a longer operator (`&&`, `->`, `//`).
@@ -236,7 +237,13 @@ struct Scan<'a> {
 /// Lexes `src` into a normalised token stream. With `keep_comments` false, comments (other than
 /// directives) become whitespace.
 pub fn tokens(lang: Lang, src: &str, keep_comments: bool) -> Res<Vec<Item<'_>>> {
-    if lang.family() != Family::Token || src.as_bytes().contains(&0) {
+    if lang.family() != Family::Token || src.as_bytes().contains(&0) || odd_line_break(src) {
+        return Err(LexError);
+    }
+    // Java reads `\u000a` before it lexes; C may read `??/` as a backslash.
+    if (lang == Lang::Java && java_ascii_unicode_escape(src.as_bytes()))
+        || (lang.c_like() && has_trigraph(src.as_bytes()))
+    {
         return Err(LexError);
     }
     let mut sc = Scan {
@@ -250,7 +257,75 @@ pub fn tokens(lang: Lang, src: &str, keep_comments: bool) -> Res<Vec<Item<'_>>> 
         nl: false,
     };
     sc.run()?;
+    // The comment before `import "C"` is C source (cgo), not a comment.
+    if lang == Lang::Go
+        && sc
+            .out
+            .iter()
+            .any(|t| t.class == Class::Str && matches!(t.text, "\"C\"" | "`C`"))
+    {
+        return Err(LexError);
+    }
     Ok(sc.out)
+}
+
+/// A line ends at a bare CR, NEL, LS or PS in some languages and not in others; refuse them all.
+fn odd_line_break(src: &str) -> bool {
+    let b = src.as_bytes();
+    b.iter()
+        .enumerate()
+        .any(|(i, &c)| c == b'\r' && b.get(i + 1) != Some(&b'\n'))
+        || src.contains(['\u{85}', '\u{2028}', '\u{2029}'])
+}
+
+/// Whether Java source holds a `\uXXXX` escape (outside a `\\` pair) that is not a plain
+/// non-ASCII character. Java decodes it before lexing, so it can be a quote, a newline or `/`.
+fn java_ascii_unicode_escape(b: &[u8]) -> bool {
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let mut k = i;
+        while b.get(k) == Some(&b'\\') {
+            k += 1;
+        }
+        if (k - i) % 2 == 1 && b.get(k) == Some(&b'u') {
+            let mut h = k;
+            while b.get(h) == Some(&b'u') {
+                h += 1;
+            }
+            let digits = b
+                .get(h..h + 4)
+                .filter(|d| d.iter().all(u8::is_ascii_hexdigit));
+            let value = digits
+                .and_then(|d| std::str::from_utf8(d).ok())
+                .and_then(|d| u32::from_str_radix(d, 16).ok());
+            if value.is_none_or(|v| v < 0x80) {
+                return true;
+            }
+        }
+        i = k;
+    }
+    false
+}
+
+/// Whether C source holds a trigraph (`??/` is a backslash).
+fn has_trigraph(b: &[u8]) -> bool {
+    b.windows(3)
+        .any(|w| w[0] == b'?' && w[1] == b'?' && b"=/'()!<>-".contains(&w[2]))
+}
+
+/// Whether `t` holds a backslash followed by blanks and a line break (a line splice).
+fn has_splice(t: &[u8]) -> bool {
+    t.iter().enumerate().any(|(i, &c)| {
+        c == b'\\'
+            && t[i + 1..]
+                .iter()
+                .find(|&&x| !matches!(x, b' ' | b'\t' | b'\r' | 0x0b | 0x0c))
+                == Some(&b'\n')
+    })
 }
 
 fn is_word_byte(c: u8) -> bool {
@@ -378,11 +453,47 @@ impl<'a> Scan<'a> {
         Err(LexError)
     }
 
+    /// Whether the `)` that ends `out` closes the head of `if`, `while`, `for` or `with`, so a
+    /// `/` after it starts a regex. An unbalanced `)` counts as one.
+    fn stmt_head_closed(&self) -> bool {
+        let mut depth = 0usize;
+        for (k, it) in self.out.iter().enumerate().rev() {
+            if it.class != Class::Punct {
+                continue;
+            }
+            match it.text {
+                ")" => depth += 1,
+                "(" => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let mut before = self.out[..k].iter().rev().filter(|t| {
+                            !matches!(t.class, Class::Space | Class::Newline | Class::Comment)
+                        });
+                        return match before.next() {
+                            Some(w) if w.class == Class::Word => {
+                                matches!(w.text, "if" | "while" | "for" | "with")
+                                    || (w.text == "await"
+                                        && before.next().is_some_and(|f| f.text == "for"))
+                            }
+                            _ => false,
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }
+
     fn regex_possible(&self) -> bool {
         match self.out.last() {
             None => true,
             Some(it) => match it.class {
-                Class::Punct => !matches!(it.text, ")" | "]"),
+                Class::Punct => match it.text {
+                    "]" => false,
+                    ")" => self.stmt_head_closed(),
+                    _ => true,
+                },
                 Class::Word => REGEX_KEYWORDS.contains(&it.text),
                 Class::Str => false,
                 Class::Comment | Class::Newline | Class::Space => true,
@@ -410,6 +521,10 @@ impl<'a> Scan<'a> {
                 }
                 b'/' if self.at(i + 1) == b'*' => {
                     let z = self.block_end(i + 2)?;
+                    // A backslash-newline inside `*\<nl>/` closes the comment early in C.
+                    if lang.c_like() && has_splice(&self.b[i..z]) {
+                        return Err(LexError);
+                    }
                     self.comment(i, z, i + 2, false)?;
                 }
                 b'/' => {
@@ -436,9 +551,8 @@ impl<'a> Scan<'a> {
                 b'\'' => self.single_quote(i)?,
                 b'`' => match lang {
                     Lang::Go => {
-                        let z = self
-                            .quoted(i + 1, b'`', true)
-                            .or_else(|_| self.raw_go(i + 1))?;
+                        // A raw string has no escapes: only `raw_go` is right.
+                        let z = self.raw_go(i + 1)?;
                         self.emit(Class::Str, i, z)?;
                         self.i = z;
                     }
@@ -452,6 +566,10 @@ impl<'a> Scan<'a> {
                     let nl = self.at(i + 1) == b'\n'
                         || (self.at(i + 1) == b'\r' && self.at(i + 2) == b'\n');
                     if lang.c_like() && nl {
+                        // `/\<nl>/` and `/\<nl>*` start a comment the scan would not see.
+                        if i > 0 && self.b[i - 1] == b'/' {
+                            return Err(LexError);
+                        }
                         self.ws = true;
                         self.i += if self.at(i + 1) == b'\r' { 3 } else { 2 };
                     } else {
@@ -737,7 +855,10 @@ struct LineScan<'a> {
 
 /// Scans a line-family file.
 pub fn scan_lines(lang: Lang, src: &str) -> Res<Lines> {
-    if lang.family() != Family::Line || src.as_bytes().iter().any(|&c| c == 0 || c == 1) {
+    if lang.family() != Family::Line
+        || src.as_bytes().iter().any(|&c| c == 0 || c == 1)
+        || odd_line_break(src)
+    {
         return Err(LexError);
     }
     let b = src.as_bytes();
@@ -855,10 +976,11 @@ impl LineScan<'_> {
                 let word = self.s[i..j].to_ascii_lowercase();
                 let prefix = matches!(
                     word.as_str(),
-                    "r" | "u" | "b" | "f" | "br" | "rb" | "fr" | "rf"
+                    "r" | "u" | "b" | "f" | "br" | "rb" | "fr" | "rf" | "t" | "tr" | "rt"
                 );
                 if prefix && matches!(self.at(j), b'"' | b'\'') {
-                    i = self.py_string(j, word.contains('f'))?;
+                    // f-strings and t-strings both have `{...}` holes.
+                    i = self.py_string(j, word.contains(['f', 't']))?;
                 } else {
                     i = j;
                 }
@@ -880,6 +1002,10 @@ impl LineScan<'_> {
         loop {
             let c = *self.b.get(j).ok_or(LexError)?;
             if fstr {
+                // `\{` is a backslash then a hole; reading it as an escape loses the hole.
+                if c == b'\\' && depth == 0 && self.at(j + 1) == b'{' {
+                    return Err(LexError);
+                }
                 if c == b'{' {
                     if depth == 0 && self.at(j + 1) == b'{' {
                         j += 2;
@@ -962,10 +1088,13 @@ impl LineScan<'_> {
 
     fn shell(&mut self) -> Res<()> {
         let mut i = 0;
+        // The index just after the last backslash escape: a `#` there is mid-word.
+        let mut esc_end = usize::MAX;
         while i < self.b.len() {
             let c = self.b[i];
             let prev = if i == 0 { b'\n' } else { self.b[i - 1] };
             match c {
+                b'#' if i == esc_end => i += 1,
                 b'#' if i == 0
                     || matches!(
                         prev,
@@ -976,7 +1105,30 @@ impl LineScan<'_> {
                     self.comment(i, z, true);
                     i = z;
                 }
-                b'\\' => i += 2,
+                b'\\' => {
+                    // A joined line continues the word, so `#` after it is not a comment start.
+                    let k = i + 1 + usize::from(self.at(i + 1) == b'\r');
+                    if self.at(k) == b'\n' && self.at(k + 1) == b'#' {
+                        return Err(LexError);
+                    }
+                    i += 2;
+                    esc_end = i;
+                }
+                // The body of `${...}` is not scanned for comments or quotes.
+                b'$' if self.at(i + 1) == b'{' => {
+                    let mut j = i + 2;
+                    loop {
+                        match *self.b.get(j).ok_or(LexError)? {
+                            b'}' => break,
+                            b'\'' | b'"' | b'`' | b'\\' | b'\n' => return Err(LexError),
+                            b'$' if matches!(self.at(j + 1), b'(' | b'{' | b'\'' | b'"') => {
+                                return Err(LexError);
+                            }
+                            _ => j += 1,
+                        }
+                    }
+                    i = j + 1;
+                }
                 b'<' if self.at(i + 1) == b'<' => return Err(LexError),
                 b'\'' => {
                     let z = self.quoted(i + 1, b'\'', false, true)?;
@@ -1068,13 +1220,29 @@ impl LineScan<'_> {
         let lower = self.s.to_ascii_lowercase();
         let has_comment = lower.contains("<!--");
         if lang == Lang::Html {
-            for bad in ["<script", "<style", "<pre", "<textarea", "<![cdata[", "<?"] {
+            // Raw-text elements hold no comments; `<title>` is skipped to its end tag below.
+            for bad in [
+                "<script",
+                "<style",
+                "<pre",
+                "<textarea",
+                "<![cdata[",
+                "<?",
+                "<xmp",
+                "<plaintext",
+                "<iframe",
+                "<noembed",
+                "<noframes",
+                "<noscript",
+            ] {
                 if lower.contains(bad) {
                     return Err(LexError);
                 }
             }
         } else if has_comment
-            && (self.s.contains('`')
+            && (self.s.starts_with("---")
+                || self.s.starts_with("+++")
+                || self.s.contains('`')
                 || self.s.contains("~~~")
                 || self
                     .s
@@ -1086,6 +1254,13 @@ impl LineScan<'_> {
         let mut i = 0;
         while i < self.b.len() {
             if self.starts_with(i, "<!--") {
+                // `\<!--` is text; `<!-->`, `<!--->` and a `--!>` end the comment early.
+                if (i > 0 && self.b[i - 1] == b'\\')
+                    || self.starts_with(i, "<!-->")
+                    || self.starts_with(i, "<!--->")
+                {
+                    return Err(LexError);
+                }
                 let z = self
                     .s
                     .get(i + 4..)
@@ -1093,6 +1268,9 @@ impl LineScan<'_> {
                     .map(|p| i + 4 + p + 3)
                     .ok_or(LexError)?;
                 let inner = self.s.get(i + 4..z - 3).unwrap_or("");
+                if inner.contains("--!>") {
+                    return Err(LexError);
+                }
                 if !is_directive(inner, false, false) {
                     self.out.comments.push((i, z));
                 }
@@ -1102,6 +1280,10 @@ impl LineScan<'_> {
                 && (self.at(i + 1).is_ascii_alphabetic() || self.at(i + 1) == b'/')
             {
                 // Skip a whole tag: attribute values may hold `<!--`.
+                let title = lower.get(i..).is_some_and(|r| {
+                    r.starts_with("<title")
+                        && !r.as_bytes().get(6).is_some_and(|&c| is_word_byte(c))
+                });
                 let mut j = i + 1;
                 loop {
                     match *self.b.get(j).ok_or(LexError)? {
@@ -1113,6 +1295,14 @@ impl LineScan<'_> {
                     }
                 }
                 i = j + 1;
+                if title {
+                    // RCDATA: the text up to `</title` holds no comments.
+                    i = lower
+                        .get(i..)
+                        .and_then(|r| r.find("</title"))
+                        .map(|p| i + p)
+                        .ok_or(LexError)?;
+                }
             } else {
                 i += 1;
             }
