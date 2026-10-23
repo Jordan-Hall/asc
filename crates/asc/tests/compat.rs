@@ -90,6 +90,21 @@ scenarios! {
     fetch_agent_refs = "fetch-agent-refs",
     apply_unsafe_paths = "apply-unsafe-paths",
     apply_unsafe_asc = "apply-unsafe-asc",
+    am_basic = "am-basic",
+    am_conflict = "am-conflict",
+    am_hooks = "am-hooks",
+    apply_basic = "apply-basic",
+    apply_errors = "apply-errors",
+    apply_offset = "apply-offset",
+    apply_rename = "apply-rename",
+    bisect_basic = "bisect-basic",
+    bisect_merge = "bisect-merge",
+    bisect_run = "bisect-run",
+    bisect_skip = "bisect-skip",
+    format_patch_basic = "format-patch-basic",
+    format_patch_files = "format-patch-files",
+    format_patch_text = "format-patch-text",
+    git_remote_roundtrip = "git-remote-roundtrip",
 }
 
 #[test]
