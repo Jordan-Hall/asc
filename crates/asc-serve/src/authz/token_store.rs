@@ -22,7 +22,8 @@
 //!
 //! # Decisions
 //!
-//! A token has a principal and grants `(repo or glob, read|write|admin)`. A glob is `*` or
+//! A token has a typed principal (`pat:<user>`, `deploy:<owner/repo>`, `ci:<token id>`; see
+//! [`principal_id`]) and grants `(repo or glob, read|write|admin)`. A glob is `*` or
 //! `owner/*`. The decision for `(repo, access)` is the strongest matching grant. A missing,
 //! malformed, unknown, expired or revoked token is [`AuthError::Unauthenticated`]; a valid token
 //! without enough access is [`AuthError::Forbidden`]. Lookups are cached for [`CACHE_TTL_SECS`],
@@ -52,6 +53,8 @@ use asc_rpc::server::RepoName;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use sqlx::{AnyPool, Row};
+
+use super::key_file;
 
 /// Random bytes in a token secret.
 pub const SECRET_BYTES: usize = 32;
@@ -252,25 +255,12 @@ impl TokenKey {
         Ok(Self(random_bytes()?))
     }
 
-    /// Reads the key file. On Unix a file readable by group or others is refused.
+    /// Reads the key file. A file other users could read is refused (mode on Unix, the DACL and
+    /// owner on Windows; see [`super::key_file`]).
     pub fn load(path: &Path) -> Result<Self, TokenError> {
         let bad = |m: String| TokenError::Key(format!("{}: {m}", path.display()));
         let file = std::fs::File::open(path).map_err(|e| bad(e.to_string()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let mode = file
-                .metadata()
-                .map_err(|e| bad(e.to_string()))?
-                .permissions()
-                .mode();
-            if mode & 0o077 != 0 {
-                return Err(bad(format!(
-                    "mode {:04o} lets other users read the key; chmod 600",
-                    mode & 0o7777
-                )));
-            }
-        }
+        key_file::check_private(path).map_err(|e| bad(e.to_string()))?;
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::Read::take(file, 1024), &mut text)
             .map_err(|e| bad(e.to_string()))?;
@@ -284,23 +274,16 @@ impl TokenKey {
         Ok(Self(key))
     }
 
-    /// Reads the key file, or creates it (mode 0600 on Unix, never overwriting) when missing.
-    /// Only the token CLI creates keys: a server that starts without its key must fail, not mint
-    /// a new one that no stored digest matches.
+    /// Reads the key file, or creates it (private to the current user, never overwriting) when
+    /// missing. Only the token CLI creates keys: a server that starts without its key must fail,
+    /// not mint a new one that no stored digest matches.
     pub fn load_or_create(path: &Path) -> Result<Self, TokenError> {
         if path.exists() {
             return Self::load(path);
         }
         let key = Self::generate()?;
         let bad = |e: std::io::Error| TokenError::Key(format!("{}: {e}", path.display()));
-        let mut opts = std::fs::OpenOptions::new();
-        opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            opts.mode(0o600);
-        }
-        match opts.open(path) {
+        match key_file::create_private(path) {
             Ok(mut f) => {
                 std::io::Write::write_all(&mut f, format!("{}\n", hex(&key.0)).as_bytes())
                     .map_err(bad)?;
@@ -502,6 +485,18 @@ fn plan(req: &NewToken, now: i64) -> Result<Plan, TokenError> {
 
 // ------------------------------------------------------------------------------ the store
 
+/// The principal id of a token: the kind, a colon and the full identity, so that no user name can
+/// equal a deploy or CI principal, or `forgejo-internal`, and no two principals share an id.
+/// A user name and a repository name never contain `:`. The id is lossless; what turns it into a
+/// path (turbo's `dev-<id>`) must stay injective too, which `Scope::dev` does by hashing.
+pub fn principal_id(kind: TokenKind, user: Option<&str>, repo: &str, token_id: &str) -> String {
+    match (kind, user) {
+        (TokenKind::Pat, user) => format!("pat:{}", user.unwrap_or_default()),
+        (TokenKind::Deploy, _) => format!("deploy:{repo}"),
+        (TokenKind::Ci, _) => format!("ci:{token_id}"),
+    }
+}
+
 /// A verified, live token as the authorizer sees it.
 #[derive(Debug)]
 struct Verified {
@@ -565,11 +560,7 @@ impl TokenStore {
         let secret = URL_SAFE_NO_PAD.encode(random_bytes::<SECRET_BYTES>()?);
         let token = format!("{}{id}_{secret}", req.kind.prefix());
         debug_assert_eq!(token.len(), TOKEN_LEN);
-        let principal = match (req.kind, &plan.user) {
-            (_, Some(user)) => user.clone(),
-            (TokenKind::Deploy, None) => format!("deploy:{}", plan.grants[0].repo),
-            _ => format!("ci:{id}"),
-        };
+        let principal = principal_id(req.kind, plan.user.as_deref(), &plan.grants[0].repo, &id);
 
         let mut tx = self.pool.begin().await?;
         let cutoff = now.saturating_sub(DEAD_RETENTION_SECS);
