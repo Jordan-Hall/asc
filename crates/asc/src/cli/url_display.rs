@@ -21,16 +21,13 @@ const SECRET_KEYS: [&str; 11] = [
 
 /// `url` with credentials removed, otherwise unchanged: userinfo, in the URL and in any URL
 /// nested in its query, and the values of secret-bearing query parameters (replaced by `***`).
+/// The host shown is always the host the transport parses; when the two could differ, or the URL
+/// does not parse and its authority is suspect, the authority is shown as `***`.
 pub fn anonymize(url: &str) -> String {
-    // Userinfo first: a password may itself contain `?` or `#`.
-    let stripped = strip_userinfo(url);
-    let (base, tail) = match stripped.find(['?', '#']) {
-        Some(i) => stripped.split_at(i),
-        None => (stripped.as_str(), ""),
-    };
-    let mut out = base.to_owned();
-    out.push_str(&anonymize_tail(tail));
-    out
+    match scheme_len(url) {
+        Some(n) => anonymize_url(url, n),
+        None => anonymize_scp(url),
+    }
 }
 
 /// The length of a leading `scheme://`, if `url` starts with one.
@@ -39,43 +36,74 @@ fn scheme_len(url: &str) -> Option<usize> {
     let scheme = &url[..i];
     let mut chars = scheme.chars();
     let first = chars.next()?;
-    (first.is_ascii_alphabetic()
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
-    .then_some(i + 3)
+    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+        .then_some(i + 3)
 }
 
-/// Removes the userinfo: everything before the last `@` that precedes the first `/` (or backslash)
-/// after `scheme://`; for scp-like forms, the password only.
-fn strip_userinfo(url: &str) -> String {
-    if let Some(n) = scheme_len(url) {
-        let (head, rest) = url.split_at(n);
-        let authority_end = rest.find(['/', char::from(92u8)]).unwrap_or(rest.len());
-        let out = match rest[..authority_end].rfind('@') {
-            Some(at) => format!("{head}{}", &rest[at + 1..]),
-            None => url.to_owned(),
-        };
-        // The transport's parser must agree: if it still sees credentials, let it strip them.
-        if let Ok(mut parsed) = url::Url::parse(&out)
-            && (!parsed.username().is_empty() || parsed.password().is_some())
-            && parsed.set_username("").is_ok()
-            && parsed.set_password(None).is_ok()
-        {
-            return parsed.to_string();
+fn finish(base_and_tail: &str) -> String {
+    let (base, tail) = match base_and_tail.find(['?', '#']) {
+        Some(i) => base_and_tail.split_at(i),
+        None => (base_and_tail, ""),
+    };
+    format!("{base}{}", anonymize_tail(tail))
+}
+
+fn anonymize_url(url: &str, n: usize) -> String {
+    let (head, rest) = url.split_at(n);
+    let Ok(parsed) = url::Url::parse(url) else {
+        // The transport cannot parse it: never guess a host from text after an `@`.
+        let region_end = rest.find(['/', char::from(92u8)]);
+        let region = &rest[..region_end.unwrap_or(rest.len())];
+        if region.contains(['@', '?', '#']) {
+            return match region_end {
+                Some(i) => format!("{head}***/{}", &rest[i + 1..]),
+                None => format!("{head}***"),
+            };
         }
-        return out;
+        return finish(url);
+    };
+    let special = matches!(parsed.scheme(), "http" | "https" | "ftp" | "ws" | "wss" | "file");
+    let end = (if special { rest.find(['/', char::from(92u8), '?', '#']) } else { rest.find(['/', '?', '#']) })
+        .unwrap_or(rest.len());
+    let auth = &rest[..end];
+    let host_text = auth.rfind('@').map_or(auth, |at| &auth[at + 1..]);
+    let bare = if host_text.ends_with(']') { host_text } else { host_text.rsplit_once(':').map_or(host_text, |(h, _)| h) };
+    let agrees = parsed.host_str().is_some_and(|h| h.eq_ignore_ascii_case(bare)) || (parsed.host_str().is_none() && bare.is_empty());
+    if agrees {
+        return finish(&format!("{head}{host_text}{}", &rest[end..]));
     }
-    // scp-like `user[:password]@host:path`, or a plain path.
+    // Display from the parsed parts, so it names exactly the host the transport uses.
+    let mut clean = parsed;
+    let _ = clean.set_username("");
+    let _ = clean.set_password(None);
+    finish(clean.as_str())
+}
+
+/// scp-like `user@host:path`, or a plain path.
+fn anonymize_scp(url: &str) -> String {
     let slash = url.find('/').unwrap_or(url.len());
     let Some(at) = url[..slash].rfind('@') else {
         return url.to_owned();
     };
-    let user = &url[..at];
-    let user = user.split_once(':').map_or(user, |(u, _)| u);
-    format!("{user}{}", &url[at..])
+    let (user, after) = (&url[..at], &url[at + 1..]);
+    if !user.contains([':', '?', '#']) {
+        return url.to_owned();
+    }
+    match after.split_once(':') {
+        Some((host, _)) if !host.is_empty() && !host.contains(['@', '?', '#']) => format!("***@{after}"),
+        _ => "***".to_owned(),
+    }
+}
+
+fn mask_fragment(f: &str) -> String {
+    if f.contains('@') { "***".to_owned() } else { strip_nested(f) }
 }
 
 /// `?query#fragment`: secret values hidden, nested URLs stripped of userinfo.
 fn anonymize_tail(tail: &str) -> String {
+    if let Some(f) = tail.strip_prefix('#') {
+        return format!("#{}", mask_fragment(f));
+    }
     let Some(rest) = tail.strip_prefix('?') else {
         return tail.to_owned();
     };
@@ -85,7 +113,9 @@ fn anonymize_tail(tail: &str) -> String {
     let pairs: Vec<String> = query
         .split('&')
         .map(|pair| {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            let Some((key, value)) = pair.split_once('=') else {
+                return if pair.contains('@') { "***".to_owned() } else { pair.to_owned() };
+            };
             let lower = key.to_ascii_lowercase();
             if SECRET_KEYS.iter().any(|k| lower.contains(k)) {
                 return format!("{key}=***");
@@ -100,7 +130,7 @@ fn anonymize_tail(tail: &str) -> String {
     let mut out = format!("?{}", pairs.join("&"));
     if let Some(f) = fragment {
         out.push('#');
-        out.push_str(&strip_nested(f));
+        out.push_str(&mask_fragment(f));
     }
     out
 }
@@ -154,7 +184,7 @@ mod tests {
     #[test]
     fn scp_like_keeps_user_drops_password() {
         assert_eq!(anonymize("git@host:o/r.git"), "git@host:o/r.git");
-        assert_eq!(anonymize("user:TOKEN@host:o/r.git"), "user@host:o/r.git");
+        assert_eq!(anonymize("user:TOKEN@host:o/r.git"), "***@host:o/r.git");
     }
 
     #[test]
@@ -184,6 +214,7 @@ mod tests {
         );
         assert_eq!(anonymize("https://u:pw@host#x"), "https://host#x");
         assert_eq!(anonymize("https://host/?a=b@c"), "https://host/?a=b@c");
+        assert_eq!(anonymize("https://host?a=b@c"), "https://host?a=b@c");
     }
 
     #[test]
@@ -218,16 +249,31 @@ mod tests {
 
     #[test]
     fn scp_like_path_containing_a_scheme_separator_still_hides_the_password() {
-        assert_eq!(anonymize("user:pw@host:path/x://y"), "user@host:path/x://y");
-        assert_eq!(anonymize("u:pw@host:a?b=c://d"), "u@host:a?b=c://d");
+        assert_eq!(anonymize("user:pw@host:path/x://y"), "***@host:path/x://y");
+        assert_eq!(anonymize("u:pw@host:a?b=c://d"), "***@host:a?b=c://d");
+    }
+
+    #[test]
+    fn display_never_names_a_different_host_than_the_transport() {
+        assert_eq!(anonymize("https://evil.com?@good.com/"), "https://evil.com?***");
+        assert_eq!(anonymize("https://evil.com#@good.com/"), "https://evil.com#***");
+    }
+
+    #[test]
+    fn unparsable_suspect_authorities_are_masked() {
+        let shown = anonymize("https://u:p?w@host/");
+        assert!(!shown.contains("p?w") && !shown.contains("u:p"), "{shown}");
+        assert_eq!(shown, "https://***/");
+        assert_eq!(anonymize("https://u:p#w@host/r"), "https://***/r");
+        assert_eq!(anonymize("u:p?w@host:path"), "***@host:path");
+        assert_eq!(anonymize("u:p@@x"), "***");
     }
 
     #[test]
     fn query_and_fragment_characters_inside_userinfo_do_not_leak() {
-        assert_eq!(anonymize("https://u:p?w@host/"), "https://host/");
-        assert_eq!(anonymize("https://u:p#w@host/"), "https://host/");
-        assert_eq!(anonymize("https://us?er:pw@host/r"), "https://host/r");
-        assert_eq!(anonymize("https://us#er:pw@host/r?x=1"), "https://host/r?x=1");
-        assert_eq!(anonymize("u:p?w@host:path"), "u@host:path");
+        for url in ["https://us?er:pw@host/r", "https://us#er:pw@host/r?x=1", "https://u:p?w@host/", "https://u:p#w@host/"] {
+            let shown = anonymize(url);
+            assert!(!shown.contains("pw") && !shown.contains("p?w") && !shown.contains("p#w"), "{url} -> {shown}");
+        }
     }
 }
