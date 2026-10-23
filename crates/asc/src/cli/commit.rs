@@ -18,9 +18,11 @@ use asc_core::git::{ObjectKind, export_commit, tree_oid};
 use asc_core::id::{ChangesetId, GitOid, RefTarget, TreeId};
 use asc_core::object::Change;
 use asc_core::path::{RefName, RepoPath};
+use asc_core::sig::Signature;
 use asc_engine::commit::{NewChangeset, PathPolicy};
 use asc_engine::derive::{Gen, index_commit_git};
-use asc_engine::diff::{DiffCtx, DiffOptions, NoAttributes, Status, mode, write_shortstat};
+use asc_engine::diff::format::write_summary;
+use asc_engine::diff::{DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_shortstat};
 use asc_engine::history::HistoryApi;
 use asc_git::projection::Head;
 use asc_state::state::stage::{self, SetId, StageSet};
@@ -29,6 +31,7 @@ use asc_state::state::{git_map, stage_sets};
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
 
 use self::message::Cleanup;
+use super::format::date::Mode as DateMode;
 use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use crate::ext::{self, OpId};
 use crate::hooks_runner::{Gate, Hook, HookEnv, MsgSource, RewriteKind, Runner};
@@ -741,11 +744,12 @@ async fn flow(
     if !a.quiet {
         let summary = Summary {
             label: branch.map_or_else(|| "detached HEAD".to_owned(), str::to_owned),
-            root_commit: parents.is_empty(),
+            root_commit: head.is_none(),
             oid: new_git,
             subject,
             author_differs: ident::display(&idents.author) != ident::display(&idents.committer),
             author: ident::display(&idents.author),
+            date: author_date_is_interesting(a).then(|| default_date(&idents.author)),
         };
         print_summary(ws, &summary, first_parent_root, root).await?;
     }
@@ -765,6 +769,17 @@ fn nothing_to_commit(head_ref: &Head, head: Option<ChangesetId>) -> String {
     } else {
         format!("{on}\nnothing to commit, working tree clean")
     }
+}
+
+/// git's `author_date_is_interesting`: the author date came from a commit being amended or from
+/// `--date`, so the template and the summary show it.
+fn author_date_is_interesting(a: &Args) -> bool {
+    a.amend || a.date.is_some()
+}
+
+/// git's default date format for an identity's time.
+fn default_date(sig: &Signature) -> String {
+    DateMode::default().render(sig.time(), sig.tz_min(), sig.time())
 }
 
 /// The `asc mv` renames whose destination is written by this commit and whose source is in the
@@ -868,6 +883,8 @@ struct Summary {
     subject: String,
     author_differs: bool,
     author: String,
+    /// The author date, when it is not simply now (amend, `--date`).
+    date: Option<String>,
 }
 
 /// `[branch abc1234] subject`, the author if it differs, the shortstat and the mode lines.
@@ -879,7 +896,14 @@ async fn print_summary(ws: &WsCtx, s: &Summary, parent_root: TreeId, root: TreeI
     if s.author_differs {
         writeln!(out, " Author: {}", s.author)?;
     }
-    let opts = DiffOptions::default();
+    if let Some(date) = &s.date {
+        writeln!(out, " Date: {date}")?;
+    }
+    // git hardcodes rename detection (limit 100) for the summary, whatever `diff.renames` says.
+    let opts = DiffOptions {
+        renames: Some(RenameOptions { limit: 100, ..RenameOptions::default() }),
+        ..DiffOptions::default()
+    };
     let changes = ws
         .engine
         .diff_trees(parent_root, root, None, &opts)
@@ -893,17 +917,7 @@ async fn print_summary(ws: &WsCtx, s: &Summary, parent_root: TreeId, root: TreeI
     write_shortstat(&mut out, &dctx, &changes)
         .await
         .map_err(|e| fatal(e.to_string()))?;
-    for c in &changes {
-        match (c.status, &c.new, &c.old) {
-            (Status::Added, Some(e), _) => {
-                writeln!(out, " create mode {:06o} {}", mode(e.kind), c.path)?;
-            }
-            (Status::Deleted, _, Some(e)) => {
-                writeln!(out, " delete mode {:06o} {}", mode(e.kind), c.path)?;
-            }
-            _ => {}
-        }
-    }
+    write_summary(&mut out, &changes, &opts).map_err(|e| fatal(e.to_string()))?;
     std::io::stdout().write_all(&out)?;
     Ok(())
 }
