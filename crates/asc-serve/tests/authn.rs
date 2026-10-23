@@ -165,19 +165,19 @@ const ROUTES: &[Route] = &[
         name: "git info/refs",
         method: "GET",
         path: "/acme/web.git/info/refs?service=git-upload-pack",
-        allowed: StatusCode::NOT_FOUND,
+        allowed: StatusCode::FORBIDDEN,
     },
     Route {
         name: "git upload-pack",
         method: "POST",
         path: "/acme/web/git-upload-pack",
-        allowed: StatusCode::NOT_FOUND,
+        allowed: StatusCode::FORBIDDEN,
     },
     Route {
         name: "git receive-pack",
         method: "POST",
         path: "/acme/web.git/git-receive-pack",
-        allowed: StatusCode::NOT_FOUND,
+        allowed: StatusCode::FORBIDDEN,
     },
 ];
 
@@ -414,11 +414,12 @@ async fn oversized_repeated_unknown_and_query_credentials_are_refused_with_400()
 }
 
 #[tokio::test]
-async fn git_paths_challenge_anonymous_callers_then_say_where_git_is_served() {
+async fn git_paths_challenge_anonymous_callers_then_say_the_protocol_is_disabled() {
     let spy = Spy::new();
     let app = public(&spy);
     let path = "/acme/web.git/info/refs?service=git-upload-pack";
     assert_challenged(&send(&app, "GET", path, &[]).await, "anonymous");
+    // The stub of SPEC 25.9 (this router has no live git layer): `403`, the flag and the text.
     for repo in [
         "/acme/web",
         "/acme/web.git",
@@ -427,9 +428,22 @@ async fn git_paths_challenge_anonymous_callers_then_say_where_git_is_served() {
     ] {
         let path = format!("{repo}/info/refs?service=git-upload-pack");
         let res = send(&app, "GET", &path, &[&format!("token {TOKEN}")]).await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{repo}");
-        assert!(body_text(res).await.contains("served by the forge"));
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{repo}");
+        assert_eq!(res.headers()["x-asc-git"], "disabled", "{repo}");
+        assert_eq!(
+            body_text(res).await.trim(),
+            "asc: git protocol disabled on this server"
+        );
     }
+    // A name that cannot be a repository is the 404 of a missing one.
+    let res = send(
+        &app,
+        "GET",
+        "/acme/%2e%2e.git/info/refs?service=git-upload-pack",
+        &[&format!("token {TOKEN}")],
+    )
+    .await;
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -528,7 +542,8 @@ async fn real_git_asks_its_credential_helper_after_the_challenge() {
     .await
     .unwrap();
 
-    // asc serve does not serve the git protocol, so git ends in "not found", as with any host.
+    // The stub answers 403 ("git protocol disabled"), so git ends in an error, as with any host
+    // that does not serve git.
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(!stderr.contains(TOKEN), "{stderr}");
@@ -537,10 +552,10 @@ async fn real_git_asks_its_credential_helper_after_the_challenge() {
         asked.lines().any(|l| l == "get"),
         "the helper was never asked; git said: {stderr}"
     );
-    // Anonymous requests (git probes more than once) get 401; the one with the credential, 404.
+    // Anonymous requests (git probes more than once) get 401; the one with the credential, 403.
     let log = log.lock().unwrap();
     let (last, anonymous) = log.split_last().unwrap();
-    assert_eq!(*last, (true, 404), "{stderr}");
+    assert_eq!(*last, (true, 403), "{stderr}");
     assert!(!anonymous.is_empty() && anonymous.iter().all(|r| *r == (false, 401)));
     assert!(
         spy.seen
