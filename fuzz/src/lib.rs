@@ -14,8 +14,11 @@ use asc_core::id::{ChangesetId, TreeId};
 use asc_core::object::{Changeset, ChunkList, TagRecord, Tree};
 use asc_core::path::{Name, RefName, RepoPath, casefold, checkout_safe, windows_valid};
 
+/// One fuzz target body.
+pub type TargetBody = fn(&[u8]);
+
 /// Every target, in the order `run-all.sh` runs them.
-pub const TARGETS: &[(&str, fn(&[u8]))] = &[
+pub const TARGETS: &[(&str, TargetBody)] = &[
     ("envelope_decode", envelope_decode),
     (
         "git_commit_parse_canonicalise",
@@ -137,10 +140,10 @@ pub fn proto_convert(data: &[u8]) {
         return;
     }
     let desc = pool.all_messages().nth(usize::from(pick) % count).unwrap();
-    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(rest) {
-        if let Ok(msg) = asc_rpc::json::decode(&desc, &value) {
-            let _ = asc_rpc::json::encode(&msg);
-        }
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(rest)
+        && let Ok(msg) = asc_rpc::json::decode(&desc, &value)
+    {
+        let _ = asc_rpc::json::encode(&msg);
     }
     let _ = DynamicMessage::decode(desc, rest);
 }
