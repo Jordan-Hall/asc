@@ -85,7 +85,10 @@ impl Budget {
             0 => DEFAULT_RESULTS,
             n => n.min(MAX_RESULTS),
         };
-        Limits { results: results as usize, bytes }
+        Limits {
+            results: results as usize,
+            bytes,
+        }
     }
 }
 
@@ -195,7 +198,10 @@ fn clean(raw: &[u8], starts: &[u32]) -> (String, Vec<usize>) {
         .iter()
         .map(|&s| {
             let at = chars.partition_point(|x| x.0 < s as usize);
-            pos.get(at).or_else(|| pos.last()).copied().unwrap_or(out.len())
+            pos.get(at)
+                .or_else(|| pos.last())
+                .copied()
+                .unwrap_or(out.len())
         })
         .collect();
     (out, cols)
@@ -203,7 +209,9 @@ fn clean(raw: &[u8], starts: &[u32]) -> (String, Vec<usize>) {
 
 /// Labels of PEM-style blocks whose body must not be shown.
 fn block_label(label: &str) -> bool {
-    ["PRIVATE KEY", "SECRET", "CREDENTIAL", "TOKEN"].iter().any(|k| label.contains(k))
+    ["PRIVATE KEY", "SECRET", "CREDENTIAL", "TOKEN"]
+        .iter()
+        .any(|k| label.contains(k))
 }
 
 /// Byte offset of the last secret `-----BEGIN <label>-----` marker in `s`, if any.
@@ -276,8 +284,16 @@ fn redacted_lines<'a>(lines: impl IntoIterator<Item = (i64, &'a [u8])>) -> HashS
 /// Absolute numbers and text of the context lines around a match at `line`.
 fn context_lines(r: &RawLine) -> impl Iterator<Item = (i64, &[u8])> {
     let (line, n) = (i64::from(r.line), r.before.len() as i64);
-    let before = r.before.iter().enumerate().map(move |(j, l)| (line - n + j as i64, l.as_slice()));
-    let after = r.after.iter().enumerate().map(move |(j, l)| (line + 1 + j as i64, l.as_slice()));
+    let before = r
+        .before
+        .iter()
+        .enumerate()
+        .map(move |(j, l)| (line - n + j as i64, l.as_slice()));
+    let after = r
+        .after
+        .iter()
+        .enumerate()
+        .map(move |(j, l)| (line + 1 + j as i64, l.as_slice()));
     before.chain(after)
 }
 
@@ -422,7 +438,11 @@ pub struct RenderedSearch {
 fn line_cost(l: &LineOut) -> usize {
     8 + l.cols.len() * 4
         + l.text.len()
-        + l.before.iter().chain(&l.after).map(|b| b.len() + 1).sum::<usize>()
+        + l.before
+            .iter()
+            .chain(&l.after)
+            .map(|b| b.len() + 1)
+            .sum::<usize>()
 }
 
 fn file_head_cost(f: &FileOut) -> usize {
@@ -499,7 +519,10 @@ pub fn render_search(
     input_truncated: bool,
 ) -> RenderedSearch {
     let lim = budget.limits();
-    let mut out = RenderedSearch { truncated: input_truncated, ..RenderedSearch::default() };
+    let mut out = RenderedSearch {
+        truncated: input_truncated,
+        ..RenderedSearch::default()
+    };
     // One FileId is one file, however many hits name it.
     let mut by_id: HashMap<FileId, usize> = HashMap::new();
     let mut merged: Vec<(&RawFileHit, Vec<&Vec<u8>>)> = Vec::new();
@@ -615,14 +638,19 @@ pub struct RenderedSymbols {
 
 /// The lines of a signature or doc that are rendered.
 fn field_lines(raw: &[u8]) -> impl Iterator<Item = &[u8]> {
-    raw[..raw.len().min(MAX_LINE_IN * 4)].split(|&b| b == b'\n').take(20)
+    raw[..raw.len().min(MAX_LINE_IN * 4)]
+        .split(|&b| b == b'\n')
+        .take(20)
 }
 
 /// Line numbers given to the doc's lines, after the signature's, so a gap keeps a block open.
 const DOC_BASE: i64 = 100;
 
 fn numbered_field(raw: &[u8], base: i64) -> Vec<(i64, &[u8])> {
-    field_lines(raw).enumerate().map(|(i, l)| (base + i as i64, l)).collect()
+    field_lines(raw)
+        .enumerate()
+        .map(|(i, l)| (base + i as i64, l))
+        .collect()
 }
 
 fn text_field(raw: &[u8], base: i64, inside: &HashSet<i64>) -> (Vec<u8>, bool) {
@@ -640,17 +668,21 @@ fn text_field(raw: &[u8], base: i64, inside: &HashSet<i64>) -> (Vec<u8>, bool) {
     (out, flagged)
 }
 
-/// Renders symbols under `budget`. `flagged_paths` lists paths whose file the caller knows
-/// to be flagged; paths matching the path rules are always flagged.
+/// Renders symbols under `budget`. Each symbol carries its file's secret flag
+/// ([`crate::symbols::Symbol::secret`]); `None` (not known) counts as flagged, and so do paths
+/// that match the path rules. A flagged symbol shows its path, kind and lines only: the name,
+/// signature, container and doc are dropped.
 pub fn render_symbols(
     ctx: &RenderCtx,
     budget: Budget,
     symbols: &[crate::symbols::Symbol],
-    flagged_paths: &[Vec<u8>],
     input_truncated: bool,
 ) -> RenderedSymbols {
     let lim = budget.limits();
-    let mut out = RenderedSymbols { truncated: input_truncated, ..RenderedSymbols::default() };
+    let mut out = RenderedSymbols {
+        truncated: input_truncated,
+        ..RenderedSymbols::default()
+    };
     let mut used = ctx.repo.len() + ctx.changeset.len();
     for s in symbols {
         if out.symbols.len() >= lim.results {
@@ -658,25 +690,34 @@ pub fn render_symbols(
             break;
         }
         let path = clean_path(&s.path);
-        let file_flagged = path_flagged(&s.path) || flagged_paths.contains(&s.path);
-        let (signature, doc, redacted) = if file_flagged {
-            (Vec::new(), Vec::new(), true)
+        let file_flagged = s.secret != Some(false)
+            || path_flagged(&s.path)
+            || secrets::line_is_secret(s.name.as_bytes())
+            || secrets::line_is_secret(s.container.as_bytes());
+        let (name, container, signature, doc, redacted) = if file_flagged {
+            (String::new(), String::new(), Vec::new(), Vec::new(), true)
         } else {
             let mut all = numbered_field(&s.signature, 0);
             all.extend(numbered_field(&s.doc, DOC_BASE));
             let inside = redacted_lines(all);
             let (sig, a) = text_field(&s.signature, 0, &inside);
             let (doc, b) = text_field(&s.doc, DOC_BASE, &inside);
-            (sig, doc, a || b)
+            (
+                clean_text(&s.name, 256),
+                clean_text(&s.container, 256),
+                sig,
+                doc,
+                a || b,
+            )
         };
         let o = SymbolOut {
-            name: clean_text(&s.name, 256),
+            name,
             kind: clean_text(&s.kind, 32),
             is_def: s.is_def,
             line: s.line,
             end_line: s.end_line,
             signature,
-            container: clean_text(&s.container, 256),
+            container,
             doc,
             confidence: s.confidence.to_owned(),
             redacted,
@@ -756,7 +797,10 @@ pub fn render_chunks(
     input_truncated: bool,
 ) -> RenderedChunks {
     let lim = budget.limits();
-    let mut out = RenderedChunks { truncated: input_truncated, ..RenderedChunks::default() };
+    let mut out = RenderedChunks {
+        truncated: input_truncated,
+        ..RenderedChunks::default()
+    };
     let mut used = ctx.repo.len() + ctx.changeset.len();
     // Every line of every chunk of a file is keyed by its absolute number (`start_line + i`),
     // so overlapping or out-of-order chunks are one line each and a key split across chunks
@@ -770,8 +814,10 @@ pub fn render_chunks(
                 .map(|(i, l)| (i64::from(c.start_line) + i as i64, l)),
         );
     }
-    let inside: HashMap<FileId, HashSet<i64>> =
-        numbered.into_iter().map(|(f, v)| (f, redacted_lines(v))).collect();
+    let inside: HashMap<FileId, HashSet<i64>> = numbered
+        .into_iter()
+        .map(|(f, v)| (f, redacted_lines(v)))
+        .collect();
     let no_lines = HashSet::new();
     for c in chunks {
         let inside = inside.get(&c.file).unwrap_or(&no_lines);
@@ -781,7 +827,12 @@ pub fn render_chunks(
         }
         let path = clean_path(&c.path);
         let mut redacted = c.flagged || path_flagged(&c.path);
-        let sources: Vec<String> = c.sources.iter().take(8).map(|s| clean_text(s, 32)).collect();
+        let sources: Vec<String> = c
+            .sources
+            .iter()
+            .take(8)
+            .map(|s| clean_text(s, 32))
+            .collect();
         let head = path.len()
             + 32
             + 24
@@ -850,7 +901,10 @@ mod tests {
     const AWS: &str = "let k = \"AKIAIOSFODNN7EXAMPLE\";";
 
     fn ctx() -> RenderCtx {
-        RenderCtx { repo: "acme/app".into(), changeset: vec![7; 32] }
+        RenderCtx {
+            repo: "acme/app".into(),
+            changeset: vec![7; 32],
+        }
     }
 
     fn fid(n: u8) -> FileId {
@@ -859,7 +913,12 @@ mod tests {
 
     fn raw_line(n: u32, text: &str) -> RawLine {
         let at = text.find("needle").unwrap_or(0) as u32;
-        RawLine { line: n, text: text.as_bytes().to_vec(), spans: vec![(at, at + 6)], ..RawLine::default() }
+        RawLine {
+            line: n,
+            text: text.as_bytes().to_vec(),
+            spans: vec![(at, at + 6)],
+            ..RawLine::default()
+        }
     }
 
     fn hit(n: u8, paths: &[&str], lines: Vec<RawLine>) -> RawFileHit {
@@ -877,7 +936,12 @@ mod tests {
         let mut l = raw_line(3, AWS);
         l.before = vec![b"// ok".to_vec(), AWS.as_bytes().to_vec()];
         l.after = vec![AWS.as_bytes().to_vec()];
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["src/a.rs"], vec![l])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["src/a.rs"], vec![l])],
+            false,
+        );
         let f = &r.files[0];
         assert!(f.redacted);
         let m = &f.matches[0];
@@ -892,24 +956,44 @@ mod tests {
 
     #[test]
     fn secret_path_shows_path_only() {
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["cfg/.env"], vec![raw_line(1, "x=1")])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["cfg/.env"], vec![raw_line(1, "x=1")])],
+            false,
+        );
         assert!(r.files[0].redacted && r.files[0].matches.is_empty());
         assert_eq!(r.files[0].path, b"cfg/.env");
         // A secret alias flags the whole file.
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.txt", "b/.env"], vec![raw_line(1, "x=1")])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a.txt", "b/.env"], vec![raw_line(1, "x=1")])],
+            false,
+        );
         assert!(r.files[0].redacted && r.files[0].matches.is_empty());
     }
 
     #[test]
     fn controls_and_ansi_are_stripped() {
         let raw = "a\x1b[31mred\x1b[0m\x07b\x1b]0;title\x07c\td\r\u{202e}e\u{200b}f\x00g";
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a"], vec![raw_line(1, raw)])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a"], vec![raw_line(1, raw)])],
+            false,
+        );
         assert_eq!(r.files[0].matches[0].text, b"aredbc defg");
     }
 
     #[test]
     fn invalid_utf8_and_cols() {
-        let mut l = RawLine { line: 2, text: b"\x1b[1mab\xffneedle".to_vec(), spans: vec![(7, 13)], ..RawLine::default() };
+        let mut l = RawLine {
+            line: 2,
+            text: b"\x1b[1mab\xffneedle".to_vec(),
+            spans: vec![(7, 13)],
+            ..RawLine::default()
+        };
         l.spans = vec![(7, 13)];
         let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a"], vec![l])], false);
         let m = &r.files[0].matches[0];
@@ -921,14 +1005,24 @@ mod tests {
     #[test]
     fn long_lines_cut_around_the_match() {
         let text = format!("{}needle{}", "x".repeat(900), "y".repeat(900));
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a"], vec![raw_line(1, &text)])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a"], vec![raw_line(1, &text)])],
+            false,
+        );
         let m = &r.files[0].matches[0];
         assert!(m.text.len() <= MAX_LINE_OUT);
         let at = m.cols[0] as usize - 1;
         assert_eq!(&m.text[at..at + 6], b"needle");
         // Multi-byte text is cut on a boundary.
         let text = format!("{}needle", "é".repeat(500));
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a"], vec![raw_line(1, &text)])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a"], vec![raw_line(1, &text)])],
+            false,
+        );
         assert!(std::str::from_utf8(&r.files[0].matches[0].text).is_ok());
     }
 
@@ -939,7 +1033,10 @@ mod tests {
         let r = render_search(
             &ctx(),
             Budget::default(),
-            &[hit(1, &refs[..4], vec![raw_line(1, "needle")]), hit(1, &refs[4..], vec![])],
+            &[
+                hit(1, &refs[..4], vec![raw_line(1, "needle")]),
+                hit(1, &refs[4..], vec![]),
+            ],
             false,
         );
         assert_eq!(r.files.len(), 1);
@@ -951,7 +1048,16 @@ mod tests {
 
     #[test]
     fn provenance_on_every_hit() {
-        let r = render_search(&ctx(), Budget::default(), &[hit(4, &["a/b.rs"], vec![raw_line(8, "needle"), raw_line(12, "needle")])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(
+                4,
+                &["a/b.rs"],
+                vec![raw_line(8, "needle"), raw_line(12, "needle")],
+            )],
+            false,
+        );
         let f = &r.files[0];
         assert_eq!(f.provenance.repo, "acme/app");
         assert_eq!(f.provenance.changeset, vec![7; 32]);
@@ -967,20 +1073,51 @@ mod tests {
     #[test]
     fn budget_bounds_output() {
         let lines: Vec<RawLine> = (1..=200).map(|n| raw_line(n, &"z".repeat(200))).collect();
-        let hits: Vec<RawFileHit> = (0..50).map(|i| hit(i, &["p/file.rs"], lines.clone())).collect();
-        let small: Vec<RawFileHit> = (0..50).map(|i| hit(i, &["p/file.rs"], lines[..2].to_vec())).collect();
-        let b = Budget { max_tokens: 500, ..Budget::default() };
+        let hits: Vec<RawFileHit> = (0..50)
+            .map(|i| hit(i, &["p/file.rs"], lines.clone()))
+            .collect();
+        let small: Vec<RawFileHit> = (0..50)
+            .map(|i| hit(i, &["p/file.rs"], lines[..2].to_vec()))
+            .collect();
+        let b = Budget {
+            max_tokens: 500,
+            ..Budget::default()
+        };
         let r = render_search(&ctx(), b, &hits, false);
         assert!(r.truncated);
         assert!(r.est_tokens <= 500, "{}", r.est_tokens);
         assert!(!r.files.is_empty());
         // The hard cap wins over a bigger request.
-        let r = render_search(&ctx(), Budget { max_tokens: 1_000_000, ..Budget::default() }, &hits, false);
+        let r = render_search(
+            &ctx(),
+            Budget {
+                max_tokens: 1_000_000,
+                ..Budget::default()
+            },
+            &hits,
+            false,
+        );
         assert!(r.est_tokens <= MAX_TOKENS);
         // max_results and max_bytes.
-        let r = render_search(&ctx(), Budget { max_results: 2, ..Budget::default() }, &small, false);
+        let r = render_search(
+            &ctx(),
+            Budget {
+                max_results: 2,
+                ..Budget::default()
+            },
+            &small,
+            false,
+        );
         assert_eq!(r.files.len(), 2);
-        let r = render_search(&ctx(), Budget { max_bytes: 300, ..Budget::default() }, &hits, false);
+        let r = render_search(
+            &ctx(),
+            Budget {
+                max_bytes: 300,
+                ..Budget::default()
+            },
+            &hits,
+            false,
+        );
         assert!(r.est_tokens <= 100);
         assert_eq!(est_tokens(0), 0);
         assert_eq!(est_tokens(1), 1);
@@ -1001,15 +1138,81 @@ mod tests {
             container: String::new(),
             doc: AWS.as_bytes().to_vec(),
             confidence: "high",
+            secret: Some(false),
         };
-        let r = render_symbols(&ctx(), Budget::default(), &[s("a.rs", "fn f()"), s("x/.env", "fn g()")], &[], false);
+        let r = render_symbols(
+            &ctx(),
+            Budget::default(),
+            &[s("a.rs", "fn f()"), s("x/.env", "fn g()")],
+            false,
+        );
         assert_eq!(r.symbols[0].name, "f");
         assert_eq!(r.symbols[0].signature, b"fn f()");
         assert!(r.symbols[0].redacted);
         assert_eq!(r.symbols[0].doc, REDACTED_TEXT);
-        assert!(r.symbols[1].redacted && r.symbols[1].signature.is_empty() && r.symbols[1].doc.is_empty());
+        assert!(
+            r.symbols[1].redacted
+                && r.symbols[1].signature.is_empty()
+                && r.symbols[1].doc.is_empty()
+        );
         assert_eq!(r.symbols[1].provenance.start_line, 4);
         assert!(!format!("{r:?}").contains("AKIA"));
+    }
+
+    fn secret_symbol(secret: Option<bool>) -> crate::symbols::Symbol {
+        crate::symbols::Symbol {
+            name: "hiddenName".into(),
+            kind: "fn".into(),
+            is_def: true,
+            path: b"src/a.rs".to_vec(),
+            line: 3,
+            end_line: 5,
+            signature: b"fn hiddenName(hiddenArg: u8)".to_vec(),
+            container: "HiddenContainer".into(),
+            doc: b"hiddenDoc".to_vec(),
+            confidence: "high",
+            secret,
+        }
+    }
+
+    #[test]
+    fn symbols_without_an_explicit_flag_are_flagged() {
+        for secret in [None, Some(true)] {
+            let r = render_symbols(&ctx(), Budget::default(), &[secret_symbol(secret)], false);
+            let o = &r.symbols[0];
+            assert!(o.redacted, "{secret:?}");
+            assert!(o.name.is_empty() && o.container.is_empty(), "{o:?}");
+            assert!(o.signature.is_empty() && o.doc.is_empty(), "{o:?}");
+            assert_eq!(o.path, b"src/a.rs");
+            assert_eq!((o.line, o.end_line), (3, 5));
+            let dump = format!("{r:?}");
+            for t in ["hidden", "Hidden"] {
+                assert!(!dump.contains(t), "{secret:?}: {dump}");
+            }
+        }
+        let r = render_symbols(
+            &ctx(),
+            Budget::default(),
+            &[secret_symbol(Some(false))],
+            false,
+        );
+        let o = &r.symbols[0];
+        assert!(!o.redacted);
+        assert_eq!(o.name, "hiddenName");
+        assert_eq!(o.container, "HiddenContainer");
+        assert_eq!(o.doc, b"hiddenDoc");
+    }
+
+    #[test]
+    fn a_secret_name_or_container_flags_the_symbol() {
+        for (name, container) in [(AWS, ""), ("f", AWS)] {
+            let mut s = secret_symbol(Some(false));
+            s.name = name.into();
+            s.container = container.into();
+            let r = render_symbols(&ctx(), Budget::default(), &[s], false);
+            assert!(r.symbols[0].redacted);
+            assert!(!format!("{r:?}").contains("AKIA"));
+        }
     }
 
     #[test]
@@ -1026,13 +1229,29 @@ mod tests {
             flagged,
         };
         let text = format!("fn f() {{\n{AWS}\n}}");
-        let r = render_chunks(&ctx(), Budget::default(), &[c(&text, false), c("x", true)], false);
+        let r = render_chunks(
+            &ctx(),
+            Budget::default(),
+            &[c(&text, false), c("x", true)],
+            false,
+        );
         assert!(r.chunks[0].redacted);
         assert!(!format!("{r:?}").contains("AKIA"));
-        assert_eq!(r.chunks[0].text, [b"fn f() {\n".as_slice(), REDACTED_TEXT, b"\n}"].concat());
+        assert_eq!(
+            r.chunks[0].text,
+            [b"fn f() {\n".as_slice(), REDACTED_TEXT, b"\n}"].concat()
+        );
         assert!(r.chunks[1].redacted && r.chunks[1].text.is_empty());
         let big = "w".repeat(200) + "\n";
-        let r = render_chunks(&ctx(), Budget { max_tokens: 100, ..Budget::default() }, &[c(&big.repeat(50), false)], false);
+        let r = render_chunks(
+            &ctx(),
+            Budget {
+                max_tokens: 100,
+                ..Budget::default()
+            },
+            &[c(&big.repeat(50), false)],
+            false,
+        );
         assert!(r.truncated && r.est_tokens <= 100);
     }
 
@@ -1043,10 +1262,19 @@ mod tests {
             ord: 1,
             file: fid(9),
             paths: vec![RepoPath::new("a/b.rs").unwrap()],
-            lines: vec![search::LineMatch { line: 5, text: b"needle".to_vec(), spans: vec![(0, 6)] }],
+            lines: vec![search::LineMatch {
+                line: 5,
+                text: b"needle".to_vec(),
+                spans: vec![(0, 6)],
+            }],
             more_lines: false,
         };
-        let r = render_search(&ctx(), Budget::default(), &[RawFileHit::from_search(&h, Some("rust"), Some(false))], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[RawFileHit::from_search(&h, Some("rust"), Some(false))],
+            false,
+        );
         assert_eq!(r.files[0].lang, "rust");
         assert_eq!(r.files[0].matches[0].cols, vec![1]);
     }
@@ -1058,7 +1286,11 @@ mod tests {
             ord: 1,
             file: fid(9),
             paths: vec![RepoPath::new("a/b.rs").unwrap()],
-            lines: vec![search::LineMatch { line: 5, text: b"harmless needle".to_vec(), spans: vec![(9, 15)] }],
+            lines: vec![search::LineMatch {
+                line: 5,
+                text: b"harmless needle".to_vec(),
+                spans: vec![(9, 15)],
+            }],
             more_lines: false,
         };
         for (flag, shown) in [(None, false), (Some(true), false), (Some(false), true)] {
@@ -1091,11 +1323,15 @@ mod tests {
 
     #[test]
     fn pem_block_spanning_lines_is_fully_redacted() {
-        let text = format!("fn f() {{\n{PEM_BEGIN}\n{BODY1}\n{BODY2}\n{PEM_END}\nlet after = 1;\n}}");
+        let text =
+            format!("fn f() {{\n{PEM_BEGIN}\n{BODY1}\n{BODY2}\n{PEM_END}\nlet after = 1;\n}}");
         let r = render_chunks(&ctx(), Budget::default(), &[chunk(1, 1, &text)], false);
         let t = String::from_utf8_lossy(&r.chunks[0].text).into_owned();
         assert!(r.chunks[0].redacted);
-        assert!(!t.contains("secretBODY") && !t.contains("PRIVATE KEY"), "{t}");
+        assert!(
+            !t.contains("secretBODY") && !t.contains("PRIVATE KEY"),
+            "{t}"
+        );
         assert!(t.contains("fn f()") && t.contains("let after = 1;"), "{t}");
         // An unterminated block redacts to the end.
         let text = format!("a\n{PEM_BEGIN}\n{BODY1}\n{BODY2}");
@@ -1122,7 +1358,12 @@ mod tests {
             assert!(later.redacted);
         }
         // A different file's chunk is not affected.
-        let r = render_chunks(&ctx(), Budget::default(), &[chunk(1, 1, &first), chunk(2, 4, &second)], false);
+        let r = render_chunks(
+            &ctx(),
+            Budget::default(),
+            &[chunk(1, 1, &first), chunk(2, 4, &second)],
+            false,
+        );
         assert!(String::from_utf8_lossy(&r.chunks[1].text).contains("secretBODY"));
     }
 
@@ -1134,9 +1375,17 @@ mod tests {
         let mut b = raw_line(9, BODY2);
         b.before = vec![b"still inside".to_vec()];
         b.after = vec![PEM_END.as_bytes().to_vec(), b"after".to_vec()];
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![b, a])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a.rs"], vec![b, a])],
+            false,
+        );
         let dump = format!("{r:?}");
-        assert!(!dump.contains("secretBODY") && !dump.contains("still inside"), "{dump}");
+        assert!(
+            !dump.contains("secretBODY") && !dump.contains("still inside"),
+            "{dump}"
+        );
         let mut m = r.files[0].matches.clone();
         m.sort_by_key(|l| l.line);
         assert_eq!(m[0].line, 2);
@@ -1153,8 +1402,9 @@ mod tests {
             container: String::new(),
             doc: format!("{BODY2}\n{PEM_END}\nplain").into_bytes(),
             confidence: "high",
+            secret: Some(false),
         };
-        let r = render_symbols(&ctx(), Budget::default(), &[s], &[], false);
+        let r = render_symbols(&ctx(), Budget::default(), &[s], false);
         assert!(!format!("{r:?}").contains("secretBODY"));
         assert!(r.symbols[0].doc.ends_with(b"plain"));
     }
@@ -1186,7 +1436,17 @@ mod tests {
         inputs.push(b"\xe2\x82\x1b[\xf0\x9f".to_vec());
         // Every string over a small alphabet up to length 5, then a pseudo-random tail.
         let alpha: [&[u8]; 11] = [
-            b"\x1b", b"[", b"]", b"P", b";", b"1", b"m", b"\x07", b"\\", "é".as_bytes(), b"\xff",
+            b"\x1b",
+            b"[",
+            b"]",
+            b"P",
+            b";",
+            b"1",
+            b"m",
+            b"\x07",
+            b"\\",
+            "é".as_bytes(),
+            b"\xff",
         ];
         let mut idx = vec![0usize; 0];
         for len in 1..=5usize {
@@ -1194,7 +1454,9 @@ mod tests {
             idx.resize(len, 0);
             loop {
                 inputs.push(idx.iter().flat_map(|&i| alpha[i].iter().copied()).collect());
-                let Some(k) = (0..len).rev().find(|&k| idx[k] + 1 < alpha.len()) else { break };
+                let Some(k) = (0..len).rev().find(|&k| idx[k] + 1 < alpha.len()) else {
+                    break;
+                };
                 idx[k] += 1;
                 idx[k + 1..].fill(0);
             }
@@ -1203,10 +1465,14 @@ mod tests {
         for _ in 0..2000 {
             let mut v = Vec::new();
             for _ in 0..(x % 40) {
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 v.extend_from_slice(alpha[(x >> 33) as usize % alpha.len()]);
             }
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             inputs.push(v);
         }
         for raw in &inputs {
@@ -1228,7 +1494,12 @@ mod tests {
             let (t, cols) = clean(raw, &[0, 1, u32::MAX, raw.len() as u32]);
             assert!(cols.iter().all(|&c| c <= t.len()));
             assert!(!clean_path(raw).contains(&0x1b));
-            let _ = render_chunks(&ctx(), Budget::default(), &[chunk(1, 1, &String::from_utf8_lossy(raw))], false);
+            let _ = render_chunks(
+                &ctx(),
+                Budget::default(),
+                &[chunk(1, 1, &String::from_utf8_lossy(raw))],
+                false,
+            );
         }
     }
 
@@ -1276,20 +1547,36 @@ mod tests {
         // the body again in its leading context.
         let lines: Vec<Vec<u8>> = (1..=6).map(|n| doc_line(n, 2, 4).into_bytes()).collect();
         let at = |n: usize| lines[n - 1].clone();
-        let mut a = RawLine { line: 3, text: at(3), ..RawLine::default() };
+        let mut a = RawLine {
+            line: 3,
+            text: at(3),
+            ..RawLine::default()
+        };
         a.before = vec![at(2)];
         a.after = vec![at(4), at(5)];
-        let mut b = RawLine { line: 5, text: at(5), ..RawLine::default() };
+        let mut b = RawLine {
+            line: 5,
+            text: at(5),
+            ..RawLine::default()
+        };
         b.before = vec![at(3), at(4)];
         b.after = vec![at(6)];
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![a, b])], false);
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a.rs"], vec![a, b])],
+            false,
+        );
         assert!(!format!("{r:?}").contains("secretBODY"), "{r:?}");
         let m = &r.files[0].matches;
         assert!(m[0].redacted && m[0].before == [REDACTED_TEXT] && m[0].after[0] == REDACTED_TEXT);
         assert_eq!(m[0].after[1], b"L5");
         assert_eq!(m[1].before, [REDACTED_TEXT, REDACTED_TEXT]);
         assert!(!m[1].redacted);
-        assert_eq!((m[1].text.as_slice(), m[1].after[0].as_slice()), (b"L5".as_slice(), b"L6".as_slice()));
+        assert_eq!(
+            (m[1].text.as_slice(), m[1].after[0].as_slice()),
+            (b"L5".as_slice(), b"L6".as_slice())
+        );
     }
 
     #[test]
@@ -1307,13 +1594,31 @@ mod tests {
         assert!(!t.contains("secretBODY") && !t.contains("BODYline"), "{t}");
         let lines: Vec<&str> = t.split('\n').collect();
         assert_eq!(lines.len(), 4);
-        assert!(lines[..3].iter().all(|l| l.as_bytes() == REDACTED_TEXT), "{t}");
+        assert!(
+            lines[..3].iter().all(|l| l.as_bytes() == REDACTED_TEXT),
+            "{t}"
+        );
         assert_eq!(lines[3], "tail");
         // The same through a search hit: the marker is on the match line, the body in context.
-        let mut l = RawLine { line: 1, text: format!("{pad}{PEM_BEGIN}").into_bytes(), ..RawLine::default() };
-        l.after = vec![BODY1.as_bytes().to_vec(), PEM_END.as_bytes().to_vec(), b"tail".to_vec()];
-        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![l])], false);
+        let mut l = RawLine {
+            line: 1,
+            text: format!("{pad}{PEM_BEGIN}").into_bytes(),
+            ..RawLine::default()
+        };
+        l.after = vec![
+            BODY1.as_bytes().to_vec(),
+            PEM_END.as_bytes().to_vec(),
+            b"tail".to_vec(),
+        ];
+        let r = render_search(
+            &ctx(),
+            Budget::default(),
+            &[hit(1, &["a.rs"], vec![l])],
+            false,
+        );
         let m = &r.files[0].matches[0];
-        assert!(m.redacted && m.after[..2] == [REDACTED_TEXT, REDACTED_TEXT] && m.after[2] == b"tail");
+        assert!(
+            m.redacted && m.after[..2] == [REDACTED_TEXT, REDACTED_TEXT] && m.after[2] == b"tail"
+        );
     }
 }

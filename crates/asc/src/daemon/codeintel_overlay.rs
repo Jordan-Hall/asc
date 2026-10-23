@@ -418,7 +418,14 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
 }
 
-fn symbol_of(t: &Tag, all: &[Tag], path: &RepoPath, is_def: bool, conf: &'static str) -> Symbol {
+fn symbol_of(
+    t: &Tag,
+    all: &[Tag],
+    path: &RepoPath,
+    flagged: bool,
+    is_def: bool,
+    conf: &'static str,
+) -> Symbol {
     let container = all
         .get(t.container as usize)
         .filter(|_| t.container != NO_CONTAINER)
@@ -435,11 +442,12 @@ fn symbol_of(t: &Tag, all: &[Tag], path: &RepoPath, is_def: bool, conf: &'static
         container,
         doc: t.doc.clone(),
         confidence: conf,
+        secret: Some(flagged),
     }
 }
 
 /// The caller of a call tag: its enclosing definition, or the call site at the top level.
-fn caller_of(call: &Tag, all: &[Tag], path: &RepoPath) -> Symbol {
+fn caller_of(call: &Tag, all: &[Tag], path: &RepoPath, flagged: bool) -> Symbol {
     match all
         .get(call.container as usize)
         .filter(|_| call.container != NO_CONTAINER)
@@ -452,7 +460,7 @@ fn caller_of(call: &Tag, all: &[Tag], path: &RepoPath) -> Symbol {
                 .unwrap_or_default();
             Symbol {
                 container: parent,
-                ..symbol_of(c, all, path, true, NAME_MATCH)
+                ..symbol_of(c, all, path, flagged, true, NAME_MATCH)
             }
         }
         None => Symbol {
@@ -466,6 +474,7 @@ fn caller_of(call: &Tag, all: &[Tag], path: &RepoPath) -> Symbol {
             container: String::new(),
             doc: Vec::new(),
             confidence: NAME_MATCH,
+            secret: Some(flagged),
         },
     }
 }
@@ -491,7 +500,7 @@ impl Overlay {
             let Some(l) = e.lang else {
                 return Ok((Vec::new(), false));
             };
-            let out = symbols::outline(path.as_bytes(), l, &e.text, q.kinds, 0)
+            let out = symbols::outline(path.as_bytes(), Some(e.flagged), l, &e.text, q.kinds, 0)
                 .map(|s| s.symbols)
                 .unwrap_or_default();
             return Ok((out, false));
@@ -529,23 +538,23 @@ impl Overlay {
                 }
                 match q.op {
                     ci::SymbolOp::Def if t.role == Role::Def && pat.matches(&t.name) => {
-                        out.push(symbol_of(t, &all, path, true, NAME_MATCH));
+                        out.push(symbol_of(t, &all, path, e.flagged, true, NAME_MATCH));
                     }
                     ci::SymbolOp::Find
                         if t.role == Role::Def
                             && (pat.matches(&t.name)
                                 || symbols::within_one(pat.needle(), &t.name)) =>
                     {
-                        out.push(symbol_of(t, &all, path, true, NAME_MATCH));
+                        out.push(symbol_of(t, &all, path, e.flagged, true, NAME_MATCH));
                     }
                     ci::SymbolOp::Refs if t.role == Role::Ref && pat.matches(&t.name) => {
                         let conf = if imports { IMPORT_MATCH } else { NAME_MATCH };
-                        out.push(symbol_of(t, &all, path, false, conf));
+                        out.push(symbol_of(t, &all, path, e.flagged, false, conf));
                     }
                     ci::SymbolOp::Callers
                         if t.role == Role::Ref && t.kind == Kind::Call && pat.matches(&t.name) =>
                     {
-                        out.push(caller_of(t, &all, path));
+                        out.push(caller_of(t, &all, path, e.flagged));
                     }
                     _ => {}
                 }
@@ -1027,7 +1036,6 @@ pub async fn symbols(
             &render_ctx(&req.scope.repo, &cx.head),
             budget(req.budget),
             &found,
-            &[],
             cut,
         );
         resp.symbols = r.symbols.into_iter().map(wire_symbol).collect();
@@ -1831,6 +1839,98 @@ mod tests {
             sent.exclude_paths,
             vec!["vendor".to_owned()],
             "outline excludes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn symbols_of_a_flagged_overlay_file_show_no_secret_text() {
+        // Flagged by content (a key literal in the doc comment) and by path (`.env.rs`).
+        const BODY: &str = "/// Uses AKIAIOSFODNN7EXAMPLE as the key.
+fn leakyname(leakyarg: u8) -> u8 {
+    leakyname(1)
+}
+
+struct LeakyHolder;
+
+impl LeakyHolder {
+    fn leakyinner(&self) {
+        leakyname(2);
+    }
+}
+";
+        let (_d, cx) = cx(&[("flagged.rs", BODY), (".env.rs", BODY), ("clean.rs", RUST)]);
+        assert!(cx.overlay.files.values().filter(|e| e.flagged).count() == 2);
+        let base = ci::SymbolsRequest {
+            scope: scope(),
+            op: ci::SymbolOp::Def,
+            name: String::new(),
+            path: None,
+            kinds: Vec::new(),
+            def_path: None,
+            def_line: 0,
+            budget: ci::Budget::default(),
+            page_token: String::new(),
+        };
+        let mut shown = 0;
+        for (op, name) in [
+            (ci::SymbolOp::Def, "leakyname"),
+            (ci::SymbolOp::Refs, "leakyname"),
+            (ci::SymbolOp::Callers, "leakyname"),
+            (ci::SymbolOp::Find, "leakynam"),
+            (ci::SymbolOp::Def, "Leaky*"),
+        ] {
+            let req = ci::SymbolsRequest {
+                op,
+                name: name.into(),
+                ..base.clone()
+            };
+            let r = symbols(&cx, None, &req).await.unwrap();
+            for s in &r.symbols {
+                shown += 1;
+                assert!(
+                    s.name.is_empty() && s.container.is_empty(),
+                    "{op:?} {name}: {s:?}"
+                );
+                assert!(s.signature.is_empty() && s.doc.is_empty(), "{s:?}");
+            }
+            let dump = format!("{r:?}");
+            for t in ["AKIA", "leaky", "Leaky"] {
+                assert!(!dump.contains(t), "{op:?} {name}: {dump}");
+            }
+        }
+        assert!(
+            shown >= 10,
+            "the queries found the flagged symbols: {shown}"
+        );
+        for file in ["flagged.rs", ".env.rs"] {
+            let req = ci::SymbolsRequest {
+                op: ci::SymbolOp::Outline,
+                path: Some(rp(file)),
+                ..base.clone()
+            };
+            let r = symbols(&cx, None, &req).await.unwrap();
+            assert!(!r.symbols.is_empty());
+            assert!(
+                r.symbols
+                    .iter()
+                    .all(|s| { s.name.is_empty() && s.signature.is_empty() && s.doc.is_empty() })
+            );
+            let dump = format!("{r:?}");
+            assert!(
+                !["AKIA", "leaky", "Leaky"].iter().any(|t| dump.contains(t)),
+                "{dump}"
+            );
+        }
+        // A clean file still shows its symbols.
+        let req = ci::SymbolsRequest {
+            name: "helper".into(),
+            ..base
+        };
+        let r = symbols(&cx, None, &req).await.unwrap();
+        assert!(
+            r.symbols
+                .iter()
+                .any(|s| s.name == "helper" && !s.signature.is_empty())
         );
     }
 
