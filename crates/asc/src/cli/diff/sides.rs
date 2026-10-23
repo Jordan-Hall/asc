@@ -125,7 +125,10 @@ async fn work_deltas(
             Work::Same if old.is_some() => {}
             Work::Same => {
                 // Intent-to-add of a file that is as the placeholder says: still a new file.
-                let abs = asc_wc::plain::fs_path(root, &path);
+                let Some(abs) = tree.resolve(&path) else {
+                    out.insert(path, Delta { old, new: None });
+                    continue;
+                };
                 let new = local.add(&path, abs, entry.kind, entry.size, entry.git);
                 out.insert(path, Delta { old, new: Some(new) });
             }

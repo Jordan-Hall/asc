@@ -140,6 +140,12 @@ impl WorkTree {
             && self.index_mtime.is_none_or(|t| e.mtime.to_system_time() < t)
     }
 
+    /// The path of `path` in the work tree, or `None` when it is outside it (a symlinked or
+    /// reparse-point ancestor, or a name this OS cannot hold): treat the file as missing.
+    pub fn resolve(&self, path: &RepoPath) -> Option<PathBuf> {
+        self.gate.resolve(path)
+    }
+
     /// The work tree state of `path`, which the index holds as `entry`.
     pub fn probe(&self, path: &RepoPath, entry: &Entry) -> io::Result<Work> {
         let Some(abs) = self.gate.resolve(path) else { return Ok(Work::Missing) };
