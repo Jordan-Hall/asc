@@ -9,6 +9,7 @@ pub mod alt_svc;
 pub mod authn;
 pub mod authz;
 pub mod cache_role;
+pub mod changes;
 pub mod classify;
 pub mod codeintel;
 pub mod commit_graph_markers;
@@ -191,6 +192,7 @@ fn register_all(
         forgejo.and_then(|f| f.repo_root.clone()),
     );
     commit_graph_rpc::register(ext, registry, &hooks);
+    changes::register(ext, registry, &hooks);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
