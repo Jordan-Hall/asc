@@ -528,7 +528,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let flushed = out.finish();
     written?;
     flushed?;
-    if matches!(format, Format::Turbo | Format::Nx) {
+    if matches!(format, Format::Turbo | Format::Nx | Format::Gha | Format::Matrix) {
         eprint!("{}", fmt_affected::invisible_note(&report));
     }
     Ok(ExitCode::SUCCESS)
