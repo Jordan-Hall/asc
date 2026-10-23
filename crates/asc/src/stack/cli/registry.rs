@@ -55,27 +55,27 @@ mod probe {
     use crate::native::NativeSpec;
 
     #[derive(clap::Parser, Debug)]
-    #[command(name = "share", disable_help_flag = true)]
+    #[command(name = "landed", disable_help_flag = true)]
     pub struct Args {
         #[arg(long)]
         pub json: bool,
     }
 
-    pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "share", flags: &["--json"], placeholders: &[] }];
+    pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "landed", flags: &["--json"], placeholders: &[] }];
 
     pub async fn run(_ctx: &Ctx, _args: Args) -> Result<ExitCode> {
         Ok(ExitCode::SUCCESS)
     }
 
-    super::super::verb!(PROBE_SHARE, "share");
+    super::super::verb!(PROBE_LANDED, "landed");
 
     #[test]
     fn a_registered_verb_is_found_and_listed_once() {
-        let c = crate::stack::cli::find("share").expect("registered");
-        assert_eq!(c.native[0].cmd, "share");
-        assert_eq!(crate::stack::cli::registered().filter(|c| c.name == "share").count(), 1);
-        assert!(crate::cli::find("share").is_some());
-        assert!(crate::cli::native_specs().any(|s| s.cmd == "share"));
+        let c = crate::stack::cli::find("landed").expect("registered");
+        assert_eq!(c.native[0].cmd, "landed");
+        assert_eq!(crate::stack::cli::registered().filter(|c| c.name == "landed").count(), 1);
+        assert!(crate::cli::find("landed").is_some());
+        assert!(crate::cli::native_specs().any(|s| s.cmd == "landed"));
         assert!(crate::stack::cli::problems().is_empty());
     }
 }
