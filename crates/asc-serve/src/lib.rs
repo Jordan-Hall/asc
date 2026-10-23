@@ -182,6 +182,8 @@ fn register_all(
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
     let mutations = mutations::register(ext, registry, &hooks);
+    mutations::rebase::register(ext, &mutations);
+    mutations::land_merge::register(ext, &hooks);
     import_push::register(
         ext,
         registry,

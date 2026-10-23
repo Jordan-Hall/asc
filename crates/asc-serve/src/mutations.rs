@@ -1233,6 +1233,11 @@ fn revert_message(original: &[u8], id: ChangesetId) -> Vec<u8> {
 // `Merge` (PLAN U48b) shares this module's helpers: it is a child, so it sees what is private here.
 #[path = "merge_rpc.rs"]
 pub mod merge_rpc;
+// `Rebase` and the land content merge (PLAN U68) share them too.
+#[path = "land_merge.rs"]
+pub mod land_merge;
+#[path = "rebase.rs"]
+pub mod rebase;
 
 // ------------------------------------------------------------------------------ handlers
 
