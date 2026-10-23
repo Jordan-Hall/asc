@@ -18,6 +18,7 @@ thiserror.workspace = true
 bytes.workspace = true
 fastcdc.workspace = true
 sha1.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
