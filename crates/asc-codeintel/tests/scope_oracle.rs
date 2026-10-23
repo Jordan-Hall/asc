@@ -12,9 +12,10 @@ use bytes::Bytes;
 use asc_codeintel::config::CodeintelConfig;
 use asc_codeintel::doc::{DocError, OrdTable};
 use asc_codeintel::scope::{OrdSource, ScopeEngine, ScopeQuery};
+use asc_core::codec::Enveloped;
 use asc_core::content::{Body, ingest};
 use asc_core::id::{ChangesetId, FileId, TreeId};
-use asc_core::object::{Change, Kind};
+use asc_core::object::{Change, Changeset, Kind, SortedMap};
 use asc_core::path::{RefName, RepoPath};
 use asc_core::sig::Signature;
 use asc_engine::Engine;
@@ -572,4 +573,146 @@ async fn locate_finds_every_path_of_an_ord() {
         );
         seen.insert(o);
     }
+}
+
+/// A changeset on `honest`'s parent and root whose `changes` list claims nothing happened.
+async fn lying_twin(env: &Env, honest: ChangesetId) -> ChangesetId {
+    let h = env.e.get_changeset(honest).await.unwrap();
+    let liar = Changeset {
+        message: b"liar
+"
+        .to_vec(),
+        changes: SortedMap::new(Vec::new()).unwrap(),
+        ..(*h).clone()
+    };
+    let id = liar.id();
+    env.objs
+        .put(&ObjKey::Changeset(id), encode_stored(&liar.to_envelope()))
+        .await
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn a_lying_changes_list_cannot_poison_the_memo_of_a_shared_tree() {
+    let env = Env::new();
+    let c0 = base_commit(&env).await;
+    env.scope.scope(c0).await.unwrap(); // checkpoint
+    let honest = env
+        .commit(
+            Some(c0),
+            &[("fresh/a.txt", Some("fresh a")), ("d00/f0.txt", None)],
+        )
+        .await;
+    let liar = lying_twin(&env, honest).await;
+    assert_ne!(liar, honest);
+    assert_eq!(env.root_of(liar).await, env.root_of(honest).await);
+    // The liar is scoped first and memoises under the shared root.
+    let l = env.scope.scope(liar).await.unwrap();
+    assert_eq!(*l.bitmap(), env.oracle(honest).await, "the tree decides");
+    let h = env.scope.scope(honest).await.unwrap();
+    assert_eq!(*h.bitmap(), env.oracle(honest).await);
+    assert!(h.bitmap().contains(env.ord_of(FileId::of(b"fresh a"))));
+}
+
+/// Engine on `env`'s store with a per-operation entry budget.
+fn budgeted(env: &Env, n: usize) -> ScopeEngine<Counting, NoRefs, CountOrds> {
+    ScopeEngine::new(env.e.clone(), env.objs.clone(), env.counted.clone()).with_max_entries(n)
+}
+
+#[tokio::test]
+async fn a_repeated_subtree_id_is_walked_once_per_operation() {
+    let env = Env::new();
+    // 100 directories holding the same 10 files: one subtree id, 100 times.
+    let files: Vec<(String, String)> = (0..100)
+        .flat_map(|d| (0..10).map(move |f| (format!("r{d:03}/f{f}.txt"), format!("same {f}"))))
+        .collect();
+    let edits: Vec<(&str, Option<&str>)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), Some(c.as_str())))
+        .collect();
+    let c0 = env.commit(None, &edits).await;
+    let root = env.root_of(c0).await;
+    // Walking every directory separately would cost 100 + 100 x 10 entries.
+    let scope = budgeted(&env, 500);
+    let t = scope.tdocs(root).await.unwrap();
+    assert_eq!(t.bitmap().len(), 10);
+    assert_eq!(t.total_files(), 1000);
+    assert_eq!(
+        scope.entries_visited(),
+        110,
+        "root entries plus one subtree"
+    );
+}
+
+#[tokio::test]
+async fn the_entry_budget_belongs_to_the_operation_not_to_each_call() {
+    let env = Env::new();
+    // 30 distinct directories of 10 distinct files: 330 entries in all.
+    let files: Vec<(String, String)> = (0..30)
+        .flat_map(|d| (0..10).map(move |f| (format!("d{d:02}/f{f}.txt"), format!("c {d} {f}"))))
+        .collect();
+    let edits: Vec<(&str, Option<&str>)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), Some(c.as_str())))
+        .collect();
+    let c0 = env.commit(None, &edits).await;
+    let root = env.root_of(c0).await;
+    env.oracle(c0).await; // assigns every ord
+    let ord = env.ord_of(FileId::of(b"c 29 9"));
+
+    // locate: one fresh budget per child tdocs would never trip.
+    let scope = budgeted(&env, 200);
+    let err = scope.locate(root, ord, 5).await.unwrap_err();
+    assert!(
+        matches!(err, asc_codeintel::scope::ScopeError::TooLarge(_)),
+        "{err}"
+    );
+    assert!(
+        scope.entries_visited() <= 200,
+        "{}",
+        scope.entries_visited()
+    );
+
+    // resolve: include paths, each a distinct subtree.
+    let scope = budgeted(&env, 200);
+    let mut q = ScopeQuery::new(c0);
+    q.include = (0..30).map(|d| p(&format!("d{d:02}"))).collect();
+    let err = scope.resolve(&q).await.unwrap_err();
+    assert!(
+        matches!(err, asc_codeintel::scope::ScopeError::TooLarge(_)),
+        "{err}"
+    );
+    assert!(
+        scope.entries_visited() <= 200,
+        "{}",
+        scope.entries_visited()
+    );
+
+    // stack-diff shares the operation's walk.
+    let c1 = env
+        .commit(
+            Some(c0),
+            &(0..30)
+                .map(|d| (format!("d{d:02}/new.txt"), format!("n {d}")))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|(p, c)| (p.as_str(), Some(c.as_str())))
+                .collect::<Vec<_>>(),
+        )
+        .await;
+    let scope = budgeted(&env, 200);
+    let mut q = ScopeQuery::new(c1);
+    q.include = vec![p("d00")];
+    q.stack_diff_trunk = Some(c0);
+    // Stack paths are files, so only d00 is walked: 11 entries.
+    let kept = scope.resolve(&q).await.unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(scope.entries_visited(), 11);
+
+    // The same operations succeed under the default budget.
+    assert_eq!(
+        env.scope.locate(root, ord, 5).await.unwrap(),
+        vec![p("d29/f9.txt")]
+    );
 }

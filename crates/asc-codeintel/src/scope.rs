@@ -6,18 +6,23 @@
 //!   are what make deletion exact: removing one of two paths that hold one `FileId` keeps it.
 //! * [`ScopeEngine::tdocs`] derives it per `TreeId` (memoised for subtrees of at least
 //!   [`STORE_MIN_FILES`] files, so a new revision costs `depth x changed paths` tree reads).
-//! * [`ScopeEngine::scope`] adds the counted skip-list delta for a historical revision.
+//! * [`ScopeEngine::scope`] adds the counted skip-list delta for a historical revision. The
+//!   delta is the tree diff against the checkpoint, never a changeset's own `changes` list
+//!   (pushed metadata that nothing proves equal to the trees).
 //! * [`ScopeEngine::xdocs`] derives the bitmap of ords excluded at every path they have, per
 //!   `(TreeId, rules digest)`, with `.ascattributes` first and `.gitattributes` the fallback.
 //! * [`ScopeEngine::resolve`] applies path filters, `xdocs` and the stack-diff to a revision.
 //! * [`ScopeEngine::locate`] maps an ord back to paths.
 //!
 //! Every input is untrusted: stored values are validated on decode, and each walk has a
-//! visit, depth or size bound.
+//! visit, depth or size bound. The entry budget belongs to one public operation: every
+//! subtree derivation, `locate` step and `xdocs` pass of that operation draws on it, and each
+//! `TreeId` is derived once per operation.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -339,6 +344,26 @@ pub struct ScopeEngine<O: Objects, R: Refs, S: OrdSource> {
     engine: Arc<Engine<O, R>>,
     objects: Arc<O>,
     ords: Arc<S>,
+    /// Tree entries one operation may visit.
+    max_entries: usize,
+    /// Tree entries visited by every operation so far (observability).
+    visited: AtomicUsize,
+}
+
+/// State of one public operation: the remaining entry budget and the subtrees already
+/// derived, so a repeated `TreeId` costs nothing and no sub-call gets a fresh budget.
+struct Walk {
+    budget: usize,
+    subtrees: HashMap<TreeId, Arc<Tdocs>>,
+}
+
+impl Walk {
+    fn new(budget: usize) -> Walk {
+        Walk {
+            budget,
+            subtrees: HashMap::new(),
+        }
+    }
 }
 
 impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngine<O, R, S> {
@@ -348,7 +373,30 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
             engine,
             objects,
             ords,
+            max_entries: MAX_ENTRIES,
+            visited: AtomicUsize::new(0),
         }
+    }
+
+    /// Lowers the per-operation entry budget (default [`MAX_ENTRIES`]).
+    pub fn with_max_entries(mut self, n: usize) -> Self {
+        self.max_entries = n.min(MAX_ENTRIES);
+        self
+    }
+
+    /// Tree entries visited by all operations on this engine so far.
+    pub fn entries_visited(&self) -> usize {
+        self.visited.load(Ordering::Relaxed)
+    }
+
+    /// Draws `n` entries from the operation's budget.
+    fn charge(&self, walk: &mut Walk, n: usize, what: &'static str) -> Result<()> {
+        walk.budget = walk
+            .budget
+            .checked_sub(n)
+            .ok_or(ScopeError::TooLarge(what))?;
+        self.visited.fetch_add(n, Ordering::Relaxed);
+        Ok(())
     }
 
     // -------------------------------------------------------------------------- memos
@@ -398,19 +446,22 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
 
     /// `tdocs(root)`: memoised for large subtrees, expanded from tree objects otherwise.
     pub async fn tdocs(&self, root: TreeId) -> Result<Arc<Tdocs>> {
-        let mut budget = MAX_ENTRIES;
-        self.derive_tree(root, 0, &mut budget).await
+        self.derive_tree(root, 0, &mut Walk::new(self.max_entries))
+            .await
     }
 
     fn derive_tree<'a>(
         &'a self,
         id: TreeId,
         depth: usize,
-        budget: &'a mut usize,
+        walk: &'a mut Walk,
     ) -> BoxFut<'a, Arc<Tdocs>> {
         Box::pin(async move {
             if depth > MAX_DEPTH {
                 return Err(ScopeError::TooLarge("directory depth"));
+            }
+            if let Some(t) = walk.subtrees.get(&id) {
+                return Ok(t.clone());
             }
             let tree = self.engine.get_tree(id).await.map_err(st)?;
             let entries = tree.entries();
@@ -418,11 +469,11 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
             let storable = entries.len() as u64 >= STORE_MIN_FILES
                 || entries.iter().any(|e| e.kind == Kind::Dir);
             if storable && let Some(t) = self.stored_tdocs(id).await? {
-                return Ok(Arc::new(t));
+                let t = Arc::new(t);
+                walk.subtrees.insert(id, t.clone());
+                return Ok(t);
             }
-            *budget = budget
-                .checked_sub(entries.len())
-                .ok_or(ScopeError::TooLarge("tree walk"))?;
+            self.charge(walk, entries.len(), "tree walk")?;
             let mut acc = Tdocs::default();
             for e in entries {
                 match e.kind {
@@ -432,7 +483,7 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
                     }
                     Kind::Dir => {
                         let child = self
-                            .derive_tree(TreeId::from_bytes(e.id), depth + 1, budget)
+                            .derive_tree(TreeId::from_bytes(e.id), depth + 1, walk)
                             .await?;
                         acc.add(&child)?;
                     }
@@ -440,13 +491,20 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
                 }
             }
             self.store_tdocs(id, &acc).await?;
-            Ok(Arc::new(acc))
+            let acc = Arc::new(acc);
+            walk.subtrees.insert(id, acc.clone());
+            Ok(acc)
         })
     }
 
     /// `tdocs` of the entry at `path` below `root`: a file is a singleton, a directory its
     /// subtree, anything else (absent, symlink, gitlink) empty. O(depth) tree reads.
     pub async fn tdocs_at(&self, root: TreeId, path: &RepoPath) -> Result<Tdocs> {
+        self.tdocs_at_in(root, path, &mut Walk::new(self.max_entries))
+            .await
+    }
+
+    async fn tdocs_at_in(&self, root: TreeId, path: &RepoPath, walk: &mut Walk) -> Result<Tdocs> {
         let Some(e) = self.engine.lookup(root, path).await.map_err(st)? else {
             return Ok(Tdocs::default());
         };
@@ -454,98 +512,102 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
             Kind::File | Kind::Exec => {
                 Ok(Tdocs::single(self.ords.ord_for(FileId::from_bytes(e.id))?))
             }
-            Kind::Dir => Ok((*self.tdocs(TreeId::from_bytes(e.id)).await?).clone()),
+            Kind::Dir => Ok((*self.derive_tree(TreeId::from_bytes(e.id), 0, walk).await?).clone()),
             Kind::Symlink | Kind::Gitlink => Ok(Tdocs::default()),
         }
     }
 
     // -------------------------------------------------------------------------- scope
 
-    /// `scope(rev)`: the memo of the root when derived; else, for a revision within 64
-    /// first-parent steps of a derived one, that checkpoint with the counted delta; else the
-    /// tree derivation, which reuses every shared subtree.
+    /// `scope(rev)`: the memo of the root when derived; else, for a revision near an ancestor
+    /// with a derived root, that checkpoint with the counted tree delta; else the tree
+    /// derivation, which reuses every shared subtree.
     pub async fn scope(&self, rev: ChangesetId) -> Result<Arc<Tdocs>> {
+        self.scope_in(rev, &mut Walk::new(self.max_entries)).await
+    }
+
+    async fn scope_in(&self, rev: ChangesetId, walk: &mut Walk) -> Result<Arc<Tdocs>> {
         let cs = self.engine.get_changeset(rev).await.map_err(st)?;
         if let Some(t) = self.stored_tdocs(cs.root).await? {
             return Ok(Arc::new(t));
         }
-        if let Some(t) = self.scope_by_delta(rev, cs.root).await? {
+        if let Some(t) = self.scope_by_delta(rev, cs.root, walk).await? {
             self.store_tdocs(cs.root, &t).await?;
             return Ok(Arc::new(t));
         }
-        self.tdocs(cs.root).await
+        self.derive_tree(cs.root, 0, walk).await
     }
 
-    /// Nearest ancestor (and its distance) at a probe distance whose root has a stored
-    /// `tdocs`. One `has_many` for all probes.
-    async fn find_checkpoint(&self, rev: ChangesetId) -> Result<Option<(usize, TreeId)>> {
+    /// Root of the nearest ancestor, at a probe distance, whose `tdocs` is stored. One
+    /// `has_many` for all probes.
+    async fn find_checkpoint(&self, rev: ChangesetId) -> Result<Option<TreeId>> {
         let skip = self.engine.get_derived::<Skip>(rev).await.map_err(st)?;
-        let mut cands = Vec::new();
-        for (level, &d) in PROBE_DISTANCES.iter().enumerate() {
+        let mut roots = Vec::new();
+        for level in 0..PROBE_DISTANCES.len() {
             if let Some(&anc) = skip.ptrs.get(level) {
-                let root = self.engine.get_changeset(anc).await.map_err(st)?.root;
-                cands.push((d, root));
+                roots.push(self.engine.get_changeset(anc).await.map_err(st)?.root);
             }
         }
-        let keys: Vec<ObjKey> = cands
+        let keys: Vec<ObjKey> = roots
             .iter()
-            .map(|(_, r)| Self::memo_key(TDOCS, *r.as_bytes()))
+            .map(|r| Self::memo_key(TDOCS, *r.as_bytes()))
             .collect();
         if keys.is_empty() {
             return Ok(None);
         }
         let present = self.objects.has_many(&keys).await.map_err(st)?;
-        Ok(cands
+        Ok(roots
             .into_iter()
             .zip(present)
-            .find_map(|(c, p)| p.then_some(c)))
+            .find_map(|(r, p)| p.then_some(r)))
     }
 
-    /// `tdocs(A.root) (+) delta`, where the delta is built from the `changes` lists of the
-    /// first-parent chain `A..rev`. Old values of changed paths are read from `A.root` with
-    /// one `lookup` each, so the tree reads are bounded by changed paths x depth and no
-    /// subtree is walked. `None` when no checkpoint is near or the delta is too big or
-    /// does not fit the checkpoint (the caller derives from the tree).
-    async fn scope_by_delta(&self, rev: ChangesetId, root: TreeId) -> Result<Option<Tdocs>> {
-        let Some((dist, a_root)) = self.find_checkpoint(rev).await? else {
+    /// `tdocs(A.root) (+) delta`, where `A` is a nearby ancestor with a stored `tdocs` and the
+    /// delta is the leaf diff `A.root -> root`. The diff comes from the trees, not from any
+    /// changeset's `changes` list: that list is pushed metadata, so a value derived from it
+    /// and memoised under a `TreeId` would let one lying changeset poison every revision that
+    /// shares the tree. Equal subtrees are skipped unread, and old values of changed paths
+    /// are read from `A.root` with one `lookup` each, so tree reads are bounded by changed
+    /// paths x depth. `None` when no checkpoint is near, the delta is too big or does not fit
+    /// the checkpoint (the caller derives from the tree).
+    async fn scope_by_delta(
+        &self,
+        rev: ChangesetId,
+        root: TreeId,
+        walk: &mut Walk,
+    ) -> Result<Option<Tdocs>> {
+        let Some(a_root) = self.find_checkpoint(rev).await? else {
             return Ok(None);
         };
         let Some(base) = self.stored_tdocs(a_root).await? else {
             return Ok(None);
         };
-        // Newest first: rev, its first parent, ... dist changesets.
-        let mut chain = Vec::with_capacity(dist);
-        let mut at = rev;
-        let mut total = 0usize;
-        for _ in 0..dist {
-            let cs = self.engine.get_changeset(at).await.map_err(st)?;
-            total += cs.changes.as_slice().len();
-            if total > MAX_DELTA_PATHS {
-                return Ok(None);
-            }
-            let next = cs.parents.first().copied();
-            chain.push(cs);
-            match next {
-                Some(p) => at = p,
-                None => return Ok(None),
-            }
+        let (diff, visits) = match self
+            .engine
+            .leafdiff_limited(a_root, root, None, walk.budget, MAX_DELTA_PATHS)
+            .await
+        {
+            Ok(d) => d,
+            Err(asc_engine::tree::Error::TooLarge(_)) => return Ok(None),
+            Err(e) => return Err(st(e)),
+        };
+        if diff.len() > MAX_DELTA_PATHS {
+            return Ok(None);
         }
-        // Final state per touched path, oldest to newest.
-        let mut last: HashMap<RepoPath, Option<FileId>> = HashMap::new();
-        for cs in chain.iter().rev() {
-            let paths: HashSet<&RepoPath> = cs.changes.as_slice().iter().map(|(p, _)| p).collect();
-            for (p, change) in cs.changes.as_slice() {
-                // Ancestor and descendant paths in one changeset: the leaf algebra does not
-                // hold, so derive from the tree.
-                let mut anc = p.parent();
-                while let Some(a) = anc {
-                    if paths.contains(&a) {
-                        return Ok(None);
-                    }
-                    anc = a.parent();
+        self.charge(walk, visits, "tree walk")?;
+        // Ancestor and descendant paths in one diff (a file/directory switch): the leaf
+        // algebra does not hold, so derive from the tree.
+        let paths: HashSet<&RepoPath> = diff.iter().map(|(p, _)| p).collect();
+        let mut last: HashMap<&RepoPath, Option<FileId>> = HashMap::with_capacity(diff.len());
+        for (p, change) in &diff {
+            let mut anc = p.parent();
+            while let Some(a) = anc {
+                if paths.contains(&a) {
+                    return Ok(None);
                 }
-                last.insert(p.clone(), counted(change));
+                anc = a.parent();
             }
+            last.insert(p, counted(change));
         }
         let mut removed: HashMap<u32, u32> = HashMap::new();
         let mut added: HashMap<u32, u32> = HashMap::new();
@@ -578,9 +640,6 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
             };
             out.set_count(o, c);
         }
-        // The delta is only as good as the changeset's own `changes`; the root is checked by
-        // content-addressing at ingest, so no further check is needed here.
-        let _ = root;
         Ok(Some(out))
     }
 
@@ -589,25 +648,27 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
     /// The kept ords of a query: scope, path filters, `xdocs` and stack-diff.
     pub async fn resolve(&self, q: &ScopeQuery<'_>) -> Result<RoaringBitmap> {
         let cs = self.engine.get_changeset(q.rev).await.map_err(st)?;
+        // One budget and one subtree memo for the whole query.
+        let mut walk = Walk::new(self.max_entries);
         let (include, exclude) = normalise(&q.include, &q.exclude);
         let mut base = if include.is_empty() && q.include.is_empty() {
-            (*self.scope(q.rev).await?).clone()
+            (*self.scope_in(q.rev, &mut walk).await?).clone()
         } else {
             let mut t = Tdocs::default();
             for p in &include {
-                t.add(&self.tdocs_at(cs.root, p).await?)?;
+                t.add(&self.tdocs_at_in(cs.root, p, &mut walk).await?)?;
             }
             t
         };
         for p in &exclude {
-            base.sub(&self.tdocs_at(cs.root, p).await?)?;
+            base.sub(&self.tdocs_at_in(cs.root, p, &mut walk).await?)?;
         }
         let mut kept = base.bitmap;
         if let Some(cfg) = q.rules {
-            kept -= &*self.xdocs(cs.root, cfg).await?;
+            kept -= &*self.xdocs_in(cs.root, cfg, &mut walk).await?;
         }
         if let Some(trunk) = q.stack_diff_trunk {
-            kept &= self.stack_ords(q.rev, trunk, cs.root).await?;
+            kept &= self.stack_ords(q.rev, trunk, cs.root, &mut walk).await?;
         }
         Ok(kept)
     }
@@ -618,6 +679,7 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
         top: ChangesetId,
         trunk: ChangesetId,
         root: TreeId,
+        walk: &mut Walk,
     ) -> Result<RoaringBitmap> {
         let base = self
             .engine
@@ -633,7 +695,7 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
         }
         let mut out = RoaringBitmap::new();
         for p in paths.iter() {
-            out |= &self.tdocs_at(root, p).await?.bitmap;
+            out |= &self.tdocs_at_in(root, p, walk).await?.bitmap;
         }
         Ok(out)
     }
@@ -645,7 +707,7 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
     pub async fn locate(&self, root: TreeId, ord: u32, limit: usize) -> Result<Vec<RepoPath>> {
         let mut out: Vec<RepoPath> = Vec::new();
         let mut stack = vec![(root, Vec::<u8>::new(), 0usize)];
-        let mut visits = MAX_LOCATE_VISITS;
+        let mut walk = Walk::new(self.max_entries.min(MAX_LOCATE_VISITS));
         while let Some((id, prefix, depth)) = stack.pop() {
             if out.len() >= limit {
                 break;
@@ -654,9 +716,7 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
                 return Err(ScopeError::TooLarge("directory depth"));
             }
             let tree = self.engine.get_tree(id).await.map_err(st)?;
-            visits = visits
-                .checked_sub(tree.entries().len())
-                .ok_or(ScopeError::TooLarge("locate walk"))?;
+            self.charge(&mut walk, tree.entries().len(), "locate walk")?;
             for e in tree.entries() {
                 let mut path = prefix.clone();
                 if !path.is_empty() {
@@ -677,7 +737,12 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
                     }
                     Kind::Dir => {
                         let child = TreeId::from_bytes(e.id);
-                        if self.tdocs(child).await?.bitmap.contains(ord) {
+                        if self
+                            .derive_tree(child, depth + 1, &mut walk)
+                            .await?
+                            .bitmap
+                            .contains(ord)
+                        {
                             stack.push((child, path, depth + 1));
                         }
                     }
@@ -696,8 +761,23 @@ impl<O: Objects + 'static, R: Refs + 'static, S: OrdSource + 'static> ScopeEngin
     /// files are read per directory, `.ascattributes` first and `.gitattributes` the
     /// fallback, never merged. Memoised per `(TreeId, rules digest)`.
     pub async fn xdocs(&self, root: TreeId, cfg: &CodeintelConfig) -> Result<Arc<RoaringBitmap>> {
-        let mut ctx = XCtx::new(cfg)?;
-        let x = self.xdocs_dir(&mut ctx, root, Vec::new(), None, 0).await?;
+        self.xdocs_in(root, cfg, &mut Walk::new(self.max_entries))
+            .await
+    }
+
+    /// `xdocs` drawing on the operation's budget.
+    async fn xdocs_in(
+        &self,
+        root: TreeId,
+        cfg: &CodeintelConfig,
+        walk: &mut Walk,
+    ) -> Result<Arc<RoaringBitmap>> {
+        let mut ctx = XCtx::new(cfg, walk.budget);
+        let x = self.xdocs_dir(&mut ctx, root, Vec::new(), None, 0).await;
+        let used = walk.budget - ctx.budget;
+        self.visited.fetch_add(used, Ordering::Relaxed);
+        walk.budget = ctx.budget;
+        let x = x?;
         Ok(Arc::new(&x.excluded - &x.included))
     }
 
@@ -978,13 +1058,13 @@ struct XCtx {
 }
 
 impl XCtx {
-    fn new(cfg: &CodeintelConfig) -> Result<XCtx> {
-        Ok(XCtx {
+    fn new(cfg: &CodeintelConfig, budget: usize) -> XCtx {
+        XCtx {
             cfg: cfg.clone(),
             cfg_digest: cfg.rules_digest(),
             files: HashMap::new(),
-            budget: MAX_ENTRIES,
-        })
+            budget,
+        }
     }
 }
 
