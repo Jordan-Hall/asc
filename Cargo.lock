@@ -699,6 +699,7 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror",
+ "url",
 ]
 
 [[package]]
