@@ -131,21 +131,32 @@ fn ns_bytes(name: &str) -> std::result::Result<Vec<u8>, IndexError> {
         .collect()
 }
 
-/// `d/tags.v1/<FileId>`.
-pub fn tags_key(f: &FileId) -> ObjKey {
+/// Derived-object id scoped to one namespace, like `vseg_key`: `blake3` derive_key over
+/// `ns.len() || ns || FileId`. A bare `FileId` is shared by every namespace holding the same
+/// bytes, so one namespace's sweep would delete objects another namespace still reads.
+fn scoped_id(context: &str, ns: &[u8], f: &FileId) -> [u8; 32] {
+    let mut k = blake3::Hasher::new_derive_key(context);
+    k.update(&(ns.len() as u64).to_le_bytes());
+    k.update(ns);
+    k.update(f.as_bytes());
+    *k.finalize().as_bytes()
+}
+
+/// `d/tags.v1/<blake3(ns, FileId)>`.
+pub fn tags_key(ns: &[u8], f: &FileId) -> ObjKey {
     ObjKey::Derived {
         name: "tags",
         version: TAGS_VER,
-        id: *f.as_bytes(),
+        id: scoped_id("asc v2 ci tags", ns, f),
     }
 }
 
-/// `d/chunks.v1/<FileId>`.
-pub fn chunks_key(f: &FileId) -> ObjKey {
+/// `d/chunks.v1/<blake3(ns, FileId)>`.
+pub fn chunks_key(ns: &[u8], f: &FileId) -> ObjKey {
     ObjKey::Derived {
         name: "chunks",
         version: CHUNKER_VERSION,
-        id: *f.as_bytes(),
+        id: scoped_id("asc v2 ci chunks", ns, f),
     }
 }
 
@@ -318,13 +329,17 @@ pub fn chunk_rows(chunks: &[Chunk]) -> Vec<ChunkRow> {
 }
 
 /// Reads `d/tags.v1` back.
-pub async fn read_tags(objects: &dyn Objects, f: &FileId) -> Result<Option<Vec<Tag>>> {
-    read_json(objects, &tags_key(f)).await
+pub async fn read_tags(objects: &dyn Objects, ns: &[u8], f: &FileId) -> Result<Option<Vec<Tag>>> {
+    read_json(objects, &tags_key(ns, f)).await
 }
 
 /// Reads `d/chunks.v1` back.
-pub async fn read_chunk_rows(objects: &dyn Objects, f: &FileId) -> Result<Option<Vec<ChunkRow>>> {
-    read_json(objects, &chunks_key(f)).await
+pub async fn read_chunk_rows(
+    objects: &dyn Objects,
+    ns: &[u8],
+    f: &FileId,
+) -> Result<Option<Vec<ChunkRow>>> {
+    read_json(objects, &chunks_key(ns, f)).await
 }
 
 async fn read_json<T: for<'de> Deserialize<'de>>(
@@ -802,14 +817,14 @@ impl Worker {
         if let Some(t) = &a.tags {
             let json = serde_json::to_vec(t).map_err(store_err)?;
             self.objects
-                .put(&tags_key(&id), encode_stored(&json))
+                .put(&tags_key(ns, &id), encode_stored(&json))
                 .await
                 .map_err(store_err)?;
         }
         if !a.chunks.is_empty() {
             let json = serde_json::to_vec(&chunk_rows(&a.chunks)).map_err(store_err)?;
             self.objects
-                .put(&chunks_key(&id), encode_stored(&json))
+                .put(&chunks_key(ns, &id), encode_stored(&json))
                 .await
                 .map_err(store_err)?;
             self.put_texts(&a.chunks).await?;
@@ -1638,9 +1653,12 @@ mod tests {
         // The row, derived objects and chunk rows exist.
         let (ord, _) = r.worker.doc_row(NS, &id).await.unwrap().unwrap();
         assert_eq!(ord, 0);
-        let tags = read_tags(&*r.objects, &id).await.unwrap().unwrap();
+        let tags = read_tags(&*r.objects, NS, &id).await.unwrap().unwrap();
         assert!(tags.iter().any(|t| t.name == "add_numbers"));
-        let rows = read_chunk_rows(&*r.objects, &id).await.unwrap().unwrap();
+        let rows = read_chunk_rows(&*r.objects, NS, &id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!rows.is_empty());
         let depth = r.worker.queue.depth().await.unwrap();
         let embeds = depth.iter().find(|d| d.0 == "embed").map_or(0, |d| d.2);
@@ -1729,12 +1747,12 @@ mod tests {
         let b = put_file(&r, format!("// copy\n{src}").as_bytes()).await;
         r.worker.step(NS, 10_000).await.unwrap();
         r.worker.step(NS, 12_000).await.unwrap();
-        let chunks_a = read_chunk_rows(&*r.objects, &a)
+        let chunks_a = read_chunk_rows(&*r.objects, NS, &a)
             .await
             .unwrap()
             .unwrap()
             .len();
-        let chunks_b = read_chunk_rows(&*r.objects, &b)
+        let chunks_b = read_chunk_rows(&*r.objects, NS, &b)
             .await
             .unwrap()
             .unwrap()
@@ -1761,7 +1779,10 @@ mod tests {
         let id = put_file(&r, RUST.as_bytes()).await;
         r.worker.step(NS, 10_000).await.unwrap();
         r.worker.step(NS, 12_000).await.unwrap();
-        let rows = read_chunk_rows(&*r.objects, &id).await.unwrap().unwrap();
+        let rows = read_chunk_rows(&*r.objects, NS, &id)
+            .await
+            .unwrap()
+            .unwrap();
         let n = rows.len();
         // The same chunks again at doc 900.
         sqlx::query(

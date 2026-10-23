@@ -4,7 +4,8 @@
 //! and drafts touched in the last 30 days. An ord that has been dead for 14 days is tombstoned:
 //! removed from the `files` and `chunks` indexes (its bit leaves the `indexed` bitmap in a new
 //! generation, so no query sees it), dropped from the vector segments at their next merge
-//! (merges read the tombstone flag), and its `d/tags.v1` and `d/chunks.v1` objects removed.
+//! (merges read the tombstone flag), and its `d/tags.v1` and `d/chunks.v1` objects removed
+//! (their keys are scoped to the namespace, so another namespace's copies are untouched).
 //! Ords are never reused: `ci_docs` rows stay. Content that becomes reachable again loses its
 //! tombstone and is enqueued as new work. The sweep is idempotent and runs on the leader only.
 //!
@@ -290,15 +291,49 @@ impl Sweeper {
             for kind in [IndexKind::Files, IndexKind::Chunks] {
                 self.hide(&nsn, kind, &set, now_ms).await?;
             }
+            // Derived keys are scoped to this namespace, so removing them cannot touch another
+            // namespace's objects. A worker that re-indexes the same file here clears the
+            // tombstone (`reserve_doc`) before it writes, so a row that is no longer tombstoned
+            // after the delete may have had its fresh objects deleted: put it back under the
+            // tombstone and queue it, and the job rewrites them.
+            let mut raced: Vec<(u32, FileId)> = Vec::new();
             for (ord, file) in &doomed {
-                for key in [tags_key(file), chunks_key(file)] {
+                for key in [tags_key(ns, file), chunks_key(ns, file)] {
                     self.objects.delete(&key).await.map_err(store_err)?;
+                }
+                if !self.is_tombstoned(ns, *ord).await? {
+                    raced.push((*ord, *file));
+                    continue;
                 }
                 sqlx::query("DELETE FROM ci_chunks WHERE ns = $1 AND doc_ord = $2")
                     .bind(ns.to_vec())
                     .bind(i64::from(*ord))
                     .execute(&self.pool)
                     .await?;
+            }
+            if !raced.is_empty() {
+                for (ord, _) in &raced {
+                    sqlx::query(
+                        "UPDATE ci_docs SET flags = flags | 128 WHERE ns = $1 AND ord = $2 AND flags < 128",
+                    )
+                    .bind(ns.to_vec())
+                    .bind(i64::from(*ord))
+                    .execute(&self.pool)
+                    .await?;
+                }
+                let set: RoaringBitmap = raced.iter().map(|(o, _)| *o).collect();
+                for kind in [IndexKind::Files, IndexKind::Chunks] {
+                    self.hide(&nsn, kind, &set, now_ms).await?;
+                }
+                let jobs: Vec<NewJob> = raced
+                    .iter()
+                    .map(|(_, f)| NewJob::file(f.as_bytes(), Priority::Backfill))
+                    .collect();
+                for part in jobs.chunks(super::queue::MAX_ENQUEUE) {
+                    self.queue
+                        .enqueue(ns, part, i64::try_from(now_ms / 1000).unwrap_or(i64::MAX))
+                        .await?;
+                }
             }
         }
         // Reachable again: clear the tombstone and index it as new work.
@@ -322,6 +357,18 @@ impl Sweeper {
             report.resurrected = revived.len();
         }
         Ok(Some(report))
+    }
+
+    async fn is_tombstoned(&self, ns: &[u8], ord: u32) -> Result<bool> {
+        let n: i64 = sqlx::query(
+            "SELECT COUNT(*) AS n FROM ci_docs WHERE ns = $1 AND ord = $2 AND flags >= 128",
+        )
+        .bind(ns.to_vec())
+        .bind(i64::from(ord))
+        .fetch_one(&self.pool)
+        .await?
+        .try_get("n")?;
+        Ok(n > 0)
     }
 
     /// Removes `set` from the `indexed` bitmap of a kind in a new generation. A no-op (no new
@@ -372,9 +419,11 @@ mod tests {
     use asc_codeintel::index::manifest::MemManifest;
     use asc_store::bucket::BucketObjects;
     use asc_store::codec::encode_stored;
+    use asc_store::key::ObjKey;
 
     use super::*;
     use crate::codeintel::modelgen::tests::pool;
+    use crate::codeintel::worker::{read_chunk_rows, read_tags};
 
     const NS: &[u8] = b"sweep-ns";
     const DAY: u64 = 24 * 3600 * 1000;
@@ -446,7 +495,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-            for key in [tags_key(&f), chunks_key(&f)] {
+            for key in [tags_key(NS, &f), chunks_key(NS, &f)] {
                 objects.put(&key, encode_stored(b"[]")).await.unwrap();
             }
         }
@@ -536,21 +585,21 @@ mod tests {
         // Its derived objects are gone; the PR head's are not.
         assert!(
             r.objects
-                .get(&tags_key(&r.files[2]))
+                .get(&tags_key(NS, &r.files[2]))
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             r.objects
-                .get(&chunks_key(&r.files[2]))
+                .get(&chunks_key(NS, &r.files[2]))
                 .await
                 .unwrap()
                 .is_none()
         );
         assert!(
             r.objects
-                .get(&tags_key(&r.files[1]))
+                .get(&tags_key(NS, &r.files[1]))
                 .await
                 .unwrap()
                 .is_some()
@@ -641,6 +690,165 @@ mod tests {
             "node-b",
         );
         assert!(s.run(NS, 5).await.unwrap().is_none());
+    }
+
+    const OTHER: &[u8] = b"other-tenant-ns";
+
+    /// Gives `OTHER` a doc row and derived objects for the same file content as `files[2]`.
+    async fn share_file_with_other_ns(r: &Rig) {
+        let f = r.files[2];
+        sqlx::query(
+            "INSERT INTO ci_docs (ns, file, ord, size, flags, versions) VALUES ($1, $2, 0, 4, 0, $3)",
+        )
+        .bind(OTHER.to_vec())
+        .bind(f.as_bytes().to_vec())
+        .bind(vec![0u8; 12])
+        .execute(&r.pool)
+        .await
+        .unwrap();
+        for key in [tags_key(OTHER, &f), chunks_key(OTHER, &f)] {
+            r.objects.put(&key, encode_stored(b"[]")).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sweeping_one_namespace_keeps_the_derived_objects_of_another_with_the_same_file() {
+        let r = rig().await;
+        share_file_with_other_ns(&r).await;
+        let f = r.files[2];
+        assert_ne!(tags_key(NS, &f), tags_key(OTHER, &f));
+        assert_ne!(chunks_key(NS, &f), chunks_key(OTHER, &f));
+
+        let t0 = 100 * DAY;
+        let s = sweeper(
+            &r,
+            vec![
+                head(1, HeadKind::Land, t0),
+                head(2, HeadKind::Pr, t0),
+                head(4, HeadKind::Draft, t0),
+            ],
+        );
+        s.run(NS, t0).await.unwrap();
+        let rep = s.run(NS, t0 + 14 * DAY).await.unwrap().unwrap();
+        assert_eq!(rep.tombstoned, 1); // ord 2 in NS
+        assert!(read_tags(&*r.objects, NS, &f).await.unwrap().is_none());
+        assert!(
+            read_chunk_rows(&*r.objects, NS, &f)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The other namespace still loads both.
+        assert_eq!(
+            read_tags(&*r.objects, OTHER, &f).await.unwrap(),
+            Some(vec![])
+        );
+        assert_eq!(
+            read_chunk_rows(&*r.objects, OTHER, &f).await.unwrap(),
+            Some(vec![])
+        );
+    }
+
+    /// Runs `before_delete` (a concurrent worker) just before the first object delete.
+    struct Racing {
+        inner: Arc<BucketObjects>,
+        pool: AnyPool,
+        fired: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Objects for Racing {
+        async fn get(&self, key: &ObjKey) -> asc_store::objects::Result<Option<bytes::Bytes>> {
+            self.inner.get(key).await
+        }
+        async fn get_stored(
+            &self,
+            key: &ObjKey,
+        ) -> asc_store::objects::Result<Option<bytes::Bytes>> {
+            self.inner.get_stored(key).await
+        }
+        async fn get_range(
+            &self,
+            key: &ObjKey,
+            r: std::ops::Range<u64>,
+        ) -> asc_store::objects::Result<Option<bytes::Bytes>> {
+            self.inner.get_range(key, r).await
+        }
+        async fn put(&self, key: &ObjKey, stored: bytes::Bytes) -> asc_store::objects::Result<()> {
+            self.inner.put(key, stored).await
+        }
+        async fn has_many(&self, keys: &[ObjKey]) -> asc_store::objects::Result<Vec<bool>> {
+            self.inner.has_many(keys).await
+        }
+        async fn delete(&self, key: &ObjKey) -> asc_store::objects::Result<()> {
+            if matches!(key, ObjKey::Derived { name: "tags", .. })
+                && !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                // A worker re-indexes the file in this namespace: `reserve_doc` clears the
+                // tombstone, then it writes the objects. The sweep's delete lands after.
+                sqlx::query("UPDATE ci_docs SET flags = 0 WHERE ns = $1 AND ord = 2")
+                    .bind(NS.to_vec())
+                    .execute(&self.pool)
+                    .await
+                    .unwrap();
+            }
+            self.inner.delete(key).await
+        }
+        fn list(
+            &self,
+            prefix: asc_store::key::KeyPrefix,
+        ) -> futures::stream::BoxStream<
+            '_,
+            asc_store::objects::Result<(ObjKey, std::time::SystemTime)>,
+        > {
+            self.inner.list(prefix)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reindex_racing_the_delete_is_tombstoned_again_and_requeued() {
+        let r = rig().await;
+        let t0 = 100 * DAY;
+        let racing = Arc::new(Racing {
+            inner: r.objects.clone(),
+            pool: r.pool.clone(),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        let s = Sweeper::new(
+            r.pool.clone(),
+            racing,
+            r.manifests.clone(),
+            Arc::new(Fixed(vec![
+                head(1, HeadKind::Land, t0),
+                head(2, HeadKind::Pr, t0),
+                head(4, HeadKind::Draft, t0),
+            ])),
+            Arc::new(Table(HashMap::from([
+                (rev(1), bits(&[0])),
+                (rev(2), bits(&[0, 1])),
+                (rev(4), bits(&[0, 3])),
+            ]))),
+            "node-a",
+        );
+        s.run(NS, t0).await.unwrap();
+        s.run(NS, t0 + 14 * DAY).await.unwrap();
+        // The row is under the tombstone again, hidden, with its chunk rows kept, and a file job
+        // is queued so the objects are rewritten.
+        assert_eq!(tombstoned(&r.pool, NS).await.unwrap(), bits(&[2]));
+        assert!(!indexed(&r, IndexKind::Files).await.contains(2));
+        let n: i64 = sqlx::query("SELECT COUNT(*) FROM ci_chunks WHERE ns = $1 AND doc_ord = 2")
+            .bind(NS.to_vec())
+            .fetch_one(&r.pool)
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(n, 1);
+        let jobs = Queue::new(r.pool.clone())
+            .lease(NS, 10, 60, 100 * 86_400 + 15 * 86_400)
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].key, r.files[2].as_bytes().to_vec());
     }
 
     #[test]
