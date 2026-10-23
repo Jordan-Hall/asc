@@ -23,7 +23,7 @@ use asc_wc::worktree as wt;
 use super::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::restore::{actor, root_of, sync_worktree};
 use super::switch::{
-    Rev, RevKind, abbrev_len, bad_branch_name, branch_tip, commit_line, ensure_mapped, held_anywhere, ref_name,
+    Rev, RevKind, TrackOpt, abbrev_len, bad_branch_name, branch_tip, commit_line, ensure_mapped, held_anywhere, ref_name,
     resolve_rev, valid_branch_name,
 };
 use crate::ext;
@@ -58,7 +58,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "worktree",
     flags: &[
         "-f", "--force", "--detach", "--checkout", "--lock", "--reason", "-b", "-B", "-q", "--quiet",
-        "--ephemeral", "--ttl", "--mode", "-n", "--dry-run", "-v", "--verbose", "--porcelain", "-z",
+        "--track", "--no-track", "--ephemeral", "--ttl", "--mode", "-n", "--dry-run", "-v", "--verbose", "--porcelain", "-z",
         "--plain",
     ],
     placeholders: &[],
@@ -290,6 +290,8 @@ pub(crate) struct AddOpts {
     pub lock: Option<String>,
     pub quiet: bool,
     pub start: Option<String>,
+    /// `--track` / `--no-track`: how a new branch tracks its start point.
+    pub track: TrackOpt,
     /// `--ephemeral --ttl`: seconds until the worktree may be removed.
     pub ephemeral_secs: Option<u64>,
     /// `--mode virtual`.
@@ -570,6 +572,7 @@ async fn materialise(
             format!("branch: Created from {}", start.label)
         };
         ctx.update_local_refs(txn, &reason, StagingAfterMove::Keep).await?;
+        super::switch::track_start(ctx, name, start, o.track, o.quiet).await?;
     }
 
     // The path a nested worktree is reached by.
@@ -593,6 +596,8 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             flag(Some('f'), "--force"),
             flag(None, "--detach"),
             flag(None, "--checkout"),
+            flag(None, "--track"),
+            flag(None, "--no-track"),
             flag(None, "--lock"),
             valued(None, "--reason"),
             valued(Some('b'), "-b"),
@@ -652,6 +657,11 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             lock: sc.has("--lock").then(|| sc.value("--reason").unwrap_or("").to_owned()),
             quiet: sc.has("--quiet"),
             start,
+            track: match (sc.has("--track"), sc.has("--no-track")) {
+                (true, false) => TrackOpt::Direct,
+                (false, true) => TrackOpt::No,
+                _ => TrackOpt::Auto,
+            },
             ephemeral_secs,
             virtual_mode,
         },
