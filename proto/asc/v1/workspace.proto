@@ -3,6 +3,7 @@ package asc.v1;
 option go_package = "forgejo.org/modules/ascproto/ascv1";
 import "asc/v1/repo.proto";
 import "asc/v1/projects.proto";
+import "asc/v1/codeintel.proto";
 
 // workspace.proto — daemon IPC only (named pipe / Unix socket, current user only)
 // The plugin RPCs (Status … Watch) are the stable, documented API for ASC's IDE plugins [audit: user decision No-IDE].
@@ -14,6 +15,10 @@ service Workspace {
   rpc Affected(WsAffectedRequest) returns (WsAffectedResponse); // §12A.7, including --uncommitted
   rpc Watch(WatchRequest) returns (stream WatchEvent);          // path changed, HEAD/ref moved, staging changed, op started/finished, switch done
   rpc Stage(WsStageRequest) returns (WsStageResponse);          // add/remove paths or hunks; the plugin's "git add"
+  rpc Search(WsSearchRequest) returns (stream SearchResponse);          // §23.2.5: workspace scope = server at HEAD minus dirty paths, plus the overlay
+  rpc Symbols(WsSymbolsRequest) returns (SymbolsResponse);
+  rpc Semantic(WsSemanticRequest) returns (SemanticResponse);          // the daemon loads no model: the server answers, dirty paths excluded
+  rpc IndexStatus(WsIndexStatusRequest) returns (IndexStatusResponse);
   rpc Ping(PingRequest) returns (PingResponse);                 // version, pid, uptime
   rpc Mount(MountRequest) returns (MountResponse);              // ws_id → starts provider
   rpc Unmount(UnmountRequest) returns (UnmountResponse);
@@ -24,10 +29,6 @@ service Workspace {
   rpc Prefetch(PrefetchRequest) returns (PrefetchResponse);     // ws_id, pathspec
   rpc Stats(StatsRequest) returns (StatsResponse);              // hydrations by path/process, bytes, journal size
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
-  rpc Stacks(WsStacksRequest) returns (WsStacksResponse);                       // SPEC 20.6 (C31): = asc sl --json
-  rpc Worktrees(WsWorktreesRequest) returns (WsWorktreesResponse);              // SPEC 20.6 (C31)
-  rpc Conflicts(WsConflictsRequest) returns (WsConflictsResponse);              // SPEC 20.6 (C31): staging stages 1-3
-  rpc CommitGraph(WsCommitGraphRequest) returns (stream CommitGraphResponse);   // SPEC 20.6 (C31): with a WIP row per worktree
 }
 
 // Plugin messages [audit: plugin-api-undefined]. Ids are 20-byte git SHA-1s (§11.1). workspace.proto imports
@@ -42,22 +43,25 @@ message WsDiffRequest { string ws_id = 1; string from = 2; string to = 3; /* "in
   repeated bytes paths = 4; DiffFormat format = 5; uint32 context = 6; }
 message WsLogRequest { string ws_id = 1; LogRequest query = 2; }
 message WsBlameRequest { string ws_id = 1; string rev = 2; /* empty = working copy */ bytes path = 3; uint32 start_line = 4;
-  uint32 end_line = 5;
-  bytes buffer = 6; /* unsaved editor bytes; lines map to HEAD by one line diff (C31) */ bool ignore_whitespace = 7; }
+  uint32 end_line = 5; }
 message WsAffectedRequest { string ws_id = 1; AffectedRequest query = 2; bool uncommitted = 3; }
 message WsAffectedResponse { AffectedResponse result = 1; }
 message WatchRequest { string ws_id = 1; string since_token = 2; }
 message WatchEvent { enum Kind { KIND_PATHS = 0; KIND_HEAD = 1; KIND_REF = 2; KIND_STAGE = 3; KIND_OP_STARTED = 4;
   KIND_OP_FINISHED = 5; KIND_SWITCH_DONE = 6; KIND_RESYNC = 7;
-  KIND_STACK = 8; /* C31; emitted by C49 */
-  KIND_CLOUD = 9; /* cloud events go to the workspace owner only (§21.3.7) */ } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
-  string token = 7; bytes change = 8; /* KIND_STACK: the change id (C31) */ }
+  KIND_CLOUD = 9; /* 8 is KIND_STACK (C31); cloud events go to the workspace owner only (§21.3.7) */ } Kind kind = 1; repeated bytes paths = 2; string ref = 3; bytes old = 4; bytes new = 5; string op = 6;
+  string token = 7; }
 message WsStageRequest { string ws_id = 1; repeated bytes add = 2; repeated bytes remove = 3; bytes patch = 4; /* git apply --cached format */ }
 message WsStageResponse { WsStatusResponse status = 1; }
 // The internal RPCs (Ping … Shutdown) carry the fields named in their comments; their messages are defined in U41
 // and are not part of the stable plugin API.
 
 // Internal daemon RPC messages (not part of the stable plugin API).
+// The four CodeIntel RPCs over the daemon IPC (codeintel.proto messages). `scope.workspace` is accepted only here.
+message WsSearchRequest { string ws_id = 1; SearchRequest query = 2; }
+message WsSymbolsRequest { string ws_id = 1; SymbolsRequest query = 2; }
+message WsSemanticRequest { string ws_id = 1; SemanticRequest query = 2; }
+message WsIndexStatusRequest { string ws_id = 1; IndexStatusRequest query = 2; }
 message PingRequest {}
 message PingResponse { string version = 1; uint32 pid = 2; uint64 uptime_ms = 3; }
 message MountRequest { string ws_id = 1; }
@@ -81,20 +85,3 @@ message StatsResponse { repeated HydrationCount by_path = 1; repeated HydrationC
   uint64 bytes_hydrated = 3; uint64 journal_size = 4; }
 message ShutdownRequest {}
 message ShutdownResponse {}
-
-// Plugin additions (SPEC 20.5, 20.6, C31). Ids are 20-byte git SHA-1s; `change` is a change id.
-message WsStacksRequest { string ws_id = 1; bool all = 2; bool remote = 3; string revset = 4; }
-message StackTrunk { string name = 1; bytes tip = 2; string remote = 3; }
-message StackEntry { bytes change = 1; bytes commit = 2; bytes asc = 3; bytes parent_change = 4; repeated string branches = 5;
-  bytes subject = 6; Signature author = 7; string state = 8; bool needs_restack = 9; bool frozen = 10; bool empty = 11;
-  bool current = 12; string worktree = 13; ReviewState review = 14; string short = 15; }
-message WsStack { string trunk = 1; bytes base = 2; uint32 behind = 3; repeated StackEntry changes = 4; }
-message WsStacksResponse { uint32 version = 1; repeated StackTrunk trunks = 2; repeated WsStack stacks = 3; }
-message WsWorktreesRequest {}
-message WsWorktree { string ws_id = 1; string path = 2; string mount = 3; string mode = 4; string head_ref = 5; bytes head = 6;
-  uint32 dirty = 7; uint32 staged = 8; uint32 ahead = 9; uint32 behind = 10; int64 ephemeral_until = 11; string locked = 12; string in_progress = 13; }
-message WsWorktreesResponse { repeated WsWorktree worktrees = 1; }
-message WsConflictsRequest { string ws_id = 1; }
-message WsConflict { bytes path = 1; ConflictKind kind = 2; bytes base = 3; bytes ours = 4; bytes theirs = 5; bytes marked = 6; }
-message WsConflictsResponse { repeated WsConflict conflicts = 1; }
-message WsCommitGraphRequest { string ws_id = 1; CommitGraphRequest query = 2; bool wip_rows = 3; }
