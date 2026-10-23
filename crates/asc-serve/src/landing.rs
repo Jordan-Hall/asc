@@ -104,12 +104,7 @@ fn may_write(actor: &str, refname: &str) -> bool {
         return true;
     }
     let principal = Principal { id: actor.into() };
-    refpolicy::owner_of(&principal).is_some_and(|owner| owns(owner, refname))
-}
-
-/// Whether `refname` lies in `owner`'s user namespace (the test `refpolicy::advertise` applies).
-fn owns(owner: i64, refname: &str) -> bool {
-    refname.starts_with(&format!("{}{owner}/", refpolicy::USER_NS))
+    refpolicy::owner_of(&principal).is_some_and(|owner| refpolicy::owns_user_ref(owner, refname))
 }
 
 /// One `ref_log` entry of a ref.
@@ -319,7 +314,9 @@ fn ref_of(
     let named = RefName::new(full).map_err(|e| Status::invalid_argument(e.to_string()))?;
     let text = named.to_string();
     if text.starts_with(refpolicy::USER_NS) {
-        return Ok(owner.is_some_and(|o| owns(o, &text)).then_some(named));
+        return Ok(owner
+            .is_some_and(|o| refpolicy::owns_user_ref(o, &text))
+            .then_some(named));
     }
     match policy.classify(owner, &text) {
         Ok(Class::User { stored, .. }) => RefName::new(stored.as_bytes())
@@ -635,9 +632,16 @@ mod tests {
         assert_eq!(rejected(&f, &[0; 32], "refs/heads/a..b".into()).await, bad);
     }
 
+    /// A caller named by its Forgejo user id (`"8"` acts as `8:u8`), or by any other principal
+    /// text (`"alice"`), which has no user id.
     fn ctx_as(id: &str) -> CallCtx {
+        let id = if id.bytes().all(|b| b.is_ascii_digit()) {
+            format!("{id}:u{id}")
+        } else {
+            id.to_owned()
+        };
         CallCtx {
-            principal: Principal { id: id.into() },
+            principal: Principal { id },
             ..ctx(Uuid::new_v4(), IdMode::Asc)
         }
     }
@@ -796,7 +800,7 @@ mod tests {
         let a = commit(&f.e, &[f.base], &[("a", b"a")]).await;
         let b = commit(&f.e, &[f.base], &[("b", b"b")]).await;
         let (stored, op) = user_landing(&f, "8", "x", a).await;
-        sqlx::query("UPDATE ref_log SET actor = '9' WHERE op_id = $1")
+        sqlx::query("UPDATE ref_log SET actor = '9:u9' WHERE op_id = $1")
             .bind(op.as_bytes().to_vec())
             .execute(f.r.pool())
             .await
