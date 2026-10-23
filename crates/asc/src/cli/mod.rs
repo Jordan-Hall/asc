@@ -45,6 +45,9 @@ pub mod safe_dir;
 pub mod seed_opts;
 
 pub mod add;
+mod add_patch;
+mod add_patch_diff;
+mod add_patch_ui;
 pub mod affected;
 pub mod am;
 pub mod api;
