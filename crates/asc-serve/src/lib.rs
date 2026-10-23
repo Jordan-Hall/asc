@@ -5,6 +5,7 @@
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
 pub mod admin;
+pub mod alt_svc;
 pub mod authn;
 pub mod authz;
 pub mod cache_role;
@@ -27,7 +28,6 @@ pub mod idmode;
 pub mod import_push;
 pub mod ingest;
 pub mod land;
-pub mod landing;
 pub mod limits;
 pub mod mainline;
 pub mod migrate;
@@ -37,7 +37,6 @@ pub mod outbox;
 pub mod projects;
 pub mod projects_warm;
 pub mod read;
-pub mod refpolicy;
 pub mod registry;
 pub mod seeds;
 #[cfg(feature = "git-ssh")]
@@ -177,7 +176,6 @@ fn register_all(
 ) {
     limits::register(ext, limits);
     update::register(ext, registry);
-    landing::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
     let mutations = mutations::register(ext, registry, &hooks);
@@ -253,6 +251,8 @@ pub async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServeError> {
     cfg.validate()?;
+    // Plain http is only right behind a TLS-terminating proxy (U89).
+    cfg.validate_listener()?;
     if cfg.role == Role::Cache {
         // No SQL and no store: the cache role authorises through its upstream (U70).
         return cache_role::serve(cfg, shutdown).await;
@@ -366,6 +366,8 @@ pub async fn serve(
         let identity = Identity::from_pem(read_pem(&tls.cert)?, read_pem(&tls.key)?);
         server = server.tls_config(ServerTlsConfig::new().identity(identity))?;
     }
+    // `Alt-Svc: h3=…` when an h3-capable proxy in front serves HTTP/3 (U89).
+    let mut server = server.layer(alt_svc::layer(cfg.http3_port));
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();

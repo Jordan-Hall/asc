@@ -192,7 +192,7 @@ mod tests {
     fn forge_needs_the_internal_endpoint() {
         let forge = |internal: &str| {
             format!(
-                "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"http://forge.example\"\n{internal}[ssh]\nenabled = true\n"
+                "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\n{internal}[ssh]\nenabled = true\n"
             )
         };
         let stage1 = forge("");
@@ -200,7 +200,7 @@ mod tests {
             matches!(gate(&cfg(&stage1), true), Gate::Skip(r) if r.contains("internal authz endpoint (K19)"))
         );
         // The [ssh] table must follow [forgejo]; the internal token file is a [forgejo] key.
-        let stage2 = "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"http://forge.example\"\ninternal_token_file = \"t\"\n[ssh]\nenabled = true\n";
+        let stage2 = "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\ninternal_token_file = \"t\"\n[ssh]\nenabled = true\n";
         assert_eq!(gate(&cfg(stage2), true), Gate::Run);
     }
 }

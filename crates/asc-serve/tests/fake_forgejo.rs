@@ -356,6 +356,8 @@ mod forgejo {
     }
 
     async fn start() -> (Fake, String) {
+        // The fake Forgejo speaks plain http on the loopback interface (U89 opt-in).
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         let fake = Fake::default();
         let app = Router::new().fallback(handle).with_state(fake.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
