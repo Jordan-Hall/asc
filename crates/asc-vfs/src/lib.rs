@@ -12,3 +12,7 @@ pub mod stats;
 #[cfg(all(feature = "projfs", windows))]
 #[allow(unsafe_code)] // the ProjFS FFI; every call is confined to this module tree.
 pub mod projfs;
+
+/// Linux FUSE backend (SPEC §10.3).
+#[cfg(all(feature = "fuse", target_os = "linux"))]
+pub mod fuse;

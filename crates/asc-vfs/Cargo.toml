@@ -26,4 +26,8 @@ tokio = { workspace = true }
 
 [features]
 projfs = ["dep:asc-state", "dep:libloading", "dep:tokio"]
-fuse = []
+fuse = ["dep:fuser", "dep:asc-state", "dep:tokio", "dep:rustix"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true }
