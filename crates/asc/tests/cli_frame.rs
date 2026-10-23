@@ -401,11 +401,11 @@ fn shell_alias_finds_the_private_shim_dir_before_real_git() {
 fn git_prefers_aliases_then_git_externals_then_asc_verbs() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    append_global(&sb, "[alias]\n\tgraph = tag --list\n");
-    // `git graph` is the alias (it expands to `tag`, which has not landed).
+    append_global(&sb, "[alias]\n\tgraph = stash list\n");
+    // `git graph` is the alias (it expands to `stash`, which has not landed).
     let out = git(&sb, &root, &["graph"]);
     assert_eq!(out.code, 129);
-    assert_eq!(out.stderr, "fatal: asc: 'tag' is not supported yet\n");
+    assert_eq!(out.stderr, "fatal: asc: 'stash' is not supported yet\n");
     // Under `asc`, the asc-only verb `graph` wins and is also not built yet.
     let out = asc(&sb, &root, &["graph"]);
     assert_eq!((out.code, out.stderr.as_str()), (129, "fatal: asc: 'graph' is not supported yet\n"));
@@ -481,7 +481,7 @@ fn autocorrect_never_picks_a_asc_only_verb() {
 fn commands_not_yet_landed_exit_129() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    for cmd in ["branch", "tag", "merge", "stash", "rebase", "push"] {
+    for cmd in ["merge", "stash", "rebase", "push"] {
         let out = git(&sb, &root, &[cmd, "--any-flag"]);
         assert_eq!(out.code, 129, "{cmd}");
         assert_eq!(out.stderr, format!("fatal: asc: '{cmd}' is not supported yet\n"), "{cmd}");
