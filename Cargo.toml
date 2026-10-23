@@ -182,3 +182,11 @@ tantivy        = { version = "=0.27.0", default-features = false, features = ["m
 usearch        = { version = "=2.26.5", default-features = false }
 # additions (I02)
 regex-syntax   = "0.8.11"
+
+# Faster builds and much smaller target dirs (2026-10-23): line tables are enough for our own
+# backtraces; dependencies carry no debug info. Tests inherit the dev profile.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
