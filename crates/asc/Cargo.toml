@@ -48,6 +48,8 @@ serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+similar = { workspace = true }
+toml = { workspace = true }
 
 # vfs-projfs is Windows-only, vfs-fuse is Linux-only; the dep is optional on both.
 [target.'cfg(windows)'.dependencies]

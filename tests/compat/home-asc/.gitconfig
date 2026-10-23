@@ -1,0 +1,4 @@
+[init]
+	defaultBranch = master
+[asc "shim"]
+	init = asc
