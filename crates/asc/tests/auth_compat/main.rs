@@ -1014,20 +1014,13 @@ mod edge {
         assert!(!run.stderr.contains(RW), "no secret on git's stderr");
 
         let (status, flag, body) = stub_answer(&edge, &basic_header("x-access-token", RW)).await;
-        // U78 built the stub as `404` ("the forge serves git"). SPEC §25.9 (v1.12) and U81 make
-        // it `403` with `X-Asc-Git: disabled`; the `#[ignore]` test below pins that contract.
-        match status {
-            404 => {}
-            403 => {
-                assert_eq!(flag.as_deref(), Some("disabled"));
-                assert!(body.contains("git protocol disabled"), "{body}");
-            }
-            other => panic!("unexpected stub status {other}"),
-        }
+        // SPEC §25.9 (v1.12), U81: the disabled stub is `403` with `X-Asc-Git: disabled`.
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(flag.as_deref(), Some("disabled"));
+        assert!(body.contains("git protocol disabled"), "{body}");
     }
 
     /// The v1.12 stub contract (PLAN U78/U81): `403`, `X-Asc-Git: disabled`, and the text.
-    #[ignore = "U78 shipped the 404 stub; U81 replaces it with the 403 disabled stub"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_disabled_git_stub_is_403_with_x_asc_git() {
         let edge = Edge::start(&[(RW, "ci-write", Access::Write)]).await;

@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use asc_core::path::RefName;
 use asc_engine::derive::{Error as DeriveError, GitMapRow, GitMapSink};
+use asc_rpc::auth::Authorizer;
 use asc_rpc::server::{EngineBackend, RepoHandlers, RepoName};
 use asc_store::bucket::BucketObjects;
 use asc_store::refs::RepoKey;
@@ -372,6 +373,28 @@ impl GrpcServices {
     }
 }
 
+/// Builds the live git smart-HTTP routes (SPEC §25) around the server's authorizer.
+pub type GitRouterFactory = Arc<dyn Fn(Arc<dyn Authorizer>) -> axum::Router + Send + Sync>;
+
+/// Holds the live git routes, set once by `git_http::register` when the layer is running.
+/// `build_routes` serves them in place of the disabled stub (`authn::git_router`) when set.
+#[derive(Default)]
+pub struct GitRoutesSlot {
+    factory: std::sync::OnceLock<GitRouterFactory>,
+}
+
+impl GitRoutesSlot {
+    /// Installs the factory; fails (returning it) when one is already set.
+    pub fn set(&self, f: GitRouterFactory) -> Result<(), GitRouterFactory> {
+        self.factory.set(f)
+    }
+
+    /// The live routes for `authorizer`, or `None` when the layer is not running.
+    pub fn router(&self, authorizer: Arc<dyn Authorizer>) -> Option<axum::Router> {
+        self.factory.get().map(|f| f(authorizer))
+    }
+}
+
 /// What every unit's one-line registration receives.
 pub struct Extensions {
     /// One handler per RPC group (U42).
@@ -381,6 +404,8 @@ pub struct Extensions {
     /// The `Projects` service handler (G09); `build_routes` serves it behind the authorizer.
     pub projects: asc_rpc::projects::ProjectsSlot,
     pub text_budget: crate::TextBudgetSlot,
+    /// The live git smart-HTTP routes (U81); the disabled stub serves while this is empty.
+    pub git: GitRoutesSlot,
     /// Ingest and `UpdateRefs` hook points (U43b).
     pub pipeline: Arc<crate::update::PipelineHooks>,
 }
@@ -393,6 +418,7 @@ impl Extensions {
             grpc: GrpcServices::new(),
             projects: Default::default(),
             text_budget: crate::TextBudgetSlot::default(),
+            git: GitRoutesSlot::default(),
             pipeline: Arc::default(),
         }
     }

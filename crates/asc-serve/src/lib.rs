@@ -15,6 +15,8 @@ pub mod config;
 pub mod forgejo;
 pub mod gc;
 #[cfg(feature = "git-compat")]
+pub mod git_http;
+#[cfg(feature = "git-compat")]
 pub mod git_view;
 pub mod graph_sql;
 pub mod history;
@@ -173,7 +175,11 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
                 .into_service(),
         );
     }
-    let git_hosts = authn::git_router(authorizer.clone());
+    // The live git routes when the layer runs (U81), else the disabled stub (U78, SPEC §25.9).
+    let git_hosts = ext
+        .git
+        .router(authorizer.clone())
+        .unwrap_or_else(|| authn::git_router(authorizer.clone()));
     ext.grpc
         .register(RepoService::new(ext.handlers.clone(), authorizer, info).into_service());
     let router = ext
@@ -181,7 +187,7 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
         .routes()
         .into_axum_router()
         .merge(ext.http.router())
-        // `/<owner>/<repo>/info/refs` and the pack paths: the challenge, then a 404 (U78).
+        // `/<owner>/<repo>/info/refs` and the pack paths (U81; the stub of U78 when disabled).
         .merge(git_hosts)
         // tonic's own fallback answers an unknown path with `200` and a gRPC status; the public
         // listener answers a plain 404 instead (`/metrics` lives on the admin listener only).
@@ -250,9 +256,20 @@ pub async fn serve(
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror = mirror::register(&ext, &registry, &cfg)
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-    // The git protocol layer's views (SPEC §25); the git routes receive this service.
+    // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
+    // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
-    let _git_views = git_view::register(&registry, &outbox, &cfg);
+    let git_live = match git_view::register(&registry, &outbox, &cfg) {
+        Some(views) => {
+            git_http::register(&ext, views, registry.clone(), &metrics, &cfg);
+            true
+        }
+        None => false,
+    };
+    #[cfg(not(feature = "git-compat"))]
+    if cfg.git.enabled {
+        tracing::warn!("git-compat is not compiled in; git protocol disabled");
+    }
     let well_known = http::WellKnown {
         server: cfg.public_url.clone(),
         ..http::WellKnown::default()
@@ -267,8 +284,14 @@ pub async fn serve(
     // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
     // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
+    #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
+    let mut features = vec![projects::feature()];
+    #[cfg(feature = "git-compat")]
+    if git_live {
+        features.push(git_http::FEATURE.to_owned());
+    }
     let info = ServerInfo {
-        features: vec![projects::feature()],
+        features,
         ..ServerInfo::default()
     };
     let routes = limits::guarded_routes(&ext, authorizer, admission, info);

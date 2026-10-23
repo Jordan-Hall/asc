@@ -11,8 +11,11 @@
 //! `/mcp` adds its `resource_metadata` challenge (SPEC §22.7.3).
 //!
 //! [`guard_admin`] is the same edge for the admin listener, whose token is an operator secret
-//! outside the `Authorizer`. [`git_router`] answers the git smart-HTTP paths so that a real git
-//! client pointed at `asc serve` meets the challenge and then a plain 404.
+//! outside the `Authorizer`. [`git_router`] is the disabled stub of the git smart-HTTP paths
+//! (SPEC §25.9): a real git client pointed at `asc serve` meets the challenge, then, once
+//! authenticated and allowed to read, a `403` with `X-Asc-Git: disabled`. It is compiled in every
+//! build and serves whenever the live routes of `git_http` do not (the feature is off,
+//! `[git] enabled = false`, git is older than 2.40).
 //!
 //! Nothing here logs or returns a credential.
 
@@ -180,12 +183,31 @@ pub fn guard_admin(router: Router, token: Option<Arc<str>>) -> Router {
 
 // ------------------------------------------------------------------------------ git hosts
 
-const GIT_ELSEWHERE: &str = "the git protocol is served by the forge; this host serves asc's API\n";
+/// The body of the disabled stub (SPEC §25.9).
+pub const GIT_DISABLED_BODY: &str = "asc: git protocol disabled on this server
+";
+/// The header that marks the disabled stub; its value is `disabled`.
+pub const GIT_DISABLED_HEADER: &str = "x-asc-git";
 
-/// `/<owner>/<repo>[.git]/info/refs`, `git-upload-pack` and `git-receive-pack` (SPEC §15.6.2,
-/// "Git protocol hosts"): anonymous gets the challenge, so a credential helper is asked; once
-/// authenticated, a 404 that says where git is served. The same 404 answers a repository the
-/// principal cannot read and one that does not exist.
+/// The `403` an authenticated principal gets from the disabled stub.
+pub fn git_disabled() -> Response {
+    let mut res = (StatusCode::FORBIDDEN, GIT_DISABLED_BODY).into_response();
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    res.headers_mut().insert(
+        axum::http::HeaderName::from_static(GIT_DISABLED_HEADER),
+        HeaderValue::from_static("disabled"),
+    );
+    res
+}
+
+/// `/<owner>/<repo>[.git]/info/refs`, `git-upload-pack` and `git-receive-pack` when the git layer
+/// is not live (SPEC §15.6.2, §25.9): anonymous gets the challenge, so a credential helper is
+/// asked; an authenticated principal that may read the repository gets `403` with
+/// `X-Asc-Git: disabled`; one that may not, and a name that cannot be a repository, get the same
+/// `404` as a repository that does not exist.
 pub fn git_router(authorizer: Arc<dyn Authorizer>) -> Router {
     async fn git_stub(
         State(authorizer): State<Arc<dyn Authorizer>>,
@@ -196,12 +218,17 @@ pub fn git_router(authorizer: Arc<dyn Authorizer>) -> Router {
             return unauthorized(&Surface::Api, &headers);
         };
         let repo = repo.strip_suffix(".git").unwrap_or(&repo);
+        let name = format!("{owner}/{repo}");
+        if asc_rpc::server::RepoName::parse(&name).is_err() {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         match authorizer
-            .authorize_credential(Some(&credential), &format!("{owner}/{repo}"), Access::Read)
+            .authorize_credential(Some(&credential), &name, Access::Read)
             .await
         {
             Err(AuthError::Unauthenticated) => unauthorized(&Surface::Api, &headers),
-            _ => (StatusCode::NOT_FOUND, GIT_ELSEWHERE).into_response(),
+            Ok(_) => git_disabled(),
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
         }
     }
     let routes = Router::new()
