@@ -714,8 +714,13 @@ dependencies = [
 name = "asc-vfs"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "asc-core",
+ "asc-store",
  "asc-wc",
+ "quick_cache",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
