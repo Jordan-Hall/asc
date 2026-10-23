@@ -6,6 +6,7 @@
 
 mod child;
 mod cli;
+mod daemon;
 mod dispatch;
 mod env;
 mod ext;
@@ -28,6 +29,7 @@ async fn main() -> ExitCode {
     let argv0 = args.first().cloned().unwrap_or_default();
     let _ = ext::set_ref_txn_hook(Box::new(hooks_runner::RefTxnRunner::new()));
     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
+    let _ = ext::set_workspace_factory(Box::new(daemon::workspace_factory::DaemonWorkspaceFactory::system()));
     match Program::from_argv0(&argv0) {
         Program::Git => shim::run(args).await,
         Program::Asc => dispatch::run(Program::Asc, args).await,

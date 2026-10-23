@@ -46,6 +46,7 @@ uuid = { workspace = true }
 linkme = { workspace = true }
 automod = { workspace = true }
 serde = { workspace = true }
+tonic = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
