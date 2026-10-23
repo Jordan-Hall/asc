@@ -7,8 +7,8 @@
 pub mod authn;
 pub mod authz;
 pub mod cache_role;
-pub mod codeintel;
 pub mod classify;
+pub mod codeintel;
 pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
@@ -269,8 +269,8 @@ pub async fn serve(
     let warmer = projects::register(&ext, &registry);
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
-    let mirror = mirror::register(&ext, &registry, &cfg)
-        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
+    let mirror =
+        mirror::register(&ext, &registry, &cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?;
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
@@ -349,9 +349,7 @@ pub async fn serve(
             ext.pipeline.clone(),
             cfg.gc.to_config()?,
         ));
-        Some(service.spawn_worker(std::time::Duration::from_secs(
-            cfg.gc.interval_hours * 3600,
-        )))
+        Some(service.spawn_worker(std::time::Duration::from_secs(cfg.gc.interval_hours * 3600)))
     } else {
         None
     };

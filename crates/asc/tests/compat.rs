@@ -119,9 +119,18 @@ scenarios! {
 #[test]
 fn every_scenario_has_a_test() {
     let names = tools().scenario_names();
-    let missing: Vec<_> = names.iter().filter(|n| !REGISTERED.contains(&n.as_str())).collect();
-    assert!(missing.is_empty(), "scenarios without a test in compat.rs: {missing:?}");
-    let stale: Vec<_> = REGISTERED.iter().filter(|n| !names.iter().any(|m| m == *n)).collect();
+    let missing: Vec<_> = names
+        .iter()
+        .filter(|n| !REGISTERED.contains(&n.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "scenarios without a test in compat.rs: {missing:?}"
+    );
+    let stale: Vec<_> = REGISTERED
+        .iter()
+        .filter(|n| !names.iter().any(|m| m == *n))
+        .collect();
     assert!(stale.is_empty(), "tests without a scenario file: {stale:?}");
 }
 
@@ -135,7 +144,10 @@ fn allowed_toml_parses_and_every_entry_is_justified() {
 #[test]
 fn a_fall_through_on_the_asc_side_fails_the_case() {
     let err = tools()
-        .check_script("selfcheck-fall-through", "g init\ng config --global compat.selfcheck 1\n")
+        .check_script(
+            "selfcheck-fall-through",
+            "g init\ng config --global compat.selfcheck 1\n",
+        )
         .expect_err("the runner must reject a fall-through");
     assert!(err.contains("fell through to real git"), "{err}");
 }
@@ -145,8 +157,13 @@ fn a_fall_through_on_the_asc_side_fails_the_case() {
 #[test]
 fn a_difference_between_the_sides_fails_the_case() {
     let script = "g init\nif [ -n \"${ASC_HOME:-}\" ]; then echo asc-side; else echo git-side; fi\n";
-    let err = tools().check_script("selfcheck-diff", script).expect_err("the sides differ");
-    assert!(err.contains("--- stdout") && err.contains("-git-side") && err.contains("+asc-side"), "{err}");
+    let err = tools()
+        .check_script("selfcheck-diff", script)
+        .expect_err("the sides differ");
+    assert!(
+        err.contains("--- stdout") && err.contains("-git-side") && err.contains("+asc-side"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -154,7 +171,8 @@ fn allowed_entries_drop_lines_from_both_sides() {
     use harness::{Allow, Capture, compare};
     let side = |line: &str| {
         let mut c = Capture::default();
-        c.sections.insert("stdout".into(), format!("same\n{line}\n").into_bytes());
+        c.sections
+            .insert("stdout".into(), format!("same\n{line}\n").into_bytes());
         c
     };
     let allow = |scenario: &str| Allow {

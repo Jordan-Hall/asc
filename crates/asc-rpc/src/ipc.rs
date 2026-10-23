@@ -25,7 +25,9 @@ use hyper_util::rt::TokioIo;
 use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::StreamCommon as _;
 use interprocess::local_socket::traits::tokio::{Listener as _, Stream as _};
-use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName};
+use interprocess::local_socket::{
+    GenericFilePath, GenericNamespaced, ListenerOptions, Name, ToFsName, ToNsName,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tonic::transport::server::Connected;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -81,10 +83,17 @@ impl IpcEndpoint {
         xdg_runtime_dir: Option<&std::ffi::OsStr>,
         asc_home: Option<&std::ffi::OsStr>,
     ) -> Result<Self, IpcError> {
-        let path = match (xdg_runtime_dir.filter(|v| !v.is_empty()), asc_home.filter(|v| !v.is_empty())) {
+        let path = match (
+            xdg_runtime_dir.filter(|v| !v.is_empty()),
+            asc_home.filter(|v| !v.is_empty()),
+        ) {
             (Some(x), _) => std::path::Path::new(x).join("asc").join("asc.sock"),
             (None, Some(h)) => std::path::Path::new(h).join("run").join("asc.sock"),
-            (None, None) => return Err(IpcError::NoRuntimeDir("XDG_RUNTIME_DIR and ASC_HOME unset".into())),
+            (None, None) => {
+                return Err(IpcError::NoRuntimeDir(
+                    "XDG_RUNTIME_DIR and ASC_HOME unset".into(),
+                ));
+            }
         };
         Ok(Self(path.to_string_lossy().into_owned()))
     }
@@ -117,13 +126,21 @@ impl Connected for IpcStream {
 }
 
 impl AsyncRead for IpcStream {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.0).poll_read(cx, buf)
     }
 }
 
 impl AsyncWrite for IpcStream {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.0).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -148,14 +165,20 @@ impl IpcListener {
         {
             use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
             let sd = win::owner_only_descriptor(&win::user_sid()?)?;
-            let inner = ListenerOptions::new().name(endpoint.name()?).security_descriptor(sd).create_tokio()?;
+            let inner = ListenerOptions::new()
+                .name(endpoint.name()?)
+                .security_descriptor(sd)
+                .create_tokio()?;
             Ok(Self { inner })
         }
         #[cfg(unix)]
         {
             use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
             let own_uid = unix::prepare(endpoint)?;
-            let inner = ListenerOptions::new().name(endpoint.name()?).mode(0o600).create_tokio()?;
+            let inner = ListenerOptions::new()
+                .name(endpoint.name()?)
+                .mode(0o600)
+                .create_tokio()?;
             Ok(Self { inner, own_uid })
         }
     }
@@ -274,8 +297,13 @@ mod unix {
     /// Returns this user's uid.
     pub(super) fn prepare(endpoint: &IpcEndpoint) -> Result<u32, IpcError> {
         let path = Path::new(endpoint.as_str());
-        let dir = path.parent().ok_or_else(|| IpcError::NoRuntimeDir(endpoint.as_str().into()))?;
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| IpcError::NoRuntimeDir(endpoint.as_str().into()))?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
         let own = own_euid();
         // Never chmod or bind inside a link, or a directory that is not ours: a directory owned
         // by someone else could be swapped under us, and its owner could replace the socket.
@@ -310,23 +338,27 @@ mod unix {
 #[allow(unsafe_code)]
 mod win {
     use super::IpcError;
-    use interprocess::os::windows::security_descriptor::{BorrowedSecurityDescriptor, SecurityDescriptor};
     use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt as _;
+    use interprocess::os::windows::security_descriptor::{
+        BorrowedSecurityDescriptor, SecurityDescriptor,
+    };
     use std::ffi::{OsString, c_void};
     use std::os::windows::ffi::OsStringExt as _;
     use std::path::{Path, PathBuf};
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
-        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
     };
     use windows::Win32::Security::{
-        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
-        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
-        TokenIntegrityLevel, TokenIsAppContainer, TokenLogonSid, TokenRestrictedSids, TokenUser,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, PSECURITY_DESCRIPTOR,
+        PSID, TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        TOKEN_USER, TokenIntegrityLevel, TokenIsAppContainer, TokenLogonSid, TokenRestrictedSids,
+        TokenUser,
     };
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     };
     use windows::core::{PCWSTR, PWSTR};
 
@@ -363,7 +395,9 @@ mod win {
         unsafe {
             let mut out = PWSTR::null();
             ConvertSidToStringSidW(sid, &mut out).map_err(os)?;
-            let s = out.to_string().map_err(|e| IpcError::NoRuntimeDir(e.to_string()));
+            let s = out
+                .to_string()
+                .map_err(|e| IpcError::NoRuntimeDir(e.to_string()));
             let _ = LocalFree(Some(HLOCAL(out.0.cast())));
             s
         }
@@ -373,13 +407,23 @@ mod win {
     ///
     /// # Safety
     /// `token` must be a valid token handle opened with `TOKEN_QUERY`.
-    unsafe fn token_buf(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u64>, IpcError> {
+    unsafe fn token_buf(
+        token: HANDLE,
+        class: TOKEN_INFORMATION_CLASS,
+    ) -> Result<Vec<u64>, IpcError> {
         // SAFETY: the caller vouches for the handle; the buffer is sized by the first call.
         unsafe {
             let mut len = 0u32;
             let _ = GetTokenInformation(token, class, None, 0, &mut len);
             let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-            GetTokenInformation(token, class, Some(buf.as_mut_ptr().cast::<c_void>()), len, &mut len).map_err(os)?;
+            GetTokenInformation(
+                token,
+                class,
+                Some(buf.as_mut_ptr().cast::<c_void>()),
+                len,
+                &mut len,
+            )
+            .map_err(os)?;
             Ok(buf)
         }
     }
@@ -400,7 +444,9 @@ mod win {
             let label = &*(buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>());
             let count = *GetSidSubAuthorityCount(label.Label.Sid);
             if count == 0 {
-                return Err(IpcError::NoRuntimeDir("token integrity SID is empty".into()));
+                return Err(IpcError::NoRuntimeDir(
+                    "token integrity SID is empty".into(),
+                ));
             }
             let integrity = *GetSidSubAuthority(label.Label.Sid, u32::from(count) - 1);
 
@@ -462,9 +508,14 @@ mod win {
             let facts = process_token_facts(process);
             let mut buf = vec![0u16; 4096];
             let mut len = buf.len() as u32;
-            let path = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
-                .ok()
-                .map(|()| PathBuf::from(OsString::from_wide(&buf[..len as usize])));
+            let path = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            )
+            .ok()
+            .map(|()| PathBuf::from(OsString::from_wide(&buf[..len as usize])));
             let _ = CloseHandle(process);
             Ok((facts?, path))
         }
@@ -510,7 +561,9 @@ mod win {
 
     /// Logs a server image that is not this executable.
     fn note_image(pid: u32, path: Option<&Path>) {
-        let Ok(me) = std::env::current_exe() else { return };
+        let Ok(me) = std::env::current_exe() else {
+            return;
+        };
         match path {
             Some(p) if p == me => {}
             Some(p) if p.as_os_str().eq_ignore_ascii_case(me.as_os_str()) => {
@@ -551,8 +604,8 @@ mod win {
     pub(super) fn spawn_low_integrity() -> Result<LowChild, IpcError> {
         use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
         use windows::Win32::Security::{
-            DuplicateTokenEx, GetLengthSid, SID_AND_ATTRIBUTES, SecurityImpersonation, SetTokenInformation,
-            TOKEN_ACCESS_MASK, TOKEN_DUPLICATE, TokenPrimary,
+            DuplicateTokenEx, GetLengthSid, SID_AND_ATTRIBUTES, SecurityImpersonation,
+            SetTokenInformation, TOKEN_ACCESS_MASK, TOKEN_DUPLICATE, TokenPrimary,
         };
         use windows::Win32::System::Threading::{
             CREATE_NO_WINDOW, CreateProcessAsUserW, PROCESS_INFORMATION, STARTUPINFOW,
@@ -565,7 +618,12 @@ mod win {
         // converted SID are released on every path.
         unsafe {
             let mut token = HANDLE::default();
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token).map_err(os)?;
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_QUERY | TOKEN_DUPLICATE,
+                &mut token,
+            )
+            .map_err(os)?;
             let mut low = HANDLE::default();
             let dup = DuplicateTokenEx(
                 token,
@@ -588,8 +646,13 @@ mod win {
                     },
                 };
                 let size = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(psid);
-                SetTokenInformation(low, TokenIntegrityLevel, (&raw const label).cast::<c_void>(), size)
-                    .map_err(os)?;
+                SetTokenInformation(
+                    low,
+                    TokenIntegrityLevel,
+                    (&raw const label).cast::<c_void>(),
+                    size,
+                )
+                .map_err(os)?;
                 let si = STARTUPINFOW {
                     cb: std::mem::size_of::<STARTUPINFOW>() as u32,
                     ..Default::default()
@@ -635,8 +698,13 @@ mod win {
         // one and then freed.
         unsafe {
             let mut psd = PSECURITY_DESCRIPTOR::default();
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut psd, None)
-                .map_err(os)?;
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl.as_ptr()),
+                SDDL_REVISION_1,
+                &mut psd,
+                None,
+            )
+            .map_err(os)?;
             let owned = BorrowedSecurityDescriptor::from_ptr(psd.0.cast_const()).to_owned_sd();
             let _ = LocalFree(Some(HLOCAL(psd.0)));
             Ok(owned?)
@@ -646,11 +714,11 @@ mod win {
     /// Reads the DACL of the pipe `name` back as an SDDL string.
     #[cfg(test)]
     pub(super) fn pipe_dacl_sddl(name: &str) -> Result<String, IpcError> {
+        use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Security::Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SE_KERNEL_OBJECT,
         };
         use windows::Win32::Security::DACL_SECURITY_INFORMATION;
-        use std::os::windows::io::AsRawHandle as _;
         let pipe = std::fs::File::open(format!(r"\\.\pipe\{name}"))?;
         // SAFETY: out-pointers are valid; the returned descriptor and string are freed.
         unsafe {
@@ -701,7 +769,12 @@ mod tests {
         if cfg!(windows) {
             IpcEndpoint::from_raw(format!("asc-test-{}", unique()))
         } else {
-            IpcEndpoint::from_raw(dir.join("asc").join("asc.sock").to_string_lossy().into_owned())
+            IpcEndpoint::from_raw(
+                dir.join("asc")
+                    .join("asc.sock")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     }
 
@@ -780,7 +853,10 @@ mod tests {
                 .await
         });
         let mut client = WorkspaceClient::new(connect(&ep));
-        let err = client.ping(crate::pb::PingRequest::default()).await.unwrap_err();
+        let err = client
+            .ping(crate::pb::PingRequest::default())
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unimplemented);
         assert_eq!(err.message(), "stub");
         let _ = tx.send(());
@@ -789,8 +865,15 @@ mod tests {
 
     #[test]
     fn missing_endpoint_fails_to_connect() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let ep = IpcEndpoint::from_raw(if cfg!(windows) { format!("asc-absent-{}", unique()) } else { "/nonexistent/asc.sock".into() });
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let ep = IpcEndpoint::from_raw(if cfg!(windows) {
+            format!("asc-absent-{}", unique())
+        } else {
+            "/nonexistent/asc.sock".into()
+        });
         assert!(rt.block_on(connect_stream(&ep)).is_err());
     }
 
@@ -800,10 +883,7 @@ mod tests {
         let ep = test_endpoint(dir.path());
         let _listener = IpcListener::bind(&ep).unwrap();
         // The listener lives in this process, so the OS must name this process.
-        assert_eq!(
-            verified_server_pid(&ep).await.unwrap(),
-            std::process::id()
-        );
+        assert_eq!(verified_server_pid(&ep).await.unwrap(), std::process::id());
     }
 
     #[tokio::test]
@@ -864,19 +944,44 @@ mod tests {
         let ours = facts();
         let refused = |theirs: win::TokenFacts| win::judge(&ours, &theirs).unwrap_err();
         win::judge(&ours, &ours).unwrap();
-        win::judge(&ours, &win::TokenFacts { integrity: 0x3000, ..facts() }).unwrap();
+        win::judge(
+            &ours,
+            &win::TokenFacts {
+                integrity: 0x3000,
+                ..facts()
+            },
+        )
+        .unwrap();
 
-        let other_user = refused(win::TokenFacts { sid: "S-1-5-18".into(), ..facts() });
+        let other_user = refused(win::TokenFacts {
+            sid: "S-1-5-18".into(),
+            ..facts()
+        });
         assert!(other_user.contains("current user"), "{other_user}");
-        let other_session = refused(win::TokenFacts { logon_sid: Some("S-1-5-5-0-222".into()), ..facts() });
+        let other_session = refused(win::TokenFacts {
+            logon_sid: Some("S-1-5-5-0-222".into()),
+            ..facts()
+        });
         assert!(other_session.contains("logon session"), "{other_session}");
-        let no_session = refused(win::TokenFacts { logon_sid: None, ..facts() });
+        let no_session = refused(win::TokenFacts {
+            logon_sid: None,
+            ..facts()
+        });
         assert!(no_session.contains("logon session"), "{no_session}");
-        let low = refused(win::TokenFacts { integrity: 0x1000, ..facts() });
+        let low = refused(win::TokenFacts {
+            integrity: 0x1000,
+            ..facts()
+        });
         assert!(low.contains("integrity"), "{low}");
-        let sandbox = refused(win::TokenFacts { app_container: true, ..facts() });
+        let sandbox = refused(win::TokenFacts {
+            app_container: true,
+            ..facts()
+        });
         assert!(sandbox.contains("AppContainer"), "{sandbox}");
-        let restricted = refused(win::TokenFacts { restricted: true, ..facts() });
+        let restricted = refused(win::TokenFacts {
+            restricted: true,
+            ..facts()
+        });
         assert!(restricted.contains("restricted"), "{restricted}");
     }
 
@@ -884,7 +989,10 @@ mod tests {
     #[test]
     fn windows_our_own_token_is_a_trusted_server() {
         let me = win::current_facts().unwrap();
-        assert!(me.integrity >= 0x2000, "tests run at medium integrity or above: {me:?}");
+        assert!(
+            me.integrity >= 0x2000,
+            "tests run at medium integrity or above: {me:?}"
+        );
         assert!(!me.app_container && !me.restricted, "{me:?}");
         assert!(me.logon_sid.is_some(), "{me:?}");
         let (seen, image) = win::process_facts(std::process::id()).unwrap();
@@ -960,7 +1068,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn pipe_dacl_allows_only_user_and_system() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let _guard = rt.enter();
         let dir = tempfile::tempdir().unwrap();
         let ep = test_endpoint(dir.path());
@@ -972,7 +1083,10 @@ mod tests {
         assert_eq!(sddl.matches("(D;").count(), 0, "{sddl}");
         assert!(sddl.contains(&sid) || sddl.contains(";;;SY)"), "{sddl}");
         assert!(sddl.contains(";;;SY)"), "SYSTEM ace: {sddl}");
-        assert!(sddl.contains(&format!(";;;{sid})")) || sddl.contains(";;;OW)"), "user ace: {sddl}");
+        assert!(
+            sddl.contains(&format!(";;;{sid})")) || sddl.contains(";;;OW)"),
+            "user ace: {sddl}"
+        );
     }
 
     #[cfg(unix)]
@@ -984,9 +1098,22 @@ mod tests {
         {
             let _l = IpcListener::bind(&ep).unwrap();
             let p = std::path::Path::new(ep.as_str());
-            assert_eq!(std::fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o600);
-            assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-            assert!(matches!(IpcListener::bind(&ep), Err(IpcError::InUse(_)) | Err(IpcError::Io(_))));
+            assert_eq!(
+                std::fs::metadata(p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(p.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert!(matches!(
+                IpcListener::bind(&ep),
+                Err(IpcError::InUse(_)) | Err(IpcError::Io(_))
+            ));
         }
         // A leftover socket file with no listener is cleared by the next bind.
         let _l = IpcListener::bind(&ep).unwrap();

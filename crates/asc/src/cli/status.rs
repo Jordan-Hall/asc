@@ -24,9 +24,9 @@ use asc_state::state::stage::{self, StageRow, StageSet};
 use asc_store::cachedir::CacheDir;
 use asc_store::refs::Refs;
 use asc_store::storeset::StoreSet;
+use asc_wc::SafeRoot;
 use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
 use asc_wc::plain::{Sparse, Wc};
-use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::status::{ChangeKind, NoEol, Untracked, compute};
 use prost_reflect::{DescriptorPool, DynamicMessage, Value};
@@ -113,7 +113,9 @@ fn expand_untracked(argv: Vec<OsString>) -> Vec<OsString> {
     for (i, arg) in argv.into_iter().enumerate() {
         let text = arg.to_str().map(str::to_owned);
         let cluster = match &text {
-            Some(t) if i > 0 && !ended && t.starts_with('-') && !t.starts_with("--") => Some(t.clone()),
+            Some(t) if i > 0 && !ended && t.starts_with('-') && !t.starts_with("--") => {
+                Some(t.clone())
+            }
             _ => None,
         };
         if text.as_deref() == Some("--") {
@@ -138,9 +140,27 @@ fn expand_untracked(argv: Vec<OsString>) -> Vec<OsString> {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "status",
     flags: &[
-        "-s", "--short", "-b", "--branch", "--porcelain", "--long", "-z", "-u",
-        "--untracked-files", "--ignored", "--ahead-behind", "--no-ahead-behind", "--renames",
-        "--no-renames", "--json", "-n", "-o", "-r", "-m", "-a", "-l",
+        "-s",
+        "--short",
+        "-b",
+        "--branch",
+        "--porcelain",
+        "--long",
+        "-z",
+        "-u",
+        "--untracked-files",
+        "--ignored",
+        "--ahead-behind",
+        "--no-ahead-behind",
+        "--renames",
+        "--no-renames",
+        "--json",
+        "-n",
+        "-o",
+        "-r",
+        "-m",
+        "-a",
+        "-l",
     ],
     placeholders: &[],
 }];
@@ -200,7 +220,12 @@ fn untracked_mode(text: &str) -> Result<UntrackedMode> {
 
 /// The directory of `cwd` below `root` as a `/`-terminated byte string.
 fn cwd_prefix(root: &Path, cwd: &Path) -> Vec<u8> {
-    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_owned();
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_owned()
+    };
     let (r, c) = (norm(root), norm(cwd));
     let (r_cmp, c_cmp) = if cfg!(windows) {
         (r.to_ascii_lowercase(), c.to_ascii_lowercase())
@@ -227,7 +252,10 @@ fn pathspec(prefix: &[u8], items: &[OsString]) -> Result<Option<Pathspec>> {
             out.push(text.into_bytes());
             continue;
         }
-        let mut parts: Vec<&[u8]> = prefix.split(|&b| b == b'/').filter(|p| !p.is_empty()).collect();
+        let mut parts: Vec<&[u8]> = prefix
+            .split(|&b| b == b'/')
+            .filter(|p| !p.is_empty())
+            .collect();
         for comp in text.split('/') {
             match comp {
                 "" | "." => {}
@@ -246,7 +274,9 @@ fn pathspec(prefix: &[u8], items: &[OsString]) -> Result<Option<Pathspec>> {
     if out.is_empty() {
         return Ok(None);
     }
-    Pathspec::parse(out).map(Some).map_err(|e| fatal(e.to_string()))
+    Pathspec::parse(out)
+        .map(Some)
+        .map_err(|e| fatal(e.to_string()))
 }
 
 fn options(ctx: &Ctx, ws: &WsCtx, a: &Cli) -> Result<Opts> {
@@ -291,15 +321,24 @@ fn options(ctx: &Ctx, ws: &WsCtx, a: &Cli) -> Result<Opts> {
         Some(other) => return Err(fatal(format!("Invalid ignored mode '{other}'"))),
     };
     if a.json && ignored {
-        return Err(CliError::Usage("error: --json does not take --ignored".into()));
+        return Err(CliError::Usage(
+            "error: --json does not take --ignored".into(),
+        ));
     }
     let renames = if a.no_renames {
         false
     } else if a.renames {
         true
     } else {
-        let value = cfg.get("status.renames").or_else(|| cfg.get("diff.renames"));
-        value.is_none_or(|v| !matches!(v.to_ascii_lowercase().as_str(), "false" | "no" | "off" | "0"))
+        let value = cfg
+            .get("status.renames")
+            .or_else(|| cfg.get("diff.renames"));
+        value.is_none_or(|v| {
+            !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "false" | "no" | "off" | "0"
+            )
+        })
     };
     let prefix = cwd_prefix(ws.projection.toplevel(), &ctx.cwd);
     let spec = pathspec(&prefix, &a.paths)?;
@@ -314,7 +353,8 @@ fn options(ctx: &Ctx, ws: &WsCtx, a: &Cli) -> Result<Opts> {
         renames,
         hints: cfg.bool("advice.statusHints").unwrap_or(true),
         u_hint: cfg.bool("advice.statusUoption").unwrap_or(true),
-        relative: !matches!(format, Format::V1 | Format::Json) && cfg.bool("status.relativePaths").unwrap_or(true),
+        relative: !matches!(format, Format::V1 | Format::Json)
+            && cfg.bool("status.relativePaths").unwrap_or(true),
         quote_high: cfg.bool("core.quotePath").unwrap_or(true),
         optional_locks: ctx.env.optional_locks,
         template: false,
@@ -389,7 +429,10 @@ enum HeadKind {
 /// The state of the branch against its upstream.
 enum Track {
     Gone,
-    Counts { ahead: usize, behind: usize },
+    Counts {
+        ahead: usize,
+        behind: usize,
+    },
     /// `--no-ahead-behind` and the tips differ.
     Different,
 }
@@ -410,7 +453,10 @@ enum State {
     Merge,
     CherryPick(String),
     Revert(String),
-    Rebase { branch: Option<String>, onto: Option<String> },
+    Rebase {
+        branch: Option<String>,
+        onto: Option<String>,
+    },
     Bisect(Option<String>),
 }
 
@@ -452,7 +498,10 @@ fn ignore_sources(ctx: &Ctx, ws: &WsCtx) -> IgnoreSources {
             .path("asc.excludesFile")
             .or_else(|| xdg("asc/ignore"))
             .unwrap_or_else(|| root.join(".asc/no-such-global-ignore")),
-        core_excludes: ctx.config.path("core.excludesFile").or_else(|| xdg("git/ignore")),
+        core_excludes: ctx
+            .config
+            .path("core.excludesFile")
+            .or_else(|| xdg("git/ignore")),
         local_exclude: root.join(".asc/info/exclude"),
         common_exclude: ws.projection.common_dir().join("info/exclude"),
     }
@@ -497,11 +546,19 @@ fn work_mode(gate: &SafeRoot, path: &RepoPath, index: Option<Side>, symlinks: bo
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if meta.permissions().mode() & 0o111 != 0 { 0o100755 } else { 0o100644 }
+        if meta.permissions().mode() & 0o111 != 0 {
+            0o100755
+        } else {
+            0o100644
+        }
     }
     #[cfg(not(unix))]
     {
-        if index_mode == 0o100755 { 0o100755 } else { 0o100644 }
+        if index_mode == 0o100755 {
+            0o100755
+        } else {
+            0o100644
+        }
     }
 }
 
@@ -560,7 +617,11 @@ fn row_entry(path: &RepoPath, r: &StageRow) -> Option<Entry> {
 
 /// The mask of conflict stages of an unmerged path to git's two-letter code.
 fn unmerged_xy(stages: &[Option<Side>; 3]) -> [u8; 2] {
-    match (stages[0].is_some(), stages[1].is_some(), stages[2].is_some()) {
+    match (
+        stages[0].is_some(),
+        stages[1].is_some(),
+        stages[2].is_some(),
+    ) {
         (true, true, true) => *b"UU",
         (false, true, true) => *b"AA",
         (true, true, false) => *b"UD",
@@ -605,7 +666,14 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
     for r in stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await? {
         rows.entry(r.path.clone()).or_default().push(r);
     }
-    let g = Gather { ctx, ws, o, head_root, rows, symlinks };
+    let g = Gather {
+        ctx,
+        ws,
+        o,
+        head_root,
+        rows,
+        symlinks,
+    };
 
     let mut out: BTreeMap<Vec<u8>, Row> = BTreeMap::new();
 
@@ -769,7 +837,11 @@ struct Tracked {
 /// The synthetic index plus the stage rows.
 fn tracked_sets(g: &Gather<'_>, index_path: &Path) -> Result<Tracked> {
     let index = IndexFile::read_or_empty(index_path).map_err(wc_err)?;
-    let mut files: HashSet<Vec<u8>> = index.entries.iter().map(|e| e.path.as_bytes().to_vec()).collect();
+    let mut files: HashSet<Vec<u8>> = index
+        .entries
+        .iter()
+        .map(|e| e.path.as_bytes().to_vec())
+        .collect();
     files.extend(g.rows.keys().cloned());
     let mut dirs = HashSet::new();
     for f in &files {
@@ -907,7 +979,8 @@ impl IgnoredWalk<'_> {
                 } else {
                     self.dir(Some(&child), &child_abs)?;
                 }
-            } else if !self.tracked_files.contains(key) && self.stack.is_ignored(&child_abs, false) {
+            } else if !self.tracked_files.contains(key) && self.stack.is_ignored(&child_abs, false)
+            {
                 self.out.push(key.to_vec());
             }
         }
@@ -920,7 +993,9 @@ impl IgnoredWalk<'_> {
 /// old enough not to be racily clean. Writes the index only when an entry changed.
 fn refresh_stat_cache(index_path: &Path, root: &Path, skip: &HashSet<Vec<u8>>) -> Result<()> {
     let mut index = IndexFile::read_or_empty(index_path).map_err(wc_err)?;
-    let stat = PlainStat { root: root.to_owned() };
+    let stat = PlainStat {
+        root: root.to_owned(),
+    };
     let cutoff = SystemTime::now() - Duration::from_secs(2);
     let mut newest: Option<SystemTime> = None;
     for e in &mut index.entries {
@@ -945,8 +1020,15 @@ fn refresh_stat_cache(index_path: &Path, root: &Path, skip: &HashSet<Vec<u8>>) -
         if same || !old_enough {
             continue;
         }
-        (e.ctime, e.mtime, e.dev, e.ino, e.uid, e.gid, e.size) =
-            (fresh.ctime, fresh.mtime, fresh.dev, fresh.ino, fresh.uid, fresh.gid, fresh.size);
+        (e.ctime, e.mtime, e.dev, e.ino, e.uid, e.gid, e.size) = (
+            fresh.ctime,
+            fresh.mtime,
+            fresh.dev,
+            fresh.ino,
+            fresh.uid,
+            fresh.gid,
+            fresh.size,
+        );
         let t = fresh.mtime.to_system_time();
         newest = Some(newest.map_or(t, |n| n.max(t)));
     }
@@ -1027,7 +1109,10 @@ async fn branch_info(g: &Gather<'_>) -> Result<Branch> {
                         (Some(theirs), Some(ours)) => {
                             if !g.o.ahead_behind {
                                 if theirs == ours {
-                                    Track::Counts { ahead: 0, behind: 0 }
+                                    Track::Counts {
+                                        ahead: 0,
+                                        behind: 0,
+                                    }
                                 } else {
                                     Track::Different
                                 }
@@ -1047,19 +1132,31 @@ async fn branch_info(g: &Gather<'_>) -> Result<Branch> {
                             }
                         }
                         // An unborn branch has no commits to compare.
-                        (Some(_), None) => Track::Counts { ahead: 0, behind: 0 },
+                        (Some(_), None) => Track::Counts {
+                            ahead: 0,
+                            behind: 0,
+                        },
                     };
-                    Some(Upstream { name: display, track })
+                    Some(Upstream {
+                        name: display,
+                        track,
+                    })
                 }
             };
             (HeadKind::Branch(name), up)
         }
     };
-    Ok(Branch { head: kind, oid, upstream })
+    Ok(Branch {
+        head: kind,
+        oid,
+        upstream,
+    })
 }
 
 fn read_trim(path: impl AsRef<Path>) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_owned())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_owned())
 }
 
 fn short_oid(text: &str) -> String {
@@ -1068,7 +1165,11 @@ fn short_oid(text: &str) -> String {
 
 fn in_progress(git_dir: &Path) -> Option<State> {
     if git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir() {
-        let dir = if git_dir.join("rebase-merge").is_dir() { "rebase-merge" } else { "rebase-apply" };
+        let dir = if git_dir.join("rebase-merge").is_dir() {
+            "rebase-merge"
+        } else {
+            "rebase-apply"
+        };
         let branch = read_trim(git_dir.join(dir).join("head-name"))
             .map(|b| b.strip_prefix("refs/heads/").unwrap_or(&b).to_owned());
         let onto = read_trim(git_dir.join(dir).join("onto")).map(|o| short_oid(&o));
@@ -1126,8 +1227,16 @@ impl Printer<'_> {
 
     /// A path as the current format shows it.
     fn path(&self, p: &[u8], quote_space: bool) -> Vec<u8> {
-        let shown = if self.o.relative { relativize(p, &self.o.prefix) } else { p.to_vec() };
-        if self.o.z { shown } else { quote(&shown, quote_space, self.o.quote_high) }
+        let shown = if self.o.relative {
+            relativize(p, &self.o.prefix)
+        } else {
+            p.to_vec()
+        };
+        if self.o.z {
+            shown
+        } else {
+            quote(&shown, quote_space, self.o.quote_high)
+        }
     }
 
     fn term(&mut self) {
@@ -1156,10 +1265,16 @@ fn tracking_text(up: &Upstream, hints: bool) -> String {
             hint("use \"git status --ahead-behind\" for details");
             format!("Your branch and '{name}' refer to different commits.\n")
         }
-        Track::Counts { ahead: 0, behind: 0 } => format!("Your branch is up to date with '{name}'.\n"),
+        Track::Counts {
+            ahead: 0,
+            behind: 0,
+        } => format!("Your branch is up to date with '{name}'.\n"),
         Track::Counts { ahead, behind: 0 } => {
             hint("use \"git push\" to publish your local commits");
-            format!("Your branch is ahead of '{name}' by {}.\n", plural(ahead, "commit", "commits"))
+            format!(
+                "Your branch is ahead of '{name}' by {}.\n",
+                plural(ahead, "commit", "commits")
+            )
         }
         Track::Counts { ahead: 0, behind } => {
             hint("use \"git pull\" to update your local branch");
@@ -1203,11 +1318,19 @@ fn state_text(s: &State, unmerged: bool, hints: bool) -> String {
             if unmerged {
                 hint(&format!("fix conflicts and run \"git {verb} --continue\""));
             } else {
-                hint(&format!("all conflicts fixed: run \"git {verb} --continue\""));
+                hint(&format!(
+                    "all conflicts fixed: run \"git {verb} --continue\""
+                ));
             }
             hint(&format!("use \"git {verb} --skip\" to skip this patch"));
-            let abort = if verb == "revert" { "revert" } else { "cherry-pick" };
-            hint(&format!("use \"git {verb} --abort\" to cancel the {abort} operation"));
+            let abort = if verb == "revert" {
+                "revert"
+            } else {
+                "cherry-pick"
+            };
+            hint(&format!(
+                "use \"git {verb} --abort\" to cancel the {abort} operation"
+            ));
             format!("You are currently {noun} commit {commit}.\n")
         }
         State::Rebase { branch, onto } => {
@@ -1219,7 +1342,9 @@ fn state_text(s: &State, unmerged: bool, hints: bool) -> String {
                 hint("all conflicts fixed: run \"git rebase --continue\"");
             }
             match (branch, onto) {
-                (Some(b), Some(o)) => format!("You are currently rebasing branch '{b}' on '{o}'.\n"),
+                (Some(b), Some(o)) => {
+                    format!("You are currently rebasing branch '{b}' on '{o}'.\n")
+                }
                 _ => "You are currently rebasing.\n".to_owned(),
             }
         }
@@ -1262,7 +1387,11 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     match &r.branch.head {
         HeadKind::Branch(name) => p.line(&format!("On branch {name}")),
         HeadKind::Detached => {
-            let at = r.branch.oid.map(|o| short_oid(&o.to_string())).unwrap_or_default();
+            let at = r
+                .branch
+                .oid
+                .map(|o| short_oid(&o.to_string()))
+                .unwrap_or_default();
             p.line(&format!("HEAD detached at {at}"));
         }
     }
@@ -1279,17 +1408,33 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     }
     if r.initial {
         p.line("");
-        p.line(if o.template { "Initial commit" } else { "No commits yet" });
+        p.line(if o.template {
+            "Initial commit"
+        } else {
+            "No commits yet"
+        });
         p.line("");
     }
 
-    let staged: Vec<&Row> = r.rows.iter().filter(|x| x.stages.is_none() && x.x != b'.').collect();
+    let staged: Vec<&Row> = r
+        .rows
+        .iter()
+        .filter(|x| x.stages.is_none() && x.x != b'.')
+        .collect();
     let unmerged: Vec<&Row> = r.rows.iter().filter(|x| x.stages.is_some()).collect();
-    let unstaged: Vec<&Row> = r.rows.iter().filter(|x| x.stages.is_none() && x.y != b'.').collect();
+    let unstaged: Vec<&Row> = r
+        .rows
+        .iter()
+        .filter(|x| x.stages.is_none() && x.y != b'.')
+        .collect();
 
     if !staged.is_empty() {
         p.line("Changes to be committed:");
-        if o.hints && r.state.as_ref().is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick") {
+        if o.hints
+            && r.state
+                .as_ref()
+                .is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick")
+        {
             if r.initial {
                 p.hint("  (use \"git rm --cached <file>...\" to unstage)");
             } else {
@@ -1313,7 +1458,11 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     }
     if !unmerged.is_empty() {
         p.line("Unmerged paths:");
-        if o.hints && r.state.as_ref().is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick") {
+        if o.hints
+            && r.state
+                .as_ref()
+                .is_none_or(|s| s.name() != "merge" && s.name() != "cherry-pick")
+        {
             if r.initial {
                 p.hint("  (use \"git rm --cached <file>...\" to unstage)");
             } else {
@@ -1321,7 +1470,9 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
             }
         }
         if o.hints {
-            let removes = unmerged.iter().any(|x| matches!(&[x.x, x.y], b"DD" | b"UD" | b"DU"));
+            let removes = unmerged
+                .iter()
+                .any(|x| matches!(&[x.x, x.y], b"DD" | b"UD" | b"DU"));
             if removes {
                 p.hint("  (use \"git add/rm <file>...\" as appropriate to mark resolution)");
             } else {
@@ -1363,7 +1514,9 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
         }
         p.line(&format!("{title}:"));
         if p.o.hints {
-            p.hint(&format!("  (use \"{hint}\" to include in what will be committed)"));
+            p.hint(&format!(
+                "  (use \"{hint}\" to include in what will be committed)"
+            ));
         }
         for item in items {
             p.text("\t");
@@ -1384,12 +1537,22 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
         return; // the template has no summary line (git's `nowarn`)
     }
     if o.untracked == UntrackedMode::No && committable {
-        let hint = if o.u_hint { " (use -u option to show untracked files)" } else { "" };
+        let hint = if o.u_hint {
+            " (use -u option to show untracked files)"
+        } else {
+            ""
+        };
         p.line(&format!("Untracked files not listed{hint}"));
     }
     if !committable {
         let dirty = !unstaged.is_empty() || !unmerged.is_empty();
-        let hint = |s: &str| if o.hints { p.named(&format!(" ({s})")) } else { String::new() };
+        let hint = |s: &str| {
+            if o.hints {
+                p.named(&format!(" ({s})"))
+            } else {
+                String::new()
+            }
+        };
         if dirty {
             p.line(&format!(
                 "no changes added to commit{}",
@@ -1406,7 +1569,10 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
                 hint("create/copy files and use \"git add\" to track")
             ));
         } else if o.untracked == UntrackedMode::No {
-            p.line(&format!("nothing to commit{}", hint("use -u to show untracked files")));
+            p.line(&format!(
+                "nothing to commit{}",
+                hint("use -u to show untracked files")
+            ));
         } else {
             p.line("nothing to commit, working tree clean");
         }
@@ -1424,7 +1590,10 @@ fn branch_line(b: &Branch, initial: bool) -> String {
         match up.track {
             Track::Gone => line.push_str(" [gone]"),
             Track::Different => line.push_str(" [different]"),
-            Track::Counts { ahead: 0, behind: 0 } => {}
+            Track::Counts {
+                ahead: 0,
+                behind: 0,
+            } => {}
             Track::Counts { ahead, behind: 0 } => line.push_str(&format!(" [ahead {ahead}]")),
             Track::Counts { ahead: 0, behind } => line.push_str(&format!(" [behind {behind}]")),
             Track::Counts { ahead, behind } => {
@@ -1480,7 +1649,12 @@ fn print_short(p: &mut Printer<'_>, r: &Report) {
 
 fn print_v2(p: &mut Printer<'_>, r: &Report) {
     use asc_engine::render::status as rs;
-    let side = |s: Option<Side>| s.map(|s| rs::Side { mode: s.mode, oid: s.oid });
+    let side = |s: Option<Side>| {
+        s.map(|s| rs::Side {
+            mode: s.mode,
+            oid: s.oid,
+        })
+    };
     let branch = p.o.branch.then(|| rs::Branch {
         head: match &r.branch.head {
             HeadKind::Branch(n) => rs::Head::Branch(n.clone()),
@@ -1519,7 +1693,13 @@ fn print_v2(p: &mut Printer<'_>, r: &Report) {
         prefix: p.o.prefix.clone(),
         quote_high: p.o.quote_high,
     };
-    p.out.extend_from_slice(&rs::porcelain_v2(branch.as_ref(), &rows, &r.untracked, &r.ignored, &opts));
+    p.out.extend_from_slice(&rs::porcelain_v2(
+        branch.as_ref(),
+        &rows,
+        &r.untracked,
+        &r.ignored,
+        &opts,
+    ));
 }
 
 // ---------------------------------------------------------------------- json
@@ -1551,7 +1731,10 @@ fn json_line(r: &Report) -> Result<Vec<u8>> {
     for row in &r.rows {
         let mut f = DynamicMessage::new(file_desc.clone());
         f.set_field_by_name("path", bytes(&row.path));
-        f.set_field_by_name("xy", Value::String(format!("{}{}", row.x as char, row.y as char)));
+        f.set_field_by_name(
+            "xy",
+            Value::String(format!("{}{}", row.x as char, row.y as char)),
+        );
         if let Some((orig, _)) = &row.orig {
             f.set_field_by_name("orig_path", bytes(orig));
         }
@@ -1589,7 +1772,8 @@ fn json_line(r: &Report) -> Result<Vec<u8>> {
 /// message template: no hints, no summary line, "Initial commit", and every line behind the
 /// comment character `comment`. Otherwise it is what `git status` prints for "nothing to commit".
 pub(crate) async fn long_text(ctx: &Ctx, ws: &WsCtx, template: Option<u8>) -> Result<Vec<u8>> {
-    let cli = <Cli as clap::Parser>::try_parse_from(["status"]).map_err(|e| fatal(e.to_string()))?;
+    let cli =
+        <Cli as clap::Parser>::try_parse_from(["status"]).map_err(|e| fatal(e.to_string()))?;
     let mut o = options(ctx, ws, &cli)?;
     o.format = Format::Long;
     o.z = false;
@@ -1598,7 +1782,10 @@ pub(crate) async fn long_text(ctx: &Ctx, ws: &WsCtx, template: Option<u8>) -> Re
         o.template = true;
     }
     let report = gather(ctx, ws, &o).await?;
-    let mut p = Printer { o: &o, out: Vec::new() };
+    let mut p = Printer {
+        o: &o,
+        out: Vec::new(),
+    };
     print_long(&mut p, &report);
     Ok(match template {
         Some(c) => comment_lines(&p.out, c),
@@ -1625,7 +1812,10 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let o = options(ctx, ws, &a)?;
     let report = gather(ctx, ws, &o).await?;
-    let mut p = Printer { o: &o, out: Vec::new() };
+    let mut p = Printer {
+        o: &o,
+        out: Vec::new(),
+    };
     match o.format {
         Format::Long => print_long(&mut p, &report),
         Format::Short | Format::V1 => print_short(&mut p, &report),
@@ -1670,13 +1860,19 @@ mod tests {
             m("+refs/heads/*:refs/remotes/origin/*", "refs/heads/trunk").as_deref(),
             Some("refs/remotes/origin/trunk")
         );
-        assert_eq!(m("refs/heads/x:refs/remotes/o/y", "refs/heads/x").as_deref(), Some("refs/remotes/o/y"));
+        assert_eq!(
+            m("refs/heads/x:refs/remotes/o/y", "refs/heads/x").as_deref(),
+            Some("refs/remotes/o/y")
+        );
         assert_eq!(m("refs/tags/*:refs/tags/*", "refs/heads/x"), None);
     }
 
     #[test]
     fn unmerged_codes() {
-        let s = Some(Side { mode: 0o100644, oid: zero() });
+        let s = Some(Side {
+            mode: 0o100644,
+            oid: zero(),
+        });
         assert_eq!(unmerged_xy(&[s, s, s]), *b"UU");
         assert_eq!(unmerged_xy(&[None, s, s]), *b"AA");
         assert_eq!(unmerged_xy(&[s, s, None]), *b"UD");
