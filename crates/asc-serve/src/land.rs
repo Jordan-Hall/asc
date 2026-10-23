@@ -60,6 +60,10 @@ pub enum LandError {
     /// Paths the stack and the branch both changed (`LAND_CONFLICT`).
     #[error("land conflict on {} path(s)", .0.len())]
     Conflict(Vec<String>),
+    /// The request set `no_content_merge` and these paths would need a content merge
+    /// (`LAND_NEEDS_CONTENT_MERGE`, SPEC §20.5). No ref changes.
+    #[error("land needs a content merge on {} path(s)", .0.len())]
+    NeedsContentMerge(Vec<String>),
     /// As [`Self::Conflict`], with the `Conflict` records of the content merge (SPEC §8.5 step 3).
     #[error("land conflict on {} path(s)", .0.len())]
     Conflicts(Vec<wire::Conflict>),
@@ -81,6 +85,9 @@ impl From<LandError> for Status {
                 rpc(RpcError::LandNeedsClientRebase(info(Vec::new())))
             }
             LandError::Conflict(paths) => rpc(RpcError::LandConflict(info(paths))),
+            LandError::NeedsContentMerge(paths) => {
+                rpc(RpcError::LandNeedsContentMerge(info(paths)))
+            }
             LandError::Conflicts(details) => {
                 let mut detail = info(
                     details
@@ -146,7 +153,7 @@ impl OverlapPolicy for DisjointOnly {
         engine: &Arc<RepoEngine>,
         stack: &[ChangesetId],
         tip: ChangesetId,
-        _opts: LandOptions,
+        opts: LandOptions,
     ) -> Result<Rewrite, LandError> {
         // A glob that matches every path turns each overlap into a conflict without a merge.
         let all = NoMergeGlobs::new(&["**"]).map_err(LandError::internal)?;
@@ -167,7 +174,12 @@ impl OverlapPolicy for DisjointOnly {
                 .take(MAX_CONFLICT_PATHS)
                 .map(|c| c.path.to_string())
                 .collect();
-            return Err(LandError::Conflict(paths.into_iter().collect()));
+            let paths = paths.into_iter().collect();
+            return Err(if opts.no_content_merge {
+                LandError::NeedsContentMerge(paths)
+            } else {
+                LandError::Conflict(paths)
+            });
         }
         Ok(Rewrite {
             pairs: merged.rewritten,
