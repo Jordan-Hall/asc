@@ -4,7 +4,7 @@
 //! failure before the ref moves restores set 0 from the snapshot, which is dropped in every case.
 
 mod ident;
-mod message;
+pub(super) mod message;
 mod stagebuild;
 
 use std::collections::BTreeSet;

@@ -29,6 +29,7 @@ use self::attrs::Attrs;
 use self::scan::{Op, Opts};
 use self::spec::Spec;
 use self::target::{Edit, Target};
+use super::add_patch;
 use super::common::{CliError, Ctx, Result, WsCtx};
 use crate::native::NativeSpec;
 
@@ -51,6 +52,14 @@ pub struct Args {
     pub dry_run: bool,
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+    /// Choose hunks interactively (`add -p`).
+    #[arg(short = 'p', long = "patch")]
+    pub patch: bool,
+    /// Context lines of `-p` hunks.
+    #[arg(short = 'U', long = "unified")]
+    pub unified: Option<usize>,
+    #[arg(long = "inter-hunk-context")]
+    pub inter_hunk_context: Option<usize>,
     pub pathspec: Vec<OsString>,
 }
 
@@ -58,7 +67,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "add",
     flags: &[
         "-u", "--update", "-A", "--all", "-N", "--intent-to-add", "-f", "--force", "-n",
-        "--dry-run", "-v", "--verbose",
+        "--dry-run", "-v", "--verbose", "-p", "--patch", "-U", "--unified", "--inter-hunk-context",
     ],
     placeholders: &[],
 }];
@@ -105,6 +114,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if a.all && a.update {
         return Err(CliError::Fatal("options '-A' and '-u' cannot be used together".into()));
+    }
+    if a.patch {
+        return add_patch::run(ctx, &a).await;
     }
     if a.pathspec.is_empty() && !a.all && !a.update {
         eprintln!("Nothing specified, nothing added.");
@@ -174,13 +186,7 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
                 }
                 .map_err(|e| fail(&e))?;
                 let exec = convert::exec_bit(&meta).filter(|_| filemode);
-                let kind = match (symlink, exec, prev) {
-                    (true, ..) => Kind::Symlink,
-                    (false, _, Some(Kind::Symlink)) if !core_symlinks => Kind::Symlink,
-                    (false, Some(x), _) => if x { Kind::Exec } else { Kind::File },
-                    (false, None, Some(Kind::Exec)) => Kind::Exec,
-                    (false, None, _) => Kind::File,
-                };
+                let kind = staged_kind(symlink, exec, prev, core_symlinks);
                 store(ctx, ws, &got).await?;
                 mapped.push(GitMapRow {
                     git: got.git,
@@ -196,8 +202,20 @@ async fn execute(ctx: &Ctx, ws: &WsCtx, target: &mut Target, ops: Vec<Op>) -> Re
     target.apply(ctx, edits).await
 }
 
+/// The kind a work tree entry is staged as: `exec` is its exec bit where the file system has one,
+/// `prev` the kind it is staged as now (which decides where the work tree cannot say).
+pub(crate) fn staged_kind(symlink: bool, exec: Option<bool>, prev: Option<Kind>, core_symlinks: bool) -> Kind {
+    match (symlink, exec, prev) {
+        (true, ..) => Kind::Symlink,
+        (false, _, Some(Kind::Symlink)) if !core_symlinks => Kind::Symlink,
+        (false, Some(x), _) => if x { Kind::Exec } else { Kind::File },
+        (false, None, Some(Kind::Exec)) => Kind::Exec,
+        (false, None, _) => Kind::File,
+    }
+}
+
 /// Writes the file's objects to the object stack: `store/` takes new objects (SPEC §3.5).
-async fn store(_ctx: &Ctx, ws: &WsCtx, got: &Ingested) -> Result<()> {
+pub(crate) async fn store(_ctx: &Ctx, ws: &WsCtx, got: &Ingested) -> Result<()> {
     match &got.body {
         Body::Inline(bytes) => {
             ws.objects.put(&ObjKey::File(got.file), encode_stored(bytes)).await?;
@@ -302,6 +320,9 @@ mod tests {
             force: false,
             dry_run: false,
             verbose: false,
+            patch: false,
+            unified: None,
+            inter_hunk_context: None,
             pathspec: paths.iter().map(OsString::from).collect(),
         };
         run(&ctx, args(&["a.txt", "b.txt"])).await.unwrap();
