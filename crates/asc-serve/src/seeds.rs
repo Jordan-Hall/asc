@@ -17,7 +17,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken};
+use asc_rpc::auth::{Access, AuthError, Authorizer};
 use asc_store::seed::{self, SeedManifest};
 use futures::StreamExt;
 use object_store::path::Path as StorePath;
@@ -417,23 +417,6 @@ impl IntoResponse for HttpError {
     }
 }
 
-fn bearer(headers: &HeaderMap) -> Result<Option<BearerToken>, HttpError> {
-    let mut values = headers.get_all(header::AUTHORIZATION).iter();
-    let Some(first) = values.next() else {
-        return Ok(None);
-    };
-    let bad = || HttpError::Auth(AuthError::Malformed);
-    if values.next().is_some() {
-        return Err(bad());
-    }
-    let text = first.to_str().map_err(|_| bad())?;
-    let (scheme, rest) = text.split_once(' ').ok_or_else(bad)?;
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return Err(bad());
-    }
-    BearerToken::new(rest).map(Some).map_err(HttpError::Auth)
-}
-
 async fn latest(
     State(s): State<Arc<SeedsState>>,
     Path((owner, repo)): Path<(String, String)>,
@@ -445,9 +428,9 @@ async fn latest(
     }
     let slug = Slug::parse(&format!("{owner}.{repo}"))
         .map_err(|_| HttpError::BadRequest("bad owner or repo"))?;
-    let token = bearer(&headers)?;
+    let credential = crate::authn::credential(&headers).map_err(HttpError::Auth)?;
     s.authorizer
-        .authorize(token.as_ref(), &slug.repo_name(), Access::Read)
+        .authorize_credential(credential.as_ref(), &slug.repo_name(), Access::Read)
         .await
         .map_err(HttpError::Auth)?;
     let changeset = s
@@ -478,9 +461,11 @@ async fn latest(
 
 /// The `/seeds/<owner>/<repo>/latest` route.
 pub fn router(state: Arc<SeedsState>) -> axum::Router {
-    axum::Router::new()
+    let routes = axum::Router::new()
         .route("/seeds/{owner}/{repo}/latest", get(latest))
-        .with_state(state)
+        .with_state(state);
+    // The edge answers 401 with the Basic challenge first, and 400 for a malformed header.
+    crate::authn::guard(routes, crate::authn::Surface::Api)
 }
 
 /// One registration line in `lib.rs`.

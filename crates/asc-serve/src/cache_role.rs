@@ -1042,12 +1042,12 @@ impl CacheRole {
     }
 }
 
-/// The admin listener of a cache server: `/metrics`, behind the admin token when one is set.
+/// The admin listener of a cache server: `/metrics`, behind the admin token when one is set
+/// (Bearer or Basic, constant-time, with the Basic challenge first: U78's `authn::guard_admin`).
 fn admin_router(metrics: Arc<Metrics>, token: Option<Arc<str>>) -> axum::Router {
-    use axum::http::{StatusCode, header};
-    use axum::response::IntoResponse;
+    use axum::http::header;
     const OPENMETRICS: &str = "application/openmetrics-text; version=1.0.0; charset=utf-8";
-    axum::Router::new()
+    let routes = axum::Router::new()
         .route(
             "/metrics",
             axum::routing::get(
@@ -1056,33 +1056,8 @@ fn admin_router(metrics: Arc<Metrics>, token: Option<Arc<str>>) -> axum::Router 
                 },
             ),
         )
-        .with_state(metrics)
-        .layer(axum::middleware::from_fn_with_state(
-            token,
-            |axum::extract::State(token): axum::extract::State<Option<Arc<str>>>,
-             req: axum::extract::Request,
-             next: axum::middleware::Next| async move {
-                if let Some(expected) = token {
-                    let given = req
-                        .headers()
-                        .get(header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.strip_prefix("Bearer "))
-                        .unwrap_or("");
-                    // Equal-length digests, compared without an early exit.
-                    let (a, b) = (Sha256::digest(given), Sha256::digest(expected.as_bytes()));
-                    let diff = a.iter().zip(b.iter()).fold(0u8, |d, (x, y)| d | (x ^ y));
-                    if std::hint::black_box(diff) != 0 {
-                        return (
-                            StatusCode::UNAUTHORIZED,
-                            [(header::WWW_AUTHENTICATE, "Bearer")],
-                        )
-                            .into_response();
-                    }
-                }
-                next.run(req).await
-            },
-        ))
+        .with_state(metrics);
+    crate::authn::guard_admin(routes, token)
 }
 
 /// Runs the cache server until `shutdown` resolves.
@@ -1701,5 +1676,54 @@ mod tests {
             return;
         }
         assert!(DiskCache::open(&link, 1000).is_err());
+    }
+
+    // U78: the admin token is taken as Bearer or Basic, and a refusal is a Basic-first 401.
+    #[tokio::test]
+    async fn the_admin_listener_takes_bearer_or_basic_and_challenges_with_basic_first() {
+        use base64::Engine as _;
+        use tower::ServiceExt;
+        let basic = |raw: &str| {
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(raw)
+            )
+        };
+        let get = |auth: Option<String>| async move {
+            let app = admin_router(Arc::new(Metrics::new()), Some(Arc::from("s3cret")));
+            let mut req = axum::http::Request::get("/metrics");
+            if let Some(a) = auth {
+                req = req.header(axum::http::header::AUTHORIZATION, a);
+            }
+            app.oneshot(req.body(axum::body::Body::empty()).unwrap())
+                .await
+                .unwrap()
+        };
+        for ok in [
+            "Bearer s3cret".to_owned(),
+            basic("admin:s3cret"),
+            basic(":s3cret"),
+            basic("s3cret:"),
+        ] {
+            assert_eq!(get(Some(ok.clone())).await.status(), 200, "{ok}");
+        }
+        for bad in [
+            None,
+            Some("Bearer wrong".to_owned()),
+            Some(basic("admin:wrong")),
+            Some("Basic !!!".to_owned()),
+            Some("Digest abc".to_owned()),
+        ] {
+            let res = get(bad.clone()).await;
+            assert_eq!(res.status(), 401, "{bad:?}");
+            let challenges: Vec<_> = res
+                .headers()
+                .get_all(axum::http::header::WWW_AUTHENTICATE)
+                .iter()
+                .map(|v| v.to_str().unwrap().to_owned())
+                .collect();
+            assert!(challenges[0].starts_with("Basic realm="), "{challenges:?}");
+            assert!(challenges[1].starts_with("Bearer realm="), "{challenges:?}");
+        }
     }
 }
