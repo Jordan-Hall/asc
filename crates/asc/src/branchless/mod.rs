@@ -3,4 +3,5 @@
 //! Later branchless units add their own `pub mod` line here (PLAN, branchless track).
 
 pub mod heads_sink;
+pub mod local_gc;
 pub mod mode;

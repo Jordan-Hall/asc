@@ -1,7 +1,9 @@
 //! `asc gc` (SPEC §3.5, §3.6): evicts the local cache down to 80% of `asc.cache.maxSize`.
 //!
-//! `store/` is never touched: it holds the objects this machine wrote and nothing else has
-//! them. With `--store <url>` the command collects a bucket-mode repository instead
+//! `store/` holds the objects this machine wrote and nothing else has them, so eviction never
+//! touches it. The one removal is the hidden-draft expiry of SPEC §21.2.4
+//! ([`crate::branchless::local_gc`]): objects reachable only from hidden drafts older than
+//! `asc.draft.hiddenDays`. With `--store <url>` the command collects a bucket-mode repository instead
 //! ([`super::gc_store`]). `--dry-run` reports what an eviction would free and changes nothing.
 //! Git's `--auto` and `--quiet` are accepted; git's other gc flags (`--prune`, `--aggressive`,
 //! ...) have nothing to do in a layout without loose objects or packs and are refused.
@@ -16,6 +18,7 @@ use asc_store::cachedir::CacheDir;
 use super::common::{CliError, Ctx, Result};
 use super::doctor::{dir_size, human};
 use super::gc_store::{self, StoreGcArgs};
+use crate::branchless::{local_gc, mode::Settings};
 use crate::daemon::scheduler;
 use crate::native::NativeSpec;
 
@@ -102,6 +105,38 @@ fn cache_limit(ctx: &Ctx) -> Result<u64> {
     }
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// The expiry of hidden, un-uploaded drafts; only inside a workspace (it needs `state.db`).
+async fn expire_drafts(ctx: &Ctx, local: &LocalArgs) -> Result<()> {
+    let Some(ws) = ctx.ws_opt() else {
+        return Ok(());
+    };
+    let getenv = |k: &str| std::env::var(k).ok();
+    let days = Settings::resolve(&ctx.config, &ctx.env, &getenv)
+        .map_err(CliError::Fatal)?
+        .hidden_days;
+    let r = local_gc::collect(ws, days, unix_now(), local.dry_run).await?;
+    if !local.quiet && r.expired_heads > 0 {
+        if local.dry_run {
+            println!(
+                "drafts: {} hidden heads past {days} days; would remove {} objects; nothing was deleted",
+                r.expired_heads, r.collectable
+            );
+        } else {
+            println!(
+                "drafts: removed {} objects of {} hidden heads past {days} days",
+                r.deleted, r.rows_dropped
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if has_store_flag(&args.rest) {
         let default_days = ctx
@@ -140,6 +175,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                 human(would)
             );
         }
+        expire_drafts(ctx, &local).await?;
         return Ok(ExitCode::SUCCESS);
     }
     let cache = CacheDir::open(&root, home.tmp()).map_err(CliError::Objects)?;
@@ -156,6 +192,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             human(limit)
         );
     }
+    expire_drafts(ctx, &local).await?;
     Ok(ExitCode::SUCCESS)
 }
 
