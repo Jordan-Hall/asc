@@ -32,6 +32,7 @@ use asc_core::path::RepoPath;
 
 pub mod compare;
 pub mod linehist;
+pub mod pickaxe;
 
 /// Largest page a log answers with (also bounds the round trips of a fetch).
 pub const LOG_PAGE: usize = 4096;
