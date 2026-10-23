@@ -1006,6 +1006,108 @@ mod tests {
         );
     }
 
+    /// Comments that tools or compilers act on: adding one is `LOGIC`, never `COMMENT_ONLY`.
+    #[test]
+    fn behaviour_changing_comments_are_logic() {
+        let js = [
+            "/*#__PURE__*/",
+            "/*@__PURE__*/",
+            "//#__PURE__",
+            "/*@__NO_SIDE_EFFECTS__*/",
+            "//# sourceMappingURL=a.map",
+            "//# sourceURL=a.js",
+            "//@ sourceMappingURL=a.map",
+            "// @ts-ignore",
+            "// @ts-expect-error",
+            "// @ts-nocheck",
+            "/// <reference path=\"a\" />",
+            "// eslint-disable-next-line x",
+            "/* eslint-disable */",
+            "// prettier-ignore",
+            "// biome-ignore lint/x: y",
+            "// deno-lint-ignore x",
+            "// tslint:disable",
+            "/** @jsx h */",
+            "/** @jsxImportSource preact */",
+            "/**\n * @jsxImportSource preact\n */",
+            "/*! keep */",
+            "/* x @license MIT */",
+            "/* @preserve */",
+            "// v8 ignore next",
+        ];
+        let go = [
+            "//go:generate x",
+            "//go:build linux",
+            "// +build linux",
+            "//nolint:x",
+            "//line a.go:1",
+            "//export F",
+        ];
+        let py = [
+            "# type: ignore",
+            "# noqa",
+            "# noqa: E501",
+            "# pragma: no cover",
+            "# -*- coding: latin-1 -*-",
+            "# coding: latin-1",
+            "# ruff: noqa",
+            "# nosec",
+            "# fmt: off",
+            "# pyright: basic",
+            "# mypy: ignore-errors",
+        ];
+        let mut bad = Vec::new();
+        let mut check = |f: &str, old: &str, new: String| {
+            if c(f, old, &new) != Logic {
+                bad.push(format!("{f}: {new:?}"));
+            }
+        };
+        for d in js {
+            for f in ["a.js", "a.ts"] {
+                check(f, "f();\n", format!("{d}\nf();\n"));
+            }
+        }
+        for d in go {
+            check("a.go", "f()\n", format!("{d}\nf()\n"));
+        }
+        check("a.rs", "f();\n", "// rustfmt: skip\nf();\n".to_owned());
+        check("a.cs", "int a;\n", "#nullable enable\nint a;\n".to_owned());
+        check(
+            "a.cs",
+            "int a;\n",
+            "#pragma warning disable\nint a;\n".to_owned(),
+        );
+        for d in py {
+            check("a.py", "f()\n", format!("{d}\nf()\n"));
+        }
+        check("a.sh", "f\n", "# shellcheck disable=SC2086\nf\n".to_owned());
+        check(
+            "a.yaml",
+            "a: 1\n",
+            "# yaml-language-server: $schema=x\na: 1\n".to_owned(),
+        );
+        check(
+            "a.md",
+            "t\n",
+            "<!-- markdownlint-disable -->\nt\n".to_owned(),
+        );
+        check(
+            "a.html",
+            "<p>x</p>\n",
+            "<!-- prettier-ignore -->\n<p>x</p>\n".to_owned(),
+        );
+        assert!(bad.is_empty(), "classified below Logic: {bad:#?}");
+        // Ordinary comments still drop.
+        assert_eq!(c("a.js", "f();", "// note\n/* x */ f();"), CommentOnly);
+        assert_eq!(c("a.py", "f()\n", "## note\nf()\n"), CommentOnly);
+    }
+
+    #[test]
+    fn pure_annotation_is_not_droppable() {
+        assert_eq!(c("a.js", "x = f();", "x = /*#__PURE__*/ f();"), Logic);
+        assert_eq!(c("a.js", "x = /*#__PURE__*/ f();", "x = f();"), Logic);
+    }
+
     // Raw and verbatim forms the audit found sound; these pin them.
     #[test]
     fn raw_and_verbatim_forms_stay_sound() {
