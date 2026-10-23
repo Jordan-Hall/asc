@@ -754,6 +754,84 @@ fn the_key_file_is_private_and_never_overwritten() {
     assert!(TokenKey::load(&dir.path().join("short")).is_err());
 }
 
+/// Rows written before principals were typed hold bare text. The principal is rebuilt from the
+/// row's typed columns, never taken from the stored text.
+#[tokio::test]
+async fn a_stored_principal_text_is_never_trusted() {
+    let f = fixture().await;
+    let set = |id: String, text: &'static str| {
+        let pool = f.pool.clone();
+        async move {
+            sqlx::query("UPDATE auth_tokens SET principal = $1 WHERE id = $2")
+                .bind(text)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    let pat = f
+        .mint(
+            TokenKind::Pat,
+            Some("mallory"),
+            &["acme/web"],
+            Access::Write,
+        )
+        .await;
+    let deploy = f
+        .mint(TokenKind::Deploy, None, &["acme/web"], Access::Write)
+        .await;
+    let ci = f
+        .mint(TokenKind::Ci, None, &["acme/web"], Access::Write)
+        .await;
+
+    set(pat[4..20].to_owned(), "forgejo-internal").await;
+    set(deploy[4..20].to_owned(), "forgejo-internal").await;
+    set(ci[4..20].to_owned(), "forgejo-internal").await;
+    let got = |t: &String| {
+        let f = &f;
+        let t = t.clone();
+        async move { f.check(&t, "acme/web", Access::Write).await }
+    };
+    let p = got(&pat).await.unwrap();
+    assert_eq!(p.id, "pat:forgejo-internal");
+    assert_ne!(p.id, asc_serve::forgejo::INTERNAL_PRINCIPAL);
+    assert_eq!(got(&deploy).await.unwrap().id, "deploy:acme/web");
+    assert_eq!(got(&ci).await.unwrap().id, format!("ci:{}", &ci[4..20]));
+
+    // A legacy bare user name becomes the typed principal; a typed one stays.
+    f.advance(CACHE_TTL_SECS);
+    set(pat[4..20].to_owned(), "alice").await;
+    assert_eq!(got(&pat).await.unwrap().id, "pat:alice");
+    f.advance(CACHE_TTL_SECS);
+    set(pat[4..20].to_owned(), "pat:alice").await;
+    assert_eq!(got(&pat).await.unwrap().id, "pat:alice");
+
+    // Text that cannot be a user name refuses the token.
+    f.advance(CACHE_TTL_SECS);
+    set(pat[4..20].to_owned(), "pat:pat:x").await;
+    assert_eq!(got(&pat).await, Err(AuthError::Unauthenticated));
+    f.advance(CACHE_TTL_SECS);
+    set(pat[4..20].to_owned(), "a b").await;
+    assert_eq!(got(&pat).await, Err(AuthError::Unauthenticated));
+
+    // A deploy row that lost its grant, or an unknown kind, is refused.
+    f.advance(CACHE_TTL_SECS);
+    sqlx::query("DELETE FROM auth_token_grants WHERE token_id = $1")
+        .bind(deploy[4..20].to_owned())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    assert_eq!(got(&deploy).await, Err(AuthError::Unauthenticated));
+    sqlx::query("UPDATE auth_tokens SET kind = 'root' WHERE id = $1")
+        .bind(ci[4..20].to_owned())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    f.advance(CACHE_TTL_SECS);
+    assert_eq!(got(&ci).await, Err(AuthError::Unauthenticated));
+}
+
 /// Windows: the key file's access list names only the current user and SYSTEM, and a file that
 /// grants anyone else access is refused.
 #[cfg(windows)]
