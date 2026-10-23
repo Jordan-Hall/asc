@@ -205,7 +205,7 @@ async fn unchanged(ws: &WsCtx, abs: &std::path::Path, entry: &Entry) -> bool {
                 std::fs::read_link(abs)
                     .is_ok_and(|t| t.to_string_lossy().replace('\\', "/").as_bytes() == &want[..])
             } else {
-                meta.is_file() && std::fs::read(abs).is_ok_and(|b| b == &want[..])
+                meta.is_file() && std::fs::read(abs).is_ok_and(|b| b == want[..])
             }
         }
         Kind::File | Kind::Exec => {
