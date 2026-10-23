@@ -5,17 +5,30 @@
 //! token embedded in a URL never reaches a terminal, a CI log or a ref log.
 
 /// Query parameter names (lower case, substring match) whose values may hold a credential.
-const SECRET_KEYS: [&str; 11] =
-    ["secret", "token", "password", "passwd", "pwd", "key", "sig", "credential", "auth", "session", "x-amz-"];
+const SECRET_KEYS: [&str; 11] = [
+    "secret",
+    "token",
+    "password",
+    "passwd",
+    "pwd",
+    "key",
+    "sig",
+    "credential",
+    "auth",
+    "session",
+    "x-amz-",
+];
 
 /// `url` with credentials removed, otherwise unchanged: userinfo, in the URL and in any URL
 /// nested in its query, and the values of secret-bearing query parameters (replaced by `***`).
 pub fn anonymize(url: &str) -> String {
-    let (base, tail) = match url.find(['?', '#']) {
-        Some(i) => url.split_at(i),
-        None => (url, ""),
+    // Userinfo first: a password may itself contain `?` or `#`.
+    let stripped = strip_userinfo(url);
+    let (base, tail) = match stripped.find(['?', '#']) {
+        Some(i) => stripped.split_at(i),
+        None => (stripped.as_str(), ""),
     };
-    let mut out = anonymize_base(base);
+    let mut out = base.to_owned();
     out.push_str(&anonymize_tail(tail));
     out
 }
@@ -26,12 +39,14 @@ fn scheme_len(url: &str) -> Option<usize> {
     let scheme = &url[..i];
     let mut chars = scheme.chars();
     let first = chars.next()?;
-    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
-        .then_some(i + 3)
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some(i + 3)
 }
 
-/// The part before any `?` or `#`.
-fn anonymize_base(url: &str) -> String {
+/// Removes the userinfo: everything before the last `@` that precedes the first `/` (or backslash)
+/// after `scheme://`; for scp-like forms, the password only.
+fn strip_userinfo(url: &str) -> String {
     if let Some(n) = scheme_len(url) {
         let (head, rest) = url.split_at(n);
         let authority_end = rest.find(['/', char::from(92u8)]).unwrap_or(rest.len());
@@ -64,7 +79,9 @@ fn anonymize_tail(tail: &str) -> String {
     let Some(rest) = tail.strip_prefix('?') else {
         return tail.to_owned();
     };
-    let (query, fragment) = rest.split_once('#').map_or((rest, None), |(q, f)| (q, Some(f)));
+    let (query, fragment) = rest
+        .split_once('#')
+        .map_or((rest, None), |(q, f)| (q, Some(f)));
     let pairs: Vec<String> = query
         .split('&')
         .map(|pair| {
@@ -110,9 +127,18 @@ mod tests {
 
     #[test]
     fn strips_user_and_password_from_url_forms() {
-        assert_eq!(anonymize("https://user:TOKEN@host/repo.git"), "https://host/repo.git");
-        assert_eq!(anonymize("https://TOKEN@host:8443/repo"), "https://host:8443/repo");
-        assert_eq!(anonymize("s3://u:p%40ss@bucket/pre?endpoint=http://x"), "s3://bucket/pre?endpoint=http://x");
+        assert_eq!(
+            anonymize("https://user:TOKEN@host/repo.git"),
+            "https://host/repo.git"
+        );
+        assert_eq!(
+            anonymize("https://TOKEN@host:8443/repo"),
+            "https://host:8443/repo"
+        );
+        assert_eq!(
+            anonymize("s3://u:p%40ss@bucket/pre?endpoint=http://x"),
+            "s3://bucket/pre?endpoint=http://x"
+        );
     }
 
     #[test]
@@ -140,15 +166,24 @@ mod tests {
 
     #[test]
     fn ipv6_host_is_kept() {
-        assert_eq!(anonymize("https://user:TOKEN@[::1]:8080/r"), "https://[::1]:8080/r");
-        assert_eq!(anonymize("ssh://git@[2001:db8::1]/r"), "ssh://[2001:db8::1]/r");
+        assert_eq!(
+            anonymize("https://user:TOKEN@[::1]:8080/r"),
+            "https://[::1]:8080/r"
+        );
+        assert_eq!(
+            anonymize("ssh://git@[2001:db8::1]/r"),
+            "ssh://[2001:db8::1]/r"
+        );
     }
 
     #[test]
     fn authority_ends_at_query_or_fragment() {
-        assert_eq!(anonymize("s3://u:pw@bucket?region=x"), "s3://bucket?region=x");
+        assert_eq!(
+            anonymize("s3://u:pw@bucket?region=x"),
+            "s3://bucket?region=x"
+        );
         assert_eq!(anonymize("https://u:pw@host#x"), "https://host#x");
-        assert_eq!(anonymize("https://host?a=b@c"), "https://host?a=b@c");
+        assert_eq!(anonymize("https://host/?a=b@c"), "https://host/?a=b@c");
     }
 
     #[test]
@@ -161,21 +196,38 @@ mod tests {
             anonymize("s3://b/p?endpoint=http://k:s@h:1/x?y=z"),
             "s3://b/p?endpoint=http://h:1/x?y=z"
         );
-        assert_eq!(anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"), "s3://b/p?endpoint=***");
+        assert_eq!(
+            anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"),
+            "s3://b/p?endpoint=***"
+        );
     }
 
     #[test]
     fn secret_query_parameters_are_hidden() {
         assert_eq!(
-            anonymize("s3://b/p?access_key=AK&Secret=S&token=T&password=P&sig=G&X-Amz-Signature=Z&region=eu"),
+            anonymize(
+                "s3://b/p?access_key=AK&Secret=S&token=T&password=P&sig=G&X-Amz-Signature=Z&region=eu"
+            ),
             "s3://b/p?access_key=***&Secret=***&token=***&password=***&sig=***&X-Amz-Signature=***&region=eu"
         );
-        assert_eq!(anonymize("s3://b/p?path_style=true"), "s3://b/p?path_style=true");
+        assert_eq!(
+            anonymize("s3://b/p?path_style=true"),
+            "s3://b/p?path_style=true"
+        );
     }
 
     #[test]
     fn scp_like_path_containing_a_scheme_separator_still_hides_the_password() {
         assert_eq!(anonymize("user:pw@host:path/x://y"), "user@host:path/x://y");
         assert_eq!(anonymize("u:pw@host:a?b=c://d"), "u@host:a?b=c://d");
+    }
+
+    #[test]
+    fn query_and_fragment_characters_inside_userinfo_do_not_leak() {
+        assert_eq!(anonymize("https://u:p?w@host/"), "https://host/");
+        assert_eq!(anonymize("https://u:p#w@host/"), "https://host/");
+        assert_eq!(anonymize("https://us?er:pw@host/r"), "https://host/r");
+        assert_eq!(anonymize("https://us#er:pw@host/r?x=1"), "https://host/r?x=1");
+        assert_eq!(anonymize("u:p?w@host:path"), "u@host:path");
     }
 }
