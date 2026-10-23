@@ -1,0 +1,492 @@
+//! B08b: user-ref authorisation, the per-user ref cap and the quota on user-ref pushes (SPEC
+//! §21.5.1, §21.3.2, §21.3.7), over a real `Registry`, `ServerRefs` and `ImportPush`.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use async_trait::async_trait;
+use asc_core::id::RefTarget;
+use asc_core::path::RefName;
+use asc_git::realgit::RealGit;
+use asc_rpc::IdMode;
+use asc_rpc::auth::Principal;
+use asc_rpc::server::{CallCtx, RefsHandler, RepoName, status_rpc_error, wire};
+use asc_serve::import_push::{ImportOptions, ImportPush, PushCommand, Quarantine};
+use asc_serve::registry::{NewRepo, Registry, RepoEntry};
+use asc_serve::update::{HookRejected, HookRequest, PipelineHooks, PushHooks, ServerRefs};
+use asc_serve::migrate;
+use asc_store::refs::Refs;
+use tonic::Status;
+use uuid::Uuid;
+
+// ------------------------------------------------------------------------------ git fixtures
+
+struct Forge {
+    _tmp: tempfile::TempDir,
+    git_dir: PathBuf,
+}
+
+fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
+    use std::io::Write as _;
+    let real = RealGit::resolve(None, None).expect("git is installed");
+    let mut cmd = real.command().unwrap();
+    cmd.arg("--git-dir")
+        .arg(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "A")
+        .env("GIT_AUTHOR_EMAIL", "a@x")
+        .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+        .env("GIT_COMMITTER_NAME", "A")
+        .env("GIT_COMMITTER_EMAIL", "a@x")
+        .env("GIT_COMMITTER_DATE", "1700000000 +0000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+impl Forge {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let git_dir = tmp.path().join("r.git");
+        std::fs::create_dir_all(&git_dir).unwrap();
+        let real = RealGit::resolve(None, None).unwrap();
+        assert!(
+            real.command()
+                .unwrap()
+                .args(["init", "--bare", "--quiet", "--initial-branch=master"])
+                .arg(&git_dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+        Self { _tmp: tmp, git_dir }
+    }
+
+    fn commit(&self, parent: Option<&str>, content: &str) -> String {
+        let blob = git(
+            &self.git_dir,
+            &["hash-object", "-w", "--stdin"],
+            content.as_bytes(),
+        );
+        let tree = git(
+            &self.git_dir,
+            &["mktree"],
+            format!("100644 blob {blob}\ta.txt\n").as_bytes(),
+        );
+        let msg = format!("commit {content}");
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", msg.as_str()];
+        if let Some(p) = parent {
+            args.extend(["-p", p]);
+        }
+        git(&self.git_dir, &args, b"")
+    }
+
+    fn whole(&self) -> Quarantine {
+        Quarantine {
+            object_dir: self.git_dir.join("objects"),
+            alternate_dirs: Vec::new(),
+        }
+    }
+}
+
+fn cmd(name: &str, old: Option<&str>, new: Option<&str>) -> PushCommand {
+    PushCommand {
+        name: name.into(),
+        old: old.map(|s| s.parse().unwrap()),
+        new: new.map(|s| s.parse().unwrap()),
+    }
+}
+
+// ------------------------------------------------------------------------------ server fixtures
+
+#[derive(Default)]
+struct CountingHooks {
+    pre_receive: AtomicUsize,
+}
+
+#[async_trait]
+impl PushHooks for CountingHooks {
+    async fn pre_receive(&self, _req: &HookRequest<'_>) -> Result<(), HookRejected> {
+        self.pre_receive.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn outbox_effects(&self) -> &'static [&'static str] {
+        &["post_receive"]
+    }
+}
+
+struct Fx {
+    forge: Forge,
+    registry: Arc<Registry>,
+    entry: Arc<RepoEntry>,
+    #[allow(dead_code)]
+    hooks: Arc<CountingHooks>,
+    push: ImportPush,
+    refs: ServerRefs,
+}
+
+async fn fx(branchless: bool) -> Fx {
+    let pool = migrate::connect("sqlite::memory:", 1).await.unwrap();
+    migrate::migrate(&pool).await.unwrap();
+    let registry = Arc::new(Registry::new(pool, "memory:///").unwrap());
+    let entry = registry
+        .create(&RepoName::parse("o/r").unwrap(), &NewRepo::default())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE repos SET branchless = $1 WHERE id = $2")
+        .bind(branchless)
+        .bind(entry.key.0)
+        .execute(registry.pool())
+        .await
+        .unwrap();
+    let pipeline = Arc::new(PipelineHooks::default());
+    let hooks = Arc::new(CountingHooks::default());
+    assert!(pipeline.set_push_hooks(hooks.clone()).is_ok());
+    Fx {
+        forge: Forge::new(),
+        push: ImportPush::new(registry.clone(), pipeline.clone()),
+        refs: ServerRefs::new(registry.clone(), pipeline),
+        registry,
+        entry,
+        hooks,
+    }
+}
+
+fn ctx(principal: &str, mode: IdMode) -> CallCtx {
+    CallCtx {
+        repo: RepoName::parse("o/r").unwrap(),
+        id_mode: mode,
+        principal: Principal {
+            id: principal.into(),
+        },
+        op_id: Some(Uuid::new_v4()),
+        client: None,
+    }
+}
+
+fn code(s: &Status) -> String {
+    status_rpc_error(s).map_or_else(|| s.code().to_string(), |e| e.code().to_owned())
+}
+
+impl Fx {
+    async fn git_push(
+        &self,
+        who: &str,
+        commands: &[PushCommand],
+    ) -> Result<wire::ImportGitPushResponse, Status> {
+        self.push
+            .import_git_push(
+                &ctx(who, IdMode::Git),
+                &self.forge.whole(),
+                commands,
+                &ImportOptions::default(),
+            )
+            .await
+    }
+
+    async fn stored(&self, name: &str) -> Option<RefTarget> {
+        self.registry
+            .refs()
+            .get(self.entry.key, &RefName::new(name.as_bytes()).unwrap())
+            .await
+            .unwrap()
+            .map(|e| e.target)
+    }
+
+    async fn list(&self, who: &str, prefix: &str) -> Result<Vec<String>, Status> {
+        self.list_page(who, prefix, 0, "")
+            .await
+            .map(|r| r.refs.into_iter().map(|x| x.name).collect())
+    }
+
+    async fn list_page(
+        &self,
+        who: &str,
+        prefix: &str,
+        limit: u32,
+        after: &str,
+    ) -> Result<wire::ListRefsResponse, Status> {
+        self.refs
+            .list_refs(
+                &ctx(who, IdMode::Asc),
+                wire::ListRefsRequest {
+                    repo: Some(wire::RepoRef {
+                        name: "o/r".into(),
+                        id_mode: 0,
+                    }),
+                    prefix: prefix.into(),
+                    limit,
+                    after: after.into(),
+                    ..Default::default()
+                },
+            )
+            .await
+    }
+
+    async fn update(&self, who: &str, name: &str, to: RefTarget) -> Result<(), Status> {
+        self.refs
+            .update_refs(
+                &ctx(who, IdMode::Asc),
+                wire::UpdateRefsRequest {
+                    repo: Some(wire::RepoRef {
+                        name: "o/r".into(),
+                        id_mode: 0,
+                    }),
+                    updates: vec![wire::RefUpdate {
+                        name: name.into(),
+                        expect: Some(wire::ref_update::Expect::Absent(true)),
+                        new: Some(wire::RefTarget::from(&to)),
+                        delete: false,
+                    }],
+                    mode: wire::UpdateMode::FastForward as i32,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map(|_| ())
+    }
+
+    async fn outbox_effects(&self) -> Vec<String> {
+        use sqlx::Row;
+        sqlx::query("SELECT effects FROM outbox ORDER BY id")
+            .fetch_all(self.registry.pool())
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| String::from_utf8(r.get::<Vec<u8>, _>("effects")).unwrap())
+            .collect()
+    }
+}
+
+/// A repo with `master` pushed by git as `7:maint`; returns the commit's git id.
+async fn with_master(f: &Fx) -> String {
+    let c1 = f.forge.commit(None, "one");
+    f.git_push("7:maint", &[cmd("refs/heads/master", None, Some(&c1))])
+        .await
+        .unwrap();
+    c1
+}
+
+// ------------------------------------------------------------------------------ tests
+
+async fn seed_user_refs(f: &Fx, owner: i64, n: usize) {
+    let target = f.stored("refs/heads/master").await.unwrap();
+    sqlx::query(
+        "INSERT INTO refs (repo_id, name, target, version) \
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < $3) \
+         SELECT $1, 'refs/users/' || $4 || '/heads/seed' || i, $2, 1 FROM n",
+    )
+    .bind(f.entry.key.0)
+    .bind(target.to_bytes().to_vec())
+    .bind(n as i64)
+    .bind(owner)
+    .execute(f.registry.pool())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_non_owner_cannot_push_or_list_another_users_ref() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+    f.git_push("42:alice", &[cmd("refs/heads/feat", None, Some(&c2))])
+        .await
+        .unwrap();
+    let target = f.stored("refs/users/42/heads/feat").await.unwrap();
+
+    // Naming the user namespace in an update is refused, whoever asks.
+    for who in ["43:bob", "42:alice"] {
+        let e = f
+            .update(who, "refs/users/42/heads/feat2", target)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{who}");
+    }
+    // Bob's push of the same branch name never touches Alice's ref.
+    let c3 = f.forge.commit(Some(&c2), "three");
+    f.git_push("43:bob", &[cmd("refs/heads/feat", None, Some(&c3))])
+        .await
+        .unwrap();
+    assert_eq!(f.stored("refs/users/42/heads/feat").await, Some(target));
+    // Bob cannot delete Alice's ref: a delete in his namespace is against his own ref.
+    let e = f
+        .git_push("43:bob", &[cmd("refs/heads/feat", Some(&c2), None)])
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "REF_CONFLICT");
+    assert_eq!(f.stored("refs/users/42/heads/feat").await, Some(target));
+
+    // Listing: Bob cannot list Alice's refs by prefix.
+    for prefix in ["refs/users/42/", "refs/users/42/heads/"] {
+        let e = f.list("43:bob", prefix).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied, "{prefix}");
+    }
+    assert_eq!(
+        f.list("43:bob", "refs/users/43/").await.unwrap(),
+        ["refs/users/43/heads/feat"]
+    );
+    // The bare namespace lists only the caller's own.
+    assert_eq!(
+        f.list("43:bob", "refs/users/").await.unwrap(),
+        ["refs/users/43/heads/feat"]
+    );
+    // A principal with no user id has no user refs at all.
+    let e = f.list("carol", "refs/users/42/").await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::PermissionDenied);
+}
+
+#[tokio::test]
+async fn user_ref_updates_write_no_outbox_post_receive() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let before = f.outbox_effects().await.len();
+    let c2 = f.forge.commit(Some(&c1), "two");
+    f.git_push("42:alice", &[cmd("refs/heads/feat", None, Some(&c2))])
+        .await
+        .unwrap();
+    let c3 = f.forge.commit(Some(&c2), "three");
+    f.git_push("42:alice", &[cmd("refs/heads/feat", Some(&c2), Some(&c3))])
+        .await
+        .unwrap();
+    f.git_push("42:alice", &[cmd("refs/heads/feat", Some(&c3), None)])
+        .await
+        .unwrap();
+    let all = f.outbox_effects().await;
+    for e in &all[before..] {
+        assert!(!e.contains("post_receive"), "{e}");
+    }
+}
+
+#[tokio::test]
+async fn the_1001st_user_ref_gets_user_refs_limit_and_other_users_are_unaffected() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+    seed_user_refs(&f, 42, 1000).await;
+
+    let e = f
+        .git_push(
+            "42:alice",
+            &[cmd("refs/heads/one-too-many", None, Some(&c2))],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "USER_REFS_LIMIT");
+    assert!(f.stored("refs/users/42/heads/one-too-many").await.is_none());
+    // The same through UpdateRefs.
+    let target = f.stored("refs/heads/master").await.unwrap();
+    let e = f
+        .update("42:alice", "refs/heads/also", target)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "USER_REFS_LIMIT");
+    // Another user has their own budget; deleting one of Alice's frees a slot.
+    f.git_push("43:bob", &[cmd("refs/heads/x", None, Some(&c2))])
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM refs WHERE repo_id = $1 AND name = 'refs/users/42/heads/seed1'")
+        .bind(f.entry.key.0)
+        .execute(f.registry.pool())
+        .await
+        .unwrap();
+    f.git_push(
+        "42:alice",
+        &[cmd("refs/heads/one-too-many", None, Some(&c2))],
+    )
+    .await
+    .unwrap();
+}
+
+struct Quota {
+    refuse: bool,
+    charged: AtomicUsize,
+}
+
+#[async_trait]
+impl PushHooks for Quota {
+    fn max_user_refs(&self) -> usize {
+        2
+    }
+
+    async fn charge_user_refs(
+        &self,
+        _ctx: &CallCtx,
+        owner: i64,
+        new_changesets: usize,
+    ) -> Result<(), asc_serve::refauthz::QuotaDenied> {
+        assert_eq!(owner, 42);
+        self.charged.fetch_add(new_changesets, Ordering::SeqCst);
+        if self.refuse {
+            Err(asc_serve::refauthz::QuotaDenied("over quota".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn pusher(f: &Fx, quota: Arc<Quota>) -> ImportPush {
+    let pipeline = Arc::new(PipelineHooks::default());
+    assert!(pipeline.set_push_hooks(quota).is_ok());
+    ImportPush::new(f.registry.clone(), pipeline)
+}
+
+async fn push_as_alice(
+    f: &Fx,
+    push: &ImportPush,
+    name: &str,
+    new: &str,
+) -> Result<wire::ImportGitPushResponse, Status> {
+    push.import_git_push(
+        &ctx("42:alice", IdMode::Git),
+        &f.forge.whole(),
+        &[cmd(name, None, Some(new))],
+        &ImportOptions::default(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+
+    let refusing = Arc::new(Quota {
+        refuse: true,
+        charged: AtomicUsize::new(0),
+    });
+    let push = pusher(&f, refusing.clone());
+    let e = push_as_alice(&f, &push, "refs/heads/feat", &c2)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "QUOTA_EXCEEDED");
+    assert!(f.stored("refs/users/42/heads/feat").await.is_none());
+    assert!(refusing.charged.load(Ordering::SeqCst) >= 1);
+
+    // With the quota open, this server's cap (2) applies.
+    let open = Arc::new(Quota {
+        refuse: false,
+        charged: AtomicUsize::new(0),
+    });
+    let push = pusher(&f, open);
+    push_as_alice(&f, &push, "refs/heads/a", &c2).await.unwrap();
+    push_as_alice(&f, &push, "refs/heads/b", &c2).await.unwrap();
+    let e = push_as_alice(&f, &push, "refs/heads/c", &c2)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "USER_REFS_LIMIT");
+}
