@@ -928,6 +928,7 @@ Critical path to **IDE plugins** (SPEC §24) [audit: ide-plugins-folded]: M02 �
 - **Owns:** `crates/asc-serve/src/landing.rs`, `crates/asc-serve/migrations/{postgres,sqlite}/0102_land_map.sql`, `crates/asc/src/cli/landed.rs`
 - **Depends:** U46, U48b, U65. **Accept:** `cargo test -p asc-serve landing::`
 - **Brief:** SPEC §8.9: `land_map` rows in the step-8 transaction for land and `Merge` rewrites, `ref_log_by_ref`, the `FindLanding` RPC, and `asc landed <rev> [--ref] [--json]`. Tests: land three stacks; `FindLanding` on every pre-land id returns the right new id and `ref_log` seq; an `EXPLAIN` test shows no sequential scan. Calls U43b's `IngestObserver` (`on_ingested` for what it ingests, `on_rewritten` for what it rewrites, in the same transaction) so the server writes `ChangeMeta` and `changes` rows (SPEC §20.4) [audit: stack-server-and-sync-hooks-unowned].
+- **Follow-up (contract step):** migration 0106 adds `land_map_ref` (key `(ns, ref, old_cs)`) beside `land_map` and copies its rows; the server uses `land_map_ref` alone. A later `-- contract:` migration drops the unused `land_map` once no N-1 server reads it.
 
 ### U67 Classify (`asc-engine::classify`, `asc-serve::classify`) [audit: 27-semantic-classification]
 - **Owns:** `crates/asc-engine/src/classify/{mod.rs,lexer.rs}`, `crates/asc-serve/src/classify.rs`

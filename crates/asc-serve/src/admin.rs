@@ -86,7 +86,7 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 11] = [
+const NS_TABLES: [&str; 16] = [
     "cs_graph",
     "git_map",
     "file_meta",
@@ -98,6 +98,11 @@ const NS_TABLES: [&str; 11] = [
     "ci_chunks",
     "ci_manifest",
     "ci_jobs",
+    "land_map",
+    "land_map_ref",
+    "changes",
+    "change_versions",
+    "review_state",
 ];
 
 // ------------------------------------------------------------------------------ statuses
