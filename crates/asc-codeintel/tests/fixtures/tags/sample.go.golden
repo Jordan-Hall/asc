@@ -1,0 +1,22 @@
+def struct Server L6-9 in - | sig="Server struct { Addr string port int }" | doc="Server serves."
+def field Addr L7-7 in Server | sig="Addr string"
+ref type string L7-7 in Addr
+def field port L8-8 in Server | sig="port int"
+ref type int L8-8 in port
+def interface Handler L11-13 in - | sig="Handler interface { Serve(path string) error }"
+def method Serve L12-12 in Handler | sig="Serve(path string) error"
+ref type string L12-12 in Serve
+ref type error L12-12 in Serve
+def type ID L15-15 in - | sig="ID = int"
+ref type int L15-15 in ID
+def constant Max L17-17 in - | sig="Max = 10"
+def variable global L19-19 in - | sig="global = 1"
+def method Start L22-26 in - | sig="func (s *Server) Start() error" | doc="Start begins serving."
+ref type Server L22-22 in Start
+ref type error L22-22 in Start
+ref type int L23-23 in Start
+ref call Println L24-24 in Start
+ref call run L25-25 in Start
+def function run L28-30 in - | sig="func run(n int) error"
+ref type int L28-28 in run
+ref type error L28-28 in run

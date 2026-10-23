@@ -1,0 +1,23 @@
+def struct Point L6-9 in - | sig="pub struct Point" | doc="A point in the plane.\nCoordinates are integers."
+def field x L7-7 in Point | sig="pub x: i32"
+def field y L8-8 in Point | sig="pub y: i32"
+def enum Shape L11-14 in - | sig="pub enum Shape"
+def variant Dot L12-12 in Shape | sig="Dot"
+ref type Point L12-12 in Dot
+def variant Line L13-13 in Shape | sig="Line"
+def trait Area L16-18 in - | sig="pub trait Area"
+def method area L17-17 in Area | sig="fn area(&self) -> f64;"
+def impl Shape L20-24 in - | sig="impl Area for Shape"
+ref type Area L20-20 in Shape
+def method area L21-23 in Shape | sig="fn area(&self) -> f64"
+ref call helper L22-22 in area
+def impl Point L26-32 in - | sig="impl Point"
+def method new L28-31 in Point | sig="pub fn new(x: i32, y: i32) -> Self" | doc="Make a point."
+ref type Self L28-28 in new
+ref type Point L30-30 in new
+def constant LIMIT L34-34 in - | sig="const LIMIT: usize = 4;"
+def module inner L36-40 in - | sig="pub mod inner"
+def function deep L37-39 in inner | sig="pub fn deep()"
+ref call println L38-38 in deep
+def function helper L42-46 in - | sig="fn helper(v: f64) -> f64"
+ref call new L44-44 in helper

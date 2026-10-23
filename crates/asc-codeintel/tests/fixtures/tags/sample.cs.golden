@@ -1,0 +1,17 @@
+def module Demo.App L1-1 in - | sig="namespace Demo.App;"
+def class Widget L4-19 in - | sig="public class Widget : IWidget" | doc="<summary>A thing.</summary>"
+def field count L6-6 in Widget | sig="private int count;"
+def property Name L7-7 in Widget | sig="public string Name { get; set; }"
+def method Widget L9-9 in Widget | sig="public Widget(string name)"
+def method Run L12-16 in Widget | sig="public void Run()" | doc="<summary>Run it.</summary>"
+ref call Helper L14-14 in Run
+ref call Widget L15-15 in Run
+def method Helper L18-18 in Widget | sig="private static int Helper(int n)"
+def interface IWidget L21-21 in - | sig="public interface IWidget"
+def method Run L21-21 in IWidget | sig="void Run();"
+def enum Mode L23-23 in - | sig="public enum Mode"
+def variant Fast L23-23 in Mode | sig="Fast"
+def variant Slow L23-23 in Mode | sig="Slow"
+def class Pair L25-25 in - | sig="public record Pair(int A, int B);"
+def struct Vec L27-27 in - | sig="public struct Vec"
+def field X L27-27 in Vec | sig="public int X;"

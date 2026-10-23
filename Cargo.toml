@@ -163,3 +163,12 @@ asc-sim = { path = "crates/asc-sim" }
 # additions (I09)
 fastembed      = { version = "=7.2.0", default-features = false, features = ["ort-download-binaries-rustls-tls"] }
 ort            = "=2.0.0-rc.15"
+# additions (I03)
+tree-sitter            = "=0.27.1"
+tree-sitter-language   = "=0.1.9"
+tree-sitter-rust       = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-python     = "=0.25.0"
+tree-sitter-c-sharp    = "=0.23.5"
+tree-sitter-go         = "=0.25.0"
+tree-sitter-javascript = "=0.25.0"

@@ -1,0 +1,9 @@
+def variable LIMIT L1-1 in - | sig="LIMIT = 3"
+def class Greeter L4-15 in - | sig="class Greeter:" | doc="Greets people."
+def field prefix L7-7 in Greeter | sig="prefix = \"hi\""
+def method greet L9-11 in Greeter | sig="def greet(self, name):" | doc="Say hello."
+ref call fmt L11-11 in greet
+def method fmt L14-15 in Greeter | sig="def fmt(name):"
+ref call helper L15-15 in fmt
+def function helper L18-20 in - | sig="def helper(s): # not a docstring"
+ref call strip L20-20 in helper

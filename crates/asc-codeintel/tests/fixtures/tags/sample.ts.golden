@@ -1,0 +1,18 @@
+def interface User L2-5 in - | sig="interface User" | doc="A user."
+def property name L3-3 in User | sig="name: string"
+def method greet L4-4 in User | sig="greet(): void"
+def type Id L7-7 in - | sig="type Id = string;"
+def enum Color L9-9 in - | sig="enum Color"
+def class Account L11-20 in - | sig="class Account implements User"
+ref type User L11-11 in Account
+def property name L12-12 in Account | sig="name = \"a\""
+def method greet L14-16 in Account | sig="greet(): void" | doc="Say hello."
+ref call helper L15-15 in greet
+def method make L17-19 in Account | sig="static make(): Account"
+ref type Account L17-17 in make
+ref call Account L18-18 in make
+def function helper L22-24 in - | sig="function helper(s: string): number"
+def function double L26-26 in - | sig="double = (n: number): number =>"
+def variable LIMIT L28-28 in - | sig="LIMIT = 10"
+def module Util L30-32 in - | sig="namespace Util"
+def function inner L31-31 in Util | sig="function inner()"

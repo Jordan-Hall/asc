@@ -7,3 +7,4 @@ pub mod doc;
 pub mod lang;
 pub mod secrets;
 pub mod skip;
+pub mod tags;

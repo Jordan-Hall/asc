@@ -1,0 +1,4 @@
+def function Hello L4-6 in - | sig="function Hello(props: { name: string })" | doc="Renders a greeting."
+ref call format L5-5 in Hello
+def function format L8-8 in - | sig="format = (s: string) =>"
+ref call trim L8-8 in format
