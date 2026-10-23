@@ -732,6 +732,22 @@ async fn diff_tree_matches_git() {
         &["diff-tree", "-r", "-M", "HEAD~1", "HEAD"],
         &["diff-tree", "--abbrev=10", "-r", "HEAD"],
         &["diff-tree", "--exit-code", "HEAD", "HEAD"],
+        &["diff-tree", "--merge-base", "HEAD~1", "HEAD"],
+        &["diff-tree", "--merge-base", "HEAD", "HEAD~1"],
+        &[
+            "diff-tree",
+            "-r",
+            "--name-only",
+            "--no-commit-id",
+            "-z",
+            "--merge-base",
+            "--end-of-options",
+            "HEAD~1",
+            "HEAD",
+            "--",
+            "d",
+        ],
+        &["diff-tree", "-r", "--end-of-options", "HEAD~1", "HEAD"],
     ] {
         p.same(args);
     }

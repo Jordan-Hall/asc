@@ -30,7 +30,14 @@ pub type Args = RawArgs;
 pub const NATIVE: &[NativeSpec] = &[
     NativeSpec {
         cmd: "diff-tree",
-        flags: flags!("-r", "-t", "--root", "--no-commit-id"),
+        flags: flags!(
+            "-r",
+            "-t",
+            "--root",
+            "--no-commit-id",
+            "--merge-base",
+            "--end-of-options"
+        ),
         placeholders: &[],
     },
     NativeSpec {
@@ -148,13 +155,24 @@ async fn shape(
 }
 
 async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<ExitCode> {
-    reject_extras(&c, &["-r", "-t", "--root", "--no-commit-id"])?;
+    reject_extras(
+        &c,
+        &["-r", "-t", "--root", "--no-commit-id", "--merge-base"],
+    )?;
     let has = |name: &str| c.extra.iter().any(|f| f == name);
-    let (recursive, show_trees, root, no_id) =
-        (has("-r"), has("-t"), has("--root"), has("--no-commit-id"));
+    let (recursive, show_trees, root, no_id, merge_base) = (
+        has("-r"),
+        has("-t"),
+        has("--root"),
+        has("--no-commit-id"),
+        has("--merge-base"),
+    );
     let (revs, paths) = split_args(ctx, &c, 2).await?;
     let spec = pathspec(ctx, &paths)?;
     let mut header = None;
+    if merge_base && revs.len() != 2 {
+        return Err(fatal("--merge-base only works with two commits"));
+    }
     let (a, b) = match revs.as_slice() {
         [one] => {
             let cs = resolve_commit(ctx, one)
@@ -183,10 +201,19 @@ async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<Exit
                         .ok_or_else(|| fatal(format!("Not a valid object name {spec}")))
                 }
             };
-            (
-                root_of(ws, Some(side(x).await?)).await?,
-                root_of(ws, Some(side(y).await?)).await?,
-            )
+            let (x, y) = (side(x).await?, side(y).await?);
+            // `--merge-base A B` diffs the merge base of the two commits against B.
+            let x = if merge_base {
+                HistoryApi::merge_base(&ws.engine, x, &[y], false)
+                    .await
+                    .map_err(|e| fatal(e.to_string()))?
+                    .first()
+                    .copied()
+                    .ok_or_else(|| fatal("no merge base"))?
+            } else {
+                x
+            };
+            (root_of(ws, Some(x)).await?, root_of(ws, Some(y)).await?)
         }
         _ => {
             return Err(usage(

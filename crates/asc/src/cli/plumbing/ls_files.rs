@@ -1,7 +1,8 @@
 //! `ls-files` (SPEC §9.5): the index (HEAD's tree overlaid with the stage rows) as git prints its
-//! own, and with `-o` the untracked files of the work tree.
+//! own, with `-o` the untracked files of the work tree and with `-m` the tracked files whose work
+//! tree file differs from the index or is gone.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::Path;
@@ -15,6 +16,8 @@ use super::usage;
 use crate::cli::add::cwd_prefix;
 use crate::cli::add::spec::Spec;
 use crate::cli::common::{CliError, Ctx, Result, WsCtx};
+use crate::cli::diff::sides;
+use crate::cli::diff::work::LocalFiles;
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
 use crate::cli::refs_plumbing::args::{Cursor, Word};
@@ -24,6 +27,7 @@ struct Opts {
     cached: bool,
     stage: bool,
     others: bool,
+    modified: bool,
     exclude_standard: bool,
     nul: bool,
     full_name: bool,
@@ -46,6 +50,7 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         'c' => o.cached = true,
                         's' => o.stage = true,
                         'o' => o.others = true,
+                        'm' => o.modified = true,
                         'z' => o.nul = true,
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     }
@@ -55,6 +60,7 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                 "cached" => o.cached = true,
                 "stage" => o.stage = true,
                 "others" => o.others = true,
+                "modified" => o.modified = true,
                 "exclude-standard" => o.exclude_standard = true,
                 "full-name" => o.full_name = true,
                 "error-unmatch" => o.error_unmatch = true,
@@ -214,7 +220,7 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             },
         )
     };
-    let show_cached = o.cached || o.stage || !o.others;
+    let show_cached = o.cached || o.stage || !(o.others || o.modified);
     let mut matched = vec![false; spec.includes().len()];
     let mut tracked: HashSet<Vec<u8>> = HashSet::new();
     let mut tracked_dirs: HashSet<Vec<u8>> = HashSet::new();
@@ -248,18 +254,37 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             out.write_all(&[names.terminator])?;
         }
     }
-    if show_cached {
+    // The tracked paths whose work tree file differs from the index or is gone, and the
+    // unmerged ones: git lists each of them once per index entry, after the entry itself.
+    let modified: BTreeSet<Vec<u8>> = if o.modified {
+        let mut local = LocalFiles::new(&ws.engine);
+        let built = sides::worktree(ctx, ws, &mut local, None, None).await?;
+        built
+            .changes
+            .iter()
+            .map(|c| c.path.as_bytes().to_vec())
+            .chain(built.unmerged.iter().map(|p| p.as_bytes().to_vec()))
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
+    if show_cached || o.modified {
         let mut entries = index.entries(ws, spec_ref).await?;
         while let Some(e) = entries.next().await? {
             spec.mark(&e.path, &mut matched);
-            let result: std::io::Result<()> = (|| {
+            let print = |out: &mut Output| -> std::io::Result<()> {
                 if o.stage {
                     write!(out, "{:06o} {} {}	", e.mode(), e.oid, e.stage)?;
                 }
-                show(&mut out, &e.path)?;
+                show(out, &e.path)?;
                 out.write_all(&[names.terminator])
-            })();
-            result?;
+            };
+            if show_cached {
+                print(&mut out)?;
+            }
+            if o.modified && modified.contains(&e.path) {
+                print(&mut out)?;
+            }
         }
     }
     out.finish()?;

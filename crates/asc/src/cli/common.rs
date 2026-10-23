@@ -846,9 +846,12 @@ impl Ctx {
         if let Some(oid) = plan.detached {
             ws.projection.write_head(&Head::Detached(oid))?;
         }
-        if old_head != plan.new_head {
+        // `old_head` can already name the new commit (`checkout <branch>` points HEAD at the
+        // branch before this call), while `plan.base` is the commit the index was last exported
+        // for: either one differing means the export is stale.
+        if old_head != plan.new_head || plan.base != plan.new_head {
             ext::index_sink()
-                .on_head_moved(ws_id, old_head, plan.new_head)
+                .on_head_moved(ws_id, plan.base, plan.new_head)
                 .await
                 .map_err(|e| CliError::Fatal(e.to_string()))?;
         }

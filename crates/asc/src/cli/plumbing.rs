@@ -95,6 +95,8 @@ pub const NATIVE: &[NativeSpec] = &[
             "--stage",
             "-o",
             "--others",
+            "-m",
+            "--modified",
             "--exclude-standard",
             "-z",
             "--full-name",
