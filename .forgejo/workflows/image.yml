@@ -39,8 +39,9 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ vars.REGISTRY_USER }}
-          password: ${{ secrets.FORGEJO_PACKAGES_TOKEN }}
+          # monorepo's convention: the org-level FORGEJO_REGISTRY_TOKEN when set.
+          username: ${{ vars.REGISTRY_USER || github.actor }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN || secrets.FORGEJO_PACKAGES_TOKEN }}
 
       - name: Build
         env:
