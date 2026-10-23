@@ -495,12 +495,31 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         spec: Option<&Pathspec>,
         budget: usize,
     ) -> Result<Vec<(RepoPath, Change)>> {
+        Ok(self
+            .leafdiff_limited(a, b, spec, budget, usize::MAX)
+            .await?
+            .0)
+    }
+
+    /// [`Self::leafdiff_bounded`] that stops walking once `limit + 1` leaves are collected, so
+    /// the walk and the output are bounded by `limit` rather than by the size of the change.
+    /// More than `limit` leaves back means the diff has more. Also returns the entries the walk
+    /// visited.
+    pub async fn leafdiff_limited(
+        &self,
+        a: TreeId,
+        b: TreeId,
+        spec: Option<&Pathspec>,
+        budget: usize,
+        limit: usize,
+    ) -> Result<(Vec<(RepoPath, Change)>, usize)> {
         let mut out = Vec::new();
+        let mut visits = 0;
         if a != b {
-            self.diff_dir(a, b, spec, &mut out, budget).await?;
+            visits = self.diff_dir(a, b, spec, &mut out, budget, limit).await?;
         }
         out.sort_by(|x, y| x.0.cmp(&y.0));
-        Ok(out)
+        Ok((out, visits))
     }
 
     /// Iterative: an explicit stack of directory frames, so stack use does not depend on depth.
@@ -511,7 +530,8 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         spec: Option<&Pathspec>,
         out: &mut Vec<(RepoPath, Change)>,
         budget: usize,
-    ) -> Result<()> {
+        limit: usize,
+    ) -> Result<usize> {
         let mut visits = 0usize;
         let mut out_bytes = 0usize;
         enum Frame {
@@ -704,6 +724,9 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                                 Change::Delete
                             },
                         ));
+                        if out.len() > limit {
+                            return Ok(visits);
+                        }
                     }
                 } else if spec.is_none_or(|s| s.may_contain_dir(&path)) {
                     if stack.len() > MAX_TREE_DEPTH {
@@ -719,7 +742,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                 }
             }
         }
-        Ok(())
+        Ok(visits)
     }
 
     /// Streams the leaf entries (files, symlinks, gitlinks) under `root` that match `spec`.

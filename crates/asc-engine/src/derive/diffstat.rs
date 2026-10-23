@@ -4,7 +4,8 @@
 //! derived on demand, one changeset at a time. It is keyed by the changeset alone
 //! ([`DerivedKeyed`]) so deriving one never walks the history below it.
 //!
-//! Every input is bounded: at most [`MAX_FILES`] files are listed, a file larger than
+//! Every input is bounded: at most [`MAX_FILES`] files are listed (the tree walk itself stops
+//! after the `MAX_FILES + 1`th change, so a huge commit costs no more than a big one), a file larger than
 //! [`MAX_FILE_BYTES`] on either side counts as binary without being read, and one changeset
 //! reads at most [`MAX_READ_BYTES`] of content in total (the rest is listed as binary and the
 //! stat is marked `truncated`).
@@ -21,6 +22,7 @@ use super::{DerivedKeyed, Error, Result, read_memo};
 use crate::Engine;
 use crate::diff::TreeChange;
 use crate::diff::line::{self, Algorithm};
+use crate::tree::MAX_DIFF_VISITS;
 
 /// Files one stat lists.
 pub const MAX_FILES: usize = 10_000;
@@ -130,6 +132,37 @@ async fn count<O: Objects, R: Refs>(
     })
 }
 
+/// The stat of `id` listing at most `max_files` files, and the tree entries visited. The tree
+/// walk stops after the `max_files + 1`th change (that extra one only marks the list as cut),
+/// so a commit touching a million files costs no more than one touching `max_files`.
+async fn stat_of<O: Objects, R: Refs>(
+    e: &Engine<O, R>,
+    id: ChangesetId,
+    max_files: usize,
+) -> Result<(DiffStatV1, usize)> {
+    let cs = e.get_changeset(id).await?;
+    let base = match cs.parents.first() {
+        Some(&p) => e.get_changeset(p).await?.root,
+        None => Engine::<O, R>::empty_tree_id(),
+    };
+    let (changes, visits) = e
+        .tree_changes_limited(base, cs.root, None, MAX_DIFF_VISITS, max_files)
+        .await?;
+    let mut truncated = changes.len() > max_files;
+    let mut read = 0;
+    let mut files = Vec::with_capacity(changes.len().min(max_files));
+    for c in changes.iter().take(max_files) {
+        let n = count(e, c, &mut read, &mut truncated).await?;
+        files.push(FileStat {
+            path: c.path.clone(),
+            added: n.added,
+            removed: n.removed,
+            binary: n.binary,
+        });
+    }
+    Ok((DiffStatV1 { files, truncated }, visits))
+}
+
 #[async_trait]
 impl DerivedKeyed for DiffStatV1 {
     const NAME: &'static str = "diffstat";
@@ -145,25 +178,7 @@ impl DerivedKeyed for DiffStatV1 {
         id: ChangesetId,
         _: &(),
     ) -> Result<Self> {
-        let cs = e.get_changeset(id).await?;
-        let base = match cs.parents.first() {
-            Some(&p) => e.get_changeset(p).await?.root,
-            None => Engine::<O, R>::empty_tree_id(),
-        };
-        let changes = e.tree_changes(base, cs.root, None).await?;
-        let mut truncated = changes.len() > MAX_FILES;
-        let mut read = 0;
-        let mut files = Vec::with_capacity(changes.len().min(MAX_FILES));
-        for c in changes.iter().take(MAX_FILES) {
-            let n = count(e, c, &mut read, &mut truncated).await?;
-            files.push(FileStat {
-                path: c.path.clone(),
-                added: n.added,
-                removed: n.removed,
-                binary: n.binary,
-            });
-        }
-        Ok(Self { files, truncated })
+        Ok(stat_of(e, id, MAX_FILES).await?.0)
     }
 
     fn encode(&self) -> Vec<u8> {
@@ -505,5 +520,42 @@ mod tests {
         let mut bad = s.encode();
         bad[9] = b'/';
         assert!(DiffStatV1::decode(&bad).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_huge_change_stops_the_walk_after_the_cap() {
+        let e = engine();
+        let names: Vec<String> = (0..8)
+            .flat_map(|d| (0..25).map(move |f| format!("d{d}/f{f:02}")))
+            .collect();
+        let ops: Vec<(&str, Option<&[u8]>)> = names
+            .iter()
+            .map(|n| (n.as_str(), Some(&b"x
+"[..])))
+            .collect();
+        let a = mk(&e, None, &ops).await;
+        let (all, all_visits) = stat_of(&e, a, 1000).await.unwrap();
+        assert_eq!((all.files.len(), all.truncated), (200, false));
+        assert!(all_visits >= 200, "a full walk visits every file: {all_visits}");
+        let (cut, visits) = stat_of(&e, a, 10).await.unwrap();
+        assert_eq!((cut.files.len(), cut.truncated), (10, true));
+        // The walk ends at the 11th change inside the first directory; the other seven
+        // directories are never opened.
+        assert!(visits < 30, "the walk went on past the cap: {visits} entries");
+    }
+
+    #[tokio::test]
+    async fn more_than_max_files_lists_max_files_and_marks_the_cut() {
+        let e = engine();
+        let names: Vec<String> = (0..MAX_FILES + 5).map(|i| format!("f{i:05}")).collect();
+        let ops: Vec<(&str, Option<&[u8]>)> = names
+            .iter()
+            .map(|n| (n.as_str(), Some(&b"x
+"[..])))
+            .collect();
+        let a = mk(&e, None, &ops).await;
+        let (s, visits) = stat_of(&e, a, MAX_FILES).await.unwrap();
+        assert_eq!((s.files.len(), s.truncated), (MAX_FILES, true));
+        assert!(visits <= MAX_FILES + 3, "{visits}");
     }
 }

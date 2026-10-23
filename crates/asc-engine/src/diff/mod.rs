@@ -16,7 +16,7 @@ use asc_store::refs::Refs;
 use futures::stream::{self, StreamExt, TryStreamExt};
 
 use crate::Engine;
-use crate::tree::{self, Pathspec};
+use crate::tree::{self, MAX_DIFF_VISITS, Pathspec};
 
 pub mod format;
 pub mod line;
@@ -179,7 +179,23 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         b: TreeId,
         spec: Option<&Pathspec>,
     ) -> Result<Vec<TreeChange>> {
-        let leaves = self.leafdiff(a, b, spec).await?;
+        let (changes, _) = self
+            .tree_changes_limited(a, b, spec, MAX_DIFF_VISITS, usize::MAX)
+            .await?;
+        Ok(changes)
+    }
+
+    /// [`tree_changes`](Self::tree_changes) that stops the walk once more than `limit` leaves
+    /// are found (so at most `limit + 1` come back), with the entries the walk visited.
+    pub async fn tree_changes_limited(
+        &self,
+        a: TreeId,
+        b: TreeId,
+        spec: Option<&Pathspec>,
+        budget: usize,
+        limit: usize,
+    ) -> Result<(Vec<TreeChange>, usize)> {
+        let (leaves, visits) = self.leafdiff_limited(a, b, spec, budget, limit).await?;
         let found: Vec<Option<TreeChange>> = stream::iter(leaves)
             .map(|(path, change)| async move {
                 let old = self.lookup(a, &path).await?.filter(|e| e.kind != Kind::Dir);
@@ -189,7 +205,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
             .buffered(LOOKUP_FANOUT)
             .try_collect()
             .await?;
-        Ok(found.into_iter().flatten().collect())
+        Ok((found.into_iter().flatten().collect(), visits))
     }
 
     /// [`tree_changes`](Self::tree_changes) followed by rename detection when `opts` asks for it.
