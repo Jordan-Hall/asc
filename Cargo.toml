@@ -14,6 +14,7 @@ members = [
     "crates/asc-serve",
     "crates/asc-ci",
     "crates/asc-embed",
+    "crates/asc-codeintel",
     "crates/asc",
 ]
 
