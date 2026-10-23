@@ -73,6 +73,9 @@ pub struct Symbol {
     pub container: String,
     pub doc: Vec<u8>,
     pub confidence: &'static str,
+    /// The secret flag of the file the symbol sits in. `None` (not known) counts as flagged:
+    /// the renderer redacts the symbol. There is no default, so a producer must decide.
+    pub secret: Option<bool>,
 }
 
 /// The symbols of one query.
@@ -97,6 +100,9 @@ pub trait FileSource {
     fn read_path(&self, path: &[u8]) -> Result<Option<Arc<[u8]>>>;
     /// Up to `limit` ords of `scope` that have no grammar, hence no refs in the index.
     fn untagged(&self, scope: &RoaringBitmap, limit: usize) -> Vec<u32>;
+    /// The secret flag of the file: `Some(false)` only when it is known to be clean. `None`
+    /// counts as flagged, so rendering fails closed.
+    fn secret(&self, ord: u32) -> Option<bool>;
     /// Tags of the file, from a cache or by extracting them. The default extracts.
     fn tags(&self, ord: u32) -> Result<Option<Arc<Vec<Tag>>>> {
         let Some(lang) = self.lang(ord) else {
@@ -339,7 +345,14 @@ fn kind_ok(kinds: &[Kind], k: Kind) -> bool {
     kinds.is_empty() || kinds.contains(&k)
 }
 
-fn to_symbol(t: &Tag, all: &[Tag], path: &[u8], is_def: bool, conf: &'static str) -> Symbol {
+fn to_symbol(
+    t: &Tag,
+    all: &[Tag],
+    path: &[u8],
+    secret: Option<bool>,
+    is_def: bool,
+    conf: &'static str,
+) -> Symbol {
     let container = all
         .get(t.container as usize)
         .filter(|_| t.container != NO_CONTAINER)
@@ -356,6 +369,7 @@ fn to_symbol(t: &Tag, all: &[Tag], path: &[u8], is_def: bool, conf: &'static str
         container,
         doc: t.doc.clone(),
         confidence: conf,
+        secret,
     }
 }
 
@@ -458,6 +472,7 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
                 continue;
             };
             let paths = self.files.paths(ord);
+            let secret = self.files.secret(ord);
             for t in tags.iter().filter(|t| t.role == Role::Def) {
                 if !kind_ok(&q.kinds, t.kind) {
                     continue;
@@ -470,7 +485,7 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
                 };
                 for path in paths.iter().take(MAX_PATHS_PER_FILE) {
                     out.push(Hit {
-                        sym: to_symbol(t, &tags, path, true, NAME_MATCH),
+                        sym: to_symbol(t, &tags, path, secret, true, NAME_MATCH),
                         class,
                         key: path.clone(),
                     });
@@ -541,6 +556,7 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
                 continue;
             };
             let paths = self.files.paths(ord);
+            let secret = self.files.secret(ord);
             for t in tags
                 .iter()
                 .filter(|t| t.role == Role::Ref && t.name == name)
@@ -549,9 +565,9 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
                     continue;
                 }
                 for path in paths.iter().take(MAX_PATHS_PER_FILE) {
-                    let mut s = to_symbol(t, &tags, path, false, NAME_MATCH);
+                    let mut s = to_symbol(t, &tags, path, secret, false, NAME_MATCH);
                     if calls_only {
-                        s = caller_of(t, &tags, path);
+                        s = caller_of(t, &tags, path, secret);
                     }
                     found.push(s);
                 }
@@ -574,7 +590,7 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
                     break;
                 }
                 let paths = self.files.paths(ord);
-                for s in scan_word(&b, &name, calls_only, &paths) {
+                for s in scan_word(&b, &name, calls_only, &paths, self.files.secret(ord)) {
                     found.push(s);
                 }
             }
@@ -629,7 +645,7 @@ impl<'a, S: FileSource, P: ProjectRank> SymbolEngine<'a, S, P> {
 
 /// The caller entry of a call tag: its enclosing definition, or the call site itself when
 /// the call is at the top level of the file.
-fn caller_of(call: &Tag, all: &[Tag], path: &[u8]) -> Symbol {
+fn caller_of(call: &Tag, all: &[Tag], path: &[u8], secret: Option<bool>) -> Symbol {
     match all
         .get(call.container as usize)
         .filter(|_| call.container != NO_CONTAINER)
@@ -642,7 +658,7 @@ fn caller_of(call: &Tag, all: &[Tag], path: &[u8]) -> Symbol {
                 .unwrap_or_default();
             Symbol {
                 container: parent,
-                ..to_symbol(c, all, path, true, NAME_MATCH)
+                ..to_symbol(c, all, path, secret, true, NAME_MATCH)
             }
         }
         None => Symbol {
@@ -656,6 +672,7 @@ fn caller_of(call: &Tag, all: &[Tag], path: &[u8]) -> Symbol {
             container: String::new(),
             doc: Vec::new(),
             confidence: NAME_MATCH,
+            secret,
         },
     }
 }
@@ -678,7 +695,13 @@ fn group_callers(found: Vec<Symbol>) -> Vec<Symbol> {
 
 /// Word-boundary matches of `name` in an untagged file, one per line, with the line as the
 /// signature. For callers only a match followed by `(` counts.
-fn scan_word(bytes: &[u8], name: &str, calls_only: bool, paths: &[Vec<u8>]) -> Vec<Symbol> {
+fn scan_word(
+    bytes: &[u8],
+    name: &str,
+    calls_only: bool,
+    paths: &[Vec<u8>],
+    secret: Option<bool>,
+) -> Vec<Symbol> {
     if bytes.contains(&0) {
         return Vec::new();
     }
@@ -713,6 +736,7 @@ fn scan_word(bytes: &[u8], name: &str, calls_only: bool, paths: &[Vec<u8>]) -> V
                 container: String::new(),
                 doc: Vec::new(),
                 confidence: NAME_MATCH,
+                secret,
             });
         }
         if out.len() >= 4 * MAX_LIMIT {
@@ -723,9 +747,10 @@ fn scan_word(bytes: &[u8], name: &str, calls_only: bool, paths: &[Vec<u8>]) -> V
 }
 
 /// The definitions of one file in source order (`outline`): no index, only the file's own
-/// tags. `container` names the enclosing definition.
+/// tags. `container` names the enclosing definition. `secret` is the file's secret flag.
 pub fn outline(
     path: &[u8],
+    secret: Option<bool>,
     lang: Lang,
     bytes: &[u8],
     kinds: &[Kind],
@@ -736,7 +761,7 @@ pub fn outline(
         .into_iter()
         .map(|e| &tags[e.index as usize])
         .filter(|t| kind_ok(kinds, t.kind))
-        .map(|t| to_symbol(t, &tags, path, true, NAME_MATCH))
+        .map(|t| to_symbol(t, &tags, path, secret, true, NAME_MATCH))
         .collect();
     let limit = match limit {
         0 => DEFAULT_LIMIT,

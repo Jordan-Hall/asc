@@ -42,6 +42,11 @@ impl FileSource for Src {
         v.truncate(limit);
         v
     }
+    fn secret(&self, ord: u32) -> Option<bool> {
+        self.0
+            .get(&ord)
+            .map(|f| f.paths.iter().any(|p| p.contains(".env")))
+    }
 }
 
 struct Proj;
@@ -318,13 +323,29 @@ fn find_is_a_prefix_search() {
 
 #[test]
 fn outline_is_in_source_order_with_containers() {
-    let r = outline(b"a/src/lib_a.rs", Lang::Rust, LIB.as_bytes(), &[], 0).unwrap();
+    let r = outline(
+        b"a/src/lib_a.rs",
+        Some(false),
+        Lang::Rust,
+        LIB.as_bytes(),
+        &[],
+        0,
+    )
+    .unwrap();
     let n: Vec<_> = r.symbols.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(n, vec!["parse_widget", "Gadget", "Gadget", "spin"]);
     let spin = &r.symbols[3];
     assert_eq!(spin.container, "Gadget");
     assert!(spin.line > r.symbols[2].line);
-    let r = outline(b"p", Lang::Rust, LIB.as_bytes(), &[Kind::Struct], 0).unwrap();
+    let r = outline(
+        b"p",
+        Some(false),
+        Lang::Rust,
+        LIB.as_bytes(),
+        &[Kind::Struct],
+        0,
+    )
+    .unwrap();
     assert_eq!(r.symbols.len(), 1);
 }
 
