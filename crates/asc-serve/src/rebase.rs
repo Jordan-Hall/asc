@@ -256,7 +256,7 @@ impl ServerMutations {
             .open(&name)
             .await
             .map_err(|e| hide_missing(registry_status(e)))?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &source);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &source).for_viewer(&ctx.principal);
         let spec = ids
             .rev_in(&req.head, &source.default_branch)
             .await
@@ -1027,5 +1027,28 @@ mod tests {
         make_mirror(&f).await;
         let e = f.m.rebase(&ctx(), req(base, mine, onto)).await.unwrap_err();
         assert_eq!(code(&e), "MIRROR_MODE");
+    }
+
+    #[tokio::test]
+    async fn another_users_ref_is_not_a_rebase_head() {
+        let f = fx().await;
+        let (base, _a, b, onto) = stack(&f).await;
+        set_ref(&f, "refs/users/42/heads/x", b).await;
+        for head in [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+        ] {
+            let mut q = req(base, b, onto);
+            q.head = head.into();
+            q.dry_run = true;
+            let err = f.m.rebase(&ctx_as("43:bob"), q.clone()).await.unwrap_err();
+            assert_eq!(err.code(), tonic::Code::NotFound, "bob rebased {head}");
+            if head.contains("@{") && !head.starts_with("refs/") {
+                continue; // `name@{n}` takes the full ref name, for everyone
+            }
+            let got = f.m.rebase(&ctx_as("42:alice"), q).await.unwrap();
+            assert!(!got.result.is_empty(), "the owner rebases {head}");
+        }
     }
 }

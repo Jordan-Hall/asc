@@ -419,21 +419,7 @@ impl<O: Objects, R: Refs> HistoryApi for Engine<O, R> {
     }
 
     async fn resolve(&self, specs: &[String]) -> Result<Vec<Option<ChangesetId>>> {
-        let r = EngineResolver {
-            engine: self,
-            src: SkipSource::new(self),
-        };
-        let mut out = Vec::with_capacity(specs.len());
-        for s in specs {
-            out.push(match revspec::resolve_str(&r, s).await {
-                Ok(Resolved::Single(id)) => Some(id),
-                Ok(_) => return Err(Error::Unsupported("resolve answers single commits only")),
-                Err(revspec::Error::NotFound(_)) => None,
-                Err(revspec::Error::Graph(e)) => return Err(e),
-                Err(e) => return Err(Error::Remote(e.to_string())),
-            });
-        }
-        Ok(out)
+        self.resolve_visible(specs, &|_| true).await
     }
 
     async fn git_map(&self, asc: &[ChangesetId], git: &[GitOid]) -> Result<GitMapping> {
@@ -457,10 +443,41 @@ impl<O: Objects, R: Refs> HistoryApi for Engine<O, R> {
     }
 }
 
+/// Whether a stored ref name may take part in a resolution.
+pub type RefVisible<'a> = &'a (dyn Fn(&str) -> bool + Send + Sync);
+
+impl<O: Objects, R: Refs> Engine<O, R> {
+    /// [`HistoryApi::resolve`] over the refs `visible` accepts. A ref it rejects is as good as
+    /// absent: not a name, not a reflog and not a tip, so no revspec can reach it.
+    pub async fn resolve_visible(
+        &self,
+        specs: &[String],
+        visible: RefVisible<'_>,
+    ) -> Result<Vec<Option<ChangesetId>>> {
+        let r = EngineResolver {
+            engine: self,
+            src: SkipSource::new(self),
+            visible,
+        };
+        let mut out = Vec::with_capacity(specs.len());
+        for s in specs {
+            out.push(match revspec::resolve_str(&r, s).await {
+                Ok(Resolved::Single(id)) => Some(id),
+                Ok(_) => return Err(Error::Unsupported("resolve answers single commits only")),
+                Err(revspec::Error::NotFound(_)) => None,
+                Err(revspec::Error::Graph(e)) => return Err(e),
+                Err(e) => return Err(Error::Remote(e.to_string())),
+            });
+        }
+        Ok(out)
+    }
+}
+
 /// Revspec resolution over an engine's refs and objects.
 struct EngineResolver<'a, O: Objects, R: Refs> {
     engine: &'a Engine<O, R>,
     src: SkipSource<'a, O, R>,
+    visible: RefVisible<'a>,
 }
 
 fn store_err(e: impl Into<commit::Error>) -> revspec::Error {
@@ -488,6 +505,9 @@ impl<O: Objects, R: Refs> GraphSource for EngineResolver<'_, O, R> {
 impl<O: Objects, R: Refs> Resolver for EngineResolver<'_, O, R> {
     async fn resolve_ref(&self, name: &str) -> revspec::Result<Option<RefTarget>> {
         for cand in revspec::dwim_candidates(name) {
+            if !(self.visible)(&cand) {
+                continue;
+            }
             let Ok(n) = RefName::new_onelevel(cand) else {
                 continue;
             };
@@ -505,6 +525,9 @@ impl<O: Objects, R: Refs> Resolver for EngineResolver<'_, O, R> {
     }
 
     async fn reflog(&self, name: &str, n: u32) -> revspec::Result<Option<ChangesetId>> {
+        if !(self.visible)(name) {
+            return Ok(None);
+        }
         let Ok(name) = RefName::new_onelevel(name) else {
             return Ok(None);
         };
@@ -565,6 +588,9 @@ impl<O: Objects, R: Refs> Resolver for EngineResolver<'_, O, R> {
             .map_err(ref_err)?;
         let mut out = Vec::new();
         for e in refs {
+            if !(self.visible)(&e.name.to_string()) {
+                continue;
+            }
             match e.target {
                 RefTarget::Changeset(c) => out.push(c),
                 RefTarget::Tag(t) => out.push(self.peel_tag(t).await?),
@@ -1207,5 +1233,48 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_visible_hides_refs_the_filter_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let refs = sqlite(dir.path(), "server.db").await;
+        let e = engine(&refs, 1);
+        let policy = crate::commit::PathPolicy::Native { windows_safe: true };
+        // The message is the file count, so `:/3` can only match the hidden changeset.
+        let shared = commit_files(&e, &[], &[("a", b"1")], policy, Vec::new()).await;
+        let hidden = commit_files(
+            &e,
+            &[],
+            &[("a", b"1"), ("b", b"2"), ("c", b"3")],
+            policy,
+            Vec::new(),
+        )
+        .await;
+        set_ref(&e, "refs/heads/master", shared).await;
+        set_ref(&e, "refs/users/42/heads/x", hidden).await;
+        let specs: Vec<String> = [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "refs/users/42/heads/x@{0}",
+            "master",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let all = e.resolve_visible(&specs, &|_| true).await.unwrap();
+        assert_eq!(
+            all,
+            [Some(hidden), Some(hidden), Some(hidden), Some(shared)]
+        );
+        let shared_only = |n: &str| !n.starts_with("refs/users/");
+        let got = e.resolve_visible(&specs, &shared_only).await.unwrap();
+        assert_eq!(got, [None, None, None, Some(shared)]);
+        // A message search walks from the tips, and a hidden ref is not one.
+        let search = [":/3".to_owned()];
+        assert_eq!(
+            e.resolve_visible(&search, &|_| true).await.unwrap(),
+            [Some(hidden)]
+        );
+        assert!(e.resolve_visible(&search, &shared_only).await.is_err());
     }
 }

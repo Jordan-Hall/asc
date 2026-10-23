@@ -321,7 +321,7 @@ impl ServerMutations {
             return self.rev(o, &req.head).await;
         }
         let source = self.registry.open(&name).await.map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &source);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &source).for_viewer(&ctx.principal);
         let spec = ids.rev_in(&req.head, &source.default_branch).await?;
         let head = source
             .backend
@@ -1744,5 +1744,32 @@ mod tests {
             id_mode: 0,
         });
         assert_eq!(result_of(&f.m.merge_inner(&ctx(), same).await.unwrap()), t1);
+    }
+
+    #[tokio::test]
+    async fn another_users_ref_is_not_a_merge_head() {
+        let f = fx().await;
+        let r = root(&f).await;
+        let hidden = make(&f, &[r], "hidden", &[("g.txt", Some("secret\n"))]).await;
+        let main = make(&f, &[r], "main", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
+        set_ref(&f, "refs/users/42/heads/x", hidden).await;
+        for head in [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+        ] {
+            let mut q = req(main, hidden, wire::MergeStyle::Merge);
+            q.head = head.into();
+            let err =
+                f.m.merge_inner(&ctx_as("43:bob"), q.clone())
+                    .await
+                    .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::NotFound, "bob merged {head}");
+            if head.contains("@{") && !head.starts_with("refs/") {
+                continue; // `name@{n}` takes the full ref name, for everyone
+            }
+            let got = f.m.merge_inner(&ctx_as("42:alice"), q).await.unwrap();
+            assert!(!got.result.is_empty(), "the owner merges {head}");
+        }
     }
 }

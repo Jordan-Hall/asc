@@ -98,7 +98,7 @@ impl ServerRepoConfig {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let shown = if req.rev.is_empty() { "HEAD" } else { &req.rev };
         let spec = ids.rev_in(shown, &entry.default_branch).await?;

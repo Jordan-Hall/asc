@@ -388,7 +388,7 @@ impl ClassifyHandler for ServerClassify {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let mut base = Self::rev(&engine, &ids, &entry, &req.base).await?;
         let head = Self::rev(&engine, &ids, &entry, &req.head).await?;

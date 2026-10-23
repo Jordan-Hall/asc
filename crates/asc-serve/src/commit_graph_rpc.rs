@@ -528,7 +528,7 @@ impl InsightsHandler for ServerCommitGraph {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let limit = match req.limit as usize {
             0 => DEFAULT_PAGE,

@@ -162,7 +162,7 @@ impl ServerPickaxe {
             .open(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
+        let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let q = Self::query(&entry, &engine, &ids, &req).await?;
         let page = {
