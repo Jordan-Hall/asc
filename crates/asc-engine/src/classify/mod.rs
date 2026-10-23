@@ -799,6 +799,289 @@ mod tests {
         assert_eq!(c("a.rs", "x", "x"), RenameOnly);
     }
 
+    // ---- fail-closed regressions: an under-classified change bypasses K17 approvals ----
+
+    #[test]
+    fn go_raw_string_has_no_escapes() {
+        assert_eq!(
+            c(
+                "a.go",
+                "a := `\\`\nb := `\n// c\n`\nx := 1 // `",
+                "a := `\\`\nb := `\n// d\n`\nx := 1 // `"
+            ),
+            Logic
+        );
+    }
+
+    #[test]
+    fn go_cgo_preamble_comment_is_code() {
+        assert_eq!(
+            c(
+                "a.go",
+                "/*\nint x = 1;\n*/\nimport \"C\"\n",
+                "/*\nint x = 2;\n*/\nimport \"C\"\n"
+            ),
+            Logic
+        );
+    }
+
+    #[test]
+    fn java_unicode_escape_ends_comment() {
+        assert_eq!(
+            c(
+                "a.java",
+                "f(); // c \\u000a g();\n",
+                "f(); // c \\u000a h();\n"
+            ),
+            Logic
+        );
+    }
+
+    #[test]
+    fn lone_cr_and_unicode_breaks_end_line_comments() {
+        for f in ["a.java", "a.cs", "a.js", "a.ts", "a.c", "a.go", "a.rs"] {
+            assert_eq!(c(f, "f(); // c\rg();\n", "f(); // c\rh();\n"), Logic, "{f}");
+        }
+        for f in ["a.js", "a.cs", "a.java"] {
+            assert_eq!(
+                c(f, "f(); // c\u{2028}g();\n", "f(); // c\u{2028}h();\n"),
+                Logic,
+                "{f}"
+            );
+        }
+        assert_eq!(c("a.py", "f() # c\rg()\n", "f() # c\rh()\n"), Logic);
+        assert_eq!(c("a.yaml", "a: 1 # c\rb: 2\n", "a: 1 # c\rb: 3\n"), Logic);
+    }
+
+    #[test]
+    fn c_block_comment_splice_and_trigraph_close_comment() {
+        for f in ["a.c", "a.cpp"] {
+            assert_eq!(
+                c(f, "/* c *\\\n/ f(); /* z */", "/* c *\\\n/ g(); /* z */"),
+                Logic,
+                "{f}"
+            );
+            assert_eq!(
+                c(f, "/* c *\\ \n/ f(); /* z */", "/* c *\\ \n/ g(); /* z */"),
+                Logic,
+                "{f}"
+            );
+            assert_eq!(
+                c(f, "/* c *??/\n/ f(); /* z */", "/* c *??/\n/ g(); /* z */"),
+                Logic,
+                "{f}"
+            );
+        }
+    }
+
+    #[test]
+    fn js_slash_after_statement_paren_or_default_is_regex() {
+        assert_eq!(
+            c(
+                "a.js",
+                "if (x) /[/*]/.test(s); f(); /* z */",
+                "if (x) /[/*]/.test(s); g(); /* z */"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.js",
+                "export default /[/*]/; f(); /* z */",
+                "export default /[/*]/; g(); /* z */"
+            ),
+            Logic
+        );
+        // A parenthesised division stays classifiable.
+        assert_eq!(
+            c("a.js", "y = (a + b) / 2;", "y = (a + b) / 2; // c"),
+            CommentOnly
+        );
+    }
+
+    #[test]
+    fn sh_escaped_char_before_hash_is_not_a_comment() {
+        assert_eq!(c("a.sh", "echo a\\ #b\n", "echo a\\ #c\n"), Logic);
+        assert_eq!(c("a.sh", "echo \\;#b\n", "echo \\;#c\n"), Logic);
+    }
+
+    #[test]
+    fn sh_continuation_then_hash_is_not_a_comment() {
+        assert_eq!(c("a.sh", "echo a\\\n# b\n", "echo a\\\n# c\n"), Logic);
+    }
+
+    #[test]
+    fn sh_parameter_expansion_hash_is_not_a_comment() {
+        assert_eq!(c("a.sh", "echo ${x/ #/y}\n", "echo ${x/ #/z}\n"), Logic);
+        assert_eq!(c("a.sh", "echo ${x}\n", "echo ${x} # c\n"), CommentOnly);
+    }
+
+    #[test]
+    fn py_template_and_backslash_brace_strings() {
+        assert_eq!(
+            c(
+                "a.py",
+                "x = t\"{ \"a # b\" }\"\n",
+                "x = t\"{ \"a # c\" }\"\n"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.py",
+                "x = f\"\\{ \"a # b\" }\"\n",
+                "x = f\"\\{ \"a # c\" }\"\n"
+            ),
+            Logic
+        );
+    }
+
+    #[test]
+    fn html_comment_forms_that_end_early() {
+        assert_eq!(
+            c(
+                "a.html",
+                "<p>a</p><!-- c --!><b>x</b> -->\n",
+                "<p>a</p><!-- c --!><b>y</b> -->\n"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.html",
+                "<p>a</p><!--> <b>x</b> -->\n",
+                "<p>a</p><!--> <b>y</b> -->\n"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.md",
+                "<p>a</p><!---> <b>x</b> -->\n",
+                "<p>a</p><!---> <b>y</b> -->\n"
+            ),
+            Logic
+        );
+    }
+
+    #[test]
+    fn html_rcdata_and_raw_text_elements_hold_no_comments() {
+        assert_eq!(
+            c(
+                "a.html",
+                "<title><!-- a --></title>\n",
+                "<title><!-- b --></title>\n"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.html",
+                "<noscript><!-- a --></noscript>\n",
+                "<noscript><!-- b --></noscript>\n"
+            ),
+            Logic
+        );
+        // A title elsewhere does not stop comments being dropped.
+        assert_eq!(
+            c(
+                "a.html",
+                "<title>t</title><p>x</p>\n",
+                "<title>t</title><p>x</p><!-- c -->\n"
+            ),
+            CommentOnly
+        );
+    }
+
+    #[test]
+    fn md_escaped_or_front_matter_comment_is_text() {
+        assert_eq!(c("a.md", "\\<!-- a -->\n", "\\<!-- b -->\n"), Logic);
+        assert_eq!(
+            c(
+                "a.md",
+                "---\ntitle: x <!-- a -->\n---\n",
+                "---\ntitle: x <!-- b -->\n---\n"
+            ),
+            Logic
+        );
+    }
+
+    // Raw and verbatim forms the audit found sound; these pin them.
+    #[test]
+    fn raw_and_verbatim_forms_stay_sound() {
+        // Rust: any number of `#`, byte raw strings, backslash is literal.
+        assert_eq!(
+            c(
+                "a.rs",
+                "let s = r##\"a\"# \"##; // c",
+                "let s = r##\"a\"# \"##; // d"
+            ),
+            CommentOnly
+        );
+        assert_eq!(
+            c(
+                "a.rs",
+                "let s = r##\"a\"# // x\"##;",
+                "let s = r##\"a\"# // y\"##;"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c("a.rs", "let s = br\"\\\"; // c", "let s = br\"\\\"; // d"),
+            CommentOnly
+        );
+        assert_eq!(c("a.rs", "let s = r#\"a", "let s = r#\"a "), Logic);
+        // C#: verbatim has only `\"\"`, raw strings refused.
+        assert_eq!(
+            c("a.cs", "var s = @\"\\\"; // c", "var s = @\"\\\"; // d"),
+            CommentOnly
+        );
+        assert_eq!(
+            c(
+                "a.cs",
+                "var s = \"\"\"a // b\"\"\";",
+                "var s = \"\"\"a // c\"\"\";"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.java",
+                "s = \"\"\"\n// a\n\"\"\";",
+                "s = \"\"\"\n// b\n\"\"\";"
+            ),
+            Logic
+        );
+        // Python: raw strings keep the backslash but still cannot end on it.
+        assert_eq!(
+            c("a.py", "x = r\"\\\"\" # c\n", "x = r\"\\\"\" # d\n"),
+            CommentOnly
+        );
+        assert_eq!(c("a.py", "x = r'''a # b'''\n", "x = r'''a # c'''\n"), Logic);
+        // JS: template text and nested holes.
+        assert_eq!(
+            c("a.js", "s = `${a} // ${b}`;", "s = `${a} // ${c}`;"),
+            Logic
+        );
+        assert_eq!(
+            c("a.js", "s = `${`${x}`}`;", "s = `${`${x}`}`; // c"),
+            Logic
+        );
+        assert_eq!(
+            c("a.js", "s = `a ${x} b`;", "s = `a ${x} b`; // c"),
+            CommentOnly
+        );
+        // C++ raw strings with any prefix are refused.
+        assert_eq!(
+            c(
+                "a.cpp",
+                "auto s = u8R\"x(//)x\";",
+                "auto s = u8R\"x(//)x\"; // c"
+            ),
+            Logic
+        );
+    }
+
     // ---- rules ----
 
     #[test]
