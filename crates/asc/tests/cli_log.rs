@@ -1127,11 +1127,11 @@ async fn json_prints_log_response_lines() {
     assert_ne!(entries[0]["id"], entries[1]["id"]);
     assert_eq!(entries[0]["parents"][0], entries[1]["id"]);
     assert!(
-        entries[0]["git"].as_str().is_some_and(|g| g.len() == 28),
+        entries[0]["git"].as_str().is_some_and(|g| g.len() == 40),
         "{}",
         entries[0]["git"]
     );
-    assert_eq!(entries[0]["author"]["name"].as_str().unwrap(), "VGVzdA==");
+    assert_eq!(entries[0]["author"]["name"].as_str().unwrap(), "Test");
     // The walk order is git's; the JSON has no extra page when everything fits.
     let all = b.asc(&["log", "--json"]);
     let line: serde_json::Value = serde_json::from_str(all.stdout.lines().next().unwrap()).unwrap();

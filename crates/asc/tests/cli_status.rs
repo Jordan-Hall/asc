@@ -478,14 +478,14 @@ async fn json_matches_the_golden_shape() {
         .unwrap()
         .trim_start_matches("# branch.oid ")
         .to_owned();
-    // The WsStatusResponse fields carry no JsonKind option, so ids and paths are base64.
+    // The asc JSON profile (SPEC 22.4.2): hex ids and UTF-8 paths.
     assert_eq!(v["head_ref"], "refs/heads/master");
-    assert_eq!(v["head"], b64(&unhex(&head_hex)));
+    assert_eq!(v["head"], head_hex);
     let files = v["files"].as_array().unwrap();
     let find = |path: &str| {
         files
             .iter()
-            .find(|f| f["path"] == b64(path.as_bytes()))
+            .find(|f| f["path"] == path)
             .unwrap_or_else(|| panic!("{path} in {files:?}"))
     };
     assert_eq!(find("a.txt")["xy"], "M.");
@@ -699,33 +699,6 @@ async fn unsupported_forms_are_refused_by_name() {
     let out = p.asc(&["--untracked-files=bogus"]);
     assert_eq!(out.code, 128);
     assert_eq!(out.stderr, "fatal: Invalid untracked files mode 'bogus'\n");
-}
-
-fn unhex(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect()
-}
-
-/// Standard base64 with padding (the JSON profile's encoding of plain `bytes`).
-fn b64(data: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in data.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 /// Makes `link` a directory symlink (Unix) or a junction (Windows, where a symlink needs a
