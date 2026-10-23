@@ -333,6 +333,7 @@ pub fn open(
         url: stored,
         spec,
         remote: Box::new(remote),
+        server: None,
     })
 }
 

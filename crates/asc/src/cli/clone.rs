@@ -181,6 +181,24 @@ pub(crate) async fn write_remote_config(
     .await
 }
 
+/// `remote.<name>.*` of a server remote: the URL, the fetch refspec and the agent-ref exclusion
+/// that bucket remotes get (the server lists user refs; a clone does not fetch them).
+pub(crate) async fn write_server_remote_config(
+    ctx: &Ctx,
+    name: &str,
+    stored_url: &str,
+) -> Result<()> {
+    write_git_remote_config(ctx, name, stored_url).await?;
+    let rest = vec![
+        OsString::from("--local"),
+        OsString::from("--add"),
+        OsString::from(format!("remote.{name}.fetch")),
+        OsString::from("^refs/heads/agent/*"),
+    ];
+    super::config::run(ctx, super::config::Args { rest }).await?;
+    Ok(())
+}
+
 /// `remote.<name>.*` of a git remote: git's own `clone` leaves exactly these two keys.
 pub(crate) async fn write_git_remote_config(ctx: &Ctx, name: &str, stored_url: &str) -> Result<()> {
     set_config(ctx, &format!("remote.{name}.url"), stored_url).await?;
@@ -235,16 +253,21 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return Err(CliError::Usage(USAGE.to_owned()));
     }
     let spec = url::parse(typed_url, o.refs.unwrap_or(RefsMode::Local)).map_err(fatal)?;
-    let git_mode = matches!(spec, RemoteSpec::Git { .. } | RemoteSpec::Discover { .. });
+    // An asc server is found by discovery (SPEC §6.2); a host without one is a git remote.
+    let mut git_mode = matches!(spec, RemoteSpec::Git { .. });
+    let mut server_mode = matches!(spec, RemoteSpec::Server { .. });
+    if matches!(spec, RemoteSpec::Discover { .. }) {
+        let probe = StateDb::open(&AscHome::locate()?).await?;
+        match remote::server::resolve(ctx.config.file(), &probe, None, typed_url).await? {
+            remote::server::Resolution::Server(_) => server_mode = true,
+            remote::server::Resolution::Git => git_mode = true,
+        }
+    }
     let refs = match &spec {
         RemoteSpec::Bucket { refs, .. } => *refs,
-        // Git-remote mode (SPEC §6.3): any host without an asc server.
-        RemoteSpec::Git { .. } | RemoteSpec::Discover { .. } => RefsMode::Local,
-        RemoteSpec::Server { .. } => {
-            return Err(CliError::Fatal(format!(
-                "asc: {} remotes are not supported yet (bucket and git remotes only)",
-                spec.kind()
-            )));
+        // Git-remote mode (SPEC §6.3) and server remotes keep no local-refs claim.
+        RemoteSpec::Git { .. } | RemoteSpec::Discover { .. } | RemoteSpec::Server { .. } => {
+            RefsMode::Local
         }
     };
     let origin = o.origin.clone().unwrap_or_else(|| "origin".to_owned());
@@ -277,7 +300,41 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     // Reach the bucket before anything is registered or created.
     let home = AscHome::locate()?;
     let db = StateDb::open(&home).await?;
-    let (branches, remote_head) = if git_mode {
+    let (branches, remote_head) = if server_mode {
+        let connected = remote::server::connect(
+            ctx.config.file(),
+            &db,
+            ctx.real_git().ok().cloned(),
+            Some(&origin),
+            &stored,
+            crate::credential::terminal_prompt(),
+        )
+        .await?
+        .ok_or_else(|| {
+            CliError::Fatal(format!(
+                "repository '{}' does not exist",
+                super::url_display::anonymize(typed_url)
+            ))
+        })?;
+        let probe = remote::server::opened(
+            origin.clone(),
+            stored.clone(),
+            true,
+            spec.clone(),
+            connected,
+        );
+        let remote_refs = probe.remote.list_refs().await.map_err(sync_error)?;
+        let branches: Vec<String> = remote_refs
+            .iter()
+            .filter_map(|r| {
+                String::from_utf8_lossy(r.name.as_bytes())
+                    .strip_prefix("refs/heads/")
+                    .map(str::to_owned)
+            })
+            .collect();
+        drop(probe);
+        (branches, None)
+    } else if git_mode {
         let advertised = remote::git::ls_remote(ctx, &stored).await?;
         let heads: Vec<String> = advertised
             .refs
@@ -345,8 +402,21 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     let (repo_id, ws_id) = (RepoId::new(), WorkspaceId::new());
     let built = build(
-        ctx, &home, &db, &root, repo_id, ws_id, &stored, &origin, refs, &branch, &o, empty,
-        typed_url, git_mode,
+        ctx,
+        &home,
+        &db,
+        &root,
+        repo_id,
+        ws_id,
+        &stored,
+        &origin,
+        refs,
+        &branch,
+        &o,
+        empty,
+        typed_url,
+        git_mode,
+        server_mode,
     )
     .await;
     match built {
@@ -389,6 +459,7 @@ async fn build(
     empty: bool,
     typed_url: &str,
     git_mode: bool,
+    server_mode: bool,
 ) -> Result<ExitCode> {
     let projection = Projection::create(home, repo_id, ws_id, root)?;
     projection.write_head(&Head::Branch(branch.to_owned()))?;
@@ -405,6 +476,8 @@ async fn build(
             remote_url: Some(bucket_url),
             remote_kind: if git_mode {
                 RemoteKind::GitRemote
+            } else if server_mode {
+                RemoteKind::Server
             } else {
                 RemoteKind::Bucket
             },
@@ -434,6 +507,8 @@ async fn build(
     let setup = open_at(ctx, root.to_owned()).await?;
     if git_mode {
         write_git_remote_config(&setup, origin, stored).await?;
+    } else if server_mode {
+        write_server_remote_config(&setup, origin, stored).await?;
     } else {
         write_remote_config(&setup, origin, stored, refs).await?;
     }
@@ -480,7 +555,6 @@ async fn build(
         )));
     };
     let tracking = report.local_updates.updates;
-    drop(opened);
     // Every other branch's tip (not the agent branches), as git clone's fetch does.
     super::remote::apply_refs(
         &fresh,
@@ -514,13 +588,18 @@ async fn build(
         .update_local_refs(
             txn,
             &format!("clone: from {}", super::url_display::anonymize(typed_url)),
-            StagingAfterMove::Keep,
+            // The new branch starts with an index equal to its tip (nothing staged).
+            StagingAfterMove::Set(Vec::new()),
         )
         .await?;
     let git = ensure_mapped(ws, head).await?;
     let mut paths: Vec<RepoPath> = Vec::new();
     if !o.no_checkout {
         let tree = root_of(ws, Some(head)).await?;
+        // A work tree is written from the local tiers: bring in what this machine lacks.
+        if !git_mode {
+            remote::hydrate(&fresh, ws, &*opened.remote, tree).await?;
+        }
         let empty_tree = super::common::CliEngine::empty_tree_id();
         paths = ws
             .engine
@@ -531,6 +610,7 @@ async fn build(
             .collect();
         sync_worktree(&fresh, tree, &paths, true).await?;
     }
+    drop(opened);
     ext::index_sink()
         .on_head_moved(ws_id, None, Some(head))
         .await

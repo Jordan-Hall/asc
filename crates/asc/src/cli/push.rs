@@ -21,6 +21,7 @@ use asc_store::refs::{Expect, RefError, RefUpdate, Refs};
 
 use super::common::{CliError, Ctx, Result, WsCtx};
 use super::fetch::{Line, current_branch, fatal, git_short, render, sync_error};
+use super::push_land::{self, Landing};
 use super::remote::apply_refs;
 use super::switch::{abbrev_len, ref_name, ref_target, resolve_rev, set_config};
 use crate::hooks_runner::{Gate, Hook, HookEnv, PushLine, Runner, null_oid};
@@ -491,21 +492,24 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let o = parse(&a.rest)?;
     let prog = ctx.prog.name();
-    if o.land {
-        return Err(CliError::Fatal(
-            "asc: --land needs an asc server remote".into(),
-        ));
-    }
-    if !o.push_options.is_empty() {
-        return Err(CliError::Fatal(
-            "the receiving end does not support push options".into(),
-        ));
-    }
     let (target, rest) = match o.words.split_first() {
         Some((first, rest)) => (first.clone(), rest.to_vec()),
         None => (push_remote(ctx, ws)?, Vec::new()),
     };
     let opened = remote::open(ctx, ws, &target, Intent::Write).await?;
+    let server = opened.server.clone();
+    let (option_land, options) = push_land::split_options(&o.push_options);
+    let land = o.land || option_land;
+    if land && server.is_none() {
+        return Err(CliError::Fatal(
+            "asc: --land needs an asc server remote".into(),
+        ));
+    }
+    if !options.is_empty() && server.is_none() {
+        return Err(CliError::Fatal(
+            "the receiving end does not support push options".into(),
+        ));
+    }
     let shown_url = super::url_display::anonymize(&opened.url);
     let abbrev = abbrev_len(ctx);
     let boundaries = StateBoundaries::new(ws);
@@ -580,7 +584,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 return Ok(ExitCode::from(1));
             }
         };
-        if RefName::new(dst.clone().into_bytes()).is_err() || dst.starts_with("refs/for/") {
+        if RefName::new(dst.clone().into_bytes()).is_err()
+            || (push_land::is_agit(&dst) && server.is_none())
+        {
             return Err(CliError::Fatal(format!(
                 "asc: cannot push to '{dst}' on a bucket remote"
             )));
@@ -646,6 +652,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         } else {
             kind
         };
+        // LAND exists for the push a plain push would refuse: the server rebases it (SPEC §8.5).
+        let kind = match kind {
+            Kind::Rejected("fetch first" | "non-fast-forward")
+                if land && dst.starts_with("refs/heads/") =>
+            {
+                Kind::Forced
+            }
+            other => other,
+        };
         plans.push(Plan {
             spec: Spec { dst, ..spec },
             src_label: label,
@@ -698,6 +713,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         .filter(|p| !matches!(p.kind, Kind::UpToDate | Kind::Rejected(_)))
         .collect();
     let mut raced = false;
+    let mut outcome: Option<crate::remote::server::UpdateOutcome> = None;
     if !to_send.is_empty() && !o.dry_run {
         remote::claim_local_refs(ws, &opened).await?;
         let updates: Vec<PushUpdate> = to_send
@@ -708,6 +724,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 expect: p.old.map_or(Expect::Absent, Expect::Value),
             })
             .collect();
+        if let Some(s) = &server {
+            let forcing = o.force
+                || o.lease.is_some()
+                || to_send
+                    .iter()
+                    .any(|p| p.spec.force || p.new.is_none() || p.kind == Kind::Forced);
+            s.arm(push_land::intent(land, forcing, options.clone()));
+        }
         match ws
             .engine
             .push(
@@ -719,7 +743,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             .await
         {
             Ok(report) => {
-                if opened.configured {
+                outcome = server.as_ref().and_then(|s| s.take_outcome());
+                if land {
+                    // The fetch after the land moves the remote-tracking refs to the landed tips.
+                } else if opened.configured {
                     let mut tracking: Vec<RefUpdate> = Vec::new();
                     for u in report.local_updates.updates {
                         let exists = ref_target(ws, &String::from_utf8_lossy(u.name.as_bytes()))
@@ -736,6 +763,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             Err(SyncError::Refs(RefError::Conflict { .. })) => raced = true,
             Err(e) => return Err(sync_error(e)),
         }
+    }
+
+    // A LAND moved the remote's ref to a tip of its own: bring it in before reporting.
+    let landing: Option<Landing> = outcome.as_ref().filter(|_| land).map(Landing::of);
+    let mut land_notes: Vec<String> = Vec::new();
+    if let Some(l) = &landing
+        && !raced
+    {
+        land_notes = push_land::follow(ctx, ws, &opened, l).await?;
     }
 
     // Upstream configuration (`-u`, `push.autoSetupRemote`).
@@ -776,28 +812,50 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             String::new()
         };
         let to = short(&p.spec.dst);
+        // What the server landed for this ref, if this was a LAND.
+        let landed = landing
+            .as_ref()
+            .filter(|l| !raced && l.tips.contains_key(&p.spec.dst));
+        let shown_new = landed.and_then(|l| l.new_tip(&p.spec.dst)).or(p.new);
+        let landed_note = match landed {
+            Some(l) => {
+                let onto = git_short(ws, l.old_tip(&p.spec.dst), abbrev).await;
+                Some(push_land::annotation(l, &p.spec.dst, &onto))
+            }
+            None => None,
+        };
         let (flag, summary, reason): (char, String, Option<String>) = match &kind {
             Kind::New => {
                 let word = if p.spec.dst.starts_with("refs/tags/") {
                     "[new tag]"
+                } else if push_land::is_agit(&p.spec.dst) {
+                    "[new reference]"
                 } else {
                     "[new branch]"
                 };
-                ('*', word.to_owned(), None)
+                ('*', word.to_owned(), landed_note)
             }
             Kind::FastForward => {
                 let (x, y) = (
                     git_short(ws, p.old, abbrev).await,
-                    git_short(ws, p.new, abbrev).await,
+                    git_short(ws, shown_new, abbrev).await,
                 );
-                (' ', format!("{x}..{y}"), None)
+                (' ', format!("{x}..{y}"), landed_note)
             }
             Kind::Forced => {
                 let (x, y) = (
                     git_short(ws, p.old, abbrev).await,
-                    git_short(ws, p.new, abbrev).await,
+                    git_short(ws, shown_new, abbrev).await,
                 );
-                ('+', format!("{x}...{y}"), Some("forced update".to_owned()))
+                if landed.is_some_and(|l| !l.rewrote()) {
+                    (' ', format!("{x}..{y}"), landed_note)
+                } else {
+                    (
+                        '+',
+                        format!("{x}...{y}"),
+                        landed_note.or(Some("forced update".to_owned())),
+                    )
+                }
             }
             Kind::Delete => ('-', "[deleted]".to_owned(), None),
             Kind::UpToDate => ('=', "[up to date]".to_owned(), None),
@@ -873,6 +931,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
     }
 
+    if !o.quiet
+        && let Some(out) = &outcome
+    {
+        for line in out.message.lines().take(100) {
+            eprintln!("remote: {line}");
+        }
+    }
     if !o.quiet {
         if o.porcelain {
             print!("To {shown_url}\n{porcelain}Done\n");
@@ -893,6 +958,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     for note in tracking_notes {
         println!("{note}");
+    }
+    for note in land_notes {
+        eprintln!("{note}");
     }
     Ok(if any_rejected {
         ExitCode::from(1)

@@ -2,13 +2,19 @@
 //! an engine [`Remote`], and the `state.db` boundary store behind the history window.
 
 pub mod bucket;
+pub mod discover;
 pub mod git;
+pub mod server;
 pub mod url;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use asc_core::id::ChangesetId;
+use asc_core::codec::decode_envelope;
+use asc_core::content::CHUNK_THRESHOLD;
+use asc_core::id::{ChangesetId, FileId, TreeId};
+use asc_core::object::{ChunkList, Kind};
 use asc_engine::graph::Error as GraphError;
 use asc_engine::history::BoundaryStore;
 use asc_engine::sync::{BucketRemote, DEFAULT_ANCESTRY_BUDGET, Demote, Remote, SyncOptions};
@@ -18,6 +24,7 @@ use asc_store::bucket::BucketObjects;
 use asc_store::bucketrefs::BucketRefs;
 use asc_store::cachedir::CacheDir;
 use asc_store::key::ObjKey;
+use asc_store::objects::{Objects, decode_verified};
 use asc_store::refs::RepoKey;
 use asc_store::storeset::StoreSet;
 
@@ -107,6 +114,8 @@ pub struct Opened {
     pub url: String,
     pub spec: RemoteSpec,
     pub remote: Box<dyn Remote>,
+    /// The same remote as a [`server::ServerRemote`], when it is an asc server (push modes).
+    pub server: Option<Arc<server::ServerRemote>>,
 }
 
 /// Whether the remote is used to read or to write.
@@ -201,10 +210,27 @@ pub async fn open(ctx: &Ctx, ws: &WsCtx, arg: &str, intent: Intent) -> Result<Op
     } else {
         RefsMode::Local
     };
-    if let Ok(spec @ (RemoteSpec::Git { .. } | RemoteSpec::Discover { .. })) =
-        url::parse(&stored, mode)
-    {
-        return git::open(ctx, ws, name, stored, is_named, spec, intent);
+    match url::parse(&stored, mode) {
+        Ok(spec @ (RemoteSpec::Server { .. } | RemoteSpec::Discover { .. })) => {
+            let real = ctx.real_git().ok().cloned();
+            let connected = server::connect(
+                ctx.config.file(),
+                &ws.db,
+                real,
+                is_named.then_some(name.as_str()),
+                &stored,
+                crate::credential::terminal_prompt(),
+            )
+            .await?;
+            return match connected {
+                Some(c) => Ok(server::opened(name, stored, is_named, spec, c)),
+                None => git::open(ctx, ws, name, stored, is_named, spec, intent),
+            };
+        }
+        Ok(spec @ RemoteSpec::Git { .. }) => {
+            return git::open(ctx, ws, name, stored, is_named, spec, intent);
+        }
+        _ => {}
     }
     open_url(&ws.db, name, stored, is_named, mode, intent).await
 }
@@ -274,6 +300,7 @@ pub async fn open_url(
         url: stored,
         spec,
         remote,
+        server: None,
     })
 }
 
@@ -322,4 +349,135 @@ pub fn fetch_refspecs(ctx: &Ctx, name: &str) -> Vec<String> {
     } else {
         configured
     }
+}
+
+// ------------------------------------------------------------------------------ hydration
+
+/// Most trees and files one hydration will walk (a hostile or broken server cannot make a
+/// checkout run for ever).
+const HYDRATE_MAX_TREES: usize = 4_000_000;
+const HYDRATE_MAX_FILES: usize = 20_000_000;
+
+fn hydrate_error(e: impl std::fmt::Display) -> CliError {
+    CliError::Fatal(format!("asc: {e}"))
+}
+
+/// Downloads the keys of `keys` the local tiers lack into the object stack, verifying each.
+async fn pull(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, keys: Vec<ObjKey>) -> Result<usize> {
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let near = store_set(ctx, ws)?;
+    let have = near.has_many(&keys).await.map_err(hydrate_error)?;
+    let want: Vec<ObjKey> = keys
+        .into_iter()
+        .zip(have)
+        .filter(|(_, h)| !*h)
+        .map(|(k, _)| k)
+        .collect();
+    if want.is_empty() {
+        return Ok(0);
+    }
+    let asked: HashSet<ObjKey> = want.iter().copied().collect();
+    let mut got: HashSet<ObjKey> = HashSet::new();
+    let mut stream = remote.get_many(want.clone());
+    while let Some(item) = futures::StreamExt::next(&mut stream).await {
+        let (key, stored) = item.map_err(hydrate_error)?;
+        if !asked.contains(&key) || got.contains(&key) {
+            continue;
+        }
+        decode_verified(&key, &stored).map_err(hydrate_error)?;
+        ws.objects.put(&key, stored).await.map_err(hydrate_error)?;
+        got.insert(key);
+    }
+    if let Some(k) = want.iter().find(|k| !got.contains(k)) {
+        return Err(CliError::Fatal(format!("asc: the remote does not have {k}")));
+    }
+    Ok(want.len())
+}
+
+/// Brings the content of `files` (id and size) into the local store: a work tree is written from
+/// the local tiers only, so a checkout of commits another machine made needs this first.
+pub async fn hydrate_files(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    remote: &dyn Remote,
+    files: &[(FileId, u64)],
+) -> Result<usize> {
+    if files.len() > HYDRATE_MAX_FILES {
+        return Err(CliError::Fatal(
+            "asc: too many files to download at once".into(),
+        ));
+    }
+    let mut seen: HashSet<FileId> = HashSet::new();
+    let (mut plain, mut lists) = (Vec::new(), Vec::new());
+    for (file, size) in files {
+        if !seen.insert(*file) {
+            continue;
+        }
+        if *size > CHUNK_THRESHOLD {
+            lists.push(ObjKey::ChunkList(*file));
+        } else {
+            plain.push(ObjKey::File(*file));
+        }
+    }
+    let mut fetched = pull(ctx, ws, remote, plain).await?;
+    fetched += pull(ctx, ws, remote, lists.clone()).await?;
+    let mut chunks = Vec::new();
+    for key in lists {
+        let Some(bytes) = ws.objects.get(&key).await.map_err(hydrate_error)? else {
+            continue;
+        };
+        let list: ChunkList = decode_envelope(&bytes).map_err(hydrate_error)?;
+        chunks.extend(list.chunks.iter().map(|(id, _)| ObjKey::Chunk(*id)));
+    }
+    let mut unique: HashSet<ObjKey> = HashSet::new();
+    chunks.retain(|k| unique.insert(*k));
+    fetched += pull(ctx, ws, remote, chunks).await?;
+    Ok(fetched)
+}
+
+/// Brings every tree below `root` and every file in them into the local store, level by level
+/// with batched downloads (the `clone` checkout; SPEC §6.3 "tree then blob").
+pub async fn hydrate(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, root: TreeId) -> Result<usize> {
+    let mut fetched = 0;
+    let mut level = vec![root];
+    let mut seen: HashSet<TreeId> = HashSet::from([root]);
+    let mut files: Vec<(FileId, u64)> = Vec::new();
+    while !level.is_empty() {
+        fetched += pull(
+            ctx,
+            ws,
+            remote,
+            level.iter().map(|t| ObjKey::Tree(*t)).collect(),
+        )
+        .await?;
+        let mut next = Vec::new();
+        for batch in level.chunks(256) {
+            let trees = ws.engine.get_trees(batch).await.map_err(hydrate_error)?;
+            for tree in trees {
+                for e in tree.entries() {
+                    match e.kind {
+                        Kind::Dir => {
+                            let id = TreeId::from_bytes(e.id);
+                            if seen.insert(id) {
+                                next.push(id);
+                            }
+                        }
+                        Kind::File | Kind::Exec | Kind::Symlink => {
+                            files.push((FileId::from_bytes(e.id), e.size));
+                        }
+                        Kind::Gitlink => {}
+                    }
+                }
+            }
+        }
+        if seen.len() > HYDRATE_MAX_TREES || files.len() > HYDRATE_MAX_FILES {
+            return Err(CliError::Fatal(
+                "asc: the tree is too large to download at once".into(),
+            ));
+        }
+        level = next;
+    }
+    Ok(fetched + hydrate_files(ctx, ws, remote, &files).await?)
 }

@@ -60,7 +60,7 @@ pub(crate) use flags;
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "diff",
-    flags: flags!("--cached", "--staged", "--no-index"),
+    flags: flags!("--cached", "--staged", "--no-index", "--remote"),
     placeholders: &[],
 }];
 
@@ -294,7 +294,164 @@ async fn range(ctx: &Ctx, ws: &WsCtx, text: &str) -> Result<(ChangesetId, Change
 
 // ------------------------------------------------------------------------ run
 
+/// `--remote <repo>` / `--remote=<repo>` taken out of the arguments before `--`.
+fn take_remote(rest: &[OsString]) -> Result<(Option<String>, Vec<OsString>)> {
+    let mut remote = None;
+    let mut out = Vec::with_capacity(rest.len());
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        let text = a.to_string_lossy();
+        if text == "--" {
+            out.push(a.clone());
+            out.extend(it.by_ref().cloned());
+            break;
+        }
+        if text == "--remote" {
+            let Some(v) = it.next() else {
+                return Err(CliError::Usage(
+                    "error: option `remote' requires a value".into(),
+                ));
+            };
+            remote = Some(v.to_string_lossy().into_owned());
+        } else if let Some(v) = text.strip_prefix("--remote=") {
+            remote = Some(v.to_owned());
+        } else {
+            out.push(a.clone());
+        }
+    }
+    Ok((remote, out))
+}
+
+/// `diff --remote <repo> <a> <b>` (SPEC §11.2): two revisions of a server repository, with no
+/// checkout. Revisions resolve on the server; trees and file content come through the server's
+/// object source; output is the ordinary diff.
+async fn run_remote(ctx: &Ctx, remote: &str, rest: &[OsString]) -> Result<ExitCode> {
+    use std::sync::Arc;
+
+    use asc_engine::Engine;
+    use asc_store::refs::RepoKey;
+    use asc_store::sqlrefs::SqlRefs;
+
+    use super::common::{CliEngine, ObjectStack};
+    use crate::refs_guard::ReadOnlyRefs;
+
+    let mut seed = asc_engine::diff::DiffOptions::default();
+    apply_config(ctx, &mut seed, true)?;
+    let mut c = parse(seed, rest)?;
+    reject_extras(&c, &[])?;
+    let fmt = c.fmt.resolve(false);
+    let words: Vec<String> = c
+        .positional
+        .iter()
+        .map(|w| w.to_string_lossy().into_owned())
+        .collect();
+    let (left, right, three_dots, path_words): (String, String, bool, &[String]) =
+        match words.as_slice() {
+            [one, rest @ ..] if one.contains("...") => {
+                let (l, r) = one.split_once("...").unwrap_or((one, ""));
+                (l.to_owned(), r.to_owned(), true, rest)
+            }
+            [one, rest @ ..] if one.contains("..") => {
+                let (l, r) = one.split_once("..").unwrap_or((one, ""));
+                (l.to_owned(), r.to_owned(), false, rest)
+            }
+            [a, b, rest @ ..] => (a.clone(), b.clone(), false, rest),
+            _ => {
+                return Err(CliError::Usage(
+                    "usage: asc diff --remote <repo> <rev> <rev> [--] [<path>...]".into(),
+                ));
+            }
+        };
+    if left.is_empty() || right.is_empty() {
+        return Err(fatal("asc: diff --remote needs both revisions"));
+    }
+    let server = crate::remote::server::open_for(ctx, Some(remote)).await?;
+    let client = server.client();
+    let ids = HistoryApi::resolve(&client, &[left.clone(), right.clone()])
+        .await
+        .map_err(|e| fatal(format!("asc: {e}")))?;
+    let (Some(Some(a)), Some(Some(b))) = (ids.first().copied(), ids.get(1).copied()) else {
+        return Err(fatal(format!(
+            "ambiguous argument '{left}' or '{right}': unknown revision on {remote}"
+        )));
+    };
+    let a = if three_dots {
+        HistoryApi::merge_base(&client, a, &[b], false)
+            .await
+            .map_err(|e| fatal(format!("asc: {e}")))?
+            .first()
+            .copied()
+            .ok_or_else(|| fatal(format!("{left}...{right}: no merge base")))?
+    } else {
+        a
+    };
+    sqlx::any::install_default_drivers();
+    let pool = sqlx::any::AnyPoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .map_err(|e| fatal(format!("asc: {e}")))?;
+    let refs = SqlRefs::new(pool);
+    refs.migrate()
+        .await
+        .map_err(|e| fatal(format!("asc: {e}")))?;
+    let objects = Arc::new(ObjectStack::over(Arc::new(client.objects())));
+    let engine: CliEngine = Engine::new(objects, Arc::new(ReadOnlyRefs(refs)), RepoKey(0));
+    let (ra, rb) = (
+        engine
+            .get_changeset(a)
+            .await
+            .map_err(|e| fatal(e.to_string()))?
+            .root,
+        engine
+            .get_changeset(b)
+            .await
+            .map_err(|e| fatal(e.to_string()))?
+            .root,
+    );
+    let items: Vec<OsString> = path_words
+        .iter()
+        .map(OsString::from)
+        .chain(c.paths.iter().cloned())
+        .collect();
+    let spec = if items.is_empty() {
+        None
+    } else {
+        Some(
+            Pathspec::parse(items.iter().map(|p| p.as_encoded_bytes()))
+                .map_err(|e| fatal(format!("asc: {e}")))?,
+        )
+    };
+    let changes = engine
+        .diff_trees(ra, rb, spec.as_ref(), &c.opts)
+        .await
+        .map_err(|e| fatal(e.to_string()))?;
+    c.opts.sides = (SideKind::Commit, SideKind::Commit);
+    let local = LocalFiles::new(&engine);
+    finish(
+        ctx,
+        &c,
+        fmt,
+        &local,
+        Built {
+            changes,
+            unmerged: Vec::new(),
+        },
+        Emit {
+            pager: PagerWant::Auto,
+            header: None,
+            plumbing: false,
+            attrs: false,
+        },
+    )
+    .await
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
+    let (remote, rest) = take_remote(&args.rest)?;
+    if let Some(remote) = remote {
+        return run_remote(ctx, &remote, &rest).await;
+    }
     let mut seed = asc_engine::diff::DiffOptions::default();
     apply_config(ctx, &mut seed, true)?;
     let mut c = parse(seed, &args.rest)?;
