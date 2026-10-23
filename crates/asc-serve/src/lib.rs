@@ -11,6 +11,7 @@ pub mod authn;
 pub mod authz;
 pub mod cache_role;
 pub mod changes;
+pub mod cloud;
 pub mod classify;
 pub mod codeintel;
 pub mod commit_graph_markers;
@@ -197,6 +198,7 @@ fn register_all(
     );
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
+    cloud::rpc::register(ext, registry, cloud::Limits::default());
     watch_refs::register(ext, registry, limits);
 }
 
@@ -205,6 +207,12 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
     if let Some(h) = ext.projects.get() {
         ext.grpc.register(
             asc_rpc::projects::ProjectsService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+    }
+    if let Some(h) = ext.cloud.get() {
+        ext.grpc.register(
+            cloud::rpc::CloudService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
