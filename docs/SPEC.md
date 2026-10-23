@@ -1,6 +1,6 @@
 # asc: final specification
 
-Status: **authoritative**, v1.11 (authentication is git authentication on every transport: one section, §15.6, replaces the per-section credential text; `asc auth login` and `logout` are removed; v1.10 made MCP forge-neutral: one catalogue served by `asc mcp`, `asc mcp --remote` and `asc serve` `/mcp`, authenticated by the git authorizer; the Forgejo `/api/mcp` is superseded; v1.9 was fold verification round 2: crate-edge fixes, MCP rename recorded, no change to behaviour; v1.8 folded ASC-built IDE plugins in as §24; v1.7 folded agentic code intelligence in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
+Status: **authoritative**, v1.12 (`asc serve` speaks the git smart-HTTP protocol behind the Cargo feature `git-compat`, so plain `git clone`, `fetch` and `push` work against an asc server for migrations: §25, §0 decision 18; v1.11 was: authentication is git authentication on every transport: one section, §15.6, replaces the per-section credential text; `asc auth login` and `logout` are removed; v1.10 made MCP forge-neutral: one catalogue served by `asc mcp`, `asc mcp --remote` and `asc serve` `/mcp`, authenticated by the git authorizer; the Forgejo `/api/mcp` is superseded; v1.9 was fold verification round 2: crate-edge fixes, MCP rename recorded, no change to behaviour; v1.8 folded ASC-built IDE plugins in as §24; v1.7 folded agentic code intelligence in as §23; v1.6 folded built-in MCP in as §22; v1.5 folded branchless by default and commit cloud in as §21; v1.4 closed the round-4 contract gaps: sinks, ref chokepoint, staging, registration, proto, store tiers), 2026-10-22. This document supersedes `docs/designs/*.md`. Where it is silent, the design documents are background only; they are not normative.
 
 Inputs: `docs/designs/{simplicity,integration,performance}.md`, `docs/research/{asc-profile,forgejo,prior-art,rust-stack,turbo-ci,scion-article,stacks,branchless,mcp,codeintel,ide-plugins}.md`, `docs/research/scion-checklist.md` (the required coverage list, including the user requirements), and the three judge reports. Base design: *simplicity* (two of three judges ranked it first). Grafts are marked **[graft: source]**. Fixes for judge-reported flaws are marked **[fix Jn]**, and fixes from the round-1, round-2 and round-3 audits are marked **[audit: gap-id]**. All are listed in Appendix A.
 
@@ -42,13 +42,14 @@ Conventions: MUST/MUST NOT are requirements. "ASC" means the `asc/dds` monorepo 
 15. **Agentic code intelligence is built in.** Exact (trigram) search, tree-sitter symbols and local-model vector search run on `asc serve` as derived data keyed by `FileId`, so an agent can query any revision, draft or stack with no checkout. Exact search and symbols come first; vectors are the third tool, fused by RRF. One engine (tantivy) holds the postings and BM25; embeddings run on the server CPU by default and no code leaves ASC. Indexes are per namespace and every result is read-ACL filtered inside the ANN traversal. The tools are `search` and `read_file` (§22), and Forgejo code search reads the same service. See §23 [audit: codeintel-folded].
 16. **ASC builds its own IDE plugins.** VS Code (Cursor and VSCodium through Open VSX) first, then one IntelliJ Platform plugin. They replace the built-in git SCM in asc workspaces (`git.enabled: false`; JetBrains maps the roots to `asc`), render a native SCM view plus one shared React UI (`asc-ui`: smartlog, graph, review, history), and reach asc only through one `asc api --stdio` bridge, so neither Node nor the JVM touches the daemon pipe and no plugin parses human output. One generated TypeScript client and `asc-ui` also serve the Forgejo fork. Local features never need an account. See §24 [audit: ide-plugins-folded].
 17. **Authentication is git authentication.** (User decision 2026-10-23, extending decision 14.) `asc auth` works the way git authentication works, on every transport, so migrations are easy, cloud providers included: credential helpers (`credential.helper`, `credential.<url>.*`, the `get`/`store`/`erase` protocol, GCM, `osxkeychain`, `libsecret`, `store`, `cache`), `GIT_ASKPASS`/`core.askPass`, `~/.netrc`, `http.extraHeader`, `GIT_TERMINAL_PROMPT=0`; on the server HTTP Basic and Bearer with a `WWW-Authenticate: Basic` challenge, all mapped to one `Authorizer` (forge, standalone token store or OIDC). No asc-specific login, token prompt or credential store. Libraries never prompt. SSH is git's, through real git in git-remote mode, in v1. See §15.6.
+18. **Git protocol compatibility, behind a feature.** (User decision 2026-10-23.) `asc serve` speaks git smart-HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`; protocol v2 for fetch, v0/v1 compatible; SSH stays out), so plain `git clone`, `fetch` and `push` work against an asc server, for migrations from GitHub, GitLab and other hosts. It is a compatibility layer in `asc-git` only, behind the Cargo feature `git-compat` (default on in `asc-git`, `asc-serve` and `asc`) and the runtime switch `[git] enabled`: it serves a derived git view through real `git upload-pack` and `git receive-pack` in `--stateless-rpc` mode, and every push goes through the normal `UpdateRefs` pipeline. With the feature off everything else builds and runs, and git clients get `403 git protocol disabled`. See §25.
 
 Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, then asc-rpc and asc-state; asc-engine never names a proto or SQL type and reaches them through traits it defines (§4.3).
 
 **Not built in v1** (each is additive):
 - *Measured v1.x items:* segment packing of small objects, zstd dictionaries, logical dedup across a fork network (§3.3; deviation recorded as §19 decision 6).
 - *Gated on measurement:* a path-log table beyond the mainline index (§5.1), virtual CI, daemon-side turbo cache tier, a host-level fetch proxy for CI.
-- *Out of scope:* SSH `asc-authenticate` (§15.6), jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
+- *Out of scope:* SSH to `asc serve` (`asc-authenticate`, §15.6; the git smart-HTTP protocol is in scope, §25), jj-style first-class conflicts, workspace sync, macOS NFS/FSKit, `node_modules` snapshots, `WatchRefs`, `asc run` task execution, TypeScript import-graph inference, parsing `package-lock.json`/`pnpm-lock.yaml`/`yarn.lock`/`bun.lockb` (they are eco-global files, §12A.2), compatibility with the IDEs' built-in git (ASC's plugins replace it, §24), and real git operating inside an asc workspace.
 
 ---
 
@@ -92,6 +93,7 @@ Crate edges (v1.9): the dependency order is asc-core, asc-store, asc-engine, the
 | **Branchless by default** (decision 2026-10-22): shared refs are only `master` and release branches; other work is draft changes indexed by change id and visible at once; `git push origin feat` submits the stack as draft changes; the daemon uploads commits asynchronously; off switch per repo and per user; local-only mode still works | §21 (BD1–BD12), §0 decision 13, §6.1, §6.3, §6.4, §2.7, §3.5, §3.6, §8.2, §8.3, §9.1, §11.1, §11.2, §13.3, §15.2, §16.3, §17.1; PLAN units B01–B28 |
 | **MCP built in, forge-neutral** (decisions 2026-10-22 and v1.10): `asc mcp`, `asc mcp --remote` and `asc serve /mcp`, authenticated by the git authorizer, no Forgejo MCP; schemas generated from proto; read-only by default; ACL-scoped; bounded results | §22 (M-D1–M-D10), §0 decision 14, §7 (`options.proto`, `cli.proto`, `/mcp`, the JSON profile), §8.1 `[mcp]`, §8.7, §11.2 `asc mcp`, §13.3 (M20–M28 superseded), §15.1, §16.3, §16.4, §20.7 (`--json` shapes), §21.7; PLAN units M01a–M34 |
 | **Authentication is git authentication** (decision 2026-10-23, extends the MCP decision): credential helpers, askpass, `.netrc`, `http.extraHeader`, Basic and Bearer with a Basic challenge, one server `Authorizer`, no asc-specific login, SSH through real git | §15.6, §0 decision 17, §15.1, §22.7.3 |
+| **Git protocol compatibility** (decision 2026-10-23): plain `git clone`, `fetch` and `push` against `asc serve` for migrations from GitHub, GitLab and others; a compatibility layer in `asc-git` behind the Cargo feature `git-compat`, off at build time or by `[git] enabled = false` with a clear `403 git protocol disabled` | §25, §0 decision 18, §15.6.2, §8.3, §21.5.1 |
 | **Agentic code intelligence built in** (decision 2026-10-22): trigram exact and regex search, tree-sitter symbols for Rust, TypeScript, Python, C# and Go, and local-model vector search with hybrid ranking; server-side derived data keyed by `FileId`, ACL-filtered, incremental per commit; exposed through MCP, RPC, IPC, `--json` and Forgejo search; offline queries from the daemon | §23 (CI-D1–CI-D8), §0 decision 15, §3.3, §5, §7, §8.1, §8.2, §9.1, §11.2, §13.3 I23–I26, §15, §16.1, §16.3, §16.4, §18 (phases 4c, 4c-MCP, 5c, 9c), §22.3.2; PLAN units I01–I31 |
 | **ASC-built IDE plugins** (decision 2026-10-22): VS Code (Cursor, VSCodium) first, then JetBrains; they replace the built-in git SCM, with the feature list of GitKraken and Graphite in one place; one generated TypeScript client shared with the Forgejo UI; no parsing of human output; the asc performance budgets | §24 (IP-D1–IP-D15), §0 decision 16, §7 (`bridge.proto`, `Workspace.ReadFile`), §20.6, §11.2, §13.3 (P04–P07, P58), §16.4, §17 |
 
@@ -1031,6 +1033,8 @@ workers = 4
 model = "jina-embeddings-v2-base-code"
 device = "cpu"
 provider = "local"
+[git]                      # §25; honoured only in a build with the Cargo feature `git-compat`
+enabled = true             # false: git clients get 403 "git protocol disabled"
 ```
 
 `--role indexer` [audit: codeintel-folded] runs only the codeintel workers (no RPC serving), for GPU hosts (§23.5).
@@ -1056,7 +1060,7 @@ land_map, INDEX ref_log_by_ref                   -- §8.9
 changes, change_versions, review_state, open_paths, mergeable   -- §20.4 (stacked changes; change_versions are GC roots, §3.6)
 cloud_ws, cloud_heads, user_ref_meta, cloud_usage, gc_purge     -- §21.2.3 (commit cloud; cloud_heads are GC roots, §3.6)
 ci_docs, ci_doc_langs, ci_chunks, ci_jobs, ci_manifest   -- §23.2, §23.5 (code intelligence; per namespace, derived and rebuildable; migration 0301_codeintel)
--- repos += branchless BOOL, cloud BOOL, shared_refs TEXT /*json*/, legacy_shared TEXT /*json*/; outbox effect kind cache_evict (§21.3.7)
+-- repos += branchless BOOL, cloud BOOL, shared_refs TEXT /*json*/, legacy_shared TEXT /*json*/, git_import_grade BOOL /*§25.6 migration window*/; outbox effect kind cache_evict (§21.3.7)
 ```
 
 **Schema changes are expand/contract [audit: rolling-upgrade-encodings]:** release N only adds nullable columns and tables, and release N+1 may drop what N stopped using, so replicas N and N-1 run together. `asc serve migrate` runs before the rollout, never at replica start.
@@ -2100,6 +2104,7 @@ ASC scale: 5,502 commits and about 50k blobs (6.99 GiB raw) import in minutes. T
 | Transport | Client credential | Verified by |
 |---|---|---|
 | Server remote: fetch, push, pull, clone, `asc api`, `asc ci`, `asc mcp --remote`, `/v8`, `/seeds`, the `objects` tier, daemon uploads and cloud sync | the resolver (15.6.1) | the `Authorizer` (15.6.2) |
+| Plain `git` against `asc serve` (smart-HTTP, §25): `clone`, `fetch`, `push` | git's own credential machinery; asc never sees the helper | the `Authorizer` (15.6.2), the same parser and challenge |
 | Git-remote mode (§6.3): `https://`, `git+https://`, `git+ssh://`, `git@host:path` | real git does everything through `RealGit` (§11.4); asc never sees the credential | the git host (GitHub, GitLab, Bitbucket, Azure DevOps, Forgejo, Gitea, ...) |
 | Bucket remote `s3://` | `AWS_*` environment, else only with `asc.s3.credentialHelper=true` the helper with `protocol=s3` (§6.2) | the object store |
 | Daemon IPC (§9.1) | the OS identity of the peer; no token crosses the pipe | the daemon |
@@ -2133,7 +2138,7 @@ After the request: `approve` once for a credential that `fill` produced and the 
 - **Credential kinds**, all resolved to a principal and per-repo `read` or `write` (and `admin` for admin RPCs): a **PAT** (never above its user's own rights; forge scopes such as `write:repository` are honoured, §15.1); a **deploy token** (bound to one repo, no user, read unless minted `--write`; the HTTPS counterpart of a deploy key, `asc serve token create --repo <r> --deploy [--write]`, M30); a **CI job token** (the Actions task token: bound to its repo for the job's lifetime, read-only for a fork PR, composed repos need a grant, §15.5); and an OIDC-issued token. Deploy keys for SSH stay the forge's: `asc serve` has no SSH listener in v1.
 - **The challenge.** A request that needs a credential and has none, or a bad one, gets `401` with `WWW-Authenticate: Basic realm="asc <host>", charset="UTF-8"` first, because git and every credential helper retry only after a Basic challenge. A route that also takes Bearer adds `WWW-Authenticate: Bearer realm="asc <host>"`; `/mcp` adds `Bearer resource_metadata="…", scope="asc:read"` (§22.7.3). gRPC answers `UNAUTHENTICATED`, which the client treats as a 401. Anonymous requests succeed only for what the authorizer calls public; an anonymous request for a repo it cannot read gets 401 whether or not the repo exists. An authenticated principal without read access gets the same `NOT_FOUND` as a missing repo; with read but not write, 403 (`PERMISSION_DENIED`).
 - **Failed attempts** are throttled per source address and per `sha256(secret)` in admission (§16.3, which runs before authentication); an unknown token and a wrong token get the same answer; static tables compare in constant time. The admin token (`[admin] token_file`) is an operator secret outside the `Authorizer`: Bearer or Basic (password = token), constant-time, the same challenge.
-- **Git protocol hosts.** `asc serve` serves asc's RPC and HTTP, not `git-upload-pack` or SSH. With Forgejo in front, git smart-HTTP and SSH are Forgejo's, kept in step by the bridge (§13), and accept the credentials the forge `Authorizer` accepts; the same Forgejo PAT therefore works for `git` and for `asc`. A git client pointed at `asc serve` gets the challenge when anonymous and, once authenticated, a 404 that says the git protocol is served by the forge (U78), so credential helpers behave as with any git host and can be tested against it (U79).
+- **Git protocol hosts [revised v1.12].** `asc serve` serves git smart-HTTP (`info/refs`, `git-upload-pack`, `git-receive-pack`) through the compatibility layer of §25, with the same parser, `Authorizer` and challenge as every other route: a git client gets the `401` Basic challenge when anonymous, runs its credential helper and retries, and a read scope is enough to clone and fetch while a push needs write. SSH is not served in v1; with Forgejo in front its SSH and smart-HTTP stay available beside asc's, kept in step by the bridge (§13), and accept the credentials the forge `Authorizer` accepts, so the same Forgejo PAT works for `git` and for `asc`. In a build without the Cargo feature `git-compat`, or with `[git] enabled = false`, the git routes answer the challenge when anonymous and, once authenticated, `403` with `asc: git protocol disabled on this server` (U78 builds this stub, U81 and U82 replace it when the feature is on, U83 tests both), so credential helpers still behave as with any git host (U79).
 
 #### 15.6.3 Migration
 
@@ -2189,6 +2194,7 @@ After the request: `approve` once for a credential that `fill` produced and the 
   - commit cloud (§21.3.5): `Cloud.GetWorkspace` and `ListWorkspaces` are `cheap`; `Cloud.UpdateWorkspace` and the uploader's `Ingest` run in a new class `background` that is shed first; `PutObjects` stays in `objects`;
   - MCP (§22.5) [audit: mcp-folded]: each call is charged to the class of its backing RPC (`log` is `cheap` or `expensive`, a `diff` with a patch is `expensive`), plus at most 8 in-flight MCP calls per principal per `asc serve` instance (a gateway enforces cluster limits on `Mcp-Param-Repo`). Over the limit, the call returns `isError` with `RATE_LIMITED` and `retry_after_ms`;
   - code intelligence (§23.4.1) [audit: codeintel-folded]: new class `codeintel`: `Search` and `Symbols` 50 req/s per principal (burst 100); `Semantic` 10 req/s per principal and 32 concurrent per replica (query embedding uses the CPU); `IndexStatus` is `cheap`; a search with no usable trigram counts as `expensive`. An MCP `search` call is charged to this class;
+  - git protocol (§25.5) [v1.12]: new class `git` (only with the feature `git-compat`): discovery and `ls-refs` are `cheap`; fetch POSTs are 4 concurrent per principal and 16 per replica, push POSTs 2 and 8; bytes are charged as they stream to the `objects` budget; size, object-count and time limits are in `[limits.git]`;
   - the `service` class (Forgejo internal token, CI warmer) has its own limits. All values live in `asc-serve.toml [limits]`.
 - **Over limit:** gRPC `RESOURCE_EXHAUSTED` with `ErrorDetail.code = RATE_LIMITED` and trailer `retry-after-ms`; `/v8` and `/seeds` return 429 with `Retry-After`.
 - **Load shedding:** each replica caps in-flight requests (`limits.max_inflight`, default 1,024) and 64 in-flight RPCs per token. Requests beyond a cap are shed at once (`UNAVAILABLE` or `RESOURCE_EXHAUSTED` with `retry-after-ms`) and never queued for longer than 1 s. Bucket calls have a per-replica concurrency cap (`bucket.max_concurrency = 256`) and a 30 s timeout.
@@ -2277,6 +2283,7 @@ Team assumption: 2 Rust engineers, 1 Go engineer (from week 8), and implementati
 | 4m Server MCP | 12–15 | M12a, M12b, M29, M30, M13, M32, M14, M18 (after M05, U47, U69, C19, G09, U44) | `asc serve /mcp`: stateless HTTP, the git `Authorizer` (forge delegation or token store), read and write tools incl. `land` (§22) | `mcp_http`, `mcp_backend`, `mcp_authz`, `mcp_auth` and `mcp_write` tests green, also with the forge absent; an unreadable repo answers like a missing one |
 | 4c Server code intelligence [audit: codeintel-folded] | 12–17 | I01–I17, I22, I29 (after U47, U43c, U69, U44, C19) | `CodeIntel` service: exact search, symbols, vectors, hybrid ranking; `asc search/sym/semantic`; metrics | `scope_oracle`, `ann_acl`, `codeintel_acl`, `codeintel_fork` and `codeintel_cli` tests green; gates of §23.9 measured by I27 |
 | 4c-MCP | 15–17 | I21 (after I16, M15, M08) | `search` tool backed by `CodeIntel`; `search.v1` advertised | `search_codeintel` test green |
+| 4g Git protocol compatibility [v1.12] | 15–19 | U80–U83 (after U33, U34, U43c, U69, U78, U48d; U83 after B08a and U77) | `git clone`, `fetch` and `push` against `asc serve` through the derived git view, behind the Cargo feature `git-compat` | `cargo test -p asc --test git_compat` green with real git (clone, fetch, push, shallow, partial, credential helper, migration push); `--no-default-features` builds and tests pass |
 | 5 Daemon and ProjFS | 8–12 | U52–U58, U73 | virtual worktrees on Windows; plugin API | Windows exit: worktree add < 1 s; turbo hashes equal; 0 hydrations beyond manifests; daemon idle RSS ≤ 64 MiB; compat suite green |
 | 5m Local MCP | 12–16 | M01a–M11, M15–M17 (after U73, C31, C24, C25) | the asc JSON profile for `--json`, `asc mcp` over stdio, `asc mcp install`, the generated tool reference | stdio acceptance tests green in local-only mode; default `tools/list` ≤ 6,000 tokens; idle RSS ≤ 24 MiB (M16) |
 | 5c Daemon code intelligence | 13–18 | I18–I20 (after U53b, U73) | daemon overlay, degraded local index, opt-in local embeddings | idle RSS ≤ 64 MiB after the reader closes; search works with `--store` local-only |
@@ -3021,7 +3028,7 @@ To https://forge.example.org/asc/monorepo.git
 | other `refs/tags/*` | rejected `REF_NOT_SHARED` | shared |
 | `refs/for/*` | AGit (§13.5, C34) | same |
 | `refs/pull/*`, `refs/snapshots/*` | server-managed, as today | same |
-| plain git push through `ImportGitPush` to a non-shared branch | accepted as the pusher's user ref `refs/users/<owner-id>/heads/<n>` (same CAS, same output as git; the imported commits get ids by the C01 rule). No PR is created, because a plain push carries no `refs/for` ref; the pusher runs `asc submit` or pushes with `asc`. AGit pushes (`refs/for/<default_branch>`) work as before. | shared branch |
+| plain git push through `ImportGitPush` to a non-shared branch | accepted as the pusher's user ref `refs/users/<owner-id>/heads/<n>` (same CAS, same output as git; the imported commits get ids by the C01 rule). No PR is created, because a plain push carries no `refs/for` ref; the pusher runs `asc submit` or pushes with `asc`. AGit pushes (`refs/for/<default_branch>`) work as before. The same rule applies to a plain `git push` straight to `asc serve` over the smart-HTTP layer (§25.6). | shared branch |
 
 `shared_refs` defaults to `[refs/heads/<default_branch>, refs/heads/release/*, refs/heads/green/*, refs/tags/*]` plus `land_branches`; it is set per repo through `RepoAdmin` and the Forgejo repo settings (B17). `ListRefs` returns shared refs plus the caller's own user refs renamed to `refs/heads/<n>`; an explicit `refs/users/<login>/` prefix lists another user's (write permission; the login is resolved to the id per request). A user ref and a shared ref can never collide, because the name decides the class.
 
@@ -4521,6 +4528,187 @@ Required tests beyond each acceptance command are the layers of §24.7.1 (bridge
 10. **Hydration references:** the research file cites "SPEC line 1284" and "SPEC 5a"; they are §10.2 item 5 and item 5a. Its cite of `codeintel.md:207` is §23.4.1 (`Version.features` has `search.v1`).
 11. **Old wording rewritten:** every statement of "no IDE support" in SPEC, PLAN and `stacks.md` now says that the IDEs' built-in git is not supported and ASC-built plugins are; the full `.git` projection stays out of scope. The `[audit: user decision No-IDE]` tags stay, because they name the history of the decision.
 12. **Related designs:** `docs/research/stacks.md` (rows that marked IDE UI as OUT are corrected), `docs/research/mcp.md` (placement rule and M26 note), `docs/research/codeintel.md` (the plugins call `CodeIntel` through the bridge; `Hello.features` mirrors `Version.features`' `search.v1`) and `docs/research/branchless.md` (BD1–BD3 are the basis of IP-D7; the cloud status item and `Watch KIND_CLOUD` are §21.3).
+
+---
+
+## 25. Git protocol compatibility (feature `git-compat`) [user decision 2026-10-23, v1.12]
+
+**Decision.** `asc serve` speaks the git smart-HTTP protocol, so that plain `git clone`, `git fetch` and `git push` work against an asc server with no asc installed. The purpose is migration: a team moves repositories from GitHub, GitLab, Bitbucket, Azure DevOps or Forgejo with `git push --mirror`, keeps its existing git tools, CI checkouts and IDEs working until it moves to asc, and can leave again with `git clone`. This reverses the v1.11 text "`asc serve` does not serve `git-upload-pack`" (§15.6.2).
+
+The layer is a **compatibility layer**, not a second storage model. It lives only in the crate `asc-git`, module `compat`, behind the Cargo feature **`git-compat`**. With the feature off, `asc` and `asc serve` build, test and run without it (§25.9).
+
+### 25.1 Scope
+
+| Item | v1 |
+|---|---|
+| Transport | git smart-HTTP: `GET /<repo>.git/info/refs?service=git-upload-pack`, `…=git-receive-pack`, `POST /<repo>.git/git-upload-pack`, `POST /<repo>.git/git-receive-pack`. The `.git` suffix is optional on the URL. |
+| Protocol versions | fetch: v2 where the client asks for it (`Git-Protocol: version=2`), else v1 and v0; push: v0/v1 (git has no v2 push). |
+| Fetch features | `ls-refs`, `fetch`, shallow (`--depth`, `--shallow-since`, `--shallow-exclude`, `--deepen`, `--unshallow`), partial clone filters (`blob:none`, `blob:limit=<n>`, `tree:<depth>`), `thin-pack`, `ofs-delta`, `include-tag`, side-band-64k. |
+| Push features | `report-status-v2`, `side-band-64k`, `atomic`, `ofs-delta`, `quiet`, push options (§25.6). Signed pushes (`--signed`) are not advertised. |
+| Not served | SSH (out of scope in v1, §15.6.2: SSH stays git's, through the forge or git-remote mode); the dumb HTTP protocol; `git-upload-archive` (`asc` has `Archive`, §7); the git LFS API (no LFS anywhere, §2.5: pointer files are ordinary blobs); `bundle-uri`; `object-info`; SHA-256 object format. |
+| Object format | SHA-1 only. A repo with `object_format=asc` (Stage 6) or a SHA-256 git view answers 403 `git protocol unavailable for this object format`. |
+
+### 25.2 Strategy: serve a derived git view through real git
+
+Three designs were compared.
+
+| Design | Cost | Verdict |
+|---|---|---|
+| **A. Native Rust server side** (pkt-line, want/have negotiation, shallow, filter, pack generation with delta search, thin-pack fixing, `index-pack`, fsck) | `gix` has client-side protocol code but no server-side `upload-pack`, no delta-reusing `pack-objects` and no `receive-pack` unpacking. We would own negotiation, shallow, filters, bitmaps, delta search and fsck, which is years of git's bug history, and each is an attack surface (pack bombs, delta bombs, `.gitmodules` tricks). | Rejected. |
+| **B. On-the-fly export per request, no stored view** (walk asc objects, render git objects, write an undeltified pack) | No on-disk copy, but packs are 5 to 10 times larger than git's (no deltas), every fetch re-renders, negotiation still needs a native implementation. Unusable for ASC's 6.99 GiB raw history. | Rejected. |
+| **C. A derived git view, served by `git upload-pack` and `git receive-pack` in `--stateless-rpc` mode** through `RealGit` (§11.4) | A bare repository per repo, built by the deterministic export (U34, §14.2) and kept in step with asc's refs. Git does negotiation, shallow, filters, delta reuse, bitmaps and fsck. asc owns authentication, ref visibility, limits, the child's environment and every state change. | **Chosen.** |
+
+The view is the same object the Stage 2 bridge is (§13, §14.2): the bridge writer renders it and `git update-ref --stdin` sets its refs. Only the directory differs: the **git view** is an asc-owned derived cache at `<cache disk_dir>/gitview/<repo-id>.git`, never Forgejo's repository directory. It is rebuildable (`asc serve admin git-view rebuild <repo>`), so losing it loses nothing.
+
+**Reads (`upload-pack`).**
+
+1. A request (`info/refs`, or any POST) is authenticated and admitted (§25.4, §25.5), then `sync_view(repo)` runs once per repo at a time (singleflight, `Coalesce`, §16.3): compare asc's shared refs and tags (`ListRefs`, §21.5.1 policy) with the view's refs; export the missing closure with `Exporter::export` (U34) into the view; set the refs with `git update-ref --stdin`. The cheap path (every ref already equal) is one SQL read. A view that does not exist yet is built by a background job and the request gets `503` with `Retry-After` (a repo under 50,000 objects builds inline). `asc serve admin git-view warm <repo>` pre-builds.
+2. The handler then runs `git upload-pack --stateless-rpc [--advertise-refs] <view>` through `ServerGit` (§25.8) and streams stdin, stdout and a byte count between the HTTP body and the child. Nothing is buffered beyond one pkt-line.
+3. A **mirror-mode** repo (§8.6) skips the export: its bare mirror `<disk_dir>/mirrors/<repo-id>.git` is already a complete git repository, so it is its own view, read-only.
+
+**Writes (`receive-pack`).** Pushes never write asc state from git. The handler runs `git receive-pack --stateless-rpc <view>` with git's own quarantine and an **asc-owned pre-receive hook** (fixed `core.hooksPath`, §25.8). The hook is the only place git waits for asc:
+
+1. git unpacks the pack into its quarantine (`GIT_QUARANTINE_PATH`) with `transfer.fsckObjects` on, within the size caps of §25.5.
+2. git runs the asc hook with the command list on stdin. The hook is `asc serve git-hook pre-receive`, a few lines of Rust in the `asc` binary. It connects to a per-process Unix socket (a named pipe with the daemon's DACL rules on Windows, §9.1) in `$ASC_HOME/git-compat/run/`, mode 0700, and presents a single-use 256-bit request token from its environment. The server maps the token to the authenticated principal, the repo, the `op_id` and the limits. A token works once and dies with the request (at most 15 minutes). No credential is ever in the hook's argv or environment.
+3. The server runs the **`ImportGitPush` path** (U48d, §8.3) in-process: it reads the quarantine with `gix` under the per-repo advisory lock (§14.4 I6), imports the unknown commits (U33, §14.1: the `gitcommit == oid` round trip and the `changes` derivation), applies §25.6, and calls `UpdateRefs` with the **normal pipeline** (§8.3: authorise and classify, idempotency, mode check, closure and `changes` verification (§2.6), path policy, bridge quarantine, pre-receive towards Forgejo when configured, the one SQL transaction with the outbox, and the GC fence of §3.6). It differs from a Forgejo-originated `ImportGitPush` in one thing: it never sets `SKIP_PRE`, because the caller is a client and not Forgejo's own pre-receive.
+4. On success the hook exits 0 and git moves the objects out of the quarantine into the view and sets the view's refs to the new values (asc's SQL CAS has already committed; the bridge-style convergence of §8.3 resets any view ref that disagrees). On refusal the hook prints the reason on stderr, which git relays as `remote: …` lines, and exits 1; git then reports `! [remote rejected] <ref> (pre-receive hook declined)` and nothing is changed. The client sees git's usual output.
+5. The ref log row has `via = git-push`; the outbox carries `post_receive` (Forgejo `push` event, CI triggers) and, in Stage 2 and 3, `bridge_promote` (§8.3).
+
+A hook outcome is all-or-nothing for the whole push (as on every server with a `pre-receive` hook). A client that wants per-ref results pushes ref by ref.
+
+**Statelessness.** HTTP requests of one fetch may land on different replicas. Each replica keeps its own view on local disk, built from the same SQL state. Operators who do not want every replica to hold a view run git traffic on a dedicated replica set (`[git] enabled = true` on those only, `false` elsewhere, with the load balancer routing `*.git/*` paths).
+
+### 25.3 Ids and the git map
+
+Git SHA-1 ids are the only ids on the wire. asc ids never appear. Mapping:
+
+- Outbound: the view is rendered by the deterministic export (§14.2), so a changeset always has the same git commit id, equal to `gitcommit(changeset)` and to the kind-3 `git_map` row (§8.2). Refs advertised are asc's refs mapped through `git_map`. Native changesets made by asc carry the `asc` header (copy information, §2.9); git ignores unknown commit headers.
+- Inbound: `ImportGitPush` writes the `git_map` rows as its commit point (§14.4 I3). A commit the client builds on top of an exported commit names a parent SHA that is already in `git_map`, so history joins without any client-side step. Every imported commit passes the §14.1 round-trip assertion, so a push never stores a changeset that cannot be exported to the same SHA.
+- Change ids for imported commits follow the import derivation (C01, §20.2).
+- Object reads are per repo, not per ref (§15.5): an advertised ref set is filtered, an object requested by its SHA is served to any principal who can read the repo, exactly as for `GetObjects`. A git SHA is a capability only in that sense.
+
+### 25.4 Authentication and authorisation
+
+One `Authorizer`, one parser, as everywhere (§15.6.2; the credential edge is U78). Specifically for git:
+
+- **Challenge.** An unauthenticated request to any git route for a repo the anonymous principal cannot read gets `401` with `WWW-Authenticate: Basic realm="asc <host>", charset="UTF-8"` (plus `Bearer realm=…` where Bearer is taken), whether or not the repo exists. git and every credential helper retry only after that challenge, so `credential.helper`, GCM, `.netrc`, `http.extraHeader` and `https://TOKEN@host` URLs all work as with GitHub.
+- **Credentials.** `Authorization: Basic base64(user:secret)` (the form git sends), `Bearer`, `token`; user names `x-access-token`, `oauth2`, `gitlab-ci-token`, `git` and empty are hints (§15.6.2). PATs, deploy tokens (bound to one repo; read unless minted `--write`, M30) and CI job tokens (read-only for a fork PR) are accepted. A token in the query string is a 400.
+- **Scopes.** `info/refs?service=git-upload-pack` and `POST git-upload-pack` need `read`. `info/refs?service=git-receive-pack` and `POST git-receive-pack` need `write`; the `Authorizer` is asked once per request, with the 60 s / 5 s cache of §15.1. A principal with read but not write gets `403` on the receive-pack advertisement (git prints `The requested URL returned error: 403`). A principal with no read access gets the same `404` as a missing repo.
+- **Anonymous read** works only for what the authorizer calls public.
+- **Ref-level rules** are policy, not authentication: `UpdateRefs` step 1 and Forgejo's pre-receive (branch protection, required signatures, protected paths, §15.2) decide per ref. Their messages reach the client as `remote:` lines.
+- **Failed attempts** are throttled by admission before authentication (§16.3, §15.6.2). Credentials are never logged (§15.6.4).
+- **Deploy keys over SSH** stay the forge's (§15.6.2). An HTTPS deploy token is the asc-side equivalent.
+
+### 25.5 Limits and admission
+
+Git traffic goes through the same admission as RPC (U69, §16.3), before authentication. New class **`git`**, with these defaults in `asc-serve.toml [limits.git]`:
+
+| Limit | Default | Applies to |
+|---|---|---|
+| discovery (`info/refs`, `ls-refs`) | class `cheap` (200 req/s, burst 400) | all |
+| concurrent `upload-pack` fetches | 4 per principal, 16 per replica | fetch POST |
+| concurrent `receive-pack` pushes | 2 per principal, 8 per replica | push POST |
+| bytes in and out | charged as they stream to the `objects` bucket (400 MiB/s per principal), never from `Content-Length` | both |
+| fetch request body (negotiation) | 16 MiB after decompression; a `Content-Encoding: gzip` body is inflated under the same cap | fetch POST |
+| `max_push_bytes` | 2 GiB (passed as `receive.maxInputSize`) | push POST |
+| `max_push_objects` | 2,000,000 (checked from the quarantine before import) | push POST |
+| `max_object_bytes` | 512 MiB for one object (checked from the quarantine before import) | push POST |
+| `request_timeout` | 15 min wall clock; the child is killed (process tree) at the deadline | both |
+| `idle_timeout` | 60 s with no bytes either way; `upload-pack --timeout` is set too | both |
+| child memory | 2 GiB (`RLIMIT_AS` or a cgroup memory limit on Linux, a Job Object limit on Windows) | each child |
+| child CPU and processes | CPU time = the request deadline; `RLIMIT_NPROC`; `pack.threads=2` | each child |
+| disk | a push is refused with `503` and `asc: server disk is low` when free space is under `min_free_disk` (default 10 GiB) | push POST |
+| view build | one build per repo at a time; at most 2 per replica; builds run in the `background` class | view |
+
+Over limit: `429` with `Retry-After` (git does not retry; it prints the status). A pack bomb is bounded three ways: bytes (`receive.maxInputSize`), memory and time (the child's limits kill an expanding delta chain or a zlib bomb, git then fails the push before the hook runs), and object count and size (the hook rejects before import, `remote: asc: push has <n> objects, the limit is <m>`). Deltas are resolved by git inside its quarantine and the child's memory limit, never in asc's process. asc's own import of a push is bounded by §14.4 I7 (bounded window) and §2.6.
+
+`GET info/refs` for `git-receive-pack` and the `0000` probe request that git sends before a large POST (to trigger authentication before it uploads a pack) are answered before any child starts.
+
+### 25.6 Plain `git push` on a branchless repo and draft changes
+
+A plain git push carries no asc information, so asc maps it by the ref policy (§21.5.1, row "plain git push through `ImportGitPush`") and does only what git users expect:
+
+- `git push origin HEAD` pushes the current branch to the same-named remote branch. On a detached HEAD git fails before it talks to the server, as with any git server.
+- **Non-shared branch** (`feat`): accepted as the pusher's **user ref** `refs/users/<owner-id>/heads/feat` (one CAS row, owner-only, per-user cap, quota charge, no pre-receive, no `post_receive`, no bridge). The client sees `ok refs/heads/feat` and git's normal summary line, and one extra line: `remote: asc: stored as your branch 'feat'; run 'asc submit' or push HEAD:refs/for/<trunk> to open a draft change`. **No PR is created**, because a plain push names no `refs/for` ref. This is the same rule as the Forgejo-fronted path.
+- **Draft PR on request.** `git push origin HEAD:refs/for/<trunk>` (AGit, §13.5, C34) creates one draft change per commit of the stack, exactly as Forgejo's AGit does (§21.5.2); `-o topic=…` is passed through. The imported commits get change ids by the import derivation (C01).
+- **Shared ref** (`master`, `release/*`, `green/*`, tags): a CAS through `UpdateRefs` and the full pipeline, with branch protection from the `Authorizer` and Forgejo's pre-receive. A lost CAS race answers `! [remote rejected] master -> master (failed to update ref)`; a non-fast-forward the client did not force is refused by the client itself (`(fetch first)`), as in git. A forced push to a shared ref needs the policy to allow it. Land branches take fast-forward CAS only (§8.5, "Legacy git pushes"): `-o land` is refused with `remote: asc: -o land needs the asc client`.
+- **Deletion** (`git push origin :feat`) deletes the user ref. Tags in a branchless repo follow `shared_refs`; a non-shared tag is refused with `REF_NOT_SHARED` text on `remote:`.
+- **Push options** (`receive.advertisePushOptions`) are forwarded as `GitPushOptions` to Forgejo's pre-receive and to `UpdateRefs`; only `asc.ttl=<d>` (for `agent/*` and `snapshots/*`, §8.8) and AGit's `topic`, `title`, `description`, `force-push` have meaning; unknown options are ignored as git does.
+- **Fetching them back.** Over the git protocol the advertisement holds shared refs only (`refs/heads/<shared>` and tags). Draft and user refs, `refs/pull/*`, `refs/snapshots/*` and cloud heads are hidden (`transfer.hideRefs`); a pusher reads their own user refs through asc (`ListRefs`, §21.5.1). This keeps the view free of per-user refs and lets one view serve every principal. v1.x may add per-principal advertisement.
+- **Migration push.** `git push --mirror` or `git push --all` into an empty repo is the migration path. The first push to a repo with no refs uses the import rule of §2.8 (history is never rejected for Windows names or case collisions) plus `checkout_safe` (§25.8); later pushes use the native rule of §2.8 for every new changeset. An operator can set `repos.git_import_grade = true` for a migration window (`RepoAdmin`) so that later pushes of old history use the import rule too. In `branchless` repos the migration pushes `master` and tags as shared refs and every other branch as the pusher's user refs; `asc migrate branchless` (B-units) can promote them.
+- **Mirror mode** (§8.6) refuses every push: the `git-receive-pack` advertisement is `403` with `asc: this repository is a read-only mirror of <host>/<path>; push there` (the mirror URL without credentials).
+
+### 25.7 Interaction with mirror mode and the Forgejo cutover
+
+| Stage (§13.1) | Git protocol of `asc serve` |
+|---|---|
+| 0 git-remote | No asc server. Git hosts keep serving git. Nothing here applies. |
+| 1 mirror | Read-only fetch from the bare mirror (§8.6), useful for CI clones and a first look at asc. Pushes stay on the forge; the `git-receive-pack` route is `403` `read-only mirror`. ASC's proxy keeps routing git paths to Forgejo unless the operator chooses otherwise. |
+| 2 asc truth, 3 Seam A | The forge's git smart-HTTP and SSH stay the public git face. `asc serve`'s git layer works beside it, in its own view, and a push to it runs the full pipeline: pre-receive towards Forgejo, `post_receive` events and CI triggers (§8.3), and the bridge, so Forgejo sees the push as `PushTrigger="asc"`. It never touches Forgejo's repository directory or hooks. |
+| 4 Seam B, 5 Actions | The bridge is `lazy` (§13.1). Legacy git consumers (`git clone`, `actions/checkout`, push mirrors, external submodules) can be pointed at `asc serve` directly; the git view is built on first use by the same writer. Forgejo's own git routes can be switched off at the proxy. |
+| 6 IDs | `object_format=asc`: the git layer answers 403 (§25.1). `asc` clients use RPC. |
+
+Rollback is the feature switch: `[git] enabled = false` (or a build without the feature) removes the layer; no asc state, ref or id changes with it, because the view is derived. Pushes made through the layer are ordinary `UpdateRefs` commits with `via = git-push` and stay.
+
+### 25.8 Security (normative)
+
+1. **Path handling.** The route is `/<owner>/<name>[.git]/<suffix>` with suffix exactly `info/refs`, `git-upload-pack` or `git-receive-pack`. The URL is percent-decoded once; any remaining `%`, a NUL, a backslash, `//`, `.` or `..` segment, a segment starting with `.`, a name outside `[A-Za-z0-9._-]{1,100}` or ending in `.` or a space, or extra segments is `404`. The name is resolved by registry lookup (`repos.name`, §8.2) to the numeric repo id, and the directory is `<gitview>/<repo-id>.git`. URL text never reaches the file system, and no client string is ever an argv element of a child. Only `service=git-upload-pack` and `git-receive-pack` are valid; any other service (including `git-upload-archive`) and the dumb-protocol paths are `403` or `404`.
+2. **No config injection (`ServerGit`).** The child is built by `asc_git::compat::ServerGit`, a wrapper that can be constructed only from a `RealGit` (U16a), so the "RealGit is the only git path" rule and its lint hold. It starts from an **empty environment** and sets only: `PATH` (the directory of the resolved git), `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` = an empty file, `HOME` = an empty private directory, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_REPLACE_OBJECTS=1`, `GIT_PROTOCOL` (only after the value matches `^version=[0-2](:[a-z0-9=]+)*$`, at most 256 bytes; otherwise it is dropped), `GIT_USER_AGENT=asc/<semver>`, `LC_ALL=C`, and on Windows the minimum `SystemRoot`. It passes **`-c` for every behaviour**, which beats the repository's own `config`: `core.hooksPath=<asc hooks dir>`, `protocol.allow=never`, `core.fsmonitor=false`, `core.sshCommand=false`, `gc.auto=0`, `receive.autogc=false`, `receive.denyDeletes=false`, `receive.denyNonFastForwards=false` (asc decides), `receive.fsckObjects=true`, `transfer.fsckObjects=true`, `receive.maxInputSize=<max_push_bytes>`, `receive.unpackLimit=1`, `receive.advertisePushOptions=true`, `receive.advertiseAtomic=true`, no `receive.certNonceSeed`, `receive.updateServerInfo=false`, `uploadpack.allowFilter=true`, `uploadpack.allowAnySHA1InWant=false`, `uploadpack.allowReachableSHA1InWant=false`, `transfer.hideRefs=refs/pull`, `=refs/users`, `=refs/snapshots`, and the pack settings of §25.5. The view repository is created by asc (`git init --bare --template=` with an empty template) and its `config` is rewritten from a fixed template before a child starts if its hash differs. `uploadpack.packObjectsHook` is honoured by git only from protected config, so it is never set. Git must be at least 2.40; `asc serve` checks `git --version` at start and disables the layer with a logged reason when it is older or missing.
+3. **No repository-supplied code runs on the server.** The only hook is asc's own `pre-receive`, in an asc-owned directory outside every view, written at start from a fixed two-line script that execs the resolved `asc` binary by absolute path (read-only, mode 0555). Pushed content cannot add hooks, config, attributes or filters: the server never checks out a work tree, never reads `.gitattributes` or `.gitmodules` for behaviour, and runs no filter, textconv or diff driver. The `.git` directory of a view holds only objects and refs.
+4. **Quarantine.** git's own quarantine (`GIT_QUARANTINE_PATH`, an `objects/incoming-*` directory) holds a push until the hook exits 0. The import (U33) reads only from it. Objects of a refused push are deleted by git; the janitor (§8.3) removes any left after a crash after 24 hours. The GC fence of §3.6 and `PgClusterLock` (CARRY) cover the ingested-but-uncommitted window, because the push uses the same `ImportGitPush` code path.
+5. **fsck.** `receive.fsckObjects` and `transfer.fsckObjects` are always on. Git's fsck refuses `.git` and its aliases in trees (`hasDotgit`), `.gitmodules` as a symlink and malformed or dangerous `.gitmodules` values (`gitmodulesSymlink`, `gitmodulesName`, `gitmodulesPath`, `gitmodulesUrl`, `gitmodulesUpdate`, `gitmodulesParse`, `gitmodulesMissing`, `gitmodulesBlob`, `gitmodulesLarge`) and NUL bytes in headers. These classes are errors in both modes. `[git] fsck = "strict"` (the default) keeps git's defaults for the rest; `fsck = "migration"` downgrades the harmless legacy classes (for example `zeroPaddedFilemode`, `badTimezone`, `missingEmail`, `badEmail`, `badDate`) with `receive.fsck.<id>=ignore`, so old histories from other hosts can be pushed. The exact id list is pinned against the git version in U82's tests.
+6. **`checkout_safe` on every pushed path.** After fsck, the import checks each path added or changed by each new changeset with `checkout_safe` (§2.3: NTFS and HFS `.git` aliases such as `GIT~1`, `.git::$INDEX_ALLOCATION`, ignorable code points, backslashes) **in every mode, including the import rule and `windows_safe = false`**. A violation refuses the whole push with `remote: asc: refusing path '<p>': a .git alias`. `windows_valid` and case-collision checks follow §25.6 and §2.8.
+7. **Extras and `changes`.** Pushed commits go through `canonicalise_commit` and the §14.1 round trip; an `asc` header whose copies do not map is rejected. `changes` is derived from the git trees (§2.6, "verified at ingest"); a client cannot supply it. `git.commit` and `git.tag` extras are created only here, by the server, as §8.4 requires.
+8. **Authentication and enumeration.** Anonymous access to an unreadable repo is `401`, a signed-in principal without read gets `404`, so repo names do not leak (§15.6.2). The advertisement never lists refs the principal cannot see. Responses carry no server paths; `agent=` shows `asc/<semver>`, not the git version.
+9. **Audit and metrics.** Every request writes one audit record: method (`basic`, `bearer`, `token`, `oauth`), principal, repo, service, protocol version, peer address, bytes in and out, object count, the refs updated with old and new git SHA, the `op_id`, the outcome (`ok`, `rejected:<reason>`, `limit:<which>`, `killed`) and duration. Never a credential or a `Git-Protocol` value other than the version. Metrics: `asc_git_requests_total{service,version,status}`, `asc_git_bytes_total{dir}`, `asc_git_child_seconds`, `asc_git_rejected_total{reason}`, `asc_git_view_build_seconds`, `asc_git_view_lag_refs`.
+10. **Credentials.** §15.6.4 applies unchanged. In particular the hook, the children and the logs never see a secret.
+
+### 25.9 The Cargo feature and the runtime switch
+
+**Feature.**
+
+```toml
+# crates/asc-git/Cargo.toml
+[features]
+default = ["git-compat"]
+git-compat = []     # plus `dep:` entries for the optional dependencies only the server layer needs
+
+# crates/asc-serve/Cargo.toml
+[features]
+default = ["git-compat"]
+git-compat = ["asc-git/git-compat"]                               # forwarding feature
+
+# crates/asc/Cargo.toml (the features `serve`, `vfs-projfs` and `vfs-fuse` already exist)
+[features]
+default = ["serve", "vfs-projfs", "vfs-fuse", "git-compat"]
+git-compat = ["asc-git/git-compat", "asc-serve?/git-compat"]
+
+# Cargo.toml: [workspace.dependencies] asc-git = { path = "crates/asc-git", default-features = false }
+# (every consumer that wants the layer names the feature, so `--no-default-features` really removes it)
+```
+
+- **Where the code lives.** Only `crates/asc-git/src/compat/` (`mod.rs`, `view.rs`, `server_git.rs`, `pktline.rs`, `upload.rs`, `receive.rs`, `hook.rs`, `limits.rs`) and its `tests/compat_*`, all behind `#[cfg(feature = "git-compat")]` in `lib.rs`. Nothing outside `asc-git` may name `asc_git::compat`, except the **feature-gated wiring**: `asc-serve` (`src/git_http.rs`: route registration and the hook socket) and `asc` (the hidden `asc serve git-hook` subcommand), each under `#[cfg(feature = "git-compat")]`. The export (U34), import (U33), `RealGit`, the bridge writer and mirror mode are not under the feature: they exist without it. No crate may depend on `git-compat` being on; `asc-engine`, `asc-rpc`, `asc-store` and `asc-core` never see it.
+- **What compiles out.** The `compat` module and its optional dependencies; the git routes; the hook subcommand; the `[limits.git]` handlers; the `asc_git_*` metrics; the `git-view` admin commands. The `[git]` and `[limits.git]` tables still parse (a config file works with either build).
+- **Behaviour with the feature off** (also `[git] enabled = false`, git older than 2.40, or an unsupported object format): the git routes are served by a small stub in `asc-serve::authn` (U78), so credential helpers still behave: an anonymous request gets the `401` Basic challenge, and an authenticated one gets **`403 Forbidden`** with `Content-Type: text/plain`, `X-Asc-Git: disabled` and the body `asc: git protocol disabled on this server`. A repo the principal cannot read is `404` as before. `asc serve` starts normally; with `[git] enabled = true` but no feature it logs `git-compat is not compiled in; git protocol disabled` once and `asc doctor` reports it. `Version.features` lists `git.smart_http` only when the layer is live.
+- **Build gate.** `cargo build -p asc -p asc-serve --no-default-features` and `cargo test --workspace --no-default-features` must pass in CI, and `cargo tree -e features -p asc --no-default-features` must show no `git-compat` (U83).
+
+**Config (`asc-serve.toml`).**
+
+```toml
+[git]
+enabled = true                 # runtime switch; false = the disabled stub above
+git_path = ""                  # default: RealGit resolution (U16a)
+view_dir = ""                  # default: <cache disk_dir>/gitview
+fsck = "strict"                # "strict" | "migration" (§25.8 item 5)
+# the limits of §25.5 live in [limits.git]: max_push_bytes, max_push_objects, max_object_bytes,
+# request_timeout, idle_timeout, child_memory, min_free_disk, per-principal and per-replica caps
+```
+
+The default is `enabled = true` in a build that has the feature, because the layer needs no extra setup and adds no write path of its own. An operator who fronts asc with a forge for git traffic routes `*.git/*` at the proxy or sets `enabled = false`.
+
+### 25.10 Tests and units
+
+Units U80 to U83 (PLAN) build it: the module, view and feature flag; the upload-pack path; the receive-pack path; and the compatibility suite against real git clients, which includes a build with the feature off. The suite is a gate for the phase "4g" (§18): `git clone`, `fetch`, `push`, shallow and partial clones, a credential helper and `.netrc`, a deploy token, a migration push, the branchless cases of §25.6, the limit and security cases of §25.5 and §25.8, and the `--no-default-features` build.
 
 ---
 
