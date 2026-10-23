@@ -221,7 +221,15 @@ async fn the_store_helper_round_trips_and_erases_on_401() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_cache_helper_serves_an_approved_credential() {
     let mut side = helpers::Side::new(accept_alice).await;
-    let socket = side.dir().join("cache.sock");
+    // git's cache daemon refuses a socket directory that anyone else can enter, and a
+    // temp dir is made with the umask (0755), so give the socket a private directory.
+    let socket_dir = side.dir().join("cache");
+    std::fs::create_dir(&socket_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let socket = socket_dir.join("cache.sock");
     let cred = format!(
         "[credential]
 	helper = cache --timeout 60 --socket {}
@@ -239,7 +247,8 @@ async fn the_cache_helper_serves_an_approved_credential() {
         asc_git::credential::CredentialRequest::new("http", format!("127.0.0.1:{}", side.port()));
     let stored = asc_git::credential::Credential::new(USER, PASS);
     asc_git::credential::approve(&helpers::real(), &request, &stored, &session).unwrap();
-    assert!(side.git(&side.url()).ok, "git read the cached credential");
+    let g = side.git(&side.url());
+    assert!(g.ok, "git read the cached credential: {}", g.stderr);
     assert!(
         side.asc(&side.url(), Prompt::Never).await.ok,
         "asc read it too"
@@ -619,6 +628,53 @@ async fn config_askpass_inner() {
         std::fs::read_to_string(&ran).unwrap().lines().count(),
         4,
         "Never ran no askpass"
+    );
+}
+
+/// A prompt test can never block on a terminal. git asks `GIT_ASKPASS`, then the terminal, so
+/// an askpass that git cannot run (here a plain file with no execute bit) would send git to
+/// `/dev/tty`: an hour-long hang in a developer's shell, and in CI a different failure. `rerun`
+/// sets `GIT_TERMINAL_PROMPT=0` for its child, so both clients fail at once with git's words.
+/// Unix only: a script without the execute bit still runs under Git for Windows' `sh`.
+#[cfg(unix)]
+#[test]
+fn an_askpass_that_cannot_run_never_reaches_a_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("not-executable.sh");
+    std::fs::write(&broken, "#!/bin/sh\necho nobody\n").unwrap();
+    std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o644)).unwrap();
+    rerun(
+        "broken_askpass_inner",
+        &[("GIT_ASKPASS", &sh_path(&broken))],
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broken_askpass_inner() {
+    if !is_inner() {
+        return;
+    }
+    assert_eq!(
+        std::env::var("GIT_TERMINAL_PROMPT").as_deref(),
+        Ok("0"),
+        "rerun leaves the terminal on"
+    );
+    let p = pair(accept_alice, |_| (Spec::new(), ())).await;
+    let g = p.git.git(&p.git.url());
+    assert!(!g.ok);
+    assert!(
+        g.fatal().contains("terminal prompts disabled"),
+        "git: {}",
+        g.stderr
+    );
+    let c = p.asc.asc(&p.asc.url(), Prompt::Allowed).await;
+    assert!(!c.ok);
+    assert!(
+        c.message.contains("terminal prompts disabled"),
+        "asc: {}",
+        c.message
     );
 }
 
