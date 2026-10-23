@@ -308,7 +308,7 @@ impl Side {
             std::fs::create_dir_all(git_dir.join("refs")).expect("repo");
             std::fs::write(
                 git_dir.join("HEAD"),
-                "ref: refs/heads/main
+                "ref: refs/heads/master
 ",
             )
             .expect("HEAD");
