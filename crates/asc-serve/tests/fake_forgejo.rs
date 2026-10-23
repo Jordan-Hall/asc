@@ -9,11 +9,13 @@ mod forgejo {
     use axum::body::Bytes;
     use axum::extract::State;
     use axum::http::{HeaderMap, Method, StatusCode, Uri};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
     use asc_core::git::ObjectKind;
     use asc_core::id::{ChangesetId, GitOid, RefTarget};
     use asc_engine::derive::{GitMapRow, GitMapSink};
     use asc_rpc::IdMode;
-    use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
+    use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
     use asc_rpc::server::{CallCtx, RepoName};
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
@@ -33,6 +35,8 @@ mod forgejo {
         path: String,
         method: String,
         auth: Option<String>,
+        /// The `user:password` of an `Authorization: Basic` header.
+        basic: Option<String>,
         body: Value,
         op_id: Option<String>,
     }
@@ -40,7 +44,7 @@ mod forgejo {
     #[derive(Default)]
     struct Inner {
         calls: Vec<Call>,
-        /// token -> (id, login)
+        /// token -> (id, login); a Basic login is keyed `basic/<user>:<password>`.
         users: HashMap<String, (i64, String)>,
         /// (token, repo) -> (admin, push, pull); token "" is anonymous.
         repos: HashMap<(String, String), (bool, bool, bool)>,
@@ -92,17 +96,28 @@ mod forgejo {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .map(str::to_owned);
+        let basic = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Basic "))
+            .and_then(|v| STANDARD.decode(v).ok())
+            .and_then(|v| String::from_utf8(v).ok());
         let op_id = headers
             .get("x-asc-op-id")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-        let token = bearer.clone().unwrap_or_default();
+        let token = match (&bearer, &basic) {
+            (Some(b), _) => b.clone(),
+            (None, Some(b)) => format!("basic/{b}"),
+            (None, None) => String::new(),
+        };
         fake.with(|i| {
             i.calls.push(Call {
                 path: path.clone(),
                 method: method.to_string(),
                 auth: bearer.clone(),
+                basic: basic.clone(),
                 body: json.clone(),
                 op_id: op_id.clone(),
             });
@@ -141,7 +156,14 @@ mod forgejo {
                 };
             }
             if path == "/api/internal/asc/authz" {
-                let t = json["token"].as_str().unwrap_or("").to_owned();
+                let mut t = json["token"].as_str().unwrap_or("").to_owned();
+                if let Some(user) = json["user"].as_str() {
+                    // A Basic login: Forgejo refuses a wrong password outright.
+                    t = format!("basic/{user}:{t}");
+                    if !i.users.contains_key(&t) {
+                        return reply(401, json!({}));
+                    }
+                }
                 let r = json["repo"].as_str().unwrap_or("").to_owned();
                 return match i.authz.get(&(t, r)) {
                     Some(v) => reply(200, v.clone()),
@@ -511,6 +533,366 @@ mod forgejo {
                 .unwrap_err(),
             AuthError::Forbidden
         );
+    }
+
+    // ------------------------------------------------------------------ Basic logins (U44 override of U78)
+
+    fn basic(user: &str, secret: &str) -> Credential {
+        Credential::basic(user, secret).unwrap()
+    }
+
+    fn password_fixture(fake: &Fake) {
+        fake.with(|i| {
+            for (key, id, login) in [
+                ("basic/alice:pw-1", 7, "alice"),
+                ("basic/bob:pw-1", 8, "bob"),
+                ("basic/x-access-token:pat-1", 7, "alice"),
+            ] {
+                i.users.insert(key.into(), (id, login.into()));
+                i.repos
+                    .insert((key.into(), "o/w".into()), (false, true, true));
+                i.repos
+                    .insert((key.into(), "o/r".into()), (false, false, true));
+            }
+            i.users.insert("alice-tok".into(), (7, "alice".into()));
+            i.repos
+                .insert(("alice-tok".into(), "o/w".into()), (false, true, true));
+        });
+    }
+
+    #[tokio::test]
+    async fn a_basic_login_is_forwarded_to_forgejo_as_basic() {
+        let (fake, url) = start().await;
+        password_fixture(&fake);
+        let authz = stage1(&url);
+        let p = authz
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/w", Access::Write)
+            .await
+            .unwrap();
+        assert_eq!(p.id, "7:alice");
+        // The user, the repository and the scope probe all carried Basic `user:password`, and
+        // none of them a Bearer token.
+        let calls = fake.calls("/api/v1/");
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        for c in &calls {
+            assert_eq!(c.basic.as_deref(), Some("alice:pw-1"), "{c:?}");
+            assert_eq!(c.auth, None, "{c:?}");
+        }
+        assert_eq!(calls[2].method, "POST");
+        assert!(calls[2].path.ends_with("/markdown"));
+        // A PAT under `x-access-token` is Basic too; Forgejo reads the token from the password.
+        let p = authz
+            .authorize_credential(Some(&basic("x-access-token", "pat-1")), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(p.id, "7:alice");
+        // When Forgejo answers the scope probe 403, the login is capped at read.
+        fake.with(|i| {
+            i.read_only_tokens.insert("basic/alice:pw-1".into());
+        });
+        assert_eq!(
+            stage1(&url)
+                .authorize_credential(Some(&basic("alice", "pw-1")), "o/w", Access::Write)
+                .await
+                .unwrap_err(),
+            AuthError::Forbidden
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_password_is_unauthenticated_and_the_refusal_is_cached() {
+        let (fake, url) = start().await;
+        password_fixture(&fake);
+        let authz = stage1(&url);
+        for _ in 0..2 {
+            assert_eq!(
+                authz
+                    .authorize_credential(Some(&basic("alice", "nope")), "o/w", Access::Read)
+                    .await
+                    .unwrap_err(),
+                AuthError::Unauthenticated
+            );
+        }
+        // A real user with another user's password is refused as well.
+        assert_eq!(
+            authz
+                .authorize_credential(Some(&basic("carol", "pw-1")), "o/w", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Unauthenticated
+        );
+        let users = fake.calls("/api/v1/user");
+        assert_eq!(users.len(), 2, "the negative answer was cached: {users:?}");
+        assert_eq!(users[0].basic.as_deref(), Some("alice:nope"));
+        assert_eq!(fake.calls("/api/v1/repos/").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn bearer_token_and_userless_basic_still_go_as_bearer() {
+        let (fake, url) = start().await;
+        password_fixture(&fake);
+        let authz = stage1(&url);
+        let bearer = Credential::bearer(tok("alice-tok"));
+        let token = Credential::token(tok("alice-tok"));
+        // `https://TOKEN@host` and `:TOKEN` carry no user name.
+        let nameless = basic("", "alice-tok");
+        assert_eq!(nameless.user(), None);
+        for c in [&bearer, &token, &nameless] {
+            let p = authz
+                .authorize_credential(Some(c), "o/w", Access::Write)
+                .await
+                .unwrap();
+            assert_eq!(p.id, "7:alice");
+        }
+        // One secret and no user name is one cache entry whatever the scheme.
+        assert_eq!(fake.calls("/api/v1/user").len(), 1);
+        for c in fake.calls("/api/v1/") {
+            assert_eq!(c.auth.as_deref(), Some("alice-tok"), "{c:?}");
+            assert_eq!(c.basic, None, "{c:?}");
+        }
+        // The plain `authorize` takes the Bearer path too.
+        authz
+            .authorize(Some(&tok("alice-tok")), "o/w", Access::Write)
+            .await
+            .unwrap();
+        assert_eq!(fake.calls("/api/v1/user").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_cache_key_includes_the_basic_user_name() {
+        let (fake, url) = start().await;
+        password_fixture(&fake);
+        let authz = stage1(&url);
+        let alice = basic("alice", "pw-1");
+        let bob = basic("bob", "pw-1");
+        let who = |p: Result<Principal, AuthError>| p.unwrap().id;
+        assert_eq!(
+            who(authz
+                .authorize_credential(Some(&alice), "o/r", Access::Read)
+                .await),
+            "7:alice"
+        );
+        // The same password under another user name is a different caller, not alice's entry.
+        assert_eq!(
+            who(authz
+                .authorize_credential(Some(&bob), "o/r", Access::Read)
+                .await),
+            "8:bob"
+        );
+        assert_eq!(fake.calls("/api/v1/user").len(), 2);
+        // Both are cached afterwards, each under its own key.
+        assert_eq!(
+            who(authz
+                .authorize_credential(Some(&alice), "o/r", Access::Read)
+                .await),
+            "7:alice"
+        );
+        assert_eq!(
+            who(authz
+                .authorize_credential(Some(&bob), "o/r", Access::Read)
+                .await),
+            "8:bob"
+        );
+        assert_eq!(fake.calls("/api/v1/user").len(), 2);
+        // The same text as a Bearer token is yet another caller, and Forgejo refuses it.
+        assert_eq!(
+            authz
+                .authorize(Some(&tok("pw-1")), "o/r", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Unauthenticated
+        );
+        assert_eq!(fake.calls("/api/v1/user").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn internal_authz_forwards_the_basic_user_and_refuses_a_wrong_password() {
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            for (key, id, name) in [
+                ("basic/alice:pw-1", 7, "alice"),
+                ("basic/bob:pw-1", 8, "bob"),
+            ] {
+                i.users.insert(key.into(), (id, name.into()));
+                i.authz.insert(
+                    (key.into(), "o/r".into()),
+                    json!({"allowed": true, "user_id": id, "username": name, "perm": "write"}),
+                );
+            }
+            i.authz.insert(
+                ("pw-1".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": 1, "username": "bearer", "perm": "read"}),
+            );
+        });
+        let authz = internal_authz(&url, Vec::new());
+        let a = authz
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Write)
+            .await
+            .unwrap();
+        assert_eq!(a.id, "7:alice");
+        let calls = fake.calls("/api/internal/asc/authz");
+        assert_eq!(calls[0].auth.as_deref(), Some(INTERNAL));
+        assert_eq!(calls[0].body["user"], "alice");
+        assert_eq!(calls[0].body["token"], "pw-1");
+        // The cache key includes the user.
+        let b = authz
+            .authorize_credential(Some(&basic("bob", "pw-1")), "o/r", Access::Write)
+            .await
+            .unwrap();
+        assert_eq!(b.id, "8:bob");
+        authz
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Write)
+            .await
+            .unwrap();
+        assert_eq!(fake.calls("/api/internal/asc/authz").len(), 2);
+        // Bearer is unchanged: no `user` in the body, and its own answer.
+        let c = authz
+            .authorize_credential(Some(&Credential::bearer(tok("pw-1"))), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(c.id, "1:bearer");
+        let calls = fake.calls("/api/internal/asc/authz");
+        assert_eq!(calls.len(), 3);
+        assert!(calls[2].body.get("user").is_none(), "{:?}", calls[2].body);
+        // Forgejo refuses a wrong password with 401.
+        assert_eq!(
+            authz
+                .authorize_credential(Some(&basic("alice", "wrong")), "o/r", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Unauthenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn the_recording_wrapper_passes_basic_logins_to_the_forgejo_authorizer() {
+        use asc_serve::config::Limits;
+        use asc_serve::limits::Admission;
+        let (fake, url) = start().await;
+        password_fixture(&fake);
+        // Admission keys its record on the hash of the parsed secret (limits.rs tests the throttle
+        // itself) and the wrapper forwards the credential, so Forgejo sees the Basic user and a
+        // refused password is a refused caller.
+        let admission = Admission::new(&Limits::default());
+        let authz = admission.recording(Arc::new(stage1(&url)));
+        assert_eq!(
+            authz
+                .authorize_credential(Some(&basic("alice", "bad")), "o/r", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Unauthenticated
+        );
+        let p = authz
+            .authorize_credential(Some(&basic("alice", "pw-1")), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(p.id, "7:alice");
+        let users = fake.calls("/api/v1/user");
+        assert_eq!(users[1].basic.as_deref(), Some("alice:pw-1"));
+    }
+
+    // ------------------------------------------------------------------ logs never hold the secret
+
+    /// Records every tracing event (level, target, fields) in one string.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<String>>);
+
+    struct Fields<'a>(&'a mut String);
+
+    impl tracing::field::Visit for Fields<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={:?} ", field.name(), value);
+        }
+    }
+
+    impl tracing::Subscriber for Capture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut out = self.0.lock().unwrap();
+            let meta = event.metadata();
+            out.push_str(&format!("{} {} ", meta.level(), meta.target()));
+            event.record(&mut Fields(&mut out));
+            out.push('\n');
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    #[tokio::test]
+    async fn the_secret_never_reaches_the_logs() {
+        use base64::Engine as _;
+        // Events from other tasks count too, so the subscriber is global.
+        let capture = Capture::default();
+        let _ = tracing::subscriber::set_global_default(capture.clone());
+
+        let password = "Zq9-never-log-this-password";
+        let wrong = "Zq9-never-log-this-wrong-one";
+        let (fake, url) = start().await;
+        fake.with(|i| {
+            let key = format!("basic/alice:{password}");
+            i.users.insert(key.clone(), (7, "alice".into()));
+            i.repos
+                .insert((key.clone(), "o/w".into()), (false, true, true));
+            // The scope probe is refused, which logs at debug level.
+            i.read_only_tokens.insert(key);
+        });
+        let stage1 = stage1(&url);
+        let internal = internal_authz(&url, Vec::new());
+        let creds = [basic("alice", password), basic("alice", wrong)];
+        for c in &creds {
+            let _ = stage1
+                .authorize_credential(Some(c), "o/w", Access::Write)
+                .await;
+            let _ = internal
+                .authorize_credential(Some(c), "o/w", Access::Write)
+                .await;
+        }
+        // An unreachable Forgejo logs the failure; it must not log the request either.
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_url = format!("http://{}/", dead.local_addr().unwrap());
+        drop(dead);
+        let dead1 = PublicApiAuthz::new(client(&dead_url, false), AuthzCacheConfig::default());
+        let dead2 = InternalAuthz::new(
+            client(&dead_url, true),
+            Vec::new(),
+            AuthzCacheConfig::default(),
+        );
+        for c in &creds {
+            let _ = dead1
+                .authorize_credential(Some(c), "o/w", Access::Read)
+                .await;
+            let _ = dead2
+                .authorize_credential(Some(c), "o/w", Access::Read)
+                .await;
+        }
+        assert_eq!(format!("{:?}", creds[0]), "Credential(basic, <redacted>)");
+
+        let log = capture.0.lock().unwrap().clone();
+        assert!(
+            log.contains("lacks write") && log.contains("lookup failed"),
+            "the failure paths logged nothing, so this test proves nothing: {log:?}"
+        );
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let needles = [
+            password.to_owned(),
+            wrong.to_owned(),
+            format!("alice:{password}"),
+            format!("alice:{wrong}"),
+            b64(&format!("alice:{password}")),
+            b64(&format!("alice:{wrong}")),
+            b64(password),
+        ];
+        for n in needles {
+            assert!(!log.contains(&n), "{n} was logged:\n{log}");
+        }
     }
 
     #[tokio::test]
