@@ -30,6 +30,8 @@ use crate::{Engine, commit};
 
 use asc_core::path::RepoPath;
 
+pub mod linehist;
+
 /// Largest page a log answers with (also bounds the round trips of a fetch).
 pub const LOG_PAGE: usize = 4096;
 

@@ -11,6 +11,7 @@ pub mod config;
 pub mod forgejo;
 pub mod gc;
 pub mod graph_sql;
+pub mod history;
 pub mod http;
 pub mod idmode;
 pub mod ingest;
