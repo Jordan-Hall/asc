@@ -194,7 +194,7 @@ impl Source {
     fn new(refs: Vec<SourceRef>) -> Self {
         Self {
             refs: Mutex::new(refs),
-            head: Some("refs/heads/main".into()),
+            head: Some("refs/heads/master".into()),
             estimate: Some(10),
             list_calls: AtomicUsize::new(0),
         }
@@ -273,7 +273,7 @@ async fn the_view_of_a_native_history_has_the_same_shas_as_git_and_the_export() 
         .await;
     let b = fx.commit(&[a], &[("f.txt", b"two")]).await;
     let source = Source::new(vec![
-        fx.head_ref("refs/heads/main", b).await,
+        fx.head_ref("refs/heads/master", b).await,
         fx.tag_ref("v1", b).await,
     ]);
     let view = fx.open(1);
@@ -298,12 +298,15 @@ async fn the_view_of_a_native_history_has_the_same_shas_as_git_and_the_export() 
     let cb = git(dir, &["commit-tree", &tree_b, "-p", &ca, "-m", "msg"]);
     assert_eq!(ga.to_string(), ca);
     assert_eq!(gb.to_string(), cb);
-    assert_eq!(git(dir, &["rev-parse", "refs/heads/main"]), gb.to_string());
+    assert_eq!(
+        git(dir, &["rev-parse", "refs/heads/master"]),
+        gb.to_string()
+    );
     assert_eq!(
         git(dir, &["rev-parse", "refs/tags/v1^{commit}"]),
         gb.to_string()
     );
-    assert_eq!(git(dir, &["symbolic-ref", "HEAD"]), "refs/heads/main");
+    assert_eq!(git(dir, &["symbolic-ref", "HEAD"]), "refs/heads/master");
     assert_eq!(git(dir, &["show", &format!("{gb}:d/g.txt")]), "fixed");
 
     // A plain `git clone` of the view sees the same history.
@@ -318,13 +321,13 @@ async fn the_view_of_a_native_history_has_the_same_shas_as_git_and_the_export() 
             &clone.to_string_lossy(),
         ],
     );
-    assert_eq!(git(&clone, &["rev-parse", "main"]), gb.to_string());
-    assert_eq!(git(&clone, &["rev-list", "--count", "main"]), "2");
+    assert_eq!(git(&clone, &["rev-parse", "master"]), gb.to_string());
+    assert_eq!(git(&clone, &["rev-list", "--count", "master"]), "2");
 
     // The view holds only the shared refs.
     assert_eq!(
         names(&fx.server, &view),
-        vec!["refs/heads/main", "refs/tags/v1"]
+        vec!["refs/heads/master", "refs/tags/v1"]
     );
 }
 
@@ -332,7 +335,7 @@ async fn the_view_of_a_native_history_has_the_same_shas_as_git_and_the_export() 
 async fn sync_is_a_noop_when_equal_and_exports_only_the_new_closure() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let source = Source::new(vec![fx.head_ref("refs/heads/main", a).await]);
+    let source = Source::new(vec![fx.head_ref("refs/heads/master", a).await]);
     let view = fx.open(2);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
     let first = view.sync(&source, &exporter).await.unwrap();
@@ -348,7 +351,7 @@ async fn sync_is_a_noop_when_equal_and_exports_only_the_new_closure() {
     // A ref move exports only what the new commit adds.
     let b = fx.commit(&[a], &[("f", b"two"), ("g", b"one")]).await;
     source.set(vec![
-        fx.head_ref("refs/heads/main", b).await,
+        fx.head_ref("refs/heads/master", b).await,
         fx.head_ref("refs/heads/topic", a).await,
     ]);
     let moved = view.sync(&source, &exporter).await.unwrap();
@@ -360,17 +363,17 @@ async fn sync_is_a_noop_when_equal_and_exports_only_the_new_closure() {
     );
     assert_eq!(
         names(&fx.server, &view),
-        vec!["refs/heads/main", "refs/heads/topic"]
+        vec!["refs/heads/master", "refs/heads/topic"]
     );
 
     // A ref that left asc's set leaves the view.
-    source.set(vec![fx.head_ref("refs/heads/main", b).await]);
+    source.set(vec![fx.head_ref("refs/heads/master", b).await]);
     let dropped = view.sync(&source, &exporter).await.unwrap();
     assert_eq!(
         (dropped.refs_set, dropped.refs_deleted, dropped.written),
         (0, 1, 0)
     );
-    assert_eq!(names(&fx.server, &view), vec!["refs/heads/main"]);
+    assert_eq!(names(&fx.server, &view), vec!["refs/heads/master"]);
     git(view.path(), &["fsck", "--strict", "--no-dangling"]);
 }
 
@@ -380,7 +383,7 @@ async fn two_concurrent_syncs_build_once() {
     let a = fx.commit(&[], &[("f", b"one")]).await;
     let b = fx.commit(&[a], &[("f", b"two")]).await;
     let source = Source::new(vec![
-        fx.head_ref("refs/heads/main", b).await,
+        fx.head_ref("refs/heads/master", b).await,
         fx.head_ref("refs/heads/old", a).await,
     ]);
     let view = fx.open(3);
@@ -404,7 +407,7 @@ async fn two_concurrent_syncs_build_once() {
 async fn refs_the_view_must_not_hold_are_refused_and_nothing_changes() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let good = fx.head_ref("refs/heads/main", a).await;
+    let good = fx.head_ref("refs/heads/master", a).await;
     let view = fx.open(4);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
     let source = Source::new(vec![]);
@@ -456,7 +459,7 @@ async fn refs_the_view_must_not_hold_are_refused_and_nothing_changes() {
 async fn private_refs_left_in_a_view_are_deleted_by_sync() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let source = Source::new(vec![fx.head_ref("refs/heads/main", a).await]);
+    let source = Source::new(vec![fx.head_ref("refs/heads/master", a).await]);
     let view = fx.open(5);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
     view.sync(&source, &exporter).await.unwrap();
@@ -478,14 +481,14 @@ async fn private_refs_left_in_a_view_are_deleted_by_sync() {
         .unwrap();
     let report = view.sync(&source, &exporter).await.unwrap();
     assert_eq!(report.refs_deleted, 2);
-    assert_eq!(names(&fx.server, &view), vec!["refs/heads/main"]);
+    assert_eq!(names(&fx.server, &view), vec!["refs/heads/master"]);
 }
 
 #[tokio::test]
 async fn the_build_state_machine_answers_building_until_a_big_view_is_ready() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let mut source = Source::new(vec![fx.head_ref("refs/heads/main", a).await]);
+    let mut source = Source::new(vec![fx.head_ref("refs/heads/master", a).await]);
     source.estimate = Some(asc_git::compat::INLINE_BUILD_OBJECTS + 1);
     let view = fx.open(6);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
@@ -540,7 +543,7 @@ async fn the_build_state_machine_answers_building_until_a_big_view_is_ready() {
 async fn a_small_absent_view_builds_inline_and_a_failed_build_leaves_it_absent() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let good = fx.head_ref("refs/heads/main", a).await;
+    let good = fx.head_ref("refs/heads/master", a).await;
     let view = fx.open(8);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
 
@@ -567,7 +570,7 @@ async fn a_small_absent_view_builds_inline_and_a_failed_build_leaves_it_absent()
 async fn builds_are_capped_per_replica() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let mut source = Source::new(vec![fx.head_ref("refs/heads/main", a).await]);
+    let mut source = Source::new(vec![fx.head_ref("refs/heads/master", a).await]);
     source.estimate = None;
     let slots = BuildSlots::new(1);
     let (v1, v2) = (fx.open(11), fx.open(12));
@@ -707,7 +710,7 @@ async fn a_mirror_is_its_own_read_only_view_with_no_export() {
 async fn rebuild_discards_and_rederives_and_prune_removes_dead_views() {
     let fx = Fixture::new();
     let a = fx.commit(&[], &[("f", b"one")]).await;
-    let source = Source::new(vec![fx.head_ref("refs/heads/main", a).await]);
+    let source = Source::new(vec![fx.head_ref("refs/heads/master", a).await]);
     let view = fx.open(20);
     let exporter = view.exporter(&fx.engine, &*fx.objects, &fx.git);
     view.sync(&source, &exporter).await.unwrap();
