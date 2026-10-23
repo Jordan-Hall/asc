@@ -1,0 +1,64 @@
+# The worktree-default flow with git hooks installed: post-checkout fires in the new work tree
+# (git passes the null id, the new HEAD and 1) and reference-transaction fires around each ref
+# update. Authored from Claude Code 2.1.296 and SPEC §9.4.1. Recapture under spike S7.
+tool = "claude-code"
+version = "2.1.296"
+provenance = "authored"
+git = "2.55.0"
+recapture = "S7"
+driver = "Claude Code enters and leaves a worktree in a repository that has post-checkout and reference-transaction hooks. The hooks run their own git calls, so the trace pins what git hands them and what they may call."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "alpha\nbeta\n" > notes.txt; printf ".claude/worktrees/\n" > .gitignore'
+from = "driver"
+
+[[step]]
+git = ["add", "notes.txt", ".gitignore"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["worktree", "add", "--no-track", "-B", "worktree-feature-x", ".claude/worktrees/feature-x", "HEAD"]
+env = { LC_ALL = "C" }
+from = "claude-code"
+exit = 0
+
+[[step.hook]]
+name = "post-checkout"
+path = "${GITDIR}/hooks/post-checkout"
+exit = 0
+
+[[step.hook.call]]
+git = ["rev-parse", "--abbrev-ref", "HEAD"]
+from = "hook"
+exit = 0
+
+[[step.hook.call]]
+git = ["rev-parse", "--show-toplevel"]
+from = "hook"
+exit = 0
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "--no-optional-locks", "status", "--porcelain"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["worktree", "remove", "--force", ".claude/worktrees/feature-x"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["branch", "-D", "worktree-feature-x"]
+from = "claude-code"
+exit = 0

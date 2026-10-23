@@ -1,0 +1,115 @@
+# Gaps between the trace corpus and the native table (docs/SPEC.md §11.5).
+#
+# `cargo test -p asc --test traces` replays every trace through the asc shim. An invocation that
+# the native table does not serve fails with `fatal: asc: … is not supported`; the asc side then
+# stops following the recording, so the trace cannot be compared with git. Each such gap is
+# listed here with the PLAN unit that closes it. The test fails on a gap that is not listed,
+# and prints a stale entry as a warning. `ASC_TRACES_STRICT=1` (the compat gate, PLAN U25) fails on
+# any entry, so this file must be empty before the gate passes.
+#
+# The unit that serves an invocation removes its entry; a gap that appears behind it (the asc
+# side now gets further) is added or fixed by the same unit. An entry with `differs = true`
+# means the trace runs to the end but asc's output or post-state still differs from git's.
+
+[[pending]]
+trace = "claude-code/session-context"
+unit = "U21a"
+reason = "status --ignore-submodules=all, used by Claude Code's snapshot call"
+unsupported = ["option '--ignore-submodules' is not supported"]
+
+[[pending]]
+trace = "claude-code/edit-commit-push"
+unit = "U32"
+reason = "init --bare for the origin (U20), remote add and push -u (U32)"
+unsupported = ["option '--bare' is not supported", "'remote' is not supported yet", "'push' is not supported yet"]
+
+[[pending]]
+trace = "claude-code/worktree-default"
+unit = "U54w"
+reason = "worktree add, list and remove"
+unsupported = ["'worktree' is not supported yet"]
+
+[[pending]]
+trace = "claude-code/worktree-git-hooks"
+unit = "U54w"
+reason = "worktree add, list and remove, with post-checkout in the new work tree"
+unsupported = ["'worktree' is not supported yet"]
+
+[[pending]]
+trace = "claude-code/worktree-hook-commands"
+unit = "U54w"
+reason = "the git calls of a WorktreeCreate and a WorktreeRemove hook script"
+unsupported = ["'worktree' is not supported yet"]
+
+[[pending]]
+trace = "asc-scripts/pr-pack-forge"
+unit = "U32"
+reason = "remote add and remote get-url"
+unsupported = ["'remote' is not supported yet"]
+
+[[pending]]
+trace = "turbo/affected"
+unit = "U24c"
+reason = "diff-tree --merge-base (U24c) and ls-files --modified (U24e), both used by turbo --affected"
+unsupported = ["option '--merge-base' is not supported", "option '--modified' is not supported"]
+
+[[pending]]
+trace = "lint-staged/partially-staged"
+unit = "U27e"
+reason = "diff --ita-*-in-index (U24c), ls-files -t (U24e), stash create|store (U27e), apply (U27b)"
+unsupported = [
+  "option '--ita-visible-in-index' is not supported",
+  "option '--ita-invisible-in-index' is not supported",
+  "option '-t' is not supported",
+  "'stash' is not supported yet",
+  "'apply' is not supported yet",
+]
+
+[[pending]]
+trace = "lint-staged/restore-conflict"
+unit = "U27e"
+reason = "diff --ita-*-in-index (U24c), ls-files -t (U24e), stash create|store|apply (U27e), apply --3way (U27b)"
+unsupported = [
+  "option '--ita-visible-in-index' is not supported",
+  "option '--ita-invisible-in-index' is not supported",
+  "option '-t' is not supported",
+  "'stash' is not supported yet",
+  "'apply' is not supported yet",
+]
+
+[[pending]]
+trace = "lint-staged/task-failure"
+unit = "U27e"
+reason = "diff --ita-*-in-index (U24c), ls-files -t (U24e), stash create|store|apply (U27e)"
+unsupported = [
+  "option '--ita-visible-in-index' is not supported",
+  "option '--ita-invisible-in-index' is not supported",
+  "option '-t' is not supported",
+  "'stash' is not supported yet",
+]
+
+[[pending]]
+trace = "lint-staged/add-delete-rename"
+unit = "U27e"
+reason = "diff --ita-*-in-index (U24c), ls-files -t (U24e), stash create|store (U27e)"
+unsupported = [
+  "option '--ita-visible-in-index' is not supported",
+  "option '--ita-invisible-in-index' is not supported",
+  "option '-t' is not supported",
+  "'stash' is not supported yet",
+]
+
+[[pending]]
+trace = "husky/hooks"
+unit = "U27e"
+reason = "everything lint-staged needs, plus init --bare (U20), remote add and push -u (U32)"
+unsupported = [
+  "option '--ita-visible-in-index' is not supported",
+  "option '--ita-invisible-in-index' is not supported",
+  "option '-t' is not supported",
+  "'stash' is not supported yet",
+  "'apply' is not supported yet",
+  "option '--bare' is not supported",
+  "'remote' is not supported yet",
+  "'push' is not supported yet",
+]

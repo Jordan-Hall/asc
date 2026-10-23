@@ -1,0 +1,65 @@
+# Claude Code 2.1.296 with a WorktreeCreate and a WorktreeRemove hook configured: Claude Code
+# does not run git itself; it feeds the hook's stdin and reads the path from its stdout. The hook
+# steps below pin that JSON contract for the asc hooks (SPEC §9.3, unit U54w) and the git calls a
+# hand-written hook script makes. The field names and the stdout contract are unconfirmed until
+# spike S7; the git runner replays the git steps only and skips the hook_event steps.
+tool = "claude-code"
+version = "2.1.296"
+provenance = "authored"
+git = "2.55.0"
+recapture = "S7"
+driver = "Claude Code enters a worktree named feature-x through a WorktreeCreate hook (the hook creates the work tree and prints its path) and leaves it through a WorktreeRemove hook."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "alpha\nbeta\n" > notes.txt; printf ".claude/worktrees/\n" > .gitignore'
+from = "driver"
+
+[[step]]
+git = ["add", "notes.txt", ".gitignore"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+hook_event = "WorktreeCreate"
+stdin = '{"session_id":"s-0001","transcript_path":"${ROOT}/.claude/transcript.jsonl","cwd":"${ROOT}","hook_event_name":"WorktreeCreate","name":"feature-x"}'
+stdout = "${ROOT}/.claude/worktrees/feature-x"
+from = "claude-code"
+
+[[step]]
+git = ["worktree", "add", "-B", "agent/feature-x", ".claude/worktrees/feature-x", "HEAD"]
+from = "hook:WorktreeCreate"
+exit = 0
+
+[[step]]
+sh = 'printf "gamma\n" >> .claude/worktrees/feature-x/notes.txt'
+from = "claude-code"
+
+[[step]]
+git = ["-C", ".claude/worktrees/feature-x", "--no-optional-locks", "status", "--porcelain"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+hook_event = "WorktreeRemove"
+stdin = '{"session_id":"s-0001","transcript_path":"${ROOT}/.claude/transcript.jsonl","cwd":"${ROOT}","hook_event_name":"WorktreeRemove","worktree_path":"${ROOT}/.claude/worktrees/feature-x"}'
+from = "claude-code"
+
+[[step]]
+git = ["worktree", "remove", "--force", ".claude/worktrees/feature-x"]
+from = "hook:WorktreeRemove"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "--verify", "--quiet", "refs/heads/agent/feature-x"]
+from = "driver"
+exit = 0

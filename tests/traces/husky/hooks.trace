@@ -1,0 +1,528 @@
+# Recorded by tests/traces/record/record.sh from record/scenarios/husky/hooks.sh
+tool = "husky"
+version = "9.1.7"
+provenance = "recorded"
+git = "2.55.0"
+driver = "A user installs husky (the prepare script), adds a pre-commit hook that runs lint-staged, a commit-msg hook that runs commitlint, a post-checkout hook that looks for a changed lockfile and a pre-push hook that refuses a dirty work tree. They commit, commit with a rejected message, switch to a new branch, commit a partially staged file and push to a bare remote."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = '''
+printf "line one\nline two\nline three\nline four\nline five\nline six\nline seven\nline eight\n" > a.js
+printf "{\"name\":\"fx\",\"private\":true,\"scripts\":{\"prepare\":\"husky\"}}\n" > package.json
+printf "bun.lock stub\n" > bun.lock
+printf ".husky/_/\n" > .gitignore
+cat > .lintstagedrc.json <<"CFG"
+{"*.js": "asc-act --file .semi.sh"}
+CFG
+cat > .semi.sh <<"TASK"
+for f in "$@"; do sed -i "1s/\$/;/" "$f"; done
+TASK
+cat > commitlint.config.mjs <<"CFG"
+export default {
+  rules: {
+    "type-empty": [2, "never"],
+    "type-enum": [2, "always", ["feat", "fix", "chore", "docs"]],
+    "subject-empty": [2, "never"],
+    "header-max-length": [2, "always", 72],
+  },
+};
+CFG
+'''
+from = "driver"
+
+[[step]]
+git = ["config", "core.hooksPath", ".husky/_"]
+from = "husky"
+exit = 0
+
+[[step]]
+sh = '''
+mkdir -p .husky
+cat > .husky/pre-commit <<"H"
+lint-staged
+H
+cat > .husky/commit-msg <<"H"
+commitlint --edit "$1"
+H
+cat > .husky/post-checkout <<"H"
+git diff --name-only "$1" "$2" -- bun.lock
+H
+cat > .husky/pre-push <<"H"
+git diff --quiet || { echo "dirty work tree"; exit 1; }
+git rev-parse --abbrev-ref HEAD
+H
+'''
+from = "driver"
+
+[[step]]
+git = ["add", "-A"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step.hook]]
+name = "pre-commit"
+path = ".husky/_/pre-commit"
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "version", "--build-options"]
+from = "husky"
+routes = "real"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--show-cdup", "--show-toplevel", "--absolute-git-dir"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "log", "-1"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 128
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--ita-visible-in-index", "--raw", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-visible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-invisible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "ls-files", "-z", "--full-name", "-t", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/package.json", ":(glob)**/package.yaml", ":(glob)**/package.yml", ":(glob)**/.lintstagedrc", ":(glob)**/.lintstagedrc.json", ":(glob)**/.lintstagedrc.yaml", ":(glob)**/.lintstagedrc.yml", ":(glob)**/.lintstagedrc.mjs", ":(glob)**/.lintstagedrc.mts", ":(glob)**/.lintstagedrc.js", ":(glob)**/.lintstagedrc.ts", ":(glob)**/.lintstagedrc.cjs", ":(glob)**/.lintstagedrc.cts", ":(glob)**/lint-staged.config.mjs", ":(glob)**/lint-staged.config.mts", ":(glob)**/lint-staged.config.js", ":(glob)**/lint-staged.config.ts", ":(glob)**/lint-staged.config.cjs", ":(glob)**/lint-staged.config.cts"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "status", "-z", "--untracked-files=no"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+sh = "set -- \"${ROOT}/a.js\"; for f in \"$@\"; do sed -i \"1s/\\$/;/\" \"$f\"; done"
+from = "husky"
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "add", "--", "${ROOT}/a.js"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook]]
+name = "commit-msg"
+path = ".husky/_/commit-msg"
+exit = 0
+
+[[step.hook.call]]
+git = ["config", "core.commentChar"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 1
+
+[[step]]
+sh = "sed -i \"1s/one/ONE/\" a.js"
+from = "driver"
+
+[[step]]
+git = ["add", "a.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "update a.js"]
+from = "driver"
+exit = 1
+
+[[step.hook]]
+name = "pre-commit"
+path = ".husky/_/pre-commit"
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "version", "--build-options"]
+from = "husky"
+routes = "real"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--show-cdup", "--show-toplevel", "--absolute-git-dir"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "log", "-1"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--ita-visible-in-index", "--raw", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-visible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-invisible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "ls-files", "-z", "--full-name", "-t", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/package.json", ":(glob)**/package.yaml", ":(glob)**/package.yml", ":(glob)**/.lintstagedrc", ":(glob)**/.lintstagedrc.json", ":(glob)**/.lintstagedrc.yaml", ":(glob)**/.lintstagedrc.yml", ":(glob)**/.lintstagedrc.mjs", ":(glob)**/.lintstagedrc.mts", ":(glob)**/.lintstagedrc.js", ":(glob)**/.lintstagedrc.ts", ":(glob)**/.lintstagedrc.cjs", ":(glob)**/.lintstagedrc.cts", ":(glob)**/lint-staged.config.mjs", ":(glob)**/lint-staged.config.mts", ":(glob)**/lint-staged.config.js", ":(glob)**/lint-staged.config.ts", ":(glob)**/lint-staged.config.cjs", ":(glob)**/lint-staged.config.cts"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "status", "-z", "--untracked-files=no"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "create"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (747f9701)", "ea00ab576db51875eda2a208a7a32a7303d48cd5"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "ea00ab576db51875eda2a208a7a32a7303d48cd5"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+sh = "set -- \"${ROOT}/a.js\"; for f in \"$@\"; do sed -i \"1s/\\$/;/\" \"$f\"; done"
+from = "husky"
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "add", "--", "${ROOT}/a.js"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "list", "--format=\"%H %s\"", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "drop", "--quiet", "0"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook]]
+name = "commit-msg"
+path = ".husky/_/commit-msg"
+exit = 1
+
+[[step.hook.call]]
+git = ["config", "core.commentChar"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 1
+
+[[step]]
+git = ["checkout", "-q", "-b", "feature"]
+from = "driver"
+exit = 0
+
+[[step.hook]]
+name = "post-checkout"
+path = ".husky/_/post-checkout"
+exit = 0
+
+[[step.hook.call]]
+git = ["diff", "--name-only", "5d7ff20dc9dda28242a6b359c1cb9ea8dfb8658a", "5d7ff20dc9dda28242a6b359c1cb9ea8dfb8658a", "--", "bun.lock"]
+from = "husky"
+exit = 0
+
+[[step]]
+sh = "sed -i \"8s/eight/EIGHT/\" a.js"
+from = "driver"
+
+[[step]]
+git = ["add", "a.js"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = "sed -i \"4s/four/FOUR/\" a.js"
+from = "driver"
+
+[[step]]
+git = ["commit", "-qm", "feat: change line eight"]
+from = "driver"
+exit = 0
+
+[[step.hook]]
+name = "pre-commit"
+path = ".husky/_/pre-commit"
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "version", "--build-options"]
+from = "husky"
+routes = "real"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--show-cdup", "--show-toplevel", "--absolute-git-dir"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "log", "-1"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--ita-visible-in-index", "--raw", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-visible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--staged", "--ita-invisible-in-index", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "ls-files", "-z", "--full-name", "-t", "--cached", "--others", "--exclude-standard", "--", ":(glob)**/package.json", ":(glob)**/package.yaml", ":(glob)**/package.yml", ":(glob)**/.lintstagedrc", ":(glob)**/.lintstagedrc.json", ":(glob)**/.lintstagedrc.yaml", ":(glob)**/.lintstagedrc.yml", ":(glob)**/.lintstagedrc.mjs", ":(glob)**/.lintstagedrc.mts", ":(glob)**/.lintstagedrc.js", ":(glob)**/.lintstagedrc.ts", ":(glob)**/.lintstagedrc.cjs", ":(glob)**/.lintstagedrc.cts", ":(glob)**/lint-staged.config.mjs", ":(glob)**/lint-staged.config.mts", ":(glob)**/lint-staged.config.js", ":(glob)**/lint-staged.config.ts", ":(glob)**/lint-staged.config.cjs", ":(glob)**/lint-staged.config.cts"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "status", "-z", "--untracked-files=no"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+sh = "mkdir -p \"$(dirname \"${GITDIR}/lint-staged/7e9e2a21/unstaged.patch\")\""
+from = "husky"
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--output", "${GITDIR}/lint-staged/7e9e2a21/unstaged.patch", "--", "a.js"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "create"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (7e9e2a21)", "707edfcdfc7e6fc8aff1e55810faa73071cf8ef0"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "707edfcdfc7e6fc8aff1e55810faa73071cf8ef0"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "restore", "--worktree", "--", "a.js"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+sh = "set -- \"${ROOT}/a.js\"; for f in \"$@\"; do sed -i \"1s/\\$/;/\" \"$f\"; done"
+from = "husky"
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--binary", "--unified=0", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--patch", "--submodule=short", "--raw", "-z", "--no-renames", "--no-textconv"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "add", "--", "${ROOT}/a.js"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "diff", "--diff-filter=ACMR", "--staged", "--name-only", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "apply", "-v", "--whitespace=nowarn", "--recount", "--unidiff-zero", "${GITDIR}/lint-staged/7e9e2a21/unstaged.patch"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "list", "--format=\"%H %s\"", "-z"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook.call]]
+git = ["-c", "submodule.recurse=false", "stash", "drop", "--quiet", "0"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 0
+
+[[step.hook]]
+name = "commit-msg"
+path = ".husky/_/commit-msg"
+exit = 0
+
+[[step.hook.call]]
+git = ["config", "core.commentChar"]
+from = "husky"
+env = { GIT_INDEX_FILE = "${GITDIR}/index", GIT_EDITOR = ":" }
+exit = 1
+
+[[step]]
+git = ["status", "--porcelain=v1"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["init", "-q", "--bare", "../remote.git"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["remote", "add", "origin", "../remote.git"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["checkout", "--", "a.js"]
+from = "driver"
+exit = 0
+
+[[step.hook]]
+name = "post-checkout"
+path = ".husky/_/post-checkout"
+exit = 0
+
+[[step.hook.call]]
+git = ["diff", "--name-only", "e3a00fc9ce48102346c0975bd8ce6ce9493158f3", "e3a00fc9ce48102346c0975bd8ce6ce9493158f3", "--", "bun.lock"]
+from = "husky"
+exit = 0
+
+[[step]]
+git = ["push", "-u", "origin", "feature"]
+from = "driver"
+exit = 0
+
+[[step.hook]]
+name = "pre-push"
+path = ".husky/_/pre-push"
+exit = 0
+
+[[step.hook.call]]
+git = ["diff", "--quiet"]
+from = "husky"
+exit = 0
+
+[[step.hook.call]]
+git = ["rev-parse", "--abbrev-ref", "HEAD"]
+from = "husky"
+exit = 0

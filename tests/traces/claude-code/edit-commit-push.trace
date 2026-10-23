@@ -1,0 +1,116 @@
+# Authored from the commands the /commit and PR flows send through Claude Code 2.1.296's Bash
+# tool. Recapture with the pinned build under spike S7 (docs/SPEC.md §19).
+tool = "claude-code"
+version = "2.1.296"
+provenance = "authored"
+git = "2.55.0"
+recapture = "S7"
+driver = "Claude Code edits a file, reviews the change with status, diff and log, stages the file, commits with a multi-line message and pushes the new branch to a bare origin with an upstream. It checks the ahead count before and after the push."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["init", "-q", "--bare", "../origin.git"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["remote", "add", "origin", "../origin.git"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "alpha\nbeta\n" > notes.txt'
+from = "driver"
+
+[[step]]
+git = ["add", "notes.txt"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["push", "-q", "-u", "origin", "master"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["checkout", "-q", "-b", "claude/fix-notes"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'sed -i "2s/beta/BETA/" notes.txt; printf "gamma\n" >> notes.txt; printf "scratch\n" > scratch.txt'
+from = "claude-code"
+
+[[step]]
+git = ["status"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["diff", "HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["diff", "--stat"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["branch", "--show-current"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["log", "--oneline", "-10"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["add", "notes.txt"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["diff", "--staged"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["commit", "-m", "fix: capitalise beta\n\nAdds gamma as well.\n"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["status", "--short"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["rev-list", "--count", "@{u}..HEAD"]
+from = "claude-code"
+exit = 128
+
+[[step]]
+git = ["push", "-u", "origin", "HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["rev-list", "--count", "@{u}..HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["log", "--oneline", "origin/master..HEAD"]
+from = "claude-code"
+exit = 0

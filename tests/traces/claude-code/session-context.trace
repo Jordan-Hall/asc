@@ -1,0 +1,96 @@
+# Authored from the git argv templates in Claude Code 2.1.296 (session start and the /commit
+# skill's context block). Recapture with the pinned build under spike S7 (docs/SPEC.md §19).
+tool = "claude-code"
+version = "2.1.296"
+provenance = "authored"
+git = "2.55.0"
+recapture = "S7"
+driver = "A user opens Claude Code in a repository with one commit, one modified file, one staged file and one untracked file. At session start Claude Code reads the branch, the default branch, the user name, the status and the last commits. The /commit skill then reads the status, the diff against HEAD, the branch and the last ten commits."
+
+[[step]]
+git = ["init", "-q"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "one\n" > a.txt; printf "two\n" > b.txt'
+from = "driver"
+
+[[step]]
+git = ["config", "user.name", "A U Thor"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["add", "a.txt", "b.txt"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["commit", "-qm", "chore: baseline"]
+from = "driver"
+exit = 0
+
+[[step]]
+sh = 'printf "one more\n" >> a.txt; printf "staged\n" >> b.txt; printf "new\n" > c.txt'
+from = "driver"
+
+[[step]]
+git = ["add", "b.txt"]
+from = "driver"
+exit = 0
+
+[[step]]
+git = ["--no-optional-locks", "status", "--short"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["branch", "--show-current"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+from = "claude-code"
+exit = 128
+
+[[step]]
+git = ["--no-optional-locks", "log", "--oneline", "-n", "5"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["config", "user.name"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "--verify", "--quiet", "HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignored=no", "--no-renames", "--ignore-submodules=all"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["rev-parse", "@{u}"]
+from = "claude-code"
+exit = 128
+
+[[step]]
+git = ["status"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["diff", "HEAD"]
+from = "claude-code"
+exit = 0
+
+[[step]]
+git = ["log", "--oneline", "-10"]
+from = "claude-code"
+exit = 0
