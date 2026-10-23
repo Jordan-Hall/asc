@@ -6,6 +6,7 @@
 
 mod child;
 mod cli;
+mod credential;
 mod daemon;
 mod dispatch;
 mod env;
