@@ -10,6 +10,12 @@
 //!   daemon holds the database.
 //! * **Liveness:** a `Ping` with no answer within [`Config::ping_timeout`] (2 s) writes a dump
 //!   to `log/`, kills the process named by the pid file and starts a new daemon.
+//! * **Trust:** whatever answers on the endpoint is not trusted by name. Every connection checks
+//!   the server process with the OS (`asc_rpc::ipc`: same user, else refused), and a kill only
+//!   ever targets a pid that is *all* of: the OS-reported server pid, the pid in the pid file the
+//!   daemon wrote into the private run directory, and (after `Ping`) the pid the daemon claims.
+//!   Otherwise the endpoint is held by something that is not asc's daemon:
+//!   [`LifecycleError::NotDaemon`], and nothing is killed.
 //!
 //! The process side effects (spawn, kill) sit behind [`Process`] so tests run daemons in
 //! process.
@@ -18,7 +24,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use asc_rpc::ipc::{IpcEndpoint, IpcError, WorkspaceClient, connect};
+use asc_rpc::ipc::{IpcEndpoint, IpcError, WorkspaceClient, connect, connect_stream, verified_server_pid};
 use asc_rpc::server::wire;
 use asc_state::AscHome;
 
@@ -39,6 +45,8 @@ pub enum LifecycleError {
     UnknownPid,
     #[error("the daemon (pid {0}) did not stop")]
     StopFailed(u32),
+    #[error("a process that is not asc's daemon holds the endpoint; nothing was killed")]
+    NotDaemon,
 }
 
 /// Timeouts and locations of one daemon.
@@ -247,6 +255,32 @@ fn write_linux_threads(out: &mut impl io::Write, pid: u32) {
     }
 }
 
+/// Fails with [`LifecycleError::NotDaemon`] when the endpoint is held by a server that the OS
+/// does not show to be this user's. Nothing is sent to such a server.
+async fn refuse_foreign(cfg: &Config) -> Result<(), LifecycleError> {
+    match connect_stream(&cfg.endpoint).await {
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Err(LifecycleError::NotDaemon),
+        _ => Ok(()),
+    }
+}
+
+/// The one pid a kill may target, or `None` when the server is already gone.
+///
+/// The pid is what the OS says serves the endpoint (a user-owned process: see `asc_rpc::ipc`),
+/// and it must equal the pid file in the private run directory and, if given, the pid the
+/// server claims. Any mismatch is [`LifecycleError::NotDaemon`].
+async fn kill_target(cfg: &Config, claimed: Option<u32>) -> Result<Option<u32>, LifecycleError> {
+    let pid = match verified_server_pid(&cfg.endpoint).await {
+        Ok(pid) => pid,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(LifecycleError::NotDaemon),
+        Err(_) => return Ok(None),
+    };
+    if read_pid(&cfg.run_dir) != Some(pid) || claimed.is_some_and(|c| c != pid) {
+        return Err(LifecycleError::NotDaemon);
+    }
+    Ok(Some(pid))
+}
+
 /// Stops a daemon that answers `Ping`: `Shutdown`, then a kill if it stays.
 async fn stop_up(cfg: &Config, proc: &dyn Process, info: &Info) -> Result<(), LifecycleError> {
     let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
@@ -255,18 +289,25 @@ async fn stop_up(cfg: &Config, proc: &dyn Process, info: &Info) -> Result<(), Li
     if wait_down(cfg).await {
         return Ok(());
     }
-    proc.kill(info.pid)?;
+    // `info.pid` came from whatever answered; it is only ever compared, never trusted.
+    let Some(pid) = kill_target(cfg, Some(info.pid)).await? else {
+        return Ok(());
+    };
+    proc.kill(pid)?;
     if wait_down(cfg).await {
         Ok(())
     } else {
-        Err(LifecycleError::StopFailed(info.pid))
+        Err(LifecycleError::StopFailed(pid))
     }
 }
 
 /// Kills a daemon that does not answer, after writing the dump. The pid comes from the pid file
-/// in the user's private `run/` directory.
+/// in the user's private `run/` directory and must be the one the OS says serves the endpoint.
 async fn kill_hung(cfg: &Config, proc: &dyn Process) -> Result<(), LifecycleError> {
-    let pid = read_pid(&cfg.run_dir).ok_or(LifecycleError::UnknownPid)?;
+    read_pid(&cfg.run_dir).ok_or(LifecycleError::UnknownPid)?;
+    let Some(pid) = kill_target(cfg, None).await? else {
+        return Ok(());
+    };
     // The dump is diagnostics; failing to write it must not keep a hung daemon alive.
     let _ = write_dump(cfg, pid);
     proc.kill(pid)?;
@@ -302,6 +343,7 @@ pub async fn ensure_running(cfg: &Config, proc: &dyn Process) -> Result<Info, Li
         Probe::Up(info) => stop_up(cfg, proc, &info).await?,
         Probe::Hung => kill_hung(cfg, proc).await?,
         Probe::Down => {
+            refuse_foreign(cfg).await?;
             // A pid file with nobody behind it is stale.
             let _ = std::fs::remove_file(pid_file(&cfg.run_dir));
         }
@@ -318,6 +360,7 @@ pub async fn stop_skewed(cfg: &Config, proc: &dyn Process) -> Result<bool, Lifec
             stop_up(cfg, proc, &info).await?;
             Ok(true)
         }
+        Probe::Down => refuse_foreign(cfg).await.map(|()| false),
         _ => Ok(false),
     }
 }
@@ -332,7 +375,7 @@ pub enum Stopped {
 /// `asc daemon stop`: asks the daemon to shut down; a hung one is killed.
 pub async fn stop(cfg: &Config, proc: &dyn Process) -> Result<Stopped, LifecycleError> {
     match probe(cfg).await {
-        Probe::Down => Ok(Stopped::NotRunning),
+        Probe::Down => refuse_foreign(cfg).await.map(|()| Stopped::NotRunning),
         Probe::Up(info) => stop_up(cfg, proc, &info).await.map(|()| Stopped::Stopped),
         Probe::Hung => kill_hung(cfg, proc).await.map(|()| Stopped::Stopped),
     }
@@ -343,11 +386,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use asc_rpc::ipc::IpcListener;
+    use asc_rpc::ipc::{IpcListener, Workspace, WorkspaceServer, serve_incoming};
     use tokio::task::JoinHandle;
+    use tonic::{Request, Response, Status};
 
     use super::*;
-    use crate::daemon::{RunConfig, run};
+    use crate::daemon::{Never, RunConfig, not_served, run};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -534,16 +578,17 @@ mod tests {
         let proc = InProcess::new(&cfg);
         proc.adopt(hung_daemon(&cfg));
         std::fs::create_dir_all(&cfg.run_dir).unwrap();
-        std::fs::write(pid_file(&cfg.run_dir), "4242\n").unwrap();
+        let me = std::process::id();
+        write_pid_file(&cfg, me);
         assert_eq!(probe(&cfg).await, Probe::Hung);
 
         let info = ensure_running(&cfg, &*proc).await.unwrap();
         assert_eq!(info.version, "1.0.0");
-        assert_eq!(*proc.killed.lock().unwrap(), [4242], "the pid file names the process to kill");
+        assert_eq!(*proc.killed.lock().unwrap(), [me], "the pid file names the process to kill");
         let dumps: Vec<_> = std::fs::read_dir(&cfg.log_dir).unwrap().flatten().collect();
         assert_eq!(dumps.len(), 1, "one dump per hang");
         let text = std::fs::read_to_string(dumps[0].path()).unwrap();
-        assert!(text.contains("pid: 4242"), "{text}");
+        assert!(text.contains(&format!("pid: {me}")), "{text}");
         stop(&cfg, &*proc).await.unwrap();
     }
 
@@ -557,6 +602,253 @@ mod tests {
         assert!(matches!(err, LifecycleError::UnknownPid), "{err}");
         assert!(proc.killed.lock().unwrap().is_empty());
         proc.crash();
+    }
+
+    // ------------------------------------------------------------------ a squatter on the endpoint
+
+    /// A server that took the endpoint and lies in `Ping`: its version differs, so asc wants to
+    /// replace it, and it names `claimed_pid` as its own. It ignores `Shutdown`.
+    struct Fake {
+        version: String,
+        claimed_pid: u32,
+    }
+
+    #[tonic::async_trait]
+    impl Workspace for Fake {
+        async fn status(&self, _: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
+            not_served()
+        }
+
+        type DiffStream = Never<wire::DiffResponse>;
+        async fn diff(&self, _: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
+            not_served()
+        }
+
+        type LogStream = Never<wire::LogResponse>;
+        async fn log(&self, _: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
+            not_served()
+        }
+
+        type BlameStream = Never<wire::BlameResponse>;
+        async fn blame(&self, _: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
+            not_served()
+        }
+
+        async fn affected(&self, _: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
+            not_served()
+        }
+
+        type WatchStream = Never<wire::WatchEvent>;
+        async fn watch(&self, _: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
+            not_served()
+        }
+
+        async fn stage(&self, _: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
+            not_served()
+        }
+
+        async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
+            Ok(Response::new(wire::PingResponse {
+                version: self.version.clone(),
+                pid: self.claimed_pid,
+                uptime_ms: 1,
+            }))
+        }
+
+        async fn mount(&self, _: Request<wire::MountRequest>) -> Result<Response<wire::MountResponse>, Status> {
+            not_served()
+        }
+
+        async fn unmount(&self, _: Request<wire::UnmountRequest>) -> Result<Response<wire::UnmountResponse>, Status> {
+            not_served()
+        }
+
+        async fn switch(&self, _: Request<wire::SwitchRequest>) -> Result<Response<wire::SwitchResponse>, Status> {
+            not_served()
+        }
+
+        async fn journal(&self, _: Request<wire::JournalRequest>) -> Result<Response<wire::JournalResponse>, Status> {
+            not_served()
+        }
+
+        async fn clear_journal(&self, _: Request<wire::ClearJournalRequest>) -> Result<Response<wire::ClearJournalResponse>, Status> {
+            not_served()
+        }
+
+        async fn dehydrate(&self, _: Request<wire::DehydrateRequest>) -> Result<Response<wire::DehydrateResponse>, Status> {
+            not_served()
+        }
+
+        async fn prefetch(&self, _: Request<wire::PrefetchRequest>) -> Result<Response<wire::PrefetchResponse>, Status> {
+            not_served()
+        }
+
+        async fn stats(&self, _: Request<wire::StatsRequest>) -> Result<Response<wire::StatsResponse>, Status> {
+            not_served()
+        }
+
+        async fn shutdown(&self, _: Request<wire::ShutdownRequest>) -> Result<Response<wire::ShutdownResponse>, Status> {
+            // Ignored: the squatter stays, so the caller is tempted to kill it.
+            Ok(Response::new(wire::ShutdownResponse::default()))
+        }
+    }
+
+    fn serve_fake(cfg: &Config, claimed_pid: u32) -> JoinHandle<()> {
+        let incoming = serve_incoming(IpcListener::bind(&cfg.endpoint).unwrap());
+        let fake = Fake {
+            version: "0.0.1-squatter".into(),
+            claimed_pid,
+        };
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(WorkspaceServer::new(fake))
+                .serve_with_incoming(incoming)
+                .await;
+        })
+    }
+
+    /// An innocent process owned by this user, that must survive.
+    struct Victim(std::process::Child);
+
+    impl Victim {
+        fn start() -> Self {
+            use std::process::{Command, Stdio};
+            let mut cmd = if cfg!(windows) {
+                let mut c = Command::new("ping");
+                c.args(["-n", "120", "127.0.0.1"]);
+                c
+            } else {
+                let mut c = Command::new("sleep");
+                c.arg("120");
+                c
+            };
+            Self(cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap())
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+
+        fn alive(&mut self) -> bool {
+            self.0.try_wait().unwrap().is_none()
+        }
+    }
+
+    impl Drop for Victim {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Records every kill and, when `really`, carries it out with the operating system's kill.
+    struct Recording {
+        really: bool,
+        killed: Mutex<Vec<u32>>,
+    }
+
+    impl Recording {
+        fn new(really: bool) -> Self {
+            Self {
+                really,
+                killed: Mutex::default(),
+            }
+        }
+    }
+
+    impl Process for Recording {
+        fn spawn(&self) -> io::Result<()> {
+            Err(io::Error::other("the test does not start daemons"))
+        }
+
+        fn kill(&self, pid: u32) -> io::Result<()> {
+            self.killed.lock().unwrap().push(pid);
+            if self.really {
+                let sys = SystemProcess {
+                    exe: PathBuf::from("asc"),
+                    home: PathBuf::new(),
+                };
+                return sys.kill(pid);
+            }
+            Ok(())
+        }
+    }
+
+    fn write_pid_file(cfg: &Config, pid: u32) {
+        std::fs::create_dir_all(&cfg.run_dir).unwrap();
+        std::fs::write(pid_file(&cfg.run_dir), format!("{pid}\n")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_squatter_cannot_make_asc_kill_another_process() {
+        let me = std::process::id();
+        // (pid the squatter claims, pid in the pid file): the OS says the server is this process,
+        // so each of these names a process that is not the server.
+        for (claimed, in_file) in [(None, None), (None, Some(me)), (Some(me), None)] {
+            let mut victim = Victim::start();
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = Config {
+            stop_wait: Duration::from_millis(300),
+            ..config(dir.path(), "1.0.0")
+        };
+            let squatter = serve_fake(&cfg, claimed.unwrap_or_else(|| victim.pid()));
+            write_pid_file(&cfg, in_file.unwrap_or_else(|| victim.pid()));
+            let proc = Recording::new(true);
+
+            let probed = probe(&cfg).await;
+            assert!(matches!(&probed, Probe::Up(i) if i.version != "1.0.0"), "{probed:?}");
+            let err = ensure_running(&cfg, &proc).await.unwrap_err();
+            assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
+            let err = stop(&cfg, &proc).await.unwrap_err();
+            assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
+            let err = stop_skewed(&cfg, &proc).await.unwrap_err();
+            assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
+
+            assert!(proc.killed.lock().unwrap().is_empty(), "nothing is killed");
+            assert!(victim.alive(), "the victim survives (claimed {claimed:?}, file {in_file:?})");
+            squatter.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hung_endpoint_whose_pid_file_names_another_process_kills_nothing() {
+        let mut victim = Victim::start();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            stop_wait: Duration::from_millis(300),
+            ..config(dir.path(), "1.0.0")
+        };
+        let proc = InProcess::new(&cfg);
+        proc.adopt(hung_daemon(&cfg));
+        write_pid_file(&cfg, victim.pid());
+        let killer = Recording::new(true);
+
+        let err = ensure_running(&cfg, &killer).await.unwrap_err();
+        assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
+        assert!(killer.killed.lock().unwrap().is_empty());
+        assert!(victim.alive());
+        assert!(pid_file(&cfg.run_dir).exists(), "the pid file is left as found");
+        assert!(!cfg.log_dir.exists(), "no dump is written for a process that is not the daemon");
+        proc.crash();
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_ignores_shutdown_is_killed_when_every_pid_agrees() {
+        let me = std::process::id();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            stop_wait: Duration::from_millis(300),
+            ..config(dir.path(), "1.0.0")
+        };
+        let squatter = serve_fake(&cfg, me);
+        write_pid_file(&cfg, me);
+        let proc = Recording::new(false);
+
+        // The OS-verified pid, the pid file and the claimed pid are all this process.
+        let err = ensure_running(&cfg, &proc).await.unwrap_err();
+        assert!(matches!(err, LifecycleError::StopFailed(p) if p == me), "{err}");
+        assert_eq!(*proc.killed.lock().unwrap(), [me]);
+        squatter.abort();
     }
 
     #[test]
