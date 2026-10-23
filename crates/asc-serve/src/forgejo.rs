@@ -260,6 +260,9 @@ pub struct ForgejoIdentity {
     pub deploy_key_id: i64,
 }
 
+/// The user id Forgejo gives to every Actions task (`user_model.ActionsUserID`).
+const ACTIONS_USER_ID: i64 = -2;
+
 impl ForgejoIdentity {
     fn new(user_id: i64, username: &str, deploy_key_id: i64) -> Option<Self> {
         let name_ok = !username.is_empty()
@@ -267,7 +270,8 @@ impl ForgejoIdentity {
             && username.bytes().all(|b| {
                 b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+')
             });
-        (name_ok && user_id >= 0 && deploy_key_id >= 0).then(|| Self {
+        let id_ok = user_id >= 0 || user_id == ACTIONS_USER_ID;
+        (name_ok && id_ok && deploy_key_id >= 0).then(|| Self {
             user_id,
             username: username.to_owned(),
             deploy_key_id,
@@ -903,10 +907,11 @@ impl InternalAuthz {
             .await
     }
 
+    /// Repository names compare case-insensitively, as Forgejo resolves them.
     fn granted(&self, parent: &str, child: &str) -> bool {
         self.grants
             .iter()
-            .any(|g| g.parent == parent && g.child == child)
+            .any(|g| g.parent.eq_ignore_ascii_case(parent) && g.child.eq_ignore_ascii_case(child))
     }
 
     async fn fetch(
@@ -960,11 +965,17 @@ impl InternalAuthz {
         access: Access,
     ) -> Result<Decision, Fetch> {
         let deny = || Fetch::Denied(denied_for(login));
-        let mut perm = if a.allowed {
-            Perm::parse(&a.perm)
-        } else {
-            Perm::None
-        };
+        if !a.allowed {
+            // The fork answers a credential that did not authenticate with every field zero
+            // and a refusal after authentication with the user's own id. Unauthenticated
+            // becomes a 401 challenge, so git erases the stored credential and asks again.
+            return Err(Fetch::Denied(if a.user_id == 0 {
+                AuthError::Unauthenticated
+            } else {
+                AuthError::Forbidden
+            }));
+        }
+        let mut perm = Perm::parse(&a.perm);
         let task = a.task.filter(|_| a.is_actions_task);
         if a.is_actions_task {
             // A task token is bound to its own repository. Any other repository needs a
@@ -973,7 +984,7 @@ impl InternalAuthz {
                 .as_ref()
                 .and_then(|t| t.repo.as_deref())
                 .ok_or_else(deny)?;
-            if bound != repo {
+            if !bound.eq_ignore_ascii_case(repo) {
                 perm = if self.granted(bound, repo) {
                     Perm::Read
                 } else {

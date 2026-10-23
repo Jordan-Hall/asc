@@ -87,15 +87,24 @@ mod forgejo {
         }
     }
 
+    /// The answer for a credential that did not authenticate: every field zero.
+    fn zero_denial() -> Value {
+        json!({"allowed": false, "user_id": 0, "username": "", "perm": "", "deploy_key_id": 0,
+               "is_actions_task": false, "task": null, "branch_rules": {"require_signed": false}})
+    }
+
     fn reply(status: u16, body: Value) -> (StatusCode, String) {
         (StatusCode::from_u16(status).unwrap(), body.to_string())
     }
+
+    /// One known field of a request: its name and a check of its Go type.
+    type KnownField<'a> = (&'a str, fn(&Value) -> bool);
 
     /// Forgejo's `decodeAscStrict`: the body is one JSON object whose fields are all known, and
     /// the values have the Go field types. `None` is a 400 (`modules/private/asc.go`).
     fn strict_fields(
         json: &Value,
-        known: &[(&str, fn(&Value) -> bool)],
+        known: &[KnownField<'_>],
     ) -> Option<serde_json::Map<String, Value>> {
         let obj = json.as_object()?;
         obj.iter()
@@ -150,7 +159,10 @@ mod forgejo {
             return Err("invalid owner or repo");
         }
         if let Some(k) = o.get("ssh_key") {
-            if ["token", "user", "key_id"].iter().any(|f| o.contains_key(*f)) {
+            if ["token", "user", "key_id"]
+                .iter()
+                .any(|f| o.contains_key(*f))
+            {
                 return Err("ssh_key excludes token, user and key_id");
             }
             return strict_key(k).map(|_| ()).ok_or("invalid key");
@@ -248,7 +260,9 @@ mod forgejo {
             }
             if path == "/api/internal/asc/authz" {
                 // Like the fork: an unknown field or a wrong name is a 400, and a denial is a 200
-                // with `allowed: false`, never a 401 or 403.
+                // with `allowed: false`, never a 401 or 403. A credential that did not
+                // authenticate gives every field zero; a refusal after authentication carries
+                // the user's own `user_id` and `username` (K07c).
                 if let Err(m) = strict_authz(&json) {
                     return reply(400, json!({"user_msg": m}));
                 }
@@ -279,7 +293,7 @@ mod forgejo {
                     // A Basic login: a wrong password is `allowed: false`, as any other denial.
                     t = format!("basic/{user}:{t}");
                     if !i.users.contains_key(&t) {
-                        return reply(200, json!({"allowed": false}));
+                        return reply(200, zero_denial());
                     }
                 }
                 let r = format!(
@@ -287,9 +301,29 @@ mod forgejo {
                     json["owner"].as_str().unwrap_or(""),
                     json["repo"].as_str().unwrap_or("")
                 );
-                return match i.authz.get(&(t, r)) {
-                    Some(v) => reply(200, v.clone()),
-                    None => reply(200, json!({"allowed": false})),
+                if let Some(v) = i.authz.get(&(t.clone(), r)) {
+                    return reply(200, v.clone());
+                }
+                // No answer for this repo: a refusal that names the user when the credential
+                // is known, and the all-zero denial when it is not.
+                let known = i.users.get(&t).cloned().or_else(|| {
+                    i.authz.iter().find_map(|((tok, _), v)| {
+                        (*tok == t && v["user_id"].as_i64().unwrap_or(0) != 0).then(|| {
+                            (
+                                v["user_id"].as_i64().unwrap_or(0),
+                                v["username"].as_str().unwrap_or("").to_owned(),
+                            )
+                        })
+                    })
+                });
+                return match known {
+                    Some((id, name)) if !t.is_empty() => reply(
+                        200,
+                        json!({"allowed": false, "user_id": id, "username": name, "perm": "",
+                               "deploy_key_id": 0, "is_actions_task": false, "task": null,
+                               "branch_rules": {"require_signed": false}}),
+                    ),
+                    _ => reply(200, zero_denial()),
                 };
             }
             if path.starts_with("/api/internal/hook/pre-receive/") {
@@ -651,7 +685,7 @@ mod forgejo {
     async fn task_token_reads_a_child_repo_only_with_a_grant() {
         let (fake, url) = start().await;
         let task = |bound: &str| {
-            json!({"allowed": true, "user_id": 3, "username": "actions", "perm": "write",
+            json!({"allowed": true, "user_id": -2, "username": "gitea-actions", "perm": "write",
                    "is_actions_task": true,
                    "task": {"run_id": 5, "event": "push", "ref": "refs/heads/master",
                             "pr_index": 0, "is_fork_pr": false, "repo": bound}})
@@ -678,10 +712,33 @@ mod forgejo {
         let without = internal_authz(&url, Vec::new());
         let t = tok("task");
 
-        // Its own repo: normal permissions.
-        with.decide(Some(&t), "asc/dds", Access::Write)
+        // Its own repo: normal permissions, and the Actions user id is negative.
+        let own = with
+            .decide(Some(&t), "asc/dds", Access::Write)
             .await
             .unwrap();
+        assert_eq!(own.principal.id, "-2:gitea-actions");
+        // Repository names compare case-insensitively, as Forgejo resolves them.
+        fake.with(|i| {
+            i.authz
+                .insert(("task".into(), "asc/DDS".into()), task("asc/dds"));
+        });
+        with.decide(Some(&t), "asc/DDS", Access::Write)
+            .await
+            .unwrap();
+        // Another repo the task cannot reach: Forgejo names the Actions user in the refusal.
+        fake.with(|i| {
+            i.authz.insert(
+                ("task".into(), "asc/private".into()),
+                json!({"allowed": false, "user_id": -2, "username": "gitea-actions"}),
+            );
+        });
+        assert_eq!(
+            with.decide(Some(&t), "asc/private", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Forbidden
+        );
         // The child: read with a grant, never write, and not at all without one.
         let d = with
             .decide(Some(&t), "asc/soma", Access::Read)
@@ -935,13 +992,34 @@ mod forgejo {
         let calls = fake.calls("/api/internal/asc/authz");
         assert_eq!(calls.len(), 3);
         assert!(calls[2].body.get("user").is_none(), "{:?}", calls[2].body);
-        // Forgejo answers a wrong password as it answers any denial: 200 with `allowed: false`.
+        // Forgejo answers a wrong password with `allowed: false` and every field zero, which
+        // is a 401 challenge, so git erases the stored credential (SPEC §15.6).
         assert_eq!(
             authz
                 .authorize_credential(Some(&basic("alice", "wrong")), "o/r", Access::Read)
                 .await
                 .unwrap_err(),
-            AuthError::Forbidden
+            AuthError::Unauthenticated
+        );
+        // A good login without permission on the repository is a 403-class refusal: the fork
+        // names the user, and a missing repository looks the same.
+        for repo in ["o/private", "o/missing"] {
+            assert_eq!(
+                authz
+                    .authorize_credential(Some(&basic("alice", "pw-1")), repo, Access::Read)
+                    .await
+                    .unwrap_err(),
+                AuthError::Forbidden,
+                "{repo}"
+            );
+        }
+        // A bearer token Forgejo does not know is unauthenticated, not forbidden.
+        assert_eq!(
+            authz
+                .authorize(Some(&tok("not-a-token")), "o/r", Access::Read)
+                .await
+                .unwrap_err(),
+            AuthError::Unauthenticated
         );
     }
 
