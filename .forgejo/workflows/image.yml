@@ -11,12 +11,9 @@ on:
     tags: ["v*"]
   pull_request:
 
-# The registry credential is the secret above, not the job token, so reading the repository is
-# all the job token needs.
-permissions:
-  contents: read
-  # Only used when no registry secret is set: the job token then pushes the image.
-  packages: write
+# Forgejo ignores `permissions:` (capabilities come from Authorized Integrations), so there is no
+# block here. The registry credential is the FORGEJO_REGISTRY_TOKEN secret (write:package only);
+# the job token is only a fallback.
 
 concurrency:
   group: image-${{ github.ref }}
