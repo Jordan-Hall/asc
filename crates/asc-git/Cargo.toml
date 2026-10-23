@@ -28,7 +28,7 @@ async-trait = { workspace = true }
 quick_cache = { workspace = true }
 data-encoding = { workspace = true }
 futures = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio = { workspace = true }

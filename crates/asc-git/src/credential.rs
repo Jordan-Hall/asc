@@ -13,7 +13,6 @@
 
 use std::fmt;
 use std::io::{Read as _, Write as _};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -426,6 +425,8 @@ fn run(
             .env("GIT_ASKPASS", "")
             .env_remove("SSH_ASKPASS");
     }
+    // Held until git exits: the directory is removed when it drops.
+    let mut private: Option<tempfile::TempDir> = None;
     if let Some(config) = &session.config {
         for (key, _) in std::env::vars_os() {
             if is_config_env(&key.to_string_lossy()) {
@@ -433,20 +434,41 @@ fn run(
             }
         }
         let mut pairs = config.git_pairs();
-        if !never && let Some(program) = config.ask_pass() {
-            pairs.push(("core.askPass".to_owned(), program.to_owned()));
+        // Nothing in a program-running slot comes from anywhere but the trusted snapshot.
+        pairs.push(("core.fsmonitor".to_owned(), "false".to_owned()));
+        if !never {
+            match config.ask_pass() {
+                Some(program) => pairs.push(("core.askPass".to_owned(), program.to_owned())),
+                None => {
+                    // Git's order is GIT_ASKPASS, core.askPass, SSH_ASKPASS. Name no
+                    // core.askPass, and keep the SSH_ASKPASS step that an empty one would end.
+                    pairs.push(("core.askPass".to_owned(), String::new()));
+                    let git_askpass = std::env::var_os("GIT_ASKPASS");
+                    if let (None, Some(ssh)) = (git_askpass, std::env::var_os("SSH_ASKPASS")) {
+                        cmd.env("GIT_ASKPASS", ssh);
+                    }
+                }
+            }
         }
         cmd.env("GIT_CONFIG_COUNT", pairs.len().to_string());
         for (i, (key, value)) in pairs.iter().enumerate() {
             cmd.env(format!("GIT_CONFIG_KEY_{i}"), key);
             cmd.env(format!("GIT_CONFIG_VALUE_{i}"), value);
         }
-        // No repository: its config must not add helpers or prompts of its own.
-        let no_repo: PathBuf = std::env::temp_dir().join("asc-no-repository");
-        cmd.env("GIT_DIR", no_repo)
+        // No repository: run in a fresh private directory (mode 0700 on Unix), never in a
+        // shared, guessable one that another user could have filled with a repository whose
+        // config runs programs. `GIT_DIR` names a path that does not exist inside it, git may
+        // not look above it, and the system config is not read (the snapshot carries it).
+        let dir = tempfile::Builder::new()
+            .prefix("asc-credential-")
+            .tempdir()?;
+        cmd.env("GIT_DIR", dir.path().join("no-repository"))
+            .env("GIT_CEILING_DIRECTORIES", dir.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_COMMON_DIR")
-            .current_dir(std::env::temp_dir());
+            .current_dir(dir.path());
+        private = Some(dir);
     }
     cmd.args(["credential", verb])
         .stdin(Stdio::piped())
@@ -482,6 +504,7 @@ fn run(
         std::thread::sleep(Duration::from_millis(5));
     };
     let out = reader.join().unwrap_or_default();
+    drop(private);
     Ok(status
         .success()
         .then(|| String::from_utf8_lossy(&out).into_owned()))

@@ -74,6 +74,8 @@ fn runs_programs_or_redirects(
                 | "alternaterefscommand"
         ),
         "pager" | "credential" | "browser" | "man" | "trailer" => true,
+        // An `Authorization` header here would be sent to the remote with the user's name.
+        "http" => name == "extraheader",
         "sequence" => name == "editor",
         "gpg" => name == "program",
         "ssh" => name == "variant" || name == "program",
@@ -1398,6 +1400,8 @@ mod tests {
         [pager]\n\tlog = evil-log-pager\n\
         [credential]\n\thelper = !evil-helper\n\
         [credential \"https://example.com\"]\n\thelper = evil\n\
+        [http]\n\textraHeader = Authorization: Bearer evil\n\
+        [http \"https://example.com\"]\n\textraHeader = Authorization: Bearer evil\n\
         [user]\n\tname = Mallory\n";
 
     #[test]
@@ -1416,6 +1420,8 @@ mod tests {
             "pager.log",
             "credential.helper",
             "credential.https://example.com.helper",
+            "http.extraHeader",
+            "http.https://example.com.extraHeader",
         ] {
             assert_eq!(
                 c.get(key),

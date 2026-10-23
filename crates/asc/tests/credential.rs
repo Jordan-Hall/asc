@@ -1217,3 +1217,81 @@ fn source_ordering_matches_the_spec_list() {
     assert!(Source::AscToken < Source::Netrc);
     assert!(Source::Netrc < Source::Helper);
 }
+
+// ------------------------------------------------- hostile locations and config
+
+/// A reduced-trust section (a repository config another user owns) cannot supply headers.
+#[test]
+fn extra_headers_from_reduced_trust_sections_are_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = "[http]\n\textraHeader = Authorization: Bearer evil\n\textraHeader = X-Evil: 1\n\
+                [http \"https://git.example.com/\"]\n\textraHeader = X-Scoped: 2\n";
+    let target = url(REMOTE);
+    let got = resolver(&cfg_trust(text, Trust::Reduced), &[], dir.path())
+        .resolve(&target, Prompt::Never)
+        .unwrap();
+    assert!(got.is_anonymous());
+    assert!(
+        got.headers_for(&target).is_empty(),
+        "{:?}",
+        got.headers_for(&target)
+    );
+
+    let got = resolver(&cfg_trust(text, Trust::Full), &[], dir.path())
+        .resolve(&target, Prompt::Never)
+        .unwrap();
+    assert_eq!(got.source(), "http.extraHeader");
+    assert_eq!(got.headers_for(&target).len(), 3);
+}
+
+/// `git credential` runs in a private directory: a repository planted at the old fixed
+/// `<temp>/asc-no-repository` name can neither add a helper nor name an askpass program.
+#[test]
+fn a_planted_shared_temp_repository_is_never_used() {
+    let planted_in = tempfile::tempdir().unwrap();
+    let markers = tempfile::tempdir().unwrap();
+    let hostile = planted_in.path().join("asc-no-repository");
+    let init = Command::new(real().path())
+        .args(["init", "-q", "--bare"])
+        .arg(&hostile)
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let (askpass, ran_askpass) = marker(markers.path(), "askpass", "planted");
+    let helper = Helper::plain(markers.path(), "planted-helper", "planted", "planted");
+    let mut config = std::fs::read_to_string(hostile.join("config")).unwrap();
+    config.push_str(&format!(
+        "[core]\n\taskPass = {}\n\tfsmonitor = {}\n[credential]\n\thelper = {}\n",
+        sh_path(&askpass),
+        sh_path(&askpass),
+        helper.config()
+    ));
+    std::fs::write(hostile.join("config"), config).unwrap();
+    let temp = planted_in.path().display().to_string();
+    rerun(
+        "planted_repo_inner",
+        &[
+            ("U77_DIR", &sh_path(markers.path())),
+            ("TMP", &temp),
+            ("TEMP", &temp),
+            ("TMPDIR", &temp),
+            ("GIT_TERMINAL_PROMPT", "0"),
+        ],
+        None,
+    );
+    assert!(!ran_askpass.exists(), "the planted core.askPass ran");
+    assert!(helper.calls().is_empty(), "the planted helper ran");
+}
+
+#[test]
+fn planted_repo_inner() {
+    let Some(dir) = inner_dir() else { return };
+    let config = cfg("");
+    let target = url(REMOTE);
+    for prompt in [Prompt::Never, Prompt::Allowed] {
+        let got = resolver(&config, &[], &dir)
+            .resolve(&target, prompt)
+            .unwrap();
+        assert!(got.is_anonymous(), "{prompt:?}: {got:?}");
+    }
+}

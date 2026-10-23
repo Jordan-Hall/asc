@@ -513,7 +513,9 @@ impl<'a> Resolver<'a> {
         let mut cascade = Cascade::new(url.as_str());
         let mut headers: Vec<(String, Secret)> = Vec::new();
         for entry in section_entries(self.config, "http") {
-            if entry.name != "extraheader" || !cascade.offer(entry.sub.as_deref()) {
+            // A reduced-trust section (a repository config another user owns) supplies none.
+            if !entry.trusted || entry.name != "extraheader" || !cascade.offer(entry.sub.as_deref())
+            {
                 continue;
             }
             match entry.value.as_deref() {
