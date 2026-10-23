@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -60,6 +60,9 @@ pub const MAX_REF_UPDATES: usize = 1024;
 pub const DEFAULT_REF_PAGE: usize = 1000;
 /// Most refs one `ListRefs` page returns.
 pub const MAX_REF_PAGE: usize = 10_000;
+/// How often an open `WatchRefs` stream re-checks the caller's access, so a stream closes soon
+/// after its token expires or is revoked.
+pub const WATCH_RECHECK: Duration = Duration::from_secs(30);
 /// Longest repository name, in bytes.
 pub const MAX_REPO_NAME: usize = 255;
 /// Changes per `DiffResponse` message.
@@ -435,6 +438,14 @@ handler_group! {
     }
 }
 
+handler_group! {
+    /// `WatchRefs` (SPEC §21.3.8). The service layer re-checks the caller's access while the
+    /// stream is open and closes it when the check fails.
+    WatchHandler {
+        stream fn watch_refs(WatchRefsRequest) -> RefEvent;
+    }
+}
+
 /// A handler group was registered twice.
 #[derive(Debug, thiserror::Error)]
 #[error("the {0} handler group is already registered")]
@@ -479,6 +490,7 @@ registry! {
     classify, set_classify: ClassifyHandler;
     rebase, set_rebase: RebaseHandler;
     insights, set_insights: InsightsHandler;
+    watch, set_watch: WatchHandler;
 }
 
 // ------------------------------------------------------------------------------ service
@@ -488,6 +500,8 @@ pub struct RepoService {
     handlers: Arc<RepoHandlers>,
     authorizer: Arc<dyn Authorizer>,
     info: ServerInfo,
+    /// How often an open `WatchRefs` stream re-checks the caller's access.
+    watch_recheck: Duration,
 }
 
 impl RepoService {
@@ -500,7 +514,15 @@ impl RepoService {
             handlers,
             authorizer,
             info,
+            watch_recheck: WATCH_RECHECK,
         }
+    }
+
+    /// Sets how often an open `WatchRefs` stream re-checks the caller's access.
+    #[must_use]
+    pub fn with_watch_recheck(mut self, every: Duration) -> Self {
+        self.watch_recheck = every.max(Duration::from_millis(1));
+        self
     }
 
     /// The tonic service with message limits, zstd request decoding and [`AuthInterceptor`].
@@ -682,6 +704,33 @@ repo_impl! {
                 .map_or_else(String::new, |v| v.to_string()),
             features: self.info.features.clone(),
         }))
+    }
+
+    type WatchRefsStream = RpcStream<pb::RefEvent>;
+
+    async fn watch_refs(
+        &self,
+        request: Request<pb::WatchRefsRequest>,
+    ) -> Result<Response<RpcStream<pb::RefEvent>>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        crate::watch_refs::parse_request(&msg)?;
+        let events = self.handlers.watch().watch_refs(&ctx, msg).await?;
+        let (authorizer, credential) = (self.authorizer.clone(), ext.get::<Credential>().cloned());
+        let repo = ctx.repo.to_string();
+        let out = crate::watch_refs::rechecked(events, self.watch_recheck, move || {
+            let (authorizer, credential, repo) = (authorizer.clone(), credential.clone(), repo.clone());
+            async move {
+                authorizer
+                    .authorize_credential(credential.as_ref(), &repo, Access::Read)
+                    .await
+                    .map(drop)
+                    .map_err(Status::from)
+            }
+        });
+        Ok(Response::new(out))
     }
 
     async fn has_objects(
