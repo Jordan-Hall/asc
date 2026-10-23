@@ -100,8 +100,21 @@ pub trait PushHooks: Send + Sync {
         crate::refauthz::DEFAULT_MAX_USER_REFS
     }
 
-    /// Quota for a user-ref push (SPEC §21.3.7): user refs skip pre-receive, so this is their
-    /// size policy. `new_changesets` is how many changesets the push points user refs or other refs at.
+    /// Quota for a user-ref push, asked BEFORE anything is ingested (SPEC §21.3.7): an owner who
+    /// is already over quota is refused before any object is written for the push.
+    async fn check_user_quota(
+        &self,
+        _ctx: &CallCtx,
+        _owner: i64,
+    ) -> Result<(), crate::refauthz::QuotaDenied> {
+        Ok(())
+    }
+
+    /// Charges a user-ref push to the owner's quota (SPEC §21.3.7), after the ingest: user refs
+    /// skip pre-receive, so this is their size policy. `new_changesets` is how many changesets the
+    /// push actually added to the repository (not how many it names: changesets the repository
+    /// already held cost nothing). An implementation records the usage even when it refuses, so a
+    /// retry, which then adds nothing, is still refused by [`PushHooks::check_user_quota`].
     async fn charge_user_refs(
         &self,
         _ctx: &CallCtx,
@@ -531,28 +544,16 @@ impl ServerRefs {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
 
-        // Per-user ref cap (SPEC §21.3.2): count only the creations, before any ingest work.
-        if let (true, Some(owner)) = (has_user, user_owner) {
-            let mut creates = Vec::new();
-            for p in planned.iter().filter(|p| p.user && p.new.is_some()) {
-                let held = self
-                    .registry
-                    .refs()
-                    .get(entry.key, &p.name)
-                    .await
-                    .map_err(|e| internal("refs", &e))?;
-                if held.is_none() {
-                    creates.push(&p.name);
-                }
-            }
-            refauthz::check_cap(
-                &**self.registry.refs(),
-                entry.key,
-                owner,
-                hooks.max_user_refs(),
-                &creates,
-            )
-            .await?;
+        // The per-user ref cap (SPEC §21.3.2) is enforced once, inside the step-8 transaction
+        // under the per-(repo, owner) lock (`refpolicy::check_user_ref_writes`).
+        // Quota (SPEC §21.3.7), part 1: an owner already over quota is refused before ingest
+        // writes anything. A delete-only push is never refused here, so an owner can shrink.
+        let quota_owner = user_owner.filter(|_| planned.iter().any(|p| p.user && p.new.is_some()));
+        if let Some(owner) = quota_owner {
+            hooks
+                .check_user_quota(ctx, owner)
+                .await
+                .map_err(|d| refauthz::quota_status(&d))?;
         }
 
         if pushed.is_some() && rewrites.is_some() {
@@ -570,7 +571,7 @@ impl ServerRefs {
         })?;
         let targets: Vec<RefTarget> = planned.iter().filter_map(|p| p.new).collect();
         let windows_safe = self.windows_safe(&entry).await?;
-        Ingestor::new(
+        let added = Ingestor::new(
             self.registry.pool(),
             self.registry.refs(),
             &entry,
@@ -579,10 +580,10 @@ impl ServerRefs {
         .ingest(&targets, self.hooks.observer())
         .await
         .map_err(ingest_status)?;
-        // Quota for user-ref pushes (SPEC §21.3.7): they skip pre-receive.
-        if let (true, Some(owner)) = (has_user, user_owner) {
+        // Quota, part 2 (SPEC §21.3.7): charge what the ingest actually added.
+        if let (Some(owner), false) = (quota_owner, added.is_empty()) {
             hooks
-                .charge_user_refs(ctx, owner, targets.len())
+                .charge_user_refs(ctx, owner, added.len())
                 .await
                 .map_err(|d| refauthz::quota_status(&d))?;
         }
@@ -854,7 +855,8 @@ impl ServerRefs {
         }
         // User refs have no pre-receive, so the owner and the cap are checked here, in the same
         // transaction as the write (SPEC §21.5.1).
-        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer).await?;
+        let max_user_refs = self.hooks.push_hooks().max_user_refs();
+        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer, max_user_refs).await?;
         if let Some(land) = land {
             land.apply(&mut tx, entry, txn).await?;
         }

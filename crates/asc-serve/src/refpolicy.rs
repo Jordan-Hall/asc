@@ -266,7 +266,9 @@ pub(crate) enum UserRefWriter {
 /// Inside the `UpdateRefs` transaction, after the updates applied: every user ref the transaction
 /// touches, deletes included, must belong to the actor (`permission_denied` otherwise; a malformed
 /// `refs/users/` name is `invalid_argument`), and the owner must not hold more than
-/// [`MAX_USER_REFS`] user refs in the repository afterwards (`USER_REFS_LIMIT`). A delete is
+/// `max` user refs (the server's `[cloud] max_user_refs`, [`MAX_USER_REFS`] by default) in the
+/// repository afterwards (`USER_REFS_LIMIT`). This is the only place the cap is enforced: it is
+/// counted after the writes, under the lock below, so no earlier look can be raced. A delete is
 /// exempt from the cap only, so an owner over it can always shrink. Fails closed: an actor with no
 /// verified owner id owns nothing.
 ///
@@ -280,7 +282,9 @@ pub(crate) async fn check_user_ref_writes(
     repo: asc_store::refs::RepoKey,
     txn: &asc_store::refs::RefTxn,
     writer: UserRefWriter,
+    max: usize,
 ) -> Result<(), Status> {
+    let max = i64::try_from(max).unwrap_or(i64::MAX);
     let actor = owner_of(&Principal {
         id: txn.actor.id.clone(),
     });
@@ -342,7 +346,7 @@ pub(crate) async fn check_user_ref_writes(
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| internal("refs", &e))?;
-        if held > MAX_USER_REFS {
+        if held > max {
             return Err(rpc(RpcError::UserRefsLimit(info(vec![format!(
                 "{USER_NS}{owner}/"
             )]))));
@@ -675,7 +679,7 @@ mod tests {
             op_id: Uuid::new_v4(),
         };
         let mut tx = registry.refs().begin().await.unwrap();
-        check_user_ref_writes(&mut tx, entry.key, &txn, writer).await
+        check_user_ref_writes(&mut tx, entry.key, &txn, writer, MAX_USER_REFS as usize).await
     }
 
     fn tip() -> Option<RefTarget> {

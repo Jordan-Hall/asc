@@ -15,9 +15,9 @@ use asc_rpc::IdMode;
 use asc_rpc::auth::Principal;
 use asc_rpc::server::{CallCtx, RefsHandler, RepoName, status_rpc_error, wire};
 use asc_serve::import_push::{ImportOptions, ImportPush, PushCommand, Quarantine};
+use asc_serve::migrate;
 use asc_serve::registry::{NewRepo, Registry, RepoEntry};
 use asc_serve::update::{HookRejected, HookRequest, PipelineHooks, PushHooks, ServerRefs};
-use asc_serve::migrate;
 use asc_store::refs::Refs;
 use tonic::Status;
 use uuid::Uuid;
@@ -237,26 +237,35 @@ impl Fx {
     }
 
     async fn update(&self, who: &str, name: &str, to: RefTarget) -> Result<(), Status> {
-        self.refs
-            .update_refs(
-                &ctx(who, IdMode::Asc),
-                wire::UpdateRefsRequest {
-                    repo: Some(wire::RepoRef {
-                        name: "o/r".into(),
-                        id_mode: 0,
-                    }),
-                    updates: vec![wire::RefUpdate {
-                        name: name.into(),
-                        expect: Some(wire::ref_update::Expect::Absent(true)),
-                        new: Some(wire::RefTarget::from(&to)),
-                        delete: false,
-                    }],
-                    mode: wire::UpdateMode::FastForward as i32,
-                    ..Default::default()
-                },
-            )
-            .await
-            .map(|_| ())
+        self.update_with(&self.refs, who, name, to).await
+    }
+
+    async fn update_with(
+        &self,
+        refs: &ServerRefs,
+        who: &str,
+        name: &str,
+        to: RefTarget,
+    ) -> Result<(), Status> {
+        refs.update_refs(
+            &ctx(who, IdMode::Asc),
+            wire::UpdateRefsRequest {
+                repo: Some(wire::RepoRef {
+                    name: "o/r".into(),
+                    id_mode: 0,
+                }),
+                updates: vec![wire::RefUpdate {
+                    name: name.into(),
+                    expect: Some(wire::ref_update::Expect::Absent(true)),
+                    new: Some(wire::RefTarget::from(&to)),
+                    delete: false,
+                }],
+                mode: wire::UpdateMode::FastForward as i32,
+                ..Default::default()
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn outbox_effects(&self) -> Vec<String> {
@@ -413,13 +422,50 @@ async fn the_1001st_user_ref_gets_user_refs_limit_and_other_users_are_unaffected
 
 struct Quota {
     refuse: bool,
+    /// Refuse in `check_user_quota`, before anything is ingested.
+    over_quota: bool,
+    max: usize,
     charged: AtomicUsize,
+    charges: AtomicUsize,
+    checks: AtomicUsize,
+}
+
+impl Quota {
+    fn build(refuse: bool, over_quota: bool, max: usize) -> Arc<Self> {
+        Arc::new(Self {
+            refuse,
+            over_quota,
+            max,
+            charged: AtomicUsize::new(0),
+            charges: AtomicUsize::new(0),
+            checks: AtomicUsize::new(0),
+        })
+    }
+
+    /// A cap of 2 user refs; `refuse` makes the charge fail.
+    fn new(refuse: bool) -> Arc<Self> {
+        Self::build(refuse, false, 2)
+    }
 }
 
 #[async_trait]
 impl PushHooks for Quota {
     fn max_user_refs(&self) -> usize {
-        2
+        self.max
+    }
+
+    async fn check_user_quota(
+        &self,
+        _ctx: &CallCtx,
+        owner: i64,
+    ) -> Result<(), asc_serve::refauthz::QuotaDenied> {
+        assert_eq!(owner, 42);
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        if self.over_quota {
+            Err(asc_serve::refauthz::QuotaDenied("already over quota".into()))
+        } else {
+            Ok(())
+        }
     }
 
     async fn charge_user_refs(
@@ -429,6 +475,7 @@ impl PushHooks for Quota {
         new_changesets: usize,
     ) -> Result<(), asc_serve::refauthz::QuotaDenied> {
         assert_eq!(owner, 42);
+        self.charges.fetch_add(1, Ordering::SeqCst);
         self.charged.fetch_add(new_changesets, Ordering::SeqCst);
         if self.refuse {
             Err(asc_serve::refauthz::QuotaDenied("over quota".into()))
@@ -465,10 +512,7 @@ async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
     let c1 = with_master(&f).await;
     let c2 = f.forge.commit(Some(&c1), "two");
 
-    let refusing = Arc::new(Quota {
-        refuse: true,
-        charged: AtomicUsize::new(0),
-    });
+    let refusing = Quota::new(true);
     let push = pusher(&f, refusing.clone());
     let e = push_as_alice(&f, &push, "refs/heads/feat", &c2)
         .await
@@ -478,10 +522,7 @@ async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
     assert!(refusing.charged.load(Ordering::SeqCst) >= 1);
 
     // With the quota open, this server's cap (2) applies.
-    let open = Arc::new(Quota {
-        refuse: false,
-        charged: AtomicUsize::new(0),
-    });
+    let open = Quota::new(false);
     let push = pusher(&f, open);
     push_as_alice(&f, &push, "refs/heads/a", &c2).await.unwrap();
     push_as_alice(&f, &push, "refs/heads/b", &c2).await.unwrap();
@@ -489,4 +530,139 @@ async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
         .await
         .unwrap_err();
     assert_eq!(code(&e), "USER_REFS_LIMIT");
+}
+
+fn server(f: &Fx, hooks: Arc<Quota>) -> ServerRefs {
+    let pipeline = Arc::new(PipelineHooks::default());
+    assert!(pipeline.set_push_hooks(hooks).is_ok());
+    ServerRefs::new(f.registry.clone(), pipeline)
+}
+
+async fn count(f: &Fx, sql: &'static str) -> i64 {
+    sqlx::query_scalar(sql)
+        .fetch_one(f.registry.pool())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn concurrent_creates_near_the_configured_cap_end_at_or_below_it() {
+    let f = fx(true).await;
+    with_master(&f).await;
+    let target = f.stored("refs/heads/master").await.unwrap();
+    let refs = server(&f, Quota::build(false, false, 3));
+    seed_user_refs(&f, 42, 1).await;
+
+    let names: Vec<String> = (0..8).map(|i| format!("refs/heads/c{i}")).collect();
+    let results = futures::future::join_all(
+        names
+            .iter()
+            .map(|n| f.update_with(&refs, "42:alice", n, target)),
+    )
+    .await;
+    let held = count(
+        &f,
+        "SELECT COUNT(*) FROM refs WHERE name LIKE 'refs/users/42/heads/%'",
+    )
+    .await;
+    assert!(held <= 3, "{held} user refs with a cap of 3");
+    assert_eq!(held, 3);
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 2);
+    for e in results.iter().filter_map(|r| r.as_ref().err()) {
+        assert_eq!(code(e), "USER_REFS_LIMIT");
+    }
+}
+
+#[tokio::test]
+async fn an_over_quota_owner_is_refused_before_anything_is_ingested() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+    let graph = count(&f, "SELECT COUNT(*) FROM cs_graph").await;
+    let mapped = count(&f, "SELECT COUNT(*) FROM git_map").await;
+
+    let over = Quota::build(false, true, 10);
+    // The git push: the import writes nothing.
+    let push = pusher(&f, over.clone());
+    let e = push_as_alice(&f, &push, "refs/heads/feat", &c2)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "QUOTA_EXCEEDED");
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, graph);
+    assert_eq!(count(&f, "SELECT COUNT(*) FROM git_map").await, mapped);
+    assert_eq!(over.charges.load(Ordering::SeqCst), 0);
+
+    // UpdateRefs: the quota is asked before the closure is read, so a target that does not exist
+    // is still QUOTA_EXCEEDED (an ingest would have said it is missing).
+    let ghost = RefTarget::Changeset(asc_core::id::ChangesetId::from_bytes([9; 32]));
+    let refs = server(&f, over.clone());
+    let e = f
+        .update_with(&refs, "42:alice", "refs/heads/ghost", ghost)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "QUOTA_EXCEEDED");
+    assert!(f.stored("refs/users/42/heads/ghost").await.is_none());
+    assert_eq!(over.charges.load(Ordering::SeqCst), 0);
+    assert!(over.checks.load(Ordering::SeqCst) >= 2);
+
+    // A delete is never refused for quota, so an over-quota owner can shrink.
+    seed_user_refs(&f, 42, 1).await;
+    let seeded = f.stored("refs/heads/master").await.unwrap();
+    let del = refs
+        .update_refs(
+            &ctx("42:alice", IdMode::Asc),
+            wire::UpdateRefsRequest {
+                repo: Some(wire::RepoRef {
+                    name: "o/r".into(),
+                    id_mode: 0,
+                }),
+                updates: vec![wire::RefUpdate {
+                    name: "refs/heads/seed1".into(),
+                    expect: Some(wire::ref_update::Expect::Value(wire::RefTarget::from(
+                        &seeded,
+                    ))),
+                    new: None,
+                    delete: true,
+                }],
+                mode: wire::UpdateMode::FastForward as i32,
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(del.is_ok(), "{del:?}");
+    assert!(f.stored("refs/users/42/heads/seed1").await.is_none());
+}
+
+#[tokio::test]
+async fn the_charge_is_the_changesets_actually_added_not_the_target_count() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+    let c3 = f.forge.commit(Some(&c2), "three");
+    let c4 = f.forge.commit(Some(&c3), "four");
+
+    let q = Quota::build(false, false, 10);
+    let push = pusher(&f, q.clone());
+    // One ref, three new changesets.
+    push_as_alice(&f, &push, "refs/heads/stack", &c4)
+        .await
+        .unwrap();
+    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
+    assert!(q.checks.load(Ordering::SeqCst) >= 1);
+
+    // The same history under a second name adds nothing, so nothing is charged.
+    push_as_alice(&f, &push, "refs/heads/again", &c4)
+        .await
+        .unwrap();
+    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
+    assert_eq!(q.charges.load(Ordering::SeqCst), 1);
+
+    // UpdateRefs to a changeset the repository already holds adds nothing either.
+    let refs = server(&f, q.clone());
+    let target = f.stored("refs/heads/master").await.unwrap();
+    f.update_with(&refs, "42:alice", "refs/heads/third", target)
+        .await
+        .unwrap();
+    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
+    assert_eq!(q.charges.load(Ordering::SeqCst), 1);
 }

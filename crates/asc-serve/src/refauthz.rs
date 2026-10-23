@@ -1,23 +1,18 @@
 //! User-ref authorisation and limits (SPEC §21.5.1, §21.3.2, §21.3.7; PLAN B08b).
 //!
 //! A user ref `refs/users/<owner-id>/heads/<n>` belongs to one user. [`authorize`] admits a write
-//! only to the owner, [`check_cap`] bounds how many refs one user holds in one repository
-//! (`USER_REFS_LIMIT`), and [`QuotaDenied`] is what a [`crate::update::PushHooks`] quota check
+//! only to the owner, and [`QuotaDenied`] is what a [`crate::update::PushHooks`] quota check
 //! returns (`QUOTA_EXCEEDED`). User refs run no pre-receive, so the quota is the only size policy
 //! they meet.
 
-use asc_core::path::RefName;
 use asc_rpc::errors::RpcError;
-use asc_store::refs::{Refs, RepoKey};
 use tonic::Status;
 
 use crate::refpolicy::{Class, USER_NS};
-use crate::update::{info, internal, rpc};
+use crate::update::{info, rpc};
 
 /// `[cloud] max_user_refs`: user refs per user per repository.
 pub const DEFAULT_MAX_USER_REFS: usize = 1_000;
-/// The most user refs this module counts, whatever the configured cap.
-const COUNT_CEILING: usize = 1_000_000;
 
 /// A quota check refused the write; the text is shown to the user (`QUOTA_EXCEEDED`).
 #[derive(Debug, thiserror::Error)]
@@ -51,33 +46,6 @@ pub fn owns(caller: Option<i64>, name: &str) -> bool {
             (caller, crate::refpolicy::parse_user_ref(name)),
             (Some(c), Some((o, _))) if c == o
         )
-}
-
-/// Refuses with `USER_REFS_LIMIT` when creating `creates` (stored names, all absent today) would
-/// leave `owner` with more than `max` user refs in the repository. Reads only the owner's prefix.
-pub async fn check_cap<R: Refs + ?Sized>(
-    refs: &R,
-    repo: RepoKey,
-    owner: i64,
-    max: usize,
-    creates: &[&RefName],
-) -> Result<(), Status> {
-    if creates.is_empty() {
-        return Ok(());
-    }
-    let prefix = format!("{USER_NS}{owner}/heads/");
-    let held = refs
-        .list(repo, &prefix)
-        .await
-        .map_err(|e| internal("refs", &e))?
-        .len()
-        .min(COUNT_CEILING);
-    if held.saturating_add(creates.len()) > max.min(COUNT_CEILING) {
-        return Err(rpc(RpcError::UserRefsLimit(info(vec![format!(
-            "you already hold {held} branches in this repository; delete some (limit {max})"
-        )]))));
-    }
-    Ok(())
 }
 
 /// The error a refused quota check becomes.
