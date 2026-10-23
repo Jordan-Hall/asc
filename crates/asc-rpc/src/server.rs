@@ -564,6 +564,26 @@ impl RepoService {
         })
     }
 
+    /// A head in another repository is read from it, so the caller needs read access there too
+    /// (SPEC §3.3), before the handler looks at that namespace. The same check `CopyClosure`
+    /// makes on its source.
+    async fn authorize_head_repo(
+        &self,
+        ext: &Extensions,
+        ctx: &CallCtx,
+        head: Option<&pb::RepoRef>,
+    ) -> Result<(), Status> {
+        if let Some(head) = head {
+            let head = RepoName::parse(&head.name)?;
+            if head != ctx.repo {
+                self.authorizer
+                    .authorize_credential(ext.get::<Credential>(), head.as_str(), Access::Read)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn open<T>(
         &self,
         request: Request<T>,
@@ -747,19 +767,28 @@ repo_impl! {
         let ctx = self
             .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
             .await?;
-        // A head in another repository is read from it, so the caller needs read access there
-        // too (SPEC §3.3), before the handler looks at that namespace.
-        if let Some(head) = msg.head_repo.as_ref() {
-            let head = RepoName::parse(&head.name)?;
-            if head != ctx.repo {
-                self.authorizer
-                    .authorize_credential(ext.get::<Credential>(), head.as_str(), Access::Read)
-                    .await?;
-            }
-        }
+        self.authorize_head_repo(&ext, &ctx, msg.head_repo.as_ref())
+            .await?;
         self.handlers
             .mutations()
             .merge(&ctx, msg)
+            .await
+            .map(Response::new)
+    }
+
+    async fn rebase(
+        &self,
+        request: Request<pb::RebaseRequest>,
+    ) -> Result<Response<pb::RebaseResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
+        self.authorize_head_repo(&ext, &ctx, msg.head_repo.as_ref())
+            .await?;
+        self.handlers
+            .rebase()
+            .rebase(&ctx, msg)
             .await
             .map(Response::new)
     }
@@ -843,7 +872,6 @@ repo_impl! {
         ingest(IngestRequest) -> IngestResponse, import_push, Access::Write, true;
         find_landing(FindLandingRequest) -> FindLandingResponse, landing, Access::Read, false;
         classify(ClassifyRequest) -> ClassifyResponse, classify, Access::Read, false;
-        rebase(RebaseRequest) -> RebaseResponse, rebase, Access::Write, true;
         compare(CompareRequest) -> CompareResponse, insights, Access::Read, false;
         repo_config(RepoConfigRequest) -> RepoConfigResponse, insights, Access::Read, false;
     }
@@ -1781,6 +1809,80 @@ mod tests {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(pb::MergeResponse::default())
         }
+    }
+
+    /// Counts the rebases that reach the handler.
+    #[derive(Default)]
+    struct SpyRebase(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl RebaseHandler for SpyRebase {
+        async fn rebase(
+            &self,
+            _: &CallCtx,
+            _: pb::RebaseRequest,
+        ) -> Result<pb::RebaseResponse, Status> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(pb::RebaseResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rebase_from_another_repository_needs_read_access_there() {
+        let spy = Arc::new(SpyRebase::default());
+        let handlers = Arc::new(RepoHandlers::new());
+        handlers.set_rebase(spy.clone()).unwrap();
+        let svc = RepoService::new(handlers, Arc::new(OnlyA), ServerInfo::default());
+        let call = |repo: &str, head_repo: Option<&str>, head: &str| {
+            let mut r = Request::new(pb::RebaseRequest {
+                repo: Some(pb::RepoRef {
+                    name: repo.into(),
+                    id_mode: 0,
+                }),
+                head_repo: head_repo.map(|n| pb::RepoRef {
+                    name: n.into(),
+                    id_mode: 0,
+                }),
+                head: head.into(),
+                ..pb::RebaseRequest::default()
+            });
+            r.metadata_mut()
+                .insert("x-asc-op-id", Uuid::new_v4().to_string().parse().unwrap());
+            r
+        };
+        let reached = || spy.0.load(std::sync::atomic::Ordering::SeqCst);
+        // A repository that exists, one that does not and a revision that does not: the caller
+        // is refused alike, and the handler (which would copy a closure) never runs.
+        let denied = Repo::rebase(&svc, call("o/a", Some("o/secret"), "refs/heads/main"))
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        for (name, head) in [
+            ("o/missing", "refs/heads/main"),
+            ("o/secret", "refs/heads/no"),
+        ] {
+            let e = Repo::rebase(&svc, call("o/a", Some(name), head))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), denied.code());
+            assert_eq!(e.message(), denied.message());
+        }
+        // No write access on the target is refused before anything else.
+        let e = Repo::rebase(&svc, call("o/b", Some("o/a"), "main"))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        let bad = Repo::rebase(&svc, call("o/a", Some("no-slash"), "main"))
+            .await
+            .unwrap_err();
+        assert_eq!(bad.code(), tonic::Code::InvalidArgument);
+        assert_eq!(reached(), 0);
+        // Same repository, and no head repository, reach the handler.
+        Repo::rebase(&svc, call("o/a", Some("o/a"), "main"))
+            .await
+            .unwrap();
+        Repo::rebase(&svc, call("o/a", None, "main")).await.unwrap();
+        assert_eq!(reached(), 2);
     }
 
     #[tokio::test]
