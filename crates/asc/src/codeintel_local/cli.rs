@@ -8,9 +8,11 @@ use crate::cli::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
 const USAGE: &str = "usage: asc codeintel worker [--once] [--now]
+       asc codeintel enable-embed [--from <dir>]
 
     --once    index the current HEAD and exit
     --now     do not wait for the workspace to be idle
+    --from    install the embed helper from a release directory instead of asc.releasesUrl
 ";
 
 #[derive(clap::Parser, Debug)]
@@ -26,7 +28,7 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "codeintel",
-    flags: &["--once", "--now"],
+    flags: &["--once", "--now", "--from"],
     placeholders: &[],
 }];
 
@@ -43,6 +45,35 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             }
             super::worker::run(ctx, opts).await
+        }
+        Some("enable-embed") => {
+            let mut from: Option<std::path::PathBuf> = None;
+            while let Some(w) = words.next() {
+                match (w.to_str(), from.is_none()) {
+                    (Some("--from"), true) => match words.next() {
+                        Some(d) => from = Some(d.into()),
+                        None => return Err(CliError::Usage(USAGE.trim_end().to_owned())),
+                    },
+                    _ => return Err(CliError::Usage(USAGE.trim_end().to_owned())),
+                }
+            }
+            let fatal = |e: &dyn std::fmt::Display| CliError::Fatal(format!("asc: codeintel: {e}"));
+            let source = match (from, ctx.config.get("asc.releasesUrl")) {
+                (Some(d), _) => super::embed::Source::Dir(d),
+                (None, Some(u)) => super::embed::Source::url(&u).map_err(|e| fatal(&e))?,
+                (None, None) => {
+                    return Err(CliError::Fatal(
+                        "asc: codeintel: no release source: set asc.releasesUrl or pass --from <dir>"
+                            .to_owned(),
+                    ));
+                }
+            };
+            let home = asc_state::AscHome::locate().map_err(|e| fatal(&e))?;
+            let msg = super::embed::enable_command(home.root(), &source)
+                .await
+                .map_err(|e| fatal(&e))?;
+            println!("{msg}");
+            Ok(ExitCode::SUCCESS)
         }
         _ => Err(CliError::Usage(USAGE.trim_end().to_owned())),
     }
