@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use asc_core::id::RefTarget;
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal, Scheme};
+use asc_rpc::auth::{
+    Access, AuthError, Authorizer, BearerToken, Credential, Decision as SshDecision, Principal,
+    Scheme, SshIdentity, SshKey,
+};
 use asc_rpc::server::{CallCtx, MAX_REF_UPDATES, RepoName};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,10 @@ use crate::config::{CompositionGrant, ForgejoConfig, ServeConfig};
 use crate::outbox::{Effect, EffectError, Job, Outbox};
 use crate::registry::{Extensions, Ns, Registry};
 use crate::update::{HookRejected, HookRequest, PushHooks};
+
+#[path = "forgejo_ssh.rs"]
+mod forgejo_ssh;
+pub use forgejo_ssh::{MAX_SSH_LOOKUPS_IN_FLIGHT, SSH_LOOKUP_TIMEOUT, SshLookupLimits, SshSupport};
 
 /// Positive and negative authorisation answers are cached this long (SPEC §15.1).
 pub const POSITIVE_TTL: Duration = Duration::from_secs(60);
@@ -763,6 +770,26 @@ impl Authorizer for PublicApiAuthz {
             .principal
             .clone())
     }
+
+    /// Stage 1 has only the public API, which cannot map a key to a user: SSH keys are
+    /// [`SshSupport::Unsupported`], so every key is unknown (SPEC §25.11.3 item 5).
+    async fn identify_ssh_key(&self, _key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
+        Ok(None)
+    }
+
+    async fn authorize_ssh_key(
+        &self,
+        _key: &SshKey,
+        _repo: &str,
+        _access: Access,
+    ) -> Result<SshDecision, AuthError> {
+        Ok(SshDecision::Denied)
+    }
+}
+
+impl PublicApiAuthz {
+    /// Stage 1 cannot resolve SSH keys.
+    pub const SSH_KEYS: SshSupport = SshSupport::Unsupported;
 }
 
 // ------------------------------------------------------------------------------ stage 2+
@@ -811,6 +838,7 @@ pub struct InternalAuthz {
     client: Arc<ForgejoClient>,
     core: AuthzCore,
     grants: Vec<CompositionGrant>,
+    ssh: forgejo_ssh::SshLookup,
 }
 
 impl InternalAuthz {
@@ -824,7 +852,15 @@ impl InternalAuthz {
             client,
             core: AuthzCore::new(cache, internal),
             grants,
+            ssh: forgejo_ssh::SshLookup::new(cache),
         }
+    }
+
+    /// Sets the timeout and the concurrency cap of the SSH key lookups (SPEC §25.11.3).
+    #[must_use]
+    pub fn with_ssh_limits(mut self, limits: SshLookupLimits) -> Self {
+        self.ssh = self.ssh.with_limits(limits);
+        self
     }
 
     /// The full decision, including the identity, task and branch rules.
@@ -973,6 +1009,24 @@ impl Authorizer for InternalAuthz {
             .principal
             .clone())
     }
+
+    async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
+        self.ssh.identify(&self.client, key).await
+    }
+
+    async fn authorize_ssh_key(
+        &self,
+        key: &SshKey,
+        repo: &str,
+        access: Access,
+    ) -> Result<SshDecision, AuthError> {
+        self.ssh.authorize(&self.client, key, repo, access).await
+    }
+}
+
+impl InternalAuthz {
+    /// Stage 2+ resolves keys through K19.
+    pub const SSH_KEYS: SshSupport = SshSupport::Supported;
 }
 
 /// Small helper so the request builder reads as one chain.
@@ -1406,6 +1460,15 @@ pub fn authorizer(cfg: &ServeConfig) -> Result<Option<Arc<dyn Authorizer>>, Forg
     } else {
         Arc::new(PublicApiAuthz::new(client, cache))
     }))
+}
+
+/// Whether [`authorizer`] can resolve SSH keys for this configuration: only with the internal
+/// token (Stage 2+, K19). The SSH listener start check refuses `provider = "forge"` otherwise.
+pub fn ssh_support(cfg: &ServeConfig) -> SshSupport {
+    match &cfg.forgejo {
+        Some(f) if f.internal_token_file.is_some() => InternalAuthz::SSH_KEYS,
+        _ => PublicApiAuthz::SSH_KEYS,
+    }
 }
 
 /// Wires pipeline step 7 and the `post_receive` effect. Does nothing without `[forgejo]`;
