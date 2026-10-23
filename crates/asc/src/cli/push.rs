@@ -385,7 +385,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         None => (push_remote(ctx, ws)?, Vec::new()),
     };
     let opened = remote::open(ctx, ws, &target, Intent::Write).await?;
-    let shown_url = opened.url.clone();
+    let shown_url = super::url_display::anonymize(&opened.url);
     let abbrev = abbrev_len(ctx);
     let boundaries = StateBoundaries::new(ws);
     let mut sync_opts = remote::options(ctx, &boundaries);
@@ -506,7 +506,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             });
         }
         let runner = Runner::for_ctx(ctx)?;
-        let hook = Hook::PrePush { remote: opened.name.clone(), url: shown_url.clone(), lines };
+        let hook = Hook::PrePush { remote: opened.name.clone(), url: opened.url.clone(), lines };
         match runner.gate(hook, &HookEnv::of(ctx, "push")).await.map_err(fatal)? {
             Gate::Pass => {}
             Gate::Reject(_) => {

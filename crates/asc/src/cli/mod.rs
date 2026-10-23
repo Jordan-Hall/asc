@@ -130,6 +130,7 @@ pub mod submodule;
 pub mod switch;
 pub mod tag;
 pub mod upgrade;
+pub mod url_display;
 pub mod watch;
 pub mod whatchanged;
 pub mod worktree;

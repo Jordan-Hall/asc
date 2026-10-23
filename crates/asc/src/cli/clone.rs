@@ -196,7 +196,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let db = StateDb::open(&home).await?;
     let probe = remote::open_url(&db, origin.clone(), stored.clone(), true, refs, Intent::Read).await.map_err(|e| match e {
         CliError::Fatal(m) if m.contains("does not appear to be an asc bucket") => {
-            CliError::Fatal(format!("repository '{typed_url}' does not exist"))
+            CliError::Fatal(format!("repository '{}' does not exist", super::url_display::anonymize(typed_url)))
         }
         other => other,
     })?;
@@ -324,7 +324,7 @@ async fn build(
     let tracking = report.local_updates.updates;
     drop(opened);
     // Every other branch's tip (not the agent branches), as git clone's fetch does.
-    super::remote::apply_refs(&fresh, tracking, &format!("clone: from {typed_url}")).await?;
+    super::remote::apply_refs(&fresh, tracking, &format!("clone: from {}", super::url_display::anonymize(typed_url))).await?;
     let quiet = FetchOpts { quiet: true, ..FetchOpts::default() };
     drop(fetch_one(&fresh, ws, origin, &quiet, &[]).await?);
 
@@ -336,7 +336,7 @@ async fn build(
         expires_at: None,
     };
     let txn = RefTxn { updates: vec![update], actor: actor(), reason: String::new(), op_id: ext::OpId::new().0 };
-    fresh.update_local_refs(txn, &format!("clone: from {typed_url}"), StagingAfterMove::Keep).await?;
+    fresh.update_local_refs(txn, &format!("clone: from {}", super::url_display::anonymize(typed_url)), StagingAfterMove::Keep).await?;
     let git = ensure_mapped(ws, head).await?;
     let mut paths: Vec<RepoPath> = Vec::new();
     if !o.no_checkout {

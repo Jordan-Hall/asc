@@ -265,3 +265,57 @@ fn boundary_store_rows_round_trip_per_repository() {
         assert_eq!(history_boundary::list(&db, r1).await.unwrap(), vec![ids[1]]);
     });
 }
+
+/// A token in a remote URL's userinfo must reach neither the terminal nor the ref logs.
+#[test]
+fn a_token_in_a_remote_url_is_never_printed_or_recorded() {
+    const TOKEN: &str = "SECRETTOKEN123";
+    let sb = Sandbox::new();
+    let repo = sb.dir("r");
+    ok(&sb, &repo, &["init", "-q"]);
+    commit_file(&sb, &repo, "a.txt", "a\n");
+    let urls = [
+        format!("s3://user:{TOKEN}@nobucket/p?endpoint=http://127.0.0.1:9"),
+        format!("https://user:{TOKEN}@127.0.0.1:9/o/r.git"),
+        format!("user:{TOKEN}@127.0.0.1:o/r.git"),
+    ];
+    for (i, url) in urls.iter().enumerate() {
+        let name = format!("r{i}");
+        ok(&sb, &repo, &["remote", "add", &name, url]);
+        for cmd in [["fetch", name.as_str()], ["push", name.as_str()], ["pull", name.as_str()]] {
+            let out = asc(&sb, &repo, &cmd);
+            let (so, se) = (text(&out.stdout), text(&out.stderr));
+            assert!(!so.contains(TOKEN) && !se.contains(TOKEN), "{cmd:?} on {url}: {so}{se}");
+        }
+        let direct = asc(&sb, &repo, &["fetch", url]);
+        assert!(!text(&direct.stderr).contains(TOKEN), "fetch {url}: {}", text(&direct.stderr));
+        let dest = sb.dir(&format!("c{i}"));
+        let clone = asc(&sb, &sb.dir("w"), &["clone", url, dest.to_str().unwrap()]);
+        let (so, se) = (text(&clone.stdout), text(&clone.stderr));
+        assert!(!so.contains(TOKEN) && !se.contains(TOKEN), "clone {url}: {so}{se}");
+    }
+    // Neither the reflogs nor FETCH_HEAD carry the token.
+    let mut stack = vec![repo.clone(), sb.dir("w")];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n == "FETCH_HEAD") || p.to_string_lossy().contains("logs") {
+                let body = std::fs::read(&p).unwrap_or_default();
+                assert!(!text(&body).contains(TOKEN), "{}", p.display());
+            }
+        }
+    }
+}
+
+#[test]
+fn remote_verbose_prints_the_configured_url_as_git_does() {
+    let sb = Sandbox::new();
+    let repo = sb.dir("r");
+    ok(&sb, &repo, &["init", "-q"]);
+    ok(&sb, &repo, &["remote", "add", "o", "user:pw@127.0.0.1:o/r.git"]);
+    let v = text(&ok(&sb, &repo, &["remote", "-v"]).stdout);
+    assert!(v.starts_with("o\tuser:pw@127.0.0.1:o/r.git (fetch)"), "{v}");
+}
