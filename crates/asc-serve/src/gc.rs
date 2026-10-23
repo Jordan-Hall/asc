@@ -9,9 +9,12 @@
 //! configuration (a worker) or from an operator calling the service in process.
 //!
 //! The fence is the exclusive side of the lock `UpdateRefs` holds shared from ingest (step 4)
-//! until its transaction commits (step 8). On Postgres a sweep batch also takes
-//! `pg_advisory_xact_lock(asc_gc)`, which the step-8 transaction's shared lock conflicts with, so
-//! a second server process cannot commit a push during the batch either.
+//! until its transaction commits (step 8). The lock has two halves taken in the same order by
+//! both sides: an in-process `RwLock`, and on Postgres a session-level advisory lock
+//! ([`PgClusterLock`], `pg_advisory_lock_shared` for a push and `pg_advisory_lock` for a sweep
+//! batch) held on a dedicated pooled connection for the whole interval. A sweep in one server
+//! process therefore waits for every push of every other process that has ingested and not yet
+//! committed. SQLite is a single-process database, so the in-process half is the whole fence.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,7 +32,8 @@ use asc_store::refs::{Refs, RepoKey};
 use asc_store::sqlrefs::SqlRefs;
 use serde::Deserialize;
 use sqlx::any::Any;
-use sqlx::{AnyPool, Row, Transaction};
+use sqlx::pool::PoolConnection;
+use sqlx::{AnyPool, Row};
 use tokio::task::JoinHandle;
 
 use crate::config::ConfigError;
@@ -295,7 +299,122 @@ impl MarkStore for SqlMarks {
     }
 }
 
-/// The sweep fence: the exclusive `UpdateRefs` GC lock (and the Postgres advisory lock).
+// ------------------------------------------------------------------------------ cross-process fence
+
+/// The cross-process half of the GC fence (see [`crate::update::GcLock`]). A guard holds the lock
+/// until it is dropped, including when the future holding it is cancelled.
+#[async_trait]
+pub trait ClusterLock: Send + Sync {
+    /// Taken by a push before its ingest; any number may hold it at once.
+    async fn shared(&self) -> Result<Box<dyn Send>, sqlx::Error>;
+    /// Taken by a sweep batch; waits for every shared holder in every process and excludes new ones.
+    async fn exclusive(&self) -> Result<Box<dyn Send>, sqlx::Error>;
+}
+
+/// [`ClusterLock`] as a Postgres session-level advisory lock on `GC_LOCK_KEY`. Each guard owns one
+/// pooled connection for as long as it lives; at most half the pool is lent out this way so that
+/// pushes holding the fence can still reach the database to ingest and commit.
+pub struct PgClusterLock {
+    pool: AnyPool,
+    slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl PgClusterLock {
+    pub fn new(pool: AnyPool) -> Self {
+        let max = usize::try_from(pool.options().get_max_connections()).unwrap_or(1);
+        Self {
+            slots: Arc::new(tokio::sync::Semaphore::new((max / 2).max(1))),
+            pool,
+        }
+    }
+
+    async fn take(&self, shared: bool) -> Result<Box<dyn Send>, sqlx::Error> {
+        let slot = self
+            .slots
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| sqlx::Error::PoolClosed)?;
+        let conn = self.pool.acquire().await?;
+        // The guard exists before the statement runs: a cancelled wait must not hand a connection
+        // that may yet receive the lock back to the pool.
+        let mut held = PgHeld {
+            conn: Some(conn),
+            shared,
+            locked: false,
+            slot: Some(slot),
+        };
+        let q = if shared {
+            "SELECT pg_advisory_lock_shared($1)"
+        } else {
+            "SELECT pg_advisory_lock($1)"
+        };
+        if let Some(conn) = held.conn.as_mut() {
+            sqlx::query(q)
+                .bind(GC_LOCK_KEY)
+                .execute(&mut **conn)
+                .await?;
+        }
+        held.locked = true;
+        Ok(Box::new(held))
+    }
+}
+
+#[async_trait]
+impl ClusterLock for PgClusterLock {
+    async fn shared(&self) -> Result<Box<dyn Send>, sqlx::Error> {
+        self.take(true).await
+    }
+
+    async fn exclusive(&self) -> Result<Box<dyn Send>, sqlx::Error> {
+        self.take(false).await
+    }
+}
+
+/// One held (or being acquired) advisory lock and the connection it lives on.
+struct PgHeld {
+    conn: Option<PoolConnection<Any>>,
+    shared: bool,
+    locked: bool,
+    slot: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Drop for PgHeld {
+    fn drop(&mut self) {
+        let Some(mut conn) = self.conn.take() else {
+            return;
+        };
+        let slot = self.slot.take();
+        // Closing the connection ends the session, which drops any lock it holds or is waiting
+        // for; that is the answer whenever an orderly unlock is not certain.
+        if !self.locked {
+            conn.close_on_drop();
+            return;
+        }
+        let q = if self.shared {
+            "SELECT pg_advisory_unlock_shared($1)"
+        } else {
+            "SELECT pg_advisory_unlock($1)"
+        };
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            conn.close_on_drop();
+            return;
+        };
+        rt.spawn(async move {
+            let unlocked = sqlx::query_scalar::<_, bool>(q)
+                .bind(GC_LOCK_KEY)
+                .fetch_one(&mut *conn)
+                .await;
+            if !matches!(unlocked, Ok(true)) {
+                conn.close_on_drop();
+            }
+            drop(conn);
+            drop(slot);
+        });
+    }
+}
+
+/// The sweep fence: the exclusive `UpdateRefs` GC lock, in this process and (on Postgres) in all.
 pub struct ServerFence {
     pub hooks: Arc<PipelineHooks>,
     pub pool: AnyPool,
@@ -304,19 +423,14 @@ pub struct ServerFence {
 #[async_trait]
 impl Fence for ServerFence {
     async fn enter(&self) -> Result<Box<dyn Send>, GcError> {
-        let local = self.hooks.gc().exclusive().await;
-        let tx: Option<Transaction<'static, Any>> = if is_postgres(&self.pool) {
-            let mut tx = self.pool.begin().await.map_err(|e| sql("gc fence", e))?;
-            sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(GC_LOCK_KEY)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| sql("gc fence", e))?;
-            Some(tx)
-        } else {
-            None
-        };
-        Ok(Box::new((local, tx)))
+        self.hooks.gc().attach_pool(&self.pool);
+        let hold = self
+            .hooks
+            .gc()
+            .exclusive()
+            .await
+            .map_err(|e| sql("gc fence", e))?;
+        Ok(Box::new(hold))
     }
 }
 
@@ -537,6 +651,7 @@ mod tests {
 
     use asc_core::id::{ChangesetId, FileId, RefTarget};
     use asc_core::path::RefName;
+    use asc_rpc::server::{CallCtx, RefsHandler, wire};
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
     use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
@@ -545,6 +660,7 @@ mod tests {
     use super::*;
     use crate::ingest::testutil::{commit, registry, repo};
     use crate::registry::RepoEntry;
+    use crate::update::{HookRejected, HookRequest, PushHooks, ServerRefs};
 
     const D15: Duration = Duration::from_secs(15 * 24 * 3600);
     const H25: Duration = Duration::from_secs(25 * 3600);
@@ -748,7 +864,7 @@ mod tests {
         s.svc.run_repo(&name(), t1, false).await.unwrap();
 
         // `UpdateRefs` holds the shared lock between ingest and commit.
-        let push = s.hooks.gc().shared().await;
+        let push = s.hooks.gc().shared().await.unwrap();
         let svc = s.svc.clone();
         let sweep = tokio::spawn(async move { svc.run_repo(&name(), t1 + H25, false).await });
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -765,6 +881,117 @@ mod tests {
             .unwrap();
         assert_eq!(r.sweep.deleted, 3);
         assert!(!has(&s, ObjKey::Changeset(lost)).await);
+    }
+
+    /// Stands in for the Postgres advisory lock that every server process on one database
+    /// shares: the harness has no Postgres, so two "processes" share this instead.
+    #[derive(Default)]
+    struct SharedLock(Arc<tokio::sync::RwLock<()>>);
+
+    #[async_trait]
+    impl ClusterLock for SharedLock {
+        async fn shared(&self) -> Result<Box<dyn Send>, sqlx::Error> {
+            Ok(Box::new(self.0.clone().read_owned().await))
+        }
+        async fn exclusive(&self) -> Result<Box<dyn Send>, sqlx::Error> {
+            Ok(Box::new(self.0.clone().write_owned().await))
+        }
+    }
+
+    /// Parks every push in step 7 (after ingest, before the commit) until released.
+    struct ParkedPush {
+        reached: Arc<tokio::sync::Notify>,
+        go: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl PushHooks for ParkedPush {
+        async fn pre_receive(&self, _: &HookRequest<'_>) -> Result<(), HookRejected> {
+            self.reached.notify_one();
+            self.go.notified().await;
+            Ok(())
+        }
+    }
+
+    fn push_request(name: &str, to: ChangesetId) -> wire::UpdateRefsRequest {
+        wire::UpdateRefsRequest {
+            repo: Some(wire::RepoRef {
+                name: "o/r".into(),
+                id_mode: 0,
+            }),
+            updates: vec![wire::RefUpdate {
+                name: name.into(),
+                expect: Some(wire::ref_update::Expect::Absent(true)),
+                new: Some(wire::RefTarget::from(&RefTarget::Changeset(to))),
+                delete: false,
+            }],
+            mode: wire::UpdateMode::FastForward as i32,
+            ..wire::UpdateRefsRequest::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sweep_in_another_process_waits_for_an_ingested_push() {
+        let s = setup().await;
+        // Two server processes on one database: their own in-process locks, one shared cluster
+        // lock between them.
+        let cluster = Arc::new(SharedLock::default());
+        let hooks_b = Arc::new(PipelineHooks::default());
+        s.hooks.gc().attach(cluster.clone());
+        hooks_b.gc().attach(cluster);
+        let svc_b = Arc::new(GcService::new(s.reg.clone(), hooks_b, GcConfig::default()));
+
+        // An old orphan, seen unreachable by mark 1.
+        let lost = commit(&s.entry, &[], &[("a", b"lost")]).await;
+        let t1 = SystemTime::now() + D15;
+        svc_b.run_repo(&name(), t1, false).await.unwrap();
+
+        // Process A ingests it for a push and parks before the ref commit.
+        let reached = Arc::new(tokio::sync::Notify::new());
+        let go = Arc::new(tokio::sync::Notify::new());
+        s.hooks
+            .set_push_hooks(Arc::new(ParkedPush {
+                reached: reached.clone(),
+                go: go.clone(),
+            }))
+            .ok()
+            .unwrap();
+        let a = ServerRefs::new(s.reg.clone(), s.hooks.clone());
+        let ctx = CallCtx {
+            repo: name(),
+            id_mode: asc_rpc::IdMode::Asc,
+            principal: asc_rpc::auth::Principal { id: "alice".into() },
+            op_id: Some(Uuid::new_v4()),
+            client: None,
+        };
+        let push = tokio::spawn(async move {
+            a.update_refs(&ctx, push_request("refs/heads/master", lost))
+                .await
+        });
+        reached.notified().await;
+
+        // Process B sweeps. Its batch must wait: `lost` is ingested but no ref names it yet.
+        let sweeping = svc_b.clone();
+        let sweep = tokio::spawn(async move { sweeping.run_repo(&name(), t1 + H25, false).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !sweep.is_finished(),
+            "a sweep in another process ran between a push's ingest and its commit"
+        );
+        assert!(has(&s, ObjKey::Changeset(lost)).await);
+
+        go.notify_one();
+        push.await.unwrap().unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(10), sweep)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.sweep.deleted, 0, "{report}");
+        assert!(has(&s, ObjKey::Changeset(lost)).await);
+        let rn = RefName::new(b"refs/heads/master".to_vec()).unwrap();
+        let got = s.reg.refs().get(s.entry.key, &rn).await.unwrap().unwrap();
+        assert_eq!(got.target, RefTarget::Changeset(lost));
     }
 
     #[tokio::test]

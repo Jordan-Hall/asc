@@ -26,6 +26,7 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tonic::Status;
 use uuid::Uuid;
 
+use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
 use crate::land::{self, DisjointOnly, OverlapPolicy};
@@ -102,18 +103,58 @@ struct NoHooks;
 impl PushHooks for NoHooks {}
 
 /// The GC fence: pushes hold it shared from step 4 to their commit; a sweep batch takes it
-/// exclusively (O01). On Postgres the step-8 transaction also takes the shared advisory lock
-/// `pg_advisory_xact_lock_shared`, which a sweeper in another process takes exclusively.
+/// exclusively (O01). It has two halves, always taken in this order: an in-process `RwLock`, and
+/// on Postgres a [`ClusterLock`] (a session-level advisory lock) that spans the same interval in
+/// every server process. SQLite is a single-process database, so there it is the `RwLock` alone.
 #[derive(Clone, Default)]
-pub struct GcLock(Arc<RwLock<()>>);
+pub struct GcLock {
+    local: Arc<RwLock<()>>,
+    cluster: Arc<OnceLock<Arc<dyn ClusterLock>>>,
+}
+
+/// Both halves of the fence, released together. The cluster half goes first.
+pub struct GcHold<G> {
+    _cluster: Option<Box<dyn Send>>,
+    _local: G,
+}
 
 impl GcLock {
-    pub async fn shared(&self) -> OwnedRwLockReadGuard<()> {
-        self.0.clone().read_owned().await
+    /// Installs the cross-process half; the first call wins.
+    pub fn attach(&self, lock: Arc<dyn ClusterLock>) {
+        let _ = self.cluster.set(lock);
     }
 
-    pub async fn exclusive(&self) -> OwnedRwLockWriteGuard<()> {
-        self.0.clone().write_owned().await
+    /// Installs the Postgres advisory lock when `pool` is Postgres; SQLite needs none.
+    pub fn attach_pool(&self, pool: &AnyPool) {
+        if self.cluster.get().is_none() && is_postgres(pool) {
+            self.attach(Arc::new(PgClusterLock::new(pool.clone())));
+        }
+    }
+
+    /// Held by a push from before its ingest until its ref commit, and by a mirror sync.
+    pub async fn shared(&self) -> Result<GcHold<OwnedRwLockReadGuard<()>>, sqlx::Error> {
+        let local = self.local.clone().read_owned().await;
+        let cluster = match self.cluster.get() {
+            Some(c) => Some(c.shared().await?),
+            None => None,
+        };
+        Ok(GcHold {
+            _cluster: cluster,
+            _local: local,
+        })
+    }
+
+    /// Held by a sweep batch.
+    pub async fn exclusive(&self) -> Result<GcHold<OwnedRwLockWriteGuard<()>>, sqlx::Error> {
+        let local = self.local.clone().write_owned().await;
+        let cluster = match self.cluster.get() {
+            Some(c) => Some(c.exclusive().await?),
+            None => None,
+        };
+        Ok(GcHold {
+            _cluster: cluster,
+            _local: local,
+        })
     }
 }
 
@@ -321,6 +362,7 @@ pub struct ServerRefs {
 
 impl ServerRefs {
     pub fn new(registry: Arc<Registry>, hooks: Arc<PipelineHooks>) -> Self {
+        hooks.gc().attach_pool(registry.pool());
         Self { registry, hooks }
     }
 
@@ -427,8 +469,12 @@ impl ServerRefs {
             land::check_branch(self.registry.pool(), &entry, &planned[0].text).await?;
         }
 
-        // Step 4: ingest the closure of every new target, under the shared GC lock.
-        let _gc = self.hooks.gc().shared().await;
+        // Step 4: ingest the closure of every new target, under the shared GC lock. It is held
+        // until this function returns, which is after the step-8 commit, in every server process.
+        let _gc = self.hooks.gc().shared().await.map_err(|e| {
+            tracing::warn!(error = %e, "gc fence unavailable");
+            Status::unavailable("garbage-collection fence unavailable; retry")
+        })?;
         let targets: Vec<RefTarget> = planned.iter().filter_map(|p| p.new).collect();
         let windows_safe = self.windows_safe(&entry).await?;
         Ingestor::new(
@@ -587,13 +633,6 @@ impl ServerRefs {
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
-        if is_postgres(self.registry.pool()) {
-            sqlx::query("SELECT pg_advisory_xact_lock_shared($1)")
-                .bind(GC_LOCK_KEY)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| internal("gc lock", &e))?;
-        }
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
