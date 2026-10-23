@@ -36,7 +36,7 @@ jobs:
       # compile. Skipped for a pull request, which never sees the secret.
       - name: Sign in to the container registry
         if: ${{ github.event_name != 'pull_request' }}
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: https://github.com/docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           # monorepo's convention: the org-level FORGEJO_REGISTRY_TOKEN when set.
