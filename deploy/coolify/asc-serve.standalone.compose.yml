@@ -44,6 +44,8 @@ services:
   # imported with the id and secret this app already holds, and read+write (never owner) on that
   # bucket only. Idempotent. Remove GARAGE_ADMIN_TOKEN from the app environment after the first
   # successful deploy; the step then fails closed and is skipped by nothing else.
+  # Its ADMIN URL is plain http on the internal network. That is the one approved plain-http
+  # exception: internal, one-shot, never the long-running server (whose S3 endpoint is https only).
   asc-garage-init:
     image: curlimages/curl:8.11.1
     user: '100:101'

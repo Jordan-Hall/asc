@@ -22,7 +22,7 @@ use object_store::{
     PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, WriteMultipart,
 };
 
-use asc_core::transport_policy::{Policy, Transport, TransportError, require_network};
+use asc_core::transport_policy::{Policy, Transport, require_network};
 
 use crate::objects::{Error, Result};
 
@@ -75,34 +75,22 @@ pub fn open_strict(
     open_inner(url, credentials, false)
 }
 
-/// [`open_with`] for the bucket an operator wrote into the server's own config (`asc-serve.toml`
-/// `store`, the turbo cache): its `endpoint` may be plain http to a host on the operator's
-/// private network (a Garage or MinIO container next to the server), which every client path
-/// refuses. Never call this with a URL a user or a remote supplied.
-pub fn open_operator(
-    url: &url::Url,
-    credentials: Option<S3Credentials>,
-) -> Result<(Arc<dyn ObjectStore>, Path)> {
-    open_under(url, credentials, true, Policy::current(), true)
-}
-
 fn open_inner(
     url: &url::Url,
     credentials: Option<S3Credentials>,
     create_fallback: bool,
 ) -> Result<(Arc<dyn ObjectStore>, Path)> {
-    open_under(url, credentials, create_fallback, Policy::current(), false)
+    open_under(url, credentials, create_fallback, Policy::current())
 }
 
 /// [`open_inner`] under an explicit transport policy: an `endpoint` is https, or plain http to
-/// the local machine when the policy allows it (U89). `operator` also lets it be plain http to
-/// any host (see [`open_operator`]).
+/// the local machine when the policy allows it (U89). The server's own `store` and turbo
+/// endpoints follow the same rule as a client's.
 fn open_under(
     url: &url::Url,
     credentials: Option<S3Credentials>,
     create_fallback: bool,
     policy: Policy,
-    operator: bool,
 ) -> Result<(Arc<dyn ObjectStore>, Path)> {
     let bucket = url
         .host_str()
@@ -126,16 +114,7 @@ fn open_under(
         }
     }
     if let Some(e) = endpoint {
-        let allow_http =
-            match require_network(&e, policy) {
-                Ok(Transport::Https) => false,
-                Ok(Transport::LoopbackHttp) => true,
-                Ok(_) => return Err(Error::Url("s3 endpoint must be an http(s) url".into())),
-                Err(
-                    TransportError::PlainHttp { .. } | TransportError::LoopbackNotEnabled { .. },
-                ) if operator => true,
-                Err(why) => return Err(Error::Url(format!("s3 endpoint: {why}"))),
-            };
+        let allow_http = endpoint_allows_http(&e, policy)?;
         builder = builder.with_allow_http(allow_http).with_endpoint(e);
     }
     if let Some(r) = region {
@@ -162,6 +141,24 @@ fn open_under(
         store = store.without_create_fallback();
     }
     Ok((Arc::new(store), root))
+}
+
+/// Whether the HTTP client may speak plain http to an `endpoint`: false for https, true for
+/// loopback http under the opt-in, an error for anything else. The error names
+/// `scheme://host:port` only.
+fn endpoint_allows_http(endpoint: &str, policy: Policy) -> Result<bool> {
+    match require_network(endpoint, policy) {
+        Ok(Transport::Https) => Ok(false),
+        Ok(Transport::LoopbackHttp) => Ok(true),
+        Ok(_) => Err(Error::Url("s3 endpoint must be an http(s) url".into())),
+        Err(why) => Err(Error::Url(format!("s3 endpoint: {why}"))),
+    }
+}
+
+/// [`endpoint_allows_http`] under the current transport policy, for code that builds its own
+/// S3 client from the same `s3://` URL (the turbo presigner).
+pub fn endpoint_allows_http_now(endpoint: &str) -> Result<bool> {
+    endpoint_allows_http(endpoint, Policy::current())
 }
 
 fn parse_bool(v: &str) -> Result<bool> {
@@ -717,9 +714,8 @@ mod tests {
     #[test]
     fn a_plain_http_endpoint_needs_the_opt_in_and_a_loopback_host() {
         let u = |s: &str| url::Url::parse(s).unwrap();
-        let strict = |s: &str| open_under(&u(s), None, true, Policy::STRICT, false).err();
-        let dev = |s: &str| open_under(&u(s), None, true, Policy::LOOPBACK_HTTP, false).err();
-        let operator = |s: &str| open_under(&u(s), None, true, Policy::STRICT, true).err();
+        let strict = |s: &str| open_under(&u(s), None, true, Policy::STRICT).err();
+        let dev = |s: &str| open_under(&u(s), None, true, Policy::LOOPBACK_HTTP).err();
         for e in [
             "http://minio.example:9000",
             "http://192.0.2.7:9000",
@@ -734,12 +730,20 @@ mod tests {
         assert!(dev(local).is_none());
         let https = "s3://bkt/p?endpoint=https://minio.example:9000&region=r";
         assert!(strict(https).is_none());
-        // The server's own configured store may use plain http on its private network, but still
-        // only http(s).
+        // The server's own store and turbo endpoints are not an exception: a private-network
+        // host over plain http is refused (U89c), https and opted-in loopback pass.
         let private = "s3://bkt/p?endpoint=http://garage-abc:3900&region=r";
-        assert!(operator(private).is_none());
         assert!(strict(private).is_some());
-        assert!(operator("s3://bkt/p?endpoint=ftp://garage:3900&region=r").is_some());
+        assert!(dev(private).is_some());
+        assert!(strict("s3://bkt/p?endpoint=ftp://garage:3900&region=r").is_some());
+        assert!(matches!(
+            endpoint_allows_http("https://garage.apps.example", Policy::STRICT),
+            Ok(false)
+        ));
+        assert!(matches!(
+            endpoint_allows_http("http://localhost:3900", Policy::LOOPBACK_HTTP),
+            Ok(true)
+        ));
         // The refusal names the origin and keeps secrets out.
         let url = "s3://bkt/p?endpoint=http://u:hunter2@minio.example:9000/x&region=r";
         let why = strict(url).unwrap().to_string();
