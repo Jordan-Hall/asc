@@ -235,10 +235,6 @@ async fn materialise(ctx: &Ctx) -> Result<(), CliError> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/mod.rs"]
-mod support;
-
-#[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
@@ -247,7 +243,7 @@ mod tests {
     use super::*;
     use crate::cli::safe_dir::SafeDirectory;
 
-    use super::support::Fixture;
+    use crate::cli::common::support::Fixture;
 
     #[derive(Default)]
     struct Recording(Mutex<Vec<WorkspaceId>>);

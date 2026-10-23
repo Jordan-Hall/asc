@@ -798,7 +798,7 @@ impl Ctx {
 
 #[cfg(test)]
 #[path = "../../tests/support/mod.rs"]
-mod support;
+pub(crate) mod support;
 
 #[cfg(test)]
 mod tests {
