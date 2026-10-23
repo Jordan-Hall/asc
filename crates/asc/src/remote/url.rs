@@ -85,23 +85,23 @@ fn is_git_dir(dir: &Path) -> bool {
 /// The normalised `file:///…` URL of an absolute local path.
 fn file_url(path: &str) -> Result<String, UrlError> {
     if is_unc(path) {
-        return Err(UrlError::NetworkShare(path.to_owned()));
+        return Err(UrlError::NetworkShare(crate::cli::url_display::anonymize(path)));
     }
     let p = Path::new(path);
     url::Url::from_file_path(p)
         .map(|u| u.to_string().trim_end_matches('/').to_owned())
-        .map_err(|()| UrlError::BadBucket(path.to_owned(), "not an absolute path".into()))
+        .map_err(|()| UrlError::BadBucket(crate::cli::url_display::anonymize(path), "not an absolute path".into()))
 }
 
 /// Normalises `file://` and `s3://` URLs: no trailing slash, no query on file URLs.
 fn normalise_bucket(raw: &str) -> Result<String, UrlError> {
-    let bad = |why: String| UrlError::BadBucket(raw.to_owned(), why);
+    let bad = |why: String| UrlError::BadBucket(crate::cli::url_display::anonymize(raw), why);
     let mut parsed = url::Url::parse(raw).map_err(|e| bad(e.to_string()))?;
     match parsed.scheme() {
         "file" => {
             match parsed.host_str() {
                 None | Some("") | Some("localhost") => {}
-                Some(_) => return Err(UrlError::NetworkShare(raw.to_owned())),
+                Some(_) => return Err(UrlError::NetworkShare(crate::cli::url_display::anonymize(raw))),
             }
             let path = parsed.path();
             if path.is_empty() || path == "/" {
@@ -142,7 +142,7 @@ pub fn parse(input: &str, refs: RefsMode) -> Result<RemoteSpec, UrlError> {
         return Err(UrlError::Control);
     }
     if input.starts_with('-') {
-        return Err(UrlError::LooksLikeOption(input.to_owned()));
+        return Err(UrlError::LooksLikeOption(crate::cli::url_display::anonymize(input)));
     }
     let lower = input.to_ascii_lowercase();
     if lower.starts_with("s3://") || lower.starts_with("file://") {
@@ -161,7 +161,7 @@ pub fn parse(input: &str, refs: RefsMode) -> Result<RemoteSpec, UrlError> {
     }
     if is_absolute_path(input) {
         if is_unc(input) {
-            return Err(UrlError::NetworkShare(input.to_owned()));
+            return Err(UrlError::NetworkShare(crate::cli::url_display::anonymize(input)));
         }
         if is_git_dir(Path::new(input)) {
             return Ok(RemoteSpec::Git { url: input.to_owned() });
@@ -191,7 +191,8 @@ pub fn default_dir_name(url: &str) -> String {
 /// The URL git prints after `From`/`To`: the stored URL without a trailing slash or `.git`
 /// for fetch, as typed for push.
 pub fn display_from(url: &str) -> String {
-    let t = url.trim_end_matches('/');
+    let anon = crate::cli::url_display::anonymize(url);
+    let t = anon.trim_end_matches('/');
     t.strip_suffix(".git").unwrap_or(t).to_owned()
 }
 

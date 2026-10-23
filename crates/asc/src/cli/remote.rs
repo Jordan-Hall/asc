@@ -433,7 +433,7 @@ async fn prune(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     println!("Pruning {name}");
-    println!("URL: {}", opened.url);
+    println!("URL: {}", super::url_display::anonymize(&opened.url));
     let mut updates = Vec::new();
     for (full, target) in stale {
         let short = full.strip_prefix("refs/remotes/").unwrap_or(&full);

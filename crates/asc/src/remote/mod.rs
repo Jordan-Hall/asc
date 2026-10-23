@@ -149,14 +149,19 @@ fn not_yet(spec: &RemoteSpec) -> CliError {
     CliError::Fatal(format!("asc: {} remotes are not supported yet (bucket remotes only)", spec.kind()))
 }
 
+fn anon(url: &str) -> String {
+    crate::cli::url_display::anonymize(url)
+}
+
 fn bucket_err(url: &str, why: impl std::fmt::Display) -> CliError {
-    CliError::Fatal(format!("asc: cannot open the bucket {url}: {why}"))
+    CliError::Fatal(format!("asc: cannot open the bucket {}: {why}", anon(url)))
 }
 
 /// The message of SPEC §3.4 for a bucket whose refs another machine holds.
 pub fn other_machine(url: &str) -> CliError {
     CliError::Fatal(format!(
-        "asc: refs for {url} are local to another machine; use an asc server or --refs shared (U30)"
+        "asc: refs for {} are local to another machine; use an asc server or --refs shared (U30)",
+        anon(url)
     ))
 }
 
@@ -188,7 +193,7 @@ pub async fn open_url(
     if intent == Intent::Write {
         bucket::ensure_local_dir(bucket_url)?;
     } else if !bucket::exists(bucket_url) {
-        return Err(CliError::Fatal(format!("asc: '{stored}' does not appear to be an asc bucket")));
+        return Err(CliError::Fatal(format!("asc: '{}' does not appear to be an asc bucket", anon(&stored))));
     }
     let objects = Arc::new(BucketObjects::from_url(bucket_url).map_err(|e| bucket_err(bucket_url, e))?);
     let remote: Box<dyn Remote> = match refs {
