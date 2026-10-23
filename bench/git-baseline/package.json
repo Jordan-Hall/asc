@@ -1,0 +1,6 @@
+{
+  "name": "asc-bench-git-baseline",
+  "private": true,
+  "type": "module",
+  "main": "bench.test.mjs"
+}
