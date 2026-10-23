@@ -6,6 +6,8 @@
 
 use std::path::Path;
 
+use asc_core::transport_policy::{TransportError, check};
+
 /// Longest URL accepted.
 pub const MAX_URL: usize = 8192;
 
@@ -58,6 +60,9 @@ pub enum UrlError {
     NetworkShare(String),
     #[error("invalid bucket URL '{0}': {1}")]
     BadBucket(String, String),
+    /// Plain http, `git://` or another transport asc does not speak (U89).
+    #[error(transparent)]
+    Transport(#[from] TransportError),
 }
 
 fn is_drive_path(s: &str) -> bool {
@@ -165,6 +170,14 @@ pub fn parse(input: &str, refs: RefsMode) -> Result<RemoteSpec, UrlError> {
             url: normalise_bucket(input)?,
             refs,
         });
+    }
+    // asc talks https or ssh: plain http (loopback only, and only under the opt-in), `git://` and
+    // every other network scheme are refused before anything is stored or contacted (U89).
+    let network = ["asc+", "git+", "ssh://", "git://", "https://", "http://"]
+        .iter()
+        .any(|p| lower.starts_with(p));
+    if network {
+        check(input)?;
     }
     for prefix in ["asc+https://", "asc+http://"] {
         if lower.starts_with(prefix) {
@@ -275,6 +288,32 @@ mod tests {
             parse("../elsewhere", l),
             Ok(RemoteSpec::Git { .. })
         ));
+    }
+
+    #[test]
+    fn plain_http_and_the_git_protocol_are_refused() {
+        // Non-loopback cases only: they are refused whatever the opt-in says.
+        for bad in [
+            "http://example.com/o/r",
+            "asc+http://example.com",
+            "git+http://example.com/o/r.git",
+            "git://example.com/o/r.git",
+            "git+git://example.com/o/r.git",
+            "http://u:hunter2@example.com:81/o/r?t=abc",
+        ] {
+            let err = parse(bad, RefsMode::Local).expect_err(bad);
+            assert!(matches!(err, UrlError::Transport(_)), "{bad}: {err}");
+            let text = err.to_string();
+            assert!(!text.contains("hunter2") && !text.contains("abc"), "{text}");
+        }
+        assert_eq!(
+            parse("git@example.com:o/r.git", RefsMode::Local),
+            Ok(RemoteSpec::Git {
+                url: "git@example.com:o/r.git".into()
+            })
+        );
+        assert!(parse("ssh://git@example.com/o/r.git", RefsMode::Local).is_ok());
+        assert!(parse("git+ssh://example.com/o/r.git", RefsMode::Local).is_ok());
     }
 
     #[test]

