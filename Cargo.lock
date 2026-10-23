@@ -445,6 +445,7 @@ dependencies = [
  "asc-core",
  "asc-engine",
  "asc-git",
+ "asc-graph",
  "asc-rpc",
  "asc-serve",
  "asc-state",
