@@ -5,16 +5,13 @@
 //!   only from its parsed parts: scheme, host, port, path, query and fragment. Raw authority text
 //!   and the username and password are never copied. A URL that does not parse shows as
 //!   `scheme://***`.
-//! * Query values that look like secrets, or that carry `@`, `%40` or `://`, are shown as `***`.
+//! * Only `region=` and `path_style=` query pairs are shown (and only if the value carries no `@`,
+//!   `%40` or `://`); every other pair, and any fragment, is shown as `***`.
 //! * An scp-like `user[:pw]@host:path` shows as `host:path`; an ambiguous host shows as `***`.
 //! * `file://` URLs without credentials and plain paths are unchanged.
 //!
 //! Every place that prints or records a remote URL (`From`, `To`, errors, reflog messages, merge
 //! messages) goes through [`anonymize`].
-
-/// Query parameter names (lower case, substring match) whose values may hold a credential.
-const SECRET_KEYS: [&str; 11] =
-    ["secret", "token", "password", "passwd", "pwd", "key", "sig", "credential", "auth", "session", "x-amz-"];
 
 /// `url` in a form that is safe to print or record.
 pub fn anonymize(url: &str) -> String {
@@ -60,22 +57,21 @@ fn anonymize_url(url: &str, n: usize) -> String {
         out.push('?');
         out.push_str(&pairs.join("&"));
     }
-    if let Some(fragment) = parsed.fragment() {
-        out.push('#');
-        out.push_str(if suspect(fragment) { "***" } else { fragment });
+    if parsed.fragment().is_some() {
+        out.push_str("#***");
     }
     out
 }
 
+/// Keys the bucket URL parser (`asc-store` `s3::open`) accepts whose values are never secret.
+/// `endpoint` is deliberately absent: its value is a URL and always shows as `***`.
+const SAFE_KEYS: [&str; 2] = ["region", "path_style"];
+
+/// Only `safe-key=value` pairs are shown; every other pair is `***`.
 fn mask_pair(pair: &str) -> String {
-    let Some((key, value)) = pair.split_once('=') else {
-        return if suspect(pair) { "***".to_owned() } else { pair.to_owned() };
-    };
-    let lower = key.to_ascii_lowercase();
-    if SECRET_KEYS.iter().any(|k| lower.contains(k)) || suspect(value) {
-        format!("{key}=***")
-    } else {
-        pair.to_owned()
+    match pair.split_once('=') {
+        Some((key, value)) if SAFE_KEYS.contains(&key) && !suspect(value) => pair.to_owned(),
+        _ => "***".to_owned(),
     }
 }
 
@@ -114,12 +110,12 @@ mod tests {
     #[test]
     fn authority_ends_at_query_or_fragment() {
         assert_eq!(anonymize("s3://u:pw@bucket?region=x"), "s3://bucket?region=x");
-        assert_eq!(anonymize("https://u:pw@host#x"), "https://host/#x");
+        assert_eq!(anonymize("https://u:pw@host#x"), "https://host/#***");
     }
 
     #[test]
     fn query_at_sign_never_becomes_the_host() {
-        assert_eq!(anonymize("https://host?a=b@c"), "https://host/?a=***");
+        assert_eq!(anonymize("https://host?a=b@c"), "https://host/?***");
         assert_eq!(shown_host("https://host?a=b@c").as_deref(), Some("host"));
         assert_eq!(shown_host("https://evil.com?@good.com/").as_deref(), Some("evil.com"));
         assert_eq!(shown_host("https://evil.com#@good.com/").as_deref(), Some("evil.com"));
@@ -150,19 +146,27 @@ mod tests {
     fn nested_urls_and_encoded_userinfo_in_the_query_are_masked() {
         assert_eq!(
             anonymize("s3://bucket/p?endpoint=https://key:secret@minio:9000&region=eu"),
-            "s3://bucket/p?endpoint=***&region=eu"
+            "s3://bucket/p?***&region=eu"
         );
-        assert_eq!(anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"), "s3://b/p?endpoint=***");
-        assert_eq!(anonymize("s3://b/p?endpoint=http://127.0.0.1:9000"), "s3://b/p?endpoint=***");
+        assert_eq!(anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"), "s3://b/p?***");
+        assert_eq!(anonymize("s3://b/p?endpoint=http://127.0.0.1:9000"), "s3://b/p?***");
     }
 
     #[test]
     fn secret_query_parameters_are_hidden() {
         assert_eq!(
             anonymize("s3://b/p?access_key=AK&Secret=S&token=T&password=P&sig=G&X-Amz-Signature=Z&region=eu"),
-            "s3://b/p?access_key=***&Secret=***&token=***&password=***&sig=***&X-Amz-Signature=***&region=eu"
+            "s3://b/p?***&***&***&***&***&***&region=eu"
         );
         assert_eq!(anonymize("s3://b/p?path_style=true"), "s3://b/p?path_style=true");
+    }
+
+    #[test]
+    fn a_query_key_can_carry_credentials() {
+        assert_eq!(anonymize("s3://b/p?https://u:p@x=1"), "s3://b/p?***");
+        assert_eq!(anonymize("s3://b/p?u:p%40x=1&region=eu"), "s3://b/p?***&region=eu");
+        assert_eq!(anonymize("s3://b/p?region=http://u:p@h"), "s3://b/p?***");
+        assert_eq!(anonymize("s3://b/p?anything=1"), "s3://b/p?***");
     }
 
     #[test]
