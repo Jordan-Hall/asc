@@ -42,6 +42,14 @@ scenarios! {
     external_commands = "external-commands",
     commit_variants = "commit-variants",
     hooks = "hooks",
+    hooks_husky_pre_commit = "hooks-husky-pre-commit",
+    hooks_husky_pre_push = "hooks-husky-pre-push",
+    hooks_commitlint = "hooks-commitlint",
+    hooks_lint_staged_partial = "lint-staged-partial",
+    hooks_lint_staged_binary = "lint-staged-binary",
+    hooks_claude_code_flow = "claude-code-flow",
+    hooks_path = "hooks-path",
+    hooks_reference_transaction = "hooks-reference-transaction",
 }
 
 #[test]
