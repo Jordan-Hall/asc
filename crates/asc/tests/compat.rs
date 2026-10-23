@@ -87,6 +87,7 @@ scenarios! {
     remote_bucket = "remote-bucket",
     push_reject = "push-reject",
     fetch_agent_refs = "fetch-agent-refs",
+    git_remote_roundtrip = "git-remote-roundtrip",
     apply_basic = "apply-basic",
     apply_offset = "apply-offset",
     apply_errors = "apply-errors",

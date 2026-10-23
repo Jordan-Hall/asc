@@ -2,6 +2,7 @@
 
 pub mod credential;
 pub mod export;
+pub mod gitremote;
 pub mod import;
 pub mod import_change;
 pub mod index;
