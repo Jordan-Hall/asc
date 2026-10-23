@@ -55,6 +55,8 @@ pub enum Op {
     FastForward,
     Pick,
     Revert,
+    /// `stash apply` and `pop`: staged changes elsewhere are fine, failures exit 1.
+    Stash,
 }
 
 impl Op {
@@ -63,6 +65,7 @@ impl Op {
             Self::Merge | Self::FastForward => "merge",
             Self::Pick => "cherry-pick",
             Self::Revert => "revert",
+            Self::Stash => "stash",
         }
     }
 
@@ -73,6 +76,7 @@ impl Op {
             Self::FastForward => ("", 1),
             Self::Pick => ("fatal: cherry-pick failed", 128),
             Self::Revert => ("fatal: revert failed", 128),
+            Self::Stash => ("", 1),
         }
     }
 }

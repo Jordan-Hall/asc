@@ -174,8 +174,15 @@ async fn reflog_walk(
     };
     let name = RefName::new(full.clone().into_bytes()).map_err(fatal)?;
     let limit = o.max_count.map_or(10_000, |n| (n + o.skip).min(10_000)) as u32;
-    let log = ws.db.refs().log(ws.repo.key, &name, limit).await?;
-    let short = full.strip_prefix("refs/heads/").unwrap_or(&full).to_owned();
+    let log = match super::stash::stack::reflog_view(ws, &name, limit).await? {
+        Some(stash) => stash,
+        None => ws.db.refs().log(ws.repo.key, &name, limit).await?,
+    };
+    let short = ["refs/heads/", "refs/tags/", "refs/remotes/", "refs/"]
+        .iter()
+        .find_map(|p| full.strip_prefix(p))
+        .unwrap_or(&full)
+        .to_owned();
     for (i, entry) in log.iter().enumerate().skip(o.skip) {
         let Some(RefTarget::Changeset(id)) = entry.new else { continue };
         let reflog = Reflog {

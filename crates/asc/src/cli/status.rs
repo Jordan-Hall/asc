@@ -803,7 +803,7 @@ fn name_bytes(n: &std::ffi::OsStr) -> Vec<u8> {
 }
 
 /// `-uall`: the files below an untracked directory (a nested workspace stays one entry).
-fn expand_dir(
+pub(crate) fn expand_dir(
     root: &Path,
     sources: &IgnoreSources,
     u: &Untracked,
