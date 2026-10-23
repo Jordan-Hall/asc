@@ -162,6 +162,12 @@ fn visible(r: &Report) -> (Vec<&str>, Vec<&str>) {
     (names, hidden)
 }
 
+/// How many affected rows have a value no CI output may emit. When it is not zero the outputs
+/// widen to "run everything", so a hostile rename cannot make CI skip a project.
+fn unsafe_count(r: &Report) -> usize {
+    r.rows.iter().filter(|p| !row_safe(p)).count()
+}
+
 /// The rows CI outputs may emit.
 fn safe_rows(r: &Report) -> impl Iterator<Item = &Row> {
     r.rows.iter().filter(|p| row_safe(p))
@@ -179,6 +185,9 @@ pub fn invisible_note(r: &Report) -> String {
 
 /// `turbo`: `--filter=<name>` for each affected Node package, space-separated, one line.
 pub fn turbo(r: &Report) -> String {
+    if unsafe_count(r) > 0 {
+        return "--filter=*\n".into();
+    }
     let (names, _) = visible(r);
     let filters: Vec<String> = names.iter().map(|n| format!("--filter={n}")).collect();
     format!("{}\n", filters.join(" "))
@@ -186,6 +195,9 @@ pub fn turbo(r: &Report) -> String {
 
 /// `nx`: comma-separated names for `nx run-many --projects=`.
 pub fn nx(r: &Report) -> String {
+    if unsafe_count(r) > 0 {
+        return "*\n".into();
+    }
     let (names, _) = visible(r);
     format!("{}\n", names.join(","))
 }
@@ -224,16 +236,26 @@ pub fn matrix(r: &Report, by: MatrixBy) -> Value {
                 .collect()
         }
     };
+    let mut include = include;
+    if unsafe_count(r) > 0 {
+        include.push(json!({"project": "all", "name": "all", "ecosystem": "all", "root": ".",
+                            "workspace": "."}));
+    }
     json!({ "include": include })
 }
 
 /// `gha`: lines for `$GITHUB_OUTPUT`.
 pub fn gha(r: &Report, by: MatrixBy) -> String {
     let ids: Vec<&str> = safe_rows(r).map(|p| p.id.as_str()).collect();
-    let ids_len = ids.len();
-    let has = |eco: &str| r.all || safe_rows(r).any(|p| p.ecosystem == eco);
+    let hidden = unsafe_count(r);
+    let all = r.all || hidden > 0;
+    let has = |eco: &str| all || r.rows.iter().any(|p| p.ecosystem == eco);
     let (names, _) = visible(r);
-    let filters: Vec<String> = names.iter().map(|n| format!("--filter={n}")).collect();
+    let (turbo_filter, nx_projects) = if hidden > 0 {
+        ("--filter=*".to_string(), "*".to_string())
+    } else {
+        (names.iter().map(|n| format!("--filter={n}")).collect::<Vec<_>>().join(" "), names.join(","))
+    };
     let mut out = String::new();
     let mut line = |k: &str, v: String| {
         out.push_str(k);
@@ -242,13 +264,14 @@ pub fn gha(r: &Report, by: MatrixBy) -> String {
         out.push('\n');
     };
     line("affected", Value::from(ids).to_string());
-    line("count", ids_len.to_string());
-    line("all", r.all.to_string());
+    line("count", r.rows.len().to_string());
+    line("all", all.to_string());
+    line("hidden", hidden.to_string());
     for eco in ["rust", "python", "dotnet", "node"] {
         line(eco, has(eco).to_string());
     }
-    line("turbo_filter", filters.join(" "));
-    line("nx_projects", names.join(","));
+    line("turbo_filter", turbo_filter);
+    line("nx_projects", nx_projects);
     line("matrix", matrix(r, by).to_string());
     out
 }
@@ -318,9 +341,9 @@ mod tests {
     }
 
     #[test]
-    fn names_that_split_filters_are_hidden() {
+    fn names_that_split_filters_widen_to_everything() {
         let r = report(vec![row("node", "a b", "pkg/a"), row("node", "x,y", "pkg/b")]);
-        assert_eq!(turbo(&r), "\n");
+        assert_eq!(turbo(&r), "--filter=*\n");
         assert_eq!(invisible_note(&r), "asc: not visible to turbo: node:a b node:x,y\n");
     }
 
@@ -358,7 +381,7 @@ mod tests {
         assert_eq!(
             gha(&r, MatrixBy::Project),
             concat!(
-                "affected=[\"node:a\"]\ncount=1\nall=false\nrust=false\npython=false\n",
+                "affected=[\"node:a\"]\ncount=1\nall=false\nhidden=0\nrust=false\npython=false\n",
                 "dotnet=false\nnode=true\nturbo_filter=--filter=a\nnx_projects=a\n",
                 "matrix={\"include\":[{\"ecosystem\":\"node\",\"name\":\"a\",\"project\":\"node:a\",",
                 "\"root\":\"pkg/a\",\"workspace\":\"pkg/a\"}]}\n"
@@ -397,19 +420,16 @@ mod tests {
         let r = report(rows);
         let out = gha(&r, MatrixBy::Project);
         let mat = matrix(&r, MatrixBy::Project).to_string();
-        let all = format!("{out}
-{mat}
-{}
-{}", turbo(&r), nx(&r));
+        let all = format!("{out}\n{mat}\n{}\n{}", turbo(&r), nx(&r));
         for h in HOSTILE {
             assert!(!all.contains(h), "{h} leaked");
             assert!(invisible_note(&r).contains(h), "{h} not hidden");
         }
-        assert!(out.contains("turbo_filter=--filter=@asc/web --filter=my_pkg.v2
-"));
-        assert!(out.contains("nx_projects=@asc/web,my_pkg.v2
-"));
-        assert_eq!(matrix(&r, MatrixBy::Project)["include"].as_array().unwrap().len(), 2);
+        assert!(out.contains("all=true\nhidden=8\n"));
+        assert!(out.contains("turbo_filter=--filter=*\nnx_projects=*\n"));
+        let m = matrix(&r, MatrixBy::Project);
+        assert_eq!(m["include"].as_array().unwrap().len(), 3);
+        assert!(mat.contains("@asc/web") && mat.contains("my_pkg.v2"));
     }
 
     #[test]
@@ -424,6 +444,21 @@ mod tests {
         assert!(out.contains("pkg/good"));
         assert!(invisible_note(&r).contains("node:ok"));
         assert!(invisible_note(&r).contains("rust:fine"));
+    }
+
+    #[test]
+    fn unsafe_row_widens_outputs_to_run_everything() {
+        let r = report(vec![row("node", "ok", "pkg/ok"), row("rust", "$(id)", "crates/x")]);
+        let out = gha(&r, MatrixBy::Project);
+        assert!(out.contains("count=2\nall=true\nhidden=1\nrust=true\n"), "{out}");
+        assert!(out.contains("turbo_filter=--filter=*\nnx_projects=*\n"));
+        assert!(!out.contains("$(id)"));
+        assert_eq!(turbo(&r), "--filter=*\n");
+        assert_eq!(nx(&r), "*\n");
+        let m = matrix(&r, MatrixBy::Project);
+        assert_eq!(m["include"].as_array().unwrap().len(), 2);
+        assert_eq!(m["include"][1]["project"], "all");
+        assert!(!m.to_string().contains("$(id)"));
     }
 
     #[test]
