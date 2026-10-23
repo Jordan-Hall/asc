@@ -19,6 +19,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 globset = { workspace = true }
+memchr = { workspace = true }
 quick_cache = { workspace = true }
 regex = { workspace = true }
 thiserror = { workspace = true }
