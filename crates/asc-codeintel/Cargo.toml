@@ -9,6 +9,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# usearch HNSW (C++ FFI) for vector segments; off by default and off in asc.exe (SPEC 15.2, 23.9).
+ann = ["dep:usearch"]
+
 [dependencies]
 asc-core.workspace = true
 blake3.workspace = true
@@ -37,6 +41,7 @@ tantivy.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+usearch = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
