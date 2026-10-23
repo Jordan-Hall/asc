@@ -38,3 +38,56 @@ mkdir keep && echo x > keep/f
 printf '{"cwd":"%s","worktree_path":"%s/keep"}' "$here" "$here" > evil.json
 if asc internal claude-hook worktree-remove < evil.json 2> evil-err.txt; then exit 1; fi
 test -f keep/f
+# --- The hook input is untrusted: only a worktree the create hook made is force-removed. ---
+hook_remove() {
+  printf '{"hook_event_name":"WorktreeRemove","cwd":"%s","worktree_path":"%s"}' "$2" "$1" \
+    | asc internal claude-hook worktree-remove > hook-out.txt 2> hook-err.txt
+}
+hook_create() {
+  printf '{"hook_event_name":"WorktreeCreate","cwd":"%s","name":"%s"}' "$here" "$1" > c.json
+  asc internal claude-hook worktree-create < c.json | tr '\' '/'
+}
+# A dirty, hand-made worktree in the agent directory survives (no force), as does its work.
+git worktree add .claude/worktrees/hand -b hand-made
+echo precious > .claude/worktrees/hand/work.txt
+if hook_remove "$here/.claude/worktrees/hand" "$here"; then exit 1; fi
+test "$(cat .claude/worktrees/hand/work.txt)" = "precious"
+git worktree list | grep -q 'worktrees/hand'
+# ... but a clean hand-made one there may go, without force.
+rm .claude/worktrees/hand/work.txt
+hook_remove "$here/.claude/worktrees/hand" "$here"
+test ! -e .claude/worktrees/hand
+# A worktree outside .claude/worktrees is refused, even one marked ephemeral and clean.
+git worktree add --ephemeral ../outside-wt -b outside-b
+outside="$(cd ../outside-wt && wpwd)"
+echo precious > ../outside-wt/work.txt
+if hook_remove "$outside" "$here"; then exit 1; fi
+grep -q 'not directly under' hook-err.txt
+test "$(cat ../outside-wt/work.txt)" = "precious"
+rm ../outside-wt/work.txt
+if hook_remove "$outside" "$here"; then exit 1; fi
+test -f ../outside-wt/a.txt
+git worktree list | grep -q 'outside-wt'
+# A cwd from another repository is ignored.
+mkdir ../other-repo
+(cd ../other-repo && git init)
+there="$(cd ../other-repo && wpwd)"
+far="$(hook_create far-fox)"
+hook_remove "$far" "$there"
+test ! -e "$far"
+# So is one that is not an ancestor of the worktree path.
+near="$(hook_create near-fox)"
+hook_remove "$near" "$here/keep"
+test ! -e "$near"
+# A dirty hook-created worktree is saved on refs/asc/agent-trash before it is force-removed.
+dirty="$(hook_create dirty-fox)"
+echo mine > "$dirty/work.txt"
+echo changed > "$dirty/a.txt"
+hook_remove "$dirty" "$here"
+test ! -e "$dirty"
+grep -q 'refs/asc/agent-trash/dirty-fox/' hook-err.txt
+snap="$(git for-each-ref --format='%(refname)' refs/asc/agent-trash/dirty-fox/)"
+test -n "$snap"
+test "$(git show "$snap:work.txt")" = "mine"
+test "$(git show "$snap:a.txt")" = "changed"
+test "$(git show "agent/dirty-fox:a.txt")" = "one"
