@@ -6,6 +6,7 @@ pub mod chunk;
 pub mod config;
 pub mod doc;
 pub mod grams;
+pub mod index;
 pub mod lang;
 pub mod plan;
 pub mod secrets;

@@ -33,8 +33,11 @@ async-trait.workspace = true
 bstr.workspace = true
 bytes.workspace = true
 gix-attributes.workspace = true
+tantivy.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 proptest.workspace = true
 futures.workspace = true

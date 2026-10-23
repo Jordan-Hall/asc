@@ -174,5 +174,7 @@ tree-sitter-go         = "=0.25.0"
 tree-sitter-javascript = "=0.25.0"
 # additions (I05)
 roaring        = "=0.10.12"
+# additions (I06)
+tantivy        = { version = "=0.27.0", default-features = false, features = ["mmap"] }
 # additions (I02)
 regex-syntax   = "0.8.11"
