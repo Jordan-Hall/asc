@@ -268,6 +268,8 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
         dashdash: false,
     };
     let mut args = argv.iter();
+    // After `--end-of-options` every word up to `--` is a revision, whatever it looks like.
+    let mut options_ended = false;
     while let Some(arg) = args.next() {
         if c.dashdash {
             c.paths.push(arg.clone());
@@ -279,6 +281,14 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
         };
         if text == "--" {
             c.dashdash = true;
+            continue;
+        }
+        if options_ended {
+            c.positional.push(arg.clone());
+            continue;
+        }
+        if text == "--end-of-options" {
+            options_ended = true;
             continue;
         }
         if !text.starts_with('-') || text == "-" {

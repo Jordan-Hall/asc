@@ -805,6 +805,7 @@ const DEREF_FORMATS: &[&str] = &[
     "%(*symref)",
 ];
 
+// fidelity: Q-4
 #[tokio::test]
 async fn every_atom_matches_git() {
     let b = standard().await;
@@ -961,6 +962,7 @@ async fn reachability_and_identity_filters_match_git() {
     }
 }
 
+// fidelity: Q-4
 #[tokio::test]
 async fn upstream_and_push_atoms_match_git() {
     let b = standard().await;
@@ -1855,8 +1857,33 @@ async fn ls_files_matches_git() {
     b.same_in("sub", &["ls-files", "-o"]);
     b.same_in("sub", &["ls-files", "-o", "--exclude-standard"]);
     b.same_in("sub", &["ls-files", "-o", "--full-name"]);
+
+    // Tracked files whose work tree file changed or is gone.
+    b.same_all("ls-files", &[&["-m"], &["--modified"]]);
+    b.put(
+        "a.txt",
+        "changed in the work tree
+",
+    );
+    b.unput("sp ace.txt");
+    b.same_all(
+        "ls-files",
+        &[
+            &["-m"],
+            &["--modified"],
+            &["-m", "-z"],
+            &["-m", "sub"],
+            &["-m", "a.txt"],
+            &["-c", "-m"],
+            &["-s", "-m"],
+            &["-o", "-m", "--exclude-standard", "-z"],
+            &["-m", "--full-name"],
+        ],
+    );
+    b.same_in("sub", &["ls-files", "-m"]);
 }
 
+// fidelity: Q-3
 #[tokio::test]
 async fn update_index_matches_git() {
     let b = standard().await;
@@ -1922,6 +1949,11 @@ async fn update_index_matches_git() {
     ]);
     assert_eq!(ghost.code, 128, "{}", ghost.stderr);
     assert!(ghost.stderr.contains("invalid object"), "{}", ghost.stderr);
+    assert!(
+        ghost.stderr.contains("(git-fidelity Q-3)"),
+        "{}",
+        ghost.stderr
+    );
     b.same(&[
         "update-index",
         "--add",

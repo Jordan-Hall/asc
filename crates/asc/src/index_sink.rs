@@ -7,8 +7,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use asc_core::git::blob_oid;
 use asc_core::id::ChangesetId;
-use asc_core::object::Entry;
+use asc_core::object::{Entry, Kind};
 use asc_core::path::{Name, RepoPath, checkout_safe, windows_valid};
 use asc_git::index::{FileStat, IndexFile, PlainStat, StatSource, StatTime};
 use asc_git::projection::Projection;
@@ -16,6 +17,7 @@ use asc_git::projection::index_export::{self, Basis, ExportOptions, TurboIndex};
 use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces::{self, Mode};
 use asc_state::{AscHome, WorkspaceId};
+use asc_wc::SafeRoot;
 use asc_wc::plain::Sparse;
 
 use crate::cli::common::{Admitted, CliEngine, WsCtx};
@@ -77,13 +79,45 @@ impl StatSource for VirtualStat {
     }
 }
 
-/// Real stat for the paths a command just staged, whose files equal the staged content;
-/// stat-dirty (zero times, tree size) for every other changed entry, since the file may differ
-/// from HEAD's content and a recorded stat would make a reader trust the wrong oid. Entries that
-/// did not change keep the stat they had (SPEC §9.4; `export::Inherit`).
+/// The largest file a head move hashes to prove that it equals the entry it is exported as.
+const VERIFY_LIMIT: u64 = 32 << 20;
+
+/// Real stat for the paths a command just staged, whose files equal the staged content, and for
+/// every other changed entry whose file hashes to the entry's oid (a checkout just wrote it);
+/// stat-dirty (zero times, tree size) for any other, since the file may differ from the tree's
+/// content and a recorded stat would make a reader trust the wrong oid. Entries that did not
+/// change keep the stat they had (SPEC §9.4; `export::Inherit`).
 struct Trusted {
     inner: PlainStat,
+    safe: SafeRoot,
     paths: HashSet<Vec<u8>>,
+}
+
+impl Trusted {
+    /// The stat of the regular file at `path` when its bytes hash to `entry.git`, taken before
+    /// and after the read so a concurrent write is not recorded; stat-dirty otherwise.
+    fn verified(&self, path: &RepoPath, entry: &Entry) -> FileStat {
+        let dirty = FileStat {
+            size: entry.size as u32,
+            ..FileStat::default()
+        };
+        if !matches!(entry.kind, Kind::File | Kind::Exec) || entry.size > VERIFY_LIMIT {
+            return dirty;
+        }
+        let Some(file) = self.safe.resolve(path) else {
+            return dirty;
+        };
+        let before = self.inner.stat(path, entry);
+        let regular =
+            std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file() && m.len() == entry.size);
+        let matches =
+            regular && std::fs::read(&file).is_ok_and(|bytes| blob_oid(&bytes) == entry.git);
+        if matches && self.inner.stat(path, entry) == before {
+            before
+        } else {
+            dirty
+        }
+    }
 }
 
 impl StatSource for Trusted {
@@ -91,10 +125,7 @@ impl StatSource for Trusted {
         if self.paths.contains(path.as_bytes()) {
             self.inner.stat(path, entry)
         } else {
-            FileStat {
-                size: entry.size as u32,
-                ..FileStat::default()
-            }
+            self.verified(path, entry)
         }
     }
 }
@@ -160,6 +191,7 @@ async fn sync(
             inner: PlainStat {
                 root: ws.projection.toplevel().to_owned(),
             },
+            safe: SafeRoot::new(ws.projection.toplevel().to_owned()),
             paths: paths.iter().map(|p| p.as_bytes().to_vec()).collect(),
         };
         index_export::update(&ws.engine, basis, root, paths, &rows, &stat, &opts).await?

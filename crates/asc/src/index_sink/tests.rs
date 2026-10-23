@@ -347,8 +347,61 @@ async fn an_unverified_file_is_never_recorded_as_stat_clean() {
         listing(&idx),
         expect(&[("a.txt", b"one"), ("b.txt", b"two")])
     );
-    assert!(
-        idx.entries.iter().all(|e| e.mtime == StatTime::default()),
-        "no entry may claim a stat match for content asc has not seen"
+    for e in &idx.entries {
+        let name = String::from_utf8_lossy(e.path.as_bytes()).into_owned();
+        let meta = std::fs::metadata(w.at(&name)).unwrap();
+        if name == "b.txt" {
+            assert_eq!(
+                e.mtime,
+                StatTime::default(),
+                "no entry may claim a stat match for content asc has not seen"
+            );
+        } else {
+            // `a.txt` was hashed and equals its entry, so it carries the file's real stat.
+            assert_eq!(
+                e.mtime,
+                StatTime::from_system_time(meta.modified().unwrap())
+            );
+            assert_eq!(u64::from(e.size), meta.len());
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_head_move_records_the_stat_of_the_files_it_verified() {
+    let w = World::new(Mode::Plain).await;
+    let sink = w.sink();
+    let c1 = w
+        .commit(None, &[("a.txt", b"one"), ("b.txt", b"two")])
+        .await;
+    sink.on_commit(w.ws, c1).await.unwrap();
+    let c2 = w.commit(Some(c1), &[("a.txt", b"uno")]).await;
+    // The files are those of `c2` now, as after a checkout; the move must export their stat.
+    sink.on_head_moved(w.ws, Some(c1), Some(c2)).await.unwrap();
+    let idx = w.index().expect("exported");
+    assert_eq!(
+        listing(&idx),
+        expect(&[("a.txt", b"uno"), ("b.txt", b"two")])
     );
+    for e in &idx.entries {
+        let name = String::from_utf8_lossy(e.path.as_bytes()).into_owned();
+        let meta = std::fs::metadata(w.at(&name)).unwrap();
+        assert_eq!(
+            e.mtime,
+            StatTime::from_system_time(meta.modified().unwrap()),
+            "{name}: a verified file is stat-clean, so a reader hashes nothing"
+        );
+        assert_eq!(u64::from(e.size), meta.len());
+    }
+    // A file that changed on disk after the move to `c2` is not exported as stat-clean.
+    let c3 = w.commit(Some(c2), &[("a.txt", b"dos")]).await;
+    std::fs::write(w.at("a.txt"), b"dox").unwrap();
+    sink.on_head_moved(w.ws, Some(c2), Some(c3)).await.unwrap();
+    let idx = w.index().expect("exported");
+    let a = idx
+        .entries
+        .iter()
+        .find(|e| e.path.as_bytes() == b"a.txt")
+        .unwrap();
+    assert_eq!(a.mtime, StatTime::default(), "same size, other content");
 }
