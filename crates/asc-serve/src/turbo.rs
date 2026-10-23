@@ -18,7 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
+use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
 use futures::{StreamExt, TryStreamExt};
 use object_store::path::Path as StorePath;
 use object_store::signer::Signer;
@@ -369,7 +369,8 @@ impl TurboState {
                 .as_deref()
                 .ok_or(TurboError::BadRequest("slug is required"))?,
         )?;
-        let token = bearer(headers)?;
+        let credential = crate::authn::credential(headers)?;
+        let token = credential.as_ref().map(Credential::secret);
         // An anonymous caller never writes: even where the authorizer admits one (a public
         // repository, local no-auth mode), a write would poison what CI reads back.
         if token.is_none() && access == Access::Write {
@@ -378,11 +379,9 @@ impl TurboState {
         let repo = slug.repo_name();
         let principal = self
             .authorizer
-            .authorize(token.as_ref(), &repo, access)
+            .authorize_credential(credential.as_ref(), &repo, access)
             .await?;
-        let scope = self
-            .caller_scope(token.as_ref(), &principal, &repo)
-            .await;
+        let scope = self.caller_scope(token, &principal, &repo).await;
         Ok(Caller { slug, scope })
     }
 
@@ -630,22 +629,6 @@ pub fn load_trusted_tokens(path: &FsPath) -> Result<HashSet<[u8; 32]>, TurboErro
         }
     }
     Ok(out)
-}
-
-fn bearer(headers: &HeaderMap) -> Result<Option<BearerToken>, TurboError> {
-    let mut values = headers.get_all(header::AUTHORIZATION).iter();
-    let Some(first) = values.next() else {
-        return Ok(None);
-    };
-    if values.next().is_some() {
-        return Err(AuthError::Malformed.into());
-    }
-    let text = first.to_str().map_err(|_| AuthError::Malformed)?;
-    let (scheme, rest) = text.split_once(' ').ok_or(AuthError::Malformed)?;
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return Err(AuthError::Malformed.into());
-    }
-    Ok(Some(BearerToken::new(rest)?))
 }
 
 struct Caller {
@@ -926,7 +909,7 @@ async fn post_events(
 
 /// The `/v8` routes.
 pub fn router(state: Arc<TurboState>) -> axum::Router {
-    axum::Router::new()
+    let routes = axum::Router::new()
         .route("/v8/artifacts/status", get(status))
         .route("/v8/artifacts/events", post(post_events))
         .route(
@@ -937,7 +920,9 @@ pub fn router(state: Arc<TurboState>) -> axum::Router {
                 .options(options_artifact),
         )
         .route("/v8/artifacts", post(query_artifacts))
-        .with_state(state)
+        .with_state(state);
+    // The edge answers 401 with the Basic challenge first, and 400 for a malformed header.
+    crate::authn::guard(routes, crate::authn::Surface::Api)
 }
 
 /// One registration line in `lib.rs`: mounts the routes on `ext`.

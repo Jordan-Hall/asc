@@ -315,41 +315,6 @@ async fn readyz_detailed(State(s): State<HttpState>) -> Response {
         .into_response()
 }
 
-/// Compares two byte strings without an early exit on the first differing byte.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = a.len() ^ b.len();
-    for i in 0..a.len().max(b.len()) {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        diff |= usize::from(x ^ y);
-    }
-    std::hint::black_box(diff) == 0
-}
-
-/// Requires `Authorization: Bearer <token>` when the admin listener has a token.
-async fn admin_auth(
-    State(token): State<Option<Arc<str>>>,
-    req: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    if let Some(expected) = token {
-        let given = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if !ct_eq(given.as_bytes(), expected.as_bytes()) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Bearer")],
-            )
-                .into_response();
-        }
-    }
-    next.run(req).await
-}
-
 async fn metrics(State(s): State<HttpState>) -> Response {
     match s.outbox.lag_secs().await {
         Ok(lag) => {
@@ -377,13 +342,14 @@ pub fn router(state: HttpState) -> Router {
         .with_state(state)
 }
 
-/// The admin routes (`/metrics`, detailed `/readyz`). With a `token`, every route requires it.
+/// The admin routes (`/metrics`, detailed `/readyz`). With a `token`, every route requires it as
+/// Bearer or Basic (U78's `authn::guard_admin`).
 pub fn admin_router(state: HttpState, token: Option<Arc<str>>) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/metrics", get(metrics))
         .route("/readyz", get(readyz_detailed))
-        .with_state(state)
-        .layer(axum::middleware::from_fn_with_state(token, admin_auth))
+        .with_state(state);
+    crate::authn::guard_admin(routes, token)
 }
 
 /// One registration line in `lib.rs`: mounts the routes on `ext`.
@@ -474,15 +440,6 @@ mod tests {
             assert_eq!(send(app(), path, Some("s3cret")).await.0, 401);
             assert_eq!(send(app(), path, Some("Bearer s3cret")).await.0, 200);
         }
-    }
-
-    #[test]
-    fn constant_time_compare() {
-        assert!(ct_eq(b"abc", b"abc"));
-        assert!(ct_eq(b"", b""));
-        assert!(!ct_eq(b"abc", b"abd"));
-        assert!(!ct_eq(b"abc", b"abcd"));
-        assert!(!ct_eq(b"", b"a"));
     }
 
     #[tokio::test]

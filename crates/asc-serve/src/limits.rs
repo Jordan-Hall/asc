@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use axum::body::{Body, Bytes, HttpBody};
 use axum::http::{Request, Response};
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
+use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
 use asc_rpc::errors::RpcError;
 use asc_rpc::limits::{CounterGuard, KeyedCounter, KeyedLimiter, MAX_KEYS, OnFull, Shed};
 use asc_rpc::retry::RETRY_AFTER_MS;
@@ -298,15 +298,16 @@ fn connect_addr(ext: &axum::http::Extensions) -> Option<IpAddr> {
     addr.map(|a| a.ip())
 }
 
-/// The `Bearer` token of a request, if it has one. Mirrors `AuthInterceptor`: the scheme is
-/// case-insensitive.
-fn bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
-    let (scheme, rest) = headers
-        .get(axum::http::header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .split_once(' ')?;
-    (scheme.eq_ignore_ascii_case("bearer") && !rest.is_empty()).then_some(rest)
+/// The secret of a request's credential, whatever the scheme (`Basic`, `Bearer` or `token`), by
+/// the parser the interceptor and every route share (U78). Admission runs before authentication
+/// and never refuses on a bad header, so one the parser rejects is anonymous here; the handler
+/// then answers it. The hash [`token_hash`] takes this secret, never the header, so the three
+/// schemes carrying one token are one caller.
+fn credential_secret(headers: &axum::http::HeaderMap) -> Option<String> {
+    crate::authn::credential(headers)
+        .ok()
+        .flatten()
+        .map(|c| c.secret().expose().to_owned())
 }
 
 /// The tokens the authorizer has accepted recently, and the principal each belongs to.
@@ -505,16 +506,35 @@ impl Authorizer for RecordingAuthorizer {
         repo: &str,
         access: Access,
     ) -> Result<Principal, AuthError> {
-        let answer = self.inner.authorize(token, repo, access).await;
-        if let Some(t) = token {
+        let credential = token.cloned().map(Credential::bearer);
+        self.authorize_credential(credential.as_ref(), repo, access)
+            .await
+    }
+
+    /// Forwards to the inner authorizer's own `authorize_credential` (which may use the Basic
+    /// user name) and records the verdict under the hash of the credential's secret, the same
+    /// hash admission computes from the header, so a verified token is one caller whichever of
+    /// `Basic`, `Bearer` or `token` it arrives in.
+    async fn authorize_credential(
+        &self,
+        credential: Option<&Credential>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Principal, AuthError> {
+        let answer = self
+            .inner
+            .authorize_credential(credential, repo, access)
+            .await;
+        if let Some(c) = credential {
+            let secret = c.secret().expose();
             match &answer {
-                Ok(p) => self.ids.verified.record(t.expose(), &p.id),
+                Ok(p) => self.ids.verified.record(secret, &p.id),
                 // A refused token (revoked, or not allowed here) is no longer a known caller.
-                Err(_) => self.ids.verified.forget(&token_hash(t.expose())),
+                Err(_) => self.ids.verified.forget(&token_hash(secret)),
             }
             self.ids
                 .bootstrap
-                .settle(&token_hash(t.expose()), answer.is_ok());
+                .settle(&token_hash(secret), answer.is_ok());
         }
         answer
     }
@@ -1098,10 +1118,12 @@ where
             connect_addr(req.extensions()).map(|tcp| self.admission.client_ip(tcp, req.headers()));
         // The size of the body is not known yet and the header cannot be trusted, so the call
         // costs one unit here and the body's real bytes are charged as they stream.
-        match self
-            .admission
-            .admit_request(bearer(req.headers()), peer, class, 1)
-        {
+        match self.admission.admit_request(
+            credential_secret(req.headers()).as_deref(),
+            peer,
+            class,
+            1,
+        ) {
             Err(status) => Box::pin(std::future::ready(Ok(status.into_http()))),
             Ok((who, permit)) => {
                 let meter = self.admission.meter(who, class);
@@ -1613,6 +1635,89 @@ mod tests {
             "bob-token",
             1
         )));
+    }
+
+    /// A call carrying `authorization` verbatim, from peer `from`.
+    fn call_with_header<S>(
+        svc: &mut AdmissionService<S>,
+        authorization: &str,
+        from: u8,
+    ) -> Response<Body>
+    where
+        S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
+            + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+    {
+        let mut req = Request::builder()
+            .uri("/asc.v1.Repo/Version")
+            .header("authorization", authorization)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(peer(from));
+        futures::executor::block_on(svc.call(req)).unwrap()
+    }
+
+    // U78: the verified-token record keys on the credential's secret, whatever the scheme, so a
+    // Basic login is charged as its principal just as a Bearer one is.
+    #[tokio::test]
+    async fn a_basic_credential_the_authorizer_accepted_is_charged_as_its_principal() {
+        use base64::Engine as _;
+        let basic = |user: &str, secret: &str| {
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{secret}"))
+            )
+        };
+        let admission = Arc::new(Admission::new(&limits(|l| {
+            l.cheap_burst = 3;
+            l.cheap_rps = 1;
+        })));
+        let mut svc = AdmissionLayer::new(admission.clone()).layer(Echo);
+        let authz = admission.recording(Arc::new(Accepts));
+        let alice = basic("x-access-token", "alice-token");
+        for _ in 0..10 {
+            call_with_header(&mut svc, &alice, 1);
+        }
+        assert!(shed(&call_with_header(&mut svc, &alice, 1)));
+        // A refused Basic password gains nothing, whatever the user name says.
+        let wrong = Credential::basic("alice", "alice-token-but-wrong").unwrap();
+        assert!(
+            authz
+                .authorize_credential(Some(&wrong), "o/r", Access::Read)
+                .await
+                .is_err()
+        );
+        assert!(shed(&call_with_header(
+            &mut svc,
+            &basic("alice", "alice-token-but-wrong"),
+            1
+        )));
+        // An accepted one is charged as alice from any peer, in any scheme.
+        let good = Credential::basic("x-access-token", "alice-token").unwrap();
+        let who = authz
+            .authorize_credential(Some(&good), "o/r", Access::Read)
+            .await
+            .unwrap();
+        assert_eq!(who.id, "alice");
+        for _ in 0..3 {
+            assert!(!shed(&call_with_header(&mut svc, &alice, 2)));
+        }
+        assert!(shed(&call_with_header(&mut svc, &alice, 3)));
+        assert!(shed(&call_with_header(&mut svc, "Bearer alice-token", 4)));
+        assert!(shed(&call_with_header(&mut svc, "token alice-token", 5)));
+        // The token as the user name with an empty password (`https://TOKEN@host`) is the same.
+        assert!(shed(&call_with_header(
+            &mut svc,
+            &basic("alice-token", ""),
+            6
+        )));
+        // The inner authorizer sees the credential, not just the secret.
+        assert_eq!(
+            admission.identify(Some("alice-token"), None),
+            Caller::principal("alice")
+        );
     }
 
     // Finding 3: a table full of unverified callers must not shed a newcomer.

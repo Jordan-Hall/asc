@@ -25,7 +25,7 @@ use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Extensions, Request, Response, Status};
 
-use crate::auth::{Access, AuthInterceptor, Authorizer, BearerToken};
+use crate::auth::{Access, AuthInterceptor, Authorizer, Credential};
 use crate::client::{CallError, RpcClient};
 use crate::convert::{ConvertError, IdMode, WireId};
 use crate::errors::{ErrorInfo, RpcError};
@@ -159,7 +159,7 @@ impl ProjectsService {
         }
         let principal = self
             .authorizer
-            .authorize(ext.get::<BearerToken>(), name.as_str(), Access::Read)
+            .authorize_credential(ext.get::<Credential>(), name.as_str(), Access::Read)
             .await?;
         Ok(CallCtx {
             repo: name,

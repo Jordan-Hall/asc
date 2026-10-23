@@ -385,7 +385,7 @@ mod tests {
     use asc_engine::derive::{GitMapRow, GitMapSink};
     use asc_engine::projects::{GraphView, ProjectsApi};
     use asc_rpc::IdMode;
-    use asc_rpc::auth::{Access, BearerToken, StaticTokens};
+    use asc_rpc::auth::{Access, BearerToken, Credential, StaticTokens};
     use asc_rpc::client::RpcClient;
     use asc_rpc::errors::RpcError;
     use asc_rpc::projects::ProjectsService;
@@ -819,7 +819,8 @@ mod tests {
         let with_token = |m: wire::ProjectGraphRequest, token: Option<&str>| {
             let mut r = Request::new(m);
             if let Some(t) = token {
-                r.extensions_mut().insert(BearerToken::new(t).unwrap());
+                r.extensions_mut()
+                    .insert(Credential::bearer(BearerToken::new(t).unwrap()));
             }
             r
         };

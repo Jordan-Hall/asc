@@ -36,7 +36,7 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint, Uri};
 use tonic::{Code, Request, Status, Streaming};
 use uuid::Uuid;
 
-use crate::auth::BearerToken;
+use crate::auth::Credential;
 use crate::convert::{self, ConvertError, IdMode, WireId};
 use crate::errors::RpcError;
 use crate::pb;
@@ -168,7 +168,7 @@ struct Inner {
     tiers: Vec<Channel>,
     repo: RepoName,
     remote_name: String,
-    token: Option<BearerToken>,
+    credential: Option<Credential>,
     user_agent: String,
 }
 
@@ -208,16 +208,22 @@ fn channel(url: &str) -> Result<Channel, ClientError> {
 }
 
 impl RpcClient {
-    /// A client for `repo` (`owner/name`) on the server at `url`.
-    pub fn connect(url: &str, repo: &str, token: Option<BearerToken>) -> Result<Self, ClientError> {
-        Self::from_channel(channel(url)?, repo, token)
+    /// A client for `repo` (`owner/name`) on the server at `url`. `credential` is the resolved
+    /// credential (SPEC §15.6.1), sent as the `Authorization` header of its own scheme; a
+    /// `BearerToken` converts into a Bearer one.
+    pub fn connect<C: Into<Credential>>(
+        url: &str,
+        repo: &str,
+        credential: Option<C>,
+    ) -> Result<Self, ClientError> {
+        Self::from_channel(channel(url)?, repo, credential)
     }
 
     /// A client over an existing channel.
-    pub fn from_channel(
+    pub fn from_channel<C: Into<Credential>>(
         primary: Channel,
         repo: &str,
-        token: Option<BearerToken>,
+        credential: Option<C>,
     ) -> Result<Self, ClientError> {
         let repo = RepoName::parse(repo).map_err(|_| ClientError::InvalidRepo)?;
         Ok(Self {
@@ -226,7 +232,7 @@ impl RpcClient {
                 tiers: Vec::new(),
                 remote_name: repo.to_string(),
                 repo,
-                token,
+                credential: credential.map(Into::into),
                 user_agent: format!(
                     "asc/{} {}-{}",
                     env!("CARGO_PKG_VERSION"),
@@ -244,7 +250,7 @@ impl RpcClient {
             tiers: i.tiers.clone(),
             repo: i.repo.clone(),
             remote_name: i.remote_name.clone(),
-            token: i.token.clone(),
+            credential: i.credential.clone(),
             user_agent: i.user_agent.clone(),
         };
         edit(&mut inner);
@@ -303,8 +309,8 @@ impl RpcClient {
     pub(crate) fn req<T>(&self, msg: T, op_id: Option<Uuid>) -> Request<T> {
         let mut r = Request::new(msg);
         let meta = r.metadata_mut();
-        if let Some(t) = &self.inner.token
-            && let Ok(mut v) = format!("Bearer {}", t.expose()).parse::<MetadataValue<Ascii>>()
+        if let Some(c) = &self.inner.credential
+            && let Ok(mut v) = c.header_value().parse::<MetadataValue<Ascii>>()
         {
             v.set_sensitive(true);
             meta.insert("authorization", v);
@@ -1232,6 +1238,7 @@ impl Objects for RemoteObjects {
 pub(crate) mod testkit {
     //! An in-process server over an `EngineBackend`, for the client and server tests.
 
+    use crate::auth::BearerToken;
     use std::net::SocketAddr;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1476,6 +1483,7 @@ mod tests {
 
     use super::testkit::{Fixture, History, REPO, history};
     use super::*;
+    use crate::auth::BearerToken;
     use crate::server::{CallCtx, ObjectsHandler, RpcStream, ServerInfo};
 
     fn name(s: &str) -> RefName {
@@ -1922,7 +1930,7 @@ mod tests {
         // Repository names are validated, and another repository is not served.
         for bad in ["a", "a/b/c", "../x", "a/.b", "a b/c", ""] {
             assert!(
-                RpcClient::connect("http://127.0.0.1:1", bad, None).is_err(),
+                RpcClient::connect("http://127.0.0.1:1", bad, None::<Credential>).is_err(),
                 "{bad}"
             );
         }
@@ -1942,8 +1950,36 @@ mod tests {
 
         // Credentials are not sent over plain http to a remote host.
         assert!(matches!(
-            RpcClient::connect("http://example.com", REPO, None),
+            RpcClient::connect("http://example.com", REPO, None::<Credential>),
             Err(ClientError::Insecure(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn every_credential_scheme_authenticates_one_token() {
+        let fx = Fixture::start().await;
+        let h = history(&fx).await;
+        let key = ObjKey::Changeset(h.c1);
+        let rw = || BearerToken::new("rw").unwrap();
+        for c in [
+            Credential::bearer(rw()),
+            Credential::token(rw()),
+            Credential::basic("alice", "rw").unwrap(),
+            Credential::basic("x-access-token", "rw").unwrap(),
+            Credential::basic("", "rw").unwrap(),
+        ] {
+            let label = format!("{c:?} {:?}", c.user());
+            let client = RpcClient::connect(&format!("http://{}", fx.addr), REPO, Some(c)).unwrap();
+            assert_eq!(client.has_objects(&[key]).await.unwrap(), [true], "{label}");
+        }
+        let wrong = Credential::basic("alice", "nope").unwrap();
+        let client = RpcClient::connect(&format!("http://{}", fx.addr), REPO, Some(wrong)).unwrap();
+        assert!(matches!(
+            client.has_objects(&[key]).await.unwrap_err(),
+            CallError::Status {
+                code: Code::Unauthenticated,
+                ..
+            }
         ));
     }
 

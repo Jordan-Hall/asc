@@ -34,7 +34,7 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::{Extensions, Request, Response, Status, Streaming};
 use uuid::Uuid;
 
-use crate::auth::{Access, AuthInterceptor, Authorizer, BearerToken, Principal};
+use crate::auth::{Access, AuthInterceptor, Authorizer, Credential, Principal};
 use crate::convert::{self, ConvertError, IdMode};
 use crate::errors::{ErrorInfo, RpcError};
 use crate::pb;
@@ -541,7 +541,7 @@ impl RepoService {
         }
         let principal = self
             .authorizer
-            .authorize(ext.get::<BearerToken>(), name.as_str(), access)
+            .authorize_credential(ext.get::<Credential>(), name.as_str(), access)
             .await?;
         let op_id = match meta.get("x-asc-op-id") {
             None => None,
@@ -754,7 +754,7 @@ repo_impl! {
             .ok_or_else(|| Status::invalid_argument("missing from"))?;
         let from = RepoName::parse(&from.name)?;
         self.authorizer
-            .authorize(ext.get::<BearerToken>(), from.as_str(), Access::Read)
+            .authorize_credential(ext.get::<Credential>(), from.as_str(), Access::Read)
             .await?;
         self.handlers
             .mutations()

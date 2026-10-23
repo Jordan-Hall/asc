@@ -4,6 +4,7 @@
 //! handler group on `Extensions::handlers`, a router on `Extensions::http`, a service on
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
+pub mod authn;
 pub mod cache_role;
 pub mod codeintel;
 pub mod classify;
@@ -168,6 +169,7 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
                 .into_service(),
         );
     }
+    let git_hosts = authn::git_router(authorizer.clone());
     ext.grpc
         .register(RepoService::new(ext.handlers.clone(), authorizer, info).into_service());
     let router = ext
@@ -175,6 +177,8 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
         .routes()
         .into_axum_router()
         .merge(ext.http.router())
+        // `/<owner>/<repo>/info/refs` and the pack paths: the challenge, then a 404 (U78).
+        .merge(git_hosts)
         // tonic's own fallback answers an unknown path with `200` and a gRPC status; the public
         // listener answers a plain 404 instead (`/metrics` lives on the admin listener only).
         .fallback(|| async { axum::http::StatusCode::NOT_FOUND });
