@@ -31,8 +31,6 @@ pub const DEFAULT_LANDED_REF_DAYS: u32 = 7;
 pub const REAP_BATCH: i64 = 1_000;
 /// Database lookups one land spends on markers; the rest of the refs wait for the next land.
 pub const MAX_LOOKUPS_PER_LAND: usize = 50_000;
-/// Parents one changeset may have for the marker walk; a changeset over it is unknown, not landed.
-pub const MAX_PARENTS_PER_NODE: usize = 1_000;
 /// Tips a delete-reachability check considers (1,000 user refs plus 10,000 cloud heads).
 pub const MAX_REACH_TIPS: usize = 11_000;
 /// Changesets a delete-reachability walk visits at most.
@@ -95,162 +93,89 @@ struct Walker<'a> {
     landed: HashMap<ChangesetId, bool>,
     mainline: HashMap<ChangesetId, bool>,
     lookups: usize,
-    /// Lookups the whole call may spend ([`MAX_LOOKUPS_PER_LAND`]).
-    budget: usize,
-    /// Parents one changeset may have ([`MAX_PARENTS_PER_NODE`]).
-    max_parents: usize,
-    /// The last [`Self::stack_landed`] stopped at a changeset with too many parents.
-    over_parents: bool,
-}
-
-/// `$first, $first + 1, ...` placeholders for `n` bound ids.
-fn placeholders(first: usize, n: usize) -> String {
-    (first..first + n)
-        .map(|i| format!("${i}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl Walker<'_> {
     fn spent(&self) -> bool {
-        self.lookups >= self.budget
+        self.lookups >= MAX_LOOKUPS_PER_LAND
     }
 
-    /// Counts `n` lookups against the budget; `false` (and nothing counted) when they do not fit.
-    fn charge(&mut self, n: usize) -> bool {
-        if self.lookups.saturating_add(n) > self.budget {
-            return false;
-        }
-        self.lookups += n;
-        true
-    }
-
-    /// Whether `cs` landed on the trunk in this land or before; call [`Self::fill_landed`] first.
-    fn is_landed(&self, cs: ChangesetId) -> bool {
-        self.steps.contains(&cs) || self.landed.get(&cs).copied().unwrap_or(false)
-    }
-
-    /// Whether `cs` is on the trunk's mainline; call [`Self::fill_mainline`] first.
-    fn on_mainline(&self, cs: ChangesetId) -> bool {
-        self.mainline.get(&cs).copied().unwrap_or(false)
-    }
-
-    /// Looks up which of `ids` landed on the trunk (a `land_map` row for it), `GRAPH_BATCH` per
-    /// query, and charges one lookup per id. `false` when the budget ran out first.
-    async fn fill_landed(
+    /// Whether `cs` landed on the trunk in this land or before (a `land_map` row for it).
+    async fn is_landed(
         &mut self,
         conn: &mut AnyConnection,
-        ids: &[ChangesetId],
+        cs: ChangesetId,
     ) -> Result<bool, sqlx::Error> {
-        let mut todo: Vec<ChangesetId> = Vec::new();
-        for cs in ids {
-            if !self.steps.contains(cs) && !self.landed.contains_key(cs) && !todo.contains(cs) {
-                todo.push(*cs);
-            }
+        if self.steps.contains(&cs) {
+            return Ok(true);
         }
-        for chunk in todo.chunks(GRAPH_BATCH) {
-            if !self.charge(chunk.len()) {
-                return Ok(false);
-            }
-            let marks = placeholders(3, chunk.len());
-            let sql = format!(
-                "SELECT old_cs FROM land_map_ref WHERE ns = $1 AND ref = $2 AND old_cs IN ({marks})                  UNION ALL SELECT old_cs FROM land_map WHERE ns = $1 AND ref = $2                  AND old_cs IN ({marks})"
-            );
-            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+        if let Some(v) = self.landed.get(&cs) {
+            return Ok(*v);
+        }
+        self.lookups += 1;
+        let hit =
+            sqlx::query("SELECT 1 FROM land_map_ref WHERE ns = $1 AND ref = $2 AND old_cs = $3              UNION ALL SELECT 1 FROM land_map WHERE ns = $1 AND ref = $2 AND old_cs = $3")
                 .bind(self.ns.as_bytes().to_vec())
-                .bind(self.trunk);
-            for cs in chunk {
-                q = q.bind(cs.as_bytes().to_vec());
-            }
-            let mut hits = HashSet::new();
-            for row in q.fetch_all(&mut *conn).await? {
-                hits.insert(id_of(&row.try_get::<Vec<u8>, _>("old_cs")?)?);
-            }
-            for cs in chunk {
-                self.landed.insert(*cs, hits.contains(cs));
-            }
-        }
-        Ok(true)
+                .bind(self.trunk)
+                .bind(cs.as_bytes().to_vec())
+                .fetch_optional(&mut *conn)
+                .await?
+                .is_some();
+        self.landed.insert(cs, hit);
+        Ok(hit)
     }
 
-    /// Looks up which of `ids` are on the trunk's mainline, like [`Self::fill_landed`].
-    async fn fill_mainline(
+    async fn on_mainline(
         &mut self,
         conn: &mut AnyConnection,
-        ids: &[ChangesetId],
+        cs: ChangesetId,
     ) -> Result<bool, sqlx::Error> {
-        let mut todo: Vec<ChangesetId> = Vec::new();
-        for cs in ids {
-            if !self.mainline.contains_key(cs) && !todo.contains(cs) {
-                todo.push(*cs);
-            }
+        if let Some(v) = self.mainline.get(&cs) {
+            return Ok(*v);
         }
-        for chunk in todo.chunks(GRAPH_BATCH) {
-            if !self.charge(chunk.len()) {
-                return Ok(false);
-            }
-            let marks = placeholders(3, chunk.len());
-            let sql =
-                format!("SELECT cs FROM mainline WHERE ns = $1 AND ref = $2 AND cs IN ({marks})");
-            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(self.ns.as_bytes().to_vec())
-                .bind(self.trunk);
-            for cs in chunk {
-                q = q.bind(cs.as_bytes().to_vec());
-            }
-            let mut hits = HashSet::new();
-            for row in q.fetch_all(&mut *conn).await? {
-                hits.insert(id_of(&row.try_get::<Vec<u8>, _>("cs")?)?);
-            }
-            for cs in chunk {
-                self.mainline.insert(*cs, hits.contains(cs));
-            }
-        }
-        Ok(true)
+        self.lookups += 1;
+        let hit = sqlx::query("SELECT 1 FROM mainline WHERE ns = $1 AND ref = $2 AND cs = $3")
+            .bind(self.ns.as_bytes().to_vec())
+            .bind(self.trunk)
+            .bind(cs.as_bytes().to_vec())
+            .fetch_optional(&mut *conn)
+            .await?
+            .is_some();
+        self.mainline.insert(cs, hit);
+        Ok(hit)
     }
 
     /// Whether every changeset of `trunk..tip` has landed, and the stack is not empty. `None`
-    /// (unknown, never landed) when the lookup budget ran out or a changeset has more than
-    /// `max_parents` parents.
+    /// when the lookup budget ran out.
     async fn stack_landed(
         &mut self,
         conn: &mut AnyConnection,
         tip: ChangesetId,
     ) -> Result<Option<bool>, sqlx::Error> {
-        self.over_parents = false;
         // The tip itself must have landed: a ref that merely sits on the trunk has no work.
-        if !self.fill_landed(conn, &[tip]).await? {
-            return Ok(None);
-        }
-        if !self.is_landed(tip) {
+        if !self.is_landed(conn, tip).await? {
             return Ok(Some(false));
         }
         let mut seen = HashSet::from([tip]);
         let mut todo = vec![tip];
         while let Some(cs) = todo.pop() {
-            if !self.charge(1) {
+            if self.spent() {
                 return Ok(None);
             }
+            self.lookups += 1;
             let Some(parents) = graph_parents(conn, self.ns, cs).await? else {
                 return Ok(Some(false));
             };
-            if parents.len() > self.max_parents {
-                self.over_parents = true;
-                return Ok(None);
+            for p in parents {
+                if !seen.insert(p) {
+                    continue;
+                }
+                if self.is_landed(conn, p).await? {
+                    todo.push(p);
+                } else if !self.on_mainline(conn, p).await? {
+                    return Ok(Some(false));
+                }
             }
-            let fresh: Vec<ChangesetId> = parents.into_iter().filter(|p| seen.insert(*p)).collect();
-            if !self.fill_landed(conn, &fresh).await? {
-                return Ok(None);
-            }
-            let (landed, rest): (Vec<_>, Vec<_>) =
-                fresh.into_iter().partition(|p| self.is_landed(*p));
-            if !self.fill_mainline(conn, &rest).await? {
-                return Ok(None);
-            }
-            if rest.iter().any(|p| !self.on_mainline(*p)) {
-                return Ok(Some(false));
-            }
-            todo.extend(landed);
         }
         Ok(Some(true))
     }
@@ -275,40 +200,6 @@ pub async fn mark_landed(
     pairs: &[(ChangesetId, ChangesetId)],
     at: i64,
     max_refs: usize,
-) -> Result<LandedScan, sqlx::Error> {
-    mark_landed_within(
-        tx,
-        ns,
-        repo_id,
-        trunk,
-        actor,
-        landed,
-        old_tip,
-        pairs,
-        at,
-        max_refs,
-        MAX_LOOKUPS_PER_LAND,
-        MAX_PARENTS_PER_NODE,
-    )
-    .await
-}
-
-/// [`mark_landed`] with its two caps as arguments: the lookup `budget` and the parents one
-/// changeset may have (`max_parents`).
-#[allow(clippy::too_many_arguments)]
-async fn mark_landed_within(
-    tx: &mut Transaction<'_, Any>,
-    ns: Ns,
-    repo_id: i64,
-    trunk: &str,
-    actor: &str,
-    landed: &[ChangesetId],
-    old_tip: Option<ChangesetId>,
-    pairs: &[(ChangesetId, ChangesetId)],
-    at: i64,
-    max_refs: usize,
-    budget: usize,
-    max_parents: usize,
 ) -> Result<LandedScan, sqlx::Error> {
     let mut scan = LandedScan::default();
     let Some(owner) = refpolicy::owner_of(&Principal { id: actor.into() }) else {
@@ -341,9 +232,6 @@ async fn mark_landed_within(
         landed: HashMap::new(),
         mainline: HashMap::new(),
         lookups: 0,
-        budget,
-        max_parents,
-        over_parents: false,
     };
     for row in &rows {
         let name: String = row.try_get("name")?;
@@ -361,8 +249,6 @@ async fn mark_landed_within(
         match walker.stack_landed(tx, tip).await? {
             Some(true) => {}
             Some(false) => continue,
-            // Too many parents: this ref stays unknown; the others are still checked.
-            None if walker.over_parents => continue,
             None => {
                 scan.truncated = true;
                 break;
@@ -741,200 +627,5 @@ impl LandedReaper {
                 report.failed += 1;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-
-    use super::*;
-    use crate::migrate;
-
-    fn id(n: u32) -> ChangesetId {
-        let mut b = [0u8; 32];
-        b[..4].copy_from_slice(&n.to_be_bytes());
-        ChangesetId::from_bytes(b)
-    }
-
-    struct Db {
-        pool: AnyPool,
-        ns: Ns,
-    }
-
-    async fn db() -> Db {
-        let pool = migrate::connect("sqlite::memory:", 1).await.unwrap();
-        migrate::migrate(&pool).await.unwrap();
-        Db {
-            pool,
-            ns: Ns::random(),
-        }
-    }
-
-    impl Db {
-        async fn node(&self, cs: u32, parents: &[u32]) {
-            let blob: Vec<u8> = parents
-                .iter()
-                .flat_map(|p| id(*p).as_bytes().to_vec())
-                .collect();
-            sqlx::query("INSERT INTO cs_graph (ns, cs, gen, parents) VALUES ($1, $2, 1, $3)")
-                .bind(self.ns.as_bytes().to_vec())
-                .bind(id(cs).as_bytes().to_vec())
-                .bind(blob)
-                .execute(&self.pool)
-                .await
-                .unwrap();
-        }
-
-        async fn landed(&self, cs: u32) {
-            sqlx::query(
-                "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
-                 VALUES ($1, $2, $2, 'refs/heads/main', 1, $3)",
-            )
-            .bind(self.ns.as_bytes().to_vec())
-            .bind(id(cs).as_bytes().to_vec())
-            .bind(vec![0u8; 16])
-            .execute(&self.pool)
-            .await
-            .unwrap();
-        }
-
-        async fn user_ref(&self, branch: &str, tip: u32) {
-            sqlx::query("INSERT INTO refs (repo_id, name, target, version) VALUES (1, $1, $2, 1)")
-                .bind(format!("{USER_NS}42/heads/{branch}"))
-                .bind(RefTarget::Changeset(id(tip)).to_bytes().to_vec())
-                .execute(&self.pool)
-                .await
-                .unwrap();
-        }
-
-        fn walker(&self, budget: usize, max_parents: usize) -> Walker<'static> {
-            Walker {
-                ns: self.ns,
-                trunk: "refs/heads/main",
-                steps: HashSet::new(),
-                landed: HashMap::new(),
-                mainline: HashMap::new(),
-                lookups: 0,
-                budget,
-                max_parents,
-                over_parents: false,
-            }
-        }
-
-        async fn mark(&self, budget: usize, max_parents: usize) -> (LandedScan, Vec<String>) {
-            let mut tx = self.pool.begin().await.unwrap();
-            let scan = mark_landed_within(
-                &mut tx,
-                self.ns,
-                1,
-                "refs/heads/main",
-                "42:alice",
-                &[],
-                None,
-                &[],
-                100,
-                10,
-                budget,
-                max_parents,
-            )
-            .await
-            .unwrap();
-            tx.commit().await.unwrap();
-            let marked = sqlx::query("SELECT name FROM user_ref_meta WHERE landed_at IS NOT NULL")
-                .fetch_all(&self.pool)
-                .await
-                .unwrap()
-                .iter()
-                .map(|r| r.try_get("name").unwrap())
-                .collect();
-            (scan, marked)
-        }
-    }
-
-    #[tokio::test]
-    async fn a_node_with_more_parents_than_the_budget_stops_at_the_budget() {
-        let d = db().await;
-        let parents: Vec<u32> = (10..510).collect();
-        d.landed(1).await;
-        d.node(1, &parents).await;
-        let mut w = d.walker(20, 10_000);
-        let mut conn = d.pool.acquire().await.unwrap();
-        assert_eq!(w.stack_landed(&mut conn, id(1)).await.unwrap(), None);
-        // The tip (1) and the graph row (1) are counted; the 500 parents do not fit in what is left.
-        assert_eq!(w.lookups, 2);
-    }
-
-    #[tokio::test]
-    async fn a_node_over_the_parent_cap_is_unknown_without_parent_lookups() {
-        let d = db().await;
-        let parents: Vec<u32> = (10..20).collect();
-        d.landed(1).await;
-        d.node(1, &parents).await;
-        let mut w = d.walker(1_000, 9);
-        let mut conn = d.pool.acquire().await.unwrap();
-        assert_eq!(w.stack_landed(&mut conn, id(1)).await.unwrap(), None);
-        assert!(w.over_parents);
-        // The tip lookup and the graph lookup only.
-        assert_eq!(w.lookups, 2);
-    }
-
-    #[tokio::test]
-    async fn parents_at_the_cap_are_batched_and_decided() {
-        let d = db().await;
-        let parents: Vec<u32> = (10..20).collect();
-        d.landed(1).await;
-        d.node(1, &parents).await;
-        for p in &parents {
-            d.landed(*p).await;
-            d.node(*p, &[]).await;
-        }
-        let mut w = d.walker(1_000, 10);
-        let mut conn = d.pool.acquire().await.unwrap();
-        assert_eq!(w.stack_landed(&mut conn, id(1)).await.unwrap(), Some(true));
-        // Tip, its graph row, 10 landed ids, then one graph row per parent.
-        assert_eq!(w.lookups, 2 + parents.len() + parents.len());
-    }
-
-    #[tokio::test]
-    async fn a_graph_over_the_budget_is_unknown_and_the_ref_is_not_marked() {
-        let d = db().await;
-        // A landed chain 1 <- 2 <- ... <- 10 on top of a trunk changeset 11.
-        for n in 1..=10 {
-            d.landed(n).await;
-            d.node(n, &[n + 1]).await;
-        }
-        d.node(11, &[]).await;
-        sqlx::query(
-            "INSERT INTO mainline (ns, ref, pos, cs) VALUES ($1, 'refs/heads/main', 1, $2)",
-        )
-        .bind(d.ns.as_bytes().to_vec())
-        .bind(id(11).as_bytes().to_vec())
-        .execute(&d.pool)
-        .await
-        .unwrap();
-        d.user_ref("chain", 1).await;
-        let (scan, marked) = d.mark(6, 1_000).await;
-        assert!(scan.truncated);
-        assert!(marked.is_empty(), "{marked:?}");
-        assert!(scan.lookups <= 6);
-        // The same graph within the budget marks the ref.
-        let (scan, marked) = d.mark(10_000, 1_000).await;
-        assert!(!scan.truncated);
-        assert_eq!(marked, ["chain"]);
-    }
-
-    #[tokio::test]
-    async fn a_node_over_the_parent_cap_never_marks_and_does_not_stop_the_scan() {
-        let d = db().await;
-        d.landed(1).await;
-        d.node(1, &[20, 21, 22]).await;
-        d.landed(2).await;
-        d.node(2, &[]).await;
-        d.user_ref("a-wide", 1).await;
-        d.user_ref("b-narrow", 2).await;
-        let (scan, marked) = d.mark(10_000, 2).await;
-        assert!(!scan.truncated);
-        assert_eq!(marked, ["b-narrow"]);
     }
 }

@@ -539,6 +539,8 @@ impl CloudRpc {
         let ns = entry.ns.as_bytes().to_vec();
         let at = now();
         let mut tx = self.registry.pool().begin().await.map_err(sql)?;
+        // U48c: the namespace must still belong to this repository id and name.
+        self.registry.guard(&mut tx, entry).await?;
         let (base, mut heads) = match Self::row(&mut tx, entry, owner, name).await? {
             Some((v, h)) => {
                 if v != req.base_version {
@@ -1049,6 +1051,67 @@ mod tests {
             ),
             (1, 3, "42")
         );
+    }
+
+    /// Calls `apply` with the entry opened before the repository was changed underneath it.
+    async fn apply_stale(f: &Fx) -> Result<(), Status> {
+        let cs = f.css[0];
+        let adds = vec![(cs, "[]".to_owned())];
+        let changes = std::collections::HashMap::from([(cs, cid(1))]);
+        let m = upd("w", 0, vec![]);
+        f.svc
+            .rpc
+            .apply(
+                &f.e,
+                42,
+                "w",
+                Uuid::new_v4(),
+                &m,
+                &adds,
+                &changes,
+                &[],
+                &[],
+                &[],
+            )
+            .await
+            .map(|_| ())
+    }
+
+    async fn cloud_rows(f: &Fx) -> i64 {
+        let mut n = 0;
+        for t in ["cloud_ws", "cloud_heads", "cloud_usage"] {
+            let c: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT COUNT(*) FROM {t} WHERE ns = $1"
+            )))
+            .bind(f.e.ns.as_bytes().to_vec())
+            .fetch_one(f.reg.pool())
+            .await
+            .unwrap();
+            n += c;
+        }
+        n
+    }
+
+    #[tokio::test]
+    async fn an_apply_after_the_repository_was_deleted_or_renamed_writes_nothing() {
+        let f = fx().await;
+        sqlx::query("UPDATE repos SET name = 'o/moved' WHERE id = $1")
+            .bind(f.e.key.0)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let e = apply_stale(&f).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(cloud_rows(&f).await, 0);
+
+        sqlx::query("DELETE FROM repos WHERE id = $1")
+            .bind(f.e.key.0)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let e = apply_stale(&f).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        assert_eq!(cloud_rows(&f).await, 0);
     }
 
     #[tokio::test]
