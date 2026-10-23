@@ -19,7 +19,7 @@ use asc_core::git::{ObjectKind, blob_oid};
 use asc_core::object::Kind;
 use asc_core::path::{RepoPath, checkout_safe};
 use asc_engine::derive::GitMapRow;
-use asc_engine::diff::apply::{self, ApplyOptions, FilePatch, MAX_APPLY_BYTES, ParseOptions};
+use asc_engine::diff::apply::{self, ApplyOptions, FilePatch, MAX_APPLY_BYTES, ParseOptions, Work};
 use asc_state::state::git_map;
 use asc_state::state::stage::{self, Leaf, StageRow, StageSet};
 use asc_wc::SafeRoot;
@@ -134,7 +134,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if inputs.is_empty() {
         inputs.push(OsString::from("-"));
     }
-    let mut applier = Applier::new(ctx, ws, &settings).await?;
+    // One budget for the whole run: every file patch of every input draws on it.
+    let work = Work::default();
+    let mut applier = Applier::new(ctx, ws, &settings, &work).await?;
     // Each input is checked and, unless `--check`, written to the work tree on its own; the
     // staged tree is written once at the end, and only when every input applied (as git does).
     for item in &inputs {
@@ -226,8 +228,9 @@ pub async fn apply_patches(
     ws: &WsCtx,
     patches: &[FilePatch],
     s: &Settings,
+    work: &Work,
 ) -> Result<bool> {
-    let mut applier = Applier::new(ctx, ws, s).await?;
+    let mut applier = Applier::new(ctx, ws, s, work).await?;
     if !applier.input(patches).await? {
         return Ok(false);
     }
@@ -240,6 +243,8 @@ pub struct Applier<'a> {
     ctx: &'a Ctx,
     ws: &'a WsCtx,
     s: &'a Settings,
+    /// The run's hunk placement budget, shared by every file patch and the `--3way` retries.
+    work: &'a Work,
     gate: SafeRoot,
     target: Option<Target>,
     /// Results so far by path: `None` is a deleted file. Later patches read from here first.
@@ -292,11 +297,12 @@ fn inflate(data: &[u8], size: usize) -> Option<Vec<u8>> {
 
 impl<'a> Applier<'a> {
     /// A fresh run.
-    pub async fn new(ctx: &'a Ctx, ws: &'a WsCtx, s: &'a Settings) -> Result<Self> {
+    pub async fn new(ctx: &'a Ctx, ws: &'a WsCtx, s: &'a Settings, work: &'a Work) -> Result<Self> {
         Ok(Self {
             ctx,
             ws,
             s,
+            work,
             gate: SafeRoot::new(ws.projection.toplevel()),
             target: if s.index {
                 Some(Target::open(ctx).await?)
@@ -564,7 +570,7 @@ impl<'a> Applier<'a> {
             }
         } else {
             let pre = base.as_ref().map(|b| &b.content[..]);
-            match apply::apply_file(pre, fp, opts) {
+            match apply::apply_file(pre, fp, opts, self.work) {
                 Ok(r) => {
                     self.report(fp, &r.placements);
                     result = r.content;
@@ -601,6 +607,17 @@ impl<'a> Applier<'a> {
             Some(m) => return Ok(fail(format!("{}: unsupported mode {m:o}", show(dest)))),
             None => base.as_ref().map_or(Kind::File, |b| b.kind),
         };
+        // Whatever the headers say, a result that is a symbolic link must point inside the tree
+        // and at no `.git` alias; a content patch to an existing link would otherwise rewrite it.
+        if let (Kind::Symlink, Some(target)) = (kind, &result)
+            && !apply::symlink_target_allowed(dest, target)
+        {
+            return Ok(fail(format!(
+                "invalid path '{} -> {}'",
+                show(dest),
+                show(target)
+            )));
+        }
         if fp.is_rename
             && let Some(old) = src
         {
@@ -652,7 +669,7 @@ impl<'a> Applier<'a> {
             return None;
         };
         eprintln!("Falling back to three-way merge...");
-        let theirs = match apply::apply_text(&base, fp, opts) {
+        let theirs = match apply::apply_text(&base, fp, opts, self.work) {
             Ok(a) => a.content,
             Err(_) => {
                 eprintln!("error: cannot apply the patch to the blob it was made against");
