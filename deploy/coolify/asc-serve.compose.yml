@@ -61,6 +61,8 @@ services:
     <<: *asc-serve
     command: ['serve', 'migrate']
     restart: 'no'
+    networks:
+      - backend
     deploy:
       resources:
         limits:
@@ -80,6 +82,12 @@ services:
       # Coolify magic variable: asks Coolify to route a domain to container port 7890 and to
       # generate the proxy labels. The domain itself is set by coolify-apply.sh (ASC_FQDN).
       SERVICE_FQDN_ASCSERVE_7890: ''
+    # `default` is the per-application network Coolify makes: it holds this app and the proxy only,
+    # so nothing else can reach port 7890 through it. `backend` is only for the way out (Postgres,
+    # Garage).
+    networks:
+      - default
+      - backend
     expose:
       - '7890'
     # /readyz fails when the database does not answer or the outbox lags (SPEC 16.1); the admin
@@ -105,6 +113,12 @@ volumes:
   # from the bucket and Postgres.
   asc-state:
 
+networks:
+  # The platform network on which Garage (garage-<service-uuid>) and Forgejo's Postgres resolve.
+  backend:
+    external: true
+    name: ${ASC_BACKEND_NETWORK:?name of the platform network that reaches Garage and Postgres}
+
 configs:
   asc_serve_toml:
     content: |
@@ -128,8 +142,10 @@ configs:
 
       [limits]
       text_memory = "${ASC_TEXT_MEMORY:-512MiB}"
-      # Coolify's proxy is in front; only these peers may name the real client in X-Forwarded-For.
-      trusted_proxies = ["172.16.0.0/12", "10.0.0.0/8"]
+      # Only a peer in this list may name the real client in X-Forwarded-For. It is the exact
+      # address (a /32) of the coolify-proxy container on this app's network, as a TOML array body
+      # such as "172.18.0.2/32". Empty means no forwarded header is trusted (README step 5).
+      trusted_proxies = [${ASC_TRUSTED_PROXIES?exact /32 of the proxy on the app network, or empty}]
 
       [git]
       enabled = ${ASC_GIT_ENABLED:-true}
