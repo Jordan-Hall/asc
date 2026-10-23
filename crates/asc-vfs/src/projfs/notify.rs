@@ -10,10 +10,12 @@ use asc_wc::redirect::Redirections;
 
 use super::data::inner_of;
 use super::ffi::{self, CallbackData, Hresult, Pcwstr, notify as n};
+use super::rename;
 use super::{guard, rel_path};
 
 /// The notifications the root mapping asks for.
 pub const MOUNT_MASK: u32 = n::NEW_FILE_CREATED
+    | n::PRE_RENAME
     | n::FILE_OVERWRITTEN
     | n::CLOSED_FILE_MODIFIED
     | n::CLOSED_FILE_DELETED
@@ -100,6 +102,10 @@ pub(crate) unsafe extern "system" fn notification(
         // Dropped before any other work: neither side of a rename is looked at otherwise.
         if note != n::FILE_RENAMED && dropped(red, &path) {
             return ffi::S_OK;
+        }
+        if note == n::PRE_RENAME {
+            // A directory is hydrated before it moves; the journal hears of the move afterwards.
+            return rename::pre_rename(sh, &path, is_dir != 0);
         }
         // SAFETY: NUL terminated or null.
         let to = unsafe { ffi::wide_to_string(dest) }
