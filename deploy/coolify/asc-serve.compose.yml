@@ -6,7 +6,7 @@
 # No Postgres container: the database is a schema (`asc`) on Forgejo's Postgres, reached through
 # the DSN secret ASC_DATABASE_URL. No bucket container either: Garage already runs on the platform.
 #
-# Every `${VAR:?}` below has no default, so the deploy refuses to start without it. Values live in
+# Every variable written with the `:?` form below has no default, so the deploy refuses to start without it. Values live in
 # the Coolify application's environment (see asc-serve.env.example and coolify-apply.sh), never in
 # this file.
 #
