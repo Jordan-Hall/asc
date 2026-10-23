@@ -1375,10 +1375,13 @@ mod tests {
         for i in 0..5 {
             make_read_only(&two.join(format!("f{i}")));
         }
+        // A projection's directories are locked on Unix.
+        lock_dir(&two).unwrap();
         assert!(verify_composed(&two, &p("many"), 5).is_ok());
         let why = verify_composed(&two, &p("many"), 4).unwrap_err();
         assert!(why.contains("more than 4 entries"), "{why}");
         assert!(gate2.resolve(&p("many")).is_some());
+        make_dir_writable(&two);
     }
 
     #[tokio::test]
@@ -1406,10 +1409,13 @@ mod tests {
             .output()
             .is_ok_and(|o| o.status.success());
         assert!(made, "the test link was not created");
+        // Lock the directory again so the link, not the open directory, is the reason.
+        lock_dir(&sdk).unwrap();
         let why = check_composed(&gate, &p("sdk")).unwrap_err().to_string();
         assert!(why.contains("link"), "{why}");
         assert!(clear(&gate, &p("sdk")).is_err());
         assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"keep");
+        make_dir_writable(&sdk);
     }
 
     fn copy_dir(from: &Path, to: &Path) {
