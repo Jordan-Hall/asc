@@ -101,13 +101,12 @@ async fn show(ws: &WsCtx, o: &Opts, out: &mut Output, name: &str, target: RefTar
     } else {
         writeln!(out, "{} {name}", hex(oid))?;
     }
-    if o.dereference {
-        if let RefTarget::Tag(t) = target {
+    if o.dereference
+        && let RefTarget::Tag(t) = target {
             let peeled = crate::cli::log::refs::tag_record(ws, t).await?.target;
             let peeled = object_oid_of(ws, RefTarget::Changeset(peeled)).await?;
             writeln!(out, "{} {name}^{{}}", hex(peeled))?;
         }
-    }
     Ok(())
 }
 
@@ -154,12 +153,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             return Ok(ExitCode::SUCCESS);
         }
         let filtered = o.tags || o.branches;
-        if o.head {
-            if let Some(target) = read(ws, "HEAD").await? {
+        if o.head
+            && let Some(target) = read(ws, "HEAD").await? {
                 found += 1;
                 show(ws, &o, &mut out, "HEAD", target).await?;
             }
-        }
         for entry in ws.db.refs().list(ws.repo.key, "refs/").await? {
             let name = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
             let kind_ok = (!filtered)

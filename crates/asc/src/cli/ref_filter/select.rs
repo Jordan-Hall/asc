@@ -43,13 +43,12 @@ fn bracket(p: &[u8], c: u8, fold: bool) -> Option<(bool, usize)> {
             return Some((found != negate, i + 1));
         }
         first = false;
-        if p[i] == b'[' && p.get(i + 1) == Some(&b':') {
-            if let Some(end) = p[i + 2..].windows(2).position(|w| w == b":]") {
+        if p[i] == b'[' && p.get(i + 1) == Some(&b':')
+            && let Some(end) = p[i + 2..].windows(2).position(|w| w == b":]") {
                 found |= class_has(&p[i + 2..i + 2 + end], c);
                 i += end + 4;
                 continue;
             }
-        }
         let mut lo = p[i];
         if lo == b'\\' && i + 1 < p.len() {
             i += 1;

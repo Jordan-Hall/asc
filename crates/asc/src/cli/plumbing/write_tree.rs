@@ -78,13 +78,11 @@ pub async fn write_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     for (path, _) in &changes {
         let bytes = path.as_bytes();
         for (at, b) in bytes.iter().enumerate() {
-            if *b == b'/' && seen.insert(bytes[..at].to_vec()) {
-                if let Ok(dir) = RepoPath::new(bytes[..at].to_vec()) {
-                    if let Some(entry) = ws.engine.lookup(root, &dir).await? {
-                        resolver.from_entry(&entry);
+            if *b == b'/' && seen.insert(bytes[..at].to_vec())
+                && let Ok(dir) = RepoPath::new(bytes[..at].to_vec())
+                    && let Some(entry) = ws.engine.lookup(root, &dir).await? {
+                        resolver.resolve_entry(&entry);
                     }
-                }
-            }
         }
     }
     let Object::Tree { oid, .. } = resolver.tree(root).await? else {
@@ -97,7 +95,7 @@ pub async fn write_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             let missing = || fatal(format!("git-write-tree: prefix {p} not found"));
             let dir = RepoPath::new(trimmed.as_bytes().to_vec()).map_err(|_| missing())?;
             let entry = ws.engine.lookup(root, &dir).await?.filter(|e| e.kind == Kind::Dir).ok_or_else(missing)?;
-            resolver.from_entry(&entry);
+            resolver.resolve_entry(&entry);
             entry.git
         }
     };

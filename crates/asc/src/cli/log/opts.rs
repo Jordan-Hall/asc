@@ -161,8 +161,8 @@ impl Opts {
     }
 
     fn short(&mut self, cluster: &str, it: &mut impl Iterator<Item = String>) -> Result<()> {
-        let mut chars = cluster.char_indices();
-        while let Some((at, c)) = chars.next() {
+        let chars = cluster.char_indices();
+        for (at, c) in chars {
             let rest = &cluster[at + c.len_utf8()..];
             match c {
                 'n' | 'U' => {

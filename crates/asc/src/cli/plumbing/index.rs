@@ -266,7 +266,7 @@ impl Entries<'_> {
         }
     }
 
-    fn from_rows(&self, group: Vec<StageRow>) -> Vec<IndexEntry> {
+    fn stage_rows_to_entries(&self, group: Vec<StageRow>) -> Vec<IndexEntry> {
         if self.spec.is_some_and(|s| !s.matches(&group[0].path)) {
             return Vec::new();
         }
@@ -310,13 +310,13 @@ impl Entries<'_> {
                 }
                 std::cmp::Ordering::Greater => {
                     if let Some(group) = self.rows.next() {
-                        self.pending.extend(self.from_rows(group));
+                        self.pending.extend(self.stage_rows_to_entries(group));
                     }
                 }
                 std::cmp::Ordering::Equal => {
                     self.head = None;
                     if let Some(group) = self.rows.next() {
-                        self.pending.extend(self.from_rows(group));
+                        self.pending.extend(self.stage_rows_to_entries(group));
                     }
                 }
             }

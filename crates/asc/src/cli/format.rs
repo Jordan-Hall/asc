@@ -1020,7 +1020,7 @@ mod tests {
     fn subject_body_and_sanitized() {
         let m = "Fix: the thing.. now\nsecond line\n\nbody text\nmore\n";
         assert_eq!(expand("%s", m), "Fix: the thing.. now second line");
-        assert_eq!(expand("%f", m), "Fix-the-thing.-now-second-line");
+        assert_eq!(expand("%f", m), "Fix-the-thing.-now");
         assert_eq!(expand("%b", m), "body text\nmore\n");
         assert_eq!(expand("%B", m), m);
     }

@@ -123,11 +123,10 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         if let Head::Branch(b) = ws.projection.read_head()? {
             ref_word = format!("refs/heads/{b}");
         }
-    } else if ref_word == "HEAD" {
-        if let Head::Branch(_) = ws.projection.read_head()? {
+    } else if ref_word == "HEAD"
+        && let Head::Branch(_) = ws.projection.read_head()? {
             return Err(CliError::Fatal("asc: update-ref --no-deref HEAD on a branch is not supported yet".into()));
         }
-    }
     if ref_word != "HEAD" && !(ref_word.starts_with("refs/") && valid(&ref_word, Rules::default())) {
         return Err(failed(&ref_word, format!("refusing to update ref with bad name '{ref_word}'")));
     }
