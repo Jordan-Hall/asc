@@ -88,7 +88,7 @@ const INDEX_PAGE: i64 = 5000;
 const CHUNK_THRESHOLD: u64 = 4 * 1024 * 1024;
 /// Tables keyed by a namespace; the drop of a deleted repository clears each. A test checks that
 /// every table with an `ns` column is named here.
-const NS_TABLES: [&str; 16] = [
+const NS_TABLES: [&str; 20] = [
     "cs_graph",
     "git_map",
     "file_meta",
@@ -105,6 +105,10 @@ const NS_TABLES: [&str; 16] = [
     "changes",
     "change_versions",
     "review_state",
+    "cloud_ws",
+    "cloud_heads",
+    "cloud_usage",
+    "user_ref_meta",
 ];
 
 // ------------------------------------------------------------------------------ statuses
@@ -2971,6 +2975,19 @@ mod tests {
             .execute(f.registry.pool())
             .await
             .unwrap();
+        for sql in [
+            "INSERT INTO cloud_ws (ns, owner, name, version, updated, heads)              VALUES ($1, 42, 'w', 1, 0, 1)",
+            "INSERT INTO cloud_heads (ns, owner, name, cs, change, labels, added)              VALUES ($1, 42, 'w', $2, $2, '[]', 0)",
+            "INSERT INTO cloud_usage (ns, owner, bytes, workspaces) VALUES ($1, 42, 1, 1)",
+        ] {
+            let q = sqlx::query(sqlx::AssertSqlSafe(sql.to_owned())).bind(ns.as_bytes().to_vec());
+            let q = if sql.contains("$2") {
+                q.bind(vec![7u8; 32])
+            } else {
+                q
+            };
+            q.execute(f.registry.pool()).await.unwrap();
+        }
         let before = f.listing(ns).await;
         assert!(!before.is_empty());
         f.call("o/src", Op::Delete(true)).await.unwrap();
