@@ -14,3 +14,13 @@ asc-core = { workspace = true }
 asc-wc = { workspace = true }
 asc-git = { workspace = true }
 asc-rpc = { workspace = true }
+asc-store = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
