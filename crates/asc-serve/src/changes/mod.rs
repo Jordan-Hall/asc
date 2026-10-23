@@ -6,6 +6,9 @@
 //! * [`versions`] holds `change_versions`: the version log with the `CHANGE_DIVERGED` lease, and
 //!   the [`GcRootSource`](asc_store::gc::GcRootSource) that keeps every published version alive.
 //!
+//! * [`rpc`] serves the `Changes` service (C19): `ResolveChanges`, `Stack`, `Versions`,
+//!   `SetReviewState`.
+//!
 //! [`register`] is the unit's one line in `register_all`.
 
 use std::sync::Arc;
@@ -16,6 +19,7 @@ use crate::read::ReadHooks;
 use crate::registry::{Extensions, Registry};
 
 pub mod index;
+pub mod rpc;
 pub mod versions;
 
 /// `$from, $from+1, ...` for `n` placeholders.
@@ -44,4 +48,5 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
         .register(Arc::new(versions::VersionRoots::new(
             registry.pool().clone(),
         )));
+    rpc::register(ext, registry);
 }
