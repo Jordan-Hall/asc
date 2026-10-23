@@ -4,7 +4,10 @@
 //! calibration table into `$ASC_HOME/embed/`. What it downloads is described by a `manifest.json`
 //! whose minisign signature is checked against the release key baked into the build; every file
 //! the manifest lists is then fetched with a size cap and checked against the sha256 the signed
-//! manifest holds. The model files are checked a second time by the helper itself, against the
+//! manifest holds. The signature's trusted comment names the file and the release
+//! (`file:manifest.json version:<semver>`), the manifest body carries the same release, and a
+//! release older than the installed one or than `MIN_EMBED_RELEASE` is refused, so a mirror
+//! cannot replay an older signed helper. The model files are checked a second time by the helper itself, against the
 //! digests pinned in its registry. Nothing is installed when any check fails.
 //!
 //! The helper is a separate process (the daemon and `asc.exe` never load a model): the worker
@@ -45,6 +48,7 @@ use super::store::{
     CiRoot, Lock, MAX_TRACKED, RepoStore, RevRec, SegRec, ensure_dir, read_capped, write_atomic,
 };
 use super::{EXIT_AFTER, LocalError, Result, hex, unhex32};
+use crate::cli::upgrade::Version;
 
 /// The only model the registry of `asc-embed` knows (SPEC §23.7).
 pub const MODEL: &str = "jina-embeddings-v2-base-code";
@@ -88,6 +92,9 @@ const HELPER_FILE: &str = if cfg!(windows) {
 };
 const MANIFEST_NAME: &str = "manifest.json";
 const PUBKEY: Option<&str> = option_env!("ASC_RELEASE_PUBKEY");
+/// The oldest embed release this build installs. A signed manifest older than this is refused,
+/// whatever the install on disk says. Raise it when a release is withdrawn.
+const MIN_EMBED_RELEASE: &str = "0.1.0";
 
 const TARGET: &str = if cfg!(all(windows, target_arch = "x86_64")) {
     "x86_64-pc-windows-msvc"
@@ -186,6 +193,8 @@ struct Artifact {
 #[serde(deny_unknown_fields)]
 struct Manifest {
     version: u32,
+    /// The release this manifest belongs to; the signature's trusted comment must say the same.
+    release: String,
     model: String,
     helpers: BTreeMap<String, Artifact>,
     model_files: BTreeMap<String, Artifact>,
@@ -200,6 +209,10 @@ pub struct InstallRec {
     pub calibration_blake3: String,
     pub helper_sha256: String,
     pub manifest_sha256: String,
+    /// The signed release that was installed. `None` for an install made before this field
+    /// existed; the next install sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
 }
 
 fn hex_n(s: &str, n: usize) -> bool {
@@ -314,6 +327,10 @@ impl Installed {
             || !hex_n(&rec.calibration_blake3, 64)
             || !hex_n(&rec.helper_sha256, 64)
             || !hex_n(&rec.manifest_sha256, 64)
+            || rec
+                .release
+                .as_deref()
+                .is_some_and(|r| Version::parse(r).is_none())
         {
             return Err(other("damaged install.json"));
         }
@@ -471,9 +488,26 @@ impl Source {
     }
 }
 
-/// Checks the minisign signature of `bytes`. The trusted comment must name `file:<expected>`,
-/// so a validly signed file cannot stand in for another.
-pub fn verify_signed(bytes: &[u8], sig: &str, key: &str, expected: &str) -> Result<()> {
+/// The release a trusted comment names. It must carry `file:<expected>` and exactly one
+/// `version:<MAJOR.MINOR.PATCH>`, so a signature binds the file to one release.
+fn signed_release(comment: &str, expected: &str) -> Result<Version> {
+    let tokens = || comment.split(['\t', ' ']);
+    if !tokens().any(|t| t.strip_prefix("file:") == Some(expected)) {
+        return Err(other(format!("the signature is not for {expected}")));
+    }
+    let mut versions = tokens().filter_map(|t| t.strip_prefix("version:"));
+    match (versions.next(), versions.next()) {
+        (Some(v), None) => Version::parse(v)
+            .ok_or_else(|| other("the signature names a malformed release version")),
+        (None, _) => Err(other("the signature does not name a release version")),
+        (Some(_), Some(_)) => Err(other("the signature names more than one release version")),
+    }
+}
+
+/// Checks the minisign signature of `bytes` and returns the release it names. The trusted
+/// comment must name `file:<expected> version:<release>`, so a validly signed file cannot stand
+/// in for another file or for another release.
+pub fn verify_signed(bytes: &[u8], sig: &str, key: &str, expected: &str) -> Result<Version> {
     let key = minisign_verify::PublicKey::from_base64(key)
         .map_err(|e| other(format!("bad release key: {e}")))?;
     let sig = minisign_verify::Signature::decode(sig)
@@ -483,12 +517,43 @@ pub fn verify_signed(bytes: &[u8], sig: &str, key: &str, expected: &str) -> Resu
             "signature check failed, nothing was installed: {e}"
         ))
     })?;
-    let named = sig
-        .trusted_comment()
-        .split(['\t', ' '])
-        .any(|t| t.strip_prefix("file:") == Some(expected));
-    if !named {
-        return Err(other(format!("the signature is not for {expected}")));
+    signed_release(sig.trusted_comment(), expected)
+}
+
+/// The release recorded by the install under `home`: `None` when there is no install, or an
+/// install made before the release was recorded.
+fn installed_release(home: &Path) -> Result<Option<Version>> {
+    #[derive(Deserialize)]
+    struct Rec {
+        release: Option<String>,
+    }
+    let path = embed_dir(home).join("install.json");
+    if std::fs::symlink_metadata(&path).is_err() {
+        return Ok(None);
+    }
+    let rec: Rec = serde_json::from_slice(&read_capped(&path, 64 << 10)?)
+        .map_err(|_| other("damaged install.json"))?;
+    rec.release
+        .map(|r| Version::parse(&r).ok_or_else(|| other("damaged install.json")))
+        .transpose()
+}
+
+/// Refuses a release that is below the build's minimum or older than the installed one. An equal
+/// release passes: it is a reinstall.
+fn check_release(release: Version, installed: Option<Version>) -> Result<()> {
+    let min = Version::parse(MIN_EMBED_RELEASE)
+        .ok_or_else(|| other("this build has a malformed minimum embed release"))?;
+    if release < min {
+        return Err(other(format!(
+            "embed release {release} is older than the minimum {min} this build accepts"
+        )));
+    }
+    if let Some(have) = installed
+        && release < have
+    {
+        return Err(other(format!(
+            "embed release {release} is older than the installed release {have}; refusing a rollback"
+        )));
     }
     Ok(())
 }
@@ -506,21 +571,30 @@ pub async fn enable(home: &Path, source: &Source) -> Result<Installed> {
     .await
 }
 
-/// The install, with the signature check supplied.
+/// The install, with the signature check supplied. `verify` returns the release the signature
+/// names; it must equal the manifest's own `release`, and it must not be a rollback.
 pub async fn install_with(
     home: &Path,
     source: &Source,
-    verify: &dyn Fn(&[u8], &str) -> Result<()>,
+    verify: &dyn Fn(&[u8], &str) -> Result<Version>,
 ) -> Result<Installed> {
     let manifest_bytes = source.small(MANIFEST_NAME, MAX_MANIFEST).await?;
     let sig = source
         .small(&format!("{MANIFEST_NAME}.minisig"), MAX_SIG)
         .await?;
     let sig = String::from_utf8(sig).map_err(|_| other("the signature file is not text"))?;
-    verify(&manifest_bytes, &sig)?;
+    let signed = verify(&manifest_bytes, &sig)?;
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).map_err(|e| other(format!("bad manifest: {e}")))?;
     manifest.check()?;
+    let release = Version::parse(&manifest.release)
+        .ok_or_else(|| other("the manifest has a malformed release version"))?;
+    if release != signed {
+        return Err(other(format!(
+            "the manifest is for release {release} but its signature is for release {signed}"
+        )));
+    }
+    check_release(release, installed_release(home)?)?;
     let helper = manifest
         .helpers
         .get(TARGET)
@@ -575,6 +649,7 @@ pub async fn install_with(
             calibration_blake3: blake3::hash(&calib).to_hex().to_string(),
             helper_sha256: helper.sha256.clone(),
             manifest_sha256: hex(&Sha256::digest(&manifest_bytes)),
+            release: Some(release.to_string()),
         };
         write_atomic(
             &stage.join("install.json"),
@@ -1178,8 +1253,13 @@ mod tests {
         hex(&Sha256::digest(b))
     }
 
-    /// Writes a release directory and returns its source.
+    /// Writes a release directory for release 0.2.0 and returns its source.
     fn release(dir: &Path, onnx: &[u8], calib: &[u8]) -> Source {
+        release_at(dir, onnx, calib, "0.2.0")
+    }
+
+    /// Writes a release directory whose manifest names `rel` and returns its source.
+    fn release_at(dir: &Path, onnx: &[u8], calib: &[u8], rel: &str) -> Source {
         let e = dir.join("embed");
         std::fs::create_dir_all(&e).unwrap();
         let put = |name: &str, b: &[u8]| {
@@ -1199,6 +1279,7 @@ mod tests {
         let calibration = put("calibration.bin", calib);
         let manifest = serde_json::json!({
             "version": 1,
+            "release": rel,
             "model": MODEL,
             "helpers": { TARGET: helper },
             "model_files": files,
@@ -1209,8 +1290,15 @@ mod tests {
         Source::Dir(dir.to_path_buf())
     }
 
-    fn accept(_: &[u8], _: &str) -> Result<()> {
-        Ok(())
+    fn ver(v: &str) -> Version {
+        Version::parse(v).unwrap()
+    }
+
+    /// A signature check that passes and names the manifest's own release, as a good signature
+    /// from the release job does.
+    fn accept(bytes: &[u8], _: &str) -> Result<Version> {
+        let v: serde_json::Value = serde_json::from_slice(bytes).map_err(other)?;
+        Ok(ver(v["release"].as_str().unwrap_or("0.0.0")))
     }
 
     async fn installed(home: &Path, rel: &Path, onnx: &[u8]) -> Installed {
@@ -1246,6 +1334,141 @@ mod tests {
         assert!(verify_signed(b"test", SIG, "junk", "test").is_err());
     }
 
+    #[test]
+    fn a_trusted_comment_binds_the_file_to_one_release() {
+        let ok = |c: &str| signed_release(c, MANIFEST_NAME);
+        assert_eq!(
+            ok("file:manifest.json version:1.4.2").unwrap(),
+            ver("1.4.2")
+        );
+        assert_eq!(
+            ok("timestamp:1\tfile:manifest.json\tversion:0.2.0").unwrap(),
+            ver("0.2.0")
+        );
+        // No release in the comment: an old manifest cannot be told from a new one.
+        assert!(ok("file:manifest.json").is_err());
+        assert!(ok("timestamp:1 file:manifest.json").is_err());
+        // Another file, an ambiguous or a malformed release.
+        assert!(ok("file:other.json version:1.0.0").is_err());
+        assert!(ok("version:1.0.0").is_err());
+        assert!(ok("file:manifest.json version:1.0.0 version:2.0.0").is_err());
+        for bad in ["", "1", "1.0", "1.0.0.0", "01.0.0", "1.0.x", "v1.0.0"] {
+            assert!(
+                ok(&format!("file:manifest.json version:{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_minimum_release_parses() {
+        assert!(Version::parse(MIN_EMBED_RELEASE).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_older_signed_release_cannot_replace_a_newer_install() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let calib = table_bytes(0.0, 1.0);
+        let new = release_at(&t.path().join("new"), b"onnx-new", &calib, "0.3.0");
+        let inst = install_with(&home, &new, &accept).await.unwrap();
+        assert_eq!(inst.rec.release.as_deref(), Some("0.3.0"));
+        // A genuinely signed, older release is replayed from the download source.
+        let old = release_at(&t.path().join("old"), b"onnx-old", &calib, "0.2.0");
+        let e = install_with(&home, &old, &accept).await.unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("0.2.0") && msg.contains("0.3.0") && msg.contains("rollback"),
+            "{msg}"
+        );
+        let now = Installed::load(&home).unwrap().unwrap();
+        assert_eq!(now.rec.onnx_sha256, sha(b"onnx-new"));
+        assert_eq!(now.rec.release.as_deref(), Some("0.3.0"));
+        assert_eq!(
+            std::fs::read_dir(&home).unwrap().count(),
+            1,
+            "no staging is left"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_below_the_minimum_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let calib = table_bytes(0.0, 1.0);
+        let src = release_at(&t.path().join("rel"), b"onnx", &calib, "0.0.9");
+        let e = install_with(&home, &src, &accept).await.unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("0.0.9") && msg.contains(MIN_EMBED_RELEASE),
+            "{msg}"
+        );
+        assert!(!home.join("embed").exists());
+    }
+
+    #[tokio::test]
+    async fn the_signed_release_must_equal_the_manifest_release() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let calib = table_bytes(0.0, 1.0);
+        let src = release_at(&t.path().join("rel"), b"onnx", &calib, "0.5.0");
+        // The signature is for an older release than the body claims, and the other way round.
+        for signed in ["0.2.0", "0.9.0"] {
+            let v = ver(signed);
+            let e = install_with(&home, &src, &move |_: &[u8], _: &str| Ok(v))
+                .await
+                .unwrap_err();
+            let msg = e.to_string();
+            assert!(msg.contains("0.5.0") && msg.contains(signed), "{msg}");
+            assert!(!home.join("embed").exists());
+        }
+        // A body without a release at all is not a manifest.
+        let mp = t.path().join("rel/embed/manifest.json");
+        let body = std::fs::read_to_string(&mp).unwrap();
+        let cut = body.replacen("\"release\":\"0.5.0\",", "", 1);
+        assert_ne!(cut, body);
+        std::fs::write(&mp, cut).unwrap();
+        assert!(install_with(&home, &src, &accept).await.is_err());
+        assert!(!home.join("embed").exists());
+    }
+
+    #[tokio::test]
+    async fn a_newer_or_equal_release_installs_over_an_older_one() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let calib = table_bytes(0.0, 1.0);
+        let a = release_at(&t.path().join("a"), b"onnx-a", &calib, "0.2.0");
+        install_with(&home, &a, &accept).await.unwrap();
+        let b = release_at(&t.path().join("b"), b"onnx-b", &calib, "0.2.1");
+        let up = install_with(&home, &b, &accept).await.unwrap();
+        assert_eq!(up.rec.release.as_deref(), Some("0.2.1"));
+        assert_eq!(up.rec.onnx_sha256, sha(b"onnx-b"));
+        // The same release again is a reinstall.
+        let c = release_at(&t.path().join("c"), b"onnx-b", &calib, "0.2.1");
+        let again = install_with(&home, &c, &accept).await.unwrap();
+        assert_eq!(again.rec.release.as_deref(), Some("0.2.1"));
+    }
+
+    #[tokio::test]
+    async fn an_install_that_predates_the_release_field_is_upgraded() {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let calib = table_bytes(0.0, 1.0);
+        let a = release_at(&t.path().join("a"), b"onnx", &calib, "0.2.0");
+        install_with(&home, &a, &accept).await.unwrap();
+        // The record as the first I20 build wrote it: no release.
+        let ip = home.join("embed/install.json");
+        let mut rec: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ip).unwrap()).unwrap();
+        rec.as_object_mut().unwrap().remove("release");
+        std::fs::write(&ip, rec.to_string()).unwrap();
+        let old = Installed::load(&home).unwrap().unwrap();
+        assert_eq!(old.rec.release, None);
+        let b = release_at(&t.path().join("b"), b"onnx", &calib, "0.2.0");
+        let now = install_with(&home, &b, &accept).await.unwrap();
+        assert_eq!(now.rec.release.as_deref(), Some("0.2.0"));
+    }
+
     #[tokio::test]
     async fn install_verifies_every_file_and_swaps_atomically() {
         let t = tempfile::tempdir().unwrap();
@@ -1279,7 +1502,7 @@ mod tests {
         let rel = t.path().join("rel");
         let src = release(&rel, b"onnx", &table_bytes(0.0, 1.0));
         // The signature check refuses.
-        let no = |_: &[u8], _: &str| Err(other("bad signature"));
+        let no = |_: &[u8], _: &str| -> Result<Version> { Err(other("bad signature")) };
         assert!(install_with(&home, &src, &no).await.is_err());
         assert!(!home.join("embed").exists());
         // A file that no longer matches the signed manifest.
