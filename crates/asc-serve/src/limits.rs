@@ -113,6 +113,57 @@ pub enum Class {
     Background,
     /// Forgejo's internal token and the CI warmer.
     Service,
+    /// A `git-upload-pack` fetch over smart-HTTP (SPEC §25.5): holds one of `limits.git`'s
+    /// per-principal and per-replica fetch slots for its whole run, and its bytes in and out are
+    /// charged to the `objects` bucket as they stream. Discovery (`info/refs`) is `Cheap`.
+    Git,
+}
+
+/// The class of a git smart-HTTP request (`/<owner>/<repo>/info/refs`, `…/git-upload-pack`,
+/// `…/git-receive-pack`), or `None` for any other path. The path is read as the client sent it;
+/// the handler validates the name (SPEC §25.8 item 1), so a hostile path costs a `Cheap` unit
+/// here and is a `404` there.
+pub fn git_class_of(path: &str) -> Option<Class> {
+    let mut parts = path.strip_prefix('/')?.split('/');
+    let (Some(_owner), Some(_repo), Some(first)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return None;
+    };
+    match (first, parts.next(), parts.next()) {
+        ("info", Some("refs"), None) => Some(Class::Cheap),
+        ("git-upload-pack", None, None) => Some(Class::Git),
+        // Pushes get their own caps with the receive-pack path (U82).
+        ("git-receive-pack", None, None) => Some(Class::Cheap),
+        _ => None,
+    }
+}
+
+/// A refusal of admission as the plain HTTP answer a git client understands: `429` or `503` with
+/// `Retry-After` in whole seconds (git does not retry; it prints the status).
+fn git_refusal(status: &Status) -> Response<Body> {
+    let code = match status.code() {
+        tonic::Code::ResourceExhausted => axum::http::StatusCode::TOO_MANY_REQUESTS,
+        tonic::Code::Unavailable => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let ms: u64 = status
+        .metadata()
+        .get(RETRY_AFTER_MS)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let mut res = Response::new(Body::from("asc: too many git requests; retry later
+"));
+    *res.status_mut() = code;
+    res.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    res.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from(ms.div_ceil(1000).max(1)),
+    );
+    res
 }
 
 /// The class of a gRPC call, or `None` for a path this server does not rate-limit.
@@ -287,7 +338,7 @@ fn token_hash(token: &str) -> [u8; 32] {
 
 /// The TCP peer of a request. tonic puts `TcpConnectInfo` on every request and, over TLS,
 /// `TlsConnectInfo` too; this reads both, as `tonic::Request::remote_addr` does.
-fn connect_addr(ext: &axum::http::Extensions) -> Option<IpAddr> {
+pub(crate) fn connect_addr(ext: &axum::http::Extensions) -> Option<IpAddr> {
     let addr = ext
         .get::<TcpConnectInfo>()
         .and_then(TcpConnectInfo::remote_addr)
@@ -634,6 +685,8 @@ pub struct Admission {
     service: Tiered,
     expensive_principal: Arc<KeyedCounter<Caller>>,
     expensive_replica: Arc<Semaphore>,
+    git_principal: Arc<KeyedCounter<Caller>>,
+    git_replica: Arc<Semaphore>,
     semantic_replica: Arc<Semaphore>,
     service_tokens: HashSet<[u8; 32]>,
     ids: Arc<Identities>,
@@ -671,6 +724,8 @@ impl Admission {
             service: tier(rate(cfg.service_rps), rate(cfg.service_burst)),
             expensive_principal: Arc::new(KeyedCounter::new()),
             expensive_replica: Arc::new(Semaphore::new(cfg.expensive_per_replica as usize)),
+            git_principal: Arc::new(KeyedCounter::new()),
+            git_replica: Arc::new(Semaphore::new(cfg.git.fetch_per_replica as usize)),
             semantic_replica: Arc::new(Semaphore::new(cfg.semantic_concurrency as usize)),
             service_tokens: HashSet::new(),
             ids: Arc::new(Identities {
@@ -890,6 +945,8 @@ impl Admission {
             Class::Cheap | Class::Background => self.cheap.check(&who, 1),
             // `cost` is what is known up front; the body's bytes are charged as they stream.
             Class::Objects => self.objects.check(&who, cost),
+            // A fetch's bytes are charged as they stream; here it costs one unit.
+            Class::Git => self.objects.check(&who, 1),
             Class::UpdateRefs => self.update_refs.check(&who, 1),
             Class::Codeintel => self.codeintel.check(&who, 1),
             Class::Service => self.service.check(&who, 1),
@@ -917,6 +974,14 @@ impl Admission {
                 self.replica_slot(&self.semantic_replica)
                     .map_err(Refusal::other)?,
             ),
+            Class::Git => {
+                permit.hold(CounterHold(
+                    self.git_principal
+                        .try_acquire(&slots, self.cfg.git.fetch_per_principal)
+                        .map_err(|shed| Refusal::other(rate_limited(shed)))?,
+                ));
+                permit.hold(self.replica_slot(&self.git_replica).map_err(Refusal::other)?);
+            }
             _ => {}
         }
         Ok(permit)
@@ -924,7 +989,7 @@ impl Admission {
 
     /// The meter for the body bytes of an `objects` call, or `None` for any other call.
     fn meter(&self, who: Caller, class: Class) -> Option<Meter> {
-        (class == Class::Objects && who != Caller::Service).then(|| Meter {
+        (matches!(class, Class::Objects | Class::Git) && who != Caller::Service).then(|| Meter {
             limiter: self.objects.clone(),
             who,
         })
@@ -1111,7 +1176,9 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let ready = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, ready);
-        let Some(class) = class_of(req.uri().path()) else {
+        let path = req.uri().path();
+        let git = class_of(path).is_none();
+        let Some(class) = class_of(path).or_else(|| git_class_of(path)) else {
             return Box::pin(inner.call(req));
         };
         let peer =
@@ -1124,7 +1191,11 @@ where
             class,
             1,
         ) {
-            Err(status) => Box::pin(std::future::ready(Ok(status.into_http()))),
+            Err(status) => Box::pin(std::future::ready(Ok(if git {
+                git_refusal(&status)
+            } else {
+                status.into_http()
+            }))),
             Ok((who, permit)) => {
                 let meter = self.admission.meter(who, class);
                 let req = match &meter {
@@ -1300,6 +1371,68 @@ mod tests {
         assert!(retry_after(&err).is_some());
         // A shed request leaves nothing held.
         assert_eq!(a.in_flight(), 3);
+    }
+
+    #[test]
+    fn git_paths_have_a_class_and_nothing_else_does() {
+        for (path, class) in [
+            ("/acme/web.git/info/refs", Class::Cheap),
+            ("/acme/web/info/refs", Class::Cheap),
+            ("/acme/web.git/git-upload-pack", Class::Git),
+            ("/acme/web/git-upload-pack", Class::Git),
+            ("/acme/web.git/git-receive-pack", Class::Cheap),
+        ] {
+            assert_eq!(git_class_of(path), Some(class), "{path}");
+        }
+        for path in [
+            "/",
+            "/healthz",
+            "/acme/web",
+            "/acme/web/HEAD",
+            "/acme/web/info/refs/",
+            "/acme/web/info/x",
+            "/acme/web/git-upload-pack/x",
+            "/seeds/acme/web/latest",
+            "/v8/artifacts/abc",
+            "/asc.v1.Repo/Version",
+        ] {
+            assert_eq!(git_class_of(path), None, "{path}");
+        }
+        // gRPC paths keep their own classes.
+        assert_eq!(class_of("/acme/web/git-upload-pack"), None);
+    }
+
+    #[test]
+    fn fetches_are_capped_per_principal_and_per_replica_from_limits_git() {
+        let a = Admission::new(&limits(|l| {
+            l.git.fetch_per_principal = 2;
+            l.git.fetch_per_replica = 3;
+        }));
+        let (x, y) = (caller(1), caller(2));
+        let _a1 = a.admit(x, Class::Git, 1).unwrap();
+        let _a2 = a.admit(x, Class::Git, 1).unwrap();
+        assert!(is_rate_limited(&a.admit(x, Class::Git, 1).err().unwrap()));
+        let _b1 = a.admit(y, Class::Git, 1).unwrap();
+        // Three fetches run on the replica, so a fourth principal is shed.
+        let err = a.admit(caller(3), Class::Git, 1).err().unwrap();
+        assert!(retry_after(&err).is_some());
+        assert_eq!(a.in_flight(), 3, "a shed fetch leaves nothing held");
+        // Discovery is `cheap` and does not use a fetch slot.
+        a.admit(x, Class::Cheap, 1).unwrap();
+        // The refusal reaches a git client as plain HTTP with whole seconds of Retry-After.
+        let res = git_refusal(&err);
+        assert!(matches!(res.status().as_u16(), 429 | 503));
+        assert!(res.headers().contains_key(axum::http::header::RETRY_AFTER));
+    }
+
+    #[test]
+    fn a_fetch_streams_its_bytes_through_the_objects_bucket() {
+        let a = Admission::new(&limits(|l| l.objects_bytes_per_sec = ByteSize(1000)));
+        let who = caller(1);
+        assert!(a.meter(who, Class::Git).is_some());
+        assert!(a.meter(who, Class::Objects).is_some());
+        assert!(a.meter(who, Class::Cheap).is_none());
+        assert!(a.meter(Caller::Service, Class::Git).is_none());
     }
 
     #[test]
