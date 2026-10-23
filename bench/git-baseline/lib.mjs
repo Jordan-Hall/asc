@@ -8,7 +8,7 @@ export const OPS = Object.freeze(['status', 'add', 'commit', 'checkout', 'log', 
 export const MAX_RUNS = 100;
 
 export function parseArgs(argv, env = {}) {
-  const o = { sizes: ['small', 'medium'], runs: 5, out: 'target/bench-git-baseline', work: null, asc: env.ASC_BENCH_ASC || 'D:\dev\monorepo', keep: false };
+  const o = { sizes: ['small', 'medium'], runs: 5, out: 'target/bench-git-baseline', work: null, asc: env.ASC_BENCH_ASC || 'D:/dev/monorepo', keep: false };
   const val = (i, f) => {
     if (i + 1 >= argv.length) throw new Error(`${f} needs a value`);
     return argv[i + 1];
@@ -62,17 +62,24 @@ export function fastImportStream(files, commits) {
   return parts.join('');
 }
 
+const cell = (c) => (c === null || c === undefined ? 'n/a' : (c.status ?? String(c.median)));
+
+// Table of median ms per size; with asc results, an asc column and an asc/git ratio per size.
 export function markdown(doc) {
-  const ops = OPS;
-  const out = [`# Git baseline (${doc.meta.git}, ${doc.meta.runs} runs, median ms)`, ''];
-  out.push(`| op | ${doc.meta.sizes.map((s) => `git ${s}`).join(' | ')} | asc |`);
-  out.push(`|---|${doc.meta.sizes.map(() => '---:').join('|')}|---|`);
-  for (const op of ops) {
-    const cells = doc.meta.sizes.map((s) => {
+  const withAsc = doc.results.some((r) => r.asc);
+  const head = [`# ${withAsc ? 'asc vs git' : 'Git baseline'} (${doc.meta.git}${doc.meta.asc ? `; ${doc.meta.asc}` : ''}, ${doc.meta.runs} runs, median ms)`, ''];
+  const cols = doc.meta.sizes.flatMap((s) => (withAsc ? [`git ${s}`, `asc ${s}`, `asc/git ${s}`] : [`git ${s}`]));
+  const out = [...head, `| op | ${cols.join(' | ')} |${withAsc ? '' : ' asc |'}`, `|---|${cols.map(() => '---:').join('|')}|${withAsc ? '' : '---|'}`];
+  for (const op of OPS) {
+    const cells = doc.meta.sizes.flatMap((s) => {
       const r = doc.results.find((x) => x.size === s && x.op === op);
-      return r ? String(r.median) : 'n/a';
+      const g = r ? cell(r) : 'n/a';
+      if (!withAsc) return [g];
+      const c = r?.asc ? cell(r.asc) : 'n/a';
+      const ratio = r?.asc && r.asc.median !== undefined && r.median > 0 ? `${(r.asc.median / r.median).toFixed(2)}x` : '-';
+      return [g, c, ratio];
     });
-    out.push(`| ${op} | ${cells.join(' | ')} |  |`);
+    out.push(`| ${op} | ${cells.join(' | ')} |${withAsc ? '' : '  |'}`);
   }
   out.push('');
   return out.join('\n');

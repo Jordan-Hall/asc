@@ -33,3 +33,21 @@ test('markdown has empty asc column', () => {
   assert.match(md, /\| status \| 4\.2 \|  \|/);
   assert.match(md, /\| log \| n\/a \|  \|/);
 });
+
+test('markdown with asc results shows asc column, ratio and unsupported status', () => {
+  const doc = {
+    meta: { git: 'git x', asc: 'asc y', runs: 3, sizes: ['small'] },
+    results: [
+      { size: 'small', op: 'status', median: 4, asc: { median: 2 } },
+      { size: 'small', op: 'blame', median: 5, asc: { status: 'unsupported' } },
+    ],
+  };
+  const md = markdown(doc);
+  assert.match(md, /\| status \| 4 \| 2 \| 0\.50x \|/);
+  assert.match(md, /\| blame \| 5 \| unsupported \| - \|/);
+  assert.match(md, /\| log \| n\/a \| n\/a \| - \|/);
+});
+
+test('default asc path keeps its separators', () => {
+  assert.equal(parseArgs([], {}).asc, 'D:/dev/monorepo');
+});
