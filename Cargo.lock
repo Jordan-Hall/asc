@@ -644,10 +644,18 @@ dependencies = [
 name = "asc-ci"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "bytes",
  "asc-core",
  "asc-git",
  "asc-rpc",
+ "asc-store",
  "asc-wc",
+ "futures",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
