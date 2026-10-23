@@ -4,7 +4,9 @@
 
 pub mod config;
 pub mod doc;
+pub mod grams;
 pub mod lang;
+pub mod plan;
 pub mod secrets;
 pub mod skip;
 pub mod tags;

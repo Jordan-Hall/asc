@@ -172,3 +172,5 @@ tree-sitter-python     = "=0.25.0"
 tree-sitter-c-sharp    = "=0.23.5"
 tree-sitter-go         = "=0.25.0"
 tree-sitter-javascript = "=0.25.0"
+# additions (I02)
+regex-syntax   = "0.8.11"
