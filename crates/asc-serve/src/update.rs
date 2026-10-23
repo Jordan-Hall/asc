@@ -678,7 +678,7 @@ impl ServerRefs {
             Err(e) => return Err(internal("refs", &e)),
         }
         if let Some(land) = land {
-            land.apply(&mut tx, entry).await?;
+            land.apply(&mut tx, entry, txn).await?;
         }
         let at = now();
         sqlx::query("INSERT INTO op_results (op_id, repo_id, result, at) VALUES ($1, $2, $3, $4)")

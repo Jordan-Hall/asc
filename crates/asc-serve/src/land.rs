@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestObserver, Ingestor};
+use crate::landing;
 use crate::mainline::{self, MainlineIndex, MainlineStep, SqlMainline};
 use crate::registry::RepoEntry;
 use asc_core::path::RepoPath;
@@ -353,12 +354,19 @@ impl TxWrites<'_> {
         &self,
         tx: &mut Transaction<'_, Any>,
         entry: &RepoEntry,
+        txn: &RefTxn,
     ) -> Result<(), Status> {
         if !self.pairs.is_empty() {
             self.observer
                 .on_rewritten(tx, entry.key, self.pairs, self.op)
                 .await
                 .map_err(|e| internal("on_rewritten", &e))?;
+            // The rewrites belong to the single ref this update moves (SPEC §8.9).
+            if let [one] = txn.updates.as_slice() {
+                landing::record(tx, entry.ns, entry.key.0, &one.name, txn.op_id, self.pairs)
+                    .await
+                    .map_err(|e| internal("land_map", &e))?;
+            }
         }
         if let Some(m) = &self.mainline {
             mainline::apply(tx, entry.ns, &m.refname, m.base, &m.steps)
