@@ -328,7 +328,24 @@ pub(crate) struct MainlineWrite {
 pub(crate) struct TxWrites<'a> {
     observer: &'a dyn IngestObserver,
     pairs: &'a [(ChangesetId, ChangesetId)],
+    op: RewriteOp,
     mainline: Option<MainlineWrite>,
+}
+
+impl<'a> TxWrites<'a> {
+    /// Only the observer's `on_rewritten`, for a server-side `Merge` that rewrites changesets.
+    pub(crate) fn rewrites(
+        observer: &'a dyn IngestObserver,
+        pairs: &'a [(ChangesetId, ChangesetId)],
+        op: RewriteOp,
+    ) -> Self {
+        Self {
+            observer,
+            pairs,
+            op,
+            mainline: None,
+        }
+    }
 }
 
 impl TxWrites<'_> {
@@ -339,7 +356,7 @@ impl TxWrites<'_> {
     ) -> Result<(), Status> {
         if !self.pairs.is_empty() {
             self.observer
-                .on_rewritten(tx, entry.key, self.pairs, RewriteOp::Land)
+                .on_rewritten(tx, entry.key, self.pairs, self.op)
                 .await
                 .map_err(|e| internal("on_rewritten", &e))?;
         }
@@ -561,6 +578,7 @@ pub(crate) async fn run(
         let writes = TxWrites {
             observer,
             pairs: &landing.rewrite.pairs,
+            op: RewriteOp::Land,
             mainline: mainline_write(job.entry, pool, &refname, current_cs, landing.new_tip)
                 .await?,
         };

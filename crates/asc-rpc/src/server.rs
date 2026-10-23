@@ -739,6 +739,31 @@ repo_impl! {
         Ok(Response::new(total))
     }
 
+    async fn merge(
+        &self,
+        request: Request<pb::MergeRequest>,
+    ) -> Result<Response<pb::MergeResponse>, Status> {
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write, true)
+            .await?;
+        // A head in another repository is read from it, so the caller needs read access there
+        // too (SPEC §3.3), before the handler looks at that namespace.
+        if let Some(head) = msg.head_repo.as_ref() {
+            let head = RepoName::parse(&head.name)?;
+            if head != ctx.repo {
+                self.authorizer
+                    .authorize_credential(ext.get::<Credential>(), head.as_str(), Access::Read)
+                    .await?;
+            }
+        }
+        self.handlers
+            .mutations()
+            .merge(&ctx, msg)
+            .await
+            .map(Response::new)
+    }
+
     async fn copy_closure(
         &self,
         request: Request<pb::CopyClosureRequest>,
@@ -776,7 +801,6 @@ repo_impl! {
         stat(StatRequest) -> StatResponse, reads, Access::Read, false;
         check_attr(CheckAttrRequest) -> CheckAttrResponse, reads, Access::Read, false;
         commit(CommitRequest) -> CommitResponse, mutations, Access::Write, true;
-        merge(MergeRequest) -> MergeResponse, mutations, Access::Write, true;
         apply(ApplyRequest) -> ApplyResponse, mutations, Access::Write, true;
         repo_admin(RepoAdminRequest) -> RepoAdminResponse, admin, Access::Admin, true;
         import_git_push(ImportGitPushRequest) -> ImportGitPushResponse, import_push, Access::Admin, true;
@@ -1686,6 +1710,76 @@ mod tests {
         };
         let err = ingest_policy(&key, &Bytes::from_static(&[0, 1])).unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// Allows everything on `o/a` and nothing on any other repository.
+    struct OnlyA;
+
+    #[async_trait]
+    impl Authorizer for OnlyA {
+        async fn authorize(
+            &self,
+            _: Option<&crate::auth::BearerToken>,
+            repo: &str,
+            _: Access,
+        ) -> Result<Principal, crate::auth::AuthError> {
+            if repo == "o/a" {
+                Ok(Principal { id: "alice".into() })
+            } else {
+                Err(crate::auth::AuthError::Forbidden)
+            }
+        }
+    }
+
+    /// Counts the merges that reach the handler.
+    #[derive(Default)]
+    struct SpyMutations(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl MutationsHandler for SpyMutations {
+        async fn merge(
+            &self,
+            _: &CallCtx,
+            _: pb::MergeRequest,
+        ) -> Result<pb::MergeResponse, Status> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(pb::MergeResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_from_another_repository_needs_read_access_there() {
+        let spy = Arc::new(SpyMutations::default());
+        let handlers = Arc::new(RepoHandlers::new());
+        handlers.set_mutations(spy.clone()).unwrap();
+        let svc = RepoService::new(handlers, Arc::new(OnlyA), ServerInfo::default());
+        let call = |head: Option<&str>| {
+            let mut r = Request::new(pb::MergeRequest {
+                repo: Some(pb::RepoRef {
+                    name: "o/a".into(),
+                    id_mode: 0,
+                }),
+                head_repo: head.map(|n| pb::RepoRef {
+                    name: n.into(),
+                    id_mode: 0,
+                }),
+                ..pb::MergeRequest::default()
+            });
+            r.metadata_mut()
+                .insert("x-asc-op-id", Uuid::new_v4().to_string().parse().unwrap());
+            r
+        };
+        let denied = Repo::merge(&svc, call(Some("o/secret"))).await.unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+        assert_eq!(spy.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // A malformed head name is refused before the handler too.
+        let bad = Repo::merge(&svc, call(Some("no-slash"))).await.unwrap_err();
+        assert_eq!(bad.code(), tonic::Code::InvalidArgument);
+        assert_eq!(spy.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // Same repository, and no head repository, reach the handler.
+        Repo::merge(&svc, call(Some("o/a"))).await.unwrap();
+        Repo::merge(&svc, call(None)).await.unwrap();
+        assert_eq!(spy.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
