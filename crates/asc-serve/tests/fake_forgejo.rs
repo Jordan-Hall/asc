@@ -15,7 +15,9 @@ mod forgejo {
     use asc_core::id::{ChangesetId, GitOid, RefTarget};
     use asc_engine::derive::{GitMapRow, GitMapSink};
     use asc_rpc::IdMode;
-    use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
+    use asc_rpc::auth::{
+        Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshKey,
+    };
     use asc_rpc::server::{CallCtx, RepoName};
     use asc_serve::config::CompositionGrant;
     use asc_serve::forgejo::{
@@ -58,6 +60,10 @@ mod forgejo {
         read_only_tokens: HashSet<String>,
         /// Overrides the scope probe's answer (a Forgejo that changed the route, or a 5xx).
         probe_status: Option<u16>,
+        /// K19: key fingerprint -> the `ssh-key` answer (unknown: `known: false`).
+        ssh_keys: HashMap<String, Value>,
+        /// K19: (key fingerprint, `owner/repo`, mode) -> the `ssh_key` variant of the authz answer.
+        ssh_authz: HashMap<(String, String, String), Value>,
     }
 
     #[derive(Clone, Default)]
@@ -153,6 +159,29 @@ mod forgejo {
                         json!({"permissions": {"admin": admin, "push": push, "pull": pull}}),
                     ),
                     None => reply(404, json!({})),
+                };
+            }
+            if path == "/api/internal/asc/ssh-key" {
+                let fp = json["fingerprint"].as_str().unwrap_or("");
+                return match i.ssh_keys.get(fp) {
+                    Some(v) => reply(200, v.clone()),
+                    None => reply(200, json!({"known": false})),
+                };
+            }
+            if path == "/api/internal/asc/authz" && json["ssh_key"].is_object() {
+                // K19: `{ssh_key, owner, repo, mode}`; the key excludes `token` and `user`.
+                let k = (
+                    json["ssh_key"]["fingerprint"].as_str().unwrap_or("").to_owned(),
+                    format!(
+                        "{}/{}",
+                        json["owner"].as_str().unwrap_or(""),
+                        json["repo"].as_str().unwrap_or("")
+                    ),
+                    json["mode"].as_str().unwrap_or("").to_owned(),
+                );
+                return match i.ssh_authz.get(&k) {
+                    Some(v) => reply(200, v.clone()),
+                    None => reply(200, json!({"allowed": false})),
                 };
             }
             if path == "/api/internal/asc/authz" {
@@ -1160,5 +1189,84 @@ mod forgejo {
         assert_eq!(body["NewCommitIDs"][0], "aa".repeat(20));
         assert_eq!(body["UserID"], 7);
         assert_eq!(body["PushTrigger"], "asc");
+    }
+
+    /// U85: a user key and a deploy key through the two K19 endpoints of the fake.
+    #[tokio::test]
+    async fn internal_authz_identifies_and_authorises_ssh_keys() {
+        let (fake, url) = start().await;
+        let alice = SshKey::new("ssh-ed25519", &[7; 51]).unwrap();
+        let deploy = SshKey::new("ssh-ed25519", &[8; 51]).unwrap();
+        let (fa, fd) = (
+            alice.fingerprint().to_string(),
+            deploy.fingerprint().to_string(),
+        );
+        fake.with(|i| {
+            i.ssh_keys.insert(
+                fa.clone(),
+                json!({"known": true, "key_id": 11, "kind": "user", "user_id": 7, "username": "alice"}),
+            );
+            i.ssh_keys
+                .insert(fd.clone(), json!({"known": true, "key_id": 12, "kind": "deploy"}));
+            let user = |perm: &str| {
+                json!({"allowed": true, "user_id": 7, "username": "alice", "perm": perm, "deploy_key_id": 0})
+            };
+            for mode in ["read", "write"] {
+                i.ssh_authz.insert((fa.clone(), "o/w".into(), mode.into()), user("write"));
+            }
+            i.ssh_authz.insert((fa.clone(), "o/r".into(), "read".into()), user("read"));
+            i.ssh_authz.insert(
+                (fd.clone(), "o/d".into(), "read".into()),
+                json!({"allowed": true, "user_id": 2, "username": "o", "perm": "read", "deploy_key_id": 5}),
+            );
+        });
+        let a = internal_authz(&url, Vec::new());
+
+        let who = a.identify_ssh_key(&alice).await.unwrap().unwrap();
+        assert_eq!(
+            (who.key_id.as_str(), who.principal.id.as_str()),
+            ("11", "7:alice")
+        );
+        let who = a.identify_ssh_key(&deploy).await.unwrap().unwrap();
+        assert_eq!(who.key_id, "12");
+        assert_eq!(
+            a.identify_ssh_key(&SshKey::new("ssh-ed25519", &[9; 51]).unwrap())
+                .await,
+            Ok(None)
+        );
+
+        let allowed = |id: &str| Decision::Allowed(Principal { id: id.into() });
+        assert_eq!(
+            a.authorize_ssh_key(&alice, "o/w", Access::Write).await,
+            Ok(allowed("7:alice"))
+        );
+        assert_eq!(
+            a.authorize_ssh_key(&alice, "o/r", Access::Read).await,
+            Ok(allowed("7:alice"))
+        );
+        assert_eq!(
+            a.authorize_ssh_key(&alice, "o/r", Access::Write).await,
+            Ok(Decision::Denied)
+        );
+        assert_eq!(
+            a.authorize_ssh_key(&deploy, "o/d", Access::Read).await,
+            Ok(allowed("2:o:5"))
+        );
+        assert_eq!(
+            a.authorize_ssh_key(&deploy, "o/d", Access::Write).await,
+            Ok(Decision::Denied)
+        );
+        assert_eq!(
+            a.authorize_ssh_key(&deploy, "o/other", Access::Read).await,
+            Ok(Decision::Denied)
+        );
+
+        // The internal token, and a body with the key and no token fields.
+        for c in fake.calls("/api/internal/asc/") {
+            assert_eq!(c.auth.as_deref(), Some(INTERNAL));
+        }
+        let body = &fake.calls("/api/internal/asc/authz")[0].body;
+        assert_eq!(body["ssh_key"]["fingerprint"], fa);
+        assert!(body.get("token").is_none() && body.get("user").is_none());
     }
 }
