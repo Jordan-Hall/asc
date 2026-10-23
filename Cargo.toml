@@ -16,6 +16,7 @@ members = [
     "crates/asc-embed",
     "crates/asc-codeintel",
     "crates/asc",
+    "tests/turbo",
 ]
 
 [workspace.package]
