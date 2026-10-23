@@ -67,7 +67,10 @@ impl Sandbox {
             .env("GIT_CONFIG_GLOBAL", self.user.join(".gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("NO_COLOR", "1");
+            .env("NO_COLOR", "1")
+            // The fixtures serve plain http on the loopback interface; asc refuses that unless
+            // asked (tests that check the refusal remove this variable).
+            .env("ASC_ALLOW_LOOPBACK_HTTP", "1");
         cmd
     }
 

@@ -278,18 +278,27 @@ fn discovery_objects_sends_get_objects_to_the_tier_and_log_to_the_server() {
         text(&pushed.stderr)
     );
 
-    let doc = format!(
-        r#"{{"server":"{}","objects":["{}"],"repos":"*","mode":{{"acme/app":"primary"}}}}"#,
-        primary.base(),
-        tier.base()
-    );
-    let wk = WellKnown::start(doc);
+    // A document on the remote's own origin may name an objects tier elsewhere only when the
+    // user configured it (`remote.<n>.ascObjects`); `ascServer` names the server the same way.
+    let wk = WellKnown::start("{}".to_owned());
     primary.forget_calls();
     tier.forget_calls();
     // A second machine: its own `$ASC_HOME`, so every object must come over the wire.
     let sb = Sandbox::new();
-    let root = sb.tmp.path().to_owned();
-    let out = asc(&sb, &root, &["clone", "-q", &wk.url("acme/app"), "c"]);
+    let c = sb.dir("c");
+    ok(&sb, &c, &["init", "-q"]);
+    ok(&sb, &c, &["remote", "add", "origin", &wk.url("acme/app")]);
+    ok(
+        &sb,
+        &c,
+        &["config", "remote.origin.ascServer", &primary.base()],
+    );
+    ok(
+        &sb,
+        &c,
+        &["config", "remote.origin.ascObjects", &tier.base()],
+    );
+    let out = asc(&sb, &c, &["fetch", "origin"]);
     assert!(
         out.status.success(),
         "{} tier {:?} primary {:?}",
@@ -297,9 +306,6 @@ fn discovery_objects_sends_get_objects_to_the_tier_and_log_to_the_server() {
         tier.calls(),
         primary.calls()
     );
-    let c = root.join("c");
-    assert_eq!(std::fs::read_to_string(c.join("one.txt")).unwrap(), "one\n");
-
     assert!(
         tier.count("GetObjects") > 0,
         "the tier served no GetObjects: tier {:?} primary {:?}",
@@ -325,6 +331,58 @@ fn discovery_objects_sends_get_objects_to_the_tier_and_log_to_the_server() {
     primary.forget_calls();
     ok(&sb, &c, &["fetch", "origin"]);
     assert_eq!(tier.count("GetObjects"), 0);
+}
+
+#[test]
+fn a_document_naming_another_origin_gets_no_credential() {
+    let primary = Server::start(&["acme/app"]);
+    let doc = format!(r#"{{"server":"{}","repos":"*"}}"#, primary.base());
+    let wk = WellKnown::start(doc);
+    let sb = Sandbox::new();
+    let root = sb.tmp.path().to_owned();
+    let out = asc(&sb, &root, &["clone", "-q", &wk.url("acme/app"), "c"]);
+    assert!(!out.status.success());
+    let err = text(&out.stderr);
+    let (home, other) = (format!("http://{}", wk.addr), primary.base());
+    assert!(err.contains(&home) && err.contains(&other), "{err}");
+    assert!(err.contains("different origin"), "{err}");
+    assert!(
+        primary.calls().is_empty(),
+        "the token reached {:?}",
+        primary.calls()
+    );
+}
+
+#[test]
+fn plain_http_is_refused_unless_loopback_is_allowed() {
+    let server = Server::start(&["acme/app"]);
+    let wk = WellKnown::start("{}".to_owned());
+    let sb = Sandbox::new();
+    first_client(&sb, "a", &server.url("acme/app"));
+    server.forget_calls();
+    let root = sb.tmp.path().to_owned();
+    // The variable is off by default: no discovery request, no RPC, no git.
+    let refused = |url: &str| {
+        let mut cmd = sb.asc(&root);
+        cmd.env_remove("ASC_ALLOW_LOOPBACK_HTTP")
+            .env("ASC_TOKEN", WRITE)
+            .args(["clone", "-q", url, "x"]);
+        let out = cmd.output().expect("spawn asc");
+        assert_eq!(out.status.code(), Some(128), "{url}");
+        let err = text(&out.stderr);
+        assert!(err.contains("refusing plain http"), "{url}: {err}");
+        if url.contains("127.0.0.1") {
+            assert!(err.contains("ASC_ALLOW_LOOPBACK_HTTP"), "{err}");
+        }
+    };
+    refused(&wk.url("acme/app"));
+    refused(&server.url("acme/app"));
+    refused(&format!("git+http://{}/acme/app", server.addr));
+    refused("http://example.com/acme/app");
+    assert!(server.calls().is_empty(), "{:?}", server.calls());
+    assert!(!root.join("x").exists());
+    // With the opt-in the same loopback remote works.
+    ok(&sb, &root, &["clone", "-q", &server.url("acme/app"), "y"]);
 }
 
 #[test]

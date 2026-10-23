@@ -253,6 +253,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         return Err(CliError::Usage(USAGE.to_owned()));
     }
     let spec = url::parse(typed_url, o.refs.unwrap_or(RefsMode::Local)).map_err(fatal)?;
+    remote::server::check_transport(typed_url)?;
     // An asc server is found by discovery (SPEC §6.2); a host without one is a git remote.
     let mut git_mode = matches!(spec, RemoteSpec::Git { .. });
     let mut server_mode = matches!(spec, RemoteSpec::Server { .. });

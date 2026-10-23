@@ -326,6 +326,7 @@ pub fn open(
     spec: RemoteSpec,
     _intent: Intent,
 ) -> crate::cli::common::Result<Opened> {
+    super::server::check_transport(&stored)?;
     let remote = GitRemote::new(ctx, ws, &name, &stored)?;
     Ok(Opened {
         name,
@@ -339,6 +340,7 @@ pub fn open(
 
 /// `git ls-remote` of `url` outside any repository: what `clone` needs to pick a branch.
 pub async fn ls_remote(ctx: &Ctx, url: &str) -> crate::cli::common::Result<gitremote::Advertised> {
+    super::server::check_transport(url)?;
     let git = ctx.real_git()?.clone();
     let (url, cwd) = (url.to_owned(), ctx.cwd.clone());
     tokio::task::spawn_blocking(move || gitremote::ls_remote(&git, &url, &cwd))
