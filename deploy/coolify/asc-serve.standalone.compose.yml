@@ -1,0 +1,134 @@
+# asc serve, staging, standalone: no Forgejo integration (Stage 1 before the fork is deployed).
+#
+# Differences from asc-serve.compose.yml:
+# - [auth] provider = "token_store": asc's own token store (SPEC 15.1, M30). Users sign in with
+#   tokens minted by `asc serve token create`, through git's normal credential flow (SPEC 15.6).
+#   Forgejo's INTERNAL_TOKEN is never given to this deployment.
+# - The database is SQLite on the state volume (one replica only), so no Postgres is needed.
+# - A one-shot `asc-bootstrap` mints the first admin token into a 0600 file on the state volume,
+#   only when that file does not exist. It is never printed: read it once from the Coolify
+#   terminal of ascserve (`cat /var/lib/asc/bootstrap/admin-token`), store it, then delete the file.
+#
+# Values live in the Coolify application's environment, never in this file.
+
+x-asc-serve: &asc-serve
+  image: forge.example.org/asc/asc-serve:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
+  user: '${ASC_RUN_UID:-10001}:${ASC_RUN_UID:-10001}'
+  read_only: true
+  tmpfs:
+    - /tmp:size=256m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment: &asc-serve-env
+    ASC_SERVE_CONFIG: /etc/asc/asc-serve.toml
+    AWS_ACCESS_KEY_ID: ${ASC_S3_ACCESS_KEY_ID:?Garage key id}
+    AWS_SECRET_ACCESS_KEY: ${ASC_S3_SECRET_ACCESS_KEY:?Garage key secret}
+    AWS_REGION: garage
+    HOME: /var/lib/asc/home
+    RUST_LOG: ${ASC_LOG:-info}
+  configs: &asc-serve-configs
+    - source: asc_serve_toml
+      target: /etc/asc/asc-serve.toml
+      uid: '${ASC_RUN_UID:-10001}'
+      gid: '${ASC_RUN_UID:-10001}'
+      mode: 0400
+  volumes:
+    - asc-state:/var/lib/asc
+
+services:
+  asc-migrate:
+    <<: *asc-serve
+    command: ['serve', 'migrate']
+    restart: 'no'
+    networks:
+      - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512m
+
+  # Mints the first admin token once. umask 077 makes the file 0600; an existing file is kept.
+  asc-bootstrap:
+    <<: *asc-serve
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - >-
+        set -eu; umask 077; mkdir -p /var/lib/asc/bootstrap;
+        f=/var/lib/asc/bootstrap/admin-token;
+        if [ -s "$$f" ]; then echo "bootstrap token already minted"; exit 0; fi;
+        asc serve token create --user "$$ASC_ADMIN_USER" --repo "$$ASC_ADMIN_OWNER/*" --admin
+        --expires 30d --label bootstrap > "$$f.tmp" && mv "$$f.tmp" "$$f";
+        echo "bootstrap token written to $$f"
+    environment:
+      <<: *asc-serve-env
+      ASC_ADMIN_USER: ${ASC_ADMIN_USER:-jordan}
+      ASC_ADMIN_OWNER: ${ASC_ADMIN_OWNER:-asc}
+    depends_on:
+      asc-migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+    network_mode: none
+
+  ascserve:
+    <<: *asc-serve
+    command: ['serve']
+    depends_on:
+      asc-bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    environment:
+      <<: *asc-serve-env
+      SERVICE_FQDN_ASCSERVE_7890: ''
+    networks:
+      - default
+      - backend
+    expose:
+      - '7890'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '${ASC_CPU_LIMIT:-2.0}'
+          memory: ${ASC_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
+    pids_limit: 512
+    stop_grace_period: 30s
+
+volumes:
+  asc-state:
+
+networks:
+  # The platform network on which Garage (garage-<service-uuid>) resolves.
+  backend:
+    external: true
+    name: ${ASC_BACKEND_NETWORK:-coolify}
+
+configs:
+  asc_serve_toml:
+    content: |
+      listen = "0.0.0.0:7890"
+      public_url = '${ASC_PUBLIC_URL:?public https URL, e.g. https://asc-staging.example.org}'
+      store = 's3://${ASC_S3_BUCKET:-asc-staging}?endpoint=${ASC_S3_ENDPOINT:?Garage S3 endpoint}&region=garage&path_style=true'
+      db = 'sqlite:///var/lib/asc/asc.db?mode=rwc'
+      cache = { memory = "${ASC_CACHE_MEMORY:-512MiB}", disk_dir = "/var/lib/asc/cache", disk = "${ASC_CACHE_DISK:-5GiB}" }
+
+      [auth]
+      provider = "token_store"
+      token_key_file = "/var/lib/asc/token.key"
+
+      [limits]
+      text_memory = "${ASC_TEXT_MEMORY:-512MiB}"
+      trusted_proxies = [${ASC_TRUSTED_PROXIES?exact /32 of the proxy on the app network, or empty}]
+
+      [git]
+      enabled = ${ASC_GIT_ENABLED:-true}
+      view_dir = "/var/lib/asc/gitview"
