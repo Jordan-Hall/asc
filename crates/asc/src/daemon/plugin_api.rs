@@ -637,6 +637,27 @@ fn unhex(text: &str) -> Bytes {
         .into()
 }
 
+/// The `targets` object of one project of `asc affected --json` (SPEC §24.8.2, A4). An entry
+/// that fails the `.asc/projects.toml` limits is dropped, never passed on.
+fn targets_of(p: &Value) -> std::collections::HashMap<String, wire::TargetCmd> {
+    let Some(map) = p.get("targets").and_then(Value::as_object) else {
+        return Default::default();
+    };
+    map.iter()
+        .take(asc_graph::targets::MAX_TARGETS)
+        .filter_map(|(t, v)| {
+            let argv: Vec<String> = v
+                .get("argv")?
+                .as_array()?
+                .iter()
+                .map(|w| w.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?;
+            asc_graph::targets::check_argv(t, &argv).ok()?;
+            Some((t.clone(), wire::TargetCmd { argv }))
+        })
+        .collect()
+}
+
 /// The SPEC §12A.9 document that `asc affected --json` prints, as an `AffectedResponse`.
 fn affected_of(doc: &Value) -> wire::AffectedResponse {
     let text = |v: &Value, k: &str| {
@@ -686,6 +707,7 @@ fn affected_of(doc: &Value) -> wire::AffectedResponse {
                         })
                         .unwrap_or_default(),
                     input_hash: unhex(&text(p, "hash")),
+                    targets: targets_of(p),
                 })
                 .collect()
         })

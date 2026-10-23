@@ -23,7 +23,7 @@ use asc_graph::model::{Ecosystem, ProjectKey};
 use asc_graph::select::Selector;
 use asc_rpc::projects::{
     MAX_RESPONSE_BYTES, ProjectsHandler, affected_project, config_status, detect_issue, id_index,
-    project_info, project_infos,
+    project_info, project_infos, target_cmds,
 };
 use asc_rpc::server::{CallCtx, MAX_STRING, wire};
 use asc_store::objects;
@@ -293,7 +293,11 @@ impl ProjectsHandler for ServerProjects {
                         ..Default::default()
                     },
                 };
-                affected_project(p, info)
+                let mut wire = affected_project(p, info);
+                if let Some(&i) = index.get(&p.project.key) {
+                    wire.targets = target_cmds(&asc_graph::targets::commands_for(g, &g.projects[i]));
+                }
+                wire
             })
             .collect();
         bounded(wire::AffectedResponse {

@@ -207,7 +207,12 @@ message CommitGraphRequest { RepoRef repo = 1; repeated string include = 2; repe
 message GraphEdge { uint32 to_column = 1; bytes parent = 2 [(asc.v1.json) = JSON_KIND_HEX]; }
 message GraphRow { LogEntry entry = 1; repeated string refs = 2; uint32 column = 3; repeated GraphEdge edges = 4;
   bool overflow = 5; ReviewState review = 6; bool wip = 7; string ws_id = 8; }
-message CommitGraphResponse { repeated GraphRow rows = 1; string next_page_token = 2; }
+// A ref and the row it labels in the first page (SPEC §24.8.2, A2).
+message RefMarker { string name = 1; uint64 row = 2; }
+// total and ref_markers are set on the first page only and only when cheap: total is the row count of the whole
+// result, row is the zero-based index of the labelled row in the first page. 0 and [] mean "not known".
+message CommitGraphResponse { repeated GraphRow rows = 1; string next_page_token = 2; uint64 total = 3;
+  repeated RefMarker ref_markers = 4; }
 message LineHistoryRequest { RepoRef repo = 1; string rev = 2; bytes path = 3 [(asc.v1.json) = JSON_KIND_PATH]; uint32 start_line = 4; uint32 end_line = 5;
   uint32 limit = 6; uint32 scan_budget = 7; string resume_token = 8; }
 message CompareRequest { RepoRef repo = 1; string a = 2; string b = 3; bool three_dot = 4; uint32 limit = 5;

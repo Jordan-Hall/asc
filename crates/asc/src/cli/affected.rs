@@ -229,6 +229,7 @@ fn row_of(
                 workspace,
                 workspace_id,
                 workspace_head: head || proj.kind != ProjectKind::Package,
+                targets: asc_graph::targets::commands_for(graph, proj),
             }
         }
         // Not in the head graph (it cannot happen for an affected project): a bare row.
@@ -246,6 +247,7 @@ fn row_of(
             workspace: ".".into(),
             workspace_id: p.project.id.clone(),
             workspace_head: true,
+            targets: BTreeMap::new(),
         },
     }
 }

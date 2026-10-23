@@ -9,6 +9,7 @@ pub mod authz;
 pub mod cache_role;
 pub mod codeintel;
 pub mod classify;
+pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
 pub mod forgejo;

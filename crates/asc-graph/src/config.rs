@@ -86,6 +86,9 @@ pub struct ProjectEntry {
     /// Selectors that add `Implicit` edges, or remove edges when excluded (`!`).
     pub implicit_dependencies: Vec<Selector>,
     pub tags: Vec<String>,
+    /// `argv = { <target> = [...] }`: the command an IDE runs for a target (SPEC §24.8.2, A4).
+    /// Validated by [`crate::targets::check_argv`]; asc stores and serves it and never runs it.
+    pub argv: BTreeMap<String, Vec<String>>,
 }
 
 /// The validated contents of `.asc/projects.toml`; `Default` is an absent file.
@@ -451,12 +454,26 @@ impl Parser<'_> {
         let t = self.table(v, "project")?;
         let (mut select, mut name, mut root) = (None, None, None);
         let (mut inputs, mut implicit, mut tags) = (BTreeMap::new(), Vec::new(), Vec::new());
+        let mut argv = BTreeMap::new();
         for (k, val) in t {
             match k.get_ref().as_ref() {
                 "select" => select = Some((self.string(val, "select")?, val.span())),
                 "name" => name = Some((self.string(val, "name")?, val.span())),
                 "root" => root = Some((self.string(val, "root")?, val.span())),
                 "tags" => tags = self.string_list(val, "tags")?,
+                "argv" => {
+                    for (target, list) in self.table(val, "argv")? {
+                        let name = target.get_ref().as_ref().to_owned();
+                        let words = self.string_list(list, "argv")?;
+                        if let Err(m) = crate::targets::check_argv(&name, &words) {
+                            return self.err(list.span(), m);
+                        }
+                        argv.insert(name, words);
+                    }
+                    if let Err(m) = crate::targets::check_table(&argv) {
+                        return self.err(val.span(), m);
+                    }
+                }
                 "inputs" => {
                     for (target, list) in self.table(val, "inputs")? {
                         let items = self.items(list, "inputs")?;
@@ -503,6 +520,7 @@ impl Parser<'_> {
             inputs,
             implicit_dependencies: implicit,
             tags,
+            argv,
         })
     }
 

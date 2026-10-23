@@ -34,6 +34,7 @@ use futures::stream::TryStreamExt;
 use futures::stream::{self, StreamExt};
 use tonic::Status;
 
+use crate::commit_graph_markers as markers;
 use crate::history::compare_rpc::ServerCompare;
 use crate::history::linehist_rpc::ServerLineHistory;
 use crate::history::repo_config::ServerRepoConfig;
@@ -544,6 +545,7 @@ impl InsightsHandler for ServerCommitGraph {
                     .map_err(|_| Status::invalid_argument("malformed page token"))?,
             )
         };
+        let token_is_none = token.is_none();
         let (include, exclude) = match token {
             None => self.starts(&engine, &ids, &entry, &req).await?,
             Some(_) => (Vec::new(), Vec::new()),
@@ -556,8 +558,14 @@ impl InsightsHandler for ServerCommitGraph {
             },
         };
         let page = engine.graph_page(start, limit).await.map_err(page_status)?;
+        let labels = self.labels(&entry, &page.rows).await?;
+        // The first page also carries the minimap header (A2); later pages never do.
+        let header = token_is_none.then(|| {
+            let ids: Vec<ChangesetId> = page.rows.iter().map(|r| r.id).collect();
+            markers::first_page(&ids, &labels, page.next.is_some())
+        });
         let build = Arc::new(Build {
-            labels: self.labels(&entry, &page.rows).await?,
+            labels,
             engine,
             ids,
             lanes: req.lanes,
@@ -569,6 +577,7 @@ impl InsightsHandler for ServerCommitGraph {
         let chunks = rows.len().div_ceil(ROWS_PER_MESSAGE).max(1);
         Ok(stream::try_unfold(0usize, move |i| {
             let (build, rows, next) = (build.clone(), rows.clone(), next.clone());
+            let header = if i == 0 { header.clone() } else { None };
             async move {
                 if i >= chunks {
                     return Ok(None);
@@ -576,6 +585,9 @@ impl InsightsHandler for ServerCommitGraph {
                 let lo = (i * ROWS_PER_MESSAGE).min(rows.len());
                 let hi = (lo + ROWS_PER_MESSAGE).min(rows.len());
                 let mut msg = build.message(&rows[lo..hi]).await?;
+                if let Some(h) = header {
+                    markers::apply(&mut msg, h);
+                }
                 if i + 1 == chunks {
                     msg.next_page_token = next.unwrap_or_default();
                 }
