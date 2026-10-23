@@ -196,7 +196,7 @@ fn register_all(
     );
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
-    watch_refs::register(ext, registry);
+    watch_refs::register(ext, registry, limits);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
