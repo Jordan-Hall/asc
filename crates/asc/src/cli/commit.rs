@@ -257,6 +257,11 @@ async fn initial_message(
         });
     }
     if !args.message.is_empty() {
+        // git completes the last line of `-m` text, so COMMIT_EDITMSG ends in a newline.
+        let mut m = m;
+        if !m.is_empty() && !m.ends_with(b"\n") {
+            m.push(b'\n');
+        }
         return Ok(Initial {
             text: m,
             source: Some(MsgSource::Message),
