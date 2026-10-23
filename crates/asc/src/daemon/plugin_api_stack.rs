@@ -71,7 +71,8 @@ fn change_bytes(t: &str) -> Bytes {
 
 /// Lowercase hex as bytes; any other text (a change id that is not hex) as its own bytes.
 fn id_bytes(t: &str) -> Bytes {
-    let hex = !t.is_empty() && t.len().is_multiple_of(2) && t.bytes().all(|b| b.is_ascii_hexdigit());
+    let hex =
+        !t.is_empty() && t.len().is_multiple_of(2) && t.bytes().all(|b| b.is_ascii_hexdigit());
     if hex {
         let raw: Option<Vec<u8>> = (0..t.len() / 2)
             .map(|i| u8::from_str_radix(&t[2 * i..2 * i + 2], 16).ok())

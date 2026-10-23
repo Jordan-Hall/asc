@@ -11,10 +11,10 @@ use std::process::ExitCode;
 
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::Kind;
-use asc_engine::tree::Pathspec as TreeSpec;
-use futures::TryStreamExt;
 use asc_core::path::RepoPath;
+use asc_engine::tree::Pathspec as TreeSpec;
 use asc_wc::SafeRoot;
+use futures::TryStreamExt;
 use regex::bytes::{Regex, RegexBuilder};
 
 use super::add::cwd_prefix;
@@ -36,9 +36,28 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "grep",
     flags: &[
-        "-n", "--line-number", "-i", "--ignore-case", "-w", "--word-regexp", "-l",
-        "--files-with-matches", "--name-only", "-c", "--count", "-v", "--invert-match", "-q",
-        "--quiet", "-e", "--regexp", "-F", "--fixed-strings", "-E", "--extended-regexp", "-G",
+        "-n",
+        "--line-number",
+        "-i",
+        "--ignore-case",
+        "-w",
+        "--word-regexp",
+        "-l",
+        "--files-with-matches",
+        "--name-only",
+        "-c",
+        "--count",
+        "-v",
+        "--invert-match",
+        "-q",
+        "--quiet",
+        "-e",
+        "--regexp",
+        "-F",
+        "--fixed-strings",
+        "-E",
+        "--extended-regexp",
+        "-G",
         "--basic-regexp",
     ],
     placeholders: &[],
@@ -205,7 +224,9 @@ fn bracket(chars: &[char], at: usize, out: &mut String) -> std::result::Result<u
                 continue;
             }
             '[' if matches!(chars.get(i + 1), Some('=' | '.')) => {
-                return Err("equivalence classes and collating symbols are not supported".to_owned());
+                return Err(
+                    "equivalence classes and collating symbols are not supported".to_owned(),
+                );
             }
             '[' | '\\' | '&' | '~' => {
                 out.push('\\');
@@ -263,7 +284,8 @@ fn translate(pattern: &str, extended: bool) -> std::result::Result<String, Strin
             '^' if !extended && !at_start => out.push_str("\\^"),
             '$' if !extended => {
                 let end = i + 1 == chars.len()
-                    || (chars.get(i + 1) == Some(&'\\') && matches!(chars.get(i + 2), Some(')' | '|')));
+                    || (chars.get(i + 1) == Some(&'\\')
+                        && matches!(chars.get(i + 2), Some(')' | '|')));
                 out.push_str(if end { "$" } else { "\\$" });
             }
             '(' | ')' | '{' | '}' | '|' | '+' | '?' if !extended => push_literal(&mut out, c),
@@ -305,7 +327,10 @@ fn compile(o: &Opts) -> Result<Regex> {
             .zip(&parts)
             .find(|(_, part)| build(part).is_err())
             .map_or_else(|| "?".to_owned(), |(p, _)| p.to_string_lossy().into_owned());
-        CliError::Fatal(format!("command line, '{culprit}': Invalid regular expression ({})", first_line(&e.to_string())))
+        CliError::Fatal(format!(
+            "command line, '{culprit}': Invalid regular expression ({})",
+            first_line(&e.to_string())
+        ))
     })
 }
 
@@ -325,7 +350,9 @@ fn hits(re: &Regex, word: bool, line: &[u8]) -> bool {
     }
     let mut start = 0;
     while start <= line.len() {
-        let Some(m) = re.find_at(line, start) else { return false };
+        let Some(m) = re.find_at(line, start) else {
+            return false;
+        };
         let left = m.start() == 0 || !is_word(line[m.start() - 1]);
         let right = m.end() == line.len() || !is_word(line[m.end()]);
         if left && right {
@@ -359,7 +386,9 @@ impl Search<'_> {
         let mut line = Vec::new();
         loop {
             line.clear();
-            let n = (&mut reader).take(MAX_LINE as u64 + 1).read_until(NEWLINE, &mut line)?;
+            let n = (&mut reader)
+                .take(MAX_LINE as u64 + 1)
+                .read_until(NEWLINE, &mut line)?;
             if n == 0 {
                 break;
             }
@@ -394,7 +423,12 @@ impl Sink<'_> {
     /// (`-q` matched, or the output failed).
     fn file(&mut self, shown: &[u8], content: impl Read) -> bool {
         let o = self.search.o;
-        let Sink { out, search, any, failed } = self;
+        let Sink {
+            out,
+            search,
+            any,
+            failed,
+        } = self;
         let mut emit = |number: usize, line: &[u8], binary: bool| -> bool {
             *any = true;
             if o.quiet {
@@ -404,7 +438,9 @@ impl Sink<'_> {
                 return !o.files_only;
             }
             let written = if binary {
-                [&b"Binary file "[..], shown, &b" matches"[..], LF].iter().try_for_each(|p| out.write_all(p))
+                [&b"Binary file "[..], shown, &b" matches"[..], LF]
+                    .iter()
+                    .try_for_each(|p| out.write_all(p))
             } else {
                 (|| {
                     out.write_all(shown)?;
@@ -452,7 +488,12 @@ impl Sink<'_> {
     }
 
     fn finish(self) -> Result<ExitCode> {
-        let Sink { mut out, any, failed, .. } = self;
+        let Sink {
+            mut out,
+            any,
+            failed,
+            ..
+        } = self;
         let flushed = match failed {
             None => out.flush(),
             Some(e) => Err(e),
@@ -476,7 +517,11 @@ async fn take_revs(ctx: &Ctx, ws: &WsCtx, o: &mut Opts) -> Result<Vec<(OsString,
             let text = arg.to_string_lossy().into_owned();
             match resolve_commit(ctx, &text).await? {
                 Some(c) => revs.push((arg, c)),
-                None => return Err(CliError::Fatal(format!("unable to resolve revision: {text}"))),
+                None => {
+                    return Err(CliError::Fatal(format!(
+                        "unable to resolve revision: {text}"
+                    )));
+                }
             }
         }
         return Ok(revs);
@@ -514,7 +559,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         o.paths.push(OsString::from("."));
     }
     let spec = Spec::parse(&o.paths, &prefix, root)?;
-    let strip = if prefix.is_empty() { Vec::new() } else { format!("{prefix}/").into_bytes() };
+    let strip = if prefix.is_empty() {
+        Vec::new()
+    } else {
+        format!("{prefix}/").into_bytes()
+    };
     let mut sink = Sink {
         out: io::BufWriter::new(io::stdout().lock()),
         search: Search { re: &re, o: &o },
@@ -524,7 +573,17 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if !revs.is_empty() {
         let source = grep_index::local_source();
         for (label, commit) in &revs {
-            let proceed = grep_rev(ws, &o, &spec, &strip, source.as_deref(), label, *commit, &mut sink).await?;
+            let proceed = grep_rev(
+                ws,
+                &o,
+                &spec,
+                &strip,
+                source.as_deref(),
+                label,
+                *commit,
+                &mut sink,
+            )
+            .await?;
             if !proceed {
                 break;
             }
@@ -564,12 +623,18 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     files.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
 
     for path in &files {
-        let Some(abs) = gate.resolve(path) else { continue };
-        let Ok(meta) = fs::symlink_metadata(&abs) else { continue };
+        let Some(abs) = gate.resolve(path) else {
+            continue;
+        };
+        let Ok(meta) = fs::symlink_metadata(&abs) else {
+            continue;
+        };
         if !meta.is_file() {
             continue;
         }
-        let Ok(file) = fs::File::open(&abs) else { continue };
+        let Ok(file) = fs::File::open(&abs) else {
+            continue;
+        };
         let shown = relative(path.as_bytes(), &strip);
         if !sink.file(&shown, file) {
             break;
@@ -620,7 +685,8 @@ async fn grep_rev(
         let names: Vec<RepoPath> = entries.iter().map(|e| e.0.clone()).collect();
         let kept = grep_index::narrow(source, &q, names);
         if kept.len() != entries.len() {
-            let keep: std::collections::HashSet<&[u8]> = kept.iter().map(RepoPath::as_bytes).collect();
+            let keep: std::collections::HashSet<&[u8]> =
+                kept.iter().map(RepoPath::as_bytes).collect();
             entries.retain(|e| keep.contains(e.0.as_bytes()));
         }
     }
@@ -638,7 +704,10 @@ async fn grep_rev(
             continue;
         }
         let Ok(bytes) = ws.engine.read_file(id, size).await else {
-            eprintln!("warning: asc: grep: {}: the blob could not be read", String::from_utf8_lossy(&named));
+            eprintln!(
+                "warning: asc: grep: {}: the blob could not be read",
+                String::from_utf8_lossy(&named)
+            );
             continue;
         };
         if !sink.file(&named, io::Cursor::new(&bytes[..])) {
@@ -706,6 +775,9 @@ mod tests {
         assert_eq!(o.patterns, [OsString::from("x"), OsString::from("y")]);
         assert_eq!(o.paths, [OsString::from("p")]);
         assert!(matches!(parse(&args(&[])), Err(CliError::Fatal(_))));
-        assert!(matches!(parse(&args(&["-Z", "x"])), Err(CliError::Usage(_))));
+        assert!(matches!(
+            parse(&args(&["-Z", "x"])),
+            Err(CliError::Usage(_))
+        ));
     }
 }

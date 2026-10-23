@@ -23,15 +23,19 @@ use asc_wc::worktree as wt;
 use super::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::restore::{actor, root_of, sync_worktree};
 use super::switch::{
-    Rev, RevKind, TrackOpt, abbrev_len, bad_branch_name, branch_tip, commit_line, ensure_mapped, held_anywhere, ref_name,
-    resolve_rev, valid_branch_name,
+    Rev, RevKind, TrackOpt, abbrev_len, bad_branch_name, branch_tip, commit_line, ensure_mapped,
+    held_anywhere, ref_name, resolve_rev, valid_branch_name,
 };
 use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner, null_oid};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "worktree", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "worktree",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// Every word before `--`, options included: the command reads its own flags.
     #[arg(allow_hyphen_values = true, num_args = 0..)]
@@ -57,8 +61,27 @@ impl Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "worktree",
     flags: &[
-        "-f", "--force", "--detach", "--checkout", "--lock", "--reason", "-b", "-B", "-q", "--quiet",
-        "--track", "--no-track", "--ephemeral", "--ttl", "--mode", "-n", "--dry-run", "-v", "--verbose", "--porcelain", "-z",
+        "-f",
+        "--force",
+        "--detach",
+        "--checkout",
+        "--lock",
+        "--reason",
+        "-b",
+        "-B",
+        "-q",
+        "--quiet",
+        "--track",
+        "--no-track",
+        "--ephemeral",
+        "--ttl",
+        "--mode",
+        "-n",
+        "--dry-run",
+        "-v",
+        "--verbose",
+        "--porcelain",
+        "-z",
         "--plain",
     ],
     placeholders: &[],
@@ -76,11 +99,19 @@ struct Spec {
 }
 
 const fn flag(short: Option<char>, long: &'static str) -> Spec {
-    Spec { short, long, value: false }
+    Spec {
+        short,
+        long,
+        value: false,
+    }
 }
 
 const fn valued(short: Option<char>, long: &'static str) -> Spec {
-    Spec { short, long, value: true }
+    Spec {
+        short,
+        long,
+        value: true,
+    }
 }
 
 /// The options and words of one subcommand.
@@ -100,7 +131,11 @@ impl Scanned {
     }
 
     fn value(&self, long: &str) -> Option<&str> {
-        self.flags.iter().rev().find(|(l, _)| *l == long).and_then(|(_, v)| v.as_deref())
+        self.flags
+            .iter()
+            .rev()
+            .find(|(l, _)| *l == long)
+            .and_then(|(_, v)| v.as_deref())
     }
 }
 
@@ -113,12 +148,17 @@ fn scan(argv: &[OsString], specs: &[Spec]) -> Result<Scanned> {
     let mut ended = false;
     let mut at = 0;
     let utf8 = |a: &OsString, opt: &str| {
-        a.to_str().map(str::to_owned).ok_or_else(|| unknown(format!("option `{opt}' needs a UTF-8 value")))
+        a.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| unknown(format!("option `{opt}' needs a UTF-8 value")))
     };
     while at < argv.len() {
         let arg = &argv[at];
         at += 1;
-        let Some(text) = arg.to_str().filter(|t| !ended && t.len() > 1 && t.starts_with('-')) else {
+        let Some(text) = arg
+            .to_str()
+            .filter(|t| !ended && t.len() > 1 && t.starts_with('-'))
+        else {
             out.words.push(arg.clone());
             continue;
         };
@@ -127,14 +167,21 @@ fn scan(argv: &[OsString], specs: &[Spec]) -> Result<Scanned> {
             continue;
         }
         if let Some(long) = text.strip_prefix("--") {
-            let (name, inline) = long.split_once('=').map_or((long, None), |(n, v)| (n, Some(v.to_owned())));
-            let Some(spec) = specs.iter().find(|s| s.long.trim_start_matches("--") == name) else {
+            let (name, inline) = long
+                .split_once('=')
+                .map_or((long, None), |(n, v)| (n, Some(v.to_owned())));
+            let Some(spec) = specs
+                .iter()
+                .find(|s| s.long.trim_start_matches("--") == name)
+            else {
                 return Err(unknown(format!("unknown option `{name}'")));
             };
             let value = match (spec.value, inline) {
                 (true, Some(v)) => Some(v),
                 (true, None) => {
-                    let next = argv.get(at).ok_or_else(|| unknown(format!("option `{name}' requires a value")))?;
+                    let next = argv
+                        .get(at)
+                        .ok_or_else(|| unknown(format!("option `{name}' requires a value")))?;
                     at += 1;
                     Some(utf8(next, name)?)
                 }
@@ -155,7 +202,9 @@ fn scan(argv: &[OsString], specs: &[Spec]) -> Result<Scanned> {
             }
             let rest = &body[i + c.len_utf8()..];
             let value = if rest.is_empty() {
-                let next = argv.get(at).ok_or_else(|| unknown(format!("switch `{c}' requires a value")))?;
+                let next = argv
+                    .get(at)
+                    .ok_or_else(|| unknown(format!("switch `{c}' requires a value")))?;
                 at += 1;
                 utf8(next, &c.to_string())?
             } else {
@@ -183,11 +232,14 @@ fn slashed(path: &str) -> String {
 }
 
 fn text_of(path: &Path) -> Result<&str> {
-    path.to_str().ok_or_else(|| fatal(format!("'{}' is not valid UTF-8", path.display())))
+    path.to_str()
+        .ok_or_else(|| fatal(format!("'{}' is not valid UTF-8", path.display())))
 }
 
 fn name_of(path: &str) -> String {
-    Path::new(path).file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+    Path::new(path)
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
 /// The repository's worktrees: the main one (registered first) and then the others by name.
@@ -195,7 +247,11 @@ async fn rows(ws: &WsCtx) -> Result<Vec<Workspace>> {
     let mut all = workspaces::list(&ws.db, Some(ws.repo.key)).await?;
     if all.len() > 1 {
         let main = all.remove(0);
-        all.sort_by(|a, b| name_of(&a.ws.path).cmp(&name_of(&b.ws.path)).then_with(|| a.ws.path.cmp(&b.ws.path)));
+        all.sort_by(|a, b| {
+            name_of(&a.ws.path)
+                .cmp(&name_of(&b.ws.path))
+                .then_with(|| a.ws.path.cmp(&b.ws.path))
+        });
         all.insert(0, main);
     }
     Ok(all)
@@ -203,18 +259,26 @@ async fn rows(ws: &WsCtx) -> Result<Vec<Workspace>> {
 
 /// The worktree `typed` names: a path (against the current directory), or a unique name.
 fn locate<'a>(ctx: &Ctx, all: &'a [Workspace], typed: &OsString) -> Result<&'a Workspace> {
-    let not_one = || fatal(format!("'{}' is not a working tree", typed.to_string_lossy()));
+    let not_one = || {
+        fatal(format!(
+            "'{}' is not a working tree",
+            typed.to_string_lossy()
+        ))
+    };
     let abs = wt::absolutize(&ctx.cwd, Path::new(typed));
     let key = wt::path_key(&abs);
-    if let Some(row) = all
-        .iter()
-        .find(|r| wt::path_key(Path::new(&r.ws.path)) == key || wt::path_key(Path::new(&r.ws.mount)) == key)
-    {
+    if let Some(row) = all.iter().find(|r| {
+        wt::path_key(Path::new(&r.ws.path)) == key || wt::path_key(Path::new(&r.ws.mount)) == key
+    }) {
         return Ok(row);
     }
-    let plain_name = typed.to_str().is_some_and(|t| !t.is_empty() && !t.contains(['/', '\\']));
+    let plain_name = typed
+        .to_str()
+        .is_some_and(|t| !t.is_empty() && !t.contains(['/', '\\']));
     if plain_name {
-        let mut hits = all.iter().filter(|r| name_of(&r.ws.path) == typed.to_string_lossy());
+        let mut hits = all
+            .iter()
+            .filter(|r| name_of(&r.ws.path) == typed.to_string_lossy());
         if let (Some(one), None) = (hits.next(), hits.next()) {
             return Ok(one);
         }
@@ -262,9 +326,13 @@ fn is_dirty(dir: &Path) -> Result<bool> {
 
 fn lock_text(reason: &str, what: &str, ff: &str) -> String {
     if reason.is_empty() {
-        format!("cannot {what} a locked working tree;\nuse '{what} -f -f' to override or unlock first")
+        format!(
+            "cannot {what} a locked working tree;\nuse '{what} -f -f' to override or unlock first"
+        )
     } else {
-        format!("cannot {what} a locked working tree, lock reason: {reason}\nuse '{what} -f -f' to override or unlock first{ff}")
+        format!(
+            "cannot {what} a locked working tree, lock reason: {reason}\nuse '{what} -f -f' to override or unlock first{ff}"
+        )
     }
 }
 
@@ -306,13 +374,24 @@ pub(crate) struct Added {
 }
 
 enum Dest {
-    New { name: String, force: bool, start: Rev },
-    Existing { name: String, tip: ChangesetId },
-    Detach { commit: ChangesetId },
+    New {
+        name: String,
+        force: bool,
+        start: Rev,
+    },
+    Existing {
+        name: String,
+        tip: ChangesetId,
+    },
+    Detach {
+        commit: ChangesetId,
+    },
 }
 
 async fn need_rev(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Rev> {
-    resolve_rev(ctx, ws, word).await?.ok_or_else(|| fatal(format!("invalid reference: {word}")))
+    resolve_rev(ctx, ws, word)
+        .await?
+        .ok_or_else(|| fatal(format!("invalid reference: {word}")))
 }
 
 async fn destination(ctx: &Ctx, ws: &WsCtx, o: &AddOpts) -> Result<Dest> {
@@ -321,7 +400,11 @@ async fn destination(ctx: &Ctx, ws: &WsCtx, o: &AddOpts) -> Result<Dest> {
             return Err(bad_branch_name(ctx, name));
         }
         let start = need_rev(ctx, ws, o.start.as_deref().unwrap_or("HEAD")).await?;
-        return Ok(Dest::New { name: name.clone(), force: *force, start });
+        return Ok(Dest::New {
+            name: name.clone(),
+            force: *force,
+            start,
+        });
     }
     if o.detach {
         let rev = need_rev(ctx, ws, o.start.as_deref().unwrap_or("HEAD")).await?;
@@ -330,18 +413,30 @@ async fn destination(ctx: &Ctx, ws: &WsCtx, o: &AddOpts) -> Result<Dest> {
     if let Some(word) = o.start.as_deref() {
         let rev = need_rev(ctx, ws, word).await?;
         return Ok(match rev.kind {
-            RevKind::Branch(name) => Dest::Existing { name, tip: rev.commit },
+            RevKind::Branch(name) => Dest::Existing {
+                name,
+                tip: rev.commit,
+            },
             _ => Dest::Detach { commit: rev.commit },
         });
     }
     // `worktree add <path>`: a branch named after the directory, made from HEAD when missing.
-    let name = o.path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_owned();
+    let name = o
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_owned();
     if !valid_branch_name(&name) {
         return Err(bad_branch_name(ctx, &name));
     }
     Ok(match branch_tip(ws, &name).await? {
         Some(tip) => Dest::Existing { name, tip },
-        None => Dest::New { name, force: false, start: need_rev(ctx, ws, "HEAD").await? },
+        None => Dest::New {
+            name,
+            force: false,
+            start: need_rev(ctx, ws, "HEAD").await?,
+        },
     })
 }
 
@@ -383,7 +478,9 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     // Bind the hook runner to this workspace before anything else can bind another.
     let _ = Runner::for_ctx(ctx)?;
     if o.virtual_mode {
-        return Err(fatal("asc: virtual worktrees need the daemon, which is not available yet; use --mode plain"));
+        return Err(fatal(
+            "asc: virtual worktrees need the daemon, which is not available yet; use --mode plain",
+        ));
     }
     let dest = destination(ctx, ws, &o).await?;
     let (commit, branch_name): (ChangesetId, Option<String>) = match &dest {
@@ -397,20 +494,29 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
         _ => None,
     };
 
-    if let Dest::New { name, force: true, .. } = &dest
+    if let Dest::New {
+        name, force: true, ..
+    } = &dest
         && existing_tip.is_some()
         && !o.force
         && let Some(at) = held_anywhere(ws, name).await?
     {
-        return Err(fatal(format!("'{name}' is already used by worktree at '{at}'")));
+        return Err(fatal(format!(
+            "'{name}' is already used by worktree at '{at}'"
+        )));
     }
 
     if !o.quiet {
         let abbrev = |oid: &GitOid| oid.to_string()[..abbrev_len(ctx)].to_owned();
         match &dest {
-            Dest::New { name, force: true, .. } if existing_tip.is_some() => {
+            Dest::New {
+                name, force: true, ..
+            } if existing_tip.is_some() => {
                 let was = ensure_mapped(ws, existing_tip.unwrap_or(commit)).await?;
-                eprintln!("Preparing worktree (resetting branch '{name}'; was at {})", abbrev(&was));
+                eprintln!(
+                    "Preparing worktree (resetting branch '{name}'; was at {})",
+                    abbrev(&was)
+                );
             }
             Dest::New { name, .. } => eprintln!("Preparing worktree (new branch '{name}')"),
             Dest::Existing { name, .. } => eprintln!("Preparing worktree (checking out '{name}')"),
@@ -426,7 +532,9 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     }
     let all = workspaces::list(&ws.db, None).await?;
     let key = wt::path_key(&abs);
-    if all.iter().any(|r| wt::path_key(Path::new(&r.ws.path)) == key || wt::path_key(Path::new(&r.ws.mount)) == key) {
+    if all.iter().any(|r| {
+        wt::path_key(Path::new(&r.ws.path)) == key || wt::path_key(Path::new(&r.ws.mount)) == key
+    }) {
         return Err(fatal(if std::fs::symlink_metadata(&abs).is_ok() {
             format!("'{}' already exists", o.typed)
         } else {
@@ -441,12 +549,19 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
         return Err(fatal(format!("'{}' already exists", o.typed)));
     }
     match &dest {
-        Dest::New { name, force: false, .. } if existing_tip.is_some() => {
-            return Err(CliError::Raw(format!("fatal: a branch named '{name}' already exists"), 255));
+        Dest::New {
+            name, force: false, ..
+        } if existing_tip.is_some() => {
+            return Err(CliError::Raw(
+                format!("fatal: a branch named '{name}' already exists"),
+                255,
+            ));
         }
         Dest::Existing { name, .. } if !o.force => {
             if let Some(at) = held_anywhere(ws, name).await? {
-                return Err(fatal(format!("'{name}' is already used by worktree at '{at}'")));
+                return Err(fatal(format!(
+                    "'{name}' is already used by worktree at '{at}'"
+                )));
             }
         }
         _ => {}
@@ -459,9 +574,28 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
 
     let id = WorkspaceId::new();
     let nested = enclosing.is_some();
-    let mount = if nested { ws.home.worktree_mount(id) } else { abs.clone() };
+    let mount = if nested {
+        ws.home.worktree_mount(id)
+    } else {
+        abs.clone()
+    };
     let mut made = Made::default();
-    let built = materialise(ctx, ws, &o, &dest, commit, git, branch_name.as_deref(), &abs, &mount, enclosing.as_deref(), id, occupancy, &mut made).await;
+    let built = materialise(
+        ctx,
+        ws,
+        &o,
+        &dest,
+        commit,
+        git,
+        branch_name.as_deref(),
+        &abs,
+        &mount,
+        enclosing.as_deref(),
+        id,
+        occupancy,
+        &mut made,
+    )
+    .await;
     let new_ctx = match built {
         Ok(c) => c,
         Err(e) => {
@@ -474,12 +608,23 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
         println!("HEAD is now at {}", commit_line(ctx, ws, commit).await?);
     }
     let runner = Runner::for_ctx(&new_ctx)?;
-    let hook = Hook::PostCheckout { old: null_oid(), new: git, branch: true };
-    let hook_exit = match runner.run(hook, &HookEnv::of(&new_ctx, "worktree add")).await.map_err(fatal)? {
+    let hook = Hook::PostCheckout {
+        old: null_oid(),
+        new: git,
+        branch: true,
+    };
+    let hook_exit = match runner
+        .run(hook, &HookEnv::of(&new_ctx, "worktree add"))
+        .await
+        .map_err(fatal)?
+    {
         Outcome::Exit(code) if code != 0 => u8::try_from(code).unwrap_or(1),
         _ => 0,
     };
-    Ok(Added { path: abs, hook_exit })
+    Ok(Added {
+        path: abs,
+        hook_exit,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -548,7 +693,13 @@ async fn materialise(
     }
     let root = root_of(fws, Some(commit)).await?;
     let empty = super::common::CliEngine::empty_tree_id();
-    let paths: Vec<_> = fws.engine.leafdiff(empty, root, None).await?.into_iter().map(|(p, _)| p).collect();
+    let paths: Vec<_> = fws
+        .engine
+        .leafdiff(empty, root, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
     sync_worktree(&fresh, root, &paths, true).await?;
 
     // The branch.
@@ -565,27 +716,35 @@ async fn materialise(
             new: Some(RefTarget::Changeset(start.commit)),
             expires_at: None,
         };
-        let txn = RefTxn { updates: vec![update], actor: actor(), reason: String::new(), op_id: ext::OpId::new().0 };
+        let txn = RefTxn {
+            updates: vec![update],
+            actor: actor(),
+            reason: String::new(),
+            op_id: ext::OpId::new().0,
+        };
         let reason = if old.is_some() {
             format!("branch: Reset to {}", start.label)
         } else {
             format!("branch: Created from {}", start.label)
         };
-        ctx.update_local_refs(txn, &reason, StagingAfterMove::Keep).await?;
+        ctx.update_local_refs(txn, &reason, StagingAfterMove::Keep)
+            .await?;
         super::switch::track_start(ctx, name, start, o.track, o.quiet).await?;
     }
 
     // The path a nested worktree is reached by.
     if enclosing.is_some() {
-        wt::make_dir_link(abs, mount).map_err(|e| {
-            fatal(format!("cannot link '{}' to its mount: {e}", o.typed))
-        })?;
+        wt::make_dir_link(abs, mount)
+            .map_err(|e| fatal(format!("cannot link '{}' to its mount: {e}", o.typed)))?;
         made.link = true;
     }
     if let Some(reason) = &o.lock {
         workspaces::set_locked(&ws.db, id, Some(reason)).await?;
     }
-    ext::index_sink().on_head_moved(id, None, Some(commit)).await.map_err(fatal)?;
+    ext::index_sink()
+        .on_head_moved(id, None, Some(commit))
+        .await
+        .map_err(fatal)?;
     Ok(fresh)
 }
 
@@ -615,7 +774,9 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     }
     if sc.has("--detach") && (sc.has("-b") || sc.has("-B")) {
         let which = if sc.has("-b") { "-b" } else { "-B" };
-        return Err(fatal(format!("options '--detach' and '{which}' cannot be used together")));
+        return Err(fatal(format!(
+            "options '--detach' and '{which}' cannot be used together"
+        )));
     }
     if sc.has("--reason") && !sc.has("--lock") {
         return Err(fatal("the option '--reason' requires '--lock'"));
@@ -625,7 +786,11 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     }
     let ephemeral_secs = if sc.has("--ephemeral") {
         Some(match sc.value("--ttl") {
-            Some(t) => wt::parse_ttl(t).ok_or_else(|| fatal(format!("invalid --ttl '{t}'; use a number and s, m, h, d or w")))?,
+            Some(t) => wt::parse_ttl(t).ok_or_else(|| {
+                fatal(format!(
+                    "invalid --ttl '{t}'; use a number and s, m, h, d or w"
+                ))
+            })?,
             None => wt::DEFAULT_TTL_SECS,
         })
     } else {
@@ -634,11 +799,22 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let virtual_mode = match sc.value("--mode") {
         None | Some("plain") => false,
         Some("virtual") => true,
-        Some(other) => return Err(fatal(format!("invalid --mode '{other}'; use virtual or plain"))),
+        Some(other) => {
+            return Err(fatal(format!(
+                "invalid --mode '{other}'; use virtual or plain"
+            )));
+        }
     };
     let (typed, start) = match sc.words.as_slice() {
         [p] => (p, None),
-        [p, s] => (p, Some(s.to_str().ok_or_else(|| fatal("the commit-ish is not valid UTF-8"))?.to_owned())),
+        [p, s] => (
+            p,
+            Some(
+                s.to_str()
+                    .ok_or_else(|| fatal("the commit-ish is not valid UTF-8"))?
+                    .to_owned(),
+            ),
+        ),
         _ => return Err(usage_error()),
     };
     let branch = match (sc.value("-b"), sc.value("-B")) {
@@ -654,7 +830,9 @@ async fn add_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             branch,
             detach: sc.has("--detach"),
             force: sc.has("--force"),
-            lock: sc.has("--lock").then(|| sc.value("--reason").unwrap_or("").to_owned()),
+            lock: sc
+                .has("--lock")
+                .then(|| sc.value("--reason").unwrap_or("").to_owned()),
             quiet: sc.has("--quiet"),
             start,
             track: match (sc.has("--track"), sc.has("--no-track")) {
@@ -715,7 +893,14 @@ async fn describe(ws: &WsCtx, all: &[Workspace], row: &Workspace) -> Result<Line
 }
 
 async fn list_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
-    let sc = scan(argv, &[flag(Some('v'), "--verbose"), flag(None, "--porcelain"), flag(Some('z'), "--z")])?;
+    let sc = scan(
+        argv,
+        &[
+            flag(Some('v'), "--verbose"),
+            flag(None, "--porcelain"),
+            flag(Some('z'), "--z"),
+        ],
+    )?;
     if !sc.words.is_empty() {
         return Err(usage_error());
     }
@@ -723,7 +908,9 @@ async fn list_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
         return Err(fatal("the option '-z' requires '--porcelain'"));
     }
     if sc.has("--verbose") && sc.has("--porcelain") {
-        return Err(fatal("options '--verbose' and '--porcelain' cannot be used together"));
+        return Err(fatal(
+            "options '--verbose' and '--porcelain' cannot be used together",
+        ));
     }
     let ws = ctx.ws()?;
     let all = rows(ws).await?;
@@ -755,13 +942,22 @@ async fn list_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
         }
     } else {
         let verbose = sc.has("--verbose");
-        let width = lines.iter().map(|l| l.path.chars().count()).max().unwrap_or(0);
+        let width = lines
+            .iter()
+            .map(|l| l.path.chars().count())
+            .max()
+            .unwrap_or(0);
         for l in &lines {
             let short = &l.oid.to_string()[..abbrev_len(ctx)];
-            let head = l.branch.as_ref().map_or_else(|| "(detached HEAD)".to_owned(), |b| format!("[{b}]"));
+            let head = l
+                .branch
+                .as_ref()
+                .map_or_else(|| "(detached HEAD)".to_owned(), |b| format!("[{b}]"));
             out.push_str(&format!("{:<width$} {short} {head}", l.path));
             match &l.locked {
-                Some(reason) if verbose && !reason.is_empty() => out.push_str(&format!("\n\tlocked: {reason}")),
+                Some(reason) if verbose && !reason.is_empty() => {
+                    out.push_str(&format!("\n\tlocked: {reason}"))
+                }
                 Some(_) => out.push_str(" locked"),
                 None => {}
             }
@@ -800,7 +996,10 @@ async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
     };
     if nested {
         if mount != ws.home.worktree_mount(id) {
-            return Err(fatal(format!("asc: the mount of '{}' is not where asc makes mounts", slashed(&row.ws.path))));
+            return Err(fatal(format!(
+                "asc: the mount of '{}' is not where asc makes mounts",
+                slashed(&row.ws.path)
+            )));
         }
         if std::fs::symlink_metadata(&path).is_ok() {
             if !wt::is_link_at(&path) {
@@ -813,7 +1012,10 @@ async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
         }
         if mount.exists() {
             if !ours(&mount) {
-                return Err(fatal(format!("asc: '{}' is not the mount of this worktree", slashed(&row.ws.mount))));
+                return Err(fatal(format!(
+                    "asc: '{}' is not the mount of this worktree",
+                    slashed(&row.ws.mount)
+                )));
             }
             wt::remove_tree(&mount)?;
         }
@@ -866,7 +1068,9 @@ pub(crate) async fn remove(ctx: &Ctx, typed: &OsString, force: usize) -> Result<
             )));
         }
         if is_dirty(mount)? {
-            return Err(fatal(format!("'{shown}' contains modified or untracked files, use --force to delete it")));
+            return Err(fatal(format!(
+                "'{shown}' contains modified or untracked files, use --force to delete it"
+            )));
         }
     }
     leave(row, ws);
@@ -875,7 +1079,9 @@ pub(crate) async fn remove(ctx: &Ctx, typed: &OsString, force: usize) -> Result<
 
 async fn remove_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let sc = scan(argv, &[flag(Some('f'), "--force")])?;
-    let [typed] = sc.words.as_slice() else { return Err(usage_error()) };
+    let [typed] = sc.words.as_slice() else {
+        return Err(usage_error());
+    };
     remove(ctx, typed, sc.count("--force")).await?;
     Ok(ExitCode::SUCCESS)
 }
@@ -883,7 +1089,10 @@ async fn remove_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 // --------------------------------------------------------------------------------------- prune
 
 async fn prune_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
-    let sc = scan(argv, &[flag(Some('n'), "--dry-run"), flag(Some('v'), "--verbose")])?;
+    let sc = scan(
+        argv,
+        &[flag(Some('n'), "--dry-run"), flag(Some('v'), "--verbose")],
+    )?;
     if !sc.words.is_empty() {
         return Err(usage_error());
     }
@@ -896,7 +1105,11 @@ async fn prune_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             None => {
                 // An expired ephemeral worktree goes when it is clean; a dirty one is kept.
                 let expired = row.ws.ephemeral_until.is_some_and(|t| t < now());
-                if !expired || is_main(&all, row) || row.locked.is_some() || is_dirty(Path::new(&row.ws.mount))? {
+                if !expired
+                    || is_main(&all, row)
+                    || row.locked.is_some()
+                    || is_dirty(Path::new(&row.ws.mount))?
+                {
                     continue;
                 }
                 "ephemeral worktree expired"
@@ -918,7 +1131,9 @@ async fn prune_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 async fn lock_command(ctx: &Ctx, argv: &[OsString], lock: bool) -> Result<ExitCode> {
     let specs = [valued(None, "--reason")];
     let sc = scan(argv, if lock { &specs } else { &[] })?;
-    let [typed] = sc.words.as_slice() else { return Err(usage_error()) };
+    let [typed] = sc.words.as_slice() else {
+        return Err(usage_error());
+    };
     let ws = ctx.ws()?;
     let all = rows(ws).await?;
     let row = locate(ctx, &all, typed)?;
@@ -927,8 +1142,14 @@ async fn lock_command(ctx: &Ctx, argv: &[OsString], lock: bool) -> Result<ExitCo
     }
     let shown = typed.to_string_lossy();
     match (&row.locked, lock) {
-        (Some(reason), true) if reason.is_empty() => return Err(fatal(format!("'{shown}' is already locked"))),
-        (Some(reason), true) => return Err(fatal(format!("'{shown}' is already locked, reason: {reason}"))),
+        (Some(reason), true) if reason.is_empty() => {
+            return Err(fatal(format!("'{shown}' is already locked")));
+        }
+        (Some(reason), true) => {
+            return Err(fatal(format!(
+                "'{shown}' is already locked, reason: {reason}"
+            )));
+        }
         (None, false) => return Err(fatal(format!("'{shown}' is not locked"))),
         _ => {}
     }
@@ -941,7 +1162,9 @@ async fn lock_command(ctx: &Ctx, argv: &[OsString], lock: bool) -> Result<ExitCo
 
 async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let sc = scan(argv, &[flag(Some('f'), "--force")])?;
-    let [typed, to] = sc.words.as_slice() else { return Err(usage_error()) };
+    let [typed, to] = sc.words.as_slice() else {
+        return Err(usage_error());
+    };
     let ws = ctx.ws()?;
     let all = rows(ws).await?;
     let row = locate(ctx, &all, typed)?;
@@ -961,13 +1184,19 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let src = PathBuf::from(&row.ws.path);
     let key = wt::path_key(&dst);
     if wt::path_key(&dst) == wt::path_key(ws.home.root()) || wt::is_inside(&dst, ws.home.root()) {
-        return Err(fatal(format!("'{}' is inside the asc home", to.to_string_lossy())));
+        return Err(fatal(format!(
+            "'{}' is inside the asc home",
+            to.to_string_lossy()
+        )));
     }
     if wt::is_inside(&dst, &src) || wt::is_inside(&dst, Path::new(&row.ws.mount)) {
         return Err(fatal(format!("cannot move '{shown}' into itself")));
     }
     if std::fs::symlink_metadata(&dst).is_ok()
-        || all.iter().any(|r| wt::path_key(Path::new(&r.ws.path)) == key || wt::path_key(Path::new(&r.ws.mount)) == key)
+        || all.iter().any(|r| {
+            wt::path_key(Path::new(&r.ws.path)) == key
+                || wt::path_key(Path::new(&r.ws.mount)) == key
+        })
     {
         return Err(fatal(format!("'{}' already exists", to.to_string_lossy())));
     }
@@ -978,7 +1207,11 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
         .map(|r| PathBuf::from(&r.ws.path));
     let old_mount = PathBuf::from(&row.ws.mount);
     let old_nested = wt::path_key(&src) != wt::path_key(&old_mount);
-    let new_mount = if enclosing.is_some() { ws.home.worktree_mount(row.ws.id) } else { dst.clone() };
+    let new_mount = if enclosing.is_some() {
+        ws.home.worktree_mount(row.ws.id)
+    } else {
+        dst.clone()
+    };
     leave(row, ws);
 
     // The files first, then the row; the file moves are undone if the row cannot follow.
@@ -988,21 +1221,30 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             None => std::fs::create_dir_all(parent)?,
         }
     }
-    let renamed = |from: &Path, to: &Path| std::fs::rename(from, to).map_err(|e| fatal(format!("cannot move '{}': {e}", from.display())));
+    let renamed = |from: &Path, to: &Path| {
+        std::fs::rename(from, to)
+            .map_err(|e| fatal(format!("cannot move '{}': {e}", from.display())))
+    };
     match (old_nested, enclosing.is_some()) {
         (false, false) => renamed(&old_mount, &new_mount)?,
         (false, true) => {
             renamed(&old_mount, &new_mount)?;
             if let Err(e) = wt::make_dir_link(&dst, &new_mount) {
                 let _ = std::fs::rename(&new_mount, &old_mount);
-                return Err(fatal(format!("cannot link '{}' to its mount: {e}", to.to_string_lossy())));
+                return Err(fatal(format!(
+                    "cannot link '{}' to its mount: {e}",
+                    to.to_string_lossy()
+                )));
             }
         }
         (true, true) => {
             wt::remove_tree(&src)?;
             if let Err(e) = wt::make_dir_link(&dst, &new_mount) {
                 let _ = wt::make_dir_link(&src, &old_mount);
-                return Err(fatal(format!("cannot link '{}' to its mount: {e}", to.to_string_lossy())));
+                return Err(fatal(format!(
+                    "cannot link '{}' to its mount: {e}",
+                    to.to_string_lossy()
+                )));
             }
         }
         (true, false) => {
@@ -1013,7 +1255,9 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
             }
         }
     }
-    if let Err(e) = workspaces::set_location(&ws.db, row.ws.id, text_of(&dst)?, text_of(&new_mount)?).await {
+    if let Err(e) =
+        workspaces::set_location(&ws.db, row.ws.id, text_of(&dst)?, text_of(&new_mount)?).await
+    {
         // Put the files back where the row says they are.
         if enclosing.is_some() {
             let _ = wt::remove_tree(&dst);
@@ -1033,14 +1277,19 @@ async fn move_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 
 async fn convert_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
     let sc = scan(argv, &[flag(None, "--plain")])?;
-    let [typed] = sc.words.as_slice() else { return Err(usage_error()) };
+    let [typed] = sc.words.as_slice() else {
+        return Err(usage_error());
+    };
     if !sc.has("--plain") {
         return Err(fatal("worktree convert needs --plain"));
     }
     let ws = ctx.ws()?;
     let all = rows(ws).await?;
     let row = locate(ctx, &all, typed)?;
-    ext::workspace_factory().convert_plain(row).await.map_err(fatal)?;
+    ext::workspace_factory()
+        .convert_plain(row)
+        .await
+        .map_err(fatal)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1049,7 +1298,9 @@ async fn convert_command(ctx: &Ctx, argv: &[OsString]) -> Result<ExitCode> {
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let argv = a.argv();
     let Some(sub) = argv.first().and_then(|s| s.to_str()) else {
-        return Err(CliError::Usage(format!("error: need a subcommand\n{USAGE}")));
+        return Err(CliError::Usage(format!(
+            "error: need a subcommand\n{USAGE}"
+        )));
     };
     let rest = &argv[1..];
     ctx.ws()?;
@@ -1062,7 +1313,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         "unlock" => lock_command(ctx, rest, false).await,
         "move" => move_command(ctx, rest).await,
         "convert" => convert_command(ctx, rest).await,
-        other => Err(CliError::Usage(format!("error: unknown subcommand: `{other}'\n{USAGE}"))),
+        other => Err(CliError::Usage(format!(
+            "error: unknown subcommand: `{other}'\n{USAGE}"
+        ))),
     }
 }
 
@@ -1074,11 +1327,20 @@ mod tests {
         items.iter().map(OsString::from).collect()
     }
 
-    const ADD: [Spec; 4] = [flag(Some('f'), "--force"), valued(Some('b'), "-b"), flag(Some('q'), "--quiet"), valued(None, "--ttl")];
+    const ADD: [Spec; 4] = [
+        flag(Some('f'), "--force"),
+        valued(Some('b'), "-b"),
+        flag(Some('q'), "--quiet"),
+        valued(None, "--ttl"),
+    ];
 
     #[test]
     fn options_words_clusters_and_values() {
-        let sc = scan(&os(&["-fq", "-b", "topic", "../w", "master", "--ttl=7d"]), &ADD).unwrap();
+        let sc = scan(
+            &os(&["-fq", "-b", "topic", "../w", "master", "--ttl=7d"]),
+            &ADD,
+        )
+        .unwrap();
         assert!(sc.has("--force") && sc.has("--quiet"));
         assert_eq!(sc.value("-b"), Some("topic"));
         assert_eq!(sc.value("--ttl"), Some("7d"));
@@ -1092,8 +1354,17 @@ mod tests {
 
     #[test]
     fn unknown_and_valueless_options_are_usage_errors() {
-        for bad in [&["--nope"][..], &["-x"], &["--ttl"], &["-b"], &["--force=1"]] {
-            assert!(matches!(scan(&os(bad), &ADD), Err(CliError::Usage(_))), "{bad:?}");
+        for bad in [
+            &["--nope"][..],
+            &["-x"],
+            &["--ttl"],
+            &["-b"],
+            &["--force=1"],
+        ] {
+            assert!(
+                matches!(scan(&os(bad), &ADD), Err(CliError::Usage(_))),
+                "{bad:?}"
+            );
         }
     }
 
@@ -1103,13 +1374,19 @@ mod tests {
             lock_text("why", "remove", ""),
             "cannot remove a locked working tree, lock reason: why\nuse 'remove -f -f' to override or unlock first"
         );
-        assert_eq!(lock_text("", "move", ""), "cannot move a locked working tree;\nuse 'move -f -f' to override or unlock first");
+        assert_eq!(
+            lock_text("", "move", ""),
+            "cannot move a locked working tree;\nuse 'move -f -f' to override or unlock first"
+        );
     }
 
     #[test]
     fn names_come_from_the_last_component() {
         // A backslash separates path components on Windows only.
-        assert_eq!(name_of("D:\\a\\b\\wt"), if cfg!(windows) { "wt" } else { "D:\\a\\b\\wt" });
+        assert_eq!(
+            name_of("D:\\a\\b\\wt"),
+            if cfg!(windows) { "wt" } else { "D:\\a\\b\\wt" }
+        );
         assert_eq!(name_of("/a/b/c"), "c");
         assert_eq!(slashed("D:\\a\\b"), "D:/a/b");
     }

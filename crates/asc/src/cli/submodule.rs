@@ -32,7 +32,11 @@ use crate::msg::Msg;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "submodule", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "submodule",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// `[status|set-pin|update|init] [<args>…]`.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
@@ -152,7 +156,10 @@ async fn outcome(ws: &WsCtx, subs: &Submodules, path: &RepoPath, pin: &GitOid) -
         .get_changeset(ChangesetId::from_bytes(asc))
         .await
         .map_err(fatal)?;
-    Ok(Outcome::Composed { repo, tree: cs.root })
+    Ok(Outcome::Composed {
+        repo,
+        tree: cs.root,
+    })
 }
 
 async fn status(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
@@ -189,16 +196,31 @@ async fn resolve_rev(ws: &WsCtx, nested: Option<&Repo>, rev: &str) -> Result<Git
         )));
     };
     let refs = ws.db.refs();
-    for name in [rev.to_owned(), format!("refs/heads/{rev}"), format!("refs/tags/{rev}")] {
-        let Ok(name) = RefName::new(name.into_bytes()) else { continue };
-        let Some(entry) = Refs::get(&refs, n.key, &name).await.map_err(fatal)? else { continue };
-        let RefTarget::Changeset(cs) = entry.target else { continue };
-        let rows = git_map::asc_to_git(&ws.db, n.key, cs.as_bytes()).await.map_err(fatal)?;
+    for name in [
+        rev.to_owned(),
+        format!("refs/heads/{rev}"),
+        format!("refs/tags/{rev}"),
+    ] {
+        let Ok(name) = RefName::new(name.into_bytes()) else {
+            continue;
+        };
+        let Some(entry) = Refs::get(&refs, n.key, &name).await.map_err(fatal)? else {
+            continue;
+        };
+        let RefTarget::Changeset(cs) = entry.target else {
+            continue;
+        };
+        let rows = git_map::asc_to_git(&ws.db, n.key, cs.as_bytes())
+            .await
+            .map_err(fatal)?;
         if let Some((oid, _)) = rows.into_iter().find(|(_, k)| *k == ObjectKind::Commit) {
             return Ok(oid);
         }
     }
-    Err(fatal(format!("{rev}: not a branch, tag or commit of {}", n.repo.name)))
+    Err(fatal(format!(
+        "{rev}: not a branch, tag or commit of {}",
+        n.repo.name
+    )))
 }
 
 async fn set_pin(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
@@ -209,7 +231,9 @@ async fn set_pin(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
     let root = ws.projection.toplevel();
     let bytes = repo_path(path_arg, &cwd_prefix(ctx, ws), root)?;
     let path = RepoPath::new(bytes).map_err(fatal)?;
-    let rev = rev.to_str().ok_or_else(|| CliError::Usage(USAGE_SET_PIN.into()))?;
+    let rev = rev
+        .to_str()
+        .ok_or_else(|| CliError::Usage(USAGE_SET_PIN.into()))?;
 
     let mut target = Target::open(ctx).await?;
     let is_link = matches!(
@@ -225,8 +249,22 @@ async fn set_pin(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         None => None,
     };
     let pin = resolve_rev(ws, nested.as_ref(), rev).await?;
-    let leaf = Leaf { kind: Kind::Gitlink, file: FileId::from_bytes([0; 32]), size: 0, git: pin };
-    target.apply(ctx, vec![Edit::Put { path: path.clone(), leaf, ita: false }]).await?;
+    let leaf = Leaf {
+        kind: Kind::Gitlink,
+        file: FileId::from_bytes([0; 32]),
+        size: 0,
+        git: pin,
+    };
+    target
+        .apply(
+            ctx,
+            vec![Edit::Put {
+                path: path.clone(),
+                leaf,
+                ita: false,
+            }],
+        )
+        .await?;
     println!("{pin} {path}");
 
     if target.is_default() && ws.workspace.ws.mode == Mode::Plain {
@@ -240,14 +278,29 @@ async fn set_pin(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
 async fn reproject(ctx: &Ctx, ws: &WsCtx, subs: &Submodules, path: &RepoPath, pin: &GitOid) {
     let gate = SafeRoot::new(ws.projection.toplevel());
     let done = async {
-        let replace = if looks_composed(&gate, path) { Replace::Composed } else { Replace::EmptyOnly };
-        match outcome(ws, subs, path, pin).await.map_err(|e| e.to_string())? {
+        let replace = if looks_composed(&gate, path) {
+            Replace::Composed
+        } else {
+            Replace::EmptyOnly
+        };
+        match outcome(ws, subs, path, pin)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             Outcome::Composed { tree, .. } => {
                 let symlinks = ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows));
-                project(&*ws.objects, &gate, path, tree, symlinks, replace, &Limits::default())
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e.to_string())
+                project(
+                    &*ws.objects,
+                    &gate,
+                    path,
+                    tree,
+                    symlinks,
+                    replace,
+                    &Limits::default(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
             }
             Outcome::Restricted { .. } => restrict(&gate, path, replace).map_err(|e| e.to_string()),
             Outcome::Unavailable { .. } => {
@@ -290,7 +343,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
         "set-pin" => set_pin(ctx, tail).await,
         "update" | "init" => Ok(update_notice()),
-        other => Err(CliError::Msg(Msg::AscNotInWorkspace { cmd: format!("submodule {other}") })),
+        other => Err(CliError::Msg(Msg::AscNotInWorkspace {
+            cmd: format!("submodule {other}"),
+        })),
     }
 }
 
@@ -307,9 +362,17 @@ mod tests {
         let pin = GitOid::from_bytes([0xab; 20]);
         let hex = "ab".repeat(20);
         let tree = TreeId::from_bytes([1; 32]);
-        let composed = Outcome::Composed { repo: "asc/soma".into(), tree };
-        assert_eq!(status_line(&rp("sdk"), &pin, &composed), format!(" {hex} sdk (asc/soma)"));
-        let restricted = Outcome::Restricted { repo: "asc/vault".into() };
+        let composed = Outcome::Composed {
+            repo: "asc/soma".into(),
+            tree,
+        };
+        assert_eq!(
+            status_line(&rp("sdk"), &pin, &composed),
+            format!(" {hex} sdk (asc/soma)")
+        );
+        let restricted = Outcome::Restricted {
+            repo: "asc/vault".into(),
+        };
         assert_eq!(
             status_line(&rp("vault"), &pin, &restricted),
             "vault: restricted (no access to asc/vault)"
@@ -319,7 +382,13 @@ mod tests {
             format!("-{hex} x")
         );
         assert_eq!(
-            status_line(&rp("x"), &pin, &Outcome::Unavailable { repo: Some("A/b".into()) }),
+            status_line(
+                &rp("x"),
+                &pin,
+                &Outcome::Unavailable {
+                    repo: Some("A/b".into())
+                }
+            ),
             format!("-{hex} x (A/b: commit not available)")
         );
     }

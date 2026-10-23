@@ -101,7 +101,11 @@ pub fn favor_of(xopts: &[String]) -> Result<Favor> {
         favor = match x.as_str() {
             "ours" => Favor::Ours,
             "theirs" => Favor::Theirs,
-            other => return Err(fatal(format!("asc: strategy option '{other}' is not supported (only ours and theirs)"))),
+            other => {
+                return Err(fatal(format!(
+                    "asc: strategy option '{other}' is not supported (only ours and theirs)"
+                )));
+            }
         };
     }
     Ok(favor)
@@ -129,7 +133,11 @@ fn prepare_attrs(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) -> HashMap<RepoPath,
     let gate = SafeRoot::new(&root);
     let mut collection = MetadataCollection::default();
     let mut buf = Vec::new();
-    let Ok(base) = Search::new_globals(ctx.config.path("core.attributesFile"), &mut buf, &mut collection) else {
+    let Ok(base) = Search::new_globals(
+        ctx.config.path("core.attributesFile"),
+        &mut buf,
+        &mut collection,
+    ) else {
         return out;
     };
     let info = ws.projection.common_dir().join("info").join("attributes");
@@ -138,7 +146,10 @@ fn prepare_attrs(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) -> HashMap<RepoPath,
     let mut outcome = Outcome::default();
     for path in paths {
         let bytes = path.as_bytes();
-        let dir = bytes.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &bytes[..i]);
+        let dir = bytes
+            .iter()
+            .rposition(|&c| c == b'/')
+            .map_or(&[][..], |i| &bytes[..i]);
         // Directories root first, so each inherits its parent's patterns.
         let mut chain: Vec<&[u8]> = vec![&[][..]];
         for (i, &c) in dir.iter().enumerate() {
@@ -156,24 +167,52 @@ fn prepare_attrs(ctx: &Ctx, ws: &WsCtx, paths: &[RepoPath]) -> HashMap<RepoPath,
                 continue;
             }
             let regular = |name: &str| -> Option<PathBuf> {
-                let rel = if d.is_empty() { name.as_bytes().to_vec() } else { [d, b"/", name.as_bytes()].concat() };
+                let rel = if d.is_empty() {
+                    name.as_bytes().to_vec()
+                } else {
+                    [d, b"/", name.as_bytes()].concat()
+                };
                 let abs = gate.resolve(&RepoPath::new(rel).ok()?)?;
-                std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_file()).then_some(abs)
+                std::fs::symlink_metadata(&abs)
+                    .is_ok_and(|m| m.is_file())
+                    .then_some(abs)
             };
             if info.is_some() && !d.is_empty() {
                 search.pop_pattern_list();
             }
             if let Some(file) = regular(".ascattributes").or_else(|| regular(".gitattributes")) {
-                let _ = search.add_patterns_file(file, false, Some(&root), &mut buf, &mut collection, true);
+                let _ = search.add_patterns_file(
+                    file,
+                    false,
+                    Some(&root),
+                    &mut buf,
+                    &mut collection,
+                    true,
+                );
             }
             if let Some(i) = &info {
-                let _ = search.add_patterns_file(i.clone(), false, None, &mut buf, &mut collection, true);
+                let _ = search.add_patterns_file(
+                    i.clone(),
+                    false,
+                    None,
+                    &mut buf,
+                    &mut collection,
+                    true,
+                );
             }
             dirs.insert(d.to_vec(), Rc::new(search.clone()));
         }
         outcome.initialize_with_selection(&collection, ["merge"]);
-        search.pattern_matching_relative_path(bytes.as_bstr(), Case::Sensitive, Some(false), &mut outcome);
-        let state = outcome.iter_selected().find(|m| m.assignment.name.as_str() == "merge").map(|m| m.assignment.state);
+        search.pattern_matching_relative_path(
+            bytes.as_bstr(),
+            Case::Sensitive,
+            Some(false),
+            &mut outcome,
+        );
+        let state = outcome
+            .iter_selected()
+            .find(|m| m.assignment.name.as_str() == "merge")
+            .map(|m| m.assignment.state);
         let attr = match state {
             Some(StateRef::Set) => MergeAttr::Text,
             Some(StateRef::Unset) => MergeAttr::Unset,
@@ -211,8 +250,13 @@ impl MergeDrivers for ShellDrivers {
         driver: &str,
         req: &DriverRequest<'_>,
     ) -> asc_engine::merge::Result<Option<DriverResult>> {
-        let Some(template) = self.commands.get(driver) else { return Ok(None) };
-        let failed = |message: String| asc_engine::merge::Error::Driver { driver: driver.to_owned(), message };
+        let Some(template) = self.commands.get(driver) else {
+            return Ok(None);
+        };
+        let failed = |message: String| asc_engine::merge::Error::Driver {
+            driver: driver.to_owned(),
+            message,
+        };
         let dir = self.tmp.join(format!("merge-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).map_err(|e| failed(e.to_string()))?;
         let guard = DirGuard(dir.clone());
@@ -263,7 +307,10 @@ impl MergeDrivers for ShellDrivers {
         }
         let content = std::fs::read(&a).map_err(|e| failed(e.to_string()))?;
         drop(guard);
-        Ok(Some(DriverResult { content, clean: code == 0 }))
+        Ok(Some(DriverResult {
+            content,
+            clean: code == 0,
+        }))
     }
 }
 
@@ -278,14 +325,26 @@ impl Drop for DirGuard {
 /// The paths both sides changed relative to the base, and (for the messages) whether the two
 /// results differ: `Auto-merging` is printed for those that do.
 async fn both_changed(ws: &WsCtx, sides: &Sides) -> Result<(Vec<RepoPath>, BTreeSet<RepoPath>)> {
-    let ours: BTreeMap<RepoPath, Change> = ws.engine.leafdiff(sides.base, sides.ours, None).await?.into_iter().collect();
+    let ours: BTreeMap<RepoPath, Change> = ws
+        .engine
+        .leafdiff(sides.base, sides.ours, None)
+        .await?
+        .into_iter()
+        .collect();
     let theirs = ws.engine.leafdiff(sides.base, sides.theirs, None).await?;
     let (mut both, mut differ) = (Vec::new(), BTreeSet::new());
     for (path, t) in theirs {
         let Some(o) = ours.get(&path) else { continue };
         both.push(path.clone());
         let same = match (o, &t) {
-            (Change::Write { kind: k1, file: f1, .. }, Change::Write { kind: k2, file: f2, .. }) => k1 == k2 && f1 == f2,
+            (
+                Change::Write {
+                    kind: k1, file: f1, ..
+                },
+                Change::Write {
+                    kind: k2, file: f2, ..
+                },
+            ) => k1 == k2 && f1 == f2,
             (Change::Delete, Change::Delete) => true,
             (Change::Gitlink { commit: a }, Change::Gitlink { commit: b }) => a == b,
             _ => false,
@@ -307,7 +366,11 @@ pub async fn merge_options(
 ) -> Result<(MergeOptions, BTreeSet<RepoPath>)> {
     let style = match ctx.config.get("merge.conflictStyle") {
         None => ConflictStyle::default(),
-        Some(s) => ConflictStyle::parse(&s).ok_or_else(|| fatal(format!("unknown style '{s}' given for 'merge.conflictstyle'")))?,
+        Some(s) => ConflictStyle::parse(&s).ok_or_else(|| {
+            fatal(format!(
+                "unknown style '{s}' given for 'merge.conflictstyle'"
+            ))
+        })?,
     };
     let (both, differ) = both_changed(ws, sides).await?;
     let attrs = prepare_attrs(ctx, ws, &both);
@@ -323,7 +386,11 @@ pub async fn merge_options(
         Arc::new(asc_engine::merge::NoDrivers)
     } else {
         let _ = ctx.real_git();
-        Arc::new(ShellDrivers { shell: ctx.shell(), commands, tmp: ws.home.tmp().to_owned() })
+        Arc::new(ShellDrivers {
+            shell: ctx.shell(),
+            commands,
+            tmp: ws.home.tmp().to_owned(),
+        })
     };
     let opts = MergeOptions {
         style,
@@ -341,10 +408,18 @@ pub async fn merge_options(
 /// git's output for the paths a merge touched specially, sorted by path: `Auto-merging` for a
 /// file both sides changed, then the `CONFLICT (...)` line. `ours` and `theirs` are the names
 /// printed in the modify/delete line.
-pub fn messages(outcome: &MergeOutcome, differ: &BTreeSet<RepoPath>, ours: &str, theirs: &str) -> Vec<String> {
+pub fn messages(
+    outcome: &MergeOutcome,
+    differ: &BTreeSet<RepoPath>,
+    ours: &str,
+    theirs: &str,
+) -> Vec<String> {
     let mut by_path: BTreeMap<&RepoPath, Vec<String>> = BTreeMap::new();
     for p in differ {
-        by_path.entry(p).or_default().push(format!("Auto-merging {}", p));
+        by_path
+            .entry(p)
+            .or_default()
+            .push(format!("Auto-merging {}", p));
     }
     for c in &outcome.conflicts {
         let p = &c.path;
@@ -352,16 +427,27 @@ pub fn messages(outcome: &MergeOutcome, differ: &BTreeSet<RepoPath>, ours: &str,
         match c.kind {
             ConflictKind::Content | ConflictKind::Binary | ConflictKind::AddAdd => {
                 if c.kind == ConflictKind::Binary {
-                    lines.insert(0, format!("warning: Cannot merge binary files: {p} ({ours} vs. {theirs})"));
+                    lines.insert(
+                        0,
+                        format!("warning: Cannot merge binary files: {p} ({ours} vs. {theirs})"),
+                    );
                 }
                 if !lines.iter().any(|l| l.starts_with("Auto-merging")) {
                     lines.push(format!("Auto-merging {p}"));
                 }
-                let kind = if c.stages.base.is_none() { "add/add" } else { "content" };
+                let kind = if c.stages.base.is_none() {
+                    "add/add"
+                } else {
+                    "content"
+                };
                 lines.push(format!("CONFLICT ({kind}): Merge conflict in {p}"));
             }
             ConflictKind::ModifyDelete => {
-                let (deleted, modified) = if c.stages.ours.is_none() { (ours, theirs) } else { (theirs, ours) };
+                let (deleted, modified) = if c.stages.ours.is_none() {
+                    (ours, theirs)
+                } else {
+                    (theirs, ours)
+                };
                 lines.push(format!(
                     "CONFLICT (modify/delete): {p} deleted in {deleted} and modified in {modified}.  Version {modified} of {p} left in tree."
                 ));
@@ -400,7 +486,11 @@ pub fn conflicts_block(outcome: &MergeOutcome, comment: u8) -> Vec<u8> {
 
 /// Refuses a conflict kind asc cannot materialise the way git does.
 pub fn refuse_unsupported(outcome: &MergeOutcome) -> Result<()> {
-    if let Some(c) = outcome.conflicts.iter().find(|c| matches!(c.kind, ConflictKind::FileDir | ConflictKind::CaseFold)) {
+    if let Some(c) = outcome
+        .conflicts
+        .iter()
+        .find(|c| matches!(c.kind, ConflictKind::FileDir | ConflictKind::CaseFold))
+    {
         return Err(fatal(format!(
             "asc: a file/directory or case conflict at '{}' is not supported yet; nothing was changed",
             c.path
@@ -440,9 +530,16 @@ pub async fn precheck(
 ) -> Result<()> {
     let cmd = op.command();
     let (tail, exit_code) = op.failure();
-    let tail = if tail.is_empty() { String::new() } else { format!("{tail}\n") };
+    let tail = if tail.is_empty() {
+        String::new()
+    } else {
+        format!("{tail}\n")
+    };
     let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
-    let staged: BTreeSet<RepoPath> = rows.iter().filter_map(|r| RepoPath::new(r.path.clone()).ok()).collect();
+    let staged: BTreeSet<RepoPath> = rows
+        .iter()
+        .filter_map(|r| RepoPath::new(r.path.clone()).ok())
+        .collect();
     if !allow_staged && op != Op::FastForward && !staged.is_empty() {
         let text = match op {
             Op::Merge => format!(
@@ -475,7 +572,9 @@ pub async fn precheck(
         .await?
         .ok_or_else(|| fatal("asc: this workspace is not registered in state.db"))?;
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
-    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh).await.map_err(fatal)?;
+    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh)
+        .await
+        .map_err(fatal)?;
     let mut dirty: BTreeSet<RepoPath> = st.unstaged.iter().map(|c| c.path.clone()).collect();
     if op == Op::FastForward {
         dirty.extend(staged.iter().cloned());
@@ -492,10 +591,15 @@ pub async fn precheck(
     let gate = SafeRoot::new(ws.projection.toplevel());
     let mut untracked = BTreeSet::new();
     for p in &touched {
-        if ws.engine.lookup(current, p).await?.is_some() || ws.engine.lookup(outcome.root, p).await?.is_none() {
+        if ws.engine.lookup(current, p).await?.is_some()
+            || ws.engine.lookup(outcome.root, p).await?.is_none()
+        {
             continue;
         }
-        if gate.resolve(p).is_some_and(|abs| std::fs::symlink_metadata(abs).is_ok()) {
+        if gate
+            .resolve(p)
+            .is_some_and(|abs| std::fs::symlink_metadata(abs).is_ok())
+        {
             untracked.insert(p.clone());
         }
     }
@@ -541,7 +645,13 @@ pub async fn materialise(
     // Rows relative to HEAD: everything the result differs from HEAD at, conflicts as stages.
     let conflicted: BTreeSet<&RepoPath> = outcome.conflicts.iter().map(|c| &c.path).collect();
     let mut rows = Vec::new();
-    let mut all: BTreeSet<RepoPath> = ws.engine.leafdiff(head_root, outcome.root, None).await?.into_iter().map(|(p, _)| p).collect();
+    let mut all: BTreeSet<RepoPath> = ws
+        .engine
+        .leafdiff(head_root, outcome.root, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
     all.extend(outcome.conflicts.iter().map(|c| c.path.clone()));
     for path in &all {
         if conflicted.contains(path) {
@@ -551,12 +661,18 @@ pub async fn materialise(
         let merged = ws.engine.lookup(outcome.root, path).await?;
         match (&head, &merged) {
             (_, Some(m)) if m.kind != Kind::Dir => rows.push(leaf_row(path, 0, m)),
-            (Some(h), None) if h.kind != Kind::Dir => rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), None)),
+            (Some(h), None) if h.kind != Kind::Dir => {
+                rows.push(StageRow::from_leaf(path.as_bytes().to_vec(), None))
+            }
             _ => {}
         }
     }
     for c in &outcome.conflicts {
-        for (n, e) in [(1u8, &c.stages.base), (2, &c.stages.ours), (3, &c.stages.theirs)] {
+        for (n, e) in [
+            (1u8, &c.stages.base),
+            (2, &c.stages.ours),
+            (3, &c.stages.theirs),
+        ] {
             if let Some(e) = e {
                 rows.push(leaf_row(&c.path, n, e));
             }
@@ -565,19 +681,29 @@ pub async fn materialise(
     let paths: Vec<RepoPath> = touched.into_iter().collect();
     sync_worktree(ctx, outcome.root, &paths, true).await?;
     stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &rows).await?;
-    ext::index_sink().on_stage_changed(ws.workspace.ws.id, &[]).await.map_err(fatal)?;
+    ext::index_sink()
+        .on_stage_changed(ws.workspace.ws.id, &[])
+        .await
+        .map_err(fatal)?;
     Ok(())
 }
 
 /// The git tree id of `root`, for `AUTO_MERGE`.
 pub async fn git_tree_id(ws: &WsCtx, root: TreeId) -> Result<GitOid> {
-    Ok(asc_core::git::tree_oid(ws.engine.get_tree(root).await?.as_ref()))
+    Ok(asc_core::git::tree_oid(
+        ws.engine.get_tree(root).await?.as_ref(),
+    ))
 }
 
 /// The git id of `commit`, registering it in the git map first.
 pub async fn git_id(ws: &WsCtx, commit: ChangesetId) -> Result<GitOid> {
-    let sink = git_map::RepoGitMap { db: ws.db.clone(), repo: ws.repo.key };
-    index_commit_git(&ws.engine, commit, &sink).await.map_err(fatal)?;
+    let sink = git_map::RepoGitMap {
+        db: ws.db.clone(),
+        repo: ws.repo.key,
+    };
+    index_commit_git(&ws.engine, commit, &sink)
+        .await
+        .map_err(fatal)?;
     ws.engine.git_commit_of(commit).await.map_err(fatal)
 }
 
@@ -624,14 +750,20 @@ pub async fn write_commit(ws: &WsCtx, new: NewCommit) -> Result<(ChangesetId, Gi
         root,
         copies: Vec::new(),
     };
-    let policy = PathPolicy::Native { windows_safe: ws.repo.repo.windows_safe };
+    let policy = PathPolicy::Native {
+        windows_safe: ws.repo.repo.windows_safe,
+    };
     let id = engine.create_changeset(cs, policy).await?;
     let gen_no = engine.get_derived::<Gen>(id).await.map_err(fatal)?;
     engine.warm(id).await.map_err(fatal)?;
     cs_gen::insert_many(
         &ws.db,
         ws.repo.key,
-        &[cs_gen::CsGen { cs: id, gen_no: u64::from(gen_no.generation), parents }],
+        &[cs_gen::CsGen {
+            cs: id,
+            gen_no: u64::from(gen_no.generation),
+            parents,
+        }],
     )
     .await?;
     index_result(ws, first, root).await?;
@@ -678,7 +810,10 @@ pub async fn move_head(
 /// (`New`, no predecessors) and the synthetic index.
 pub async fn announce(ws: &WsCtx, id: ChangesetId, op: OpId) -> Result<()> {
     ext::rewrite_sink().record(id, &[], RewriteOp::New, op);
-    ext::index_sink().on_commit(ws.workspace.ws.id, id).await.map_err(fatal)
+    ext::index_sink()
+        .on_commit(ws.workspace.ws.id, id)
+        .await
+        .map_err(fatal)
 }
 
 /// `[branch abc1234] subject`: the label git prints for a commit on the current branch.
@@ -695,11 +830,22 @@ mod tests {
     use asc_engine::merge::{Conflict, Stages};
 
     fn conflict(path: &str, kind: ConflictKind, stages: Stages) -> Conflict {
-        Conflict { path: RepoPath::new(path.as_bytes().to_vec()).unwrap(), kind, stages, marked_id: None }
+        Conflict {
+            path: RepoPath::new(path.as_bytes().to_vec()).unwrap(),
+            kind,
+            stages,
+            marked_id: None,
+        }
     }
 
     fn entry() -> Entry {
-        Entry { name: asc_core::path::Name::new(b"f".to_vec()).unwrap(), kind: Kind::File, id: [1; 32], size: 1, git: GitOid::from_bytes([2; 20]) }
+        Entry {
+            name: asc_core::path::Name::new(b"f".to_vec()).unwrap(),
+            kind: Kind::File,
+            id: [1; 32],
+            size: 1,
+            git: GitOid::from_bytes([2; 20]),
+        }
     }
 
     #[test]
@@ -707,8 +853,24 @@ mod tests {
         let outcome = MergeOutcome {
             root: TreeId::from_bytes([0; 32]),
             conflicts: vec![
-                conflict("k", ConflictKind::ModifyDelete, Stages { base: Some(entry()), ours: Some(entry()), theirs: None }),
-                conflict("f", ConflictKind::Content, Stages { base: Some(entry()), ours: Some(entry()), theirs: Some(entry()) }),
+                conflict(
+                    "k",
+                    ConflictKind::ModifyDelete,
+                    Stages {
+                        base: Some(entry()),
+                        ours: Some(entry()),
+                        theirs: None,
+                    },
+                ),
+                conflict(
+                    "f",
+                    ConflictKind::Content,
+                    Stages {
+                        base: Some(entry()),
+                        ours: Some(entry()),
+                        theirs: Some(entry()),
+                    },
+                ),
             ],
         };
         let lines = messages(&outcome, &BTreeSet::new(), "HEAD", "side");
@@ -724,12 +886,22 @@ mod tests {
 
     #[test]
     fn a_conflict_block_lists_each_path_once_with_the_comment_char() {
-        let st = Stages { base: None, ours: Some(entry()), theirs: Some(entry()) };
+        let st = Stages {
+            base: None,
+            ours: Some(entry()),
+            theirs: Some(entry()),
+        };
         let outcome = MergeOutcome {
             root: TreeId::from_bytes([0; 32]),
-            conflicts: vec![conflict("b", ConflictKind::AddAdd, st.clone()), conflict("a", ConflictKind::AddAdd, st)],
+            conflicts: vec![
+                conflict("b", ConflictKind::AddAdd, st.clone()),
+                conflict("a", ConflictKind::AddAdd, st),
+            ],
         };
-        assert_eq!(conflicts_block(&outcome, b'#'), b"\n# Conflicts:\n#\ta\n#\tb\n");
+        assert_eq!(
+            conflicts_block(&outcome, b'#'),
+            b"\n# Conflicts:\n#\ta\n#\tb\n"
+        );
     }
 
     #[test]

@@ -264,9 +264,12 @@ async fn run_with(
     let state = match hosting {
         None => None,
         Some(h) => {
-            let db = asc_state::StateDb::open(&h.home).await.map_err(|e| io::Error::other(e.to_string()))?;
+            let db = asc_state::StateDb::open(&h.home)
+                .await
+                .map_err(|e| io::Error::other(e.to_string()))?;
             let events = Arc::new(
-                metrics::EventLog::open(&h.home.log()).unwrap_or_else(|_| metrics::EventLog::none()),
+                metrics::EventLog::open(&h.home.log())
+                    .unwrap_or_else(|_| metrics::EventLog::none()),
             );
             let meter = Arc::new(metrics::Metrics::new());
             let state = service::State::new(db, h.home, h.backend, meter.clone(), events.clone());
@@ -323,19 +326,29 @@ mod tests {
     fn watchdog_fires_only_for_a_callback_over_the_limit() {
         let fired = Arc::new(AtomicBool::new(false));
         let seen = fired.clone();
-        let dog = Watchdog::spawn(Duration::from_millis(60), Duration::from_millis(10), move |what, _| {
-            assert_eq!(what, "read");
-            seen.store(true, Ordering::SeqCst);
-        })
+        let dog = Watchdog::spawn(
+            Duration::from_millis(60),
+            Duration::from_millis(10),
+            move |what, _| {
+                assert_eq!(what, "read");
+                seen.store(true, Ordering::SeqCst);
+            },
+        )
         .unwrap();
         {
             let _quick = dog.enter("read");
         }
         std::thread::sleep(Duration::from_millis(150));
-        assert!(!fired.load(Ordering::SeqCst), "a finished callback must not trip the watchdog");
+        assert!(
+            !fired.load(Ordering::SeqCst),
+            "a finished callback must not trip the watchdog"
+        );
         let _slow = dog.enter("read");
         std::thread::sleep(Duration::from_millis(250));
-        assert!(fired.load(Ordering::SeqCst), "a callback over the limit trips it");
+        assert!(
+            fired.load(Ordering::SeqCst),
+            "a callback over the limit trips it"
+        );
     }
 
     #[test]
@@ -349,6 +362,9 @@ mod tests {
         std::fs::write(pid_file(dir.path()), "1".repeat(4096)).unwrap();
         assert_eq!(read_pid(dir.path()), None, "an oversized file is not a pid");
         remove_own_pid(dir.path());
-        assert!(pid_file(dir.path()).exists(), "another process's pid file is left alone");
+        assert!(
+            pid_file(dir.path()).exists(),
+            "another process's pid file is left alone"
+        );
     }
 }

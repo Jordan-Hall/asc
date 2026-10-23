@@ -24,7 +24,10 @@ async fn set_ref(f: &Fixture, name: &str, cs: ChangesetId) {
             new: Some(RefTarget::Changeset(cs)),
             expires_at: None,
         }],
-        actor: Actor { id: "fixture".into(), via: "test".into() },
+        actor: Actor {
+            id: "fixture".into(),
+            via: "test".into(),
+        },
         reason: "fixture".into(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -74,20 +77,31 @@ fn code(f: &Fixture, args: &[&str]) -> (i32, String) {
 async fn default_base_is_origin_default_branch_not_the_upstream() {
     let (f, _, tip) = two_packages().await;
     // The branch's upstream is origin/feat, which is at the branch tip.
-    for (k, v) in [("branch.feat.remote", "origin"), ("branch.feat.merge", "refs/heads/feat")] {
+    for (k, v) in [
+        ("branch.feat.remote", "origin"),
+        ("branch.feat.merge", "refs/heads/feat"),
+    ] {
         ok(&f, &["config", k, v]);
     }
     set_ref(&f, "refs/remotes/origin/feat", tip).await;
     assert_eq!(ok(&f, &["affected"]), "node:a\n");
     // An explicit base wins.
-    assert_eq!(ok(&f, &["affected", "--base", "refs/remotes/origin/feat"]), "");
+    assert_eq!(
+        ok(&f, &["affected", "--base", "refs/remotes/origin/feat"]),
+        ""
+    );
 }
 
 #[tokio::test]
 async fn base_falls_back_to_the_local_default_branch() {
     // No origin refs at all: master is used.
     let g = Fixture::new().await;
-    let c0 = g.commit(&[], &[("pkgs/a/package.json", A.as_bytes()), ("pkgs/a/x", b"1")]).await;
+    let c0 = g
+        .commit(
+            &[],
+            &[("pkgs/a/package.json", A.as_bytes()), ("pkgs/a/x", b"1")],
+        )
+        .await;
     let c1 = g.commit(&[c0], &[("pkgs/a/x", b"2")]).await;
     g.set_branch("master", c0).await;
     g.set_branch("feat", c1).await;
@@ -98,14 +112,24 @@ async fn base_falls_back_to_the_local_default_branch() {
 #[tokio::test]
 async fn formats() {
     let (f, c0, c1) = two_packages().await;
-    assert_eq!(ok(&f, &["affected", "--explain"]), "node:a\tfile:pkgs/a/src/index.js\n");
+    assert_eq!(
+        ok(&f, &["affected", "--explain"]),
+        "node:a\tfile:pkgs/a/src/index.js\n"
+    );
     assert_eq!(ok(&f, &["affected", "--format", "turbo"]), "--filter=a\n");
     assert_eq!(ok(&f, &["affected", "--format", "nx"]), "a\n");
     let matrix: Value = serde_json::from_str(&ok(&f, &["affected", "--format", "matrix"])).unwrap();
     assert_eq!(matrix["include"][0]["project"], "node:a");
     assert_eq!(matrix["include"][0]["root"], "pkgs/a");
     let gha = ok(&f, &["affected", "--format", "gha"]);
-    for line in ["count=1", "all=false", "node=true", "rust=false", "turbo_filter=--filter=a", "nx_projects=a"] {
+    for line in [
+        "count=1",
+        "all=false",
+        "node=true",
+        "rust=false",
+        "turbo_filter=--filter=a",
+        "nx_projects=a",
+    ] {
         assert!(gha.lines().any(|l| l == line), "{line} in {gha}");
     }
     assert!(gha.starts_with("affected=[\"node:a\"]\n"));
@@ -115,7 +139,14 @@ async fn formats() {
     assert_eq!(doc["all"], false);
     assert_eq!(doc["projects"].as_array().unwrap().len(), 1);
     let p = &doc["projects"][0];
-    assert_eq!((p["id"].as_str(), p["ecosystem"].as_str(), p["kind"].as_str()), (Some("node:a"), Some("node"), Some("package")));
+    assert_eq!(
+        (
+            p["id"].as_str(),
+            p["ecosystem"].as_str(),
+            p["kind"].as_str()
+        ),
+        (Some("node:a"), Some("node"), Some("package"))
+    );
     assert_eq!(p["direct"], true);
     assert_eq!(p["hash"].as_str().map(str::len), Some(64));
     assert_eq!(doc["unowned"], Value::Array(vec![]));
@@ -134,7 +165,10 @@ async fn target_and_type_and_select_filter() {
     assert_eq!(ok(&f, &["affected", "--type", "js"]), "node:a\n");
     assert_eq!(ok(&f, &["affected", "--select", "node:a"]), "node:a\n");
     assert_eq!(ok(&f, &["affected", "--select", "node:b"]), "");
-    assert_eq!(ok(&f, &["affected", "--no-merge-base", "--base", "HEAD"]), "");
+    assert_eq!(
+        ok(&f, &["affected", "--no-merge-base", "--base", "HEAD"]),
+        ""
+    );
 }
 
 #[tokio::test]
@@ -155,14 +189,21 @@ async fn exit_codes() {
 #[tokio::test]
 async fn invalid_projects_toml_exits_1() {
     let f = Fixture::new().await;
-    let c0 = f.commit(&[], &[("pkgs/a/package.json", A.as_bytes())]).await;
-    let c1 = f.commit(&[c0], &[(".asc/projects.toml", b"[global\nnot toml")]).await;
+    let c0 = f
+        .commit(&[], &[("pkgs/a/package.json", A.as_bytes())])
+        .await;
+    let c1 = f
+        .commit(&[c0], &[(".asc/projects.toml", b"[global\nnot toml")])
+        .await;
     f.set_branch("master", c0).await;
     f.set_branch("feat", c1).await;
     f.checkout_branch("feat", Some(c1)).await;
     let (c, err) = code(&f, &["affected"]);
     assert_eq!(c, 1, "{err}");
-    assert!(err.contains("asc:") || err.contains("projects.toml"), "{err}");
+    assert!(
+        err.contains("asc:") || err.contains("projects.toml"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -174,7 +215,18 @@ async fn projects_listing_and_owner() {
     let doc: Value = serde_json::from_str(&ok(&f, &["projects", "--format", "json"])).unwrap();
     assert_eq!(doc["projects"].as_array().unwrap().len(), 3);
     assert_eq!(doc["rev"].as_str().map(str::len), Some(40));
-    let owners = ok(&f, &["projects", "--owner", "pkgs/a/src/index.js", "--owner", "pkgs/a/package.json", "--owner", "nothing.txt"]);
+    let owners = ok(
+        &f,
+        &[
+            "projects",
+            "--owner",
+            "pkgs/a/src/index.js",
+            "--owner",
+            "pkgs/a/package.json",
+            "--owner",
+            "nothing.txt",
+        ],
+    );
     let lines: Vec<&str> = owners.lines().collect();
     assert_eq!(lines[0], "pkgs/a/src/index.js\tnode:a");
     assert_eq!(lines[1], "pkgs/a/package.json\tnode:a");
@@ -186,14 +238,26 @@ async fn projects_listing_and_owner() {
 async fn graph_json_and_dot() {
     let (f, ..) = two_packages().await;
     let doc: Value = serde_json::from_str(&ok(&f, &["graph"])).unwrap();
-    let ids: Vec<&str> = doc["projects"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    let ids: Vec<&str> = doc["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
     assert_eq!(ids, ["node:root", "node:a", "node:b"]);
     assert_eq!(doc["projects"][0]["hash"], Value::Null);
-    let hashed: Value = serde_json::from_str(&ok(&f, &["graph", "--hashes", "--target", "build"])).unwrap();
-    assert_eq!(hashed["projects"][0]["hash"].as_str().map(str::len), Some(64));
+    let hashed: Value =
+        serde_json::from_str(&ok(&f, &["graph", "--hashes", "--target", "build"])).unwrap();
+    assert_eq!(
+        hashed["projects"][0]["hash"].as_str().map(str::len),
+        Some(64)
+    );
     let dot = ok(&f, &["graph", "--format", "dot"]);
     assert!(dot.starts_with("digraph projects {\n"), "{dot}");
-    assert!(dot.contains("  \"node:a\";\n") && dot.ends_with("}\n"), "{dot}");
+    assert!(
+        dot.contains("  \"node:a\";\n") && dot.ends_with("}\n"),
+        "{dot}"
+    );
     assert_eq!(code(&f, &["graph", "--target", "build"]).0, 129);
 }
 
@@ -218,6 +282,15 @@ async fn uncommitted_adds_work_tree_paths() {
     assert_eq!(ok(&f, &["affected", "--uncommitted"]), "node:a\nnode:b\n");
     // A dirty manifest affects its project.
     fs::remove_file(f.root.join("pkgs/b/src/new.js")).unwrap();
-    fs::write(f.root.join("pkgs/b/package.json"), r#"{"name":"b","version":"2.0.0"}"#).unwrap();
-    assert_eq!(ok(&f, &["affected", "--uncommitted", "--explain"]).lines().count(), 2);
+    fs::write(
+        f.root.join("pkgs/b/package.json"),
+        r#"{"name":"b","version":"2.0.0"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        ok(&f, &["affected", "--uncommitted", "--explain"])
+            .lines()
+            .count(),
+        2
+    );
 }

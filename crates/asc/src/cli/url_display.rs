@@ -26,13 +26,17 @@ fn scheme_len(url: &str) -> Option<usize> {
     let i = url.find("://")?;
     let mut chars = url[..i].chars();
     let first = chars.next()?;
-    (first.is_ascii_alphabetic() && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
-        .then_some(i + 3)
+    (first.is_ascii_alphabetic()
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some(i + 3)
 }
 
 fn suspect(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains('@') || lower.contains("%40") || lower.contains("://") || lower.contains("%2f%2f")
+    lower.contains('@')
+        || lower.contains("%40")
+        || lower.contains("://")
+        || lower.contains("%2f%2f")
 }
 
 fn anonymize_url(url: &str, n: usize) -> String {
@@ -41,7 +45,11 @@ fn anonymize_url(url: &str, n: usize) -> String {
         return format!("{scheme}://***");
     };
     let has_credentials = !parsed.username().is_empty() || parsed.password().is_some();
-    if parsed.scheme() == "file" && !has_credentials && parsed.query().is_none() && parsed.fragment().is_none() {
+    if parsed.scheme() == "file"
+        && !has_credentials
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+    {
         return url.to_owned();
     }
     let mut out = format!("{}://", parsed.scheme());
@@ -96,20 +104,31 @@ mod tests {
 
     /// The host a URL displays as, or None when it is masked.
     fn shown_host(url: &str) -> Option<String> {
-        url::Url::parse(&anonymize(url)).ok().and_then(|u| u.host_str().map(str::to_owned))
+        url::Url::parse(&anonymize(url))
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
     }
 
     #[test]
     fn strips_user_and_password_from_url_forms() {
-        assert_eq!(anonymize("https://user:TOKEN@host/repo.git"), "https://host/repo.git");
-        assert_eq!(anonymize("https://TOKEN@host:8443/repo"), "https://host:8443/repo");
+        assert_eq!(
+            anonymize("https://user:TOKEN@host/repo.git"),
+            "https://host/repo.git"
+        );
+        assert_eq!(
+            anonymize("https://TOKEN@host:8443/repo"),
+            "https://host:8443/repo"
+        );
         assert_eq!(anonymize("https://user:pa@ss@host/r"), "https://host/r");
         assert_eq!(anonymize("https://host/path@x"), "https://host/path@x");
     }
 
     #[test]
     fn authority_ends_at_query_or_fragment() {
-        assert_eq!(anonymize("s3://u:pw@bucket?region=x"), "s3://bucket?region=x");
+        assert_eq!(
+            anonymize("s3://u:pw@bucket?region=x"),
+            "s3://bucket?region=x"
+        );
         assert_eq!(anonymize("https://u:pw@host#x"), "https://host/#***");
     }
 
@@ -117,14 +136,27 @@ mod tests {
     fn query_at_sign_never_becomes_the_host() {
         assert_eq!(anonymize("https://host?a=b@c"), "https://host/?***");
         assert_eq!(shown_host("https://host?a=b@c").as_deref(), Some("host"));
-        assert_eq!(shown_host("https://evil.com?@good.com/").as_deref(), Some("evil.com"));
-        assert_eq!(shown_host("https://evil.com#@good.com/").as_deref(), Some("evil.com"));
-        assert_eq!(anonymize("https://evil.com#@good.com/"), "https://evil.com/#***");
+        assert_eq!(
+            shown_host("https://evil.com?@good.com/").as_deref(),
+            Some("evil.com")
+        );
+        assert_eq!(
+            shown_host("https://evil.com#@good.com/").as_deref(),
+            Some("evil.com")
+        );
+        assert_eq!(
+            anonymize("https://evil.com#@good.com/"),
+            "https://evil.com/#***"
+        );
     }
 
     #[test]
     fn unparsable_urls_show_only_the_scheme() {
-        for url in ["https://u:p?w@host/", "https://u:p#w@host/r", "https://u:p@w@host:bad/"] {
+        for url in [
+            "https://u:p?w@host/",
+            "https://u:p#w@host/r",
+            "https://u:p@w@host:bad/",
+        ] {
             assert_eq!(anonymize(url), "https://***", "{url}");
         }
     }
@@ -138,7 +170,10 @@ mod tests {
             "https://u:p#w@host/",
         ] {
             let shown = anonymize(url);
-            assert!(!shown.contains("pw") && !shown.contains("p?w") && !shown.contains("p#w"), "{url} -> {shown}");
+            assert!(
+                !shown.contains("pw") && !shown.contains("p?w") && !shown.contains("p#w"),
+                "{url} -> {shown}"
+            );
         }
     }
 
@@ -148,23 +183,37 @@ mod tests {
             anonymize("s3://bucket/p?endpoint=https://key:secret@minio:9000&region=eu"),
             "s3://bucket/p?***&region=eu"
         );
-        assert_eq!(anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"), "s3://b/p?***");
-        assert_eq!(anonymize("s3://b/p?endpoint=http://127.0.0.1:9000"), "s3://b/p?***");
+        assert_eq!(
+            anonymize("s3://b/p?endpoint=http%3A%2F%2Fk%3As%40h"),
+            "s3://b/p?***"
+        );
+        assert_eq!(
+            anonymize("s3://b/p?endpoint=http://127.0.0.1:9000"),
+            "s3://b/p?***"
+        );
     }
 
     #[test]
     fn secret_query_parameters_are_hidden() {
         assert_eq!(
-            anonymize("s3://b/p?access_key=AK&Secret=S&token=T&password=P&sig=G&X-Amz-Signature=Z&region=eu"),
+            anonymize(
+                "s3://b/p?access_key=AK&Secret=S&token=T&password=P&sig=G&X-Amz-Signature=Z&region=eu"
+            ),
             "s3://b/p?***&***&***&***&***&***&region=eu"
         );
-        assert_eq!(anonymize("s3://b/p?path_style=true"), "s3://b/p?path_style=true");
+        assert_eq!(
+            anonymize("s3://b/p?path_style=true"),
+            "s3://b/p?path_style=true"
+        );
     }
 
     #[test]
     fn a_query_key_can_carry_credentials() {
         assert_eq!(anonymize("s3://b/p?https://u:p@x=1"), "s3://b/p?***");
-        assert_eq!(anonymize("s3://b/p?u:p%40x=1&region=eu"), "s3://b/p?***&region=eu");
+        assert_eq!(
+            anonymize("s3://b/p?u:p%40x=1&region=eu"),
+            "s3://b/p?***&region=eu"
+        );
         assert_eq!(anonymize("s3://b/p?region=http://u:p@h"), "s3://b/p?***");
         assert_eq!(anonymize("s3://b/p?anything=1"), "s3://b/p?***");
     }
@@ -190,7 +239,13 @@ mod tests {
 
     #[test]
     fn ipv6_host_is_kept() {
-        assert_eq!(anonymize("https://user:TOKEN@[::1]:8080/r"), "https://[::1]:8080/r");
-        assert_eq!(anonymize("ssh://git@[2001:db8::1]/r"), "ssh://[2001:db8::1]/r");
+        assert_eq!(
+            anonymize("https://user:TOKEN@[::1]:8080/r"),
+            "https://[::1]:8080/r"
+        );
+        assert_eq!(
+            anonymize("ssh://git@[2001:db8::1]/r"),
+            "ssh://[2001:db8::1]/r"
+        );
     }
 }

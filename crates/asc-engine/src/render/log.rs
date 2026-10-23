@@ -77,8 +77,16 @@ mod tests {
         let id = GitOid::from_bytes([0xab; 20]);
         let dec = vec!["HEAD -> master".to_owned(), "tag: v1".to_owned()];
         let entries = [
-            Entry { id, subject: b"first", decorations: &dec },
-            Entry { id, subject: b"", decorations: &[] },
+            Entry {
+                id,
+                subject: b"first",
+                decorations: &dec,
+            },
+            Entry {
+                id,
+                subject: b"",
+                decorations: &[],
+            },
         ];
         let text = String::from_utf8(oneline(&entries, 7)).unwrap();
         assert_eq!(text, "abababa (HEAD -> master, tag: v1) first\nabababa\n");
@@ -87,7 +95,11 @@ mod tests {
     #[test]
     fn abbrev_is_clamped() {
         let id = GitOid::from_bytes([0x12; 20]);
-        let e = [Entry { id, subject: b"s", decorations: &[] }];
+        let e = [Entry {
+            id,
+            subject: b"s",
+            decorations: &[],
+        }];
         assert_eq!(oneline(&e, 0), b"1212 s\n");
         assert_eq!(oneline(&e, 999).len(), 40 + 3);
     }

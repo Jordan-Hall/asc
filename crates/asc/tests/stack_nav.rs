@@ -37,7 +37,11 @@ impl Repo {
     /// `three`. Changes are numbered 1, 2, 3.
     fn new() -> Self {
         let sb = Sandbox::new();
-        fs::write(sb.user.join(".gitconfig"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        fs::write(
+            sb.user.join(".gitconfig"),
+            "[user]\n\tname = T\n\temail = t@example.com\n",
+        )
+        .unwrap();
         let root = sb.dir("repo");
         let r = Self { sb, root };
         r.ok(&["init"]);
@@ -53,8 +57,18 @@ impl Repo {
     }
 
     fn asc(&self, args: &[&str]) -> Out {
-        let out = self.sb.asc(&self.root).args(args).stdin(std::process::Stdio::null()).output().expect("spawn");
-        Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+        let out = self
+            .sb
+            .asc(&self.root)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: text(&out.stdout),
+            stderr: text(&out.stderr),
+        }
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -73,13 +87,19 @@ impl Repo {
 
     fn index(&self, rev: &str, n: u8) {
         let sha = self.sha(rev);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
             let oid: GitOid = sha.parse().unwrap();
-            let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit).await.unwrap().unwrap();
+            let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
+                .await
+                .unwrap()
+                .unwrap();
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
             let row = ChangeRow {
                 cs: ChangesetId::from_bytes(cs),
@@ -192,14 +212,27 @@ fn a_fork_exits_2_and_lists_candidates() {
     let o = r.asc(&["up"]);
     assert_eq!(o.code, 2, "{}", o.stderr);
     assert_eq!(r.sha("HEAD"), before, "nothing moves at a fork");
-    assert!(o.stdout.contains(&change_id(2).to_string()) && o.stdout.contains("two"), "{}", o.stdout);
-    assert!(o.stdout.contains(&change_id(4).to_string()) && o.stdout.contains("alt"), "{}", o.stdout);
+    assert!(
+        o.stdout.contains(&change_id(2).to_string()) && o.stdout.contains("two"),
+        "{}",
+        o.stdout
+    );
+    assert!(
+        o.stdout.contains(&change_id(4).to_string()) && o.stdout.contains("alt"),
+        "{}",
+        o.stdout
+    );
 
     let j = r.asc(&["up", "--json"]);
     assert_eq!(j.code, 2);
     let v: Value = serde_json::from_str(j.stdout.trim()).unwrap();
     assert_eq!(v["status"], "ambiguous");
-    let subjects: Vec<&str> = v["candidates"].as_array().unwrap().iter().map(|c| c["subject"].as_str().unwrap()).collect();
+    let subjects: Vec<&str> = v["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["subject"].as_str().unwrap())
+        .collect();
     assert_eq!(subjects.len(), 2);
     assert!(subjects.contains(&"two") && subjects.contains(&"alt"));
     assert_eq!(r.sha("HEAD"), before);

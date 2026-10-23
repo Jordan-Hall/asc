@@ -751,7 +751,10 @@ async fn commit_does_not_read_through_a_linked_directory() {
         fs::write(f.root.join("g.txt"), "keep").unwrap();
         let outside = f.sandbox.dir("outside");
         fs::write(outside.join("x"), "SECRET").unwrap();
-        assert!(link_dir(&outside, &f.root.join("d")), "cannot make a directory link here");
+        assert!(
+            link_dir(&outside, &f.root.join("d")),
+            "cannot make a directory link here"
+        );
 
         let secret = leaf(&f, b"SECRET").await.git;
         let r = commit(&f, args);

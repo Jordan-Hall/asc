@@ -31,11 +31,24 @@ impl Row {
     /// A clean row for `path` (`..` status, nothing on either side).
     #[must_use]
     pub fn new(path: Vec<u8>) -> Self {
-        Self { path, orig: None, x: b'.', y: b'.', head: None, index: None, work: 0, stages: None }
+        Self {
+            path,
+            orig: None,
+            x: b'.',
+            y: b'.',
+            head: None,
+            index: None,
+            work: 0,
+            stages: None,
+        }
     }
 
     fn submodule(&self) -> bool {
-        [self.head, self.index].iter().flatten().any(|s| s.mode == 0o160000) || self.work == 0o160000
+        [self.head, self.index]
+            .iter()
+            .flatten()
+            .any(|s| s.mode == 0o160000)
+            || self.work == 0o160000
     }
 
     /// The `<sub>` field.
@@ -43,7 +56,11 @@ impl Row {
         if !self.submodule() {
             return "N...";
         }
-        if self.head.is_some() && self.index.is_some() && self.head != self.index { "SC.." } else { "S..." }
+        if self.head.is_some() && self.index.is_some() && self.head != self.index {
+            "SC.."
+        } else {
+            "S..."
+        }
     }
 }
 
@@ -58,7 +75,10 @@ pub enum Head {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Track {
     Gone,
-    Counts { ahead: usize, behind: usize },
+    Counts {
+        ahead: usize,
+        behind: usize,
+    },
     /// `--no-ahead-behind` and the tips differ.
     Different,
 }
@@ -93,8 +113,16 @@ pub struct Opts {
 
 impl Opts {
     fn path(&self, p: &[u8]) -> Vec<u8> {
-        let shown = if self.relative { relativize(p, &self.prefix) } else { p.to_vec() };
-        if self.z { shown } else { quote_path(&shown, false, self.quote_high) }
+        let shown = if self.relative {
+            relativize(p, &self.prefix)
+        } else {
+            p.to_vec()
+        };
+        if self.z {
+            shown
+        } else {
+            quote_path(&shown, false, self.quote_high)
+        }
     }
 
     fn term(&self, out: &mut Vec<u8>) {
@@ -126,7 +154,10 @@ pub fn porcelain_v2(
             out.extend_from_slice(s.as_bytes());
             o.term(&mut out);
         };
-        header(format!("# branch.oid {}", b.oid.map_or("(initial)".to_owned(), |x| x.to_string())));
+        header(format!(
+            "# branch.oid {}",
+            b.oid.map_or("(initial)".to_owned(), |x| x.to_string())
+        ));
         header(format!(
             "# branch.head {}",
             match &b.head {
@@ -139,7 +170,9 @@ pub fn porcelain_v2(
             match up.track {
                 Track::Gone => {}
                 Track::Different => header("# branch.ab +? -?".into()),
-                Track::Counts { ahead, behind } => header(format!("# branch.ab +{ahead} -{behind}")),
+                Track::Counts { ahead, behind } => {
+                    header(format!("# branch.ab +{ahead} -{behind}"))
+                }
             }
         }
     }
@@ -212,7 +245,10 @@ mod tests {
     }
 
     fn opts() -> Opts {
-        Opts { quote_high: true, ..Opts::default() }
+        Opts {
+            quote_high: true,
+            ..Opts::default()
+        }
     }
 
     #[test]
@@ -228,7 +264,13 @@ mod tests {
         r.head = side(0o100644, 3);
         r.index = side(0o100644, 3);
         r.work = 0o100644;
-        let text = porcelain_v2(None, &[m, r], &[b"u\xc3\xa9".to_vec()], &[b"t.o".to_vec()], &opts());
+        let text = porcelain_v2(
+            None,
+            &[m, r],
+            &[b"u\xc3\xa9".to_vec()],
+            &[b"t.o".to_vec()],
+            &opts(),
+        );
         let want = format!(
             "1 M. N... 100644 100644 100644 {} {} a.txt\n\
              2 R. N... 100644 100644 100644 {} {} R100 new name\told\n\
@@ -257,7 +299,12 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            format!("u UU N... 100644 100644 000000 100644 {} {} {} c", oid(1), oid(2), oid(0))
+            format!(
+                "u UU N... 100644 100644 000000 100644 {} {} {} c",
+                oid(1),
+                oid(2),
+                oid(0)
+            )
         );
         assert!(lines[1].starts_with("1 .M SC.. 160000 160000 160000 "));
     }
@@ -269,7 +316,10 @@ mod tests {
             oid: Some(oid(9)),
             upstream: Some(Upstream {
                 name: "origin/master".into(),
-                track: Track::Counts { ahead: 2, behind: 1 },
+                track: Track::Counts {
+                    ahead: 2,
+                    behind: 1,
+                },
             }),
         };
         let o = Opts { z: true, ..opts() };
@@ -279,7 +329,11 @@ mod tests {
             oid(9)
         );
         assert_eq!(text, want.as_bytes());
-        let init = Branch { head: Head::Detached, oid: None, upstream: None };
+        let init = Branch {
+            head: Head::Detached,
+            oid: None,
+            upstream: None,
+        };
         let text = porcelain_v2(Some(&init), &[], &[], &[], &opts());
         assert_eq!(text, b"# branch.oid (initial)\n# branch.head (detached)\n");
     }
@@ -288,7 +342,11 @@ mod tests {
     fn relative_to_prefix() {
         let mut m = Row::new(b"top.txt".to_vec());
         m.y = b'M';
-        let o = Opts { relative: true, prefix: b"sub/".to_vec(), ..opts() };
+        let o = Opts {
+            relative: true,
+            prefix: b"sub/".to_vec(),
+            ..opts()
+        };
         let text = porcelain_v2(None, &[m], &[], &[], &o);
         assert!(text.ends_with(b" ../top.txt\n"));
     }

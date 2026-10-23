@@ -15,12 +15,12 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use asc_core::codec::Enveloped as _;
 use asc_core::content::{Body, ingest};
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, RefTarget, TagId};
 use asc_core::object::{Change, Kind, SortedMap, TagRecord};
 use asc_core::path::{RefName, RepoPath};
-use asc_core::codec::Enveloped as _;
 use asc_core::sig::Signature;
 use asc_engine::Engine;
 use asc_engine::commit::{NewChangeset, PathPolicy};
@@ -42,14 +42,22 @@ struct Out {
 
 fn run(cmd: &mut Command) -> Out {
     let out = cmd.output().expect("spawn");
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 /// Real git in `dir`: hermetic, UTC, no pager.
 fn git_cmd(dir: &Path, home: &Path) -> Command {
     let mut c = Command::new("git"); // lint:allow-raw-git
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
             c.env_remove(&key);
         }
     }
@@ -76,16 +84,32 @@ struct Who {
 
 impl Who {
     fn at(time: i64) -> Self {
-        Self { name: "Test", email: "test@example.com", time, tz: 0 }
+        Self {
+            name: "Test",
+            email: "test@example.com",
+            time,
+            tz: 0,
+        }
     }
 
     fn tz_text(&self) -> String {
         let a = self.tz.abs();
-        format!("{}{:02}{:02}", if self.tz < 0 { '-' } else { '+' }, a / 60, a % 60)
+        format!(
+            "{}{:02}{:02}",
+            if self.tz < 0 { '-' } else { '+' },
+            a / 60,
+            a % 60
+        )
     }
 
     fn sig(&self) -> Signature {
-        Signature::new(self.name.as_bytes().to_vec(), self.email.as_bytes().to_vec(), self.time, self.tz).unwrap()
+        Signature::new(
+            self.name.as_bytes().to_vec(),
+            self.email.as_bytes().to_vec(),
+            self.time,
+            self.tz,
+        )
+        .unwrap()
     }
 }
 
@@ -103,7 +127,10 @@ fn step(name: &str, parents: &[&str], files: &[(&str, &str)], time: i64, msg: &s
     Step {
         name: name.into(),
         parents: parents.iter().map(|p| (*p).to_owned()).collect(),
-        files: files.iter().map(|(p, c)| ((*p).to_owned(), (*c).to_owned())).collect(),
+        files: files
+            .iter()
+            .map(|(p, c)| ((*p).to_owned(), (*c).to_owned()))
+            .collect(),
         author: Who::at(time),
         committer: Who::at(time),
         msg: msg.into(),
@@ -124,11 +151,17 @@ impl Drop for Built {
     fn drop(&mut self) {
         let fails = self.fails.borrow();
         if !fails.is_empty() && !std::thread::panicking() {
-            panic!("{} mismatches with git:
+            panic!(
+                "{} mismatches with git:
 
-{}", fails.len(), fails.join("
+{}",
+                fails.len(),
+                fails.join(
+                    "
 
-"));
+"
+                )
+            );
         }
     }
 }
@@ -155,7 +188,10 @@ async fn set_ref_asc(f: &Fixture, name: &str, target: RefTarget) {
             new: Some(target),
             expires_at: None,
         }],
-        actor: Actor { id: "fixture".into(), via: "test".into() },
+        actor: Actor {
+            id: "fixture".into(),
+            via: "test".into(),
+        },
         reason: "fixture".into(),
         op_id: uuid::Uuid::now_v7(),
     };
@@ -166,14 +202,23 @@ async fn asc_commit(f: &Fixture, s: &Step, parents: Vec<ChangesetId>) -> Changes
     let mut changes = Vec::new();
     for (path, content) in &s.files {
         let got = ingest(Cursor::new(content.as_bytes())).unwrap();
-        let Body::Inline(bytes) = got.body else { panic!("scenario files are small") };
-        f.objects.put(&ObjKey::File(got.file), encode_stored(&bytes)).await.unwrap();
+        let Body::Inline(bytes) = got.body else {
+            panic!("scenario files are small")
+        };
+        f.objects
+            .put(&ObjKey::File(got.file), encode_stored(&bytes))
+            .await
+            .unwrap();
         changes.push((
             RepoPath::new(path.as_str()).unwrap(),
             Change::write(Kind::File, got.file, got.size, got.git, None).unwrap(),
         ));
     }
-    let root = f.engine.apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes).await.unwrap();
+    let root = f
+        .engine
+        .apply(Engine::<StoreSet, SqlRefs>::empty_tree_id(), &changes)
+        .await
+        .unwrap();
     f.engine
         .create_changeset(
             NewChangeset {
@@ -215,12 +260,18 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
     let init = run(git_cmd(dir, home).args(["init", "-q", "-b", "master"]));
     assert_eq!(init.code, 0, "{}", init.stderr);
     let mut stream: Vec<u8> = Vec::new();
-    let mark: HashMap<&str, usize> = steps.iter().enumerate().map(|(i, s)| (s.name.as_str(), i + 1)).collect();
+    let mark: HashMap<&str, usize> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.as_str(), i + 1))
+        .collect();
     for (i, s) in steps.iter().enumerate() {
         stream.extend_from_slice(b"commit refs/heads/work\n");
         stream.extend_from_slice(format!("mark :{}\n", i + 1).as_bytes());
         for (k, w) in [("author", s.author), ("committer", s.committer)] {
-            stream.extend_from_slice(format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes());
+            stream.extend_from_slice(
+                format!("{k} {} <{}> {} {}\n", w.name, w.email, w.time, w.tz_text()).as_bytes(),
+            );
         }
         stream.extend_from_slice(format!("data {}\n{}\n", s.msg.len(), s.msg).as_bytes());
         if let Some(first) = s.parents.first() {
@@ -232,13 +283,23 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         stream.extend_from_slice(b"deleteall\n");
         for (path, content) in &s.files {
             let spelled = fast_import_path(path);
-            stream.extend_from_slice(format!("M 100644 inline {spelled}\ndata {}\n{content}\n", content.len()).as_bytes());
+            stream.extend_from_slice(
+                format!(
+                    "M 100644 inline {spelled}\ndata {}\n{content}\n",
+                    content.len()
+                )
+                .as_bytes(),
+            );
         }
         stream.push(b'\n');
     }
     let marks = dir.join("marks.txt");
     let mut child = git_cmd(dir, home)
-        .args(["fast-import", "--quiet", &format!("--export-marks={}", marks.display())])
+        .args([
+            "fast-import",
+            "--quiet",
+            &format!("--export-marks={}", marks.display()),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -246,7 +307,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         .unwrap();
     child.stdin.take().unwrap().write_all(&stream).unwrap();
     let done = child.wait_with_output().unwrap();
-    assert!(done.status.success(), "fast-import: {}", String::from_utf8_lossy(&done.stderr));
+    assert!(
+        done.status.success(),
+        "fast-import: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
     let table = fs::read_to_string(&marks).unwrap();
     let by_mark: HashMap<usize, String> = table
         .lines()
@@ -256,7 +321,11 @@ fn git_build(dir: &Path, home: &Path, steps: &[Step]) -> HashMap<String, String>
         })
         .collect();
     fs::remove_file(&marks).unwrap();
-    steps.iter().enumerate().map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone())).collect()
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), by_mark[&(i + 1)].clone()))
+        .collect()
 }
 
 impl Built {
@@ -271,18 +340,38 @@ impl Built {
             let parents = s.parents.iter().map(|p| ids[p]).collect();
             let id = asc_commit(&f, s, parents).await;
             let git = f.engine.git_commit_of(id).await.unwrap();
-            assert_eq!(git.to_string(), shas[&s.name], "commit {} must have the same id in both repositories", s.name);
-            rows.push(GitMapRow { git, kind: ObjectKind::Commit, asc: *id.as_bytes() });
+            assert_eq!(
+                git.to_string(),
+                shas[&s.name],
+                "commit {} must have the same id in both repositories",
+                s.name
+            );
+            rows.push(GitMapRow {
+                git,
+                kind: ObjectKind::Commit,
+                asc: *id.as_bytes(),
+            });
             ids.insert(s.name.clone(), id);
         }
         git_map::insert_many(&f.db, f.repo, &rows).await.unwrap();
         // The work tree of the asc workspace holds the files of HEAD, as git's does.
-        for (path, content) in &steps.iter().find(|s| s.name == head).expect("head step").files {
+        for (path, content) in &steps
+            .iter()
+            .find(|s| s.name == head)
+            .expect("head step")
+            .files
+        {
             let at = f.root.join(path);
             fs::create_dir_all(at.parent().unwrap()).unwrap();
             fs::write(at, content).unwrap();
         }
-        let b = Self { f, git_dir, ids, shas, fails: Default::default() };
+        let b = Self {
+            f,
+            git_dir,
+            ids,
+            shas,
+            fails: Default::default(),
+        };
         b.branch("master", head).await;
         let r = b.git(&["update-ref", "-d", "refs/heads/work"]);
         assert_eq!(r.code, 0, "{}", r.stderr);
@@ -333,7 +422,12 @@ impl Built {
 
     /// An annotated tag by the same tagger in both repositories.
     async fn annotated_tag(&self, name: &str, at: &str, message: &str, time: i64) {
-        let tagger = Who { name: "Tagger", email: "tagger@example.com", time, tz: 60 };
+        let tagger = Who {
+            name: "Tagger",
+            email: "tagger@example.com",
+            time,
+            tz: 60,
+        };
         let rec = TagRecord {
             target: self.ids[at],
             name: name.as_bytes().to_vec(),
@@ -342,7 +436,11 @@ impl Built {
             extra: SortedMap::new(vec![]).unwrap(),
         };
         let id: TagId = rec.id();
-        self.f.objects.put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope())).await.unwrap();
+        self.f
+            .objects
+            .put(&ObjKey::Tag(id), encode_stored(&rec.to_envelope()))
+            .await
+            .unwrap();
         set_ref_asc(&self.f, &format!("refs/tags/{name}"), RefTarget::Tag(id)).await;
         let when = format!("{time} +0100");
         let r = self.git_env(
@@ -368,8 +466,21 @@ impl Built {
     fn same(&self, args: &[&str]) {
         let want = self.git(args);
         let got = self.asc(args);
-        soft_eq!(self, got.code, want.code, "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
-        soft_eq!(self, got.stdout, want.stdout, "stdout of {args:?}\n--- asc stderr:\n{}", got.stderr);
+        soft_eq!(
+            self,
+            got.code,
+            want.code,
+            "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr,
+            want.stderr
+        );
+        soft_eq!(
+            self,
+            got.stdout,
+            want.stdout,
+            "stdout of {args:?}\n--- asc stderr:\n{}",
+            got.stderr
+        );
         if want.code != 0 {
             let normal = |s: &str| s.replace("'git <command>", "'asc <command>");
             soft_eq!(self, got.stderr, normal(&want.stderr), "stderr of {args:?}");
@@ -379,7 +490,9 @@ impl Built {
     /// `same` for `command` with each argument list.
     fn same_all(&self, command: &str, lists: &[&[&str]]) {
         for list in lists {
-            let args: Vec<&str> = std::iter::once(command).chain(list.iter().copied()).collect();
+            let args: Vec<&str> = std::iter::once(command)
+                .chain(list.iter().copied())
+                .collect();
             self.same(&args);
         }
     }
@@ -388,8 +501,21 @@ impl Built {
     fn same_out(&self, args: &[&str]) {
         let want = self.git(args);
         let got = self.asc(args);
-        soft_eq!(self, got.code, want.code, "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
-        soft_eq!(self, got.stdout, want.stdout, "stdout of {args:?}\n--- asc stderr:\n{}", got.stderr);
+        soft_eq!(
+            self,
+            got.code,
+            want.code,
+            "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr,
+            want.stderr
+        );
+        soft_eq!(
+            self,
+            got.stdout,
+            want.stdout,
+            "stdout of {args:?}\n--- asc stderr:\n{}",
+            got.stderr
+        );
     }
 
     /// The git sha of step `name` with `suffix` (`~1`, `^2`).
@@ -404,7 +530,12 @@ const DAY: i64 = 86_400;
 /// A history with a merge, trailers, tabs and several identities.
 fn history() -> Vec<Step> {
     let a = |s: &mut Step| {
-        s.author = Who { name: "Ann Author", email: "ann@example.org", time: s.author.time, tz: 0 };
+        s.author = Who {
+            name: "Ann Author",
+            email: "ann@example.org",
+            time: s.author.time,
+            tz: 0,
+        };
     };
     let mut c1 = step(
         "c1",
@@ -418,39 +549,74 @@ fn history() -> Vec<Step> {
     let mut c2 = step(
         "c2",
         &["c1"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + DAY,
         "Second change\n",
     );
-    c2.author = Who { name: "Bob Builder", email: "bob@example.com", time: T0 + DAY, tz: -300 };
-    c2.committer = Who { name: "Cy Committer", email: "cy@example.net", time: T0 + DAY + 600, tz: 330 };
+    c2.author = Who {
+        name: "Bob Builder",
+        email: "bob@example.com",
+        time: T0 + DAY,
+        tz: -300,
+    };
+    c2.committer = Who {
+        name: "Cy Committer",
+        email: "cy@example.net",
+        time: T0 + DAY + 600,
+        tz: 330,
+    };
     let mut c3 = step(
         "c3",
         &["c2"],
-        &[("a.txt", "one\ntwo\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 2 * DAY,
         "Side branch work\n\nSigned-off-by: Side <side@example.org>\n",
     );
-    c3.author = Who { name: "Side Dev", email: "side@example.org", time: T0 + 2 * DAY, tz: 120 };
+    c3.author = Who {
+        name: "Side Dev",
+        email: "side@example.org",
+        time: T0 + 2 * DAY,
+        tz: 120,
+    };
     c3.committer = c3.author;
     let c4 = step(
         "c4",
         &["c2"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 3 * DAY,
         "Main work\ncontinued subject line\n\nBody paragraph\n\n\nAfter blanks\twith a tab  \n  indented\n",
     );
     let c5 = step(
         "c5",
         &["c4", "c3"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("c.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("c.txt", "c\n"),
+        ],
         T0 + 4 * DAY,
         "Merge branch 'side'\n",
     );
     let c6 = step(
         "c6",
         &["c5"],
-        &[("a.txt", "one\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n")],
+        &[
+            ("a.txt", "one\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+        ],
         T0 + 5 * DAY,
         "Rename c to d\n\nBug: 42\nSigned-off-by: Cy <cy@example.net>\nReviewed-by: Dee <dee@example.org>\n",
     );
@@ -458,11 +624,21 @@ fn history() -> Vec<Step> {
     let mut c7 = step(
         "c7",
         &["c6"],
-        &[("a.txt", "ONE\ntwo\nthree\n"), ("sub/b.txt", "b1\nb2\n"), ("d.txt", "c\n"), ("big.txt", &big)],
+        &[
+            ("a.txt", "ONE\ntwo\nthree\n"),
+            ("sub/b.txt", "b1\nb2\n"),
+            ("d.txt", "c\n"),
+            ("big.txt", &big),
+        ],
         T0 + 6 * DAY,
         "Third: uppercase a, add big\n",
     );
-    c7.author = Who { name: "No Mail", email: "nomail", time: T0 + 6 * DAY, tz: 0 };
+    c7.author = Who {
+        name: "No Mail",
+        email: "nomail",
+        time: T0 + 6 * DAY,
+        tz: 0,
+    };
     vec![c1, c2, c3, c4, c5, c6, c7]
 }
 
@@ -475,7 +651,13 @@ async fn standard() -> Built {
     b.tag("v1.9", "c3").await;
     b.reference("refs/remotes/origin/master", "c6").await;
     b.reference("refs/remotes/origin/HEAD", "c6").await;
-    b.annotated_tag("v2", "c4", "Release two\n\nWith notes.\nSigned-off-by: Rel <rel@example.org>\n", T0 + 3 * DAY + 60).await;
+    b.annotated_tag(
+        "v2",
+        "c4",
+        "Release two\n\nWith notes.\nSigned-off-by: Rel <rel@example.org>\n",
+        T0 + 3 * DAY + 60,
+    )
+    .await;
     b
 }
 
@@ -658,15 +840,24 @@ async fn default_format_and_selection_match_git() {
             &["--ignore-case", "REFS/HEADS"],
             &["--ignore-case", "--sort=refname", "refs/Tags/V*"],
             &["--include-root-refs"],
-            &["--include-root-refs", "--format=%(refname) %(symref) [%(HEAD)] %(objectname:short)"],
+            &[
+                "--include-root-refs",
+                "--format=%(refname) %(symref) [%(HEAD)] %(objectname:short)",
+            ],
             &["--format=%(refname:short)", "--omit-empty"],
-            &["--format=%(if)%(HEAD)%(then)%(refname:short)%(end)", "--omit-empty"],
+            &[
+                "--format=%(if)%(HEAD)%(then)%(refname:short)%(end)",
+                "--omit-empty",
+            ],
             &["--format=%(refname:short) %(subject)", "--shell"],
             &["--format=%(refname:short) %(subject)", "--perl"],
             &["--format=%(refname:short) %(subject)", "--python"],
             &["--format=%(refname:short) %(subject)", "--tcl"],
             &["--format=%(refname:short) %(subject)", "-s"],
-            &["--format=%(align:12)%(refname:short)%(end)|%(subject)", "--shell"],
+            &[
+                "--format=%(align:12)%(refname:short)%(end)|%(subject)",
+                "--shell",
+            ],
             &["--format=%(if)%(HEAD)%(then)a'b%(else)c$d%(end)", "--tcl"],
             &["--format"],
         ],
@@ -711,11 +902,30 @@ async fn sort_keys_match_git() {
         "HEAD",
     ];
     for key in keys {
-        b.same(&["for-each-ref", &format!("--sort={key}"), "--format=%(refname) %(objectname:short)"]);
+        b.same(&[
+            "for-each-ref",
+            &format!("--sort={key}"),
+            "--format=%(refname) %(objectname:short)",
+        ]);
     }
-    b.same(&["for-each-ref", "--sort=authorname", "--sort=-committerdate", "--format=%(refname)"]);
-    b.same(&["for-each-ref", "--sort=-committerdate", "--sort=authorname", "--format=%(refname)"]);
-    b.same(&["for-each-ref", "--ignore-case", "--sort=subject", "--format=%(refname) %(subject)"]);
+    b.same(&[
+        "for-each-ref",
+        "--sort=authorname",
+        "--sort=-committerdate",
+        "--format=%(refname)",
+    ]);
+    b.same(&[
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--sort=authorname",
+        "--format=%(refname)",
+    ]);
+    b.same(&[
+        "for-each-ref",
+        "--ignore-case",
+        "--sort=subject",
+        "--format=%(refname) %(subject)",
+    ]);
 }
 
 #[tokio::test]
@@ -779,25 +989,52 @@ async fn upstream_and_push_atoms_match_git() {
         "push:remoteref",
     ];
     for atom in atoms {
-        b.same(&["for-each-ref", &format!("--format=%(refname:short) [%({atom})]"), "refs/heads"]);
+        b.same(&[
+            "for-each-ref",
+            &format!("--format=%(refname:short) [%({atom})]"),
+            "refs/heads",
+        ]);
     }
     b.config("push.default", "current");
-    b.same(&["for-each-ref", "--format=%(refname:short) [%(push)] [%(push:track)]", "refs/heads"]);
+    b.same(&[
+        "for-each-ref",
+        "--format=%(refname:short) [%(push)] [%(push:track)]",
+        "refs/heads",
+    ]);
     b.config("push.default", "upstream");
-    b.same(&["for-each-ref", "--format=%(refname:short) [%(push)] [%(push:track)]", "refs/heads"]);
+    b.same(&[
+        "for-each-ref",
+        "--format=%(refname:short) [%(push)] [%(push:track)]",
+        "refs/heads",
+    ]);
     b.config("remote.pushDefault", "origin");
     b.config("push.default", "nothing");
-    b.same(&["for-each-ref", "--format=%(refname:short) [%(push)] [%(push:remotename)]", "refs/heads"]);
+    b.same(&[
+        "for-each-ref",
+        "--format=%(refname:short) [%(push)] [%(push:remotename)]",
+        "refs/heads",
+    ]);
 }
 
 #[tokio::test]
 async fn is_base_and_ahead_behind_match_git() {
     let b = standard().await;
     for target in ["side", "master", "v2", "old", "refs/remotes/origin/master"] {
-        b.same(&["for-each-ref", &format!("--format=%(refname):%(is-base:{target})"), "refs/heads"]);
-        b.same(&["for-each-ref", &format!("--format=%(refname) %(ahead-behind:{target})")]);
+        b.same(&[
+            "for-each-ref",
+            &format!("--format=%(refname):%(is-base:{target})"),
+            "refs/heads",
+        ]);
+        b.same(&[
+            "for-each-ref",
+            &format!("--format=%(refname) %(ahead-behind:{target})"),
+        ]);
     }
-    b.same(&["for-each-ref", "--format=%(refname):%(is-base:side)", "--sort=-refname"]);
+    b.same(&[
+        "for-each-ref",
+        "--format=%(refname):%(is-base:side)",
+        "--sort=-refname",
+    ]);
 }
 
 #[tokio::test]
@@ -848,10 +1085,18 @@ async fn format_errors_match_git() {
 #[tokio::test]
 async fn worktreepath_names_the_workspace() {
     let b = standard().await;
-    let out = b.asc(&["for-each-ref", "--format=%(refname) [%(worktreepath)]", "refs/heads"]);
+    let out = b.asc(&[
+        "for-each-ref",
+        "--format=%(refname) [%(worktreepath)]",
+        "refs/heads",
+    ]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     let root = b.f.root.display().to_string().replace('\\', "/");
-    assert!(out.stdout.contains(&format!("refs/heads/master [{root}]")), "{}", out.stdout);
+    assert!(
+        out.stdout.contains(&format!("refs/heads/master [{root}]")),
+        "{}",
+        out.stdout
+    );
     assert!(out.stdout.contains("refs/heads/side []"), "{}", out.stdout);
 }
 
@@ -993,7 +1238,12 @@ async fn var_matches_git() {
     ] {
         let want = b.git_env(&env, &["var", var]);
         let got = b.asc_env(&env, &["var", var]);
-        assert_eq!((got.code, &got.stdout), (want.code, &want.stdout), "{var}: {}", got.stderr);
+        assert_eq!(
+            (got.code, &got.stdout),
+            (want.code, &want.stdout),
+            "{var}: {}",
+            got.stderr
+        );
     }
     b.config("core.editor", "cfg-editor");
     b.config("core.pager", "cfg-pager");
@@ -1001,19 +1251,48 @@ async fn var_matches_git() {
     b.config("init.defaultBranch", "trunk");
     b.config("user.name", "Config Name");
     b.config("user.email", "config@example.org");
-    let plain = [("TERM", "xterm"), ("GIT_AUTHOR_DATE", "1700000000 +0000"), ("GIT_COMMITTER_DATE", "1700000000 +0000")];
-    for var in ["GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_DEFAULT_BRANCH", "GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"] {
+    let plain = [
+        ("TERM", "xterm"),
+        ("GIT_AUTHOR_DATE", "1700000000 +0000"),
+        ("GIT_COMMITTER_DATE", "1700000000 +0000"),
+    ];
+    for var in [
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "GIT_DEFAULT_BRANCH",
+        "GIT_AUTHOR_IDENT",
+        "GIT_COMMITTER_IDENT",
+    ] {
         let want = b.git_env(&plain, &["var", var]);
         let got = b.asc_env(&plain, &["var", var]);
-        assert_eq!((got.code, &got.stdout), (want.code, &want.stdout), "{var}: {}", got.stderr);
+        assert_eq!(
+            (got.code, &got.stdout),
+            (want.code, &want.stdout),
+            "{var}: {}",
+            got.stderr
+        );
     }
     b.same_out(&["var", "NOT_A_VARIABLE"]);
     b.same_out(&["var"]);
     let listing = b.asc_env(&plain, &["var", "-l"]);
     assert_eq!(listing.code, 0, "{}", listing.stderr);
-    assert!(listing.stdout.contains("user.name=Config Name\n"), "{}", listing.stdout);
-    assert!(listing.stdout.contains("GIT_DEFAULT_BRANCH=trunk\n"), "{}", listing.stdout);
-    assert!(listing.stdout.contains("GIT_COMMITTER_IDENT=Config Name <config@example.org> 1700000000 +0000\n"), "{}", listing.stdout);
+    assert!(
+        listing.stdout.contains("user.name=Config Name\n"),
+        "{}",
+        listing.stdout
+    );
+    assert!(
+        listing.stdout.contains("GIT_DEFAULT_BRANCH=trunk\n"),
+        "{}",
+        listing.stdout
+    );
+    assert!(
+        listing
+            .stdout
+            .contains("GIT_COMMITTER_IDENT=Config Name <config@example.org> 1700000000 +0000\n"),
+        "{}",
+        listing.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------- object plumbing helpers
@@ -1047,27 +1326,59 @@ impl Built {
     fn same_in(&self, sub: &str, args: &[&str]) {
         let want = self.git_in(sub, args);
         let got = self.asc_in(sub, args);
-        soft_eq!(self, got.code, want.code, "exit code of {args:?} in {sub}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
-        soft_eq!(self, got.stdout, want.stdout, "stdout of {args:?} in {sub}\n--- asc stderr:\n{}", got.stderr);
+        soft_eq!(
+            self,
+            got.code,
+            want.code,
+            "exit code of {args:?} in {sub}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr,
+            want.stderr
+        );
+        soft_eq!(
+            self,
+            got.stdout,
+            want.stdout,
+            "stdout of {args:?} in {sub}\n--- asc stderr:\n{}",
+            got.stderr
+        );
     }
 
     /// Both tools run with `input` on standard input.
     fn same_stdin(&self, args: &[&str], input: &str) {
         let feed = |mut c: Command| {
-            c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            c.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             let mut child = c.spawn().expect("spawn");
             // A command that fails before reading its input closes the pipe: Linux reports EPIPE.
             let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             let out = child.wait_with_output().unwrap();
-            Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+            Out {
+                code: out.status.code().unwrap_or(-1),
+                stdout: text(&out.stdout),
+                stderr: text(&out.stderr),
+            }
         };
         let mut g = git_cmd(&self.git_dir, &self.f.sandbox.user);
         g.args(args);
         let mut c = self.f.asc();
         c.args(args);
         let (want, got) = (feed(g), feed(c));
-        soft_eq!(self, got.code, want.code, "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}", got.stderr, want.stderr);
-        soft_eq!(self, got.stdout, want.stdout, "stdout of {args:?}\n--- asc stderr:\n{}", got.stderr);
+        soft_eq!(
+            self,
+            got.code,
+            want.code,
+            "exit code of {args:?}\nasc stderr: {}\ngit stderr: {}",
+            got.stderr,
+            want.stderr
+        );
+        soft_eq!(
+            self,
+            got.stdout,
+            want.stdout,
+            "stdout of {args:?}\n--- asc stderr:\n{}",
+            got.stderr
+        );
         if want.code != 0 {
             soft_eq!(self, got.stderr, want.stderr, "stderr of {args:?}");
         }
@@ -1086,12 +1397,18 @@ impl Built {
 async fn quoted() -> Built {
     let mut steps = history();
     let last = steps.last_mut().unwrap();
-    for name in ["sp ace.txt", "ünï.txt", "dir with space/f.txt", "dot.dot..txt"] {
+    for name in [
+        "sp ace.txt",
+        "ünï.txt",
+        "dir with space/f.txt",
+        "dot.dot..txt",
+    ] {
         last.files.push((name.to_owned(), "x\n".to_owned()));
     }
     let b = Built::new(steps, "c7").await;
     b.branch("side", "c3").await;
-    b.annotated_tag("v2", "c4", "Release two\n", T0 + 3 * DAY + 60).await;
+    b.annotated_tag("v2", "c4", "Release two\n", T0 + 3 * DAY + 60)
+        .await;
     b
 }
 
@@ -1176,7 +1493,9 @@ async fn ls_tree_matches_git() {
 }
 
 fn args_with<'a>(command: &'a str, args: &[&'a str]) -> Vec<&'a str> {
-    std::iter::once(command).chain(args.iter().copied()).collect()
+    std::iter::once(command)
+        .chain(args.iter().copied())
+        .collect()
 }
 
 #[tokio::test]
@@ -1185,9 +1504,25 @@ async fn ls_tree_ids_are_accepted_by_the_next_command() {
     // The fixture never recorded tree or blob ids: printing them teaches asc.
     let listing = b.asc(&["ls-tree", "-r", "HEAD"]);
     assert_eq!(listing.code, 0, "{}", listing.stderr);
-    let blob = listing.stdout.lines().find(|l| l.ends_with("a.txt")).unwrap().split_whitespace().nth(2).unwrap().to_owned();
+    let blob = listing
+        .stdout
+        .lines()
+        .find(|l| l.ends_with("a.txt"))
+        .unwrap()
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .to_owned();
     let dirs = b.asc(&["ls-tree", "HEAD"]);
-    let tree = dirs.stdout.lines().find(|l| l.ends_with("\tsub")).unwrap().split_whitespace().nth(2).unwrap().to_owned();
+    let tree = dirs
+        .stdout
+        .lines()
+        .find(|l| l.ends_with("\tsub"))
+        .unwrap()
+        .split_whitespace()
+        .nth(2)
+        .unwrap()
+        .to_owned();
     b.same(&["cat-file", "-p", &blob]);
     b.same(&["cat-file", "-t", &blob]);
     b.same(&["cat-file", "-s", &blob]);
@@ -1202,14 +1537,39 @@ async fn ls_tree_ids_are_accepted_by_the_next_command() {
 async fn cat_file_matches_git() {
     let b = quoted().await;
     let c4 = b.shas["c4"].clone();
-    let tree = b.git(&["rev-parse", "HEAD^{tree}"]).stdout.trim().to_owned();
+    let tree = b
+        .git(&["rev-parse", "HEAD^{tree}"])
+        .stdout
+        .trim()
+        .to_owned();
     let blob = b.git(&["rev-parse", "HEAD:a.txt"]).stdout.trim().to_owned();
     let tag = b.git(&["rev-parse", "v2"]).stdout.trim().to_owned();
     let missing = "1".repeat(40);
     for name in [
-        "HEAD", "master", "side", "HEAD~3", "HEAD^{tree}", "HEAD:", "HEAD:a.txt", "HEAD:sub", "HEAD:sub/b.txt",
-        "HEAD:big.txt", "v2", "v2^{}", "v2^{commit}", "v2^{tree}", "side^{tree}", &c4, &tree, &blob, &tag,
-        "HEAD:sp ace.txt", "HEAD:ünï.txt", ":a.txt", ":sub/b.txt", ":0:a.txt",
+        "HEAD",
+        "master",
+        "side",
+        "HEAD~3",
+        "HEAD^{tree}",
+        "HEAD:",
+        "HEAD:a.txt",
+        "HEAD:sub",
+        "HEAD:sub/b.txt",
+        "HEAD:big.txt",
+        "v2",
+        "v2^{}",
+        "v2^{commit}",
+        "v2^{tree}",
+        "side^{tree}",
+        &c4,
+        &tree,
+        &blob,
+        &tag,
+        "HEAD:sp ace.txt",
+        "HEAD:ünï.txt",
+        ":a.txt",
+        ":sub/b.txt",
+        ":0:a.txt",
     ] {
         for flag in ["-t", "-s", "-e", "-p"] {
             b.same(&["cat-file", flag, name]);
@@ -1257,7 +1617,11 @@ async fn cat_file_matches_git() {
 #[tokio::test]
 async fn cat_file_batch_matches_git() {
     let b = quoted().await;
-    let tree = b.git(&["rev-parse", "HEAD^{tree}"]).stdout.trim().to_owned();
+    let tree = b
+        .git(&["rev-parse", "HEAD^{tree}"])
+        .stdout
+        .trim()
+        .to_owned();
     let input = format!(
         "HEAD\nHEAD:a.txt\nnonexistent\n\n{}\nHEAD^{{tree}}\nv2\n{}\nHEAD:a.txt trailing words\nHEAD:big.txt\nside~1\n",
         b.shas["c3"],
@@ -1267,9 +1631,21 @@ async fn cat_file_batch_matches_git() {
     b.same_stdin(&["cat-file", "--batch"], &with_tree);
     b.same_stdin(&["cat-file", "--batch-check"], &with_tree);
     b.same_stdin(&["cat-file", "--batch", "--buffer"], &with_tree);
-    b.same_stdin(&["cat-file", "--batch=%(objectname) %(objecttype)"], &with_tree);
-    b.same_stdin(&["cat-file", "--batch-check=%(objecttype) %(objectsize) [%(rest)]"], &with_tree);
-    b.same_stdin(&["cat-file", "--batch-check=%(objectname) %(deltabase) 100%%"], &with_tree);
+    b.same_stdin(
+        &["cat-file", "--batch=%(objectname) %(objecttype)"],
+        &with_tree,
+    );
+    b.same_stdin(
+        &[
+            "cat-file",
+            "--batch-check=%(objecttype) %(objectsize) [%(rest)]",
+        ],
+        &with_tree,
+    );
+    b.same_stdin(
+        &["cat-file", "--batch-check=%(objectname) %(deltabase) 100%%"],
+        &with_tree,
+    );
     b.same_stdin(&["cat-file", "--batch=%(foo)"], &with_tree);
     b.same_stdin(&["cat-file", "--batch"], "");
     b.same_stdin(&["cat-file", "--batch", "-t"], "HEAD\n");
@@ -1312,9 +1688,18 @@ async fn hash_object_matches_git() {
         ],
     );
     b.same_stdin(&["hash-object", "--stdin"], "stdin text\r\n");
-    b.same_stdin(&["hash-object", "--stdin", "--path=any.txt"], "stdin text\r\n");
-    b.same_stdin(&["hash-object", "--stdin", "--path=any.bin"], "stdin text\r\n");
-    b.same_stdin(&["hash-object", "--stdin", "--no-filters", "--path=any.txt"], "stdin text\r\n");
+    b.same_stdin(
+        &["hash-object", "--stdin", "--path=any.txt"],
+        "stdin text\r\n",
+    );
+    b.same_stdin(
+        &["hash-object", "--stdin", "--path=any.bin"],
+        "stdin text\r\n",
+    );
+    b.same_stdin(
+        &["hash-object", "--stdin", "--no-filters", "--path=any.txt"],
+        "stdin text\r\n",
+    );
     b.same_stdin(&["hash-object", "--stdin", "note.txt"], "stdin text\r\n");
     b.same_stdin(&["hash-object", "--stdin"], "");
     // From a subdirectory.
@@ -1338,7 +1723,10 @@ async fn hash_object_writes_blobs_asc_can_read_back() {
         let want = b.git(&["cat-file", "blob", &oid]);
         let got = b.asc(&["cat-file", "blob", &oid]);
         assert_eq!(got.code, 0, "{}", got.stderr);
-        assert!(got.stdout == want.stdout, "blob {oid} reads back differently");
+        assert!(
+            got.stdout == want.stdout,
+            "blob {oid} reads back differently"
+        );
     }
     b.same_stdin(&["hash-object", "-w", "--stdin"], "from stdin\n");
     let oid = b.git(&["hash-object", "--stdin"]).stdout;
@@ -1367,9 +1755,20 @@ impl Built {
             "exit code of {args:?} on the alternate index\nasc stderr: {}\ngit stderr: {}",
             got.stderr, want.stderr
         );
-        soft_eq!(self, got.stdout, want.stdout, "stdout of {args:?} on the alternate index\n--- asc stderr:\n{}", got.stderr);
+        soft_eq!(
+            self,
+            got.stdout,
+            want.stdout,
+            "stdout of {args:?} on the alternate index\n--- asc stderr:\n{}",
+            got.stderr
+        );
         if want.code != 0 {
-            soft_eq!(self, got.stderr, want.stderr, "stderr of {args:?} on the alternate index");
+            soft_eq!(
+                self,
+                got.stderr,
+                want.stderr,
+                "stderr of {args:?} on the alternate index"
+            );
         }
     }
 
@@ -1485,20 +1884,68 @@ async fn update_index_matches_git() {
     b.same(&["update-index", "--force-remove", "never-there.txt"]);
     // Entries by id.
     let blob = b.blob("cached\n");
-    b.same(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},cached.txt")]);
-    b.same(&["update-index", "--add", "--cacheinfo", "100755", &blob, "exe.sh"]);
-    b.same(&["update-index", "--add", "--cacheinfo", "120000", &blob, "link"]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},cached.txt"),
+    ]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "100755",
+        &blob,
+        "exe.sh",
+    ]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "120000",
+        &blob,
+        "link",
+    ]);
     b.same_index();
-    b.same(&["update-index", "--cacheinfo", &format!("100644,{blob},sub/b.txt")]);
+    b.same(&[
+        "update-index",
+        "--cacheinfo",
+        &format!("100644,{blob},sub/b.txt"),
+    ]);
     b.same_index();
     // asc stages only content it can read: an id it has never seen is refused where git accepts it.
-    let ghost = b.asc(&["update-index", "--add", "--cacheinfo", &format!("100644,{},ghost.txt", "1".repeat(40))]);
+    let ghost = b.asc(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{},ghost.txt", "1".repeat(40)),
+    ]);
     assert_eq!(ghost.code, 128, "{}", ghost.stderr);
     assert!(ghost.stderr.contains("invalid object"), "{}", ghost.stderr);
-    b.same(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob}")]);
-    b.same(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},../escape.txt")]);
-    b.same(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},.git/config")]);
-    b.same(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},/abs.txt")]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob}"),
+    ]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},../escape.txt"),
+    ]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},.git/config"),
+    ]);
+    b.same(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},/abs.txt"),
+    ]);
     b.same_index();
     // Errors.
     b.same(&["update-index", "never-there.txt"]);
@@ -1549,7 +1996,11 @@ async fn write_tree_and_read_tree_match_git() {
     b.same_index();
     b.same(&["read-tree", "v2"]);
     b.same_index();
-    let head_tree = b.git(&["rev-parse", "HEAD^{tree}"]).stdout.trim().to_owned();
+    let head_tree = b
+        .git(&["rev-parse", "HEAD^{tree}"])
+        .stdout
+        .trim()
+        .to_owned();
     b.same(&["read-tree", &head_tree]);
     b.same_index();
     b.same(&["read-tree", "--empty"]);
@@ -1587,7 +2038,12 @@ async fn index_plumbing_follows_git_index_file() {
     b.same_alt(&["ls-files", "-s"]);
     b.same_alt(&["write-tree"]);
     let blob = b.blob("alt cached\n");
-    b.same_alt(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},alt/cached.txt")]);
+    b.same_alt(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("100644,{blob},alt/cached.txt"),
+    ]);
     b.same_alt(&["ls-files", "-s"]);
     b.same_alt(&["update-index", "--force-remove", "a.txt"]);
     b.same_alt(&["ls-files", "-s"]);

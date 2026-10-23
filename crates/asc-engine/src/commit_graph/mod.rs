@@ -228,7 +228,12 @@ mod tests {
     use crate::derive::testutil::*;
 
     async fn stored(e: &TestEngine) -> HashSet<ObjKey> {
-        let keys: Vec<_> = e.objects.list(KeyPrefix::all()).try_collect().await.unwrap();
+        let keys: Vec<_> = e
+            .objects
+            .list(KeyPrefix::all())
+            .try_collect()
+            .await
+            .unwrap();
         keys.into_iter().map(|(k, _)| k).collect()
     }
 
@@ -272,7 +277,10 @@ mod tests {
         let live = SpillCache::new(1 << 20, Duration::from_secs(3600));
         live.put(RepoKey(1), &hash, state.clone());
         assert_eq!(live.get(RepoKey(1), &hash).as_deref(), Some(&*state));
-        assert!(live.get(RepoKey(2), &hash).is_none(), "scoped to a repository");
+        assert!(
+            live.get(RepoKey(2), &hash).is_none(),
+            "scoped to a repository"
+        );
         let stale = SpillCache::new(1 << 20, Duration::ZERO);
         stale.put(RepoKey(1), &hash, state.clone());
         std::thread::sleep(Duration::from_millis(2));
@@ -281,7 +289,11 @@ mod tests {
         let small = SpillCache::new(16 << 10, Duration::from_secs(3600));
         for i in 0..200u32 {
             let s: Arc<[u8]> = vec![i as u8; 1000].into();
-            small.put(RepoKey(1), &blake3::hash(&[&s[..], &i.to_le_bytes()].concat()), s);
+            small.put(
+                RepoKey(1),
+                &blake3::hash(&[&s[..], &i.to_le_bytes()].concat()),
+                s,
+            );
         }
         assert!(small.cache.weight() <= 16 << 10, "{}", small.cache.weight());
     }

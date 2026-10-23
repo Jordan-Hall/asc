@@ -49,7 +49,10 @@ fn every_bytes_field_has_a_json_option() {
         }
     }
     assert!(seen > 50, "walked only {seen} messages");
-    assert!(miss.is_empty(), "bytes fields without (asc.v1.json): {miss:?}");
+    assert!(
+        miss.is_empty(),
+        "bytes fields without (asc.v1.json): {miss:?}"
+    );
 }
 
 #[test]

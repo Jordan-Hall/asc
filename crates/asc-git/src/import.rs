@@ -825,9 +825,11 @@ impl<'a, O: Objects, R: Refs> Importer<'a, O, R> {
         }
         for batch in byte_batches(self.odb, &want, self.policy.batch.max(1)) {
             let n = HASH_WORKERS.min(self.forks.len());
-            let done = par_map(&mut self.forks[..n], &batch, |odb, &oid| hash_blob(odb, oid))
-                .into_iter()
-                .collect::<Result<Vec<_>>>()?;
+            let done = par_map(&mut self.forks[..n], &batch, |odb, &oid| {
+                hash_blob(odb, oid)
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
             let mut rows = Vec::with_capacity(done.len());
             for (oid, got) in done {
                 self.store_content(&got).await?;

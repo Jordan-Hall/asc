@@ -385,13 +385,14 @@ mod tests {
         let fx = Fx::new();
         let a = fx.file("a", b"1").await;
         let t1 = fx.tree(vec![a]).await;
-        let fake = Fake(HashMap::from([(
-            ("asc/soma".to_owned(), oid(1)),
-            Ok(t1),
-        )]));
-        let comp = Composition::build(&[(rp("sdk"), oid(1))], &subs(&[("sdk", "asc/soma")]), &fake)
-            .await
-            .unwrap();
+        let fake = Fake(HashMap::from([(("asc/soma".to_owned(), oid(1)), Ok(t1))]));
+        let comp = Composition::build(
+            &[(rp("sdk"), oid(1))],
+            &subs(&[("sdk", "asc/soma")]),
+            &fake,
+        )
+        .await
+        .unwrap();
         assert_eq!(comp.subtree(&rp("sdk"), &oid(1)), Some(t1));
         // Another commit at the same path, or the same commit elsewhere, is not composed.
         assert_eq!(comp.subtree(&rp("sdk"), &oid(9)), None);
@@ -410,10 +411,17 @@ mod tests {
                 Box::pin(async { Err(NestedError::Other("network".into())) })
             }
         }
-        let err = Composition::build(&[(rp("sdk"), oid(1))], &subs(&[("sdk", "asc/soma")]), &Boom).await;
+        let err = Composition::build(
+            &[(rp("sdk"), oid(1))],
+            &subs(&[("sdk", "asc/soma")]),
+            &Boom,
+        )
+        .await;
         assert!(matches!(err, Err(ComposeError::Nested { .. })));
 
-        let many: Vec<(RepoPath, GitOid)> = (0..=MAX_PINS).map(|i| (rp(&format!("m{i}")), oid(1))).collect();
+        let many: Vec<(RepoPath, GitOid)> = (0..=MAX_PINS)
+            .map(|i| (rp(&format!("m{i}")), oid(1)))
+            .collect();
         let err = Composition::build(&many, &Submodules::default(), &Boom).await;
         assert!(matches!(err, Err(ComposeError::TooMany)));
     }

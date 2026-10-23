@@ -55,14 +55,32 @@ async fn codeintel_fork_copies_the_content_closure_and_no_index_objects_or_rows(
     assert_eq!(copy_closure(&src, &dst, &keys).await.unwrap(), 1);
     let present = dst.has_many(&keys).await.unwrap();
     assert!(present[0]);
-    assert!(present[1..].iter().all(|p| !p), "a derived object was copied");
+    assert!(
+        present[1..].iter().all(|p| !p),
+        "a derived object was copied"
+    );
 
     for (table, sql) in [
-        ("ci_docs", "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_docs WHERE ns = $1"),
-        ("ci_doc_langs", "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_doc_langs WHERE ns = $1"),
-        ("ci_chunks", "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_chunks WHERE ns = $1"),
-        ("ci_jobs", "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_jobs WHERE ns = $1"),
-        ("ci_manifest", "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_manifest WHERE ns = $1"),
+        (
+            "ci_docs",
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_docs WHERE ns = $1",
+        ),
+        (
+            "ci_doc_langs",
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_doc_langs WHERE ns = $1",
+        ),
+        (
+            "ci_chunks",
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_chunks WHERE ns = $1",
+        ),
+        (
+            "ci_jobs",
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_jobs WHERE ns = $1",
+        ),
+        (
+            "ci_manifest",
+            "SELECT CAST(COUNT(*) AS BIGINT) FROM ci_manifest WHERE ns = $1",
+        ),
     ] {
         let n: i64 = sqlx::query_scalar(sql)
             .bind(b"dst".to_vec())

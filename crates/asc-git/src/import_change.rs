@@ -113,7 +113,10 @@ mod tests {
     #[test]
     fn jj_header_wins_over_trailer() {
         let raw = format!("tree x\nchange-id {JJ}\n\nsubject\n\nbody\n\nChange-Id: I1\n");
-        assert_eq!(change_id_of(raw.as_bytes(), b"r"), Some(JJ.parse().unwrap()));
+        assert_eq!(
+            change_id_of(raw.as_bytes(), b"r"),
+            Some(JJ.parse().unwrap())
+        );
     }
 
     #[test]

@@ -45,34 +45,134 @@ pub struct Args {
 
 /// The `--format` placeholders `log` and `show` serve: git 2.55's complete set.
 pub const PLACEHOLDERS: &[&str] = &[
-    "%H", "%h", "%T", "%t", "%P", "%p", "%a", "%c", "%d", "%D", "%S", "%e", "%s", "%f", "%b", "%B",
-    "%N", "%G", "%g", "%m", "%x", "%C", "%w", "%<", "%>", "%+", "%-", "% ", "%(trailers)",
-    "%(describe)", "%(decorate)", "%(count)", "%(total)",
+    "%H",
+    "%h",
+    "%T",
+    "%t",
+    "%P",
+    "%p",
+    "%a",
+    "%c",
+    "%d",
+    "%D",
+    "%S",
+    "%e",
+    "%s",
+    "%f",
+    "%b",
+    "%B",
+    "%N",
+    "%G",
+    "%g",
+    "%m",
+    "%x",
+    "%C",
+    "%w",
+    "%<",
+    "%>",
+    "%+",
+    "%-",
+    "% ",
+    "%(trailers)",
+    "%(describe)",
+    "%(decorate)",
+    "%(count)",
+    "%(total)",
 ];
 
 /// The output flags `log` and `show` share.
 pub const OUTPUT_FLAGS: &[&str] = &[
-    "--oneline", "--format", "--pretty", "--abbrev-commit", "--no-abbrev-commit", "--abbrev",
-    "--no-abbrev", "--date", "--relative-date", "--decorate", "--no-decorate", "--source",
-    "--color", "--no-color", "-p", "-u", "--patch", "-s", "--no-patch", "--stat", "--shortstat",
-    "--numstat", "--name-only", "--name-status", "--raw", "--summary", "-U", "--unified", "-z",
-    "-M", "--no-renames", "--patience", "--histogram", "--minimal", "--diff-algorithm",
+    "--oneline",
+    "--format",
+    "--pretty",
+    "--abbrev-commit",
+    "--no-abbrev-commit",
+    "--abbrev",
+    "--no-abbrev",
+    "--date",
+    "--relative-date",
+    "--decorate",
+    "--no-decorate",
+    "--source",
+    "--color",
+    "--no-color",
+    "-p",
+    "-u",
+    "--patch",
+    "-s",
+    "--no-patch",
+    "--stat",
+    "--shortstat",
+    "--numstat",
+    "--name-only",
+    "--name-status",
+    "--raw",
+    "--summary",
+    "-U",
+    "--unified",
+    "-z",
+    "-M",
+    "--no-renames",
+    "--patience",
+    "--histogram",
+    "--minimal",
+    "--diff-algorithm",
     "--end-of-options",
 ];
 
 /// The flags only `log` serves.
 const LOG_FLAGS: &[&str] = &[
-    "-n", "--max-count", "-<n>", "--skip", "--since", "--after", "--until", "--before", "--author",
-    "--committer", "--grep", "-i", "--regexp-ignore-case", "-E", "--extended-regexp", "-F",
-    "--fixed-strings", "--invert-grep", "--first-parent", "--all", "--branches", "--tags",
-    "--remotes", "--not", "--follow", "--merges", "--no-merges", "--min-parents", "--max-parents",
-    "--reverse", "--topo-order", "--date-order", "--author-date-order", "--left-right", "-g",
-    "--walk-reflogs", "--graph", "--json",
+    "-n",
+    "--max-count",
+    "-<n>",
+    "--skip",
+    "--since",
+    "--after",
+    "--until",
+    "--before",
+    "--author",
+    "--committer",
+    "--grep",
+    "-i",
+    "--regexp-ignore-case",
+    "-E",
+    "--extended-regexp",
+    "-F",
+    "--fixed-strings",
+    "--invert-grep",
+    "--first-parent",
+    "--all",
+    "--branches",
+    "--tags",
+    "--remotes",
+    "--not",
+    "--follow",
+    "--merges",
+    "--no-merges",
+    "--min-parents",
+    "--max-parents",
+    "--reverse",
+    "--topo-order",
+    "--date-order",
+    "--author-date-order",
+    "--left-right",
+    "-g",
+    "--walk-reflogs",
+    "--graph",
+    "--json",
 ];
 
 pub const NATIVE: &[NativeSpec] = &[
-    NativeSpec { cmd: "log", flags: OUTPUT_FLAGS, placeholders: PLACEHOLDERS },
-    NativeSpec { cmd: "log", flags: LOG_FLAGS, placeholders: PLACEHOLDERS },
+    NativeSpec {
+        cmd: "log",
+        flags: OUTPUT_FLAGS,
+        placeholders: PLACEHOLDERS,
+    },
+    NativeSpec {
+        cmd: "log",
+        flags: LOG_FLAGS,
+        placeholders: PLACEHOLDERS,
+    },
 ];
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
@@ -97,7 +197,10 @@ async fn log(ctx: &Ctx, o: Opts) -> Result<ExitCode> {
     let hist = Hist::select(ws);
     let api = hist.api(ws);
     if o.graph && o.reverse {
-        return Err(CliError::Raw("fatal: options '--reverse' and '--graph' cannot be used together".into(), 128));
+        return Err(CliError::Raw(
+            "fatal: options '--reverse' and '--graph' cannot be used together".into(),
+            128,
+        ));
     }
     if o.max_count == Some(0) {
         return Ok(ExitCode::SUCCESS);
@@ -164,7 +267,9 @@ async fn reflog_walk(
         match ws.projection.read_head()? {
             asc_git::projection::Head::Branch(b) => format!("refs/heads/{b}"),
             asc_git::projection::Head::Detached(_) => {
-                return Err(CliError::Fatal("asc: the reflog of a detached HEAD is not kept".into()));
+                return Err(CliError::Fatal(
+                    "asc: the reflog of a detached HEAD is not kept".into(),
+                ));
             }
         }
     } else if typed.starts_with("refs/") {
@@ -184,7 +289,9 @@ async fn reflog_walk(
         .unwrap_or(&full)
         .to_owned();
     for (i, entry) in log.iter().enumerate().skip(o.skip) {
-        let Some(RefTarget::Changeset(id)) = entry.new else { continue };
+        let Some(RefTarget::Changeset(id)) = entry.new else {
+            continue;
+        };
         let reflog = Reflog {
             selector: format!("{typed}@{{{i}}}"),
             short_selector: format!("{}@{{{i}}}", if typed == "HEAD" { "HEAD" } else { &short }),
@@ -204,5 +311,12 @@ pub async fn load(ws: &WsCtx, id: ChangesetId) -> Result<Entry> {
     let cs = ws.engine.get_changeset(id).await?;
     let git = ws.engine.git_commit_of(id).await.map_err(fatal)?;
     let shown_parents = cs.parents.clone();
-    Ok(Entry { id, git, generation: 0, cs, shown_parents, left: false })
+    Ok(Entry {
+        id,
+        git,
+        generation: 0,
+        cs,
+        shown_parents,
+        left: false,
+    })
 }

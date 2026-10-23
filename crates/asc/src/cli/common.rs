@@ -32,14 +32,14 @@ use asc_store::tiered::Tiered;
 use futures::stream::{BoxStream, StreamExt};
 
 use super::config::{self, ConfigSnapshot, LocalConfig};
-use super::safe_dir::{self, OwnerProbe, SafeDirectory, owned_by_current_user};
 use super::output::OutputKind;
+use super::safe_dir::{self, OwnerProbe, SafeDirectory, owned_by_current_user};
+use crate::child;
 use crate::dispatch::Program;
 use crate::env::GitEnv;
 use crate::ext::{self, RefChange, RefTxnView, RemoteSpec};
 use crate::msg::Msg;
 use crate::refs_guard::{LocalRefs, ReadOnlyRefs};
-use crate::child;
 
 /// `Result` of a command.
 pub type Result<T, E = CliError> = std::result::Result<T, E>;
@@ -272,10 +272,12 @@ impl WsCtx {
         let db = StateDb::open(&home).await?;
         let workspace = workspaces::get(&db, projection.workspace())
             .await?
-            .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
-        let repo = repos::get(&db, workspace.ws.repo)
-            .await?
-            .ok_or_else(|| CliError::Fatal("asc: the repository of this workspace is missing".into()))?;
+            .ok_or_else(|| {
+                CliError::Fatal("asc: this workspace is not registered in state.db".into())
+            })?;
+        let repo = repos::get(&db, workspace.ws.repo).await?.ok_or_else(|| {
+            CliError::Fatal("asc: the repository of this workspace is missing".into())
+        })?;
         let spec = RemoteSpec {
             kind: repo.repo.remote_kind,
             url: repo.repo.remote_url.clone(),
@@ -326,12 +328,27 @@ impl WsCtx {
     }
 
     /// `leafdiff(from, to)` in the shape `stage::rebase` takes.
-    async fn leaf_deltas(&self, from: Option<ChangesetId>, to: Option<ChangesetId>) -> Result<Vec<LeafDelta>> {
+    async fn leaf_deltas(
+        &self,
+        from: Option<ChangesetId>,
+        to: Option<ChangesetId>,
+    ) -> Result<Vec<LeafDelta>> {
         let (a, b) = (self.root_of(from).await?, self.root_of(to).await?);
         let mut out = Vec::new();
         for (path, change) in self.engine.leafdiff(a, b, None).await? {
             let to_leaf = match change {
-                Change::Write { kind, file, size, git, .. } => Some(Leaf { kind, file, size, git }),
+                Change::Write {
+                    kind,
+                    file,
+                    size,
+                    git,
+                    ..
+                } => Some(Leaf {
+                    kind,
+                    file,
+                    size,
+                    git,
+                }),
                 Change::Gitlink { commit } => Some(Leaf {
                     kind: Kind::Gitlink,
                     file: FileId::from_bytes([0; 32]),
@@ -368,7 +385,9 @@ impl WsCtx {
     ) -> Result<MovePlan> {
         let row = workspaces::get(&self.db, self.workspace.ws.id)
             .await?
-            .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
+            .ok_or_else(|| {
+                CliError::Fatal("asc: this workspace is not registered in state.db".into())
+            })?;
         let commit_of = |t: Option<RefTarget>| match t {
             Some(RefTarget::Changeset(c)) => Some(c),
             _ => None,
@@ -376,7 +395,9 @@ impl WsCtx {
         let (new_head, detached) = match self.projection.read_head()? {
             Head::Branch(b) => {
                 if !head_updates.is_empty() {
-                    return Err(CliError::Fatal("asc: HEAD is a branch; update the branch instead".into()));
+                    return Err(CliError::Fatal(
+                        "asc: HEAD is a branch; update the branch instead".into(),
+                    ));
                 }
                 let name = RefName::new(format!("refs/heads/{b}").into_bytes())
                     .map_err(|e| CliError::Fatal(format!("HEAD names a bad branch: {e}")))?;
@@ -398,15 +419,22 @@ impl WsCtx {
                         return Err(CliError::Fatal("asc: HEAD cannot be deleted".into()));
                     };
                     let rows =
-                        asc_state::state::git_map::asc_to_git(&self.db, self.repo.key, cs.as_bytes()).await?;
+                        asc_state::state::git_map::asc_to_git(&self.db, self.repo.key, cs.as_bytes())
+                            .await?;
                     let oid: GitOid = rows
                         .into_iter()
                         .find(|(_, k)| *k == asc_core::git::ObjectKind::Commit)
                         .map(|(o, _)| o)
-                        .ok_or_else(|| CliError::Fatal(format!("asc: no git commit for changeset {cs}")))?;
+                        .ok_or_else(|| {
+                            CliError::Fatal(format!("asc: no git commit for changeset {cs}"))
+                        })?;
                     (Some(cs), Some(oid))
                 }
-                _ => return Err(CliError::Fatal("asc: one transaction may update HEAD only once".into())),
+                _ => {
+                    return Err(CliError::Fatal(
+                        "asc: one transaction may update HEAD only once".into(),
+                    ));
+                }
             },
         };
         let base = row.ws.base_cs;
@@ -416,8 +444,18 @@ impl WsCtx {
             Vec::new()
         };
         // A detached move records no branch name; every other move keeps the recorded one.
-        let head = if detached.is_some() { String::new() } else { row.ws.head };
-        Ok(MovePlan { base, new_head, head, deltas, detached })
+        let head = if detached.is_some() {
+            String::new()
+        } else {
+            row.ws.head
+        };
+        Ok(MovePlan {
+            base,
+            new_head,
+            head,
+            deltas,
+            detached,
+        })
     }
 }
 
@@ -449,7 +487,11 @@ fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
         let s = p.to_string_lossy().replace('\\', "/");
         let s = s.trim_end_matches('/').to_owned();
-        if cfg!(windows) { s.to_ascii_lowercase() } else { s }
+        if cfg!(windows) {
+            s.to_ascii_lowercase()
+        } else {
+            s
+        }
     };
     norm(a) == norm(b)
 }
@@ -538,12 +580,20 @@ async fn admit(p: Projection, gate: &Gate<'_>) -> Result<Option<Admitted>> {
 /// candidate must then pass [`admit`]; one that does not is not an asc workspace either.
 pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Option<Admitted>> {
     let candidate = if let Some(git_dir) = &env.git_dir {
-        let git_dir = if git_dir.is_absolute() { git_dir.clone() } else { cwd.join(git_dir) };
+        let git_dir = if git_dir.is_absolute() {
+            git_dir.clone()
+        } else {
+            cwd.join(git_dir)
+        };
         let Ok(marker) = std::fs::read_to_string(git_dir.join("asc-workspace")) else {
             return Ok(None);
         };
         if let Some(tree) = &env.work_tree {
-            let tree = if tree.is_absolute() { tree.clone() } else { cwd.join(tree) };
+            let tree = if tree.is_absolute() {
+                tree.clone()
+            } else {
+                cwd.join(tree)
+            };
             Projection::open(&tree).ok()
         } else {
             let id: WorkspaceId = marker
@@ -598,7 +648,12 @@ impl Ctx {
 
     /// [`Ctx::open`] with the user's home, `safe.directory` list and ownership probe supplied
     /// (tests; every other caller goes through [`Ctx::open`]).
-    pub async fn open_with(prog: Program, env: GitEnv, cwd: PathBuf, gate: &Gate<'_>) -> Result<Self> {
+    pub async fn open_with(
+        prog: Program,
+        env: GitEnv,
+        cwd: PathBuf,
+        gate: &Gate<'_>,
+    ) -> Result<Self> {
         let admitted = discover(&env, &cwd, gate).await?;
         let get = |k: &str| std::env::var_os(k);
         let local = admitted.as_ref().map(|a| LocalConfig {
@@ -717,13 +772,15 @@ impl Ctx {
         let ws_id = ws.workspace.ws.id;
         txn.reason = reflog_msg.to_owned();
         let old_head = ws.head_commit().await?;
-        let head_name = RefName::new_onelevel(b"HEAD".to_vec())
-            .map_err(|e| CliError::Fatal(e.to_string()))?;
+        let head_name =
+            RefName::new_onelevel(b"HEAD".to_vec()).map_err(|e| CliError::Fatal(e.to_string()))?;
         let (head_updates, updates): (Vec<_>, Vec<_>) = std::mem::take(&mut txn.updates)
             .into_iter()
             .partition(|u| u.name == head_name);
         let keep = matches!(staging, StagingAfterMove::Keep);
-        let plan = ws.plan_move(&updates, &head_updates, old_head, keep).await?;
+        let plan = ws
+            .plan_move(&updates, &head_updates, old_head, keep)
+            .await?;
         let mut changes = Vec::new();
         for u in &updates {
             let old = ws.refs.get(repo, &u.name).await?.map(|e| e.target);
@@ -749,7 +806,9 @@ impl Ctx {
         let hook = ext::ref_txn_hook();
         if let Err(rejected) = hook.prepared(&view).await {
             hook.aborted(&view).await;
-            return Err(CliError::Fatal(format!("ref updates aborted by hook: {rejected}")));
+            return Err(CliError::Fatal(format!(
+                "ref updates aborted by hook: {rejected}"
+            )));
         }
         let applied = async {
             let mut tx = ws.db.begin().await?;
@@ -826,14 +885,22 @@ mod tests {
         let env = GitEnv::from_vars(&|_| None);
         let safe = SafeDirectory::default();
         let home = || Ok(f.home.clone());
-        let gate = Gate { safe: &safe, home: &home, owned: &owned_by_current_user };
-        Ctx::open_with(Program::Asc, env, f.root.clone(), &gate).await.unwrap()
+        let gate = Gate {
+            safe: &safe,
+            home: &home,
+            owned: &owned_by_current_user,
+        };
+        Ctx::open_with(Program::Asc, env, f.root.clone(), &gate)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
     async fn keep_leaves_the_effective_staged_state_unchanged() {
         let f = Fixture::new().await;
-        let a = f.commit(&[], &[("f.txt", b"one"), ("g.txt", b"keep")]).await;
+        let a = f
+            .commit(&[], &[("f.txt", b"one"), ("g.txt", b"keep")])
+            .await;
         let b = f.commit(&[a], &[("f.txt", b"two")]).await;
         f.set_branch("master", a).await;
         f.checkout_branch("master", Some(a)).await;
@@ -890,7 +957,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, CliError::Refs(RefError::Conflict(_))), "{err}");
+        assert!(
+            matches!(err, CliError::Refs(RefError::Conflict(_))),
+            "{err}"
+        );
         assert_eq!(ctx.ws().unwrap().head_commit().await.unwrap(), Some(a));
     }
 
@@ -914,8 +984,17 @@ mod tests {
         let tree = Tree::new(vec![entry], true).unwrap();
         let tree_env = tree.to_envelope();
         let root = asc_core::id::TreeId::of(&tree_env);
-        f.objects.put(&ObjKey::Tree(root), encode_stored(&tree_env)).await.unwrap();
-        let sig = asc_core::sig::Signature::new(b"T".to_vec(), b"t@example.com".to_vec(), 1_700_000_000, 0).unwrap();
+        f.objects
+            .put(&ObjKey::Tree(root), encode_stored(&tree_env))
+            .await
+            .unwrap();
+        let sig = asc_core::sig::Signature::new(
+            b"T".to_vec(),
+            b"t@example.com".to_vec(),
+            1_700_000_000,
+            0,
+        )
+        .unwrap();
         let cs = Changeset {
             parents: vec![parent],
             root,
@@ -927,17 +1006,39 @@ mod tests {
         };
         let env = cs.to_envelope();
         let id = ChangesetId::of(&env);
-        f.objects.put(&ObjKey::Changeset(id), encode_stored(&env)).await.unwrap();
+        f.objects
+            .put(&ObjKey::Changeset(id), encode_stored(&env))
+            .await
+            .unwrap();
         id
     }
 
     /// The state a ref move must keep consistent: the branch, `base_cs`, HEAD and the stage rows.
-    async fn snapshot(ctx: &Ctx) -> (Option<RefTarget>, Option<ChangesetId>, Option<ChangesetId>, Vec<StageRow>) {
+    async fn snapshot(
+        ctx: &Ctx,
+    ) -> (
+        Option<RefTarget>,
+        Option<ChangesetId>,
+        Option<ChangesetId>,
+        Vec<StageRow>,
+    ) {
         let ws = ctx.ws().unwrap();
         let master = RefName::new(b"refs/heads/master".to_vec()).unwrap();
-        let target = ws.refs.get(ws.repo.key, &master).await.unwrap().map(|e| e.target);
-        let base = workspaces::get(&ws.db, ws.workspace.ws.id).await.unwrap().unwrap().ws.base_cs;
-        let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await.unwrap();
+        let target = ws
+            .refs
+            .get(ws.repo.key, &master)
+            .await
+            .unwrap()
+            .map(|e| e.target);
+        let base = workspaces::get(&ws.db, ws.workspace.ws.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ws
+            .base_cs;
+        let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default)
+            .await
+            .unwrap();
         (target, base, ws.head_commit().await.unwrap(), rows)
     }
 
@@ -953,16 +1054,23 @@ mod tests {
     #[tokio::test]
     async fn a_head_whose_delta_cannot_be_computed_is_refused_before_the_ref_moves() {
         let f = Fixture::new().await;
-        let a = f.commit(&[], &[("f.txt", b"one"), ("g.txt", b"keep")]).await;
+        let a = f
+            .commit(&[], &[("f.txt", b"one"), ("g.txt", b"keep")])
+            .await;
         f.set_branch("master", a).await;
         f.checkout_branch("master", Some(a)).await;
         let ctx = ctx_of(&f).await;
         // A staged difference that a successful rebase would have to carry across the move.
         let ws = ctx.ws().unwrap();
         let edited = StageRow::from_leaf(b"f.txt".to_vec(), Some(&f.file_leaf(a, "f.txt").await));
-        stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &[StageRow { size: 99, ..edited }])
-            .await
-            .unwrap();
+        stage::replace(
+            &ws.db,
+            ws.workspace.ws.id,
+            StageSet::Default,
+            &[StageRow { size: 99, ..edited }],
+        )
+        .await
+        .unwrap();
         let before = snapshot(&ctx).await;
 
         let hostile = hostile_long_name_changeset(&f, a).await;
@@ -973,8 +1081,15 @@ mod tests {
                 .update_local_refs(move_master(a, target), "pull", StagingAfterMove::Keep)
                 .await
                 .unwrap_err();
-            assert!(!matches!(err, CliError::Refs(RefError::Conflict(_))), "{err}");
-            assert_eq!(snapshot(&ctx).await, before, "ref, head_base and stage stay on the old head: {err}");
+            assert!(
+                !matches!(err, CliError::Refs(RefError::Conflict(_))),
+                "{err}"
+            );
+            assert_eq!(
+                snapshot(&ctx).await,
+                before,
+                "ref, head_base and stage stay on the old head: {err}"
+            );
         }
     }
 
@@ -987,18 +1102,31 @@ mod tests {
         let ctx = ctx_of(&f).await;
         let ws = ctx.ws().unwrap();
         let old = StageRow::from_leaf(b"old.txt".to_vec(), Some(&f.file_leaf(a, "f").await));
-        stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &[old]).await.unwrap();
+        stage::replace(&ws.db, ws.workspace.ws.id, StageSet::Default, &[old])
+            .await
+            .unwrap();
         let before = snapshot(&ctx).await;
 
         // Stage 4 does not exist: storing the row fails after the old rows were deleted.
-        let bad = StageRow { stage: 4, ..StageRow::from_leaf(b"new.txt".to_vec(), Some(&f.file_leaf(a, "f").await)) };
+        let bad = StageRow {
+            stage: 4,
+            ..StageRow::from_leaf(b"new.txt".to_vec(), Some(&f.file_leaf(a, "f").await))
+        };
         let b = f.commit(&[a], &[("f", b"2")]).await;
         let err = ctx
-            .update_local_refs(move_master(a, b), "commit", StagingAfterMove::Set(vec![bad]))
+            .update_local_refs(
+                move_master(a, b),
+                "commit",
+                StagingAfterMove::Set(vec![bad]),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, CliError::State(_)), "{err}");
-        assert_eq!(snapshot(&ctx).await, before, "the old rows, ref and base all survive");
+        assert_eq!(
+            snapshot(&ctx).await,
+            before,
+            "the old rows, ref and base all survive"
+        );
     }
 
     #[tokio::test]
@@ -1009,7 +1137,9 @@ mod tests {
         f.set_branch("master", a).await;
         f.checkout_branch("master", Some(a)).await;
         let ctx = ctx_of(&f).await;
-        ctx.update_local_refs(move_master(a, b), "ff", StagingAfterMove::Keep).await.unwrap();
+        ctx.update_local_refs(move_master(a, b), "ff", StagingAfterMove::Keep)
+            .await
+            .unwrap();
         let (target, base, head, rows) = snapshot(&ctx).await;
         assert_eq!(target, Some(RefTarget::Changeset(b)));
         assert_eq!((base, head), (Some(b), Some(b)));
@@ -1055,7 +1185,9 @@ mod tests {
             new: Some(RefTarget::Changeset(ChangesetId::from_bytes([9; 32]))),
             expires_at: None,
         });
-        let err = Refs::update(ws.refs.as_ref(), ws.repo.key, &t).await.unwrap_err();
+        let err = Refs::update(ws.refs.as_ref(), ws.repo.key, &t)
+            .await
+            .unwrap_err();
         assert!(crate::refs_guard::ReadOnly::is(&err));
     }
 }
@@ -1095,7 +1227,11 @@ mod gate_tests {
         owned: OwnerProbe<'_>,
     ) -> Result<Option<Admitted>> {
         let home = || Ok(f.home.clone());
-        let gate = Gate { safe, home: &home, owned };
+        let gate = Gate {
+            safe,
+            home: &home,
+            owned,
+        };
         discover(&GitEnv::from_vars(&|_| None), cwd, &gate).await
     }
 
@@ -1109,7 +1245,9 @@ mod gate_tests {
         let sub = f.root.join("a").join("b");
         std::fs::create_dir_all(&sub).unwrap();
         for dir in [&f.root, &sub] {
-            let p = discover_in(&f, dir, &none, &owned_by_current_user).await.unwrap();
+            let p = discover_in(&f, dir, &none, &owned_by_current_user)
+                .await
+                .unwrap();
             assert_eq!(p.expect("workspace").projection.workspace(), f.ws);
         }
     }
@@ -1130,13 +1268,22 @@ mod gate_tests {
         // Even when every path is "ours" and the list says `*`.
         for safe in [none.clone(), SafeDirectory::new(["*".to_owned()])] {
             let got = discover_in(&f, &planted, &safe, YES).await.unwrap();
-            assert!(got.is_none(), "a workspace outside ASC_HOME is not an asc repository");
+            assert!(
+                got.is_none(),
+                "a workspace outside ASC_HOME is not an asc repository"
+            );
         }
         // The context never reads the planted config.
         let home = || Ok(f.home.clone());
-        let gate = Gate { safe: &none, home: &home, owned: YES };
+        let gate = Gate {
+            safe: &none,
+            home: &home,
+            owned: YES,
+        };
         let env = GitEnv::from_vars(&|k| (k == "GIT_CONFIG_NOSYSTEM").then(|| "1".into()));
-        let ctx = Ctx::open_with(Program::Asc, env, planted, &gate).await.unwrap();
+        let ctx = Ctx::open_with(Program::Asc, env, planted, &gate)
+            .await
+            .unwrap();
         assert!(ctx.ws_opt().is_none());
         assert_eq!(ctx.config.get("asc.realGit"), None);
         assert_eq!(ctx.config.get("alias.x"), None);
@@ -1168,29 +1315,58 @@ mod gate_tests {
         let evil = f.sandbox.dir("evil");
         let wc = evil.join("wc").join(f.ws.to_string());
         std::fs::create_dir_all(&wc).unwrap();
-        let linked = link_dir(&wc.join("git"), &real_git) && link_dir(&evil.join("repos"), &f.home.root().join("repos"));
+        let linked = link_dir(&wc.join("git"), &real_git)
+            && link_dir(&evil.join("repos"), &f.home.root().join("repos"));
         if !linked {
             eprintln!("skipped: cannot create directory links here");
             return;
         }
-        std::fs::write(f.root.join(".git"), format!("gitdir: {}\n", wc.join("git").display())).unwrap();
+        std::fs::write(
+            f.root.join(".git"),
+            format!("gitdir: {}\n", wc.join("git").display()),
+        )
+        .unwrap();
         let lexical = Projection::open(&f.root).unwrap();
-        assert!(lexical.git_dir().starts_with(&evil), "the projection is lexical before admission");
+        assert!(
+            lexical.git_dir().starts_with(&evil),
+            "the projection is lexical before admission"
+        );
 
-        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES).await.unwrap().expect("admitted");
-        assert_eq!(got.home, f.home, "the gate's home, not the link's grandparent");
+        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES)
+            .await
+            .unwrap()
+            .expect("admitted");
+        assert_eq!(
+            got.home, f.home,
+            "the gate's home, not the link's grandparent"
+        );
         assert_eq!(got.projection.git_dir(), canonical(&real_git).unwrap());
-        assert_eq!(got.projection.common_dir(), canonical(&real_common).unwrap());
+        assert_eq!(
+            got.projection.common_dir(),
+            canonical(&real_common).unwrap()
+        );
 
         // The whole context opens the user's state, and `evil` gets no state.db.
         let home = || Ok(f.home.clone());
         let none = SafeDirectory::default();
-        let gate = Gate { safe: &none, home: &home, owned: YES };
+        let gate = Gate {
+            safe: &none,
+            home: &home,
+            owned: YES,
+        };
         let env = GitEnv::from_vars(&|k| (k == "GIT_CONFIG_NOSYSTEM").then(|| "1".into()));
-        let ctx = Ctx::open_with(Program::Asc, env, f.root.clone(), &gate).await.unwrap();
+        let ctx = Ctx::open_with(Program::Asc, env, f.root.clone(), &gate)
+            .await
+            .unwrap();
         assert_eq!(ctx.ws().unwrap().home, f.home);
-        assert_eq!(ctx.ws().unwrap().projection.common_dir(), canonical(&real_common).unwrap());
-        assert!(!evil.join("state.db").exists(), "no state was created under the link's parent");
+        assert_eq!(
+            ctx.ws().unwrap().projection.common_dir(),
+            canonical(&real_common).unwrap()
+        );
+        assert!(
+            !evil.join("state.db").exists(),
+            "no state was created under the link's parent"
+        );
     }
 
     #[tokio::test]
@@ -1199,7 +1375,9 @@ mod gate_tests {
         let dir = f.sandbox.dir("unregistered");
         // Inside the user's home, but no `workspaces` row.
         Projection::create(&f.home, RepoId::new(), WorkspaceId::new(), &dir).unwrap();
-        let got = discover_in(&f, &dir, &SafeDirectory::default(), YES).await.unwrap();
+        let got = discover_in(&f, &dir, &SafeDirectory::default(), YES)
+            .await
+            .unwrap();
         assert!(got.is_none());
     }
 
@@ -1210,9 +1388,19 @@ mod gate_tests {
         // Repoint the workspace at a common dir of a repository the row does not name.
         let stray = f.home.common_dir(RepoId::new());
         std::fs::create_dir_all(&stray).unwrap();
-        let rel = format!("../../../repos/{}/.git\n", stray.parent().unwrap().file_name().unwrap().to_string_lossy());
+        let rel = format!(
+            "../../../repos/{}/.git\n",
+            stray
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
         std::fs::write(proj.git_dir().join("commondir"), rel).unwrap();
-        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES).await.unwrap();
+        let got = discover_in(&f, &f.root, &SafeDirectory::default(), YES)
+            .await
+            .unwrap();
         assert!(got.is_none());
     }
 
@@ -1225,15 +1413,32 @@ mod gate_tests {
         // The gitdir alone being foreign is enough.
         let git_dir = Projection::open(&f.root).unwrap().git_dir().to_owned();
         let only_gitdir = |p: &Path| Ok(!p.starts_with(std::fs::canonicalize(&git_dir).unwrap()));
-        assert!(is_dubious(&discover_in(&f, &f.root, &none, &only_gitdir).await));
+        assert!(is_dubious(
+            &discover_in(&f, &f.root, &none, &only_gitdir).await
+        ));
 
         let star = SafeDirectory::new(["*".to_owned()]);
         assert!(discover_in(&f, &f.root, &star, NO).await.unwrap().is_some());
-        let exact = SafeDirectory::new([safe_dir::display_path(&std::fs::canonicalize(&f.root).unwrap())]);
-        assert!(discover_in(&f, &f.root, &exact, NO).await.unwrap().is_some());
+        let exact = SafeDirectory::new([safe_dir::display_path(
+            &std::fs::canonicalize(&f.root).unwrap(),
+        )]);
+        assert!(
+            discover_in(&f, &f.root, &exact, NO)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let parent = f.root.parent().unwrap();
-        let prefix = SafeDirectory::new([format!("{}/*", safe_dir::display_path(&std::fs::canonicalize(parent).unwrap()))]);
-        assert!(discover_in(&f, &f.root, &prefix, NO).await.unwrap().is_some());
+        let prefix = SafeDirectory::new([format!(
+            "{}/*",
+            safe_dir::display_path(&std::fs::canonicalize(parent).unwrap())
+        )]);
+        assert!(
+            discover_in(&f, &f.root, &prefix, NO)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let elsewhere = SafeDirectory::new(["/somewhere/else".to_owned()]);
         assert!(is_dubious(&discover_in(&f, &f.root, &elsewhere, NO).await));
     }
@@ -1243,22 +1448,39 @@ mod gate_tests {
         let f = Fixture::new().await;
         let proj = Projection::open(&f.root).unwrap();
         // The repository vouches for itself, and so does a worktree-level file: ignored.
-        std::fs::write(proj.common_dir().join("config"), b"[safe]\n\tdirectory = *\n").unwrap();
-        std::fs::write(proj.git_dir().join("config.worktree"), b"[safe]\n\tdirectory = *\n").unwrap();
+        std::fs::write(
+            proj.common_dir().join("config"),
+            b"[safe]\n\tdirectory = *\n",
+        )
+        .unwrap();
+        std::fs::write(
+            proj.git_dir().join("config.worktree"),
+            b"[safe]\n\tdirectory = *\n",
+        )
+        .unwrap();
         let global = f.sandbox.dir("g").join("gitconfig");
         std::fs::write(&global, b"").unwrap();
         let env = GitEnv::from_vars(&|_| None);
         let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
-        assert!(is_dubious(&discover_in(&f, &f.root, &safe, NO).await), "repo-local safe.directory is ignored");
+        assert!(
+            is_dubious(&discover_in(&f, &f.root, &safe, NO).await),
+            "repo-local safe.directory is ignored"
+        );
 
         std::fs::write(&global, b"[safe]\n\tdirectory = *\n").unwrap();
         let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
-        assert!(discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(), "global `*` works");
+        assert!(
+            discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(),
+            "global `*` works"
+        );
 
         std::fs::write(&global, b"").unwrap();
         let mut env = GitEnv::from_vars(&|_| None);
         env.cli_config.push(ConfigParam::parse("safe.directory=*"));
         let safe = config::safe_directories(&env, &hermetic(&global)).unwrap();
-        assert!(discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(), "-c works");
+        assert!(
+            discover_in(&f, &f.root, &safe, NO).await.unwrap().is_some(),
+            "-c works"
+        );
     }
 }

@@ -224,7 +224,10 @@ mod tests {
         fx.env.draft_heads = vec![fx.ids[4]];
         let rows = vec![head(&fx, 4, false)];
         let st = fx.stacks().await;
-        assert_eq!(fx.indexes(&visible_set(&st).await.unwrap()), vec![1, 2, 3, 4]);
+        assert_eq!(
+            fx.indexes(&visible_set(&st).await.unwrap()),
+            vec![1, 2, 3, 4]
+        );
         let plan = hide_plan(&st, &rows, fx.ids[3]).await.unwrap();
         assert_eq!(plan.heads, vec![fx.ids[4]]);
         assert_eq!(plan.expose, Some((fx.ids[2], change_of(2))));

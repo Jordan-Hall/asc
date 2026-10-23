@@ -1396,10 +1396,7 @@ mod tests {
             size: None,
             method: None,
         };
-        let c = s
-            .gate(&HeaderMap::new(), &q, Access::Read)
-            .await
-            .unwrap();
+        let c = s.gate(&HeaderMap::new(), &q, Access::Read).await.unwrap();
         assert_ne!(c.scope, Scope::Trusted);
         assert_eq!(c.scope, Scope::Pr(0));
     }

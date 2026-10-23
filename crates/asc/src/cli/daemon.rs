@@ -63,16 +63,23 @@ pub fn system() -> Result<(Config, SystemProcess)> {
 }
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
-    if lifecycle::disabled(&|k: &str| std::env::var_os(k)) && !matches!(args.action, Action::Status) {
+    if lifecycle::disabled(&|k: &str| std::env::var_os(k)) && !matches!(args.action, Action::Status)
+    {
         return Err(fatal("the daemon is disabled by ASC_NO_DAEMON"));
     }
     let (cfg, proc) = system()?;
     match args.action {
         Action::Start => {
             let before = lifecycle::probe(&cfg).await;
-            let info = lifecycle::ensure_running(&cfg, &proc).await.map_err(fatal)?;
+            let info = lifecycle::ensure_running(&cfg, &proc)
+                .await
+                .map_err(fatal)?;
             let again = matches!(&before, Probe::Up(i) if i.version == cfg.version);
-            println!("daemon {} (pid {})", if again { "already running" } else { "started" }, info.pid);
+            println!(
+                "daemon {} (pid {})",
+                if again { "already running" } else { "started" },
+                info.pid
+            );
         }
         Action::Stop => match lifecycle::stop(&cfg, &proc).await.map_err(fatal)? {
             Stopped::Stopped => println!("daemon stopped"),
@@ -81,7 +88,12 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         Action::Status => {
             return Ok(match lifecycle::probe(&cfg).await {
                 Probe::Up(i) => {
-                    println!("daemon running (pid {}, version {}, up {} s)", i.pid, i.version, i.uptime_ms / 1000);
+                    println!(
+                        "daemon running (pid {}, version {}, up {} s)",
+                        i.pid,
+                        i.version,
+                        i.uptime_ms / 1000
+                    );
                     ExitCode::SUCCESS
                 }
                 Probe::Hung => {
@@ -97,16 +109,26 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         Action::Run { metrics_listen } => {
             let run_dir = cfg.run_dir.clone();
             let listen = metrics_listen
-                .or_else(|| std::env::var("ASC_METRICS_LISTEN").ok().filter(|v| !v.is_empty()))
+                .or_else(|| {
+                    std::env::var("ASC_METRICS_LISTEN")
+                        .ok()
+                        .filter(|v| !v.is_empty())
+                })
                 .map(|text| metrics::parse_listen(&text))
                 .transpose()
                 .map_err(fatal)?;
             let home = AscHome::locate()?;
             let mut settings = scheduler::Settings::new(std::env::current_exe().map_err(fatal)?);
-            let size = ctx.config.get("asc.cache.maxsize").or_else(|| ctx.config.get("asc.cache.maxSize"));
+            let size = ctx
+                .config
+                .get("asc.cache.maxsize")
+                .or_else(|| ctx.config.get("asc.cache.maxSize"));
             if let Some(text) = size {
-                settings.cache_max_bytes = scheduler::parse_size(&text)
-                    .ok_or_else(|| fatal(format!("bad numeric config value '{text}' for 'asc.cache.maxsize'")))?;
+                settings.cache_max_bytes = scheduler::parse_size(&text).ok_or_else(|| {
+                    fatal(format!(
+                        "bad numeric config value '{text}' for 'asc.cache.maxsize'"
+                    ))
+                })?;
             }
             let _watchdog = daemon::Watchdog::abort_on_hang().map_err(fatal)?;
             daemon::run_hosting(
@@ -140,7 +162,9 @@ pub async fn stop_skewed_daemon() {
     if lifecycle::disabled(&|k: &str| std::env::var_os(k)) {
         return;
     }
-    let Ok(endpoint) = lifecycle::endpoint_for_current_user() else { return };
+    let Ok(endpoint) = lifecycle::endpoint_for_current_user() else {
+        return;
+    };
     let proc = SystemProcess {
         exe: std::path::PathBuf::new(),
         home: std::path::PathBuf::new(),

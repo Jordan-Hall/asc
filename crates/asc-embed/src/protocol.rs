@@ -80,14 +80,18 @@ pub fn read_frame<T: for<'de> Deserialize<'de>>(r: &mut impl Read) -> Result<Opt
     }
     let len = u32::from_le_bytes(head) as usize;
     if len > MAX_FRAME {
-        return Err(Error::Protocol(format!("frame of {len} bytes exceeds bound")));
+        return Err(Error::Protocol(format!(
+            "frame of {len} bytes exceeds bound"
+        )));
     }
     let mut body = Vec::new();
     r.take(len as u64).read_to_end(&mut body)?;
     if body.len() != len {
         return Err(Error::Protocol("truncated body".to_owned()));
     }
-    serde_json::from_slice(&body).map(Some).map_err(|e| Error::Protocol(e.to_string()))
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|e| Error::Protocol(e.to_string()))
 }
 
 /// Serve requests from `input` to `output` with `embedder` until `Shutdown` or end of input.
@@ -99,15 +103,19 @@ pub fn serve(
     while let Some(req) = read_frame::<Request>(input)? {
         let resp = match req {
             Request::Shutdown => return Ok(()),
-            Request::Hello => {
-                Response::Hello { version: VERSION, model: embedder.name().to_owned(), dims: embedder.dims() }
-            }
-            Request::Embed { texts } if texts.len() > MAX_TEXTS => {
-                Response::Error { message: format!("more than {MAX_TEXTS} texts") }
-            }
+            Request::Hello => Response::Hello {
+                version: VERSION,
+                model: embedder.name().to_owned(),
+                dims: embedder.dims(),
+            },
+            Request::Embed { texts } if texts.len() > MAX_TEXTS => Response::Error {
+                message: format!("more than {MAX_TEXTS} texts"),
+            },
             Request::Embed { texts } => match embedder.embed(&texts) {
                 Ok(vectors) => Response::Vectors { vectors },
-                Err(e) => Response::Error { message: e.to_string() },
+                Err(e) => Response::Error {
+                    message: e.to_string(),
+                },
             },
         };
         write_frame(output, &resp)?;

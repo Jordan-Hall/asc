@@ -39,8 +39,16 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "blame",
     flags: &[
-        "-L", "-w", "-p", "--porcelain", "--line-porcelain", "--incremental", "--reverse", "--root",
-        "--json", "--end-of-options",
+        "-L",
+        "-w",
+        "-p",
+        "--porcelain",
+        "--line-porcelain",
+        "--incremental",
+        "--reverse",
+        "--root",
+        "--json",
+        "--end-of-options",
     ],
     placeholders: &[],
 }];
@@ -58,7 +66,9 @@ fn bad_revision(word: &str) -> CliError {
 }
 
 async fn rev_of(ctx: &Ctx, word: &str) -> Result<asc_core::id::ChangesetId> {
-    resolve_commit(ctx, word).await?.ok_or_else(|| bad_revision(word))
+    resolve_commit(ctx, word)
+        .await?
+        .ok_or_else(|| bad_revision(word))
 }
 
 async fn compute(ctx: &Ctx, o: &Opts, path: &RepoPath) -> Result<Blamed> {
@@ -77,7 +87,10 @@ async fn compute(ctx: &Ctx, o: &Opts, path: &RepoPath) -> Result<Blamed> {
         let cs = rev_of(ctx, word).await?;
         return compute::committed(ws, cs, path, Some(word), o.ignore_ws).await;
     }
-    let head = ws.head_commit().await?.ok_or_else(|| CliError::Fatal("no such ref: HEAD".into()))?;
+    let head = ws
+        .head_commit()
+        .await?
+        .ok_or_else(|| CliError::Fatal("no such ref: HEAD".into()))?;
     let in_head = compute::entry_at(ws, head, path).await?.is_some();
     if !in_head {
         let staged = Target::open(ctx).await?.staged(ws, path).await?;
@@ -127,7 +140,11 @@ async fn blame(ctx: &Ctx, o: Opts) -> Result<ExitCode> {
         abbrev: super::switch::abbrev_len(ctx),
         quote_high: ctx.config.get("core.quotepath").as_deref() != Some("false"),
     };
-    let want = if o.format == Format::Json { PagerWant::Never } else { PagerWant::Auto };
+    let want = if o.format == Format::Json {
+        PagerWant::Never
+    } else {
+        PagerWant::Auto
+    };
     let mut out = Output::open(ctx, "blame", want)?;
     let written = match o.format {
         Format::Default => emit::default_layout(&mut out, &blamed, &shown, &facts, &path, &style),

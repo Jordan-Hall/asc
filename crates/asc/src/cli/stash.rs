@@ -40,11 +40,39 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "stash",
     flags: &[
-        "-u", "--include-untracked", "--no-include-untracked", "-k", "--keep-index", "--no-keep-index", "-q",
-        "--quiet", "-m", "--message", "--index", "--no-index", "-z", "-p", "--patch", "-s", "--no-patch",
-        "--stat", "--numstat", "--shortstat", "--name-only", "--name-status", "--raw", "--summary",
-        "--pretty", "--format", "--oneline", "--abbrev-commit", "--no-abbrev-commit", "--date",
-        "--end-of-options", "-U", "--unified",
+        "-u",
+        "--include-untracked",
+        "--no-include-untracked",
+        "-k",
+        "--keep-index",
+        "--no-keep-index",
+        "-q",
+        "--quiet",
+        "-m",
+        "--message",
+        "--index",
+        "--no-index",
+        "-z",
+        "-p",
+        "--patch",
+        "-s",
+        "--no-patch",
+        "--stat",
+        "--numstat",
+        "--shortstat",
+        "--name-only",
+        "--name-status",
+        "--raw",
+        "--summary",
+        "--pretty",
+        "--format",
+        "--oneline",
+        "--abbrev-commit",
+        "--no-abbrev-commit",
+        "--date",
+        "--end-of-options",
+        "-U",
+        "--unified",
     ],
     placeholders: PLACEHOLDERS,
 }];
@@ -75,9 +103,12 @@ fn parse_push(tokens: &[OsString], save: bool) -> Result<(save::Opts, Vec<OsStri
             }
             break;
         }
-        let missing = |name: &str| CliError::Usage(format!("error: switch `{name}' requires a value"));
+        let missing =
+            |name: &str| CliError::Usage(format!("error: switch `{name}' requires a value"));
         if let Some(long) = t.strip_prefix("--") {
-            let (name, inline) = long.split_once('=').map_or((long, None), |(n, v)| (n, Some(v.to_owned())));
+            let (name, inline) = long
+                .split_once('=')
+                .map_or((long, None), |(n, v)| (n, Some(v.to_owned())));
             match name {
                 "include-untracked" => o.untracked = true,
                 "no-include-untracked" => o.untracked = false,
@@ -94,7 +125,9 @@ fn parse_push(tokens: &[OsString], save: bool) -> Result<(save::Opts, Vec<OsStri
                 "patch" => return Err(unsupported("--patch")),
                 "staged" => return Err(unsupported("--staged")),
                 "all" => return Err(unsupported("--all")),
-                "pathspec-from-file" | "pathspec-file-nul" => return Err(unsupported("--pathspec-from-file")),
+                "pathspec-from-file" | "pathspec-file-nul" => {
+                    return Err(unsupported("--pathspec-from-file"));
+                }
                 _ => return Err(CliError::Usage(format!("error: unknown option `{name}'"))),
             }
             continue;
@@ -118,7 +151,9 @@ fn parse_push(tokens: &[OsString], save: bool) -> Result<(save::Opts, Vec<OsStri
                     'p' => return Err(unsupported("--patch")),
                     'S' => return Err(unsupported("--staged")),
                     'a' => return Err(unsupported("--all")),
-                    other => return Err(CliError::Usage(format!("error: unknown switch `{other}'"))),
+                    other => {
+                        return Err(CliError::Usage(format!("error: unknown switch `{other}'")));
+                    }
                 }
             }
             continue;
@@ -157,7 +192,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some("clear") => clear(ctx, args).await,
         Some("branch") => branch(ctx, args).await,
         Some("create") => {
-            let message = (!args.is_empty()).then(|| args.iter().map(text).collect::<Vec<_>>().join(" "));
+            let message =
+                (!args.is_empty()).then(|| args.iter().map(text).collect::<Vec<_>>().join(" "));
             save::create(ctx, message).await
         }
         Some("store") => store(ctx, args).await,
@@ -183,7 +219,10 @@ fn parse_apply(args: &[OsString]) -> Result<(apply::Opts, Option<String>)> {
             Some("--index") => o.index = true,
             Some("--no-index") => o.index = false,
             Some(t) if t.starts_with('-') && t != "-" => {
-                return Err(CliError::Usage(format!("error: unknown option `{}'", t.trim_start_matches('-'))));
+                return Err(CliError::Usage(format!(
+                    "error: unknown option `{}'",
+                    t.trim_start_matches('-')
+                )));
             }
             _ if which.is_none() => which = Some(text(arg)),
             _ => return Err(fatal("asc: too many arguments")),
@@ -198,11 +237,15 @@ async fn pick_any(ctx: &Ctx, stack: &[stack::Entry], arg: Option<&str>) -> Resul
     let ws = ctx.ws()?;
     match stack::pick(ws, stack, arg).await {
         Err(CliError::Raw(msg, 1)) if msg.ends_with("is not a valid reference") => {
-            let Some(arg) = arg else { return Err(CliError::Raw(msg, 1)) };
+            let Some(arg) = arg else {
+                return Err(CliError::Raw(msg, 1));
+            };
             match resolve_rev(ctx, arg).await? {
-                Some(c) if apply::is_stash_like(ws, c).await? => {
-                    Ok(stack::Picked { index: None, commit: c, text: arg.to_owned() })
-                }
+                Some(c) if apply::is_stash_like(ws, c).await? => Ok(stack::Picked {
+                    index: None,
+                    commit: c,
+                    text: arg.to_owned(),
+                }),
                 _ => Err(CliError::Raw(msg, 1)),
             }
         }
@@ -245,7 +288,10 @@ async fn pop(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     let stack = stack::load(ws).await?;
     let picked = stack::pick(ws, &stack, which.as_deref()).await?;
     let Some(index) = picked.index else {
-        return Err(not_a_reference(tool(ctx), which.as_deref().unwrap_or_default()));
+        return Err(not_a_reference(
+            tool(ctx),
+            which.as_deref().unwrap_or_default(),
+        ));
     };
     if !apply::apply(ctx, ws, picked.commit, o).await? {
         println!("The stash entry is kept in case you need it again.");
@@ -259,7 +305,11 @@ async fn pop(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
 async fn announce_drop(ctx: &Ctx, picked: &stack::Picked, quiet: bool) -> Result<()> {
     if !quiet {
         let ws = ctx.ws()?;
-        println!("Dropped {} ({})", picked.text, conflict::git_id(ws, picked.commit).await?);
+        println!(
+            "Dropped {} ({})",
+            picked.text,
+            conflict::git_id(ws, picked.commit).await?
+        );
     }
     Ok(())
 }
@@ -270,7 +320,10 @@ async fn drop_cmd(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     let stack = stack::load(ws).await?;
     let picked = stack::pick(ws, &stack, which.as_deref()).await?;
     let Some(index) = picked.index else {
-        return Err(not_a_reference(tool(ctx), which.as_deref().unwrap_or_default()));
+        return Err(not_a_reference(
+            tool(ctx),
+            which.as_deref().unwrap_or_default(),
+        ));
     };
     ext::op_sink().snapshot_wc();
     stack::drop_at(ctx, ws, &stack, index).await?;
@@ -281,7 +334,10 @@ async fn drop_cmd(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
 async fn clear(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if let Some(extra) = args.first() {
-        return Err(CliError::Usage(format!("error: unknown option `{}'", text(extra).trim_start_matches('-'))));
+        return Err(CliError::Usage(format!(
+            "error: unknown option `{}'",
+            text(extra).trim_start_matches('-')
+        )));
     }
     if stack::load(ws).await?.is_empty() {
         return Ok(ExitCode::SUCCESS);
@@ -303,17 +359,33 @@ async fn branch(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     let stack = stack::load(ws).await?;
     let picked = pick_any(ctx, &stack, which.as_deref()).await?;
     let w = ws.engine.get_changeset(picked.commit).await?;
-    let base = *w.parents.first().ok_or_else(|| fatal("not a stash-like commit"))?;
+    let base = *w
+        .parents
+        .first()
+        .ok_or_else(|| fatal("not a stash-like commit"))?;
     let base_git = conflict::git_id(ws, base).await?;
     let switch_args = super::switch::Args {
-        rest: vec![OsString::from("-c"), name.clone(), OsString::from(base_git.to_string())],
+        rest: vec![
+            OsString::from("-c"),
+            name.clone(),
+            OsString::from(base_git.to_string()),
+        ],
         after: Vec::new(),
     };
     let code = super::switch::run(ctx, switch_args).await?;
     if code != ExitCode::SUCCESS {
         return Ok(code);
     }
-    let ok = apply::apply(ctx, ws, picked.commit, apply::Opts { index: true, quiet: false }).await?;
+    let ok = apply::apply(
+        ctx,
+        ws,
+        picked.commit,
+        apply::Opts {
+            index: true,
+            quiet: false,
+        },
+    )
+    .await?;
     if !ok {
         return Ok(ExitCode::FAILURE);
     }
@@ -341,8 +413,16 @@ fn has_format(flags: &[OsString]) -> bool {
     flags.iter().filter_map(|f| f.to_str()).any(|f| {
         matches!(
             f,
-            "-p" | "--patch" | "-s" | "--no-patch" | "--stat" | "--numstat" | "--shortstat" | "--name-only"
-                | "--name-status" | "--raw" | "--summary"
+            "-p" | "--patch"
+                | "-s"
+                | "--no-patch"
+                | "--stat"
+                | "--numstat"
+                | "--shortstat"
+                | "--name-only"
+                | "--name-status"
+                | "--raw"
+                | "--summary"
         ) || f.starts_with("--stat=")
     })
 }
@@ -364,7 +444,10 @@ async fn show(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     let stack = stack::load(ws).await?;
     let picked = pick_any(ctx, &stack, which.as_deref()).await?;
     let w = ws.engine.get_changeset(picked.commit).await?;
-    let base = *w.parents.first().ok_or_else(|| fatal("not a stash-like commit"))?;
+    let base = *w
+        .parents
+        .first()
+        .ok_or_else(|| fatal("not a stash-like commit"))?;
     if !has_format(&flags) {
         flags.push("--stat".into());
     }
@@ -372,7 +455,14 @@ async fn show(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
     // full git id.
     flags.push(OsString::from(base.to_string()));
     flags.push(OsString::from(picked.commit.to_string()));
-    super::diff::run(ctx, super::diff::opts::RawArgs { cmd: "diff".into(), rest: flags }).await
+    super::diff::run(
+        ctx,
+        super::diff::opts::RawArgs {
+            cmd: "diff".into(),
+            rest: flags,
+        },
+    )
+    .await
 }
 
 // ---------------------------------------------------------------- store
@@ -391,22 +481,36 @@ async fn store(ctx: &Ctx, args: &[OsString]) -> Result<ExitCode> {
                     CliError::Usage("error: switch `m' requires a value".into())
                 })?));
             }
-            Some(t) if t.starts_with("--message=") => message = Some(t["--message=".len()..].to_owned()),
+            Some(t) if t.starts_with("--message=") => {
+                message = Some(t["--message=".len()..].to_owned())
+            }
             Some(t) if t.starts_with('-') && t != "-" => {
-                return Err(CliError::Usage(format!("error: unknown option `{}'", t.trim_start_matches('-'))));
+                return Err(CliError::Usage(format!(
+                    "error: unknown option `{}'",
+                    t.trim_start_matches('-')
+                )));
             }
             _ if commit.is_none() && !extra => commit = Some(text(arg)),
             _ => extra = true,
         }
     }
     let Some(arg) = commit.filter(|_| !extra) else {
-        return Err(CliError::Raw(format!("\"{} stash store\" requires one <commit> argument", tool(ctx)), 1));
+        return Err(CliError::Raw(
+            format!(
+                "\"{} stash store\" requires one <commit> argument",
+                tool(ctx)
+            ),
+            1,
+        ));
     };
     let Some(c) = resolve_rev(ctx, &arg).await? else {
         return Err(fatal(format!("'{arg}' is not a stash-like commit")));
     };
     if !apply::is_stash_like(ws, c).await? {
-        return Err(fatal(format!("'{}' is not a stash-like commit", conflict::git_id(ws, c).await?)));
+        return Err(fatal(format!(
+            "'{}' is not a stash-like commit",
+            conflict::git_id(ws, c).await?
+        )));
     }
     let message = message.unwrap_or_else(|| format!("Created via \"{} stash store\".", tool(ctx)));
     // Like a ref update to the value the ref already has: nothing is logged.
@@ -431,15 +535,24 @@ mod tests {
         assert_eq!(o.message.as_deref(), Some("msg"));
         assert_eq!(o.paths, words(&["a", "b"]));
         let (o, _) = parse_push(&words(&["--message=x y", "-q", "p"]), false).unwrap();
-        assert_eq!((o.message.as_deref(), o.quiet, o.paths), (Some("x y"), true, words(&["p"])));
+        assert_eq!(
+            (o.message.as_deref(), o.quiet, o.paths),
+            (Some("x y"), true, words(&["p"]))
+        );
         let (o, _) = parse_push(&words(&["-mattached"]), false).unwrap();
         assert_eq!(o.message.as_deref(), Some("attached"));
     }
 
     #[test]
     fn a_missing_message_is_a_usage_error() {
-        assert!(matches!(parse_push(&words(&["-m"]), false), Err(CliError::Usage(_))));
-        assert!(matches!(parse_push(&words(&["--message"]), false), Err(CliError::Usage(_))));
+        assert!(matches!(
+            parse_push(&words(&["-m"]), false),
+            Err(CliError::Usage(_))
+        ));
+        assert!(matches!(
+            parse_push(&words(&["--message"]), false),
+            Err(CliError::Usage(_))
+        ));
     }
 
     #[test]
@@ -449,7 +562,10 @@ mod tests {
         for flag in ["-p", "--patch", "-S", "--staged", "-a", "--all"] {
             assert!(parse_push(&words(&[flag]), false).is_err(), "{flag}");
         }
-        assert!(matches!(parse_push(&words(&["--bogus"]), false), Err(CliError::Usage(_))));
+        assert!(matches!(
+            parse_push(&words(&["--bogus"]), false),
+            Err(CliError::Usage(_))
+        ));
     }
 
     #[test]

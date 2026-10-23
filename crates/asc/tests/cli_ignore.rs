@@ -21,7 +21,9 @@ struct Out {
 }
 
 fn finish(mut cmd: Command, stdin: &[u8]) -> Out {
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("spawn");
     let mut input = child.stdin.take().expect("stdin");
     let bytes = stdin.to_vec();
@@ -30,7 +32,11 @@ fn finish(mut cmd: Command, stdin: &[u8]) -> Out {
     });
     let out = child.wait_with_output().expect("wait");
     feeder.join().unwrap();
-    Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+    Out {
+        code: out.status.code().unwrap_or(-1),
+        stdout: text(&out.stdout),
+        stderr: text(&out.stderr),
+    }
 }
 
 /// An asc workspace and a real git repository holding the same files.
@@ -44,7 +50,10 @@ impl Rig {
     async fn new() -> Self {
         let f = Fixture::new().await;
         let git = f.sandbox.dir("gitwork");
-        let git_bin = RealGit::resolve(None, None).expect("real git").path().to_owned();
+        let git_bin = RealGit::resolve(None, None)
+            .expect("real git")
+            .path()
+            .to_owned();
         let rig = Self { f, git, git_bin };
         for args in [
             &["init", "-q"][..],
@@ -111,8 +120,16 @@ impl Rig {
     fn same(&self, sub: &str, args: &[&str], stdin: &[u8], err: bool) -> Out {
         let (c, g) = (self.asc_in(sub, args, stdin), self.git_in(sub, args, stdin));
         let what = format!("{args:?} in {sub:?}");
-        assert_eq!(c.stdout, g.stdout, "stdout of {what}\nasc stderr: {}", c.stderr);
-        assert_eq!(c.code, g.code, "exit code of {what}\nasc stderr: {}", c.stderr);
+        assert_eq!(
+            c.stdout, g.stdout,
+            "stdout of {what}\nasc stderr: {}",
+            c.stderr
+        );
+        assert_eq!(
+            c.code, g.code,
+            "exit code of {what}\nasc stderr: {}",
+            c.stderr
+        );
         if err {
             assert_eq!(c.stderr, g.stderr, "stderr of {what}");
         }
@@ -131,7 +148,12 @@ impl Rig {
 fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
     for entry in fs::read_dir(dir).unwrap() {
         let entry = entry.unwrap();
-        let rel = entry.path().strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         if rel == ".git" || rel == ".asc" {
             continue;
         }
@@ -148,25 +170,63 @@ fn walk(root: &Path, dir: &Path, out: &mut BTreeSet<String>) {
 
 async fn ignore_rig() -> Rig {
     let r = Rig::new().await;
-    r.seed(&[("tracked.log", b"t\n"), ("sub/keep.txt", b"k\n")]).await;
+    r.seed(&[("tracked.log", b"t\n"), ("sub/keep.txt", b"k\n")])
+        .await;
     r.write(".gitignore", b"build/\n*.log\n!keep.log\n/rooted\n*.tmp\n");
     r.write("sub/.gitignore", b"x.tmp\n!y.tmp\nlocal/\n");
-    for f in ["a.log", "keep.log", "rooted", "sub/rooted", "build/x.o", "sub/x.tmp", "sub/y.tmp", "sub/local/f", "a.tmp", "sp ace.log"] {
+    for f in [
+        "a.log",
+        "keep.log",
+        "rooted",
+        "sub/rooted",
+        "build/x.o",
+        "sub/x.tmp",
+        "sub/y.tmp",
+        "sub/local/f",
+        "a.tmp",
+        "sp ace.log",
+    ] {
         r.write(f, b"x\n");
     }
     r
 }
 
 const IGNORE_PATHS: &[&str] = &[
-    "build", "build/", "build/x.o", "nonexist/", "build2/", "a.log", "keep.log", "sub/x.tmp", "sub/y.tmp", "tracked.log",
-    "rooted", "sub/rooted", "nothing", "sub/local/f", "sub/local", "a.tmp", "sp ace.log", "sub/z.tmp", "./a.log",
-    "sub/../a.log", "sub", "sub/keep.txt",
+    "build",
+    "build/",
+    "build/x.o",
+    "nonexist/",
+    "build2/",
+    "a.log",
+    "keep.log",
+    "sub/x.tmp",
+    "sub/y.tmp",
+    "tracked.log",
+    "rooted",
+    "sub/rooted",
+    "nothing",
+    "sub/local/f",
+    "sub/local",
+    "a.tmp",
+    "sp ace.log",
+    "sub/z.tmp",
+    "./a.log",
+    "sub/../a.log",
+    "sub",
+    "sub/keep.txt",
 ];
 
 #[tokio::test]
 async fn check_ignore_matches_git() {
     let r = ignore_rig().await;
-    for flags in [&[][..], &["-v"], &["-v", "-n"], &["--no-index"], &["-v", "--no-index"], &["-v", "-n", "--no-index"]] {
+    for flags in [
+        &[][..],
+        &["-v"],
+        &["-v", "-n"],
+        &["--no-index"],
+        &["-v", "--no-index"],
+        &["-v", "-n", "--no-index"],
+    ] {
         let mut args = vec!["check-ignore"];
         args.extend(flags);
         args.extend(IGNORE_PATHS);
@@ -186,23 +246,59 @@ async fn check_ignore_matches_git() {
 #[tokio::test]
 async fn check_ignore_in_a_subdirectory_prints_names_as_typed() {
     let r = ignore_rig().await;
-    r.same("sub", &["check-ignore", "-v", "-n", "x.tmp", "y.tmp", "../a.log", "local/f", "../tracked.log", "rooted"], b"", false);
-    r.same("sub", &["check-ignore", "-v", "../build/x.o", "../sub/x.tmp"], b"", false);
-    assert_eq!(r.asc_in("sub", &["check-ignore", "../../outside"], b"").code, 128);
-    assert_eq!(r.git_in("sub", &["check-ignore", "../../outside"], b"").code, 128);
+    r.same(
+        "sub",
+        &[
+            "check-ignore",
+            "-v",
+            "-n",
+            "x.tmp",
+            "y.tmp",
+            "../a.log",
+            "local/f",
+            "../tracked.log",
+            "rooted",
+        ],
+        b"",
+        false,
+    );
+    r.same(
+        "sub",
+        &["check-ignore", "-v", "../build/x.o", "../sub/x.tmp"],
+        b"",
+        false,
+    );
+    assert_eq!(
+        r.asc_in("sub", &["check-ignore", "../../outside"], b"").code,
+        128
+    );
+    assert_eq!(
+        r.git_in("sub", &["check-ignore", "../../outside"], b"")
+            .code,
+        128
+    );
 }
 
 #[tokio::test]
 async fn check_ignore_stdin_and_nul_forms_match_git() {
     let r = ignore_rig().await;
     let lines = b"a.log\nnothing\nkeep.log\n\"sp ace.log\"\nsub/x.tmp\nbuild/\n";
-    for flags in [&["--stdin"][..], &["--stdin", "-v"], &["--stdin", "-v", "-n"], &["--stdin", "--no-index", "-v", "-n"]] {
+    for flags in [
+        &["--stdin"][..],
+        &["--stdin", "-v"],
+        &["--stdin", "-v", "-n"],
+        &["--stdin", "--no-index", "-v", "-n"],
+    ] {
         let mut args = vec!["check-ignore"];
         args.extend(flags);
         r.same("", &args, lines, false);
     }
     let nul = b"a.log\0nothing\0keep.log\0sp ace.log\0sub/x.tmp\0build/\0";
-    for flags in [&["--stdin", "-z"][..], &["--stdin", "-z", "-v"], &["--stdin", "-z", "-v", "-n"]] {
+    for flags in [
+        &["--stdin", "-z"][..],
+        &["--stdin", "-z", "-v"],
+        &["--stdin", "-z", "-v", "-n"],
+    ] {
         let mut args = vec!["check-ignore"];
         args.extend(flags);
         r.same("", &args, nul, false);
@@ -234,7 +330,10 @@ async fn ascignore_replaces_gitignore_and_is_named_by_v() {
     }
     let out = r.asc(&["check-ignore", "-v", "-n", "a.log", "a.tmp", "keep.tmp"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(out.stdout, "::\ta.log\n.ascignore:2:*.tmp\ta.tmp\n.ascignore:3:!keep.tmp\tkeep.tmp\n");
+    assert_eq!(
+        out.stdout,
+        "::\ta.log\n.ascignore:2:*.tmp\ta.tmp\n.ascignore:3:!keep.tmp\tkeep.tmp\n"
+    );
     assert_eq!(
         out.stderr,
         "warning: asc: .gitignore is not read because .ascignore exists (rename or merge it: asc migrate ignore)\n"
@@ -242,7 +341,10 @@ async fn ascignore_replaces_gitignore_and_is_named_by_v() {
     // The same contents in both files: no shadow warning.
     fs::write(r.f.root.join(".gitignore"), "# mine\n*.tmp\n!keep.tmp\n").unwrap();
     let again = r.asc(&["check-ignore", "a.tmp"]);
-    assert_eq!((again.code, again.stdout.as_str(), again.stderr.as_str()), (0, "a.tmp\n", ""));
+    assert_eq!(
+        (again.code, again.stdout.as_str(), again.stderr.as_str()),
+        (0, "a.tmp\n", "")
+    );
 }
 
 #[tokio::test]
@@ -250,7 +352,13 @@ async fn exclude_files_are_named_with_their_location() {
     let r = Rig::new().await;
     fs::create_dir_all(r.f.root.join(".asc/info")).unwrap();
     fs::write(r.f.root.join(".asc/info/exclude"), "scratch/\n*.bak\n").unwrap();
-    let out = r.asc(&["check-ignore", "-v", "x.bak", "scratch/f", ".asc/info/exclude"]);
+    let out = r.asc(&[
+        "check-ignore",
+        "-v",
+        "x.bak",
+        "scratch/f",
+        ".asc/info/exclude",
+    ]);
     assert_eq!(
         out.stdout,
         ".asc/info/exclude:2:*.bak\tx.bak\n.asc/info/exclude:1:scratch/\tscratch/f\n:0:.asc/info/\t.asc/info/exclude\n"
@@ -267,7 +375,11 @@ async fn check_ignore_refuses_a_path_beyond_a_link() {
     }
     let out = r.asc(&["check-ignore", "link/f"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("is beyond a symbolic link"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("is beyond a symbolic link"),
+        "{}",
+        out.stderr
+    );
 }
 
 /// Makes `link` a directory link to `target`; false when the OS refuses.
@@ -302,19 +414,82 @@ async fn attr_rig() -> Rig {
 }
 
 const ATTR_PATHS: &[&str] = &[
-    "tr.txt", "a.bin", "sub/f.txt", "sub/x.mm", "x.mm", "plain", "missing/dir/file.bin", "sub/special", "sub/deep/n.txt", "sub",
+    "tr.txt",
+    "a.bin",
+    "sub/f.txt",
+    "sub/x.mm",
+    "x.mm",
+    "plain",
+    "missing/dir/file.bin",
+    "sub/special",
+    "sub/deep/n.txt",
+    "sub",
 ];
 
 #[tokio::test]
 async fn check_attr_matches_git() {
     let r = attr_rig().await;
-    r.same("", &[&["check-attr", "-a", "--"][..], ATTR_PATHS].concat(), b"", false);
-    r.same("", &[&["check-attr", "-a"][..], ATTR_PATHS].concat(), b"", false);
-    r.same("", &[&["check-attr", "text", "eol", "diff", "foo", "custom", "binary", "bar", "x", "nosuch", "--"][..], ATTR_PATHS].concat(), b"", false);
-    r.same("", &[&["check-attr", "text", "text", "Text"][..], &["tr.txt"]].concat(), b"", false);
-    r.same("", &["check-attr", "-z", "text", "eol", "--", "tr.txt", "sub/f.txt"], b"", false);
+    r.same(
+        "",
+        &[&["check-attr", "-a", "--"][..], ATTR_PATHS].concat(),
+        b"",
+        false,
+    );
+    r.same(
+        "",
+        &[&["check-attr", "-a"][..], ATTR_PATHS].concat(),
+        b"",
+        false,
+    );
+    r.same(
+        "",
+        &[
+            &[
+                "check-attr",
+                "text",
+                "eol",
+                "diff",
+                "foo",
+                "custom",
+                "binary",
+                "bar",
+                "x",
+                "nosuch",
+                "--",
+            ][..],
+            ATTR_PATHS,
+        ]
+        .concat(),
+        b"",
+        false,
+    );
+    r.same(
+        "",
+        &[&["check-attr", "text", "text", "Text"][..], &["tr.txt"]].concat(),
+        b"",
+        false,
+    );
+    r.same(
+        "",
+        &[
+            "check-attr",
+            "-z",
+            "text",
+            "eol",
+            "--",
+            "tr.txt",
+            "sub/f.txt",
+        ],
+        b"",
+        false,
+    );
     r.same("", &["check-attr", "-z", "-a", "tr.txt"], b"", false);
-    r.same("sub", &["check-attr", "-a", "f.txt", "../tr.txt", "x.mm"], b"", false);
+    r.same(
+        "sub",
+        &["check-attr", "-a", "f.txt", "../tr.txt", "x.mm"],
+        b"",
+        false,
+    );
     r.same("sub", &["check-attr", "text", "tr.txt"], b"", false);
 }
 
@@ -325,7 +500,12 @@ async fn check_attr_stdin_forms_match_git() {
     r.same("", &["check-attr", "--stdin", "text", "diff"], lines, false);
     r.same("", &["check-attr", "--stdin", "-a"], lines, false);
     let nul = b"tr.txt\0a.bin\0sub/f.txt\0";
-    r.same("", &["check-attr", "--stdin", "-z", "text", "diff"], nul, false);
+    r.same(
+        "",
+        &["check-attr", "--stdin", "-z", "text", "diff"],
+        nul,
+        false,
+    );
     r.same("", &["check-attr", "--stdin", "-z", "-a"], nul, false);
 }
 
@@ -354,7 +534,15 @@ async fn ascattributes_replaces_gitattributes_per_directory() {
     fs::create_dir_all(r.f.root.join("sub")).unwrap();
     fs::write(r.f.root.join("sub/.gitattributes"), "* text\n").unwrap();
     fs::write(r.f.root.join("sub/.ascattributes"), "* -text mine=1\n").unwrap();
-    let out = r.asc(&["check-attr", "text", "mine", "--", "x", "sub/x", "sub/deeper/x"]);
+    let out = r.asc(&[
+        "check-attr",
+        "text",
+        "mine",
+        "--",
+        "x",
+        "sub/x",
+        "sub/deeper/x",
+    ]);
     assert_eq!(
         out.stdout,
         "x: text: set\nx: mine: unspecified\nsub/x: text: unset\nsub/x: mine: 1\nsub/deeper/x: text: unset\nsub/deeper/x: mine: 1\n"
@@ -372,7 +560,11 @@ async fn attribute_files_behind_a_link_are_not_read() {
         return;
     }
     let out = r.asc(&["check-attr", "secret", "--", "link/f"]);
-    assert_eq!(out.stdout, "link/f: secret: unspecified\n", "{}", out.stderr);
+    assert_eq!(
+        out.stdout, "link/f: secret: unspecified\n",
+        "{}",
+        out.stderr
+    );
 }
 
 // ---------------------------------------------------------------- grep
@@ -390,7 +582,10 @@ async fn grep_rig() -> Rig {
     ])
     .await;
     // Dirty: a changed tracked file, a deleted one and an untracked one.
-    r.write("a.txt", b"Hello World\nfoo bar\nfoobar\nthe foo\nlast\nfoo dirty line\n");
+    r.write(
+        "a.txt",
+        b"Hello World\nfoo bar\nfoobar\nthe foo\nlast\nfoo dirty line\n",
+    );
     for root in [&r.f.root, &r.git] {
         fs::remove_file(root.join("gone.txt")).unwrap();
     }
@@ -447,7 +642,11 @@ async fn grep_matches_git() {
 #[tokio::test]
 async fn grep_misuse_and_limits() {
     let r = grep_rig().await;
-    for args in [&["grep"][..], &["grep", "-E", "("], &["grep", "foo", "nonexistent-path"]] {
+    for args in [
+        &["grep"][..],
+        &["grep", "-E", "("],
+        &["grep", "foo", "nonexistent-path"],
+    ] {
         let (c, g) = (r.asc_in("", args, b""), r.git_in("", args, b""));
         assert_eq!(c.code, g.code, "{args:?}: {}", c.stderr);
         assert!(c.stderr.starts_with("fatal: "), "{args:?}: {}", c.stderr);
@@ -455,7 +654,11 @@ async fn grep_misuse_and_limits() {
     // Back-references are refused, not misread.
     let out = r.asc(&["grep", "-E", "(fo)\\1"]);
     assert_eq!(out.code, 128);
-    assert!(out.stderr.contains("back-references are not supported"), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("back-references are not supported"),
+        "{}",
+        out.stderr
+    );
     // A pattern that blows the expression size limit is an error, not a hang.
     let big = "a{1000}{1000}{1000}";
     assert_eq!(r.asc(&["grep", "-E", big]).code, 128);
@@ -466,7 +669,15 @@ async fn grep_does_not_read_through_links() {
     let r = Rig::new().await;
     let outside = r.f.sandbox.dir("grep-outside");
     fs::write(outside.join("secret"), "needle outside\n").unwrap();
-    let c = r.f.commit(&[], &[("link/secret", b"needle tracked\n"), ("plain", b"needle plain\n")]).await;
+    let c =
+        r.f.commit(
+            &[],
+            &[
+                ("link/secret", b"needle tracked\n"),
+                ("plain", b"needle plain\n"),
+            ],
+        )
+        .await;
     r.f.set_branch("master", c).await;
     r.f.checkout_branch("master", Some(c)).await;
     fs::write(r.f.root.join("plain"), "needle plain\n").unwrap();
@@ -481,7 +692,12 @@ async fn grep_does_not_read_through_links() {
 
 async fn clean_rig() -> Rig {
     let r = Rig::new().await;
-    r.seed(&[(".gitignore", b"*.log\nbuild/\n"), ("tr.txt", b"t\n"), ("tdir/f", b"x\n")]).await;
+    r.seed(&[
+        (".gitignore", b"*.log\nbuild/\n"),
+        ("tr.txt", b"t\n"),
+        ("tdir/f", b"x\n"),
+    ])
+    .await;
     for (f, body) in [
         ("un.txt", "a"),
         ("u1/deep/f", "a"),
@@ -589,7 +805,11 @@ async fn clean_refuses_without_force() {
     assert_eq!(r.files(false), before);
     let both = r.asc(&["clean", "-nx", "-X"]);
     assert_eq!(both.code, 128);
-    assert!(both.stderr.contains("cannot be used together"), "{}", both.stderr);
+    assert!(
+        both.stderr.contains("cannot be used together"),
+        "{}",
+        both.stderr
+    );
     // `clean.requireForce=false` lifts the need for -f.
     assert_eq!(r.asc(&["config", "clean.requireForce", "false"]).code, 0);
     assert_eq!(r.git(&["config", "clean.requireForce", "false"]).code, 0);
@@ -613,21 +833,45 @@ async fn clean_never_follows_links_or_touches_metadata() {
     fs::write(r.f.root.join("nested/f"), "x").unwrap();
     let out = r.asc(&["clean", "-fdx"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(outside.join("inner/keep").exists() && outside.join("top").exists(), "files behind a link survive");
+    assert!(
+        outside.join("inner/keep").exists() && outside.join("top").exists(),
+        "files behind a link survive"
+    );
     if linked {
-        assert!(!r.f.root.join("linkdir").exists(), "the link itself is removed");
+        assert!(
+            !r.f.root.join("linkdir").exists(),
+            "the link itself is removed"
+        );
     }
-    assert!(r.f.root.join(".asc/redirections").exists(), "the .asc metadata directory is never removed");
-    assert!(r.f.root.join("node_modules/pkg/index.js").exists(), "redirected names are never walked");
-    assert!(r.f.root.join("nested/f").exists(), "a nested repository survives a single -f");
+    assert!(
+        r.f.root.join(".asc/redirections").exists(),
+        "the .asc metadata directory is never removed"
+    );
+    assert!(
+        r.f.root.join("node_modules/pkg/index.js").exists(),
+        "redirected names are never walked"
+    );
+    assert!(
+        r.f.root.join("nested/f").exists(),
+        "a nested repository survives a single -f"
+    );
     assert!(!r.f.root.join("un.txt").exists() && !r.f.root.join("u1").exists());
-    assert!(r.f.root.join("tr.txt").exists() && r.f.root.join("tdir/f").exists(), "tracked files stay");
+    assert!(
+        r.f.root.join("tr.txt").exists() && r.f.root.join("tdir/f").exists(),
+        "tracked files stay"
+    );
     // `-ff` asks for the nested repository too; asc never deletes a `.git`, so it stays and asc says
     // so. What is behind a link stays as well.
     let forced = r.asc(&["clean", "-ffdx"]);
     assert_eq!(forced.code, 0, "{}", forced.stderr);
     assert!(r.f.root.join("nested/f").exists());
-    assert!(forced.stderr.contains("not removing the nested repository nested/"), "{}", forced.stderr);
+    assert!(
+        forced
+            .stderr
+            .contains("not removing the nested repository nested/"),
+        "{}",
+        forced.stderr
+    );
     assert!(outside.join("inner/keep").exists());
 }
 
@@ -636,15 +880,26 @@ async fn clean_keeps_the_current_directory() {
     let r = clean_rig().await;
     let out = r.asc_in("u1/deep", &["clean", "-fd"], b"");
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(r.f.root.join("u1/deep").is_dir(), "the current directory is not removed");
-    assert!(out.stdout.contains("Refusing to remove current working directory"), "{}", out.stdout);
+    assert!(
+        r.f.root.join("u1/deep").is_dir(),
+        "the current directory is not removed"
+    );
+    assert!(
+        out.stdout
+            .contains("Refusing to remove current working directory"),
+        "{}",
+        out.stdout
+    );
 }
 
 #[tokio::test]
 async fn clean_keeps_the_empty_directory_when_removing_it_would_take_an_unnamed_parent() {
     let r = Rig::new().await;
-    r.seed(&[("tr.txt", b"t
-")]).await;
+    r.seed(&[(
+        "tr.txt", b"t
+",
+    )])
+    .await;
     fs::create_dir_all(r.f.root.join("outer/inner")).unwrap();
     fs::write(r.f.root.join("outer/inner/f"), "x").unwrap();
     // `outer` is untracked and only `outer/inner` is named. The gate removes a directory only as
@@ -652,7 +907,12 @@ async fn clean_keeps_the_empty_directory_when_removing_it_would_take_an_unnamed_
     // keeps the emptied directory and says so, where git removes `inner` and keeps `outer`.
     let out = r.asc(&["clean", "-f", "outer/inner"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert!(out.stderr.contains("warning: asc: left the empty directory outer/inner/"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("warning: asc: left the empty directory outer/inner/"),
+        "{}",
+        out.stderr
+    );
     assert!(!r.f.root.join("outer/inner/f").exists());
     assert!(r.f.root.join("outer/inner").is_dir());
     // With another entry in `outer` the removal is exactly git's.

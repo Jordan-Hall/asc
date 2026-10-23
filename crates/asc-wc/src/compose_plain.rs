@@ -172,11 +172,7 @@ pub fn valid_repo_name(name: &str) -> bool {
 /// `../soma.git` gives `asc/soma`; an absolute url gives its last two path segments.
 pub fn derive_repo(parent: &str, url: &str) -> Option<String> {
     let url = url.trim();
-    let strip = |s: &str| {
-        s.trim_end_matches('/')
-            .trim_end_matches(".git")
-            .to_owned()
-    };
+    let strip = |s: &str| s.trim_end_matches('/').trim_end_matches(".git").to_owned();
     let relative = url.starts_with("./") || url.starts_with("../");
     let derived = if relative {
         let mut stack: Vec<String> = parent.split('/').map(str::to_owned).collect();
@@ -1069,18 +1065,37 @@ mod tests {
             .unwrap();
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sub"), with_link, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sub"),
+            with_link,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         assert!(fx.root.join("sub/deep/link").is_dir());
-        assert_eq!(fs::read_dir(fx.root.join("sub/deep/link")).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_dir(fx.root.join("sub/deep/link")).unwrap().count(),
+            0
+        );
 
         let tight = Limits {
             max_entries: 1,
             ..Limits::default()
         };
-        let err = project(&*fx.store, &gate, &p("sub2"), with_link, true, Replace::EmptyOnly, &tight)
-            .await;
+        let err = project(
+            &*fx.store,
+            &gate,
+            &p("sub2"),
+            with_link,
+            true,
+            Replace::EmptyOnly,
+            &tight,
+        )
+        .await;
         assert!(matches!(err, Err(Error::TooBig("entry count"))));
         assert!(!fx.root.join("sub2").exists());
         assert_eq!(
@@ -1115,7 +1130,16 @@ mod tests {
             .unwrap();
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        let err = project(&*fx.store, &gate, &p("s"), ghost, true, Replace::EmptyOnly, &lim).await;
+        let err = project(
+            &*fx.store,
+            &gate,
+            &p("s"),
+            ghost,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await;
         assert!(matches!(err, Err(Error::BadContent(_))));
         assert!(!fx.root.join("s").exists());
     }
@@ -1146,7 +1170,16 @@ mod tests {
         let t = fx.tree(&[("a", Kind::File, b"1")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        let err = project(&*fx.store, &gate, &p("evil/sdk"), t, true, Replace::EmptyOnly, &lim).await;
+        let err = project(
+            &*fx.store,
+            &gate,
+            &p("evil/sdk"),
+            t,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await;
         assert!(matches!(err, Err(Error::Unsafe(_))));
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         assert!(matches!(
@@ -1161,9 +1194,17 @@ mod tests {
         let t = fx.tree(&[("a", Kind::File, b"1")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sdk"), t, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            t,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         assert!(looks_composed(&gate, &p("sdk")));
         fs::create_dir_all(fx.root.join("mine")).unwrap();
         fs::write(fx.root.join("mine/file"), b"x").unwrap();
@@ -1204,10 +1245,22 @@ mod tests {
         fs::write(mine.join("one/two/work.txt"), b"unsaved work").unwrap();
 
         assert!(!looks_composed(&gate, &p("mine")));
-        let err = project(&*fx.store, &gate, &p("mine"), t, true, Replace::Composed, &lim).await;
+        let err = project(
+            &*fx.store,
+            &gate,
+            &p("mine"),
+            t,
+            true,
+            Replace::Composed,
+            &lim,
+        )
+        .await;
         assert!(err.is_err(), "a user directory is never replaced");
         assert!(clear(&gate, &p("mine")).is_err());
-        assert_eq!(fs::read(mine.join("one/two/work.txt")).unwrap(), b"unsaved work");
+        assert_eq!(
+            fs::read(mine.join("one/two/work.txt")).unwrap(),
+            b"unsaved work"
+        );
         assert_eq!(fs::read(mine.join("ro.txt")).unwrap(), b"ro");
     }
 
@@ -1225,7 +1278,16 @@ mod tests {
         }
 
         assert!(!looks_composed(&gate, &p("plain")));
-        let replaced = project(&*fx.store, &gate, &p("plain"), t, true, Replace::Composed, &lim).await;
+        let replaced = project(
+            &*fx.store,
+            &gate,
+            &p("plain"),
+            t,
+            true,
+            Replace::Composed,
+            &lim,
+        )
+        .await;
         assert!(replaced.is_err());
         assert!(restrict(&gate, &p("plain"), Replace::Composed).is_err());
         assert!(clear(&gate, &p("plain")).is_err());
@@ -1237,18 +1299,37 @@ mod tests {
     async fn a_genuine_composed_copy_is_replaced() {
         let fx = Fixture::new();
         let v1 = fx
-            .tree(&[("lib.rs", Kind::File, b"v1"), ("d/e/deep.rs", Kind::File, b"d1")])
+            .tree(&[
+                ("lib.rs", Kind::File, b"v1"),
+                ("d/e/deep.rs", Kind::File, b"d1"),
+            ])
             .await;
         let v2 = fx.tree(&[("lib.rs", Kind::File, b"v2")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sdk"), v1, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            v1,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         assert!(looks_composed(&gate, &p("sdk")));
-        project(&*fx.store, &gate, &p("sdk"), v2, true, Replace::Composed, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            v2,
+            true,
+            Replace::Composed,
+            &lim,
+        )
+        .await
+        .unwrap();
         assert_eq!(fx.read("sdk/lib.rs"), b"v2");
         assert!(!fx.root.join("sdk/d").exists());
         assert!(looks_composed(&gate, &p("sdk")));
@@ -1262,23 +1343,42 @@ mod tests {
     async fn a_composed_copy_with_one_nested_file_made_writable_survives() {
         let fx = Fixture::new();
         let v1 = fx
-            .tree(&[("lib.rs", Kind::File, b"v1"), ("d/e/deep.rs", Kind::File, b"d1")])
+            .tree(&[
+                ("lib.rs", Kind::File, b"v1"),
+                ("d/e/deep.rs", Kind::File, b"d1"),
+            ])
             .await;
         let v2 = fx.tree(&[("lib.rs", Kind::File, b"v2")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sdk"), v1, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            v1,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         let deep = fx.root.join("sdk/d/e/deep.rs");
         make_writable(&deep);
         fs::write(&deep, b"my edit").unwrap();
 
         assert!(!looks_composed(&gate, &p("sdk")));
-        let err = project(&*fx.store, &gate, &p("sdk"), v2, true, Replace::Composed, &lim)
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            v2,
+            true,
+            Replace::Composed,
+            &lim,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("not a composed"), "{err}");
         assert!(err.contains("deep.rs"), "the refusal names the file: {err}");
         assert!(clear(&gate, &p("sdk")).is_err());
@@ -1289,12 +1389,22 @@ mod tests {
     #[tokio::test]
     async fn a_marker_for_another_path_or_an_added_entry_is_not_ours() {
         let fx = Fixture::new();
-        let t = fx.tree(&[("a", Kind::File, b"1"), ("d/b", Kind::File, b"2")]).await;
+        let t = fx
+            .tree(&[("a", Kind::File, b"1"), ("d/b", Kind::File, b"2")])
+            .await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("one"), t, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("one"),
+            t,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         // A copied directory carries a marker made for another path.
         copy_dir(&fx.root.join("one"), &fx.root.join("two"));
         let why = check_composed(&gate, &p("two")).unwrap_err().to_string();
@@ -1311,7 +1421,10 @@ mod tests {
         });
         make_read_only(&extra);
         let why = check_composed(&gate, &p("one")).unwrap_err().to_string();
-        assert!(why.contains("asc recorded") || why.contains("writable"), "{why}");
+        assert!(
+            why.contains("asc recorded") || why.contains("writable"),
+            "{why}"
+        );
         assert!(clear(&gate, &p("one")).is_err());
         assert_eq!(fs::read(&extra).unwrap(), b"mine");
     }
@@ -1322,9 +1435,17 @@ mod tests {
         let t = fx.tree(&[("a", Kind::File, b"1")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sdk"), t, true, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            t,
+            true,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         let marker = fx.root.join("sdk").join(MARKER);
         let good = fs::read_to_string(&marker).unwrap();
         make_writable(&marker);
@@ -1333,8 +1454,13 @@ mod tests {
         assert!(!looks_composed(&gate, &p("sdk")));
         let bad_entries = good.replace("entries 1", "entries 7");
         let bad_nonce = good.replace("nonce ", "nonce z");
-        for bad in ["", "asc-composed 1
-", &bad_entries, &bad_nonce] {
+        for bad in [
+            "",
+            "asc-composed 1
+",
+            &bad_entries,
+            &bad_nonce,
+        ] {
             fs::write(&marker, bad).unwrap();
             make_read_only(&marker);
             assert!(!looks_composed(&gate, &p("sdk")), "{bad:?}");
@@ -1353,7 +1479,10 @@ mod tests {
         let dir = gate.resolve(&p("sdk")).unwrap();
         assert!(verify_composed(&dir, &p("sdk"), 0).is_ok());
         let marker = Marker::parse(&fs::read_to_string(dir.join(MARKER)).unwrap()).unwrap();
-        assert_eq!((marker.entries, marker.links, marker.tree.as_str()), (0, 0, RESTRICTED));
+        assert_eq!(
+            (marker.entries, marker.links, marker.tree.as_str()),
+            (0, 0, RESTRICTED)
+        );
 
         // More entries than the cap: refused without finishing the walk.
         let fx2 = Fixture::new();
@@ -1390,9 +1519,17 @@ mod tests {
         let t = fx.tree(&[("a", Kind::File, b"1")]).await;
         let gate = SafeRoot::new(&fx.root);
         let lim = Limits::default();
-        project(&*fx.store, &gate, &p("sdk"), t, false, Replace::EmptyOnly, &lim)
-            .await
-            .unwrap();
+        project(
+            &*fx.store,
+            &gate,
+            &p("sdk"),
+            t,
+            false,
+            Replace::EmptyOnly,
+            &lim,
+        )
+        .await
+        .unwrap();
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("keep"), b"keep").unwrap();
         let sdk = fx.root.join("sdk");

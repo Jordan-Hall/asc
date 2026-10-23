@@ -21,7 +21,12 @@ use crate::native::NativeSpec;
 
 /// Serves six commands: clap's multicall mode picks the subcommand from the command name.
 #[derive(clap::Parser, Debug)]
-#[command(multicall = true, disable_help_flag = true, disable_version_flag = true, disable_help_subcommand = true)]
+#[command(
+    multicall = true,
+    disable_help_flag = true,
+    disable_version_flag = true,
+    disable_help_subcommand = true
+)]
 pub struct Args {
     #[command(subcommand)]
     which: Which,
@@ -29,15 +34,35 @@ pub struct Args {
 
 #[derive(clap::Subcommand, Debug)]
 enum Which {
-    #[command(name = "show-ref", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "show-ref",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     ShowRef(Rest),
-    #[command(name = "for-each-ref", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "for-each-ref",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     ForEachRef(Rest),
-    #[command(name = "symbolic-ref", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "symbolic-ref",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     SymbolicRef(Rest),
-    #[command(name = "update-ref", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "update-ref",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     UpdateRef(Rest),
-    #[command(name = "check-ref-format", disable_help_flag = true, disable_version_flag = true)]
+    #[command(
+        name = "check-ref-format",
+        disable_help_flag = true,
+        disable_version_flag = true
+    )]
     CheckRefFormat(Rest),
     #[command(name = "var", disable_help_flag = true, disable_version_flag = true)]
     Var(Rest),
@@ -53,24 +78,62 @@ pub const NATIVE: &[NativeSpec] = &[
     NativeSpec {
         cmd: "show-ref",
         flags: &[
-            "--head", "--tags", "--branches", "--heads", "-d", "--dereference", "-s", "--hash",
-            "--abbrev", "-q", "--quiet", "--verify", "--exists",
+            "--head",
+            "--tags",
+            "--branches",
+            "--heads",
+            "-d",
+            "--dereference",
+            "-s",
+            "--hash",
+            "--abbrev",
+            "-q",
+            "--quiet",
+            "--verify",
+            "--exists",
         ],
         placeholders: &[],
     },
     NativeSpec {
         cmd: "for-each-ref",
         flags: &[
-            "--count", "--shell", "-s", "--perl", "-p", "--python", "--tcl", "--sort", "--format",
-            "--include-root-refs", "--points-at", "--merged", "--no-merged", "--contains",
-            "--no-contains", "--ignore-case", "--omit-empty", "--exclude", "--stdin", "--color",
-            "--no-color", "--start-after",
+            "--count",
+            "--shell",
+            "-s",
+            "--perl",
+            "-p",
+            "--python",
+            "--tcl",
+            "--sort",
+            "--format",
+            "--include-root-refs",
+            "--points-at",
+            "--merged",
+            "--no-merged",
+            "--contains",
+            "--no-contains",
+            "--ignore-case",
+            "--omit-empty",
+            "--exclude",
+            "--stdin",
+            "--color",
+            "--no-color",
+            "--start-after",
         ],
         placeholders: ref_filter::ATOMS,
     },
     NativeSpec {
         cmd: "symbolic-ref",
-        flags: &["-q", "--quiet", "--short", "--no-recurse", "--recurse", "-m", "-d", "--delete"],
+        flags: &[
+            "-q",
+            "--quiet",
+            "--short",
+            "--no-recurse",
+            "--recurse",
+            "-m",
+            "-d",
+            "--delete",
+        ],
         placeholders: &[],
     },
     NativeSpec {
@@ -81,12 +144,20 @@ pub const NATIVE: &[NativeSpec] = &[
     NativeSpec {
         cmd: "check-ref-format",
         flags: &[
-            "--normalize", "--print", "--allow-onelevel", "--no-allow-onelevel", "--refspec-pattern",
+            "--normalize",
+            "--print",
+            "--allow-onelevel",
+            "--no-allow-onelevel",
+            "--refspec-pattern",
             "--branch",
         ],
         placeholders: &[],
     },
-    NativeSpec { cmd: "var", flags: &["-l"], placeholders: &[] },
+    NativeSpec {
+        cmd: "var",
+        flags: &["-l"],
+        placeholders: &[],
+    },
 ];
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {

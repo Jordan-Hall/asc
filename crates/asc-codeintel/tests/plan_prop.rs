@@ -28,8 +28,7 @@ fn pattern() -> impl Strategy<Value = String> {
     atom().prop_recursive(4, 24, 4, |inner| {
         prop_oneof![
             prop::collection::vec(inner.clone(), 2..4).prop_map(|v| v.concat()),
-            prop::collection::vec(inner.clone(), 2..4)
-                .prop_map(|v| format!("(?:{})", v.join("|"))),
+            prop::collection::vec(inner.clone(), 2..4).prop_map(|v| format!("(?:{})", v.join("|"))),
             inner.clone().prop_map(|s| format!("(?:{s})*")),
             inner.clone().prop_map(|s| format!("(?:{s})+")),
             inner.clone().prop_map(|s| format!("(?:{s})?")),
@@ -115,11 +114,17 @@ fn brute_force_on_fixed_patterns() {
         ("^abc$", "abc", false),
     ];
     for (pat, text, ci) in cases {
-        let re = regex::RegexBuilder::new(pat).case_insensitive(*ci).build().unwrap();
+        let re = regex::RegexBuilder::new(pat)
+            .case_insensitive(*ci)
+            .build()
+            .unwrap();
         assert!(re.is_match(text), "{pat} should match {text:?}");
         let plan = plan_regex(pat, *ci).unwrap();
         let grams = distinct_trigrams(text.as_bytes(), usize::MAX).unwrap();
-        assert!(plan.matches_sorted(&grams), "{pat}: {plan:?} excludes {text:?}");
+        assert!(
+            plan.matches_sorted(&grams),
+            "{pat}: {plan:?} excludes {text:?}"
+        );
     }
 }
 

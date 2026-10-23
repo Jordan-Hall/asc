@@ -50,15 +50,26 @@ fn verify_accepts_pinned_and_rejects_tampered() {
     record("MIT", &f).verify(&f).unwrap();
     let mut bad = f.clone();
     bad.onnx.push(0);
-    assert!(matches!(record("MIT", &f).verify(&bad), Err(Error::Digest { name: "onnx", .. })));
+    assert!(matches!(
+        record("MIT", &f).verify(&bad),
+        Err(Error::Digest { name: "onnx", .. })
+    ));
 }
 
 #[test]
 fn licence_allow_list() {
     let f = files();
-    assert!(matches!(record("CC-BY-NC-4.0", &f).verify(&f), Err(Error::Licence(_))));
+    assert!(matches!(
+        record("CC-BY-NC-4.0", &f).verify(&f),
+        Err(Error::Licence(_))
+    ));
     assert!(Registry::new(vec![record("GPL-3.0", &f)]).get("t").is_err());
-    assert!(Registry::builtin().get("jina-embeddings-v2-base-code").unwrap().licence_allowed());
+    assert!(
+        Registry::builtin()
+            .get("jina-embeddings-v2-base-code")
+            .unwrap()
+            .licence_allowed()
+    );
 }
 
 #[test]
@@ -83,18 +94,30 @@ fn calibration_quantises_and_roundtrips() {
 fn protocol_roundtrip() {
     let mut input = Vec::new();
     protocol::write_frame(&mut input, &Request::Hello).unwrap();
-    protocol::write_frame(&mut input, &Request::Embed { texts: vec!["abc".into()] }).unwrap();
+    protocol::write_frame(
+        &mut input,
+        &Request::Embed {
+            texts: vec!["abc".into()],
+        },
+    )
+    .unwrap();
     protocol::write_frame(&mut input, &Request::Shutdown).unwrap();
     let mut out = Vec::new();
     protocol::serve(&mut Fake, &mut input.as_slice(), &mut out).unwrap();
     let mut r = out.as_slice();
     assert_eq!(
         protocol::read_frame::<Response>(&mut r).unwrap(),
-        Some(Response::Hello { version: 1, model: "fake".into(), dims: 2 })
+        Some(Response::Hello {
+            version: 1,
+            model: "fake".into(),
+            dims: 2
+        })
     );
     assert_eq!(
         protocol::read_frame::<Response>(&mut r).unwrap(),
-        Some(Response::Vectors { vectors: vec![vec![3.0, 1.0]] })
+        Some(Response::Vectors {
+            vectors: vec![vec![3.0, 1.0]]
+        })
     );
     assert_eq!(protocol::read_frame::<Response>(&mut r).unwrap(), None);
 }
@@ -112,7 +135,10 @@ fn protocol_bounds() {
     protocol::write_frame(&mut input, &Request::Embed { texts }).unwrap();
     let mut out = Vec::new();
     protocol::serve(&mut Fake, &mut input.as_slice(), &mut out).unwrap();
-    assert!(matches!(protocol::read_frame::<Response>(&mut out.as_slice()).unwrap(), Some(Response::Error { .. })));
+    assert!(matches!(
+        protocol::read_frame::<Response>(&mut out.as_slice()).unwrap(),
+        Some(Response::Error { .. })
+    ));
 }
 
 /// Needs the model files in `ASC_EMBED_MODEL_DIR`; run with `--ignored`.
@@ -128,7 +154,10 @@ fn real_model_embeds() {
         special_tokens: rd("special_tokens_map.json"),
         tokenizer_config: rd("tokenizer_config.json"),
     };
-    let rec = Registry::builtin().get("jina-embeddings-v2-base-code").unwrap().clone();
+    let rec = Registry::builtin()
+        .get("jina-embeddings-v2-base-code")
+        .unwrap()
+        .clone();
     let mut e = asc_embed::FastEmbedder::load(&rec, files).unwrap();
     let v = e.embed(&["fn main() {}".to_owned()]).unwrap();
     assert_eq!(v[0].len(), 768);

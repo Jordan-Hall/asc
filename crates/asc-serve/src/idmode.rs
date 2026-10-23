@@ -213,7 +213,9 @@ impl IdCodec {
                 .map(|i| format!("${}", i + 3))
                 .collect::<Vec<_>>()
                 .join(",");
-            let sql = format!("SELECT git, asc FROM git_map WHERE ns = $1 AND kind = $2 AND git IN ({marks})");
+            let sql = format!(
+                "SELECT git, asc FROM git_map WHERE ns = $1 AND kind = $2 AND git IN ({marks})"
+            );
             let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
                 .bind(self.ns.as_bytes().to_vec())
                 .bind(i32::from(kind_code(kind)));
@@ -232,7 +234,11 @@ impl IdCodec {
                     found.insert(g, c);
                 }
             }
-            out.extend(chunk.iter().map(|g| found.get(g.as_bytes().as_slice()).copied()));
+            out.extend(
+                chunk
+                    .iter()
+                    .map(|g| found.get(g.as_bytes().as_slice()).copied()),
+            );
         }
         Ok(out)
     }
@@ -240,9 +246,12 @@ impl IdCodec {
     /// The changeset a wire id names. A git oid must be a commit in the map.
     pub async fn changeset_in(&self, wire: &[u8]) -> Result<ChangesetId, Status> {
         match self.mode {
-            IdMode::Asc => ChangesetId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string())),
+            IdMode::Asc => {
+                ChangesetId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))
+            }
             IdMode::Git => {
-                let g = GitOid::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))?;
+                let g = GitOid::from_slice(wire)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?;
                 let got = self.asc_of_git(ObjectKind::Commit, &[g]).await?;
                 got.into_iter()
                     .next()
@@ -256,9 +265,12 @@ impl IdCodec {
     /// The file a wire id names. A git oid must be a blob in the map.
     pub async fn file_in(&self, wire: &[u8]) -> Result<FileId, Status> {
         match self.mode {
-            IdMode::Asc => FileId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string())),
+            IdMode::Asc => {
+                FileId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))
+            }
             IdMode::Git => {
-                let g = GitOid::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))?;
+                let g = GitOid::from_slice(wire)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?;
                 let got = self.asc_of_git(ObjectKind::Blob, &[g]).await?;
                 got.into_iter()
                     .next()
@@ -272,9 +284,12 @@ impl IdCodec {
     /// The tree a wire id names. A git oid must be a tree in the map.
     pub async fn tree_in(&self, wire: &[u8]) -> Result<TreeId, Status> {
         match self.mode {
-            IdMode::Asc => TreeId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string())),
+            IdMode::Asc => {
+                TreeId::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))
+            }
             IdMode::Git => {
-                let g = GitOid::from_slice(wire).map_err(|e| Status::invalid_argument(e.to_string()))?;
+                let g = GitOid::from_slice(wire)
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?;
                 let got = self.asc_of_git(ObjectKind::Tree, &[g]).await?;
                 got.into_iter()
                     .next()
@@ -353,7 +368,11 @@ impl IdCodec {
         match self.mode {
             IdMode::Asc => Ok(Bytes::copy_from_slice(id.as_bytes())),
             IdMode::Git => {
-                let g = self.engine.git_commit_of(id).await.map_err(|e| internal("git commit", &e))?;
+                let g = self
+                    .engine
+                    .git_commit_of(id)
+                    .await
+                    .map_err(|e| internal("git commit", &e))?;
                 Ok(Bytes::copy_from_slice(g.as_bytes()))
             }
         }
@@ -446,7 +465,10 @@ mod tests {
             git.file_in(blob.as_bytes()).await.unwrap(),
             FileId::of(b"hello\n")
         );
-        assert_eq!(git.file_in(g.as_bytes()).await.unwrap_err().code(), tonic::Code::NotFound);
+        assert_eq!(
+            git.file_in(g.as_bytes()).await.unwrap_err().code(),
+            tonic::Code::NotFound
+        );
         // Wrong lengths are rejected in both modes.
         assert!(git.changeset_in(&[0; 32]).await.is_err());
         let asc = IdCodec::new(IdMode::Asc, &r, &e);
@@ -458,7 +480,10 @@ mod tests {
     async fn namespaces_do_not_leak() {
         let (r, _e, c) = setup().await;
         let other = r
-            .create(&asc_rpc::server::RepoName::parse("o/other").unwrap(), &Default::default())
+            .create(
+                &asc_rpc::server::RepoName::parse("o/other").unwrap(),
+                &Default::default(),
+            )
             .await
             .unwrap();
         let git = IdCodec::new(IdMode::Git, &r, &other);
@@ -476,13 +501,22 @@ mod tests {
         let (r, e, c) = setup().await;
         let git = IdCodec::new(IdMode::Git, &r, &e);
         let g = git.git_of(c).await.unwrap();
-        assert_eq!(git.rev_in(&g.to_string(), "master").await.unwrap(), c.to_string());
+        assert_eq!(
+            git.rev_in(&g.to_string(), "master").await.unwrap(),
+            c.to_string()
+        );
         assert_eq!(
             git.rev_in(&format!("{g}~2"), "master").await.unwrap(),
             format!("{c}~2")
         );
-        assert_eq!(git.rev_in("HEAD", "master").await.unwrap(), "refs/heads/master");
-        assert_eq!(git.rev_in("HEAD~1", "trunk").await.unwrap(), "refs/heads/trunk~1");
+        assert_eq!(
+            git.rev_in("HEAD", "master").await.unwrap(),
+            "refs/heads/master"
+        );
+        assert_eq!(
+            git.rev_in("HEAD~1", "trunk").await.unwrap(),
+            "refs/heads/trunk~1"
+        );
         assert_eq!(git.rev_in("topic", "master").await.unwrap(), "topic");
         assert_eq!(
             git.rev_in(&format!("{c}^"), "master").await.unwrap(),
@@ -490,7 +524,10 @@ mod tests {
         );
         // An unmapped oid is not found; an abbreviation is refused rather than scanned for.
         assert_eq!(
-            git.rev_in(&"ab".repeat(20), "master").await.unwrap_err().code(),
+            git.rev_in(&"ab".repeat(20), "master")
+                .await
+                .unwrap_err()
+                .code(),
             tonic::Code::NotFound
         );
         assert_eq!(
@@ -540,7 +577,9 @@ mod tests {
             format!("master..{c}")
         );
         assert_eq!(
-            git.rev_in(&format!("{g}^{{tree}}"), "master").await.unwrap(),
+            git.rev_in(&format!("{g}^{{tree}}"), "master")
+                .await
+                .unwrap(),
             format!("{c}^{{tree}}")
         );
         assert_eq!(
@@ -558,7 +597,11 @@ mod tests {
         let (r, e, c) = setup().await;
         let root = e.backend.engine().get_changeset(c).await.unwrap().root;
         let tree = e.backend.engine().get_tree(root).await.unwrap();
-        let file = tree.entries().iter().find(|x| x.kind == Kind::File).unwrap();
+        let file = tree
+            .entries()
+            .iter()
+            .find(|x| x.kind == Kind::File)
+            .unwrap();
         let git = IdCodec::new(IdMode::Git, &r, &e);
         let asc = IdCodec::new(IdMode::Asc, &r, &e);
         assert_eq!(&git.entry_out(file)[..], file.git.as_bytes());

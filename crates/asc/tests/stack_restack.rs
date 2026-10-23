@@ -49,7 +49,11 @@ impl Repo {
     /// and the rewrite of `one` both edit the same line of `f`.
     fn new(conflict: bool) -> Self {
         let sb = Sandbox::new();
-        fs::write(sb.user.join(".gitconfig"), "[user]\n\tname = T\n\temail = t@example.com\n").unwrap();
+        fs::write(
+            sb.user.join(".gitconfig"),
+            "[user]\n\tname = T\n\temail = t@example.com\n",
+        )
+        .unwrap();
         let root = sb.dir("repo");
         let r = Self { sb, root };
         r.ok(&["init"]);
@@ -93,8 +97,18 @@ impl Repo {
     }
 
     fn asc(&self, args: &[&str]) -> Out {
-        let out = self.sb.asc(&self.root).args(args).stdin(std::process::Stdio::null()).output().expect("spawn");
-        Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
+        let out = self
+            .sb
+            .asc(&self.root)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn");
+        Out {
+            code: out.status.code().unwrap_or(-1),
+            stdout: text(&out.stdout),
+            stderr: text(&out.stderr),
+        }
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -108,24 +122,42 @@ impl Repo {
     }
 
     fn subjects(&self, rev: &str) -> Vec<String> {
-        self.ok(&["log", "--format=%s", rev]).lines().map(str::to_owned).collect()
+        self.ok(&["log", "--format=%s", rev])
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn gitdir(&self) -> PathBuf {
         let dir = PathBuf::from(self.ok(&["rev-parse", "--git-dir"]).trim());
-        if dir.is_absolute() { dir } else { self.root.join(dir) }
+        if dir.is_absolute() {
+            dir
+        } else {
+            self.root.join(dir)
+        }
     }
 
     /// `status --porcelain` without the `.ascignore` asc writes at init.
     fn status(&self) -> String {
-        self.ok(&["status", "--porcelain"]).lines().filter(|l| *l != "?? .ascignore").map(|l| format!("{l}
-")).collect()
+        self.ok(&["status", "--porcelain"])
+            .lines()
+            .filter(|l| *l != "?? .ascignore")
+            .map(|l| {
+                format!(
+                    "{l}
+"
+                )
+            })
+            .collect()
     }
 
     fn index(&self, rev: &str, n: u8, preds: &[&str]) {
         let sha = self.sha(rev);
         let preds: Vec<String> = preds.iter().map(|s| (*s).to_owned()).collect();
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
@@ -135,7 +167,12 @@ impl Repo {
                 let repo = ws.ws.repo;
                 async move {
                     let oid: GitOid = s.parse().unwrap();
-                    ChangesetId::from_bytes(git_map::git_to_asc(&db, repo, oid, ObjectKind::Commit).await.unwrap().unwrap())
+                    ChangesetId::from_bytes(
+                        git_map::git_to_asc(&db, repo, oid, ObjectKind::Commit)
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                    )
                 }
             };
             let cs = cs_of(sha).await;
@@ -144,7 +181,12 @@ impl Repo {
                 pred_ids.push(cs_of(p).await);
             }
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
-            let row = ChangeRow { cs, change: change_id(n), meta: MetaId::from_bytes([n; 32]), op: RewriteOp::New };
+            let row = ChangeRow {
+                cs,
+                change: change_id(n),
+                meta: MetaId::from_bytes([n; 32]),
+                op: RewriteOp::New,
+            };
             rows.insert(&row, &pred_ids).await.unwrap();
         });
     }
@@ -163,7 +205,11 @@ fn restack_moves_the_stack_onto_the_rewritten_parent_and_keeps_the_change_ids() 
     let out = r.asc(&["restack"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert_eq!(out.stdout.lines().count(), 2, "{}", out.stdout);
-    assert!(out.stdout.lines().all(|l| l.starts_with("Restacked ")), "{}", out.stdout);
+    assert!(
+        out.stdout.lines().all(|l| l.starts_with("Restacked ")),
+        "{}",
+        out.stdout
+    );
     assert_ne!(r.sha("feature"), old_head);
     assert_eq!(r.sha("feature~2"), amended);
     assert_eq!(r.subjects("feature"), ["three", "two", "one v2", "base"]);
@@ -180,7 +226,10 @@ fn restack_moves_the_stack_onto_the_rewritten_parent_and_keeps_the_change_ids() 
     let again = r.asc(&["restack", "--json"]);
     assert_eq!(again.code, 0, "{}", again.stderr);
     let v: Value = serde_json::from_str(&again.stdout).unwrap();
-    assert_eq!((v["version"].as_u64(), v["status"].as_str()), (Some(1), Some("nothing")));
+    assert_eq!(
+        (v["version"].as_u64(), v["status"].as_str()),
+        (Some(1), Some("nothing"))
+    );
 }
 
 #[test]
@@ -244,7 +293,10 @@ fn a_conflict_pauses_in_gits_rebase_state_and_continue_finishes() {
     assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "feature");
     assert_eq!(r.subjects("feature"), ["three", "two", "one v2", "base"]);
     assert_ne!(r.sha("feature"), old_head);
-    assert_eq!(fs::read_to_string(r.root.join("f")).unwrap(), "a\nb-both\nc\n");
+    assert_eq!(
+        fs::read_to_string(r.root.join("f")).unwrap(),
+        "a\nb-both\nc\n"
+    );
     assert_eq!(fs::read_to_string(r.root.join("three")).unwrap(), "three");
     assert_eq!(r.status(), "");
     assert_eq!(r.change("feature~1"), change_id(2).to_string());
@@ -262,7 +314,10 @@ fn abort_restores_the_before_state() {
     assert_eq!(r.ok(&["branch", "--show-current"]).trim(), "feature");
     assert!(!r.gitdir().join("rebase-merge").exists());
     assert!(!r.gitdir().join("asc-stack-op.json").exists());
-    assert_eq!(fs::read_to_string(r.root.join("f")).unwrap(), "a\nb-two\nc\n");
+    assert_eq!(
+        fs::read_to_string(r.root.join("f")).unwrap(),
+        "a\nb-two\nc\n"
+    );
     assert_eq!(r.status(), "");
     // The stack still needs a restack, and it can be started again.
     assert_eq!(r.asc(&["restack"]).code, 1);
@@ -286,7 +341,11 @@ fn continue_and_abort_without_an_operation_exit_1() {
     for verb in ["continue", "abort"] {
         let o = r.asc(&[verb]);
         assert_eq!(o.code, 1, "{verb}: {}", o.stderr);
-        assert!(o.stderr.contains("no operation in progress"), "{}", o.stderr);
+        assert!(
+            o.stderr.contains("no operation in progress"),
+            "{}",
+            o.stderr
+        );
     }
 }
 
@@ -305,7 +364,11 @@ fn continue_and_abort_serve_a_plain_git_operation() {
 fn a_damaged_state_file_is_refused_and_changes_nothing() {
     let r = Repo::new(true);
     let head = r.sha("feature");
-    fs::write(r.gitdir().join("asc-stack-op.json"), b"{\"version\":1,\"nonsense\":true}").unwrap();
+    fs::write(
+        r.gitdir().join("asc-stack-op.json"),
+        b"{\"version\":1,\"nonsense\":true}",
+    )
+    .unwrap();
     for verb in ["continue", "abort"] {
         let o = r.asc(&[verb]);
         assert_eq!(o.code, 128, "{verb}: {}", o.stderr);
@@ -366,7 +429,10 @@ fn every_rewritten_commit_is_signed_when_commit_gpgsign_is_set() {
     let out = r.asc(&["restack"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     for rev in ["feature", "feature~1"] {
-        assert!(r.ok(&["cat-file", "-p", rev]).contains("gpgsig"), "{rev} is unsigned");
+        assert!(
+            r.ok(&["cat-file", "-p", rev]).contains("gpgsig"),
+            "{rev} is unsigned"
+        );
     }
 }
 
@@ -377,7 +443,11 @@ fn a_failing_signer_moves_no_ref_and_exits_1() {
     let script = r.sb.tmp.path().join("badgpg.sh");
     fs::write(&script, "#!/bin/sh\ncat > /dev/null\nexit 1\n").unwrap();
     make_executable(&script);
-    r.ok(&["config", "gpg.program", &script.display().to_string().replace('\\', "/")]);
+    r.ok(&[
+        "config",
+        "gpg.program",
+        &script.display().to_string().replace('\\', "/"),
+    ]);
     r.ok(&["config", "user.signingkey", "KEY1"]);
     r.ok(&["config", "commit.gpgsign", "true"]);
     let out = r.asc(&["restack"]);

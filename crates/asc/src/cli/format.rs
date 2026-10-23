@@ -404,7 +404,15 @@ fn parse_pad(rest: &[u8]) -> Option<(Pad, usize)> {
     if width == 0 || (width < 0 && !column) {
         return None;
     }
-    Some((Pad { flush, column, width, trunc }, i + 1 + used))
+    Some((
+        Pad {
+            flush,
+            column,
+            width,
+            trunc,
+        },
+        i + 1 + used,
+    ))
 }
 
 /// One placeholder after the `%` and any modifier: the placeholder and the bytes consumed.
@@ -431,7 +439,11 @@ fn parse_placeholder(rest: &[u8]) -> Option<(Ph, usize)> {
         b'N' => (Ph::Notes, 1),
         b'm' => (Ph::Mark, 1),
         c @ (b'a' | b'c') => {
-            let who = if c == b'a' { Who::Author } else { Who::Committer };
+            let who = if c == b'a' {
+                Who::Author
+            } else {
+                Who::Committer
+            };
             let field = match at(1)? {
                 b'n' => Field::Name,
                 b'N' => Field::NameMap,
@@ -535,9 +547,18 @@ impl Template {
         match *rest.first()? {
             b'C' => {
                 let tail = &rest[1..];
-                for (name, sgr) in [("red", "red"), ("green", "green"), ("blue", "blue"), ("reset", "reset")] {
+                for (name, sgr) in [
+                    ("red", "red"),
+                    ("green", "green"),
+                    ("blue", "blue"),
+                    ("reset", "reset"),
+                ] {
                     if tail.starts_with(name.as_bytes()) {
-                        let t = Tint { sgr: color::sgr(sgr), forced: false, never: false };
+                        let t = Tint {
+                            sgr: color::sgr(sgr),
+                            forced: false,
+                            never: false,
+                        };
                         return Some((Piece::Tint(t), 1 + name.len()));
                     }
                 }
@@ -551,7 +572,11 @@ impl Template {
                 } else if let Some(s) = body.strip_prefix("auto,") {
                     spec = s;
                 }
-                let sgr = if spec == "auto" { String::new() } else { color::Spec::parse(spec)?.sgr() };
+                let sgr = if spec == "auto" {
+                    String::new()
+                } else {
+                    color::Spec::parse(spec)?.sgr()
+                };
                 Some((Piece::Tint(Tint { sgr, forced, never }), 1 + 1 + used))
             }
             b'w' => {
@@ -582,29 +607,53 @@ impl Template {
 
     /// Whether the template reads the reflog placeholders.
     pub fn uses_reflog(&self) -> bool {
-        self.pieces.iter().any(|p| matches!(p, Piece::Ph(_, Ph::Reflog(_))))
+        self.pieces
+            .iter()
+            .any(|p| matches!(p, Piece::Ph(_, Ph::Reflog(_))))
     }
 
     /// Whether the template uses `%d`, `%D` or `%(decorate)`.
     pub fn uses_decorations(&self) -> bool {
-        self.pieces
-            .iter()
-            .any(|p| matches!(p, Piece::Ph(_, Ph::Decorate | Ph::DecorateBare | Ph::DecorateWith(_))))
+        self.pieces.iter().any(|p| {
+            matches!(
+                p,
+                Piece::Ph(_, Ph::Decorate | Ph::DecorateBare | Ph::DecorateWith(_))
+            )
+        })
     }
 
     /// Whether the template uses `%S`.
     pub fn uses_source(&self) -> bool {
-        self.pieces.iter().any(|p| matches!(p, Piece::Ph(_, Ph::Source)))
+        self.pieces
+            .iter()
+            .any(|p| matches!(p, Piece::Ph(_, Ph::Source)))
     }
 
     /// Whether the template uses `%N`.
     pub fn uses_notes(&self) -> bool {
-        self.pieces.iter().any(|p| matches!(p, Piece::Ph(_, Ph::Notes)))
+        self.pieces
+            .iter()
+            .any(|p| matches!(p, Piece::Ph(_, Ph::Notes)))
     }
 
     /// Expands the template for `commit`, appending to `out`.
-    pub fn render(&self, commit: &Commit<'_>, env: &Env<'_>, extras: &Extras<'_>, out: &mut Vec<u8>) {
-        let mut r = Renderer { commit, env, extras, base: out.len(), wrap: (0, 0, 0), wrap_start: out.len(), pending: None, out };
+    pub fn render(
+        &self,
+        commit: &Commit<'_>,
+        env: &Env<'_>,
+        extras: &Extras<'_>,
+        out: &mut Vec<u8>,
+    ) {
+        let mut r = Renderer {
+            commit,
+            env,
+            extras,
+            base: out.len(),
+            wrap: (0, 0, 0),
+            wrap_start: out.len(),
+            pending: None,
+            out,
+        };
         let mut i = 0;
         while i < self.pieces.len() {
             i += r.piece(&self.pieces, i);
@@ -634,7 +683,10 @@ fn hex(oid: &GitOid) -> String {
 /// The subject paragraph and the offset of the body (git's `parse_commit_message`).
 fn split_message(msg: &[u8]) -> (Vec<u8>, usize) {
     let lines = |from: usize| {
-        let end = msg[from..].iter().position(|&b| b == b'\n').map_or(msg.len(), |p| from + p + 1);
+        let end = msg[from..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(msg.len(), |p| from + p + 1);
         (&msg[from..end], end)
     };
     let blank = |l: &[u8]| l.iter().all(u8::is_ascii_whitespace);
@@ -705,7 +757,10 @@ fn sanitized(subject: &[u8]) -> Vec<u8> {
 }
 
 fn local_part(email: &[u8]) -> &[u8] {
-    email.iter().position(|&b| b == b'@').map_or(email, |p| &email[..p])
+    email
+        .iter()
+        .position(|&b| b == b'@')
+        .map_or(email, |p| &email[..p])
 }
 
 impl Renderer<'_, '_> {
@@ -818,7 +873,11 @@ impl Renderer<'_, '_> {
     fn apply_pad(&mut self, pad: &Pad, local: Vec<u8>) {
         let mut padding = pad.width;
         if pad.column {
-            let target = if pad.width > 0 { pad.width } else { self.env.columns as i64 + pad.width };
+            let target = if pad.width > 0 {
+                pad.width
+            } else {
+                self.env.columns as i64 + pad.width
+            };
             let line = self.text().rsplit(|&b| b == b'\n').next().unwrap_or(&[]);
             let occupied = (layout::width(line) + self.extras.graph_width) as i64;
             padding = target - occupied;
@@ -839,7 +898,12 @@ impl Renderer<'_, '_> {
             let keep = padding.saturating_sub(2);
             local = match pad.trunc {
                 Trunc::Left => layout::replace_columns(&local, 0, len - keep, b".."),
-                Trunc::Middle => layout::replace_columns(&local, (padding / 2).saturating_sub(1), len - keep, b".."),
+                Trunc::Middle => layout::replace_columns(
+                    &local,
+                    (padding / 2).saturating_sub(1),
+                    len - keep,
+                    b"..",
+                ),
                 Trunc::Right => layout::replace_columns(&local, keep, len - keep, b".."),
                 Trunc::None => local,
             };
@@ -875,13 +939,34 @@ impl Renderer<'_, '_> {
         use date::{Kind, Mode};
         let mode = match field {
             Field::Date => self.env.date.clone(),
-            Field::Rfc => Mode { kind: Kind::Rfc2822, local: false },
-            Field::Relative => Mode { kind: Kind::Relative, local: false },
-            Field::Unix => Mode { kind: Kind::Unix, local: false },
-            Field::Iso => Mode { kind: Kind::Iso, local: false },
-            Field::Strict => Mode { kind: Kind::IsoStrict, local: false },
-            Field::Short => Mode { kind: Kind::Short, local: false },
-            _ => Mode { kind: Kind::Human, local: false },
+            Field::Rfc => Mode {
+                kind: Kind::Rfc2822,
+                local: false,
+            },
+            Field::Relative => Mode {
+                kind: Kind::Relative,
+                local: false,
+            },
+            Field::Unix => Mode {
+                kind: Kind::Unix,
+                local: false,
+            },
+            Field::Iso => Mode {
+                kind: Kind::Iso,
+                local: false,
+            },
+            Field::Strict => Mode {
+                kind: Kind::IsoStrict,
+                local: false,
+            },
+            Field::Short => Mode {
+                kind: Kind::Short,
+                local: false,
+            },
+            _ => Mode {
+                kind: Kind::Human,
+                local: false,
+            },
         };
         mode.render(s.time(), s.tz_min(), self.env.now)
     }
@@ -900,7 +985,11 @@ impl Renderer<'_, '_> {
                 out.extend_from_slice(all.join(" ").as_bytes());
             }
             Ph::AbbrevParents => {
-                let all: Vec<String> = c.parents.iter().map(|p| hex(p)[..abbrev].to_owned()).collect();
+                let all: Vec<String> = c
+                    .parents
+                    .iter()
+                    .map(|p| hex(p)[..abbrev].to_owned())
+                    .collect();
                 out.extend_from_slice(all.join(" ").as_bytes());
             }
             Ph::Person(who, field) => {
@@ -911,11 +1000,16 @@ impl Renderer<'_, '_> {
                     Field::Email => out.extend_from_slice(s.email()),
                     Field::EmailMap => out.extend_from_slice(&self.mapped(s.name(), s.email()).1),
                     Field::Local => out.extend_from_slice(local_part(s.email())),
-                    Field::LocalMap => out.extend_from_slice(local_part(&self.mapped(s.name(), s.email()).1)),
+                    Field::LocalMap => {
+                        out.extend_from_slice(local_part(&self.mapped(s.name(), s.email()).1))
+                    }
                     f => out.extend_from_slice(self.date(s, *f).as_bytes()),
                 }
             }
-            Ph::Decorate => self.decoration(&Style::standard(self.env.decorate_full, self.env.color), out),
+            Ph::Decorate => self.decoration(
+                &Style::standard(self.env.decorate_full, self.env.color),
+                out,
+            ),
             Ph::DecorateBare => {
                 let mut style = Style::standard(self.env.decorate_full, self.env.color);
                 style.prefix.clear();
@@ -945,7 +1039,12 @@ impl Renderer<'_, '_> {
             Ph::Encoding => out.extend_from_slice(c.encoding.unwrap_or(b"")),
             Ph::Subject => out.extend_from_slice(&split_message(c.message).0),
             Ph::Sanitized => {
-                let line = c.message.trim_ascii_start().split(|&b| b == b'\n').next().unwrap_or(&[]);
+                let line = c
+                    .message
+                    .trim_ascii_start()
+                    .split(|&b| b == b'\n')
+                    .next()
+                    .unwrap_or(&[]);
                 out.extend_from_slice(&sanitized(line.trim_ascii_end()));
             }
             Ph::Body => {
@@ -994,7 +1093,10 @@ mod tests {
     }
 
     fn expand(format: &str, message: &str) -> String {
-        let (a, c) = (sig("Ann Author", "ann@example.com", 1_700_000_000, 0), sig("Cy", "cy@x.org", 1_700_000_100, 60));
+        let (a, c) = (
+            sig("Ann Author", "ann@example.com", 1_700_000_000, 0),
+            sig("Cy", "cy@x.org", 1_700_000_100, 60),
+        );
         let id = GitOid::from_bytes([0xab; 20]);
         let commit = Commit {
             id,
@@ -1006,13 +1108,24 @@ mod tests {
             encoding: None,
         };
         let mut out = Vec::new();
-        Template::parse(format.as_bytes()).render(&commit, &Env { now: 1_700_000_000, ..Env::default() }, &Extras::default(), &mut out);
+        Template::parse(format.as_bytes()).render(
+            &commit,
+            &Env {
+                now: 1_700_000_000,
+                ..Env::default()
+            },
+            &Extras::default(),
+            &mut out,
+        );
         String::from_utf8(out).unwrap()
     }
 
     #[test]
     fn identity_and_hash_placeholders() {
-        assert_eq!(expand("%h %p %an <%ae> %cn %cI", "s\n"), "abababa 1212121 Ann Author <ann@example.com> Cy 2023-11-14T23:15:00+01:00");
+        assert_eq!(
+            expand("%h %p %an <%ae> %cn %cI", "s\n"),
+            "abababa 1212121 Ann Author <ann@example.com> Cy 2023-11-14T23:15:00+01:00"
+        );
         assert_eq!(expand("%al|%cL", "s\n"), "ann|cy");
     }
 
@@ -1055,19 +1168,28 @@ mod tests {
     #[test]
     fn colours_need_always_or_a_colour_terminal() {
         assert_eq!(expand("%Cred%s%Creset", "s\n"), "s");
-        assert_eq!(expand("%C(always,bold blue)x%C(always,reset)", "s\n"), "\x1b[1;34mx\x1b[m");
+        assert_eq!(
+            expand("%C(always,bold blue)x%C(always,reset)", "s\n"),
+            "\x1b[1;34mx\x1b[m"
+        );
     }
 
     #[test]
     fn trailers_placeholder() {
         let m = "s\n\nbody\n\nSigned-off-by: A\nTicket: 7\n";
         assert_eq!(expand("%(trailers:key=ticket,valueonly)", m), "7\n");
-        assert_eq!(expand("%(trailers:only,separator=%x2C )", m), "Signed-off-by: A, Ticket: 7");
+        assert_eq!(
+            expand("%(trailers:only,separator=%x2C )", m),
+            "Signed-off-by: A, Ticket: 7"
+        );
     }
 
     #[test]
     fn describe_options_are_collected() {
         let t = Template::parse(b"%(describe) %(describe:tags,abbrev=9) %(describe:bogus)");
-        assert_eq!(t.describe_options(), vec!["".to_owned(), "tags,abbrev=9".to_owned()]);
+        assert_eq!(
+            t.describe_options(),
+            vec!["".to_owned(), "tags,abbrev=9".to_owned()]
+        );
     }
 }

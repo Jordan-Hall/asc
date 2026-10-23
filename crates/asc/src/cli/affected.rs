@@ -15,7 +15,9 @@ use asc_engine::history::HistoryApi;
 use asc_engine::projects::{AffectedQuery, AffectedResult, Error as ProjectsError};
 use asc_graph::affected::{self as algebra, ChangeKind, ChangedPath, Query, Reason, Side};
 use asc_graph::detect::{Claim, claim_of};
-use asc_graph::model::{DepKind, Ecosystem, ManifestSet, Project, ProjectGraph, ProjectKey, ProjectKind};
+use asc_graph::model::{
+    DepKind, Ecosystem, ManifestSet, Project, ProjectGraph, ProjectKey, ProjectKind,
+};
 use asc_graph::registry::DETECTORS;
 use asc_graph::select::Selector;
 
@@ -40,7 +42,11 @@ const MAX_STATUS_BYTES: usize = 256 << 20;
 const PROBE: &[u8] = b"asc-uncommitted-input";
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "affected", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "affected",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     #[arg(long)]
     pub base: Option<String>,
@@ -76,8 +82,19 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "affected",
     flags: &[
-        "--base", "--head", "--no-merge-base", "--uncommitted", "--type", "--target", "--select",
-        "--format", "--matrix-by", "--json", "--explain", "--hashes", "--repo",
+        "--base",
+        "--head",
+        "--no-merge-base",
+        "--uncommitted",
+        "--type",
+        "--target",
+        "--select",
+        "--format",
+        "--matrix-by",
+        "--json",
+        "--explain",
+        "--hashes",
+        "--repo",
     ],
     placeholders: &[],
 }];
@@ -118,7 +135,9 @@ pub(super) fn ecosystems(types: &[String]) -> Result<Vec<Ecosystem>> {
     }
     types
         .iter()
-        .map(|t| Ecosystem::parse(t).ok_or_else(|| usage(format!("unknown ecosystem '{t}' for --type"))))
+        .map(|t| {
+            Ecosystem::parse(t).ok_or_else(|| usage(format!("unknown ecosystem '{t}' for --type")))
+        })
         .collect()
 }
 
@@ -126,7 +145,10 @@ pub(super) fn selectors(texts: &[String]) -> Result<Vec<Selector>> {
     if texts.len() > MAX_ARGS {
         return Err(usage("too many selectors"));
     }
-    texts.iter().map(|t| Selector::parse(t).map_err(select_err)).collect()
+    texts
+        .iter()
+        .map(|t| Selector::parse(t).map_err(select_err))
+        .collect()
 }
 
 pub(super) fn hex(bytes: &[u8]) -> String {
@@ -143,7 +165,12 @@ pub(super) fn kind_name(k: ProjectKind) -> &'static str {
 
 /// A changeset id as a git SHA-1 (SPEC §11.1).
 pub(super) async fn git_id(ws: &WsCtx, cs: ChangesetId) -> Result<String> {
-    Ok(ws.engine.git_commit_of(cs).await.map_err(|e| CliError::Fatal(e.to_string()))?.to_string())
+    Ok(ws
+        .engine
+        .git_commit_of(cs)
+        .await
+        .map_err(|e| CliError::Fatal(e.to_string()))?
+        .to_string())
 }
 
 pub(super) fn write_json(out: &mut Output, v: &serde_json::Value) -> Result<()> {
@@ -152,8 +179,15 @@ pub(super) fn write_json(out: &mut Output, v: &serde_json::Value) -> Result<()> 
     Ok(())
 }
 
-pub(super) fn project_at<'a>(graph: &'a ProjectGraph, key: &ProjectKey) -> Option<(usize, &'a Project)> {
-    graph.projects.binary_search_by(|p| p.key.cmp(key)).ok().map(|i| (i, &graph.projects[i]))
+pub(super) fn project_at<'a>(
+    graph: &'a ProjectGraph,
+    key: &ProjectKey,
+) -> Option<(usize, &'a Project)> {
+    graph
+        .projects
+        .binary_search_by(|p| p.key.cmp(key))
+        .ok()
+        .map(|i| (i, &graph.projects[i]))
 }
 
 /// Workspace membership and Contains reachability of one graph.
@@ -195,7 +229,10 @@ impl Shape {
                 }
             }
         }
-        Self { member_of, contained }
+        Self {
+            member_of,
+            contained,
+        }
     }
 }
 
@@ -282,10 +319,17 @@ async fn default_base(ctx: &Ctx, ws: &WsCtx) -> Result<ChangesetId> {
 /// The staged, unstaged and untracked-but-not-ignored paths of the work tree, from this
 /// binary's own `status --porcelain -z`.
 fn dirty_paths(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<ChangedPath>> {
-    let exe = std::env::current_exe().map_err(|e| CliError::Fatal(format!("cannot find asc: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| CliError::Fatal(format!("cannot find asc: {e}")))?;
     let out = ctx
         .child(exe)?
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"])
+        .args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ])
         .current_dir(ws.projection.toplevel())
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
@@ -304,7 +348,11 @@ fn dirty_paths(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<ChangedPath>> {
         let (x, y) = (entry[0], entry[1]);
         let path = RepoPath::new(entry[3..].to_vec())
             .map_err(|e| CliError::Fatal(format!("unusable path in the work tree: {e}")))?;
-        let kind = if x == b'D' || y == b'D' { ChangeKind::Delete } else { ChangeKind::Write };
+        let kind = if x == b'D' || y == b'D' {
+            ChangeKind::Delete
+        } else {
+            ChangeKind::Write
+        };
         paths.push(ChangedPath { path, kind });
     }
     Ok(paths)
@@ -331,7 +379,9 @@ async fn uncommitted(
             .map_err(|e| CliError::Fatal(e.to_string()))?
             .first()
             .copied()
-            .ok_or_else(|| CliError::Fatal(format!("{} and {} have no common ancestor", q.head, q.base)))?
+            .ok_or_else(|| {
+                CliError::Fatal(format!("{} and {} have no common ancestor", q.head, q.base))
+            })?
     };
     let (m, h) = (
         ws.engine.get_changeset(merge_base).await?,
@@ -354,8 +404,14 @@ async fn uncommitted(
     let committed = changed.len();
     changed.extend(dirty_paths(ctx, ws)?);
     let (gb, gh) = (
-        ws.engine.project_graph(merge_base).await.map_err(projects_err)?,
-        ws.engine.project_graph(q.head).await.map_err(projects_err)?,
+        ws.engine
+            .project_graph(merge_base)
+            .await
+            .map_err(projects_err)?,
+        ws.engine
+            .project_graph(q.head)
+            .await
+            .map_err(projects_err)?,
     );
     let probe = Name::new(PROBE.to_vec()).map_err(|e| CliError::Fatal(e.to_string()))?;
     let mut originals: BTreeMap<RepoPath, RepoPath> = BTreeMap::new();
@@ -365,20 +421,35 @@ async fn uncommitted(
         if matches!(claimed, Some((_, Claim::Manifest | Claim::Lockfile))) {
             let stand_in = match c.path.parent() {
                 Some(dir) => dir.join(&probe),
-                None => RepoPath::new(PROBE.to_vec()).map_err(|e| CliError::Fatal(e.to_string()))?,
+                None => {
+                    RepoPath::new(PROBE.to_vec()).map_err(|e| CliError::Fatal(e.to_string()))?
+                }
             };
             if !originals.contains_key(&stand_in) {
                 originals.insert(stand_in.clone(), c.path.clone());
-                changed.push(ChangedPath { path: stand_in, kind: c.kind });
+                changed.push(ChangedPath {
+                    path: stand_in,
+                    kind: c.kind,
+                });
             }
         }
     }
     let empty = ManifestSet::default();
-    let query = Query { target: q.target.as_deref(), ecosystems: &q.ecosystems, selectors };
+    let query = Query {
+        target: q.target.as_deref(),
+        ecosystems: &q.ecosystems,
+        selectors,
+    };
     let mut a = algebra::affected(
         DETECTORS,
-        Side { graph: &gb.graph, set: &empty },
-        Side { graph: &gh.graph, set: &empty },
+        Side {
+            graph: &gb.graph,
+            set: &empty,
+        },
+        Side {
+            graph: &gh.graph,
+            set: &empty,
+        },
         &changed,
         &query,
     )
@@ -398,7 +469,11 @@ async fn uncommitted(
     }
     a.unowned.retain(|p| !originals.contains_key(p));
     if q.with_hashes {
-        let hashes = ws.engine.input_hashes(q.head, q.target.as_deref().unwrap_or("")).await.map_err(projects_err)?;
+        let hashes = ws
+            .engine
+            .input_hashes(q.head, q.target.as_deref().unwrap_or(""))
+            .await
+            .map_err(projects_err)?;
         for p in &mut a.projects {
             p.input_hash = hashes
                 .0
@@ -462,7 +537,10 @@ fn matrix_by(a: &Args) -> Result<MatrixBy> {
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if let Some(extra) = a.rest.first() {
-        return Err(usage(format!("unexpected argument '{}'", extra.to_string_lossy())));
+        return Err(usage(format!(
+            "unexpected argument '{}'",
+            extra.to_string_lossy()
+        )));
     }
     let format = format_of(&a)?;
     let by = matrix_by(&a)?;
@@ -482,9 +560,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let view = ws.engine.project_graph(head).await.map_err(projects_err)?;
     if !selectors.is_empty() {
         // A selector that matches nothing is an error (exit 1), not an empty result.
-        let chosen = asc_graph::select::select(&view.graph.projects, &selectors).map_err(select_err)?;
+        let chosen =
+            asc_graph::select::select(&view.graph.projects, &selectors).map_err(select_err)?;
         if chosen.is_empty() {
-            return Err(CliError::Raw("asc: the selectors match no project".into(), 1));
+            return Err(CliError::Raw(
+                "asc: the selectors match no project".into(),
+                1,
+            ));
         }
     }
     let q = AffectedQuery {
@@ -522,7 +604,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         issues: result
             .issues
             .iter()
-            .map(|i| (i.path.to_string(), String::from_utf8_lossy(&i.message).into_owned()))
+            .map(|i| {
+                (
+                    i.path.to_string(),
+                    String::from_utf8_lossy(&i.message).into_owned(),
+                )
+            })
             .collect(),
     };
     let mut out = Output::open(ctx, "affected", PagerWant::Never)?;
@@ -530,7 +617,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let flushed = out.finish();
     written?;
     flushed?;
-    if matches!(format, Format::Turbo | Format::Nx | Format::Gha | Format::Matrix) {
+    if matches!(
+        format,
+        Format::Turbo | Format::Nx | Format::Gha | Format::Matrix
+    ) {
         eprint!("{}", fmt_affected::invisible_note(&report));
     }
     Ok(ExitCode::SUCCESS)

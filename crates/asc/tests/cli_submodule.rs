@@ -35,7 +35,13 @@ struct Rig {
 }
 
 fn sig() -> Signature {
-    Signature::new(b"Test".to_vec(), b"test@example.com".to_vec(), 1_700_000_000, 0).unwrap()
+    Signature::new(
+        b"Test".to_vec(),
+        b"test@example.com".to_vec(),
+        1_700_000_000,
+        0,
+    )
+    .unwrap()
 }
 
 fn oid(n: u8) -> GitOid {
@@ -68,7 +74,9 @@ impl Rig {
         let mut changes = Vec::new();
         for (path, content) in files {
             let got = ingest(Cursor::new(*content)).unwrap();
-            let Body::Inline(bytes) = got.body else { panic!("small files only") };
+            let Body::Inline(bytes) = got.body else {
+                panic!("small files only")
+            };
             self.f
                 .objects
                 .put(&ObjKey::File(got.file), encode_stored(&bytes))
@@ -103,7 +111,11 @@ impl Rig {
         git_map::insert_many(
             &self.f.db,
             self.nested,
-            &[GitMapRow { git, kind: ObjectKind::Commit, asc: *cs.as_bytes() }],
+            &[GitMapRow {
+                git,
+                kind: ObjectKind::Commit,
+                asc: *cs.as_bytes(),
+            }],
         )
         .await
         .unwrap();
@@ -112,13 +124,21 @@ impl Rig {
 
     /// Stages a gitlink at `path` pinned to `git`.
     async fn stage_link(&self, path: &str, git: GitOid) {
-        let leaf = Leaf { kind: Kind::Gitlink, file: FileId::from_bytes([0; 32]), size: 0, git };
-        self.f.stage(&[StageRow::from_leaf(path.as_bytes().to_vec(), Some(&leaf))]).await;
+        let leaf = Leaf {
+            kind: Kind::Gitlink,
+            file: FileId::from_bytes([0; 32]),
+            size: 0,
+            git,
+        };
+        self.f
+            .stage(&[StageRow::from_leaf(path.as_bytes().to_vec(), Some(&leaf))])
+            .await;
     }
 
     fn asc(&self, args: &[&str]) -> Output {
         let mut cmd = self.f.asc();
-        cmd.args(["-c", "asc.submodule.sdk.repo=asc/soma"]).args(args);
+        cmd.args(["-c", "asc.submodule.sdk.repo=asc/soma"])
+            .args(args);
         cmd.output().expect("spawn asc")
     }
 }
@@ -135,18 +155,28 @@ async fn status_composes_a_pinned_commit_and_flags_what_is_unavailable() {
     rig.stage_link("loose", oid(2)).await; // no repository configured for it
     rig.stage_link("gone", oid(3)).await;
 
-    let o = rig.asc(&["-c", "asc.submodule.gone.repo=asc/none", "submodule", "status"]);
+    let o = rig.asc(&[
+        "-c",
+        "asc.submodule.gone.repo=asc/none",
+        "submodule",
+        "status",
+    ]);
     assert!(o.status.success(), "{}", text(&o.stderr));
     let hex1 = "01".repeat(20);
     let hex2 = "02".repeat(20);
     let hex3 = "03".repeat(20);
     assert_eq!(
         out(&o),
-        format!("-{hex3} gone (asc/none: commit not available)\n-{hex2} loose\n {hex1} sdk (asc/soma)\n")
+        format!(
+            "-{hex3} gone (asc/none: commit not available)\n-{hex2} loose\n {hex1} sdk (asc/soma)\n"
+        )
     );
 
     // A pathspec limits the listing; a bare `submodule` is `status`.
-    assert_eq!(out(&rig.asc(&["submodule", "status", "sdk"])), format!(" {hex1} sdk (asc/soma)\n"));
+    assert_eq!(
+        out(&rig.asc(&["submodule", "status", "sdk"])),
+        format!(" {hex1} sdk (asc/soma)\n")
+    );
     assert!(out(&rig.asc(&["submodule"])).contains("sdk (asc/soma)"));
 }
 
@@ -154,7 +184,8 @@ async fn status_composes_a_pinned_commit_and_flags_what_is_unavailable() {
 async fn set_pin_stages_a_gitlink_and_reprojects_the_work_tree_read_only() {
     let rig = Rig::new().await;
     rig.nested_commit(oid(1), &[("lib.rs", b"v1")]).await;
-    rig.nested_commit(oid(2), &[("lib.rs", b"v2"), ("extra.rs", b"e")]).await;
+    rig.nested_commit(oid(2), &[("lib.rs", b"v2"), ("extra.rs", b"e")])
+        .await;
     rig.stage_link("sdk", oid(1)).await;
     let sdk = rig.f.root.join("sdk");
     fs::create_dir_all(&sdk).unwrap();
@@ -164,22 +195,41 @@ async fn set_pin_stages_a_gitlink_and_reprojects_the_work_tree_read_only() {
     assert!(o.status.success(), "{}", text(&o.stderr));
     assert_eq!(out(&o), format!("{hex2} sdk\n"));
     assert_eq!(fs::read(sdk.join("lib.rs")).unwrap(), b"v2");
-    assert!(fs::metadata(sdk.join("lib.rs")).unwrap().permissions().readonly());
-    assert!(fs::write(sdk.join("lib.rs"), b"x").is_err(), "a composed file is not writable");
+    assert!(
+        fs::metadata(sdk.join("lib.rs"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+    assert!(
+        fs::write(sdk.join("lib.rs"), b"x").is_err(),
+        "a composed file is not writable"
+    );
     assert!(out(&rig.asc(&["submodule", "status"])).starts_with(&format!(" {hex2} sdk")));
 
     // The staged entry is a gitlink carrying the new pin (a `Change::Gitlink` at commit).
-    let ws = asc_state::state::workspaces::get(&rig.f.db, rig.f.ws).await.unwrap().unwrap();
-    let rows = asc_state::state::stage::overlay(&rig.f.db, ws.ws.id, asc_state::state::stage::StageSet::Default)
+    let ws = asc_state::state::workspaces::get(&rig.f.db, rig.f.ws)
         .await
+        .unwrap()
         .unwrap();
+    let rows = asc_state::state::stage::overlay(
+        &rig.f.db,
+        ws.ws.id,
+        asc_state::state::stage::StageSet::Default,
+    )
+    .await
+    .unwrap();
     let row = rows.iter().find(|r| r.path == b"sdk").expect("sdk row");
     assert_eq!(row.kind, Kind::Gitlink);
     assert_eq!(row.git, Some(oid(2)));
 
     // Moving back replaces the composed directory, removing files the old pin lacks.
     let hex1 = "01".repeat(20);
-    assert!(rig.asc(&["submodule", "set-pin", "sdk", &hex1]).status.success());
+    assert!(
+        rig.asc(&["submodule", "set-pin", "sdk", &hex1])
+            .status
+            .success()
+    );
     assert_eq!(fs::read(sdk.join("lib.rs")).unwrap(), b"v1");
     assert!(!sdk.join("extra.rs").exists());
 }
@@ -206,7 +256,9 @@ async fn set_pin_refuses_what_it_cannot_verify() {
     assert_eq!(name.status.code(), Some(128));
 
     // Nothing moved.
-    assert!(out(&rig.asc(&["submodule", "status"])).starts_with(&format!(" {} sdk", "01".repeat(20))));
+    assert!(
+        out(&rig.asc(&["submodule", "status"])).starts_with(&format!(" {} sdk", "01".repeat(20)))
+    );
 }
 
 #[tokio::test]
@@ -219,7 +271,10 @@ async fn update_and_init_are_no_ops_with_a_notice() {
         assert!(out(&o).is_empty());
         assert!(text(&o.stderr).contains("nothing to update"));
     }
-    assert!(!rig.f.root.join("sdk").exists(), "update must not create or fetch anything");
+    assert!(
+        !rig.f.root.join("sdk").exists(),
+        "update must not create or fetch anything"
+    );
     let add = rig.asc(&["submodule", "add", "x"]);
     assert_ne!(add.status.code(), Some(0));
 }

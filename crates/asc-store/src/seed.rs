@@ -994,7 +994,13 @@ mod tests {
         // the local path `/host/share`.
         #[cfg(windows)]
         {
-            let r = unpack_str("file:////127.0.0.1/seed-test/s.tar.zst", &dst, None, Origin::Explicit).await;
+            let r = unpack_str(
+                "file:////127.0.0.1/seed-test/s.tar.zst",
+                &dst,
+                None,
+                Origin::Explicit,
+            )
+            .await;
             assert!(matches!(r, Err(SeedError::Refused(_))), "{r:?}");
         }
         // A local file URL and a plain path still work.

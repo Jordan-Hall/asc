@@ -45,7 +45,10 @@ impl Rig {
     async fn new() -> Self {
         let f = Fixture::new().await;
         let git = f.sandbox.dir("gitwork");
-        let git_bin = RealGit::resolve(None, None).expect("real git").path().to_owned();
+        let git_bin = RealGit::resolve(None, None)
+            .expect("real git")
+            .path()
+            .to_owned();
         let rig = Self { f, git, git_bin };
         for args in [
             &["init", "-q"][..],
@@ -96,16 +99,25 @@ impl Rig {
 
     /// `ls-files -s` of the staged tree, as asc has it: HEAD overlaid with the `stage` rows.
     async fn asc_index(&self) -> Vec<String> {
-        let ws = workspaces::get(&self.f.db, self.f.ws).await.unwrap().unwrap();
+        let ws = workspaces::get(&self.f.db, self.f.ws)
+            .await
+            .unwrap()
+            .unwrap();
         let mut entries: BTreeMap<(Vec<u8>, u8), String> = BTreeMap::new();
         if let Some(cs) = ws.ws.base_cs {
             let root = self.f.engine.get_changeset(cs).await.unwrap().root;
             let mut walk = self.f.engine.walk(root, None);
             while let Some((path, e)) = walk.try_next().await.unwrap() {
-                entries.insert((path.as_bytes().to_vec(), 0), line(e.kind, &e.git.to_string(), 0));
+                entries.insert(
+                    (path.as_bytes().to_vec(), 0),
+                    line(e.kind, &e.git.to_string(), 0),
+                );
             }
         }
-        for r in stage::overlay(&self.f.db, self.f.ws, StageSet::Default).await.unwrap() {
+        for r in stage::overlay(&self.f.db, self.f.ws, StageSet::Default)
+            .await
+            .unwrap()
+        {
             if r.stage == 0 {
                 entries.remove(&(r.path.clone(), 0));
             }
@@ -155,11 +167,19 @@ async fn add_dot_stages_what_git_stages() {
     r.write("build/out.o", b"obj");
     r.write("dir/.gitignore", b"b.txt\n");
     let (c, g) = (r.asc(&["add", "."]), r.git(&["add", "."]));
-    assert_eq!((c.code, c.stderr.as_str()), (g.code, g.stderr.as_str()), "{}", c.stderr);
+    assert_eq!(
+        (c.code, c.stderr.as_str()),
+        (g.code, g.stderr.as_str()),
+        "{}",
+        c.stderr
+    );
     assert_eq!(c.code, 0);
     r.same("add .").await;
     let index = r.git_index().join("\n");
-    assert!(!index.contains("x.log") && !index.contains("build/") && index.contains("keep.log"), "{index}");
+    assert!(
+        !index.contains("x.log") && !index.contains("build/") && index.contains("keep.log"),
+        "{index}"
+    );
     assert!(!r.f.root.join(".git").is_dir(), "the gitfile is not staged");
 }
 
@@ -198,7 +218,8 @@ async fn update_and_all_follow_git() {
     r.write("new", b"n\n");
     assert_eq!(r.asc(&["add", "-u"]).code, 0);
     assert_eq!(r.git(&["add", "-u"]).code, 0);
-    r.same("add -u: no new file, changes and deletions staged").await;
+    r.same("add -u: no new file, changes and deletions staged")
+        .await;
     assert!(!r.asc_index().await.join("\n").contains("\tnew"));
     r.write("d/e", b"4 changed\n");
     r.write("d/f", b"5\n");
@@ -206,7 +227,11 @@ async fn update_and_all_follow_git() {
     assert_eq!(r.git(&["add", "-A"]).code, 0);
     r.same("add -A").await;
     r.delete("a");
-    assert_eq!(r.asc(&["add", "a"]).code, 0, "a deleted tracked path is staged by name");
+    assert_eq!(
+        r.asc(&["add", "a"]).code,
+        0,
+        "a deleted tracked path is staged by name"
+    );
     assert_eq!(r.git(&["add", "a"]).code, 0);
     r.same("add of a deleted path").await;
 }
@@ -214,7 +239,13 @@ async fn update_and_all_follow_git() {
 #[tokio::test]
 async fn staging_over_a_head_keeps_rows_minimal() {
     let r = Rig::new().await;
-    r.seed(&[("keep.txt", b"keep\n"), ("mod.txt", b"one\n"), ("gone.txt", b"bye\n"), ("d/x", b"x\n")]).await;
+    r.seed(&[
+        ("keep.txt", b"keep\n"),
+        ("mod.txt", b"one\n"),
+        ("gone.txt", b"bye\n"),
+        ("d/x", b"x\n"),
+    ])
+    .await;
     r.write("mod.txt", b"two\n");
     r.delete("gone.txt");
     r.write("new.txt", b"new\n");
@@ -225,15 +256,26 @@ async fn staging_over_a_head_keeps_rows_minimal() {
     assert_eq!(r.asc(&["add", "-u"]).code, 0);
     assert_eq!(r.git(&["add", "-u"]).code, 0);
     r.same("add -u").await;
-    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap();
-    let paths: Vec<_> = rows.iter().map(|x| String::from_utf8_lossy(&x.path).into_owned()).collect();
-    assert_eq!(paths, ["d/x", "gone.txt", "mod.txt"], "one row per difference from HEAD");
+    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+        .await
+        .unwrap();
+    let paths: Vec<_> = rows
+        .iter()
+        .map(|x| String::from_utf8_lossy(&x.path).into_owned())
+        .collect();
+    assert_eq!(
+        paths,
+        ["d/x", "gone.txt", "mod.txt"],
+        "one row per difference from HEAD"
+    );
     // Restoring the HEAD content and adding it drops the row.
     r.write("mod.txt", b"one\n");
     assert_eq!(r.asc(&["add", "mod.txt"]).code, 0);
     assert_eq!(r.git(&["add", "mod.txt"]).code, 0);
     r.same("back to HEAD").await;
-    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap();
+    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+        .await
+        .unwrap();
     assert!(rows.iter().all(|x| x.path != b"mod.txt"), "{rows:?}");
 }
 
@@ -246,14 +288,21 @@ async fn intent_to_add_records_an_empty_entry() {
     assert_eq!(r.git(&["add", "-N", "a.txt"]).code, 0);
     r.same("add -N").await;
     assert!(r.git_index()[0].contains(EMPTY_BLOB));
-    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap();
+    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+        .await
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert!(rows[0].intent_to_add, "{rows:?}");
     // A later plain add stages the content.
     assert_eq!(r.asc(&["add", "a.txt"]).code, 0);
     assert_eq!(r.git(&["add", "a.txt"]).code, 0);
     r.same("add after -N").await;
-    assert!(!stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap()[0].intent_to_add);
+    assert!(
+        !stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+            .await
+            .unwrap()[0]
+            .intent_to_add
+    );
 }
 
 #[tokio::test]
@@ -263,14 +312,20 @@ async fn ignored_paths_need_force_and_dry_run_changes_nothing() {
     r.write("x.log", b"log\n");
     r.write("a.txt", b"a\n");
     r.write("build/o", b"o");
-    let (c, g) = (r.asc(&["add", "x.log", "a.txt"]), r.git(&["add", "x.log", "a.txt"]));
+    let (c, g) = (
+        r.asc(&["add", "x.log", "a.txt"]),
+        r.git(&["add", "x.log", "a.txt"]),
+    );
     assert_eq!((c.code, &c.stderr), (g.code, &g.stderr));
     assert_eq!(c.code, 1);
     r.same("the rest is still added").await;
     let (c, g) = (r.asc(&["add", "build"]), r.git(&["add", "build"]));
     assert_eq!((c.code, &c.stderr), (g.code, &g.stderr));
     r.same("an ignored directory").await;
-    let (c, g) = (r.asc(&["add", "-n", "-f", "x.log"]), r.git(&["add", "-n", "-f", "x.log"]));
+    let (c, g) = (
+        r.asc(&["add", "-n", "-f", "x.log"]),
+        r.git(&["add", "-n", "-f", "x.log"]),
+    );
     assert_eq!((c.code, &c.stdout), (g.code, &g.stdout));
     assert_eq!(c.stdout, "add 'x.log'\n");
     r.same("-n stages nothing").await;
@@ -283,9 +338,19 @@ async fn ignored_paths_need_force_and_dry_run_changes_nothing() {
 async fn nothing_specified_and_unmatched_pathspecs_report_like_git() {
     let r = Rig::new().await;
     r.write("a.txt", b"a\n");
-    for args in [&["add"][..], &["add", "nope"], &["add", "a.txt", "*.zzz"], &["add", "-A", "-u"], &["add", ""]] {
+    for args in [
+        &["add"][..],
+        &["add", "nope"],
+        &["add", "a.txt", "*.zzz"],
+        &["add", "-A", "-u"],
+        &["add", ""],
+    ] {
         let (c, g) = (r.asc(args), r.git(args));
-        assert_eq!((c.code, &c.stdout, &c.stderr), (g.code, &g.stdout, &g.stderr), "{args:?}");
+        assert_eq!(
+            (c.code, &c.stdout, &c.stderr),
+            (g.code, &g.stdout, &g.stderr),
+            "{args:?}"
+        );
     }
     r.same("a failing pathspec stages nothing").await;
 }
@@ -293,14 +358,27 @@ async fn nothing_specified_and_unmatched_pathspecs_report_like_git() {
 #[tokio::test]
 async fn unsupported_attributes_fail_and_lfs_is_stored_natively() {
     let r = Rig::new().await;
-    r.write(".gitattributes", b"*.id ident\n*.enc working-tree-encoding=UTF-16\n*.flt filter=foo\n*.bin filter=lfs\n");
-    for (name, attr) in [("a.id", "ident"), ("a.enc", "working-tree-encoding"), ("a.flt", "filter=foo")] {
+    r.write(
+        ".gitattributes",
+        b"*.id ident\n*.enc working-tree-encoding=UTF-16\n*.flt filter=foo\n*.bin filter=lfs\n",
+    );
+    for (name, attr) in [
+        ("a.id", "ident"),
+        ("a.enc", "working-tree-encoding"),
+        ("a.flt", "filter=foo"),
+    ] {
         r.write(name, b"x\n");
         let out = r.asc(&["add", name]);
         assert_eq!(out.code, 128, "{name}");
-        assert_eq!(out.stderr, format!("fatal: asc: attribute '{attr}' is not supported\n"));
+        assert_eq!(
+            out.stderr,
+            format!("fatal: asc: attribute '{attr}' is not supported\n")
+        );
     }
-    assert!(r.asc_index().await.is_empty(), "a refused path stages nothing");
+    assert!(
+        r.asc_index().await.is_empty(),
+        "a refused path stages nothing"
+    );
     let big = vec![7u8; 10 * 1024 * 1024];
     r.write("big.bin", &big);
     let out = r.asc(&["add", "big.bin"]);
@@ -309,14 +387,33 @@ async fn unsupported_attributes_fail_and_lfs_is_stored_natively() {
         out.stderr,
         "warning: asc: ignoring filter=lfs for big.bin (large files are native)\n"
     );
-    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap();
+    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+        .await
+        .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].size, big.len() as u64);
     let file = rows[0].file.unwrap();
-    assert!(r.f.objects.get(&ObjKey::ChunkList(file)).await.unwrap().is_some(), "a chunked FileId");
-    assert!(r.f.objects.get(&ObjKey::File(file)).await.unwrap().is_none());
+    assert!(
+        r.f.objects
+            .get(&ObjKey::ChunkList(file))
+            .await
+            .unwrap()
+            .is_some(),
+        "a chunked FileId"
+    );
+    assert!(
+        r.f.objects
+            .get(&ObjKey::File(file))
+            .await
+            .unwrap()
+            .is_none()
+    );
     let git = r.git(&["hash-object", "big.bin"]);
-    assert_eq!(rows[0].git.unwrap().to_string(), git.stdout.trim(), "the blob is the plain content");
+    assert_eq!(
+        rows[0].git.unwrap().to_string(),
+        git.stdout.trim(),
+        "the blob is the plain content"
+    );
 }
 
 fn entries(path: &Path) -> Vec<(String, String, u8, bool)> {
@@ -350,17 +447,30 @@ async fn git_index_file_names_a_temporary_stage_set() {
     let (asc_index, git_index) = (tmp.join("asc-x"), tmp.join("git-x"));
     let c = run(r.f.asc().args(["add", "a"]).env("GIT_INDEX_FILE", &asc_index));
     assert_eq!(c.code, 0, "{}", c.stderr);
-    let g = run(r.f.sandbox.command(&r.git_bin, &r.git).args(["add", "a"]).env("GIT_INDEX_FILE", &git_index));
+    let g = run(r
+        .f
+        .sandbox
+        .command(&r.git_bin, &r.git)
+        .args(["add", "a"])
+        .env("GIT_INDEX_FILE", &git_index));
     assert_eq!(g.code, 0);
     assert_eq!(entries(&asc_index), entries(&git_index));
-    assert!(r.asc_index().await.is_empty(), "the default staging is unchanged");
+    assert!(
+        r.asc_index().await.is_empty(),
+        "the default staging is unchanged"
+    );
     assert!(!r.f.root.join(".git").is_dir());
     // The set is registered: a second add through the same file adds to it.
     for (bin_asc, args) in [(true, ["add", "d"]), (false, ["add", "d"])] {
         let out = if bin_asc {
             run(r.f.asc().args(args).env("GIT_INDEX_FILE", &asc_index))
         } else {
-            run(r.f.sandbox.command(&r.git_bin, &r.git).args(args).env("GIT_INDEX_FILE", &git_index))
+            run(r
+                .f
+                .sandbox
+                .command(&r.git_bin, &r.git)
+                .args(args)
+                .env("GIT_INDEX_FILE", &git_index))
         };
         assert_eq!(out.code, 0, "{}", out.stderr);
     }
@@ -378,12 +488,22 @@ async fn git_index_file_imports_an_existing_file() {
     // A file git wrote, holding blobs asc knows from its git map.
     let tmp = r.f.sandbox.dir("imp");
     let file = tmp.join("x");
-    let g = run(r.f.sandbox.command(&r.git_bin, &r.git).args(["add", "a"]).env("GIT_INDEX_FILE", &file));
+    let g = run(r
+        .f
+        .sandbox
+        .command(&r.git_bin, &r.git)
+        .args(["add", "a"])
+        .env("GIT_INDEX_FILE", &file));
     assert_eq!(g.code, 0);
     r.write("c", b"c\n");
     let c = run(r.f.asc().args(["add", "c"]).env("GIT_INDEX_FILE", &file));
     assert_eq!(c.code, 0, "{}", c.stderr);
-    let g2 = run(r.f.sandbox.command(&r.git_bin, &r.git).args(["add", "c"]).env("GIT_INDEX_FILE", &file));
+    let g2 = run(r
+        .f
+        .sandbox
+        .command(&r.git_bin, &r.git)
+        .args(["add", "c"])
+        .env("GIT_INDEX_FILE", &file));
     assert_eq!(g2.code, 0);
     let names: Vec<_> = entries(&file).into_iter().map(|e| e.0).collect();
     assert_eq!(names, ["a", "c"], "the imported entries plus the new one");
@@ -391,13 +511,21 @@ async fn git_index_file_imports_an_existing_file() {
 
 fn same_run(r: &Rig, args: &[&str]) -> Out {
     let (c, g) = (r.asc(args), r.git(args));
-    assert_eq!((c.code, &c.stdout, &c.stderr), (g.code, &g.stdout, &g.stderr), "{args:?}");
+    assert_eq!(
+        (c.code, &c.stdout, &c.stderr),
+        (g.code, &g.stdout, &g.stderr),
+        "{args:?}"
+    );
     c
 }
 
 fn same_files(r: &Rig, rels: &[&str]) {
     for rel in rels {
-        assert_eq!(r.f.root.join(rel).exists(), r.git.join(rel).exists(), "{rel}");
+        assert_eq!(
+            r.f.root.join(rel).exists(),
+            r.git.join(rel).exists(),
+            "{rel}"
+        );
     }
 }
 
@@ -458,18 +586,28 @@ async fn rm_follows_git() {
     assert_eq!(r.git(&["add", "new.txt"]).code, 0);
     same_run(&r, &["rm", "--cached", "new.txt"]);
     r.same("unstaging an added file").await;
-    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default).await.unwrap();
+    let rows = stage::overlay(&r.f.db, r.f.ws, StageSet::Default)
+        .await
+        .unwrap();
     assert!(rows.iter().all(|x| x.path != b"new.txt"), "{rows:?}");
 }
 
 #[tokio::test]
 async fn mv_follows_git_and_records_renames() {
     let r = Rig::new().await;
-    r.seed(&[("a.txt", b"a\n"), ("d/x", b"x\n"), ("d/y", b"y\n"), ("e/z", b"z\n")]).await;
+    r.seed(&[
+        ("a.txt", b"a\n"),
+        ("d/x", b"x\n"),
+        ("d/y", b"y\n"),
+        ("e/z", b"z\n"),
+    ])
+    .await;
     same_run(&r, &["mv", "a.txt", "b.txt"]);
     r.same("file rename").await;
     same_files(&r, &["a.txt", "b.txt"]);
-    let pending = asc_state::state::ws_ops::pending_renames(&r.f.db, r.f.ws).await.unwrap();
+    let pending = asc_state::state::ws_ops::pending_renames(&r.f.db, r.f.ws)
+        .await
+        .unwrap();
     assert_eq!(pending, [(b"a.txt".to_vec(), b"b.txt".to_vec())]);
 
     same_run(&r, &["mv", "d", "f"]);
@@ -480,7 +618,9 @@ async fn mv_follows_git_and_records_renames() {
     same_run(&r, &["mv", "-n", "f/x", "g.txt"]);
     r.same("-n").await;
     same_files(&r, &["f/x", "g.txt"]);
-    let mut pending = asc_state::state::ws_ops::pending_renames(&r.f.db, r.f.ws).await.unwrap();
+    let mut pending = asc_state::state::ws_ops::pending_renames(&r.f.db, r.f.ws)
+        .await
+        .unwrap();
     pending.sort();
     let want = [("a.txt", "e/b.txt"), ("d/x", "f/x"), ("d/y", "f/y")]
         .map(|(a, b)| (a.as_bytes().to_vec(), b.as_bytes().to_vec()));
@@ -513,17 +653,32 @@ async fn paths_are_relative_to_the_current_directory() {
         if bin_asc {
             run(r.f.sandbox.asc(&r.f.root.join("dir")).args(args))
         } else {
-            run(r.f.sandbox.command(&r.git_bin, &r.git.join("dir")).args(args))
+            run(r
+                .f
+                .sandbox
+                .command(&r.git_bin, &r.git.join("dir"))
+                .args(args))
         }
     };
-    for args in [&["add", "sub"][..], &["add", "../top.txt"], &["add", "a.txt", "../other"]] {
+    for args in [
+        &["add", "sub"][..],
+        &["add", "../top.txt"],
+        &["add", "a.txt", "../other"],
+    ] {
         let (c, g) = (in_dir(true, args), in_dir(false, args));
         assert_eq!((c.code, &c.stderr), (g.code, &g.stderr), "{args:?}");
         r.same(&format!("{args:?}")).await;
     }
-    let (c, g) = (in_dir(true, &["add", "../../outside"]), in_dir(false, &["add", "../../outside"]));
+    let (c, g) = (
+        in_dir(true, &["add", "../../outside"]),
+        in_dir(false, &["add", "../../outside"]),
+    );
     assert_eq!(c.code, g.code);
-    assert!(c.stderr.contains("is outside repository at"), "{}", c.stderr);
+    assert!(
+        c.stderr.contains("is outside repository at"),
+        "{}",
+        c.stderr
+    );
     r.write("dir/late.txt", b"l\n");
     r.write("top2.txt", b"t2\n");
     assert_eq!(in_dir(true, &["add", "-A"]).code, 0);
@@ -550,8 +705,22 @@ async fn ascignore_wins_and_shadowing_is_reported_once() {
         out.stderr,
         "warning: asc: .gitignore is not read because .ascignore exists (rename or merge it: asc migrate ignore)\n"
     );
-    let staged: Vec<_> = r.asc_index().await.into_iter().map(|l| l.split('\t').nth(1).unwrap().to_owned()).collect();
-    assert_eq!(staged, [".asc/redirections", ".ascignore", ".gitignore", "a.txt", "x.log"]);
+    let staged: Vec<_> = r
+        .asc_index()
+        .await
+        .into_iter()
+        .map(|l| l.split('\t').nth(1).unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        staged,
+        [
+            ".asc/redirections",
+            ".ascignore",
+            ".gitignore",
+            "a.txt",
+            "x.log"
+        ]
+    );
 }
 
 // ---------------------------------------------------------------- symlinked ancestors
@@ -584,13 +753,18 @@ async fn linked_rig(files: &[(&str, &[u8])], outside_body: &[u8]) -> (Rig, PathB
     let dir = files[0].0.split('/').next().unwrap();
     let out_dir = r.f.sandbox.dir("outside");
     for (rel, _) in files {
-        let Some(inner) = rel.strip_prefix(&format!("{dir}/")) else { continue };
+        let Some(inner) = rel.strip_prefix(&format!("{dir}/")) else {
+            continue;
+        };
         let p = out_dir.join(inner);
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(p, outside_body).unwrap();
     }
     fs::remove_dir_all(r.f.root.join(dir)).unwrap();
-    assert!(link_dir(&out_dir, &r.f.root.join(dir)), "cannot make a directory link here");
+    assert!(
+        link_dir(&out_dir, &r.f.root.join(dir)),
+        "cannot make a directory link here"
+    );
     (r, out_dir)
 }
 
@@ -599,8 +773,15 @@ async fn rm_does_not_delete_through_a_linked_directory() {
     let (r, outside) = linked_rig(&[("a/b", b"same\n"), ("keep", b"k\n")], b"same\n").await;
     let out = r.asc(&["rm", "a/b"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
-    assert_eq!(fs::read(outside.join("b")).unwrap(), b"same\n", "the outside file survives");
-    assert!(fs::symlink_metadata(r.f.root.join("a")).is_ok(), "the link itself is not removed");
+    assert_eq!(
+        fs::read(outside.join("b")).unwrap(),
+        b"same\n",
+        "the outside file survives"
+    );
+    assert!(
+        fs::symlink_metadata(r.f.root.join("a")).is_ok(),
+        "the link itself is not removed"
+    );
 }
 
 #[tokio::test]
@@ -609,9 +790,15 @@ async fn rm_cleanup_stops_at_a_linked_directory() {
     let out = r.asc(&["rm", "a/e/x"]);
     assert_eq!(out.code, 0, "{}", out.stderr);
     assert!(outside.join("e/x").is_file(), "the outside file survives");
-    assert!(outside.join("e").is_dir(), "the outside directory is not removed");
+    assert!(
+        outside.join("e").is_dir(),
+        "the outside directory is not removed"
+    );
     assert!(outside.is_dir());
-    assert!(fs::symlink_metadata(r.f.root.join("a")).is_ok(), "the link itself is not removed");
+    assert!(
+        fs::symlink_metadata(r.f.root.join("a")).is_ok(),
+        "the link itself is not removed"
+    );
 }
 
 #[tokio::test]
@@ -621,11 +808,19 @@ async fn add_does_not_read_through_a_linked_directory() {
     fs::write(r.git.join("probe"), b"SECRET\n").unwrap();
     let secret = r.git(&["hash-object", "probe"]).stdout.trim().to_owned();
     assert_eq!(secret.len(), 40);
-    for args in [&["add", "a/b"][..], &["add", "-u"], &["add", "-A"], &["add", "."]] {
+    for args in [
+        &["add", "a/b"][..],
+        &["add", "-u"],
+        &["add", "-A"],
+        &["add", "."],
+    ] {
         let out = r.asc(args);
         assert_eq!(out.code, 0, "{args:?}: {}", out.stderr);
         let index = r.asc_index().await.join("\n");
-        assert!(!index.contains(&secret), "{args:?} staged outside content:\n{index}");
+        assert!(
+            !index.contains(&secret),
+            "{args:?} staged outside content:\n{index}"
+        );
     }
     assert_eq!(fs::read(outside.join("b")).unwrap(), b"SECRET\n");
 }

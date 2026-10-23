@@ -2,8 +2,8 @@
 
 pub mod bun;
 pub mod cargo;
-pub mod uv;
 pub mod nuget;
+pub mod uv;
 
 /// Most dependency edges one lockfile may resolve: a small multiple of
 /// [`MAX_LOCKFILE_PACKAGES`](crate::model::MAX_LOCKFILE_PACKAGES). A lock over

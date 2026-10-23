@@ -12,11 +12,11 @@ use std::process::ExitCode;
 
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::{RefName, RepoPath};
+use asc_git::projection::Head;
 use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces;
 use asc_store::refs::{Expect, RefTxn, RefUpdate};
 use asc_wc::status;
-use asc_git::projection::Head;
 
 use super::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::restore::{
@@ -81,26 +81,44 @@ async fn parse_args(ctx: &Ctx, a: &Args) -> Result<Parsed> {
     if !a.after.is_empty() {
         // `--` was used: at most one revision before it.
         return match a.args.as_slice() {
-            [] => Ok(Parsed { rev: None, paths: a.after.clone() }),
-            [rev] => Ok(Parsed { rev: Some(text(rev)), paths: a.after.clone() }),
+            [] => Ok(Parsed {
+                rev: None,
+                paths: a.after.clone(),
+            }),
+            [rev] => Ok(Parsed {
+                rev: Some(text(rev)),
+                paths: a.after.clone(),
+            }),
             _ => Err(CliError::Fatal("too many arguments before '--'".into())),
         };
     }
     let Some(first) = a.args.first() else {
-        return Ok(Parsed { rev: None, paths: Vec::new() });
+        return Ok(Parsed {
+            rev: None,
+            paths: Vec::new(),
+        });
     };
     let first_text = text(first);
     if resolve_commit(ctx, &first_text).await?.is_some() {
-        return Ok(Parsed { rev: Some(first_text), paths: a.args[1..].to_vec() });
+        return Ok(Parsed {
+            rev: Some(first_text),
+            paths: a.args[1..].to_vec(),
+        });
     }
     // Not a revision: a path, when it exists on disk or in the index or HEAD.
     let on_disk = ctx.cwd.join(&first_text).exists();
     let head_root = root_of(ws, ws.head_commit().await?).await?;
     let (index, _) = index_tree(ws, head_root).await?;
     let spec = Spec::new(ctx, std::slice::from_ref(first))?;
-    let known = spec.first_unmatched(ws, &[index, head_root]).await?.is_none();
+    let known = spec
+        .first_unmatched(ws, &[index, head_root])
+        .await?
+        .is_none();
     if on_disk || known {
-        return Ok(Parsed { rev: None, paths: a.args.clone() });
+        return Ok(Parsed {
+            rev: None,
+            paths: a.args.clone(),
+        });
     }
     let bin = tool(ctx);
     Err(CliError::Raw(
@@ -115,7 +133,11 @@ async fn parse_args(ctx: &Ctx, a: &Args) -> Result<Parsed> {
 
 /// `git sha` of `commit`, abbreviated to seven digits, and the subject of its message.
 async fn describe(ws: &WsCtx, commit: ChangesetId) -> Result<String> {
-    let git = ws.engine.git_commit_of(commit).await.map_err(|e| CliError::Fatal(e.to_string()))?;
+    let git = ws
+        .engine
+        .git_commit_of(commit)
+        .await
+        .map_err(|e| CliError::Fatal(e.to_string()))?;
     let message = ws.engine.get_changeset(commit).await?.message.clone();
     let text = String::from_utf8_lossy(&message).into_owned();
     let subject: Vec<&str> = text.lines().take_while(|l| !l.trim().is_empty()).collect();
@@ -127,7 +149,9 @@ async fn print_unstaged(ctx: &Ctx) -> Result<()> {
     let ws = ctx.ws()?;
     let fresh = workspaces::get(&ws.db, ws.workspace.ws.id)
         .await?
-        .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
+        .ok_or_else(|| {
+            CliError::Fatal("asc: this workspace is not registered in state.db".into())
+        })?;
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
     let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh)
         .await
@@ -151,7 +175,11 @@ async fn print_unstaged(ctx: &Ctx) -> Result<()> {
 
 /// The paths a hard reset to `target` must rewrite: every path the index and the target differ
 /// at, every modified or deleted tracked file, and every conflicted path.
-async fn hard_paths(ctx: &Ctx, index: asc_core::id::TreeId, target: asc_core::id::TreeId) -> Result<Vec<RepoPath>> {
+async fn hard_paths(
+    ctx: &Ctx,
+    index: asc_core::id::TreeId,
+    target: asc_core::id::TreeId,
+) -> Result<Vec<RepoPath>> {
     let ws = ctx.ws()?;
     let mut paths: BTreeSet<RepoPath> = ws
         .engine
@@ -170,14 +198,20 @@ async fn hard_paths(ctx: &Ctx, index: asc_core::id::TreeId, target: asc_core::id
 }
 
 /// Moves HEAD (its branch, or the detached HEAD) to `target`.
-async fn move_head(ctx: &Ctx, target: ChangesetId, rev: &str, staging: StagingAfterMove) -> Result<()> {
+async fn move_head(
+    ctx: &Ctx,
+    target: ChangesetId,
+    rev: &str,
+    staging: StagingAfterMove,
+) -> Result<()> {
     let ws = ctx.ws()?;
     let old = ws.head_commit().await?;
     let name = match ws.projection.read_head()? {
         Head::Branch(b) => format!("refs/heads/{b}"),
         Head::Detached(_) => "HEAD".to_owned(),
     };
-    let name = RefName::new_onelevel(name.into_bytes()).map_err(|e| CliError::Fatal(e.to_string()))?;
+    let name =
+        RefName::new_onelevel(name.into_bytes()).map_err(|e| CliError::Fatal(e.to_string()))?;
     let txn = RefTxn {
         updates: vec![RefUpdate {
             name,
@@ -189,7 +223,8 @@ async fn move_head(ctx: &Ctx, target: ChangesetId, rev: &str, staging: StagingAf
         reason: String::new(),
         op_id: ext::OpId::new().0,
     };
-    ctx.update_local_refs(txn, &format!("reset: moving to {rev}"), staging).await
+    ctx.update_local_refs(txn, &format!("reset: moving to {rev}"), staging)
+        .await
 }
 
 /// Writes `ORIG_HEAD` as the old HEAD, or removes it when HEAD is unborn.
@@ -197,7 +232,11 @@ async fn write_orig_head(ws: &WsCtx) -> Result<()> {
     let file = ws.projection.git_dir().join("ORIG_HEAD");
     match ws.head_commit().await? {
         Some(old) => {
-            let git = ws.engine.git_commit_of(old).await.map_err(|e| CliError::Fatal(e.to_string()))?;
+            let git = ws
+                .engine
+                .git_commit_of(old)
+                .await
+                .map_err(|e| CliError::Fatal(e.to_string()))?;
             fs::write(&file, format!("{git}\n"))?;
         }
         None => {
@@ -230,7 +269,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
     if !parsed.paths.is_empty() {
         if kind != Kind::Mixed {
-            return Err(CliError::Fatal(format!("Cannot do {} reset with paths.", kind.name())));
+            return Err(CliError::Fatal(format!(
+                "Cannot do {} reset with paths.",
+                kind.name()
+            )));
         }
         let (index, unmerged) = index_tree(ws, head_root).await?;
         let spec = Spec::new(ctx, &parsed.paths)?;
@@ -244,7 +286,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let Some(target) = target else {
         // An unborn branch: only the index can be reset, to empty.
         if kind != Kind::Mixed {
-            return Err(CliError::Fatal("Failed to resolve 'HEAD' as a valid ref.".into()));
+            return Err(CliError::Fatal(
+                "Failed to resolve 'HEAD' as a valid ref.".into(),
+            ));
         }
         stage::clear(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
         ext::index_sink()

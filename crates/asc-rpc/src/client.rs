@@ -338,7 +338,12 @@ impl RpcClient {
         e.is_unavailable()
     }
 
-    pub(crate) fn graph_err(&self, e: CallError, operation: &'static str, rpc: &'static str) -> graph::Error {
+    pub(crate) fn graph_err(
+        &self,
+        e: CallError,
+        operation: &'static str,
+        rpc: &'static str,
+    ) -> graph::Error {
         if self.offline(&e) {
             graph::Error::Offline {
                 remote: self.inner.remote_name.clone(),

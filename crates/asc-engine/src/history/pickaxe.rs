@@ -111,9 +111,9 @@ impl Matcher {
             return Err(Error::NeedleTooLong(q.needle.len()));
         }
         if !q.regex {
-            return Ok(Self::Literal(
-                Box::new(memchr::memmem::Finder::new(&q.needle).into_owned()),
-            ));
+            return Ok(Self::Literal(Box::new(
+                memchr::memmem::Finder::new(&q.needle).into_owned(),
+            )));
         }
         let pat = std::str::from_utf8(&q.needle).map_err(|e| Error::BadPattern(e.to_string()))?;
         regex::bytes::RegexBuilder::new(pat)
@@ -416,9 +416,12 @@ mod tests {
             (b"abc", b"xabcabcab"),
             (b"abc", b"ab"),
             (b"  ", b"   "),
-            (b"foo", b"foo
+            (
+                b"foo",
+                b"foo
 bar
-foo"),
+foo",
+            ),
         ];
         for (n, h) in table {
             assert_eq!(literal(n).count(h), old_count(n, h), "{n:?} in {h:?}");

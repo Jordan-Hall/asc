@@ -113,7 +113,9 @@ fn registry_status(e: RegistryError) -> Status {
 
 fn commit_status(e: commit::Error) -> Status {
     match e {
-        commit::Error::MissingChangeset(id) => Status::not_found(format!("changeset {id} is missing")),
+        commit::Error::MissingChangeset(id) => {
+            Status::not_found(format!("changeset {id} is missing"))
+        }
         commit::Error::Store(e) => store_status(e),
         e => internal("changeset", &e),
     }
@@ -273,7 +275,9 @@ fn child(prefix: Option<&RepoPath>, name: &Name) -> Result<RepoPath, Status> {
         None => RepoPath::from(name.clone()),
     };
     if path.as_bytes().len() > MAX_WALK_PATH_BYTES {
-        return Err(Status::out_of_range("a path is longer than the server allows"));
+        return Err(Status::out_of_range(
+            "a path is longer than the server allows",
+        ));
     }
     Ok(path)
 }
@@ -362,18 +366,24 @@ impl Call {
     }
 
     async fn budget(&self, bytes: u64) -> Result<TextGuard, Status> {
-        self.hooks.text_budget.acquire(bytes).await.map_err(exhausted)
+        self.hooks
+            .text_budget
+            .acquire(bytes)
+            .await
+            .map_err(exhausted)
     }
 
     /// The `LogEntry` of each id. `hints` carry a known generation and git oid.
-    async fn log_entries(
-        &self,
-        items: &[LogItem],
-    ) -> Result<Vec<wire::LogEntry>, Status> {
-        let mut out: Vec<wire::LogEntry> = stream::iter(items.iter().map(|&(id, hint)| self.log_entry(id, hint)).collect::<Vec<_>>())
-            .buffered(FANOUT)
-            .try_collect()
-            .await?;
+    async fn log_entries(&self, items: &[LogItem]) -> Result<Vec<wire::LogEntry>, Status> {
+        let mut out: Vec<wire::LogEntry> = stream::iter(
+            items
+                .iter()
+                .map(|&(id, hint)| self.log_entry(id, hint))
+                .collect::<Vec<_>>(),
+        )
+        .buffered(FANOUT)
+        .try_collect()
+        .await?;
         let ids: Vec<ChangesetId> = items.iter().map(|(id, _)| *id).collect();
         for e in self.hooks.enrichers() {
             e.enrich(&self.entry, &ids, &mut out).await?;
@@ -381,11 +391,7 @@ impl Call {
         Ok(out)
     }
 
-    async fn log_entry(
-        &self,
-        id: ChangesetId,
-        hint: Hint,
-    ) -> Result<wire::LogEntry, Status> {
+    async fn log_entry(&self, id: ChangesetId, hint: Hint) -> Result<wire::LogEntry, Status> {
         let cs = self.changeset(id).await?;
         let generation = match hint {
             Some((g, _)) => g,
@@ -428,16 +434,19 @@ impl Call {
             mode: diff::mode(e.kind),
             id: self.ids.entry_out(e),
             git: Bytes::copy_from_slice(e.git.as_bytes()),
-            size: if e.kind == Kind::Dir || e.kind == Kind::Gitlink { 0 } else { e.size },
+            size: if e.kind == Kind::Dir || e.kind == Kind::Gitlink {
+                0
+            } else {
+                e.size
+            },
         }
     }
 
     fn tree_change_wire(&self, c: &TreeChange) -> wire::PathChange {
         let side = |e: &Option<Entry>| match e {
-            Some(e) if e.kind != Kind::Gitlink => (
-                self.file_out(&FileId::from_bytes(e.id), &e.git),
-                e.size,
-            ),
+            Some(e) if e.kind != Kind::Gitlink => {
+                (self.file_out(&FileId::from_bytes(e.id), &e.git), e.size)
+            }
             _ => (Bytes::new(), 0),
         };
         let git = |e: &Option<Entry>| {
@@ -467,7 +476,6 @@ impl Call {
     }
 }
 
-
 // ------------------------------------------------------------------------------ file streaming
 
 /// Reads a file's bytes in order, a chunk at a time, verifying what it can.
@@ -488,7 +496,10 @@ struct FileStream {
 
 enum Plan {
     Inline(Option<Bytes>),
-    Chunked { chunks: Vec<(ChunkId, u32)>, next: usize },
+    Chunked {
+        chunks: Vec<(ChunkId, u32)>,
+        next: usize,
+    },
 }
 
 fn clamp(r: &Range<u64>, total: u64) -> (u64, u64) {
@@ -673,8 +684,12 @@ impl TreeAttrs {
     fn new(engine: Arc<Eng>, objects: Arc<dyn Objects>, root: TreeId) -> Result<Self, Status> {
         let mut collection = gix_attributes::search::MetadataCollection::default();
         let mut buf = Vec::new();
-        let base = gix_attributes::Search::new_globals(None::<std::path::PathBuf>, &mut buf, &mut collection)
-            .map_err(|e| internal("attributes", &e))?;
+        let base = gix_attributes::Search::new_globals(
+            None::<std::path::PathBuf>,
+            &mut buf,
+            &mut collection,
+        )
+        .map_err(|e| internal("attributes", &e))?;
         Ok(Self {
             engine,
             objects,
@@ -698,7 +713,12 @@ impl TreeAttrs {
         let Ok(path) = RepoPath::new(path) else {
             return Ok(None);
         };
-        let Some(e) = self.engine.lookup(self.root, &path).await.map_err(tree_status)? else {
+        let Some(e) = self
+            .engine
+            .lookup(self.root, &path)
+            .await
+            .map_err(tree_status)?
+        else {
             return Ok(None);
         };
         if !matches!(e.kind, Kind::File | Kind::Exec) || e.size > ATTR_MAX_FILE {
@@ -781,7 +801,10 @@ impl TreeAttrs {
         is_dir: bool,
         names: &[&str],
     ) -> Result<Vec<Attr>, Status> {
-        let dir = path.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &path[..i]);
+        let dir = path
+            .iter()
+            .rposition(|&c| c == b'/')
+            .map_or(&[][..], |i| &path[..i]);
         let search = self.search(dir).await?;
         if !self.any {
             return Ok(vec![Attr::Unspecified; names.len()]);
@@ -896,7 +919,16 @@ impl Subst {
                 None => (trimmed.trim_end().replace('\n', " "), String::new()),
             }
         };
-        Self { git, tree, parents, author, committer, message, subject, body }
+        Self {
+            git,
+            tree,
+            parents,
+            author,
+            committer,
+            message,
+            subject,
+            body,
+        }
     }
 
     fn expand(&self, fmt: &str, out: &mut CappedOut) -> Result<(), SubstOverflow> {
@@ -919,9 +951,22 @@ impl Subst {
                 ('h', _) => (hex(&self.git)[..7].to_owned().into(), 1),
                 ('T', _) => (hex(&self.tree).into(), 1),
                 ('t', _) => (hex(&self.tree)[..7].to_owned().into(), 1),
-                ('P', _) => (self.parents.iter().map(hex).collect::<Vec<_>>().join(" ").into(), 1),
+                ('P', _) => (
+                    self.parents
+                        .iter()
+                        .map(hex)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .into(),
+                    1,
+                ),
                 ('p', _) => (
-                    self.parents.iter().map(|p| hex(p)[..7].to_owned()).collect::<Vec<_>>().join(" ").into(),
+                    self.parents
+                        .iter()
+                        .map(|p| hex(p)[..7].to_owned())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .into(),
                     1,
                 ),
                 ('s', _) => (self.subject.as_str().into(), 1),
@@ -951,9 +996,8 @@ impl Subst {
     /// Fails with `resource_exhausted` once the output would pass [`SUBST_MAX_OUT`].
     fn apply(&self, data: &[u8]) -> Result<Vec<u8>, Status> {
         const OPEN: &[u8] = b"$Format:";
-        let overflow = |_: SubstOverflow| {
-            Status::resource_exhausted("export-subst expansion is too large")
-        };
+        let overflow =
+            |_: SubstOverflow| Status::resource_exhausted("export-subst expansion is too large");
         let mut out = CappedOut {
             buf: Vec::with_capacity(data.len()),
             limit: usize::try_from(SUBST_MAX_OUT).unwrap_or(usize::MAX),
@@ -967,7 +1011,8 @@ impl Subst {
             match stop {
                 Some(j) if after[j] == b'$' => {
                     out.push(&rest[..i]).map_err(overflow)?;
-                    self.expand(&lossy(&after[..j]), &mut out).map_err(overflow)?;
+                    self.expand(&lossy(&after[..j]), &mut out)
+                        .map_err(overflow)?;
                     rest = &after[j + 1..];
                 }
                 _ => {
@@ -1024,7 +1069,13 @@ impl Write for ChanWriter {
 
 /// An archive format writer.
 trait Sink {
-    fn file(&mut self, name: &[u8], exec: bool, size: u64, data: &mut dyn io::Read) -> io::Result<()>;
+    fn file(
+        &mut self,
+        name: &[u8],
+        exec: bool,
+        size: u64,
+        data: &mut dyn io::Read,
+    ) -> io::Result<()>;
     fn symlink(&mut self, name: &[u8], target: &[u8]) -> io::Result<()>;
     fn finish(self: Box<Self>) -> io::Result<()>;
 }
@@ -1047,7 +1098,13 @@ struct TarSink {
 }
 
 impl Sink for TarSink {
-    fn file(&mut self, name: &[u8], exec: bool, size: u64, data: &mut dyn io::Read) -> io::Result<()> {
+    fn file(
+        &mut self,
+        name: &[u8],
+        exec: bool,
+        size: u64,
+        data: &mut dyn io::Read,
+    ) -> io::Result<()> {
         let Some(path) = bytes_to_path(name) else {
             return Ok(());
         };
@@ -1100,7 +1157,13 @@ fn zip_err(e: zip::result::ZipError) -> io::Error {
 }
 
 impl Sink for ZipSink {
-    fn file(&mut self, name: &[u8], exec: bool, size: u64, data: &mut dyn io::Read) -> io::Result<()> {
+    fn file(
+        &mut self,
+        name: &[u8],
+        exec: bool,
+        size: u64,
+        data: &mut dyn io::Read,
+    ) -> io::Result<()> {
         let Ok(name) = std::str::from_utf8(name) else {
             return Ok(());
         };
@@ -1111,7 +1174,8 @@ impl Sink for ZipSink {
     }
 
     fn symlink(&mut self, name: &[u8], target: &[u8]) -> io::Result<()> {
-        let (Ok(name), Ok(target)) = (std::str::from_utf8(name), std::str::from_utf8(target)) else {
+        let (Ok(name), Ok(target)) = (std::str::from_utf8(name), std::str::from_utf8(target))
+        else {
             return Ok(());
         };
         let opts = self.options(0o120_777, 0);
@@ -1214,7 +1278,11 @@ impl ServerReads {
     }
 
     /// The tree of `dir` in changeset `root`, or `None` when it is not a directory there.
-    async fn dir_tree(call: &Call, root: TreeId, dir: Option<&RepoPath>) -> Result<Option<TreeId>, Status> {
+    async fn dir_tree(
+        call: &Call,
+        root: TreeId,
+        dir: Option<&RepoPath>,
+    ) -> Result<Option<TreeId>, Status> {
         match dir {
             None => Ok(Some(root)),
             Some(p) => Ok(call
@@ -1242,7 +1310,11 @@ impl ServerReads {
         }
         let tip_root = call.root(tip).await?;
         let Some(tip_dir) = Self::dir_tree(call, tip_root, dir).await? else {
-            return Ok(Arc::new(LastsMemo { map: HashMap::new(), all: true, exhausted: false }));
+            return Ok(Arc::new(LastsMemo {
+                map: HashMap::new(),
+                all: true,
+                exhausted: false,
+            }));
         };
         let tree = call.engine.get_tree(tip_dir).await.map_err(tree_status)?;
         let all = tree.entries().len() <= LASTS_MAX_ENTRIES;
@@ -1276,7 +1348,9 @@ impl ServerReads {
                         Name::new(name.clone())
                             .ok()
                             .and_then(|n| t.get(&n).cloned())
-                            .is_some_and(|o| o.id == mine.id && o.kind == mine.kind && o.git == mine.git)
+                            .is_some_and(|o| {
+                                o.id == mine.id && o.kind == mine.kind && o.git == mine.git
+                            })
                     });
                     if !same {
                         map.insert(name.clone(), cur);
@@ -1299,7 +1373,11 @@ impl ServerReads {
                 break;
             }
         }
-        let memo = Arc::new(LastsMemo { map, all, exhausted });
+        let memo = Arc::new(LastsMemo {
+            map,
+            all,
+            exhausted,
+        });
         if all {
             self.lasts.insert(key, memo.clone());
         }
@@ -1317,7 +1395,10 @@ impl ServerReads {
             Kind::Gitlink => 2,
             _ => 0,
         };
-        let old = call.lookup(parent_root, path).await?.filter(|e| e.kind != Kind::Dir);
+        let old = call
+            .lookup(parent_root, path)
+            .await?
+            .filter(|e| e.kind != Kind::Dir);
         let mut pc = wire::PathChange {
             path: Bytes::copy_from_slice(path.as_bytes()),
             ..wire::PathChange::default()
@@ -1331,7 +1412,13 @@ impl ServerReads {
             }
         }
         match change {
-            Change::Write { kind, file, size, git, copy_from } => {
+            Change::Write {
+                kind,
+                file,
+                size,
+                git,
+                copy_from,
+            } => {
                 pc.status = match (&old, copy_from) {
                     (Some(o), _) if class(o.kind) != class(*kind) => "T",
                     (Some(_), _) => "M",
@@ -1359,7 +1446,8 @@ impl ServerReads {
 
     async fn stat_key(call: &Call, k: &wire::ObjKey) -> Result<ObjKey, Status> {
         use wire::ObjKind as K;
-        let kind = K::try_from(k.kind).map_err(|_| Status::invalid_argument("unknown object kind"))?;
+        let kind =
+            K::try_from(k.kind).map_err(|_| Status::invalid_argument("unknown object kind"))?;
         Ok(match kind {
             K::File => ObjKey::File(call.ids.file_in(&k.id).await?),
             K::Tree => ObjKey::Tree(call.ids.tree_in(&k.id).await?),
@@ -1389,10 +1477,17 @@ impl ReadsHandler for ServerReads {
             Some(&p) => call.root(p).await?,
             None => Eng::empty_tree_id(),
         };
-        let changes: Vec<wire::PathChange> = stream::iter(cs.changes.as_slice().iter().take(MAX_CHANGES).map(|(path, change)| Self::change_wire(&call, parent_root, path, change)).collect::<Vec<_>>())
-            .buffered(FANOUT)
-            .try_collect()
-            .await?;
+        let changes: Vec<wire::PathChange> = stream::iter(
+            cs.changes
+                .as_slice()
+                .iter()
+                .take(MAX_CHANGES)
+                .map(|(path, change)| Self::change_wire(&call, parent_root, path, change))
+                .collect::<Vec<_>>(),
+        )
+        .buffered(FANOUT)
+        .try_collect()
+        .await?;
         let mut extra = HashMap::new();
         let mut raw_git_commit = Bytes::new();
         for (k, v) in cs.extra.as_slice() {
@@ -1412,7 +1507,11 @@ impl ReadsHandler for ServerReads {
         })
     }
 
-    async fn stat(&self, ctx: &CallCtx, req: wire::StatRequest) -> Result<wire::StatResponse, Status> {
+    async fn stat(
+        &self,
+        ctx: &CallCtx,
+        req: wire::StatRequest,
+    ) -> Result<wire::StatResponse, Status> {
         let call = self.core.call(ctx).await?;
         if req.paths.len() + req.objects.len() > MAX_NAMES {
             return Err(Status::invalid_argument("too many paths and objects"));
@@ -1422,30 +1521,35 @@ impl ReadsHandler for ServerReads {
         if !req.paths.is_empty() {
             let id = call.rev(&req.rev).await?;
             let root = call.root(id).await?;
-            let found: Vec<(wire::TreeEntryInfo, bool)> = stream::iter(req.paths.iter().map(|p| {
-                    let call = &call;
-                    async move {
-                        match dir_path(p)? {
-                            None => {
-                                let git = call.ids.tree_git(root).await?;
-                                let info = wire::TreeEntryInfo {
-                                    mode: diff::mode(Kind::Dir),
-                                    id: call.ids.tree_out(root, git),
-                                    git: Bytes::copy_from_slice(git.as_bytes()),
-                                    ..wire::TreeEntryInfo::default()
-                                };
-                                Ok::<_, Status>((info, true))
+            let found: Vec<(wire::TreeEntryInfo, bool)> = stream::iter(
+                req.paths
+                    .iter()
+                    .map(|p| {
+                        let call = &call;
+                        async move {
+                            match dir_path(p)? {
+                                None => {
+                                    let git = call.ids.tree_git(root).await?;
+                                    let info = wire::TreeEntryInfo {
+                                        mode: diff::mode(Kind::Dir),
+                                        id: call.ids.tree_out(root, git),
+                                        git: Bytes::copy_from_slice(git.as_bytes()),
+                                        ..wire::TreeEntryInfo::default()
+                                    };
+                                    Ok::<_, Status>((info, true))
+                                }
+                                Some(path) => Ok(match call.lookup(root, &path).await? {
+                                    Some(e) => (call.entry_info(&path, &e), true),
+                                    None => (wire::TreeEntryInfo::default(), false),
+                                }),
                             }
-                            Some(path) => Ok(match call.lookup(root, &path).await? {
-                                Some(e) => (call.entry_info(&path, &e), true),
-                                None => (wire::TreeEntryInfo::default(), false),
-                            }),
                         }
-                    }
-                }).collect::<Vec<_>>())
-                .buffered(FANOUT)
-                .try_collect()
-                .await?;
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .buffered(FANOUT)
+            .try_collect()
+            .await?;
             for (e, x) in found {
                 entries.push(e);
                 exists.push(x);
@@ -1464,7 +1568,12 @@ impl ReadsHandler for ServerReads {
                     probe.push(ObjKey::ChunkList(*f));
                 }
             }
-            let have = call.entry.objects.has_many(&probe).await.map_err(store_status)?;
+            let have = call
+                .entry
+                .objects
+                .has_many(&probe)
+                .await
+                .map_err(store_status)?;
             let mut at = 0;
             for (k, wk) in keys.iter().zip(&req.objects) {
                 let mut present = have[at];
@@ -1490,7 +1599,9 @@ impl ReadsHandler for ServerReads {
     ) -> Result<wire::CheckAttrResponse, Status> {
         let call = self.core.call(ctx).await?;
         if req.paths.len() > MAX_NAMES || req.names.is_empty() || req.names.len() > MAX_ATTR_NAMES {
-            return Err(Status::invalid_argument("bad number of paths or attribute names"));
+            return Err(Status::invalid_argument(
+                "bad number of paths or attribute names",
+            ));
         }
         if !req.names.iter().all(|n| valid_attr_name(n)) {
             return Err(Status::invalid_argument("invalid attribute name"));
@@ -1504,7 +1615,12 @@ impl ReadsHandler for ServerReads {
             let path = repo_path(p)?;
             let got = attrs.lookup(path.as_bytes(), false, &names).await?;
             per_path.push(wire::AttrValues {
-                values: req.names.iter().cloned().zip(got.iter().map(Attr::text)).collect(),
+                values: req
+                    .names
+                    .iter()
+                    .cloned()
+                    .zip(got.iter().map(Attr::text))
+                    .collect(),
             });
         }
         Ok(wire::CheckAttrResponse { per_path })
@@ -1639,10 +1755,17 @@ impl ReadsHandler for ServerReads {
             for (i, comp) in after.iter().enumerate() {
                 let entries = tree.entries();
                 let pos = entries.partition_point(|e| e.name.as_bytes() < comp.as_slice());
-                let hit = entries.get(pos).filter(|e| e.name.as_bytes() == comp.as_slice()).cloned();
+                let hit = entries
+                    .get(pos)
+                    .filter(|e| e.name.as_bytes() == comp.as_slice())
+                    .cloned();
                 match hit {
                     Some(e) if recursive && e.kind == Kind::Dir && i + 1 < after.len() => {
-                        stack.push(Frame { prefix: prefix.clone(), tree: tree.clone(), next: pos + 1 });
+                        stack.push(Frame {
+                            prefix: prefix.clone(),
+                            tree: tree.clone(),
+                            next: pos + 1,
+                        });
                         prefix = Some(child(prefix.as_ref(), &e.name)?);
                         tree = call.tree(TreeId::from_bytes(e.id)).await?;
                         if stack.len() > MAX_TREE_DEPTH {
@@ -1651,7 +1774,11 @@ impl ReadsHandler for ServerReads {
                     }
                     other => {
                         let next = pos + usize::from(other.is_some());
-                        stack.push(Frame { prefix: prefix.clone(), tree: tree.clone(), next });
+                        stack.push(Frame {
+                            prefix: prefix.clone(),
+                            tree: tree.clone(),
+                            next,
+                        });
                         break;
                     }
                 }
@@ -1672,13 +1799,19 @@ impl ReadsHandler for ServerReads {
                         return Err(Status::out_of_range("tree is nested too deeply"));
                     }
                     let tree = call.tree(TreeId::from_bytes(e.id)).await?;
-                    stack.push(Frame { prefix: Some(path), tree, next: 0 });
+                    stack.push(Frame {
+                        prefix: Some(path),
+                        tree,
+                        next: 0,
+                    });
                     continue;
                 }
                 batch.push(call.entry_info(&path, &e));
                 sent += 1;
                 if sent > MAX_TREE_ENTRIES {
-                    return Err(Status::resource_exhausted("directory listing is too large; use `limit` and `after`"));
+                    return Err(Status::resource_exhausted(
+                        "directory listing is too large; use `limit` and `after`",
+                    ));
                 }
                 if batch.len() >= TREE_CHUNK {
                     out.send(head(std::mem::take(&mut batch))).await?;
@@ -1711,15 +1844,23 @@ impl ReadsHandler for ServerReads {
                     .await?
                     .ok_or_else(|| Status::not_found(format!("{path} does not exist at {rev}")))?;
                 match e.kind {
-                    Kind::File | Kind::Exec | Kind::Symlink => (FileId::from_bytes(e.id), Some(e.size)),
+                    Kind::File | Kind::Exec | Kind::Symlink => {
+                        (FileId::from_bytes(e.id), Some(e.size))
+                    }
                     Kind::Dir => return Err(Status::failed_precondition("path is a directory")),
-                    Kind::Gitlink => return Err(Status::failed_precondition("path is a submodule")),
+                    Kind::Gitlink => {
+                        return Err(Status::failed_precondition("path is a submodule"));
+                    }
                 }
             }
             Some(At::FileId(b)) => (call.ids.file_in(&b).await?, None),
             None => return Err(Status::invalid_argument("missing rev_path or file_id")),
         };
-        let end = if req.length == 0 { u64::MAX } else { req.offset.saturating_add(req.length) };
+        let end = if req.length == 0 {
+            u64::MAX
+        } else {
+            req.offset.saturating_add(req.length)
+        };
         let objects: Arc<dyn Objects> = call.entry.objects.clone();
         let (mut file_stream, total) =
             FileStream::open(objects, file, size, req.offset..end).await?;
@@ -1728,12 +1869,20 @@ impl ReadsHandler for ServerReads {
             while let Some(mut piece) = file_stream.next().await? {
                 while !piece.is_empty() {
                     let part = piece.split_to(piece.len().min(DATA_MSG));
-                    out.send(wire::ReadFileResponse { data: part, total_size: total }).await?;
+                    out.send(wire::ReadFileResponse {
+                        data: part,
+                        total_size: total,
+                    })
+                    .await?;
                     any = true;
                 }
             }
             if !any {
-                out.send(wire::ReadFileResponse { data: Bytes::new(), total_size: total }).await?;
+                out.send(wire::ReadFileResponse {
+                    data: Bytes::new(),
+                    total_size: total,
+                })
+                .await?;
             }
             Ok(())
         }))
@@ -1748,7 +1897,11 @@ impl ReadsHandler for ServerReads {
         if req.pattern.is_empty() || req.pattern.len() > MAX_STRING {
             return Err(Status::invalid_argument("empty or too long pattern"));
         }
-        let pattern = if req.fixed { regex::escape(&req.pattern) } else { req.pattern.clone() };
+        let pattern = if req.fixed {
+            regex::escape(&req.pattern)
+        } else {
+            req.pattern.clone()
+        };
         let re = regex::bytes::RegexBuilder::new(&pattern)
             .case_insensitive(req.ignore_case)
             .size_limit(1 << 20)
@@ -1766,7 +1919,10 @@ impl ReadsHandler for ServerReads {
             let mut walk = call.engine.walk(root, spec.as_ref());
             let (mut batch, mut found) = (Vec::new(), 0usize);
             'files: while let Some((path, e)) = walk.try_next().await.map_err(tree_status)? {
-                if !matches!(e.kind, Kind::File | Kind::Exec) || e.size == 0 || e.size > GREP_MAX_FILE {
+                if !matches!(e.kind, Kind::File | Kind::Exec)
+                    || e.size == 0
+                    || e.size > GREP_MAX_FILE
+                {
                     continue;
                 }
                 let _guard = call.budget(e.size).await?;
@@ -1790,7 +1946,10 @@ impl ReadsHandler for ServerReads {
                     });
                     found += 1;
                     if batch.len() >= GREP_CHUNK {
-                        out.send(wire::GrepResponse { matches: std::mem::take(&mut batch) }).await?;
+                        out.send(wire::GrepResponse {
+                            matches: std::mem::take(&mut batch),
+                        })
+                        .await?;
                     }
                     if found >= max {
                         break 'files;
@@ -1842,16 +2001,26 @@ impl ReadsHandler for ServerReads {
         let err = tx.clone();
         let handle = Handle::current();
         tokio::task::spawn_blocking(move || {
-            let writer = ChanWriter { tx, buf: Vec::new() };
+            let writer = ChanWriter {
+                tx,
+                buf: Vec::new(),
+            };
             let run = || -> Result<(), Status> {
                 let objects: Arc<dyn Objects> = call.entry.objects.clone();
                 let mut attrs = TreeAttrs::new(call.engine.clone(), objects.clone(), root)?;
                 let mut sink: Box<dyn Sink> = match fmt {
-                    Fmt::Tar => Box::new(TarSink { builder: tar::Builder::new(writer), mtime }),
+                    Fmt::Tar => Box::new(TarSink {
+                        builder: tar::Builder::new(writer),
+                        mtime,
+                    }),
                     Fmt::Zip => {
                         let (y, mo, d, h, mi, s) = civil(mtime);
-                        let time = zip::DateTime::from_date_and_time(y, mo, d, h, mi, s).unwrap_or_default();
-                        Box::new(ZipSink { zip: zip::ZipWriter::new_stream(writer), time })
+                        let time = zip::DateTime::from_date_and_time(y, mo, d, h, mi, s)
+                            .unwrap_or_default();
+                        Box::new(ZipSink {
+                            zip: zip::ZipWriter::new_stream(writer),
+                            time,
+                        })
                     }
                 };
                 let io = |e: io::Error| {
@@ -1863,11 +2032,20 @@ impl ReadsHandler for ServerReads {
                 };
                 let mut walk = call.engine.walk(root, spec.as_ref());
                 while let Some((path, e)) = handle.block_on(walk.try_next()).map_err(tree_status)? {
-                    if e.kind == Kind::Gitlink || handle.block_on(attrs.export_ignored(path.as_bytes()))? {
+                    if e.kind == Kind::Gitlink
+                        || handle.block_on(attrs.export_ignored(path.as_bytes()))?
+                    {
                         continue;
                     }
                     let name = [prefix.as_slice(), path.as_bytes()].concat();
-                    let open = || FileStream::open(objects.clone(), FileId::from_bytes(e.id), Some(e.size), 0..e.size);
+                    let open = || {
+                        FileStream::open(
+                            objects.clone(),
+                            FileId::from_bytes(e.id),
+                            Some(e.size),
+                            0..e.size,
+                        )
+                    };
                     let read_all = || -> Result<Vec<u8>, Status> {
                         let (mut s, _) = handle.block_on(open())?;
                         let mut data = Vec::new();
@@ -1889,10 +2067,15 @@ impl ReadsHandler for ServerReads {
                         // Both the file and its expansion are held at once.
                         let _guard = handle.block_on(call.budget(e.size + SUBST_MAX_OUT))?;
                         let data = subst.apply(&read_all()?)?;
-                        sink.file(&name, exec, data.len() as u64, &mut data.as_slice()).map_err(io)?;
+                        sink.file(&name, exec, data.len() as u64, &mut data.as_slice())
+                            .map_err(io)?;
                     } else {
                         let (stream, _) = handle.block_on(open())?;
-                        let mut reader = SyncFile { handle: handle.clone(), stream, cur: Bytes::new() };
+                        let mut reader = SyncFile {
+                            handle: handle.clone(),
+                            stream,
+                            cur: Bytes::new(),
+                        };
                         sink.file(&name, exec, e.size, &mut reader).map_err(io)?;
                     }
                 }
@@ -1913,7 +2096,9 @@ impl ReadsHandler for ServerReads {
         const BLAME_CHUNK: usize = 1_000;
         let call = self.core.call(ctx).await?;
         if req.reverse {
-            return Err(Status::unimplemented("reverse blame is not available on this server yet"));
+            return Err(Status::unimplemented(
+                "reverse blame is not available on this server yet",
+            ));
         }
         let rev = call.rev(&req.rev).await?;
         let path = repo_path(&req.path)?;
@@ -1924,25 +2109,39 @@ impl ReadsHandler for ServerReads {
             .filter(|e| matches!(e.kind, Kind::File | Kind::Exec))
             .ok_or_else(|| Status::not_found(format!("{path} is not a file at that revision")))?;
         if entry.size > BIG_FILE {
-            return Err(Status::failed_precondition("file is binary (over core.bigFileThreshold)"));
+            return Err(Status::failed_precondition(
+                "file is binary (over core.bigFileThreshold)",
+            ));
         }
         let _guard = call.budget(entry.size).await?;
         let blame_err = |e: blame::Error| match e {
-            blame::Error::NotFound(p) => Status::not_found(format!("{p} is not a file at that revision")),
+            blame::Error::NotFound(p) => {
+                Status::not_found(format!("{p} is not a file at that revision"))
+            }
             blame::Error::BadRange { .. } => Status::out_of_range(e.to_string()),
             e => internal("blame", &e),
         };
-        let whole = BlameApi::blame(&*call.engine, rev, &path, None).await.map_err(blame_err)?;
+        let whole = BlameApi::blame(&*call.engine, rev, &path, None)
+            .await
+            .map_err(blame_err)?;
         let view = if req.start_line == 0 && req.end_line == 0 {
             whole
         } else {
-            let end = if req.end_line == 0 { whole.lines() } else { req.end_line };
+            let end = if req.end_line == 0 {
+                whole.lines()
+            } else {
+                req.end_line
+            };
             whole.slice(req.start_line..end).map_err(blame_err)?
         };
         let mut responses = Vec::new();
         for runs in view.runs().chunks(BLAME_CHUNK) {
             let mut seen = std::collections::HashSet::new();
-            let origins: Vec<ChangesetId> = runs.iter().map(|r| r.origin).filter(|o| seen.insert(*o)).collect();
+            let origins: Vec<ChangesetId> = runs
+                .iter()
+                .map(|r| r.origin)
+                .filter(|o| seen.insert(*o))
+                .collect();
             let items: Vec<_> = origins.iter().map(|o| (*o, None)).collect();
             let commits = call.log_entries(&items).await?;
             let mut hunks = Vec::with_capacity(runs.len());
@@ -1955,7 +2154,11 @@ impl ReadsHandler for ServerReads {
                     len: r.len,
                 });
             }
-            responses.push(wire::BlameResponse { hunks, commits, reviews: Vec::new() });
+            responses.push(wire::BlameResponse {
+                hunks,
+                commits,
+                reviews: Vec::new(),
+            });
         }
         if responses.is_empty() {
             responses.push(wire::BlameResponse::default());
@@ -2017,7 +2220,11 @@ impl ServerHistory {
 
 #[async_trait]
 impl HistoryHandler for ServerHistory {
-    async fn resolve(&self, ctx: &CallCtx, req: wire::ResolveRequest) -> Result<wire::ResolveResponse, Status> {
+    async fn resolve(
+        &self,
+        ctx: &CallCtx,
+        req: wire::ResolveRequest,
+    ) -> Result<wire::ResolveResponse, Status> {
         let call = self.core.call(ctx).await?;
         if req.revspecs.len() > MAX_LIST {
             return Err(Status::invalid_argument("too many revisions"));
@@ -2033,7 +2240,11 @@ impl HistoryHandler for ServerHistory {
         Ok(wire::ResolveResponse { ids })
     }
 
-    async fn git_map(&self, ctx: &CallCtx, req: wire::GitMapRequest) -> Result<wire::GitMapResponse, Status> {
+    async fn git_map(
+        &self,
+        ctx: &CallCtx,
+        req: wire::GitMapRequest,
+    ) -> Result<wire::GitMapResponse, Status> {
         use asc_rpc::convert::WireId;
         let call = self.core.call(ctx).await?;
         if req.asc.len() > MAX_LIST || req.git.len() > MAX_LIST {
@@ -2053,15 +2264,25 @@ impl HistoryHandler for ServerHistory {
             .iter()
             .map(|b| GitOid::from_slice(b).map_err(invalid))
             .collect::<Result<_, _>>()?;
-        let found = call.ids.asc_of_git(asc_core::git::ObjectKind::Commit, &git).await?;
+        let found = call
+            .ids
+            .asc_of_git(asc_core::git::ObjectKind::Commit, &git)
+            .await?;
         let git_to_asc = found
             .into_iter()
             .map(|c| c.map_or_else(Bytes::new, |c| Bytes::copy_from_slice(&c)))
             .collect();
-        Ok(wire::GitMapResponse { asc_to_git, git_to_asc })
+        Ok(wire::GitMapResponse {
+            asc_to_git,
+            git_to_asc,
+        })
     }
 
-    async fn merge_base(&self, ctx: &CallCtx, req: wire::MergeBaseRequest) -> Result<wire::MergeBaseResponse, Status> {
+    async fn merge_base(
+        &self,
+        ctx: &CallCtx,
+        req: wire::MergeBaseRequest,
+    ) -> Result<wire::MergeBaseResponse, Status> {
         let call = self.core.call(ctx).await?;
         if req.b.len() > MAX_LIST {
             return Err(Status::invalid_argument("too many ids"));
@@ -2071,11 +2292,21 @@ impl HistoryHandler for ServerHistory {
         for b in &req.b {
             others.push(call.ids.changeset_in(b).await?);
         }
-        let bases = call.engine.merge_base(a, &others, req.all).await.map_err(graph_status)?;
-        Ok(wire::MergeBaseResponse { bases: call.ids.changesets_out(&bases).await? })
+        let bases = call
+            .engine
+            .merge_base(a, &others, req.all)
+            .await
+            .map_err(graph_status)?;
+        Ok(wire::MergeBaseResponse {
+            bases: call.ids.changesets_out(&bases).await?,
+        })
     }
 
-    async fn is_ancestor(&self, ctx: &CallCtx, req: wire::IsAncestorRequest) -> Result<wire::IsAncestorResponse, Status> {
+    async fn is_ancestor(
+        &self,
+        ctx: &CallCtx,
+        req: wire::IsAncestorRequest,
+    ) -> Result<wire::IsAncestorResponse, Status> {
         let call = self.core.call(ctx).await?;
         let a = call.ids.changeset_in(&req.ancestor).await?;
         let b = call.ids.changeset_in(&req.descendant).await?;
@@ -2084,7 +2315,11 @@ impl HistoryHandler for ServerHistory {
         })
     }
 
-    async fn log(&self, ctx: &CallCtx, req: wire::LogRequest) -> Result<RpcStream<wire::LogResponse>, Status> {
+    async fn log(
+        &self,
+        ctx: &CallCtx,
+        req: wire::LogRequest,
+    ) -> Result<RpcStream<wire::LogResponse>, Status> {
         use base64::Engine as _;
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let call = self.core.call(ctx).await?;
@@ -2094,11 +2329,9 @@ impl HistoryHandler for ServerHistory {
         } else if req.page_token.len() > 64 * 1024 {
             return Err(Status::invalid_argument("page token is too long"));
         } else {
-            Some(PageToken(
-                URL_SAFE_NO_PAD
-                    .decode(&req.page_token)
-                    .map_err(|_| Status::invalid_argument("malformed page token"))?,
-            ))
+            Some(PageToken(URL_SAFE_NO_PAD.decode(&req.page_token).map_err(
+                |_| Status::invalid_argument("malformed page token"),
+            )?))
         };
         if token.is_none() {
             query.include = if req.include.is_empty() {
@@ -2156,10 +2389,15 @@ impl HistoryHandler for ServerHistory {
         }))
     }
 
-    async fn diff(&self, ctx: &CallCtx, req: wire::DiffRequest) -> Result<RpcStream<wire::DiffResponse>, Status> {
+    async fn diff(
+        &self,
+        ctx: &CallCtx,
+        req: wire::DiffRequest,
+    ) -> Result<RpcStream<wire::DiffResponse>, Status> {
         use wire::DiffFormat as F;
         let call = self.core.call(ctx).await?;
-        let format = F::try_from(req.format).map_err(|_| Status::invalid_argument("unknown diff format"))?;
+        let format =
+            F::try_from(req.format).map_err(|_| Status::invalid_argument("unknown diff format"))?;
         let spec = pathspec(&req.paths)?;
         let mut base = call.rev(&req.base).await?;
         let head = call.rev(&req.head).await?;
@@ -2177,7 +2415,11 @@ impl HistoryHandler for ServerHistory {
             n => n.min(DIFF_MAX_FILES),
         };
         let opts = DiffOptions {
-            context: if req.context == 0 { 3 } else { req.context as usize },
+            context: if req.context == 0 {
+                3
+            } else {
+                req.context as usize
+            },
             renames: req.renames.then(RenameOptions::default),
             nul: req.null_terminated,
             ..DiffOptions::default()
@@ -2191,11 +2433,20 @@ impl HistoryHandler for ServerHistory {
         let truncated = changes.len() > cap;
         changes.truncate(cap);
         Ok(spawn_stream(move |out| async move {
-            let wire_changes: Vec<wire::PathChange> = changes.iter().map(|c| call.tree_change_wire(c)).collect();
+            let wire_changes: Vec<wire::PathChange> =
+                changes.iter().map(|c| call.tree_change_wire(c)).collect();
             for chunk in wire_changes.chunks(DIFF_CHANGES_CHUNK) {
-                out.send(wire::DiffResponse { changes: chunk.to_vec(), ..wire::DiffResponse::default() }).await?;
+                out.send(wire::DiffResponse {
+                    changes: chunk.to_vec(),
+                    ..wire::DiffResponse::default()
+                })
+                .await?;
             }
-            let ctx = DiffCtx { opts: &opts, content: &*call.engine, attrs: &NoAttributes };
+            let ctx = DiffCtx {
+                opts: &opts,
+                content: &*call.engine,
+                attrs: &NoAttributes,
+            };
             let mut buf: Vec<u8> = Vec::new();
             let flush = |buf: &mut Vec<u8>| wire::DiffResponse {
                 text: Bytes::from(std::mem::take(buf)),
@@ -2228,12 +2479,20 @@ impl HistoryHandler for ServerHistory {
                     }
                 }
                 F::Stat => {
-                    let _guard = call.budget(changes.iter().map(read_cost).max().unwrap_or(0)).await?;
-                    diff::write_stat(&mut buf, &ctx, &changes).await.map_err(diff_status)?;
+                    let _guard = call
+                        .budget(changes.iter().map(read_cost).max().unwrap_or(0))
+                        .await?;
+                    diff::write_stat(&mut buf, &ctx, &changes)
+                        .await
+                        .map_err(diff_status)?;
                 }
             }
-            out.send(wire::DiffResponse { text: Bytes::from(buf), truncated, ..wire::DiffResponse::default() })
-                .await?;
+            out.send(wire::DiffResponse {
+                text: Bytes::from(buf),
+                truncated,
+                ..wire::DiffResponse::default()
+            })
+            .await?;
             Ok(())
         }))
     }
@@ -2261,7 +2520,10 @@ fn read_cost(c: &TreeChange) -> u64 {
 /// the real text budget (U69).
 pub fn register(ext: &Extensions, registry: &Arc<Registry>) -> Arc<ReadHooks> {
     let hooks = Arc::new(ReadHooks::default());
-    let core = Arc::new(Core { registry: registry.clone(), hooks: hooks.clone() });
+    let core = Arc::new(Core {
+        registry: registry.clone(),
+        hooks: hooks.clone(),
+    });
     ext.handlers
         .set_reads(Arc::new(ServerReads::new(core.clone())))
         .expect("the reads handler group is registered once");
@@ -2287,7 +2549,7 @@ mod tests {
     use asc_rpc::auth::Principal;
     use asc_rpc::server::RepoName;
     use asc_store::codec::encode_stored;
-    use asc_store::refs::{Actor, Expect, RefUpdate, RefTxn, Refs};
+    use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
 
     use super::*;
     use crate::ingest::testutil::{registry, repo};
@@ -2322,7 +2584,10 @@ mod tests {
         let reg = registry().await;
         let entry = repo(&reg).await;
         let hooks = Arc::new(ReadHooks::default());
-        let core = Arc::new(Core { registry: reg.clone(), hooks: hooks.clone() });
+        let core = Arc::new(Core {
+            registry: reg.clone(),
+            hooks: hooks.clone(),
+        });
         Fx {
             reads: ServerReads::new(core.clone()),
             hist: ServerHistory { core },
@@ -2343,22 +2608,34 @@ mod tests {
     }
 
     fn repo_ref(mode: IdMode) -> Option<wire::RepoRef> {
-        Some(wire::RepoRef { name: "o/r".into(), id_mode: mode.to_wire() })
+        Some(wire::RepoRef {
+            name: "o/r".into(),
+            id_mode: mode.to_wire(),
+        })
     }
 
     async fn put(e: &RepoEntry, kind: Kind, content: &[u8]) -> Change {
         let got = ingest(Cursor::new(content)).unwrap();
         match got.body {
             Body::Inline(b) => {
-                e.objects.put(&ObjKey::File(got.file), encode_stored(&b)).await.unwrap();
+                e.objects
+                    .put(&ObjKey::File(got.file), encode_stored(&b))
+                    .await
+                    .unwrap();
             }
             Body::Chunked { list, chunks } => {
                 for (id, data) in chunks {
-                    e.objects.put(&ObjKey::Chunk(id), encode_stored(&data)).await.unwrap();
+                    e.objects
+                        .put(&ObjKey::Chunk(id), encode_stored(&data))
+                        .await
+                        .unwrap();
                 }
                 use asc_core::codec::Enveloped;
                 e.objects
-                    .put(&ObjKey::ChunkList(got.file), encode_stored(&list.to_envelope()))
+                    .put(
+                        &ObjKey::ChunkList(got.file),
+                        encode_stored(&list.to_envelope()),
+                    )
                     .await
                     .unwrap();
             }
@@ -2367,7 +2644,13 @@ mod tests {
     }
 
     /// A changeset with `ops` applied to the first parent's tree.
-    async fn mk(e: &RepoEntry, parents: &[ChangesetId], ops: &[Op<'_>], msg: &str, time: i64) -> ChangesetId {
+    async fn mk(
+        e: &RepoEntry,
+        parents: &[ChangesetId],
+        ops: &[Op<'_>],
+        msg: &str,
+        time: i64,
+    ) -> ChangesetId {
         let engine = e.backend.engine();
         let base = match parents.first() {
             Some(&p) => engine.get_changeset(p).await.unwrap().root,
@@ -2424,7 +2707,10 @@ mod tests {
                 new: Some(RefTarget::Changeset(cs)),
                 expires_at: None,
             }],
-            actor: Actor { id: "t".into(), via: "test".into() },
+            actor: Actor {
+                id: "t".into(),
+                via: "test".into(),
+            },
             reason: "test".into(),
             op_id: uuid::Uuid::new_v4(),
         };
@@ -2442,12 +2728,23 @@ mod tests {
         }
     }
 
-    async fn read_all(f: &Fx, mode: IdMode, at: wire::read_file_request::At, offset: u64, length: u64) -> (Vec<u8>, u64) {
+    async fn read_all(
+        f: &Fx,
+        mode: IdMode,
+        at: wire::read_file_request::At,
+        offset: u64,
+        length: u64,
+    ) -> (Vec<u8>, u64) {
         let s = f
             .reads
             .read_file(
                 &ctx(mode),
-                wire::ReadFileRequest { repo: repo_ref(mode), at: Some(at), offset, length },
+                wire::ReadFileRequest {
+                    repo: repo_ref(mode),
+                    at: Some(at),
+                    offset,
+                    length,
+                },
             )
             .await
             .unwrap();
@@ -2495,20 +2792,41 @@ mod tests {
     }
 
     /// Mirrors one changeset into the git repo at `dir`; returns git's commit id.
-    fn git_commit(dir: &Path, parent: Option<&str>, ops: &[Op<'_>], msg: &str, time: i64) -> String {
+    fn git_commit(
+        dir: &Path,
+        parent: Option<&str>,
+        ops: &[Op<'_>],
+        msg: &str,
+        time: i64,
+    ) -> String {
         for (path, op) in ops {
             match op {
                 Some((kind, content)) => {
-                    let oid = String::from_utf8(git_run(dir, &["hash-object", "-w", "--stdin"], content, 0))
-                        .unwrap()
-                        .trim()
-                        .to_owned();
+                    let oid = String::from_utf8(git_run(
+                        dir,
+                        &["hash-object", "-w", "--stdin"],
+                        content,
+                        0,
+                    ))
+                    .unwrap()
+                    .trim()
+                    .to_owned();
                     let mode = match kind {
                         Kind::Exec => "100755",
                         Kind::Symlink => "120000",
                         _ => "100644",
                     };
-                    git_run(dir, &["update-index", "--add", "--cacheinfo", &format!("{mode},{oid},{path}")], b"", 0);
+                    git_run(
+                        dir,
+                        &[
+                            "update-index",
+                            "--add",
+                            "--cacheinfo",
+                            &format!("{mode},{oid},{path}"),
+                        ],
+                        b"",
+                        0,
+                    );
                 }
                 None => {
                     git_run(dir, &["update-index", "--force-remove", path], b"", 0);
@@ -2521,7 +2839,10 @@ mod tests {
             args.extend(["-p", p]);
         }
         args.extend(["-F", "-"]);
-        String::from_utf8(git_run(dir, &args, msg.as_bytes(), time)).unwrap().trim().to_owned()
+        String::from_utf8(git_run(dir, &args, msg.as_bytes(), time))
+            .unwrap()
+            .trim()
+            .to_owned()
     }
 
     fn hex(b: &[u8]) -> String {
@@ -2541,7 +2862,11 @@ mod tests {
             w("d/b.txt", b"bee\n"),
             l("link", b"a.txt"),
         ];
-        let ops2 = [w("a.txt", b"hello\nthere\nworld\n"), d("d/b.txt"), w("d/e/c.txt", b"sea sea\n")];
+        let ops2 = [
+            w("a.txt", b"hello\nthere\nworld\n"),
+            d("d/b.txt"),
+            w("d/e/c.txt", b"sea sea\n"),
+        ];
         let c1 = mk(&f.entry, &[], &ops1, "one\n", 1_700_000_000).await;
         let c2 = mk(&f.entry, &[c1], &ops2, "two\n\nbody\n", 1_700_000_100).await;
         let g1 = git_commit(dir.path(), None, &ops1, "one\n", 1_700_000_000);
@@ -2556,18 +2881,28 @@ mod tests {
         assert_eq!(ids.git_of(c2).await.unwrap().to_string(), g2);
 
         // Log: git ids, newest first, like `git log --format=%H`.
-        let logs = all(
-            f.hist
-                .log(
-                    &ctx(git),
-                    wire::LogRequest { repo: repo_ref(git), include: vec![g2.clone()], ..Default::default() },
-                )
-                .await
-                .unwrap(),
-        )
+        let logs = all(f
+            .hist
+            .log(
+                &ctx(git),
+                wire::LogRequest {
+                    repo: repo_ref(git),
+                    include: vec![g2.clone()],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap())
         .await;
-        let got: Vec<String> = logs.iter().flat_map(|r| &r.entries).map(|e| hex(&e.id)).collect();
-        let want: Vec<String> = git_text(dir.path(), &["log", "--format=%H", &g2]).lines().map(str::to_owned).collect();
+        let got: Vec<String> = logs
+            .iter()
+            .flat_map(|r| &r.entries)
+            .map(|e| hex(&e.id))
+            .collect();
+        let want: Vec<String> = git_text(dir.path(), &["log", "--format=%H", &g2])
+            .lines()
+            .map(str::to_owned)
+            .collect();
         assert_eq!(got, want);
         let first = &logs[0].entries[0];
         assert_eq!(hex(&first.parents[0]), g1);
@@ -2582,7 +2917,8 @@ mod tests {
                 .map(|l| {
                     let (meta, path) = l.split_once('\t').unwrap();
                     let mut it = meta.split(' ');
-                    let (mode, _kind, oid) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+                    let (mode, _kind, oid) =
+                        (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
                     format!("{mode} {oid} {path}")
                 })
                 .collect();
@@ -2590,7 +2926,12 @@ mod tests {
                 .reads
                 .read_tree(
                     &ctx(git),
-                    wire::ReadTreeRequest { repo: repo_ref(git), rev: g2.clone(), recursive, ..Default::default() },
+                    wire::ReadTreeRequest {
+                        repo: repo_ref(git),
+                        rev: g2.clone(),
+                        recursive,
+                        ..Default::default()
+                    },
                 )
                 .await
                 .unwrap();
@@ -2598,7 +2939,14 @@ mod tests {
                 .await
                 .iter()
                 .flat_map(|r| &r.entries)
-                .map(|e| format!("{:06o} {} {}", e.mode, hex(&e.id), String::from_utf8_lossy(&e.path)))
+                .map(|e| {
+                    format!(
+                        "{:06o} {} {}",
+                        e.mode,
+                        hex(&e.id),
+                        String::from_utf8_lossy(&e.path)
+                    )
+                })
                 .collect();
             assert_eq!(got, want, "recursive={recursive}");
         }
@@ -2607,17 +2955,40 @@ mod tests {
         let (data, total) = read_all(&f, git, rev_path(&format!("{g2}:a.txt")), 0, 0).await;
         assert_eq!(data, b"hello\nthere\nworld\n");
         assert_eq!(total, data.len() as u64);
-        let blob = git_text(dir.path(), &["rev-parse", &format!("{g2}:d/e/c.txt")]).trim().to_owned();
-        let oid: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&blob[2 * i..2 * i + 2], 16).unwrap()).collect();
-        let (data, _) = read_all(&f, git, wire::read_file_request::At::FileId(oid.into()), 0, 0).await;
-        assert_eq!(data, git_run(dir.path(), &["cat-file", "blob", &blob], b"", 0));
+        let blob = git_text(dir.path(), &["rev-parse", &format!("{g2}:d/e/c.txt")])
+            .trim()
+            .to_owned();
+        let oid: Vec<u8> = (0..20)
+            .map(|i| u8::from_str_radix(&blob[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let (data, _) = read_all(
+            &f,
+            git,
+            wire::read_file_request::At::FileId(oid.into()),
+            0,
+            0,
+        )
+        .await;
+        assert_eq!(
+            data,
+            git_run(dir.path(), &["cat-file", "blob", &blob], b"", 0)
+        );
 
         // Diff: names, status and the patch text equal `git diff`.
         for (fmt, args) in [
-            (wire::DiffFormat::Names, vec!["diff", "--no-renames", "--name-only"]),
-            (wire::DiffFormat::Status, vec!["diff", "--no-renames", "--name-status"]),
+            (
+                wire::DiffFormat::Names,
+                vec!["diff", "--no-renames", "--name-only"],
+            ),
+            (
+                wire::DiffFormat::Status,
+                vec!["diff", "--no-renames", "--name-status"],
+            ),
             (wire::DiffFormat::Patch, vec!["diff", "--no-renames"]),
-            (wire::DiffFormat::Numstat, vec!["diff", "--no-renames", "--numstat"]),
+            (
+                wire::DiffFormat::Numstat,
+                vec!["diff", "--no-renames", "--numstat"],
+            ),
         ] {
             let s = f
                 .hist
@@ -2637,7 +3008,11 @@ mod tests {
             let text: Vec<u8> = rs.iter().flat_map(|r| r.text.to_vec()).collect();
             let mut a = args.clone();
             a.extend([g1.as_str(), g2.as_str()]);
-            assert_eq!(String::from_utf8(text).unwrap(), git_text(dir.path(), &a), "{fmt:?}");
+            assert_eq!(
+                String::from_utf8(text).unwrap(),
+                git_text(dir.path(), &a),
+                "{fmt:?}"
+            );
             let changes: Vec<&wire::PathChange> = rs.iter().flat_map(|r| &r.changes).collect();
             assert_eq!(changes.len(), 3);
             if fmt == wire::DiffFormat::Names {
@@ -2648,26 +3023,47 @@ mod tests {
         // ReadChangeset, Resolve, MergeBase, IsAncestor, GitMap and LastCommits speak git ids.
         let rc = f
             .reads
-            .read_changeset(&ctx(git), wire::ReadChangesetRequest { repo: repo_ref(git), rev: g2.clone() })
+            .read_changeset(
+                &ctx(git),
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(git),
+                    rev: g2.clone(),
+                },
+            )
             .await
             .unwrap();
         assert_eq!(hex(&rc.header.unwrap().id), g2);
-        assert_eq!(hex(&rc.root_git), git_text(dir.path(), &["rev-parse", &format!("{g2}^{{tree}}")]).trim());
+        assert_eq!(
+            hex(&rc.root_git),
+            git_text(dir.path(), &["rev-parse", &format!("{g2}^{{tree}}")]).trim()
+        );
         assert_eq!(rc.root_tree, rc.root_git);
         let statuses: Vec<(String, String)> = rc
             .changes
             .iter()
-            .map(|c| (String::from_utf8_lossy(&c.path).into_owned(), c.status.clone()))
+            .map(|c| {
+                (
+                    String::from_utf8_lossy(&c.path).into_owned(),
+                    c.status.clone(),
+                )
+            })
             .collect();
         assert_eq!(
             statuses,
-            [("a.txt".into(), "M".into()), ("d/b.txt".into(), "D".into()), ("d/e/c.txt".into(), "A".into())]
+            [
+                ("a.txt".into(), "M".into()),
+                ("d/b.txt".into(), "D".into()),
+                ("d/e/c.txt".into(), "A".into())
+            ]
         );
         let res = f
             .hist
             .resolve(
                 &ctx(git),
-                wire::ResolveRequest { repo: repo_ref(git), revspecs: vec![format!("{g2}~1"), "nope".into(), "HEAD".into()] },
+                wire::ResolveRequest {
+                    repo: repo_ref(git),
+                    revspecs: vec![format!("{g2}~1"), "nope".into(), "HEAD".into()],
+                },
             )
             .await
             .unwrap();
@@ -2677,28 +3073,60 @@ mod tests {
         set_ref(&f, "refs/heads/master", c2).await;
         let res = f
             .hist
-            .resolve(&ctx(git), wire::ResolveRequest { repo: repo_ref(git), revspecs: vec!["HEAD".into(), "master".into()] })
+            .resolve(
+                &ctx(git),
+                wire::ResolveRequest {
+                    repo: repo_ref(git),
+                    revspecs: vec!["HEAD".into(), "master".into()],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(hex(&res.ids[0]), g2);
         assert_eq!(res.ids[0], res.ids[1]);
-        let g1b: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&g1[2 * i..2 * i + 2], 16).unwrap()).collect();
-        let g2b: Vec<u8> = (0..20).map(|i| u8::from_str_radix(&g2[2 * i..2 * i + 2], 16).unwrap()).collect();
+        let g1b: Vec<u8> = (0..20)
+            .map(|i| u8::from_str_radix(&g1[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let g2b: Vec<u8> = (0..20)
+            .map(|i| u8::from_str_radix(&g2[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
         let mb = f
             .hist
-            .merge_base(&ctx(git), wire::MergeBaseRequest { repo: repo_ref(git), a: g2b.clone().into(), b: vec![g1b.clone().into()], all: false })
+            .merge_base(
+                &ctx(git),
+                wire::MergeBaseRequest {
+                    repo: repo_ref(git),
+                    a: g2b.clone().into(),
+                    b: vec![g1b.clone().into()],
+                    all: false,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(hex(&mb.bases[0]), g1);
         let anc = f
             .hist
-            .is_ancestor(&ctx(git), wire::IsAncestorRequest { repo: repo_ref(git), ancestor: g1b.clone().into(), descendant: g2b.clone().into() })
+            .is_ancestor(
+                &ctx(git),
+                wire::IsAncestorRequest {
+                    repo: repo_ref(git),
+                    ancestor: g1b.clone().into(),
+                    descendant: g2b.clone().into(),
+                },
+            )
             .await
             .unwrap();
         assert!(anc.result);
         let gm = f
             .hist
-            .git_map(&ctx(git), wire::GitMapRequest { repo: repo_ref(git), asc: vec![c2.as_bytes().to_vec().into()], git: vec![g1b.clone().into()] })
+            .git_map(
+                &ctx(git),
+                wire::GitMapRequest {
+                    repo: repo_ref(git),
+                    asc: vec![c2.as_bytes().to_vec().into()],
+                    git: vec![g1b.clone().into()],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(hex(&gm.asc_to_git[0]), g2);
@@ -2707,7 +3135,12 @@ mod tests {
             .reads
             .last_commits(
                 &ctx(git),
-                wire::LastCommitsRequest { repo: repo_ref(git), rev: g2.clone(), dir: Bytes::new(), names: vec!["a.txt".into(), "run.sh".into(), "ghost".into()] },
+                wire::LastCommitsRequest {
+                    repo: repo_ref(git),
+                    rev: g2.clone(),
+                    dir: Bytes::new(),
+                    names: vec!["a.txt".into(), "run.sh".into(), "ghost".into()],
+                },
             )
             .await
             .unwrap();
@@ -2716,14 +3149,25 @@ mod tests {
         assert!(!lc.by_name.contains_key("ghost"));
 
         // Blame lines are attributed to git ids.
-        let b = all(
-            f.reads
-                .blame(&ctx(git), wire::BlameRequest { repo: repo_ref(git), rev: g2.clone(), path: "a.txt".into(), ..Default::default() })
-                .await
-                .unwrap(),
-        )
+        let b = all(f
+            .reads
+            .blame(
+                &ctx(git),
+                wire::BlameRequest {
+                    repo: repo_ref(git),
+                    rev: g2.clone(),
+                    path: "a.txt".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap())
         .await;
-        let origins: Vec<String> = b.iter().flat_map(|r| &r.hunks).map(|h| hex(&h.origin)).collect();
+        let origins: Vec<String> = b
+            .iter()
+            .flat_map(|r| &r.hunks)
+            .map(|h| hex(&h.origin))
+            .collect();
         assert_eq!(origins, [g1.clone(), g2.clone(), g1.clone()]);
         assert!(b[0].commits.iter().all(|c| c.id.len() == 20));
     }
@@ -2734,7 +3178,13 @@ mod tests {
         let c1 = mk(&f.entry, &[], &[w("a", b"1\n")], "one\n", 1).await;
         let rc = f
             .reads
-            .read_changeset(&ctx(IdMode::Asc), wire::ReadChangesetRequest { repo: repo_ref(IdMode::Asc), rev: c1.to_string() })
+            .read_changeset(
+                &ctx(IdMode::Asc),
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c1.to_string(),
+                },
+            )
             .await
             .unwrap();
         let h = rc.header.unwrap();
@@ -2746,16 +3196,32 @@ mod tests {
         other.repo = RepoName::parse("o/missing").unwrap();
         let err = f
             .reads
-            .read_changeset(&other, wire::ReadChangesetRequest { repo: repo_ref(IdMode::Asc), rev: c1.to_string() })
+            .read_changeset(
+                &other,
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c1.to_string(),
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
         // A changeset of another repository is invisible here.
-        let o = f.reg.create(&RepoName::parse("o/other").unwrap(), &Default::default()).await.unwrap();
+        let o = f
+            .reg
+            .create(&RepoName::parse("o/other").unwrap(), &Default::default())
+            .await
+            .unwrap();
         let theirs = mk(&o, &[], &[w("a", b"secret\n")], "x\n", 2).await;
         let err = f
             .reads
-            .read_changeset(&ctx(IdMode::Asc), wire::ReadChangesetRequest { repo: repo_ref(IdMode::Asc), rev: theirs.to_string() })
+            .read_changeset(
+                &ctx(IdMode::Asc),
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: theirs.to_string(),
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
@@ -2770,27 +3236,52 @@ mod tests {
         let mut state = 0x1234_5678_u64;
         let big: Vec<u8> = (0..9 * 1024 * 1024)
             .map(|_| {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (state >> 33) as u8
             })
             .collect();
-        let c = mk(&f.entry, &[], &[w("big.bin", &big), w("small.txt", b"0123456789")], "m\n", 1).await;
+        let c = mk(
+            &f.entry,
+            &[],
+            &[w("big.bin", &big), w("small.txt", b"0123456789")],
+            "m\n",
+            1,
+        )
+        .await;
         let rev = c.to_string();
-        let (data, total) = read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:big.bin")), 0, 0).await;
+        let (data, total) =
+            read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:big.bin")), 0, 0).await;
         assert_eq!(total, big.len() as u64);
         assert!(data == big, "whole file");
         // A range that starts mid-chunk and ends in another one.
-        let (data, _) = read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:big.bin")), 3_000_000, 2_500_000).await;
+        let (data, _) = read_all(
+            &f,
+            IdMode::Asc,
+            rev_path(&format!("{rev}:big.bin")),
+            3_000_000,
+            2_500_000,
+        )
+        .await;
         assert!(data == big[3_000_000..5_500_000], "ranged read");
         // Past the end the range is empty and the total is still reported.
-        let (data, total) = read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 99, 5).await;
+        let (data, total) =
+            read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 99, 5).await;
         assert!(data.is_empty());
         assert_eq!(total, 10);
         let (data, _) = read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 3, 4).await;
         assert_eq!(data, b"3456");
         // By file id, chunked or not.
         let id = FileId::of(&big);
-        let (data, total) = read_all(&f, IdMode::Asc, wire::read_file_request::At::FileId(id.as_bytes().to_vec().into()), 0, 0).await;
+        let (data, total) = read_all(
+            &f,
+            IdMode::Asc,
+            wire::read_file_request::At::FileId(id.as_bytes().to_vec().into()),
+            0,
+            0,
+        )
+        .await;
         assert_eq!((total, data.len()), (big.len() as u64, big.len()));
         // Errors: directories, missing paths, bad specs.
         let c2 = mk(&f.entry, &[c], &[w("dir/x", b"x")], "m\n", 2).await;
@@ -2802,20 +3293,46 @@ mod tests {
         ] {
             let err = f
                 .reads
-                .read_file(&ctx(IdMode::Asc), wire::ReadFileRequest { repo: repo_ref(IdMode::Asc), at: Some(rev_path(&spec)), ..Default::default() })
+                .read_file(
+                    &ctx(IdMode::Asc),
+                    wire::ReadFileRequest {
+                        repo: repo_ref(IdMode::Asc),
+                        at: Some(rev_path(&spec)),
+                        ..Default::default()
+                    },
+                )
                 .await
                 .err()
                 .unwrap();
             assert_eq!(err.code(), code, "{spec}");
         }
         // A missing chunk is reported as damage, not as a short file.
-        let ObjKey::ChunkList(_) = ObjKey::ChunkList(id) else { unreachable!() };
-        let raw = f.entry.objects.get(&ObjKey::ChunkList(id)).await.unwrap().unwrap();
+        let ObjKey::ChunkList(_) = ObjKey::ChunkList(id) else {
+            unreachable!()
+        };
+        let raw = f
+            .entry
+            .objects
+            .get(&ObjKey::ChunkList(id))
+            .await
+            .unwrap()
+            .unwrap();
         let list = decode_envelope::<ChunkList>(&raw).unwrap();
-        f.entry.objects.delete(&ObjKey::Chunk(list.chunks[1].0)).await.unwrap();
+        f.entry
+            .objects
+            .delete(&ObjKey::Chunk(list.chunks[1].0))
+            .await
+            .unwrap();
         let s = f
             .reads
-            .read_file(&ctx(IdMode::Asc), wire::ReadFileRequest { repo: repo_ref(IdMode::Asc), at: Some(rev_path(&format!("{rev}:big.bin"))), ..Default::default() })
+            .read_file(
+                &ctx(IdMode::Asc),
+                wire::ReadFileRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    at: Some(rev_path(&format!("{rev}:big.bin"))),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(all_err(s).await.code(), tonic::Code::DataLoss);
@@ -2825,7 +3342,12 @@ mod tests {
     async fn read_tree_pages_resume_after_the_cursor() {
         let f = fx().await;
         let names: Vec<String> = (0..7).map(|i| format!("n{i}")).collect();
-        let mut ops = vec![w("a/x", b"1"), w("a/y/z", b"2"), w("a/y/zz", b"3"), w("a.b", b"4")];
+        let mut ops = vec![
+            w("a/x", b"1"),
+            w("a/y/z", b"2"),
+            w("a/y/zz", b"3"),
+            w("a.b", b"4"),
+        ];
         ops.extend(names.iter().map(|n| w(n.as_str(), b"n")));
         let c = mk(&f.entry, &[], &ops, "m\n", 1).await;
         for (path, recursive) in [("", true), ("", false), ("a", true), ("a/y", false)] {
@@ -2841,7 +3363,12 @@ mod tests {
                 let f = &f;
                 async move {
                     let s = f.reads.read_tree(&ctx(IdMode::Asc), req).await.unwrap();
-                    all(s).await.into_iter().flat_map(|r| r.entries).map(|e| String::from_utf8(e.path.to_vec()).unwrap()).collect::<Vec<_>>()
+                    all(s)
+                        .await
+                        .into_iter()
+                        .flat_map(|r| r.entries)
+                        .map(|e| String::from_utf8(e.path.to_vec()).unwrap())
+                        .collect::<Vec<_>>()
                 }
             };
             let whole = list(0, "").await;
@@ -2862,7 +3389,15 @@ mod tests {
         // The response names the directory's own tree.
         let s = f
             .reads
-            .read_tree(&ctx(IdMode::Asc), wire::ReadTreeRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), path: "a".into(), ..Default::default() })
+            .read_tree(
+                &ctx(IdMode::Asc),
+                wire::ReadTreeRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c.to_string(),
+                    path: "a".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         let first = &all(s).await[0];
@@ -2872,13 +3407,47 @@ mod tests {
         assert_eq!(first.entries[0].name.as_ref(), b"x");
         // Bad requests.
         for (req, code) in [
-            (wire::ReadTreeRequest { path: "a/x".into(), ..Default::default() }, tonic::Code::FailedPrecondition),
-            (wire::ReadTreeRequest { path: "zzz".into(), ..Default::default() }, tonic::Code::NotFound),
-            (wire::ReadTreeRequest { after: "b/c".into(), path: "a".into(), ..Default::default() }, tonic::Code::InvalidArgument),
-            (wire::ReadTreeRequest { path: "../a".into(), ..Default::default() }, tonic::Code::InvalidArgument),
+            (
+                wire::ReadTreeRequest {
+                    path: "a/x".into(),
+                    ..Default::default()
+                },
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                wire::ReadTreeRequest {
+                    path: "zzz".into(),
+                    ..Default::default()
+                },
+                tonic::Code::NotFound,
+            ),
+            (
+                wire::ReadTreeRequest {
+                    after: "b/c".into(),
+                    path: "a".into(),
+                    ..Default::default()
+                },
+                tonic::Code::InvalidArgument,
+            ),
+            (
+                wire::ReadTreeRequest {
+                    path: "../a".into(),
+                    ..Default::default()
+                },
+                tonic::Code::InvalidArgument,
+            ),
         ] {
-            let req = wire::ReadTreeRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), ..req };
-            let err = f.reads.read_tree(&ctx(IdMode::Asc), req).await.err().unwrap();
+            let req = wire::ReadTreeRequest {
+                repo: repo_ref(IdMode::Asc),
+                rev: c.to_string(),
+                ..req
+            };
+            let err = f
+                .reads
+                .read_tree(&ctx(IdMode::Asc), req)
+                .await
+                .err()
+                .unwrap();
             assert_eq!(err.code(), code);
         }
     }
@@ -2886,7 +3455,14 @@ mod tests {
     #[tokio::test]
     async fn stat_reports_paths_and_objects() {
         let f = fx().await;
-        let c = mk(&f.entry, &[], &[w("a/b.txt", b"bee"), x("run", b"#!")], "m\n", 1).await;
+        let c = mk(
+            &f.entry,
+            &[],
+            &[w("a/b.txt", b"bee"), x("run", b"#!")],
+            "m\n",
+            1,
+        )
+        .await;
         let r = f
             .reads
             .stat(
@@ -2894,11 +3470,26 @@ mod tests {
                 wire::StatRequest {
                     repo: repo_ref(IdMode::Asc),
                     rev: c.to_string(),
-                    paths: vec!["a/b.txt".into(), "a".into(), "run".into(), "".into(), "gone".into()],
+                    paths: vec![
+                        "a/b.txt".into(),
+                        "a".into(),
+                        "run".into(),
+                        "".into(),
+                        "gone".into(),
+                    ],
                     objects: vec![
-                        wire::ObjKey { kind: wire::ObjKind::File as i32, id: FileId::of(b"bee").as_bytes().to_vec().into() },
-                        wire::ObjKey { kind: wire::ObjKind::File as i32, id: vec![9; 32].into() },
-                        wire::ObjKey { kind: wire::ObjKind::Changeset as i32, id: c.as_bytes().to_vec().into() },
+                        wire::ObjKey {
+                            kind: wire::ObjKind::File as i32,
+                            id: FileId::of(b"bee").as_bytes().to_vec().into(),
+                        },
+                        wire::ObjKey {
+                            kind: wire::ObjKind::File as i32,
+                            id: vec![9; 32].into(),
+                        },
+                        wire::ObjKey {
+                            kind: wire::ObjKind::Changeset as i32,
+                            id: c.as_bytes().to_vec().into(),
+                        },
                     ],
                 },
             )
@@ -2912,7 +3503,15 @@ mod tests {
         // Too many items are refused.
         let err = f
             .reads
-            .stat(&ctx(IdMode::Asc), wire::StatRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), paths: vec!["a".into(); MAX_NAMES + 1], objects: vec![] })
+            .stat(
+                &ctx(IdMode::Asc),
+                wire::StatRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c.to_string(),
+                    paths: vec!["a".into(); MAX_NAMES + 1],
+                    objects: vec![],
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -2927,8 +3526,14 @@ mod tests {
             &f.entry,
             &[],
             &[
-                w(".gitattributes", b"*.txt text eol=lf\n*.bin binary\n* -foo\n"),
-                w("sub/.gitattributes", b"*.txt eol=crlf\nspecial.txt export-ignore diff=x\n"),
+                w(
+                    ".gitattributes",
+                    b"*.txt text eol=lf\n*.bin binary\n* -foo\n",
+                ),
+                w(
+                    "sub/.gitattributes",
+                    b"*.txt eol=crlf\nspecial.txt export-ignore diff=x\n",
+                ),
                 w("a.txt", b"a"),
                 w("sub/b.txt", b"b"),
                 w("sub/special.txt", b"s"),
@@ -2945,23 +3550,55 @@ mod tests {
                 wire::CheckAttrRequest {
                     repo: repo_ref(IdMode::Asc),
                     rev: c.to_string(),
-                    paths: vec!["a.txt".into(), "sub/b.txt".into(), "sub/special.txt".into(), "sub/z.bin".into(), "other".into()],
-                    names: vec!["text".into(), "eol".into(), "export-ignore".into(), "diff".into(), "foo".into()],
+                    paths: vec![
+                        "a.txt".into(),
+                        "sub/b.txt".into(),
+                        "sub/special.txt".into(),
+                        "sub/z.bin".into(),
+                        "other".into(),
+                    ],
+                    names: vec![
+                        "text".into(),
+                        "eol".into(),
+                        "export-ignore".into(),
+                        "diff".into(),
+                        "foo".into(),
+                    ],
                 },
             )
             .await
             .unwrap();
         let v = |i: usize, n: &str| r.per_path[i].values[n].clone();
-        assert_eq!((v(0, "text").as_str(), v(0, "eol").as_str(), v(0, "foo").as_str()), ("set", "lf", "unset"));
+        assert_eq!(
+            (
+                v(0, "text").as_str(),
+                v(0, "eol").as_str(),
+                v(0, "foo").as_str()
+            ),
+            ("set", "lf", "unset")
+        );
         assert_eq!(v(1, "eol"), "crlf", "the nearer file wins");
         assert_eq!(v(2, "export-ignore"), "set");
         assert_eq!(v(2, "diff"), "x");
         assert_eq!(v(3, "diff"), "unset", "binary macro");
         assert_eq!(v(4, "text"), "unspecified");
-        for bad in [vec![], vec!["-x".to_owned()], vec!["a b".to_owned()], vec!["x".to_owned(); MAX_ATTR_NAMES + 1]] {
+        for bad in [
+            vec![],
+            vec!["-x".to_owned()],
+            vec!["a b".to_owned()],
+            vec!["x".to_owned(); MAX_ATTR_NAMES + 1],
+        ] {
             let err = f
                 .reads
-                .check_attr(&ctx(IdMode::Asc), wire::CheckAttrRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), paths: vec!["a.txt".into()], names: bad })
+                .check_attr(
+                    &ctx(IdMode::Asc),
+                    wire::CheckAttrRequest {
+                        repo: repo_ref(IdMode::Asc),
+                        rev: c.to_string(),
+                        paths: vec!["a.txt".into()],
+                        names: bad,
+                    },
+                )
                 .await
                 .unwrap_err();
             assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -2971,29 +3608,69 @@ mod tests {
     #[tokio::test]
     async fn ascattributes_replaces_gitattributes_in_its_directory() {
         let f = fx().await;
-        let c = mk(&f.entry, &[], &[w(".ascattributes", b"* mine\n"), w(".gitattributes", b"* theirs\n"), w("a", b"a")], "m\n", 1).await;
+        let c = mk(
+            &f.entry,
+            &[],
+            &[
+                w(".ascattributes", b"* mine\n"),
+                w(".gitattributes", b"* theirs\n"),
+                w("a", b"a"),
+            ],
+            "m\n",
+            1,
+        )
+        .await;
         let r = f
             .reads
-            .check_attr(&ctx(IdMode::Asc), wire::CheckAttrRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), paths: vec!["a".into()], names: vec!["mine".into(), "theirs".into()] })
+            .check_attr(
+                &ctx(IdMode::Asc),
+                wire::CheckAttrRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c.to_string(),
+                    paths: vec!["a".into()],
+                    names: vec!["mine".into(), "theirs".into()],
+                },
+            )
             .await
             .unwrap();
         assert_eq!(r.per_path[0].values["mine"], "set");
         assert_eq!(r.per_path[0].values["theirs"], "unspecified");
     }
 
-    async fn grep(f: &Fx, c: ChangesetId, pattern: &str, fixed: bool, ic: bool, max: u32) -> Result<Vec<(String, u32, String)>, Status> {
+    async fn grep(
+        f: &Fx,
+        c: ChangesetId,
+        pattern: &str,
+        fixed: bool,
+        ic: bool,
+        max: u32,
+    ) -> Result<Vec<(String, u32, String)>, Status> {
         let s = f
             .reads
             .grep(
                 &ctx(IdMode::Asc),
-                wire::GrepRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), pattern: pattern.into(), fixed, ignore_case: ic, paths: vec![], max_results: max },
+                wire::GrepRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c.to_string(),
+                    pattern: pattern.into(),
+                    fixed,
+                    ignore_case: ic,
+                    paths: vec![],
+                    max_results: max,
+                },
             )
             .await?;
         Ok(s.try_collect::<Vec<_>>()
             .await?
             .into_iter()
             .flat_map(|r| r.matches)
-            .map(|m| (String::from_utf8_lossy(&m.path).into_owned(), m.line, String::from_utf8_lossy(&m.text).into_owned()))
+            .map(|m| {
+                (
+                    String::from_utf8_lossy(&m.path).into_owned(),
+                    m.line,
+                    String::from_utf8_lossy(&m.text).into_owned(),
+                )
+            })
             .collect())
     }
 
@@ -3019,19 +3696,40 @@ mod tests {
         let got = grep(&f, c, "needle", true, false, 0).await.unwrap();
         assert_eq!(
             got,
-            [("a.txt".into(), 3, "three needle".into()), ("d/b.txt".into(), 2, "needle at end".into())]
+            [
+                ("a.txt".into(), 3, "three needle".into()),
+                ("d/b.txt".into(), 2, "needle at end".into())
+            ]
         );
         let got = grep(&f, c, "needle", false, true, 0).await.unwrap();
         assert_eq!(got.len(), 3);
         assert_eq!(got[0].1, 2);
-        assert_eq!(grep(&f, c, "needle", false, true, 2).await.unwrap().len(), 2);
-        assert_eq!(grep(&f, c, "^three", false, false, 0).await.unwrap().len(), 1);
+        assert_eq!(
+            grep(&f, c, "needle", false, true, 2).await.unwrap().len(),
+            2
+        );
+        assert_eq!(
+            grep(&f, c, "^three", false, false, 0).await.unwrap().len(),
+            1
+        );
         // A fixed string is not a regex.
         assert!(grep(&f, c, "(", true, false, 0).await.unwrap().is_empty());
         // Bad or hostile patterns are refused.
-        assert_eq!(grep(&f, c, "(", false, false, 0).await.unwrap_err().code(), tonic::Code::InvalidArgument);
-        assert_eq!(grep(&f, c, "", false, false, 0).await.unwrap_err().code(), tonic::Code::InvalidArgument);
-        assert_eq!(grep(&f, c, "(a{1000}){1000}", false, false, 0).await.unwrap_err().code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            grep(&f, c, "(", false, false, 0).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            grep(&f, c, "", false, false, 0).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            grep(&f, c, "(a{1000}){1000}", false, false, 0)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::InvalidArgument
+        );
         // A starved text budget sheds the request instead of buffering.
         struct Never;
         #[async_trait]
@@ -3041,7 +3739,13 @@ mod tests {
             }
         }
         assert!(f.hooks.text_budget.set(Arc::new(Never)).is_ok());
-        assert_eq!(grep(&f, c, "needle", true, false, 0).await.unwrap_err().code(), tonic::Code::ResourceExhausted);
+        assert_eq!(
+            grep(&f, c, "needle", true, false, 0)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::ResourceExhausted
+        );
     }
 
     // ------------------------------------------------------------------------ archive
@@ -3057,19 +3761,42 @@ mod tests {
                 e.read_to_end(&mut data).unwrap();
                 let kind = e.header().entry_type();
                 if kind == tar::EntryType::Symlink {
-                    data = e.link_name().unwrap().unwrap().to_string_lossy().into_owned().into_bytes();
+                    data = e
+                        .link_name()
+                        .unwrap()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned()
+                        .into_bytes();
                 }
-                (e.path().unwrap().to_string_lossy().into_owned(), data, e.header().mode().unwrap(), kind)
+                (
+                    e.path().unwrap().to_string_lossy().into_owned(),
+                    data,
+                    e.header().mode().unwrap(),
+                    kind,
+                )
             })
             .collect()
     }
 
-    async fn archive(f: &Fx, c: ChangesetId, format: &str, prefix: &str, paths: &[&str]) -> Result<Vec<wire::ArchiveResponse>, Status> {
+    async fn archive(
+        f: &Fx,
+        c: ChangesetId,
+        format: &str,
+        prefix: &str,
+        paths: &[&str],
+    ) -> Result<Vec<wire::ArchiveResponse>, Status> {
         let s = f
             .reads
             .archive(
                 &ctx(IdMode::Asc),
-                wire::ArchiveRequest { repo: repo_ref(IdMode::Asc), rev: c.to_string(), format: format.into(), prefix: prefix.into(), paths: paths.iter().map(|p| (*p).into()).collect() },
+                wire::ArchiveRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c.to_string(),
+                    format: format.into(),
+                    prefix: prefix.into(),
+                    paths: paths.iter().map(|p| (*p).into()).collect(),
+                },
             )
             .await?;
         s.try_collect().await
@@ -3082,12 +3809,18 @@ mod tests {
             &f.entry,
             &[],
             &[
-                w(".gitattributes", b"ignored.txt export-ignore\nsecret export-ignore\nver.txt export-subst\n"),
+                w(
+                    ".gitattributes",
+                    b"ignored.txt export-ignore\nsecret export-ignore\nver.txt export-subst\n",
+                ),
                 w("keep.txt", b"keep\n"),
                 w("ignored.txt", b"no\n"),
                 w("secret/a", b"no\n"),
                 w("secret/deep/b", b"no\n"),
-                w("ver.txt", b"id=$Format:%H|%h|%an <%ae>|%s|%%$ ok $Format:unclosed\n$Format:%P$\n"),
+                w(
+                    "ver.txt",
+                    b"id=$Format:%H|%h|%an <%ae>|%s|%%$ ok $Format:unclosed\n$Format:%P$\n",
+                ),
                 x("bin/run", b"#!/bin/sh\n"),
                 l("ln", b"keep.txt"),
             ],
@@ -3095,33 +3828,73 @@ mod tests {
             1_700_000_000,
         )
         .await;
-        let git = IdCodec::new(IdMode::Git, &f.reg, &f.entry).git_of(c).await.unwrap().to_string();
+        let git = IdCodec::new(IdMode::Git, &f.reg, &f.entry)
+            .git_of(c)
+            .await
+            .unwrap()
+            .to_string();
         let tar = untar(archive(&f, c, "tar", "", &[]).await.unwrap());
         let names: Vec<&str> = tar.iter().map(|e| e.0.as_str()).collect();
-        assert_eq!(names, [".gitattributes", "bin/run", "keep.txt", "ln", "ver.txt"]);
+        assert_eq!(
+            names,
+            [".gitattributes", "bin/run", "keep.txt", "ln", "ver.txt"]
+        );
         let get = |n: &str| tar.iter().find(|e| e.0 == n).unwrap();
         assert_eq!(get("bin/run").2 & 0o777, 0o755);
         assert_eq!(get("keep.txt").2 & 0o777, 0o644);
-        assert_eq!((get("ln").3, get("ln").1.as_slice()), (tar::EntryType::Symlink, &b"keep.txt"[..]));
+        assert_eq!(
+            (get("ln").3, get("ln").1.as_slice()),
+            (tar::EntryType::Symlink, &b"keep.txt"[..])
+        );
         assert_eq!(
             String::from_utf8(get("ver.txt").1.clone()).unwrap(),
-            format!("id={git}|{}|A <a@x>|subject line|% ok $Format:unclosed\n\n", &git[..7])
+            format!(
+                "id={git}|{}|A <a@x>|subject line|% ok $Format:unclosed\n\n",
+                &git[..7]
+            )
         );
         // Prefix and pathspec.
-        let tar = untar(archive(&f, c, "tar", "proj-1.0", &["keep.txt", "bin"]).await.unwrap());
-        assert_eq!(tar.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(), ["proj-1.0/bin/run", "proj-1.0/keep.txt"]);
+        let tar = untar(
+            archive(&f, c, "tar", "proj-1.0", &["keep.txt", "bin"])
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            tar.iter().map(|e| e.0.as_str()).collect::<Vec<_>>(),
+            ["proj-1.0/bin/run", "proj-1.0/keep.txt"]
+        );
         // Zip.
         let parts = archive(&f, c, "zip", "p/", &[]).await.unwrap();
         let bytes: Vec<u8> = parts.iter().flat_map(|p| p.data.to_vec()).collect();
         let mut z = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-        let mut names: Vec<String> = (0..z.len()).map(|i| z.by_index(i).unwrap().name().unwrap().to_string()).collect();
+        let mut names: Vec<String> = (0..z.len())
+            .map(|i| z.by_index(i).unwrap().name().unwrap().to_string())
+            .collect();
         names.sort();
-        assert_eq!(names, ["p/.gitattributes", "p/bin/run", "p/keep.txt", "p/ln", "p/ver.txt"]);
+        assert_eq!(
+            names,
+            [
+                "p/.gitattributes",
+                "p/bin/run",
+                "p/keep.txt",
+                "p/ln",
+                "p/ver.txt"
+            ]
+        );
         let mut keep = String::new();
-        z.by_name("p/keep.txt").unwrap().read_to_string(&mut keep).unwrap();
+        z.by_name("p/keep.txt")
+            .unwrap()
+            .read_to_string(&mut keep)
+            .unwrap();
         assert_eq!(keep, "keep\n");
         // Hostile prefixes, formats and pathspecs.
-        for (fmt, prefix) in [("tar", "../x"), ("tar", "/abs"), ("tar", "a//b"), ("rar", ""), ("tar.gz", "")] {
+        for (fmt, prefix) in [
+            ("tar", "../x"),
+            ("tar", "/abs"),
+            ("tar", "a//b"),
+            ("rar", ""),
+            ("tar.gz", ""),
+        ] {
             let err = archive(&f, c, fmt, prefix, &[]).await.err().unwrap();
             assert_eq!(err.code(), tonic::Code::InvalidArgument, "{fmt} {prefix}");
         }
@@ -3139,11 +3912,15 @@ mod tests {
         let subst = test_subst(&vec![b'm'; 2048]);
         let line = b"$Format:%B$\n";
         let data = line.repeat((SUBST_MAX_FILE as usize) / line.len());
-        let err = subst.apply(&data).expect_err("the cap must stop the expansion");
+        let err = subst
+            .apply(&data)
+            .expect_err("the cap must stop the expansion");
         assert_eq!(err.code(), tonic::Code::ResourceExhausted);
         // One placeholder repeated within a format is capped the same way.
         let fmt = format!("$Format:{}$", "%B".repeat(100_000));
-        let err = subst.apply(fmt.as_bytes()).expect_err("a repeated format is capped");
+        let err = subst
+            .apply(fmt.as_bytes())
+            .expect_err("a repeated format is capped");
         assert_eq!(err.code(), tonic::Code::ResourceExhausted);
         // Expansions under the cap still work.
         let ok = subst.apply(b"x $Format:%s$ y").unwrap();
@@ -3159,7 +3936,11 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(subst.apply(&one_line).unwrap().len() <= one_line.len());
         assert_eq!(subst.apply(&lines).unwrap(), lines);
-        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
     }
 
     #[tokio::test]
@@ -3170,7 +3951,10 @@ mod tests {
         let c = mk(
             &f.entry,
             &[],
-            &[w(".gitattributes", b"v.txt export-subst\n"), w("v.txt", &big)],
+            &[
+                w(".gitattributes", b"v.txt export-subst\n"),
+                w("v.txt", &big),
+            ],
             &"m".repeat(1024),
             1,
         )
@@ -3182,12 +3966,18 @@ mod tests {
         let c = mk(
             &f.entry,
             &[],
-            &[w(".gitattributes", b"v.txt export-subst\n"), w("v.txt", b"$Format:%H$\n")],
+            &[
+                w(".gitattributes", b"v.txt export-subst\n"),
+                w("v.txt", b"$Format:%H$\n"),
+            ],
             "m\n",
             1,
         )
         .await;
-        assert_eq!(untar(archive(&f, c, "tar", "", &[]).await.unwrap()).len(), 2);
+        assert_eq!(
+            untar(archive(&f, c, "tar", "", &[]).await.unwrap()).len(),
+            2
+        );
         struct Never;
         #[async_trait]
         impl crate::TextBudget for Never {
@@ -3223,7 +4013,14 @@ mod tests {
     #[tokio::test]
     async fn last_commits_walks_first_parents_and_memoises() {
         let f = fx().await;
-        let c1 = mk(&f.entry, &[], &[w("d/a", b"1"), w("d/b", b"1"), w("top", b"1")], "1\n", 1).await;
+        let c1 = mk(
+            &f.entry,
+            &[],
+            &[w("d/a", b"1"), w("d/b", b"1"), w("top", b"1")],
+            "1\n",
+            1,
+        )
+        .await;
         let c2 = mk(&f.entry, &[c1], &[w("d/a", b"2")], "2\n", 2).await;
         let c3 = mk(&f.entry, &[c2], &[w("top", b"3")], "3\n", 3).await;
         let c4 = mk(&f.entry, &[c3], &[w("d/c", b"4"), d("d/b")], "4\n", 4).await;
@@ -3237,7 +4034,12 @@ mod tests {
             };
             async move {
                 let r = f.reads.last_commits(&ctx(IdMode::Asc), req).await?;
-                Ok::<_, Status>(r.by_name.into_iter().map(|(n, e)| (n, e.id.to_vec())).collect::<std::collections::BTreeMap<_, _>>())
+                Ok::<_, Status>(
+                    r.by_name
+                        .into_iter()
+                        .map(|(n, e)| (n, e.id.to_vec()))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
             }
         };
         let id = |c: ChangesetId| c.as_bytes().to_vec();
@@ -3254,8 +4056,14 @@ mod tests {
         assert!(f.reads.lasts.get(&(c4, b"d".to_vec())).is_some());
         assert_eq!(ask(c4, "d", &["a"]).await.unwrap().get("a"), Some(&id(c2)));
         // A directory that is not there, and a name that is not a name.
-        assert_eq!(ask(c4, "nope", &["a"]).await.unwrap_err().code(), tonic::Code::NotFound);
-        assert_eq!(ask(c4, "d", &["a/b"]).await.unwrap_err().code(), tonic::Code::InvalidArgument);
+        assert_eq!(
+            ask(c4, "nope", &["a"]).await.unwrap_err().code(),
+            tonic::Code::NotFound
+        );
+        assert_eq!(
+            ask(c4, "d", &["a/b"]).await.unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
     }
 
     #[tokio::test]
@@ -3279,13 +4087,21 @@ mod tests {
             .reads
             .last_commits(
                 &ctx(IdMode::Asc),
-                wire::LastCommitsRequest { repo: repo_ref(IdMode::Asc), rev: "master".into(), dir: Bytes::new(), names: vec!["a".into(), "b".into()] },
+                wire::LastCommitsRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: "master".into(),
+                    dir: Bytes::new(),
+                    names: vec!["a".into(), "b".into()],
+                },
             )
             .await
             .unwrap();
         assert_eq!(r.by_name["a"].id.as_ref(), c2.as_bytes());
         assert_eq!(r.by_name["b"].id.as_ref(), c1.as_bytes());
-        assert!(f.reads.mainline.rows_read() > before, "the path index answered");
+        assert!(
+            f.reads.mainline.rows_read() > before,
+            "the path index answered"
+        );
         assert!(f.reads.lasts.is_empty(), "no walk was needed");
     }
 
@@ -3296,43 +4112,128 @@ mod tests {
         let mut chain = vec![parent];
         for i in 1..LOG_PAGE + 100 {
             let body = format!("x{i}");
-            let ops: Vec<Op<'_>> = if i % 1000 == 0 { vec![w("g", body.as_bytes())] } else { vec![] };
+            let ops: Vec<Op<'_>> = if i % 1000 == 0 {
+                vec![w("g", body.as_bytes())]
+            } else {
+                vec![]
+            };
             parent = mk(&f.entry, &[parent], &ops, &format!("c{i}\n"), 1 + i as i64).await;
             chain.push(parent);
         }
         let tip = *chain.last().unwrap();
         let ask = |req: wire::LogRequest| {
             let f = &f;
-            async move { all(f.hist.log(&ctx(IdMode::Asc), wire::LogRequest { repo: repo_ref(IdMode::Asc), ..req }).await.unwrap()).await }
+            async move {
+                all(f
+                    .hist
+                    .log(
+                        &ctx(IdMode::Asc),
+                        wire::LogRequest {
+                            repo: repo_ref(IdMode::Asc),
+                            ..req
+                        },
+                    )
+                    .await
+                    .unwrap())
+                .await
+            }
         };
-        let first = ask(wire::LogRequest { include: vec![tip.to_string()], ..Default::default() }).await;
-        let ids: Vec<Vec<u8>> = first.iter().flat_map(|r| r.entries.iter().map(|e| e.id.to_vec())).collect();
+        let first = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            ..Default::default()
+        })
+        .await;
+        let ids: Vec<Vec<u8>> = first
+            .iter()
+            .flat_map(|r| r.entries.iter().map(|e| e.id.to_vec()))
+            .collect();
         assert_eq!(ids.len(), chain.len());
         assert_eq!(ids[0], tip.as_bytes());
         let token_at = first.iter().position(|r| !r.next_page_token.is_empty());
         assert!(token_at.is_some_and(|i| i + 1 < first.len() || first.len() > 1));
         assert!(first.iter().all(|r| r.entries.len() <= LOG_MSG));
         // A fresh call from the first page's token yields the rest.
-        let token = first.iter().find(|r| !r.next_page_token.is_empty()).unwrap().next_page_token.clone();
-        let rest = ask(wire::LogRequest { page_token: token, ..Default::default() }).await;
-        let rest_ids: Vec<Vec<u8>> = rest.iter().flat_map(|r| r.entries.iter().map(|e| e.id.to_vec())).collect();
+        let token = first
+            .iter()
+            .find(|r| !r.next_page_token.is_empty())
+            .unwrap()
+            .next_page_token
+            .clone();
+        let rest = ask(wire::LogRequest {
+            page_token: token,
+            ..Default::default()
+        })
+        .await;
+        let rest_ids: Vec<Vec<u8>> = rest
+            .iter()
+            .flat_map(|r| r.entries.iter().map(|e| e.id.to_vec()))
+            .collect();
         assert_eq!(rest_ids, ids[LOG_PAGE..]);
         // Limit, skip, path and message filters.
-        let some = ask(wire::LogRequest { include: vec![tip.to_string()], limit: 3, skip: 2, ..Default::default() }).await;
-        let got: Vec<Vec<u8>> = some.iter().flat_map(|r| r.entries.iter().map(|e| e.id.to_vec())).collect();
-        assert_eq!(got, [chain[chain.len() - 3].as_bytes().to_vec(), chain[chain.len() - 4].as_bytes().to_vec(), chain[chain.len() - 5].as_bytes().to_vec()]);
-        let touching = ask(wire::LogRequest { include: vec![tip.to_string()], paths: vec!["g".into()], ..Default::default() }).await;
+        let some = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            limit: 3,
+            skip: 2,
+            ..Default::default()
+        })
+        .await;
+        let got: Vec<Vec<u8>> = some
+            .iter()
+            .flat_map(|r| r.entries.iter().map(|e| e.id.to_vec()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                chain[chain.len() - 3].as_bytes().to_vec(),
+                chain[chain.len() - 4].as_bytes().to_vec(),
+                chain[chain.len() - 5].as_bytes().to_vec()
+            ]
+        );
+        let touching = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            paths: vec!["g".into()],
+            ..Default::default()
+        })
+        .await;
         assert_eq!(touching.iter().map(|r| r.entries.len()).sum::<usize>(), 4);
-        let grep = ask(wire::LogRequest { include: vec![tip.to_string()], grep: "^c42\n".into(), ..Default::default() }).await;
+        let grep = ask(wire::LogRequest {
+            include: vec![tip.to_string()],
+            grep: "^c42\n".into(),
+            ..Default::default()
+        })
+        .await;
         assert_eq!(grep.iter().map(|r| r.entries.len()).sum::<usize>(), 1);
         // Unsupported modes and bad tokens fail closed.
         for req in [
-            wire::LogRequest { count_only: true, ..Default::default() },
-            wire::LogRequest { page_token: "!!!".into(), ..Default::default() },
-            wire::LogRequest { include: vec!["nope".into()], ..Default::default() },
+            wire::LogRequest {
+                count_only: true,
+                ..Default::default()
+            },
+            wire::LogRequest {
+                page_token: "!!!".into(),
+                ..Default::default()
+            },
+            wire::LogRequest {
+                include: vec!["nope".into()],
+                ..Default::default()
+            },
         ] {
-            let err = f.hist.log(&ctx(IdMode::Asc), wire::LogRequest { repo: repo_ref(IdMode::Asc), ..req }).await.err().unwrap();
-            assert!(matches!(err.code(), tonic::Code::Unimplemented | tonic::Code::InvalidArgument | tonic::Code::NotFound));
+            let err = f
+                .hist
+                .log(
+                    &ctx(IdMode::Asc),
+                    wire::LogRequest {
+                        repo: repo_ref(IdMode::Asc),
+                        ..req
+                    },
+                )
+                .await
+                .err()
+                .unwrap();
+            assert!(matches!(
+                err.code(),
+                tonic::Code::Unimplemented | tonic::Code::InvalidArgument | tonic::Code::NotFound
+            ));
         }
     }
 
@@ -3340,7 +4241,12 @@ mod tests {
 
     #[async_trait]
     impl LogEntryEnricher for Tag {
-        async fn enrich(&self, _: &RepoEntry, ids: &[ChangesetId], entries: &mut [wire::LogEntry]) -> Result<(), Status> {
+        async fn enrich(
+            &self,
+            _: &RepoEntry,
+            ids: &[ChangesetId],
+            entries: &mut [wire::LogEntry],
+        ) -> Result<(), Status> {
             assert_eq!(ids.len(), entries.len());
             for (id, e) in ids.iter().zip(entries) {
                 e.meta = Bytes::copy_from_slice(id.as_bytes());
@@ -3359,53 +4265,197 @@ mod tests {
         index(&f.entry, c1).await;
         index(&f.entry, c2).await;
         let git = IdMode::Git;
-        let log = all(f.hist.log(&ctx(git), wire::LogRequest { repo: repo_ref(git), include: vec![hex(IdCodec::new(git, &f.reg, &f.entry).git_of(c2).await.unwrap().as_bytes())], ..Default::default() }).await.unwrap()).await;
+        let log = all(f
+            .hist
+            .log(
+                &ctx(git),
+                wire::LogRequest {
+                    repo: repo_ref(git),
+                    include: vec![hex(IdCodec::new(git, &f.reg, &f.entry)
+                        .git_of(c2)
+                        .await
+                        .unwrap()
+                        .as_bytes())],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap())
+        .await;
         // In git mode the id is the git oid, and the enricher still receives the asc id.
         assert_eq!(log[0].entries[0].id.len(), 20);
         assert_eq!(log[0].entries[0].meta.as_ref(), c2.as_bytes());
         assert_eq!(log[0].entries[1].change.as_ref(), &[7; 16]);
-        let b = all(f.reads.blame(&ctx(IdMode::Asc), wire::BlameRequest { repo: repo_ref(IdMode::Asc), rev: c2.to_string(), path: "a".into(), ..Default::default() }).await.unwrap()).await;
+        let b = all(f
+            .reads
+            .blame(
+                &ctx(IdMode::Asc),
+                wire::BlameRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c2.to_string(),
+                    path: "a".into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap())
+        .await;
         assert!(b[0].commits.iter().all(|c| c.change.as_ref() == [7; 16]));
-        let rc = f.reads.read_changeset(&ctx(IdMode::Asc), wire::ReadChangesetRequest { repo: repo_ref(IdMode::Asc), rev: c2.to_string() }).await.unwrap();
+        let rc = f
+            .reads
+            .read_changeset(
+                &ctx(IdMode::Asc),
+                wire::ReadChangesetRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    rev: c2.to_string(),
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(rc.header.unwrap().meta.as_ref(), c2.as_bytes());
     }
 
     #[tokio::test]
     async fn diff_formats_limits_and_merge_base() {
         let f = fx().await;
-        let base = mk(&f.entry, &[], &[w("a", b"1\n2\n3\n"), w("old", b"same content here\nmore\n"), w("c", b"c\n")], "b\n", 1).await;
+        let base = mk(
+            &f.entry,
+            &[],
+            &[
+                w("a", b"1\n2\n3\n"),
+                w("old", b"same content here\nmore\n"),
+                w("c", b"c\n"),
+            ],
+            "b\n",
+            1,
+        )
+        .await;
         let left = mk(&f.entry, &[base], &[w("a", b"1\nTWO\n3\n")], "l\n", 2).await;
-        let right = mk(&f.entry, &[base], &[d("old"), w("new", b"same content here\nmore\n"), w("c", b"c2\n")], "r\n", 3).await;
+        let right = mk(
+            &f.entry,
+            &[base],
+            &[
+                d("old"),
+                w("new", b"same content here\nmore\n"),
+                w("c", b"c2\n"),
+            ],
+            "r\n",
+            3,
+        )
+        .await;
         let diff = |req: wire::DiffRequest| {
             let f = &f;
             async move {
-                let s = f.hist.diff(&ctx(IdMode::Asc), wire::DiffRequest { repo: repo_ref(IdMode::Asc), ..req }).await?;
+                let s = f
+                    .hist
+                    .diff(
+                        &ctx(IdMode::Asc),
+                        wire::DiffRequest {
+                            repo: repo_ref(IdMode::Asc),
+                            ..req
+                        },
+                    )
+                    .await?;
                 s.try_collect::<Vec<_>>().await
             }
         };
-        let text = |rs: &[wire::DiffResponse]| String::from_utf8(rs.iter().flat_map(|r| r.text.to_vec()).collect()).unwrap();
+        let text = |rs: &[wire::DiffResponse]| {
+            String::from_utf8(rs.iter().flat_map(|r| r.text.to_vec()).collect()).unwrap()
+        };
         // Three-dot semantics: the merge base is the left side.
-        let rs = diff(wire::DiffRequest { base: left.to_string(), head: right.to_string(), merge_base: true, format: wire::DiffFormat::Status as i32, ..Default::default() }).await.unwrap();
+        let rs = diff(wire::DiffRequest {
+            base: left.to_string(),
+            head: right.to_string(),
+            merge_base: true,
+            format: wire::DiffFormat::Status as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         assert_eq!(text(&rs), "M\tc\nA\tnew\nD\told\n");
-        let rs = diff(wire::DiffRequest { base: left.to_string(), head: right.to_string(), format: wire::DiffFormat::Status as i32, ..Default::default() }).await.unwrap();
+        let rs = diff(wire::DiffRequest {
+            base: left.to_string(),
+            head: right.to_string(),
+            format: wire::DiffFormat::Status as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         assert_eq!(text(&rs), "M\ta\nM\tc\nA\tnew\nD\told\n");
         // Renames.
-        let rs = diff(wire::DiffRequest { base: base.to_string(), head: right.to_string(), format: wire::DiffFormat::Status as i32, renames: true, ..Default::default() }).await.unwrap();
+        let rs = diff(wire::DiffRequest {
+            base: base.to_string(),
+            head: right.to_string(),
+            format: wire::DiffFormat::Status as i32,
+            renames: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         assert_eq!(text(&rs), "M\tc\nR100\told\tnew\n");
-        assert_eq!(rs[0].changes.iter().find(|c| c.status == "R").unwrap().similarity, 100);
+        assert_eq!(
+            rs[0]
+                .changes
+                .iter()
+                .find(|c| c.status == "R")
+                .unwrap()
+                .similarity,
+            100
+        );
         // Stat, numstat, pathspec, truncation.
-        let rs = diff(wire::DiffRequest { base: base.to_string(), head: left.to_string(), format: wire::DiffFormat::Stat as i32, ..Default::default() }).await.unwrap();
-        assert!(text(&rs).contains(" a | 2 +-") && text(&rs).contains("1 file changed"), "{}", text(&rs));
-        let rs = diff(wire::DiffRequest { base: base.to_string(), head: right.to_string(), format: wire::DiffFormat::Numstat as i32, paths: vec!["c".into()], ..Default::default() }).await.unwrap();
+        let rs = diff(wire::DiffRequest {
+            base: base.to_string(),
+            head: left.to_string(),
+            format: wire::DiffFormat::Stat as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        assert!(
+            text(&rs).contains(" a | 2 +-") && text(&rs).contains("1 file changed"),
+            "{}",
+            text(&rs)
+        );
+        let rs = diff(wire::DiffRequest {
+            base: base.to_string(),
+            head: right.to_string(),
+            format: wire::DiffFormat::Numstat as i32,
+            paths: vec!["c".into()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         assert_eq!(text(&rs), "1\t1\tc\n");
-        let rs = diff(wire::DiffRequest { base: base.to_string(), head: right.to_string(), max_files: 1, format: wire::DiffFormat::Names as i32, ..Default::default() }).await.unwrap();
+        let rs = diff(wire::DiffRequest {
+            base: base.to_string(),
+            head: right.to_string(),
+            max_files: 1,
+            format: wire::DiffFormat::Names as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         assert!(rs.last().unwrap().truncated);
         assert_eq!(rs.iter().map(|r| r.changes.len()).sum::<usize>(), 1);
         // Bad input.
         for req in [
-            wire::DiffRequest { base: "nope".into(), head: left.to_string(), ..Default::default() },
-            wire::DiffRequest { base: base.to_string(), head: left.to_string(), format: 99, ..Default::default() },
-            wire::DiffRequest { base: base.to_string(), head: left.to_string(), paths: vec![":(bad".into()], ..Default::default() },
+            wire::DiffRequest {
+                base: "nope".into(),
+                head: left.to_string(),
+                ..Default::default()
+            },
+            wire::DiffRequest {
+                base: base.to_string(),
+                head: left.to_string(),
+                format: 99,
+                ..Default::default()
+            },
+            wire::DiffRequest {
+                base: base.to_string(),
+                head: left.to_string(),
+                paths: vec![":(bad".into()],
+                ..Default::default()
+            },
         ] {
             assert!(diff(req).await.is_err());
         }
@@ -3418,7 +4468,14 @@ mod tests {
             }
         }
         f.hooks.text_budget.set(Arc::new(Never)).ok().unwrap();
-        let err = diff(wire::DiffRequest { base: base.to_string(), head: left.to_string(), format: wire::DiffFormat::Patch as i32, ..Default::default() }).await.unwrap_err();
+        let err = diff(wire::DiffRequest {
+            base: base.to_string(),
+            head: left.to_string(),
+            format: wire::DiffFormat::Patch as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
         assert_eq!(err.code(), tonic::Code::ResourceExhausted);
     }
 
@@ -3428,12 +4485,46 @@ mod tests {
         let base = mk(&f.entry, &[], &[w("a", b"1")], "b\n", 1).await;
         let l = mk(&f.entry, &[base], &[w("a", b"2")], "l\n", 2).await;
         let r = mk(&f.entry, &[base], &[w("a", b"3")], "r\n", 3).await;
-        let mb = f.hist.merge_base(&ctx(IdMode::Asc), wire::MergeBaseRequest { repo: repo_ref(IdMode::Asc), a: l.as_bytes().to_vec().into(), b: vec![r.as_bytes().to_vec().into()], all: false }).await.unwrap();
+        let mb = f
+            .hist
+            .merge_base(
+                &ctx(IdMode::Asc),
+                wire::MergeBaseRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    a: l.as_bytes().to_vec().into(),
+                    b: vec![r.as_bytes().to_vec().into()],
+                    all: false,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(mb.bases[0].as_ref(), base.as_bytes());
-        let no = f.hist.is_ancestor(&ctx(IdMode::Asc), wire::IsAncestorRequest { repo: repo_ref(IdMode::Asc), ancestor: l.as_bytes().to_vec().into(), descendant: r.as_bytes().to_vec().into() }).await.unwrap();
+        let no = f
+            .hist
+            .is_ancestor(
+                &ctx(IdMode::Asc),
+                wire::IsAncestorRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    ancestor: l.as_bytes().to_vec().into(),
+                    descendant: r.as_bytes().to_vec().into(),
+                },
+            )
+            .await
+            .unwrap();
         assert!(!no.result);
         // A git-length id is refused in asc mode.
-        let err = f.hist.is_ancestor(&ctx(IdMode::Asc), wire::IsAncestorRequest { repo: repo_ref(IdMode::Asc), ancestor: vec![1; 20].into(), descendant: r.as_bytes().to_vec().into() }).await.unwrap_err();
+        let err = f
+            .hist
+            .is_ancestor(
+                &ctx(IdMode::Asc),
+                wire::IsAncestorRequest {
+                    repo: repo_ref(IdMode::Asc),
+                    ancestor: vec![1; 20].into(),
+                    descendant: r.as_bytes().to_vec().into(),
+                },
+            )
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
@@ -3443,6 +4534,13 @@ mod tests {
         let ext = Extensions::new();
         let hooks = register(&ext, &f.reg);
         hooks.add_enricher(Arc::new(Tag));
-        assert!(ext.handlers.set_reads(Arc::new(ServerReads::new(Arc::new(Core { registry: f.reg.clone(), hooks })))).is_err());
+        assert!(
+            ext.handlers
+                .set_reads(Arc::new(ServerReads::new(Arc::new(Core {
+                    registry: f.reg.clone(),
+                    hooks
+                }))))
+                .is_err()
+        );
     }
 }
