@@ -28,9 +28,8 @@ use crate::cli::restore::{index_tree, root_of};
 use crate::cli::stash::save::{self, Opts};
 use crate::ext::{self, OpId, OpSink, RewriteSink};
 
-/// Most arguments and bytes per argument stored in an op's `argv`.
+/// Most arguments kept for an op's `argv`.
 const MAX_ARGS: usize = 256;
-const MAX_ARG_BYTES: usize = 4096;
 
 /// The sink implementations; register with `ext::set_rewrite_sink` and `ext::set_op_sink`.
 #[derive(Clone, Copy, Debug, Default)]
@@ -132,20 +131,15 @@ where
     }
 }
 
+/// The arguments an op keeps in memory until `oplog::record` stores them.
+///
+/// Arguments are not cut by length here: `oplog::record` redacts credentials and only then
+/// bounds each argument, so a clipped secret (`https://user:tok`) can never lose the `@`
+/// that marks it and leak a prefix.
 fn clip(argv: &[OsString]) -> Vec<String> {
     argv.iter()
         .take(MAX_ARGS)
-        .map(|a| {
-            let mut s = a.to_string_lossy().into_owned();
-            if s.len() > MAX_ARG_BYTES {
-                let mut end = MAX_ARG_BYTES;
-                while !s.is_char_boundary(end) {
-                    end -= 1;
-                }
-                s.truncate(end);
-            }
-            s
-        })
+        .map(|a| a.to_string_lossy().into_owned())
         .collect()
 }
 
@@ -233,7 +227,8 @@ async fn write_row(ctx: &Ctx, active: Active) {
     if !recordable {
         return;
     }
-    let kind = active.argv.first().cloned().unwrap_or_default();
+    // The kind is the first argument; it is redacted like the rest of the line.
+    let kind = oplog::redact_argv(&active.argv[..active.argv.len().min(1)]);
     let row = NewOp {
         op_id: oplog::OpId(active.id.0),
         ws: ws.workspace.ws.id,
@@ -309,5 +304,79 @@ impl OpSink for Sinks {
         if let Some(a) = state().op.as_mut() {
             a.snapshot = snap;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `oplog::record` stores for `argv`: the op's arguments, then redaction.
+    fn stored(argv: &[&str]) -> String {
+        let os: Vec<OsString> = argv.iter().map(OsString::from).collect();
+        oplog::redact_argv(&clip(&os))
+    }
+
+    #[test]
+    fn credentials_in_urls_are_not_stored() {
+        let line = stored(&["clone", "https://user:tok3n@host.test/x"]);
+        assert_eq!(line, "clone https://***@host.test/x");
+        let line = stored(&["push", "https://host.test/x?token=s3cret&ref=main"]);
+        assert_eq!(line, "push 'https://host.test/x?token=***&ref=main'");
+        assert!(!stored(&["fetch", "user:pw@host.test:path/x"]).contains("pw"));
+    }
+
+    #[test]
+    fn config_secrets_are_not_stored() {
+        let line = stored(&["-c", "http.extraHeader=Authorization: Bearer abc", "fetch"]);
+        assert_eq!(line, "-c http.extraHeader=*** fetch");
+        assert_eq!(
+            stored(&["-chttp.x.extraheader=Bearer abc"]),
+            "-chttp.x.extraheader=***"
+        );
+        assert_eq!(
+            stored(&["--config-env=user.token=TOK", "fetch"]),
+            "--config-env=user.token=*** fetch"
+        );
+        assert_eq!(stored(&["alias.token=abc", "x"]), "alias.token=*** x");
+        assert_eq!(
+            stored(&["credential.helper=store"]),
+            "credential.helper=***"
+        );
+        let line = stored(&["url.https://u:p@h/.insteadOf=https://h/"]);
+        assert!(!line.contains("u:p"), "{line}");
+        assert_eq!(
+            stored(&["login", "--token", "abc", "--password=p"]),
+            "login --token --password"
+        );
+    }
+
+    #[test]
+    fn a_secret_at_the_clip_boundary_leaks_no_prefix() {
+        for pad in 4070..4100 {
+            let url = format!("https://{}:s3cretvalue@host.test/x", "u".repeat(pad - 8));
+            let line = stored(&["clone", &url]);
+            assert!(
+                !line.contains("s3cret") && !line.contains("uuu"),
+                "pad {pad}: {line}"
+            );
+            assert!(line.contains("***@host.test"), "pad {pad}: {line}");
+        }
+    }
+
+    #[test]
+    fn plain_arguments_are_unchanged() {
+        assert_eq!(
+            stored(&["commit", "-a", "-m", "fix: a=b", "--author=Jo <jo@x.test>"]),
+            "commit -a -m 'fix: a=b' '--author=Jo <jo@x.test>'"
+        );
+        assert_eq!(
+            stored(&["push", "origin", "https://host.test/x"]),
+            "push origin https://host.test/x"
+        );
+        assert_eq!(
+            stored(&["log", "--format=%H", "src/main.rs"]),
+            "log --format=%H src/main.rs"
+        );
     }
 }

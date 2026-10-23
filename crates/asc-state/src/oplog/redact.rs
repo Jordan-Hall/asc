@@ -75,7 +75,7 @@ fn secret_header_line(arg: &str) -> bool {
 /// secret word (`--token`, `--api-key`, `--password`, ...) is dropped.
 pub fn redact_argv(argv: &[String]) -> String {
     let mut out: Vec<String> = Vec::new();
-    let mut it = argv.iter().take(MAX_ARGS);
+    let mut it = argv.iter().take(MAX_ARGS).peekable();
     while let Some(arg) = it.next() {
         if arg == "-c" {
             out.push(arg.clone());
@@ -84,6 +84,20 @@ pub fn redact_argv(argv: &[String]) -> String {
             }
         } else if let Some(rest) = arg.strip_prefix("-c").filter(|r| r.contains('=')) {
             out.push(format!("-c{}", config_value(rest)));
+        } else if (arg == "--config" || arg == "--config-env")
+            && it.peek().is_some_and(|v| v.contains('='))
+        {
+            out.push(arg.clone());
+            if let Some(v) = it.next() {
+                out.push(config_value(v));
+            }
+        } else if let Some(rest) = arg
+            .strip_prefix("--config-env=")
+            .or_else(|| arg.strip_prefix("--config="))
+            .filter(|r| r.contains('='))
+        {
+            let flag = &arg[..arg.len() - rest.len()];
+            out.push(format!("{flag}{}", config_value(rest)));
         } else if arg == "-H" || arg.eq_ignore_ascii_case("--header") {
             out.push(arg.clone());
             if let Some(v) = it.next() {
@@ -110,6 +124,17 @@ pub fn redact_argv(argv: &[String]) -> String {
             .filter(|(n, _)| n.to_ascii_lowercase().contains("extraheader"))
         {
             out.push(format!("{name}=***"));
+        } else if let Some((name, value)) = arg.split_once('=').filter(|(n, _)| config_key(n)) {
+            // A bare git-style `section.key=value` argument (an alias, `git config`).
+            if secret_name(name) || name.to_ascii_lowercase().starts_with("credential.") {
+                out.push(format!("{}=***", strip_url_credentials(name)));
+            } else {
+                out.push(format!(
+                    "{}={}",
+                    strip_url_credentials(name),
+                    strip_url_credentials(value)
+                ));
+            }
         } else if secret_header_line(arg) {
             out.push(redact_header(arg));
         } else {
@@ -128,6 +153,22 @@ pub fn redact_argv(argv: &[String]) -> String {
         line.push_str(&a);
     }
     line
+}
+
+/// Whether `name` has the shape of a git config key: `section.key`, or `url.<base>.insteadOf`
+/// where the base may hold userinfo.
+fn config_key(name: &str) -> bool {
+    if name.starts_with('-') || name.contains(char::is_whitespace) {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("url.") {
+        return lower.ends_with(".insteadof") || lower.ends_with(".pushinsteadof");
+    }
+    name.contains('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 fn config_value(kv: &str) -> String {
