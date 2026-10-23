@@ -646,7 +646,10 @@ pub fn rerun(inner: &str, envs: &[(&str, &str)]) {
             cmd.env_remove(key);
         }
     }
-    cmd.env(INNER, "1");
+    // A child can never reach a terminal: git asks `GIT_ASKPASS` first and only then the
+    // terminal, so a broken askpass would otherwise block on `/dev/tty`. A test that wants
+    // another value passes it in `envs`, which is applied after this.
+    cmd.env(INNER, "1").env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -662,6 +665,19 @@ pub fn rerun(inner: &str, envs: &[(&str, &str)]) {
     );
 }
 
+/// git runs an askpass program with `exec`, so a script that is not executable makes git fall
+/// through to the terminal (and hang when it has one). Mode 0755 on Unix; nothing on Windows.
+pub fn make_executable(script: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod askpass");
+    }
+    #[cfg(not(unix))]
+    let _ = script;
+}
+
 /// A program that records each prompt it is asked and answers by prompt text:
 /// `Username` gets `user`, anything else `pass`.
 pub fn askpass(dir: &Path, name: &str, user: &str, pass: &str) -> (PathBuf, PathBuf) {
@@ -675,6 +691,7 @@ pub fn askpass(dir: &Path, name: &str, user: &str, pass: &str) -> (PathBuf, Path
         ),
     )
     .expect("write askpass");
+    make_executable(&script);
     (script, ran)
 }
 

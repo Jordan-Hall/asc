@@ -626,7 +626,9 @@ fn control_characters_in_a_helper_answer_are_refused() {
     // resolver refuses the answer. Either way no CR reaches a header.
     match resolver(&config, &[], dir.path()).resolve(&url(REMOTE), Prompt::Never) {
         Err(err) => assert!(err.to_string().contains("invalid helper answer"), "{err}"),
-        Ok(got) => assert!(!got.secret().unwrap().expose().contains('\r')),
+        // Git 2.51 and later refuse a carriage return in a credential value and print
+        // nothing, so there is no secret at all.
+        Ok(got) => assert!(!got.secret().is_some_and(|s| s.expose().contains('\r'))),
     }
 
     let config = cfg("");
@@ -679,7 +681,10 @@ fn rerun(inner: &str, envs: &[(&str, &str)], cwd: Option<&Path>) {
             cmd.env_remove(key);
         }
     }
-    cmd.env("U77_INNER", "1");
+    // A child can never reach a terminal: git asks `GIT_ASKPASS`, then the terminal, so a
+    // broken askpass would otherwise block on `/dev/tty`. A test that wants another value
+    // passes it in `envs`, which is applied after this.
+    cmd.env("U77_INNER", "1").env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -715,6 +720,13 @@ fn marker(dir: &Path, name: &str, answer: &str) -> (PathBuf, PathBuf) {
         ),
     )
     .unwrap();
+    // git runs an askpass program with `exec`; without the execute bit it falls through to
+    // the terminal.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     (script, ran)
 }
 
@@ -765,6 +777,44 @@ fn askpass_inner() {
         Some("from-env-askpass")
     );
     assert!(env_ran.exists());
+}
+
+/// A prompt test can never block on a terminal. An askpass that git cannot run (a plain file
+/// with no execute bit) sends git to `/dev/tty` after it fails; `rerun` switches the terminal
+/// off for its child, so `Allowed` ends at once with no credential instead of waiting.
+/// Unix only: a script without the execute bit still runs under Git for Windows' `sh`.
+#[cfg(unix)]
+#[test]
+fn an_askpass_that_cannot_run_never_reaches_a_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (script, ran) = marker(dir.path(), "broken", "never-used");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+    rerun(
+        "broken_askpass_inner",
+        &[
+            ("U77_DIR", &sh_path(dir.path())),
+            ("GIT_ASKPASS", &sh_path(&script)),
+        ],
+        None,
+    );
+    assert!(!ran.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_askpass_inner() {
+    let Some(dir) = inner_dir() else { return };
+    assert_eq!(
+        std::env::var("GIT_TERMINAL_PROMPT").as_deref(),
+        Ok("0"),
+        "rerun leaves the terminal on"
+    );
+    let config = cfg("");
+    let got = resolver(&config, &[], &dir)
+        .resolve(&url(REMOTE), Prompt::Allowed)
+        .unwrap();
+    assert!(got.is_anonymous());
 }
 
 #[test]
