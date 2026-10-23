@@ -12,6 +12,7 @@ pub mod branchless;
 pub mod change;
 pub mod classify;
 pub mod commit;
+pub mod commit_graph;
 pub mod derive;
 pub mod diff;
 pub mod graph;
