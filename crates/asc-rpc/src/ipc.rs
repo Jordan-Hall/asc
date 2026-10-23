@@ -312,16 +312,21 @@ mod win {
     use super::IpcError;
     use interprocess::os::windows::security_descriptor::{BorrowedSecurityDescriptor, SecurityDescriptor};
     use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt as _;
-    use std::ffi::c_void;
+    use std::ffi::{OsString, c_void};
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::path::{Path, PathBuf};
     use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
     use windows::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
     use windows::Win32::Security::{
-        GetTokenInformation, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, PSECURITY_DESCRIPTOR, PSID,
+        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
+        TokenIntegrityLevel, TokenIsAppContainer, TokenLogonSid, TokenRestrictedSids, TokenUser,
     };
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
     use windows::core::{PCWSTR, PWSTR};
 
@@ -333,81 +338,289 @@ mod win {
         IpcError::Io(std::io::Error::other(e))
     }
 
-    /// The string SID of the user of `token`.
+    /// What the server check looks at in a process token.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) struct TokenFacts {
+        /// The user's string SID.
+        pub sid: String,
+        /// The logon session's SID (`TokenLogonSid`).
+        pub logon_sid: Option<String>,
+        /// The integrity level's RID (`SECURITY_MANDATORY_*_RID`: 0x1000 low, 0x2000 medium,
+        /// 0x3000 high, 0x4000 system).
+        pub integrity: u32,
+        /// `TokenIsAppContainer`.
+        pub app_container: bool,
+        /// The token has restricting SIDs (`IsTokenRestricted`).
+        pub restricted: bool,
+    }
+
+    /// The string form of `sid`.
     ///
     /// # Safety
-    /// `token` must be a valid token handle opened with `TOKEN_QUERY`.
-    unsafe fn token_user_sid(token: HANDLE) -> Result<String, IpcError> {
-        // SAFETY: the caller vouches for the handle; buffers are sized by the first call and
-        // every allocation is freed.
+    /// `sid` must point to a valid SID.
+    unsafe fn sid_string(sid: PSID) -> Result<String, IpcError> {
+        // SAFETY: the caller vouches for the SID; the converted string is freed.
         unsafe {
-            let mut len = 0u32;
-            let _ = GetTokenInformation(token, TokenUser, None, 0, &mut len);
-            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
-            GetTokenInformation(
-                token,
-                TokenUser,
-                Some(buf.as_mut_ptr().cast::<c_void>()),
-                len,
-                &mut len,
-            )
-            .map_err(os)?;
-            let user = &*(buf.as_ptr().cast::<TOKEN_USER>());
             let mut out = PWSTR::null();
-            ConvertSidToStringSidW(user.User.Sid, &mut out).map_err(os)?;
+            ConvertSidToStringSidW(sid, &mut out).map_err(os)?;
             let s = out.to_string().map_err(|e| IpcError::NoRuntimeDir(e.to_string()));
             let _ = LocalFree(Some(HLOCAL(out.0.cast())));
             s
         }
     }
 
-    /// The string SID of the process token's user.
-    pub(super) fn user_sid() -> Result<String, IpcError> {
+    /// The raw bytes of one token information class, aligned for the structs they hold.
+    ///
+    /// # Safety
+    /// `token` must be a valid token handle opened with `TOKEN_QUERY`.
+    unsafe fn token_buf(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Result<Vec<u64>, IpcError> {
+        // SAFETY: the caller vouches for the handle; the buffer is sized by the first call.
+        unsafe {
+            let mut len = 0u32;
+            let _ = GetTokenInformation(token, class, None, 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+            GetTokenInformation(token, class, Some(buf.as_mut_ptr().cast::<c_void>()), len, &mut len).map_err(os)?;
+            Ok(buf)
+        }
+    }
+
+    /// The facts about `token` that the server check needs.
+    ///
+    /// # Safety
+    /// `token` must be a valid token handle opened with `TOKEN_QUERY`.
+    unsafe fn token_facts(token: HANDLE) -> Result<TokenFacts, IpcError> {
+        // SAFETY: the caller vouches for the handle; each buffer holds the struct its class
+        // names, and every allocation is freed.
+        unsafe {
+            let buf = token_buf(token, TokenUser)?;
+            let user = &*(buf.as_ptr().cast::<TOKEN_USER>());
+            let sid = sid_string(user.User.Sid)?;
+
+            let buf = token_buf(token, TokenIntegrityLevel)?;
+            let label = &*(buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>());
+            let count = *GetSidSubAuthorityCount(label.Label.Sid);
+            if count == 0 {
+                return Err(IpcError::NoRuntimeDir("token integrity SID is empty".into()));
+            }
+            let integrity = *GetSidSubAuthority(label.Label.Sid, u32::from(count) - 1);
+
+            let buf = token_buf(token, TokenIsAppContainer)?;
+            let app_container = *buf.as_ptr().cast::<u32>() != 0;
+
+            // The logon SID names the logon session: a process of the same user in another
+            // session is not the daemon this session started.
+            let buf = token_buf(token, TokenLogonSid)?;
+            let groups = &*(buf.as_ptr().cast::<TOKEN_GROUPS>());
+            let logon_sid = if groups.GroupCount >= 1 {
+                Some(sid_string(groups.Groups[0].Sid)?)
+            } else {
+                None
+            };
+
+            let buf = token_buf(token, TokenRestrictedSids)?;
+            let restricted = (*(buf.as_ptr().cast::<TOKEN_GROUPS>())).GroupCount != 0;
+            Ok(TokenFacts {
+                sid,
+                logon_sid,
+                integrity,
+                app_container,
+                restricted,
+            })
+        }
+    }
+
+    /// The facts about the token of `process` (opened with `PROCESS_QUERY_LIMITED_INFORMATION`).
+    fn process_token_facts(process: HANDLE) -> Result<TokenFacts, IpcError> {
         // SAFETY: plain Win32 calls; the token handle is closed on every path.
         unsafe {
             let mut token = HANDLE::default();
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).map_err(os)?;
-            let sid = token_user_sid(token);
+            OpenProcessToken(process, TOKEN_QUERY, &mut token).map_err(os)?;
+            let facts = token_facts(token);
             let _ = CloseHandle(token);
-            sid
+            facts
         }
     }
 
-    /// The string SID of the user that process `pid` runs as. Fails when the process is gone or
-    /// cannot be inspected (another user's process normally cannot be opened at all).
-    pub(super) fn process_user_sid(pid: u32) -> Result<String, IpcError> {
-        // SAFETY: plain Win32 calls; both handles are closed on every path.
+    /// The facts about this process's token.
+    pub(super) fn current_facts() -> Result<TokenFacts, IpcError> {
+        // SAFETY: the pseudo handle of the current process needs no closing.
+        process_token_facts(unsafe { GetCurrentProcess() })
+    }
+
+    /// The string SID of the process token's user.
+    pub(super) fn user_sid() -> Result<String, IpcError> {
+        current_facts().map(|f| f.sid)
+    }
+
+    /// The facts about the token of process `pid`, and the process's image path when it can be
+    /// read. Fails when the process is gone or cannot be inspected (another user's process
+    /// normally cannot be opened at all).
+    pub(super) fn process_facts(pid: u32) -> Result<(TokenFacts, Option<PathBuf>), IpcError> {
+        // SAFETY: plain Win32 calls; the process handle is closed on every path.
         unsafe {
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(os)?;
-            let mut token = HANDLE::default();
-            let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token);
+            let facts = process_token_facts(process);
+            let mut buf = vec![0u16; 4096];
+            let mut len = buf.len() as u32;
+            let path = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
+                .ok()
+                .map(|()| PathBuf::from(OsString::from_wide(&buf[..len as usize])));
             let _ = CloseHandle(process);
-            opened.map_err(os)?;
-            let sid = token_user_sid(token);
-            let _ = CloseHandle(token);
-            sid
+            Ok((facts?, path))
         }
     }
 
-    /// Ok only when process `pid` runs as the same user as this process (fail closed: any error
-    /// is a refusal).
-    pub(super) fn require_current_user(pid: u32) -> std::io::Result<()> {
-        let ours = user_sid().map_err(|e| refuse(pid, e.to_string()))?;
-        require_user(pid, &ours)
+    /// Whether a server running with `theirs` may be trusted by a client running with `ours`:
+    /// the same user in the same logon session, an integrity level at least ours (a low-integrity or sandboxed process
+    /// of the same user must not be able to pose as the daemon), not an AppContainer and not
+    /// a restricted token. The error says which rule failed.
+    pub(super) fn judge(ours: &TokenFacts, theirs: &TokenFacts) -> Result<(), String> {
+        if theirs.sid != ours.sid {
+            return Err("it does not run as the current user".into());
+        }
+        if theirs.logon_sid != ours.logon_sid {
+            return Err("it runs in another logon session".into());
+        }
+        if theirs.integrity < ours.integrity {
+            return Err(format!(
+                "its integrity level {:#x} is below ours {:#x}",
+                theirs.integrity, ours.integrity
+            ));
+        }
+        if theirs.app_container {
+            return Err("it runs in an AppContainer".into());
+        }
+        if theirs.restricted {
+            return Err("it runs with a restricted token".into());
+        }
+        Ok(())
     }
 
-    /// Ok only when process `pid` runs as the user whose string SID is `sid`.
-    pub(super) fn require_user(pid: u32, sid: &str) -> std::io::Result<()> {
-        let theirs = process_user_sid(pid).map_err(|e| refuse(pid, e.to_string()))?;
-        if theirs == sid {
-            Ok(())
-        } else {
-            Err(refuse(pid, "it does not run as the current user".into()))
+    /// Ok only when process `pid` may be trusted as this user's daemon (see [`judge`]; fail
+    /// closed: any error is a refusal). The image path is only a signal: a server that is not
+    /// this executable is logged and still accepted, because a daemon of another version
+    /// (which `asc` must replace) is normally a different file.
+    pub(super) fn require_current_user(pid: u32) -> std::io::Result<()> {
+        let ours = current_facts().map_err(|e| refuse(pid, e.to_string()))?;
+        let (theirs, path) = process_facts(pid).map_err(|e| refuse(pid, e.to_string()))?;
+        judge(&ours, &theirs).map_err(|why| refuse(pid, why))?;
+        note_image(pid, path.as_deref());
+        Ok(())
+    }
+
+    /// Logs a server image that is not this executable.
+    fn note_image(pid: u32, path: Option<&Path>) {
+        let Ok(me) = std::env::current_exe() else { return };
+        match path {
+            Some(p) if p == me => {}
+            Some(p) if p.as_os_str().eq_ignore_ascii_case(me.as_os_str()) => {
+                tracing::info!(pid, server = %p.display(), "ipc server image differs from this executable only by case");
+            }
+            Some(p) => {
+                tracing::debug!(pid, server = %p.display(), exe = %me.display(), "ipc server runs another executable");
+            }
+            None => tracing::debug!(pid, "ipc server image path unavailable"),
         }
     }
 
     fn refuse(pid: u32, why: String) -> std::io::Error {
         super::untrusted(format!("server process {pid}: {why}"))
+    }
+
+    /// A child process of ours running at low integrity, ended on drop.
+    #[cfg(test)]
+    pub(super) struct LowChild {
+        process: HANDLE,
+        pub pid: u32,
+    }
+
+    #[cfg(test)]
+    impl Drop for LowChild {
+        fn drop(&mut self) {
+            // SAFETY: the handle was returned by CreateProcessAsUserW and is closed once.
+            unsafe {
+                let _ = windows::Win32::System::Threading::TerminateProcess(self.process, 1);
+                let _ = CloseHandle(self.process);
+            }
+        }
+    }
+
+    /// Starts `ping` with a copy of this process's token whose integrity level is lowered to
+    /// low (`S-1-16-4096`): what a sandboxed same-user process looks like.
+    #[cfg(test)]
+    pub(super) fn spawn_low_integrity() -> Result<LowChild, IpcError> {
+        use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows::Win32::Security::{
+            DuplicateTokenEx, GetLengthSid, SID_AND_ATTRIBUTES, SecurityImpersonation, SetTokenInformation,
+            TOKEN_ACCESS_MASK, TOKEN_DUPLICATE, TokenPrimary,
+        };
+        use windows::Win32::System::Threading::{
+            CREATE_NO_WINDOW, CreateProcessAsUserW, PROCESS_INFORMATION, STARTUPINFOW,
+        };
+        const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+        const SE_GROUP_INTEGRITY: u32 = 0x20;
+        let sid = wide("S-1-16-4096");
+        let mut cmd = wide("ping -n 60 127.0.0.1");
+        // SAFETY: plain Win32 calls with valid, NUL-terminated inputs; every handle and the
+        // converted SID are released on every path.
+        unsafe {
+            let mut token = HANDLE::default();
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token).map_err(os)?;
+            let mut low = HANDLE::default();
+            let dup = DuplicateTokenEx(
+                token,
+                TOKEN_ACCESS_MASK(MAXIMUM_ALLOWED),
+                None,
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut low,
+            );
+            let _ = CloseHandle(token);
+            dup.map_err(os)?;
+
+            let mut psid = PSID::default();
+            let made = ConvertStringSidToSidW(PCWSTR(sid.as_ptr()), &mut psid).map_err(os);
+            let spawned = made.and_then(|()| {
+                let label = TOKEN_MANDATORY_LABEL {
+                    Label: SID_AND_ATTRIBUTES {
+                        Sid: psid,
+                        Attributes: SE_GROUP_INTEGRITY,
+                    },
+                };
+                let size = std::mem::size_of::<TOKEN_MANDATORY_LABEL>() as u32 + GetLengthSid(psid);
+                SetTokenInformation(low, TokenIntegrityLevel, (&raw const label).cast::<c_void>(), size)
+                    .map_err(os)?;
+                let si = STARTUPINFOW {
+                    cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                    ..Default::default()
+                };
+                let mut pi = PROCESS_INFORMATION::default();
+                CreateProcessAsUserW(
+                    Some(low),
+                    PCWSTR::null(),
+                    Some(PWSTR(cmd.as_mut_ptr())),
+                    None,
+                    None,
+                    false,
+                    CREATE_NO_WINDOW,
+                    None,
+                    PCWSTR::null(),
+                    &si,
+                    &mut pi,
+                )
+                .map_err(os)?;
+                let _ = CloseHandle(pi.hThread);
+                Ok(LowChild {
+                    process: pi.hProcess,
+                    pid: pi.dwProcessId,
+                })
+            });
+            if !psid.0.is_null() {
+                let _ = LocalFree(Some(HLOCAL(psid.0)));
+            }
+            let _ = CloseHandle(low);
+            spawned
+        }
     }
 
     /// The SDDL granting full access to `sid` and SYSTEM only, with inheritance blocked.
@@ -626,15 +839,73 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         ours.unwrap();
-        // A process of ours, tested against another user's SID (SYSTEM): the comparison refuses.
-        let mismatch = win::require_user(std::process::id(), "S-1-5-18").unwrap_err();
-        assert_eq!(mismatch.kind(), io::ErrorKind::PermissionDenied, "{mismatch}");
         // pid 4 is the System process: another user, and not openable without privilege.
         let system = win::require_current_user(4).unwrap_err();
         assert_eq!(system.kind(), io::ErrorKind::PermissionDenied, "{system}");
         // A pid nobody holds is refused too.
         let gone = win::require_current_user(0x7fff_fff0).unwrap_err();
         assert_eq!(gone.kind(), io::ErrorKind::PermissionDenied, "{gone}");
+    }
+
+    #[cfg(windows)]
+    fn facts() -> win::TokenFacts {
+        win::TokenFacts {
+            sid: "S-1-5-21-1-2-3-1001".into(),
+            logon_sid: Some("S-1-5-5-0-111".into()),
+            integrity: 0x2000,
+            app_container: false,
+            restricted: false,
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_server_token_rules() {
+        let ours = facts();
+        let refused = |theirs: win::TokenFacts| win::judge(&ours, &theirs).unwrap_err();
+        win::judge(&ours, &ours).unwrap();
+        win::judge(&ours, &win::TokenFacts { integrity: 0x3000, ..facts() }).unwrap();
+
+        let other_user = refused(win::TokenFacts { sid: "S-1-5-18".into(), ..facts() });
+        assert!(other_user.contains("current user"), "{other_user}");
+        let other_session = refused(win::TokenFacts { logon_sid: Some("S-1-5-5-0-222".into()), ..facts() });
+        assert!(other_session.contains("logon session"), "{other_session}");
+        let no_session = refused(win::TokenFacts { logon_sid: None, ..facts() });
+        assert!(no_session.contains("logon session"), "{no_session}");
+        let low = refused(win::TokenFacts { integrity: 0x1000, ..facts() });
+        assert!(low.contains("integrity"), "{low}");
+        let sandbox = refused(win::TokenFacts { app_container: true, ..facts() });
+        assert!(sandbox.contains("AppContainer"), "{sandbox}");
+        let restricted = refused(win::TokenFacts { restricted: true, ..facts() });
+        assert!(restricted.contains("restricted"), "{restricted}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_our_own_token_is_a_trusted_server() {
+        let me = win::current_facts().unwrap();
+        assert!(me.integrity >= 0x2000, "tests run at medium integrity or above: {me:?}");
+        assert!(!me.app_container && !me.restricted, "{me:?}");
+        assert!(me.logon_sid.is_some(), "{me:?}");
+        let (seen, image) = win::process_facts(std::process::id()).unwrap();
+        assert_eq!(seen, me);
+        assert_eq!(image.as_deref(), std::env::current_exe().ok().as_deref());
+        win::require_current_user(std::process::id()).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_a_low_integrity_process_of_ours_is_refused() {
+        let low = win::spawn_low_integrity().expect("start a low-integrity child");
+        // It is the same user and session, so only the integrity rule can refuse it.
+        let (theirs, _) = win::process_facts(low.pid).unwrap();
+        let ours = win::current_facts().unwrap();
+        assert_eq!(theirs.sid, ours.sid);
+        assert_eq!(theirs.logon_sid, ours.logon_sid);
+        assert_eq!(theirs.integrity, 0x1000, "{theirs:?}");
+        let refused = win::require_current_user(low.pid).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+        assert!(refused.to_string().contains("integrity"), "{refused}");
     }
 
     #[cfg(windows)]
