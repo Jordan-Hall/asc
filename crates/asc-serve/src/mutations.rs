@@ -1262,9 +1262,14 @@ impl ImportPushHandler for ServerMutations {
     }
 }
 
-/// The one registration line of this unit (called from `lib.rs`): the `mutations` and
-/// `import_push` groups. `hooks` supplies the text budget.
-pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHooks>) {
+/// The one registration line of this unit (called from `lib.rs`): the `mutations` group.
+/// `hooks` supplies the text budget. The `import_push` group (`Ingest` and `ImportGitPush`) is
+/// registered by `import_push::register` over the handler this returns.
+pub fn register(
+    ext: &Extensions,
+    registry: &Arc<Registry>,
+    hooks: &Arc<ReadHooks>,
+) -> Arc<ServerMutations> {
     let handler = Arc::new(ServerMutations::new(
         registry.clone(),
         ext.pipeline.clone(),
@@ -1273,9 +1278,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
     ext.handlers
         .set_mutations(handler.clone())
         .expect("the mutations handler group is registered once");
-    ext.handlers
-        .set_import_push(handler)
-        .expect("the import_push handler group is registered once");
+    handler
 }
 
 // ------------------------------------------------------------------------------ tests

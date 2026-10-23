@@ -12,6 +12,7 @@ pub mod classify;
 pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
+pub mod expire;
 pub mod forgejo;
 pub mod gc;
 #[cfg(feature = "git-compat")]
@@ -22,6 +23,7 @@ pub mod graph_sql;
 pub mod history;
 pub mod http;
 pub mod idmode;
+pub mod import_push;
 pub mod ingest;
 pub mod land;
 pub mod limits;
@@ -160,12 +162,23 @@ impl Authorizer for DenyAll {
 // ------------------------------------------------------------------------------ startup
 
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
-fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Limits) {
+fn register_all(
+    ext: &Extensions,
+    registry: &Arc<Registry>,
+    limits: &config::Limits,
+    forgejo: Option<&config::ForgejoConfig>,
+) {
     limits::register(ext, limits);
     update::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
-    mutations::register(ext, registry, &hooks);
+    let mutations = mutations::register(ext, registry, &hooks);
+    import_push::register(
+        ext,
+        registry,
+        mutations,
+        forgejo.and_then(|f| f.repo_root.clone()),
+    );
     commit_graph_rpc::register(ext, registry, &hooks);
 }
 
@@ -252,7 +265,7 @@ pub async fn serve(
         outbox::OutboxConfig::default(),
     ));
     let ext = Extensions::new();
-    register_all(&ext, &registry, &cfg.limits);
+    register_all(&ext, &registry, &cfg.limits, cfg.forgejo.as_ref());
     let warmer = projects::register(&ext, &registry);
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
@@ -326,6 +339,9 @@ pub async fn serve(
     let sweeper = turbo.spawn_sweeper();
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
+    // Expired agent refs and snapshots are deleted through the normal pipeline (SPEC §8.8).
+    let expiry =
+        Arc::new(expire::Expirer::new(registry.clone(), ext.pipeline.clone())).spawn_worker();
     // Collection deletes data, so it runs only when `[gc] enabled` is set.
     let collector = if cfg.gc.enabled {
         let service = Arc::new(gc::GcService::new(
@@ -350,6 +366,7 @@ pub async fn serve(
     worker.abort();
     sweeper.abort();
     warming.abort();
+    expiry.abort();
     if let Some(p) = poller {
         p.abort();
     }
