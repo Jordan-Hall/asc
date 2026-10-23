@@ -13,7 +13,7 @@ workspace = true
 default = ["git-compat"]
 # The git smart-HTTP compatibility layer (SPEC 25): `asc_git::compat`. Off, the module and its
 # platform dependencies do not exist.
-git-compat = ["dep:rustix", "dep:windows-sys"]
+git-compat = ["dep:rustix", "dep:windows-sys", "dep:flate2"]
 
 [dependencies]
 asc-core = { workspace = true }
@@ -35,6 +35,9 @@ quick_cache = { workspace = true }
 data-encoding = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
+# Inflates the gzip negotiation body of a fetch under a cap (`compat::upload`); zlib-rs is the
+# backend `zip` already pulls in.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
