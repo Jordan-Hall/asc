@@ -189,7 +189,7 @@ impl ImportPush {
         // The refs as git sees them must still be what the pusher saw (the `old` of each
         // command). Checked before the import, and pinned into the CAS below.
         let map = PushMap::new(self.registry.pool().clone(), &entry);
-        // A non-shared branch of a branchless repository is the pusher's user ref (SPEC §21.5.1):
+        // A non-shared branch of a branchless repository is the pusher's user ref (SPEC Â§21.5.1):
         // git saw it as `refs/heads/<n>`, the `refs` table holds it under `refs/users/`. `UpdateRefs`
         // classifies the same names again; this pass finds the stored value for the CAS.
         let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
@@ -340,6 +340,7 @@ impl ImportPush {
                 .await
                 .map_err(|e| internal("refs", &e))?,
         };
+        self.registry.guard(&mut tx, entry).await?;
         let rows: Vec<NewNode<'_>> = nodes
             .iter()
             .map(|n| NewNode {
