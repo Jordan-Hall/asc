@@ -11,3 +11,11 @@ workspace = true
 
 [dependencies]
 asc-serve = { workspace = true }
+asc-core = { workspace = true }
+asc-store = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+object_store = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
