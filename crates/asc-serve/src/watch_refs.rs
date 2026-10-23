@@ -422,8 +422,8 @@ mod tests {
     #[tokio::test]
     async fn another_users_draft_never_appears_and_the_owner_sees_it_renamed() {
         let f = setup().await;
-        let mut alice = f.open("7", &["*"], Some(0)).await.unwrap();
-        let mut bob = f.open("8", &["*"], Some(0)).await.unwrap();
+        let mut alice = f.open("7:alice", &["*"], Some(0)).await.unwrap();
+        let mut bob = f.open("8:bob", &["*"], Some(0)).await.unwrap();
         let mut anon = f
             .open("not-a-user", &["*", "refs/users/*"], Some(0))
             .await
@@ -454,7 +454,7 @@ mod tests {
             "a principal with no user id has no drafts"
         );
         // A user-namespace pattern matches the caller's own refs only.
-        let mut own = f.open("7", &["refs/users/*"], Some(0)).await.unwrap();
+        let mut own = f.open("7:alice", &["refs/users/*"], Some(0)).await.unwrap();
         let o = take(&mut own, 5).await;
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].name, "refs/heads/wip");
@@ -464,7 +464,7 @@ mod tests {
     #[tokio::test]
     async fn unreadable_names_do_not_leak_through_the_wire_or_the_cursor_gap() {
         let f = setup().await;
-        let mut s = f.open("8", &["*"], Some(0)).await.unwrap();
+        let mut s = f.open("8:bob", &["*"], Some(0)).await.unwrap();
         f.set("refs/users/7/heads/secret-name", Some(cs(1))).await;
         f.set("refs/internal/x", Some(cs(2))).await;
         f.set("refs/heads/master", Some(cs(3))).await;
