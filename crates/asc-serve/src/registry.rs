@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use asc_core::path::RefName;
@@ -23,6 +23,9 @@ use tonic::server::NamedService;
 
 /// Repositories kept open at once; the least recently used is dropped beyond this.
 pub const MAX_OPEN_REPOS: usize = 1024;
+/// How long an open repository is trusted before its `repos` row is read again. A delete, a
+/// rename or the end of a fork copy on another replica shows up here after at most this long.
+pub const ENTRY_TTL: Duration = Duration::from_secs(5);
 /// Git-map rows written per statement batch.
 const GIT_MAP_BATCH: usize = 500;
 
@@ -124,13 +127,23 @@ pub struct RepoEntry {
     pub git_map: Arc<SqlGitMap>,
 }
 
+/// A repository kept open, and when its row was last read.
+#[derive(Clone)]
+struct Cached {
+    entry: Arc<RepoEntry>,
+    /// False while a fork copy is still running (`repos.ready`).
+    ready: bool,
+    checked: Instant,
+}
+
 /// Opens repositories by name.
 pub struct Registry {
     pool: AnyPool,
     refs: Arc<SqlRefs>,
     store: Arc<dyn ObjectStore>,
     root: Path,
-    open: quick_cache::sync::Cache<String, Arc<RepoEntry>>,
+    open: quick_cache::sync::Cache<String, Cached>,
+    ttl: Duration,
 }
 
 impl Registry {
@@ -150,7 +163,22 @@ impl Registry {
             store,
             root,
             open: quick_cache::sync::Cache::new(MAX_OPEN_REPOS),
+            ttl: ENTRY_TTL,
         })
+    }
+
+    /// Reads the `repos` row again after `ttl` instead of [`ENTRY_TTL`].
+    pub fn with_entry_ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// The bucket and the path prefix (`<root>/ns/<ns>`) of the namespace `ns`.
+    pub(crate) fn namespace(&self, ns: Ns) -> (Arc<dyn ObjectStore>, Path) {
+        (
+            self.store.clone(),
+            self.root.clone().join("ns").join(ns.hex()),
+        )
     }
 
     pub fn pool(&self) -> &AnyPool {
@@ -166,31 +194,71 @@ impl Registry {
         self.open.remove(name.as_str());
     }
 
-    /// The repository `name`.
+    /// The repository `name`. A fork whose copy has not finished is not found: it is readable
+    /// only once complete (SPEC §3.3).
     pub async fn open(&self, name: &RepoName) -> Result<Arc<RepoEntry>, RegistryError> {
-        if let Some(e) = self.open.get(name.as_str()) {
-            return Ok(e);
+        match self.lookup(name).await? {
+            (entry, true) => Ok(entry),
+            (_, false) => Err(RegistryError::NotFound(name.to_string())),
         }
-        let row = sqlx::query("SELECT id, ns, mode, default_branch FROM repos WHERE name = $1")
-            .bind(name.as_str())
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+    }
+
+    /// As [`open`](Self::open), also for a fork still being copied; the flag says whether the
+    /// repository is ready. For `RepoAdmin` and the copy job only.
+    pub(crate) async fn open_unready(
+        &self,
+        name: &RepoName,
+    ) -> Result<(Arc<RepoEntry>, bool), RegistryError> {
+        self.lookup(name).await
+    }
+
+    async fn lookup(&self, name: &RepoName) -> Result<(Arc<RepoEntry>, bool), RegistryError> {
+        let cached = self.open.get(name.as_str());
+        if let Some(c) = &cached
+            && c.checked.elapsed() < self.ttl
+        {
+            return Ok((c.entry.clone(), c.ready));
+        }
+        let row = sqlx::query(
+            "SELECT id, ns, mode, default_branch,              CAST(CASE WHEN ready THEN 1 ELSE 0 END AS BIGINT) AS ready              FROM repos WHERE name = $1",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            self.open.remove(name.as_str());
+            return Err(RegistryError::NotFound(name.to_string()));
+        };
         let id: i64 = row.try_get("id")?;
         let ns_bytes: Vec<u8> = row.try_get("ns")?;
         let mode: String = row.try_get("mode")?;
         let default_branch: String = row.try_get("default_branch")?;
+        let ready = row.try_get::<i64, _>("ready")? != 0;
         let ns = Ns::from_bytes(&ns_bytes)
             .ok_or_else(|| RegistryError::Invalid("repos.ns is not 16 bytes".into()))?;
-        let entry = Arc::new(self.build(
-            name,
-            RepoKey(id),
-            ns,
-            RepoMode::parse(&mode)?,
-            default_branch,
-        ));
-        self.open.insert(name.to_string(), entry.clone());
-        Ok(entry)
+        let mode = RepoMode::parse(&mode)?;
+        // The same repository keeps its engine (and its caches); a row that changed under the
+        // name (deleted and created again, another namespace) gets a fresh entry.
+        let entry = match cached {
+            Some(c)
+                if c.entry.key.0 == id
+                    && c.entry.ns == ns
+                    && c.entry.mode == mode
+                    && c.entry.default_branch == default_branch =>
+            {
+                c.entry
+            }
+            _ => Arc::new(self.build(name, RepoKey(id), ns, mode, default_branch)),
+        };
+        self.open.insert(
+            name.to_string(),
+            Cached {
+                entry: entry.clone(),
+                ready,
+                checked: Instant::now(),
+            },
+        );
+        Ok((entry, ready))
     }
 
     /// Creates the repository `name` with a fresh namespace.
