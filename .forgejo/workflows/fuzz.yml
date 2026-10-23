@@ -1,0 +1,68 @@
+name: fuzz
+# SPEC 17.3: 60 s per target whose crate a PR touches, 30 min per target nightly. Crash inputs
+# are committed under fuzz/regressions/<target>/ and replayed by `cargo test` (the replay job).
+on:
+  pull_request:
+    paths: ["crates/**", "fuzz/**", "Cargo.lock", ".forgejo/workflows/fuzz.yml"]
+  schedule:
+    - cron: "17 2 * * *"
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+      - run: cargo test --manifest-path fuzz/Cargo.toml --lib --locked
+
+  pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: nightly
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Fuzz the targets of the touched crates for 60 s each
+        run: |
+          set -euo pipefail
+          changed="$(git diff --name-only "origin/${GITHUB_BASE_REF:-master}...HEAD")"
+          pick() { echo "$changed" | grep -Eq "$1" && targets+=("${@:2}") || true; }
+          targets=()
+          pick '^(fuzz/|Cargo.lock|crates/asc-core/)' envelope_decode git_commit_parse_canonicalise \
+            git_tree_parse git_tag_parse path_validate
+          pick '^(fuzz/|crates/asc-git/)' index_read
+          pick '^(fuzz/|crates/asc-engine/)' revspec_parse patch_parse
+          pick '^(fuzz/|crates/asc-rpc/)' proto_convert
+          pick '^(fuzz/|crates/asc-store/)' bucket_ref_entry
+          pick '^(fuzz/|crates/asc-graph/)' projects_toml jsonc lock_bun lock_cargo lock_nuget lock_uv
+          pick '^(fuzz/|crates/asc-serve/)' ssh_command
+          [ "${#targets[@]}" -eq 0 ] && exit 0
+          bash fuzz/run-all.sh 60 $(printf '%s\n' "${targets[@]}" | sort -u)
+      - if: failure()
+        uses: https://github.com/actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: nightly
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - run: bash fuzz/run-all.sh 1800
+      - if: failure()
+        uses: https://github.com/actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts

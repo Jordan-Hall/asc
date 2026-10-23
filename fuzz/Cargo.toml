@@ -1,0 +1,150 @@
+[package]
+name = "asc-fuzz"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# cargo-fuzz drives this crate; it is its own workspace so the main build never sees it.
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+asc-core = { path = "../crates/asc-core" }
+asc-graph = { path = "../crates/asc-graph" }
+asc-engine = { path = "../crates/asc-engine" }
+asc-store = { path = "../crates/asc-store" }
+asc-git = { path = "../crates/asc-git" }
+asc-rpc = { path = "../crates/asc-rpc" }
+asc-serve = { path = "../crates/asc-serve" }
+libfuzzer-sys = "0.4.13"
+prost-reflect = "0.16.5"
+serde_json = "1.0.154"
+
+[[bin]]
+name = "envelope_decode"
+path = "fuzz_targets/envelope_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_commit_parse_canonicalise"
+path = "fuzz_targets/git_commit_parse_canonicalise.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_tree_parse"
+path = "fuzz_targets/git_tree_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_tag_parse"
+path = "fuzz_targets/git_tag_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "index_read"
+path = "fuzz_targets/index_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "revspec_parse"
+path = "fuzz_targets/revspec_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "patch_parse"
+path = "fuzz_targets/patch_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_validate"
+path = "fuzz_targets/path_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_convert"
+path = "fuzz_targets/proto_convert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bucket_ref_entry"
+path = "fuzz_targets/bucket_ref_entry.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "projects_toml"
+path = "fuzz_targets/projects_toml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jsonc"
+path = "fuzz_targets/jsonc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_bun"
+path = "fuzz_targets/lock_bun.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_cargo"
+path = "fuzz_targets/lock_cargo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_nuget"
+path = "fuzz_targets/lock_nuget.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lock_uv"
+path = "fuzz_targets/lock_uv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssh_command"
+path = "fuzz_targets/ssh_command.rs"
+test = false
+doc = false
+bench = false
+
+[patch.crates-io]
+crc-fast = { path = "patches/crc-fast" }
