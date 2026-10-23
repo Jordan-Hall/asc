@@ -80,12 +80,12 @@ pub mod format;
 pub mod format_patch;
 pub mod fsck;
 pub mod gc;
-pub mod graph;
 pub mod gc_store;
+pub mod graph;
 pub mod grep;
-pub mod install_shim;
 pub mod help_git;
 pub mod import;
+pub mod install_shim;
 pub mod interpret_trailers;
 pub mod landed;
 pub mod log;
@@ -263,14 +263,17 @@ pub static COMMANDS: &[Command] = &[
     entry!("watch", watch),
     entry!("mcp", mcp),
     entry!("migrate", migrate_ignore),
-    entry!("install-shim", install_shim),
     entry!("upgrade", upgrade),
+    entry!("install-shim", install_shim),
     entry!("internal", claude_hook),
 ];
 
 /// The command with this name.
 pub fn find(name: &str) -> Option<&'static Command> {
-    COMMANDS.iter().find(|c| c.name == name)
+    COMMANDS
+        .iter()
+        .find(|c| c.name == name)
+        .or_else(|| crate::stack::cli::find(name))
 }
 
 /// Whether a command of this name has an entry (stub or real).
@@ -280,7 +283,10 @@ pub fn is_registered(name: &str) -> bool {
 
 /// Every `NATIVE` spec of every command (SPEC §11.5).
 pub fn native_specs() -> impl Iterator<Item = &'static NativeSpec> {
-    COMMANDS.iter().flat_map(|c| c.native.iter())
+    COMMANDS
+        .iter()
+        .chain(crate::stack::cli::registered())
+        .flat_map(|c| c.native.iter())
 }
 
 /// Routes `argv` (`[command, args…]`) through the native table and runs the command.
