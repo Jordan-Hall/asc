@@ -1,8 +1,10 @@
 //! The landing map and the `FindLanding` RPC (PLAN U66, SPEC §8.9).
 //!
 //! `land_map` maps every changeset a land or a `Merge` rewrote to its replacement, together with
-//! the ref and the `ref_log` entry of the update that made it. [`record`] writes those rows inside
-//! the `UpdateRefs` step-8 transaction. `FindLanding` maps a changeset through the table, looks
+//! the ref and the `ref_log` entry of the update that made it. The map is keyed by
+//! `(ns, ref, old_cs)`, so a rewrite on one ref never changes or blocks the mapping of another.
+//! [`record`] writes those rows inside the `UpdateRefs` step-8 transaction, only for a ref the
+//! updating actor may write. `FindLanding` maps a changeset through the table, looks
 //! up its `mainline` position, and binary-searches `ref_log_by_ref` for the first update of the
 //! ref whose new tip has a position at or above it: O(log n) indexed reads, no history walk.
 
@@ -12,6 +14,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RefName;
+use asc_rpc::auth::Principal;
 use asc_rpc::convert::WireId;
 use asc_rpc::server::{CallCtx, LandingHandler, MAX_STRING, wire};
 use sqlx::any::{Any, AnyRow};
@@ -21,6 +24,7 @@ use uuid::Uuid;
 
 use crate::idmode::IdCodec;
 use crate::mainline::{MainlineIndex, Pos, SqlMainline};
+use crate::refpolicy::{self, Class, RepoPolicy};
 use crate::registry::{Extensions, Ns, Registry, RegistryError, RepoEntry};
 use crate::update::internal;
 
@@ -31,7 +35,8 @@ const INSERT_BATCH: usize = 100;
 
 /// Writes the `land_map` rows for `pairs` (old, new), made by the update of `refname` with
 /// `op_id`. Runs in the step-8 transaction after the ref update, so its `ref_log` row exists.
-/// A changeset already mapped keeps its first mapping.
+/// A changeset already mapped on that ref keeps its first mapping. A user ref is written only for
+/// its owner: when the update's actor is not the ref's owner, nothing is recorded.
 pub(crate) async fn record(
     tx: &mut Transaction<'_, Any>,
     ns: Ns,
@@ -43,16 +48,20 @@ pub(crate) async fn record(
     if pairs.is_empty() {
         return Ok(());
     }
-    let seq: i64 = sqlx::query(
-        "SELECT MAX(seq) AS seq FROM ref_log WHERE repo_id = $1 AND name = $2 AND op_id = $3",
+    let log = sqlx::query(
+        "SELECT seq, actor FROM ref_log WHERE repo_id = $1 AND name = $2 AND op_id = $3          ORDER BY seq DESC LIMIT 1",
     )
     .bind(repo_id)
     .bind(refname.to_string())
     .bind(op_id.as_bytes().to_vec())
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?
-    .try_get::<Option<i64>, _>("seq")?
     .ok_or(sqlx::Error::RowNotFound)?;
+    let seq: i64 = log.try_get("seq")?;
+    let actor: String = log.try_get("actor")?;
+    if !may_write(&actor, &refname.to_string()) {
+        return Ok(());
+    }
     for chunk in pairs.chunks(INSERT_BATCH) {
         let rows = (0..chunk.len())
             .map(|i| {
@@ -71,7 +80,7 @@ pub(crate) async fn record(
             .join(", ");
         let sql = format!(
             "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) VALUES {rows} \
-             ON CONFLICT (ns, old_cs) DO NOTHING"
+             ON CONFLICT (ns, ref, old_cs) DO NOTHING"
         );
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for (old, new) in chunk {
@@ -86,6 +95,21 @@ pub(crate) async fn record(
         q.execute(&mut **tx).await?;
     }
     Ok(())
+}
+
+/// Whether `actor` (a principal id) may write `refname`. A user ref belongs to its owner alone;
+/// the other refs were authorised by the update before it reached the transaction.
+fn may_write(actor: &str, refname: &str) -> bool {
+    if !refname.starts_with(refpolicy::USER_NS) {
+        return true;
+    }
+    let principal = Principal { id: actor.into() };
+    refpolicy::owner_of(&principal).is_some_and(|owner| owns(owner, refname))
+}
+
+/// Whether `refname` lies in `owner`'s user namespace (the test `refpolicy::advertise` applies).
+fn owns(owner: i64, refname: &str) -> bool {
+    refname.starts_with(&format!("{}{owner}/", refpolicy::USER_NS))
 }
 
 /// One `ref_log` entry of a ref.
@@ -124,14 +148,21 @@ impl LandingIndex {
         }
     }
 
-    /// The changeset `old` was rewritten to, if any.
-    pub async fn mapped(&self, ns: Ns, old: ChangesetId) -> Result<Option<ChangesetId>, Status> {
-        let row = sqlx::query("SELECT new_cs FROM land_map WHERE ns = $1 AND old_cs = $2")
-            .bind(ns.as_bytes().to_vec())
-            .bind(old.as_bytes().to_vec())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| sql("land_map", e))?;
+    /// The changeset `old` was rewritten to on `refname`, if any. Other refs' rows are ignored.
+    pub async fn mapped(
+        &self,
+        ns: Ns,
+        refname: &str,
+        old: ChangesetId,
+    ) -> Result<Option<ChangesetId>, Status> {
+        let row =
+            sqlx::query("SELECT new_cs FROM land_map WHERE ns = $1 AND ref = $2 AND old_cs = $3")
+                .bind(ns.as_bytes().to_vec())
+                .bind(refname.to_owned())
+                .bind(old.as_bytes().to_vec())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| sql("land_map", e))?;
         match row {
             None => Ok(None),
             Some(r) => {
@@ -185,13 +216,7 @@ impl LandingIndex {
         row.as_ref().map(Self::entry).transpose()
     }
 
-    async fn reaches(
-        &self,
-        ns: Ns,
-        refname: &str,
-        e: &LogEntry,
-        pos: Pos,
-    ) -> Result<bool, Status> {
+    async fn reaches(&self, ns: Ns, refname: &str, e: &LogEntry, pos: Pos) -> Result<bool, Status> {
         let Some(new) = e.new else { return Ok(false) };
         let at = self
             .mainline
@@ -210,7 +235,7 @@ impl LandingIndex {
         refname: &str,
         cs: ChangesetId,
     ) -> Result<Option<Landing>, Status> {
-        let landed_as = self.mapped(ns, cs).await?.unwrap_or(cs);
+        let landed_as = self.mapped(ns, refname, cs).await?.unwrap_or(cs);
         let Some(pos) = self
             .mainline
             .position(ns, refname, landed_as)
@@ -268,8 +293,19 @@ fn registry_status(e: RegistryError) -> Status {
     }
 }
 
-/// The ref a request names: empty means the default branch; a bare name is a branch.
-fn ref_of(entry: &RepoEntry, asked: &str) -> Result<RefName, Status> {
+/// The ref a request names, as the caller sees it: empty means the default branch; a bare name is
+/// a branch. `None` means the caller may not look at it, which the handler answers exactly as it
+/// answers a missing ref or a missing landing.
+///
+/// A name under the user namespace is the caller's own or refused. In a branchless repository a
+/// branch that is not shared is the caller's own user ref (the mapping `ListRefs` advertises and
+/// `UpdateRefs` stores), so a bare name or `refs/heads/<n>` reaches only the caller's ref.
+fn ref_of(
+    entry: &RepoEntry,
+    policy: &RepoPolicy,
+    owner: Option<i64>,
+    asked: &str,
+) -> Result<Option<RefName>, Status> {
     if asked.len() > MAX_STRING {
         return Err(Status::invalid_argument("ref name too long"));
     }
@@ -280,7 +316,19 @@ fn ref_of(entry: &RepoEntry, asked: &str) -> Result<RefName, Status> {
     } else {
         format!("refs/heads/{asked}")
     };
-    RefName::new(full).map_err(|e| Status::invalid_argument(e.to_string()))
+    let named = RefName::new(full).map_err(|e| Status::invalid_argument(e.to_string()))?;
+    let text = named.to_string();
+    if text.starts_with(refpolicy::USER_NS) {
+        return Ok(owner.is_some_and(|o| owns(o, &text)).then_some(named));
+    }
+    match policy.classify(owner, &text) {
+        Ok(Class::User { stored, .. }) => RefName::new(stored.as_bytes())
+            .map(Some)
+            .map_err(|e| Status::invalid_argument(e.to_string())),
+        Ok(_) => Ok(Some(named)),
+        // An unshared tag, or a principal with no user refs: not for this caller.
+        Err(_) => Ok(None),
+    }
 }
 
 /// The `FindLanding` handler.
@@ -308,7 +356,11 @@ impl LandingHandler for ServerLanding {
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
         let cs = ids.changeset_in(&req.changeset).await?;
-        let refname = ref_of(&entry, &req.r#ref)?;
+        let policy = RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
+        let owner = refpolicy::owner_of(&ctx.principal);
+        let Some(refname) = ref_of(&entry, &policy, owner, &req.r#ref)? else {
+            return Ok(wire::FindLandingResponse::default());
+        };
         let index = LandingIndex::new(self.registry.pool().clone());
         let Some(found) = index
             .find(entry.ns, entry.key.0, &refname.to_string(), cs)
@@ -583,11 +635,242 @@ mod tests {
         assert_eq!(rejected(&f, &[0; 32], "refs/heads/a..b".into()).await, bad);
     }
 
+    fn ctx_as(id: &str) -> CallCtx {
+        CallCtx {
+            principal: Principal { id: id.into() },
+            ..ctx(Uuid::new_v4(), IdMode::Asc)
+        }
+    }
+
+    /// Makes the repository branchless.
+    async fn branchless(f: &Fx) {
+        sqlx::query("UPDATE repos SET branchless = TRUE")
+            .execute(f.r.pool())
+            .await
+            .unwrap();
+    }
+
+    /// Pushes `refs/heads/<branch>` as principal `who` (a user ref in a branchless repository)
+    /// and indexes `cs` as its mainline, as a land would. Returns the stored ref and the op.
+    async fn user_landing(f: &Fx, who: &str, branch: &str, cs: ChangesetId) -> (String, Uuid) {
+        let op = Uuid::new_v4();
+        let mut req = update(
+            wire::ref_update::Expect::Absent(true),
+            cs,
+            wire::UpdateMode::FastForward,
+        );
+        req.updates[0].name = format!("refs/heads/{branch}");
+        let mut c = ctx_as(who);
+        c.op_id = Some(op);
+        f.refs.update_refs(&c, req).await.unwrap();
+        let stored = format!("refs/users/{who}/heads/{branch}");
+        let mut tx = f.r.pool().begin().await.unwrap();
+        crate::mainline::apply(
+            &mut tx,
+            f.e.ns,
+            &stored,
+            None,
+            &[crate::mainline::MainlineStep {
+                cs,
+                paths: Vec::new(),
+            }],
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        (stored, op)
+    }
+
+    async fn find_as(f: &Fx, who: &str, cs: ChangesetId, r: &str) -> wire::FindLandingResponse {
+        f.landing
+            .find_landing(
+                &ctx_as(who),
+                wire::FindLandingRequest {
+                    repo: None,
+                    changeset: Bytes::copy_from_slice(cs.as_bytes()),
+                    r#ref: r.into(),
+                },
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn record_pairs(f: &Fx, refname: &str, op: Uuid, pairs: &[(ChangesetId, ChangesetId)]) {
+        let mut tx = f.r.pool().begin().await.unwrap();
+        record(
+            &mut tx,
+            f.e.ns,
+            f.e.key.0,
+            &RefName::new(refname).unwrap(),
+            op,
+            pairs,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_user_cannot_find_a_landing_in_another_users_ref() {
+        let f = setup().await;
+        branchless(&f).await;
+        let one = commit(&f.e, &[f.base], &[("one", b"1")]).await;
+        let (stored, _) = user_landing(&f, "8", "feat", one).await;
+        // The owner finds it by the stored name, by the full branch name and by the bare name.
+        for asked in [stored.as_str(), "refs/heads/feat", "feat"] {
+            assert!(find_as(&f, "8", one, asked).await.found, "{asked}");
+        }
+        // Another user finds nothing, and gets the answer a missing landing gets.
+        let missing = wire::FindLandingResponse::default();
+        for asked in [stored.as_str(), "refs/heads/feat", "feat"] {
+            assert_eq!(find_as(&f, "7", one, asked).await, missing, "{asked}");
+        }
+        let nothing = commit(&f.e, &[f.base], &[("nothing", b"n")]).await;
+        assert_eq!(find_as(&f, "7", nothing, "feat").await, missing);
+        assert_eq!(
+            find_as(&f, "7", one, "refs/users/9/heads/none").await,
+            missing
+        );
+        // A principal with no user id cannot name a user ref either.
+        assert_eq!(find_as(&f, "alice", one, &stored).await, missing);
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_on_a_user_ref_does_not_change_or_block_the_shared_mapping() {
+        let f = setup().await;
+        branchless(&f).await;
+        let moved = commit(&f.e, &[f.base], &[("moved", b"m")]).await;
+        land(&f, moved).await;
+        // `one` sits on the old base, so landing it on master rewrites it.
+        let one = commit(&f.e, &[f.base], &[("one", b"1")]).await;
+        let other = commit(&f.e, &[f.base], &[("other", b"o")]).await;
+        let (stored, op) = user_landing(&f, "8", "x", other).await;
+        record_pairs(&f, &stored, op, &[(one, other)]).await;
+        let (_, pairs) = land(&f, one).await;
+        let new = pairs.iter().find(|(o, _)| *o == one).unwrap().1;
+        assert_ne!(new, other);
+        let index = LandingIndex::new(f.r.pool().clone());
+        assert_eq!(
+            index
+                .mapped(f.e.ns, "refs/heads/master", one)
+                .await
+                .unwrap(),
+            Some(new)
+        );
+        assert_eq!(
+            index.mapped(f.e.ns, &stored, one).await.unwrap(),
+            Some(other)
+        );
+        let got = find_as(&f, "7", one, "master").await;
+        assert!(got.found);
+        assert_eq!(got.landed_as.as_ref(), new.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn mapped_ignores_the_rows_of_other_refs() {
+        let f = setup().await;
+        branchless(&f).await;
+        let a = commit(&f.e, &[f.base], &[("a", b"a")]).await;
+        let b = commit(&f.e, &[f.base], &[("b", b"b")]).await;
+        let (stored, op) = user_landing(&f, "8", "x", a).await;
+        record_pairs(&f, &stored, op, &[(a, b)]).await;
+        let index = LandingIndex::new(f.r.pool().clone());
+        assert_eq!(index.mapped(f.e.ns, &stored, a).await.unwrap(), Some(b));
+        assert_eq!(
+            index.mapped(f.e.ns, "refs/heads/master", a).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            index
+                .mapped(f.e.ns, "refs/users/9/heads/x", a)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_is_recorded_only_for_a_ref_its_actor_may_write() {
+        let f = setup().await;
+        branchless(&f).await;
+        let a = commit(&f.e, &[f.base], &[("a", b"a")]).await;
+        let b = commit(&f.e, &[f.base], &[("b", b"b")]).await;
+        let (stored, op) = user_landing(&f, "8", "x", a).await;
+        sqlx::query("UPDATE ref_log SET actor = '9' WHERE op_id = $1")
+            .bind(op.as_bytes().to_vec())
+            .execute(f.r.pool())
+            .await
+            .unwrap();
+        record_pairs(&f, &stored, op, &[(a, b)]).await;
+        let index = LandingIndex::new(f.r.pool().clone());
+        assert_eq!(index.mapped(f.e.ns, &stored, a).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn the_ref_key_migration_keeps_existing_rows() {
+        let f = setup().await;
+        let pool = f.r.pool();
+        sqlx::query("DROP TABLE land_map")
+            .execute(pool)
+            .await
+            .unwrap();
+        let old = include_str!("../migrations/sqlite/0102_land_map.sql");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(old.to_owned()))
+            .execute(pool)
+            .await
+            .unwrap();
+        for i in 0..5_u8 {
+            sqlx::query(
+                "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(f.e.ns.as_bytes().to_vec())
+            .bind(vec![i; 32])
+            .bind(vec![i + 100; 32])
+            .bind(format!("refs/heads/r{i}"))
+            .bind(i64::from(i) + 1)
+            .bind(vec![i; 16])
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        let new = include_str!("../migrations/sqlite/0106_land_map_ref_key.sql");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(new.to_owned()))
+            .execute(pool)
+            .await
+            .unwrap();
+        let rows =
+            sqlx::query("SELECT old_cs, new_cs, ref, ref_log_seq FROM land_map ORDER BY ref")
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 5);
+        for (i, row) in rows.iter().enumerate() {
+            let i = u8::try_from(i).unwrap();
+            assert_eq!(row.get::<Vec<u8>, _>("old_cs"), vec![i; 32]);
+            assert_eq!(row.get::<Vec<u8>, _>("new_cs"), vec![i + 100; 32]);
+            assert_eq!(row.get::<String, _>("ref"), format!("refs/heads/r{i}"));
+            assert_eq!(row.get::<i64, _>("ref_log_seq"), i64::from(i) + 1);
+        }
+        // The same changeset may now be mapped on two refs.
+        sqlx::query(
+            "INSERT INTO land_map (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
+             VALUES ($1, $2, $3, 'refs/heads/other', 1, $4)",
+        )
+        .bind(f.e.ns.as_bytes().to_vec())
+        .bind(vec![0_u8; 32])
+        .bind(vec![7_u8; 32])
+        .bind(vec![0_u8; 16])
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn lookups_use_indexes_not_scans() {
         let f = setup().await;
         let queries = [
-            "SELECT new_cs FROM land_map WHERE ns = $1 AND old_cs = $2",
+            "SELECT new_cs FROM land_map WHERE ns = $1 AND ref = $2 AND old_cs = $3",
             "SELECT seq, new, at, actor, via FROM ref_log \
              WHERE repo_id = $1 AND name = $2 AND seq >= $3 AND seq <= $4 \
              ORDER BY seq ASC LIMIT 1",
