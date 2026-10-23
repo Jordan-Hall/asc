@@ -15,6 +15,7 @@ pub mod install;
 pub mod lifecycle;
 pub mod metrics;
 pub mod plugin_api;
+pub mod plugin_api_read;
 pub mod plugin_api_stack;
 pub mod scheduler;
 pub mod service;

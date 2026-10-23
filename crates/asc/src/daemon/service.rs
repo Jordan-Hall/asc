@@ -34,6 +34,7 @@ use tonic::{Request, Response, Status};
 use super::codeintel_overlay::{CodeIntel, ServerAnswer};
 use super::metrics::{Collected, EventLog, Metrics, Source};
 use super::plugin_api::{self, PluginStream};
+use super::plugin_api_read;
 use super::plugin_api_stack;
 
 /// Longest id or token text accepted from a client.
@@ -613,6 +614,17 @@ impl WorkspaceRpc for Service {
         let state = self.state()?;
         let r = self.codeintel.index_status(state, req.into_inner()).await?;
         Ok(Response::new(r))
+    }
+
+    type ReadFileStream = PluginStream<wire::ReadFileResponse>;
+    async fn read_file(
+        &self,
+        req: Request<wire::WsReadFileRequest>,
+    ) -> Result<Response<Self::ReadFileStream>, Status> {
+        let state = self.state()?;
+        plugin_api_read::read_file(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
