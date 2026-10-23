@@ -1,0 +1,42 @@
+name: asc/changed
+description: Runs asc ci changed and exposes its key=value lines as step outputs. Needs no checkout.
+inputs:
+  repo:
+    description: owner/repo.
+    default: ${{ github.repository }}
+  base:
+    description: Base ref.
+    default: master
+  head:
+    description: Head ref.
+    default: ${{ github.sha }}
+  rules:
+    description: Repository path of the rules file, read at the merge base.
+    default: ''
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+outputs:
+  all:
+    description: "true when the plan fell back to everything."
+    value: ${{ steps.run.outputs.all }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        IN_REPO: ${{ inputs.repo }}
+        IN_BASE: ${{ inputs.base }}
+        IN_HEAD: ${{ inputs.head }}
+        IN_RULES: ${{ inputs.rules }}
+        ASC_SERVER_URL: ${{ inputs.server }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        rules=()
+        if [ -n "$IN_RULES" ]; then rules=(--rules "$IN_RULES"); fi
+        asc ci changed --repo "$IN_REPO" --base "$IN_BASE" --head "$IN_HEAD" "${rules[@]}" >>"$GITHUB_OUTPUT"

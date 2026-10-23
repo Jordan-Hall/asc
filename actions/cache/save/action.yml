@@ -1,0 +1,31 @@
+name: cache/save
+description: Saves paths under a key in the asc Actions store.
+inputs:
+  path:
+    description: Files, directories and globs, newline separated.
+    required: true
+  key:
+    description: Key to store under.
+    required: true
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_KEY: ${{ inputs.key }}
+        IN_PATH: ${{ inputs.path }}
+        ASC_REMOTE: ${{ inputs.server }}/${{ github.repository }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        paths=()
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then paths+=("$line"); fi
+        done <<<"$IN_PATH"
+        asc ci cache save "$IN_KEY" -- "${paths[@]}"

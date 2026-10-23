@@ -1,0 +1,36 @@
+# Proposed .asc/projects.toml for ASC (SPEC 12A.3). Applied by ASC as a PR, not by this repo.
+version = 1
+ignore = ["**/fixtures/**", "**/node_modules/**"]
+
+[global]
+# A change to CI itself makes every project affected.
+inputs = [".forgejo/workflows/*.yml", ".asc/ci.toml", "ops/coolify/deploy-targets.json"]
+unowned = "ignore"
+
+[named_inputs]
+production = ["default", "!{projectRoot}/**/*.md", "!{projectRoot}/**/*.test.ts", "!{projectRoot}/tests/**"]
+
+[targets.build]
+inputs = ["production", "^production"]
+
+# Tags select the image and deploy jobs. Deployables carry both.
+[[project]]
+select = "node:ai-service"
+tags = ["image", "deploy"]
+
+[[project]]
+select = "node:insight-service"
+tags = ["image", "deploy"]
+
+[[project]]
+select = "node:ingestion-service"
+tags = ["image", "deploy"]
+
+[[project]]
+select = "node:reporting-mfe"
+tags = ["image", "deploy"]
+
+[[project]]
+name = "migrations"
+root = "packages/database/migrations"
+tags = ["deploy"]

@@ -1,0 +1,47 @@
+name: upload-artifact
+description: ASC fork of actions/upload-artifact, storing into the asc Actions store.
+inputs:
+  name:
+    description: Artifact name.
+    default: artifact
+  path:
+    description: Files, directories and globs, newline separated.
+    required: true
+  overwrite:
+    description: Replace an artifact of the same name.
+    default: 'false'
+  if-no-files-found:
+    description: warn (default), error or ignore.
+    default: warn
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_NAME: ${{ inputs.name }}
+        IN_PATH: ${{ inputs.path }}
+        IN_OVERWRITE: ${{ inputs.overwrite }}
+        IN_NOFILES: ${{ inputs.if-no-files-found }}
+        ASC_REMOTE: ${{ inputs.server }}/${{ github.repository }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        paths=()
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then paths+=("$line"); fi
+        done <<<"$IN_PATH"
+        flags=()
+        if [ "$IN_OVERWRITE" = "true" ]; then flags+=(--overwrite); fi
+        if ! asc ci artifact upload "$IN_NAME" "${flags[@]}" -- "${paths[@]}"; then
+          case "$IN_NOFILES" in
+            ignore) exit 0 ;;
+            warn) echo "::warning::no files uploaded for $IN_NAME"; exit 0 ;;
+            *) exit 1 ;;
+          esac
+        fi

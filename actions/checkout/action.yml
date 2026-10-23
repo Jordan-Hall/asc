@@ -1,0 +1,91 @@
+name: checkout
+description: ASC fork of actions/checkout. Calls `asc ci checkout` for asc repositories and falls back to a plain git fetch for repositories that are not asc.
+inputs:
+  repository:
+    description: owner/repo to check out.
+    default: ${{ github.repository }}
+  ref:
+    description: Branch, tag or commit to check out (head). Default is the triggering sha.
+    default: ''
+  base:
+    description: Base ref for affected builds (exported as TURBO_SCM_BASE).
+    default: ${{ github.base_ref || github.event.before }}
+  path:
+    description: Directory to check out into, relative to the workspace.
+    default: '.'
+  token:
+    description: Task token (passed through the environment only, never argv).
+    default: ${{ github.token }}
+  server:
+    description: asc server URL (https, or plain http to loopback only).
+    default: ${{ github.server_url }}
+  mode:
+    description: plain (default) or virtual.
+    default: plain
+  sparse-checkout:
+    description: Newline separated cones.
+    default: ''
+  fetch-depth:
+    description: Accepted and ignored; history beyond the window comes from the server.
+    default: '1'
+  submodules:
+    description: Accepted; submodules use composition (SPEC 10.6) and are not fetched here.
+    default: 'false'
+  lfs:
+    description: Accepted and ignored; large files are native.
+    default: 'false'
+outputs:
+  mode:
+    description: "asc or git: which path ran."
+    value: ${{ steps.run.outputs.mode }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        IN_REPO: ${{ inputs.repository }}
+        IN_REF: ${{ inputs.ref || github.sha }}
+        IN_BASE: ${{ inputs.base }}
+        IN_PATH: ${{ inputs.path }}
+        IN_SERVER: ${{ inputs.server }}
+        IN_MODE: ${{ inputs.mode }}
+        IN_SPARSE: ${{ inputs.sparse-checkout }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        case "$IN_REPO" in */*) ;; *) echo "checkout: repository must be owner/repo" >&2; exit 1;; esac
+        case "$IN_REPO$IN_REF$IN_PATH" in *$'\n'*|*..*) echo "checkout: invalid input" >&2; exit 1;; esac
+        case "$IN_SERVER" in
+          https://*) ;;
+          http://127.0.0.1*|http://localhost*|http://\[::1\]*) ;;
+          *) echo "checkout: server must be https (plain http only to loopback)" >&2; exit 1;;
+        esac
+        # Discovery (SPEC 6.2): an asc server answers /.well-known/asc.
+        if command -v asc >/dev/null 2>&1 \
+           && curl -fsS --max-time 10 --proto '=https,http' -o /dev/null "${IN_SERVER%/}/.well-known/asc"; then
+          sparse=()
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then sparse+=(--sparse "$line"); fi
+          done <<<"$IN_SPARSE"
+          base=()
+          if [ -n "$IN_BASE" ]; then base=(--base "$IN_BASE"); fi
+          asc ci checkout --repo "$IN_REPO" --rev "$IN_REF" --dir "$IN_PATH" --mode "$IN_MODE" \
+            --server "$IN_SERVER" "${base[@]}" "${sparse[@]}"
+          echo "mode=asc" >>"$GITHUB_OUTPUT"
+        else
+          # Not an asc repository: the plain git path of upstream checkout.
+          mkdir -p -- "$IN_PATH"
+          cd -- "$IN_PATH"
+          git init -q .
+          git remote add origin "${IN_SERVER%/}/$IN_REPO.git"
+          auth="$(printf 'x-access-token:%s' "$ASC_TOKEN" | base64 -w0)"
+          # The header goes through git's environment config, never argv, so other processes on the
+          # runner cannot read the token from the process list.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: Basic $auth" \
+            git fetch -q --depth=1 origin -- "$IN_REF"
+          unset auth
+          git checkout -q --detach FETCH_HEAD
+          echo "mode=git" >>"$GITHUB_OUTPUT"
+        fi

@@ -1,0 +1,40 @@
+name: asc/setup
+description: Installs asc, cached by version in the runner tool cache and verified by SHA-256.
+inputs:
+  version:
+    description: asc version (cache key).
+    required: true
+  url:
+    description: https URL of the asc release tarball (bin/asc inside).
+    required: true
+  sha256:
+    description: Expected SHA-256 of the tarball (lowercase hex).
+    required: true
+outputs:
+  version:
+    description: Installed version.
+    value: ${{ inputs.version }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_VERSION: ${{ inputs.version }}
+        IN_URL: ${{ inputs.url }}
+        IN_SHA: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        case "$IN_VERSION" in *[!A-Za-z0-9._+-]*|'') echo "asc/setup: bad version" >&2; exit 1 ;; esac
+        case "$IN_URL" in https://*) ;; *) echo "asc/setup: url must be https" >&2; exit 1 ;; esac
+        case "$IN_SHA" in *[!0-9a-f]*|'') echo "asc/setup: sha256 must be lowercase hex" >&2; exit 1 ;; esac
+        [ "${#IN_SHA}" -eq 64 ] || { echo "asc/setup: sha256 must be 64 hex digits" >&2; exit 1; }
+        dir="${RUNNER_TOOL_CACHE:-$RUNNER_TEMP}/asc/$IN_VERSION"
+        if [ ! -x "$dir/bin/asc" ]; then
+          tmp="$(mktemp -d)"
+          curl -fsSL --proto '=https' --max-time 300 --max-filesize 536870912 -o "$tmp/asc.tar.gz" "$IN_URL"
+          echo "$IN_SHA  $tmp/asc.tar.gz" | sha256sum -c - >/dev/null
+          mkdir -p "$dir"
+          tar -xzf "$tmp/asc.tar.gz" -C "$dir" --no-same-owner
+          rm -rf "$tmp"
+        fi
+        echo "$dir/bin" >>"$GITHUB_PATH"

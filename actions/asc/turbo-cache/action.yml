@@ -1,0 +1,35 @@
+name: asc/turbo-cache
+description: Exports TURBO_API, TURBO_TOKEN, TURBO_TEAM and TURBO_CACHE for jobs without checkout (SPEC 12.3 step 5).
+inputs:
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc serve public URL.
+    default: ${{ github.server_url }}
+  repo:
+    description: owner/repo.
+    default: ${{ github.repository }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_SERVER: ${{ inputs.server }}
+        IN_REPO: ${{ inputs.repo }}
+        IN_TOKEN: ${{ inputs.token }}
+        IN_EVENT: ${{ github.event_name }}
+      run: |
+        set -euo pipefail
+        case "$IN_SERVER" in https://*|http://127.0.0.1*|http://localhost*) ;; *) echo "asc/turbo-cache: server must be https" >&2; exit 1 ;; esac
+        case "$IN_REPO" in */*) ;; *) echo "asc/turbo-cache: repo must be owner/repo" >&2; exit 1 ;; esac
+        case "$IN_TOKEN$IN_SERVER$IN_REPO" in *$'\n'*) echo "asc/turbo-cache: invalid input" >&2; exit 1 ;; esac
+        echo "::add-mask::$IN_TOKEN"
+        cache="local:rw,remote:rw"
+        case "$IN_EVENT" in pull_request*) cache="local:rw,remote:r" ;; esac
+        {
+          echo "TURBO_API=${IN_SERVER%/}"
+          echo "TURBO_TOKEN=$IN_TOKEN"
+          echo "TURBO_TEAM=${IN_REPO/\//.}"
+          echo "TURBO_CACHE=$cache"
+        } >>"$GITHUB_ENV"
