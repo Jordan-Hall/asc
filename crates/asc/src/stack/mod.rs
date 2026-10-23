@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod json;
+pub mod opstate;
 pub mod precedence;
 
 use asc_state::changes::StateChanges;
