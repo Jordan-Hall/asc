@@ -4,6 +4,8 @@
 // later units use; they are dead code until those units land.
 #![allow(dead_code)]
 
+mod branchless;
+mod branchless;
 mod child;
 mod cli;
 mod codeintel_local;
