@@ -33,7 +33,9 @@ async fn main() -> ExitCode {
     let _ = ext::set_ref_txn_hook(Box::new(hooks_runner::RefTxnRunner::new()));
     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
     remote::bucket::register();
-    let _ = ext::set_workspace_factory(Box::new(daemon::workspace_factory::DaemonWorkspaceFactory::system()));
+    let _ = ext::set_workspace_factory(Box::new(
+        daemon::workspace_factory::DaemonWorkspaceFactory::system(),
+    ));
     match Program::from_argv0(&argv0) {
         Program::Git => shim::run(args).await,
         Program::Asc => dispatch::run(Program::Asc, args).await,

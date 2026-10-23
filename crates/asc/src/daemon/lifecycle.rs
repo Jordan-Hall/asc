@@ -24,7 +24,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use asc_rpc::ipc::{IpcEndpoint, IpcError, WorkspaceClient, connect, connect_stream, verified_server_pid};
+use asc_rpc::ipc::{
+    IpcEndpoint, IpcError, WorkspaceClient, connect, connect_stream, verified_server_pid,
+};
 use asc_rpc::server::wire;
 use asc_state::AscHome;
 
@@ -182,7 +184,10 @@ impl Process for SystemProcess {
     fn kill(&self, pid: u32) -> io::Result<()> {
         use std::process::{Command, Stdio};
         if pid <= 1 || pid == std::process::id() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "refusing to kill that pid"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "refusing to kill that pid",
+            ));
         }
         let mut cmd = if cfg!(windows) {
             let mut c = Command::new("taskkill");
@@ -193,7 +198,11 @@ impl Process for SystemProcess {
             c.args(["-9", &pid.to_string()]);
             c
         };
-        let status = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
+        let status = cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
         if status.success() {
             Ok(())
         } else {
@@ -238,9 +247,14 @@ async fn wait_down(cfg: &Config) -> bool {
 pub fn write_dump(cfg: &Config, pid: u32) -> io::Result<PathBuf> {
     use std::io::Write;
     std::fs::create_dir_all(&cfg.log_dir)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let path = cfg.log_dir.join(format!("daemon-hang-{now}-{pid}.txt"));
-    let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
     writeln!(
         out,
         "asc daemon did not answer Ping within {} ms\npid: {pid}\nunix time: {now}\nversion: {}",
@@ -256,12 +270,21 @@ pub fn write_dump(cfg: &Config, pid: u32) -> io::Result<PathBuf> {
 /// One line per thread of `pid`: id, name and the kernel function it waits in. Bounded to 512.
 fn write_linux_threads(out: &mut impl io::Write, pid: u32) {
     let tasks = Path::new("/proc").join(pid.to_string()).join("task");
-    let Ok(entries) = std::fs::read_dir(&tasks) else { return }; // lint:allow-worktree-fs /proc, not a work tree
+    let Ok(entries) = std::fs::read_dir(&tasks) else {
+        return;
+    }; // lint:allow-worktree-fs /proc, not a work tree
     for entry in entries.flatten().take(512) {
         let read = |name: &str| {
-            std::fs::read_to_string(entry.path().join(name)).map_or_else(|_| "?".into(), |s| s.trim().to_owned())
+            std::fs::read_to_string(entry.path().join(name))
+                .map_or_else(|_| "?".into(), |s| s.trim().to_owned())
         };
-        let _ = writeln!(out, "thread {} {} wchan={}", entry.file_name().to_string_lossy(), read("comm"), read("wchan"));
+        let _ = writeln!(
+            out,
+            "thread {} {} wchan={}",
+            entry.file_name().to_string_lossy(),
+            read("comm"),
+            read("wchan")
+        );
     }
 }
 
@@ -282,7 +305,9 @@ async fn refuse_foreign(cfg: &Config) -> Result<(), LifecycleError> {
 async fn kill_target(cfg: &Config, claimed: Option<u32>) -> Result<Option<u32>, LifecycleError> {
     let pid = match verified_server_pid(&cfg.endpoint).await {
         Ok(pid) => pid,
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(LifecycleError::NotDaemon),
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            return Err(LifecycleError::NotDaemon);
+        }
         Err(_) => return Ok(None),
     };
     if read_pid(&cfg.run_dir) != Some(pid) || claimed.is_some_and(|c| c != pid) {
@@ -295,7 +320,11 @@ async fn kill_target(cfg: &Config, claimed: Option<u32>) -> Result<Option<u32>, 
 async fn stop_up(cfg: &Config, proc: &dyn Process, info: &Info) -> Result<(), LifecycleError> {
     let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
     // The RPC may fail because the daemon closes the connection as it goes; the wait decides.
-    let _ = tokio::time::timeout(cfg.ping_timeout, client.shutdown(wire::ShutdownRequest::default())).await;
+    let _ = tokio::time::timeout(
+        cfg.ping_timeout,
+        client.shutdown(wire::ShutdownRequest::default()),
+    )
+    .await;
     if wait_down(cfg).await {
         return Ok(());
     }
@@ -407,9 +436,18 @@ mod tests {
 
     fn config(dir: &Path, version: &str) -> Config {
         let endpoint = if cfg!(windows) {
-            IpcEndpoint::from_raw(format!("asc-u53a-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
+            IpcEndpoint::from_raw(format!(
+                "asc-u53a-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ))
         } else {
-            IpcEndpoint::from_raw(dir.join("sock").join("asc.sock").to_string_lossy().into_owned())
+            IpcEndpoint::from_raw(
+                dir.join("sock")
+                    .join("asc.sock")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         };
         Config {
             endpoint,
@@ -500,7 +538,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(read_pid(&cfg.run_dir), None, "a clean stop removes the pid file");
+        assert_eq!(
+            read_pid(&cfg.run_dir),
+            None,
+            "a clean stop removes the pid file"
+        );
 
         ensure_running(&cfg, &*proc).await.unwrap();
         assert_eq!(proc.spawned.load(Ordering::SeqCst), 2);
@@ -523,7 +565,10 @@ mod tests {
         )
         .await;
         assert!(second.is_err(), "single instance: the endpoint is taken");
-        assert!(matches!(probe(&cfg).await, Probe::Up(_)), "the first daemon is unharmed");
+        assert!(
+            matches!(probe(&cfg).await, Probe::Up(_)),
+            "the first daemon is unharmed"
+        );
         stop(&cfg, &*proc).await.unwrap();
     }
 
@@ -535,7 +580,10 @@ mod tests {
         ensure_running(&cfg, &*proc).await.unwrap();
         proc.crash();
         assert!(wait_down(&cfg).await);
-        assert!(pid_file(&cfg.run_dir).exists(), "a crash leaves a stale pid file");
+        assert!(
+            pid_file(&cfg.run_dir).exists(),
+            "a crash leaves a stale pid file"
+        );
 
         let again = ensure_running(&cfg, &*proc).await.unwrap();
         assert_eq!(again.version, "1.0.0");
@@ -566,7 +614,10 @@ mod tests {
         let replaced = ensure_running(&new, &*proc).await.unwrap();
         assert_eq!(replaced.version, "2.0.0");
         assert_eq!(proc.spawned.load(Ordering::SeqCst), 3);
-        assert!(proc.killed.lock().unwrap().is_empty(), "a daemon that shuts down cleanly is not killed");
+        assert!(
+            proc.killed.lock().unwrap().is_empty(),
+            "a daemon that shuts down cleanly is not killed"
+        );
         stop(&new, &*proc).await.unwrap();
     }
 
@@ -594,7 +645,11 @@ mod tests {
 
         let info = ensure_running(&cfg, &*proc).await.unwrap();
         assert_eq!(info.version, "1.0.0");
-        assert_eq!(*proc.killed.lock().unwrap(), [me], "the pid file names the process to kill");
+        assert_eq!(
+            *proc.killed.lock().unwrap(),
+            [me],
+            "the pid file names the process to kill"
+        );
         let dumps: Vec<_> = std::fs::read_dir(&cfg.log_dir).unwrap().flatten().collect();
         assert_eq!(dumps.len(), 1, "one dump per hang");
         let text = std::fs::read_to_string(dumps[0].path()).unwrap();
@@ -625,39 +680,63 @@ mod tests {
 
     #[tonic::async_trait]
     impl Workspace for Fake {
-        async fn status(&self, _: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
+        async fn status(
+            &self,
+            _: Request<wire::WsStatusRequest>,
+        ) -> Result<Response<wire::WsStatusResponse>, Status> {
             not_served()
         }
 
         type DiffStream = Never<wire::DiffResponse>;
-        async fn diff(&self, _: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
+        async fn diff(
+            &self,
+            _: Request<wire::WsDiffRequest>,
+        ) -> Result<Response<Self::DiffStream>, Status> {
             not_served()
         }
 
         type LogStream = Never<wire::LogResponse>;
-        async fn log(&self, _: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
+        async fn log(
+            &self,
+            _: Request<wire::WsLogRequest>,
+        ) -> Result<Response<Self::LogStream>, Status> {
             not_served()
         }
 
         type BlameStream = Never<wire::BlameResponse>;
-        async fn blame(&self, _: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
+        async fn blame(
+            &self,
+            _: Request<wire::WsBlameRequest>,
+        ) -> Result<Response<Self::BlameStream>, Status> {
             not_served()
         }
 
-        async fn affected(&self, _: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
+        async fn affected(
+            &self,
+            _: Request<wire::WsAffectedRequest>,
+        ) -> Result<Response<wire::WsAffectedResponse>, Status> {
             not_served()
         }
 
         type WatchStream = Never<wire::WatchEvent>;
-        async fn watch(&self, _: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
+        async fn watch(
+            &self,
+            _: Request<wire::WatchRequest>,
+        ) -> Result<Response<Self::WatchStream>, Status> {
             not_served()
         }
 
-        async fn stage(&self, _: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
+        async fn stage(
+            &self,
+            _: Request<wire::WsStageRequest>,
+        ) -> Result<Response<wire::WsStageResponse>, Status> {
             not_served()
         }
 
-        async fn stacks(&self, _: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+        async fn stacks(
+            &self,
+            _: Request<wire::WsStacksRequest>,
+        ) -> Result<Response<wire::WsStacksResponse>, Status> {
             not_served()
         }
 
@@ -720,7 +799,10 @@ mod tests {
             not_served()
         }
 
-        async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
+        async fn ping(
+            &self,
+            _: Request<wire::PingRequest>,
+        ) -> Result<Response<wire::PingResponse>, Status> {
             Ok(Response::new(wire::PingResponse {
                 version: self.version.clone(),
                 pid: self.claimed_pid,
@@ -728,39 +810,66 @@ mod tests {
             }))
         }
 
-        async fn mount(&self, _: Request<wire::MountRequest>) -> Result<Response<wire::MountResponse>, Status> {
+        async fn mount(
+            &self,
+            _: Request<wire::MountRequest>,
+        ) -> Result<Response<wire::MountResponse>, Status> {
             not_served()
         }
 
-        async fn unmount(&self, _: Request<wire::UnmountRequest>) -> Result<Response<wire::UnmountResponse>, Status> {
+        async fn unmount(
+            &self,
+            _: Request<wire::UnmountRequest>,
+        ) -> Result<Response<wire::UnmountResponse>, Status> {
             not_served()
         }
 
-        async fn switch(&self, _: Request<wire::SwitchRequest>) -> Result<Response<wire::SwitchResponse>, Status> {
+        async fn switch(
+            &self,
+            _: Request<wire::SwitchRequest>,
+        ) -> Result<Response<wire::SwitchResponse>, Status> {
             not_served()
         }
 
-        async fn journal(&self, _: Request<wire::JournalRequest>) -> Result<Response<wire::JournalResponse>, Status> {
+        async fn journal(
+            &self,
+            _: Request<wire::JournalRequest>,
+        ) -> Result<Response<wire::JournalResponse>, Status> {
             not_served()
         }
 
-        async fn clear_journal(&self, _: Request<wire::ClearJournalRequest>) -> Result<Response<wire::ClearJournalResponse>, Status> {
+        async fn clear_journal(
+            &self,
+            _: Request<wire::ClearJournalRequest>,
+        ) -> Result<Response<wire::ClearJournalResponse>, Status> {
             not_served()
         }
 
-        async fn dehydrate(&self, _: Request<wire::DehydrateRequest>) -> Result<Response<wire::DehydrateResponse>, Status> {
+        async fn dehydrate(
+            &self,
+            _: Request<wire::DehydrateRequest>,
+        ) -> Result<Response<wire::DehydrateResponse>, Status> {
             not_served()
         }
 
-        async fn prefetch(&self, _: Request<wire::PrefetchRequest>) -> Result<Response<wire::PrefetchResponse>, Status> {
+        async fn prefetch(
+            &self,
+            _: Request<wire::PrefetchRequest>,
+        ) -> Result<Response<wire::PrefetchResponse>, Status> {
             not_served()
         }
 
-        async fn stats(&self, _: Request<wire::StatsRequest>) -> Result<Response<wire::StatsResponse>, Status> {
+        async fn stats(
+            &self,
+            _: Request<wire::StatsRequest>,
+        ) -> Result<Response<wire::StatsResponse>, Status> {
             not_served()
         }
 
-        async fn shutdown(&self, _: Request<wire::ShutdownRequest>) -> Result<Response<wire::ShutdownResponse>, Status> {
+        async fn shutdown(
+            &self,
+            _: Request<wire::ShutdownRequest>,
+        ) -> Result<Response<wire::ShutdownResponse>, Status> {
             // Ignored: the squatter stays, so the caller is tempted to kill it.
             Ok(Response::new(wire::ShutdownResponse::default()))
         }
@@ -795,7 +904,13 @@ mod tests {
                 c.arg("120");
                 c
             };
-            Self(cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap())
+            Self(
+                cmd.stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
         }
 
         fn pid(&self) -> u32 {
@@ -861,15 +976,18 @@ mod tests {
             let mut victim = Victim::start();
             let dir = tempfile::tempdir().unwrap();
             let cfg = Config {
-            stop_wait: Duration::from_millis(300),
-            ..config(dir.path(), "1.0.0")
-        };
+                stop_wait: Duration::from_millis(300),
+                ..config(dir.path(), "1.0.0")
+            };
             let squatter = serve_fake(&cfg, claimed.unwrap_or_else(|| victim.pid()));
             write_pid_file(&cfg, in_file.unwrap_or_else(|| victim.pid()));
             let proc = Recording::new(true);
 
             let probed = probe(&cfg).await;
-            assert!(matches!(&probed, Probe::Up(i) if i.version != "1.0.0"), "{probed:?}");
+            assert!(
+                matches!(&probed, Probe::Up(i) if i.version != "1.0.0"),
+                "{probed:?}"
+            );
             let err = ensure_running(&cfg, &proc).await.unwrap_err();
             assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
             let err = stop(&cfg, &proc).await.unwrap_err();
@@ -878,7 +996,10 @@ mod tests {
             assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
 
             assert!(proc.killed.lock().unwrap().is_empty(), "nothing is killed");
-            assert!(victim.alive(), "the victim survives (claimed {claimed:?}, file {in_file:?})");
+            assert!(
+                victim.alive(),
+                "the victim survives (claimed {claimed:?}, file {in_file:?})"
+            );
             squatter.abort();
         }
     }
@@ -900,8 +1021,14 @@ mod tests {
         assert!(matches!(err, LifecycleError::NotDaemon), "{err}");
         assert!(killer.killed.lock().unwrap().is_empty());
         assert!(victim.alive());
-        assert!(pid_file(&cfg.run_dir).exists(), "the pid file is left as found");
-        assert!(!cfg.log_dir.exists(), "no dump is written for a process that is not the daemon");
+        assert!(
+            pid_file(&cfg.run_dir).exists(),
+            "the pid file is left as found"
+        );
+        assert!(
+            !cfg.log_dir.exists(),
+            "no dump is written for a process that is not the daemon"
+        );
         proc.crash();
     }
 
@@ -919,14 +1046,19 @@ mod tests {
 
         // The OS-verified pid, the pid file and the claimed pid are all this process.
         let err = ensure_running(&cfg, &proc).await.unwrap_err();
-        assert!(matches!(err, LifecycleError::StopFailed(p) if p == me), "{err}");
+        assert!(
+            matches!(err, LifecycleError::StopFailed(p) if p == me),
+            "{err}"
+        );
         assert_eq!(*proc.killed.lock().unwrap(), [me]);
         squatter.abort();
     }
 
     #[test]
     fn no_daemon_switch() {
-        let env = |v: &'static str| move |k: &str| (k == "ASC_NO_DAEMON").then(|| std::ffi::OsString::from(v));
+        let env = |v: &'static str| {
+            move |k: &str| (k == "ASC_NO_DAEMON").then(|| std::ffi::OsString::from(v))
+        };
         assert!(disabled(&env("1")));
         assert!(!disabled(&env("0")));
         assert!(!disabled(&env("")));

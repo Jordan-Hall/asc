@@ -102,7 +102,12 @@ pub trait Hosted: Send + Sync {
         Err(plain("dehydrate"))
     }
     /// Moves the work tree from `from` to `to` (tree ids); answers the paths in conflict.
-    async fn switch(&self, _from: &[u8], _to: &[u8], _mode: wire::SwitchMode) -> Result<Vec<Vec<u8>>, HostError> {
+    async fn switch(
+        &self,
+        _from: &[u8],
+        _to: &[u8],
+        _mode: wire::SwitchMode,
+    ) -> Result<Vec<Vec<u8>>, HostError> {
         Err(plain("switch"))
     }
     /// Fetches the content of `paths` into the machine cache; answers `(files, bytes)`.
@@ -234,12 +239,15 @@ pub(super) fn parse_id(text: &str) -> Result<WorkspaceId, Status> {
     if text.len() > MAX_TEXT {
         return Err(Status::invalid_argument("workspace id too long"));
     }
-    text.parse().map_err(|_| Status::invalid_argument("malformed workspace id"))
+    text.parse()
+        .map_err(|_| Status::invalid_argument("malformed workspace id"))
 }
 
 pub(super) fn parse_paths(raw: &[bytes::Bytes]) -> Result<Vec<RepoPath>, Status> {
     if raw.len() > MAX_PATHSPECS {
-        return Err(Status::invalid_argument(format!("more than {MAX_PATHSPECS} paths")));
+        return Err(Status::invalid_argument(format!(
+            "more than {MAX_PATHSPECS} paths"
+        )));
     }
     raw.iter()
         .map(|p| RepoPath::new(p.to_vec()).map_err(|_| Status::invalid_argument("invalid path")))
@@ -270,7 +278,10 @@ pub(super) fn check_mount_root(root: &Path) -> Result<(), String> {
             Err(e) => return Err(format!("cannot read '{}': {e}", dir.display())),
         };
         if asc_wc::safe_path::is_link(&meta) {
-            return Err(format!("'{}' is a link; a workspace is never reached through one", dir.display()));
+            return Err(format!(
+                "'{}' is a link; a workspace is never reached through one",
+                dir.display()
+            ));
         }
         if dir == root && !meta.is_dir() {
             return Err("the mount root is not a directory".into());
@@ -304,9 +315,9 @@ impl State {
 
     /// The mounted workspace `id`; an unmounted one is never touched.
     pub fn mounted(&self, id: WorkspaceId) -> Result<Arc<Mounted>, Status> {
-        self.mounts
-            .get(id)
-            .ok_or_else(|| Status::failed_precondition("the workspace is not mounted; mount it first"))
+        self.mounts.get(id).ok_or_else(|| {
+            Status::failed_precondition("the workspace is not mounted; mount it first")
+        })
     }
 
     /// Hosts a registered workspace. Mounting a mounted workspace is a no-op.
@@ -319,7 +330,9 @@ impl State {
             return Ok(m);
         }
         if self.mounts.len() >= MAX_MOUNTS {
-            return Err(Status::resource_exhausted(format!("{MAX_MOUNTS} workspaces are mounted already")));
+            return Err(Status::resource_exhausted(format!(
+                "{MAX_MOUNTS} workspaces are mounted already"
+            )));
         }
         let row = workspaces::get(&self.db, id)
             .await
@@ -340,7 +353,9 @@ impl State {
             Mode::Plain => Arc::new(PlainHost),
             Mode::Virtual => {
                 let backend = self.backend.as_ref().ok_or_else(|| {
-                    Status::failed_precondition("no virtual file system backend is available on this machine")
+                    Status::failed_precondition(
+                        "no virtual file system backend is available on this machine",
+                    )
                 })?;
                 backend
                     .host(HostContext {
@@ -354,7 +369,13 @@ impl State {
             }
         };
         Journal::spawn_flusher(&journal);
-        let mounted = Arc::new(Mounted { id, row, journal, hosted, gate: tokio::sync::Mutex::new(()) });
+        let mounted = Arc::new(Mounted {
+            id,
+            row,
+            journal,
+            hosted,
+            gate: tokio::sync::Mutex::new(()),
+        });
         lock(&self.mounts.map).insert(id, mounted.clone());
         {
             let mut fresh = lock(&self.mounts.fresh);
@@ -362,20 +383,26 @@ impl State {
                 fresh.push(id);
             }
         }
-        self.events.emit("info", "workspace.mount", &[("ws", &id.to_string())]);
+        self.events
+            .emit("info", "workspace.mount", &[("ws", &id.to_string())]);
         Ok(mounted)
     }
 
     /// Stops hosting `id`. A workspace that is not mounted is not an error.
     pub async fn unmount(&self, id: WorkspaceId) -> Result<(), Status> {
         let _serial = self.mount_gate.lock().await;
-        let Some(m) = lock(&self.mounts.map).remove(&id) else { return Ok(()) };
+        let Some(m) = lock(&self.mounts.map).remove(&id) else {
+            return Ok(());
+        };
         lock(&self.mounts.fresh).retain(|f| *f != id);
         let _held = m.gate.lock().await;
         let stopped = m.hosted.unmount().await;
         let _ = m.journal.flush().await;
-        self.events.emit("info", "workspace.unmount", &[("ws", &id.to_string())]);
-        stopped.inspect_err(|_| self.metrics.provider_error("unmount")).map_err(Status::from)
+        self.events
+            .emit("info", "workspace.unmount", &[("ws", &id.to_string())]);
+        stopped
+            .inspect_err(|_| self.metrics.provider_error("unmount"))
+            .map_err(Status::from)
     }
 
     /// Mounts every virtual workspace that `state.db` registers (a daemon restart re-attaches
@@ -384,13 +411,18 @@ impl State {
         let rows = match workspaces::list(&self.db, None).await {
             Ok(rows) => rows,
             Err(e) => {
-                self.events.emit("error", "daemon.restore", &[("error", &e.to_string())]);
+                self.events
+                    .emit("error", "daemon.restore", &[("error", &e.to_string())]);
                 return;
             }
         };
         for row in rows.into_iter().filter(|r| r.ws.mode == Mode::Virtual) {
             if let Err(s) = self.mount(row.ws.id).await {
-                self.events.emit("warn", "workspace.restore", &[("ws", &row.ws.id.to_string()), ("error", s.message())]);
+                self.events.emit(
+                    "warn",
+                    "workspace.restore",
+                    &[("ws", &row.ws.id.to_string()), ("error", s.message())],
+                );
             }
         }
     }
@@ -399,8 +431,14 @@ impl State {
     pub async fn forget_unregistered(&self) -> Result<usize, String> {
         let mut gone = 0;
         for m in self.mounts.all() {
-            if workspaces::get(&self.db, m.id).await.map_err(|e| e.to_string())?.is_none() {
-                self.unmount(m.id).await.map_err(|s| s.message().to_owned())?;
+            if workspaces::get(&self.db, m.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                self.unmount(m.id)
+                    .await
+                    .map_err(|s| s.message().to_owned())?;
                 gone += 1;
             }
         }
@@ -417,8 +455,17 @@ impl State {
 
     /// The number of journal entries of `m`, at most [`MAX_SINCE`].
     pub async fn journal_size(&self, m: &Mounted) -> u64 {
-        let Ok(now) = m.journal.token().await else { return 0 };
-        match m.journal.since(Some(&Token { epoch: now.epoch, seq: 0 })).await {
+        let Ok(now) = m.journal.token().await else {
+            return 0;
+        };
+        match m
+            .journal
+            .since(Some(&Token {
+                epoch: now.epoch,
+                seq: 0,
+            }))
+            .await
+        {
             Ok(s) if s.fresh => MAX_SINCE as u64,
             Ok(s) => s.paths.len() as u64,
             Err(_) => 0,
@@ -506,10 +553,9 @@ impl Service {
     }
 
     fn state(&self) -> Result<&Arc<State>, Status> {
-        let state = self
-            .state
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("this daemon hosts no workspaces (no state database)"))?;
+        let state = self.state.as_ref().ok_or_else(|| {
+            Status::failed_precondition("this daemon hosts no workspaces (no state database)")
+        })?;
         state.mounts.touch();
         Ok(state)
     }
@@ -540,48 +586,88 @@ fn token_text(t: &Token) -> String {
 
 #[tonic::async_trait]
 impl WorkspaceRpc for Service {
-    async fn status(&self, req: Request<wire::WsStatusRequest>) -> Result<Response<wire::WsStatusResponse>, Status> {
+    async fn status(
+        &self,
+        req: Request<wire::WsStatusRequest>,
+    ) -> Result<Response<wire::WsStatusResponse>, Status> {
         let state = self.state()?;
-        plugin_api::status(state, req.into_inner()).await.map(Response::new)
+        plugin_api::status(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type DiffStream = PluginStream<wire::DiffResponse>;
-    async fn diff(&self, req: Request<wire::WsDiffRequest>) -> Result<Response<Self::DiffStream>, Status> {
+    async fn diff(
+        &self,
+        req: Request<wire::WsDiffRequest>,
+    ) -> Result<Response<Self::DiffStream>, Status> {
         let state = self.state()?;
-        plugin_api::diff(state, req.into_inner()).await.map(Response::new)
+        plugin_api::diff(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type LogStream = PluginStream<wire::LogResponse>;
-    async fn log(&self, req: Request<wire::WsLogRequest>) -> Result<Response<Self::LogStream>, Status> {
+    async fn log(
+        &self,
+        req: Request<wire::WsLogRequest>,
+    ) -> Result<Response<Self::LogStream>, Status> {
         let state = self.state()?;
-        plugin_api::log(state, req.into_inner()).await.map(Response::new)
+        plugin_api::log(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type BlameStream = PluginStream<wire::BlameResponse>;
-    async fn blame(&self, req: Request<wire::WsBlameRequest>) -> Result<Response<Self::BlameStream>, Status> {
+    async fn blame(
+        &self,
+        req: Request<wire::WsBlameRequest>,
+    ) -> Result<Response<Self::BlameStream>, Status> {
         let state = self.state()?;
-        plugin_api::blame(state, req.into_inner()).await.map(Response::new)
+        plugin_api::blame(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
-    async fn affected(&self, req: Request<wire::WsAffectedRequest>) -> Result<Response<wire::WsAffectedResponse>, Status> {
+    async fn affected(
+        &self,
+        req: Request<wire::WsAffectedRequest>,
+    ) -> Result<Response<wire::WsAffectedResponse>, Status> {
         let state = self.state()?;
-        plugin_api::affected(state, req.into_inner()).await.map(Response::new)
+        plugin_api::affected(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type WatchStream = PluginStream<wire::WatchEvent>;
-    async fn watch(&self, req: Request<wire::WatchRequest>) -> Result<Response<Self::WatchStream>, Status> {
+    async fn watch(
+        &self,
+        req: Request<wire::WatchRequest>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
         let state = self.state()?;
-        plugin_api::watch(state, req.into_inner()).await.map(Response::new)
+        plugin_api::watch(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
-    async fn stage(&self, req: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
+    async fn stage(
+        &self,
+        req: Request<wire::WsStageRequest>,
+    ) -> Result<Response<wire::WsStageResponse>, Status> {
         let state = self.state()?;
-        plugin_api::stage(state, req.into_inner()).await.map(Response::new)
+        plugin_api::stage(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
-    async fn stacks(&self, req: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+    async fn stacks(
+        &self,
+        req: Request<wire::WsStacksRequest>,
+    ) -> Result<Response<wire::WsStacksResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::stacks(state, req.into_inner()).await.map(Response::new)
+        plugin_api_stack::stacks(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn worktrees(
@@ -589,7 +675,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsWorktreesRequest>,
     ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::worktrees(state, req.into_inner()).await.map(Response::new)
+        plugin_api_stack::worktrees(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn conflicts(
@@ -597,7 +685,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsConflictsRequest>,
     ) -> Result<Response<wire::WsConflictsResponse>, Status> {
         let state = self.state()?;
-        plugin_api_stack::conflicts(state, req.into_inner()).await.map(Response::new)
+        plugin_api_stack::conflicts(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type CommitGraphStream = PluginStream<wire::CommitGraphResponse>;
@@ -606,7 +696,9 @@ impl WorkspaceRpc for Service {
         req: Request<wire::WsCommitGraphRequest>,
     ) -> Result<Response<Self::CommitGraphStream>, Status> {
         let state = self.state()?;
-        plugin_api_stack::commit_graph(state, req.into_inner()).await.map(Response::new)
+        plugin_api_stack::commit_graph(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type SearchStream = PluginStream<wire::SearchResponse>;
@@ -663,7 +755,10 @@ impl WorkspaceRpc for Service {
             .map(Response::new)
     }
 
-    async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
+    async fn ping(
+        &self,
+        _: Request<wire::PingRequest>,
+    ) -> Result<Response<wire::PingResponse>, Status> {
         Ok(Response::new(wire::PingResponse {
             version: self.version.clone(),
             pid: std::process::id(),
@@ -671,13 +766,19 @@ impl WorkspaceRpc for Service {
         }))
     }
 
-    async fn mount(&self, req: Request<wire::MountRequest>) -> Result<Response<wire::MountResponse>, Status> {
+    async fn mount(
+        &self,
+        req: Request<wire::MountRequest>,
+    ) -> Result<Response<wire::MountResponse>, Status> {
         let state = self.state()?;
         state.mount(parse_id(&req.get_ref().ws_id)?).await?;
         Ok(Response::new(wire::MountResponse {}))
     }
 
-    async fn unmount(&self, req: Request<wire::UnmountRequest>) -> Result<Response<wire::UnmountResponse>, Status> {
+    async fn unmount(
+        &self,
+        req: Request<wire::UnmountRequest>,
+    ) -> Result<Response<wire::UnmountResponse>, Status> {
         // A daemon without state hosts nothing, so there is nothing to stop.
         let Some(state) = self.state.as_ref() else {
             parse_id(&req.get_ref().ws_id)?;
@@ -688,23 +789,39 @@ impl WorkspaceRpc for Service {
         Ok(Response::new(wire::UnmountResponse {}))
     }
 
-    async fn switch(&self, req: Request<wire::SwitchRequest>) -> Result<Response<wire::SwitchResponse>, Status> {
+    async fn switch(
+        &self,
+        req: Request<wire::SwitchRequest>,
+    ) -> Result<Response<wire::SwitchResponse>, Status> {
         let r = req.into_inner();
         if r.from_root.len() > MAX_ROOT || r.to_root.len() > MAX_ROOT {
             return Err(Status::invalid_argument("tree id too long"));
         }
-        let mode = wire::SwitchMode::try_from(r.mode).map_err(|_| Status::invalid_argument("unknown switch mode"))?;
-        let conflicts = self.hosted(&r.ws_id, "switch", async |m| m.hosted.switch(&r.from_root, &r.to_root, mode).await).await?;
-        Ok(Response::new(wire::SwitchResponse { conflicts: conflicts.into_iter().map(bytes::Bytes::from).collect() }))
+        let mode = wire::SwitchMode::try_from(r.mode)
+            .map_err(|_| Status::invalid_argument("unknown switch mode"))?;
+        let conflicts = self
+            .hosted(&r.ws_id, "switch", async |m| {
+                m.hosted.switch(&r.from_root, &r.to_root, mode).await
+            })
+            .await?;
+        Ok(Response::new(wire::SwitchResponse {
+            conflicts: conflicts.into_iter().map(bytes::Bytes::from).collect(),
+        }))
     }
 
-    async fn journal(&self, req: Request<wire::JournalRequest>) -> Result<Response<wire::JournalResponse>, Status> {
+    async fn journal(
+        &self,
+        req: Request<wire::JournalRequest>,
+    ) -> Result<Response<wire::JournalResponse>, Status> {
         let r = req.into_inner();
         let state = self.state()?;
         let m = state.mounted(parse_id(&r.ws_id)?)?;
         let since = match r.since_token.as_str() {
             "" => None,
-            t => Some(t.parse::<Token>().map_err(|e| Status::invalid_argument(e.to_string()))?),
+            t => Some(
+                t.parse::<Token>()
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+            ),
         };
         let answer = m.journal.since(since.as_ref()).await.map_err(store)?;
         let mut seen = HashSet::new();
@@ -714,7 +831,11 @@ impl WorkspaceRpc for Service {
             .filter(|e| seen.insert(e.path.clone()))
             .map(|e| bytes::Bytes::from(e.path))
             .collect();
-        Ok(Response::new(wire::JournalResponse { paths, token: token_text(&answer.token), fresh: answer.fresh }))
+        Ok(Response::new(wire::JournalResponse {
+            paths,
+            token: token_text(&answer.token),
+            fresh: answer.fresh,
+        }))
     }
 
     async fn clear_journal(
@@ -724,37 +845,81 @@ impl WorkspaceRpc for Service {
         let r = req.into_inner();
         let state = self.state()?;
         let m = state.mounted(parse_id(&r.ws_id)?)?;
-        let upto: Token = r.token.parse().map_err(|e: asc_wc::journal::BadToken| Status::invalid_argument(e.to_string()))?;
+        let upto: Token = r
+            .token
+            .parse()
+            .map_err(|e: asc_wc::journal::BadToken| Status::invalid_argument(e.to_string()))?;
         // Forget the hints up to the token the caller reconciled at; later ones stay.
-        let all = m.journal.since(Some(&Token { epoch: upto.epoch, seq: 0 })).await.map_err(store)?;
+        let all = m
+            .journal
+            .since(Some(&Token {
+                epoch: upto.epoch,
+                seq: 0,
+            }))
+            .await
+            .map_err(store)?;
         if all.fresh {
-            return Err(Status::failed_precondition("the journal is stale or too large to clear; reconcile first"));
+            return Err(Status::failed_precondition(
+                "the journal is stale or too large to clear; reconcile first",
+            ));
         }
         let mut seen = HashSet::new();
-        let paths: Vec<Vec<u8>> = all.paths.into_iter().filter(|e| seen.insert(e.path.clone())).map(|e| e.path).collect();
+        let paths: Vec<Vec<u8>> = all
+            .paths
+            .into_iter()
+            .filter(|e| seen.insert(e.path.clone()))
+            .map(|e| e.path)
+            .collect();
         m.journal.clear(&paths, &upto).await.map_err(store)?;
         Ok(Response::new(wire::ClearJournalResponse {}))
     }
 
-    async fn dehydrate(&self, req: Request<wire::DehydrateRequest>) -> Result<Response<wire::DehydrateResponse>, Status> {
+    async fn dehydrate(
+        &self,
+        req: Request<wire::DehydrateRequest>,
+    ) -> Result<Response<wire::DehydrateResponse>, Status> {
         let r = req.into_inner();
         let paths = parse_paths(&r.pathspec)?;
-        let (files, bytes_freed) = self.hosted(&r.ws_id, "dehydrate", async |m| m.hosted.dehydrate(&paths).await).await?;
-        Ok(Response::new(wire::DehydrateResponse { files, bytes_freed }))
+        let (files, bytes_freed) = self
+            .hosted(&r.ws_id, "dehydrate", async |m| {
+                m.hosted.dehydrate(&paths).await
+            })
+            .await?;
+        Ok(Response::new(wire::DehydrateResponse {
+            files,
+            bytes_freed,
+        }))
     }
 
-    async fn prefetch(&self, req: Request<wire::PrefetchRequest>) -> Result<Response<wire::PrefetchResponse>, Status> {
+    async fn prefetch(
+        &self,
+        req: Request<wire::PrefetchRequest>,
+    ) -> Result<Response<wire::PrefetchResponse>, Status> {
         let r = req.into_inner();
         let paths = parse_paths(&r.pathspec)?;
-        let (files, bytes_fetched) = self.hosted(&r.ws_id, "prefetch", async |m| m.hosted.prefetch(&paths).await).await?;
-        Ok(Response::new(wire::PrefetchResponse { files, bytes_fetched }))
+        let (files, bytes_fetched) = self
+            .hosted(&r.ws_id, "prefetch", async |m| {
+                m.hosted.prefetch(&paths).await
+            })
+            .await?;
+        Ok(Response::new(wire::PrefetchResponse {
+            files,
+            bytes_fetched,
+        }))
     }
 
-    async fn stats(&self, req: Request<wire::StatsRequest>) -> Result<Response<wire::StatsResponse>, Status> {
+    async fn stats(
+        &self,
+        req: Request<wire::StatsRequest>,
+    ) -> Result<Response<wire::StatsResponse>, Status> {
         let r = req.into_inner();
         let state = self.state()?;
         // An empty id asks for the whole daemon.
-        let wanted = if r.ws_id.is_empty() { state.mounts.all() } else { vec![state.mounted(parse_id(&r.ws_id)?)?] };
+        let wanted = if r.ws_id.is_empty() {
+            state.mounts.all()
+        } else {
+            vec![state.mounted(parse_id(&r.ws_id)?)?]
+        };
         let mut paths: HashMap<String, (u64, u64)> = HashMap::new();
         let mut procs: HashMap<String, (u64, u64)> = HashMap::new();
         let (mut bytes_hydrated, mut journal_size) = (0u64, 0u64);
@@ -775,7 +940,9 @@ impl WorkspaceRpc for Service {
             let mut v: Vec<_> = map.into_iter().collect();
             v.sort_by(|a, b| b.1.0.cmp(&a.1.0).then_with(|| a.0.cmp(&b.0)));
             v.truncate(MAX_STATS_ROWS);
-            v.into_iter().map(|(key, (count, bytes))| wire::HydrationCount { key, count, bytes }).collect()
+            v.into_iter()
+                .map(|(key, (count, bytes))| wire::HydrationCount { key, count, bytes })
+                .collect()
         };
         Ok(Response::new(wire::StatsResponse {
             by_path: rows(paths),
@@ -785,7 +952,10 @@ impl WorkspaceRpc for Service {
         }))
     }
 
-    async fn shutdown(&self, _: Request<wire::ShutdownRequest>) -> Result<Response<wire::ShutdownResponse>, Status> {
+    async fn shutdown(
+        &self,
+        _: Request<wire::ShutdownRequest>,
+    ) -> Result<Response<wire::ShutdownResponse>, Status> {
         // `notify_one` keeps a permit, so a stop requested before the server awaits is not lost.
         self.stop.notify_one();
         Ok(Response::new(wire::ShutdownResponse::default()))
@@ -794,9 +964,9 @@ impl WorkspaceRpc for Service {
 
 #[cfg(test)]
 pub(crate) mod fixtures {
+    use asc_state::RepoId;
     use asc_state::state::repos::{NewRepo, RemoteKind};
     use asc_state::state::workspaces::NewWorkspace;
-    use asc_state::RepoId;
 
     use super::*;
 
@@ -810,7 +980,13 @@ pub(crate) mod fixtures {
         let dir = tempfile::tempdir().unwrap();
         let home = AscHome::open(dir.path().join("home")).unwrap();
         let db = StateDb::open(&home).await.unwrap();
-        let state = State::new(db, home, backend, Arc::new(Metrics::new()), Arc::new(EventLog::none()));
+        let state = State::new(
+            db,
+            home,
+            backend,
+            Arc::new(Metrics::new()),
+            Arc::new(EventLog::none()),
+        );
         Fixture { dir, state }
     }
 
@@ -876,7 +1052,9 @@ mod tests {
     }
 
     async fn mount(svc: &Service, id: &str) -> Result<(), Status> {
-        svc.mount(Request::new(wire::MountRequest { ws_id: id.into() })).await.map(|_| ())
+        svc.mount(Request::new(wire::MountRequest { ws_id: id.into() }))
+            .await
+            .map(|_| ())
     }
 
     fn code<T: std::fmt::Debug>(r: Result<T, Status>) -> tonic::Code {
@@ -903,7 +1081,12 @@ mod tests {
             self.dehydrated.fetch_add(1, Ordering::SeqCst);
             Ok((paths.len() as u64, 9))
         }
-        async fn switch(&self, from: &[u8], to: &[u8], mode: wire::SwitchMode) -> Result<Vec<Vec<u8>>, HostError> {
+        async fn switch(
+            &self,
+            from: &[u8],
+            to: &[u8],
+            mode: wire::SwitchMode,
+        ) -> Result<Vec<Vec<u8>>, HostError> {
             self.switched.fetch_add(1, Ordering::SeqCst);
             if mode == wire::SwitchMode::Force {
                 return Ok(vec![]);
@@ -928,14 +1111,38 @@ mod tests {
     async fn ping_and_shutdown_need_no_state() {
         let stop = Arc::new(Notify::new());
         let svc = Service::new("9.9.9".into(), stop.clone(), None);
-        let pong = svc.ping(Request::new(wire::PingRequest {})).await.unwrap().into_inner();
-        assert_eq!((pong.version.as_str(), pong.pid), ("9.9.9", std::process::id()));
-        assert_eq!(code(mount(&svc, &WorkspaceId::new().to_string()).await), tonic::Code::FailedPrecondition);
-        svc.unmount(Request::new(wire::UnmountRequest { ws_id: WorkspaceId::new().to_string() })).await.unwrap();
-        svc.shutdown(Request::new(wire::ShutdownRequest {})).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(1), stop.notified()).await.expect("shutdown notifies");
-        let status = svc.status(Request::new(wire::WsStatusRequest::default())).await;
-        assert_eq!(code(status), tonic::Code::FailedPrecondition, "no state database, so no workspaces");
+        let pong = svc
+            .ping(Request::new(wire::PingRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            (pong.version.as_str(), pong.pid),
+            ("9.9.9", std::process::id())
+        );
+        assert_eq!(
+            code(mount(&svc, &WorkspaceId::new().to_string()).await),
+            tonic::Code::FailedPrecondition
+        );
+        svc.unmount(Request::new(wire::UnmountRequest {
+            ws_id: WorkspaceId::new().to_string(),
+        }))
+        .await
+        .unwrap();
+        svc.shutdown(Request::new(wire::ShutdownRequest {}))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), stop.notified())
+            .await
+            .expect("shutdown notifies");
+        let status = svc
+            .status(Request::new(wire::WsStatusRequest::default()))
+            .await;
+        assert_eq!(
+            code(status),
+            tonic::Code::FailedPrecondition,
+            "no state database, so no workspaces"
+        );
     }
 
     #[tokio::test]
@@ -943,9 +1150,19 @@ mod tests {
         let f = fixture(None).await;
         let svc = service(Some(f.state.clone()));
 
-        assert_eq!(code(mount(&svc, "not-an-id").await), tonic::Code::InvalidArgument);
-        assert_eq!(code(mount(&svc, &"a".repeat(500)).await), tonic::Code::InvalidArgument);
-        assert_eq!(code(mount(&svc, &WorkspaceId::new().to_string()).await), tonic::Code::NotFound, "unregistered");
+        assert_eq!(
+            code(mount(&svc, "not-an-id").await),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            code(mount(&svc, &"a".repeat(500)).await),
+            tonic::Code::InvalidArgument
+        );
+        assert_eq!(
+            code(mount(&svc, &WorkspaceId::new().to_string()).await),
+            tonic::Code::NotFound,
+            "unregistered"
+        );
 
         let plain = f.workspace(Mode::Plain, None).await;
         mount(&svc, &id_of(&plain)).await.unwrap();
@@ -953,16 +1170,26 @@ mod tests {
         assert_eq!(f.state.mounts.len(), 1, "mounting twice mounts once");
 
         let virt = f.workspace(Mode::Virtual, None).await;
-        assert_eq!(code(mount(&svc, &id_of(&virt)).await), tonic::Code::FailedPrecondition, "no backend");
+        assert_eq!(
+            code(mount(&svc, &id_of(&virt)).await),
+            tonic::Code::FailedPrecondition,
+            "no backend"
+        );
 
         // A root that is gone, or a file, is refused.
         let gone = f.workspace(Mode::Plain, None).await;
         std::fs::remove_dir_all(&gone.ws.mount).unwrap();
-        assert_eq!(code(mount(&svc, &id_of(&gone)).await), tonic::Code::PermissionDenied);
+        assert_eq!(
+            code(mount(&svc, &id_of(&gone)).await),
+            tonic::Code::PermissionDenied
+        );
         let file = f.workspace(Mode::Plain, None).await;
         std::fs::remove_dir_all(&file.ws.mount).unwrap();
         std::fs::write(&file.ws.mount, b"x").unwrap();
-        assert_eq!(code(mount(&svc, &id_of(&file)).await), tonic::Code::PermissionDenied);
+        assert_eq!(
+            code(mount(&svc, &id_of(&file)).await),
+            tonic::Code::PermissionDenied
+        );
     }
 
     #[tokio::test]
@@ -984,10 +1211,20 @@ mod tests {
         std::fs::create_dir_all(&below).unwrap();
         for target in [&link, &below] {
             let ws = through.ws.clone();
-            workspaces::set_location(&f.state.db, ws.id, &target.to_string_lossy(), &target.to_string_lossy())
-                .await
-                .unwrap();
-            assert_eq!(code(mount(&svc, &id_of(&through)).await), tonic::Code::PermissionDenied, "{}", target.display());
+            workspaces::set_location(
+                &f.state.db,
+                ws.id,
+                &target.to_string_lossy(),
+                &target.to_string_lossy(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                code(mount(&svc, &id_of(&through)).await),
+                tonic::Code::PermissionDenied,
+                "{}",
+                target.display()
+            );
         }
     }
 
@@ -999,26 +1236,59 @@ mod tests {
         let id = id_of(&plain);
 
         // Registered but not mounted: nothing is touched.
-        let r = svc.journal(Request::new(wire::JournalRequest { ws_id: id.clone(), since_token: String::new() })).await;
+        let r = svc
+            .journal(Request::new(wire::JournalRequest {
+                ws_id: id.clone(),
+                since_token: String::new(),
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
-        let r = svc.dehydrate(Request::new(wire::DehydrateRequest { ws_id: id.clone(), pathspec: vec![] })).await;
+        let r = svc
+            .dehydrate(Request::new(wire::DehydrateRequest {
+                ws_id: id.clone(),
+                pathspec: vec![],
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
-        let r = svc.switch(Request::new(wire::SwitchRequest { ws_id: id.clone(), ..Default::default() })).await;
+        let r = svc
+            .switch(Request::new(wire::SwitchRequest {
+                ws_id: id.clone(),
+                ..Default::default()
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
-        let r = svc.stats(Request::new(wire::StatsRequest { ws_id: id.clone() })).await;
+        let r = svc
+            .stats(Request::new(wire::StatsRequest { ws_id: id.clone() }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
 
         mount(&svc, &id).await.unwrap();
         // A plain workspace has no placeholders.
-        let r = svc.dehydrate(Request::new(wire::DehydrateRequest { ws_id: id.clone(), pathspec: vec![] })).await;
+        let r = svc
+            .dehydrate(Request::new(wire::DehydrateRequest {
+                ws_id: id.clone(),
+                pathspec: vec![],
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
-        let r = svc.prefetch(Request::new(wire::PrefetchRequest { ws_id: id.clone(), pathspec: vec![] })).await;
+        let r = svc
+            .prefetch(Request::new(wire::PrefetchRequest {
+                ws_id: id.clone(),
+                pathspec: vec![],
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
 
-        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() })).await.unwrap();
-        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() })).await.unwrap();
+        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() }))
+            .await
+            .unwrap();
+        svc.unmount(Request::new(wire::UnmountRequest { ws_id: id.clone() }))
+            .await
+            .unwrap();
         assert!(f.state.mounts.is_empty());
-        let r = svc.stats(Request::new(wire::StatsRequest { ws_id: id })).await;
+        let r = svc
+            .stats(Request::new(wire::StatsRequest { ws_id: id }))
+            .await;
         assert_eq!(code(r), tonic::Code::FailedPrecondition);
     }
 
@@ -1035,7 +1305,12 @@ mod tests {
             let id = id.clone();
             let svc = &svc;
             async move {
-                svc.journal(Request::new(wire::JournalRequest { ws_id: id, since_token: token })).await.map(|r| r.into_inner())
+                svc.journal(Request::new(wire::JournalRequest {
+                    ws_id: id,
+                    since_token: token,
+                }))
+                .await
+                .map(|r| r.into_inner())
             }
         };
         let first = ask(String::new()).await.unwrap();
@@ -1047,19 +1322,39 @@ mod tests {
         let next = ask(first.token.clone()).await.unwrap();
         assert!(!next.fresh);
         let paths: Vec<&[u8]> = next.paths.iter().map(|p| p.as_ref()).collect();
-        assert_eq!(paths, [b"a.txt".as_slice(), b"dir/b.txt".as_slice()], "deduplicated, in order");
+        assert_eq!(
+            paths,
+            [b"a.txt".as_slice(), b"dir/b.txt".as_slice()],
+            "deduplicated, in order"
+        );
 
         m.journal.record(Op::Modified, b"later.txt");
-        svc.clear_journal(Request::new(wire::ClearJournalRequest { ws_id: id.clone(), token: next.token.clone() }))
-            .await
-            .unwrap();
+        svc.clear_journal(Request::new(wire::ClearJournalRequest {
+            ws_id: id.clone(),
+            token: next.token.clone(),
+        }))
+        .await
+        .unwrap();
         let after = ask(first.token.clone()).await.unwrap();
         let left: Vec<&[u8]> = after.paths.iter().map(|p| p.as_ref()).collect();
-        assert_eq!(left, [b"later.txt".as_slice()], "a hint recorded after the token survives");
+        assert_eq!(
+            left,
+            [b"later.txt".as_slice()],
+            "a hint recorded after the token survives"
+        );
 
         for bad in ["x", "1:", ":2", "1:2:3", "-1:0", &"9".repeat(200)] {
-            assert_eq!(code(ask(bad.into()).await), tonic::Code::InvalidArgument, "{bad}");
-            let r = svc.clear_journal(Request::new(wire::ClearJournalRequest { ws_id: id.clone(), token: bad.into() })).await;
+            assert_eq!(
+                code(ask(bad.into()).await),
+                tonic::Code::InvalidArgument,
+                "{bad}"
+            );
+            let r = svc
+                .clear_journal(Request::new(wire::ClearJournalRequest {
+                    ws_id: id.clone(),
+                    token: bad.into(),
+                }))
+                .await;
             assert_eq!(code(r), tonic::Code::InvalidArgument, "{bad}");
         }
     }
@@ -1076,7 +1371,10 @@ mod tests {
         let d = svc
             .dehydrate(Request::new(wire::DehydrateRequest {
                 ws_id: id.clone(),
-                pathspec: vec![bytes::Bytes::from_static(b"src"), bytes::Bytes::from_static(b"docs/a.md")],
+                pathspec: vec![
+                    bytes::Bytes::from_static(b"src"),
+                    bytes::Bytes::from_static(b"docs/a.md"),
+                ],
             }))
             .await
             .unwrap()
@@ -1089,23 +1387,49 @@ mod tests {
             to_root: bytes::Bytes::from_static(b"new"),
             mode: mode as i32,
         };
-        let safe = svc.switch(Request::new(sw(wire::SwitchMode::Safe))).await.unwrap().into_inner();
+        let safe = svc
+            .switch(Request::new(sw(wire::SwitchMode::Safe)))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(safe.conflicts, [bytes::Bytes::from_static(b"old:new")]);
-        let forced = svc.switch(Request::new(sw(wire::SwitchMode::Force))).await.unwrap().into_inner();
+        let forced = svc
+            .switch(Request::new(sw(wire::SwitchMode::Force)))
+            .await
+            .unwrap()
+            .into_inner();
         assert!(forced.conflicts.is_empty());
         assert_eq!(host.switched.load(Ordering::SeqCst), 2);
 
         // A host failure is an internal error and is counted; a precondition is not.
-        let r = svc.prefetch(Request::new(wire::PrefetchRequest { ws_id: id.clone(), pathspec: vec![] })).await;
+        let r = svc
+            .prefetch(Request::new(wire::PrefetchRequest {
+                ws_id: id.clone(),
+                pathspec: vec![],
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::Internal);
         assert_eq!(f.state.metrics.provider_errors("prefetch"), 1);
 
-        let stats = svc.stats(Request::new(wire::StatsRequest { ws_id: id.clone() })).await.unwrap().into_inner();
+        let stats = svc
+            .stats(Request::new(wire::StatsRequest { ws_id: id.clone() }))
+            .await
+            .unwrap()
+            .into_inner();
         assert_eq!(stats.bytes_hydrated, 70);
         assert_eq!(stats.by_path[0].key, "src/b.rs", "busiest first");
         assert_eq!(stats.by_process[0].count, 7);
-        let all = svc.stats(Request::new(wire::StatsRequest { ws_id: String::new() })).await.unwrap().into_inner();
-        assert_eq!(all.bytes_hydrated, 70, "an empty id asks about the whole daemon");
+        let all = svc
+            .stats(Request::new(wire::StatsRequest {
+                ws_id: String::new(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            all.bytes_hydrated, 70,
+            "an empty id asks about the whole daemon"
+        );
 
         // What a scrape reports.
         let c = f.state.collect().await;
@@ -1123,11 +1447,19 @@ mod tests {
         mount(&svc, &id).await.unwrap();
 
         let many = vec![bytes::Bytes::from_static(b"a"); MAX_PATHSPECS + 1];
-        let r = svc.dehydrate(Request::new(wire::DehydrateRequest { ws_id: id.clone(), pathspec: many })).await;
+        let r = svc
+            .dehydrate(Request::new(wire::DehydrateRequest {
+                ws_id: id.clone(),
+                pathspec: many,
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::InvalidArgument);
         for bad in [&b""[..], b"/abs", b"a//b", b"a/../b", b"a\0b", b"."] {
             let r = svc
-                .dehydrate(Request::new(wire::DehydrateRequest { ws_id: id.clone(), pathspec: vec![bytes::Bytes::copy_from_slice(bad)] }))
+                .dehydrate(Request::new(wire::DehydrateRequest {
+                    ws_id: id.clone(),
+                    pathspec: vec![bytes::Bytes::copy_from_slice(bad)],
+                }))
                 .await;
             assert_eq!(code(r), tonic::Code::InvalidArgument, "{bad:?}");
         }
@@ -1139,9 +1471,19 @@ mod tests {
             }))
             .await;
         assert_eq!(code(r), tonic::Code::InvalidArgument);
-        let r = svc.switch(Request::new(wire::SwitchRequest { ws_id: id.clone(), mode: 99, ..Default::default() })).await;
+        let r = svc
+            .switch(Request::new(wire::SwitchRequest {
+                ws_id: id.clone(),
+                mode: 99,
+                ..Default::default()
+            }))
+            .await;
         assert_eq!(code(r), tonic::Code::InvalidArgument);
-        assert_eq!(host.dehydrated.load(Ordering::SeqCst) + host.switched.load(Ordering::SeqCst), 0, "nothing reached the host");
+        assert_eq!(
+            host.dehydrated.load(Ordering::SeqCst) + host.switched.load(Ordering::SeqCst),
+            0,
+            "nothing reached the host"
+        );
     }
 
     #[tokio::test]
@@ -1152,7 +1494,11 @@ mod tests {
         mount(&svc, &id_of(&ws)).await.unwrap();
         f.state.shutdown().await;
         assert!(f.state.mounts.is_empty());
-        assert_eq!(code(mount(&svc, &id_of(&ws)).await), tonic::Code::Unavailable, "no new mounts while stopping");
+        assert_eq!(
+            code(mount(&svc, &id_of(&ws)).await),
+            tonic::Code::Unavailable,
+            "no new mounts while stopping"
+        );
     }
 
     #[tokio::test]
@@ -1163,7 +1509,10 @@ mod tests {
         let plain = f.workspace(Mode::Plain, None).await;
         f.state.restore().await;
         assert!(f.state.mounts.get(virt.ws.id).is_some());
-        assert!(f.state.mounts.get(plain.ws.id).is_none(), "plain workspaces are mounted on request");
+        assert!(
+            f.state.mounts.get(plain.ws.id).is_none(),
+            "plain workspaces are mounted on request"
+        );
     }
 
     /// SPEC §16.4: the daemon with two mounted plain workspaces, idle, holds at most 64 MiB.
@@ -1173,12 +1522,22 @@ mod tests {
     #[test]
     fn idle_daemon_rss_stays_under_64_mib() {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "daemon::service::tests::idle_daemon_child", "--ignored", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "daemon::service::tests::idle_daemon_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("ASC_IDLE_DAEMON_CHILD", "1")
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&out.stdout);
-        assert!(out.status.success(), "child failed:\n{text}\n{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "child failed:\n{text}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert!(text.contains("idle rss "), "{text}");
     }
 
@@ -1191,11 +1550,21 @@ mod tests {
             return;
         }
         let f = fixture(None).await;
-        let (a, b) = (f.workspace(Mode::Plain, None).await, f.workspace(Mode::Plain, None).await);
+        let (a, b) = (
+            f.workspace(Mode::Plain, None).await,
+            f.workspace(Mode::Plain, None).await,
+        );
         let endpoint = if cfg!(windows) {
             IpcEndpoint::from_raw(format!("asc-u53b-idle-{}", std::process::id()))
         } else {
-            IpcEndpoint::from_raw(f.dir.path().join("run").join("asc.sock").to_string_lossy().into_owned())
+            IpcEndpoint::from_raw(
+                f.dir
+                    .path()
+                    .join("run")
+                    .join("asc.sock")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         };
         let port = {
             let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1225,7 +1594,11 @@ mod tests {
             hooks: super::super::scheduler::Hooks::default(),
             extra_jobs: Vec::new(),
         };
-        let daemon = tokio::spawn(super::super::run_hosting(cfg, hosting, std::future::pending()));
+        let daemon = tokio::spawn(super::super::run_hosting(
+            cfg,
+            hosting,
+            std::future::pending(),
+        ));
 
         let mut client = WorkspaceClient::new(connect(&endpoint));
         let mut up = false;
@@ -1238,7 +1611,12 @@ mod tests {
         }
         assert!(up, "the daemon did not come up");
         for ws in [&a, &b] {
-            client.mount(wire::MountRequest { ws_id: ws.ws.id.to_string() }).await.unwrap();
+            client
+                .mount(wire::MountRequest {
+                    ws_id: ws.ws.id.to_string(),
+                })
+                .await
+                .unwrap();
         }
         // Idle: the scheduler ticks several times and nothing else happens.
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1246,16 +1624,31 @@ mod tests {
         println!("idle rss {rss}");
 
         // The same figure is on the metrics endpoint.
-        let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-        tokio::io::AsyncWriteExt::write_all(&mut tcp, format!("GET /metrics HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes())
+        let mut tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut tcp,
+            format!("GET /metrics HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
         let mut body = String::new();
-        tokio::io::AsyncReadExt::read_to_string(&mut tcp, &mut body).await.unwrap();
-        assert!(body.contains("asc_rss_bytes ") && body.contains("asc_daemon_task_runs_total{task=\"pending_retry\"}"), "{body}");
+        tokio::io::AsyncReadExt::read_to_string(&mut tcp, &mut body)
+            .await
+            .unwrap();
+        assert!(
+            body.contains("asc_rss_bytes ")
+                && body.contains("asc_daemon_task_runs_total{task=\"pending_retry\"}"),
+            "{body}"
+        );
 
         client.shutdown(wire::ShutdownRequest {}).await.unwrap();
         daemon.await.unwrap().unwrap();
-        assert!(rss <= 64 * 1024 * 1024, "idle daemon RSS is {} MiB, the budget is 64", rss >> 20);
+        assert!(
+            rss <= 64 * 1024 * 1024,
+            "idle daemon RSS is {} MiB, the budget is 64",
+            rss >> 20
+        );
     }
 }

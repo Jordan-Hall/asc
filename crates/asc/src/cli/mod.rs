@@ -28,9 +28,11 @@ macro_rules! stub {
             _ctx: &$crate::cli::common::Ctx,
             _args: Args,
         ) -> $crate::cli::common::Result<std::process::ExitCode> {
-            Err($crate::cli::common::CliError::Msg($crate::msg::Msg::AscNotYet {
-                cmd: $name.to_owned(),
-            }))
+            Err($crate::cli::common::CliError::Msg(
+                $crate::msg::Msg::AscNotYet {
+                    cmd: $name.to_owned(),
+                },
+            ))
         }
     };
 }
@@ -43,8 +45,8 @@ pub mod json;
 pub mod output;
 pub mod pager;
 pub mod safe_dir;
-pub mod seqstate;
 pub mod seed_opts;
+pub mod seqstate;
 
 pub mod add;
 mod add_patch;
@@ -162,7 +164,8 @@ macro_rules! entry {
             run: {
                 fn go<'a>(ctx: &'a Ctx, argv: Vec<OsString>) -> BoxFut<'a> {
                     Box::pin(async move {
-                        let args = <$m::Args as clap::Parser>::try_parse_from(argv).map_err(usage)?;
+                        let args =
+                            <$m::Args as clap::Parser>::try_parse_from(argv).map_err(usage)?;
                         $m::run(ctx, args).await
                     })
                 }
