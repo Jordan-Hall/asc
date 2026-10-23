@@ -22,6 +22,17 @@ use asc_store::objects::Objects;
 use asc_store::refs::Refs;
 use support::{Fixture, text};
 
+/// Marks a test script executable (Unix runs a script only with the execute bit; Windows has none).
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// A fixture with `f.txt` ("one") and `g.txt` ("keep") committed on `master`, the work tree
 /// matching, and an identity configured.
 async fn setup() -> (Fixture, ChangesetId) {
@@ -693,6 +704,7 @@ mod hooks {
         let custom = f.root.join(".husky");
         fs::create_dir_all(&custom).unwrap();
         fs::write(custom.join("pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+        make_executable(&custom.join("pre-commit"));
         let common = Projection::open(&f.root).unwrap().common_dir().to_owned();
         let cfg = common.join("config");
         let mut conf = fs::read_to_string(&cfg).unwrap_or_default();

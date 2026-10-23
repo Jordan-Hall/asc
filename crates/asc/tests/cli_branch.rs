@@ -20,6 +20,17 @@ use asc_state::WorkspaceId;
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
 use support::{Fixture, text};
 
+/// Marks a test script executable (Unix runs a script only with the execute bit; Windows has none).
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 const IDENT: [(&str, &str); 6] = [
     ("GIT_AUTHOR_NAME", "Test"),
     ("GIT_AUTHOR_EMAIL", "test@example.com"),
@@ -1028,6 +1039,7 @@ mod tags {
         let script = w.f.sandbox.tmp.path().join("editor.sh");
         fs::write(&script, "#!/bin/sh\nprintf 'edited message\\n# a comment\\n' > \"$1\"\n").unwrap();
         let editor = script.display().to_string().replace('\\', "/");
+        make_executable(&script);
         let mut cmd = w.cmd();
         cmd.env("GIT_EDITOR", &editor).args(["tag", "-a", "ve"]);
         assert_eq!(run(&mut cmd).code, 0);
@@ -1051,6 +1063,7 @@ mod tags {
                     echo '[GNUPG:] SIG_CREATED D 1 8 00 1700000000 ABCDEF' >&2\n\
                     printf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n";
         fs::write(&script, body).unwrap();
+        make_executable(&script);
         let program = script.display().to_string().replace('\\', "/");
         for args in [vec!["config", "gpg.program", &program], vec!["config", "user.signingkey", "KEY1"]] {
             assert_eq!(w.asc(&args).code, 0);
@@ -1092,6 +1105,7 @@ mod tags {
         let path = Projection::open(&w.f.root).unwrap().common_dir().join("hooks").join("reference-transaction");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, format!("#!/bin/sh\necho \"$1\" >> \"{log}\"\ncat >> \"{log}\"\n")).unwrap();
+        make_executable(&path);
         assert_eq!(w.asc(&["tag", "light"]).code, 0);
         let line = format!("{} {} refs/tags/light\n", "0".repeat(40), w.shas["b"]);
         assert_eq!(fs::read_to_string(&log).unwrap().replace("\r\n", "\n"), format!("prepared\n{line}committed\n{line}"));
