@@ -23,6 +23,8 @@ use std::time::Duration;
 use asc_state::AscHome;
 use asc_state::state::repos::RemoteKind;
 
+mod workflows;
+
 use super::common::{Ctx, Result};
 use crate::child;
 use crate::daemon::lifecycle::{self, Probe};
@@ -40,11 +42,14 @@ pub struct Args {
     /// Report the sizes of an old `.git`, `worktrees/`, `modules/`, `lfs/` and cruft packs.
     #[arg(long = "report-reclaimable", value_name = "PATH", num_args = 0..)]
     pub report_reclaimable: Option<Vec<PathBuf>>,
+    /// List `on: push` workflow triggers that name non-shared branches (SPEC 21.4.4).
+    #[arg(long)]
+    pub workflows: bool,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "doctor",
-    flags: &["--fix", "--store", "--report-reclaimable"],
+    flags: &["--fix", "--store", "--report-reclaimable", "--workflows"],
     placeholders: &[],
 }];
 
@@ -1466,6 +1471,14 @@ fn report_reclaimable(ctx: &Ctx, paths: &[PathBuf]) -> Result<ExitCode> {
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if let Some(paths) = &args.report_reclaimable {
         return report_reclaimable(ctx, paths);
+    }
+    if args.workflows {
+        let root = match ctx.ws_opt() {
+            Some(ws) => PathBuf::from(&ws.workspace.ws.path),
+            None => ctx.cwd.clone(),
+        };
+        print_checks(&workflows::scan(&root));
+        return Ok(ExitCode::SUCCESS);
     }
     let home = match ctx.ws_opt() {
         Some(ws) => ws.home.clone(),
