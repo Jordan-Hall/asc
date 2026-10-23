@@ -505,9 +505,26 @@ struct Verified {
     grants: Vec<Grant>,
 }
 
+/// Bumped when repository admin changes who holds access to a repository name (delete, rename):
+/// every cached lookup of an older epoch is dropped at once in this process. Other replicas wait
+/// out [`CACHE_TTL_SECS`].
+static GRANT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The current grant epoch.
+pub(super) fn grant_epoch() -> u64 {
+    GRANT_EPOCH.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Drops every cached token and SSH key lookup of this process (all token stores). `RepoAdmin`
+/// calls it after a transaction that revoked or moved the grants and deploy keys of a name.
+pub fn invalidate_grants() {
+    GRANT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+}
+
 #[derive(Clone)]
 struct Cached {
     at: i64,
+    epoch: u64,
     /// `None` is a cached refusal.
     rec: Option<Arc<Verified>>,
 }
@@ -770,7 +787,9 @@ impl TokenStore {
     async fn verify(&self, token: &str) -> Result<Arc<Verified>, AuthError> {
         let now = self.now();
         let tag = self.key.tag(token);
+        let epoch = grant_epoch();
         if let Some(hit) = self.cache.get(&tag)
+            && hit.epoch == epoch
             && now >= hit.at
             && now - hit.at < CACHE_TTL_SECS
         {
@@ -784,6 +803,7 @@ impl TokenStore {
             tag,
             Cached {
                 at: now,
+                epoch,
                 rec: rec.clone(),
             },
         );

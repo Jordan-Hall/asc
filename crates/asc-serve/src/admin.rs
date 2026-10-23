@@ -722,6 +722,13 @@ impl AdminService {
             }
         };
         let land_json = serde_json::to_string(&land).map_err(|e| internal("land branches", &e))?;
+        let mut tx = self
+            .registry
+            .refs()
+            .begin()
+            .await
+            .map_err(|e| internal("refs", &e))?;
+        refuse_leftover_access(&mut tx, ctx.repo.as_str()).await?;
         let inserted = sqlx::query(
             "INSERT INTO repos (name, ns, mode, default_branch, windows_safe, land_branches, created) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -733,7 +740,7 @@ impl AdminService {
         .bind(op.windows_safe)
         .bind(&land_json)
         .bind(unix_now())
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await;
         match inserted {
             Ok(_) => {}
@@ -742,7 +749,13 @@ impl AdminService {
             }
             Err(e) => return Err(sql("repos", e)),
         }
+        tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
+        // A target left under this name by an earlier repository is not this one's. Cleared
+        // only now: an init that found the name taken must not touch the live repository's.
+        if let Some(mirror) = &self.mirror {
+            mirror.sources().remove(&ctx.repo);
+        }
         if let (Some(mirror), Some(url)) = (mirror, mirror_url) {
             mirror
                 .sources()
@@ -790,6 +803,13 @@ impl AdminService {
         }
         let src = self.source_row(from).await?;
         let lease = unix_now().saturating_add(secs(FORK_LEASE));
+        let mut tx = self
+            .registry
+            .refs()
+            .begin()
+            .await
+            .map_err(|e| internal("refs", &e))?;
+        refuse_leftover_access(&mut tx, name.as_str()).await?;
         let inserted = sqlx::query(
             "INSERT INTO repos (name, ns, mode, default_branch, windows_safe, land_branches, \
              created, ready, fork_from, fork_lease) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
@@ -804,7 +824,7 @@ impl AdminService {
         .bind(false)
         .bind(src.id)
         .bind(lease)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await;
         match inserted {
             Ok(_) => {}
@@ -815,10 +835,14 @@ impl AdminService {
         }
         let id: i64 = sqlx::query_scalar("SELECT id FROM repos WHERE name = $1")
             .bind(name.as_str())
-            .fetch_one(self.pool())
+            .fetch_one(&mut *tx)
             .await
             .map_err(|e| sql("repos", e))?;
+        tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(name);
+        if let Some(mirror) = &self.mirror {
+            mirror.sources().remove(name);
+        }
         Ok((id, lease))
     }
 
@@ -960,7 +984,7 @@ impl AdminService {
         while let Some(batch) = walk.next_batch().await? {
             lease = self.renew(id, lease).await?;
             server_copy(&*store, &src_prefix, &dst_prefix, &batch).await?;
-            copy_rows(self.registry.refs(), src.ns, dst.ns, &batch).await?;
+            copy_rows(&self.registry, src.ns, &dst, &batch).await?;
             copied += batch.len() as u64;
         }
         for r in &tips {
@@ -988,11 +1012,14 @@ impl AdminService {
             op_id: Uuid::new_v4(),
         };
         if !txn.updates.is_empty() {
-            self.registry
-                .refs()
-                .update(dst.key, &txn)
+            let refs = self.registry.refs();
+            let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+            // A fork deleted or renamed while it was copying takes no refs.
+            self.registry.guard(&mut tx, &dst).await?;
+            refs.update_in_tx(&mut tx, dst.key, &txn)
                 .await
                 .map_err(|e| internal("refs", &e))?;
+            tx.commit().await.map_err(|e| internal("refs", &e))?;
         }
         let done = sqlx::query(
             "UPDATE repos SET ready = $1, fork_from = NULL, fork_lease = NULL, fork_error = NULL              WHERE id = $2 AND ready = $3 AND fork_lease = $4",
@@ -1067,14 +1094,19 @@ impl AdminService {
             .begin()
             .await
             .map_err(|e| internal("refs", &e))?;
-        let gone = sqlx::query("DELETE FROM repos WHERE id = $1")
+        // The row this call resolved, by id and by name: a replica that renamed or replaced it
+        // since leaves nothing to delete here.
+        let gone = sqlx::query("DELETE FROM repos WHERE id = $1 AND name = $2")
             .bind(entry.key.0)
+            .bind(ctx.repo.as_str())
             .execute(&mut *tx)
             .await
             .map_err(|e| sql("repos", e))?;
         if gone.rows_affected() != 1 {
             return Err(Status::not_found("no such repository"));
         }
+        // Tokens and deploy keys name a repository by its name: none may outlive it.
+        revoke_access(&mut tx, ctx.repo.as_str(), now).await?;
         for table in ["refs", "mirror_state"] {
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DELETE FROM {table} WHERE repo_id = $1"
@@ -1104,6 +1136,10 @@ impl AdminService {
         .map_err(|e| sql("repo_drops", e))?;
         tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
+        crate::authz::token_store::invalidate_grants();
+        if let Some(mirror) = &self.mirror {
+            mirror.sources().remove(&ctx.repo);
+        }
         Ok(wire::RepoAdminResponse {
             report: format!(
                 "deleted {}; the namespace is dropped after 30 days",
@@ -1193,10 +1229,17 @@ impl AdminService {
             .open_unready(&ctx.repo)
             .await
             .map_err(registry_status)?;
-        let done = sqlx::query("UPDATE repos SET name = $1 WHERE id = $2")
+        let mut tx = self
+            .registry
+            .refs()
+            .begin()
+            .await
+            .map_err(|e| internal("refs", &e))?;
+        let done = sqlx::query("UPDATE repos SET name = $1 WHERE id = $2 AND name = $3")
             .bind(to.as_str())
             .bind(entry.key.0)
-            .execute(self.pool())
+            .bind(ctx.repo.as_str())
+            .execute(&mut *tx)
             .await;
         match done {
             Ok(r) if r.rows_affected() == 1 => {}
@@ -1206,8 +1249,17 @@ impl AdminService {
             }
             Err(e) => return Err(sql("repos", e)),
         }
+        // Access follows the repository to its new name, in the same transaction. A new name
+        // that already has grants or keys is refused: they would merge with this repository's.
+        refuse_leftover_access(&mut tx, to.as_str()).await?;
+        move_access(&mut tx, ctx.repo.as_str(), to.as_str()).await?;
+        tx.commit().await.map_err(|e| sql("repos", e))?;
         self.registry.forget(&ctx.repo);
         self.registry.forget(&to);
+        crate::authz::token_store::invalidate_grants();
+        if let Some(mirror) = &self.mirror {
+            mirror.sources().rename(&ctx.repo, &to);
+        }
         Ok(wire::RepoAdminResponse {
             report: format!("renamed {} to {to}", ctx.repo),
             ..Default::default()
@@ -1439,6 +1491,82 @@ impl AdminService {
     }
 }
 
+// ------------------------------------------------------------------------------ name-keyed access
+
+/// Refuses a name that still has token grants or live deploy keys: they were meant for another
+/// repository and would reach this one. (`owner/*` and `*` grants are patterns, not rows of a
+/// name, and stay.)
+async fn refuse_leftover_access(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    name: &str,
+) -> Result<(), Status> {
+    let grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_grants WHERE repo = $1")
+        .bind(name.to_owned())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| sql("auth_token_grants", e))?;
+    let keys: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ssh_keys WHERE kind = 'deploy' AND repo_id = $1 AND revoked IS NULL",
+    )
+    .bind(name.to_owned())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| sql("ssh_keys", e))?;
+    if grants + keys > 0 {
+        return Err(Status::failed_precondition(
+            "token grants or deploy keys already name this repository; revoke them first",
+        ));
+    }
+    Ok(())
+}
+
+/// Revokes every grant and live deploy key that names exactly `name`.
+async fn revoke_access(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    name: &str,
+    now: i64,
+) -> Result<(), Status> {
+    sqlx::query("DELETE FROM auth_token_grants WHERE repo = $1")
+        .bind(name.to_owned())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| sql("auth_token_grants", e))?;
+    sqlx::query(
+        "UPDATE ssh_keys SET revoked = $2 \
+         WHERE kind = 'deploy' AND repo_id = $1 AND revoked IS NULL",
+    )
+    .bind(name.to_owned())
+    .bind(now)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| sql("ssh_keys", e))?;
+    Ok(())
+}
+
+/// Moves the grants and live deploy keys of exactly `from` to `to`.
+async fn move_access(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    from: &str,
+    to: &str,
+) -> Result<(), Status> {
+    sqlx::query("UPDATE auth_token_grants SET repo = $2 WHERE repo = $1")
+        .bind(from.to_owned())
+        .bind(to.to_owned())
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| sql("auth_token_grants", e))?;
+    sqlx::query(
+        "UPDATE ssh_keys SET repo_id = $2 \
+         WHERE kind = 'deploy' AND repo_id = $1 AND revoked IS NULL",
+    )
+    .bind(from.to_owned())
+    .bind(to.to_owned())
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| sql("ssh_keys", e))?;
+    Ok(())
+}
+
 fn mirror_status(e: MirrorError) -> Status {
     match e {
         MirrorError::BadUrl(why) => invalid(format!("unusable mirror url: {why}")),
@@ -1529,11 +1657,12 @@ fn placeholders(n: usize, from: usize) -> String {
 /// changesets (all must exist), and the git map and `file_meta` rows that exist. Only rows of
 /// the closure move; nothing about other changesets of the source is copied.
 async fn copy_rows(
-    refs: &asc_store::sqlrefs::SqlRefs,
+    registry: &Registry,
     src: Ns,
-    dst: Ns,
+    dst_entry: &RepoEntry,
     keys: &[ObjKey],
 ) -> Result<(), Status> {
+    let (refs, dst) = (registry.refs(), dst_entry.ns);
     let (mut changesets, mut ids, mut files) = (Vec::new(), Vec::new(), Vec::new());
     for k in keys {
         match k {
@@ -1551,6 +1680,7 @@ async fn copy_rows(
         }
     }
     let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+    registry.guard(&mut tx, dst_entry).await?;
     let (s, d) = (src.as_bytes().to_vec(), dst.as_bytes().to_vec());
     for chunk in changesets.chunks(ROW_BATCH) {
         let q = format!(
@@ -2995,6 +3125,474 @@ mod tests {
         let first = slow.open(&name("o/r")).await.unwrap();
         f.call("o/r", Op::Delete(true)).await.unwrap();
         assert!(Arc::ptr_eq(&first, &slow.open(&name("o/r")).await.unwrap()));
+    }
+
+    // -------------------------------------------------------------------------- stale entries
+
+    /// A second replica: its own registry over `f`'s database whose cache never expires on its own.
+    fn replica(f: &Fx) -> Arc<Registry> {
+        Arc::new(
+            Registry::new(f.registry.pool().clone(), "memory:///")
+                .unwrap()
+                .with_entry_ttl(Duration::from_secs(3600)),
+        )
+    }
+
+    /// `UpdateRefs` step 8 for one new branch, against `entry` as a request resolved it.
+    async fn push_branch(
+        registry: &Arc<Registry>,
+        f: &Fx,
+        entry: &RepoEntry,
+        branch: &str,
+        cs: ChangesetId,
+    ) -> Result<(), Status> {
+        let txn = RefTxn {
+            updates: vec![RefUpdate {
+                name: RefName::new(format!("refs/heads/{branch}").into_bytes()).unwrap(),
+                expect: Expect::Any,
+                new: Some(RefTarget::Changeset(cs)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "alice".into(),
+                via: "test".into(),
+            },
+            reason: "UpdateRefs".into(),
+            op_id: Uuid::new_v4(),
+        };
+        crate::update::ServerRefs::new(registry.clone(), f.pipeline.clone())
+            .commit(
+                entry,
+                &txn,
+                &wire::UpdateRefsResponse::default(),
+                b"{}",
+                None,
+            )
+            .await
+    }
+
+    async fn op_results(f: &Fx) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM op_results")
+            .fetch_one(f.registry.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_mutation_prepared_against_a_deleted_repository_fails_and_the_new_one_is_untouched() {
+        let f = fx().await;
+        let a = replica(&f);
+        let old = f.init("o/r").await;
+        let cs = commit(&old, &[], &[("a", b"1")]).await;
+        // Replica A resolves o/r and caches it; replica B deletes it and creates it again.
+        let stale = a.open(&name("o/r")).await.unwrap();
+        f.call("o/r", Op::Delete(true)).await.unwrap();
+        let new = f.init("o/r").await;
+        assert_ne!(new.key, old.key);
+        // The cache still answers the old repository (the reads' staleness is bounded by the TTL).
+        assert!(Arc::ptr_eq(&stale, &a.open(&name("o/r")).await.unwrap()));
+
+        let e = push_branch(&a, &f, &stale, "x", cs).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        // Ingest takes the same check.
+        let held = commit(&stale, &[], &[("a", b"1")]).await;
+        let e = Ingestor::new(a.pool(), a.refs(), &stale, true)
+            .ingest(&[RefTarget::Changeset(held)], &NoObserver)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            crate::ingest::IngestError::Stale { gone: true }
+        ));
+        // Nothing was written anywhere, and the failed check dropped the stale entry.
+        assert!(f.ref_names(&new).await.is_empty());
+        assert!(f.ref_names(&old).await.is_empty());
+        assert_eq!(op_results(&f).await, 0);
+        let graph: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cs_graph WHERE ns = $1")
+            .bind(new.ns.as_bytes().to_vec())
+            .fetch_one(f.registry.pool())
+            .await
+            .unwrap();
+        assert_eq!(graph, 0);
+        assert!(!Arc::ptr_eq(&stale, &a.open(&name("o/r")).await.unwrap()));
+        // The new repository takes writes through its own entry.
+        let cs = commit(&new, &[], &[("a", b"1")]).await;
+        push_branch(&a, &f, &a.open(&name("o/r")).await.unwrap(), "x", cs)
+            .await
+            .unwrap();
+        assert_eq!(f.ref_names(&new).await, ["refs/heads/x"]);
+    }
+
+    #[tokio::test]
+    async fn a_mutation_through_a_cached_entry_of_a_renamed_repository_fails() {
+        let f = fx().await;
+        let a = replica(&f);
+        let repo = f.init("o/a").await;
+        let cs = commit(&repo, &[], &[("a", b"1")]).await;
+        let stale = a.open(&name("o/a")).await.unwrap();
+        f.call("o/a", Op::RenameTo("o/b".into())).await.unwrap();
+        // The id still exists, under another name: authorised for o/a, it must not write.
+        let e = push_branch(&a, &f, &stale, "x", cs).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+        let held = commit(&stale, &[], &[("a", b"1")]).await;
+        let e = Ingestor::new(a.pool(), a.refs(), &stale, true)
+            .ingest(&[RefTarget::Changeset(held)], &NoObserver)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            crate::ingest::IngestError::Stale { gone: false }
+        ));
+        assert!(f.ref_names(&repo).await.is_empty());
+        assert_eq!(op_results(&f).await, 0);
+        // Under its new name the repository takes the write.
+        let moved = a.open(&name("o/b")).await.unwrap();
+        push_branch(&a, &f, &moved, "x", cs).await.unwrap();
+        assert_eq!(f.ref_names(&repo).await, ["refs/heads/x"]);
+        // A delete addressed to the old name finds nothing, and the renamed repository stays.
+        let e = f.call("o/a", Op::Delete(true)).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::NotFound);
+        assert!(f.registry.open(&name("o/b")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_rename_and_a_ref_update_racing_leave_one_consistent_outcome() {
+        let f = fx().await;
+        for i in 0..8 {
+            let (from, to) = (format!("o/from{i}"), format!("o/to{i}"));
+            let repo = f.init(&from).await;
+            let cs = commit(&repo, &[], &[("a", b"1")]).await;
+            let (push, renamed) = tokio::join!(
+                push_branch(&f.registry, &f, &repo, "x", cs),
+                f.call(&from, Op::RenameTo(to.clone())),
+            );
+            // The rename names the row it resolved, so nothing else can win over it.
+            renamed.unwrap();
+            let refs = f.ref_names(&repo).await;
+            match push {
+                // The update committed first: the repository carries it to its new name.
+                Ok(()) => assert_eq!(refs, ["refs/heads/x"], "{i}"),
+                // The rename committed first: the update failed whole.
+                Err(e) => {
+                    assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{i}");
+                    assert!(refs.is_empty(), "{i}");
+                }
+            }
+            assert_eq!(f.registry.open(&name(&to)).await.unwrap().key, repo.key);
+        }
+        // The other order is fixed: once the rename has committed the update cannot apply.
+        let repo = f.init("o/late").await;
+        let cs = commit(&repo, &[], &[("a", b"1")]).await;
+        f.call("o/late", Op::RenameTo("o/later".into()))
+            .await
+            .unwrap();
+        let e = push_branch(&f.registry, &f, &repo, "x", cs)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+    }
+
+    // -------------------------------------------------------------------------- mirror targets
+
+    fn mirror_admin(f: &Fx, tmp: &std::path::Path) -> (Arc<AdminService>, Arc<Mirror>) {
+        use crate::mirror::MirrorConfig;
+        use asc_git::realgit::RealGit;
+        let mirror = Arc::new(Mirror::new(
+            f.registry.clone(),
+            &f.pipeline,
+            RealGit::resolve(None, None).expect("git is installed"),
+            MirrorConfig {
+                dir: tmp.join("mirrors"),
+                secret: None,
+                forgejo_url: Some("https://forge.example".into()),
+                allowed_hosts: Vec::new(),
+                interval: Duration::from_secs(60),
+                fetch_timeout: Duration::from_secs(60),
+            },
+        ));
+        (
+            AdminService::new(f.registry.clone(), Some(mirror.clone())),
+            mirror,
+        )
+    }
+
+    async fn admin_call(
+        admin: &Arc<AdminService>,
+        n: &str,
+        op: Op,
+    ) -> Result<wire::RepoAdminResponse, Status> {
+        admin
+            .repo_admin(
+                &ctx(n),
+                wire::RepoAdminRequest {
+                    repo: repo_ref(n),
+                    op: Some(op),
+                },
+            )
+            .await
+    }
+
+    fn init_mirror(url: &str) -> Op {
+        Op::Init(wire::InitOp {
+            mode: "mirror".into(),
+            mirror_url: url.into(),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn mirror_targets_follow_a_rename_and_vanish_on_delete() {
+        let f = fx().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let (admin, mirror) = mirror_admin(&f, tmp.path());
+        let target = |n: &str| mirror.sources().client_target(&name(n)).map(|t| t.url);
+        let url = "https://forge.example/o/m.git";
+
+        admin_call(&admin, "o/m", init_mirror(url)).await.unwrap();
+        assert_eq!(target("o/m").as_deref(), Some(url));
+        // An init that finds the name taken leaves the live repository's target alone.
+        let e = admin_call(
+            &admin,
+            "o/m",
+            init_mirror("https://forge.example/o/other.git"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::AlreadyExists);
+        assert_eq!(target("o/m").as_deref(), Some(url));
+
+        admin_call(&admin, "o/m", Op::RenameTo("o/n".into()))
+            .await
+            .unwrap();
+        assert_eq!(target("o/m"), None);
+        assert_eq!(target("o/n").as_deref(), Some(url));
+
+        admin_call(&admin, "o/n", Op::Delete(true)).await.unwrap();
+        assert_eq!(target("o/n"), None);
+
+        // A target left under a name (an earlier process, a repository gone) is cleared by init.
+        mirror
+            .sources()
+            .set(
+                &name("o/n"),
+                crate::mirror::MirrorTarget {
+                    url: "https://forge.example/o/stale.git".into(),
+                    token: None,
+                },
+            )
+            .unwrap();
+        admin_call(&admin, "o/n", init_mirror("")).await.unwrap();
+        assert_eq!(target("o/n"), None);
+        mirror
+            .sources()
+            .set(
+                &name("o/q"),
+                crate::mirror::MirrorTarget {
+                    url: "https://forge.example/o/stale.git".into(),
+                    token: None,
+                },
+            )
+            .unwrap();
+        admin_call(&admin, "o/q", init_mirror("https://forge.example/o/q.git"))
+            .await
+            .unwrap();
+        assert_eq!(
+            target("o/q").as_deref(),
+            Some("https://forge.example/o/q.git")
+        );
+    }
+
+    // -------------------------------------------------------------------------- name-keyed access
+
+    async fn deploy_key(f: &Fx, id: &str, repo: &str) {
+        sqlx::query(
+            "INSERT INTO ssh_keys (id, kind, principal, repo_id, algo, public_key, fingerprint, \
+             created) VALUES ($1, 'deploy', 'x', $2, 'ssh-ed25519', $3, $4, 1)",
+        )
+        .bind(id.to_owned())
+        .bind(repo.to_owned())
+        .bind(id.as_bytes().to_vec())
+        .bind(id.as_bytes().to_vec())
+        .execute(f.registry.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn live_keys(f: &Fx, repo: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT id FROM ssh_keys WHERE repo_id = $1 AND revoked IS NULL ORDER BY id",
+        )
+        .bind(repo.to_owned())
+        .fetch_all(f.registry.pool())
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_deleted_and_recreated_name_does_not_inherit_tokens_or_deploy_keys() {
+        use crate::authz::token_store::{
+            NewToken, TokenKey, TokenKind, TokenStore, TokenStoreAuthz,
+        };
+        use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken};
+
+        let f = fx().await;
+        f.init("o/r").await;
+        let store = Arc::new(TokenStore::new(
+            f.registry.pool().clone(),
+            TokenKey::generate().unwrap(),
+        ));
+        let authz = TokenStoreAuthz::new(store.clone());
+        let mint = |kind, user: Option<&str>, repos: &[&str]| {
+            let store = store.clone();
+            let (user, repos) = (
+                user.map(str::to_owned),
+                repos.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>(),
+            );
+            async move {
+                store
+                    .create(&NewToken {
+                        kind,
+                        user,
+                        repos,
+                        access: Access::Write,
+                        expires_in: None,
+                        label: String::new(),
+                    })
+                    .await
+                    .unwrap()
+                    .secret()
+                    .to_owned()
+            }
+        };
+        let pat = mint(TokenKind::Pat, Some("alice"), &["o/r"]).await;
+        let deploy = mint(TokenKind::Deploy, None, &["o/r"]).await;
+        let wild = mint(TokenKind::Pat, Some("bob"), &["o/*"]).await;
+        let check = |t: &str, repo: &str| {
+            let t = BearerToken::new(t).unwrap();
+            let authz = &authz;
+            let repo = repo.to_owned();
+            async move { authz.authorize(Some(&t), &repo, Access::Read).await }
+        };
+        deploy_key(&f, "k1", "o/r").await;
+        deploy_key(&f, "k2", "o/other").await;
+        // All three work, and now sit in the token store's cache.
+        for t in [&pat, &deploy, &wild] {
+            check(t, "o/r").await.unwrap();
+        }
+
+        f.call("o/r", Op::Delete(true)).await.unwrap();
+        // Its tokens and keys are gone with it; the cache does not outlive the delete.
+        assert!(live_keys(&f, "o/r").await.is_empty());
+        assert_eq!(live_keys(&f, "o/other").await, ["k2"]);
+        f.init("o/r").await;
+        assert_eq!(check(&pat, "o/r").await, Err(AuthError::Forbidden));
+        assert!(check(&deploy, "o/r").await.is_err());
+        // A pattern grant is configuration of the owner, not of one repository: it stays.
+        check(&wild, "o/r").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rename_moves_access_and_a_wildcard_is_untouched() {
+        use crate::authz::token_store::{
+            NewToken, TokenKey, TokenKind, TokenStore, TokenStoreAuthz,
+        };
+        use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken};
+
+        let f = fx().await;
+        f.init("o/a").await;
+        let store = Arc::new(TokenStore::new(
+            f.registry.pool().clone(),
+            TokenKey::generate().unwrap(),
+        ));
+        let authz = TokenStoreAuthz::new(store.clone());
+        let mut secrets = Vec::new();
+        for (kind, user, repos) in [
+            (TokenKind::Pat, Some("alice"), vec!["o/a", "o/keep"]),
+            (TokenKind::Deploy, None, vec!["o/a"]),
+            (TokenKind::Pat, Some("bob"), vec!["o/*"]),
+        ] {
+            secrets.push(
+                store
+                    .create(&NewToken {
+                        kind,
+                        user: user.map(str::to_owned),
+                        repos: repos.iter().map(|r| (*r).to_owned()).collect(),
+                        access: Access::Write,
+                        expires_in: None,
+                        label: String::new(),
+                    })
+                    .await
+                    .unwrap()
+                    .secret()
+                    .to_owned(),
+            );
+        }
+        let [pat, deploy, wild] = [&secrets[0], &secrets[1], &secrets[2]];
+        let check = |t: &str, repo: &str| {
+            let t = BearerToken::new(t).unwrap();
+            let authz = &authz;
+            let repo = repo.to_owned();
+            async move { authz.authorize(Some(&t), &repo, Access::Read).await }
+        };
+        deploy_key(&f, "k1", "o/a").await;
+        for t in [pat, deploy, wild] {
+            check(t, "o/a").await.unwrap();
+        }
+
+        f.call("o/a", Op::RenameTo("o/b".into())).await.unwrap();
+        assert_eq!(live_keys(&f, "o/a").await, Vec::<String>::new());
+        assert_eq!(live_keys(&f, "o/b").await, ["k1"]);
+        // Access moved with the repository; a new repository on the old name has none.
+        check(pat, "o/b").await.unwrap();
+        check(deploy, "o/b").await.unwrap();
+        check(pat, "o/keep").await.unwrap();
+        assert!(check(deploy, "o/a").await.is_err());
+        f.init("o/a").await;
+        assert_eq!(check(pat, "o/a").await, Err(AuthError::Forbidden));
+        assert!(check(deploy, "o/a").await.is_err());
+        // The wildcard is the same row as before: it covers both names by pattern.
+        check(wild, "o/a").await.unwrap();
+        check(wild, "o/b").await.unwrap();
+        let wild_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM auth_token_grants WHERE repo = 'o/*'")
+                .fetch_one(f.registry.pool())
+                .await
+                .unwrap();
+        assert_eq!(wild_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn init_and_rename_refuse_a_name_that_still_has_grants_or_keys() {
+        let f = fx().await;
+        f.init("o/a").await;
+        // Access recorded for a name that is not a repository yet (or any more).
+        sqlx::query(
+            "INSERT INTO auth_token_grants (token_id, repo, access) VALUES ('t', 'o/new', 'write')",
+        )
+        .execute(f.registry.pool())
+        .await
+        .unwrap();
+        deploy_key(&f, "k9", "o/fork").await;
+        for n in ["o/new", "o/fork"] {
+            let e = f
+                .call(n, Op::Init(wire::InitOp::default()))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{n}");
+            assert!(f.registry.open(&name(n)).await.is_err(), "{n}");
+            let e = f.call("o/a", Op::RenameTo(n.into())).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::FailedPrecondition, "{n}");
+        }
+        // The refused rename changed nothing.
+        assert!(f.registry.open(&name("o/a")).await.is_ok());
+        // A revoked key does not count.
+        sqlx::query("UPDATE ssh_keys SET revoked = 1 WHERE id = 'k9'")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        f.call("o/fork", Op::Init(wire::InitOp::default()))
+            .await
+            .unwrap();
     }
 
     // -------------------------------------------------------------------------- size, verify

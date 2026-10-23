@@ -243,6 +243,10 @@ pub(crate) fn ingest_status(e: IngestError) -> Status {
             rpc(RpcError::PathPolicy(info(vec![path])))
         }
         IngestError::TooLarge => Status::resource_exhausted(e.to_string()),
+        IngestError::Stale { gone: true } => Status::not_found("no such repository"),
+        IngestError::Stale { gone: false } => {
+            Status::failed_precondition("the repository was renamed or replaced; retry")
+        }
         e => internal("ingest", &e),
     }
 }
@@ -664,6 +668,7 @@ impl ServerRefs {
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+        self.registry.guard(&mut tx, entry).await?;
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
