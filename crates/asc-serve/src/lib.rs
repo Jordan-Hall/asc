@@ -4,6 +4,7 @@
 //! handler group on `Extensions::handlers`, a router on `Extensions::http`, a service on
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
+pub mod classify;
 pub mod config;
 pub mod forgejo;
 pub mod gc;
@@ -148,7 +149,8 @@ impl Authorizer for DenyAll {
 fn register_all(ext: &Extensions, registry: &Arc<Registry>, limits: &config::Limits) {
     limits::register(ext, limits);
     update::register(ext, registry);
-    read::register(ext, registry);
+    let hooks = read::register(ext, registry);
+    classify::register(ext, registry, &hooks);
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
