@@ -32,6 +32,7 @@ use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
 
 use self::message::Cleanup;
 use super::format::date::Mode as DateMode;
+use super::status;
 use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use crate::ext::{self, OpId};
 use crate::hooks_runner::{Gate, Hook, HookEnv, MsgSource, RewriteKind, Runner};
@@ -511,6 +512,13 @@ async fn flow(
     }
     // Step 3: the stage set as the hook left it.
     let rows = stage::overlay(&ws.db, ws_id, use_set).await?;
+    // The root and the changes, from the rows as re-read; no file content is read.
+    let parents: Vec<ChangesetId> = match (&head_cs, a.amend) {
+        (Some(c), true) => c.parents.clone(),
+        _ => head.into_iter().chain(merge.iter().copied()).collect(),
+    };
+    let changes = stagebuild::rows_to_changes(ws, head_root, &rows).await?;
+    let root = engine.apply(head_root, &changes).await?;
 
     // Step 4: COMMIT_EDITMSG, prepare-commit-msg, the editor, commit-msg.
     let comment = message::comment_char(ctx);
@@ -519,6 +527,12 @@ async fn flow(
         Head::Branch(b) => Some(b.as_str()),
         Head::Detached(_) => None,
     };
+    let idents = ident::resolve(
+        ctx,
+        a.author.as_deref(),
+        a.date.as_deref(),
+        head_cs.as_ref().filter(|_| a.amend).map(|c| &c.author),
+    )?;
     let mut buf = initial.text.clone();
     if use_editor {
         if !buf.is_empty() && !buf.ends_with(b"\n") {
@@ -530,9 +544,16 @@ async fn flow(
         } else {
             None
         };
-        buf.extend_from_slice(&message::template(comment, branch, diff.as_deref()));
+        let status = status::long_text(ctx, ws, Some(comment)).await?;
+        let idents_shown = template_idents(comment, &idents, author_date_is_interesting(a));
+        buf.extend_from_slice(&message::template(comment, &idents_shown, &status, diff.as_deref()));
     }
     std::fs::write(&edit_file, &buf)?;
+    // git stops here, before prepare-commit-msg and the editor, when nothing would be committed.
+    if !a.amend && !a.allow_empty && merge.is_empty() && root == head_root {
+        std::io::stdout().write_all(&status::long_text(ctx, ws, None).await?)?;
+        return Ok(Flow::Abort(1));
+    }
     let prepare = Hook::PrepareCommitMsg {
         file: edit_file.clone(),
         source: initial.source.clone(),
@@ -564,28 +585,12 @@ async fn flow(
         return Ok(Flow::Abort(1));
     }
 
-    // Step 5: the root and the changes, from the rows as re-read; no file content is read.
-    let parents: Vec<ChangesetId> = match (&head_cs, a.amend) {
-        (Some(c), true) => c.parents.clone(),
-        _ => head.into_iter().chain(merge.iter().copied()).collect(),
-    };
-    let changes = stagebuild::rows_to_changes(ws, head_root, &rows).await?;
-    let root = engine.apply(head_root, &changes).await?;
-    if !a.amend && !a.allow_empty && merge.is_empty() && root == head_root {
-        println!("{}", nothing_to_commit(&head_ref, head));
-        return Ok(Flow::Abort(1));
-    }
+    // Step 5: the first parent's root and the pending copies.
     let first_parent_root = match parents.first() {
         Some(&p) => engine.get_changeset(p).await?.root,
         None => CliEngine::empty_tree_id(),
     };
     let copies = pending_copies(ws, first_parent_root, root).await?;
-    let idents = ident::resolve(
-        ctx,
-        a.author.as_deref(),
-        a.date.as_deref(),
-        head_cs.as_ref().filter(|_| a.amend).map(|c| &c.author),
-    )?;
 
     // Step 6: sign, write, derive, move the branch, clear the stage.
     let mut new = NewChangeset {
@@ -756,21 +761,6 @@ async fn flow(
     Ok(Flow::Committed)
 }
 
-/// git's text when there is nothing to commit.
-fn nothing_to_commit(head_ref: &Head, head: Option<ChangesetId>) -> String {
-    let on = match head_ref {
-        Head::Branch(b) => format!("On branch {b}"),
-        Head::Detached(oid) => format!("HEAD detached at {}", &oid.to_string()[..7]),
-    };
-    if head.is_none() {
-        format!(
-            "{on}\n\nInitial commit\n\nnothing to commit (create/copy files and use \"git add\" to track)"
-        )
-    } else {
-        format!("{on}\nnothing to commit, working tree clean")
-    }
-}
-
 /// git's `author_date_is_interesting`: the author date came from a commit being amended or from
 /// `--date`, so the template and the summary show it.
 fn author_date_is_interesting(a: &Args) -> bool {
@@ -780,6 +770,23 @@ fn author_date_is_interesting(a: &Args) -> bool {
 /// git's default date format for an identity's time.
 fn default_date(sig: &Signature) -> String {
     DateMode::default().render(sig.time(), sig.tz_min(), sig.time())
+}
+
+/// The template lines that name the author when they differ from the committer: `Author:` and
+/// `Date:`, followed by a blank comment line; empty when there is nothing to show.
+fn template_idents(comment: u8, idents: &ident::Idents, date: bool) -> Vec<u8> {
+    let c = comment as char;
+    let mut out = String::new();
+    if ident::display(&idents.author) != ident::display(&idents.committer) {
+        out.push_str(&format!("{c} Author:    {}\n", ident::display(&idents.author)));
+    }
+    if date {
+        out.push_str(&format!("{c} Date:      {}\n", default_date(&idents.author)));
+    }
+    if !out.is_empty() {
+        out.push_str(&format!("{c}\n"));
+    }
+    out.into_bytes()
 }
 
 /// The `asc mv` renames whose destination is written by this commit and whose source is in the

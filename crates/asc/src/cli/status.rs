@@ -176,6 +176,8 @@ struct Opts {
     relative: bool,
     quote_high: bool,
     optional_locks: bool,
+    /// The text goes into the commit message template (git's `commit_template`).
+    template: bool,
     /// The program name hints print (`git` or `asc`).
     prog: &'static str,
     /// The current directory below the work tree root, `""` or `a/b/`.
@@ -315,6 +317,7 @@ fn options(ctx: &Ctx, ws: &WsCtx, a: &Cli) -> Result<Opts> {
         relative: !matches!(format, Format::V1 | Format::Json) && cfg.bool("status.relativePaths").unwrap_or(true),
         quote_high: cfg.bool("core.quotePath").unwrap_or(true),
         optional_locks: ctx.env.optional_locks,
+        template: false,
         prog: ctx.prog.name(),
         prefix,
         spec,
@@ -1276,7 +1279,7 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     }
     if r.initial {
         p.line("");
-        p.line("No commits yet");
+        p.line(if o.template { "Initial commit" } else { "No commits yet" });
         p.line("");
     }
 
@@ -1370,6 +1373,9 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
         listed(p, "Ignored files", "git add -f <file>...", &r.ignored);
     }
     let committable = !staged.is_empty();
+    if o.template {
+        return; // the template has no summary line (git's `nowarn`)
+    }
     if o.untracked == UntrackedMode::No && committable {
         let hint = if o.u_hint { " (use -u option to show untracked files)" } else { "" };
         p.line(&format!("Untracked files not listed{hint}"));
@@ -1568,6 +1574,41 @@ fn json_line(r: &Report) -> Result<Vec<u8>> {
 }
 
 // ----------------------------------------------------------------------- run
+
+/// The long report as `git commit` shows it. With `template`, it is the text of the commit
+/// message template: no hints, no summary line, "Initial commit", and every line behind the
+/// comment character `comment`. Otherwise it is what `git status` prints for "nothing to commit".
+pub(crate) async fn long_text(ctx: &Ctx, ws: &WsCtx, template: Option<u8>) -> Result<Vec<u8>> {
+    let cli = <Cli as clap::Parser>::try_parse_from(["status"]).map_err(|e| fatal(e.to_string()))?;
+    let mut o = options(ctx, ws, &cli)?;
+    o.format = Format::Long;
+    o.z = false;
+    if template.is_some() {
+        o.hints = false;
+        o.template = true;
+    }
+    let report = gather(ctx, ws, &o).await?;
+    let mut p = Printer { o: &o, out: Vec::new() };
+    print_long(&mut p, &report);
+    Ok(match template {
+        Some(c) => comment_lines(&p.out, c),
+        None => p.out,
+    })
+}
+
+/// git's `status_printf` with `display_comment_prefix`: an empty line becomes the bare comment
+/// character, a tab-indented line follows it directly, any other line gets a space.
+fn comment_lines(text: &[u8], c: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + text.len() / 8);
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        out.push(c);
+        if !matches!(line.first(), Some(b'\n' | b'\t')) {
+            out.push(b' ');
+        }
+        out.extend_from_slice(line);
+    }
+    out
+}
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let a = args.0;

@@ -110,17 +110,15 @@ pub fn subject(message: &[u8]) -> String {
 }
 
 /// What the editor shows below the message.
-pub fn template(comment: u8, branch: Option<&str>, verbose_diff: Option<&[u8]>) -> Vec<u8> {
+pub fn template(comment: u8, idents: &[u8], status: &[u8], verbose_diff: Option<&[u8]>) -> Vec<u8> {
     let c = comment as char;
-    let mut out = format!(
+    let mut bytes = format!(
         "{c} Please enter the commit message for your changes. Lines starting\n\
          {c} with '{c}' will be ignored, and an empty message aborts the commit.\n{c}\n"
-    );
-    match branch {
-        Some(b) => out.push_str(&format!("{c} On branch {b}\n{c}\n")),
-        None => out.push_str(&format!("{c} Not currently on any branch.\n{c}\n")),
-    }
-    let mut bytes = out.into_bytes();
+    )
+    .into_bytes();
+    bytes.extend_from_slice(idents);
+    bytes.extend_from_slice(status);
     if let Some(diff) = verbose_diff {
         bytes.extend_from_slice(
             format!(
