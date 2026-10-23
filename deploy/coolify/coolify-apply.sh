@@ -14,9 +14,20 @@
 #   --name      Coolify application name (default asc-serve-staging).
 #   --compose   compose file (default asc-serve.compose.yml next to this script).
 #
-# Also read from the environment: COOLIFY_APP_UUID (update this application instead of looking one
-# up by name), and for a first create COOLIFY_PROJECT_UUID, COOLIFY_SERVER_UUID,
-# COOLIFY_ENVIRONMENT_NAME (default production) and optionally COOLIFY_DESTINATION_UUID.
+#   --check-app-json FILE
+#               offline: check a saved `GET /api/v1/applications/<uuid>` answer against the
+#               COOLIFY_* identity below; exits non-zero on a mismatch. Sends nothing.
+#
+# Identity, required for --apply: COOLIFY_PROJECT_UUID, COOLIFY_ENVIRONMENT_NAME and
+# COOLIFY_SERVER_UUID (optionally COOLIFY_DESTINATION_UUID for a create).
+#
+# Create versus update, never by name alone:
+#   - COOLIFY_APP_UUID unset: create. The application list is read only to refuse when an
+#     application of that name already exists in this project and environment (or cannot be
+#     placed); the refusal prints its uuid.
+#   - COOLIFY_APP_UUID set: update. The application is read first and must report the same
+#     project, environment and server as the COOLIFY_* identity; any mismatch, or a field Coolify
+#     does not report, stops the script before anything is sent (so no secret reaches it).
 #
 # Secrets never appear in argv: the token goes to curl as a header file and every body as a
 # --data @file, both mode 0600 in a private temp directory that is removed on exit. Needs bash,
@@ -29,6 +40,7 @@ env_file=
 name=asc-serve-staging
 compose="$here/asc-serve.compose.yml"
 do_deploy=0
+check_json=
 
 die() {
   printf 'coolify-apply: %s\n' "$*" >&2
@@ -56,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       compose="${2:-}"
       shift
       ;;
+    --check-app-json)
+      check_json="${2:-}"
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -66,8 +82,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "${COOLIFY_URL:-}" && -n "${COOLIFY_TOKEN:-}" ]] || die "COOLIFY_URL and COOLIFY_TOKEN are required"
-[[ -n "$env_file" && -r "$env_file" ]] || die "--env-file FILE is required and must be readable"
-[[ -r "$compose" ]] || die "cannot read compose file $compose"
+if [[ -z "$check_json" ]]; then
+  [[ -n "$env_file" && -r "$env_file" ]] || die "--env-file FILE is required and must be readable"
+  [[ -r "$compose" ]] || die "cannot read compose file $compose"
+fi
 [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--name must be lowercase letters, digits and dashes"
 command -v python3 >/dev/null 2>&1 || die "python3 is required"
 
@@ -145,7 +163,7 @@ if kind == "create":
     body = {
         "project_uuid": os.environ.get("COOLIFY_PROJECT_UUID") or "<COOLIFY_PROJECT_UUID>",
         "server_uuid": os.environ.get("COOLIFY_SERVER_UUID") or "<COOLIFY_SERVER_UUID>",
-        "environment_name": os.environ.get("COOLIFY_ENVIRONMENT_NAME") or "production",
+        "environment_name": os.environ.get("COOLIFY_ENVIRONMENT_NAME") or "<COOLIFY_ENVIRONMENT_NAME>",
         "name": name,
         "description": "asc serve staging (SPEC Stage 1); managed by deploy/coolify/coolify-apply.sh",
         "docker_compose_raw": raw,
@@ -192,15 +210,70 @@ if mode == "message":
 elif mode == "uuid":
     if isinstance(data, dict):
         print(data.get("uuid", ""))
-elif mode.startswith("find:"):
-    want = mode[5:]
-    for app in data if isinstance(data, list) else []:
-        if isinstance(app, dict) and app.get("name") == want:
-            print(app.get("uuid", ""))
-            break
+else:
+    import os
+
+    def dig(obj, keys):
+        for k in keys:
+            obj = obj.get(k) if isinstance(obj, dict) else None
+        return obj if isinstance(obj, str) and obj else None
+
+    def ident(app):
+        return {
+            "project": dig(app, ["environment", "project", "uuid"]) or dig(app, ["project_uuid"]),
+            "environment": dig(app, ["environment", "name"]) or dig(app, ["environment_name"]),
+            "server": dig(app, ["destination", "server", "uuid"])
+            or dig(app, ["server", "uuid"])
+            or dig(app, ["server_uuid"]),
+        }
+
+    ENVVAR = {"project": "COOLIFY_PROJECT_UUID", "environment": "COOLIFY_ENVIRONMENT_NAME", "server": "COOLIFY_SERVER_UUID"}
+    want = {
+        "project": os.environ.get("COOLIFY_PROJECT_UUID", ""),
+        "environment": os.environ.get("COOLIFY_ENVIRONMENT_NAME", ""),
+        "server": os.environ.get("COOLIFY_SERVER_UUID", ""),
+    }
+    if mode == "verify":
+        # Fails closed: a field Coolify does not report counts as a mismatch.
+        have = ident(data)
+        problems = []
+        for k, v in want.items():
+            if not v:
+                problems.append(f"{ENVVAR[k]} is not set")
+            elif have[k] is None:
+                problems.append(f"Coolify does not report the application's {k}; it cannot be verified")
+            elif have[k] != v:
+                problems.append(f"the application's {k} is '{have[k]}', not the expected '{v}'")
+        print("\n".join(problems))
+        sys.exit(3 if problems else 0)
+    elif mode.startswith("same-name:"):
+        # Applications of this name that are, or could be, in the target project and environment.
+        for app in data if isinstance(data, list) else []:
+            if not isinstance(app, dict) or app.get("name") != mode[10:]:
+                continue
+            have = ident(app)
+            if have["project"] in (None, want["project"]) and have["environment"] in (None, want["environment"]):
+                print(app.get("uuid", ""))
 PY
 
 build() { python3 -I "$work/build.py" "$1" "$env_file" "$compose" "$name" "${@:2}"; }
+
+# verify_identity FILE: FILE is a Coolify application answer; it must match the COOLIFY_* identity.
+verify_identity() {
+  local out
+  if out="$(python3 -I "$work/pick.py" "$1" verify)"; then
+    return 0
+  fi
+  printf '%s\n' "$out" | sed 's/^/  - /' >&2
+  return 1
+}
+
+if [[ -n "$check_json" ]]; then
+  [[ -r "$check_json" ]] || die "cannot read $check_json"
+  verify_identity "$check_json" || die "application does not match the COOLIFY_* identity"
+  echo "ok: application matches the COOLIFY_* identity"
+  exit 0
+fi
 
 # --- validation ------------------------------------------------------------------------------
 problems="$(build check || true)"
@@ -226,20 +299,31 @@ show() { # method path [kind]
   echo
 }
 
+missing_identity=
+for v in COOLIFY_PROJECT_UUID COOLIFY_ENVIRONMENT_NAME COOLIFY_SERVER_UUID; do
+  [[ -n "${!v:-}" ]] || missing_identity="$missing_identity $v"
+done
+
 if [[ "$mode" == dry-run ]]; then
-  uuid="${COOLIFY_APP_UUID:-<application uuid>}"
+  uuid="${COOLIFY_APP_UUID:-<new application uuid>}"
   echo "DRY RUN: nothing is sent. Application '$name'."
+  if [[ -n "$missing_identity" ]]; then
+    echo "note: --apply would stop: not set:$missing_identity"
+  fi
   echo
   if [[ -z "${COOLIFY_APP_UUID:-}" ]]; then
-    echo "# 1. look the application up by name"
+    echo "# 1. CREATE (COOLIFY_APP_UUID is not set). Read the list only to refuse when an application"
+    echo "#    named '$name' already exists in project/environment (its uuid is printed for you to set)"
     show GET /api/v1/applications
-    echo "# 2. only when no application has that name: create it"
+    echo "# 2. create the application"
     show POST /api/v1/applications/dockercompose create
   else
-    echo "# 1-2. COOLIFY_APP_UUID is set: no lookup, no create"
-    echo
+    echo "# 1. UPDATE $uuid. Read it and require its project, environment and server to equal"
+    echo "#    COOLIFY_PROJECT_UUID, COOLIFY_ENVIRONMENT_NAME and COOLIFY_SERVER_UUID; stop on any"
+    echo "#    mismatch, before anything is sent"
+    show GET "/api/v1/applications/$uuid"
   fi
-  echo "# 3. set the compose file and the domain (also run right after a create)"
+  echo "# 3. set the compose file and the domain (a created application is read back and verified first)"
   show PATCH "/api/v1/applications/$uuid" update
   echo "# 4. store the environment"
   show PATCH "/api/v1/applications/$uuid/envs/bulk" envs
@@ -274,22 +358,32 @@ call() {
   echo "$method $path -> HTTP $status" >&2
 }
 
+[[ -z "$missing_identity" ]] || die "not set:$missing_identity (the target project, environment and server must be named)"
+
 uuid="${COOLIFY_APP_UUID:-}"
 if [[ -z "$uuid" ]]; then
+  # Create. The name is only checked for a clash; it never selects an application to update.
   call GET /api/v1/applications
-  uuid="$(python3 -I "$work/pick.py" "$work/resp" "find:$name")"
-fi
-if [[ -z "$uuid" ]]; then
-  : "${COOLIFY_PROJECT_UUID:?COOLIFY_PROJECT_UUID is required to create the application}"
-  : "${COOLIFY_SERVER_UUID:?COOLIFY_SERVER_UUID is required to create the application}"
+  clash="$(python3 -I "$work/pick.py" "$work/resp" "same-name:$name")"
+  if [[ -n "$clash" ]]; then
+    printf '%s\n' "$clash" | sed 's/^/  existing application: /' >&2
+    if [[ "$(printf '%s\n' "$clash" | wc -l)" -gt 1 ]]; then
+      die "more than one application is named '$name' in this project/environment; nothing was sent"
+    fi
+    die "an application named '$name' already exists; to update it set COOLIFY_APP_UUID=$clash (nothing was sent)"
+  fi
   call POST /api/v1/applications/dockercompose create
   uuid="$(python3 -I "$work/pick.py" "$work/resp" uuid)"
   [[ -n "$uuid" ]] || die "Coolify did not return an application uuid"
   echo "created application $uuid" >&2
-else
-  echo "updating application $uuid" >&2
 fi
 [[ "$uuid" =~ ^[A-Za-z0-9]+$ ]] || die "unexpected application uuid"
+
+# Whether it was just created or named by the operator, read it back and check where it lives
+# before the compose file or any environment value is sent.
+call GET "/api/v1/applications/$uuid"
+verify_identity "$work/resp" || die "application $uuid is not in the expected project/environment/server; nothing was sent"
+echo "application $uuid matches the project, environment and server" >&2
 
 call PATCH "/api/v1/applications/$uuid" update
 call PATCH "/api/v1/applications/$uuid/envs/bulk" envs
