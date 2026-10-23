@@ -209,6 +209,12 @@ impl<'a, O: Objects, R: Refs> Exporter<'a, O, R> {
         input: Option<&[u8]>,
         stdin_file: Option<File>,
     ) -> Result<(), ExportError> {
+        // No repo-less ambient state: a private scratch directory, a scrubbed environment.
+        let scratch = tempfile::Builder::new()
+            .prefix("asc-export-")
+            .tempdir()
+            .map_err(io("cannot create scratch directory"))?;
+        isolate(&mut cmd, scratch.path()).map_err(io("cannot prepare git environment"))?;
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
         cmd.stdin(match (&input, stdin_file) {
             (_, Some(f)) => Stdio::from(f),
@@ -462,6 +468,49 @@ impl<'t> Sink<'t> {
     }
 }
 
+/// Makes `cmd` (already carrying `--git-dir` as its first arguments) independent of the
+/// caller's environment: the environment is cleared down to PATH, the shim depth and (on
+/// Windows) SystemRoot; global and system config are empty; hooks and fsmonitor are off; git
+/// runs in `scratch` and may not discover a repository above it.
+fn isolate(cmd: &mut std::process::Command, scratch: &Path) -> std::io::Result<()> {
+    let depth = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "ASC_SHIM_DEPTH")
+        .and_then(|(_, v)| v.map(|v| v.to_owned()));
+    let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
+    let empty_config = scratch.join("empty-config");
+    std::fs::write(&empty_config, b"")?;
+    let empty_hooks = scratch.join("no-hooks");
+    std::fs::create_dir(&empty_hooks)?;
+    let mut hooks = std::ffi::OsString::from("core.hooksPath=");
+    hooks.push(&empty_hooks);
+    // `-c` options go before the subcommand, so the command is rebuilt around them.
+    let mut isolated = std::process::Command::new(cmd.get_program());
+    isolated
+        .env_clear()
+        .args(["-c", "core.fsmonitor=false", "-c"])
+        .arg(hooks)
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &empty_config)
+        .env("GIT_CONFIG_SYSTEM", &empty_config)
+        .env("GIT_CEILING_DIRECTORIES", scratch)
+        .env("HOME", scratch)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .current_dir(scratch);
+    if let Some(v) = depth {
+        isolated.env("ASC_SHIM_DEPTH", v);
+    }
+    for key in ["PATH", "SystemRoot"] {
+        if let Some(v) = std::env::var_os(key) {
+            isolated.env(key, v);
+        }
+    }
+    *cmd = isolated;
+    Ok(())
+}
+
 /// A pack being written to a temporary file; removed on drop.
 struct PackFile {
     out: BufWriter<File>,
@@ -567,4 +616,44 @@ fn pack_header(count: u32) -> [u8; 12] {
     h[4..8].copy_from_slice(&2u32.to_be_bytes());
     h[8..].copy_from_slice(&count.to_be_bytes());
     h
+}
+
+#[cfg(test)]
+mod tests {
+    use super::isolate;
+    use crate::realgit::RealGit;
+
+    /// A hostile `GIT_CONFIG_PARAMETERS` set on the command must not reach git, while the
+    /// forced `-c` options do.
+    #[test]
+    fn hostile_environment_does_not_reach_git() {
+        let git = RealGit::resolve(None, None).expect("real git");
+        let repo = tempfile::tempdir().expect("tempdir");
+        let init = git
+            .command()
+            .unwrap()
+            .args(["init", "-q", "--bare"])
+            .arg(repo.path())
+            .status()
+            .expect("init");
+        assert!(init.success());
+        let scratch = tempfile::tempdir().expect("scratch");
+        let mut cmd = git.command().unwrap();
+        cmd.arg("--git-dir")
+            .arg(repo.path())
+            .args(["config", "--get-all", "core.fsmonitor"])
+            .env("GIT_CONFIG_PARAMETERS", "'core.fsmonitor'='evil'");
+        isolate(&mut cmd, scratch.path()).expect("isolate");
+        let out = cmd.output().expect("run");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "false");
+        let mut cmd = git.command().unwrap();
+        cmd.arg("--git-dir")
+            .arg(repo.path())
+            .args(["config", "--get", "core.hooksPath"])
+            .env("GIT_CONFIG_PARAMETERS", "'core.hooksPath'='evil'");
+        let scratch = tempfile::tempdir().expect("scratch");
+        isolate(&mut cmd, scratch.path()).expect("isolate");
+        let out = cmd.output().expect("run");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("no-hooks"));
+    }
 }

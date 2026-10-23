@@ -470,14 +470,10 @@ async fn no_response_carries_the_credential() {
 /// which makes git run its credential helper, and the retry carries the helper's answer.
 #[tokio::test(flavor = "multi_thread")]
 async fn real_git_asks_its_credential_helper_after_the_challenge() {
-    if std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
+    let Ok(real_git) = asc_git::realgit::RealGit::resolve(None, None) else {
         eprintln!("git is not installed; skipping");
         return;
-    }
+    };
     let spy = Spy::new();
     let log: Arc<Mutex<Vec<(bool, u16)>>> = Arc::default();
     let seen = log.clone();
@@ -516,7 +512,9 @@ async fn real_git_asks_its_credential_helper_after_the_challenge() {
     let url = format!("http://{addr}/acme/web.git");
     let helper_arg = format!("credential.helper=!sh {}", fwd(&helper));
     let out = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("git")
+        real_git
+            .command()
+            .unwrap()
             .args(["-c", "credential.helper=", "-c", &helper_arg])
             .args(["ls-remote", &url])
             .env("GIT_TERMINAL_PROMPT", "0")
