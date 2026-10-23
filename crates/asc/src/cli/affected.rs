@@ -12,7 +12,7 @@ use std::process::{ExitCode, Stdio};
 use asc_core::id::ChangesetId;
 use asc_core::path::{Name, RepoPath};
 use asc_engine::history::HistoryApi;
-use asc_engine::projects::{AffectedQuery, AffectedResult, Error as ProjectsError};
+use asc_engine::projects::{AffectedQuery, AffectedResult, Error as ProjectsError, ProjectsApi};
 use asc_graph::affected::{self as algebra, ChangeKind, ChangedPath, Query, Reason, Side};
 use asc_graph::detect::{Claim, claim_of};
 use asc_graph::model::{
@@ -20,12 +20,14 @@ use asc_graph::model::{
 };
 use asc_graph::registry::DETECTORS;
 use asc_graph::select::Selector;
+use asc_state::state::repos::RemoteKind;
 
 use super::common::{CliError, Ctx, Result, WsCtx};
 use super::output::Output;
 use super::pager::PagerWant;
 use super::revparse::commit_of;
 use crate::native::NativeSpec;
+use crate::remote::projects::ServerProjects;
 
 #[path = "../fmt/affected.rs"]
 pub(super) mod fmt_affected;
@@ -535,6 +537,102 @@ fn matrix_by(a: &Args) -> Result<MatrixBy> {
     }
 }
 
+/// Where the answer comes from: the local engine, or an asc server (SPEC §12A.9).
+enum Source<'a> {
+    Local(&'a WsCtx),
+    /// A workspace whose server has both revisions; ids come from the local engine.
+    Pushed(&'a WsCtx, ServerProjects),
+    /// `--repo`: no workspace; ids come from the server.
+    Repo(ServerProjects),
+}
+
+impl Source<'_> {
+    fn api(&self) -> &dyn ProjectsApi {
+        match self {
+            Self::Local(ws) => &ws.engine,
+            Self::Pushed(_, s) | Self::Repo(s) => s,
+        }
+    }
+
+    async fn git_ids(&self, ids: [ChangesetId; 3]) -> Result<[String; 3]> {
+        match self {
+            Self::Local(ws) | Self::Pushed(ws, _) => Ok([
+                git_id(ws, ids[0]).await?,
+                git_id(ws, ids[1]).await?,
+                git_id(ws, ids[2]).await?,
+            ]),
+            Self::Repo(s) => {
+                let client = s
+                    .client()
+                    .await
+                    .map_err(|m| CliError::Fatal(format!("asc: {m}")))?;
+                let map = HistoryApi::git_map(client, &ids, &[])
+                    .await
+                    .map_err(|e| CliError::Fatal(e.to_string()))?;
+                let mut out = ids.map(|c| c.to_string());
+                for (o, g) in out.iter_mut().zip(&map.asc_to_git) {
+                    if let Some(g) = g {
+                        *o = g.to_string();
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
+/// The server of this repository: the clone's remote, else an `asc+` URL of `remote.origin.url`
+/// (a repository made with `init` and `remote add`). Other URLs are not probed.
+fn server_url(ctx: &Ctx, ws: &WsCtx) -> Option<String> {
+    let repo = &ws.repo.repo;
+    if repo.remote_kind == RemoteKind::Server {
+        return repo.remote_url.clone();
+    }
+    crate::remote::server::cfg_get(ctx.config.file(), "remote.origin.url")
+        .filter(|u| u.starts_with("asc+"))
+}
+
+/// The stored URL a `--repo` value names: a URL as typed, or `owner/name` on the configured
+/// server (`ASC_SERVER`, `asc.server`, else the origin of `remote.origin.url`).
+fn repo_url(ctx: &Ctx, text: &str) -> Result<String> {
+    if text.contains("://") {
+        return Ok(text.to_owned());
+    }
+    asc_rpc::server::RepoName::parse(text).map_err(|_| {
+        usage(format!(
+            "invalid value '{text}' for --repo (expected owner/name)"
+        ))
+    })?;
+    let file = ctx.config.file();
+    let base = std::env::var("ASC_SERVER")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| crate::remote::server::cfg_get(file, "asc.server"))
+        .or_else(|| {
+            let origin = crate::remote::server::cfg_get(file, "remote.origin.url")?;
+            let (scheme, rest) = origin.split_once("://")?;
+            let host = rest.split('/').next()?;
+            Some(format!("{scheme}://{host}"))
+        })
+        .ok_or_else(|| {
+            CliError::Fatal(
+                "asc: --repo owner/name needs a server: set ASC_SERVER or asc.server, or pass a URL"
+                    .into(),
+            )
+        })?;
+    Ok(format!("{}/{text}", base.trim_end_matches('/')))
+}
+
+async fn resolve_on(client: &asc_rpc::client::RpcClient, word: &str) -> Result<ChangesetId> {
+    HistoryApi::resolve(client, &[word.to_owned()])
+        .await
+        .map_err(|e| CliError::Fatal(e.to_string()))?
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or_else(|| CliError::Fatal(format!("bad revision '{word}'")))
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if let Some(extra) = a.rest.first() {
         return Err(usage(format!(
@@ -544,20 +642,37 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     let format = format_of(&a)?;
     let by = matrix_by(&a)?;
-    if a.repo.is_some() {
-        return Err(CliError::Fatal(
-            "asc: --repo needs the server path, which this build does not have".into(),
-        ));
-    }
     let eco = ecosystems(&a.types)?;
     let selectors = selectors(&a.select)?;
-    let ws = ctx.ws()?;
-    let head = rev(ctx, a.head.as_deref().unwrap_or("HEAD")).await?;
-    let base = match a.base.as_deref() {
-        Some(word) => rev(ctx, word).await?,
-        None => default_base(ctx, ws).await?,
+    let (src, head, base) = if let Some(repo) = a.repo.as_deref() {
+        if a.uncommitted {
+            return Err(usage("--uncommitted conflicts with --repo"));
+        }
+        let url = repo_url(ctx, repo)?;
+        let remote = crate::remote::server::open_for(ctx, Some(&url)).await?;
+        let client = remote.client();
+        let head = resolve_on(&client, a.head.as_deref().unwrap_or("HEAD")).await?;
+        let base = resolve_on(&client, a.base.as_deref().unwrap_or("refs/heads/master")).await?;
+        (Source::Repo(ServerProjects::ready(client)), head, base)
+    } else {
+        let ws = ctx.ws()?;
+        let head = rev(ctx, a.head.as_deref().unwrap_or("HEAD")).await?;
+        let base = match a.base.as_deref() {
+            Some(word) => rev(ctx, word).await?,
+            None => default_base(ctx, ws).await?,
+        };
+        let mut src = Source::Local(ws);
+        if !a.uncommitted
+            && let Some(url) = server_url(ctx, ws)
+            && let Some(server) = ServerProjects::lazy(&url)
+            && server.pushed(&[base, head]).await
+        {
+            src = Source::Pushed(ws, server);
+        }
+        (src, head, base)
     };
-    let view = ws.engine.project_graph(head).await.map_err(projects_err)?;
+    let api = src.api();
+    let view = api.project_graph(head).await.map_err(projects_err)?;
     if !selectors.is_empty() {
         // A selector that matches nothing is an error (exit 1), not an empty result.
         let chosen =
@@ -578,10 +693,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         select: a.select.clone(),
         with_hashes: a.hashes,
     };
-    let result = if a.uncommitted {
-        uncommitted(ctx, ws, &q, &selectors).await?
-    } else {
-        ws.engine.affected(&q).await.map_err(projects_err)?
+    let result = match &src {
+        Source::Local(ws) if a.uncommitted => uncommitted(ctx, ws, &q, &selectors).await?,
+        _ => api.affected(&q).await.map_err(projects_err)?,
     };
     let graph = &*view.graph;
     let (ids, shape) = (graph.display_ids(), Shape::new(graph));
@@ -593,10 +707,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             row_of(graph, &ids, &shape, p, reasons)
         })
         .collect();
+    let [git_base, git_head, git_merge_base] = src
+        .git_ids([result.base, result.head, result.merge_base])
+        .await?;
     let report = Report {
-        base: git_id(ws, result.base).await?,
-        head: git_id(ws, result.head).await?,
-        merge_base: git_id(ws, result.merge_base).await?,
+        base: git_base,
+        head: git_head,
+        merge_base: git_merge_base,
         all: result.all,
         rows,
         removed: result.removed.iter().map(|r| r.id.clone()).collect(),
