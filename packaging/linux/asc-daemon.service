@@ -1,0 +1,21 @@
+# systemd user unit for the asc daemon (SPEC 9.1, 16.2). install.sh copies this to
+# ~/.config/systemd/user/ with @PREFIX@ replaced. The CLI also starts the daemon on demand;
+# this unit only keeps it up across logins.
+[Unit]
+Description=asc daemon
+Documentation=https://forgejo.asc.invalid/asc/asc
+
+[Service]
+Type=simple
+ExecStart=@PREFIX@/current/asc daemon run
+Restart=on-failure
+RestartSec=5
+# The daemon works only on the user's own files.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h
+
+[Install]
+WantedBy=default.target

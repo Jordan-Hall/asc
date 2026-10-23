@@ -1,0 +1,96 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  asc MSI (SPEC 16.2, 11.4), built by cargo-wix (see release.yml)
+  (cargo-wix supplies Version, Platform and CargoTargetBinDir).
+
+  Layout: [ProgramFiles64]\ASC\asc\<ver>\{asc.exe, scripts, shim\} and the junction
+  [ProgramFiles64]\ASC\asc\current to <ver>. Machine PATH gets [..]\current always. With the
+  optional feature "Use asc for git commands", [..]\current\shim goes on the machine PATH
+  immediately before Git\cmd (register-task.ps1 -Action Shim, which also writes the ~/.bashrc
+  block for Git Bash). The feature is off by default:
+  `msiexec /i asc.msi USE_ASC_SHIM=1` or `ADDLOCAL=ALL`.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product Id='*' Name='asc' UpgradeCode='F6689E82-2F20-41F3-933B-626D6F684539'
+           Manufacturer='ASC' Language='1033' Codepage='1252' Version='$(var.Version)'>
+    <Package Id='*' Keywords='Installer' Description='asc source control' Manufacturer='ASC'
+             InstallerVersion='450' Languages='1033' Compressed='yes' SummaryCodepage='1252'
+             InstallScope='perMachine' Platform='$(var.Platform)' />
+
+    <!-- A newer version installs beside the old one; the old directory goes with its package. -->
+    <MajorUpgrade Schedule='afterInstallExecute'
+                  DowngradeErrorMessage='A newer version of asc is already installed.' />
+    <MediaTemplate EmbedCab='yes' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='ASCDIR' Name='ASC'>
+          <Directory Id='ASCPREFIX' Name='asc'>
+            <Component Id='MachinePath' Guid='A495AA12-AC7C-40C2-9B3D-50E09AE31D29' Win64='yes'>
+              <CreateFolder />
+              <!-- PATH points at the junction, so it never changes between versions. -->
+              <Environment Id='AscPath' Name='PATH' Value='[ASCPREFIX]current' Permanent='no' Part='last' Action='set' System='yes' />
+            </Component>
+            <Directory Id='VERSIONDIR' Name='$(var.Version)'>
+              <Component Id='AscExe' Guid='F737EFF9-700C-48AE-B256-D3D93A34DDC1' Win64='yes'>
+                <File Id='AscExeFile' Name='asc.exe' Source='$(var.CargoTargetBinDir)\asc.exe' KeyPath='yes' />
+              </Component>
+              <Component Id='Scripts' Guid='4C1650EE-7326-413A-A8E5-9470E7B2FC4D' Win64='yes'>
+                <File Id='RegisterTask' Name='register-task.ps1' Source='packaging\windows\register-task.ps1' KeyPath='yes' />
+                <File Id='Defender' Name='defender.ps1' Source='packaging\windows\defender.ps1' />
+              </Component>
+              <!-- The private shim dir always exists, even when the shim is not on PATH. -->
+              <Directory Id='SHIMDIR' Name='shim'>
+                <Component Id='ShimDir' Guid='B3303831-B88A-4F82-BEF7-4F4970C84A89' Win64='yes'>
+                  <CreateFolder />
+                </Component>
+                <Component Id='GitShim' Guid='B4725A3F-49D2-48EA-A62D-A276677C17F8' Win64='yes'>
+                  <File Id='GitShimFile' Name='git.exe' Source='$(var.CargoTargetBinDir)\asc.exe' KeyPath='yes' />
+                </Component>
+              </Directory>
+            </Directory>
+          </Directory>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='Main' Title='asc' Level='1' Absent='disallow' ConfigurableDirectory='ASCPREFIX'>
+      <ComponentRef Id='AscExe' />
+      <ComponentRef Id='Scripts' />
+      <ComponentRef Id='ShimDir' />
+      <ComponentRef Id='MachinePath' />
+    </Feature>
+    <Feature Id='Shim' Title='Use asc for git commands' Level='2'
+             Description='Put the git shim before Git for Windows on PATH (SPEC 11.4).'>
+      <Condition Level='1'>USE_ASC_SHIM = 1</Condition>
+      <ComponentRef Id='GitShim' />
+    </Feature>
+
+    <!-- Windows Projected File System (ignored where the optional feature is absent). -->
+    <CustomAction Id='EnableProjFS' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='ignore'
+      ExeCommand='"[SystemFolder]dism.exe" /Online /Enable-Feature /FeatureName:Client-ProjFS /NoRestart /Quiet' />
+    <CustomAction Id='Junction' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='check'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]register-task.ps1" -Action Junction -Prefix "[ASCPREFIX]\" -Version "$(var.Version)"' />
+    <CustomAction Id='LogonTask' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='check'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]register-task.ps1" -Action Task -Prefix "[ASCPREFIX]\" -Version "$(var.Version)"' />
+    <CustomAction Id='DefenderAdd' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='ignore'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]defender.ps1" -Action Add -Prefix "[ASCPREFIX]\"' />
+    <CustomAction Id='ShimOn' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='check'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]register-task.ps1" -Action Shim -Prefix "[ASCPREFIX]\" -Version "$(var.Version)"' />
+    <CustomAction Id='Unregister' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='ignore'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]register-task.ps1" -Action Unregister -Prefix "[ASCPREFIX]\"' />
+    <CustomAction Id='DefenderRemove' Directory='VERSIONDIR' Execute='deferred' Impersonate='no' Return='ignore'
+      ExeCommand='"[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "[VERSIONDIR]defender.ps1" -Action Remove -Prefix "[ASCPREFIX]\"' />
+
+    <InstallExecuteSequence>
+      <Custom Action='EnableProjFS' After='InstallFiles'>NOT Installed</Custom>
+      <Custom Action='Junction' After='EnableProjFS'>NOT REMOVE</Custom>
+      <Custom Action='LogonTask' After='Junction'>NOT REMOVE</Custom>
+      <Custom Action='DefenderAdd' After='LogonTask'>NOT REMOVE</Custom>
+      <Custom Action='ShimOn' After='DefenderAdd'>&amp;Shim = 3</Custom>
+      <!-- Not on an upgrade: the new version's registrations must survive the old one's removal. -->
+      <Custom Action='Unregister' Before='RemoveFiles'>REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action='DefenderRemove' Before='RemoveFiles'>REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>

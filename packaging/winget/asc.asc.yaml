@@ -1,0 +1,7 @@
+# winget version manifest (singleton files are not used: version, installer and locale are separate).
+# release.yml replaces @VERSION@ and @SHA256@ and publishes the result with the release.
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+DefaultLocale: en-GB
+ManifestType: version
+ManifestVersion: 1.6.0

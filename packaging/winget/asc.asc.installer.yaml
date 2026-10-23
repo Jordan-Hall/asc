@@ -1,0 +1,20 @@
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+MinimumOSVersion: 10.0.17763.0
+InstallerType: wix
+Scope: machine
+InstallModes:
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ElevationRequirement: elevatesSelf
+Installers:
+  - Architecture: x64
+    InstallerUrl: "@RELEASES_URL@/@VERSION@/asc-@VERSION@-x86_64-pc-windows-msvc.msi"
+    InstallerSha256: "@SHA256@"
+    InstallerSwitches:
+      # The optional shim: winget install asc.asc --custom "USE_ASC_SHIM=1"
+      Silent: /qn
+      SilentWithProgress: /qb
+ManifestType: installer
+ManifestVersion: 1.6.0
