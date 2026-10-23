@@ -83,6 +83,9 @@ scenarios! {
     stash_paths = "stash-paths",
     stash_conflict = "stash-conflict",
     stash_plumbing = "stash-plumbing",
+    remote_bucket = "remote-bucket",
+    push_reject = "push-reject",
+    fetch_agent_refs = "fetch-agent-refs",
 }
 
 #[test]
