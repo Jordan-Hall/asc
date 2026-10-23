@@ -23,7 +23,8 @@
 //!   stored answer. Without `update_ref` the replay is deterministic, so a repeat stores the
 //!   same ids, and the result is ingested.
 //!
-//! The service has already checked write access on the repository and the `x-asc-op-id` header.
+//! The service has already checked write access on the repository, read access on a head
+//! repository (before this handler looks at its namespace) and the `x-asc-op-id` header.
 //! Whole-file merge buffers are reserved from the text budget first. The resolution list, the
 //! inline bytes it carries and the stack are bounded by constants below.
 
@@ -123,6 +124,20 @@ fn wire_pairs(pairs: &[(ChangesetId, ChangesetId)]) -> Vec<wire::Rewrite> {
         .collect()
 }
 
+/// What the service answers a caller without read access to the head repository.
+fn refused() -> Status {
+    Status::from(asc_rpc::auth::AuthError::Forbidden)
+}
+
+/// A `NOT_FOUND` about the head repository answers as a refusal does.
+fn hide_missing(e: Status) -> Status {
+    if e.code() == tonic::Code::NotFound {
+        refused()
+    } else {
+        e
+    }
+}
+
 fn kept_extra(extra: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
     extra
         .iter()
@@ -217,7 +232,12 @@ impl ServerMutations {
     }
 
     /// The changeset `head` names; a head in another repository is resolved there and its
-    /// closure copied here (`CopyClosure` checks its own rights on both sides).
+    /// closure copied here.
+    ///
+    /// The service has already checked `Access::Read` on that repository for the caller (the
+    /// check `CopyClosure` makes on its source), before this runs. Here a repository or a
+    /// revision that is not there answers exactly what that check answers for a refused caller,
+    /// so no reply tells a missing repository or revision from a private one.
     async fn rebase_head(
         &self,
         o: &Opened,
@@ -231,19 +251,26 @@ impl ServerMutations {
         if name == ctx.repo {
             return self.rev(o, &req.head).await;
         }
-        let source = self.registry.open(&name).await.map_err(registry_status)?;
+        let source = self
+            .registry
+            .open(&name)
+            .await
+            .map_err(|e| hide_missing(registry_status(e)))?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &source);
-        let spec = ids.rev_in(&req.head, &source.default_branch).await?;
+        let spec = ids
+            .rev_in(&req.head, &source.default_branch)
+            .await
+            .map_err(hide_missing)?;
         let head = source
             .backend
             .engine()
             .resolve(std::slice::from_ref(&spec))
             .await
-            .map_err(graph_status)?
+            .map_err(|e| hide_missing(graph_status(e)))?
             .into_iter()
             .next()
             .flatten()
-            .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))?;
+            .ok_or_else(refused)?;
         MutationsHandler::copy_closure(
             self,
             ctx,
@@ -259,7 +286,8 @@ impl ServerMutations {
                 changesets: vec![Bytes::copy_from_slice(head.as_bytes())],
             },
         )
-        .await?;
+        .await
+        .map_err(hide_missing)?;
         Ok(head)
     }
 
@@ -876,6 +904,91 @@ mod tests {
                 .await
                 .unwrap_err();
         assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn a_head_repository_that_is_not_there_answers_as_a_refusal_does() {
+        use crate::ingest::{Ingestor, NoObserver};
+
+        let named = |n: &str| {
+            Some(wire::RepoRef {
+                name: n.into(),
+                id_mode: IdMode::Asc as i32,
+            })
+        };
+        let f = fx().await;
+        let other = f
+            .registry
+            .create(&RepoName::parse("o/other").unwrap(), &Default::default())
+            .await
+            .unwrap();
+        let base = make(&f, &[], "base", &[("f.txt", Some(LINES))]).await;
+        let target = RefTarget::Changeset(base);
+        Ingestor::new(f.registry.pool(), f.registry.refs(), &f.entry, true)
+            .ingest(&[target], &NoObserver)
+            .await
+            .unwrap();
+        // The other repository shares `base` and has one more changeset.
+        crate::admin::copy_closure(
+            &f.registry,
+            &f.pipeline,
+            &CallCtx {
+                repo: RepoName::parse("o/other").unwrap(),
+                ..ctx()
+            },
+            wire::CopyClosureRequest {
+                from: named("o/r"),
+                to: named("o/other"),
+                changesets: vec![Bytes::copy_from_slice(base.as_bytes())],
+            },
+        )
+        .await
+        .unwrap();
+        let theirs = crate::ingest::testutil::commit(
+            &other,
+            &[base],
+            &[(
+                "z.txt", b"z
+",
+            )],
+        )
+        .await;
+        Ingestor::new(f.registry.pool(), f.registry.refs(), &other, true)
+            .ingest(&[RefTarget::Changeset(theirs)], &NoObserver)
+            .await
+            .unwrap();
+        let from = |repo: &str, head: String| {
+            let mut q = req(base, base, base);
+            q.head = head;
+            q.head_repo = named(repo);
+            q
+        };
+
+        // A repository that is not there and a revision that is not there answer exactly what
+        // the service answers a caller it refuses; neither copies anything.
+        let refused = Status::from(asc_rpc::auth::AuthError::Forbidden);
+        let rows = graph_rows(&f).await;
+        for q in [
+            from("o/missing", theirs.to_string()),
+            from("o/other", "refs/heads/nope".into()),
+            from(
+                "o/other",
+                ChangesetId::from_slice(&[7; 32]).unwrap().to_string(),
+            ),
+        ] {
+            let e = f.m.rebase(&ctx(), q).await.unwrap_err();
+            assert_eq!(e.code(), refused.code(), "{e:?}");
+            assert_eq!(e.message(), refused.message());
+        }
+        assert_eq!(graph_rows(&f).await, rows);
+
+        // A head that exists there is copied and rebased.
+        let done =
+            f.m.rebase(&ctx(), from("o/other", theirs.to_string()))
+                .await
+                .unwrap();
+        assert_eq!(done.rewritten.len(), 1);
+        assert!(graph_rows(&f).await > rows, "the closure was copied");
     }
 
     #[tokio::test]
