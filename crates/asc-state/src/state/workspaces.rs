@@ -191,12 +191,13 @@ pub async fn bump_epoch(db: &StateDb, id: WorkspaceId) -> Result<i64> {
     .ok_or(Error::NotFound("workspace"))
 }
 
-/// Workspaces of one repository, or of all when `repo` is `None`, oldest first.
+/// Workspaces of one repository, or of all when `repo` is `None`, oldest first (registration
+/// order within one second, so the first row of a repository is its main worktree).
 pub async fn list(db: &StateDb, repo: Option<RepoKey>) -> Result<Vec<Workspace>> {
     let rows = match repo {
         Some(r) => {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT {COLS} FROM workspaces WHERE repo_id = ? ORDER BY created, id"
+                "SELECT {COLS} FROM workspaces WHERE repo_id = ? ORDER BY created, rowid"
             )))
             .bind(r.0)
             .fetch_all(db.pool())
@@ -204,7 +205,7 @@ pub async fn list(db: &StateDb, repo: Option<RepoKey>) -> Result<Vec<Workspace>>
         }
         None => {
             sqlx::query(sqlx::AssertSqlSafe(format!(
-                "SELECT {COLS} FROM workspaces ORDER BY created, id"
+                "SELECT {COLS} FROM workspaces ORDER BY created, rowid"
             )))
             .fetch_all(db.pool())
             .await?
@@ -228,6 +229,33 @@ pub async fn holding_branch(
     .fetch_optional(db.pool())
     .await?;
     row.as_ref().map(decode).transpose()
+}
+
+/// Sets (`Some`, possibly an empty reason) or clears (`None`) the lock of a worktree.
+pub async fn set_locked(db: &StateDb, id: WorkspaceId, reason: Option<&str>) -> Result<()> {
+    let done = sqlx::query("UPDATE workspaces SET locked = ? WHERE id = ?")
+        .bind(reason)
+        .bind(id.to_string())
+        .execute(db.pool())
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(Error::NotFound("workspace"));
+    }
+    Ok(())
+}
+
+/// Moves a worktree: the requested path and the mount root (`worktree move`).
+pub async fn set_location(db: &StateDb, id: WorkspaceId, path: &str, mount: &str) -> Result<()> {
+    let done = sqlx::query("UPDATE workspaces SET path = ?, mount = ? WHERE id = ?")
+        .bind(path)
+        .bind(mount)
+        .bind(id.to_string())
+        .execute(db.pool())
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(Error::NotFound("workspace"));
+    }
+    Ok(())
 }
 
 /// Deletes the workspace and every per-workspace row.
