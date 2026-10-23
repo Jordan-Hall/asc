@@ -210,7 +210,7 @@ pub async fn append(
     if nv.parent_change == Some(nv.change) {
         return Err(Error::Invalid("a change cannot be its own parent"));
     }
-    let last = latest(&mut **tx, ns, nv.change).await?;
+    let last = latest(tx, ns, nv.change).await?;
     let next = match &last {
         Some(l) if l.cs == nv.cs => {
             return Ok(Appended {
@@ -219,7 +219,7 @@ pub async fn append(
             });
         }
         Some(l) => {
-            if !nv.force && !in_preds_closure(&mut **tx, ns, nv.cs, l.cs).await? {
+            if !nv.force && !in_preds_closure(tx, ns, nv.cs, l.cs).await? {
                 return Err(Error::Diverged {
                     change: nv.change,
                     latest: l.cs,
