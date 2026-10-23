@@ -10,6 +10,7 @@
 //! DACL on the Windows pipe, uid check on the Unix socket), so each RPC is authorised by that
 //! check before it reaches [`Service`].
 
+pub mod install;
 pub mod lifecycle;
 pub mod workspace_factory;
 
