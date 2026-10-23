@@ -899,7 +899,7 @@ mod tests {
         svc.shutdown(Request::new(wire::ShutdownRequest {})).await.unwrap();
         tokio::time::timeout(Duration::from_secs(1), stop.notified()).await.expect("shutdown notifies");
         let status = svc.status(Request::new(wire::WsStatusRequest::default())).await;
-        assert_eq!(code(status), tonic::Code::Unimplemented);
+        assert_eq!(code(status), tonic::Code::FailedPrecondition, "no state database, so no workspaces");
     }
 
     #[tokio::test]
