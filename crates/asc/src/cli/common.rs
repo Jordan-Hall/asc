@@ -583,6 +583,8 @@ pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Optio
 impl Ctx {
     /// Builds the context for an invocation in `cwd`.
     pub async fn open(prog: Program, env: GitEnv, cwd: PathBuf) -> Result<Self> {
+        // A daemon of another version goes before `state.db` is opened (SPEC §9.1).
+        super::daemon::stop_skewed_daemon().await;
         let get = |k: &str| std::env::var_os(k);
         let safe = config::safe_directories(&env, &get)?;
         let home = || AscHome::locate().map_err(CliError::from);

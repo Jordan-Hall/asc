@@ -470,6 +470,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tonic",
  "uuid",
  "windows-sys 0.61.2",
 ]

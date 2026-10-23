@@ -244,6 +244,19 @@ pub async fn set_locked(db: &StateDb, id: WorkspaceId, reason: Option<&str>) -> 
     Ok(())
 }
 
+/// Sets how the working copy is realised (`worktree convert --plain`, SPEC §9.1).
+pub async fn set_mode(db: &StateDb, id: WorkspaceId, mode: Mode) -> Result<()> {
+    let done = sqlx::query("UPDATE workspaces SET mode = ? WHERE id = ?")
+        .bind(mode.as_str())
+        .bind(id.to_string())
+        .execute(db.pool())
+        .await?;
+    if done.rows_affected() == 0 {
+        return Err(Error::NotFound("workspace"));
+    }
+    Ok(())
+}
+
 /// Moves a worktree: the requested path and the mount root (`worktree move`).
 pub async fn set_location(db: &StateDb, id: WorkspaceId, path: &str, mount: &str) -> Result<()> {
     let done = sqlx::query("UPDATE workspaces SET path = ?, mount = ? WHERE id = ?")
