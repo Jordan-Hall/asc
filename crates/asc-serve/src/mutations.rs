@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use asc_core::change::{ChangeId, ChangeMeta, RewriteOp};
 use asc_core::codec::decode_envelope;
 use asc_core::content::{Body, ChunkAssembler, ingest as ingest_content};
 use asc_core::git::{BlobOidHasher, blob_oid};
@@ -44,9 +43,8 @@ use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use tonic::Status;
 
-use crate::changes::index::ChangeIndex;
 use crate::idmode::{Eng, IdCodec};
-use crate::ingest::{IngestObserver, Ingestor, ObserverError};
+use crate::ingest::Ingestor;
 use crate::read::ReadHooks;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::update::{PipelineHooks, ServerRefs, info, ingest_status, internal, rpc};
@@ -293,26 +291,6 @@ impl ServerMutations {
     /// Pipeline step 4 for `ids`, with the stack-metadata observer in the same transaction.
     /// The caller holds the shared GC fence.
     async fn ingest_ids(&self, o: &Opened, ids: &[ChangesetId]) -> Result<(), Status> {
-        self.ingest_with(o, ids, self.pipeline.observer()).await
-    }
-
-    /// Step 4 for a changeset `Commit` just created: the stack-metadata observer runs, and the
-    /// changeset gets a draft `ChangeMeta` (SPEC §8.7, M18) in the same transaction.
-    async fn ingest_commit(&self, o: &Opened, id: ChangesetId) -> Result<(), Status> {
-        let observer = NewChangeMeta {
-            inner: self.pipeline.observer(),
-            index: ChangeIndex::new(self.registry.clone()),
-            cs: id,
-        };
-        self.ingest_with(o, &[id], &observer).await
-    }
-
-    async fn ingest_with(
-        &self,
-        o: &Opened,
-        ids: &[ChangesetId],
-        observer: &dyn IngestObserver,
-    ) -> Result<(), Status> {
         let targets: Vec<RefTarget> = ids.iter().map(|&c| RefTarget::Changeset(c)).collect();
         Ingestor::new(
             self.registry.pool(),
@@ -320,7 +298,7 @@ impl ServerMutations {
             &o.entry,
             o.windows_safe,
         )
-        .ingest(&targets, observer)
+        .ingest(&targets, self.pipeline.observer())
         .await
         .map(drop)
         .map_err(ingest_status)
@@ -731,68 +709,8 @@ impl ServerMutations {
                 copies: planned.copies,
             })
             .await?;
-        if req.update_ref.is_empty() {
-            // The fence is held; this is the whole of the work.
-            self.ingest_commit(&o, id).await?;
-        } else {
-            // The changeset is ingested (with its meta) before the ref moves, so the
-            // `UpdateRefs` ingest finds it known. The fence is dropped before `UpdateRefs`
-            // takes its own.
-            let _gc = self.fence().await?;
-            self.ingest_commit(&o, id).await?;
-        }
         self.publish(&o, ctx, id, &req.update_ref, expect).await?;
         self.commit_response(&o, id).await
-    }
-}
-
-/// Wraps the pipeline observer: after it ran, `cs` (when this ingest added it) gets a draft
-/// `ChangeMeta` (`op = New`, `preds = []`). An existing row is never replaced.
-struct NewChangeMeta<'a> {
-    inner: &'a dyn IngestObserver,
-    index: ChangeIndex,
-    cs: ChangesetId,
-}
-
-/// The change id of a changeset a server `Commit` created: derived from the changeset id, so
-/// a retry of the same commit names the same change.
-fn commit_change_id(cs: ChangesetId) -> ChangeId {
-    let key = blake3::derive_key("asc v1 change server commit", cs.as_bytes());
-    let mut id = [0u8; 16];
-    id.copy_from_slice(&key[..16]);
-    ChangeId::from_bytes(id)
-}
-
-#[async_trait]
-impl IngestObserver for NewChangeMeta<'_> {
-    async fn on_ingested(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::any::Any>,
-        repo: asc_store::refs::RepoKey,
-        new: &[ChangesetId],
-        closure: &[ObjKey],
-    ) -> Result<(), ObserverError> {
-        self.inner.on_ingested(tx, repo, new, closure).await?;
-        if new.contains(&self.cs) {
-            let meta = ChangeMeta::new(
-                self.cs,
-                commit_change_id(self.cs),
-                Vec::new(),
-                RewriteOp::New,
-            );
-            self.index.write_meta(tx, repo, &meta).await?;
-        }
-        Ok(())
-    }
-
-    async fn on_rewritten(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::any::Any>,
-        repo: asc_store::refs::RepoKey,
-        pairs: &[(ChangesetId, ChangesetId)],
-        kind: RewriteOp,
-    ) -> Result<(), ObserverError> {
-        self.inner.on_rewritten(tx, repo, pairs, kind).await
     }
 }
 

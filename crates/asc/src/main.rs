@@ -21,6 +21,7 @@ mod refs_guard;
 mod remote;
 mod shim;
 mod stack;
+mod telemetry;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
