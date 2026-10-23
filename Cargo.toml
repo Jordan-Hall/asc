@@ -132,6 +132,7 @@ gix-hash       = { version = "=0.28.1", features = ["sha1"] }  # gix 0.89 family
 async-trait    = "0.1.92"
 base64         = "0.23.1"
 regex          = "1.13.1"
+memchr         = "2.8.3"
 filetime       = "0.2.29"
 sha2           = "0.11.1"
 url            = "2.5.4"       # asc-store (U07)

@@ -31,6 +31,10 @@ pub use super::linehist::{
 pub const MAX_NEEDLE_BYTES: usize = 4096;
 /// Compiled size limit of a pattern.
 const REGEX_SIZE_LIMIT: usize = 1 << 20;
+/// Most file bytes one call scans, summed over every candidate and both file versions. When the
+/// next version would pass it, the page ends with [`Stop::Budget`] and a resume token. It is at
+/// least twice [`MAX_FILE_BYTES`], so a page always makes progress.
+pub const MAX_SCAN_BYTES: u64 = 512 << 20;
 
 const TOKEN_VERSION: u8 = 1;
 
@@ -94,7 +98,7 @@ pub struct Page {
 }
 
 enum Matcher {
-    Literal(Vec<u8>),
+    Literal(Box<memchr::memmem::Finder<'static>>),
     Regex(regex::bytes::Regex),
 }
 
@@ -107,7 +111,9 @@ impl Matcher {
             return Err(Error::NeedleTooLong(q.needle.len()));
         }
         if !q.regex {
-            return Ok(Self::Literal(q.needle.clone()));
+            return Ok(Self::Literal(
+                Box::new(memchr::memmem::Finder::new(&q.needle).into_owned()),
+            ));
         }
         let pat = std::str::from_utf8(&q.needle).map_err(|e| Error::BadPattern(e.to_string()))?;
         regex::bytes::RegexBuilder::new(pat)
@@ -124,19 +130,7 @@ impl Matcher {
     fn count(&self, hay: &[u8]) -> usize {
         match self {
             Self::Regex(r) => r.find_iter(hay).count(),
-            Self::Literal(n) => {
-                let (mut count, mut at) = (0, 0);
-                while at + n.len() <= hay.len() {
-                    match hay[at..].windows(n.len()).position(|w| w == n.as_slice()) {
-                        Some(p) => {
-                            count += 1;
-                            at += p + n.len();
-                        }
-                        None => break,
-                    }
-                }
-                count
-            }
+            Self::Literal(f) => f.find_iter(hay).count(),
         }
     }
 }
@@ -160,6 +154,10 @@ impl<O: Objects, R: Refs> Engine<O, R> {
     /// The changesets whose first-parent diff changed the number of matches of the needle in
     /// one file, newest first.
     pub async fn pickaxe(&self, q: &Query) -> Result<Page> {
+        self.pickaxe_bounded(q, MAX_SCAN_BYTES).await
+    }
+
+    async fn pickaxe_bounded(&self, q: &Query, byte_budget: u64) -> Result<Page> {
         let path = q.path.as_ref().ok_or(Error::PathRequired)?;
         let matcher = Matcher::new(q)?;
         let limit = match q.limit {
@@ -176,6 +174,7 @@ impl<O: Objects, R: Refs> Engine<O, R> {
         };
         let mut hits = Vec::new();
         let mut scanned = 0u32;
+        let mut spent = 0u64;
         loop {
             if scanned >= budget {
                 return Ok(Page {
@@ -200,6 +199,19 @@ impl<O: Objects, R: Refs> Engine<O, R> {
                     None => None,
                 };
                 if new.as_ref().map(|e| e.id) != old.as_ref().map(|e| e.id) {
+                    let want = [new.as_ref(), old.as_ref()]
+                        .into_iter()
+                        .flatten()
+                        .filter(|e| e.size <= MAX_FILE_BYTES)
+                        .fold(0u64, |a, e| a.saturating_add(e.size));
+                    if spent.saturating_add(want) > byte_budget {
+                        return Ok(Page {
+                            hits,
+                            scanned: scanned - 1,
+                            stop: Stop::Budget(encode_token(cur)),
+                        });
+                    }
+                    spent += want;
                     let n = self.count_in(&matcher, new.as_ref()).await?;
                     let o = self.count_in(&matcher, old.as_ref()).await?;
                     if n != o {
@@ -363,10 +375,82 @@ mod tests {
         assert!(e.pickaxe(&q).await.is_err());
     }
 
+    /// The pre-fix implementation, kept as the oracle.
+    fn old_count(n: &[u8], hay: &[u8]) -> usize {
+        let (mut count, mut at) = (0, 0);
+        while at + n.len() <= hay.len() {
+            match hay[at..].windows(n.len()).position(|w| w == n) {
+                Some(p) => {
+                    count += 1;
+                    at += p + n.len();
+                }
+                None => break,
+            }
+        }
+        count
+    }
+
+    fn literal(n: &[u8]) -> Matcher {
+        Matcher::Literal(Box::new(memchr::memmem::Finder::new(n).into_owned()))
+    }
+
     #[test]
     fn literal_count_is_non_overlapping() {
-        let m = Matcher::Literal(b"aa".to_vec());
+        let m = literal(b"aa");
         assert_eq!(m.count(b"aaaaa"), 2);
         assert_eq!(m.count(b""), 0);
+    }
+
+    #[test]
+    fn literal_count_matches_the_old_implementation() {
+        let table: &[(&[u8], &[u8])] = &[
+            (b"aa", b"aaaaa"),
+            (b"aa", b"aaaa"),
+            (b"aba", b"abababa"),
+            (b"a", b"a"),
+            (b"a", b""),
+            (b"ab", b"a"),
+            (b"abc", b"abc"),
+            (b"abc", b"ababc"),
+            (b"abc", b"abcabc"),
+            (b"abc", b"xabcabcab"),
+            (b"abc", b"ab"),
+            (b"  ", b"   "),
+            (b"foo", b"foo
+bar
+foo"),
+        ];
+        for (n, h) in table {
+            assert_eq!(literal(n).count(h), old_count(n, h), "{n:?} in {h:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_near_miss_needle_over_a_large_file_is_linear() {
+        let hay = vec![b'a'; 1 << 20];
+        let mut needle = vec![b'a'; (64 << 10) - 1];
+        needle.push(b'b');
+        let start = std::time::Instant::now();
+        assert_eq!(literal(&needle).count(&hay), 0);
+        // The old windows scan took over two seconds here.
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn the_byte_budget_stops_the_scan() {
+        let (_d, e) = fx().await;
+        let c = history(&e).await;
+        // Each candidate reads a new and an old version of 4 to 12 bytes.
+        let page = e.pickaxe_bounded(&query(c[3], "foo"), 10).await.unwrap();
+        assert!(page.scanned < 4);
+        let Stop::Budget(tok) = page.stop else {
+            panic!("expected a budget stop")
+        };
+        let mut q = query(c[3], "foo");
+        q.resume = Some(tok);
+        let rest = e.pickaxe_bounded(&q, 10).await.unwrap();
+        let all = e.pickaxe(&query(c[3], "foo")).await.unwrap();
+        assert!(page.hits.len() + rest.hits.len() <= all.hits.len());
+        assert_eq!(all.hits, vec![c[3], c[2], c[0]]);
     }
 }

@@ -526,6 +526,7 @@ dependencies = [
  "gix-merge",
  "globset",
  "imara-diff",
+ "memchr",
  "postcard",
  "proptest",
  "quick_cache",
