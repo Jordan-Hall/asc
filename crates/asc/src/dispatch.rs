@@ -524,6 +524,10 @@ pub async fn dispatch(ctx: &Ctx, mut argv: Vec<OsString>) -> Result<ExitCode> {
                 if words.is_empty() {
                     return Err(CliError::Fatal(format!("empty alias for {name}")));
                 }
+                // git: an expansion that starts with its own name is `recursive alias`.
+                if words[0] == name {
+                    return Err(CliError::Fatal(format!("recursive alias: {name}")));
+                }
                 let mut next: Vec<OsString> = words.into_iter().map(OsString::from).collect();
                 next.extend(argv.drain(1..));
                 argv = next;
