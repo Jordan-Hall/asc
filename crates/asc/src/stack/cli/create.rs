@@ -8,9 +8,9 @@
 //! (and a branch made for `<branch>`) is put back. The new changeset is then recorded as a new
 //! change.
 //!
-//! No branch is made unless `<branch>` is given: the default is branchless (SPEC §20.7, §21).
-//! `--no-branch` is accepted and changes nothing now; B01 makes it the explicit form once
-//! `asc.branchless=false` can name a branch from `asc.stack.branchTemplate`.
+//! No branch is made unless `<branch>` is given when the effective mode is branchless, the
+//! default (SPEC §20.7, §21; B01). With `asc.branchless` off a branch is named from
+//! `asc.stack.branchTemplate`, and `--no-branch` suppresses that.
 //!
 //! `--insert` reparents the draft children of the old HEAD onto the new change, restacking each
 //! chain above them.
@@ -24,6 +24,7 @@ use asc_git::projection::Head;
 use asc_state::changes::StateChanges;
 use uuid::Uuid;
 
+use crate::branchless::mode::{Mode, Settings, branch_name};
 use super::reword::{refuse_busy, reparent_above};
 use super::restack;
 use super::sl::fatal;
@@ -154,8 +155,26 @@ pub(crate) async fn new_change(ctx: &Ctx, a: &Args) -> Result<ExitCode> {
         }
     }
     // The branch is made before the commit so the commit advances it; a failure removes it.
+    // Without `<branch>`, branchless mode (the default) and `--no-branch` name none; with
+    // `asc.branchless` off the name comes from `asc.stack.branchTemplate` (SPEC §20.7).
+    let branch = match &a.branch {
+        Some(b) => Some(b.clone()),
+        None if a.no_branch => None,
+        None => {
+            let getenv = |k: &str| std::env::var(k).ok();
+            let settings = Settings::resolve(&ctx.config, &ctx.env, &getenv).map_err(CliError::Fatal)?;
+            // The repo's own `branchless` is not known to the client yet (B07): the default applies.
+            if settings.mode(None) == Mode::Branchless {
+                None
+            } else {
+                let subject = a.message.first().map(|m| m.lines().next().unwrap_or(""));
+                let fallback = format!("change-{}", &Uuid::now_v7().simple().to_string()[20..]);
+                Some(branch_name(&ctx.config, subject, &fallback).map_err(CliError::Fatal)?)
+            }
+        }
+    };
     let mut made_branch = false;
-    if let Some(b) = &a.branch {
+    if let Some(b) = &branch {
         let code = restack::run_asc(ctx, &["switch", "-q", "-c", b])?;
         if code != 0 {
             put_back(ctx, ws, &was, before, before_git.as_deref());
@@ -180,7 +199,7 @@ pub(crate) async fn new_change(ctx: &Ctx, a: &Args) -> Result<ExitCode> {
     if code != 0 || head.is_none() || head == base {
         // Nothing was committed: undo the branch and the switch.
         put_back(ctx, ws, &was, before, before_git.as_deref());
-        if made_branch && let Some(b) = &a.branch {
+        if made_branch && let Some(b) = &branch {
             let _ = restack::run_asc(ctx, &["branch", "-q", "-D", b]);
         }
         return Ok(ExitCode::from(u8::try_from(if code == 0 { 1 } else { code }).unwrap_or(1)));
