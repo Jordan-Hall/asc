@@ -771,7 +771,20 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if let Some(l) = &landing
         && !raced
     {
-        land_notes = push_land::follow(ctx, ws, &opened, l).await?;
+        // Only what this push sent can be rewritten: the server's list is checked against it.
+        let pushed: Vec<push_land::Pushed> = to_send
+            .iter()
+            .map(|p| push_land::Pushed {
+                src: p
+                    .src_label
+                    .starts_with("refs/heads/")
+                    .then(|| p.src_label.clone()),
+                dst: p.spec.dst.clone(),
+                old: p.old,
+                new: p.new,
+            })
+            .collect();
+        land_notes = push_land::follow(ctx, ws, &opened, l, &pushed).await?;
     }
 
     // Upstream configuration (`-u`, `push.autoSetupRemote`).
