@@ -18,9 +18,10 @@ asc-state = { workspace = true }
 futures = { workspace = true }
 ignore = { workspace = true }
 reflink-copy = { workspace = true }
+sqlx = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true }
