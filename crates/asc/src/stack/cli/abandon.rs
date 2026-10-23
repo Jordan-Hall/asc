@@ -80,7 +80,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
     }
     drop(l);
-    targets.sort_by(|p, q| q.0.cmp(&p.0));
+    targets.sort_by_key(|t| std::cmp::Reverse(t.0));
     let made: Vec<Made> = targets.iter().map(|t| Made { cs: t.2.cs, change: t.2.change.clone(), subject: t.2.subject.clone() }).collect();
     if made.is_empty() {
         return emit_nothing(ctx, a.json, "abandon");
