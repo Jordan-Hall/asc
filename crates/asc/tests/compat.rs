@@ -115,6 +115,7 @@ scenarios! {
     cherry_basic = "cherry-basic",
     notes_show = "notes-show",
     stack_invisible = "stack-invisible",
+    rev_parse_unknown_option = "rev-parse-unknown-option",
 }
 
 #[test]

@@ -1,4 +1,5 @@
 # compat: asc-only
+# fidelity: Q-7, U-2
 # Aliases of .git that real git does not refuse on every platform (HFS ignorable code points),
 # aliases of asc's own local state, and aliases that only name the source of a rename, a deletion
 # or a mode change (git reports a missing file there): asc refuses them all, up front. `g` always
@@ -43,3 +44,12 @@ PATCH
 g apply "$P/mode.patch"
 find . -mindepth 1 \( -path ./.git -o -path ./.asc -o -path ./.p \) -prune -o -print | sort > "$P/tree"
 test "$(tr -d '\r' < "$P/tree" | tr '\n' ' ')" = "./.gitignore ./f " || { cat "$P/tree"; exit 1; }
+# Each refusal that git does not make names its decision in docs/git-fidelity.md.
+note() {
+  out=$(git apply "$2" 2>&1 || true)
+  case "$out" in *"(git-fidelity $1)"*) ;; *) echo "no $1 note in: $out"; exit 1 ;; esac
+}
+note Q-7 "$P/1.patch"
+note U-2 "$P/rename.patch"
+note U-2 "$P/delete.patch"
+note U-2 "$P/mode.patch"

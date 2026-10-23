@@ -120,13 +120,16 @@ fn cannot_process(path: &str) -> CliError {
 
 /// The leaf for a `--cacheinfo` entry.
 async fn cacheinfo_leaf(ws: &WsCtx, mode: &str, oid: &str, path: &str) -> Result<Leaf> {
-    let invalid = || {
-        eprintln!("error: invalid object {mode} {oid} for '{path}'");
+    let refuse = |note: &str| {
+        eprintln!("error: invalid object {mode} {oid} for '{path}'{note}");
         CliError::Raw(
             format!("fatal: git update-index: --cacheinfo cannot add {path}"),
             128,
         )
     };
+    let invalid = || refuse("");
+    // Q-3: git writes an entry for an object it has never seen; asc stages only what it can read.
+    let missing = || refuse(" (git-fidelity Q-3)");
     let kind = match u32::from_str_radix(mode, 8) {
         Ok(0o100_644) | Ok(0o100_664) => Kind::File,
         Ok(0o100_755) => Kind::Exec,
@@ -145,11 +148,11 @@ async fn cacheinfo_leaf(ws: &WsCtx, mode: &str, oid: &str, path: &str) -> Result
     }
     let asc = git_map::git_to_asc(&ws.db, ws.repo.key, git, ObjectKind::Blob)
         .await?
-        .ok_or_else(invalid)?;
+        .ok_or_else(missing)?;
     let file = FileId::from_bytes(asc);
     let size = size(ws, Object::Blob { oid: git, file })
         .await
-        .map_err(|_| invalid())?;
+        .map_err(|_| missing())?;
     Ok(Leaf {
         kind,
         file,

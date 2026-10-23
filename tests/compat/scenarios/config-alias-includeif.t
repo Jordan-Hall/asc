@@ -1,3 +1,4 @@
+# fidelity: D-3
 g init
 g config alias.st "status -s"
 g config alias.lg "log --oneline"

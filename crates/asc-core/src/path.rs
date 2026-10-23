@@ -381,6 +381,7 @@ mod tests {
     }
 
     // Cases from git t0060-path-utils.sh (is_ntfs_dotgit / is_hfs_dotgit).
+    // fidelity: Q-7
     #[test]
     fn checkout_safe_table() {
         let bad = [

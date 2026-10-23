@@ -15,7 +15,8 @@ pub struct NativeSpec {
     /// The git command name, e.g. `"status"`.
     pub cmd: &'static str,
     /// Every flag served, spelled as typed: `"-s"`, `"--porcelain"`. `"-<n>"` stands for `-3`
-    /// style counts.
+    /// style counts. `"-*"` stands for every option: a command that echoes the options it does
+    /// not know, as git's `rev-parse` does (docs/git-quirks.md Q-2), serves them all.
     pub flags: &'static [&'static str],
     /// The format placeholders and ref-filter atoms served, e.g. `"%H"`, `"%(refname)"`. Empty
     /// means the command takes no format.
@@ -94,6 +95,7 @@ pub fn not_served(cmd: &str) -> Msg {
 
 fn serves(spec: &NativeSpec, flag: &str) -> bool {
     spec.flags.contains(&flag)
+        || spec.flags.contains(&"-*")
         || (flag.len() > 1
             && flag[1..].chars().all(|c| c.is_ascii_digit())
             && spec.flags.contains(&"-<n>"))
@@ -194,6 +196,23 @@ mod tests {
         );
         assert_eq!(route_log(&["log", "-3"]), Route::Native);
         assert_eq!(route_log(&["log", "--format=%H %aN%n%%"]), Route::Native);
+    }
+
+    #[test]
+    fn the_wildcard_serves_every_option() {
+        const ECHO: NativeSpec = NativeSpec {
+            cmd: "rev-parse",
+            flags: &["--git-dir", "-*"],
+            placeholders: &[],
+        };
+        let r = |items: &[&str]| route_in(&argv(items), &[&ECHO]);
+        assert_eq!(r(&["rev-parse", "--no-such-flag", "-x", "HEAD"]), Route::Native);
+        assert_eq!(
+            route_log(&["log", "--bogus"]),
+            Route::Unsupported(Msg::AscOptionUnsupported {
+                flag: "--bogus".into()
+            })
+        );
     }
 
     #[test]

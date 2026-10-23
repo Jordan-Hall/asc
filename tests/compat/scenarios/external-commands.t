@@ -1,3 +1,4 @@
+# fidelity: Q-1
 mkdir ../bin
 printf '#!/bin/sh\necho "hello from external: $*"\n' > ../bin/git-hello
 chmod +x ../bin/git-hello

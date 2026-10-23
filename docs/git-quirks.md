@@ -12,8 +12,8 @@ Decision `replicate`: asc does what git does. Not divergences.
 - **Git:** `git rev-parse --no-such-flag` prints `--no-such-flag` and exits 0. Scripts depend on the echo, because `rev-parse` splits "flags meant for rev-list" from revisions.
 - **Ideal:** `git-rev-parse(1) --flags` / `--no-flags`: unknown tokens that start with `-` are passed through as flags. An error for an unknown option is the common-sense reading; the docs describe the pass-through.
 - **Decision:** replicate
-- **Proof:** `tests/compat/scenarios/rev-parse-unknown-option.t` (to write)
-- **Status:** pending Q01
+- **Proof:** `tests/compat/scenarios/rev-parse-unknown-option.t`
+- **Status:** proven
 - **SPEC:** §11.5 (stacks add no `rev-parse` flag because of this echo; the change id is read with `asc change-id`, §20.2)
 
 ### Q-4 ref-filter atoms that git accepts and prints empty

@@ -1,3 +1,4 @@
+# fidelity: Q-7
 g init
 echo ".p/" > .gitignore
 mkdir .p

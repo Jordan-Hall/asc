@@ -808,7 +808,7 @@ impl<'a> Ingestor<'a> {
                 continue;
             }
             if !checkout_safe(path) {
-                return Err(policy(path, "not safe to check out"));
+                return Err(policy(path, "not safe to check out (git-fidelity Q-7)"));
             }
             let mut dir_key: Vec<u8> = Vec::new();
             let mut dir_id = cs.root;

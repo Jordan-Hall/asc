@@ -143,7 +143,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let (label, bytes) = read_input(ctx, item)?;
         let mut patches = match apply::parse(&bytes, &opts) {
             Ok(v) => v,
-            Err(e) => return Err(CliError::Raw(parse_error(&e, &label, opts.strip), 128)),
+            Err(e) => return Err(CliError::Raw(parse_error(&e, &label, opts.strip, &bytes), 128)),
         };
         if patches.is_empty() {
             return Err(CliError::Raw(
@@ -166,12 +166,51 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The ` (git-fidelity <id>)` note for a refused patch path where asc refuses and git does not
+/// (`docs/git-fidelity.md`): Q-7 for a `.git` spelling made of HFS-ignorable code points, which
+/// git refuses only where `core.protectHFS` is on; U-2 for an alias that the patch names only as
+/// the source of a rename, a deletion or a mode change, where git reports a missing file. Empty
+/// when git refuses the path too, so the message matches git's byte for byte there.
+fn fidelity_note(patch: &[u8], path: &str) -> &'static str {
+    let hfs_ignorable = |c: char| {
+        matches!(c as u32, 0x200C..=0x200F | 0x202A..=0x202E | 0x206A..=0x206F | 0xFEFF)
+    };
+    let hfs_only = path.split('/').any(|comp| {
+        let kept: String = comp.chars().filter(|&c| !hfs_ignorable(c)).collect();
+        kept.len() != comp.len() && kept.eq_ignore_ascii_case(".git")
+    });
+    if hfs_only {
+        return " (git-fidelity Q-7)";
+    }
+    let text = String::from_utf8_lossy(patch);
+    let lines: Vec<&str> = text.lines().map(|l| l.trim_end_matches('\r')).collect();
+    let names = |prefixes: &[&str]| {
+        lines.iter().any(|l| {
+            prefixes
+                .iter()
+                .any(|p| l.strip_prefix(p).is_some_and(|rest| rest.ends_with(path)))
+        })
+    };
+    let source = names(&["rename from ", "--- "]);
+    let dest = names(&["rename to ", "copy to ", "+++ "]);
+    // A mode change has a `diff --git` header and `old mode`, and no `---` or `+++` line.
+    let mode_change = lines.iter().any(|l| l.starts_with("old mode "))
+        && lines
+            .iter()
+            .any(|l| l.starts_with("diff --git ") && l.ends_with(path));
+    if (source || mode_change) && !dest {
+        " (git-fidelity U-2)"
+    } else {
+        ""
+    }
+}
+
 /// git's text for a patch that does not parse.
-pub fn parse_error(e: &apply::Error, label: &str, strip: usize) -> String {
+pub fn parse_error(e: &apply::Error, label: &str, strip: usize, patch: &[u8]) -> String {
     use apply::Error;
     match e {
         Error::Corrupt(n) => format!("error: corrupt patch at {label}:{n}"),
-        Error::UnsafePath(p) => format!("error: invalid path '{p}'"),
+        Error::UnsafePath(p) => format!("error: invalid path '{p}'{}", fidelity_note(patch, p)),
         Error::NoHeader(n, text) => {
             format!("error: patch fragment without header at line {n}: {text}")
         }

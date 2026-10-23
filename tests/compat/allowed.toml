@@ -1,6 +1,8 @@
 # Allowed differences between real git and asc (SPEC 17.1). Each entry drops the lines matching
 # `drop` from both sides of one section of one scenario (`scenario = "*"` for all). Anything not
-# listed fails. Every entry needs a reason and the SPEC section that justifies it.
+# listed fails. Every entry needs a reason and the SPEC section that justifies it, and a
+# `register` id (docs/git-fidelity.md): the quirk, defect or divergence that makes the
+# difference expected. The fidelity lint (cargo test -p asc --test fidelity) checks the id exists.
 
 [[allow]]
 scenario = "external-commands"
@@ -8,6 +10,7 @@ section = "stdout"
 drop = '^(hello from external: |alias-wins)$'
 reason = "A user alias and a git-<name> on PATH share a name. SPEC 11.4 resolves alias.<name> before git-<name>; git 2.55 runs git-<name> first. The line is the alias output on the asc side and the external output on the git side."
 spec = "§11.4"
+register = "Q-1"
 
 [[allow]]
 scenario = "config-alias-includeif"
@@ -15,6 +18,7 @@ section = "stdout"
 drop = '^core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase|autocrlf|longpaths)='
 reason = "The synthetic gitdir of a workspace has its own config, written by asc init, so the core.* keys that `git init` writes differ in set and order. User keys (alias, demo, includes) are compared."
 spec = "§9.4"
+register = "D-3"
 
 [[allow]]
 scenario = "hooks"
@@ -22,6 +26,7 @@ section = "stderr"
 drop = '^hook prepare-commit-msg: args=2 .*COMMIT_EDITMSG message$'
 reason = "A workspace's .git is a gitfile; the message file lives in the synthetic gitdir, so the hook gets that absolute path where git passes .git/COMMIT_EDITMSG."
 spec = "§9.4.1"
+register = "D-1"
 
 [[allow]]
 scenario = "hooks"
@@ -29,3 +34,4 @@ section = "stderr"
 drop = '^hook pre-commit index: '
 reason = "For a normal commit git runs pre-commit with GIT_INDEX_FILE=.git/index; a workspace's index is the synthetic one in its gitdir, so the hook gets that absolute path."
 spec = "§9.4.1"
+register = "D-2"

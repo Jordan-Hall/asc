@@ -67,6 +67,9 @@ const FLAGS: &[&str] = &[
     "--tags",
     "--remotes",
     "--end-of-options",
+    // git echoes an option it does not know and exits 0 (Q-2): scripts split flags from revisions
+    // with it, so no option is refused here.
+    "-*",
 ];
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {

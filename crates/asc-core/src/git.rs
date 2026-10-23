@@ -600,7 +600,7 @@ pub fn parse_tag(raw: &[u8]) -> Result<ParsedTag, GitError> {
         Some((k, v)) if *k == b"tagger" && it.next().is_none() => {
             Some(parse_signature(v, "bad tagger").map_err(bad)?)
         }
-        Some(_) => return Err(bad("duplicate or unexpected header")),
+        Some(_) => return Err(bad("duplicate or unexpected header (git-fidelity Q-8)")),
     };
     let (message, gpgsig) = split_tag_signature(body);
     Ok(ParsedTag {
@@ -893,6 +893,7 @@ m"
         );
     }
 
+    // fidelity: Q-8
     #[test]
     fn non_canonical_tag_keeps_raw() {
         let raw = b"object 1111111111111111111111111111111111111111\ntype commit\ntag t\ntagger A<a@x> 1 +0000\n\nmsg\n";
@@ -997,6 +998,7 @@ m"
         )
     }
 
+    // fidelity: Q-5
     #[test]
     fn strict_commit_grammar() {
         let t = "tree 1111111111111111111111111111111111111111\n";
@@ -1025,6 +1027,7 @@ m"
         }
     }
 
+    // fidelity: Q-5
     #[test]
     fn verify_commit_checks_gpgsig_and_asc() {
         let (raw, t, parents, cs) = sample_commit();
@@ -1057,6 +1060,7 @@ m"
         assert!(verify_raw_commit(with_asc.as_bytes(), &snap, t, &parents).is_ok());
     }
 
+    // fidelity: Q-8
     #[test]
     fn strict_tag_grammar_and_checks() {
         let o = "object 1111111111111111111111111111111111111111\n";
