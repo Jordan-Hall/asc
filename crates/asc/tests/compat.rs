@@ -77,6 +77,11 @@ scenarios! {
     worktree_hook = "worktree-hook",
     worktree_nested = "worktree-nested",
     worktree_claude_hook = "worktree-claude-hook",
+    stash_basic = "stash-basic",
+    stash_untracked = "stash-untracked",
+    stash_paths = "stash-paths",
+    stash_conflict = "stash-conflict",
+    stash_plumbing = "stash-plumbing",
 }
 
 #[test]
