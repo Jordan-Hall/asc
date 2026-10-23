@@ -362,6 +362,7 @@ pub struct ServeConfig {
     pub codeintel: CodeIntelConfig,
     pub bucket: BucketConfig,
     pub limits: Limits,
+    pub gc: crate::gc::GcSettings,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -383,6 +384,7 @@ impl Default for ServeConfig {
             codeintel: CodeIntelConfig::default(),
             bucket: BucketConfig::default(),
             limits: Limits::default(),
+            gc: crate::gc::GcSettings::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -415,6 +417,7 @@ impl ServeConfig {
 
     /// Checks everything the types do not: URL schemes, role requirements, bounds.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        self.gc.to_config()?;
         if let Some(store) = &self.store {
             let scheme = url_scheme(store);
             if !matches!(scheme, "s3" | "file" | "memory") {
