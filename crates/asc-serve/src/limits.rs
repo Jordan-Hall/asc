@@ -351,6 +351,23 @@ pub(crate) fn connect_addr(ext: &axum::http::Extensions) -> Option<IpAddr> {
     addr.map(|a| a.ip())
 }
 
+tokio::task_local! {
+    /// The network peer of the request being served, set by [`AdmissionLayer`] around the whole
+    /// call so a handler (the `WatchRefs` stream limit) can charge an anonymous caller to its
+    /// address without every `CallCtx` carrying one.
+    static CLIENT_PEER: Peer;
+}
+
+/// The peer of the request being served, or [`Peer::Unknown`] outside a request.
+pub(crate) fn current_peer() -> Peer {
+    CLIENT_PEER.try_with(|p| *p).unwrap_or(Peer::Unknown)
+}
+
+/// Runs `fut` with `peer` as [`current_peer`].
+pub(crate) fn with_peer<F: Future>(peer: Peer, fut: F) -> impl Future<Output = F::Output> {
+    CLIENT_PEER.scope(peer, fut)
+}
+
 /// The secret of a request's credential, whatever the scheme (`Basic`, `Bearer` or `token`), by
 /// the parser the interceptor and every route share (U78). Admission runs before authentication
 /// and never refuses on a bad header, so one the parser rejects is anonymous here; the handler
@@ -1199,13 +1216,14 @@ where
     fn call(&mut self, req: Request<Body>) -> Self::Future {
         let ready = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, ready);
+        let peer =
+            connect_addr(req.extensions()).map(|tcp| self.admission.client_ip(tcp, req.headers()));
+        let scope = Peer::from_ip(peer);
         let path = req.uri().path();
         let git = class_of(path).is_none();
         let Some(class) = class_of(path).or_else(|| git_class_of(path)) else {
-            return Box::pin(inner.call(req));
+            return Box::pin(with_peer(scope, inner.call(req)));
         };
-        let peer =
-            connect_addr(req.extensions()).map(|tcp| self.admission.client_ip(tcp, req.headers()));
         // The size of the body is not known yet and the header cannot be trusted, so the call
         // costs one unit here and the body's real bytes are charged as they stream.
         match self.admission.admit_request(
@@ -1231,7 +1249,7 @@ where
                     }),
                     None => req,
                 };
-                Box::pin(async move {
+                Box::pin(with_peer(scope, async move {
                     let resp = inner.call(req).await?;
                     Ok(resp.map(|body| {
                         Body::new(Held {
@@ -1242,7 +1260,7 @@ where
                             _permit: permit,
                         })
                     }))
-                })
+                }))
             }
         }
     }
@@ -1642,6 +1660,42 @@ mod tests {
     {
         let req = request(path, token, from, Body::empty());
         futures::executor::block_on(svc.call(req)).unwrap()
+    }
+
+    /// Answers with the peer the handler would see through [`current_peer`].
+    #[derive(Clone)]
+    struct SeesPeer;
+
+    impl Service<Request<Body>> for SeesPeer {
+        type Response = Response<Body>;
+        type Error = Infallible;
+        type Future = BoxFuture<'static, Result<Response<Body>, Infallible>>;
+
+        fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Infallible>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _: Request<Body>) -> Self::Future {
+            Box::pin(async { Ok(Response::new(Body::from(format!("{:?}", current_peer())))) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handler_sees_the_client_peer_the_layer_charged() {
+        let admission = Arc::new(Admission::new(&Limits::default()));
+        let mut svc = AdmissionLayer::new(admission).layer(SeesPeer);
+        for path in [
+            "/asc.v1.Repo/WatchRefs",
+            "/asc.v1.Repo/Version",
+            "/not-asc/at-all",
+        ] {
+            let req = request(path, "t", 7, Body::empty());
+            let resp = svc.call(req).await.unwrap();
+            let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+            let want = format!("{:?}", Peer::from_ip(Some(IpAddr::from([10, 0, 0, 7]))));
+            assert_eq!(String::from_utf8_lossy(&body), want, "{path}");
+        }
+        assert_eq!(current_peer(), Peer::Unknown, "outside a request");
     }
 
     fn shed(resp: &Response<Body>) -> bool {

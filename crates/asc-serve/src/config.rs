@@ -660,6 +660,20 @@ pub struct Limits {
     pub semantic_concurrency: u32,
     pub service_rps: u32,
     pub service_burst: u32,
+    /// `WatchRefs` streams one replica serves at once (SPEC 21.3.8).
+    pub watch_streams: u32,
+    /// `WatchRefs` streams one principal may hold at once. Anonymous callers share one principal.
+    pub watch_streams_per_principal: u32,
+    /// Of `watch_streams`, how many anonymous callers may hold together; the rest are for
+    /// verified callers.
+    pub watch_streams_anonymous: u32,
+    /// `WatchRefs` streams one anonymous peer address may hold (a trusted proxy's
+    /// `X-Forwarded-For` client counts as the peer, as in admission).
+    pub watch_streams_per_peer: u32,
+    /// The server ends a `WatchRefs` stream after this long; the client resumes.
+    pub watch_max_lifetime: Secs,
+    /// The server ends a `WatchRefs` stream that delivered no event for this long.
+    pub watch_idle_timeout: Secs,
     /// CIDRs (or bare addresses) of reverse proxies in front of this server. Only a connection
     /// from one of them may name the real client in `X-Forwarded-For`; any other peer's header is
     /// ignored. Empty by default.
@@ -688,6 +702,12 @@ impl Default for Limits {
             semantic_concurrency: 32,
             service_rps: 1000,
             service_burst: 2000,
+            watch_streams: 1024,
+            watch_streams_per_principal: 8,
+            watch_streams_anonymous: 256,
+            watch_streams_per_peer: 4,
+            watch_max_lifetime: Secs(60 * 60),
+            watch_idle_timeout: Secs(10 * 60),
             trusted_proxies: Vec::new(),
             git: GitLimitsConfig::default(),
             ssh: SshLimitsConfig::default(),
@@ -711,9 +731,24 @@ impl Limits {
             ("semantic_concurrency", self.semantic_concurrency),
             ("service_rps", self.service_rps),
             ("service_burst", self.service_burst),
+            ("watch_streams", self.watch_streams),
+            (
+                "watch_streams_per_principal",
+                self.watch_streams_per_principal,
+            ),
+            ("watch_streams_anonymous", self.watch_streams_anonymous),
+            ("watch_streams_per_peer", self.watch_streams_per_peer),
         ];
         if let Some((name, _)) = counts.iter().find(|(_, v)| *v == 0) {
             return invalid(format!("limits.{name} must be greater than zero"));
+        }
+        if self.watch_streams_anonymous > self.watch_streams {
+            return invalid("limits.watch_streams_anonymous must not exceed watch_streams");
+        }
+        if self.watch_idle_timeout.0 == 0 || self.watch_idle_timeout.0 > self.watch_max_lifetime.0 {
+            return invalid(
+                "limits.watch_idle_timeout must be positive and not exceed watch_max_lifetime",
+            );
         }
         if let Some(bad) = self
             .trusted_proxies

@@ -13,12 +13,20 @@
 //!
 //! The reader polls. A row is delivered once its `at` second is `settle` seconds old, because
 //! sequence numbers are taken when a row is inserted and commits may land out of order on a
-//! multi-writer database; waiting keeps the cursor from skipping a slow commit. Open streams are
-//! capped per process. The service layer re-checks the caller's credential while the stream is
-//! open and closes it when the token expires.
+//! multi-writer database; waiting keeps the cursor from skipping a slow commit.
+//!
+//! Open streams are capped per process and per principal (`[limits] watch_streams` and
+//! `watch_streams_per_principal`), so one caller cannot take every slot. The per-principal table
+//! is bounded and evicts idle entries. An anonymous caller is charged to its network peer instead
+//! (the address admission reads, `limits::current_peer`): anonymous callers together may hold
+//! `watch_streams_anonymous` of the slots and one peer `watch_streams_per_peer`, so one anonymous
+//! client cannot lock out the others or any verified caller. A stream ends
+//! cleanly (the client resumes from its last cursor) after `watch_max_lifetime`, or after
+//! `watch_idle_timeout` with no event delivered. The service layer re-checks the caller's
+//! credential while the stream is open and closes it when the token expires.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -30,14 +38,30 @@ use futures::StreamExt;
 use futures::stream;
 use sqlx::{AnyPool, Row};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 use tonic::Status;
 
+use crate::config::Limits;
+use crate::forgejo::ForgejoIdentity;
+use crate::limits::current_peer;
 use crate::refpolicy::{self, SHARED_ROOTS, USER_NS};
 use crate::registry::{Extensions, Registry, RegistryError};
 use crate::update::internal;
 
 /// Open streams the process serves at once.
 pub const MAX_WATCHERS: usize = 1024;
+/// Open streams one principal holds at once.
+pub const MAX_WATCHERS_PER_PRINCIPAL: usize = 8;
+/// Longest a stream lives before the server ends it (the client resumes).
+pub const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
+/// Longest a stream stays open with no event delivered.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Open streams all anonymous callers hold together.
+pub const MAX_ANONYMOUS_WATCHERS: usize = 256;
+/// Open streams one anonymous peer address holds.
+pub const MAX_WATCHERS_PER_PEER: usize = 4;
+/// Principals the per-principal table tracks; idle entries are evicted beyond it.
+pub const MAX_TRACKED_PRINCIPALS: usize = 10_000;
 /// Rows read per poll.
 const BATCH: i64 = 256;
 /// How often an idle stream looks for new rows.
@@ -77,6 +101,105 @@ fn target(blob: Option<Vec<u8>>) -> Result<Option<wire::RefTarget>, ()> {
     .transpose()
 }
 
+/// The stream limits (`[limits] watch_*`).
+#[derive(Clone, Copy, Debug)]
+pub struct WatchLimits {
+    pub streams: usize,
+    pub per_principal: usize,
+    pub anonymous: usize,
+    pub per_peer: usize,
+    pub max_lifetime: Duration,
+    pub idle_timeout: Duration,
+}
+
+impl Default for WatchLimits {
+    fn default() -> Self {
+        Self {
+            streams: MAX_WATCHERS,
+            per_principal: MAX_WATCHERS_PER_PRINCIPAL,
+            anonymous: MAX_ANONYMOUS_WATCHERS,
+            per_peer: MAX_WATCHERS_PER_PEER,
+            max_lifetime: MAX_LIFETIME,
+            idle_timeout: IDLE_TIMEOUT,
+        }
+    }
+}
+
+impl WatchLimits {
+    /// The limits `asc-serve.toml` sets.
+    pub fn from_config(l: &Limits) -> Self {
+        let n = |v: u32| usize::try_from(v).unwrap_or(usize::MAX);
+        Self {
+            streams: n(l.watch_streams),
+            per_principal: n(l.watch_streams_per_principal),
+            anonymous: n(l.watch_streams_anonymous),
+            per_peer: n(l.watch_streams_per_peer),
+            max_lifetime: Duration::from_secs(l.watch_max_lifetime.0),
+            idle_timeout: Duration::from_secs(l.watch_idle_timeout.0),
+        }
+    }
+}
+
+/// One semaphore per principal, in a table of bounded size.
+struct PrincipalSlots {
+    per: usize,
+    max_keys: usize,
+    table: Mutex<Table>,
+}
+
+#[derive(Default)]
+struct Table {
+    clock: u64,
+    map: HashMap<String, (Arc<Semaphore>, u64)>,
+}
+
+impl PrincipalSlots {
+    /// `max_keys` is raised above `streams` so a full table always holds an idle entry: every
+    /// entry with an open stream needs one of the `streams` global slots.
+    fn new(per: usize, streams: usize, max_keys: usize) -> Self {
+        Self {
+            per,
+            max_keys: max_keys.max(streams.saturating_add(1)),
+            table: Mutex::new(Table::default()),
+        }
+    }
+
+    /// A slot for `who`, or `None` when `who` holds its share already.
+    fn acquire(&self, who: &str) -> Option<OwnedSemaphorePermit> {
+        let mut t = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        t.clock += 1;
+        let stamp = t.clock;
+        if let Some((sem, last)) = t.map.get_mut(who) {
+            *last = stamp;
+            return sem.clone().try_acquire_owned().ok();
+        }
+        if t.map.len() >= self.max_keys {
+            // Only an entry with no open stream goes; the oldest one first.
+            let per = self.per;
+            let oldest = t
+                .map
+                .iter()
+                .filter(|(_, (s, _))| s.available_permits() >= per)
+                .min_by_key(|(_, (_, last))| *last)
+                .map(|(k, _)| k.clone())?;
+            t.map.remove(&oldest);
+        }
+        let sem = Arc::new(Semaphore::new(self.per));
+        let permit = sem.clone().try_acquire_owned().ok()?;
+        t.map.insert(who.to_owned(), (sem, stamp));
+        Some(permit)
+    }
+
+    #[cfg(test)]
+    fn tracked(&self) -> usize {
+        self.table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .map
+            .len()
+    }
+}
+
 /// One open stream.
 struct Reader {
     pool: AnyPool,
@@ -88,7 +211,14 @@ struct Reader {
     poll: Duration,
     settle: i64,
     failed: bool,
+    /// When the stream ends however busy it is.
+    expires: Instant,
+    idle_timeout: Duration,
+    /// When the last event went out (the open time before the first).
+    last_event: Instant,
     _slot: OwnedSemaphorePermit,
+    _key_slot: OwnedSemaphorePermit,
+    _anonymous_slot: Option<OwnedSemaphorePermit>,
 }
 
 impl Reader {
@@ -136,21 +266,47 @@ impl Reader {
         }
         Ok(full)
     }
+
+    /// When the stream must end if nothing else happens: its lifetime, or the idle timeout.
+    fn deadline(&self) -> Instant {
+        self.expires.min(self.last_event + self.idle_timeout)
+    }
 }
 
 /// The `WatchRefs` handler.
 pub struct ServerWatch {
     registry: Arc<Registry>,
     slots: Arc<Semaphore>,
+    principals: Arc<PrincipalSlots>,
+    /// Anonymous callers: their share of the streams, and a table keyed by peer address.
+    anonymous: Arc<Semaphore>,
+    peers: Arc<PrincipalSlots>,
+    limits: WatchLimits,
     poll: Duration,
     settle: i64,
 }
 
 impl ServerWatch {
     pub fn new(registry: Arc<Registry>) -> Self {
+        Self::with_limits(registry, WatchLimits::default())
+    }
+
+    pub fn with_limits(registry: Arc<Registry>, limits: WatchLimits) -> Self {
         Self {
             registry,
-            slots: Arc::new(Semaphore::new(MAX_WATCHERS)),
+            slots: Arc::new(Semaphore::new(limits.streams)),
+            principals: Arc::new(PrincipalSlots::new(
+                limits.per_principal,
+                limits.streams,
+                MAX_TRACKED_PRINCIPALS,
+            )),
+            anonymous: Arc::new(Semaphore::new(limits.anonymous.min(limits.streams))),
+            peers: Arc::new(PrincipalSlots::new(
+                limits.per_peer,
+                limits.anonymous,
+                MAX_TRACKED_PRINCIPALS,
+            )),
+            limits,
             poll: POLL,
             settle: SETTLE_SECS,
         }
@@ -170,6 +326,12 @@ impl ServerWatch {
         self.slots = Arc::new(Semaphore::new(streams));
         self
     }
+}
+
+/// Whether the authorizer admitted the caller without a credential of its own (a public
+/// repository): user id 0.
+fn is_anonymous(p: &asc_rpc::auth::Principal) -> bool {
+    ForgejoIdentity::parse(&p.id).is_some_and(|i| i.user_id == 0)
 }
 
 fn registry_status(e: RegistryError) -> Status {
@@ -198,6 +360,23 @@ impl WatchHandler for ServerWatch {
             .await
             .map_err(registry_status)?;
         let pool = self.registry.pool().clone();
+        // A verified caller is charged to its principal. An anonymous one has no identity of its
+        // own, so it is charged to its peer address and to the anonymous share of the slots.
+        let (key_slot, anonymous_slot) = if is_anonymous(&ctx.principal) {
+            let key = format!("{:?}", current_peer());
+            let by_peer = self.peers.acquire(&key).ok_or_else(|| {
+                Status::resource_exhausted("too many open ref streams from this address")
+            })?;
+            let pool = self.anonymous.clone().try_acquire_owned().map_err(|_| {
+                Status::resource_exhausted("too many open ref streams for anonymous callers")
+            })?;
+            (by_peer, Some(pool))
+        } else {
+            let by_principal = self.principals.acquire(&ctx.principal.id).ok_or_else(|| {
+                Status::resource_exhausted("too many open ref streams for this principal")
+            })?;
+            (by_principal, None)
+        };
         let slot = self
             .slots
             .clone()
@@ -222,6 +401,7 @@ impl WatchHandler for ServerWatch {
                 c
             }
         };
+        let opened = Instant::now();
         let reader = Reader {
             pool,
             repo_id: entry.key.0,
@@ -232,21 +412,32 @@ impl WatchHandler for ServerWatch {
             poll: self.poll,
             settle: self.settle,
             failed: false,
+            expires: opened + self.limits.max_lifetime,
+            idle_timeout: self.limits.idle_timeout,
+            last_event: opened,
             _slot: slot,
+            _key_slot: key_slot,
+            _anonymous_slot: anonymous_slot,
         };
         Ok(stream::unfold(reader, |mut r| async move {
             loop {
                 if let Some(ev) = r.queue.pop_front() {
+                    r.last_event = Instant::now();
                     return Some((Ok(ev), r));
                 }
                 if r.failed {
+                    return None;
+                }
+                // A clean end: the client resumes from its last cursor.
+                let left = r.deadline().saturating_duration_since(Instant::now());
+                if left.is_zero() {
                     return None;
                 }
                 match r.fill().await {
                     Ok(true) => {}
                     Ok(false) => {
                         if r.queue.is_empty() {
-                            tokio::time::sleep(r.poll).await;
+                            tokio::time::sleep(r.poll.min(left)).await;
                         }
                     }
                     Err(e) => {
@@ -261,9 +452,10 @@ impl WatchHandler for ServerWatch {
 }
 
 /// The one registration line of this unit (called from `lib.rs`).
-pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
+pub fn register(ext: &Extensions, registry: &Arc<Registry>, limits: &Limits) {
+    let watch = ServerWatch::with_limits(registry.clone(), WatchLimits::from_config(limits));
     ext.handlers
-        .set_watch(Arc::new(ServerWatch::new(registry.clone())))
+        .set_watch(Arc::new(watch))
         .expect("the watch handler group is registered once");
 }
 
@@ -509,6 +701,201 @@ mod tests {
         assert_eq!(e.code(), tonic::Code::ResourceExhausted);
         drop(first);
         assert!(watch.watch_refs(&ctx("alice"), req()).await.is_ok());
+    }
+
+    fn limits(streams: usize, per_principal: usize, life_ms: u64, idle_ms: u64) -> WatchLimits {
+        WatchLimits {
+            streams,
+            per_principal,
+            anonymous: streams,
+            per_peer: per_principal,
+            max_lifetime: Duration::from_millis(life_ms),
+            idle_timeout: Duration::from_millis(idle_ms),
+        }
+    }
+
+    fn plain_request() -> wire::WatchRefsRequest {
+        wire::WatchRefsRequest {
+            repo: Some(wire::RepoRef {
+                name: "o/r".into(),
+                id_mode: 0,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn one_principal_at_its_cap_leaves_slots_for_another() {
+        let f = setup().await;
+        let watch = ServerWatch::with_limits(f.r.clone(), limits(3, 2, 60_000, 60_000));
+        let a1 = watch.watch_refs(&ctx("alice"), plain_request()).await;
+        let a2 = watch.watch_refs(&ctx("alice"), plain_request()).await;
+        assert!(a1.is_ok() && a2.is_ok());
+        let e = watch
+            .watch_refs(&ctx("alice"), plain_request())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted);
+        assert!(e.message().contains("principal"), "{}", e.message());
+        // The refused attempt took no global slot: bob still gets the third one.
+        let b = watch.watch_refs(&ctx("bob"), plain_request()).await;
+        assert!(b.is_ok());
+        // The global cap still holds for everyone.
+        let e = watch
+            .watch_refs(&ctx("carol"), plain_request())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted);
+        // A closed stream frees alice's own slot.
+        drop(a1);
+        drop(b);
+        assert!(
+            watch
+                .watch_refs(&ctx("alice"), plain_request())
+                .await
+                .is_ok()
+        );
+    }
+
+    async fn open_from(
+        watch: &ServerWatch,
+        who: &CallCtx,
+        peer: crate::limits::Peer,
+    ) -> Result<RpcStream<wire::RefEvent>, Status> {
+        crate::limits::with_peer(peer, watch.watch_refs(who, plain_request())).await
+    }
+
+    #[tokio::test]
+    async fn anonymous_callers_are_charged_to_their_own_address_and_share() {
+        use crate::limits::Peer;
+        let f = setup().await;
+        let mut l = limits(8, 8, 60_000, 60_000);
+        l.anonymous = 3;
+        l.per_peer = 2;
+        let watch = ServerWatch::with_limits(f.r.clone(), l);
+        let anon = ctx("0:anonymous");
+        let at = |n: u8| Peer::from_ip(Some(std::net::IpAddr::from([10, 0, 0, n])));
+        let a1 = open_from(&watch, &anon, at(1)).await;
+        let a2 = open_from(&watch, &anon, at(1)).await;
+        assert!(a1.is_ok() && a2.is_ok());
+        // One address at its cap does not block another address.
+        let e = open_from(&watch, &anon, at(1)).await.err().unwrap();
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted);
+        assert!(e.message().contains("address"), "{}", e.message());
+        let b1 = open_from(&watch, &anon, at(2)).await;
+        assert!(b1.is_ok(), "a second address has slots of its own");
+        // The anonymous share (3) is spent, but a verified caller is not locked out.
+        let e = open_from(&watch, &anon, at(3)).await.err().unwrap();
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted);
+        assert!(e.message().contains("anonymous"), "{}", e.message());
+        let verified = ctx("9:dana");
+        assert!(open_from(&watch, &verified, at(1)).await.is_ok());
+        // Closing a stream frees its address and its share.
+        drop(a1);
+        assert!(open_from(&watch, &anon, at(3)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_anonymous_flood_cannot_take_every_global_slot() {
+        use crate::limits::{Peer, with_peer};
+        let f = setup().await;
+        let mut l = limits(4, 4, 60_000, 60_000);
+        l.anonymous = 2;
+        l.per_peer = 2;
+        let watch = ServerWatch::with_limits(f.r.clone(), l);
+        let anon = ctx("0:anonymous");
+        let mut held = Vec::new();
+        for n in 1..=6u8 {
+            let peer = Peer::from_ip(Some(std::net::IpAddr::from([10, 0, 0, n])));
+            if let Ok(s) = with_peer(peer, watch.watch_refs(&anon, plain_request())).await {
+                held.push(s);
+            }
+        }
+        assert_eq!(held.len(), 2, "anonymous callers hold their share only");
+        let verified = ctx("9:dana");
+        assert!(watch.watch_refs(&verified, plain_request()).await.is_ok());
+        assert!(watch.watch_refs(&verified, plain_request()).await.is_ok());
+    }
+
+    #[test]
+    fn the_principal_table_stays_bounded_and_never_evicts_an_open_stream() {
+        let slots = PrincipalSlots::new(1, 4, 6);
+        let held: Vec<_> = (0..4)
+            .map(|i| slots.acquire(&format!("busy{i}")).unwrap())
+            .collect();
+        for i in 0..1000 {
+            drop(slots.acquire(&format!("idle{i}")).unwrap());
+            assert!(slots.tracked() <= 6, "{} entries", slots.tracked());
+        }
+        // The busy principals kept their entries, so their caps still bind.
+        for i in 0..4 {
+            assert!(slots.acquire(&format!("busy{i}")).is_none());
+        }
+        drop(held);
+        assert!(slots.acquire("busy0").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_stream_ends_at_its_max_lifetime_even_with_events_flowing() {
+        let f = setup().await;
+        let watch = ServerWatch::with_limits(f.r.clone(), limits(8, 8, 400, 60_000))
+            .with_timing(Duration::from_millis(5), 0);
+        let mut s = pump(
+            watch
+                .watch_refs(&ctx("alice"), plain_request())
+                .await
+                .unwrap(),
+        );
+        let started = std::time::Instant::now();
+        let mut n = 0u8;
+        let ended = loop {
+            n = n.wrapping_add(1);
+            f.set("refs/heads/master", Some(cs(n))).await;
+            if let Ok(None) = tokio::time::timeout(Duration::from_millis(100), s.recv()).await {
+                break true;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                break false;
+            }
+        };
+        assert!(ended, "the stream outlived its max lifetime");
+        assert!(started.elapsed() >= Duration::from_millis(400));
+    }
+
+    #[tokio::test]
+    async fn an_idle_stream_ends_but_one_receiving_events_stays_open() {
+        let f = setup().await;
+        let watch = ServerWatch::with_limits(f.r.clone(), limits(8, 8, 60_000, 400))
+            .with_timing(Duration::from_millis(5), 0);
+        let mut busy = pump(
+            watch
+                .watch_refs(&ctx("alice"), plain_request())
+                .await
+                .unwrap(),
+        );
+        // Bob's pattern never matches, so no event is ever delivered to him.
+        let never = wire::WatchRefsRequest {
+            patterns: vec!["refs/tags/none".into()],
+            ..plain_request()
+        };
+        let mut quiet = pump(watch.watch_refs(&ctx("bob"), never).await.unwrap());
+        // Events every 100 ms for 800 ms span two idle windows.
+        for n in 1..=8u8 {
+            f.set("refs/heads/master", Some(cs(n))).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        f.set("refs/heads/master", Some(cs(99))).await;
+        let got = take(&mut busy, 20).await;
+        assert!(
+            got.len() >= 9,
+            "the busy stream kept receiving: {}",
+            got.len()
+        );
+        // Bob's stream delivered nothing for 800 ms, so it ended cleanly.
+        let end = tokio::time::timeout(Duration::from_secs(5), quiet.recv()).await;
+        assert!(matches!(end, Ok(None)), "the idle stream did not end");
     }
 
     #[tokio::test]
