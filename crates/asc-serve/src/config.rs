@@ -524,6 +524,28 @@ impl Limits {
     }
 }
 
+/// Which `Authorizer` a server runs (`[auth] provider`, SPEC §15.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthProvider {
+    /// Forge delegation (Forgejo today); needs `[forgejo]`.
+    Forge,
+    /// The standalone token store (M30); needs `auth.token_key_file`.
+    TokenStore,
+}
+
+/// `[auth]`: the one authorizer for RPC, HTTP routes and MCP.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AuthConfig {
+    /// `forge` or `token_store`. Absent means `forge` when `[forgejo]` is set, else every
+    /// credential is refused.
+    pub provider: Option<AuthProvider>,
+    /// The file holding the token store's HMAC key (hex, 32 bytes, mode 0600). Required for
+    /// `token_store`; `asc serve token create` makes it when it is missing.
+    pub token_key_file: Option<PathBuf>,
+}
+
 /// `[[composition_grants]]`: the parent's task tokens may read the child (SPEC §15.5).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -548,6 +570,7 @@ pub struct ServeConfig {
     /// The upstream tier of a `cache` role.
     pub upstream: Option<String>,
     pub cache: CacheConfig,
+    pub auth: AuthConfig,
     pub forgejo: Option<ForgejoConfig>,
     pub turbo: TurboConfig,
     pub mcp: McpConfig,
@@ -572,6 +595,7 @@ impl Default for ServeConfig {
             db: None,
             upstream: None,
             cache: CacheConfig::default(),
+            auth: AuthConfig::default(),
             forgejo: None,
             turbo: TurboConfig::default(),
             mcp: McpConfig::default(),
@@ -646,6 +670,15 @@ impl ServeConfig {
         if !self.admin.listen.ip().is_loopback() && self.admin.token_file.is_none() {
             return invalid("a non-loopback admin.listen needs admin.token_file");
         }
+        match self.auth_provider() {
+            Some(AuthProvider::TokenStore) if self.auth.token_key_file.is_none() => {
+                return invalid("auth.provider = \"token_store\" needs auth.token_key_file");
+            }
+            Some(AuthProvider::Forge) if self.forgejo.is_none() => {
+                return invalid("auth.provider = \"forge\" needs a [forgejo] section");
+            }
+            _ => {}
+        }
         if self.mcp.enabled && !MCP_AUTH_LAYER {
             return invalid("mcp.enabled = true is refused until the auth layer exists");
         }
@@ -690,6 +723,13 @@ impl ServeConfig {
             }
         }
         Ok(())
+    }
+
+    /// The effective authorizer: `[auth] provider`, else `forge` when `[forgejo]` is set.
+    pub fn auth_provider(&self) -> Option<AuthProvider> {
+        self.auth
+            .provider
+            .or_else(|| self.forgejo.is_some().then_some(AuthProvider::Forge))
     }
 
     /// Whether `parent`'s task tokens may read `child` (SPEC §15.5).

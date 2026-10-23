@@ -5,6 +5,7 @@
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
 pub mod authn;
+pub mod authz;
 pub mod cache_role;
 pub mod codeintel;
 pub mod classify;

@@ -726,6 +726,7 @@ dependencies = [
  "asc-rpc",
  "asc-store",
  "futures",
+ "getrandom 0.4.3",
  "gix-attributes",
  "hmac",
  "http-body",
