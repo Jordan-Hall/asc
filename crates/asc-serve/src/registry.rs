@@ -531,6 +531,7 @@ pub struct Extensions {
     pub pipeline: Arc<crate::update::PipelineHooks>,
     /// The `Changes` service handler (C19); `build_routes` serves it behind the authorizer.
     pub changes: crate::changes::rpc::ChangesSlot,
+    pub cloud: crate::cloud::rpc::CloudSlot,
 }
 
 impl Extensions {
@@ -544,6 +545,7 @@ impl Extensions {
             git: GitRoutesSlot::default(),
             pipeline: Arc::default(),
             changes: Default::default(),
+            cloud: Default::default(),
         }
     }
 }
