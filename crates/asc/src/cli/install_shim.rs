@@ -73,13 +73,13 @@ fn path_line(dir: &Path) -> String {
 fn invoked_exe() -> std::io::Result<PathBuf> {
     let real = std::env::current_exe()?;
     #[cfg(unix)]
-    if let Some(arg0) = std::env::args_os().next().map(PathBuf::from) {
-        if arg0.components().count() > 1 {
-            let abs = if arg0.is_absolute() { arg0 } else { std::env::current_dir()?.join(arg0) };
-            let same = std::fs::canonicalize(&abs).ok().zip(std::fs::canonicalize(&real).ok());
-            if same.is_some_and(|(a, b)| a == b) {
-                return Ok(abs);
-            }
+    if let Some(arg0) = std::env::args_os().next().map(PathBuf::from)
+        && arg0.components().count() > 1
+    {
+        let abs = if arg0.is_absolute() { arg0 } else { std::env::current_dir()?.join(arg0) };
+        let same = std::fs::canonicalize(&abs).ok().zip(std::fs::canonicalize(&real).ok());
+        if same.is_some_and(|(a, b)| a == b) {
+            return Ok(abs);
         }
     }
     Ok(real)
