@@ -10,6 +10,9 @@
 //!   only. Path and line number stay (git-grep parity). A PEM-style block (`-----BEGIN ...
 //!   PRIVATE KEY-----`) redacts every line up to and including its `-----END` line, across
 //!   match, context and chunk boundaries of one file; an unterminated block redacts to the end.
+//!   Block membership is decided per file by absolute line number (overlapping windows and
+//!   chunks count each line once; a gap keeps an open block open), and markers are looked
+//!   for in the whole raw line, even past [`MAX_LINE_IN`].
 //!   A document whose secret flag is unknown counts as flagged.
 //! * **Injection hygiene:** control characters, ANSI/OSC escapes and bidi/zero-width
 //!   characters are removed; lines are cut at 300 bytes around the first match.
@@ -18,7 +21,7 @@
 //! All input is untrusted: every line is capped at 4 KiB before it is scanned or shown, so
 //! text beyond what was scanned is never shown.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use asc_core::id::FileId;
 
@@ -198,12 +201,6 @@ fn clean(raw: &[u8], starts: &[u32]) -> (String, Vec<usize>) {
     (out, cols)
 }
 
-/// Multi-line secret state: inside a `-----BEGIN ... PRIVATE KEY-----` style block.
-#[derive(Clone, Copy, Debug, Default)]
-struct Block {
-    open: bool,
-}
-
 /// Labels of PEM-style blocks whose body must not be shown.
 fn block_label(label: &str) -> bool {
     ["PRIVATE KEY", "SECRET", "CREDENTIAL", "TOKEN"].iter().any(|k| label.contains(k))
@@ -226,36 +223,70 @@ fn last_begin(s: &str) -> Option<usize> {
     found
 }
 
-impl Block {
-    /// Feeds one line (both views of it); true when the line is part of a block.
-    fn feed(&mut self, views: [&str; 2]) -> bool {
-        let (mut hit, mut open) = (self.open, false);
-        for v in views {
-            let up = v.to_ascii_uppercase();
-            let (begin, end) = (last_begin(&up), up.rfind("-----END "));
-            let mut o = self.open;
-            if self.open {
-                if let Some(e) = end {
-                    o = begin.is_some_and(|b| b > e);
-                }
-            } else if let Some(b) = begin {
-                hit = true;
-                o = end.is_none_or(|e| e < b);
-            }
-            open |= o;
-        }
-        self.open = open;
-        hit
+/// The texts of one line that are scanned for block markers: the whole raw line (a marker
+/// past [`MAX_LINE_IN`] still counts), and its cleaned form, since stripping can join a
+/// split marker.
+fn marker_views(raw: &[u8]) -> Vec<String> {
+    vec![
+        String::from_utf8_lossy(raw).to_ascii_uppercase(),
+        clean(raw, &[]).0.to_ascii_uppercase(),
+    ]
+}
+
+/// One line against the block state: `(line is part of a block, block still open after)`.
+fn block_step(open: bool, view: &str) -> (bool, bool) {
+    let (begin, end) = (last_begin(view), view.rfind("-----END "));
+    if open {
+        (true, end.is_none_or(|e| begin.is_some_and(|b| b > e)))
+    } else if let Some(b) = begin {
+        (true, end.is_none_or(|e| e < b))
+    } else {
+        (false, false)
     }
 }
 
-fn clean_line(raw: &[u8], starts: &[u32], block: &mut Block) -> Cleaned {
+/// The line numbers that lie inside a `-----BEGIN ... PRIVATE KEY-----` style block, from
+/// every known line of one file. Lines are keyed by absolute number, de-duplicated and walked
+/// once in order, so overlapping windows cannot replay a line; where two sources disagree on
+/// a line, every version counts. A gap in the numbers keeps an open block open.
+fn redacted_lines<'a>(lines: impl IntoIterator<Item = (i64, &'a [u8])>) -> HashSet<i64> {
+    let mut by_line: BTreeMap<i64, Vec<&[u8]>> = BTreeMap::new();
+    for (n, l) in lines {
+        let v = by_line.entry(n).or_default();
+        if !v.contains(&l) {
+            v.push(l);
+        }
+    }
+    let (mut open, mut out) = (false, HashSet::new());
+    for (n, variants) in by_line {
+        let (mut hit, mut next) = (open, false);
+        for v in variants.into_iter().flat_map(marker_views) {
+            let (h, o) = block_step(open, &v);
+            hit |= h;
+            next |= o;
+        }
+        if hit {
+            out.insert(n);
+        }
+        open = next;
+    }
+    out
+}
+
+/// Absolute numbers and text of the context lines around a match at `line`.
+fn context_lines(r: &RawLine) -> impl Iterator<Item = (i64, &[u8])> {
+    let (line, n) = (i64::from(r.line), r.before.len() as i64);
+    let before = r.before.iter().enumerate().map(move |(j, l)| (line - n + j as i64, l.as_slice()));
+    let after = r.after.iter().enumerate().map(move |(j, l)| (line + 1 + j as i64, l.as_slice()));
+    before.chain(after)
+}
+
+fn clean_line(raw: &[u8], starts: &[u32]) -> Cleaned {
     let raw = &raw[..raw.len().min(MAX_LINE_IN)];
     let (text, cols) = clean(raw, starts);
-    // Scan the raw bytes and the cleaned text: stripping can join a split token.
-    let mut secret = secrets::line_is_secret(raw) || secrets::line_is_secret(text.as_bytes());
-    // Every line is fed, so the state follows a block even through already-flagged lines.
-    secret |= block.feed([&String::from_utf8_lossy(raw), &text]);
+    // Scan the raw bytes and the cleaned text: stripping can join a split token. Block
+    // membership is decided separately, by line number.
+    let secret = secrets::line_is_secret(raw) || secrets::line_is_secret(text.as_bytes());
     Cleaned { text, cols, secret }
 }
 
@@ -299,9 +330,9 @@ fn path_flagged(path: &[u8]) -> bool {
 }
 
 /// A context or chunk line for display: flagged lines become [`REDACTED_TEXT`].
-fn body_line(raw: &[u8], block: &mut Block) -> (Vec<u8>, bool) {
-    let c = clean_line(raw, &[], block);
-    if c.secret {
+fn body_line(raw: &[u8], inside_block: bool) -> (Vec<u8>, bool) {
+    let c = clean_line(raw, &[]);
+    if c.secret || inside_block {
         return (REDACTED_TEXT.to_vec(), true);
     }
     let (w, _) = window(&c.text, 0);
@@ -398,28 +429,30 @@ fn file_head_cost(f: &FileOut) -> usize {
     f.path.len() + 32 + f.lang.len() + f.also_at.iter().map(|p| p.len() + 1).sum::<usize>() + 8
 }
 
-/// Context lines for display; all are scanned (for the block state), the first few are kept.
-fn ctx_lines(v: &[Vec<u8>], block: &mut Block) -> Vec<Vec<u8>> {
+/// Context lines for display, the first few of them. `first` is the absolute number of
+/// `v[0]`; a line inside a block of `inside` is redacted.
+fn ctx_lines(v: &[Vec<u8>], first: i64, inside: &HashSet<i64>) -> Vec<Vec<u8>> {
     v.iter()
+        .take(MAX_CONTEXT)
         .enumerate()
-        .filter_map(|(i, l)| {
-            let (b, _) = body_line(l, block);
-            (i < MAX_CONTEXT).then_some(b)
-        })
+        .map(|(j, l)| body_line(l, inside.contains(&(first + j as i64))).0)
         .collect()
 }
 
+/// `inside` holds the file's redacted line numbers (see [`redacted_lines`]).
 fn render_line(
     ctx: &RenderCtx,
     file: &FileId,
     path: &[u8],
     raw: &RawLine,
-    block: &mut Block,
+    inside: &HashSet<i64>,
 ) -> LineOut {
     let starts: Vec<u32> = raw.spans.iter().map(|s| s.0).collect();
-    let before = ctx_lines(&raw.before, block);
-    let c = clean_line(&raw.text, &starts, block);
-    let after = ctx_lines(&raw.after, block);
+    let line = i64::from(raw.line);
+    let before = ctx_lines(&raw.before, line - raw.before.len() as i64, inside);
+    let mut c = clean_line(&raw.text, &starts);
+    c.secret |= inside.contains(&line);
+    let after = ctx_lines(&raw.after, line + 1, inside);
     let prov = Provenance {
         repo: ctx.repo.clone(),
         changeset: ctx.changeset.clone(),
@@ -522,12 +555,13 @@ pub fn render_search(
         used += file_head_cost(&f);
         if !flagged {
             let primary = f.path.clone();
-            // In line order, so a block opened above a later match is still open there.
-            let mut order: Vec<&RawLine> = h.lines.iter().collect();
-            order.sort_by_key(|l| l.line);
-            let mut block = Block::default();
-            for raw in order {
-                let l = render_line(ctx, &h.file, &primary, raw, &mut block);
+            // Matches and their context are keyed by absolute line number, so windows that
+            // overlap are one line each and a block is followed through all of them.
+            let inside = redacted_lines(h.lines.iter().flat_map(|r| {
+                std::iter::once((i64::from(r.line), r.text.as_slice())).chain(context_lines(r))
+            }));
+            for raw in &h.lines {
+                let l = render_line(ctx, &h.file, &primary, raw, &inside);
                 let cost = line_cost(&l);
                 if used + cost > lim.bytes {
                     out.truncated = true;
@@ -579,15 +613,24 @@ pub struct RenderedSymbols {
     pub est_tokens: u32,
 }
 
-fn text_field(raw: &[u8], block: &mut Block) -> (Vec<u8>, bool) {
+/// The lines of a signature or doc that are rendered.
+fn field_lines(raw: &[u8]) -> impl Iterator<Item = &[u8]> {
+    raw[..raw.len().min(MAX_LINE_IN * 4)].split(|&b| b == b'\n').take(20)
+}
+
+/// Line numbers given to the doc's lines, after the signature's, so a gap keeps a block open.
+const DOC_BASE: i64 = 100;
+
+fn numbered_field(raw: &[u8], base: i64) -> Vec<(i64, &[u8])> {
+    field_lines(raw).enumerate().map(|(i, l)| (base + i as i64, l)).collect()
+}
+
+fn text_field(raw: &[u8], base: i64, inside: &HashSet<i64>) -> (Vec<u8>, bool) {
     // Signatures and docs can span lines; every line is scanned.
     let mut out = Vec::new();
     let mut flagged = false;
-    for (i, l) in raw[..raw.len().min(MAX_LINE_IN * 4)].split(|&b| b == b'\n').enumerate() {
-        if i >= 20 {
-            break;
-        }
-        let (b, f) = body_line(l, block);
+    for (i, l) in field_lines(raw).enumerate() {
+        let (b, f) = body_line(l, inside.contains(&(base + i as i64)));
         flagged |= f;
         if i > 0 {
             out.push(b'\n');
@@ -619,9 +662,11 @@ pub fn render_symbols(
         let (signature, doc, redacted) = if file_flagged {
             (Vec::new(), Vec::new(), true)
         } else {
-            let mut block = Block::default();
-            let (sig, a) = text_field(&s.signature, &mut block);
-            let (doc, b) = text_field(&s.doc, &mut block);
+            let mut all = numbered_field(&s.signature, 0);
+            all.extend(numbered_field(&s.doc, DOC_BASE));
+            let inside = redacted_lines(all);
+            let (sig, a) = text_field(&s.signature, 0, &inside);
+            let (doc, b) = text_field(&s.doc, DOC_BASE, &inside);
             (sig, doc, a || b)
         };
         let o = SymbolOut {
@@ -713,24 +758,23 @@ pub fn render_chunks(
     let lim = budget.limits();
     let mut out = RenderedChunks { truncated: input_truncated, ..RenderedChunks::default() };
     let mut used = ctx.repo.len() + ctx.changeset.len();
-    // Block state entering each chunk: the chunks of one file are walked in line order, so a
-    // key split across two chunks is redacted in both, whatever order they are ranked in.
-    let mut entry = vec![false; chunks.len()];
-    let mut order: Vec<usize> = (0..chunks.len()).collect();
-    order.sort_by_key(|&i| (*chunks[i].file.as_bytes(), chunks[i].start_line));
-    let mut walk: Option<(FileId, Block)> = None;
-    for i in order {
-        let c = &chunks[i];
-        let block = match &mut walk {
-            Some((f, b)) if *f == c.file => b,
-            slot => &mut slot.insert((c.file, Block::default())).1,
-        };
-        entry[i] = block.open;
-        for l in c.text.split(|&b| b == b'\n') {
-            clean_line(l, &[], block);
-        }
+    // Every line of every chunk of a file is keyed by its absolute number (`start_line + i`),
+    // so overlapping or out-of-order chunks are one line each and a key split across chunks
+    // is redacted in all of them, whatever order they are ranked in.
+    let mut numbered: HashMap<FileId, Vec<(i64, &[u8])>> = HashMap::new();
+    for c in chunks {
+        numbered.entry(c.file).or_default().extend(
+            c.text
+                .split(|&b| b == b'\n')
+                .enumerate()
+                .map(|(i, l)| (i64::from(c.start_line) + i as i64, l)),
+        );
     }
-    for (n, c) in chunks.iter().enumerate() {
+    let inside: HashMap<FileId, HashSet<i64>> =
+        numbered.into_iter().map(|(f, v)| (f, redacted_lines(v))).collect();
+    let no_lines = HashSet::new();
+    for c in chunks {
+        let inside = inside.get(&c.file).unwrap_or(&no_lines);
         if out.chunks.len() >= lim.results {
             out.truncated = true;
             break;
@@ -750,14 +794,14 @@ pub fn render_chunks(
         let mut text: Vec<u8> = Vec::new();
         let mut cut = false;
         if !redacted {
-            let mut block = Block { open: entry[n] };
             let mut spent = used + head;
             for (i, l) in c.text.split(|&b| b == b'\n').enumerate() {
                 if i >= MAX_CHUNK_LINES {
                     cut = true;
                     break;
                 }
-                let (b, f) = body_line(l, &mut block);
+                let at = i64::from(c.start_line) + i as i64;
+                let (b, f) = body_line(l, inside.contains(&at));
                 if spent + b.len() + 1 > lim.bytes {
                     cut = true;
                     break;
@@ -1093,7 +1137,8 @@ mod tests {
         let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![b, a])], false);
         let dump = format!("{r:?}");
         assert!(!dump.contains("secretBODY") && !dump.contains("still inside"), "{dump}");
-        let m = &r.files[0].matches;
+        let mut m = r.files[0].matches.clone();
+        m.sort_by_key(|l| l.line);
         assert_eq!(m[0].line, 2);
         assert!(m[1].redacted && m[1].text.is_empty());
         assert_eq!(m[1].after[1], b"after");
@@ -1183,8 +1228,92 @@ mod tests {
             let (t, cols) = clean(raw, &[0, 1, u32::MAX, raw.len() as u32]);
             assert!(cols.iter().all(|&c| c <= t.len()));
             assert!(!clean_path(raw).contains(&0x1b));
-            let _ = body_line(raw, &mut Block::default());
             let _ = render_chunks(&ctx(), Budget::default(), &[chunk(1, 1, &String::from_utf8_lossy(raw))], false);
         }
+    }
+
+    /// Line `n` of a document whose key block runs from line `b` to line `e`.
+    fn doc_line(n: u32, b: u32, e: u32) -> String {
+        match n {
+            _ if n == b => PEM_BEGIN.to_string(),
+            _ if n == e => PEM_END.to_string(),
+            _ if n > b && n < e => format!("secretBODY{n}"),
+            _ => format!("L{n}"),
+        }
+    }
+
+    fn doc_chunk(from: u32, to: u32, b: u32, e: u32) -> RawChunk {
+        let text: Vec<String> = (from..=to).map(|n| doc_line(n, b, e)).collect();
+        chunk(1, from, &text.join("\n"))
+    }
+
+    #[test]
+    fn overlapping_chunks_redact_exactly_the_block_lines() {
+        for (b, e) in [(3, 12), (3, 8), (6, 7), (9, 15)] {
+            let (a, c) = (doc_chunk(1, 10, b, e), doc_chunk(5, 15, b, e));
+            for chunks in [[a.clone(), c.clone()], [c, a]] {
+                let r = render_chunks(&ctx(), Budget::default(), &chunks, false);
+                assert!(!format!("{r:?}").contains("secretBODY"), "{b}..{e}: {r:?}");
+                for (out, raw) in r.chunks.iter().zip(&chunks) {
+                    let text = String::from_utf8_lossy(&out.text).into_owned();
+                    for (i, got) in text.split('\n').enumerate() {
+                        let abs = raw.start_line + i as u32;
+                        let want = if (b..=e).contains(&abs) {
+                            String::from_utf8_lossy(REDACTED_TEXT).into_owned()
+                        } else {
+                            format!("L{abs}")
+                        };
+                        assert_eq!(got, want, "block {b}..{e}, line {abs}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_context_windows_redact_by_line_number() {
+        // Lines 2..=4 are a key block; match A (line 3) sees its end, match B (line 5) sees
+        // the body again in its leading context.
+        let lines: Vec<Vec<u8>> = (1..=6).map(|n| doc_line(n, 2, 4).into_bytes()).collect();
+        let at = |n: usize| lines[n - 1].clone();
+        let mut a = RawLine { line: 3, text: at(3), ..RawLine::default() };
+        a.before = vec![at(2)];
+        a.after = vec![at(4), at(5)];
+        let mut b = RawLine { line: 5, text: at(5), ..RawLine::default() };
+        b.before = vec![at(3), at(4)];
+        b.after = vec![at(6)];
+        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![a, b])], false);
+        assert!(!format!("{r:?}").contains("secretBODY"), "{r:?}");
+        let m = &r.files[0].matches;
+        assert!(m[0].redacted && m[0].before == [REDACTED_TEXT] && m[0].after[0] == REDACTED_TEXT);
+        assert_eq!(m[0].after[1], b"L5");
+        assert_eq!(m[1].before, [REDACTED_TEXT, REDACTED_TEXT]);
+        assert!(!m[1].redacted);
+        assert_eq!((m[1].text.as_slice(), m[1].after[0].as_slice()), (b"L5".as_slice(), b"L6".as_slice()));
+    }
+
+    #[test]
+    fn markers_past_the_line_cap_still_count() {
+        let pad = "x".repeat(MAX_LINE_IN + 10);
+        let text = [
+            format!("{pad}{PEM_BEGIN}"),
+            BODY1.to_string(),
+            format!("{pad}{PEM_END}"),
+            "tail".to_string(),
+        ]
+        .join("\n");
+        let r = render_chunks(&ctx(), Budget::default(), &[chunk(1, 1, &text)], false);
+        let t = String::from_utf8_lossy(&r.chunks[0].text).into_owned();
+        assert!(!t.contains("secretBODY") && !t.contains("BODYline"), "{t}");
+        let lines: Vec<&str> = t.split('\n').collect();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[..3].iter().all(|l| l.as_bytes() == REDACTED_TEXT), "{t}");
+        assert_eq!(lines[3], "tail");
+        // The same through a search hit: the marker is on the match line, the body in context.
+        let mut l = RawLine { line: 1, text: format!("{pad}{PEM_BEGIN}").into_bytes(), ..RawLine::default() };
+        l.after = vec![BODY1.as_bytes().to_vec(), PEM_END.as_bytes().to_vec(), b"tail".to_vec()];
+        let r = render_search(&ctx(), Budget::default(), &[hit(1, &["a.rs"], vec![l])], false);
+        let m = &r.files[0].matches[0];
+        assert!(m.redacted && m.after[..2] == [REDACTED_TEXT, REDACTED_TEXT] && m.after[2] == b"tail");
     }
 }
