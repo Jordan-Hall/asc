@@ -84,10 +84,10 @@ super::verb!(RESTACK, "restack");
 
 #[derive(Serialize)]
 pub(crate) struct Row {
-    change: String,
-    subject: String,
-    old: String,
-    new: String,
+    pub(crate) change: String,
+    pub(crate) subject: String,
+    pub(crate) old: String,
+    pub(crate) new: String,
 }
 
 #[derive(Serialize)]
@@ -200,7 +200,7 @@ fn signer(ctx: &Ctx, on: bool) -> Result<Option<Gpg<'_>>> {
 }
 
 /// Signs the replayed commit `r` when it carries no signature yet. Returns its replacement.
-async fn resign(ctx: &Ctx, ws: &WsCtx, r: ChangesetId) -> Result<ChangesetId> {
+pub(crate) async fn resign(ctx: &Ctx, ws: &WsCtx, r: ChangesetId) -> Result<ChangesetId> {
     let cs = ws.engine.get_changeset(r).await?;
     if cs.extra.get(&EXTRA_GIT_GPGSIG.to_vec()).is_some() {
         return Ok(r);
@@ -245,7 +245,7 @@ async fn resign(ctx: &Ctx, ws: &WsCtx, r: ChangesetId) -> Result<ChangesetId> {
 // ---------------------------------------------------------------- registering
 
 /// Makes a stored rewrite known to the rest of asc: generation, git ids of its trees.
-async fn register(ws: &WsCtx, new: ChangesetId) -> Result<()> {
+pub(crate) async fn register(ws: &WsCtx, new: ChangesetId) -> Result<()> {
     let cs = ws.engine.get_changeset(new).await?;
     let gen_no = ws.engine.get_derived::<Gen>(new).await.map_err(fatal)?;
     ws.engine.warm(new).await.map_err(fatal)?;
@@ -325,7 +325,7 @@ async fn pick_stack(
 }
 
 /// The branches (and a detached HEAD) that follow a rewrite of one of `steps`.
-async fn followers(ws: &WsCtx, steps: &[ChangesetId]) -> Result<Vec<RefFollow>> {
+pub(crate) async fn followers(ws: &WsCtx, steps: &[ChangesetId]) -> Result<Vec<RefFollow>> {
     let set: HashSet<ChangesetId> = steps.iter().copied().collect();
     let entries = ws.db.refs().list(ws.repo.key, "refs/heads/").await?;
     if entries.len() > MAX_REFS {
