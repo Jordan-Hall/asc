@@ -37,11 +37,13 @@ macro_rules! stub {
 
 pub mod common;
 pub mod config;
+pub mod conflict;
 pub mod init;
 pub mod json;
 pub mod output;
 pub mod pager;
 pub mod safe_dir;
+pub mod seqstate;
 pub mod seed_opts;
 
 pub mod add;
