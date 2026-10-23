@@ -1018,8 +1018,14 @@ mod tests {
     #[test]
     fn mboxes_split_at_from_lines() {
         let mut two = MAIL.to_vec();
+        // As in git's mailsplit, a `From ` line starts a message only after a blank line.
+        two.extend_from_slice(b"\n");
         two.extend_from_slice(MAIL);
         assert_eq!(split_mbox(&two).unwrap().len(), 2);
+        // Body text that looks like a `From ` line, with no blank line before it, does not split.
+        let mut glued = MAIL.to_vec();
+        glued.extend_from_slice(MAIL);
+        assert_eq!(split_mbox(&glued).unwrap().len(), 1);
         assert!(split_mbox(b"just text\n").is_none());
         assert_eq!(split_mbox(b"From: x\nSubject: y\n\nz\n").unwrap().len(), 1);
     }
