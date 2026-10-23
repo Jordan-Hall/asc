@@ -20,6 +20,8 @@ asc-git = { workspace = true }
 asc-store = { workspace = true }
 asc-engine = { workspace = true }
 asc-graph = { workspace = true }
+asc-codeintel = { path = "../asc-codeintel" }
+roaring = { workspace = true }
 blake3 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
