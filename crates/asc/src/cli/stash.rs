@@ -12,7 +12,7 @@
 //! `--pathspec-from-file`, and `show --include-untracked`.
 
 mod apply;
-mod save;
+pub(crate) mod save;
 pub(crate) mod stack;
 
 use std::ffi::OsString;
