@@ -794,16 +794,21 @@ impl PublicApiAuthz {
 
 // ------------------------------------------------------------------------------ stage 2+
 
+/// `modules/private/asc.go` `AscAuthzRequest`, token variant (K07, K07b). The handler decodes it
+/// strictly: an unknown field is a 400, so the field names here are exactly the Go JSON tags.
+/// `mode` is `read` or `write` and nothing else; `ref` is optional and asc sends none.
 #[derive(Serialize)]
 struct AuthzRequest<'a> {
-    /// The secret: a token, or the password of a Basic login.
+    /// The secret: a token, or the password of a Basic login. Absent for an anonymous caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
     token: Option<&'a str>,
     /// The Basic user name, present only for a Basic login with one. Forgejo then checks
     /// `user:token` as it checks a git client's HTTP Basic credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<&'a str>,
+    owner: &'a str,
     repo: &'a str,
-    access: &'static str,
+    mode: &'static str,
 }
 
 #[derive(Deserialize, Default)]
@@ -910,15 +915,21 @@ impl InternalAuthz {
         repo: &str,
         access: Access,
     ) -> Result<Decision, Fetch> {
+        // The forge takes `read` and `write` only. `Admin` asks for `write` and `judge` then
+        // requires the answered permission to reach admin.
+        let mode = match access {
+            Access::Read => "read",
+            Access::Write | Access::Admin => "write",
+        };
+        let (owner, name) = repo
+            .split_once('/')
+            .ok_or(Fetch::Denied(AuthError::Forbidden))?;
         let body = AuthzRequest {
             token: login.map(|l| l.secret.expose()),
             user: login.and_then(|l| l.user),
-            repo,
-            access: match access {
-                Access::Read => "read",
-                Access::Write => "write",
-                Access::Admin => "admin",
-            },
+            owner,
+            repo: name,
+            mode,
         };
         let req = self
             .client
