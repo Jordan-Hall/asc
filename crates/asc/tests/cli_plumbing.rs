@@ -1056,7 +1056,8 @@ impl Built {
         let feed = |mut c: Command| {
             c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = c.spawn().expect("spawn");
-            child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+            // A command that fails before reading its input closes the pipe: Linux reports EPIPE.
+            let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
             let out = child.wait_with_output().unwrap();
             Out { code: out.status.code().unwrap_or(-1), stdout: text(&out.stdout), stderr: text(&out.stderr) }
         };
