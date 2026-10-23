@@ -73,7 +73,7 @@ impl ServerLineHistory {
         Self { registry, hooks }
     }
 
-    async fn entry_message(
+    pub(crate) async fn entry_message(
         engine: &Eng,
         ids: &IdCodec,
         id: ChangesetId,
