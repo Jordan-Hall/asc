@@ -335,6 +335,7 @@ async fn blame_equals_the_json_cli_including_uncommitted_lines() {
         path: "pkgs/a/src/index.js".into(),
         start_line: 1,
         end_line: 1,
+        ..Default::default()
     };
     let got = collect(r.client.blame(req).await.unwrap().into_inner()).await;
     let cli = lines(ok(&r.f, &r.ep, &["blame", "--json", "-L1,1", "master", "--", "pkgs/a/src/index.js"]).as_bytes());

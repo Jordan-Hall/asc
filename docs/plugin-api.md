@@ -53,6 +53,8 @@ Details that are not obvious from the proto:
   `add` also stages deletions. A patch that does not apply fails the call and stages nothing. A request
   message is at most 4 MiB (gRPC's default), so a patch is smaller than that.
 
+The stack and history additions (`Stacks`, `Worktrees`, `Conflicts`, `CommitGraph`, and `buffer` and `ignore_whitespace` on `Blame`) are in [`plugin-api-stack.md`](plugin-api-stack.md).
+
 ## `Watch`
 
 `Watch` streams `WatchEvent`s for one workspace, push-based; a plugin needs no timer and no file watcher.

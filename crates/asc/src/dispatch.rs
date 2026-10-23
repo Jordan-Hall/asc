@@ -241,6 +241,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "cloud",
     "upgrade",
     "internal",
+    "ws-api",
     "create",
     "modify",
     "absorb",
