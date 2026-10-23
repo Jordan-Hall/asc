@@ -54,6 +54,11 @@ scenarios! {
     hooks_claude_code_flow = "claude-code-flow",
     hooks_path = "hooks-path",
     hooks_reference_transaction = "hooks-reference-transaction",
+    worktree_basic = "worktree-basic",
+    worktree_admin = "worktree-admin",
+    worktree_hook = "worktree-hook",
+    worktree_nested = "worktree-nested",
+    worktree_claude_hook = "worktree-claude-hook",
 }
 
 #[test]
