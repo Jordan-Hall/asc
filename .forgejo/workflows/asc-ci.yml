@@ -13,7 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: asc-build-${{ matrix.os }}
+    env:
+      # Tests compare against the pinned git only (docs/git-fidelity.md). ASC_GIT_ORACLE and
+      # ASC_REAL_GIT are appended to the job environment by the "Pinned git oracle" step.
+      ASC_ORACLE_STRICT: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
@@ -21,6 +25,23 @@ jobs:
           toolchain: 1.95.0
           components: rustfmt, clippy
       - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Cache the pinned git oracle
+        id: oracle-cache
+        uses: https://github.com/actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/asc-oracle
+          key: git-oracle-${{ runner.os }}-${{ hashFiles('build/git-oracle/pins.env') }}
+      - name: Pinned git oracle build tools
+        if: ${{ runner.os == 'Linux' && steps.oracle-cache.outputs.cache-hit != 'true' }}
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
+      - name: Pinned git oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/git-oracle/oracle.sh selftest
+          bash build/git-oracle/oracle.sh fetch
+          bash build/git-oracle/oracle.sh verify
+          bash build/git-oracle/oracle.sh env | tee -a "$GITHUB_ENV"
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - uses: https://github.com/EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -35,21 +56,34 @@ jobs:
       - run: cargo test --workspace
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: asc-build
+    env:
+      # linux-check.sh fetches and verifies the pinned git itself; the strict flag makes the
+      # compat harness refuse any other git (docs/git-fidelity.md).
+      ASC_ORACLE_STRICT: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
           components: rustfmt, clippy
-      - run: sudo add-apt-repository -y ppa:git-core/ppa && sudo apt-get update -qq && sudo apt-get install -y -qq git
       - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Cache the pinned git oracle
+        id: oracle-cache
+        uses: https://github.com/actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ~/.cache/asc-oracle
+          key: git-oracle-${{ runner.os }}-${{ hashFiles('build/git-oracle/pins.env') }}
+      - name: Pinned git oracle build tools
+        if: ${{ steps.oracle-cache.outputs.cache-hit != 'true' }}
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
+      - run: bash build/git-oracle/oracle.sh selftest
       - run: bash build/ci/linux-check.sh
 
   # asc-store's S3 suite against real Garage (no Docker); results in docs/garage-compat.md.
   # The Garage binaries have no published checksums, so the hashes below are the ones recorded when first fetched.
   garage-compat:
-    runs-on: ubuntu-latest
+    runs-on: asc-build
     strategy:
       fail-fast: false
       matrix:
