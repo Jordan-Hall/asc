@@ -448,23 +448,31 @@ impl SweepObserver for SqlSweepObserver {
         for chunk in keys.chunks(OBSERVER_CHUNK) {
             let mut tx = self.pool.begin().await.map_err(|e| sql("sweep", e))?;
             for key in chunk {
-                let (own, id): (Option<&'static str>, Vec<u8>) = match key {
+                // A meta is collected with its changeset (SPEC §3.6), so the `changes` row goes
+                // with either object: a row never names a swept changeset or a missing meta.
+                let (own, id): (&[&'static str], Vec<u8>) = match key {
                     ObjKey::Changeset(c) => (
-                        Some("DELETE FROM cs_graph WHERE ns = $1 AND cs = $2"),
+                        &[
+                            "DELETE FROM cs_graph WHERE ns = $1 AND cs = $2",
+                            "DELETE FROM changes WHERE ns = $1 AND cs = $2",
+                        ],
                         c.as_bytes().to_vec(),
                     ),
+                    ObjKey::ChangeMeta(m) => (
+                        &["DELETE FROM changes WHERE ns = $1 AND meta = $2"],
+                        m.as_bytes().to_vec(),
+                    ),
                     ObjKey::File(f) | ObjKey::ChunkList(f) => (
-                        Some("DELETE FROM file_meta WHERE ns = $1 AND file = $2"),
+                        &["DELETE FROM file_meta WHERE ns = $1 AND file = $2"],
                         f.as_bytes().to_vec(),
                     ),
-                    ObjKey::Tree(t) => (None, t.as_bytes().to_vec()),
-                    ObjKey::Tag(t) => (None, t.as_bytes().to_vec()),
+                    ObjKey::Tree(t) => (&[], t.as_bytes().to_vec()),
+                    ObjKey::Tag(t) => (&[], t.as_bytes().to_vec()),
                     _ => continue,
                 };
-                let stmts = own
-                    .into_iter()
-                    .chain(["DELETE FROM git_map WHERE ns = $1 AND asc = $2"]);
-                for stmt in stmts {
+                let git_map = (!matches!(key, ObjKey::ChangeMeta(_)))
+                    .then_some("DELETE FROM git_map WHERE ns = $1 AND asc = $2");
+                for stmt in own.iter().copied().chain(git_map) {
                     sqlx::query(stmt)
                         .bind(self.ns.clone())
                         .bind(id.clone())
@@ -721,6 +729,7 @@ mod tests {
         let q = match table {
             "cs_graph" => "SELECT COUNT(*) FROM cs_graph",
             "file_meta" => "SELECT COUNT(*) FROM file_meta",
+            "changes" => "SELECT COUNT(*) FROM changes",
             _ => unreachable!(),
         };
         sqlx::query_scalar(q).fetch_one(s.reg.pool()).await.unwrap()
@@ -774,6 +783,55 @@ mod tests {
         };
         let runs = marks.runs().await.unwrap();
         assert!(!runs.is_empty() && runs.len() <= 3 && runs.iter().all(|r| r.complete));
+    }
+
+    #[tokio::test]
+    async fn sweeping_a_changeset_and_its_meta_removes_their_changes_rows() {
+        use asc_core::change::{ChangeId, ChangeMeta, RewriteOp};
+        use asc_core::codec::Enveloped;
+        use asc_store::codec::encode_stored;
+        let s = setup().await;
+        let keep = commit(&s.entry, &[], &[("a", b"kept")]).await;
+        let lost = commit(&s.entry, &[], &[("b", b"lost")]).await;
+        set_ref(&s, "refs/heads/master", Some(keep)).await;
+        let ns = s.entry.ns.as_bytes().to_vec();
+        let mut metas = Vec::new();
+        for (cs, n) in [(keep, 1u8), (lost, 2)] {
+            let m = ChangeMeta::new(cs, ChangeId::from_bytes([n; 16]), vec![], RewriteOp::New);
+            s.entry
+                .objects
+                .put(&ObjKey::ChangeMeta(m.id()), encode_stored(&m.to_envelope()))
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO changes (ns, cs, change, meta, op, preds) VALUES ($1, $2, $3, $4, 0, $5)",
+            )
+            .bind(ns.clone())
+            .bind(cs.as_bytes().to_vec())
+            .bind(vec![n; 16])
+            .bind(m.id().as_bytes().to_vec())
+            .bind(Vec::<u8>::new())
+            .execute(s.reg.pool())
+            .await
+            .unwrap();
+            metas.push(m.id());
+        }
+        assert_eq!(count(&s, "changes").await, 2);
+        let t1 = SystemTime::now() + D15;
+        s.svc.run_repo(&name(), t1, false).await.unwrap();
+        s.svc.run_repo(&name(), t1 + H25, false).await.unwrap();
+        assert!(!has(&s, ObjKey::Changeset(lost)).await);
+        assert!(!has(&s, ObjKey::ChangeMeta(metas[1])).await);
+        assert!(has(&s, ObjKey::ChangeMeta(metas[0])).await);
+        let left: Vec<Vec<u8>> = sqlx::query_scalar("SELECT cs FROM changes")
+            .fetch_all(s.reg.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            left,
+            vec![keep.as_bytes().to_vec()],
+            "only the live row stays"
+        );
     }
 
     #[tokio::test]

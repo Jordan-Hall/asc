@@ -2,8 +2,9 @@
 //!
 //! [`ChangeIndex`] is the server's [`IngestObserver`]. `on_ingested` indexes every `ChangeMeta`
 //! (`ObjKey::ChangeMeta`) the ingest closure carries, after checking that the meta decodes, that
-//! its `cs` is a changeset of this push or one already stored, and that its fields are within
-//! bounds. The first meta indexed for a changeset wins (SPEC §20.2). `on_rewritten` writes a
+//! its `cs` is a changeset of this push (a meta for an already stored changeset is accepted only
+//! as an identical retry of its row), and that its fields are within bounds. The first meta
+//! indexed for a changeset wins (SPEC §20.2). `on_rewritten` writes a
 //! `ChangeMeta` and a row for each changeset a land or merge created from an indexed one, in the
 //! transaction of `land_map`. [`ChangeIndex::write_meta`] is the same write for the changesets
 //! the server creates itself (`Commit`, M18).
@@ -322,8 +323,11 @@ impl ChangeIndex {
             .buffered(FETCH_PARALLEL)
             .try_collect()
             .await?;
-        // `meta.cs` must be in this push or already stored: a meta cannot name someone else's
-        // commit (SPEC §20.2). Pushed changesets are in cs_graph by now, so one query decides.
+        // A meta is indexed only for a changeset of THIS push (SPEC §20.2): pushed changesets
+        // are new to the store, so no one else has a row for them. For an already stored
+        // changeset a meta is accepted only as an idempotent retry, identical to the stored row;
+        // anything else would claim a change id, versions or preds for someone else's commit,
+        // and the first writer would win forever.
         let in_push: HashSet<ChangesetId> = new.iter().copied().collect();
         let unknown: Vec<ChangesetId> = metas
             .iter()
@@ -331,15 +335,36 @@ impl ChangeIndex {
             .filter(|c| !in_push.contains(c))
             .collect();
         let known = stored(tx, ns, &unknown).await?;
+        let existing: HashMap<ChangesetId, ChangeRow> = rows_of(tx, ns, &unknown)
+            .await?
+            .into_iter()
+            .map(|r| (r.cs, r))
+            .collect();
         let mut written = 0;
         for (id, m) in &metas {
-            if !in_push.contains(&m.cs) && !known.contains(&m.cs) {
+            if in_push.contains(&m.cs) {
+                // The first meta indexed for a changeset wins; a different one is not indexed.
+                written += usize::from(insert_row(tx, ns, *id, m).await?);
+                continue;
+            }
+            if !known.contains(&m.cs) {
                 return Err(invalid(
                     *id,
                     format!("changeset {} is not in the push closure", m.cs),
                 ));
             }
-            written += usize::from(insert_row(tx, ns, *id, m).await?);
+            let same = existing.get(&m.cs).is_some_and(|r| {
+                r.meta == *id && r.change == m.change && r.op == m.op as i64 && r.preds == m.preds
+            });
+            if !same {
+                return Err(invalid(
+                    *id,
+                    format!(
+                        "changeset {} is already stored and not part of this push; this meta cannot claim it",
+                        m.cs
+                    ),
+                ));
+            }
         }
         Ok(written)
     }
@@ -591,9 +616,9 @@ mod tests {
             .on_ingested(&mut tx, f.e.key, &[a], &[ObjKey::ChangeMeta(first)])
             .await
             .unwrap();
-        // A second, different meta for the same changeset is stored but not indexed.
+        // A second, different meta for the same changeset of the push is stored but not indexed.
         f.idx
-            .on_ingested(&mut tx, f.e.key, &[], &[ObjKey::ChangeMeta(second)])
+            .on_ingested(&mut tx, f.e.key, &[a], &[ObjKey::ChangeMeta(second)])
             .await
             .unwrap();
         tx.commit().await.unwrap();
@@ -605,6 +630,71 @@ mod tests {
             changesets_of(&mut *c, f.e.ns, cid(1), 10).await.unwrap(),
             vec![a]
         );
+    }
+
+    #[tokio::test]
+    async fn a_meta_cannot_claim_a_changeset_stored_by_another_push() {
+        let f = fx().await;
+        let a = commit(&f.e, &[], &[("a", b"a")]).await;
+        let b = commit(&f.e, &[], &[("b", b"b")]).await;
+        let c = commit(&f.e, &[], &[("c", b"c")]).await;
+        let mine = f
+            .put(&ChangeMeta::new(a, cid(1), vec![], RewriteOp::New))
+            .await;
+        // User A's push indexes `a`; `c` was stored without a meta.
+        let mut tx = f.reg.refs().begin().await.unwrap();
+        f.graph(&mut tx, &[a, c]).await;
+        f.idx
+            .on_ingested(&mut tx, f.e.key, &[a], &[ObjKey::ChangeMeta(mine)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = f.rows(&[a]).await;
+        // User B's push (new = [b]) carries a different meta for A's `a`, and one for `c`.
+        let squat_a = f
+            .put(&ChangeMeta::new(a, cid(2), vec![b], RewriteOp::Amend))
+            .await;
+        let squat_c = f
+            .put(&ChangeMeta::new(c, cid(3), vec![], RewriteOp::New))
+            .await;
+        for squat in [squat_a, squat_c] {
+            let mut tx = f.reg.refs().begin().await.unwrap();
+            f.graph(&mut tx, &[b]).await;
+            let err = f
+                .idx
+                .on_ingested(&mut tx, f.e.key, &[b], &[ObjKey::ChangeMeta(squat)])
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ObserverError::Invalid { .. }), "{err}");
+            drop(tx);
+        }
+        assert_eq!(f.rows(&[a]).await, before, "A's row is unchanged");
+        assert!(f.rows(&[c]).await.is_empty(), "no row was created for c");
+    }
+
+    #[tokio::test]
+    async fn an_identical_meta_for_a_stored_changeset_is_an_idempotent_retry() {
+        let f = fx().await;
+        let a = commit(&f.e, &[], &[("a", b"a")]).await;
+        let m = f
+            .put(&ChangeMeta::new(a, cid(1), vec![], RewriteOp::New))
+            .await;
+        let mut tx = f.reg.refs().begin().await.unwrap();
+        f.graph(&mut tx, &[a]).await;
+        f.idx
+            .on_ingested(&mut tx, f.e.key, &[a], &[ObjKey::ChangeMeta(m)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let before = f.rows(&[a]).await;
+        // The retry: `a` is stored now, so it is not new to the push.
+        let mut tx = f.reg.refs().begin().await.unwrap();
+        f.idx
+            .on_ingested(&mut tx, f.e.key, &[], &[ObjKey::ChangeMeta(m)])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(f.rows(&[a]).await, before);
     }
 
     #[tokio::test]
