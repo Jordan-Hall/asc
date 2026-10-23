@@ -67,6 +67,10 @@ pub const GIT_BUILTINS: &[&str] = &[
     "write-tree",
 ];
 
+/// Git commands that are shell scripts in git 2.55, not builtins, but that asc serves natively
+/// (SPEC §11.2: `submodule` is composed, never cloned; §10.6).
+pub const SCRIPT_COMMANDS: &[&str] = &["submodule"];
+
 /// Git commands that are not available in an asc workspace (SPEC §11.2), whatever the program.
 pub const UNAVAILABLE: &[&str] = &[
     "filter-branch",
@@ -100,6 +104,7 @@ pub fn is_unavailable(cmd: &str) -> bool {
 /// git's command under `git` (so `git daemon` is unsupported) and asc's own under `asc`.
 fn is_git_command(prog: Program, name: &str) -> bool {
     GIT_BUILTINS.contains(&name)
+        || SCRIPT_COMMANDS.contains(&name)
         || is_unavailable(name)
         || (prog == Program::Git && name == "daemon")
 }
