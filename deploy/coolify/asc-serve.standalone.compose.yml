@@ -8,6 +8,8 @@
 # - A one-shot `asc-bootstrap` mints the first admin token into a 0600 file on the state volume,
 #   only when that file does not exist. It is never printed: read it once from the Coolify
 #   terminal of ascserve (`cat /var/lib/asc/bootstrap/admin-token`), store it, then delete the file.
+#   The marker `.minted` is written before minting and never removed, so a restart never mints a
+#   second admin token; a failed mint needs the marker removed by hand.
 #
 # Values live in the Coolify application's environment, never in this file.
 
@@ -38,10 +40,51 @@ x-asc-serve: &asc-serve
     - asc-state:/var/lib/asc
 
 services:
+  # One-shot Garage provisioning through the admin API (Garage v2): the bucket, a dedicated key
+  # imported with the id and secret this app already holds, and read+write (never owner) on that
+  # bucket only. Idempotent. Remove GARAGE_ADMIN_TOKEN from the app environment after the first
+  # successful deploy; the step then fails closed and is skipped by nothing else.
+  asc-garage-init:
+    image: curlimages/curl:8.11.1
+    user: '100:101'
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: 'no'
+    networks:
+      - backend
+    environment:
+      ADMIN: ${ASC_GARAGE_ADMIN_URL:-http://garage-movquybylk3einz4hdyx1cfi:3903}
+      ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-}
+      BUCKET: ${ASC_S3_BUCKET:-asc-staging}
+      KEY_ID: ${ASC_S3_ACCESS_KEY_ID:?Garage key id}
+      KEY_SECRET: ${ASC_S3_SECRET_ACCESS_KEY:?Garage key secret}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - >-
+        set -eu;
+        if [ -z "$$ADMIN_TOKEN" ]; then echo "no admin token: assuming already provisioned"; exit 0; fi;
+        H="Authorization: Bearer $$ADMIN_TOKEN";
+        curl -fsS -H "$$H" "$$ADMIN/v2/GetBucketInfo?globalAlias=$$BUCKET" -o /tmp/b 2>/dev/null
+        || curl -fsS -H "$$H" -X POST "$$ADMIN/v2/CreateBucket" -d "{\"globalAlias\":\"$$BUCKET\"}" -o /tmp/b;
+        BID=$$(grep -o '"id" *: *"[0-9a-f]\{64\}"' /tmp/b | head -n1 | grep -o '[0-9a-f]\{64\}');
+        [ -n "$$BID" ] || { echo "no bucket id"; exit 1; };
+        curl -fsS -H "$$H" "$$ADMIN/v2/GetKeyInfo?id=$$KEY_ID" -o /dev/null 2>/dev/null
+        || curl -fsS -H "$$H" -X POST "$$ADMIN/v2/ImportKey" -d "{\"accessKeyId\":\"$$KEY_ID\",\"secretAccessKey\":\"$$KEY_SECRET\",\"name\":\"asc-staging\"}" -o /dev/null;
+        curl -fsS -H "$$H" -X POST "$$ADMIN/v2/AllowBucketKey" -d "{\"bucketId\":\"$$BID\",\"accessKeyId\":\"$$KEY_ID\",\"permissions\":{\"read\":true,\"write\":true,\"owner\":false}}" -o /dev/null;
+        echo "garage: bucket $$BUCKET ready, key granted read+write"
+    tmpfs:
+      - /tmp:size=1m,mode=1777
+
   asc-migrate:
     <<: *asc-serve
     command: ['serve', 'migrate']
     restart: 'no'
+    depends_on:
+      asc-garage-init:
+        condition: service_completed_successfully
     networks:
       - backend
     deploy:
@@ -57,8 +100,9 @@ services:
     command:
       - >-
         set -eu; umask 077; mkdir -p /var/lib/asc/bootstrap;
-        f=/var/lib/asc/bootstrap/admin-token;
-        if [ -s "$$f" ]; then echo "bootstrap token already minted"; exit 0; fi;
+        f=/var/lib/asc/bootstrap/admin-token; done=/var/lib/asc/bootstrap/.minted;
+        if [ -e "$$done" ]; then echo "bootstrap token already minted once; not minting again"; exit 0; fi;
+        : > "$$done";
         asc serve token create --user "$$ASC_ADMIN_USER" --repo "$$ASC_ADMIN_OWNER/*" --admin
         --expires 30d --label bootstrap > "$$f.tmp" && mv "$$f.tmp" "$$f";
         echo "bootstrap token written to $$f"
