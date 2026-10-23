@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+#
+# `asc serve` as a container image (SPEC 8.1). Build from the repository root:
+#   docker build -f deploy/Dockerfile.serve -t asc-serve .
+#
+# `asc serve` is a subcommand of the `asc` binary (crates/asc/src/cli/serve.rs), built with the
+# default features: `serve` and `git-compat` (SPEC 25) are on. `git-ssh` is not a Cargo feature
+# yet, so there is no SSH port. The vfs features compile on Linux but the daemon is not run here.
+#
+# Both bases are Debian 13 (trixie): its git is 2.47, above the 2.40 floor of asc-git's RealGit
+# (crates/asc-git/src/realgit.rs); bookworm ships 2.39 and would disable the git routes. Bases are
+# pinned by tag and digest; bump both together.
+
+FROM rust:1.95.0-trixie@sha256:f49565f188ee00bc2a18dd418183f2c5f23ef7d6e691890517ed341a598f67c3 AS build
+WORKDIR /src
+# rust-toolchain.toml is not copied: the base image is the pinned 1.95.0 toolchain, and the file
+# would make rustup download rustfmt and clippy that a release build never uses.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY proto ./proto
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build --release --locked -p asc \
+ && install -D -m 0755 target/release/asc /out/asc
+
+FROM debian:trixie-20261020-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+
+# git: RealGit runs `git upload-pack` and `git receive-pack` for git smart-HTTP (SPEC 25.2).
+# ca-certificates: HTTPS to the bucket, Forgejo and OIDC issuers. curl: the HEALTHCHECK.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system --gid 10001 asc \
+ && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/asc --no-create-home --shell /usr/sbin/nologin asc \
+ && install -d -o 10001 -g 10001 -m 0750 /var/lib/asc /etc/asc
+
+COPY --from=build /out/asc /usr/local/bin/asc
+
+# Mount asc-serve.toml at /etc/asc/asc-serve.toml (or set ASC_SERVE_CONFIG). Point every on-disk
+# path in it (cache disk_dir, git view_dir, a file:// store, a sqlite db) under /var/lib/asc.
+ENV ASC_SERVE_CONFIG=/etc/asc/asc-serve.toml
+WORKDIR /var/lib/asc
+VOLUME /var/lib/asc
+USER 10001:10001
+
+# 7890: HTTP, the `listen` default in ServeConfig. The admin listener (/metrics, detailed /readyz)
+# defaults to 127.0.0.1:9464, unreachable from outside; if you bind it to 0.0.0.0 it needs
+# `token_file`, and 9464 is then the port to publish.
+EXPOSE 7890 9464
+
+# /healthz is the liveness route of crates/asc-serve/src/http.rs. If you set `listen` to another
+# port or enable [tls], override this check.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl --fail --silent --show-error --proto '=http' --max-time 4 http://127.0.0.1:7890/healthz || exit 1
+
+ENTRYPOINT ["/usr/local/bin/asc"]
+CMD ["serve"]
