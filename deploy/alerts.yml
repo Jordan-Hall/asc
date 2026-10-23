@@ -1,0 +1,69 @@
+groups:
+  - name: asc-server
+    rules:
+      - alert: AscOutboxLag
+        expr: asc_outbox_lag_seconds > 300
+        for: 5m
+        labels: {severity: page}
+        annotations: {summary: "Outbox lag over 5 minutes", runbook: "docs/runbooks/tier-server.md"}
+      - alert: AscOutboxFailures
+        expr: increase(asc_outbox_failures_total[15m]) > 0
+        for: 15m
+        labels: {severity: ticket}
+        annotations: {summary: "Outbox deliveries are failing", runbook: "docs/runbooks/tier-server.md"}
+      - alert: AscMirrorImportLag
+        expr: asc_mirror_import_lag_seconds > 600
+        for: 10m
+        labels: {severity: ticket}
+        annotations: {summary: "Mirror import is behind", runbook: "docs/runbooks/tier-server.md"}
+      - alert: AscRpcErrorRatio
+        expr: sum(rate(asc_rpc_duration_seconds_count{code=~"INTERNAL|UNAVAILABLE"}[5m])) / sum(rate(asc_rpc_duration_seconds_count[5m])) > 0.05
+        for: 10m
+        labels: {severity: page}
+        annotations: {summary: "More than 5% of RPCs fail server-side", runbook: "docs/runbooks/tier-server.md"}
+      - alert: AscShedding
+        expr: sum(rate(asc_shed_total[5m])) > 0
+        for: 15m
+        labels: {severity: ticket}
+        annotations: {summary: "Admission control is shedding requests", runbook: "docs/runbooks/tier-server.md"}
+  - name: asc-cache-slo
+    rules:
+      - record: asc:cache_hit_ratio:1d
+        expr: sum by (tier) (increase(asc_cache_requests_total{result="hit"}[1d])) / sum by (tier) (increase(asc_cache_requests_total[1d]))
+      - alert: AscCacheHitRateBelowSloThreeDays
+        expr: |
+          (max_over_time(asc:cache_hit_ratio:1d{tier=~"host|cache_role"}[3d]) < 0.99)
+          or
+          (max_over_time(asc:cache_hit_ratio:1d{tier=~"server_mem|server_disk"}[3d]) < 0.95)
+        for: 1h
+        labels: {severity: ticket}
+        annotations: {summary: "Cache tier below its hit-rate target for three days", runbook: "docs/runbooks/tier-cache.md"}
+  - name: asc-daemon
+    rules:
+      - alert: AscDaemonProviderErrors
+        expr: increase(asc_daemon_provider_errors_total[15m]) > 10
+        for: 15m
+        labels: {severity: ticket}
+        annotations: {summary: "Daemon provider errors", runbook: "docs/runbooks/tier-daemon.md"}
+      - alert: AscDaemonRss
+        expr: asc_rss_bytes > 67108864
+        for: 30m
+        labels: {severity: ticket}
+        annotations: {summary: "Daemon RSS above the 64 MiB budget", runbook: "docs/runbooks/tier-daemon.md"}
+  - name: asc-warmer
+    rules:
+      - alert: AscWarmLag
+        expr: asc_warm_lag_seconds > 3600
+        for: 10m
+        labels: {severity: ticket}
+        annotations: {summary: "Host cache trunk tip is over an hour old", runbook: "docs/runbooks/tier-warmer.md"}
+      - alert: AscWarmFailures
+        expr: increase(asc_warm_failures_total[1h]) > 0
+        labels: {severity: ticket}
+        annotations: {summary: "Warm failures", runbook: "docs/runbooks/tier-warmer.md"}
+  - name: asc-forgejo
+    rules:
+      - alert: AscShadowMismatch
+        expr: increase(forgejo_asc_shadow_mismatch_total[1h]) > 0
+        labels: {severity: ticket}
+        annotations: {summary: "Forgejo shadow mismatch", runbook: "docs/runbooks/tier-forgejo.md"}
