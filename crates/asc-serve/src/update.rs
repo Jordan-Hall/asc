@@ -711,7 +711,7 @@ mod tests {
     use asc_store::objects::Objects;
 
     use super::*;
-    use crate::ingest::testutil::{commit, registry, repo, sig};
+    use crate::ingest::testutil::{commit, put_file, registry, repo, sig};
 
     fn ctx(op: Uuid) -> CallCtx {
         CallCtx {
@@ -951,6 +951,85 @@ mod tests {
             assert_eq!(code(&err), "INVALID_OBJECT", "size {size}");
         }
         assert_eq!(count(&r, "SELECT COUNT(*) FROM refs").await, 1);
+    }
+
+    /// `master` holds an honest `a` (files `a` and `b`); returns `a` and an honest child `c`
+    /// that rewrites both files, stored but not pushed.
+    async fn master_with_a_child(
+        e: &RepoEntry,
+        s: &ServerRefs,
+    ) -> (ChangesetId, ChangesetId, Changeset) {
+        let a = commit(e, &[], &[("a", b"1"), ("b", b"2")]).await;
+        run(s, create("refs/heads/master", a)).await.unwrap();
+        let c = commit(e, &[a], &[("a", b"x"), ("b", b"y")]).await;
+        let cs = (*e.backend.engine().get_changeset(c).await.unwrap()).clone();
+        (a, c, cs)
+    }
+
+    /// Lands `to` on `master`, the only push that appends to the mainline path index.
+    fn advance(_: ChangesetId, to: ChangesetId) -> wire::UpdateRefsRequest {
+        request(
+            "refs/heads/master",
+            wire::ref_update::Expect::Any(true),
+            Some(to),
+            wire::UpdateMode::Land,
+        )
+    }
+
+    /// Rows the mainline path index holds.
+    async fn indexed_paths(r: &Registry) -> i64 {
+        count(r, "SELECT COUNT(*) FROM path_changes").await
+    }
+
+    #[tokio::test]
+    async fn an_honest_changes_list_is_accepted_and_indexed() {
+        let (r, e, s) = setup().await;
+        let (a, c, _) = master_with_a_child(&e, &s).await;
+        let before = indexed_paths(&r).await;
+        run(&s, advance(a, c)).await.unwrap();
+        assert!(indexed_paths(&r).await > before);
+    }
+
+    #[tokio::test]
+    async fn changes_that_omit_a_changed_path_are_invalid_and_never_indexed() {
+        let (r, e, s) = setup().await;
+        let (a, _, mut cs) = master_with_a_child(&e, &s).await;
+        let kept: Vec<_> = cs
+            .changes
+            .as_slice()
+            .iter()
+            .filter(|(p, _)| p.as_bytes() != b"b")
+            .cloned()
+            .collect();
+        assert_eq!(kept.len(), 1);
+        cs.changes = SortedMap::new(kept).unwrap();
+        let lie = store(&e, &cs).await;
+        let before = indexed_paths(&r).await;
+        let err = run(&s, advance(a, lie)).await.unwrap_err();
+        assert_eq!(code(&err), "INVALID_OBJECT");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(indexed_paths(&r).await, before);
+        assert_eq!(count(&r, "SELECT COUNT(*) FROM cs_graph").await, 1);
+    }
+
+    #[tokio::test]
+    async fn changes_that_list_an_unchanged_path_are_invalid_and_never_indexed() {
+        let (r, e, s) = setup().await;
+        let a = commit(&e, &[], &[("a", b"1"), ("b", b"2")]).await;
+        run(&s, create("refs/heads/master", a)).await.unwrap();
+        // The child rewrites only `b`; its list also claims `a`, which is byte-identical.
+        let c = commit(&e, &[a], &[("b", b"y")]).await;
+        let mut cs = (*e.backend.engine().get_changeset(c).await.unwrap()).clone();
+        let mut lied = cs.changes.as_slice().to_vec();
+        lied.push((RepoPath::new("a").unwrap(), put_file(&e, b"1").await));
+        lied.sort_by(|x, y| x.0.cmp(&y.0));
+        cs.changes = SortedMap::new(lied).unwrap();
+        let lie = store(&e, &cs).await;
+        let before = indexed_paths(&r).await;
+        let err = run(&s, advance(a, lie)).await.unwrap_err();
+        assert_eq!(code(&err), "INVALID_OBJECT");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(indexed_paths(&r).await, before);
     }
 
     #[tokio::test]

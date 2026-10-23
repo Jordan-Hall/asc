@@ -37,6 +37,10 @@ use crate::registry::{Ns, RepoEntry};
 pub const MAX_NEW_CHANGESETS: usize = 200_000;
 /// Most tree entries examined for one changeset.
 const MAX_CHECK_ENTRIES: usize = 4_000_000;
+/// Most leaves one changeset's `changes` may list. `changes` is checked against the tree diff
+/// (SPEC §2.6 rule 3), so a changeset whose diff has more leaves cannot be verified and is
+/// refused, not accepted unverified: no consumer could tell the two apart.
+pub const MAX_VERIFIED_CHANGES: usize = 500_000;
 /// Most missing keys reported at once.
 const MAX_MISSING: usize = 4096;
 /// Changesets read per `cs_graph` lookup while walking the closure.
@@ -330,6 +334,8 @@ pub struct Ingestor<'a> {
     engine: Arc<RepoEngine>,
     files: FileMetaStore,
     windows_safe: bool,
+    /// Cap on the leaves of one changeset's `changes`; [`MAX_VERIFIED_CHANGES`] in production.
+    max_changes: usize,
     /// Trees fully checked during this ingest.
     verified: HashSet<TreeId>,
 }
@@ -349,8 +355,16 @@ impl<'a> Ingestor<'a> {
             engine: entry.backend.engine().clone(),
             files: FileMetaStore::new(pool.clone(), entry.ns, entry.objects.clone()),
             windows_safe,
+            max_changes: MAX_VERIFIED_CHANGES,
             verified: HashSet::new(),
         }
+    }
+
+    /// Lowers the `changes` cap, so a test can reach it without half a million leaves.
+    #[cfg(test)]
+    fn with_max_changes(mut self, max: usize) -> Self {
+        self.max_changes = max;
+        self
     }
 
     /// `file_meta` rows this ingest asked for (cache misses of one query per id).
@@ -561,12 +575,24 @@ impl<'a> Ingestor<'a> {
                     .root
             }
         };
-        // Rules 2, 3 and 6: `changes` is exactly the diff against parents[0].
-        let expected = self
+        // Rules 2, 3 and 6: `changes` is exactly the diff against parents[0]. Every consumer
+        // that reads `changes` (mainline path index, blame, history filters, land overlap,
+        // project sets) trusts this check. The diff is bounded; past the cap the changeset is
+        // refused (fail closed), because the stored object has no "unverified" marker.
+        let (expected, _) = self
             .engine
-            .leafdiff(base, cs.root, None)
+            .leafdiff_limited(base, cs.root, None, tree::MAX_DIFF_VISITS, self.max_changes)
             .await
             .map_err(from_tree)?;
+        if expected.len() > self.max_changes {
+            return Err(invalid(
+                key,
+                format!(
+                    "changes cannot be verified: the tree diff has more than {} leaves",
+                    self.max_changes
+                ),
+            ));
+        }
         compare_changes(&expected, cs.changes.as_slice(), key)?;
         let changed = self.check_trees(cs.root, base, key).await?;
         self.check_writes(&cs, base, key).await?;
@@ -1141,6 +1167,26 @@ mod tests {
         ));
         let mut ing = Ingestor::new(r.pool(), r.refs(), &e, false);
         ing.ingest(&[RefTarget::Changeset(id)], &NoObserver)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_diff_past_the_changes_cap_is_refused_not_accepted_unverified() {
+        let r = registry().await;
+        let e = repo(&r).await;
+        let id = commit(&e, &[], &[("a", b"1"), ("b", b"2"), ("c", b"3")]).await;
+        let mut capped = Ingestor::new(r.pool(), r.refs(), &e, true).with_max_changes(2);
+        match capped
+            .ingest(&[RefTarget::Changeset(id)], &NoObserver)
+            .await
+        {
+            Err(IngestError::Invalid { why, .. }) => assert!(why.contains("cannot be verified")),
+            other => panic!("{other:?}"),
+        }
+        let mut exact = Ingestor::new(r.pool(), r.refs(), &e, true).with_max_changes(3);
+        exact
+            .ingest(&[RefTarget::Changeset(id)], &NoObserver)
             .await
             .unwrap();
     }
