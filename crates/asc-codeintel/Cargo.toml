@@ -26,6 +26,15 @@ tree-sitter-python.workspace = true
 tree-sitter-c-sharp.workspace = true
 tree-sitter-go.workspace = true
 tree-sitter-javascript.workspace = true
+asc-store.workspace = true
+asc-engine.workspace = true
+roaring.workspace = true
+async-trait.workspace = true
+bstr.workspace = true
+bytes.workspace = true
+gix-attributes.workspace = true
 
 [dev-dependencies]
+tokio.workspace = true
 proptest.workspace = true
+futures.workspace = true
