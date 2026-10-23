@@ -18,6 +18,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use crate::Engine;
 use crate::tree::{self, MAX_DIFF_VISITS, Pathspec};
 
+pub mod apply;
 pub mod format;
 pub mod line;
 mod options;
