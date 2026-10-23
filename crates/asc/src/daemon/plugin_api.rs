@@ -60,7 +60,7 @@ use super::service::{Mounted, State, parse_id, parse_paths};
 pub type PluginStream<T> = BoxStream<'static, Result<T, Status>>;
 
 /// Longest revision, ref or author text accepted from a client.
-const MAX_TEXT: usize = 1024;
+pub(super) const MAX_TEXT: usize = 1024;
 /// Most revisions, selectors or ecosystems in one request.
 const MAX_ITEMS: usize = 64;
 /// Most bytes of path arguments on one child command line (Windows allows 32 KiB in all).
@@ -68,7 +68,7 @@ const MAX_ARG_BYTES: usize = 16 * 1024;
 /// Largest `Stage.patch`.
 const MAX_PATCH: usize = 8 * 1024 * 1024;
 /// Largest answer of a one-message RPC.
-const MAX_OUT: usize = 16 * 1024 * 1024;
+pub(super) const MAX_OUT: usize = 16 * 1024 * 1024;
 /// Largest line of a streamed answer.
 const MAX_LINE: usize = 16 * 1024 * 1024;
 /// Most bytes one stream carries.
@@ -106,11 +106,11 @@ const SCAN_WAIT: Duration = Duration::from_secs(30);
 /// Consecutive poll failures after which a `Watch` stream ends.
 const MAX_POLL_FAILURES: u32 = 25;
 
-fn bad(text: impl Into<String>) -> Status {
+pub(super) fn bad(text: impl Into<String>) -> Status {
     Status::invalid_argument(text.into())
 }
 
-fn internal(e: impl std::fmt::Display) -> Status {
+pub(super) fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal(e.to_string())
 }
 
@@ -122,7 +122,7 @@ fn unavailable(e: impl std::fmt::Display) -> Status {
 
 /// Text that is safe as one revision, ref or option value: bounded, no NUL or line break, and
 /// (for `rev`) never an option.
-fn text_arg(text: &str, what: &str, rev: bool) -> Result<String, Status> {
+pub(super) fn text_arg(text: &str, what: &str, rev: bool) -> Result<String, Status> {
     if text.len() > MAX_TEXT {
         return Err(bad(format!("{what} is longer than {MAX_TEXT} bytes")));
     }
@@ -137,7 +137,7 @@ fn text_arg(text: &str, what: &str, rev: bool) -> Result<String, Status> {
 
 /// Validated, literal path arguments, in order. A path must be a valid repository path and valid
 /// UTF-8 (the child receives it as a command-line argument).
-fn path_args(raw: &[Bytes]) -> Result<Vec<OsString>, Status> {
+pub(super) fn path_args(raw: &[Bytes]) -> Result<Vec<OsString>, Status> {
     let paths = parse_paths(raw)?;
     let mut out = Vec::with_capacity(paths.len());
     let mut total = 0usize;
@@ -155,13 +155,13 @@ fn path_args(raw: &[Bytes]) -> Result<Vec<OsString>, Status> {
     Ok(out)
 }
 
-fn os(items: &[&str]) -> Vec<OsString> {
+pub(super) fn os(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
 }
 
 // ------------------------------------------------------------------------------ child asc
 
-fn pool() -> &'static DescriptorPool {
+pub(super) fn pool() -> &'static DescriptorPool {
     static POOL: OnceLock<DescriptorPool> = OnceLock::new();
     POOL.get_or_init(|| DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap_or_default())
 }
@@ -207,7 +207,7 @@ fn failure(cmd: &str, code: Option<i32>, stderr: &[u8]) -> Status {
 }
 
 /// Runs a command to its end and returns its stdout.
-async fn run_collect(
+pub(super) async fn run_collect(
     m: &Mounted,
     args: Vec<OsString>,
     stdin: Option<Vec<u8>>,
@@ -264,7 +264,7 @@ async fn run_collect(
 }
 
 /// One JSON line as a message of the given type.
-fn decode_line(name: &str, line: &[u8]) -> Result<DynamicMessage, Status> {
+pub(super) fn decode_line(name: &str, line: &[u8]) -> Result<DynamicMessage, Status> {
     let value: Value = serde_json::from_slice(line.trim_ascii())
         .map_err(|e| internal(format!("asc printed bad JSON: {e}")))?;
     let desc = pool()
@@ -274,7 +274,7 @@ fn decode_line(name: &str, line: &[u8]) -> Result<DynamicMessage, Status> {
         .map_err(|e| internal(format!("asc printed a bad {name}: {e}")))
 }
 
-fn first_line(out: &[u8]) -> Result<&[u8], Status> {
+pub(super) fn first_line(out: &[u8]) -> Result<&[u8], Status> {
     out.split(|b| *b == b'\n')
         .find(|l| !l.trim_ascii().is_empty())
         .ok_or_else(|| internal("asc printed nothing"))
@@ -375,7 +375,7 @@ async fn pump<T: Send + 'static>(
 }
 
 /// Runs `asc <args>` and streams each JSON line as `T`. The child stops when the client does.
-fn stream_asc<T: Send + 'static>(
+pub(super) fn stream_asc<T: Send + 'static>(
     m: &Mounted,
     args: Vec<OsString>,
     message: &'static str,
@@ -404,11 +404,11 @@ fn conv_diff(d: DynamicMessage) -> Result<wire::DiffResponse, Status> {
 fn conv_log(d: DynamicMessage) -> Result<wire::LogResponse, Status> {
     d.transcode_to().map_err(internal)
 }
-fn conv_blame(d: DynamicMessage) -> Result<wire::BlameResponse, Status> {
+pub(super) fn conv_blame(d: DynamicMessage) -> Result<wire::BlameResponse, Status> {
     d.transcode_to().map_err(internal)
 }
 
-fn mounted(state: &State, ws_id: &str) -> Result<Arc<Mounted>, Status> {
+pub(super) fn mounted(state: &State, ws_id: &str) -> Result<Arc<Mounted>, Status> {
     state.mounted(parse_id(ws_id)?)
 }
 
@@ -569,8 +569,14 @@ pub async fn blame(
     state: &Arc<State>,
     r: wire::WsBlameRequest,
 ) -> Result<PluginStream<wire::BlameResponse>, Status> {
+    if !r.buffer.is_empty() {
+        return super::plugin_api_stack::blame_buffer(state, r).await;
+    }
     let m = mounted(state, &r.ws_id)?;
     let mut args = os(&["blame", "--json"]);
+    if r.ignore_whitespace {
+        args.push("-w".into());
+    }
     if r.start_line > 0 {
         let end = if r.end_line == 0 {
             String::new()

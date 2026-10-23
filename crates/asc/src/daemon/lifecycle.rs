@@ -657,6 +657,32 @@ mod tests {
             not_served()
         }
 
+        async fn stacks(&self, _: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+            not_served()
+        }
+
+        async fn worktrees(
+            &self,
+            _: Request<wire::WsWorktreesRequest>,
+        ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
+            not_served()
+        }
+
+        async fn conflicts(
+            &self,
+            _: Request<wire::WsConflictsRequest>,
+        ) -> Result<Response<wire::WsConflictsResponse>, Status> {
+            not_served()
+        }
+
+        type CommitGraphStream = Never<wire::CommitGraphResponse>;
+        async fn commit_graph(
+            &self,
+            _: Request<wire::WsCommitGraphRequest>,
+        ) -> Result<Response<Self::CommitGraphStream>, Status> {
+            not_served()
+        }
+
         async fn ping(&self, _: Request<wire::PingRequest>) -> Result<Response<wire::PingResponse>, Status> {
             Ok(Response::new(wire::PingResponse {
                 version: self.version.clone(),
