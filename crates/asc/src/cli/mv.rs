@@ -71,6 +71,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let (dest_arg, source_args) = a.paths.split_last().ok_or_else(|| CliError::Usage("usage: git mv [-v] [-f] [-n] [-k] <source> <destination>".into()))?;
     let dest = repo_path(dest_arg, &prefix, root)?;
     let dest_is_dir = path_of(&gate, &dest).is_some_and(|p| fs::metadata(p).is_ok_and(|m| m.is_dir()));
+    // A destination written as `dir/` must be an existing directory (git's `is_dir_sep` check).
+    let dest_needs_dir = !dest_is_dir && dest_arg.to_string_lossy().ends_with(['/', '\\']);
     if source_args.len() > 1 && !dest_is_dir {
         return Err(CliError::Fatal(format!("destination '{}' is not a directory", text(&dest))));
     }
@@ -87,7 +89,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         if a.dry_run {
             println!("Checking rename of '{}' to '{}'", text(&src), text(&dst));
         }
-        let checked = check(ctx, &gate, &target, &src, &dst, a.force, &fail).await;
+        let checked = check(ctx, &gate, &target, &src, &dst, Dest { force: a.force, must_be_dir: dest_needs_dir }, &fail).await;
         let tracked = match checked {
             Ok(t) => t,
             Err(_) if a.skip_errors => continue,
@@ -143,6 +145,15 @@ fn path_of(gate: &SafeRoot, repo: &[u8]) -> Option<std::path::PathBuf> {
     gate.resolve(&RepoPath::new(repo.to_vec()).ok()?)
 }
 
+/// How the destination argument constrains a rename.
+#[derive(Clone, Copy)]
+struct Dest {
+    /// `-f`: an existing destination is overwritten.
+    force: bool,
+    /// The destination was written `dir/` but is not an existing directory.
+    must_be_dir: bool,
+}
+
 /// Checks one rename; the tracked `(old, new)` file paths it moves.
 async fn check(
     ctx: &Ctx,
@@ -150,7 +161,7 @@ async fn check(
     target: &Target,
     src: &[u8],
     dst: &[u8],
-    force: bool,
+    dest: Dest,
     fail: &dyn Fn(&str) -> CliError,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let ws = ctx.ws()?;
@@ -192,8 +203,15 @@ async fn check(
         }
     }
     let dst_abs = path_of(gate, dst).ok_or_else(|| fail("destination is beyond a symbolic link"))?;
-    if fs::symlink_metadata(dst_abs).is_ok() && !force {
+    if fs::symlink_metadata(&dst_abs).is_ok() && !dest.force {
         return Err(fail("destination exists"));
+    }
+    if dest.must_be_dir {
+        return Err(CliError::Fatal(format!(
+            "destination directory does not exist, source={}, destination={}/",
+            text(src),
+            text(dst)
+        )));
     }
     Ok(tracked)
 }
