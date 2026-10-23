@@ -30,8 +30,11 @@ pub struct Args {
     pub rest: Vec<OsString>,
 }
 
-pub const NATIVE: &[NativeSpec] =
-    &[NativeSpec { cmd: "show", flags: OUTPUT_FLAGS, placeholders: PLACEHOLDERS }];
+pub const NATIVE: &[NativeSpec] = &[NativeSpec {
+    cmd: "show",
+    flags: OUTPUT_FLAGS,
+    placeholders: PLACEHOLDERS,
+}];
 
 fn fatal(e: impl std::fmt::Display) -> CliError {
     CliError::Fatal(e.to_string())
@@ -59,8 +62,14 @@ fn ambiguous(ctx: &Ctx, word: &str) -> CliError {
 
 /// The annotated tag a word names, if it is one.
 async fn tag_of(ws: &WsCtx, word: &str) -> Result<Option<TagId>> {
-    for cand in [word.to_owned(), format!("refs/{word}"), format!("refs/tags/{word}")] {
-        let Ok(name) = RefName::new(cand.into_bytes()) else { continue };
+    for cand in [
+        word.to_owned(),
+        format!("refs/{word}"),
+        format!("refs/tags/{word}"),
+    ] {
+        let Ok(name) = RefName::new(cand.into_bytes()) else {
+            continue;
+        };
         if let Some(e) = ws.db.refs().get(ws.repo.key, &name).await? {
             return Ok(match e.target {
                 RefTarget::Tag(t) => Some(t),
@@ -118,7 +127,10 @@ async fn one(
         return tree_entry(ws, out, word, commit, rev, path).await;
     }
     if word.contains("..") {
-        let ranged = Opts { revs: vec![Tok::Rev(word.to_owned())], ..o.clone() };
+        let ranged = Opts {
+            revs: vec![Tok::Rev(word.to_owned())],
+            ..o.clone()
+        };
         let sel = revs::select(ctx, hist.api(ws), &ranged).await?;
         let mut walker = Walker::new(ws, hist, &sel, &ranged).await?;
         while let Some(e) = walker.next().await? {
@@ -139,7 +151,12 @@ async fn one(
 }
 
 /// An annotated tag's own header and message.
-async fn show_tag(printer: &mut Printer<'_>, out: &mut Output, ws: &WsCtx, id: TagId) -> Result<()> {
+async fn show_tag(
+    printer: &mut Printer<'_>,
+    out: &mut Output,
+    ws: &WsCtx,
+    id: TagId,
+) -> Result<()> {
     let rec = refs::tag_record(ws, id).await?;
     let mut text: Vec<u8> = Vec::new();
     text.extend_from_slice(b"tag ");
@@ -177,28 +194,59 @@ async fn tree_entry(
     }
     let repo_path = RepoPath::new(trimmed.as_bytes().to_vec()).map_err(fatal)?;
     let Some(entry) = ws.engine.lookup(cs.root, &repo_path).await? else {
-        return Err(CliError::Raw(format!("fatal: path '{path}' does not exist in '{rev}'"), 128));
+        return Err(CliError::Raw(
+            format!("fatal: path '{path}' does not exist in '{rev}'"),
+            128,
+        ));
     };
     match entry.kind {
         Kind::Dir => {
-            let tree = ws.engine.get_tree(asc_core::id::TreeId::from_bytes(entry.id)).await?;
-            list_names(out, word, tree.entries().iter().map(|e| (e.name.as_bytes(), e.kind == Kind::Dir)))
+            let tree = ws
+                .engine
+                .get_tree(asc_core::id::TreeId::from_bytes(entry.id))
+                .await?;
+            list_names(
+                out,
+                word,
+                tree.entries()
+                    .iter()
+                    .map(|e| (e.name.as_bytes(), e.kind == Kind::Dir)),
+            )
         }
         Kind::Gitlink => Err(fatal(format!("cannot show submodule entry '{path}'"))),
         _ => {
-            let bytes = ws.engine.read_file(asc_core::id::FileId::from_bytes(entry.id), entry.size).await.map_err(fatal)?;
+            let bytes = ws
+                .engine
+                .read_file(asc_core::id::FileId::from_bytes(entry.id), entry.size)
+                .await
+                .map_err(fatal)?;
             out.write_all(&bytes)?;
             Ok(())
         }
     }
 }
 
-async fn list_tree(ws: &WsCtx, out: &mut Output, word: &str, root: asc_core::id::TreeId) -> Result<()> {
+async fn list_tree(
+    ws: &WsCtx,
+    out: &mut Output,
+    word: &str,
+    root: asc_core::id::TreeId,
+) -> Result<()> {
     let tree = ws.engine.get_tree(root).await?;
-    list_names(out, word, tree.entries().iter().map(|e| (e.name.as_bytes(), e.kind == Kind::Dir)))
+    list_names(
+        out,
+        word,
+        tree.entries()
+            .iter()
+            .map(|e| (e.name.as_bytes(), e.kind == Kind::Dir)),
+    )
 }
 
-fn list_names<'a>(out: &mut Output, word: &str, names: impl Iterator<Item = (&'a [u8], bool)>) -> Result<()> {
+fn list_names<'a>(
+    out: &mut Output,
+    word: &str,
+    names: impl Iterator<Item = (&'a [u8], bool)>,
+) -> Result<()> {
     out.write_all(format!("tree {word}\n\n").as_bytes())?;
     for (name, dir) in names {
         out.write_all(name)?;

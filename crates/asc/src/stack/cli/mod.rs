@@ -30,7 +30,9 @@ macro_rules! verb {
                 ) -> $crate::cli::BoxFut<'a> {
                     ::std::boxed::Box::pin(async move {
                         let args = <Args as ::clap::Parser>::try_parse_from(argv).map_err(|e| {
-                            $crate::cli::common::CliError::Usage(e.render().to_string().trim_end().to_owned())
+                            $crate::cli::common::CliError::Usage(
+                                e.render().to_string().trim_end().to_owned(),
+                            )
                         })?;
                         run(ctx, args).await
                     })

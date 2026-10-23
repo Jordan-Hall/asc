@@ -21,7 +21,12 @@ pub enum OutputKind {
 }
 
 /// git's `color.ui` and friends: `always`, `auto` (the default), `never`, booleans.
-pub fn use_color(color_ui: Option<&str>, no_color: bool, stdout_is_tty: bool, term: Option<&str>) -> bool {
+pub fn use_color(
+    color_ui: Option<&str>,
+    no_color: bool,
+    stdout_is_tty: bool,
+    term: Option<&str>,
+) -> bool {
     match color_ui.map(str::to_ascii_lowercase).as_deref() {
         Some("always") => true,
         Some("never" | "false" | "no" | "off" | "0") => false,
@@ -99,7 +104,10 @@ mod tests {
         assert!(use_color(Some("always"), true, false, None));
         assert!(!use_color(Some("never"), false, true, None));
         assert!(use_color(None, false, true, Some("xterm")));
-        assert!(!use_color(None, false, false, Some("xterm")), "not a terminal");
+        assert!(
+            !use_color(None, false, false, Some("xterm")),
+            "not a terminal"
+        );
         assert!(!use_color(None, true, true, Some("xterm")), "NO_COLOR");
         assert!(!use_color(Some("auto"), false, true, Some("dumb")));
         assert!(use_color(Some("true"), false, true, None));

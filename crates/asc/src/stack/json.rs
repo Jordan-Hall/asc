@@ -44,7 +44,11 @@ pub struct Sl {
 
 impl Sl {
     pub fn new(trunks: Vec<Trunk>, stacks: Vec<StackOut>) -> Self {
-        Self { version: VERSION, trunks, stacks }
+        Self {
+            version: VERSION,
+            trunks,
+            stacks,
+        }
     }
 }
 
@@ -241,12 +245,18 @@ impl OpResult {
 
     /// Exit 2: nothing moved, `candidates` lists the choices.
     pub fn ambiguous(candidates: Vec<Candidate>) -> Self {
-        Self { candidates, ..Self::new(Status::Ambiguous) }
+        Self {
+            candidates,
+            ..Self::new(Status::Ambiguous)
+        }
     }
 
     /// Exit 1: stopped on conflicts.
     pub fn paused(conflicts: Vec<Conflict>) -> Self {
-        Self { conflicts, ..Self::new(Status::Paused) }
+        Self {
+            conflicts,
+            ..Self::new(Status::Paused)
+        }
     }
 }
 
@@ -260,7 +270,10 @@ pub struct OpLog {
 
 impl OpLog {
     pub fn new(ops: Vec<OpRow>) -> Self {
-        Self { version: VERSION, ops }
+        Self {
+            version: VERSION,
+            ops,
+        }
     }
 }
 
@@ -285,7 +298,10 @@ pub struct Evolog {
 
 impl Evolog {
     pub fn new(versions: Vec<VersionRow>) -> Self {
-        Self { version: VERSION, versions }
+        Self {
+            version: VERSION,
+            versions,
+        }
     }
 }
 
@@ -328,14 +344,20 @@ mod tests {
             json!({"version": 1, "op": null, "status": "nothing", "rewritten": [], "refs": [],
                    "skipped": [], "conflicts": [], "candidates": [], "reviews": [], "hints": []})
         );
-        let v = parse(&OpResult::ambiguous(vec![Candidate { change: "c".into(), subject: "s".into() }]));
+        let v = parse(&OpResult::ambiguous(vec![Candidate {
+            change: "c".into(),
+            subject: "s".into(),
+        }]));
         assert_eq!(v["status"], "ambiguous");
         assert_eq!(v["candidates"][0]["subject"], "s");
     }
 
     #[test]
     fn skip_reasons_are_kebab_case() {
-        let s = Skipped { change: "c".into(), reason: SkipReason::CheckedOutElsewhere };
+        let s = Skipped {
+            change: "c".into(),
+            reason: SkipReason::CheckedOutElsewhere,
+        };
         assert_eq!(parse(&s)["reason"], "checked-out-elsewhere");
     }
 
@@ -350,7 +372,10 @@ mod tests {
     #[test]
     fn lists_are_wrapped_in_objects() {
         assert_eq!(parse(&OpLog::new(vec![])), json!({"version": 1, "ops": []}));
-        assert_eq!(parse(&Evolog::new(vec![])), json!({"version": 1, "versions": []}));
+        assert_eq!(
+            parse(&Evolog::new(vec![])),
+            json!({"version": 1, "versions": []})
+        );
     }
 
     #[test]
@@ -363,7 +388,12 @@ mod tests {
             parent_change: None,
             branches: vec!["jordan/parser".into()],
             subject: "x".into(),
-            author: Signature { name: "n".into(), email: "e".into(), time: 0, tz: tz(0) },
+            author: Signature {
+                name: "n".into(),
+                email: "e".into(),
+                time: 0,
+                tz: tz(0),
+            },
             state: ChangeState::Draft,
             needs_restack: false,
             frozen: false,
@@ -373,8 +403,17 @@ mod tests {
             review: None,
         };
         let sl = Sl::new(
-            vec![Trunk { name: "master".into(), tip: "c".repeat(40), remote: Some("origin".into()) }],
-            vec![StackOut { trunk: "master".into(), base: "c".repeat(40), behind: 3, changes: vec![change] }],
+            vec![Trunk {
+                name: "master".into(),
+                tip: "c".repeat(40),
+                remote: Some("origin".into()),
+            }],
+            vec![StackOut {
+                trunk: "master".into(),
+                base: "c".repeat(40),
+                behind: 3,
+                changes: vec![change],
+            }],
         );
         let v = parse(&sl);
         assert_eq!(v["version"], 1);

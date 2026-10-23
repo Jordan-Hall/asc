@@ -71,7 +71,9 @@ fn parse_oid(text: &str, what: &str) -> Result<GitOid> {
 
 /// The object ids of a file with one id per line (`MERGE_HEAD`).
 pub fn read_oids(dir: &Path, name: &str) -> Result<Option<Vec<GitOid>>> {
-    let Some(bytes) = read(dir, name)? else { return Ok(None) };
+    let Some(bytes) = read(dir, name)? else {
+        return Ok(None);
+    };
     let text = String::from_utf8_lossy(&bytes);
     let mut out = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
@@ -140,7 +142,13 @@ pub fn write_merge(dir: &Path, state: &MergeState<'_>) -> Result<()> {
 
 /// Removes the state of a finished or abandoned merge.
 pub fn clear_merge(dir: &Path) {
-    for name in ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE", "SQUASH_MSG"] {
+    for name in [
+        "MERGE_HEAD",
+        "MERGE_MSG",
+        "MERGE_MODE",
+        "AUTO_MERGE",
+        "SQUASH_MSG",
+    ] {
         remove(dir, name);
     }
 }
@@ -247,11 +255,10 @@ impl Opts {
                 "keep-redundant-commits" => opts.keep_redundant = on,
                 "record-origin" => opts.record_origin = on,
                 "mainline" => {
-                    opts.mainline = Some(
-                        value
-                            .parse()
-                            .map_err(|_| fatal(format!("sequencer/opts: bad mainline '{value}'")))?,
-                    );
+                    opts.mainline =
+                        Some(value.parse().map_err(|_| {
+                            fatal(format!("sequencer/opts: bad mainline '{value}'"))
+                        })?);
                 }
                 "strategy-option" => opts.strategy_options.push(value.to_owned()),
                 // Options asc never writes (edit, signoff, gpg-sign, strategy) are ignored.
@@ -288,7 +295,11 @@ impl Todo {
         let replay = match parts.next() {
             Some("pick" | "p") => Replay::Pick,
             Some("revert") => Replay::Revert,
-            _ => return Err(fatal(format!("sequencer/todo: unusable instruction sheet line '{line}'"))),
+            _ => {
+                return Err(fatal(format!(
+                    "sequencer/todo: unusable instruction sheet line '{line}'"
+                )));
+            }
         };
         let abbrev = parts
             .next()
@@ -330,11 +341,20 @@ impl Sequence {
         let dir = Self::dir(gitdir);
         fs::create_dir_all(&dir)?;
         write(&dir, "head", format!("{}\n", self.head).as_bytes())?;
-        write(&dir, "abort-safety", format!("{}\n", self.abort_safety).as_bytes())?;
+        write(
+            &dir,
+            "abort-safety",
+            format!("{}\n", self.abort_safety).as_bytes(),
+        )?;
         let todo: String = self.todo.iter().map(Todo::line).collect();
         write(&dir, "todo", todo.as_bytes())?;
         if self.todo.iter().all(|t| t.oid.is_some()) {
-            let ids: String = self.todo.iter().filter_map(|t| t.oid).map(|o| format!("{o}\n")).collect();
+            let ids: String = self
+                .todo
+                .iter()
+                .filter_map(|t| t.oid)
+                .map(|o| format!("{o}\n"))
+                .collect();
             write(gitdir, SIDE_FILE, ids.as_bytes())?;
         } else {
             remove(gitdir, SIDE_FILE);
@@ -357,7 +377,10 @@ impl Sequence {
         let todo_bytes = read(&dir, "todo")?.unwrap_or_default();
         let todo_text = String::from_utf8_lossy(&todo_bytes);
         let mut todo = Vec::new();
-        for line in todo_text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')) {
+        for line in todo_text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        {
             if todo.len() >= MAX_TODO {
                 return Err(fatal("sequencer/todo has too many lines"));
             }
@@ -365,7 +388,11 @@ impl Sequence {
         }
         // The side file counts only when it lines up with the todo and every id starts with the
         // abbreviation written there, so an edited todo cannot select another commit.
-        if let Some(ids) = read_oids(gitdir, SIDE_FILE).ok().flatten().filter(|ids| ids.len() == todo.len()) {
+        if let Some(ids) = read_oids(gitdir, SIDE_FILE)
+            .ok()
+            .flatten()
+            .filter(|ids| ids.len() == todo.len())
+        {
             for (t, id) in todo.iter_mut().zip(ids) {
                 if id.to_string().starts_with(&t.abbrev.to_ascii_lowercase()) {
                     t.oid = Some(id);
@@ -376,7 +403,12 @@ impl Sequence {
             Some(bytes) => Opts::parse(&bytes)?,
             None => Opts::default(),
         };
-        Ok(Some(Self { head, abort_safety, todo, opts }))
+        Ok(Some(Self {
+            head,
+            abort_safety,
+            todo,
+            opts,
+        }))
     }
 
     /// Removes the directory.
@@ -419,8 +451,18 @@ mod tests {
             head: oid('a'),
             abort_safety: oid('b'),
             todo: vec![
-                Todo { replay: Replay::Pick, abbrev: "7777777".into(), subject: "m2 subject".into(), oid: Some(oid('7')) },
-                Todo { replay: Replay::Revert, abbrev: "9999999".into(), subject: String::new(), oid: Some(oid('9')) },
+                Todo {
+                    replay: Replay::Pick,
+                    abbrev: "7777777".into(),
+                    subject: "m2 subject".into(),
+                    oid: Some(oid('7')),
+                },
+                Todo {
+                    replay: Replay::Revert,
+                    abbrev: "9999999".into(),
+                    subject: String::new(),
+                    oid: Some(oid('9')),
+                },
             ],
             opts: Opts::default(),
         };
@@ -450,11 +492,18 @@ mod tests {
         let heads = [oid('c')];
         write_merge(
             dir.path(),
-            &MergeState { heads: &heads, message: b"Merge branch 'x'\n", mode: FfMode::Never },
+            &MergeState {
+                heads: &heads,
+                message: b"Merge branch 'x'\n",
+                mode: FfMode::Never,
+            },
         )
         .unwrap();
         assert_eq!(fs::read(dir.path().join("MERGE_MODE")).unwrap(), b"no-ff");
-        assert_eq!(read_oids(dir.path(), "MERGE_HEAD").unwrap(), Some(heads.to_vec()));
+        assert_eq!(
+            read_oids(dir.path(), "MERGE_HEAD").unwrap(),
+            Some(heads.to_vec())
+        );
         clear_merge(dir.path());
         assert!(!exists(dir.path(), "MERGE_HEAD"));
     }

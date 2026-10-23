@@ -141,9 +141,9 @@ impl Msg {
             Self::MissingConfigString => &["-c expects a configuration string\n"],
             Self::CannotChange { .. } => &["cannot change to '%s'"],
             Self::NotACommand { .. } => &["git: '%s' is not a git command. See 'git --help'."],
-            Self::AliasLoop { .. } => &[
-                "alias loop detected: expansion of '%s' does not terminate:%s",
-            ],
+            Self::AliasLoop { .. } => {
+                &["alias loop detected: expansion of '%s' does not terminate:%s"]
+            }
             Self::AutocorrectWarning { .. } => {
                 &["WARNING: You called a Git command named '%s', which does not exist."]
             }
@@ -188,12 +188,12 @@ impl Msg {
             Self::NotACommand { name: cmd } => {
                 format!("{name}: '{cmd}' is not a git command. See '{name} --help'.")
             }
-            Self::AliasLoop { alias, chain } => format!(
-                "alias loop detected: expansion of '{alias}' does not terminate:{chain}"
-            ),
-            Self::AutocorrectWarning { name: cmd } => format!(
-                "WARNING: You called a Git command named '{cmd}', which does not exist."
-            ),
+            Self::AliasLoop { alias, chain } => {
+                format!("alias loop detected: expansion of '{alias}' does not terminate:{chain}")
+            }
+            Self::AutocorrectWarning { name: cmd } => {
+                format!("WARNING: You called a Git command named '{cmd}', which does not exist.")
+            }
             Self::AutocorrectContinue { cmd } => {
                 format!("Continuing under the assumption that you meant '{cmd}'.")
             }
@@ -202,7 +202,9 @@ impl Msg {
             Self::NotARepository { cwd } => {
                 format!("not a git repository (or any of the parent directories): {cwd}")
             }
-            Self::InitializedEmpty { path } => format!("Initialized empty Git repository in {path}"),
+            Self::InitializedEmpty { path } => {
+                format!("Initialized empty Git repository in {path}")
+            }
             Self::Reinitialized { path } => {
                 format!("Reinitialized existing Git repository in {path}")
             }
@@ -251,9 +253,15 @@ impl Msg {
             Self::UnknownOption { opt: s("--x") },
             Self::MissingDir { opt: s("-C") },
             Self::MissingConfigString,
-            Self::CannotChange { dir: s("d"), reason: s("r") },
+            Self::CannotChange {
+                dir: s("d"),
+                reason: s("r"),
+            },
             Self::NotACommand { name: s("x") },
-            Self::AliasLoop { alias: s("a"), chain: s("\n  a") },
+            Self::AliasLoop {
+                alias: s("a"),
+                chain: s("\n  a"),
+            },
             Self::AutocorrectWarning { name: s("x") },
             Self::AutocorrectContinue { cmd: s("y") },
             Self::SimilarOne,
@@ -266,10 +274,16 @@ impl Msg {
             Self::ConfigNoVariable { key: s("k") },
             Self::ConfigInvalidKey { key: s("k") },
             Self::NotInGitDir,
-            Self::ConfigUnreadable { path: s("p"), reason: s("r") },
+            Self::ConfigUnreadable {
+                path: s("p"),
+                reason: s("r"),
+            },
             Self::NoSuchSection { name: s("n") },
             Self::ConfigEnvFormat { spec: s("x") },
-            Self::ConfigEnvMissing { var: s("v"), name: s("n") },
+            Self::ConfigEnvMissing {
+                var: s("v"),
+                name: s("n"),
+            },
             Self::AscOptionUnsupported { flag: s("--f") },
             Self::AscNotYet { cmd: s("c") },
             Self::AscNotInWorkspace { cmd: s("c") },
@@ -314,7 +328,10 @@ mod tests {
                 // Stored NUL-terminated, so the terminator makes the match exact at the end.
                 let mut needle = id.as_bytes().to_vec();
                 needle.push(0);
-                assert!(contains(&binary, &needle), "{msg:?}: msgid not in git: {id:?}");
+                assert!(
+                    contains(&binary, &needle),
+                    "{msg:?}: msgid not in git: {id:?}"
+                );
                 checked += 1;
             }
         }
@@ -325,10 +342,8 @@ mod tests {
     fn samples_cover_every_variant() {
         // `source` and `prefix` are exhaustive matches, so a new variant fails to compile there;
         // this keeps `samples` in step.
-        let kinds: std::collections::HashSet<_> = Msg::samples()
-            .iter()
-            .map(std::mem::discriminant)
-            .collect();
+        let kinds: std::collections::HashSet<_> =
+            Msg::samples().iter().map(std::mem::discriminant).collect();
         assert_eq!(kinds.len(), Msg::samples().len());
         assert_eq!(kinds.len(), 28);
     }
@@ -336,15 +351,26 @@ mod tests {
     #[test]
     fn hints_name_the_invoked_program() {
         let m = Msg::NotACommand { name: "x".into() };
-        assert_eq!(m.text(Program::Git), "git: 'x' is not a git command. See 'git --help'.");
-        assert_eq!(m.text(Program::Asc), "asc: 'x' is not a git command. See 'asc --help'.");
+        assert_eq!(
+            m.text(Program::Git),
+            "git: 'x' is not a git command. See 'git --help'."
+        );
+        assert_eq!(
+            m.text(Program::Asc),
+            "asc: 'x' is not a git command. See 'asc --help'."
+        );
         assert!(Msg::Usage.text(Program::Asc).starts_with("usage: asc [-v"));
     }
 
     #[test]
     fn asc_only_messages_use_the_tag_and_git_exit_codes() {
-        let m = Msg::AscOptionUnsupported { flag: "--bogus".into() };
-        assert_eq!(m.line(Program::Asc), "fatal: asc: option '--bogus' is not supported\n");
+        let m = Msg::AscOptionUnsupported {
+            flag: "--bogus".into(),
+        };
+        assert_eq!(
+            m.line(Program::Asc),
+            "fatal: asc: option '--bogus' is not supported\n"
+        );
         assert_eq!(m.exit_code(), 129);
         assert_eq!(Msg::AscNotYet { cmd: "x".into() }.exit_code(), 129);
     }

@@ -28,7 +28,16 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "remote",
     flags: &[
-        "-v", "--verbose", "--add", "--delete", "--push", "--all", "-n", "--dry-run", "--refs", "--tags",
+        "-v",
+        "--verbose",
+        "--add",
+        "--delete",
+        "--push",
+        "--all",
+        "-n",
+        "--dry-run",
+        "--refs",
+        "--tags",
         "--no-tags",
     ],
     placeholders: &[],
@@ -41,7 +50,9 @@ fn usage() -> CliError {
 }
 
 fn text(a: &OsString) -> Result<String> {
-    a.to_str().map(str::to_owned).ok_or_else(|| CliError::Fatal("asc: argument is not valid UTF-8".into()))
+    a.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| CliError::Fatal("asc: argument is not valid UTF-8".into()))
 }
 
 /// `error: <text>` with git's exit code.
@@ -77,14 +88,23 @@ async fn config_add(ctx: &Ctx, key: &str, value: &str) -> Result<()> {
 }
 
 async fn config_section(ctx: &Ctx, flag: &str, a: &str, b: Option<&str>) -> Result<()> {
-    let mut rest = vec![OsString::from("--local"), OsString::from(flag), OsString::from(a)];
+    let mut rest = vec![
+        OsString::from("--local"),
+        OsString::from(flag),
+        OsString::from(a),
+    ];
     rest.extend(b.map(OsString::from));
     super::config::run(ctx, super::config::Args { rest }).await?;
     Ok(())
 }
 
 fn txn(updates: Vec<RefUpdate>, reason: &str) -> RefTxn {
-    RefTxn { updates, actor: actor(), reason: reason.to_owned(), op_id: ext::OpId::new().0 }
+    RefTxn {
+        updates,
+        actor: actor(),
+        reason: reason.to_owned(),
+        op_id: ext::OpId::new().0,
+    }
 }
 
 /// Applies a remote-tracking ref transaction through the single local ref path.
@@ -92,7 +112,8 @@ pub(crate) async fn apply_refs(ctx: &Ctx, updates: Vec<RefUpdate>, reason: &str)
     if updates.is_empty() {
         return Ok(());
     }
-    ctx.update_local_refs(txn(updates, reason), reason, StagingAfterMove::Keep).await
+    ctx.update_local_refs(txn(updates, reason), reason, StagingAfterMove::Keep)
+        .await
 }
 
 /// The remote-tracking refs of `name` as `(full ref, target)`.
@@ -101,7 +122,12 @@ pub(crate) async fn tracking_refs(ws: &WsCtx, name: &str) -> Result<Vec<(String,
     let entries = ws.db.refs().list(ws.repo.key, &prefix).await?;
     Ok(entries
         .into_iter()
-        .map(|e| (String::from_utf8_lossy(e.name.as_bytes()).into_owned(), e.target))
+        .map(|e| {
+            (
+                String::from_utf8_lossy(e.name.as_bytes()).into_owned(),
+                e.target,
+            )
+        })
         .collect())
 }
 
@@ -117,8 +143,14 @@ fn urls_of(ctx: &Ctx, name: &str, push: bool) -> Vec<String> {
 
 fn label(ctx: &Ctx, name: &str, shown: &str) -> String {
     match url::parse(shown, remote::refs_mode(ctx, name)) {
-        Ok(RemoteSpec::Bucket { refs: RefsMode::Local, .. }) => " [bucket, refs local to this machine]".to_owned(),
-        Ok(RemoteSpec::Bucket { refs: RefsMode::Shared, .. }) => " [bucket, shared refs]".to_owned(),
+        Ok(RemoteSpec::Bucket {
+            refs: RefsMode::Local,
+            ..
+        }) => " [bucket, refs local to this machine]".to_owned(),
+        Ok(RemoteSpec::Bucket {
+            refs: RefsMode::Shared,
+            ..
+        }) => " [bucket, shared refs]".to_owned(),
         _ => String::new(),
     }
 }
@@ -161,24 +193,38 @@ async fn add(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
             w => words.push(w.to_owned()),
         }
     }
-    let [name, location] = words.as_slice() else { return Err(usage()) };
+    let [name, location] = words.as_slice() else {
+        return Err(usage());
+    };
     ctx.ws()?;
     if !valid_name(name) {
-        return Err(CliError::Fatal(format!("'{name}' is not a valid remote name")));
+        return Err(CliError::Fatal(format!(
+            "'{name}' is not a valid remote name"
+        )));
     }
     if ctx.config.get(&format!("remote.{name}.url")).is_some() {
         return Err(error(format!("remote {name} already exists."), 3));
     }
-    let spec = url::parse(location, refs.unwrap_or(RefsMode::Local)).map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+    let spec = url::parse(location, refs.unwrap_or(RefsMode::Local))
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
     // The user's URL as given; a plain directory is stored as the file URL it names.
     let stored = match &spec {
         RemoteSpec::Bucket { url, .. } if !location.contains("://") => url.clone(),
         _ => location.clone(),
     };
     set_config(ctx, &format!("remote.{name}.url"), &stored).await?;
-    set_config(ctx, &format!("remote.{name}.fetch"), &format!("+refs/heads/*:refs/remotes/{name}/*")).await?;
+    set_config(
+        ctx,
+        &format!("remote.{name}.fetch"),
+        &format!("+refs/heads/*:refs/remotes/{name}/*"),
+    )
+    .await?;
     if let RemoteSpec::Bucket { refs, .. } = &spec {
-        let word = if *refs == RefsMode::Shared { "shared" } else { "local" };
+        let word = if *refs == RefsMode::Shared {
+            "shared"
+        } else {
+            "local"
+        };
         set_config(ctx, &format!("remote.{name}.ascRefs"), word).await?;
     }
     match tags {
@@ -199,14 +245,32 @@ async fn remove(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         .await?
         .into_iter()
         .map(|(full, target)| {
-            Ok(RefUpdate { name: ref_name(&full)?, expect: Expect::Value(target), new: None, expires_at: None })
+            Ok(RefUpdate {
+                name: ref_name(&full)?,
+                expect: Expect::Value(target),
+                new: None,
+                expires_at: None,
+            })
         })
         .collect::<Result<_>>()?;
     apply_refs(ctx, gone, &format!("remote: remove {name}")).await?;
     // Branches that tracked it lose their upstream, as in git.
-    for section in ctx.config.file().sections_by_name("branch").into_iter().flatten() {
-        let Some(branch) = section.header().subsection_name().map(|b| b.to_string()) else { continue };
-        if ctx.config.get(&format!("branch.{branch}.remote")).as_deref() == Some(name.as_str()) {
+    for section in ctx
+        .config
+        .file()
+        .sections_by_name("branch")
+        .into_iter()
+        .flatten()
+    {
+        let Some(branch) = section.header().subsection_name().map(|b| b.to_string()) else {
+            continue;
+        };
+        if ctx
+            .config
+            .get(&format!("branch.{branch}.remote"))
+            .as_deref()
+            == Some(name.as_str())
+        {
             unset_config(ctx, &format!("branch.{branch}.remote")).await;
             unset_config(ctx, &format!("branch.{branch}.merge")).await;
         }
@@ -216,7 +280,9 @@ async fn remove(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
 }
 
 async fn rename(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
-    let [old, new] = args else { return Err(usage()) };
+    let [old, new] = args else {
+        return Err(usage());
+    };
     let ws = ctx.ws()?;
     if ctx.config.get(&format!("remote.{old}.url")).is_none() {
         return Err(no_such(old));
@@ -225,19 +291,44 @@ async fn rename(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         return Err(error(format!("remote {new} already exists."), 3));
     }
     if !valid_name(new) {
-        return Err(CliError::Fatal(format!("'{new}' is not a valid remote name")));
+        return Err(CliError::Fatal(format!(
+            "'{new}' is not a valid remote name"
+        )));
     }
     let mut moves = Vec::new();
     for (full, target) in tracking_refs(ws, old).await? {
-        let short = full.strip_prefix(&format!("refs/remotes/{old}/")).unwrap_or(&full).to_owned();
+        let short = full
+            .strip_prefix(&format!("refs/remotes/{old}/"))
+            .unwrap_or(&full)
+            .to_owned();
         let to = ref_name(&format!("refs/remotes/{new}/{short}"))?;
-        moves.push(RefUpdate { name: to, expect: Expect::Absent, new: Some(target), expires_at: None });
-        moves.push(RefUpdate { name: ref_name(&full)?, expect: Expect::Value(target), new: None, expires_at: None });
+        moves.push(RefUpdate {
+            name: to,
+            expect: Expect::Absent,
+            new: Some(target),
+            expires_at: None,
+        });
+        moves.push(RefUpdate {
+            name: ref_name(&full)?,
+            expect: Expect::Value(target),
+            new: None,
+            expires_at: None,
+        });
     }
-    config_section(ctx, "--rename-section", &format!("remote.{old}"), Some(&format!("remote.{new}"))).await?;
+    config_section(
+        ctx,
+        "--rename-section",
+        &format!("remote.{old}"),
+        Some(&format!("remote.{new}")),
+    )
+    .await?;
     // The default fetch refspec follows the name.
     let specs = ctx.config.get_all(&format!("remote.{new}.fetch"));
-    let specs = if specs.is_empty() { ctx.config.get_all(&format!("remote.{old}.fetch")) } else { specs };
+    let specs = if specs.is_empty() {
+        ctx.config.get_all(&format!("remote.{old}.fetch"))
+    } else {
+        specs
+    };
     let default_old = format!("+refs/heads/*:refs/remotes/{old}/*");
     if specs.contains(&default_old) {
         let rest = vec![
@@ -249,9 +340,22 @@ async fn rename(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         ];
         super::config::run(ctx, super::config::Args { rest }).await?;
     }
-    for section in ctx.config.file().sections_by_name("branch").into_iter().flatten() {
-        let Some(branch) = section.header().subsection_name().map(|b| b.to_string()) else { continue };
-        if ctx.config.get(&format!("branch.{branch}.remote")).as_deref() == Some(old.as_str()) {
+    for section in ctx
+        .config
+        .file()
+        .sections_by_name("branch")
+        .into_iter()
+        .flatten()
+    {
+        let Some(branch) = section.header().subsection_name().map(|b| b.to_string()) else {
+            continue;
+        };
+        if ctx
+            .config
+            .get(&format!("branch.{branch}.remote"))
+            .as_deref()
+            == Some(old.as_str())
+        {
             set_config(ctx, &format!("branch.{branch}.remote"), new).await?;
         }
     }
@@ -300,7 +404,8 @@ async fn set_url(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
                 return Err(no_such(name));
             }
             let current = urls_of(ctx, name, push);
-            let re = regex::Regex::new(pattern).map_err(|_| CliError::Fatal(format!("Invalid old URL pattern: {pattern}")))?;
+            let re = regex::Regex::new(pattern)
+                .map_err(|_| CliError::Fatal(format!("Invalid old URL pattern: {pattern}")))?;
             if !current.iter().any(|u| re.is_match(u)) {
                 return Err(CliError::Fatal(format!("No such URL found: {pattern}")));
             }
@@ -320,7 +425,12 @@ async fn set_url(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
                 return Err(no_such(name));
             }
             check_url(newurl)?;
-            let mut argv = vec![OsString::from("--local"), OsString::from("--replace-all"), OsString::from(key_of(name)), OsString::from(newurl)];
+            let mut argv = vec![
+                OsString::from("--local"),
+                OsString::from("--replace-all"),
+                OsString::from(key_of(name)),
+                OsString::from(newurl),
+            ];
             if let Some(old) = rest.first() {
                 argv.push(OsString::from(regex_escape(old)));
             }
@@ -332,7 +442,9 @@ async fn set_url(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
 }
 
 fn check_url(u: &str) -> Result<()> {
-    url::parse(u, RefsMode::Local).map(|_| ()).map_err(|e| CliError::Fatal(format!("asc: {e}")))
+    url::parse(u, RefsMode::Local)
+        .map(|_| ())
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))
 }
 
 fn get_url(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
@@ -346,7 +458,9 @@ fn get_url(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
             w => words.push(w.to_owned()),
         }
     }
-    let [name] = words.as_slice() else { return Err(usage()) };
+    let [name] = words.as_slice() else {
+        return Err(usage());
+    };
     let urls = urls_of(ctx, name, push);
     if ctx.config.get(&format!("remote.{name}.url")).is_none() {
         return Err(no_such(name));
@@ -371,14 +485,19 @@ async fn show(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
             w => words.push(w.to_owned()),
         }
     }
-    let [name] = words.as_slice() else { return Err(usage()) };
+    let [name] = words.as_slice() else {
+        return Err(usage());
+    };
     let ws = ctx.ws()?;
     if ctx.config.get(&format!("remote.{name}.url")).is_none() {
         return Err(no_such(name));
     }
     println!("* remote {name}");
     let fetch_urls = urls_of(ctx, name, false);
-    println!("  Fetch URL: {}", fetch_urls.first().cloned().unwrap_or_default());
+    println!(
+        "  Fetch URL: {}",
+        fetch_urls.first().cloned().unwrap_or_default()
+    );
     for u in urls_of(ctx, name, true) {
         println!("  Push  URL: {u}");
     }
@@ -387,7 +506,11 @@ async fn show(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         println!("  HEAD branch: (not queried)");
     } else {
         let opened = remote::open(ctx, ws, name, Intent::Read).await?;
-        let refs = opened.remote.list_refs().await.map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        let refs = opened
+            .remote
+            .list_refs()
+            .await
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
         for r in refs {
             let full = String::from_utf8_lossy(r.name.as_bytes()).into_owned();
             if let Some(b) = full.strip_prefix("refs/heads/") {
@@ -398,10 +521,15 @@ async fn show(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
         println!("  HEAD branch: (unknown)");
     }
     if !branches.is_empty() {
-        println!("  Remote branch{}:", if branches.len() == 1 { "" } else { "es" });
+        println!(
+            "  Remote branch{}:",
+            if branches.len() == 1 { "" } else { "es" }
+        );
         let tracked = tracking_refs(ws, name).await?;
         for b in &branches {
-            let is = tracked.iter().any(|(f, _)| f == &format!("refs/remotes/{name}/{b}"));
+            let is = tracked
+                .iter()
+                .any(|(f, _)| f == &format!("refs/remotes/{name}/{b}"));
             if is {
                 println!("    {b} tracked");
             } else {
@@ -422,7 +550,9 @@ async fn prune(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
             w => words.push(w.to_owned()),
         }
     }
-    let [name] = words.as_slice() else { return Err(usage()) };
+    let [name] = words.as_slice() else {
+        return Err(usage());
+    };
     let ws = ctx.ws()?;
     if ctx.config.get(&format!("remote.{name}.url")).is_none() {
         return Err(no_such(name));
@@ -437,8 +567,16 @@ async fn prune(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
     let mut updates = Vec::new();
     for (full, target) in stale {
         let short = full.strip_prefix("refs/remotes/").unwrap_or(&full);
-        println!(" * [{}] {short}", if dry { "would prune" } else { "pruned" });
-        updates.push(RefUpdate { name: ref_name(&full)?, expect: Expect::Value(target), new: None, expires_at: None });
+        println!(
+            " * [{}] {short}",
+            if dry { "would prune" } else { "pruned" }
+        );
+        updates.push(RefUpdate {
+            name: ref_name(&full)?,
+            expect: Expect::Value(target),
+            new: None,
+            expires_at: None,
+        });
     }
     if !dry {
         apply_refs(ctx, updates, &format!("remote: prune {name}")).await?;
@@ -448,8 +586,15 @@ async fn prune(ctx: &Ctx, args: &[String]) -> Result<ExitCode> {
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let argv: Vec<String> = a.rest.iter().map(text).collect::<Result<_>>()?;
-    let verbose = argv.iter().take_while(|w| w.starts_with('-')).any(|w| w == "-v" || w == "--verbose");
-    let rest: Vec<String> = argv.iter().filter(|w| !(*w == "-v" || *w == "--verbose")).cloned().collect();
+    let verbose = argv
+        .iter()
+        .take_while(|w| w.starts_with('-'))
+        .any(|w| w == "-v" || w == "--verbose");
+    let rest: Vec<String> = argv
+        .iter()
+        .filter(|w| !(*w == "-v" || *w == "--verbose"))
+        .cloned()
+        .collect();
     match rest.split_first() {
         None => {
             ctx.ws()?;

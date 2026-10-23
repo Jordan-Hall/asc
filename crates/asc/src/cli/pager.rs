@@ -112,21 +112,51 @@ mod tests {
     #[test]
     fn precedence_is_git_pager_core_pager_pager_less() {
         let none = config("");
-        assert_eq!(resolve(&env(&[]), &none, "log", PagerWant::Auto, true).as_deref(), Some("less"));
+        assert_eq!(
+            resolve(&env(&[]), &none, "log", PagerWant::Auto, true).as_deref(),
+            Some("less")
+        );
         let e = env(&[("PAGER", "more")]);
-        assert_eq!(resolve(&e, &none, "log", PagerWant::Auto, true).as_deref(), Some("more"));
+        assert_eq!(
+            resolve(&e, &none, "log", PagerWant::Auto, true).as_deref(),
+            Some("more")
+        );
         let c = config("[core]\n\tpager = most\n");
-        assert_eq!(resolve(&e, &c, "log", PagerWant::Auto, true).as_deref(), Some("most"));
+        assert_eq!(
+            resolve(&e, &c, "log", PagerWant::Auto, true).as_deref(),
+            Some("most")
+        );
         let e = env(&[("PAGER", "more"), ("GIT_PAGER", "bat")]);
-        assert_eq!(resolve(&e, &c, "log", PagerWant::Auto, true).as_deref(), Some("bat"));
+        assert_eq!(
+            resolve(&e, &c, "log", PagerWant::Auto, true).as_deref(),
+            Some("bat")
+        );
     }
 
     #[test]
     fn no_pager_off_a_terminal_or_for_cat_and_empty() {
         let none = config("");
         assert!(resolve(&env(&[]), &none, "log", PagerWant::Auto, false).is_none());
-        assert!(resolve(&env(&[("GIT_PAGER", "cat")]), &none, "log", PagerWant::Auto, true).is_none());
-        assert!(resolve(&env(&[("GIT_PAGER", "")]), &none, "log", PagerWant::Auto, true).is_none());
+        assert!(
+            resolve(
+                &env(&[("GIT_PAGER", "cat")]),
+                &none,
+                "log",
+                PagerWant::Auto,
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            resolve(
+                &env(&[("GIT_PAGER", "")]),
+                &none,
+                "log",
+                PagerWant::Auto,
+                true
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -4,7 +4,11 @@
 #[derive(Debug, PartialEq, Eq)]
 pub enum Entry {
     /// `Key: value`, with the raw text including any continuation lines (no final newline).
-    Trailer { key: Vec<u8>, value: Vec<u8>, raw: Vec<u8> },
+    Trailer {
+        key: Vec<u8>,
+        value: Vec<u8>,
+        raw: Vec<u8>,
+    },
     /// A line of the block that is not a trailer.
     Other(Vec<u8>),
 }
@@ -75,7 +79,8 @@ fn block_start(lines: &[&[u8]]) -> usize {
             return lines.len();
         }
         only_spaces = false;
-        if line.starts_with(b"Signed-off-by: ") || line.starts_with(b"(cherry picked from commit ") {
+        if line.starts_with(b"Signed-off-by: ") || line.starts_with(b"(cherry picked from commit ")
+        {
             trailer += 1;
             cont = 0;
             recognised = true;
@@ -122,7 +127,11 @@ pub fn parse(message: &[u8]) -> Vec<Entry> {
             Some(p) if p >= 1 => {
                 let key = line[..p].trim_ascii_end().to_vec();
                 let value = line[p + 1..].trim_ascii().to_vec();
-                out.push(Entry::Trailer { key, value, raw: line.to_vec() });
+                out.push(Entry::Trailer {
+                    key,
+                    value,
+                    raw: line.to_vec(),
+                });
             }
             _ => out.push(Entry::Other(line.to_vec())),
         }
@@ -161,7 +170,11 @@ pub fn render(entries: &[Entry], opts: &Opts, out: &mut Vec<u8>) {
                 if !key_matches(opts, key) {
                     continue;
                 }
-                let value = if opts.unfold { unfolded(value) } else { value.clone() };
+                let value = if opts.unfold {
+                    unfolded(value)
+                } else {
+                    value.clone()
+                };
                 if opts.keyonly {
                     key.clone()
                 } else if opts.valueonly {
@@ -178,7 +191,11 @@ pub fn render(entries: &[Entry], opts: &Opts, out: &mut Vec<u8>) {
                 if opts.only || !opts.keys.is_empty() {
                     continue;
                 }
-                if opts.unfold { unfolded(raw) } else { raw.clone() }
+                if opts.unfold {
+                    unfolded(raw)
+                } else {
+                    raw.clone()
+                }
             }
         };
         match &opts.separator {
@@ -210,21 +227,34 @@ mod tests {
     #[test]
     fn block_after_the_last_blank_line() {
         let m = "subject\n\nbody\n\nSigned-off-by: A <a@x>\nReviewed-by: B\n";
-        assert_eq!(shown(m, &Opts::default()), "Signed-off-by: A <a@x>\nReviewed-by: B\n");
+        assert_eq!(
+            shown(m, &Opts::default()),
+            "Signed-off-by: A <a@x>\nReviewed-by: B\n"
+        );
     }
 
     #[test]
     fn prose_is_not_a_block() {
-        assert_eq!(shown("subject\n\nsome: text\nand more\n", &Opts::default()), "");
+        assert_eq!(
+            shown("subject\n\nsome: text\nand more\n", &Opts::default()),
+            ""
+        );
         assert_eq!(shown("only: title\n", &Opts::default()), "");
     }
 
     #[test]
     fn key_filter_and_separator() {
         let m = "s\n\nA: 1\nB: 2\nA: 3\n";
-        let opts = Opts { keys: vec![b"a".to_vec()], separator: Some(b", ".to_vec()), ..Opts::default() };
+        let opts = Opts {
+            keys: vec![b"a".to_vec()],
+            separator: Some(b", ".to_vec()),
+            ..Opts::default()
+        };
         assert_eq!(shown(m, &opts), "A: 1, A: 3");
-        let opts = Opts { valueonly: true, ..Opts::default() };
+        let opts = Opts {
+            valueonly: true,
+            ..Opts::default()
+        };
         assert_eq!(shown(m, &opts), "1\n2\n3\n");
     }
 
@@ -232,7 +262,10 @@ mod tests {
     fn continuation_lines_unfold() {
         let m = "s\n\nA: one\n two\nB: x\n";
         assert_eq!(shown(m, &Opts::default()), "A: one\n two\nB: x\n");
-        let opts = Opts { unfold: true, ..Opts::default() };
+        let opts = Opts {
+            unfold: true,
+            ..Opts::default()
+        };
         assert_eq!(shown(m, &opts), "A: one two\nB: x\n");
     }
 }

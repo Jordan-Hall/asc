@@ -6,8 +6,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::cli::common::{CliError, Ctx, Result};
 use crate::cli;
+use crate::cli::common::{CliError, Ctx, Result};
 use crate::env::{EnvError, GitEnv};
 use crate::msg::Msg;
 
@@ -42,28 +42,155 @@ impl Program {
 
 /// The builtins of git 2.55 (`git --list-cmds=builtins`).
 pub const GIT_BUILTINS: &[&str] = &[
-    "add", "am", "annotate", "apply", "archive", "backfill", "bisect", "blame", "branch",
-    "bugreport", "bundle", "cat-file", "check-attr", "check-ignore", "check-mailmap",
-    "check-ref-format", "checkout", "checkout--worker", "checkout-index", "cherry", "cherry-pick",
-    "clean", "clone", "column", "commit", "commit-graph", "commit-tree", "config", "count-objects",
-    "credential", "credential-cache", "credential-cache--daemon", "credential-store", "describe",
-    "diagnose", "diff", "diff-files", "diff-index", "diff-pairs", "diff-tree", "difftool",
-    "fast-export", "fast-import", "fetch", "fetch-pack", "fmt-merge-msg", "for-each-ref",
-    "for-each-repo", "format-patch", "format-rev", "fsck", "fsck-objects", "fsmonitor--daemon",
-    "gc", "get-tar-commit-id", "grep", "hash-object", "help", "history", "hook", "index-pack",
-    "init", "init-db", "interpret-trailers", "last-modified", "log", "ls-files", "ls-remote",
-    "ls-tree", "mailinfo", "mailsplit", "maintenance", "merge", "merge-base", "merge-file",
-    "merge-index", "merge-ours", "merge-recursive", "merge-recursive-ours",
-    "merge-recursive-theirs", "merge-subtree", "merge-tree", "mktag", "mktree",
-    "multi-pack-index", "mv", "name-rev", "notes", "pack-objects", "pack-redundant", "pack-refs",
-    "patch-id", "pickaxe", "prune", "prune-packed", "pull", "push", "range-diff", "read-tree",
-    "rebase", "receive-pack", "reflog", "refs", "remote", "remote-ext", "remote-fd", "repack",
-    "replace", "replay", "repo", "rerere", "reset", "restore", "rev-list", "rev-parse", "revert",
-    "rm", "send-pack", "shortlog", "show", "show-branch", "show-index", "show-ref",
-    "sparse-checkout", "stage", "stash", "status", "stripspace", "submodule--helper", "survey",
-    "switch", "symbolic-ref", "tag", "unpack-file", "unpack-objects", "update-index", "update-ref",
-    "update-server-info", "upload-archive", "upload-archive--writer", "upload-pack", "url-parse",
-    "var", "verify-commit", "verify-pack", "verify-tag", "version", "whatchanged", "worktree",
+    "add",
+    "am",
+    "annotate",
+    "apply",
+    "archive",
+    "backfill",
+    "bisect",
+    "blame",
+    "branch",
+    "bugreport",
+    "bundle",
+    "cat-file",
+    "check-attr",
+    "check-ignore",
+    "check-mailmap",
+    "check-ref-format",
+    "checkout",
+    "checkout--worker",
+    "checkout-index",
+    "cherry",
+    "cherry-pick",
+    "clean",
+    "clone",
+    "column",
+    "commit",
+    "commit-graph",
+    "commit-tree",
+    "config",
+    "count-objects",
+    "credential",
+    "credential-cache",
+    "credential-cache--daemon",
+    "credential-store",
+    "describe",
+    "diagnose",
+    "diff",
+    "diff-files",
+    "diff-index",
+    "diff-pairs",
+    "diff-tree",
+    "difftool",
+    "fast-export",
+    "fast-import",
+    "fetch",
+    "fetch-pack",
+    "fmt-merge-msg",
+    "for-each-ref",
+    "for-each-repo",
+    "format-patch",
+    "format-rev",
+    "fsck",
+    "fsck-objects",
+    "fsmonitor--daemon",
+    "gc",
+    "get-tar-commit-id",
+    "grep",
+    "hash-object",
+    "help",
+    "history",
+    "hook",
+    "index-pack",
+    "init",
+    "init-db",
+    "interpret-trailers",
+    "last-modified",
+    "log",
+    "ls-files",
+    "ls-remote",
+    "ls-tree",
+    "mailinfo",
+    "mailsplit",
+    "maintenance",
+    "merge",
+    "merge-base",
+    "merge-file",
+    "merge-index",
+    "merge-ours",
+    "merge-recursive",
+    "merge-recursive-ours",
+    "merge-recursive-theirs",
+    "merge-subtree",
+    "merge-tree",
+    "mktag",
+    "mktree",
+    "multi-pack-index",
+    "mv",
+    "name-rev",
+    "notes",
+    "pack-objects",
+    "pack-redundant",
+    "pack-refs",
+    "patch-id",
+    "pickaxe",
+    "prune",
+    "prune-packed",
+    "pull",
+    "push",
+    "range-diff",
+    "read-tree",
+    "rebase",
+    "receive-pack",
+    "reflog",
+    "refs",
+    "remote",
+    "remote-ext",
+    "remote-fd",
+    "repack",
+    "replace",
+    "replay",
+    "repo",
+    "rerere",
+    "reset",
+    "restore",
+    "rev-list",
+    "rev-parse",
+    "revert",
+    "rm",
+    "send-pack",
+    "shortlog",
+    "show",
+    "show-branch",
+    "show-index",
+    "show-ref",
+    "sparse-checkout",
+    "stage",
+    "stash",
+    "status",
+    "stripspace",
+    "submodule--helper",
+    "survey",
+    "switch",
+    "symbolic-ref",
+    "tag",
+    "unpack-file",
+    "unpack-objects",
+    "update-index",
+    "update-ref",
+    "update-server-info",
+    "upload-archive",
+    "upload-archive--writer",
+    "upload-pack",
+    "url-parse",
+    "var",
+    "verify-commit",
+    "verify-pack",
+    "verify-tag",
+    "version",
+    "whatchanged",
+    "worktree",
     "write-tree",
 ];
 
@@ -86,13 +213,67 @@ pub const UNAVAILABLE: &[&str] = &[
 /// The asc-only verbs (SPEC §11.2, §12A.9, §20.7, §21, §22, §23). They never shadow a git
 /// command and are never autocorrect candidates.
 pub const ASC_ONLY_VERBS: &[&str] = &[
-    "daemon", "serve", "import", "export", "auth", "doctor", "prefetch", "sparse", "debug", "ci",
-    "affected", "projects", "graph", "landed", "api", "watch", "search", "sym", "semantic",
-    "codeintel", "mcp", "install-shim", "migrate", "hide", "unhide", "cloud", "upgrade", "internal",
-    "create", "modify", "absorb", "restack", "continue", "abort", "sync", "submit", "sl",
-    "smartlog", "up", "down", "top", "bottom", "next", "prev", "reword", "uncommit", "unamend",
-    "abandon", "change-id", "split", "squash", "fold", "move", "reorder", "stack", "undo", "redo",
-    "op", "evolog", "interdiff", "share",
+    "daemon",
+    "serve",
+    "import",
+    "export",
+    "auth",
+    "doctor",
+    "prefetch",
+    "sparse",
+    "debug",
+    "ci",
+    "affected",
+    "projects",
+    "graph",
+    "landed",
+    "api",
+    "watch",
+    "search",
+    "sym",
+    "semantic",
+    "codeintel",
+    "mcp",
+    "install-shim",
+    "migrate",
+    "hide",
+    "unhide",
+    "cloud",
+    "upgrade",
+    "internal",
+    "create",
+    "modify",
+    "absorb",
+    "restack",
+    "continue",
+    "abort",
+    "sync",
+    "submit",
+    "sl",
+    "smartlog",
+    "up",
+    "down",
+    "top",
+    "bottom",
+    "next",
+    "prev",
+    "reword",
+    "uncommit",
+    "unamend",
+    "abandon",
+    "change-id",
+    "split",
+    "squash",
+    "fold",
+    "move",
+    "reorder",
+    "stack",
+    "undo",
+    "redo",
+    "op",
+    "evolog",
+    "interdiff",
+    "share",
 ];
 
 /// Whether `cmd` is unavailable in every asc workspace.
@@ -429,11 +610,13 @@ fn report_env_error(prog: Program, err: EnvError) -> ExitCode {
 /// The version line (SPEC §11.4): `git version <real>.asc.<semver>` or `asc <semver> (git <real>)`.
 fn version_line(prog: Program) -> Result<String> {
     let semver = env!("CARGO_PKG_VERSION");
-    let real = asc_git::realgit::RealGit::resolve(None, None).ok().and_then(|g| {
-        let out = g.command().ok()?.arg("--version").output().ok()?;
-        let text = String::from_utf8(out.stdout).ok()?;
-        text.trim().strip_prefix("git version ").map(str::to_owned)
-    });
+    let real = asc_git::realgit::RealGit::resolve(None, None)
+        .ok()
+        .and_then(|g| {
+            let out = g.command().ok()?.arg("--version").output().ok()?;
+            let text = String::from_utf8(out.stdout).ok()?;
+            text.trim().strip_prefix("git version ").map(str::to_owned)
+        });
     match (prog, real) {
         (Program::Git, Some(real)) => Ok(format!("git version {real}.asc.{semver}")),
         (Program::Git, None) => Err(CliError::Raw(
@@ -523,9 +706,8 @@ pub async fn dispatch(ctx: &Ctx, mut argv: Vec<OsString>) -> Result<ExitCode> {
                     return Err(CliError::Msg(Msg::AliasLoop { alias: name, chain }));
                 }
                 seen.push(name.clone());
-                let words = split_cmdline(&value).map_err(|why| {
-                    CliError::Fatal(format!("bad alias.{name} string: {why}"))
-                })?;
+                let words = split_cmdline(&value)
+                    .map_err(|why| CliError::Fatal(format!("bad alias.{name} string: {why}")))?;
                 if words.is_empty() {
                     return Err(CliError::Fatal(format!("empty alias for {name}")));
                 }
@@ -546,14 +728,22 @@ pub async fn dispatch(ctx: &Ctx, mut argv: Vec<OsString>) -> Result<ExitCode> {
                     mode,
                     Autocorrect::Immediate | Autocorrect::Prompt | Autocorrect::Delay(_)
                 );
-                if !corrected && found.len() == 1 && acts && autocorrect_confirmed(ctx, mode, &name, &found[0]) {
+                if !corrected
+                    && found.len() == 1
+                    && acts
+                    && autocorrect_confirmed(ctx, mode, &name, &found[0])
+                {
                     argv[0] = OsString::from(&found[0]);
                     corrected = true;
                     continue;
                 }
                 let mut text = Msg::NotACommand { name }.line(ctx.prog);
                 if mode != Autocorrect::Never && !found.is_empty() {
-                    let head = if found.len() == 1 { Msg::SimilarOne } else { Msg::SimilarMany };
+                    let head = if found.len() == 1 {
+                        Msg::SimilarOne
+                    } else {
+                        Msg::SimilarMany
+                    };
                     text.push_str(&format!("\n{}\n", head.text(ctx.prog)));
                     for c in &found {
                         text.push_str(&format!("\t{c}\n"));
@@ -570,7 +760,13 @@ pub async fn dispatch(ctx: &Ctx, mut argv: Vec<OsString>) -> Result<ExitCode> {
 fn candidates(ctx: &Ctx) -> Vec<String> {
     let mut out: Vec<String> = GIT_BUILTINS.iter().map(|s| (*s).to_owned()).collect();
     if !ctx.env.no_aliases {
-        for section in ctx.config.file().sections_by_name("alias").into_iter().flatten() {
+        for section in ctx
+            .config
+            .file()
+            .sections_by_name("alias")
+            .into_iter()
+            .flatten()
+        {
             out.extend(section.body().value_names());
         }
     }
@@ -583,10 +779,19 @@ fn candidates(ctx: &Ctx) -> Vec<String> {
 /// Prints git's autocorrect warning and decides whether to run the suggestion.
 fn autocorrect_confirmed(ctx: &Ctx, mode: Autocorrect, name: &str, to: &str) -> bool {
     let prog = ctx.prog;
-    eprintln!("{}", Msg::AutocorrectWarning { name: name.to_owned() }.text(prog));
+    eprintln!(
+        "{}",
+        Msg::AutocorrectWarning {
+            name: name.to_owned()
+        }
+        .text(prog)
+    );
     match mode {
         Autocorrect::Immediate => {
-            eprintln!("{}", Msg::AutocorrectContinue { cmd: to.to_owned() }.text(prog));
+            eprintln!(
+                "{}",
+                Msg::AutocorrectContinue { cmd: to.to_owned() }.text(prog)
+            );
             true
         }
         Autocorrect::Delay(n) => {
@@ -616,7 +821,10 @@ fn autocorrect_confirmed(ctx: &Ctx, mode: Autocorrect, name: &str, to: &str) -> 
 /// `GIT_PREFIX` set, through the child `PATH`.
 fn run_shell_alias(ctx: &Ctx, script: &str, rest: &[OsString]) -> Result<ExitCode> {
     let mut cmd = ctx.child(ctx.shell())?;
-    cmd.arg("-c").arg(format!("{script} \"$@\"")).arg(script).args(rest);
+    cmd.arg("-c")
+        .arg(format!("{script} \"$@\""))
+        .arg(script)
+        .args(rest);
     if let Some(ws) = ctx.ws_opt() {
         let top = ws.projection.toplevel();
         let prefix = ctx
@@ -631,7 +839,10 @@ fn run_shell_alias(ctx: &Ctx, script: &str, rest: &[OsString]) -> Result<ExitCod
         }
     }
     let status = cmd.status().map_err(|e| {
-        CliError::Fatal(format!("while expanding alias: '{script}': {}", io_reason(&e)))
+        CliError::Fatal(format!(
+            "while expanding alias: '{script}': {}",
+            io_reason(&e)
+        ))
     })?;
     Ok(exit_code(status.code()))
 }
@@ -677,7 +888,10 @@ mod tests {
 
     fn fake(aliases: &[(&str, &str)], externals: &[&str]) -> Fake {
         Fake {
-            aliases: aliases.iter().map(|(a, b)| ((*a).into(), (*b).into())).collect(),
+            aliases: aliases
+                .iter()
+                .map(|(a, b)| ((*a).into(), (*b).into()))
+                .collect(),
             externals: externals.iter().map(|s| (*s).into()).collect(),
         }
     }
@@ -697,20 +911,45 @@ mod tests {
         }
         // A backslash separates path components on Windows only.
         let windows_path = Program::from_argv0(OsStr::new("C:\\x\\GIT.EXE"));
-        assert_eq!(windows_path, if cfg!(windows) { Program::Git } else { Program::Asc });
+        assert_eq!(
+            windows_path,
+            if cfg!(windows) {
+                Program::Git
+            } else {
+                Program::Asc
+            }
+        );
     }
 
     #[test]
     fn git_prefers_builtin_then_alias_then_external_then_asc_verb() {
         let lk = fake(
-            &[("graph", "log --oneline --graph"), ("status", "log"), ("foo", "log")],
+            &[
+                ("graph", "log --oneline --graph"),
+                ("status", "log"),
+                ("foo", "log"),
+            ],
             &["git-affected", "git-foo"],
         );
         let git = |n| resolve(Program::Git, n, &lk);
-        assert_eq!(git("status"), Resolved::Command("status".into()), "builtins first");
-        assert_eq!(git("graph"), Resolved::Alias("log --oneline --graph".into()));
-        assert_eq!(git("affected"), Resolved::External(PathBuf::from("git-affected")));
-        assert_eq!(git("foo"), Resolved::Alias("log".into()), "alias before git-foo");
+        assert_eq!(
+            git("status"),
+            Resolved::Command("status".into()),
+            "builtins first"
+        );
+        assert_eq!(
+            git("graph"),
+            Resolved::Alias("log --oneline --graph".into())
+        );
+        assert_eq!(
+            git("affected"),
+            Resolved::External(PathBuf::from("git-affected"))
+        );
+        assert_eq!(
+            git("foo"),
+            Resolved::Alias("log".into()),
+            "alias before git-foo"
+        );
         assert_eq!(git("projects"), Resolved::Command("projects".into()));
         assert_eq!(git("nosuch"), Resolved::NotACommand);
         assert_eq!(git("daemon"), Resolved::Unavailable("daemon".into()));
@@ -719,12 +958,23 @@ mod tests {
 
     #[test]
     fn asc_prefers_builtin_and_verb_then_alias_then_asc_then_git_external() {
-        let lk = fake(&[("graph", "log --graph"), ("x", "log")], &["asc-x", "git-y", "asc-y"]);
+        let lk = fake(
+            &[("graph", "log --graph"), ("x", "log")],
+            &["asc-x", "git-y", "asc-y"],
+        );
         let asc = |n| resolve(Program::Asc, n, &lk);
-        assert_eq!(asc("graph"), Resolved::Command("graph".into()), "asc verbs beat aliases");
+        assert_eq!(
+            asc("graph"),
+            Resolved::Command("graph".into()),
+            "asc verbs beat aliases"
+        );
         assert_eq!(asc("daemon"), Resolved::Command("daemon".into()));
         assert_eq!(asc("x"), Resolved::Alias("log".into()));
-        assert_eq!(asc("y"), Resolved::External(PathBuf::from("asc-y")), "asc-<name> first");
+        assert_eq!(
+            asc("y"),
+            Resolved::External(PathBuf::from("asc-y")),
+            "asc-<name> first"
+        );
         assert_eq!(asc("nosuch"), Resolved::NotACommand);
     }
 
@@ -751,7 +1001,10 @@ mod tests {
     #[test]
     fn typo_of_a_git_command_never_becomes_a_asc_verb() {
         // `graph` is an asc verb one edit from `grep`-like typos; `sttaus` is a git typo.
-        let all = GIT_BUILTINS.iter().copied().chain(ASC_ONLY_VERBS.iter().copied());
+        let all = GIT_BUILTINS
+            .iter()
+            .copied()
+            .chain(ASC_ONLY_VERBS.iter().copied());
         assert_eq!(similar("sttaus", all.clone()), ["status"]);
         // A name closest to an asc-only verb is not corrected to it.
         let found = similar("projectz", all);
@@ -771,7 +1024,10 @@ mod tests {
     #[test]
     fn autocorrect_values() {
         assert_eq!(Autocorrect::parse(None), Autocorrect::Show);
-        assert_eq!(Autocorrect::parse(Some("immediate")), Autocorrect::Immediate);
+        assert_eq!(
+            Autocorrect::parse(Some("immediate")),
+            Autocorrect::Immediate
+        );
         assert_eq!(Autocorrect::parse(Some("never")), Autocorrect::Never);
         assert_eq!(Autocorrect::parse(Some("prompt")), Autocorrect::Prompt);
         assert_eq!(Autocorrect::parse(Some("20")), Autocorrect::Delay(20));

@@ -46,24 +46,48 @@ async fn index_side(ws: &WsCtx, spec: Option<&Pathspec>) -> Result<(TreeId, Vec<
 }
 
 /// `a` against `b`, both commit trees.
-pub async fn trees(ws: &WsCtx, a: TreeId, b: TreeId, spec: Option<&Pathspec>, opts: &DiffOptions) -> Result<Built> {
-    let changes = ws.engine.diff_trees(a, b, spec, opts).await.map_err(fatal)?;
-    Ok(Built { changes, unmerged: Vec::new() })
+pub async fn trees(
+    ws: &WsCtx,
+    a: TreeId,
+    b: TreeId,
+    spec: Option<&Pathspec>,
+    opts: &DiffOptions,
+) -> Result<Built> {
+    let changes = ws
+        .engine
+        .diff_trees(a, b, spec, opts)
+        .await
+        .map_err(fatal)?;
+    Ok(Built {
+        changes,
+        unmerged: Vec::new(),
+    })
 }
 
 /// Paths added with intent only (`add -N`): new files to the work tree, absent from the index.
 async fn intent_to_add(ws: &WsCtx) -> Result<BTreeSet<Vec<u8>>> {
     let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
-    Ok(rows.into_iter().filter(|r| r.intent_to_add && r.stage == 0).map(|r| r.path).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|r| r.intent_to_add && r.stage == 0)
+        .map(|r| r.path)
+        .collect())
 }
 
 /// `base` (a tree, HEAD for `--cached`) against the index.
-pub async fn cached(ws: &WsCtx, base: TreeId, spec: Option<&Pathspec>, opts: &DiffOptions) -> Result<Built> {
+pub async fn cached(
+    ws: &WsCtx,
+    base: TreeId,
+    spec: Option<&Pathspec>,
+    opts: &DiffOptions,
+) -> Result<Built> {
     let (index, unmerged) = index_side(ws, spec).await?;
     let mut built = trees(ws, base, index, spec, opts).await?;
     let skip: HashSet<&RepoPath> = unmerged.iter().collect();
     let ita = intent_to_add(ws).await?;
-    built.changes.retain(|c| !skip.contains(&c.path) && !ita.contains(c.path.as_bytes()));
+    built
+        .changes
+        .retain(|c| !skip.contains(&c.path) && !ita.contains(c.path.as_bytes()));
     built.unmerged = unmerged;
     Ok(built)
 }
@@ -92,7 +116,13 @@ fn change(path: RepoPath, old: Option<Entry>, new: Option<Entry>) -> Option<Tree
         (Some(_), Some(_)) => Status::TypeChanged,
         (None, None) => return None,
     };
-    Some(TreeChange { old_path: path.clone(), path, old, new, status })
+    Some(TreeChange {
+        old_path: path.clone(),
+        path,
+        old,
+        new,
+        status,
+    })
 }
 
 /// A tracked path whose work tree file differs from the index.
@@ -111,8 +141,14 @@ async fn work_deltas(
 ) -> Result<BTreeMap<RepoPath, Delta>> {
     let root = ws.projection.toplevel();
     let symlinks = ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows));
-    let tree = WorkTree::new(root, &ws.projection.git_dir().join("index"), symlinks).map_err(fatal)?;
-    let sparse = ws.workspace.ws.sparse.as_deref().map(asc_wc::plain::Sparse::parse);
+    let tree =
+        WorkTree::new(root, &ws.projection.git_dir().join("index"), symlinks).map_err(fatal)?;
+    let sparse = ws
+        .workspace
+        .ws
+        .sparse
+        .as_deref()
+        .map(asc_wc::plain::Sparse::parse);
     let ita = intent_to_add(ws).await?;
     let mut out = BTreeMap::new();
     let mut walk = ws.engine.walk(index, spec);
@@ -130,14 +166,31 @@ async fn work_deltas(
                     continue;
                 };
                 let new = local.add(&path, abs, entry.kind, entry.size, entry.git);
-                out.insert(path, Delta { old, new: Some(new) });
+                out.insert(
+                    path,
+                    Delta {
+                        old,
+                        new: Some(new),
+                    },
+                );
             }
             Work::Missing => {
                 out.insert(path, Delta { old, new: None });
             }
-            Work::Changed { kind, size, git, abs } => {
+            Work::Changed {
+                kind,
+                size,
+                git,
+                abs,
+            } => {
                 let new = local.add(&path, abs, kind, size, git);
-                out.insert(path, Delta { old, new: Some(new) });
+                out.insert(
+                    path,
+                    Delta {
+                        old,
+                        new: Some(new),
+                    },
+                );
             }
         }
     }
@@ -178,7 +231,11 @@ pub async fn worktree(
                 let s = staged.remove(&path);
                 let old = match &s {
                     Some(c) => c.old.clone(),
-                    None => engine.lookup(base, &path).await.map_err(fatal)?.filter(|e| e.kind != Kind::Dir),
+                    None => engine
+                        .lookup(base, &path)
+                        .await
+                        .map_err(fatal)?
+                        .filter(|e| e.kind != Kind::Dir),
                 };
                 let new = match deltas.remove(&path) {
                     Some(d) => d.new,
@@ -194,7 +251,11 @@ pub async fn worktree(
 }
 
 /// Rename detection over changes whose sides may be on disk.
-pub async fn detect_renames(changes: Vec<TreeChange>, local: &LocalFiles<'_>, opts: &DiffOptions) -> Result<Vec<TreeChange>> {
+pub async fn detect_renames(
+    changes: Vec<TreeChange>,
+    local: &LocalFiles<'_>,
+    opts: &DiffOptions,
+) -> Result<Vec<TreeChange>> {
     match &opts.renames {
         Some(r) => rename::detect(changes, local, r).await.map_err(fatal),
         None => Ok(changes),

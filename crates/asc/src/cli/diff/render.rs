@@ -10,8 +10,8 @@ use asc_core::id::GitOid;
 use asc_core::path::RepoPath;
 use asc_engine::diff::format::{write_name_only, write_name_status, write_raw, write_summary};
 use asc_engine::diff::{
-    self, Attributes, ContentSource, DiffAttr, DiffCtx, DiffOptions, Status, TreeChange, write_numstat,
-    write_patch, write_shortstat, write_stat, write_word_diff,
+    self, Attributes, ContentSource, DiffAttr, DiffCtx, DiffOptions, Status, TreeChange,
+    write_numstat, write_patch, write_shortstat, write_stat, write_word_diff,
 };
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, Value};
 
@@ -72,8 +72,16 @@ fn split_type_changes(changes: &[TreeChange]) -> Vec<TreeChange> {
     let mut out = Vec::with_capacity(changes.len());
     for c in changes {
         if c.status == Status::TypeChanged {
-            out.push(TreeChange { new: None, status: Status::Deleted, ..c.clone() });
-            out.push(TreeChange { old: None, status: Status::Added, ..c.clone() });
+            out.push(TreeChange {
+                new: None,
+                status: Status::Deleted,
+                ..c.clone()
+            });
+            out.push(TreeChange {
+                old: None,
+                status: Status::Added,
+                ..c.clone()
+            });
         } else {
             out.push(c.clone());
         }
@@ -81,7 +89,10 @@ fn split_type_changes(changes: &[TreeChange]) -> Vec<TreeChange> {
     out
 }
 
-fn unmerged_before<'p>(pending: &mut std::slice::Iter<'p, RepoPath>, limit: Option<&RepoPath>) -> Vec<&'p RepoPath> {
+fn unmerged_before<'p>(
+    pending: &mut std::slice::Iter<'p, RepoPath>,
+    limit: Option<&RepoPath>,
+) -> Vec<&'p RepoPath> {
     let mut out = Vec::new();
     while let Some(p) = pending.as_slice().first() {
         if limit.is_some_and(|l| p >= l) {
@@ -101,12 +112,24 @@ pub async fn render<W: Write>(
     unmerged: &[RepoPath],
 ) -> Result<()> {
     let attrs: &dyn Attributes = if t.text { &AllText } else { t.attrs };
-    let ctx = DiffCtx { opts: t.opts, content: t.src, attrs };
+    let ctx = DiffCtx {
+        opts: t.opts,
+        content: t.src,
+        attrs,
+    };
     let fmt = t.fmt;
     let mut separate = false;
     if fmt.raw || fmt.name_only || fmt.name_status {
         if fmt.raw {
-            write_raw(w, &blank_work_ids(changes), &DiffOptions { abbrev: t.raw_abbrev, ..t.opts.clone() }).map_err(fatal)?;
+            write_raw(
+                w,
+                &blank_work_ids(changes),
+                &DiffOptions {
+                    abbrev: t.raw_abbrev,
+                    ..t.opts.clone()
+                },
+            )
+            .map_err(fatal)?;
             for p in unmerged {
                 w.write_all(b":000000 000000 0000000 0000000 U\t")?;
                 w.write_all(p.as_bytes())?;
@@ -180,7 +203,9 @@ async fn patch<W: Write>(
             write_patch(&mut buf, ctx, one).await.map_err(fatal)?;
         }
         if t.binary {
-            binary::upgrade(&mut buf, t.src, c, t.zlib_level).await.map_err(fatal)?;
+            binary::upgrade(&mut buf, t.src, c, t.zlib_level)
+                .await
+                .map_err(fatal)?;
         }
         w.write_all(&buf)?;
     }
@@ -203,8 +228,14 @@ pub struct JsonShape {
 impl JsonShape {
     pub fn load() -> Result<Self> {
         let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).map_err(fatal)?;
-        let get = |name: &str| pool.get_message_by_name(name).ok_or_else(|| fatal(format!("asc: missing message {name}")));
-        Ok(Self { response: get("asc.v1.DiffResponse")?, change: get("asc.v1.PathChange")? })
+        let get = |name: &str| {
+            pool.get_message_by_name(name)
+                .ok_or_else(|| fatal(format!("asc: missing message {name}")))
+        };
+        Ok(Self {
+            response: get("asc.v1.DiffResponse")?,
+            change: get("asc.v1.PathChange")?,
+        })
     }
 
     fn path_change(&self, c: &TreeChange) -> DynamicMessage {
@@ -217,7 +248,10 @@ impl JsonShape {
         }
         m.set_field_by_name("old_mode", Value::U32(c.old_mode()));
         m.set_field_by_name("new_mode", Value::U32(c.new_mode()));
-        for (side, entry, id, size) in [("old", &c.old, "old_id", "old_size"), ("new", &c.new, "new_id", "new_size")] {
+        for (side, entry, id, size) in [
+            ("old", &c.old, "old_id", "old_size"),
+            ("new", &c.new, "new_id", "new_size"),
+        ] {
             let Some(e) = entry else { continue };
             m.set_field_by_name(&format!("{side}_git"), bytes(e.git.as_bytes()));
             if !is_local(e) {
@@ -244,7 +278,10 @@ impl JsonShape {
             let mut text = Vec::new();
             render(&mut text, t, std::slice::from_ref(c), &[]).await?;
             let mut m = DynamicMessage::new(self.response.clone());
-            m.set_field_by_name("changes", Value::List(vec![Value::Message(self.path_change(c))]));
+            m.set_field_by_name(
+                "changes",
+                Value::List(vec![Value::Message(self.path_change(c))]),
+            );
             m.set_field_by_name("text", Value::Bytes(text.into()));
             lines.emit(&m).map_err(fatal)?;
         }

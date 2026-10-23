@@ -18,7 +18,11 @@ pub struct Mailmap {
 fn take_ident(text: &[u8]) -> Option<(&[u8], &[u8], &[u8])> {
     let open = text.iter().position(|&b| b == b'<')?;
     let close = open + text[open..].iter().position(|&b| b == b'>')?;
-    Some((text[..open].trim_ascii(), &text[open + 1..close], &text[close + 1..]))
+    Some((
+        text[..open].trim_ascii(),
+        &text[open + 1..close],
+        &text[close + 1..],
+    ))
 }
 
 impl Mailmap {
@@ -30,7 +34,9 @@ impl Mailmap {
             if line.is_empty() || line[0] == b'#' {
                 continue;
             }
-            let Some((name1, email1, rest)) = take_ident(line) else { continue };
+            let Some((name1, email1, rest)) = take_ident(line) else {
+                continue;
+            };
             let rule = match take_ident(rest.trim_ascii()) {
                 Some((name2, email2, _)) => Rule {
                     old_name: (!name2.is_empty()).then(|| name2.to_vec()),
@@ -54,13 +60,18 @@ impl Mailmap {
     /// names its email; later rules win over earlier ones.
     pub fn lookup(&self, name: &[u8], email: &[u8]) -> (Vec<u8>, Vec<u8>) {
         let hit = |r: &&Rule| r.old_email.eq_ignore_ascii_case(email);
-        let by_name = self
-            .rules
-            .iter()
-            .rev()
-            .filter(hit)
-            .find(|r| r.old_name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(name)));
-        let rule = by_name.or_else(|| self.rules.iter().rev().filter(hit).find(|r| r.old_name.is_none()));
+        let by_name = self.rules.iter().rev().filter(hit).find(|r| {
+            r.old_name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        });
+        let rule = by_name.or_else(|| {
+            self.rules
+                .iter()
+                .rev()
+                .filter(hit)
+                .find(|r| r.old_name.is_none())
+        });
         match rule {
             Some(r) => (
                 r.new_name.clone().unwrap_or_else(|| name.to_vec()),
@@ -80,9 +91,21 @@ mod tests {
         let m = Mailmap::parse(
             b"# comment\nProper <p@x> <old@x>\n<new@x> <typo@x>\nJo <jo@x> Jon <jon@x>\n",
         );
-        assert_eq!(m.lookup(b"Whoever", b"OLD@x"), (b"Proper".to_vec(), b"p@x".to_vec()));
-        assert_eq!(m.lookup(b"A", b"typo@x"), (b"A".to_vec(), b"new@x".to_vec()));
-        assert_eq!(m.lookup(b"Jon", b"jon@x"), (b"Jo".to_vec(), b"jo@x".to_vec()));
-        assert_eq!(m.lookup(b"Ann", b"jon@x"), (b"Ann".to_vec(), b"jon@x".to_vec()));
+        assert_eq!(
+            m.lookup(b"Whoever", b"OLD@x"),
+            (b"Proper".to_vec(), b"p@x".to_vec())
+        );
+        assert_eq!(
+            m.lookup(b"A", b"typo@x"),
+            (b"A".to_vec(), b"new@x".to_vec())
+        );
+        assert_eq!(
+            m.lookup(b"Jon", b"jon@x"),
+            (b"Jo".to_vec(), b"jo@x".to_vec())
+        );
+        assert_eq!(
+            m.lookup(b"Ann", b"jon@x"),
+            (b"Ann".to_vec(), b"jon@x".to_vec())
+        );
     }
 }

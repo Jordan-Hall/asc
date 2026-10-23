@@ -16,8 +16,11 @@ fn esc_len(s: &[u8]) -> usize {
 /// Terminal columns of a scalar value: 0 for combining marks, 2 for wide and fullwidth forms.
 fn char_width(c: char) -> usize {
     let u = c as u32;
-    if u == 0 || (0x300..=0x36f).contains(&u) || (0x200b..=0x200f).contains(&u)
-        || (0xfe00..=0xfe0f).contains(&u) || (0x1ab0..=0x1aff).contains(&u)
+    if u == 0
+        || (0x300..=0x36f).contains(&u)
+        || (0x200b..=0x200f).contains(&u)
+        || (0xfe00..=0xfe0f).contains(&u)
+        || (0x1ab0..=0x1aff).contains(&u)
         || (0x20d0..=0x20ff).contains(&u)
     {
         return 0;
@@ -101,7 +104,10 @@ fn is_space(c: u8) -> bool {
 fn add_indented(buf: &mut Vec<u8>, text: &[u8], mut indent: usize, indent2: usize) {
     let mut rest = text;
     while !rest.is_empty() {
-        let end = rest.iter().position(|&b| b == b'\n').map_or(rest.len(), |p| p + 1);
+        let end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(rest.len(), |p| p + 1);
         buf.extend(std::iter::repeat_n(b' ', indent));
         buf.extend_from_slice(&rest[..end]);
         rest = &rest[end..];
@@ -158,7 +164,17 @@ pub fn add_wrapped(buf: &mut Vec<u8>, text: &[u8], indent1: usize, indent2: usiz
                     }
                 }
                 if new_line {
-                    wrap_line(buf, text, &mut bol, &mut i, &mut space, s, &mut w, &mut indent, indent2);
+                    wrap_line(
+                        buf,
+                        text,
+                        &mut bol,
+                        &mut i,
+                        &mut space,
+                        s,
+                        &mut w,
+                        &mut indent,
+                        indent2,
+                    );
                     continue;
                 }
                 space = Some(s);
@@ -166,7 +182,17 @@ pub fn add_wrapped(buf: &mut Vec<u8>, text: &[u8], indent1: usize, indent2: usiz
                 i += 1;
             } else {
                 let s = space.unwrap_or(i);
-                wrap_line(buf, text, &mut bol, &mut i, &mut space, s, &mut w, &mut indent, indent2);
+                wrap_line(
+                    buf,
+                    text,
+                    &mut bol,
+                    &mut i,
+                    &mut space,
+                    s,
+                    &mut w,
+                    &mut indent,
+                    indent2,
+                );
             }
             continue;
         }

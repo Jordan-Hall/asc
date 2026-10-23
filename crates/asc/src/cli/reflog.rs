@@ -29,7 +29,11 @@ pub struct Args {
 
 const FLAGS: &[&str] = &["-n", "--max-count", "-<n>"];
 
-pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "reflog", flags: FLAGS, placeholders: &[] }];
+pub const NATIVE: &[NativeSpec] = &[NativeSpec {
+    cmd: "reflog",
+    flags: FLAGS,
+    placeholders: &[],
+}];
 
 /// Entries read when no `-n` is given: the log is read whole, so it is bounded.
 const DEFAULT_LIMIT: u32 = 100_000;
@@ -46,9 +50,12 @@ struct Opts {
 }
 
 fn count(flag: &str, value: &str) -> Result<u32> {
-    value
-        .parse()
-        .map_err(|_| CliError::Raw(format!("fatal: '{value}': not an integer (for {flag})"), 128))
+    value.parse().map_err(|_| {
+        CliError::Raw(
+            format!("fatal: '{value}': not an integer (for {flag})"),
+            128,
+        )
+    })
 }
 
 impl Opts {
@@ -63,7 +70,10 @@ impl Opts {
                 o.max_count = Some(count(&arg, &it.next().unwrap_or_default())?);
             } else if let Some(v) = arg.strip_prefix("-n") {
                 o.max_count = Some(count("-n", v)?);
-            } else if arg.len() > 1 && arg[1..].bytes().all(|b| b.is_ascii_digit()) && arg.starts_with('-') {
+            } else if arg.len() > 1
+                && arg[1..].bytes().all(|b| b.is_ascii_digit())
+                && arg.starts_with('-')
+            {
                 o.max_count = Some(count("-<n>", &arg[1..])?);
             } else {
                 words.push(arg);
@@ -79,7 +89,9 @@ impl Opts {
                 words.next();
             }
             Some(sub @ ("expire" | "delete" | "drop" | "write")) => {
-                return Err(CliError::Msg(Msg::AscOptionUnsupported { flag: sub.to_owned() }));
+                return Err(CliError::Msg(Msg::AscOptionUnsupported {
+                    flag: sub.to_owned(),
+                }));
             }
             _ => {}
         }
@@ -118,7 +130,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut out = Output::open(ctx, "reflog", PagerWant::Auto)?;
     let mut result = Ok(());
     for (i, entry) in entries.iter().enumerate() {
-        let Some(RefTarget::Changeset(id)) = entry.new else { continue };
+        let Some(RefTarget::Changeset(id)) = entry.new else {
+            continue;
+        };
         let git = match ws.engine.git_commit_of(id).await {
             Ok(g) => g.to_string(),
             Err(e) => {
@@ -152,7 +166,10 @@ mod tests {
     fn subcommand_count_and_ref() {
         let o = parse(&["show", "-n", "3", "master"]);
         assert!(!o.exists);
-        assert_eq!((o.max_count, o.target.as_deref()), (Some(3), Some("master")));
+        assert_eq!(
+            (o.max_count, o.target.as_deref()),
+            (Some(3), Some("master"))
+        );
         let o = parse(&["exists", "refs/heads/x"]);
         assert!(o.exists);
         assert_eq!(parse(&["-5"]).max_count, Some(5));
@@ -163,6 +180,9 @@ mod tests {
     #[test]
     fn expire_is_not_served() {
         let v = [OsString::from("expire")];
-        assert!(matches!(Opts::parse(&v), Err(CliError::Msg(Msg::AscOptionUnsupported { .. }))));
+        assert!(matches!(
+            Opts::parse(&v),
+            Err(CliError::Msg(Msg::AscOptionUnsupported { .. }))
+        ));
     }
 }

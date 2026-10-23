@@ -22,8 +22,8 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::storeset::StoreSet;
-use asc_wc::ignore::IgnoreSources;
 use asc_wc::SafeRoot;
+use asc_wc::ignore::IgnoreSources;
 use asc_wc::plain::{Sparse, Wc};
 use asc_wc::redirect::Redirections;
 use asc_wc::status::{self, ChangeKind, NoEol};
@@ -85,7 +85,9 @@ pub async fn rows_to_changes(
 /// does not exist. `prev` keeps the executable bit where the file system has none.
 pub async fn ingest_path(ws: &WsCtx, path: &RepoPath, prev: Option<Kind>) -> Result<Option<Leaf>> {
     // Behind a symlinked or reparse-point ancestor the path is outside the work tree: it is gone.
-    let Some(abs) = SafeRoot::new(ws.projection.toplevel()).resolve(path) else { return Ok(None) };
+    let Some(abs) = SafeRoot::new(ws.projection.toplevel()).resolve(path) else {
+        return Ok(None);
+    };
     let meta = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

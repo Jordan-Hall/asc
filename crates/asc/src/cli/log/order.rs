@@ -94,7 +94,10 @@ impl<'a> Ordered<'a> {
         };
         let left = sel.symmetric.map(|(a, _)| a);
         for &id in sel.exclude.iter() {
-            w.flags.entry(id).and_modify(|f| *f |= UNINTERESTING).or_insert(UNINTERESTING);
+            w.flags
+                .entry(id)
+                .and_modify(|f| *f |= UNINTERESTING)
+                .or_insert(UNINTERESTING);
         }
         let mut tips: Vec<ChangesetId> = Vec::new();
         for &id in sel.include.iter().chain(sel.exclude.iter()) {
@@ -138,7 +141,11 @@ impl<'a> Ordered<'a> {
 
     async fn info(&mut self, id: ChangesetId) -> Result<Info> {
         let cs = self.ws.engine.get_changeset(id).await?;
-        let info = Info { time: cs.committer.time(), author_time: cs.author.time(), parents: cs.parents.clone() };
+        let info = Info {
+            time: cs.committer.time(),
+            author_time: cs.author.time(),
+            parents: cs.parents.clone(),
+        };
         self.loaded.insert(id, info.parents.clone());
         Ok(info)
     }
@@ -154,7 +161,9 @@ impl<'a> Ordered<'a> {
                 }
                 *f |= UNINTERESTING;
                 let Some(ps) = self.loaded.get(&c) else { break };
-                let Some((first, rest)) = ps.split_first() else { break };
+                let Some((first, rest)) = ps.split_first() else {
+                    break;
+                };
                 stack.extend(rest.iter().copied());
                 c = *first;
             }
@@ -198,11 +207,16 @@ impl<'a> Ordered<'a> {
 
     /// git's `still_interesting`: how much slop is left once an uninteresting commit was popped.
     fn still_interesting(&self, date: i64, slop: u32) -> u32 {
-        let Some(&(top, _, _)) = self.queue.peek() else { return 0 };
+        let Some(&(top, _, _)) = self.queue.peek() else {
+            return 0;
+        };
         if date <= top {
             return SLOP;
         }
-        let all_uninteresting = self.queue.iter().all(|(_, _, id)| self.flag(id) & UNINTERESTING != 0);
+        let all_uninteresting = self
+            .queue
+            .iter()
+            .all(|(_, _, id)| self.flag(id) & UNINTERESTING != 0);
         if !all_uninteresting {
             return SLOP;
         }
@@ -250,7 +264,11 @@ impl<'a> Ordered<'a> {
 
     /// The parents of `item` that git's graph draws: those not hidden by the range.
     pub fn shown_parents(&self, item: &Item) -> Vec<ChangesetId> {
-        let take = if self.first_parent { 1 } else { item.parents.len() };
+        let take = if self.first_parent {
+            1
+        } else {
+            item.parents.len()
+        };
         item.parents[..take.min(item.parents.len())]
             .iter()
             .copied()
@@ -319,7 +337,9 @@ fn sort_topologically(list: Vec<Item>, sort: Sort) -> Vec<Item> {
             }
         };
         for p in &next.parents {
-            let Some(n) = indegree.get_mut(p) else { continue };
+            let Some(n) = indegree.get_mut(p) else {
+                continue;
+            };
             if *n == 0 {
                 continue;
             }

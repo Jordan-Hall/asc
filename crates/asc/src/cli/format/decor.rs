@@ -93,8 +93,17 @@ impl Decor {
                 out.extend_from_slice(color::RESET.as_bytes());
             }
         };
-        let name_of = |r: &DecorRef| if style.full { r.name.clone() } else { short_name(&r.name).to_owned() };
-        let attached = self.head_branch.as_deref().filter(|_| self.refs.iter().any(|r| r.kind == RefKind::Head));
+        let name_of = |r: &DecorRef| {
+            if style.full {
+                r.name.clone()
+            } else {
+                short_name(&r.name).to_owned()
+            }
+        };
+        let attached = self
+            .head_branch
+            .as_deref()
+            .filter(|_| self.refs.iter().any(|r| r.kind == RefKind::Head));
         let mut lead: &[u8] = &style.prefix;
         for r in &self.refs {
             if attached.is_some_and(|b| r.kind == RefKind::Local && r.name == b) {
@@ -117,7 +126,11 @@ impl Decor {
                 out.extend_from_slice(&style.pointer);
                 reset(out);
                 paint(out, kind_color(RefKind::Local));
-                let shown = if style.full { branch } else { short_name(branch) };
+                let shown = if style.full {
+                    branch
+                } else {
+                    short_name(branch)
+                };
                 out.extend_from_slice(shown.as_bytes());
                 reset(out);
             }
@@ -140,7 +153,10 @@ mod tests {
     use super::*;
 
     fn r(kind: RefKind, name: &str) -> DecorRef {
-        DecorRef { kind, name: name.into() }
+        DecorRef {
+            kind,
+            name: name.into(),
+        }
     }
 
     fn sample() -> Decor {
@@ -160,7 +176,10 @@ mod tests {
         let s = String::from_utf8(sample().text(&Style::standard(false, false))).unwrap();
         assert_eq!(s, " (HEAD -> master, tag: v1, origin/master)");
         let s = String::from_utf8(sample().text(&Style::standard(true, false))).unwrap();
-        assert_eq!(s, " (HEAD -> refs/heads/master, tag: refs/tags/v1, refs/remotes/origin/master)");
+        assert_eq!(
+            s,
+            " (HEAD -> refs/heads/master, tag: refs/tags/v1, refs/remotes/origin/master)"
+        );
     }
 
     #[test]
@@ -173,6 +192,10 @@ mod tests {
 
     #[test]
     fn empty_is_empty() {
-        assert!(Decor::default().text(&Style::standard(false, false)).is_empty());
+        assert!(
+            Decor::default()
+                .text(&Style::standard(false, false))
+                .is_empty()
+        );
     }
 }

@@ -56,12 +56,15 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     };
                     if let Some(&before) = chosen.last()
-                        && before != name {
-                            return Err(CliError::Raw(
-                                format!("error: options '{name}' and '{before}' cannot be used together"),
-                                129,
-                            ));
-                        }
+                        && before != name
+                    {
+                        return Err(CliError::Raw(
+                            format!(
+                                "error: options '{name}' and '{before}' cannot be used together"
+                            ),
+                            129,
+                        ));
+                    }
                     chosen.push(name);
                     o.mode = Some(mode);
                 }
@@ -69,9 +72,16 @@ fn parse(args: &[OsString]) -> Result<Opts> {
             Word::Long(name, inline) => match name.as_str() {
                 "batch" | "batch-check" => {
                     if batch.is_some() {
-                        return Err(CliError::Raw("error: only one batch option may be specified".into(), 129));
+                        return Err(CliError::Raw(
+                            "error: only one batch option may be specified".into(),
+                            129,
+                        ));
                     }
-                    let mode = if name == "batch" { Mode::Batch } else { Mode::BatchCheck };
+                    let mode = if name == "batch" {
+                        Mode::Batch
+                    } else {
+                        Mode::BatchCheck
+                    };
                     batch = Some((mode, inline));
                 }
                 "buffer" => {}
@@ -81,7 +91,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
     }
     if let Some((mode, format)) = batch {
         if let Some(short) = chosen.first() {
-            return Err(usage_with(&format!("'{short}' is incompatible with batch mode")));
+            return Err(usage_with(&format!(
+                "'{short}' is incompatible with batch mode"
+            )));
         }
         o.mode = Some(mode);
         o.batch_format = format;
@@ -95,9 +107,12 @@ async fn find(r: &Resolver<'_>, name: &str) -> Result<Option<Object>> {
         return Ok(Some(obj));
     }
     if let Some((rev, path)) = name.split_once(':').filter(|(rev, _)| !rev.is_empty())
-        && r.resolve(rev).await?.is_some() {
-            return Err(CliError::Fatal(format!("path '{path}' does not exist in '{rev}'")));
-        }
+        && r.resolve(rev).await?.is_some()
+    {
+        return Err(CliError::Fatal(format!(
+            "path '{path}' does not exist in '{rev}'"
+        )));
+    }
     Ok(None)
 }
 
@@ -107,7 +122,10 @@ fn not_valid(name: &str) -> CliError {
 
 /// `cat-file -p` of a tree: `ls-tree`'s lines with full ids.
 async fn pretty_tree(r: &Resolver<'_>, id: asc_core::id::TreeId, out: &mut dyn Write) -> Result<()> {
-    let names = Names { terminator: b'\n', quote_high: r.ctx.config.bool("core.quotePath").unwrap_or(true) };
+    let names = Names {
+        terminator: b'\n',
+        quote_high: r.ctx.config.bool("core.quotePath").unwrap_or(true),
+    };
     let tree = r.ws.engine.get_tree(id).await?;
     for e in git_order(&tree) {
         let kind = match e.kind {
@@ -140,7 +158,9 @@ async fn single(r: &Resolver<'_>, mode: Mode, name: &str, out: &mut Output) -> R
     let Some(obj) = found else {
         return match mode {
             Mode::Exists if hex_like => Ok(ExitCode::from(1)),
-            Mode::Type | Mode::Size if hex_like => Err(CliError::Fatal("git cat-file: could not get object info".into())),
+            Mode::Type | Mode::Size if hex_like => Err(CliError::Fatal(
+                "git cat-file: could not get object info".into(),
+            )),
             _ => Err(not_valid(name)),
         };
     };
@@ -189,7 +209,12 @@ fn parse_format(format: &str) -> Result<Vec<Piece>> {
                 "objectsize:disk" => Piece::Disk,
                 "deltabase" => Piece::DeltaBase,
                 "rest" => Piece::Rest,
-                _ => return Err(CliError::Fatal(format!("bad cat-file format: %({})", &inner[..end]))),
+                _ => {
+                    return Err(CliError::Fatal(format!(
+                        "bad cat-file format: %({})",
+                        &inner[..end]
+                    )));
+                }
             };
             if !text.is_empty() {
                 out.push(Piece::Text(std::mem::take(&mut text)));
@@ -207,7 +232,12 @@ fn parse_format(format: &str) -> Result<Vec<Piece>> {
     Ok(out)
 }
 
-async fn batch(r: &Resolver<'_>, mode: Mode, format: Option<&str>, out: &mut Output) -> Result<ExitCode> {
+async fn batch(
+    r: &Resolver<'_>,
+    mode: Mode,
+    format: Option<&str>,
+    out: &mut Output,
+) -> Result<ExitCode> {
     let default = "%(objectname) %(objecttype) %(objectsize)";
     let pieces = parse_format(format.unwrap_or(default))?;
     let wants_rest = pieces.iter().any(|p| matches!(p, Piece::Rest));
@@ -264,7 +294,11 @@ async fn typed(r: &Resolver<'_>, want: &str, name: &str, out: &mut Output) -> Re
     };
     let Some(obj) = find(r, name).await? else {
         let hex_like = name.len() == 40 && name.bytes().all(|b| b.is_ascii_hexdigit());
-        return Err(if hex_like { CliError::Fatal(format!("git cat-file {name}: bad file")) } else { not_valid(name) });
+        return Err(if hex_like {
+            CliError::Fatal(format!("git cat-file {name}: bad file"))
+        } else {
+            not_valid(name)
+        });
     };
     let Some(peeled) = r.peel(obj, kind).await? else {
         return Err(CliError::Fatal(format!("git cat-file {name}: bad file")));

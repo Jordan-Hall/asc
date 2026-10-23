@@ -102,7 +102,13 @@ impl Pieces {
             l.len += 1;
             return;
         }
-        self.0.push(Piece { start: line, len: 1, origin, orig_line, orig_path: path.clone() });
+        self.0.push(Piece {
+            start: line,
+            len: 1,
+            origin,
+            orig_line,
+            orig_path: path.clone(),
+        });
     }
 
     fn piece(&mut self, p: Piece) {
@@ -142,7 +148,10 @@ pub async fn entry_at(ws: &WsCtx, cs: ChangesetId, path: &RepoPath) -> Result<Op
 }
 
 async fn content(ws: &WsCtx, e: &Entry) -> Result<Bytes> {
-    ws.engine.read_file(FileId::from_bytes(e.id), e.size).await.map_err(fatal)
+    ws.engine
+        .read_file(FileId::from_bytes(e.id), e.size)
+        .await
+        .map_err(fatal)
 }
 
 /// git quotes the path when no revision was typed (`'f' in HEAD`) and not when one was.
@@ -158,7 +167,11 @@ pub fn no_such_path(path: &RepoPath, rev: Option<&str>) -> CliError {
 fn squeeze(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len() + 1);
     for l in line::split_lines(data) {
-        out.extend(l.iter().copied().filter(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)));
+        out.extend(
+            l.iter()
+                .copied()
+                .filter(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)),
+        );
         out.push(b'\n');
     }
     out
@@ -203,17 +216,28 @@ pub async fn committed(
     rev: Option<&str>,
     ignore_ws: bool,
 ) -> Result<Blamed> {
-    let entry = entry_at(ws, cs, path).await?.ok_or_else(|| no_such_path(path, rev))?;
+    let entry = entry_at(ws, cs, path)
+        .await?
+        .ok_or_else(|| no_such_path(path, rev))?;
     let text = content(ws, &entry).await?.to_vec();
     let b = ws.engine.blame(cs, path, None).await.map_err(fatal)?;
     let pieces = refine(ws, from_blame(&b), ignore_ws).await?;
-    Ok(Blamed { text, pieces, reverse_start: None, dirty: None })
+    Ok(Blamed {
+        text,
+        pieces,
+        reverse_start: None,
+        dirty: None,
+    })
 }
 
 /// The working file at `abs`, if it is a regular file below `gate`'s root: its bytes and mtime.
 pub fn read_work_file(gate: &SafeRoot, path: &RepoPath) -> Result<Option<(Vec<u8>, i64)>> {
-    let Some(abs) = gate.resolve(path) else { return Ok(None) };
-    let Ok(meta) = std::fs::symlink_metadata(&abs) else { return Ok(None) };
+    let Some(abs) = gate.resolve(path) else {
+        return Ok(None);
+    };
+    let Ok(meta) = std::fs::symlink_metadata(&abs) else {
+        return Ok(None);
+    };
     if !meta.is_file() {
         return Ok(None);
     }
@@ -225,7 +249,9 @@ pub fn read_work_file(gate: &SafeRoot, path: &RepoPath) -> Result<Option<(Vec<u8
         )));
     }
     let mut data = Vec::new();
-    std::fs::File::open(&abs)?.take(MAX_WORK_FILE + 1).read_to_end(&mut data)?;
+    std::fs::File::open(&abs)?
+        .take(MAX_WORK_FILE + 1)
+        .read_to_end(&mut data)?;
     if data.len() as u64 > MAX_WORK_FILE {
         return Err(CliError::Fatal("the file grew while it was read".into()));
     }
@@ -253,9 +279,20 @@ pub async fn working(
         let pieces = if n == 0 {
             Vec::new()
         } else {
-            vec![Piece { start: 0, len: n, origin: Origin::Dirty, orig_line: 0, orig_path: path.clone() }]
+            vec![Piece {
+                start: 0,
+                len: n,
+                origin: Origin::Dirty,
+                orig_line: 0,
+                orig_path: path.clone(),
+            }]
         };
-        return Ok(Blamed { text, pieces, reverse_start: None, dirty });
+        return Ok(Blamed {
+            text,
+            pieces,
+            reverse_start: None,
+            dirty,
+        });
     };
     let old = content(ws, &entry).await?;
     if old[..] == text[..] {
@@ -267,12 +304,22 @@ pub async fn working(
     for (j, m) in map.iter().enumerate() {
         let j = j as u32;
         match m.and_then(|i| base.run_at(i).map(|r| (i, r))) {
-            Some((i, r)) => pieces.line(j, Origin::Commit(r.origin), r.orig_line + (i - r.start), &r.orig_path),
+            Some((i, r)) => pieces.line(
+                j,
+                Origin::Commit(r.origin),
+                r.orig_line + (i - r.start),
+                &r.orig_path,
+            ),
             None => pieces.line(j, Origin::Dirty, j, path),
         }
     }
     let pieces = refine(ws, pieces.0, ignore_ws).await?;
-    Ok(Blamed { text, pieces, reverse_start: None, dirty })
+    Ok(Blamed {
+        text,
+        pieces,
+        reverse_start: None,
+        dirty,
+    })
 }
 
 /// How the lines of one origin's file map onto its parent's.
@@ -292,9 +339,10 @@ pub async fn parent_file(
 ) -> Result<Option<(ChangesetId, RepoPath, Entry)>> {
     let c = ws.engine.get_changeset(cs).await?;
     let renamed = match c.changes.get(path) {
-        Some(Change::Write { copy_from: Some(src), .. }) if matches!(c.changes.get(src), Some(Change::Delete)) => {
-            Some(src.clone())
-        }
+        Some(Change::Write {
+            copy_from: Some(src),
+            ..
+        }) if matches!(c.changes.get(src), Some(Change::Delete)) => Some(src.clone()),
         _ => None,
     };
     for (i, p) in c.parents.iter().enumerate() {
@@ -335,7 +383,11 @@ fn similarity(old: &[u8], new: &[u8]) -> u64 {
 
 /// Among `candidates` (paths with their entries) the file most like `data`, at least
 /// [`RENAME_SCORE`] percent alike; an identical file wins at once.
-async fn most_alike(ws: &WsCtx, data: &[u8], candidates: Vec<(RepoPath, Entry)>) -> Result<Option<(RepoPath, Entry)>> {
+async fn most_alike(
+    ws: &WsCtx,
+    data: &[u8],
+    candidates: Vec<(RepoPath, Entry)>,
+) -> Result<Option<(RepoPath, Entry)>> {
     let mut best: Option<(u64, RepoPath, Entry)> = None;
     for (path, entry) in candidates.into_iter().take(MAX_RENAME_CANDIDATES) {
         if entry.size > MAX_RENAME_FILE || !is_file(&entry) {
@@ -355,9 +407,16 @@ async fn most_alike(ws: &WsCtx, data: &[u8], candidates: Vec<(RepoPath, Entry)>)
 
 /// The file `cs` deleted that `path` (added in `cs`) most likely came from, with its entry in
 /// the first parent.
-async fn rename_source(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, data: &[u8]) -> Result<Option<(ChangesetId, RepoPath, Entry)>> {
+async fn rename_source(
+    ws: &WsCtx,
+    cs: ChangesetId,
+    path: &RepoPath,
+    data: &[u8],
+) -> Result<Option<(ChangesetId, RepoPath, Entry)>> {
     let c = ws.engine.get_changeset(cs).await?;
-    let Some(parent) = c.parents.first().copied() else { return Ok(None) };
+    let Some(parent) = c.parents.first().copied() else {
+        return Ok(None);
+    };
     let mut candidates = Vec::new();
     for (p, ch) in c.changes.as_slice() {
         if candidates.len() >= MAX_RENAME_CANDIDATES {
@@ -370,11 +429,18 @@ async fn rename_source(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, data: &[u8]
             candidates.push((p.clone(), e));
         }
     }
-    Ok(most_alike(ws, data, candidates).await?.map(|(p, e)| (parent, p, e)))
+    Ok(most_alike(ws, data, candidates)
+        .await?
+        .map(|(p, e)| (parent, p, e)))
 }
 
 /// The file that `cs` (the next commit) holds in place of `path`, which it deleted.
-async fn rename_dest(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, data: &[u8]) -> Result<Option<(RepoPath, Entry)>> {
+async fn rename_dest(
+    ws: &WsCtx,
+    cs: ChangesetId,
+    path: &RepoPath,
+    data: &[u8],
+) -> Result<Option<(RepoPath, Entry)>> {
     let c = ws.engine.get_changeset(cs).await?;
     if !matches!(c.changes.get(path), Some(Change::Delete)) {
         return Ok(None);
@@ -401,28 +467,47 @@ async fn rename_dest(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, data: &[u8]) 
 
 /// The parent and path `path` at `cs` was derived from (`previous` in porcelain output),
 /// including a rename the parent does not record.
-pub async fn previous_of(ws: &WsCtx, cs: ChangesetId, path: &RepoPath) -> Result<Option<(ChangesetId, RepoPath)>> {
+pub async fn previous_of(
+    ws: &WsCtx,
+    cs: ChangesetId,
+    path: &RepoPath,
+) -> Result<Option<(ChangesetId, RepoPath)>> {
     if let Some((parent, parent_path, _)) = parent_file(ws, cs, path).await? {
         return Ok(Some((parent, parent_path)));
     }
-    let Some(me) = entry_at(ws, cs, path).await? else { return Ok(None) };
+    let Some(me) = entry_at(ws, cs, path).await? else {
+        return Ok(None);
+    };
     if me.size > MAX_RENAME_FILE {
         return Ok(None);
     }
     let new = content(ws, &me).await?;
-    Ok(rename_source(ws, cs, path, &new).await?.map(|(parent, p, _)| (parent, p)))
+    Ok(rename_source(ws, cs, path, &new)
+        .await?
+        .map(|(parent, p, _)| (parent, p)))
 }
 
 /// How `path` at `cs` maps onto its parent: through the file the parent holds (only with `-w`;
 /// the engine has already placed the other lines), or through a rename the parent does not
 /// record.
-async fn step_of(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, ignore_ws: bool) -> Result<Option<Step>> {
-    let Some(me) = entry_at(ws, cs, path).await? else { return Ok(None) };
+async fn step_of(
+    ws: &WsCtx,
+    cs: ChangesetId,
+    path: &RepoPath,
+    ignore_ws: bool,
+) -> Result<Option<Step>> {
+    let Some(me) = entry_at(ws, cs, path).await? else {
+        return Ok(None);
+    };
     match parent_file(ws, cs, path).await? {
         Some(_) if !ignore_ws => Ok(None),
         Some((parent, parent_path, pe)) => {
             let (old, new) = (content(ws, &pe).await?, content(ws, &me).await?);
-            Ok(Some(Step { parent, parent_path, map: matching(&old, &new, true) }))
+            Ok(Some(Step {
+                parent,
+                parent_path,
+                map: matching(&old, &new, true),
+            }))
         }
         None => {
             if me.size > MAX_RENAME_FILE {
@@ -433,7 +518,11 @@ async fn step_of(ws: &WsCtx, cs: ChangesetId, path: &RepoPath, ignore_ws: bool) 
                 return Ok(None);
             };
             let old = content(ws, &pe).await?;
-            Ok(Some(Step { parent, parent_path, map: matching(&old, &new, ignore_ws) }))
+            Ok(Some(Step {
+                parent,
+                parent_path,
+                map: matching(&old, &new, ignore_ws),
+            }))
         }
     }
 }
@@ -525,7 +614,9 @@ pub async fn reverse(
     let mut cur = end;
     while cur != start {
         if chain.len() > MAX_CHAIN {
-            return Err(CliError::Fatal("asc: --reverse: the history between the revisions is too long".into()));
+            return Err(CliError::Fatal(
+                "asc: --reverse: the history between the revisions is too long".into(),
+            ));
         }
         let c = ws.engine.get_changeset(cur).await?;
         let Some(p) = c.parents.first() else {
@@ -537,7 +628,9 @@ pub async fn reverse(
         cur = *p;
     }
     chain.reverse();
-    let mut entry = entry_at(ws, start, path).await?.ok_or_else(|| no_such_path(path, Some(start_text)))?;
+    let mut entry = entry_at(ws, start, path)
+        .await?
+        .ok_or_else(|| no_such_path(path, Some(start_text)))?;
     let text = content(ws, &entry).await?;
     let n = line::split_lines(&text).len();
     let mut data = text.clone();
@@ -603,7 +696,12 @@ pub async fn reverse(
         };
         pieces.line(s as u32, Origin::Commit(chain[k]), l, &p);
     }
-    Ok(Blamed { text: text.to_vec(), pieces: pieces.0, reverse_start: Some(start), dirty: None })
+    Ok(Blamed {
+        text: text.to_vec(),
+        pieces: pieces.0,
+        reverse_start: Some(start),
+        dirty: None,
+    })
 }
 
 #[cfg(test)]
@@ -637,7 +735,10 @@ mod tests {
         b.line(0, o, 0, &p);
         b.line(1, o, 1, &p);
         b.line(2, o, 5, &p);
-        assert_eq!(b.0.iter().map(|x| (x.start, x.len)).collect::<Vec<_>>(), [(0, 2), (2, 1)]);
+        assert_eq!(
+            b.0.iter().map(|x| (x.start, x.len)).collect::<Vec<_>>(),
+            [(0, 2), (2, 1)]
+        );
         let c = b.0[0].clip(1, 5).unwrap();
         assert_eq!((c.start, c.len, c.orig_line), (1, 1, 1));
         assert!(b.0[0].clip(2, 4).is_none());

@@ -9,7 +9,11 @@ use crate::child;
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "install-shim", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "install-shim",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     /// The directory to hold `git`; `<exe dir>/shim` by default.
     #[arg(long)]
@@ -76,8 +80,14 @@ fn invoked_exe() -> std::io::Result<PathBuf> {
     if let Some(arg0) = std::env::args_os().next().map(PathBuf::from)
         && arg0.components().count() > 1
     {
-        let abs = if arg0.is_absolute() { arg0 } else { std::env::current_dir()?.join(arg0) };
-        let same = std::fs::canonicalize(&abs).ok().zip(std::fs::canonicalize(&real).ok());
+        let abs = if arg0.is_absolute() {
+            arg0
+        } else {
+            std::env::current_dir()?.join(arg0)
+        };
+        let same = std::fs::canonicalize(&abs)
+            .ok()
+            .zip(std::fs::canonicalize(&real).ok());
         if same.is_some_and(|(a, b)| a == b) {
             return Ok(abs);
         }
@@ -97,7 +107,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             128,
         ));
     }
-    relink(&exe, &dir).map_err(|e| CliError::Fatal(format!("asc: cannot install {}: {e}", dir.display())))?;
+    relink(&exe, &dir)
+        .map_err(|e| CliError::Fatal(format!("asc: cannot install {}: {e}", dir.display())))?;
     println!("{}", path_line(&dir));
     Ok(ExitCode::SUCCESS)
 }
@@ -109,9 +120,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_dir_on_another_drive_is_not_the_same_volume() {
-        assert!(same_volume(Path::new(r"C:\asc\asc.exe"), Path::new(r"c:\other\shim")));
-        assert!(same_volume(Path::new(r"\\?\C:\asc\asc.exe"), Path::new(r"C:\shim")));
-        assert!(!same_volume(Path::new(r"C:\asc\asc.exe"), Path::new(r"D:\shim")));
+        assert!(same_volume(
+            Path::new(r"C:\asc\asc.exe"),
+            Path::new(r"c:\other\shim")
+        ));
+        assert!(same_volume(
+            Path::new(r"\\?\C:\asc\asc.exe"),
+            Path::new(r"C:\shim")
+        ));
+        assert!(!same_volume(
+            Path::new(r"C:\asc\asc.exe"),
+            Path::new(r"D:\shim")
+        ));
     }
 
     #[test]
@@ -124,6 +144,10 @@ mod tests {
         relink(&old, &dir).unwrap();
         relink(&new, &dir).unwrap();
         assert_eq!(std::fs::read(dir.join(GIT_FILE)).unwrap(), b"new");
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp link is left");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "no temp link is left"
+        );
     }
 }

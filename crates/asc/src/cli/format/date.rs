@@ -1,13 +1,31 @@
 //! Date rendering with git's `--date=` modes (`date.c`), byte for byte.
 
 const WDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const WDAYS_LONG: [&str; 7] =
-    ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const MONTHS: [&str; 12] =
-    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WDAYS_LONG: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 const MONTHS_LONG: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June", "July", "August", "September",
-    "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 
 /// Which rendering `--date=<mode>` selects.
@@ -35,7 +53,10 @@ pub struct Mode {
 
 impl Default for Mode {
     fn default() -> Self {
-        Self { kind: Kind::Default, local: false }
+        Self {
+            kind: Kind::Default,
+            local: false,
+        }
     }
 }
 
@@ -43,10 +64,16 @@ impl Mode {
     /// Parses the value of `--date=`; `None` for a mode git does not know.
     pub fn parse(text: &str) -> Option<Self> {
         if let Some(f) = text.strip_prefix("format:") {
-            return Some(Self { kind: Kind::Strftime(f.to_owned()), local: false });
+            return Some(Self {
+                kind: Kind::Strftime(f.to_owned()),
+                local: false,
+            });
         }
         if let Some(f) = text.strip_prefix("format-local:") {
-            return Some(Self { kind: Kind::Strftime(f.to_owned()), local: true });
+            return Some(Self {
+                kind: Kind::Strftime(f.to_owned()),
+                local: true,
+            });
         }
         let (name, local) = match text.strip_suffix("-local") {
             Some(n) => (n, true),
@@ -70,10 +97,17 @@ impl Mode {
     /// `time` (unix seconds) in the zone `tz_min` (minutes east of UTC), as git prints it. `now`
     /// is the reference for relative and human styles.
     pub fn render(&self, time: i64, tz_min: i16, now: i64) -> String {
-        let tz = if self.local { local_offset_min() } else { i32::from(tz_min) };
+        let tz = if self.local {
+            local_offset_min()
+        } else {
+            i32::from(tz_min)
+        };
         let c = Civil::at(time, tz);
         match &self.kind {
-            Kind::Default if self.local => c.default_form().rsplit_once(' ').map_or_else(String::new, |(a, _)| a.to_owned()),
+            Kind::Default if self.local => c
+                .default_form()
+                .rsplit_once(' ')
+                .map_or_else(String::new, |(a, _)| a.to_owned()),
             Kind::Default => c.default_form(),
             Kind::Relative => relative(time, now),
             Kind::Short => format!("{:04}-{:02}-{:02}", c.year, c.month, c.day),
@@ -81,8 +115,14 @@ impl Mode {
             Kind::IsoStrict => c.iso_strict(),
             Kind::Rfc2822 => format!(
                 "{}, {} {} {} {:02}:{:02}:{:02} {}",
-                WDAYS[c.wday], c.day, MONTHS[c.month as usize - 1], c.year, c.hour, c.min,
-                c.sec, c.zone()
+                WDAYS[c.wday],
+                c.day,
+                MONTHS[c.month as usize - 1],
+                c.year,
+                c.hour,
+                c.min,
+                c.sec,
+                c.zone()
             ),
             Kind::Raw => format!("{time} {}", Civil::zone_of(tz)),
             Kind::Unix => time.to_string(),
@@ -95,7 +135,9 @@ impl Mode {
 /// The zone offset of the process, in minutes east of UTC: from `TZ` when it is `UTC`/`GMT` with
 /// an optional fixed offset, else UTC (the standard library has no zone database).
 fn local_offset_min() -> i32 {
-    let Ok(tz) = std::env::var("TZ") else { return 0 };
+    let Ok(tz) = std::env::var("TZ") else {
+        return 0;
+    };
     let rest = tz.trim_start_matches(|c: char| c.is_ascii_alphabetic());
     let (sign, digits) = match rest.as_bytes().first() {
         Some(b'-') => (1, &rest[1..]), // POSIX offsets point west: `UTC-2` is +02:00.
@@ -164,7 +206,12 @@ impl Civil {
             "Z".to_owned()
         } else {
             let a = self.tz.abs();
-            format!("{}{:02}:{:02}", if self.tz < 0 { '-' } else { '+' }, a / 60, a % 60)
+            format!(
+                "{}{:02}:{:02}",
+                if self.tz < 0 { '-' } else { '+' },
+                a / 60,
+                a % 60
+            )
         };
         format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}{zone}",
@@ -175,8 +222,14 @@ impl Civil {
     fn default_form(&self) -> String {
         format!(
             "{} {} {} {:02}:{:02}:{:02} {} {}",
-            WDAYS[self.wday], MONTHS[self.month as usize - 1], self.day, self.hour, self.min,
-            self.sec, self.year, self.zone()
+            WDAYS[self.wday],
+            MONTHS[self.month as usize - 1],
+            self.day,
+            self.hour,
+            self.min,
+            self.sec,
+            self.year,
+            self.zone()
         )
     }
 }
@@ -264,7 +317,10 @@ fn human(time: i64, tz: i32, now: i64) -> String {
     if t.month == n.month && t.day < n.day && n.day - t.day < 5 {
         return format!("{} {:02}:{:02}", WDAYS[t.wday], t.hour, t.min);
     }
-    format!("{} {month} {} {:02}:{:02}", WDAYS[t.wday], t.day, t.hour, t.min)
+    format!(
+        "{} {month} {} {:02}:{:02}",
+        WDAYS[t.wday], t.day, t.hour, t.min
+    )
 }
 
 /// The subset of `strftime` git users reach for in `--date=format:`.
@@ -305,10 +361,21 @@ fn strftime(f: &str, c: &Civil, time: i64) -> String {
             'F' => out.push_str(&format!("{:04}-{:02}-{:02}", c.year, c.month, c.day)),
             'T' => out.push_str(&format!("{:02}:{:02}:{:02}", c.hour, c.min, c.sec)),
             'R' => out.push_str(&format!("{:02}:{:02}", c.hour, c.min)),
-            'D' => out.push_str(&format!("{:02}/{:02}/{:02}", c.month, c.day, c.year.rem_euclid(100))),
+            'D' => out.push_str(&format!(
+                "{:02}/{:02}/{:02}",
+                c.month,
+                c.day,
+                c.year.rem_euclid(100)
+            )),
             'c' => out.push_str(&format!(
                 "{} {} {:2} {:02}:{:02}:{:02} {}",
-                WDAYS[c.wday], MONTHS[c.month as usize - 1], c.day, c.hour, c.min, c.sec, c.year
+                WDAYS[c.wday],
+                MONTHS[c.month as usize - 1],
+                c.day,
+                c.hour,
+                c.min,
+                c.sec,
+                c.year
             )),
             'n' => out.push('\n'),
             't' => out.push('\t'),
@@ -336,7 +403,10 @@ mod tests {
         assert_eq!(render("default", t, 0, t), "Tue Nov 14 22:13:20 2023 +0000");
         assert_eq!(render("iso", t, 90, t), "2023-11-14 23:43:20 +0130");
         assert_eq!(render("iso-strict", t, 0, t), "2023-11-14T22:13:20Z");
-        assert_eq!(render("iso-strict", t, -300, t), "2023-11-14T17:13:20-05:00");
+        assert_eq!(
+            render("iso-strict", t, -300, t),
+            "2023-11-14T17:13:20-05:00"
+        );
         assert_eq!(render("rfc", t, 0, t), "Tue, 14 Nov 2023 22:13:20 +0000");
         assert_eq!(render("short", t, 0, t), "2023-11-14");
         assert_eq!(render("raw", t, -330, t), "1700000000 -0530");
@@ -350,7 +420,10 @@ mod tests {
         assert_eq!(render("relative", now - 1, 0, now), "1 second ago");
         assert_eq!(render("relative", now - 3 * 3600, 0, now), "3 hours ago");
         assert_eq!(render("relative", now - 3 * 86_400, 0, now), "3 days ago");
-        assert_eq!(render("relative", now - 400 * 86_400, 0, now), "1 year, 1 month ago");
+        assert_eq!(
+            render("relative", now - 400 * 86_400, 0, now),
+            "1 year, 1 month ago"
+        );
         assert_eq!(render("relative", now + 5, 0, now), "in the future");
     }
 

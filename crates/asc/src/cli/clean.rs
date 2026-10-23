@@ -50,7 +50,17 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "clean",
-    flags: &["-n", "--dry-run", "-f", "--force", "-d", "-x", "-X", "-q", "--quiet"],
+    flags: &[
+        "-n",
+        "--dry-run",
+        "-f",
+        "--force",
+        "-d",
+        "-x",
+        "-X",
+        "-q",
+        "--quiet",
+    ],
     placeholders: &[],
 }];
 
@@ -69,20 +79,28 @@ struct TrackedSet {
 
 impl TrackedSet {
     fn key(&self, p: &[u8]) -> Vec<u8> {
-        if self.fold { String::from_utf8_lossy(p).to_lowercase().into_bytes() } else { p.to_vec() }
+        if self.fold {
+            String::from_utf8_lossy(p).to_lowercase().into_bytes()
+        } else {
+            p.to_vec()
+        }
     }
 
     /// Whether `p` itself is tracked (a file, a link or a gitlink).
     fn contains(&self, p: &[u8]) -> bool {
         let key = self.key(p);
-        self.paths.binary_search_by(|x| x.as_slice().cmp(&key)).is_ok()
+        self.paths
+            .binary_search_by(|x| x.as_slice().cmp(&key))
+            .is_ok()
     }
 
     /// Whether any tracked path is below directory `d`.
     fn has_dir(&self, d: &[u8]) -> bool {
         let mut key = self.key(d);
         key.push(b'/');
-        let at = self.paths.partition_point(|p| p.as_slice() < key.as_slice());
+        let at = self
+            .paths
+            .partition_point(|p| p.as_slice() < key.as_slice());
         self.paths.get(at).is_some_and(|p| p.starts_with(&key))
     }
 }
@@ -103,7 +121,11 @@ struct Sum {
 }
 
 fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
-    if dir.is_empty() { name.to_vec() } else { [dir, b"/", name].concat() }
+    if dir.is_empty() {
+        name.to_vec()
+    } else {
+        [dir, b"/", name].concat()
+    }
 }
 
 fn parent(p: &[u8]) -> Option<&[u8]> {
@@ -151,7 +173,11 @@ impl Walk<'_> {
     }
 
     fn wanted(&self, ignored: bool) -> bool {
-        if self.only_ignored { ignored } else { self.all || !ignored }
+        if self.only_ignored {
+            ignored
+        } else {
+            self.all || !ignored
+        }
     }
 
     fn ignored(&self, abs: &Path, is_dir: bool) -> bool {
@@ -161,7 +187,9 @@ impl Walk<'_> {
     fn visit(&mut self) -> Result<()> {
         self.visited += 1;
         if self.visited > MAX_VISITED {
-            return Err(CliError::Fatal(format!("asc: clean walked more than {MAX_VISITED} entries; give a pathspec")));
+            return Err(CliError::Fatal(format!(
+                "asc: clean walked more than {MAX_VISITED} entries; give a pathspec"
+            )));
         }
         Ok(())
     }
@@ -170,10 +198,13 @@ impl Walk<'_> {
     /// ignored directory above holds it: nothing inside can be re-included.
     fn dir(&mut self, rel: &[u8], abs: &Path, inherited: bool, depth: usize) -> Result<Sum> {
         if depth > MAX_DEPTH {
-            return Err(CliError::Fatal(format!("asc: clean: directories are nested deeper than {MAX_DEPTH}")));
+            return Err(CliError::Fatal(format!(
+                "asc: clean: directories are nested deeper than {MAX_DEPTH}"
+            )));
         }
         if self.ignore.push_dir(abs).map_err(|e| io_fatal(abs, &e))? {
-            self.shadowed.insert(String::from_utf8_lossy(rel).into_owned());
+            self.shadowed
+                .insert(String::from_utf8_lossy(rel).into_owned());
         }
         let done = self.entries(rel, abs, inherited, depth);
         self.ignore.pop_dir();
@@ -197,19 +228,34 @@ impl Walk<'_> {
             }
         }
         // git's order: a directory sorts as its name followed by `/`.
-        items.sort_by_key(|(n, d)| if *d { [n.as_slice(), b"/"].concat() } else { n.clone() });
-        let mut sum = Sum { unwanted: skipped, ..Sum::default() };
+        items.sort_by_key(|(n, d)| {
+            if *d {
+                [n.as_slice(), b"/"].concat()
+            } else {
+                n.clone()
+            }
+        });
+        let mut sum = Sum {
+            unwanted: skipped,
+            ..Sum::default()
+        };
         if items.is_empty() && !skipped {
             sum.wanted = !self.only_ignored;
         }
         for (name, is_dir) in items {
             self.visit()?;
-            if name == b".git" || (rel.is_empty() && name == b".asc") || self.redirections.is_redirected_name(&name) {
+            if name == b".git"
+                || (rel.is_empty() && name == b".asc")
+                || self.redirections.is_redirected_name(&name)
+            {
                 sum.unwanted = true;
                 continue;
             }
             let child = join(rel, &name);
-            let Some(child_abs) = RepoPath::new(child.clone()).ok().and_then(|rp| self.gate.resolve(&rp)) else {
+            let Some(child_abs) = RepoPath::new(child.clone())
+                .ok()
+                .and_then(|rp| self.gate.resolve(&rp))
+            else {
                 sum.unwanted = true;
                 continue;
             };
@@ -233,7 +279,14 @@ impl Walk<'_> {
         Ok(sum)
     }
 
-    fn subdir(&mut self, child: &[u8], child_abs: &Path, inherited: bool, depth: usize, sum: &mut Sum) -> Result<()> {
+    fn subdir(
+        &mut self,
+        child: &[u8],
+        child_abs: &Path,
+        inherited: bool,
+        depth: usize,
+        sum: &mut Sum,
+    ) -> Result<()> {
         let ignored = inherited || self.ignored(child_abs, true);
         if self.tracked.has_dir(child) {
             if self.spec.may_contain_dir(child) {
@@ -292,7 +345,10 @@ fn remove_tree(gate: &SafeRoot, rel: &[u8], keep_root: bool, depth: usize) -> io
     if depth > MAX_DEPTH {
         return Err(io::Error::other("directories are nested too deeply"));
     }
-    let Some(abs) = RepoPath::new(rel.to_vec()).ok().and_then(|rp| gate.resolve(&rp)) else {
+    let Some(abs) = RepoPath::new(rel.to_vec())
+        .ok()
+        .and_then(|rp| gate.resolve(&rp))
+    else {
         return Ok(false);
     };
     let meta = fs::symlink_metadata(&abs)?;
@@ -338,7 +394,10 @@ impl Walk<'_> {
     fn climb_safe(&self, d: &[u8]) -> bool {
         let mut cur = d;
         while let Some(p) = parent(cur) {
-            let Some(abs) = RepoPath::new(p.to_vec()).ok().and_then(|rp| self.gate.resolve(&rp)) else {
+            let Some(abs) = RepoPath::new(p.to_vec())
+                .ok()
+                .and_then(|rp| self.gate.resolve(&rp))
+            else {
                 return false;
             };
             let count = fs::read_dir(&abs).map(|l| l.take(2).count()); // lint:allow-worktree-fs
@@ -358,12 +417,16 @@ impl Walk<'_> {
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if a.ignored && a.only_ignored {
-        return Err(CliError::Fatal("options '-x' and '-X' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '-x' and '-X' cannot be used together".into(),
+        ));
     }
     let ws = ctx.ws()?;
     let require = ctx.config.bool("clean.requireForce").unwrap_or(true);
     if !a.dry_run && a.force == 0 && require {
-        return Err(CliError::Fatal("clean.requireForce is true and -f not given: refusing to clean".into()));
+        return Err(CliError::Fatal(
+            "clean.requireForce is true and -f not given: refusing to clean".into(),
+        ));
     }
     let root = ws.projection.toplevel();
     let prefix = cwd_prefix(ctx, ws);
@@ -375,8 +438,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let spec = Spec::parse(&items, &prefix, root)?;
 
     let target = Target::open(ctx).await?;
-    let fold = ctx.config.bool("core.ignorecase").unwrap_or(cfg!(any(windows, target_os = "macos")));
-    let mut set = TrackedSet { paths: Vec::new(), fold };
+    let fold = ctx
+        .config
+        .bool("core.ignorecase")
+        .unwrap_or(cfg!(any(windows, target_os = "macos")));
+    let mut set = TrackedSet {
+        paths: Vec::new(),
+        fold,
+    };
     let mut too_many = false;
     target
         .tracked(ws, &Spec::default(), |path, _| {
@@ -390,7 +459,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         })
         .await?;
     if too_many {
-        return Err(CliError::Fatal(format!("asc: clean: more than {MAX_TRACKED} tracked paths")));
+        return Err(CliError::Fatal(format!(
+            "asc: clean: more than {MAX_TRACKED} tracked paths"
+        )));
     }
     set.paths.sort();
 
@@ -424,7 +495,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
 
     let quote_high = ctx.config.bool("core.quotePath").unwrap_or(true);
-    let strip = if prefix.is_empty() { Vec::new() } else { format!("{prefix}/").into_bytes() };
+    let strip = if prefix.is_empty() {
+        Vec::new()
+    } else {
+        format!("{prefix}/").into_bytes()
+    };
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut errors = 0usize;
     let say = |out: &mut dyn Write, head: &str, name: &[u8]| -> io::Result<()> {
@@ -488,12 +563,18 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             }
             Ok(false) => {
                 let _ = out.flush();
-                eprintln!("warning: failed to remove {}: something in it could not be removed", String::from_utf8_lossy(&shown));
+                eprintln!(
+                    "warning: failed to remove {}: something in it could not be removed",
+                    String::from_utf8_lossy(&shown)
+                );
                 errors += 1;
             }
             Err(e) => {
                 let _ = out.flush();
-                eprintln!("warning: failed to remove {}: {e}", String::from_utf8_lossy(&shown));
+                eprintln!(
+                    "warning: failed to remove {}: {e}",
+                    String::from_utf8_lossy(&shown)
+                );
                 errors += 1;
             }
         }
@@ -520,11 +601,17 @@ mod tests {
 
     #[test]
     fn tracked_lookups() {
-        let mut set = TrackedSet { paths: vec![b"a/b".to_vec(), b"a.txt".to_vec(), b"sub".to_vec()], fold: false };
+        let mut set = TrackedSet {
+            paths: vec![b"a/b".to_vec(), b"a.txt".to_vec(), b"sub".to_vec()],
+            fold: false,
+        };
         set.paths.sort();
         assert!(set.contains(b"a.txt") && set.contains(b"sub") && !set.contains(b"a"));
         assert!(set.has_dir(b"a") && !set.has_dir(b"a.txt") && !set.has_dir(b"b"));
-        let folded = TrackedSet { paths: vec![b"readme".to_vec()], fold: true };
+        let folded = TrackedSet {
+            paths: vec![b"readme".to_vec()],
+            fold: true,
+        };
         assert!(folded.contains(b"README"));
     }
 

@@ -30,12 +30,23 @@ pub async fn load(ws: &WsCtx) -> Result<HashMap<ChangesetId, Decor>> {
     tips.sort_by(|a, b| b.name.cmp(&a.name));
     let mut map: HashMap<ChangesetId, Decor> = HashMap::new();
     for tip in tips {
-        let Some(kind) = kind_of(&tip.name) else { continue };
-        map.entry(tip.commit).or_default().refs.push(DecorRef { kind, name: tip.name });
+        let Some(kind) = kind_of(&tip.name) else {
+            continue;
+        };
+        map.entry(tip.commit).or_default().refs.push(DecorRef {
+            kind,
+            name: tip.name,
+        });
     }
     if let Some(head) = ws.head_commit().await? {
         let d = map.entry(head).or_default();
-        d.refs.insert(0, DecorRef { kind: RefKind::Head, name: "HEAD".into() });
+        d.refs.insert(
+            0,
+            DecorRef {
+                kind: RefKind::Head,
+                name: "HEAD".into(),
+            },
+        );
         if let Ok(Head::Branch(b)) = ws.projection.read_head() {
             d.head_branch = Some(format!("refs/heads/{b}"));
         }

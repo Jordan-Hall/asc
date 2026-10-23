@@ -43,12 +43,14 @@ fn bracket(p: &[u8], c: u8, fold: bool) -> Option<(bool, usize)> {
             return Some((found != negate, i + 1));
         }
         first = false;
-        if p[i] == b'[' && p.get(i + 1) == Some(&b':')
-            && let Some(end) = p[i + 2..].windows(2).position(|w| w == b":]") {
-                found |= class_has(&p[i + 2..i + 2 + end], c);
-                i += end + 4;
-                continue;
-            }
+        if p[i] == b'['
+            && p.get(i + 1) == Some(&b':')
+            && let Some(end) = p[i + 2..].windows(2).position(|w| w == b":]")
+        {
+            found |= class_has(&p[i + 2..i + 2 + end], c);
+            i += end + 4;
+            continue;
+        }
         let mut lo = p[i];
         if lo == b'\\' && i + 1 < p.len() {
             i += 1;
@@ -167,7 +169,9 @@ pub fn match_as_path(patterns: &[String], name: &str, fold: bool) -> bool {
 
 /// `branch`/`tag` style: plain `wildmatch` against the name.
 pub fn match_plain(patterns: &[String], name: &str, fold: bool) -> bool {
-    patterns.iter().any(|p| wildmatch(p.as_bytes(), name.as_bytes(), false, fold))
+    patterns
+        .iter()
+        .any(|p| wildmatch(p.as_bytes(), name.as_bytes(), false, fold))
 }
 
 /// The ref prefixes to list for these patterns: each pattern's literal head cut at its last `/`;
@@ -178,10 +182,19 @@ pub fn prefixes(patterns: &[String]) -> Vec<String> {
     }
     let mut out: Vec<String> = Vec::new();
     for p in patterns {
-        let literal = p.find(['*', '?', '[', '\\']).map_or(p.as_str(), |at| &p[..at]);
+        let literal = p
+            .find(['*', '?', '[', '\\'])
+            .map_or(p.as_str(), |at| &p[..at]);
         let cut = literal.rfind('/').map_or("", |at| &literal[..=at]);
-        let prefix = if cut.starts_with("refs/") { cut.to_owned() } else { "refs/".to_owned() };
-        if !out.iter().any(|existing| prefix.starts_with(existing.as_str())) {
+        let prefix = if cut.starts_with("refs/") {
+            cut.to_owned()
+        } else {
+            "refs/".to_owned()
+        };
+        if !out
+            .iter()
+            .any(|existing| prefix.starts_with(existing.as_str()))
+        {
             out.retain(|existing| !existing.starts_with(&prefix));
             out.push(prefix);
         }
@@ -215,20 +228,50 @@ mod tests {
     #[test]
     fn as_path_matches_prefixes_up_to_a_slash() {
         let one = |p: &str| vec![p.to_owned()];
-        assert!(match_as_path(&one("refs/heads"), "refs/heads/master", false));
-        assert!(match_as_path(&one("refs/heads/"), "refs/heads/master", false));
-        assert!(!match_as_path(&one("refs/head"), "refs/heads/master", false));
-        assert!(!match_as_path(&one("REFS/HEADS"), "refs/heads/master", true));
-        assert!(match_as_path(&one("REFS/heads/*"), "refs/heads/master", true));
-        assert!(match_as_path(&one("refs/heads/master"), "refs/heads/master", false));
+        assert!(match_as_path(
+            &one("refs/heads"),
+            "refs/heads/master",
+            false
+        ));
+        assert!(match_as_path(
+            &one("refs/heads/"),
+            "refs/heads/master",
+            false
+        ));
+        assert!(!match_as_path(
+            &one("refs/head"),
+            "refs/heads/master",
+            false
+        ));
+        assert!(!match_as_path(
+            &one("REFS/HEADS"),
+            "refs/heads/master",
+            true
+        ));
+        assert!(match_as_path(
+            &one("REFS/heads/*"),
+            "refs/heads/master",
+            true
+        ));
+        assert!(match_as_path(
+            &one("refs/heads/master"),
+            "refs/heads/master",
+            false
+        ));
     }
 
     #[test]
     fn listing_prefixes() {
         assert_eq!(prefixes(&[]), ["refs/"]);
         assert_eq!(prefixes(&["refs/heads/ma*".into()]), ["refs/heads/"]);
-        assert_eq!(prefixes(&["refs/heads/a".into(), "refs/tags/v*".into()]), ["refs/heads/", "refs/tags/"]);
+        assert_eq!(
+            prefixes(&["refs/heads/a".into(), "refs/tags/v*".into()]),
+            ["refs/heads/", "refs/tags/"]
+        );
         assert_eq!(prefixes(&["master".into()]), ["refs/"]);
-        assert_eq!(prefixes(&["refs/heads/x".into(), "refs/*".into()]), ["refs/"]);
+        assert_eq!(
+            prefixes(&["refs/heads/x".into(), "refs/*".into()]),
+            ["refs/"]
+        );
     }
 }

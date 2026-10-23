@@ -51,7 +51,9 @@ pub fn parse_listen(text: &str) -> Result<SocketAddr, String> {
         .parse()
         .map_err(|_| format!("--metrics-listen '{text}' is not <ip>:<port>"))?;
     if !addr.ip().is_loopback() {
-        return Err(format!("--metrics-listen '{text}' is not a loopback address; the daemon's metrics are local only"));
+        return Err(format!(
+            "--metrics-listen '{text}' is not a loopback address; the daemon's metrics are local only"
+        ));
     }
     Ok(addr)
 }
@@ -160,48 +162,132 @@ impl Metrics {
             let _ = writeln!(o, "# HELP {name} {help}\n# TYPE {name} {kind}");
         };
 
-        family(&mut o, "asc_daemon_hydrations_total", "counter", "Files hydrated, by requesting process.");
+        family(
+            &mut o,
+            "asc_daemon_hydrations_total",
+            "counter",
+            "Files hydrated, by requesting process.",
+        );
         let mut by = c.hydrations.clone();
         by.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let rest: u64 = by.iter().skip(MAX_PROCESS_LABELS).map(|(_, n)| n).sum();
         for (image, n) in by.iter().take(MAX_PROCESS_LABELS) {
-            let _ = writeln!(o, "asc_daemon_hydrations_total{{process=\"{}\"}} {n}", escape(image));
+            let _ = writeln!(
+                o,
+                "asc_daemon_hydrations_total{{process=\"{}\"}} {n}",
+                escape(image)
+            );
         }
         if rest > 0 {
             let _ = writeln!(o, "asc_daemon_hydrations_total{{process=\"other\"}} {rest}");
         }
 
-        family(&mut o, "asc_daemon_fetch_bytes_total", "counter", "Bytes fetched to hydrate files.");
+        family(
+            &mut o,
+            "asc_daemon_fetch_bytes_total",
+            "counter",
+            "Bytes fetched to hydrate files.",
+        );
         let _ = writeln!(o, "asc_daemon_fetch_bytes_total {}", c.fetch_bytes);
-        family(&mut o, "asc_daemon_cache_bytes", "gauge", "Size of a cache directory at the last cache GC.");
-        let _ = writeln!(o, "asc_daemon_cache_bytes{{dir=\"cache\"}} {}", self.cache_bytes.load(Ordering::Relaxed));
-        family(&mut o, "asc_daemon_journal_entries", "gauge", "Change journal entries across mounted workspaces.");
+        family(
+            &mut o,
+            "asc_daemon_cache_bytes",
+            "gauge",
+            "Size of a cache directory at the last cache GC.",
+        );
+        let _ = writeln!(
+            o,
+            "asc_daemon_cache_bytes{{dir=\"cache\"}} {}",
+            self.cache_bytes.load(Ordering::Relaxed)
+        );
+        family(
+            &mut o,
+            "asc_daemon_journal_entries",
+            "gauge",
+            "Change journal entries across mounted workspaces.",
+        );
         let _ = writeln!(o, "asc_daemon_journal_entries {}", c.journal_entries);
-        family(&mut o, "asc_daemon_pending_paths", "gauge", "Paths a switch could not finish yet.");
+        family(
+            &mut o,
+            "asc_daemon_pending_paths",
+            "gauge",
+            "Paths a switch could not finish yet.",
+        );
         let _ = writeln!(o, "asc_daemon_pending_paths {}", c.pending_paths);
-        family(&mut o, "asc_daemon_reconcile_paths_total", "counter", "Paths examined by reconcile.");
-        let _ = writeln!(o, "asc_daemon_reconcile_paths_total {}", self.reconcile_paths.load(Ordering::Relaxed));
-        family(&mut o, "asc_daemon_provider_errors_total", "counter", "Failed provider operations.");
+        family(
+            &mut o,
+            "asc_daemon_reconcile_paths_total",
+            "counter",
+            "Paths examined by reconcile.",
+        );
+        let _ = writeln!(
+            o,
+            "asc_daemon_reconcile_paths_total {}",
+            self.reconcile_paths.load(Ordering::Relaxed)
+        );
+        family(
+            &mut o,
+            "asc_daemon_provider_errors_total",
+            "counter",
+            "Failed provider operations.",
+        );
         for (op, n) in lock(&self.provider_errors).iter() {
-            let _ = writeln!(o, "asc_daemon_provider_errors_total{{op=\"{}\"}} {n}", escape(op));
+            let _ = writeln!(
+                o,
+                "asc_daemon_provider_errors_total{{op=\"{}\"}} {n}",
+                escape(op)
+            );
         }
-        family(&mut o, "asc_daemon_uptime_seconds", "gauge", "Seconds since the daemon started.");
+        family(
+            &mut o,
+            "asc_daemon_uptime_seconds",
+            "gauge",
+            "Seconds since the daemon started.",
+        );
         let _ = writeln!(o, "asc_daemon_uptime_seconds {}", self.uptime().as_secs());
-        family(&mut o, "asc_rss_bytes", "gauge", "Resident set size of the daemon.");
+        family(
+            &mut o,
+            "asc_rss_bytes",
+            "gauge",
+            "Resident set size of the daemon.",
+        );
         let _ = writeln!(o, "asc_rss_bytes {}", rss_bytes().unwrap_or(0));
 
-        family(&mut o, "asc_daemon_task_runs_total", "counter", "Scheduler task runs.");
+        family(
+            &mut o,
+            "asc_daemon_task_runs_total",
+            "counter",
+            "Scheduler task runs.",
+        );
         let tasks = lock(&self.tasks).clone();
         for (name, t) in &tasks {
             let _ = writeln!(o, "asc_daemon_task_runs_total{{task=\"{name}\"}} {}", t.runs);
         }
-        family(&mut o, "asc_daemon_task_failures_total", "counter", "Scheduler task runs that failed.");
+        family(
+            &mut o,
+            "asc_daemon_task_failures_total",
+            "counter",
+            "Scheduler task runs that failed.",
+        );
         for (name, t) in &tasks {
-            let _ = writeln!(o, "asc_daemon_task_failures_total{{task=\"{name}\"}} {}", t.failures);
+            let _ = writeln!(
+                o,
+                "asc_daemon_task_failures_total{{task=\"{name}\"}} {}",
+                t.failures
+            );
         }
-        family(&mut o, "asc_daemon_task_last_run_ms", "gauge", "Duration of the last run of a scheduler task.");
+        family(
+            &mut o,
+            "asc_daemon_task_last_run_ms",
+            "gauge",
+            "Duration of the last run of a scheduler task.",
+        );
         for (name, t) in &tasks {
-            let _ = writeln!(o, "asc_daemon_task_last_run_ms{{task=\"{name}\"}} {}", t.last_ms);
+            let _ = writeln!(
+                o,
+                "asc_daemon_task_last_run_ms{{task=\"{name}\"}} {}",
+                t.last_ms
+            );
         }
         o
     }
@@ -245,7 +331,9 @@ mod imp {
 #[cfg(windows)]
 #[allow(unsafe_code)] // one Win32 call, with a zeroed out-struct and its true size.
 mod imp {
-    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
     pub fn rss_bytes() -> Option<u64> {
@@ -293,11 +381,15 @@ pub async fn serve(
             continue;
         }
         // At the limit a new connection is dropped at once rather than queued.
-        let Ok(permit) = permits.clone().try_acquire_owned() else { continue };
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            continue;
+        };
         let (metrics, source) = (metrics.clone(), source.clone());
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = tokio::time::timeout(REQUEST_WAIT * 4, answer(stream, &metrics, source.as_ref())).await;
+            let _ =
+                tokio::time::timeout(REQUEST_WAIT * 4, answer(stream, &metrics, source.as_ref()))
+                    .await;
         });
     }
 }
@@ -305,7 +397,10 @@ pub async fn serve(
 /// Binds the metrics listener.
 pub async fn bind(addr: SocketAddr) -> io::Result<TcpListener> {
     if !addr.ip().is_loopback() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "metrics listen address is not loopback"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "metrics listen address is not loopback",
+        ));
     }
     TcpListener::bind(addr).await
 }
@@ -318,10 +413,23 @@ async fn answer(mut stream: TcpStream, metrics: &Metrics, source: &dyn Source) -
     match route(&head) {
         Route::Metrics => {
             let body = metrics.render(&source.collect().await);
-            respond_typed(&mut stream, "200 OK", "text/plain; version=0.0.4; charset=utf-8", &body).await
+            respond_typed(
+                &mut stream,
+                "200 OK",
+                "text/plain; version=0.0.4; charset=utf-8",
+                &body,
+            )
+            .await
         }
         Route::NotFound => respond(&mut stream, "404 Not Found", "not found\n").await,
-        Route::Method => respond(&mut stream, "405 Method Not Allowed", "method not allowed\n").await,
+        Route::Method => {
+            respond(
+                &mut stream,
+                "405 Method Not Allowed",
+                "method not allowed\n",
+            )
+            .await
+        }
         Route::Host => respond(&mut stream, "403 Forbidden", "forbidden\n").await,
         Route::Bad => respond(&mut stream, "400 Bad Request", "bad request\n").await,
     }
@@ -356,10 +464,13 @@ enum Route {
 }
 
 fn route(head: &[u8]) -> Route {
-    let Ok(text) = std::str::from_utf8(head) else { return Route::Bad };
+    let Ok(text) = std::str::from_utf8(head) else {
+        return Route::Bad;
+    };
     let mut lines = text.split("\r\n");
     let mut first = lines.next().unwrap_or("").split(' ');
-    let (Some(method), Some(target), Some(version), None) = (first.next(), first.next(), first.next(), first.next())
+    let (Some(method), Some(target), Some(version), None) =
+        (first.next(), first.next(), first.next(), first.next())
     else {
         return Route::Bad;
     };
@@ -380,23 +491,39 @@ fn route(head: &[u8]) -> Route {
         return Route::Method;
     }
     let path = target.split(['?', '#']).next().unwrap_or("");
-    if path == "/metrics" { Route::Metrics } else { Route::NotFound }
+    if path == "/metrics" {
+        Route::Metrics
+    } else {
+        Route::NotFound
+    }
 }
 
 fn host_is_local(host: &str) -> bool {
     let name = if let Some(rest) = host.strip_prefix('[') {
         rest.split(']').next().unwrap_or("")
     } else {
-        host.rsplit_once(':').map_or(host, |(name, port)| if port.bytes().all(|b| b.is_ascii_digit()) { name } else { host })
+        host.rsplit_once(':').map_or(host, |(name, port)| {
+            if port.bytes().all(|b| b.is_ascii_digit()) {
+                name
+            } else {
+                host
+            }
+        })
     };
-    name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    name.eq_ignore_ascii_case("localhost")
+        || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
     respond_typed(stream, status, "text/plain; charset=utf-8", body).await
 }
 
-async fn respond_typed(stream: &mut TcpStream, status: &str, kind: &str, body: &str) -> io::Result<()> {
+async fn respond_typed(
+    stream: &mut TcpStream,
+    status: &str,
+    kind: &str,
+    body: &str,
+) -> io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
         body.len()
@@ -431,16 +558,28 @@ impl RotatingLog {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let mut log = Self { path, max: max.max(1), keep: keep.max(1), file: None, size: 0 };
+        let mut log = Self {
+            path,
+            max: max.max(1),
+            keep: keep.max(1),
+            file: None,
+            size: 0,
+        };
         log.reopen()?;
         Ok(log)
     }
 
     fn reopen(&mut self) -> io::Result<()> {
         if fs::symlink_metadata(&self.path).is_ok_and(|m| asc_wc::safe_path::is_link(&m)) {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the log path is a link"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the log path is a link",
+            ));
         }
-        let file = fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         self.size = file.metadata()?.len();
         self.file = Some(file);
         Ok(())
@@ -480,7 +619,10 @@ impl RotatingLog {
         if self.size > 0 && self.size + need > self.max {
             self.rotate()?;
         }
-        let file = self.file.as_mut().ok_or_else(|| io::Error::other("log closed"))?;
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log closed"))?;
         let mut buf = Vec::with_capacity(bytes.len() + 1);
         buf.extend_from_slice(bytes);
         buf.push(b'\n');
@@ -498,13 +640,17 @@ pub struct EventLog {
 impl EventLog {
     /// A log that drops every event (tests, or a log directory that cannot be opened).
     pub fn none() -> Self {
-        Self { log: Mutex::new(None) }
+        Self {
+            log: Mutex::new(None),
+        }
     }
 
     /// `<dir>/daemon.log`, 50 MiB × 5.
     pub fn open(dir: &Path) -> io::Result<Self> {
         let log = RotatingLog::open(dir.join("daemon.log"), LOG_MAX_BYTES, LOG_FILES)?;
-        Ok(Self { log: Mutex::new(Some(log)) })
+        Ok(Self {
+            log: Mutex::new(Some(log)),
+        })
     }
 
     /// Writes one event. `fields` are extra string fields; a failed write is dropped (logging
@@ -568,7 +714,14 @@ mod tests {
     fn listen_address_must_be_loopback() {
         assert!(parse_listen("127.0.0.1:9100").is_ok());
         assert!(parse_listen("[::1]:9100").is_ok());
-        for bad in ["0.0.0.0:9100", "192.168.1.5:9100", "[::]:9100", "localhost:9100", "9100", ""] {
+        for bad in [
+            "0.0.0.0:9100",
+            "192.168.1.5:9100",
+            "[::]:9100",
+            "localhost:9100",
+            "9100",
+            "",
+        ] {
             assert!(parse_listen(bad).is_err(), "{bad}");
         }
     }
@@ -601,31 +754,69 @@ mod tests {
         ] {
             assert!(text.contains(name), "{name} missing from\n{text}");
         }
-        assert!(text.contains("process=\"evil\\\"\\nname\\\\\""), "label escaped:\n{text}");
-        assert!(text.find("tsserver.exe").unwrap() < text.find("evil").unwrap(), "busiest first");
-        assert!(text.lines().all(|l| !l.is_empty()), "no blank lines inside a label value leaked");
+        assert!(
+            text.contains("process=\"evil\\\"\\nname\\\\\""),
+            "label escaped:\n{text}"
+        );
+        assert!(
+            text.find("tsserver.exe").unwrap() < text.find("evil").unwrap(),
+            "busiest first"
+        );
+        assert!(
+            text.lines().all(|l| !l.is_empty()),
+            "no blank lines inside a label value leaked"
+        );
     }
 
     #[test]
     fn many_processes_are_folded_into_other() {
         let m = Metrics::new();
-        let hydrations = (0..MAX_PROCESS_LABELS + 10).map(|i| (format!("p{i}"), 1)).collect();
-        let text = m.render(&Collected { hydrations, ..Collected::default() });
+        let hydrations = (0..MAX_PROCESS_LABELS + 10)
+            .map(|i| (format!("p{i}"), 1))
+            .collect();
+        let text = m.render(&Collected {
+            hydrations,
+            ..Collected::default()
+        });
         assert!(text.contains("process=\"other\"} 10"));
-        assert_eq!(text.matches("asc_daemon_hydrations_total{").count(), MAX_PROCESS_LABELS + 1);
+        assert_eq!(
+            text.matches("asc_daemon_hydrations_total{").count(),
+            MAX_PROCESS_LABELS + 1
+        );
     }
 
     #[test]
     fn routing_checks_method_path_and_host() {
         let req = |line: &str, host: &str| format!("{line}\r\nHost: {host}\r\n\r\n").into_bytes();
-        assert_eq!(route(&req("GET /metrics HTTP/1.1", "127.0.0.1:9100")), Route::Metrics);
-        assert_eq!(route(&req("GET /metrics?x=1 HTTP/1.1", "localhost:9100")), Route::Metrics);
-        assert_eq!(route(&req("GET /metrics HTTP/1.1", "[::1]:9100")), Route::Metrics);
-        assert_eq!(route(&req("GET /metrics HTTP/1.1", "evil.example:9100")), Route::Host);
-        assert_eq!(route(&req("GET /metrics HTTP/1.1", "127.0.0.1.evil.example")), Route::Host);
+        assert_eq!(
+            route(&req("GET /metrics HTTP/1.1", "127.0.0.1:9100")),
+            Route::Metrics
+        );
+        assert_eq!(
+            route(&req("GET /metrics?x=1 HTTP/1.1", "localhost:9100")),
+            Route::Metrics
+        );
+        assert_eq!(
+            route(&req("GET /metrics HTTP/1.1", "[::1]:9100")),
+            Route::Metrics
+        );
+        assert_eq!(
+            route(&req("GET /metrics HTTP/1.1", "evil.example:9100")),
+            Route::Host
+        );
+        assert_eq!(
+            route(&req("GET /metrics HTTP/1.1", "127.0.0.1.evil.example")),
+            Route::Host
+        );
         assert_eq!(route(b"GET /metrics HTTP/1.1\r\n\r\n"), Route::Host);
-        assert_eq!(route(&req("POST /metrics HTTP/1.1", "127.0.0.1:1")), Route::Method);
-        assert_eq!(route(&req("GET /other HTTP/1.1", "127.0.0.1:1")), Route::NotFound);
+        assert_eq!(
+            route(&req("POST /metrics HTTP/1.1", "127.0.0.1:1")),
+            Route::Method
+        );
+        assert_eq!(
+            route(&req("GET /other HTTP/1.1", "127.0.0.1:1")),
+            Route::NotFound
+        );
         assert_eq!(route(&req("GET /metrics", "127.0.0.1:1")), Route::Bad);
         assert_eq!(route(&[0xff, 0xfe]), Route::Bad);
     }
@@ -635,7 +826,10 @@ mod tests {
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = watch::channel(false);
-        let source = Arc::new(Fixed(Collected { pending_paths: 4, ..Collected::default() }));
+        let source = Arc::new(Fixed(Collected {
+            pending_paths: 4,
+            ..Collected::default()
+        }));
         let task = tokio::spawn(serve(listener, Arc::new(Metrics::new()), source, rx));
 
         let ask = |req: String| async move {
@@ -653,8 +847,15 @@ mod tests {
         assert!(rebind.starts_with("HTTP/1.1 403"), "{rebind}");
         let other = ask(format!("GET /x HTTP/1.1\r\nHost: {host}\r\n\r\n")).await;
         assert!(other.starts_with("HTTP/1.1 404"));
-        let huge = ask(format!("GET /metrics HTTP/1.1\r\nHost: {host}\r\nX: {}\r\n", "a".repeat(2 * MAX_REQUEST))).await;
-        assert!(huge.starts_with("HTTP/1.1 400"), "an unterminated oversized head is refused");
+        let huge = ask(format!(
+            "GET /metrics HTTP/1.1\r\nHost: {host}\r\nX: {}\r\n",
+            "a".repeat(2 * MAX_REQUEST)
+        ))
+        .await;
+        assert!(
+            huge.starts_with("HTTP/1.1 400"),
+            "an unterminated oversized head is refused"
+        );
 
         tx.send(true).unwrap();
         task.await.unwrap();
@@ -692,11 +893,18 @@ mod tests {
     fn events_are_json_lines_with_the_stable_fields() {
         let dir = tempfile::tempdir().unwrap();
         let events = EventLog::open(dir.path()).unwrap();
-        events.emit("info", "daemon.restart", &[("repo", "r"), ("event", "forged")]);
+        events.emit(
+            "info",
+            "daemon.restart",
+            &[("repo", "r"), ("event", "forged")],
+        );
         let line = fs::read_to_string(dir.path().join("daemon.log")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
         assert_eq!(v["tier"], "daemon");
-        assert_eq!(v["event"], "daemon.restart", "extra fields cannot replace the stable ones");
+        assert_eq!(
+            v["event"], "daemon.restart",
+            "extra fields cannot replace the stable ones"
+        );
         assert_eq!(v["repo"], "r");
         assert!(v["ts"].as_str().unwrap().ends_with('Z'));
     }
@@ -704,7 +912,10 @@ mod tests {
     #[test]
     fn timestamps_are_civil_utc() {
         assert_eq!(rfc3339(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
-        assert_eq!(rfc3339(UNIX_EPOCH + Duration::from_secs(951_782_400 + 86_399)), "2000-02-29T23:59:59.000Z");
+        assert_eq!(
+            rfc3339(UNIX_EPOCH + Duration::from_secs(951_782_400 + 86_399)),
+            "2000-02-29T23:59:59.000Z"
+        );
     }
 
     #[cfg(any(target_os = "linux", windows))]

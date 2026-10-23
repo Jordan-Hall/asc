@@ -56,7 +56,9 @@ pub fn valid(name: &str, rules: Rules) -> bool {
     let mut rest = name.as_bytes();
     let (mut count, mut pattern) = (0, rules.refspec_pattern);
     let last_len = loop {
-        let Some(len) = component(rest, &mut pattern) else { return false };
+        let Some(len) = component(rest, &mut pattern) else {
+            return false;
+        };
         if len == 0 {
             return false;
         }
@@ -85,12 +87,19 @@ pub fn normalize(name: &str) -> String {
 
 pub fn run(args: &[OsString]) -> Result<ExitCode> {
     let usage = || CliError::Usage(USAGE.to_owned());
-    let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     if args.len() == 2 && args[0] == "--branch" {
         let name = &args[1];
-        let ok = !name.starts_with('-') && valid(&format!("refs/heads/{name}"), Rules::default()) && name != "HEAD";
+        let ok = !name.starts_with('-')
+            && valid(&format!("refs/heads/{name}"), Rules::default())
+            && name != "HEAD";
         if !ok {
-            return Err(CliError::Fatal(format!("'{name}' is not a valid branch name")));
+            return Err(CliError::Fatal(format!(
+                "'{name}' is not a valid branch name"
+            )));
         }
         println!("{name}");
         return Ok(ExitCode::SUCCESS);
@@ -110,7 +119,11 @@ pub fn run(args: &[OsString]) -> Result<ExitCode> {
     if i + 1 != args.len() {
         return Err(usage());
     }
-    let name = if print { normalize(&args[i]) } else { args[i].clone() };
+    let name = if print {
+        normalize(&args[i])
+    } else {
+        args[i].clone()
+    };
     if !valid(&name, rules) {
         return Ok(ExitCode::from(1));
     }
@@ -132,7 +145,13 @@ mod tests {
     fn git_ref_name_rules() {
         assert!(ok("refs/heads/master"));
         assert!(!ok("master"));
-        assert!(valid("master", Rules { allow_onelevel: true, ..Rules::default() }));
+        assert!(valid(
+            "master",
+            Rules {
+                allow_onelevel: true,
+                ..Rules::default()
+            }
+        ));
         assert!(!ok("refs/heads/.hidden"));
         assert!(!ok("refs/heads/a..b"));
         assert!(!ok("refs/heads/a.lock"));
@@ -145,8 +164,20 @@ mod tests {
         assert!(!ok("refs/heads/a."));
         assert!(!ok("@"));
         assert!(!ok("refs/heads/a*"));
-        assert!(valid("refs/heads/*", Rules { refspec_pattern: true, ..Rules::default() }));
-        assert!(!valid("refs/*/*", Rules { refspec_pattern: true, ..Rules::default() }));
+        assert!(valid(
+            "refs/heads/*",
+            Rules {
+                refspec_pattern: true,
+                ..Rules::default()
+            }
+        ));
+        assert!(!valid(
+            "refs/*/*",
+            Rules {
+                refspec_pattern: true,
+                ..Rules::default()
+            }
+        ));
         assert_eq!(normalize("//a///b/"), "a/b/");
     }
 }

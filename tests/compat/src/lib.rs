@@ -150,7 +150,13 @@ impl Tools {
             link_binary(&asc, &shim_dir.join(GIT_EXE))?;
             link_binary(&asc, &shim_dir.join(ASC_EXE))?;
             let suite = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/compat");
-            Ok(Tools { asc, real_git, sh, shim_dir, suite })
+            Ok(Tools {
+                asc,
+                real_git,
+                sh,
+                shim_dir,
+                suite,
+            })
         })
     }
 
@@ -171,13 +177,20 @@ impl Tools {
 
     /// Reads `allowed.toml`, rejecting an entry that lacks a reason or a SPEC section.
     pub fn allowed(&self) -> Result<Vec<Allow>, String> {
-        let text = fs::read_to_string(self.suite.join("allowed.toml")).map_err(|e| format!("allowed.toml: {e}"))?;
+        let text = fs::read_to_string(self.suite.join("allowed.toml"))
+            .map_err(|e| format!("allowed.toml: {e}"))?;
         let file: AllowFile = toml::from_str(&text).map_err(|e| format!("allowed.toml: {e}"))?;
         for a in &file.allow {
-            if a.reason.trim().is_empty() || !a.spec.contains('§') || !a.spec.chars().any(|c| c.is_ascii_digit()) {
-                return Err(format!("allowed.toml: entry {a:?} needs a reason and a SPEC section (§N.N)"));
+            if a.reason.trim().is_empty()
+                || !a.spec.contains('§')
+                || !a.spec.chars().any(|c| c.is_ascii_digit())
+            {
+                return Err(format!(
+                    "allowed.toml: entry {a:?} needs a reason and a SPEC section (§N.N)"
+                ));
             }
-            Regex::new(&a.drop).map_err(|e| format!("allowed.toml: bad regex {:?}: {e}", a.drop))?;
+            Regex::new(&a.drop)
+                .map_err(|e| format!("allowed.toml: bad regex {:?}: {e}", a.drop))?;
         }
         Ok(file.allow)
     }
@@ -197,7 +210,10 @@ impl Tools {
 
     /// Runs `script` as case `name` on both sides (or the asc side, for `asc-only`) and compares.
     pub fn check_script(&self, name: &str, script: &str) -> Result<(), String> {
-        let asc_only = script.lines().take(5).any(|l| l.trim() == "# compat: asc-only");
+        let asc_only = script
+            .lines()
+            .take(5)
+            .any(|l| l.trim() == "# compat: asc-only");
         let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let base = tmp.path().to_owned();
         // ASC_COMPAT_KEEP=1 keeps the fixtures for inspection.
@@ -231,7 +247,13 @@ impl Tools {
     }
 
     /// Runs the script on one side in `<base>/<side>/work` and captures the result.
-    pub fn run_side(&self, side: Side, script: &str, base: &Path, asc_only: bool) -> Result<Capture, String> {
+    pub fn run_side(
+        &self,
+        side: Side,
+        script: &str,
+        base: &Path,
+        asc_only: bool,
+    ) -> Result<Capture, String> {
         let root = base.join(side.dir());
         let (work, home, asc_home) = (root.join("work"), root.join("home"), root.join("asc-home"));
         for d in [&work, &home] {
@@ -241,7 +263,8 @@ impl Tools {
             Side::Git => "home",
             Side::Asc => "home-asc",
         };
-        let cfg = fs::read(self.suite.join(cfg_dir).join(".gitconfig")).map_err(|e| format!("{cfg_dir}/.gitconfig: {e}"))?;
+        let cfg = fs::read(self.suite.join(cfg_dir).join(".gitconfig"))
+            .map_err(|e| format!("{cfg_dir}/.gitconfig: {e}"))?;
         fs::write(home.join(".gitconfig"), cfg).map_err(|e| e.to_string())?;
         let trace = root.join("shim-trace.log");
 
@@ -252,7 +275,12 @@ impl Tools {
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match side {
             Side::Asc => path_dirs.push(self.shim_dir.clone()),
-            Side::Git => path_dirs.push(self.real_git.parent().map(Path::to_owned).unwrap_or_default()),
+            Side::Git => path_dirs.push(
+                self.real_git
+                    .parent()
+                    .map(Path::to_owned)
+                    .unwrap_or_default(),
+            ),
         }
         if let Some(sh_dir) = self.sh.parent() {
             path_dirs.push(sh_dir.to_owned());
@@ -266,7 +294,9 @@ impl Tools {
         scrub(&mut cmd);
         fixed_env(&mut cmd, &home, &path);
         if side == Side::Asc {
-            cmd.env("ASC_HOME", &asc_home).env("ASC_REAL_GIT", &self.real_git).env("ASC_SHIM_TRACE", &trace);
+            cmd.env("ASC_HOME", &asc_home)
+                .env("ASC_REAL_GIT", &self.real_git)
+                .env("ASC_SHIM_TRACE", &trace);
         }
         let script_path = root.join("scenario.sh");
         fs::write(&script_path, format!("{PRELUDE}\n{script}\n")).map_err(|e| e.to_string())?;
@@ -274,10 +304,16 @@ impl Tools {
         let out = run_limited(&mut cmd)?;
 
         let norm = Normaliser::new(&root);
-        let mut cap = Capture { exit: out.code, ..Capture::default() };
-        cap.sections.insert("stdout".into(), norm.apply(&out.stdout));
-        cap.sections.insert("stderr".into(), norm.apply(&out.stderr));
-        cap.sections.insert("exit".into(), format!("{}\n", out.code).into_bytes());
+        let mut cap = Capture {
+            exit: out.code,
+            ..Capture::default()
+        };
+        cap.sections
+            .insert("stdout".into(), norm.apply(&out.stdout));
+        cap.sections
+            .insert("stderr".into(), norm.apply(&out.stderr));
+        cap.sections
+            .insert("exit".into(), format!("{}\n", out.code).into_bytes());
         cap.fall_through = fs::read_to_string(&trace)
             .map(|t| t.lines().map(str::to_owned).collect())
             .unwrap_or_default();
@@ -297,7 +333,9 @@ impl Tools {
             scrub(&mut c);
             fixed_env(&mut c, &home, &path);
             if side == Side::Asc {
-                c.env("ASC_HOME", &asc_home).env("ASC_REAL_GIT", &self.real_git).env("ASC_SHIM_TRACE", &trace);
+                c.env("ASC_HOME", &asc_home)
+                    .env("ASC_REAL_GIT", &self.real_git)
+                    .env("ASC_SHIM_TRACE", &trace);
             }
             c.args(args).current_dir(&work);
             run_limited(&mut c)
@@ -318,7 +356,8 @@ impl Tools {
         if !gitdir.is_empty() {
             let gitdir = work.join(gitdir);
             for (rel, bytes) in state_files(&gitdir)? {
-                cap.sections.insert(format!("post:gitdir/{rel}"), norm.apply(&bytes));
+                cap.sections
+                    .insert(format!("post:gitdir/{rel}"), norm.apply(&bytes));
             }
         }
         // The work tree bytes.
@@ -365,11 +404,18 @@ fn state_files(gitdir: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
     Ok(out)
 }
 
-fn collect(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>, depth: usize) -> Result<(), String> {
+fn collect(
+    dir: &Path,
+    rel: &str,
+    out: &mut Vec<(String, Vec<u8>)>,
+    depth: usize,
+) -> Result<(), String> {
     if depth > 8 {
         return Err(format!("{}: nested too deep", dir.display()));
     }
-    let Ok(rd) = fs::read_dir(dir) else { return Ok(()) };
+    let Ok(rd) = fs::read_dir(dir) else {
+        return Ok(());
+    };
     let mut entries: Vec<_> = rd.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
@@ -380,7 +426,10 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>, depth: usize
         if ft.is_dir() {
             collect(&path, &rel, out, depth + 1)?;
         } else if ft.is_file() {
-            out.push((rel, fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?));
+            out.push((
+                rel,
+                fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?,
+            ));
         }
     }
     Ok(())
@@ -393,18 +442,30 @@ fn tree_files(work: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
     Ok(out)
 }
 
-fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>, depth: usize) -> Result<(), String> {
+fn walk(
+    dir: &Path,
+    rel: &str,
+    out: &mut Vec<(String, Vec<u8>)>,
+    depth: usize,
+) -> Result<(), String> {
     if depth > 64 {
         return Err(format!("{}: nested too deep", dir.display()));
     }
-    let mut entries: Vec<_> = fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .flatten()
+        .collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let name = e.file_name().to_string_lossy().into_owned();
         if depth == 0 && name == ".git" {
             continue;
         }
-        let rel = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+        let rel = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
         let path = e.path();
         let ft = e.file_type().map_err(|e| e.to_string())?;
         if ft.is_dir() {
@@ -415,7 +476,9 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<(String, Vec<u8>)>, depth: usize) -
             }
             let len = fs::metadata(&path).map_err(|e| e.to_string())?.len();
             if len > MAX_TREE_FILE {
-                return Err(format!("{rel}: {len} bytes exceeds the {MAX_TREE_FILE} byte limit"));
+                return Err(format!(
+                    "{rel}: {len} bytes exceeds the {MAX_TREE_FILE} byte limit"
+                ));
             }
             let bytes = fs::read(&path).map_err(|e| format!("{rel}: {e}"))?;
             out.push((rel, bytes));
@@ -467,8 +530,12 @@ fn fixed_env(cmd: &mut Command, home: &Path, path: &OsString) {
 /// Runs `cmd` with stdin closed and a wall-clock limit; output is capped at [`MAX_STREAM`].
 fn run_limited(cmd: &mut Command) -> Result<RunOutput, String> {
     use std::io::Read;
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("spawn {:?}: {e}", cmd.get_program()))?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn {:?}: {e}", cmd.get_program()))?;
     let drain = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -487,7 +554,10 @@ fn run_limited(cmd: &mut Command) -> Result<RunOutput, String> {
         if start.elapsed() > SCRIPT_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("{:?} timed out after {SCRIPT_TIMEOUT:?}", cmd.get_program()));
+            return Err(format!(
+                "{:?} timed out after {SCRIPT_TIMEOUT:?}",
+                cmd.get_program()
+            ));
         }
         std::thread::sleep(Duration::from_millis(5));
     };
@@ -533,7 +603,11 @@ impl Normaliser {
         let mut forms = vec![native, slash.clone()];
         let b = slash.as_bytes();
         if b.len() > 2 && b[1] == b':' && b[2] == b'/' {
-            forms.push(format!("/{}{}", (b[0] as char).to_ascii_lowercase(), &slash[2..]));
+            forms.push(format!(
+                "/{}{}",
+                (b[0] as char).to_ascii_lowercase(),
+                &slash[2..]
+            ));
         }
         forms.sort_by_key(|f| std::cmp::Reverse(f.len()));
         forms.dedup();
@@ -558,7 +632,9 @@ impl Normaliser {
 // ---- comparison ----------------------------------------------------------------------------
 
 fn text(bytes: Option<&Vec<u8>>) -> String {
-    bytes.map(|b| String::from_utf8_lossy(b).into_owned()).unwrap_or_default()
+    bytes
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
 }
 
 fn section_matches(pattern: &str, section: &str) -> bool {
@@ -611,7 +687,9 @@ pub fn compare(case: &str, git: &Capture, asc: &Capture, allowed: &[Allow]) -> R
     if report.is_empty() {
         Ok(())
     } else {
-        Err(format!("{case}: asc differs from git (git = '-', asc = '+')\n{report}"))
+        Err(format!(
+            "{case}: asc differs from git (git = '-', asc = '+')\n{report}"
+        ))
     }
 }
 
@@ -621,7 +699,11 @@ fn first_diff(git: &str, asc: &str) -> String {
     }
     let diff = similar::TextDiff::from_lines(git, asc);
     let unified = diff.unified_diff().context_radius(3).to_string();
-    let mut out: String = unified.lines().take(MAX_DIFF_LINES).map(|l| format!("  {l}\n")).collect();
+    let mut out: String = unified
+        .lines()
+        .take(MAX_DIFF_LINES)
+        .map(|l| format!("  {l}\n"))
+        .collect();
     if unified.lines().count() > MAX_DIFF_LINES {
         out.push_str("  ...\n");
     }

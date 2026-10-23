@@ -18,7 +18,9 @@ use super::common::{CliEngine, CliError, Ctx, Result, WsCtx};
 use super::diff::opts::{Common, Formats, RawArgs, apply_config, parse};
 use super::diff::sides::{self, Built};
 use super::diff::work::LocalFiles;
-use super::diff::{Emit, fatal, finish, flags, pathspec, reject_extras, resolve_relative, split_args};
+use super::diff::{
+    Emit, fatal, finish, flags, pathspec, reject_extras, resolve_relative, split_args,
+};
 use super::pager::PagerWant;
 use super::restore::{resolve_commit, root_of};
 use crate::native::NativeSpec;
@@ -31,8 +33,16 @@ pub const NATIVE: &[NativeSpec] = &[
         flags: flags!("-r", "-t", "--root", "--no-commit-id"),
         placeholders: &[],
     },
-    NativeSpec { cmd: "diff-index", flags: flags!("--cached"), placeholders: &[] },
-    NativeSpec { cmd: "diff-files", flags: flags!(), placeholders: &[] },
+    NativeSpec {
+        cmd: "diff-index",
+        flags: flags!("--cached"),
+        placeholders: &[],
+    },
+    NativeSpec {
+        cmd: "diff-files",
+        flags: flags!(),
+        placeholders: &[],
+    },
 ];
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
@@ -51,7 +61,12 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
 
 /// Plumbing output: never paged, raw ids in full.
 fn plumbing(header: Option<&[u8]>) -> Emit<'_> {
-    Emit { pager: PagerWant::Never, header, plumbing: true, attrs: true }
+    Emit {
+        pager: PagerWant::Never,
+        header,
+        plumbing: true,
+        attrs: true,
+    }
 }
 
 fn usage(text: &str) -> CliError {
@@ -67,7 +82,11 @@ async fn dir_change(ws: &WsCtx, a: TreeId, b: TreeId, dir: &[u8]) -> Result<Opti
     let path = RepoPath::new(dir.to_vec()).map_err(|e| fatal(e.to_string()))?;
     let mut sides = Vec::with_capacity(2);
     for root in [a, b] {
-        let found = ws.engine.lookup(root, &path).await.map_err(|e| fatal(e.to_string()))?;
+        let found = ws
+            .engine
+            .lookup(root, &path)
+            .await
+            .map_err(|e| fatal(e.to_string()))?;
         sides.push(found.filter(|e| e.kind == Kind::Dir));
     }
     let new = sides.pop().flatten();
@@ -78,12 +97,25 @@ async fn dir_change(ws: &WsCtx, a: TreeId, b: TreeId, dir: &[u8]) -> Result<Opti
         (Some(_), Some(_)) => Status::Modified,
         (None, None) => return Ok(None),
     };
-    Ok(Some(TreeChange { old_path: path.clone(), path, old, new, status }))
+    Ok(Some(TreeChange {
+        old_path: path.clone(),
+        path,
+        old,
+        new,
+        status,
+    }))
 }
 
 /// Non-recursive output: every directory with changes below it is one entry. With `show_trees`
 /// (`-r -t`) the directories are added before their contents instead.
-async fn shape(ws: &WsCtx, a: TreeId, b: TreeId, changes: Vec<TreeChange>, recursive: bool, show_trees: bool) -> Result<Vec<TreeChange>> {
+async fn shape(
+    ws: &WsCtx,
+    a: TreeId,
+    b: TreeId,
+    changes: Vec<TreeChange>,
+    recursive: bool,
+    show_trees: bool,
+) -> Result<Vec<TreeChange>> {
     if recursive && !show_trees {
         return Ok(changes);
     }
@@ -91,7 +123,12 @@ async fn shape(ws: &WsCtx, a: TreeId, b: TreeId, changes: Vec<TreeChange>, recur
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     for c in changes {
         let bytes = c.path.as_bytes().to_vec();
-        let slashes: Vec<usize> = bytes.iter().enumerate().filter(|(_, b)| **b == b'/').map(|(i, _)| i).collect();
+        let slashes: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'/')
+            .map(|(i, _)| i)
+            .collect();
         if recursive {
             for &at in &slashes {
                 if seen.insert(bytes[..at].to_vec()) {
@@ -113,13 +150,16 @@ async fn shape(ws: &WsCtx, a: TreeId, b: TreeId, changes: Vec<TreeChange>, recur
 async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<ExitCode> {
     reject_extras(&c, &["-r", "-t", "--root", "--no-commit-id"])?;
     let has = |name: &str| c.extra.iter().any(|f| f == name);
-    let (recursive, show_trees, root, no_id) = (has("-r"), has("-t"), has("--root"), has("--no-commit-id"));
+    let (recursive, show_trees, root, no_id) =
+        (has("-r"), has("-t"), has("--root"), has("--no-commit-id"));
     let (revs, paths) = split_args(ctx, &c, 2).await?;
     let spec = pathspec(ctx, &paths)?;
     let mut header = None;
     let (a, b) = match revs.as_slice() {
         [one] => {
-            let cs = resolve_commit(ctx, one).await?.ok_or_else(|| fatal(format!("Not a valid object name {one}")))?;
+            let cs = resolve_commit(ctx, one)
+                .await?
+                .ok_or_else(|| fatal(format!("Not a valid object name {one}")))?;
             let set = ws.engine.get_changeset(cs).await?;
             let from = match set.parents.as_slice() {
                 [] if root => CliEngine::empty_tree_id(),
@@ -127,7 +167,9 @@ async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<Exit
                 _ => return Ok(ExitCode::SUCCESS),
             };
             if !no_id {
-                let map = HistoryApi::git_map(&ws.engine, &[cs], &[]).await.map_err(|e| fatal(e.to_string()))?;
+                let map = HistoryApi::git_map(&ws.engine, &[cs], &[])
+                    .await
+                    .map_err(|e| fatal(e.to_string()))?;
                 header = map.asc_to_git.first().copied().flatten();
             }
             (from, set.root)
@@ -135,11 +177,22 @@ async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<Exit
         [x, y] => {
             let side = |spec: &String| {
                 let spec = spec.clone();
-                async move { resolve_commit(ctx, &spec).await?.ok_or_else(|| fatal(format!("Not a valid object name {spec}"))) }
+                async move {
+                    resolve_commit(ctx, &spec)
+                        .await?
+                        .ok_or_else(|| fatal(format!("Not a valid object name {spec}")))
+                }
             };
-            (root_of(ws, Some(side(x).await?)).await?, root_of(ws, Some(side(y).await?)).await?)
+            (
+                root_of(ws, Some(side(x).await?)).await?,
+                root_of(ws, Some(side(y).await?)).await?,
+            )
         }
-        _ => return Err(usage("usage: git diff-tree [--stdin] [-m] [-c | --cc] [-s] [-v] [--pretty] [-t] [-r] [--root] [<common-diff-options>] <tree-ish> [<tree-ish>] [<path>...]")),
+        _ => {
+            return Err(usage(
+                "usage: git diff-tree [--stdin] [-m] [-c | --cc] [-s] [-v] [--pretty] [-t] [-r] [--root] [<common-diff-options>] <tree-ish> [<tree-ish>] [<path>...]",
+            ));
+        }
     };
     let recursive = recursive || implies_recursion(fmt);
     let mut built = sides::trees(ws, a, b, spec.as_ref(), &c.opts).await?;
@@ -149,7 +202,10 @@ async fn tree(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<Exit
         line.push(if c.opts.nul { 0 } else { b'\n' });
         line
     });
-    c.opts.sides = (asc_engine::diff::SideKind::Commit, asc_engine::diff::SideKind::Commit);
+    c.opts.sides = (
+        asc_engine::diff::SideKind::Commit,
+        asc_engine::diff::SideKind::Commit,
+    );
     finish(ctx, &c, fmt, &ws.engine, built, plumbing(prefix.as_deref())).await
 }
 
@@ -158,9 +214,13 @@ async fn index(ctx: &Ctx, ws: &WsCtx, mut c: Common, fmt: Formats) -> Result<Exi
     let cached = c.extra.iter().any(|f| f == "--cached");
     let (revs, paths) = split_args(ctx, &c, 1).await?;
     let [rev] = revs.as_slice() else {
-        return Err(usage("usage: git diff-index [-m] [--cached] [<common-diff-options>] <tree-ish> [<path>...]"));
+        return Err(usage(
+            "usage: git diff-index [-m] [--cached] [<common-diff-options>] <tree-ish> [<path>...]",
+        ));
     };
-    let cs = resolve_commit(ctx, rev).await?.ok_or_else(|| fatal(format!("Not a valid object name {rev}")))?;
+    let cs = resolve_commit(ctx, rev)
+        .await?
+        .ok_or_else(|| fatal(format!("Not a valid object name {rev}")))?;
     let base = root_of(ws, Some(cs)).await?;
     let spec = pathspec(ctx, &paths)?;
     let mut local = LocalFiles::new(&ws.engine);

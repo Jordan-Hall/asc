@@ -83,7 +83,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
 /// Whether `refname` matches one of the patterns: equal, or ending in `/<pattern>`.
 fn matches(patterns: &[String], refname: &str, verify: bool) -> bool {
     patterns.iter().any(|p| {
-        refname == p || (!verify && refname.len() > p.len() && refname.ends_with(p.as_str()) && refname.as_bytes()[refname.len() - p.len() - 1] == b'/')
+        refname == p
+            || (!verify
+                && refname.len() > p.len()
+                && refname.ends_with(p.as_str())
+                && refname.as_bytes()[refname.len() - p.len() - 1] == b'/')
     })
 }
 
@@ -102,11 +106,12 @@ async fn show(ws: &WsCtx, o: &Opts, out: &mut Output, name: &str, target: RefTar
         writeln!(out, "{} {name}", hex(oid))?;
     }
     if o.dereference
-        && let RefTarget::Tag(t) = target {
-            let peeled = crate::cli::log::refs::tag_record(ws, t).await?.target;
-            let peeled = object_oid_of(ws, RefTarget::Changeset(peeled)).await?;
-            writeln!(out, "{} {name}^{{}}", hex(peeled))?;
-        }
+        && let RefTarget::Tag(t) = target
+    {
+        let peeled = crate::cli::log::refs::tag_record(ws, t).await?.target;
+        let peeled = object_oid_of(ws, RefTarget::Changeset(peeled)).await?;
+        writeln!(out, "{} {name}^{{}}", hex(peeled))?;
+    }
     Ok(())
 }
 
@@ -114,7 +119,9 @@ async fn read(ws: &WsCtx, name: &str) -> Result<Option<RefTarget>> {
     if name == "HEAD" {
         return Ok(ws.head_commit().await?.map(RefTarget::Changeset));
     }
-    let Ok(rn) = RefName::new(name.as_bytes().to_vec()) else { return Ok(None) };
+    let Ok(rn) = RefName::new(name.as_bytes().to_vec()) else {
+        return Ok(None);
+    };
     Ok(ws.db.refs().get(ws.repo.key, &rn).await?.map(|e| e.target))
 }
 
@@ -140,7 +147,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
                 return Err(CliError::Fatal("--verify requires a reference".into()));
             }
             for p in &o.patterns {
-                let known = if p.starts_with("refs/") || p == "HEAD" { read(ws, p).await? } else { None };
+                let known = if p.starts_with("refs/") || p == "HEAD" {
+                    read(ws, p).await?
+                } else {
+                    None
+                };
                 match known {
                     Some(target) => {
                         found += 1;
@@ -154,10 +165,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         }
         let filtered = o.tags || o.branches;
         if o.head
-            && let Some(target) = read(ws, "HEAD").await? {
-                found += 1;
-                show(ws, &o, &mut out, "HEAD", target).await?;
-            }
+            && let Some(target) = read(ws, "HEAD").await?
+        {
+            found += 1;
+            show(ws, &o, &mut out, "HEAD", target).await?;
+        }
         for entry in ws.db.refs().list(ws.repo.key, "refs/").await? {
             let name = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
             let kind_ok = (!filtered)
@@ -169,7 +181,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             found += 1;
             show(ws, &o, &mut out, &name, entry.target).await?;
         }
-        Ok(if found > 0 { ExitCode::SUCCESS } else { ExitCode::from(1) })
+        Ok(if found > 0 {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(1)
+        })
     }
     .await;
     match result {

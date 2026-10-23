@@ -17,8 +17,8 @@ use std::process::ExitCode;
 use asc_core::id::{ChangesetId, TreeId};
 use asc_core::object::Changeset;
 use asc_core::path::RepoPath;
-use asc_engine::diff::{DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_shortstat};
 use asc_engine::diff::format::write_summary;
+use asc_engine::diff::{DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_shortstat};
 use asc_engine::graph::LogQuery;
 use asc_engine::history::HistoryApi;
 use asc_engine::merge::Labels;
@@ -35,7 +35,11 @@ use crate::hooks_runner::{Hook, HookEnv, Runner};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "cherry-pick", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "cherry-pick",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     #[arg(short = 'n', long = "no-commit")]
     pub no_commit: bool,
@@ -196,24 +200,43 @@ fn usage(replay: Replay) -> CliError {
 pub async fn replay(ctx: &Ctx, replay: Replay, f: Flags) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let gitdir = ws.projection.git_dir().to_owned();
-    if [f.cont, f.skip, f.abort, f.quit].iter().filter(|&&m| m).count() > 1 {
+    if [f.cont, f.skip, f.abort, f.quit]
+        .iter()
+        .filter(|&&m| m)
+        .count()
+        > 1
+    {
         return Err(CliError::Usage(format!(
             "error: options '--continue', '--skip', '--abort' and '--quit' cannot be used together\n{}",
             usage_text(replay)
         )));
     }
-    if let Some(bad) = f.strategy.iter().find(|s| !matches!(s.as_str(), "ort" | "recursive")) {
-        return Err(fatal(format!("asc: merge strategy '{bad}' is not supported (only ort)")));
+    if let Some(bad) = f
+        .strategy
+        .iter()
+        .find(|s| !matches!(s.as_str(), "ort" | "recursive"))
+    {
+        return Err(fatal(format!(
+            "asc: merge strategy '{bad}' is not supported (only ort)"
+        )));
     }
     conflict::favor_of(&f.opts.strategy_options)?;
     if f.cont || f.skip || f.abort || f.quit {
         if !f.commits.is_empty() {
             return Err(usage(replay));
         }
-        let in_progress = Sequence::exists(&gitdir) || seqstate::replay_in_progress(&gitdir).is_some();
+        let in_progress =
+            Sequence::exists(&gitdir) || seqstate::replay_in_progress(&gitdir).is_some();
         if !in_progress {
-            let what = if f.skip { replay.command() } else { "cherry-pick or revert" };
-            return Err(CliError::Raw(format!("error: no {what} in progress\n{}", failed(replay)), 128));
+            let what = if f.skip {
+                replay.command()
+            } else {
+                "cherry-pick or revert"
+            };
+            return Err(CliError::Raw(
+                format!("error: no {what} in progress\n{}", failed(replay)),
+                128,
+            ));
         }
         return if f.cont {
             resume(ctx, ws, &gitdir, replay).await
@@ -240,7 +263,12 @@ fn usage_text(replay: Replay) -> String {
 }
 
 /// The commits to replay, in the order they are replayed.
-async fn targets(ctx: &Ctx, ws: &WsCtx, replay: Replay, specs: &[OsString]) -> Result<Vec<ChangesetId>> {
+async fn targets(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    replay: Replay,
+    specs: &[OsString],
+) -> Result<Vec<ChangesetId>> {
     let mut out = Vec::new();
     for spec in specs {
         let text = spec.to_string_lossy().into_owned();
@@ -248,10 +276,18 @@ async fn targets(ctx: &Ctx, ws: &WsCtx, replay: Replay, specs: &[OsString]) -> R
         if let Some((from, to)) = text.split_once("..").filter(|(_, t)| !t.starts_with('.')) {
             let from = if from.is_empty() { "HEAD" } else { from };
             let to = if to.is_empty() { "HEAD" } else { to };
-            let (Some(a), Some(b)) = (resolve_commit(ctx, from).await?, resolve_commit(ctx, to).await?) else {
+            let (Some(a), Some(b)) = (
+                resolve_commit(ctx, from).await?,
+                resolve_commit(ctx, to).await?,
+            ) else {
                 return Err(bad());
             };
-            let q = LogQuery { include: vec![b], exclude: vec![a], limit: Some(100_000), ..LogQuery::default() };
+            let q = LogQuery {
+                include: vec![b],
+                exclude: vec![a],
+                limit: Some(100_000),
+                ..LogQuery::default()
+            };
             let mut ids: Vec<ChangesetId> = HistoryApi::log(&ws.engine, &q, None)
                 .await
                 .map_err(fatal)?
@@ -281,7 +317,10 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay, f: Flags) -
         return Err(unmerged_files(replay));
     }
     let Some(head) = ws.head_commit().await? else {
-        return Err(fatal(format!("asc: {} on an unborn branch is not supported yet", replay.command())));
+        return Err(fatal(format!(
+            "asc: {} on an unborn branch is not supported yet",
+            replay.command()
+        )));
     };
     let ids = targets(ctx, ws, replay, &f.commits).await?;
     if ids.is_empty() {
@@ -304,9 +343,19 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay, f: Flags) -
     for &id in &ids {
         let cs = ws.engine.get_changeset(id).await?;
         let git = conflict::git_id(ws, id).await?;
-        todo.push(Todo { replay, abbrev: git.to_string()[..7].to_owned(), subject: first_line(&cs.message), oid: Some(git) });
+        todo.push(Todo {
+            replay,
+            abbrev: git.to_string()[..7].to_owned(),
+            subject: first_line(&cs.message),
+            oid: Some(git),
+        });
     }
-    let seq = Sequence { head: head_git, abort_safety: head_git, todo, opts: f.opts };
+    let seq = Sequence {
+        head: head_git,
+        abort_safety: head_git,
+        todo,
+        opts: f.opts,
+    };
     if multi {
         seq.save(gitdir)?;
     }
@@ -326,9 +375,9 @@ async fn drive(
     while let Some(item) = seq.todo.first().cloned() {
         let id = match item.oid {
             Some(oid) => conflict::changeset_of(ws, oid).await?,
-            None => resolve_commit(ctx, &item.abbrev)
-                .await?
-                .ok_or_else(|| fatal(format!("sequencer/todo: cannot resolve '{}'", item.abbrev)))?,
+            None => resolve_commit(ctx, &item.abbrev).await?.ok_or_else(|| {
+                fatal(format!("sequencer/todo: cannot resolve '{}'", item.abbrev))
+            })?,
         };
         // Staged changes from an earlier no-commit step are expected; the first step starts clean.
         let staged_ok = seq.opts.no_commit && !first;
@@ -366,14 +415,26 @@ enum Step {
 }
 
 /// The parent a replay is measured against, with git's errors for merges.
-async fn parent_root(ws: &WsCtx, replay: Replay, id: ChangesetId, cs: &Changeset, mainline: Option<usize>) -> Result<TreeId> {
+async fn parent_root(
+    ws: &WsCtx,
+    replay: Replay,
+    id: ChangesetId,
+    cs: &Changeset,
+    mainline: Option<usize>,
+) -> Result<TreeId> {
     let git = conflict::git_id(ws, id).await?;
     let refuse = |text: String| CliError::Raw(format!("error: {text}\n{}", failed(replay)), 128);
     let parent = match (cs.parents.len(), mainline) {
         (0, _) => return Ok(CliEngine::empty_tree_id()),
         (1, None | Some(1)) => cs.parents[0],
-        (_, None) => return Err(refuse(format!("commit {git} is a merge but no -m option was given."))),
-        (n, Some(m)) if m == 0 || m > n => return Err(refuse(format!("commit {git} does not have parent {m}"))),
+        (_, None) => {
+            return Err(refuse(format!(
+                "commit {git} is a merge but no -m option was given."
+            )));
+        }
+        (n, Some(m)) if m == 0 || m > n => {
+            return Err(refuse(format!("commit {git} does not have parent {m}")));
+        }
         (_, Some(m)) => cs.parents[m - 1],
     };
     root_of(ws, Some(parent)).await
@@ -381,12 +442,17 @@ async fn parent_root(ws: &WsCtx, replay: Replay, id: ChangesetId, cs: &Changeset
 
 /// `Revert "x"` / `Reapply "x"` and the "This reverts" line.
 fn revert_message(subject: &str, git: &str, mainline_parent: Option<&str>) -> String {
-    let title = match subject.strip_prefix("Revert \"").and_then(|s| s.strip_suffix('"')) {
+    let title = match subject
+        .strip_prefix("Revert \"")
+        .and_then(|s| s.strip_suffix('"'))
+    {
         Some(inner) => format!("Reapply \"{inner}\""),
         None => format!("Revert \"{subject}\""),
     };
     match mainline_parent {
-        Some(p) => format!("{title}\n\nThis reverts commit {git}, reversing\nchanges made to {p}.\n"),
+        Some(p) => {
+            format!("{title}\n\nThis reverts commit {git}, reversing\nchanges made to {p}.\n")
+        }
         None => format!("{title}\n\nThis reverts commit {git}.\n"),
     }
 }
@@ -402,9 +468,12 @@ fn with_origin(message: &[u8], git: &str) -> Vec<u8> {
     let paragraphs: Vec<&str> = text.trim_end_matches('\n').split("\n\n").collect();
     let is_trailer = |l: &str| {
         l.starts_with("(cherry picked from commit ")
-            || l.split_once(": ").is_some_and(|(k, _)| !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+            || l.split_once(": ").is_some_and(|(k, _)| {
+                !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
     };
-    let footer = paragraphs.len() > 1 && paragraphs.last().is_some_and(|p| p.lines().all(is_trailer));
+    let footer =
+        paragraphs.len() > 1 && paragraphs.last().is_some_and(|p| p.lines().all(is_trailer));
     if !footer {
         out.push(b'\n');
     }
@@ -427,23 +496,58 @@ async fn step(
         return Err(fatal("asc: HEAD is unborn"));
     };
     let head_root = root_of(ws, Some(head)).await?;
-    let current = if staged_ok { index_tree(ws, head_root).await?.0 } else { head_root };
+    let current = if staged_ok {
+        index_tree(ws, head_root).await?.0
+    } else {
+        head_root
+    };
     let parent = parent_root(ws, replay, id, &cs, opts.mainline).await?;
     let abbrev = git.to_string()[..7].to_owned();
     let subject = first_line(&cs.message);
     let named = format!("{abbrev} ({subject})");
     let parent_named = format!("parent of {named}");
     let (sides, theirs_label, base_label, op) = match replay {
-        Replay::Pick => (Sides { base: parent, ours: current, theirs: cs.root }, named.clone(), parent_named, Op::Pick),
-        Replay::Revert => (Sides { base: cs.root, ours: current, theirs: parent }, parent_named, named.clone(), Op::Revert),
+        Replay::Pick => (
+            Sides {
+                base: parent,
+                ours: current,
+                theirs: cs.root,
+            },
+            named.clone(),
+            parent_named,
+            Op::Pick,
+        ),
+        Replay::Revert => (
+            Sides {
+                base: cs.root,
+                ours: current,
+                theirs: parent,
+            },
+            parent_named,
+            named.clone(),
+            Op::Revert,
+        ),
     };
     let favor = conflict::favor_of(&opts.strategy_options)?;
-    let labels = Labels { base: base_label, ours: "HEAD".into(), theirs: theirs_label.clone() };
+    let labels = Labels {
+        base: base_label,
+        ours: "HEAD".into(),
+        theirs: theirs_label.clone(),
+    };
     let (merge_opts, differ) = conflict::merge_options(ctx, ws, &sides, favor, labels).await?;
-    let outcome = ws.engine.merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts).await.map_err(fatal)?;
+    let outcome = ws
+        .engine
+        .merge_trees(sides.base, sides.ours, sides.theirs, &merge_opts)
+        .await
+        .map_err(fatal)?;
     conflict::refuse_unsupported(&outcome)?;
     conflict::precheck(ctx, ws, op, current, &outcome, staged_ok).await?;
-    conflict::print_messages(&conflict::messages(&outcome, &differ, "HEAD", &theirs_label));
+    conflict::print_messages(&conflict::messages(
+        &outcome,
+        &differ,
+        "HEAD",
+        &theirs_label,
+    ));
     conflict::materialise(ctx, ws, head_root, current, &outcome).await?;
     seqstate::write_auto_merge(gitdir, conflict::git_tree_id(ws, outcome.root).await?)?;
 
@@ -466,7 +570,11 @@ async fn step(
         if !(opts.no_commit && replay == Replay::Pick) {
             seqstate::write(gitdir, replay.head_file(), format!("{git}\n").as_bytes())?;
         }
-        let verb = if replay == Replay::Pick { "apply" } else { "revert" };
+        let verb = if replay == Replay::Pick {
+            "apply"
+        } else {
+            "revert"
+        };
         eprintln!("error: could not {verb} {abbrev}... {subject}");
         if conflict::advice(ctx, "mergeConflict") && opts.no_commit {
             let t = tool(ctx);
@@ -516,7 +624,19 @@ async fn step(
         Replay::Pick => Some(cs.author.clone()),
         Replay::Revert => None,
     };
-    commit_result(ctx, ws, gitdir, replay, head, head_root, outcome.root, author, &text, false).await?;
+    commit_result(
+        ctx,
+        ws,
+        gitdir,
+        replay,
+        head,
+        head_root,
+        outcome.root,
+        author,
+        &text,
+        false,
+    )
+    .await?;
     Ok(Step::Done)
 }
 
@@ -594,9 +714,22 @@ async fn commit_result(
     ws_ops::clear(&ws.db, ws.workspace.ws.id).await?;
     // A resolved revert goes through `git commit`, which shows no author date.
     let show_date = !(strip && replay == Replay::Revert);
-    print_summary(ws, &label, &git.to_string(), &subject, &author, &idents.committer, head_root, root, show_date).await?;
+    print_summary(
+        ws,
+        &label,
+        &git.to_string(),
+        &subject,
+        &author,
+        &idents.committer,
+        head_root,
+        root,
+        show_date,
+    )
+    .await?;
     let runner = Runner::for_ctx(ctx)?;
-    let env = HookEnv::of(ctx, replay.command()).with_index(gitdir.join("index")).without_editor();
+    let env = HookEnv::of(ctx, replay.command())
+        .with_index(gitdir.join("index"))
+        .without_editor();
     let _ = runner.run(Hook::PostCommit, &env).await?;
     Ok(())
 }
@@ -624,16 +757,33 @@ async fn print_summary(
         )?;
     }
     if show_date {
-        let date = super::format::date::Mode::default().render(author.time(), author.tz_min(), author.time());
+        let date = super::format::date::Mode::default().render(
+            author.time(),
+            author.tz_min(),
+            author.time(),
+        );
         writeln!(out, " Date: {date}")?;
     }
     let opts = DiffOptions {
-        renames: Some(RenameOptions { limit: 100, ..RenameOptions::default() }),
+        renames: Some(RenameOptions {
+            limit: 100,
+            ..RenameOptions::default()
+        }),
         ..DiffOptions::default()
     };
-    let changes = ws.engine.diff_trees(from, to, None, &opts).await.map_err(fatal)?;
-    let dctx = DiffCtx { opts: &opts, content: &ws.engine, attrs: &NoAttributes };
-    write_shortstat(&mut out, &dctx, &changes).await.map_err(fatal)?;
+    let changes = ws
+        .engine
+        .diff_trees(from, to, None, &opts)
+        .await
+        .map_err(fatal)?;
+    let dctx = DiffCtx {
+        opts: &opts,
+        content: &ws.engine,
+        attrs: &NoAttributes,
+    };
+    write_shortstat(&mut out, &dctx, &changes)
+        .await
+        .map_err(fatal)?;
     write_summary(&mut out, &changes, &opts).map_err(fatal)?;
     std::io::stdout().write_all(&out)?;
     Ok(())
@@ -646,13 +796,25 @@ async fn print_summary(
 async fn reset_touched(ctx: &Ctx, ws: &WsCtx, target_root: TreeId) -> Result<()> {
     let rows = stage::overlay(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
     let head_root = root_of(ws, ws.head_commit().await?).await?;
-    let mut paths: Vec<RepoPath> = rows.iter().filter_map(|r| RepoPath::new(r.path.clone()).ok()).collect();
-    paths.extend(ws.engine.leafdiff(head_root, target_root, None).await?.into_iter().map(|(p, _)| p));
+    let mut paths: Vec<RepoPath> = rows
+        .iter()
+        .filter_map(|r| RepoPath::new(r.path.clone()).ok())
+        .collect();
+    paths.extend(
+        ws.engine
+            .leafdiff(head_root, target_root, None)
+            .await?
+            .into_iter()
+            .map(|(p, _)| p),
+    );
     paths.sort();
     paths.dedup();
     sync_worktree(ctx, target_root, &paths, true).await?;
     stage::clear(&ws.db, ws.workspace.ws.id, StageSet::Default).await?;
-    crate::ext::index_sink().on_stage_changed(ws.workspace.ws.id, &[]).await.map_err(fatal)
+    crate::ext::index_sink()
+        .on_stage_changed(ws.workspace.ws.id, &[])
+        .await
+        .map_err(fatal)
 }
 
 async fn write_orig_head(ws: &WsCtx, gitdir: &Path) -> Result<()> {
@@ -698,7 +860,16 @@ async fn abort(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, _replay: Replay) -> Result<
         reset_touched(ctx, ws, target_root).await?;
         write_orig_head(ws, gitdir).await?;
         if head != Some(original) {
-            conflict::move_head(ctx, ws, head, original, "reset: moving to HEAD", StagingAfterMove::Set(Vec::new()), None).await?;
+            conflict::move_head(
+                ctx,
+                ws,
+                head,
+                original,
+                "reset: moving to HEAD",
+                StagingAfterMove::Set(Vec::new()),
+                None,
+            )
+            .await?;
         }
         Sequence::remove(gitdir);
     } else {
@@ -725,7 +896,8 @@ async fn resume(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<
         let head_root = root_of(ws, Some(head)).await?;
         let changes = stagebuild::rows_to_changes(ws, head_root, &rows).await?;
         let root = ws.engine.apply(head_root, &changes).await?;
-        let picked = seqstate::read_oid(gitdir, kind.head_file())?.ok_or_else(|| fatal("asc: the replay head file is empty"))?;
+        let picked = seqstate::read_oid(gitdir, kind.head_file())?
+            .ok_or_else(|| fatal("asc: the replay head file is empty"))?;
         let picked = conflict::changeset_of(ws, picked).await?;
         let cs = ws.engine.get_changeset(picked).await?;
         if root == head_root && !opts.keep_redundant && !opts.allow_empty {
@@ -734,7 +906,10 @@ async fn resume(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, replay: Replay) -> Result<
         }
         let text = seqstate::read(gitdir, "MERGE_MSG")?.unwrap_or_else(|| cs.message.clone());
         let author = (kind == Replay::Pick).then(|| cs.author.clone());
-        commit_result(ctx, ws, gitdir, kind, head, head_root, root, author, &text, true).await?;
+        commit_result(
+            ctx, ws, gitdir, kind, head, head_root, root, author, &text, true,
+        )
+        .await?;
     }
     let Some(mut seq) = seq else {
         return Ok(ExitCode::SUCCESS);
@@ -761,20 +936,29 @@ mod tests {
             format!("Revert \"side change\"\n\nThis reverts commit {git}.\n")
         );
         assert!(revert_message("Revert \"x\"", &git, None).starts_with("Reapply \"x\"\n\n"));
-        assert!(revert_message("m", &git, Some("bbb")).contains("reversing\nchanges made to bbb.\n"));
+        assert!(
+            revert_message("m", &git, Some("bbb")).contains("reversing\nchanges made to bbb.\n")
+        );
     }
 
     #[test]
     fn the_origin_line_follows_a_blank_line_unless_a_trailer_block_ends_the_message() {
         let git = "c".repeat(40);
         let plain = with_origin(b"subject\n\nbody\n", &git);
-        assert_eq!(plain, format!("subject\n\nbody\n\n(cherry picked from commit {git})\n").into_bytes());
+        assert_eq!(
+            plain,
+            format!("subject\n\nbody\n\n(cherry picked from commit {git})\n").into_bytes()
+        );
         let one_line = with_origin(b"subject\n", &git);
-        assert_eq!(one_line, format!("subject\n\n(cherry picked from commit {git})\n").into_bytes());
+        assert_eq!(
+            one_line,
+            format!("subject\n\n(cherry picked from commit {git})\n").into_bytes()
+        );
         let trailers = with_origin(b"subject\n\nSigned-off-by: A <a@b>\n", &git);
         assert_eq!(
             trailers,
-            format!("subject\n\nSigned-off-by: A <a@b>\n(cherry picked from commit {git})\n").into_bytes()
+            format!("subject\n\nSigned-off-by: A <a@b>\n(cherry picked from commit {git})\n")
+                .into_bytes()
         );
     }
 

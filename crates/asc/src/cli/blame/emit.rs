@@ -48,9 +48,18 @@ pub struct Facts {
 
 /// The first line of the message, as `summary` prints it.
 fn summary_of(message: &[u8]) -> Vec<u8> {
-    let start = message.iter().position(|b| *b != b'\n').unwrap_or(message.len());
-    let line = message[start..].split(|b| *b == b'\n').next().unwrap_or(&[]);
-    let end = line.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |i| i + 1);
+    let start = message
+        .iter()
+        .position(|b| *b != b'\n')
+        .unwrap_or(message.len());
+    let line = message[start..]
+        .split(|b| *b == b'\n')
+        .next()
+        .unwrap_or(&[]);
+    let end = line
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(0, |i| i + 1);
     line[..end].to_vec()
 }
 
@@ -70,14 +79,20 @@ fn dirty_summary(path: &[u8]) -> Vec<u8> {
 fn header(out: &mut Vec<u8>, tag: &str, value: &[u8]) {
     out.extend_from_slice(tag.as_bytes());
     out.push(b' ');
-    out.extend(value.iter().map(|&b| if b == b'\n' || b == b'\r' { b' ' } else { b }));
+    out.extend(
+        value
+            .iter()
+            .map(|&b| if b == b'\n' || b == b'\r' { b' ' } else { b }),
+    );
     out.push(b'\n');
 }
 
 /// The local zone in minutes east of UTC, from `TZ` (`UTC`/`GMT` with an optional offset); UTC
 /// otherwise.
 fn local_tz_min() -> i16 {
-    let Ok(tz) = std::env::var("TZ") else { return 0 };
+    let Ok(tz) = std::env::var("TZ") else {
+        return 0;
+    };
     let rest = tz.trim_start_matches(|c: char| c.is_ascii_alphabetic());
     let (sign, digits) = match rest.as_bytes().first() {
         Some(b'-') => (1, &rest[1..]),
@@ -93,7 +108,12 @@ fn local_tz_min() -> i16 {
 /// `+0100` for 60 minutes east.
 pub fn tz_text(tz_min: i16) -> String {
     let t = i32::from(tz_min);
-    format!("{}{:02}{:02}", if t < 0 { '-' } else { '+' }, t.abs() / 60, t.abs() % 60)
+    format!(
+        "{}{:02}{:02}",
+        if t < 0 { '-' } else { '+' },
+        t.abs() / 60,
+        t.abs() % 60
+    )
 }
 
 fn sig(name: &[u8], email: &[u8], time: i64, tz: i16) -> Result<Signature> {
@@ -119,7 +139,9 @@ impl Facts {
                             author: c.author.clone(),
                             committer: c.committer.clone(),
                             summary: summary_of(&c.message),
-                            boundary: b.reverse_start.map_or(c.parents.is_empty() && !root, |s| s == cs),
+                            boundary: b
+                                .reverse_start
+                                .map_or(c.parents.is_empty() && !root, |s| s == cs),
                             time: c.committer.time(),
                             first_line: p.start,
                         }
@@ -146,14 +168,23 @@ impl Facts {
             }
             let prev = match p.origin {
                 Origin::Commit(cs) => match previous_of(ws, cs, &p.orig_path).await? {
-                    Some((parent, path)) => {
-                        Some((ws.engine.git_commit_of(parent).await.map_err(fatal)?.to_string(), path))
-                    }
+                    Some((parent, path)) => Some((
+                        ws.engine
+                            .git_commit_of(parent)
+                            .await
+                            .map_err(fatal)?
+                            .to_string(),
+                        path,
+                    )),
                     None => None,
                 },
                 Origin::Dirty => match &b.dirty {
                     Some(d) if entry_at(ws, d.head, &p.orig_path).await?.is_some() => Some((
-                        ws.engine.git_commit_of(d.head).await.map_err(fatal)?.to_string(),
+                        ws.engine
+                            .git_commit_of(d.head)
+                            .await
+                            .map_err(fatal)?
+                            .to_string(),
                         p.orig_path.clone(),
                     )),
                     _ => None,
@@ -163,8 +194,16 @@ impl Facts {
                 previous.insert(key, v);
             }
         }
-        let multi_path = paths.into_iter().filter(|(_, s)| s.len() > 1).map(|(o, _)| o).collect();
-        Ok(Facts { metas, previous, multi_path })
+        let multi_path = paths
+            .into_iter()
+            .filter(|(_, s)| s.len() > 1)
+            .map(|(o, _)| o)
+            .collect();
+        Ok(Facts {
+            metas,
+            previous,
+            multi_path,
+        })
     }
 }
 
@@ -254,7 +293,14 @@ fn details(w: &mut dyn Write, m: &Meta) -> Result<()> {
         mail.extend_from_slice(s.email());
         mail.push(b'>');
         header(&mut out, &format!("{tag}-mail"), &mail);
-        out.extend_from_slice(format!("{tag}-time {}\n{tag}-tz {}\n", s.time(), tz_text(s.tz_min())).as_bytes());
+        out.extend_from_slice(
+            format!(
+                "{tag}-time {}\n{tag}-tz {}\n",
+                s.time(),
+                tz_text(s.tz_min())
+            )
+            .as_bytes(),
+        );
     }
     header(&mut out, "summary", &m.summary);
     if m.boundary {
@@ -327,8 +373,10 @@ pub fn incremental(w: &mut dyn Write, shown: &[Piece], facts: &Facts, style: &St
     let mut seen: HashSet<Origin> = HashSet::new();
     for p in order {
         let m = &facts.metas[&p.origin];
-        w.write_all(format!("{} {} {} {}\n", m.hex, p.orig_line + 1, p.start + 1, p.len).as_bytes())
-            .map_err(io)?;
+        w.write_all(
+            format!("{} {} {} {}\n", m.hex, p.orig_line + 1, p.start + 1, p.len).as_bytes(),
+        )
+        .map_err(io)?;
         if seen.insert(p.origin) {
             details(w, m)?;
         }
@@ -356,9 +404,16 @@ fn signature(desc: &MessageDescriptor, s: &Signature) -> Value {
 /// one-based, as git prints them; an uncommitted hunk has an empty `origin`.
 pub async fn json(ws: &WsCtx, shown: &[Piece], facts: &Facts, out: &mut dyn Write) -> Result<()> {
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).map_err(fatal)?;
-    let get = |n: &str| pool.get_message_by_name(n).ok_or_else(|| fatal(format!("asc: missing message {n}")));
-    let (resp, hunk_d, entry_d, sig_d) =
-        (get("asc.v1.BlameResponse")?, get("asc.v1.BlameHunk")?, get("asc.v1.LogEntry")?, get("asc.v1.Signature")?);
+    let get = |n: &str| {
+        pool.get_message_by_name(n)
+            .ok_or_else(|| fatal(format!("asc: missing message {n}")))
+    };
+    let (resp, hunk_d, entry_d, sig_d) = (
+        get("asc.v1.BlameResponse")?,
+        get("asc.v1.BlameHunk")?,
+        get("asc.v1.LogEntry")?,
+        get("asc.v1.Signature")?,
+    );
     let mut lines = JsonLines::new(out);
     for page in shown.chunks(PAGE) {
         let mut hunks = Vec::with_capacity(page.len());
@@ -454,7 +509,10 @@ mod tests {
 
     #[test]
     fn normal_dirty_summary_is_git_exact() {
-        assert_eq!(dirty_summary(b"dir/a b.txt"), b"Version of dir/a b.txt from dir/a b.txt");
+        assert_eq!(
+            dirty_summary(b"dir/a b.txt"),
+            b"Version of dir/a b.txt from dir/a b.txt"
+        );
     }
 
     #[test]
@@ -472,7 +530,11 @@ mod tests {
         // `Signature::new` already refuses LF; CR is the byte that can still reach the writer.
         let m = meta(b"Eve\rauthor-mail x\rsummary forged", b"s\r".to_vec());
         let text = details_text(&m);
-        let tags: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).map(|l| l.split(' ').next().unwrap()).collect();
+        let tags: Vec<&str> = text
+            .split('\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| l.split(' ').next().unwrap())
+            .collect();
         assert_eq!(tags, TAGS);
         assert!(!text.contains('\r'));
         assert!(text.starts_with("author Eve author-mail x summary forged\nauthor-mail <a@b>\n"));

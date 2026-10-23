@@ -92,10 +92,12 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                 "format" => o.format = Some(cur.value("format", inline)?),
                 "abbrev" => {
                     o.abbrev = Some(match inline {
-                        Some(n) => n
-                            .parse::<usize>()
-                            .map(|n| n.clamp(4, 40))
-                            .map_err(|_| CliError::Raw("error: option `abbrev' expects a numerical value".into(), 129))?,
+                        Some(n) => n.parse::<usize>().map(|n| n.clamp(4, 40)).map_err(|_| {
+                            CliError::Raw(
+                                "error: option `abbrev' expects a numerical value".into(),
+                                129,
+                            )
+                        })?,
                         None => 0,
                     })
                 }
@@ -150,7 +152,11 @@ fn parse_format(format: &str) -> Result<Vec<Piece>> {
                 text.push(b'\n');
                 i += 2;
             }
-            Some(b'x') if rest.len() >= 3 && rest[1].is_ascii_hexdigit() && rest[2].is_ascii_hexdigit() => {
+            Some(b'x')
+                if rest.len() >= 3
+                    && rest[1].is_ascii_hexdigit()
+                    && rest[2].is_ascii_hexdigit() =>
+            {
                 let hex = std::str::from_utf8(&rest[1..3]).unwrap_or("00");
                 text.push(u8::from_str_radix(hex, 16).unwrap_or(0));
                 i += 4;
@@ -212,7 +218,9 @@ fn interesting(specs: &[Vec<u8>], path: &[u8], is_dir: bool) -> bool {
 
 /// `show_recursive`: whether a pathspec reaches below the directory `base`/`name`.
 fn reaches_below(specs: &[Vec<u8>], full: &[u8]) -> bool {
-    specs.iter().any(|s| s.len() > full.len() && s.starts_with(full) && s[full.len()] == b'/')
+    specs
+        .iter()
+        .any(|s| s.len() > full.len() && s.starts_with(full) && s[full.len()] == b'/')
 }
 
 struct Printer<'a> {
@@ -227,7 +235,11 @@ struct Printer<'a> {
 impl Printer<'_> {
     fn oid(&self, oid: &asc_core::id::GitOid) -> String {
         let hex = oid.to_string();
-        if self.o.abbrev.is_some() { hex[..self.abbrev.min(40)].to_owned() } else { hex }
+        if self.o.abbrev.is_some() {
+            hex[..self.abbrev.min(40)].to_owned()
+        } else {
+            hex
+        }
     }
 
     async fn size_text(&self, entry: &Entry) -> String {
@@ -245,7 +257,11 @@ impl Printer<'_> {
             Kind::Gitlink => "commit",
             _ => "blob",
         };
-        let shown = if self.chomp.is_empty() { full.to_vec() } else { relative_to(full, &self.chomp) };
+        let shown = if self.chomp.is_empty() {
+            full.to_vec()
+        } else {
+            relative_to(full, &self.chomp)
+        };
         if let Some(pieces) = &self.pieces {
             for p in pieces {
                 match p {
@@ -255,7 +271,11 @@ impl Printer<'_> {
                     Piece::Name => write!(out, "{}", self.oid(&entry.git))?,
                     Piece::Size { padded } => {
                         let size = self.size_text(entry).await;
-                        if *padded { write!(out, "{size:>7}")? } else { write!(out, "{size}")? }
+                        if *padded {
+                            write!(out, "{size:>7}")?
+                        } else {
+                            write!(out, "{size}")?
+                        }
                     }
                     Piece::Path => self.names.write_bare(out, &shown)?,
                 }
@@ -272,7 +292,11 @@ impl Printer<'_> {
             Layout::Default => write!(out, "{mode:06o} {kind} {}\t", self.oid(&entry.git))?,
             Layout::Long => {
                 let size = self.size_text(entry).await;
-                write!(out, "{mode:06o} {kind} {} {size:>7}\t", self.oid(&entry.git))?;
+                write!(
+                    out,
+                    "{mode:06o} {kind} {} {size:>7}\t",
+                    self.oid(&entry.git)
+                )?;
             }
         }
         self.names.write(out, &shown)?;
@@ -284,7 +308,10 @@ impl Printer<'_> {
 /// `../` for each directory of `base` that `full` does not share, and `./` for the directory
 /// itself.
 fn relative_to(full: &[u8], base: &[u8]) -> Vec<u8> {
-    let base: Vec<&[u8]> = base.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
+    let base: Vec<&[u8]> = base
+        .split(|&b| b == b'/')
+        .filter(|c| !c.is_empty())
+        .collect();
     let parts: Vec<&[u8]> = full.split(|&b| b == b'/').collect();
     let common = base.iter().zip(&parts).take_while(|(a, b)| a == b).count();
     let mut out = Vec::new();
@@ -318,10 +345,18 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         return Err(CliError::Fatal("not a tree object".into()));
     };
     // Paths are relative to the directory the command runs in, unless told otherwise.
-    let prefix = if o.full_tree { String::new() } else { cwd_prefix(ctx, ws) };
+    let prefix = if o.full_tree {
+        String::new()
+    } else {
+        cwd_prefix(ctx, ws)
+    };
     let mut specs: Vec<Vec<u8>> = Vec::new();
     for arg in &o.operands[1..] {
-        let abs = crate::cli::add::spec::repo_path(std::ffi::OsStr::new(arg), &prefix, ws.projection.toplevel())?;
+        let abs = crate::cli::add::spec::repo_path(
+            std::ffi::OsStr::new(arg),
+            &prefix,
+            ws.projection.toplevel(),
+        )?;
         let mut spec = abs;
         let last = arg.rsplit('/').next().unwrap_or(arg);
         // A directory spelled as a directory (`dir/`, `.`, `..`) lists what is inside it.
@@ -333,8 +368,16 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     if specs.is_empty() && !prefix.is_empty() {
         specs.push(format!("{prefix}/").into_bytes());
     }
-    let chomp = if prefix.is_empty() || o.full_name || o.full_tree { Vec::new() } else { format!("{prefix}/").into_bytes() };
-    let default_abbrev = ctx.config.get("core.abbrev").and_then(|v| v.parse::<usize>().ok()).map_or(7, |n| n.clamp(4, 40));
+    let chomp = if prefix.is_empty() || o.full_name || o.full_tree {
+        Vec::new()
+    } else {
+        format!("{prefix}/").into_bytes()
+    };
+    let default_abbrev = ctx
+        .config
+        .get("core.abbrev")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(7, |n| n.clamp(4, 40));
     let printer = Printer {
         o: &o,
         names: Names {
@@ -352,7 +395,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let mut out = Output::open(ctx, "ls-tree", PagerWant::Never)?;
     let mut frames: Vec<Frame> = Vec::new();
     let tree = ws.engine.get_tree(root).await?;
-    frames.push(Frame { base: Vec::new(), entries: git_order(&tree).into_iter().cloned().collect(), at: 0 });
+    frames.push(Frame {
+        base: Vec::new(),
+        entries: git_order(&tree).into_iter().cloned().collect(),
+        at: 0,
+    });
     while let Some(frame) = frames.last_mut() {
         let Some(entry) = frame.entries.get(frame.at).cloned() else {
             frames.pop();
@@ -382,7 +429,11 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             let mut base = full.clone();
             base.push(b'/');
             let tree = ws.engine.get_tree(TreeId::from_bytes(entry.id)).await?;
-            frames.push(Frame { base, entries: git_order(&tree).into_iter().cloned().collect(), at: 0 });
+            frames.push(Frame {
+                base,
+                entries: git_order(&tree).into_iter().cloned().collect(),
+                at: 0,
+            });
         }
     }
     out.finish()?;

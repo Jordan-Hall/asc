@@ -133,7 +133,8 @@ pub fn ensure_owned(
         return Ok(());
     }
     for path in paths {
-        let real: PathBuf = std::fs::canonicalize(path).map_err(|_| dubious_message(&canonical_shown))?;
+        let real: PathBuf =
+            std::fs::canonicalize(path).map_err(|_| dubious_message(&canonical_shown))?;
         if !owned(&real).unwrap_or(false) {
             return Err(dubious_message(&canonical_shown));
         }
@@ -167,9 +168,7 @@ mod imp {
     use std::ptr::null_mut;
 
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SE_FILE_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         CheckTokenMembership, CreateWellKnownSid, EqualSid, GetTokenInformation, IsWellKnownSid,
         OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER, TokenUser,
@@ -215,7 +214,10 @@ mod imp {
             }
             let mut buf = vec![0u64; (len as usize).div_ceil(8)];
             // SAFETY: `buf` holds at least `len` bytes.
-            if unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len) } == 0 {
+            if unsafe {
+                GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len)
+            } == 0
+            {
                 return Err(io::Error::last_os_error());
             }
             Ok(buf)
@@ -238,7 +240,13 @@ mod imp {
         let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         let mut sid: PSID = null_mut();
         // SAFETY: `wide` is NUL-terminated; `sid` receives a LocalAlloc'd SID.
-        if unsafe { windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW(wide.as_ptr(), &mut sid) } == 0 {
+        if unsafe {
+            windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW(
+                wide.as_ptr(),
+                &mut sid,
+            )
+        } == 0
+        {
             return Err(io::Error::last_os_error());
         }
         Ok(LocalSid(sid))
@@ -267,7 +275,12 @@ mod imp {
         let mut admins = vec![0u64; 9];
         // SAFETY: the buffer is 72 bytes, at least SECURITY_MAX_SID_SIZE.
         let made = unsafe {
-            CreateWellKnownSid(WinBuiltinAdministratorsSid, null_mut(), admins.as_mut_ptr().cast(), &mut size)
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                null_mut(),
+                admins.as_mut_ptr().cast(),
+                &mut size,
+            )
         };
         if made == 0 {
             return false;
@@ -280,7 +293,11 @@ mod imp {
 
     pub fn owned_by_current_user(path: &Path) -> io::Result<bool> {
         let shown = super::display_path(path).replace('/', "\\");
-        let wide: Vec<u16> = Path::new(&shown).as_os_str().encode_wide().chain(Some(0)).collect();
+        let wide: Vec<u16> = Path::new(&shown)
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let me = current_user_sid()?;
         let mut owner: PSID = null_mut();
         let mut descriptor: PSECURITY_DESCRIPTOR = null_mut();
@@ -300,7 +317,8 @@ mod imp {
         if status != ERROR_SUCCESS {
             return Err(io::Error::from_raw_os_error(status as i32));
         }
-        let accepted = !owner.is_null() && owner_accepted(owner, user_sid_ptr(&me), token_is_elevated_admin);
+        let accepted =
+            !owner.is_null() && owner_accepted(owner, user_sid_ptr(&me), token_is_elevated_admin);
         // SAFETY: allocated by GetNamedSecurityInfoW.
         unsafe { LocalFree(descriptor) };
         Ok(accepted)
@@ -353,7 +371,10 @@ mod tests {
             lines.next().unwrap(),
             "fatal: detected dubious ownership in repository at '/srv/it's'"
         );
-        assert_eq!(lines.next().unwrap(), "To add an exception for this directory, call:");
+        assert_eq!(
+            lines.next().unwrap(),
+            "To add an exception for this directory, call:"
+        );
         assert_eq!(lines.next().unwrap(), "");
         assert_eq!(
             lines.next().unwrap(),
@@ -372,9 +393,15 @@ mod tests {
         let none = SafeDirectory::default();
         assert!(ensure_owned(&a, &[&a], &none, &only_a).is_ok());
         let err = ensure_owned(&a, &[&a, &b], &none, &only_a).unwrap_err();
-        assert!(err.starts_with("fatal: detected dubious ownership in repository at '"), "{err}");
+        assert!(
+            err.starts_with("fatal: detected dubious ownership in repository at '"),
+            "{err}"
+        );
         let broken = |_: &Path| Err(io::Error::other("no"));
-        assert!(ensure_owned(&a, &[&a], &none, &broken).is_err(), "an unreadable owner fails closed");
+        assert!(
+            ensure_owned(&a, &[&a], &none, &broken).is_err(),
+            "an unreadable owner fails closed"
+        );
         let allowed = safe(&[display_path(&std::fs::canonicalize(&a).unwrap()).as_str()]);
         assert!(ensure_owned(&a, &[&a, &b], &allowed, &broken).is_ok());
         assert!(ensure_owned(&a, &[&a, &b], &safe(&["*"]), &broken).is_ok());

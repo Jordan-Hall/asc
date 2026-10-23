@@ -42,7 +42,14 @@ pub struct Args {
 /// `init` serves its own flags only; `--bare` is not in the table.
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "init",
-    flags: &["-b", "--initial-branch", "-q", "--quiet", "--store", "--refs"],
+    flags: &[
+        "-b",
+        "--initial-branch",
+        "-q",
+        "--quiet",
+        "--store",
+        "--refs",
+    ],
     placeholders: &[],
 }];
 
@@ -74,10 +81,14 @@ fn write_ascignore(root: &Path, prog: Program) -> std::io::Result<()> {
     // The root is the directory being initialised: no tracked path exists yet to lie behind a
     // link. A link named like either file counts as present, and `create_new` never follows one.
     let (ascignore, gitignore) = (root.join(".ascignore"), root.join(".gitignore")); // lint:allow-worktree-fs
-    if std::fs::symlink_metadata(&ascignore).is_ok() || std::fs::symlink_metadata(&gitignore).is_ok() {
+    if std::fs::symlink_metadata(&ascignore).is_ok() || std::fs::symlink_metadata(&gitignore).is_ok()
+    {
         return Ok(());
     }
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(ascignore)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(ascignore)?;
     std::io::Write::write_all(&mut file, format!("{ASCIGNORE_HEADER}\n").as_bytes())
 }
 
@@ -86,9 +97,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Some(d) => ctx.cwd.join(d),
         None => ctx.cwd.clone(),
     };
-    std::fs::create_dir_all(&root).map_err(|e| {
-        CliError::Fatal(format!("cannot mkdir {}: {e}", display(&root)))
-    })?;
+    std::fs::create_dir_all(&root)
+        .map_err(|e| CliError::Fatal(format!("cannot mkdir {}: {e}", display(&root))))?;
     let root = std::path::absolute(&root)?;
     let quiet = a.quiet;
     let say = |m: Msg| {
@@ -125,15 +135,30 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             let mode = match refs.as_deref() {
                 None | Some("local") => crate::remote::url::RefsMode::Local,
                 Some("shared") => crate::remote::url::RefsMode::Shared,
-                Some(other) => return Err(CliError::Fatal(format!("asc: --refs takes local or shared, not '{other}'"))),
+                Some(other) => {
+                    return Err(CliError::Fatal(format!(
+                        "asc: --refs takes local or shared, not '{other}'"
+                    )));
+                }
             };
-            let spec = crate::remote::url::parse(typed, mode).map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+            let spec = crate::remote::url::parse(typed, mode)
+                .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
             let crate::remote::url::RemoteSpec::Bucket { url, .. } = &spec else {
-                return Err(CliError::Fatal("asc: --store needs a bucket URL (s3:// or file://)".into()));
+                return Err(CliError::Fatal(
+                    "asc: --store needs a bucket URL (s3:// or file://)".into(),
+                ));
             };
             let stored = super::clone::stored_form(typed, &spec);
             // Reach the bucket (and probe a shared one) before anything is created.
-            crate::remote::open_url(&db, "origin".into(), stored.clone(), true, mode, crate::remote::Intent::Write).await?;
+            crate::remote::open_url(
+                &db,
+                "origin".into(),
+                stored.clone(),
+                true,
+                mode,
+                crate::remote::Intent::Write,
+            )
+            .await?;
             Some((url.clone(), stored, mode))
         }
     };
@@ -156,7 +181,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             name,
             ns: uuid::Uuid::new_v4().as_bytes().to_vec(),
             remote_url: store.as_ref().map(|(url, _, _)| url.clone()),
-            remote_kind: if store.is_some() { RemoteKind::Bucket } else { RemoteKind::LocalOnly },
+            remote_kind: if store.is_some() {
+                RemoteKind::Bucket
+            } else {
+                RemoteKind::LocalOnly
+            },
             default_branch: branch.clone(),
             windows_safe: true,
         },
@@ -197,7 +226,10 @@ mod tests {
     fn branch_precedence_and_validation() {
         assert_eq!(initial_branch(None, None).unwrap(), "master");
         assert_eq!(initial_branch(None, Some("trunk".into())).unwrap(), "trunk");
-        assert_eq!(initial_branch(Some("dev"), Some("trunk".into())).unwrap(), "dev");
+        assert_eq!(
+            initial_branch(Some("dev"), Some("trunk".into())).unwrap(),
+            "dev"
+        );
         for bad in ["", "a..b", "HEAD", "-x", "a b", "x.lock"] {
             assert!(
                 matches!(

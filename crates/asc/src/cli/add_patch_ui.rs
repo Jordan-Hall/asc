@@ -81,13 +81,17 @@ fn hunks(n: usize) -> String {
 /// The next undecided hunk after `from` (rolling over), other than `from` itself.
 fn undecided_after(file: &FileDiff, from: usize) -> Option<usize> {
     let n = file.hunks.len();
-    (1..n).map(|d| (from + d) % n).find(|&i| file.hunks[i].decision == Decision::Undecided)
+    (1..n)
+        .map(|d| (from + d) % n)
+        .find(|&i| file.hunks[i].decision == Decision::Undecided)
 }
 
 /// The previous undecided hunk before `from` (rolling over), other than `from` itself.
 fn undecided_before(file: &FileDiff, from: usize) -> Option<usize> {
     let n = file.hunks.len();
-    (1..n).map(|d| (from + n - d) % n).find(|&i| file.hunks[i].decision == Decision::Undecided)
+    (1..n)
+        .map(|d| (from + n - d) % n)
+        .find(|&i| file.hunks[i].decision == Decision::Undecided)
 }
 
 impl<R: Input, W: Write> Io<R, W> {
@@ -104,7 +108,11 @@ impl<R: Input, W: Write> Io<R, W> {
             if idx >= count {
                 idx = 0;
             }
-            let decision = if count > 0 { file.hunks[idx].decision } else { file.head };
+            let decision = if count > 0 {
+                file.hunks[idx].decision
+            } else {
+                file.head
+            };
             let (prev, next) = if count > 0 {
                 (undecided_before(file, idx), undecided_after(file, idx))
             } else {
@@ -117,7 +125,9 @@ impl<R: Input, W: Write> Io<R, W> {
                 self.out.write_all(&file.render(idx))?;
                 rendered = Some(idx);
             }
-            let can_edit = count > 0 && file.shape != Shape::Deleted && !matches!(file.hunks[idx].part, Part::Mode { .. });
+            let can_edit = count > 0
+                && file.shape != Shape::Deleted
+                && !matches!(file.hunks[idx].part, Part::Mode { .. });
             let can_split = count > 0 && file.splittable(idx) > 1;
             let letters = letters(count, prev.is_some(), next.is_some(), can_split, can_edit);
             let label = match (&file.hunks.get(idx).map(|h| &h.part), file.shape) {
@@ -131,7 +141,12 @@ impl<R: Input, W: Write> Io<R, W> {
                 Decision::Skip => " (was: n)",
                 Decision::Undecided => "",
             };
-            write!(self.out, "({}/{}) {label}{was} [{letters}]? ", idx + 1, count.max(1))?;
+            write!(
+                self.out,
+                "({}/{}) {label}{was} [{letters}]? ",
+                idx + 1,
+                count.max(1)
+            )?;
             self.out.flush()?;
             let Some(answer) = self.input.line()? else {
                 quit = true;
@@ -139,7 +154,11 @@ impl<R: Input, W: Write> Io<R, W> {
             };
             let Some(&c0) = answer.first() else { continue };
             if answer.len() != 1 && c0 != b'/' && c0 != b'g' {
-                writeln!(self.out, "Only one letter is expected, got '{}'", text(&answer))?;
+                writeln!(
+                    self.out,
+                    "Only one letter is expected, got '{}'",
+                    text(&answer)
+                )?;
                 continue;
             }
             let decide = |file: &mut FileDiff, idx: usize, d: Decision| {
@@ -151,12 +170,20 @@ impl<R: Input, W: Write> Io<R, W> {
             };
             match c0 {
                 b'y' | b'Y' | b'n' | b'N' => {
-                    let d = if c0.eq_ignore_ascii_case(&b'y') { Decision::Use } else { Decision::Skip };
+                    let d = if c0.eq_ignore_ascii_case(&b'y') {
+                        Decision::Use
+                    } else {
+                        Decision::Skip
+                    };
                     decide(file, idx, d);
                     idx = next.unwrap_or(count);
                 }
                 b'a' | b'A' | b'd' | b'D' => {
-                    let d = if c0.eq_ignore_ascii_case(&b'a') { Decision::Use } else { Decision::Skip };
+                    let d = if c0.eq_ignore_ascii_case(&b'a') {
+                        Decision::Use
+                    } else {
+                        Decision::Skip
+                    };
                     if count > 0 {
                         for h in &mut file.hunks[idx..] {
                             if h.decision == Decision::Undecided {
@@ -239,7 +266,11 @@ impl<R: Input, W: Write> Io<R, W> {
                 b'e' => writeln!(self.out, "Sorry, cannot edit this hunk")?,
                 b'p' | b'P' if count > 0 => rendered = None,
                 b'?' => self.help(count, prev.is_some(), next.is_some(), can_split, can_edit)?,
-                _ => writeln!(self.out, "Unknown command '{}' (use '?' for help)", text(&answer))?,
+                _ => writeln!(
+                    self.out,
+                    "Unknown command '{}' (use '?' for help)",
+                    text(&answer)
+                )?,
             }
         }
         // Git ends the prompt line of a file once the file is settled.
@@ -270,7 +301,11 @@ impl<R: Input, W: Write> Io<R, W> {
                     }
                     i += 1;
                 }
-                let prompt = if i < count { "go to which hunk (<ret> to see more)? " } else { "go to which hunk? " };
+                let prompt = if i < count {
+                    "go to which hunk (<ret> to see more)? "
+                } else {
+                    "go to which hunk? "
+                };
                 write!(self.out, "{prompt}")?;
                 self.out.flush()?;
                 match self.input.line()? {
@@ -324,7 +359,11 @@ impl<R: Input, W: Write> Io<R, W> {
             Ok(re) => re,
             Err(e) => {
                 let why = e.to_string().lines().last().unwrap_or("").trim().to_owned();
-                writeln!(self.out, "Malformed search regexp {}: {why}", text(&pattern))?;
+                writeln!(
+                    self.out,
+                    "Malformed search regexp {}: {why}",
+                    text(&pattern)
+                )?;
                 return Ok(Goto::Stay);
             }
         };
@@ -339,7 +378,12 @@ impl<R: Input, W: Write> Io<R, W> {
     }
 
     /// `e`: edit the hunk until it applies, or the user gives up.
-    fn edit(&mut self, file: &mut FileDiff, idx: usize, editor: &mut Editor<'_>) -> io::Result<Edit> {
+    fn edit(
+        &mut self,
+        file: &mut FileDiff,
+        idx: usize,
+        editor: &mut Editor<'_>,
+    ) -> io::Result<Edit> {
         loop {
             if let Some(edited) = editor(&file.edit_text(idx))? {
                 match file.set_edit(idx, &edited) {
@@ -352,12 +396,17 @@ impl<R: Input, W: Write> Io<R, W> {
                         self.out.flush()?;
                         let at = file.old_line(idx);
                         let path = text(&file.path);
-                        eprintln!("error: patch failed: {path}:{at}\nerror: {path}: patch does not apply");
+                        eprintln!(
+                            "error: patch failed: {path}:{at}\nerror: {path}: patch does not apply"
+                        );
                     }
                 }
             }
             loop {
-                write!(self.out, "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? ")?;
+                write!(
+                    self.out,
+                    "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? "
+                )?;
                 self.out.flush()?;
                 match self.input.line()? {
                     None => return Ok(Edit::Eof),
@@ -370,18 +419,43 @@ impl<R: Input, W: Write> Io<R, W> {
     }
 
     /// `?`: the commands the prompt offers.
-    fn help(&mut self, count: usize, prev: bool, next: bool, split: bool, edit: bool) -> io::Result<()> {
+    fn help(
+        &mut self,
+        count: usize,
+        prev: bool,
+        next: bool,
+        split: bool,
+        edit: bool,
+    ) -> io::Result<()> {
         let hunk = count > 0;
         let lines: [(bool, &str); 16] = [
             (true, "y - stage this hunk"),
             (true, "n - do not stage this hunk"),
-            (true, "q - quit; do not stage this hunk or any of the remaining ones"),
+            (
+                true,
+                "q - quit; do not stage this hunk or any of the remaining ones",
+            ),
             (true, "a - stage this hunk and all later hunks in the file"),
-            (true, "d - do not stage this hunk or any of the later hunks in the file"),
-            (next, "j - go to the next undecided hunk, roll over at the bottom"),
-            (count > 1, "J - go to the next hunk, roll over at the bottom"),
-            (prev, "k - go to the previous undecided hunk, roll over at the top"),
-            (count > 1, "K - go to the previous hunk, roll over at the top"),
+            (
+                true,
+                "d - do not stage this hunk or any of the later hunks in the file",
+            ),
+            (
+                next,
+                "j - go to the next undecided hunk, roll over at the bottom",
+            ),
+            (
+                count > 1,
+                "J - go to the next hunk, roll over at the bottom",
+            ),
+            (
+                prev,
+                "k - go to the previous undecided hunk, roll over at the top",
+            ),
+            (
+                count > 1,
+                "K - go to the previous hunk, roll over at the top",
+            ),
             (count > 1, "g - select a hunk to go to"),
             (count > 1, "/ - search for a hunk matching the given regex"),
             (split, "s - split the current hunk into smaller hunks"),
@@ -444,12 +518,31 @@ mod tests {
     use super::*;
 
     fn numbered(n: usize, change: &[usize]) -> String {
-        (1..=n).map(|i| if change.contains(&i) { format!("new{i}\n") } else { format!("{i}\n") }).collect()
+        (1..=n)
+            .map(|i| {
+                if change.contains(&i) {
+                    format!("new{i}\n")
+                } else {
+                    format!("{i}\n")
+                }
+            })
+            .collect()
     }
 
     fn file(old: &str, new: &str) -> FileDiff {
-        let side = |t: &str| Some(Side { content: t.as_bytes().to_vec(), mode: 0o100644, oid: Some(asc_core::git::blob_oid(t.as_bytes())) });
-        let s = Settings { context: 3, inter_hunk: 0, algorithm: Algorithm::Myers, indent_heuristic: true };
+        let side = |t: &str| {
+            Some(Side {
+                content: t.as_bytes().to_vec(),
+                mode: 0o100644,
+                oid: Some(asc_core::git::blob_oid(t.as_bytes())),
+            })
+        };
+        let s = Settings {
+            context: 3,
+            inter_hunk: 0,
+            algorithm: Algorithm::Myers,
+            indent_heuristic: true,
+        };
         let mut f = build(b"a/f", b"b/f", side(old), side(new), 7, &s);
         f.path = b"f".to_vec();
         f
@@ -461,13 +554,19 @@ mod tests {
     }
 
     fn run(f: &mut FileDiff, answers: &str) -> (bool, String) {
-        let mut io = Io { input: Cursor::new(answers.as_bytes().to_vec()), out: Vec::new() };
+        let mut io = Io {
+            input: Cursor::new(answers.as_bytes().to_vec()),
+            out: Vec::new(),
+        };
         let quit = io.review(f, &mut |_| Ok(None)).unwrap();
         (quit, String::from_utf8(io.out).unwrap())
     }
 
     fn used(f: &FileDiff) -> Vec<bool> {
-        f.hunks.iter().map(|h| h.decision == Decision::Use).collect()
+        f.hunks
+            .iter()
+            .map(|h| h.decision == Decision::Use)
+            .collect()
     }
 
     #[test]
@@ -476,8 +575,14 @@ mod tests {
         let (quit, out) = run(&mut f, "y\nn\ny\nn\n");
         assert!(!quit);
         assert_eq!(used(&f), [true, false, true, false]);
-        assert!(out.contains("(1/4) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? "), "{out}");
-        assert!(out.contains("(4/4) Stage this hunk [y,n,q,a,d,K,J,g,/,e,p,P,?]? "), "{out}");
+        assert!(
+            out.contains("(1/4) Stage this hunk [y,n,q,a,d,k,K,j,J,g,/,e,p,P,?]? "),
+            "{out}"
+        );
+        assert!(
+            out.contains("(4/4) Stage this hunk [y,n,q,a,d,K,J,g,/,e,p,P,?]? "),
+            "{out}"
+        );
     }
 
     #[test]
@@ -567,15 +672,26 @@ mod tests {
     fn unknown_and_long_answers_are_refused() {
         let mut f = four();
         let (_, out) = run(&mut f, "z\nyes\n\nq\n");
-        assert!(out.contains("Unknown command 'z' (use '?' for help)"), "{out}");
-        assert!(out.contains("Only one letter is expected, got 'yes'"), "{out}");
+        assert!(
+            out.contains("Unknown command 'z' (use '?' for help)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Only one letter is expected, got 'yes'"),
+            "{out}"
+        );
     }
 
     #[test]
     fn help_lists_what_the_prompt_offers() {
         let mut f = four();
         let (_, out) = run(&mut f, "?\nq\n");
-        for want in ["y - stage this hunk", "J - go to the next hunk", "g - select a hunk", "? - print help"] {
+        for want in [
+            "y - stage this hunk",
+            "J - go to the next hunk",
+            "g - select a hunk",
+            "? - print help",
+        ] {
             assert!(out.contains(want), "{want}: {out}");
         }
         assert!(!out.contains("s - split"), "{out}");
@@ -585,28 +701,60 @@ mod tests {
     fn edit_applies_a_good_edit_and_asks_again_for_a_bad_one() {
         let mut f = file(&numbered(12, &[]), &numbered(12, &[5]));
         let mut tries = 0;
-        let mut io = Io { input: Cursor::new(b"e\ny\nq\n".to_vec()), out: Vec::new() };
+        let mut io = Io {
+            input: Cursor::new(b"e\ny\nq\n".to_vec()),
+            out: Vec::new(),
+        };
         let quit = io
             .review(&mut f, &mut |t| {
                 tries += 1;
                 let t = String::from_utf8_lossy(t).into_owned();
-                Ok(Some(if tries == 1 { t.replace(" 3\n", " three\n") } else { t.replace("+new5\n", "+five\n") }.into_bytes()))
+                Ok(Some(
+                    if tries == 1 {
+                        t.replace(" 3\n", " three\n")
+                    } else {
+                        t.replace("+new5\n", "+five\n")
+                    }
+                    .into_bytes(),
+                ))
             })
             .unwrap();
         let out = String::from_utf8(io.out).unwrap();
         assert!(!quit && tries == 2, "{out}");
-        assert!(out.contains("Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? "), "{out}");
+        assert!(
+            out.contains(
+                "Your edited hunk does not apply. Edit again (saying \"no\" discards!) [y/n]? "
+            ),
+            "{out}"
+        );
         assert_eq!(f.hunks[0].decision, Decision::Use);
-        assert_eq!(String::from_utf8(f.assemble().unwrap()).unwrap(), numbered(12, &[]).replace("5\n", "five\n"));
+        assert_eq!(
+            String::from_utf8(f.assemble().unwrap()).unwrap(),
+            numbered(12, &[]).replace("5\n", "five\n")
+        );
     }
 
     #[test]
     fn edit_is_refused_for_a_mode_change_and_a_deletion() {
-        let side = |mode| Some(Side { content: b"x\n".to_vec(), mode, oid: Some(asc_core::git::blob_oid(b"x\n")) });
-        let s = Settings { context: 3, inter_hunk: 0, algorithm: Algorithm::Myers, indent_heuristic: true };
+        let side = |mode| {
+            Some(Side {
+                content: b"x\n".to_vec(),
+                mode,
+                oid: Some(asc_core::git::blob_oid(b"x\n")),
+            })
+        };
+        let s = Settings {
+            context: 3,
+            inter_hunk: 0,
+            algorithm: Algorithm::Myers,
+            indent_heuristic: true,
+        };
         let mut f = build(b"a/f", b"b/f", side(0o100755), side(0o100644), 7, &s);
         let (_, out) = run(&mut f, "e\ny\n");
-        assert!(out.contains("Stage mode change [y,n,q,a,d,p,P,?]? "), "{out}");
+        assert!(
+            out.contains("Stage mode change [y,n,q,a,d,p,P,?]? "),
+            "{out}"
+        );
         assert!(out.contains("Sorry, cannot edit this hunk"), "{out}");
         let mut f = build(b"a/f", b"b/f", side(0o100644), None, 7, &s);
         let (_, out) = run(&mut f, "e\ny\n");
@@ -616,11 +764,23 @@ mod tests {
 
     #[test]
     fn an_empty_added_file_is_one_prompt_without_hunks() {
-        let s = Settings { context: 3, inter_hunk: 0, algorithm: Algorithm::Myers, indent_heuristic: true };
-        let side = Some(Side { content: Vec::new(), mode: 0o100644, oid: Some(asc_core::git::blob_oid(b"")) });
+        let s = Settings {
+            context: 3,
+            inter_hunk: 0,
+            algorithm: Algorithm::Myers,
+            indent_heuristic: true,
+        };
+        let side = Some(Side {
+            content: Vec::new(),
+            mode: 0o100644,
+            oid: Some(asc_core::git::blob_oid(b"")),
+        });
         let mut f = build(b"a/f", b"b/f", None, side, 7, &s);
         let (_, out) = run(&mut f, "?\ny\n");
-        assert!(out.contains("(1/1) Stage addition [y,n,q,a,d,?]? "), "{out}");
+        assert!(
+            out.contains("(1/1) Stage addition [y,n,q,a,d,?]? "),
+            "{out}"
+        );
         assert_eq!(f.head, Decision::Use);
     }
 

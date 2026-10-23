@@ -13,14 +13,18 @@ use asc_core::path::RepoPath;
 use asc_wc::SafeRoot;
 use asc_wc::ignore::{Hit, IgnoreSources, IgnoreStack, shadow_warning};
 
+use super::add::cwd_prefix;
 use super::add::spec::{Spec, repo_path};
 use super::add::target::Target;
-use super::add::cwd_prefix;
 use super::common::{CliError, Ctx, Result, WsCtx};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "check-ignore", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "check-ignore",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
     pub rest: Vec<OsString>,
@@ -29,7 +33,15 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "check-ignore",
     flags: &[
-        "-q", "--quiet", "-v", "--verbose", "-n", "--non-matching", "-z", "--stdin", "--no-index",
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "-n",
+        "--non-matching",
+        "-z",
+        "--stdin",
+        "--no-index",
         "--index",
     ],
     placeholders: &[],
@@ -60,7 +72,8 @@ pub fn os_bytes(s: &OsStr) -> Vec<u8> {
 
 /// git's `quote_c_style`: the quoted form of `name`, or `None` when it prints as is.
 pub fn c_quote(name: &[u8], quote_high: bool) -> Option<Vec<u8>> {
-    let special = |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (quote_high && b >= 0x80);
+    let special =
+        |b: u8| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || (quote_high && b >= 0x80);
     if !name.iter().any(|&b| special(b)) {
         return None;
     }
@@ -117,7 +130,9 @@ pub fn unquote_c(line: &[u8]) -> Option<Vec<u8>> {
                         if !digits.iter().all(|d| (b'0'..=b'7').contains(d)) {
                             return None;
                         }
-                        let v = digits.iter().fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0'));
+                        let v = digits
+                            .iter()
+                            .fold(0u32, |acc, d| acc * 8 + u32::from(d - b'0'));
                         out.push(u8::try_from(v).ok()?);
                         i += 2;
                     }
@@ -169,7 +184,10 @@ pub fn ignore_sources(ctx: &Ctx, ws: &WsCtx) -> IgnoreSources {
             .path("asc.excludesFile")
             .or_else(|| xdg("asc/ignore"))
             .unwrap_or_else(|| root.join(".asc/no-such-global-ignore")),
-        core_excludes: ctx.config.path("core.excludesFile").or_else(|| xdg("git/ignore")),
+        core_excludes: ctx
+            .config
+            .path("core.excludesFile")
+            .or_else(|| xdg("git/ignore")),
         local_exclude: root.join(".asc/info/exclude"),
         common_exclude: ws.projection.common_dir().join("info/exclude"),
     }
@@ -178,9 +196,15 @@ pub fn ignore_sources(ctx: &Ctx, ws: &WsCtx) -> IgnoreSources {
 /// Reads all of stdin, at most [`MAX_STDIN`] bytes.
 pub fn read_stdin() -> Result<Vec<u8>> {
     let mut buf = Vec::new();
-    io::stdin().lock().take(MAX_STDIN + 1).read_to_end(&mut buf)?;
+    io::stdin()
+        .lock()
+        .take(MAX_STDIN + 1)
+        .read_to_end(&mut buf)?;
     if buf.len() as u64 > MAX_STDIN {
-        return Err(CliError::Fatal(format!("asc: --stdin input is larger than {} MiB", MAX_STDIN >> 20)));
+        return Err(CliError::Fatal(format!(
+            "asc: --stdin input is larger than {} MiB",
+            MAX_STDIN >> 20
+        )));
     }
     Ok(buf)
 }
@@ -196,8 +220,12 @@ pub fn stdin_records(buf: &[u8], nul: bool) -> Result<Vec<Vec<u8>>> {
         let record = &rest[..end];
         rest = rest.get(end + 1..).unwrap_or(&[]);
         if !nul && record.first() == Some(&b'"') {
-            let plain = unquote_c(record)
-                .ok_or_else(|| CliError::Fatal(format!("line is badly quoted: {}", String::from_utf8_lossy(record))))?;
+            let plain = unquote_c(record).ok_or_else(|| {
+                CliError::Fatal(format!(
+                    "line is badly quoted: {}",
+                    String::from_utf8_lossy(record)
+                ))
+            })?;
             out.push(plain);
         } else {
             out.push(record.to_vec());
@@ -252,7 +280,8 @@ fn read_ignore(gate: &SafeRoot, file: &Path) -> String {
         Err(_) => file.to_owned(),
     };
     let mut bytes = Vec::new();
-    let read = std::fs::File::open(path).and_then(|f| f.take(MAX_IGNORE_FILE + 1).read_to_end(&mut bytes));
+    let read =
+        std::fs::File::open(path).and_then(|f| f.take(MAX_IGNORE_FILE + 1).read_to_end(&mut bytes));
     if read.is_err() || bytes.len() as u64 > MAX_IGNORE_FILE {
         return String::new();
     }
@@ -261,8 +290,16 @@ fn read_ignore(gate: &SafeRoot, file: &Path) -> String {
 
 fn describe(gate: &SafeRoot, hit: &Hit, path: &[u8]) -> Source {
     let Some(file) = &hit.file else {
-        let pattern = if path.starts_with(b".git") { ".git/" } else { ".asc/info/" };
-        return Source { file: String::new(), line: 0, pattern: pattern.to_owned() };
+        let pattern = if path.starts_with(b".git") {
+            ".git/"
+        } else {
+            ".asc/info/"
+        };
+        return Source {
+            file: String::new(),
+            line: 0,
+            pattern: pattern.to_owned(),
+        };
     };
     let text = read_ignore(gate, file);
     Source {
@@ -303,13 +340,18 @@ impl Lookup<'_> {
             at.extend_from_slice(part);
             let last = i + 1 == parts.len();
             let beyond = || {
-                CliError::Fatal(format!("pathspec '{}' is beyond a symbolic link", String::from_utf8_lossy(arg)))
+                CliError::Fatal(format!(
+                    "pathspec '{}' is beyond a symbolic link",
+                    String::from_utf8_lossy(arg)
+                ))
             };
-            let repo = RepoPath::new(at.clone()).map_err(|e| CliError::Fatal(format!("{}: {e}", String::from_utf8_lossy(arg))))?;
+            let repo = RepoPath::new(at.clone())
+                .map_err(|e| CliError::Fatal(format!("{}: {e}", String::from_utf8_lossy(arg))))?;
             let abs = self.gate.resolve(&repo).ok_or_else(beyond)?;
             let is_dir = !last
                 || dir_hint
-                || std::fs::symlink_metadata(&abs).is_ok_and(|m| m.is_dir() && !asc_wc::safe_path::is_link(&m));
+                || std::fs::symlink_metadata(&abs)
+                    .is_ok_and(|m| m.is_dir() && !asc_wc::safe_path::is_link(&m));
             let hit = stack.explain(&abs, is_dir);
             if last {
                 return Ok(hit);
@@ -318,7 +360,8 @@ impl Lookup<'_> {
                 return Ok(hit);
             }
             if stack.push_dir(&abs).map_err(CliError::Io)? {
-                self.shadowed.insert(String::from_utf8_lossy(&at).into_owned());
+                self.shadowed
+                    .insert(String::from_utf8_lossy(&at).into_owned());
             }
         }
         Ok(None)
@@ -397,7 +440,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     if o.stdin {
         if !o.paths.is_empty() {
-            return Err(CliError::Fatal("cannot specify pathnames with --stdin".into()));
+            return Err(CliError::Fatal(
+                "cannot specify pathnames with --stdin".into(),
+            ));
         }
     } else {
         if o.nul {
@@ -409,14 +454,20 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
     if o.quiet {
         if o.paths.len() > 1 {
-            return Err(CliError::Fatal("--quiet is only valid with a single pathname".into()));
+            return Err(CliError::Fatal(
+                "--quiet is only valid with a single pathname".into(),
+            ));
         }
         if o.verbose {
-            return Err(CliError::Fatal("cannot have both --quiet and --verbose".into()));
+            return Err(CliError::Fatal(
+                "cannot have both --quiet and --verbose".into(),
+            ));
         }
     }
     if o.non_matching && !o.verbose {
-        return Err(CliError::Fatal("--non-matching is only valid with --verbose".into()));
+        return Err(CliError::Fatal(
+            "--non-matching is only valid with --verbose".into(),
+        ));
     }
 
     let root = ws.projection.toplevel();
@@ -427,7 +478,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     } else {
         o.paths.iter().map(|p| os_bytes(p)).collect()
     };
-    let target = if o.no_index { None } else { Some(Target::open(ctx).await?) };
+    let target = if o.no_index {
+        None
+    } else {
+        Some(Target::open(ctx).await?)
+    };
     let mut lookup = Lookup {
         gate: SafeRoot::new(root),
         sources: ignore_sources(ctx, ws),
@@ -464,7 +519,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let written = write_record(&mut out, &o, arg, source.as_ref(), quote_high);
         match written {
             Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => return Ok(ExitCode::from(u8::from(matched == 0))),
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                return Ok(ExitCode::from(u8::from(matched == 0)));
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -481,13 +538,23 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 }
 
 /// One output record: the path alone, or with `-v` the source, line and pattern.
-fn write_record(out: &mut dyn Write, o: &Opts, path: &[u8], hit: Option<&Source>, quote_high: bool) -> io::Result<()> {
+fn write_record(
+    out: &mut dyn Write,
+    o: &Opts,
+    path: &[u8],
+    hit: Option<&Source>,
+    quote_high: bool,
+) -> io::Result<()> {
     if hit.is_none() && !o.non_matching {
         return Ok(());
     }
     if o.nul {
         if o.verbose {
-            let empty = Source { file: String::new(), line: 0, pattern: String::new() };
+            let empty = Source {
+                file: String::new(),
+                line: 0,
+                pattern: String::new(),
+            };
             let s = hit.unwrap_or(&empty);
             out.write_all(s.file.as_bytes())?;
             out.write_all(&[0])?;
@@ -502,8 +569,9 @@ fn write_record(out: &mut dyn Write, o: &Opts, path: &[u8], hit: Option<&Source>
         return out.write_all(&[0]);
     }
     if o.verbose {
-        let (file, line, pattern) =
-            hit.map_or(("", String::new(), ""), |s| (s.file.as_str(), s.line.to_string(), s.pattern.as_str()));
+        let (file, line, pattern) = hit.map_or(("", String::new(), ""), |s| {
+            (s.file.as_str(), s.line.to_string(), s.pattern.as_str())
+        });
         write_quoted(out, file.as_bytes(), quote_high)?;
         out.write_all(b":")?;
         out.write_all(line.as_bytes())?;
@@ -538,8 +606,14 @@ mod tests {
 
     #[test]
     fn records_split_and_unquote() {
-        assert_eq!(stdin_records(b"a\n\"b c\"\nlast", false).unwrap(), vec![b"a".to_vec(), b"b c".to_vec(), b"last".to_vec()]);
-        assert_eq!(stdin_records(b"a\0b\n\0", true).unwrap(), vec![b"a".to_vec(), b"b\n".to_vec()]);
+        assert_eq!(
+            stdin_records(b"a\n\"b c\"\nlast", false).unwrap(),
+            vec![b"a".to_vec(), b"b c".to_vec(), b"last".to_vec()]
+        );
+        assert_eq!(
+            stdin_records(b"a\0b\n\0", true).unwrap(),
+            vec![b"a".to_vec(), b"b\n".to_vec()]
+        );
         assert!(stdin_records(b"\"bad\n", false).is_err());
     }
 

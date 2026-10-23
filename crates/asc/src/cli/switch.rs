@@ -70,9 +70,26 @@ impl Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "switch",
     flags: &[
-        "-c", "--create", "-C", "--force-create", "-d", "--detach", "-f", "--force",
-        "--discard-changes", "-q", "--quiet", "-t", "--track", "--no-track", "--guess", "--no-guess",
-        "--orphan", "--ignore-other-worktrees", "--progress", "--no-progress",
+        "-c",
+        "--create",
+        "-C",
+        "--force-create",
+        "-d",
+        "--detach",
+        "-f",
+        "--force",
+        "--discard-changes",
+        "-q",
+        "--quiet",
+        "-t",
+        "--track",
+        "--no-track",
+        "--guess",
+        "--no-guess",
+        "--orphan",
+        "--ignore-other-worktrees",
+        "--progress",
+        "--no-progress",
     ],
     placeholders: &[],
 }];
@@ -132,7 +149,9 @@ fn track_mode(value: Option<&str>) -> Result<TrackOpt> {
     match value {
         None | Some("direct") => Ok(TrackOpt::Direct),
         Some("inherit") => Ok(TrackOpt::Inherit),
-        Some(other) => Err(CliError::Fatal(format!("malformed value for --track: {other}"))),
+        Some(other) => Err(CliError::Fatal(format!(
+            "malformed value for --track: {other}"
+        ))),
     }
 }
 
@@ -153,7 +172,11 @@ pub(crate) fn parse(args: &[OsString], cmd: Cmd, usage: &'static str) -> Result<
                 while let Some(c) = chars.next() {
                     let value = |name: &str, chars: &mut std::str::Chars<'_>, cur: &mut Cursor| {
                         let rest: String = chars.by_ref().collect();
-                        if rest.is_empty() { cur.value(name, None) } else { Ok(rest) }
+                        if rest.is_empty() {
+                            cur.value(name, None)
+                        } else {
+                            Ok(rest)
+                        }
                     };
                     match (c, cmd) {
                         ('c', Cmd::Switch) | ('b', Cmd::Checkout) => {
@@ -166,7 +189,9 @@ pub(crate) fn parse(args: &[OsString], cmd: Cmd, usage: &'static str) -> Result<
                         ('f', _) => o.force = true,
                         ('q', _) => o.quiet = true,
                         ('t', _) => o.track = TrackOpt::Direct,
-                        (other, _) => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
+                        (other, _) => {
+                            return Err(cur.usage_error(&format!("unknown switch `{other}'")));
+                        }
                     }
                 }
             }
@@ -189,7 +214,11 @@ pub(crate) fn parse(args: &[OsString], cmd: Cmd, usage: &'static str) -> Result<
             },
         }
     }
-    Ok(Parsed { opts: o, words, after })
+    Ok(Parsed {
+        opts: o,
+        words,
+        after,
+    })
 }
 
 // ---------------------------------------------------------------------------------- the move
@@ -217,11 +246,22 @@ pub(crate) enum RevKind {
 #[derive(Clone, Debug)]
 pub(crate) enum Dest {
     /// A branch that exists (`tip` `None`: the unborn current branch).
-    Existing { branch: String, tip: Option<ChangesetId> },
+    Existing {
+        branch: String,
+        tip: Option<ChangesetId>,
+    },
     /// A new branch (`force`: reset it when it exists).
-    Create { branch: String, start: Option<Rev>, force: bool },
-    Detach { commit: ChangesetId },
-    Orphan { branch: String },
+    Create {
+        branch: String,
+        start: Option<Rev>,
+        force: bool,
+    },
+    Detach {
+        commit: ChangesetId,
+    },
+    Orphan {
+        branch: String,
+    },
 }
 
 /// One head move.
@@ -245,8 +285,15 @@ pub(crate) fn ref_name(full: &str) -> Result<RefName> {
 
 /// The target of `full`, when the ref exists.
 pub(crate) async fn ref_target(ws: &WsCtx, full: &str) -> Result<Option<RefTarget>> {
-    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else { return Ok(None) };
-    Ok(ws.db.refs().get(ws.repo.key, &name).await?.map(|e| e.target))
+    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else {
+        return Ok(None);
+    };
+    Ok(ws
+        .db
+        .refs()
+        .get(ws.repo.key, &name)
+        .await?
+        .map(|e| e.target))
 }
 
 /// The commit `refs/heads/<name>` is at.
@@ -269,14 +316,21 @@ pub(crate) async fn peel(ws: &WsCtx, target: RefTarget) -> Result<ChangesetId> {
 /// hook read it back, and a changeset nothing has exported yet has no row.
 pub(crate) async fn ensure_mapped(ws: &WsCtx, commit: ChangesetId) -> Result<GitOid> {
     let git = ws.engine.git_commit_of(commit).await.map_err(fatal)?;
-    let row = asc_engine::derive::GitMapRow { git, kind: ObjectKind::Commit, asc: *commit.as_bytes() };
+    let row = asc_engine::derive::GitMapRow {
+        git,
+        kind: ObjectKind::Commit,
+        asc: *commit.as_bytes(),
+    };
     git_map::insert_many(&ws.db, ws.repo.key, &[row]).await?;
     Ok(git)
 }
 
 /// Abbreviation length: `core.abbrev`, default 7.
 pub(crate) fn abbrev_len(ctx: &Ctx) -> usize {
-    ctx.config.get("core.abbrev").and_then(|v| v.parse::<usize>().ok()).map_or(7, |n| n.clamp(4, 40))
+    ctx.config
+        .get("core.abbrev")
+        .and_then(|v| v.parse::<usize>().ok())
+        .map_or(7, |n| n.clamp(4, 40))
 }
 
 /// `<abbrev> <subject>` of a commit, as `HEAD is now at …` prints it.
@@ -285,15 +339,21 @@ pub(crate) async fn commit_line(ctx: &Ctx, ws: &WsCtx, cs: ChangesetId) -> Resul
     let message = ws.engine.get_changeset(cs).await?.message.clone();
     let text = String::from_utf8_lossy(&message).into_owned();
     let subject: Vec<&str> = text.lines().take_while(|l| !l.trim().is_empty()).collect();
-    Ok(format!("{} {}", &git.to_string()[..abbrev_len(ctx)], subject.join(" ")))
+    Ok(format!(
+        "{} {}",
+        &git.to_string()[..abbrev_len(ctx)],
+        subject.join(" ")
+    ))
 }
 
 /// The path (with `/`) of another workspace that has `branch` checked out.
 pub(crate) async fn held_elsewhere(ws: &WsCtx, branch: &str) -> Result<Option<String>> {
-    Ok(match workspaces::holding_branch(&ws.db, ws.repo.key, branch).await? {
-        Some(w) if w.ws.id != ws.workspace.ws.id => Some(w.ws.path.replace('\\', "/")),
-        _ => None,
-    })
+    Ok(
+        match workspaces::holding_branch(&ws.db, ws.repo.key, branch).await? {
+            Some(w) if w.ws.id != ws.workspace.ws.id => Some(w.ws.path.replace('\\', "/")),
+            _ => None,
+        },
+    )
 }
 
 /// The path of any workspace (this one included) that has `branch` checked out.
@@ -363,17 +423,29 @@ pub(crate) async fn resolve_rev(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Opt
     let label = word.to_owned();
     if word == "-" {
         return Ok(match read_prev(ws) {
-            Some(Prev::Branch(name)) => branch_tip(ws, &name)
-                .await?
-                .map(|commit| Rev { label: name.clone(), commit, kind: RevKind::Branch(name) }),
-            Some(Prev::Commit(oid)) => git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit)
-                .await?
-                .map(|asc| Rev { label: oid.to_string(), commit: ChangesetId::from_bytes(asc), kind: RevKind::Other }),
+            Some(Prev::Branch(name)) => branch_tip(ws, &name).await?.map(|commit| Rev {
+                label: name.clone(),
+                commit,
+                kind: RevKind::Branch(name),
+            }),
+            Some(Prev::Commit(oid)) => {
+                git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit)
+                    .await?
+                    .map(|asc| Rev {
+                        label: oid.to_string(),
+                        commit: ChangesetId::from_bytes(asc),
+                        kind: RevKind::Other,
+                    })
+            }
             None => None,
         });
     }
     if !word.is_empty() && !word.contains(['~', '^', '@', ':']) {
-        for (prefix, kind) in [("refs/heads/", 0u8), ("refs/tags/", 1), ("refs/remotes/", 2)] {
+        for (prefix, kind) in [
+            ("refs/heads/", 0u8),
+            ("refs/tags/", 1),
+            ("refs/remotes/", 2),
+        ] {
             let full = format!("{prefix}{word}");
             if let Some(target) = ref_target(ws, &full).await? {
                 let commit = peel(ws, target).await?;
@@ -382,11 +454,19 @@ pub(crate) async fn resolve_rev(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Opt
                     1 => RevKind::Tag,
                     _ => RevKind::Remote(full),
                 };
-                return Ok(Some(Rev { label, commit, kind }));
+                return Ok(Some(Rev {
+                    label,
+                    commit,
+                    kind,
+                }));
             }
         }
     }
-    Ok(commit_of(ctx, word).await?.map(|commit| Rev { label, commit, kind: RevKind::Other }))
+    Ok(commit_of(ctx, word).await?.map(|commit| Rev {
+        label,
+        commit,
+        kind: RevKind::Other,
+    }))
 }
 
 /// The remote-tracking refs `refs/remotes/<remote>/<name>` that exist, as `(remote, full)`.
@@ -394,7 +474,9 @@ pub(crate) async fn remote_matches(ws: &WsCtx, name: &str) -> Result<Vec<(String
     let mut out = Vec::new();
     for entry in ws.db.refs().list(ws.repo.key, "refs/remotes/").await? {
         let full = String::from_utf8_lossy(entry.name.as_bytes()).into_owned();
-        let Some(rest) = full.strip_prefix("refs/remotes/") else { continue };
+        let Some(rest) = full.strip_prefix("refs/remotes/") else {
+            continue;
+        };
         if let Some((remote, branch)) = rest.split_once('/')
             && branch == name
         {
@@ -439,9 +521,15 @@ pub(crate) async fn guess_remote(ctx: &Ctx, ws: &WsCtx, name: &str) -> Result<Op
             }
         }
     };
-    let Some(target) = ref_target(ws, &pick.1).await? else { return Ok(None) };
+    let Some(target) = ref_target(ws, &pick.1).await? else {
+        return Ok(None);
+    };
     let commit = peel(ws, target).await?;
-    Ok(Some(Rev { label: format!("{}/{name}", pick.0), commit, kind: RevKind::Remote(pick.1) }))
+    Ok(Some(Rev {
+        label: format!("{}/{name}", pick.0),
+        commit,
+        kind: RevKind::Remote(pick.1),
+    }))
 }
 
 // ------------------------------------------------------------------------------ tree moves
@@ -451,7 +539,10 @@ struct ColdStat;
 
 impl StatSource for ColdStat {
     fn stat(&self, _: &RepoPath, entry: &Entry) -> FileStat {
-        FileStat { size: entry.size as u32, ..FileStat::default() }
+        FileStat {
+            size: entry.size as u32,
+            ..FileStat::default()
+        }
     }
 }
 
@@ -469,12 +560,24 @@ impl Drop for Scratch {
 
 fn leaf_of_change(change: &Change) -> Option<Leaf> {
     match change {
-        Change::Write { kind, file, size, git, .. } => {
-            Some(Leaf { kind: *kind, file: *file, size: *size, git: *git })
-        }
-        Change::Gitlink { commit } => {
-            Some(Leaf { kind: Kind::Gitlink, file: FileId::from_bytes([0; 32]), size: 0, git: *commit })
-        }
+        Change::Write {
+            kind,
+            file,
+            size,
+            git,
+            ..
+        } => Some(Leaf {
+            kind: *kind,
+            file: *file,
+            size: *size,
+            git: *git,
+        }),
+        Change::Gitlink { commit } => Some(Leaf {
+            kind: Kind::Gitlink,
+            file: FileId::from_bytes([0; 32]),
+            size: 0,
+            git: *commit,
+        }),
         Change::Delete => None,
     }
 }
@@ -486,19 +589,32 @@ fn row_is(row: &StageRow, leaf: Option<&Leaf>) -> bool {
     }
     match (row.file, leaf) {
         (None, None) => true,
-        (Some(f), Some(l)) => f == l.file && row.kind == l.kind && row.size == l.size && row.git == Some(l.git),
+        (Some(f), Some(l)) => {
+            f == l.file && row.kind == l.kind && row.size == l.size && row.git == Some(l.git)
+        }
         _ => false,
     }
 }
 
 fn leaf_of_entry(e: &Entry) -> Leaf {
-    Leaf { kind: e.kind, file: FileId::from_bytes(e.id), size: e.size, git: e.git }
+    Leaf {
+        kind: e.kind,
+        file: FileId::from_bytes(e.id),
+        size: e.size,
+        git: e.git,
+    }
 }
 
 /// The tree entry a write change makes.
 fn entry_of_change(path: &RepoPath, change: &Change) -> Option<Entry> {
     match change {
-        Change::Write { kind, file, size, git, .. } => Some(Entry {
+        Change::Write {
+            kind,
+            file,
+            size,
+            git,
+            ..
+        } => Some(Entry {
             name: path.file_name(),
             kind: *kind,
             id: *file.as_bytes(),
@@ -524,14 +640,18 @@ fn path_text(p: &RepoPath) -> String {
 fn would_overwrite(tracked: &[RepoPath], untracked: &[RepoPath]) -> CliError {
     let mut text = String::new();
     if !tracked.is_empty() {
-        text.push_str("error: Your local changes to the following files would be overwritten by checkout:\n");
+        text.push_str(
+            "error: Your local changes to the following files would be overwritten by checkout:\n",
+        );
         for p in tracked {
             text.push_str(&format!("\t{}\n", path_text(p)));
         }
         text.push_str("Please commit your changes or stash them before you switch branches.\n");
     }
     if !untracked.is_empty() {
-        text.push_str("error: The following untracked working tree files would be overwritten by checkout:\n");
+        text.push_str(
+            "error: The following untracked working tree files would be overwritten by checkout:\n",
+        );
         for p in untracked {
             text.push_str(&format!("\t{}\n", path_text(p)));
         }
@@ -551,15 +671,22 @@ async fn safe_move(
     rows: Vec<StageRow>,
 ) -> Result<Vec<StageRow>> {
     if rows.iter().any(|r| r.stage > 0) {
-        return Err(CliError::Raw("error: you need to resolve your current index first".into(), 1));
+        return Err(CliError::Raw(
+            "error: you need to resolve your current index first".into(),
+            1,
+        ));
     }
     let diff = ws.engine.leafdiff(head_root, target_root, None).await?;
     if diff.is_empty() {
         return Ok(rows);
     }
     // What HEAD holds at each changed path: the change that turns the target back into HEAD.
-    let back: HashMap<RepoPath, Change> =
-        ws.engine.leafdiff(target_root, head_root, None).await?.into_iter().collect();
+    let back: HashMap<RepoPath, Change> = ws
+        .engine
+        .leafdiff(target_root, head_root, None)
+        .await?
+        .into_iter()
+        .collect();
     let staged: HashMap<&[u8], &StageRow> = rows.iter().map(|r| (r.path.as_slice(), r)).collect();
     let mut touched: HashSet<Vec<u8>> = HashSet::new();
     let mut stale = Vec::new();
@@ -571,7 +698,10 @@ async fn safe_move(
             Some(row) if row_is(row, leaf_of_change(to).as_ref()) => {}
             Some(_) => stale.push(path.clone()),
             None => {
-                let from = back.get(path).filter(|c| !matches!(c, Change::Delete)).cloned();
+                let from = back
+                    .get(path)
+                    .filter(|c| !matches!(c, Change::Delete))
+                    .cloned();
                 work.push((path.clone(), from, to.clone()));
             }
         }
@@ -580,13 +710,20 @@ async fn safe_move(
         return Err(would_overwrite(&stale, &[]));
     }
     write_safe(ctx, ws, &work).await?;
-    Ok(rows.into_iter().filter(|r| !touched.contains(&r.path)).collect())
+    Ok(rows
+        .into_iter()
+        .filter(|r| !touched.contains(&r.path))
+        .collect())
 }
 
 /// Writes `work` (path, what HEAD holds, what the target holds) through `plain::checkout` in
 /// `Safe` mode. The stat cache is a scratch index holding HEAD's entries at those paths with no
 /// recorded stat, so every file is hashed and local edits are always seen.
-async fn write_safe(ctx: &Ctx, ws: &WsCtx, work: &[(RepoPath, Option<Change>, Change)]) -> Result<()> {
+async fn write_safe(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    work: &[(RepoPath, Option<Change>, Change)],
+) -> Result<()> {
     if work.is_empty() {
         return Ok(());
     }
@@ -607,11 +744,18 @@ async fn write_safe(ctx: &Ctx, ws: &WsCtx, work: &[(RepoPath, Option<Change>, Ch
     }
     let from_tree = ws.engine.apply(empty, &from).await?;
     let to_tree = ws.engine.apply(empty, &to).await?;
-    let scratch = Scratch(ws.home.tmp().join(format!("switch-index-{}", std::process::id())));
+    let scratch = Scratch(
+        ws.home
+            .tmp()
+            .join(format!("switch-index-{}", std::process::id())),
+    );
     let rendered = asc_git::index::render(
         entries.into_iter(),
         &ColdStat,
-        &asc_git::index::RenderOptions { cache_tree: false, ..Default::default() },
+        &asc_git::index::RenderOptions {
+            cache_tree: false,
+            ..Default::default()
+        },
     );
     asc_git::index::write(&scratch.0, &rendered).map_err(fatal)?;
     let parts = WcParts::new(ctx, ws, scratch.0.clone())?;
@@ -627,7 +771,8 @@ async fn write_safe(ctx: &Ctx, ws: &WsCtx, work: &[(RepoPath, Option<Change>, Ch
             Ok(())
         }
         Err(plain::Error::Conflicts(paths)) => {
-            let (local, other): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| tracked.contains(p));
+            let (local, other): (Vec<_>, Vec<_>) =
+                paths.into_iter().partition(|p| tracked.contains(p));
             Err(would_overwrite(&local, &other))
         }
         Err(e) => Err(fatal(e)),
@@ -638,10 +783,17 @@ async fn write_safe(ctx: &Ctx, ws: &WsCtx, work: &[(RepoPath, Option<Change>, Ch
 /// modified or deleted tracked file, and every conflicted path.
 async fn force_paths(ctx: &Ctx, index: TreeId, target: TreeId) -> Result<Vec<RepoPath>> {
     let ws = ctx.ws()?;
-    let mut paths: std::collections::BTreeSet<RepoPath> =
-        ws.engine.leafdiff(index, target, None).await?.into_iter().map(|(p, _)| p).collect();
+    let mut paths: std::collections::BTreeSet<RepoPath> = ws
+        .engine
+        .leafdiff(index, target, None)
+        .await?
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect();
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
-    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &ws.workspace).await.map_err(fatal)?;
+    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &ws.workspace)
+        .await
+        .map_err(fatal)?;
     paths.extend(st.unstaged.into_iter().map(|c| c.path));
     paths.extend(st.unmerged);
     Ok(paths.into_iter().collect())
@@ -649,7 +801,11 @@ async fn force_paths(ctx: &Ctx, index: TreeId, target: TreeId) -> Result<Vec<Rep
 
 /// The rows that make the index hold the whole current index tree over an empty HEAD (the
 /// state `checkout --orphan` leaves).
-async fn rows_over_empty(ws: &WsCtx, index_root: TreeId, rows: &[StageRow]) -> Result<Vec<StageRow>> {
+async fn rows_over_empty(
+    ws: &WsCtx,
+    index_root: TreeId,
+    rows: &[StageRow],
+) -> Result<Vec<StageRow>> {
     let mut out: BTreeMap<(Vec<u8>, u8), StageRow> = BTreeMap::new();
     let mut walk = ws.engine.walk(index_root, None);
     while let Some((path, entry)) = walk.try_next().await? {
@@ -678,13 +834,24 @@ impl Saved {
     pub(crate) async fn capture(ws: &WsCtx) -> Result<Self> {
         let row = workspaces::get(&ws.db, ws.workspace.ws.id)
             .await?
-            .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
-        Ok(Self { head: ws.projection.read_head()?, row_head: row.ws.head.clone(), base: row.ws.base_cs })
+            .ok_or_else(|| {
+                CliError::Fatal("asc: this workspace is not registered in state.db".into())
+            })?;
+        Ok(Self {
+            head: ws.projection.read_head()?,
+            row_head: row.ws.head.clone(),
+            base: row.ws.base_cs,
+        })
     }
 }
 
 /// Writes HEAD and the workspace row's head name (the base commit stays; the chokepoint moves it).
-pub(crate) async fn point_head(ws: &WsCtx, head: &Head, row_head: &str, base: Option<ChangesetId>) -> Result<()> {
+pub(crate) async fn point_head(
+    ws: &WsCtx,
+    head: &Head,
+    row_head: &str,
+    base: Option<ChangesetId>,
+) -> Result<()> {
     ws.projection.write_head(head)?;
     workspaces::update_head_base(&ws.db, ws.workspace.ws.id, row_head, base).await?;
     Ok(())
@@ -692,11 +859,17 @@ pub(crate) async fn point_head(ws: &WsCtx, head: &Head, row_head: &str, base: Op
 
 pub(crate) async fn restore_head(ws: &WsCtx, saved: &Saved) {
     let _ = ws.projection.write_head(&saved.head);
-    let _ = workspaces::update_head_base(&ws.db, ws.workspace.ws.id, &saved.row_head, saved.base).await;
+    let _ =
+        workspaces::update_head_base(&ws.db, ws.workspace.ws.id, &saved.row_head, saved.base).await;
 }
 
 fn update(name: &str, expect: Expect, new: Option<RefTarget>) -> Result<RefUpdate> {
-    Ok(RefUpdate { name: ref_name(name)?, expect, new, expires_at: None })
+    Ok(RefUpdate {
+        name: ref_name(name)?,
+        expect,
+        new,
+        expires_at: None,
+    })
 }
 
 /// Every ref tip's commit, for the "commits left behind" check.
@@ -710,26 +883,46 @@ async fn all_tips(ws: &WsCtx) -> Result<Vec<ChangesetId>> {
 
 /// What leaving a detached HEAD at `old` prints: git's warning about commits no ref reaches, or
 /// `Previous HEAD position was …`.
-async fn leaving_detached(ctx: &Ctx, ws: &WsCtx, old: ChangesetId, new: Option<ChangesetId>) -> Result<()> {
+async fn leaving_detached(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    old: ChangesetId,
+    new: Option<ChangesetId>,
+) -> Result<()> {
     let mut exclude = all_tips(ws).await?;
     exclude.extend(new);
     let graph = Graph::new(EngineSource::new(&ws.engine));
-    let q = LogQuery { include: vec![old], exclude, limit: Some(ORPHAN_LIMIT + 1), ..LogQuery::default() };
+    let q = LogQuery {
+        include: vec![old],
+        exclude,
+        limit: Some(ORPHAN_LIMIT + 1),
+        ..LogQuery::default()
+    };
     // A history boundary the local graph cannot cross only loses the warning, never the switch.
     let lost: Vec<ChangesetId> = graph.log(q).try_collect().await.unwrap_or_default();
     if lost.is_empty() {
-        eprintln!("Previous HEAD position was {}", commit_line(ctx, ws, old).await?);
+        eprintln!(
+            "Previous HEAD position was {}",
+            commit_line(ctx, ws, old).await?
+        );
         return Ok(());
     }
     let n = lost.len().min(ORPHAN_LIMIT);
     let noun = if n == 1 { "commit" } else { "commits" };
-    let mut text = format!("Warning: you are leaving {n} {noun} behind, not connected to\nany of your branches:\n\n");
+    let mut text = format!(
+        "Warning: you are leaving {n} {noun} behind, not connected to\nany of your branches:\n\n"
+    );
     for cs in lost.iter().take(n) {
         text.push_str(&format!("  {}\n", commit_line(ctx, ws, *cs).await?));
     }
     text.push('\n');
     if ctx.config.bool("advice.detachedHead") != Some(false) {
-        let git = ws.engine.git_commit_of(old).await.map_err(fatal)?.to_string();
+        let git = ws
+            .engine
+            .git_commit_of(old)
+            .await
+            .map_err(fatal)?
+            .to_string();
         let (pronoun, verb) = if n == 1 { ("it", "") } else { ("them", "") };
         text.push_str(&format!(
             "If you want to keep {pronoun} by creating a new branch, this may be a good time\nto do so with:\n\n {} branch <new-branch-name> {}{verb}\n\n",
@@ -766,7 +959,10 @@ pub(crate) fn upstream_ref(ctx: &Ctx, branch: &str) -> Option<(String, String)> 
     let tracking = if remote == "." {
         merge.clone()
     } else {
-        ctx.config.get_all(&format!("remote.{remote}.fetch")).iter().find_map(|spec| map_refspec(spec, &merge))?
+        ctx.config
+            .get_all(&format!("remote.{remote}.fetch"))
+            .iter()
+            .find_map(|spec| map_refspec(spec, &merge))?
     };
     let display = tracking
         .strip_prefix("refs/remotes/")
@@ -797,13 +993,18 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// The "Your branch is …" report of `branch` against its upstream (stdout), as `checkout` and
 /// `switch` print it.
 pub(crate) async fn report_tracking(ctx: &Ctx, ws: &WsCtx, branch: &str) -> Result<()> {
-    let Some((name, tracking)) = upstream_ref(ctx, branch) else { return Ok(()) };
+    let Some((name, tracking)) = upstream_ref(ctx, branch) else {
+        return Ok(());
+    };
     let hints = ctx.config.bool("advice.statusHints") != Some(false);
     let bin = tool(ctx);
     let mut text = String::new();
     let mut hint = |s: &str| {
         if hints {
-            text.push_str(&format!("  ({})\n", s.replace("\"git ", &format!("\"{bin} "))));
+            text.push_str(&format!(
+                "  ({})\n",
+                s.replace("\"git ", &format!("\"{bin} "))
+            ));
         }
     };
     let theirs = match ref_target(ws, &tracking).await? {
@@ -819,14 +1020,21 @@ pub(crate) async fn report_tracking(ctx: &Ctx, ws: &WsCtx, branch: &str) -> Resu
         (None, Some(_)) => return Ok(()),
         (Some(ours), Some(theirs)) => {
             let graph = Graph::new(EngineSource::new(&ws.engine));
-            let count = |inc, exc| LogQuery { include: vec![inc], exclude: vec![exc], ..LogQuery::default() };
+            let count = |inc, exc| LogQuery {
+                include: vec![inc],
+                exclude: vec![exc],
+                ..LogQuery::default()
+            };
             let ahead = graph.count(count(ours, theirs)).await.map_err(fatal)?;
             let behind = graph.count(count(theirs, ours)).await.map_err(fatal)?;
             match (ahead, behind) {
                 (0, 0) => format!("Your branch is up to date with '{name}'.\n"),
                 (a, 0) => {
                     hint("use \"git push\" to publish your local commits");
-                    format!("Your branch is ahead of '{name}' by {}.\n", plural(a, "commit", "commits"))
+                    format!(
+                        "Your branch is ahead of '{name}' by {}.\n",
+                        plural(a, "commit", "commits")
+                    )
                 }
                 (0, b) => {
                     hint("use \"git pull\" to update your local branch");
@@ -850,14 +1058,22 @@ pub(crate) async fn report_tracking(ctx: &Ctx, ws: &WsCtx, branch: &str) -> Resu
 
 /// Sets `branch.<name>.remote/merge` through `asc config`'s own writer.
 pub(crate) async fn set_config(ctx: &Ctx, key: &str, value: &str) -> Result<()> {
-    let rest = vec![OsString::from("--local"), OsString::from(key), OsString::from(value)];
+    let rest = vec![
+        OsString::from("--local"),
+        OsString::from(key),
+        OsString::from(value),
+    ];
     super::config::run(ctx, super::config::Args { rest }).await?;
     Ok(())
 }
 
 /// Removes a config key; a missing key is not an error.
 pub(crate) async fn unset_config(ctx: &Ctx, key: &str) {
-    let rest = vec![OsString::from("--local"), OsString::from("--unset-all"), OsString::from(key)];
+    let rest = vec![
+        OsString::from("--local"),
+        OsString::from("--unset-all"),
+        OsString::from(key),
+    ];
     let _ = super::config::run(ctx, super::config::Args { rest }).await;
 }
 
@@ -895,7 +1111,9 @@ pub(crate) async fn track_start(
     let (remote, merge, shown, tracking) = match &start.kind {
         RevKind::Remote(full) => {
             let rest = full.strip_prefix("refs/remotes/").unwrap_or(full);
-            let Some((remote, short)) = rest.split_once('/') else { return Ok(None) };
+            let Some((remote, short)) = rest.split_once('/') else {
+                return Ok(None);
+            };
             let merge = ctx
                 .config
                 .get_all(&format!("remote.{remote}.fetch"))
@@ -962,7 +1180,11 @@ async fn show_local_changes(ctx: &Ctx, ws: &WsCtx, head: Option<ChangesetId>) ->
             continue;
         }
         let path = RepoPath::new(row.path.clone()).map_err(fatal)?;
-        let in_head = ws.engine.lookup(head_root, &path).await?.is_some_and(|e| e.kind != Kind::Dir);
+        let in_head = ws
+            .engine
+            .lookup(head_root, &path)
+            .await?
+            .is_some_and(|e| e.kind != Kind::Dir);
         let letter = match (row.file, in_head) {
             (None, _) => 'D',
             (Some(_), true) => 'M',
@@ -972,9 +1194,13 @@ async fn show_local_changes(ctx: &Ctx, ws: &WsCtx, head: Option<ChangesetId>) ->
     }
     let fresh = workspaces::get(&ws.db, ws.workspace.ws.id)
         .await?
-        .ok_or_else(|| CliError::Fatal("asc: this workspace is not registered in state.db".into()))?;
+        .ok_or_else(|| {
+            CliError::Fatal("asc: this workspace is not registered in state.db".into())
+        })?;
     let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
-    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh).await.map_err(fatal)?;
+    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &fresh)
+        .await
+        .map_err(fatal)?;
     for c in st.unstaged {
         shown.insert(c.path.as_bytes().to_vec(), c.kind.letter());
     }
@@ -995,7 +1221,9 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
     // Where the move ends.
     let (branch, target): (Option<String>, Option<ChangesetId>) = match &m.dest {
         Dest::Existing { branch, tip } => (Some(branch.clone()), *tip),
-        Dest::Create { branch, start, .. } => (Some(branch.clone()), start.as_ref().map(|s| s.commit)),
+        Dest::Create { branch, start, .. } => {
+            (Some(branch.clone()), start.as_ref().map(|s| s.commit))
+        }
         Dest::Detach { commit } => (None, Some(*commit)),
         Dest::Orphan { branch } => (Some(branch.clone()), None),
     };
@@ -1012,8 +1240,15 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
                 _ => format!("'{b}' is already used by worktree at '{path}'"),
             }));
         }
-        if existed && matches!(&m.dest, Dest::Create { force: false, .. } | Dest::Orphan { .. }) {
-            return Err(CliError::Fatal(format!("a branch named '{b}' already exists")));
+        if existed
+            && matches!(
+                &m.dest,
+                Dest::Create { force: false, .. } | Dest::Orphan { .. }
+            )
+        {
+            return Err(CliError::Fatal(format!(
+                "a branch named '{b}' already exists"
+            )));
         }
     }
 
@@ -1052,11 +1287,27 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
     let reflog;
     match &m.dest {
         Dest::Existing { branch, .. } | Dest::Orphan { branch } => {
-            point_head(ws, &Head::Branch(branch.clone()), &heads(branch), saved.base).await?;
+            point_head(
+                ws,
+                &Head::Branch(branch.clone()),
+                &heads(branch),
+                saved.base,
+            )
+            .await?;
             reflog = format!("checkout: moving from {old_label} to {branch}");
         }
-        Dest::Create { branch, start, force } => {
-            point_head(ws, &Head::Branch(branch.clone()), &heads(branch), saved.base).await?;
+        Dest::Create {
+            branch,
+            start,
+            force,
+        } => {
+            point_head(
+                ws,
+                &Head::Branch(branch.clone()),
+                &heads(branch),
+                saved.base,
+            )
+            .await?;
             if let Some(start) = start {
                 let old = ref_target(ws, &heads(branch)).await?;
                 let expect = match (old, *force) {
@@ -1064,7 +1315,11 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
                     _ => Expect::Absent,
                 };
                 if old != Some(RefTarget::Changeset(start.commit)) {
-                    updates.push(update(&heads(branch), expect, Some(RefTarget::Changeset(start.commit)))?);
+                    updates.push(update(
+                        &heads(branch),
+                        expect,
+                        Some(RefTarget::Changeset(start.commit)),
+                    )?);
                 }
                 reflog = if existed {
                     format!("branch: Reset to {}", start.label)
@@ -1078,7 +1333,8 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         Dest::Detach { commit } => {
             let oid = target_git.ok_or_else(|| fatal("asc: no git commit for the target"))?;
             point_head(ws, &Head::Detached(oid), "", saved.base).await?;
-            let expect = old_commit.map_or(Expect::Absent, |o| Expect::Value(RefTarget::Changeset(o)));
+            let expect =
+                old_commit.map_or(Expect::Absent, |o| Expect::Value(RefTarget::Changeset(o)));
             updates.push(RefUpdate {
                 name: RefName::new_onelevel(b"HEAD".to_vec()).map_err(fatal)?,
                 expect,
@@ -1093,12 +1349,21 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         && matches!(saved.head, Head::Detached(_))
         && old_commit == target;
     if !in_place {
-        let txn = RefTxn { updates, actor: actor(), reason: String::new(), op_id: ext::OpId::new().0 };
+        let txn = RefTxn {
+            updates,
+            actor: actor(),
+            reason: String::new(),
+            op_id: ext::OpId::new().0,
+        };
         if let Err(e) = ctx.update_local_refs(txn, &reflog, staging).await {
             // Put HEAD back unless the move had already committed.
             let row = workspaces::get(&ws.db, id).await?;
             let committed = match &m.dest {
-                Dest::Create { branch, start: Some(_), .. } => branch_tip(ws, branch).await? == target,
+                Dest::Create {
+                    branch,
+                    start: Some(_),
+                    ..
+                } => branch_tip(ws, branch).await? == target,
                 _ => saved.base != target && row.is_some_and(|r| r.ws.base_cs == target),
             };
             if !committed {
@@ -1111,9 +1376,11 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
 
     // Tracking set up for a branch made from a remote-tracking start point.
     let fresh = match &m.dest {
-        Dest::Create { branch, start: Some(start), .. } => {
-            track_start(ctx, branch, start, m.opts.track, quiet).await?
-        }
+        Dest::Create {
+            branch,
+            start: Some(start),
+            ..
+        } => track_start(ctx, branch, start, m.opts.track, quiet).await?,
         _ => None,
     };
 
@@ -1139,12 +1406,18 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
                 }
                 eprintln!("HEAD is now at {}", commit_line(ctx, ws, *commit).await?);
             }
-            Dest::Existing { branch: name, .. } | Dest::Create { branch: name, .. } | Dest::Orphan { branch: name } => {
+            Dest::Existing { branch: name, .. }
+            | Dest::Create { branch: name, .. }
+            | Dest::Orphan { branch: name } => {
                 let same = matches!(&saved.head, Head::Branch(b) if b == name);
                 match &m.dest {
                     Dest::Create { force: true, .. } if same => eprintln!("Reset branch '{name}'"),
-                    Dest::Create { force: true, .. } if existed => eprintln!("Switched to and reset branch '{name}'"),
-                    Dest::Create { .. } | Dest::Orphan { .. } => eprintln!("Switched to a new branch '{name}'"),
+                    Dest::Create { force: true, .. } if existed => {
+                        eprintln!("Switched to and reset branch '{name}'")
+                    }
+                    Dest::Create { .. } | Dest::Orphan { .. } => {
+                        eprintln!("Switched to a new branch '{name}'")
+                    }
                     _ if same => eprintln!("Already on '{name}'"),
                     _ => eprintln!("Switched to branch '{name}'"),
                 }
@@ -1162,8 +1435,16 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
         None => null_oid(),
     };
     let runner = Runner::for_ctx(ctx)?;
-    let hook = Hook::PostCheckout { old: old_git, new: target_git.unwrap_or_else(null_oid), branch: true };
-    match runner.run(hook, &HookEnv::of(ctx, "checkout")).await.map_err(fatal)? {
+    let hook = Hook::PostCheckout {
+        old: old_git,
+        new: target_git.unwrap_or_else(null_oid),
+        branch: true,
+    };
+    match runner
+        .run(hook, &HookEnv::of(ctx, "checkout"))
+        .await
+        .map_err(fatal)?
+    {
         Outcome::Exit(code) if code != 0 => Ok(ExitCode::from(u8::try_from(code).unwrap_or(1))),
         _ => Ok(ExitCode::SUCCESS),
     }
@@ -1201,31 +1482,62 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     if p.after.is_some() {
         return Err(CliError::Fatal("only one reference expected".into()));
     }
-    let given = [o.create.is_some(), o.force_create.is_some(), o.orphan.is_some()];
+    let given = [
+        o.create.is_some(),
+        o.force_create.is_some(),
+        o.orphan.is_some(),
+    ];
     if given.iter().filter(|g| **g).count() > 1 {
-        return Err(CliError::Fatal("options '-c', '-C' and '--orphan' cannot be used together".into()));
+        return Err(CliError::Fatal(
+            "options '-c', '-C' and '--orphan' cannot be used together".into(),
+        ));
     }
     if o.detach && (o.create.is_some() || o.force_create.is_some() || o.orphan.is_some()) {
-        let name = if o.create.is_some() { "-c" } else if o.force_create.is_some() { "-C" } else { "--orphan" };
-        return Err(CliError::Fatal(format!("options '--detach' and '{name}' cannot be used together")));
+        let name = if o.create.is_some() {
+            "-c"
+        } else if o.force_create.is_some() {
+            "-C"
+        } else {
+            "--orphan"
+        };
+        return Err(CliError::Fatal(format!(
+            "options '--detach' and '{name}' cannot be used together"
+        )));
     }
-    let guess = o.guess.or_else(|| ctx.config.bool("checkout.guess")).unwrap_or(true);
+    let guess = o
+        .guess
+        .or_else(|| ctx.config.bool("checkout.guess"))
+        .unwrap_or(true);
 
     // `--orphan <new>`.
     if let Some(name) = o.orphan.clone() {
         let name = &name;
         if !p.words.is_empty() {
-            return Err(CliError::Fatal("'--orphan' cannot take <start-point>".into()));
+            return Err(CliError::Fatal(
+                "'--orphan' cannot take <start-point>".into(),
+            ));
         }
         if !valid_branch_name(name) {
             return Err(bad_branch_name(ctx, name));
         }
-        let mv = Move { dest: Dest::Orphan { branch: name.clone() }, opts: o, typed: name.clone(), keep_tree: false };
+        let mv = Move {
+            dest: Dest::Orphan {
+                branch: name.clone(),
+            },
+            opts: o,
+            typed: name.clone(),
+            keep_tree: false,
+        };
         return perform(ctx, mv).await;
     }
 
     // `-c` / `-C <new> [<start>]`.
-    if let Some((name, force)) = o.create.clone().map(|n| (n, false)).or_else(|| o.force_create.clone().map(|n| (n, true))) {
+    if let Some((name, force)) = o
+        .create
+        .clone()
+        .map(|n| (n, false))
+        .or_else(|| o.force_create.clone().map(|n| (n, true)))
+    {
         if p.words.len() > 1 {
             return Err(CliError::Fatal("only one reference expected".into()));
         }
@@ -1234,9 +1546,22 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         }
         let start = match p.words.first() {
             Some(w) => Some(resolve_start(ctx, ws, w).await?),
-            None => ws.head_commit().await?.map(|c| Rev { label: "HEAD".into(), commit: c, kind: RevKind::Other }),
+            None => ws.head_commit().await?.map(|c| Rev {
+                label: "HEAD".into(),
+                commit: c,
+                kind: RevKind::Other,
+            }),
         };
-        let mv = Move { dest: Dest::Create { branch: name.clone(), start, force }, opts: o, typed: name, keep_tree: false };
+        let mv = Move {
+            dest: Dest::Create {
+                branch: name.clone(),
+                start,
+                force,
+            },
+            opts: o,
+            typed: name,
+            keep_tree: false,
+        };
         return perform(ctx, mv).await;
     }
 
@@ -1246,7 +1571,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         (true, words) if words.len() <= 1 => {
             let word = words.first().map_or("HEAD", String::as_str);
             let rev = resolve_start(ctx, ws, word).await?;
-            let mv = Move { dest: Dest::Detach { commit: rev.commit }, opts: o, typed: word.to_owned(), keep_tree: false };
+            let mv = Move {
+                dest: Dest::Detach { commit: rev.commit },
+                opts: o,
+                typed: word.to_owned(),
+                keep_tree: false,
+            };
             perform(ctx, mv).await
         }
         (_, [word]) => switch_to(ctx, ws, word, o, guess).await,
@@ -1256,9 +1586,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
 /// `word` as a revision, or git's "invalid reference".
 async fn resolve_start(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Rev> {
-    resolve_rev(ctx, ws, word)
-        .await?
-        .ok_or_else(|| CliError::Fatal(format!("invalid reference: {}", if word == "-" { "@{-1}" } else { word })))
+    resolve_rev(ctx, ws, word).await?.ok_or_else(|| {
+        CliError::Fatal(format!(
+            "invalid reference: {}",
+            if word == "-" { "@{-1}" } else { word }
+        ))
+    })
 }
 
 /// `switch <word>`: a branch, a remote branch to create locally, or the error for a non-branch.
@@ -1272,13 +1605,19 @@ async fn switch_to(ctx: &Ctx, ws: &WsCtx, word: &str, o: Opts, guess: bool) -> R
             {
                 return create_tracking(ctx, word, remote, o).await;
             }
-            return Err(CliError::Fatal(format!("invalid reference: {}", if word == "-" { "@{-1}" } else { word })));
+            return Err(CliError::Fatal(format!(
+                "invalid reference: {}",
+                if word == "-" { "@{-1}" } else { word }
+            )));
         }
     };
     match rev.kind {
         RevKind::Branch(ref name) => {
             let mv = Move {
-                dest: Dest::Existing { branch: name.clone(), tip: Some(rev.commit) },
+                dest: Dest::Existing {
+                    branch: name.clone(),
+                    tip: Some(rev.commit),
+                },
                 opts: o,
                 typed: word.to_owned(),
                 keep_tree: false,
@@ -1313,9 +1652,18 @@ async fn switch_to(ctx: &Ctx, ws: &WsCtx, word: &str, o: Opts, guess: bool) -> R
 }
 
 /// Creates local branch `name` from a remote-tracking branch and switches to it.
-pub(crate) async fn create_tracking(ctx: &Ctx, name: &str, remote: Rev, o: Opts) -> Result<ExitCode> {
+pub(crate) async fn create_tracking(
+    ctx: &Ctx,
+    name: &str,
+    remote: Rev,
+    o: Opts,
+) -> Result<ExitCode> {
     let mv = Move {
-        dest: Dest::Create { branch: name.to_owned(), start: Some(remote), force: false },
+        dest: Dest::Create {
+            branch: name.to_owned(),
+            start: Some(remote),
+            force: false,
+        },
         opts: o,
         typed: name.to_owned(),
         keep_tree: false,
@@ -1354,8 +1702,14 @@ mod tests {
     #[test]
     fn refspecs_map_both_ways() {
         let spec = "+refs/heads/*:refs/remotes/origin/*";
-        assert_eq!(map_refspec(spec, "refs/heads/a/b").as_deref(), Some("refs/remotes/origin/a/b"));
-        assert_eq!(reverse_refspec(spec, "refs/remotes/origin/a").as_deref(), Some("refs/heads/a"));
+        assert_eq!(
+            map_refspec(spec, "refs/heads/a/b").as_deref(),
+            Some("refs/remotes/origin/a/b")
+        );
+        assert_eq!(
+            reverse_refspec(spec, "refs/remotes/origin/a").as_deref(),
+            Some("refs/heads/a")
+        );
         assert_eq!(map_refspec(spec, "refs/tags/x"), None);
     }
 
@@ -1371,7 +1725,9 @@ mod tests {
     #[test]
     fn overwrite_text_lists_both_kinds() {
         let p = |s: &str| RepoPath::new(s).unwrap();
-        let CliError::Raw(text, code) = would_overwrite(&[p("f")], &[p("g")]) else { panic!() };
+        let CliError::Raw(text, code) = would_overwrite(&[p("f")], &[p("g")]) else {
+            panic!()
+        };
         assert_eq!(code, 1);
         assert!(text.starts_with("error: Your local changes"));
         assert!(text.contains("\tf\n") && text.contains("\tg\n") && text.ends_with("Aborting"));

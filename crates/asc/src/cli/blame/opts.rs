@@ -94,13 +94,18 @@ fn end_of(text: &str, is_end: bool) -> Result<End> {
     if is_end && let Some(n) = text.strip_prefix('-') {
         return Ok(End::Minus(count(n)?));
     }
-    Ok(End::At(number(text.strip_prefix('+').filter(|_| !is_end).unwrap_or(text))?))
+    Ok(End::At(number(
+        text.strip_prefix('+').filter(|_| !is_end).unwrap_or(text),
+    )?))
 }
 
 impl RangeSpec {
     pub fn parse(text: &str) -> Result<Self> {
         let (a, b) = text.split_once(',').unwrap_or((text, ""));
-        Ok(Self { start: end_of(a, false)?, end: end_of(b, true)? })
+        Ok(Self {
+            start: end_of(a, false)?,
+            end: end_of(b, true)?,
+        })
     }
 
     /// The zero-based half-open range in a file of `lines` lines, as git clamps it.
@@ -120,7 +125,9 @@ impl RangeSpec {
         }
         if a > lines {
             let s = if lines == 1 { "" } else { "s" };
-            return Err(CliError::Fatal(format!("file {file} has only {lines} line{s}")));
+            return Err(CliError::Fatal(format!(
+                "file {file} has only {lines} line{s}"
+            )));
         }
         Ok(a - 1..b.min(lines))
     }
@@ -269,8 +276,14 @@ mod tests {
         let o = Opts::parse(&args(&["v1", "--", "f"])).unwrap();
         assert_eq!(o.rev.as_deref(), Some("v1"));
         assert!(matches!(Opts::parse(&args(&[])), Err(CliError::Usage(_))));
-        assert!(matches!(Opts::parse(&args(&["a", "b", "c"])), Err(CliError::Usage(_))));
-        assert!(matches!(Opts::parse(&args(&["--", "a", "b"])), Err(CliError::Usage(_))));
+        assert!(matches!(
+            Opts::parse(&args(&["a", "b", "c"])),
+            Err(CliError::Usage(_))
+        ));
+        assert!(matches!(
+            Opts::parse(&args(&["--", "a", "b"])),
+            Err(CliError::Usage(_))
+        ));
     }
 
     #[test]
@@ -300,7 +313,10 @@ mod tests {
 
     #[test]
     fn ranges_merge() {
-        let specs: Vec<_> = ["1,3", "2,5", "8,9"].iter().map(|s| RangeSpec::parse(s).unwrap()).collect();
+        let specs: Vec<_> = ["1,3", "2,5", "8,9"]
+            .iter()
+            .map(|s| RangeSpec::parse(s).unwrap())
+            .collect();
         assert_eq!(resolve_ranges(&specs, 10, "f").unwrap(), vec![0..5, 7..9]);
         let whole = resolve_ranges(&[], 4, "f").unwrap();
         assert_eq!((whole.len(), whole[0].clone()), (1, 0..4));

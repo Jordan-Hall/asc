@@ -30,10 +30,15 @@ fn shown(path: &Path) -> String {
 /// Every file below `dir`, by path relative to it.
 fn walk(dir: &Path, rel: &str, out: &mut BTreeMap<String, PathBuf>) -> io::Result<()> {
     // `--no-index` walks paths given on the command line, outside the work tree.
-    for entry in fs::read_dir(dir)? { // lint:allow-worktree-fs: --no-index walk, not the work tree
+    for entry in fs::read_dir(dir)? {
+        // lint:allow-worktree-fs: --no-index walk, not the work tree
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        let at = if rel.is_empty() { name } else { format!("{rel}/{name}") };
+        let at = if rel.is_empty() {
+            name
+        } else {
+            format!("{rel}/{name}")
+        };
         if entry.file_type()?.is_dir() {
             walk(&entry.path(), &at, out)?;
         } else {
@@ -48,7 +53,8 @@ type Files = BTreeMap<String, (String, PathBuf)>;
 
 fn side(cwd: &Path, arg: &Path) -> Result<(Files, bool)> {
     let abs = cwd.join(arg);
-    let meta = fs::symlink_metadata(&abs).map_err(|_| fatal(format!("Could not access '{}'", arg.display())))?;
+    let meta = fs::symlink_metadata(&abs)
+        .map_err(|_| fatal(format!("Could not access '{}'", arg.display())))?;
     let mut found = BTreeMap::new();
     let is_dir = meta.is_dir();
     if is_dir {
@@ -71,12 +77,23 @@ fn side(cwd: &Path, arg: &Path) -> Result<(Files, bool)> {
     Ok((files, is_dir))
 }
 
-fn entry(local: &mut LocalFiles<'_>, name: &RepoPath, abs: &Path) -> Result<asc_core::object::Entry> {
+fn entry(
+    local: &mut LocalFiles<'_>,
+    name: &RepoPath,
+    abs: &Path,
+) -> Result<asc_core::object::Entry> {
     let meta = fs::symlink_metadata(abs).map_err(CliError::Io)?;
     let (kind, git) = if meta.file_type().is_symlink() {
-        (Kind::Symlink, blob_oid(&link_target(abs).map_err(CliError::Io)?))
+        (
+            Kind::Symlink,
+            blob_oid(&link_target(abs).map_err(CliError::Io)?),
+        )
     } else {
-        let kind = if exec_bit(&meta).unwrap_or(false) { Kind::Exec } else { Kind::File };
+        let kind = if exec_bit(&meta).unwrap_or(false) {
+            Kind::Exec
+        } else {
+            Kind::File
+        };
         (kind, file_blob_oid(abs, Eol::Keep).map_err(CliError::Io)?)
     };
     Ok(local.add(name, abs.to_owned(), kind, meta.len(), git))
@@ -88,11 +105,23 @@ fn repo_path(name: &str) -> Result<RepoPath> {
 
 /// The changes between the files under `a` and under `b`. A file and a directory compare the
 /// file with the same name inside the directory.
-pub fn changes(local: &mut LocalFiles<'_>, cwd: &Path, a: &Path, b: &Path) -> Result<Vec<TreeChange>> {
+pub fn changes(
+    local: &mut LocalFiles<'_>,
+    cwd: &Path,
+    a: &Path,
+    b: &Path,
+) -> Result<Vec<TreeChange>> {
     let ((mut left, a_dir), (mut right, b_dir)) = (side(cwd, a)?, side(cwd, b)?);
     if a_dir != b_dir {
-        let (file, files) = if a_dir { (b, &mut right) } else { (a, &mut left) };
-        let key = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (file, files) = if a_dir {
+            (b, &mut right)
+        } else {
+            (a, &mut left)
+        };
+        let key = file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if let Some(only) = files.remove("") {
             files.insert(key, only);
         }
@@ -117,13 +146,23 @@ pub fn changes(local: &mut LocalFiles<'_>, cwd: &Path, a: &Path, b: &Path) -> Re
             (None, Some(_)) => Status::Added,
             (Some(_), None) => Status::Deleted,
             (Some(o), Some(n)) if o.git == n.git && o.kind == n.kind => continue,
-            (Some(o), Some(n)) if (o.kind == Kind::Symlink) != (n.kind == Kind::Symlink) => Status::TypeChanged,
+            (Some(o), Some(n)) if (o.kind == Kind::Symlink) != (n.kind == Kind::Symlink) => {
+                Status::TypeChanged
+            }
             (Some(_), Some(_)) => Status::Modified,
             (None, None) => continue,
         };
-        let Some(path) = new_name.clone().or_else(|| old_name.clone()) else { continue };
+        let Some(path) = new_name.clone().or_else(|| old_name.clone()) else {
+            continue;
+        };
         let old_path = old_name.or(new_name).unwrap_or_else(|| path.clone());
-        out.push(TreeChange { path, old_path, old, new, status });
+        out.push(TreeChange {
+            path,
+            old_path,
+            old,
+            new,
+            status,
+        });
     }
     Ok(out)
 }

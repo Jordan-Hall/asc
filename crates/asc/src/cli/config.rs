@@ -44,7 +44,12 @@ fn meta(source: Source, path: &Path, trust: Trust) -> Metadata {
 /// Keys whose values name a program or redirect where asc reads or writes, or a directory that
 /// receives writes. A config file the current user does not own (`Trust::Reduced`) may not set
 /// them: git ignores such keys from untrusted repo config for the same reason.
-fn runs_programs_or_redirects(section: &str, sub: Option<&str>, name: &str, values: &[String]) -> bool {
+fn runs_programs_or_redirects(
+    section: &str,
+    sub: Option<&str>,
+    name: &str,
+    values: &[String],
+) -> bool {
     let section = section.to_ascii_lowercase();
     let name = name.to_ascii_lowercase();
     match section.as_str() {
@@ -52,12 +57,20 @@ fn runs_programs_or_redirects(section: &str, sub: Option<&str>, name: &str, valu
         "asc" => {
             matches!(name.as_str(), "realgit" | "home")
                 || sub.is_some_and(|s| {
-                    ["cache", "store", "state"].iter().any(|d| s.eq_ignore_ascii_case(d))
+                    ["cache", "store", "state"]
+                        .iter()
+                        .any(|d| s.eq_ignore_ascii_case(d))
                 })
         }
         "core" => matches!(
             name.as_str(),
-            "pager" | "editor" | "fsmonitor" | "sshcommand" | "askpass" | "hookspath" | "gitproxy"
+            "pager"
+                | "editor"
+                | "fsmonitor"
+                | "sshcommand"
+                | "askpass"
+                | "hookspath"
+                | "gitproxy"
                 | "alternaterefscommand"
         ),
         "pager" | "credential" | "browser" | "man" | "trailer" => true,
@@ -68,7 +81,10 @@ fn runs_programs_or_redirects(section: &str, sub: Option<&str>, name: &str, valu
         "merge" => matches!(name.as_str(), "driver" | "tool"),
         "mergetool" | "difftool" => name == "cmd" || name == "path",
         "filter" => matches!(name.as_str(), "clean" | "smudge" | "process"),
-        "remote" => matches!(name.as_str(), "receivepack" | "uploadpack" | "vcs" | "proxy"),
+        "remote" => matches!(
+            name.as_str(),
+            "receivepack" | "uploadpack" | "vcs" | "proxy"
+        ),
         "uploadpack" | "receive" => name.contains("hook"),
         "web" => name == "browser",
         // `alias.x = !shell` runs a shell; a plain alias only rewrites git's own argv.
@@ -82,7 +98,13 @@ fn restrict_reduced_trust(file: &mut File) {
     let ids: Vec<_> = file
         .sections_and_ids()
         .filter(|(s, _)| s.meta().trust != Trust::Full)
-        .map(|(s, id)| (id, s.header().name().to_string(), s.header().subsection_name().map(|b| b.to_string())))
+        .map(|(s, id)| {
+            (
+                id,
+                s.header().name().to_string(),
+                s.header().subsection_name().map(|b| b.to_string()),
+            )
+        })
         .collect();
     for (id, section, sub) in ids {
         let Some(mut sec) = file.section_mut_by_id(id) else {
@@ -148,7 +170,12 @@ pub fn safe_directories(
 fn global_files(env: &dyn Fn(&str) -> Option<OsString>) -> Vec<(Source, PathBuf)> {
     let mut var = |k: &str| env(k);
     let mut out: Vec<(Source, PathBuf)> = Vec::new();
-    for source in [Source::GitInstallation, Source::System, Source::Git, Source::User] {
+    for source in [
+        Source::GitInstallation,
+        Source::System,
+        Source::Git,
+        Source::User,
+    ] {
         let Some(path) = source.storage_location(&mut var) else {
             continue;
         };
@@ -251,7 +278,11 @@ impl ConfigSnapshot {
         if let Some(l) = local {
             let path = l.common_dir.join("config");
             if path.is_file() {
-                let trust = if owned(&path).unwrap_or(false) { Trust::Full } else { Trust::Reduced };
+                let trust = if owned(&path).unwrap_or(false) {
+                    Trust::Full
+                } else {
+                    Trust::Reduced
+                };
                 metas.push(meta(Source::Local, &path, trust));
             }
         }
@@ -334,17 +365,25 @@ impl Key {
 /// Parses and validates `section.name` / `section.sub.name` with git's rules.
 pub fn parse_key(text: &str) -> std::result::Result<Key, Msg> {
     let Some(last) = text.rfind('.') else {
-        return Err(Msg::ConfigNoSection { key: text.to_owned() });
+        return Err(Msg::ConfigNoSection {
+            key: text.to_owned(),
+        });
     };
     if last + 1 == text.len() {
-        return Err(Msg::ConfigNoVariable { key: text.to_owned() });
+        return Err(Msg::ConfigNoVariable {
+            key: text.to_owned(),
+        });
     }
-    let invalid = || Msg::ConfigInvalidKey { key: text.to_owned() };
+    let invalid = || Msg::ConfigInvalidKey {
+        key: text.to_owned(),
+    };
     let first = text.find('.').unwrap_or(last);
     let (section, name) = (&text[..first], &text[last + 1..]);
     let sub = (first < last).then(|| text[first + 1..last].to_owned());
     let section_ok = !section.is_empty()
-        && section.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        && section
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-');
     let name_ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     let sub_ok = sub.as_deref().is_none_or(|s| !s.contains('\n'));
@@ -434,7 +473,12 @@ fn parse_int(text: &str) -> Option<i64> {
     digits.parse::<i64>().ok()?.checked_mul(mult)
 }
 
-fn convert(ty: Option<ValueType>, key: &Key, value: Option<&str>, home: Option<&Path>) -> Result<String> {
+fn convert(
+    ty: Option<ValueType>,
+    key: &Key,
+    value: Option<&str>,
+    home: Option<&Path>,
+) -> Result<String> {
     let Some(ty) = ty else {
         return Ok(value.unwrap_or_default().to_owned());
     };
@@ -450,14 +494,18 @@ fn convert(ty: Option<ValueType>, key: &Key, value: Option<&str>, home: Option<&
         Some(v) => parse_git_bool(v),
     };
     match ty {
-        ValueType::Bool => as_bool().map(|b| b.to_string()).ok_or_else(|| bad("boolean")),
+        ValueType::Bool => as_bool()
+            .map(|b| b.to_string())
+            .ok_or_else(|| bad("boolean")),
         ValueType::Int => value
             .and_then(parse_int)
             .map(|n| n.to_string())
             .ok_or_else(|| bad("numeric")),
         ValueType::BoolOrInt => match value.and_then(parse_int) {
             Some(n) => Ok(n.to_string()),
-            None => as_bool().map(|b| b.to_string()).ok_or_else(|| bad("numeric")),
+            None => as_bool()
+                .map(|b| b.to_string())
+                .ok_or_else(|| bad("numeric")),
         },
         ValueType::Path => {
             let v = value.unwrap_or_default();
@@ -544,12 +592,15 @@ fn parse_opts(rest: &[OsString]) -> std::result::Result<Opts, ParseStop> {
             Some((n, v)) if arg.starts_with("--") => (n.to_owned(), Some(v.to_owned())),
             _ => (arg.clone(), None),
         };
-        let value = |args: &mut dyn Iterator<Item = String>| -> std::result::Result<String, ParseStop> {
-            inline
-                .clone()
-                .or_else(|| args.next())
-                .ok_or_else(|| ParseStop::Usage(format!("option `{}' requires a value", name.trim_start_matches('-'))))
-        };
+        let value =
+            |args: &mut dyn Iterator<Item = String>| -> std::result::Result<String, ParseStop> {
+                inline.clone().or_else(|| args.next()).ok_or_else(|| {
+                    ParseStop::Usage(format!(
+                        "option `{}' requires a value",
+                        name.trim_start_matches('-')
+                    ))
+                })
+            };
         let set_action = |o: &mut Opts, a: Action| -> std::result::Result<(), ParseStop> {
             if o.action.is_some_and(|prev| prev != a) {
                 return Err(ParseStop::Usage("only one action at a time".into()));
@@ -585,7 +636,11 @@ fn parse_opts(rest: &[OsString]) -> std::result::Result<Opts, ParseStop> {
                     "int" => ValueType::Int,
                     "bool-or-int" => ValueType::BoolOrInt,
                     "path" => ValueType::Path,
-                    other => return Err(ParseStop::Usage(format!("unrecognized --type argument, {other}"))),
+                    other => {
+                        return Err(ParseStop::Usage(format!(
+                            "unrecognized --type argument, {other}"
+                        )));
+                    }
                 });
             }
             "-z" | "--null" => o.null = true,
@@ -598,7 +653,12 @@ fn parse_opts(rest: &[OsString]) -> std::result::Result<Opts, ParseStop> {
             "--append" => o.append = true,
             "--value" => o.value_pattern = Some(value(&mut args)?),
             "--includes" | "--no-includes" => {}
-            other => return Err(ParseStop::Usage(format!("unknown option `{}'", other.trim_start_matches('-')))),
+            other => {
+                return Err(ParseStop::Usage(format!(
+                    "unknown option `{}'",
+                    other.trim_start_matches('-')
+                )));
+            }
         }
     }
     Ok(o)
@@ -616,11 +676,42 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "config",
     flags: &[
-        "--global", "--system", "--local", "--worktree", "-f", "--file", "--get", "--get-all",
-        "--get-regexp", "--add", "--replace-all", "--unset", "--unset-all", "--rename-section",
-        "--remove-section", "-l", "--list", "--bool", "--int", "--bool-or-int", "--path", "-t",
-        "--type", "--no-type", "-z", "--null", "--name-only", "--show-origin", "--show-scope",
-        "--default", "--includes", "--no-includes", "--all", "--regexp", "--append", "--value",
+        "--global",
+        "--system",
+        "--local",
+        "--worktree",
+        "-f",
+        "--file",
+        "--get",
+        "--get-all",
+        "--get-regexp",
+        "--add",
+        "--replace-all",
+        "--unset",
+        "--unset-all",
+        "--rename-section",
+        "--remove-section",
+        "-l",
+        "--list",
+        "--bool",
+        "--int",
+        "--bool-or-int",
+        "--path",
+        "-t",
+        "--type",
+        "--no-type",
+        "-z",
+        "--null",
+        "--name-only",
+        "--show-origin",
+        "--show-scope",
+        "--default",
+        "--includes",
+        "--no-includes",
+        "--all",
+        "--regexp",
+        "--append",
+        "--value",
     ],
     placeholders: &[],
 }];
@@ -653,7 +744,11 @@ fn scope_path(ctx: &Ctx, scope: &Scope, for_write: bool) -> Result<Option<PathBu
             Some(ws.projection.common_dir().join("config"))
         }
         Scope::File(p) => {
-            let abs = if p.is_absolute() { p.clone() } else { ctx.cwd.join(p) };
+            let abs = if p.is_absolute() {
+                p.clone()
+            } else {
+                ctx.cwd.join(p)
+            };
             if !for_write && !abs.is_file() {
                 return Err(CliError::Msg(Msg::ConfigUnreadable {
                     path: p.display().to_string(),
@@ -732,7 +827,10 @@ fn open_lock(lock: &Path, mode: Option<u32>) -> std::io::Result<std::fs::File> {
 
 #[cfg(not(unix))]
 fn open_lock(lock: &Path, _mode: Option<u32>) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new().write(true).create_new(true).open(lock)
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock)
 }
 
 /// Atomically replaces `path` with `file`'s text, through `<path>.lock`. Git writes LF
@@ -751,9 +849,8 @@ fn write_file(path: &Path, file: &File) -> Result<()> {
     }
     // A rewrite keeps the file's mode (a `chmod 600` config holding credentials stays 600); a
     // new file gets `0o666 & !umask`.
-    let mut handle = open_lock(&lock, existing_mode(path)).map_err(|_| {
-        CliError::Fatal(format!("could not lock config file {}", path.display()))
-    })?;
+    let mut handle = open_lock(&lock, existing_mode(path))
+        .map_err(|_| CliError::Fatal(format!("could not lock config file {}", path.display())))?;
     let written = std::io::Write::write_all(&mut handle, &text)
         .and_then(|()| handle.sync_all())
         .and_then(|()| {
@@ -808,7 +905,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             } else {
                 Action::Set
             }),
-            Some("unset") => Some(if o.all { Action::UnsetAll } else { Action::Unset }),
+            Some("unset") => Some(if o.all {
+                Action::UnsetAll
+            } else {
+                Action::Unset
+            }),
             Some("rename-section") => Some(Action::RenameSection),
             Some("remove-section") => Some(Action::RemoveSection),
             _ => None,
@@ -823,7 +924,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         (None, 1) => Action::Get,
         (None, 2 | 3) => Action::Set,
         (None, 0) => return Err(usage_error("no action specified")),
-        (None, _) => return Err(usage_error("wrong number of arguments, should be from 1 to 3")),
+        (None, _) => {
+            return Err(usage_error(
+                "wrong number of arguments, should be from 1 to 3",
+            ));
+        }
     };
     match action {
         Action::List => list(ctx, &o),
@@ -864,7 +969,11 @@ fn emit(o: &Opts, entry: &Entry, shown_key: bool, value: &str) -> String {
         line.push_str(value);
     } else if shown_key {
         line.push_str(&entry.key.display());
-        line.push(if o.action == Some(Action::List) { '=' } else { ' ' });
+        line.push(if o.action == Some(Action::List) {
+            '='
+        } else {
+            ' '
+        });
         line.push_str(value);
     } else {
         line.push_str(value);
@@ -900,7 +1009,9 @@ fn get(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
     let mut hits = 0usize;
     if action == Action::GetRegexp {
         let [pattern, ..] = o.positional.as_slice() else {
-            return Err(usage_error("wrong number of arguments, should be from 1 to 2"));
+            return Err(usage_error(
+                "wrong number of arguments, should be from 1 to 2",
+            ));
         };
         let re = regex::Regex::new(pattern)
             .map_err(|e| CliError::Fatal(format!("invalid key pattern: {pattern}: {e}")))?;
@@ -915,7 +1026,9 @@ fn get(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
         }
     } else {
         let [name, ..] = o.positional.as_slice() else {
-            return Err(usage_error("wrong number of arguments, should be from 1 to 2"));
+            return Err(usage_error(
+                "wrong number of arguments, should be from 1 to 2",
+            ));
         };
         let key = parse_key(name).map_err(CliError::Msg)?;
         let accept = value_filter(
@@ -925,10 +1038,7 @@ fn get(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
         )?;
         let matching: Vec<&Entry> = all
             .iter()
-            .filter(|e| {
-                e.key == key
-                    && accept(e.value.as_deref().unwrap_or_default())
-            })
+            .filter(|e| e.key == key && accept(e.value.as_deref().unwrap_or_default()))
             .collect();
         let chosen: Vec<&&Entry> = if action == Action::GetAll {
             matching.iter().collect()
@@ -950,7 +1060,11 @@ fn get(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
         }
     }
     print_out(&out)?;
-    Ok(if hits == 0 { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(if hits == 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn modify(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
@@ -983,7 +1097,7 @@ fn modify(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
                 ns,
                 nsub.map(BString::from),
             )
-                .map_err(|_| CliError::Msg(Msg::NoSuchSection { name: old.clone() }))?;
+            .map_err(|_| CliError::Msg(Msg::NoSuchSection { name: old.clone() }))?;
         }
         Action::RemoveSection => {
             let [name] = o.positional.as_slice() else {
@@ -991,7 +1105,10 @@ fn modify(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
             };
             let (sec, sub) = section_of(name)?;
             let mut removed = false;
-            while file.remove_section(sec.as_str(), sub.as_deref().map(<&BStr>::from)).is_some() {
+            while file
+                .remove_section(sec.as_str(), sub.as_deref().map(<&BStr>::from))
+                .is_some()
+            {
                 removed = true;
             }
             if !removed {
@@ -1000,7 +1117,9 @@ fn modify(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
         }
         Action::Unset | Action::UnsetAll => {
             let [name, ..] = o.positional.as_slice() else {
-                return Err(usage_error("wrong number of arguments, should be from 1 to 2"));
+                return Err(usage_error(
+                    "wrong number of arguments, should be from 1 to 2",
+                ));
             };
             let key = parse_key(name).map_err(CliError::Msg)?;
             let accept = value_filter(
@@ -1025,7 +1144,9 @@ fn modify(ctx: &Ctx, o: &Opts, action: Action) -> Result<ExitCode> {
         }
         Action::Set | Action::Add | Action::ReplaceAll => {
             let [name, value, ..] = o.positional.as_slice() else {
-                return Err(usage_error("wrong number of arguments, should be from 2 to 3"));
+                return Err(usage_error(
+                    "wrong number of arguments, should be from 2 to 3",
+                ));
             };
             let key = parse_key(name).map_err(CliError::Msg)?;
             let stored = match o.ty {
@@ -1102,8 +1223,12 @@ fn read_file_no_includes(path: &Path, source: Source) -> Result<File> {
             reason: "Permission denied".into(),
         })
     })?;
-    File::from_bytes_no_includes(&bytes, meta(source, path, Trust::Full), init::Options::default())
-        .map_err(|e| CliError::Fatal(format!("bad config file '{}': {e}", path.display())))
+    File::from_bytes_no_includes(
+        &bytes,
+        meta(source, path, Trust::Full),
+        init::Options::default(),
+    )
+    .map_err(|e| CliError::Fatal(format!("bad config file '{}': {e}", path.display())))
 }
 
 #[cfg(test)]
@@ -1120,10 +1245,16 @@ mod tests {
         assert_eq!(key.display(), "remote.Origin.url");
         assert_eq!(parse_key("a.b").unwrap().sub, None);
         assert_eq!(parse_key("a.b.c.d").unwrap().sub.as_deref(), Some("b.c"));
-        assert!(matches!(parse_key("nokey"), Err(Msg::ConfigNoSection { .. })));
+        assert!(matches!(
+            parse_key("nokey"),
+            Err(Msg::ConfigNoSection { .. })
+        ));
         assert!(matches!(parse_key("a."), Err(Msg::ConfigNoVariable { .. })));
         for bad in ["a.1b", "a.b c", ".b", "a b.c", "a.b_c"] {
-            assert!(matches!(parse_key(bad), Err(Msg::ConfigInvalidKey { .. })), "{bad}");
+            assert!(
+                matches!(parse_key(bad), Err(Msg::ConfigInvalidKey { .. })),
+                "{bad}"
+            );
         }
     }
 
@@ -1132,7 +1263,11 @@ mod tests {
         let key = parse_key("a.b").unwrap();
         let conv = |ty, v: Option<&str>| convert(Some(ty), &key, v, None).unwrap();
         assert_eq!(conv(ValueType::Bool, Some("Yes")), "true");
-        assert_eq!(conv(ValueType::Bool, None), "true", "a key without = is true");
+        assert_eq!(
+            conv(ValueType::Bool, None),
+            "true",
+            "a key without = is true"
+        );
         assert_eq!(conv(ValueType::Bool, Some("0")), "false");
         assert_eq!(conv(ValueType::Int, Some("1k")), "1024");
         assert_eq!(conv(ValueType::Int, Some("2M")), "2097152");
@@ -1176,7 +1311,10 @@ mod tests {
         let file = File::try_from(layer.as_str()).unwrap();
         assert_eq!(file.string("core.editor").unwrap(), "vi \"quoted\"");
         assert_eq!(file.string("remote.o.url").unwrap(), "x");
-        assert!(file.string("bad key").is_none(), "an invalid key is skipped");
+        assert!(
+            file.string("bad key").is_none(),
+            "an invalid key is skipped"
+        );
     }
 
     #[test]
@@ -1189,7 +1327,10 @@ mod tests {
         std::fs::write(&crlf, b"[a]\r\n\tb = c\r\n").unwrap();
         write_file(&crlf, &file_of("[a]\r\n\tb = d\r\n")).unwrap();
         assert_eq!(std::fs::read(&crlf).unwrap(), b"[a]\r\n\tb = d\r\n");
-        assert!(!t.path().join("lf.lock").exists(), "the lock is renamed away");
+        assert!(
+            !t.path().join("lf.lock").exists(),
+            "the lock is renamed away"
+        );
     }
 
     #[test]
@@ -1198,7 +1339,10 @@ mod tests {
         let path = t.path().join("config");
         std::fs::write(t.path().join("config.lock"), b"").unwrap();
         let err = write_file(&path, &file_of("[a]\n\tb = c\n")).unwrap_err();
-        assert!(err.to_string().starts_with("could not lock config file"), "{err}");
+        assert!(
+            err.to_string().starts_with("could not lock config file"),
+            "{err}"
+        );
         assert!(!path.exists());
     }
 
@@ -1273,7 +1417,11 @@ mod tests {
             "credential.helper",
             "credential.https://example.com.helper",
         ] {
-            assert_eq!(c.get(key), None, "{key} must be ignored from a reduced-trust file");
+            assert_eq!(
+                c.get(key),
+                None,
+                "{key} must be ignored from a reduced-trust file"
+            );
         }
         assert!(c.path("asc.realGit").is_none());
         assert!(c.get_all("asc.cache.readOnly").is_empty());
@@ -1293,7 +1441,10 @@ mod tests {
 
     #[test]
     fn reduced_trust_drops_every_value_of_a_repeated_key() {
-        let c = load_local("[core]\n\teditor = a\n\teditor = b\n[core]\n\teditor = c\n", false);
+        let c = load_local(
+            "[core]\n\teditor = a\n\teditor = b\n[core]\n\teditor = c\n",
+            false,
+        );
         assert_eq!(c.get("core.editor"), None);
         assert!(c.get_all("core.editor").is_empty());
     }

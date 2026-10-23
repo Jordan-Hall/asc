@@ -76,7 +76,10 @@ fn lines(msg: &[u8]) -> impl Iterator<Item = &[u8]> {
         if rest.is_empty() {
             return None;
         }
-        let end = rest.iter().position(|&b| b == b'\n').map_or(rest.len(), |p| p + 1);
+        let end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(rest.len(), |p| p + 1);
         let (line, tail) = rest.split_at(end);
         rest = tail;
         Some(line)
@@ -151,7 +154,12 @@ fn remainder(msg: &[u8], from: usize, builtin: Builtin, out: &mut Vec<u8>) {
             text.extend_from_slice(t);
         }
         if builtin == Builtin::Mboxrd {
-            let from_quoted = text.iter().skip_while(|&&b| b == b'>').copied().take(5).collect::<Vec<_>>();
+            let from_quoted = text
+                .iter()
+                .skip_while(|&&b| b == b'>')
+                .copied()
+                .take(5)
+                .collect::<Vec<_>>();
             if from_quoted == b"From " {
                 out.push(b'>');
             }
@@ -187,7 +195,9 @@ pub fn print(builtin: Builtin, v: &View<'_>) -> Vec<u8> {
                 out.extend_from_slice(k.as_bytes());
                 out.push(b' ');
                 out.extend_from_slice(&ident(s));
-                out.extend_from_slice(format!(" {} {}\n", s.time(), tz_text(s.tz_min())).as_bytes());
+                out.extend_from_slice(
+                    format!(" {} {}\n", s.time(), tz_text(s.tz_min())).as_bytes(),
+                );
             }
         }
         Builtin::Email | Builtin::Mboxrd => {
@@ -196,7 +206,11 @@ pub fn print(builtin: Builtin, v: &View<'_>) -> Vec<u8> {
             out.push(b'\n');
             let rfc = Mode::parse("rfc").unwrap_or_default();
             out.extend_from_slice(
-                format!("Date: {}\n", rfc.render(v.author.time(), v.author.tz_min(), v.now)).as_bytes(),
+                format!(
+                    "Date: {}\n",
+                    rfc.render(v.author.time(), v.author.tz_min(), v.now)
+                )
+                .as_bytes(),
             );
             out.extend_from_slice(b"Subject: [PATCH] ");
             out.extend_from_slice(&subject(v.message, b" ").0);
@@ -209,8 +223,12 @@ pub fn print(builtin: Builtin, v: &View<'_>) -> Vec<u8> {
             let fuller = other == Builtin::Fuller;
             user("Author", v.author, fuller, &mut out);
             match other {
-                Builtin::Medium => out.extend_from_slice(format!("Date:   {}\n", date(v.author)).as_bytes()),
-                Builtin::Fuller => out.extend_from_slice(format!("AuthorDate: {}\n", date(v.author)).as_bytes()),
+                Builtin::Medium => {
+                    out.extend_from_slice(format!("Date:   {}\n", date(v.author)).as_bytes())
+                }
+                Builtin::Fuller => {
+                    out.extend_from_slice(format!("AuthorDate: {}\n", date(v.author)).as_bytes())
+                }
                 _ => {}
             }
             if matches!(other, Builtin::Full | Builtin::Fuller) {
@@ -222,7 +240,11 @@ pub fn print(builtin: Builtin, v: &View<'_>) -> Vec<u8> {
         }
     }
     out.push(b'\n');
-    let (_, body) = if builtin.is_mail() { subject(v.message, b" ") } else { (Vec::new(), 0) };
+    let (_, body) = if builtin.is_mail() {
+        subject(v.message, b" ")
+    } else {
+        (Vec::new(), 0)
+    };
     remainder(v.message, body, builtin, &mut out);
     while out.last().is_some_and(u8::is_ascii_whitespace) {
         out.pop();
@@ -242,7 +264,12 @@ fn body_empty(msg: &[u8]) -> bool {
 
 fn tz_text(min: i16) -> String {
     let a = min.abs();
-    format!("{}{:02}{:02}", if min < 0 { '-' } else { '+' }, a / 60, a % 60)
+    format!(
+        "{}{:02}{:02}",
+        if min < 0 { '-' } else { '+' },
+        a / 60,
+        a % 60
+    )
 }
 
 #[cfg(test)]
@@ -269,7 +296,10 @@ mod tests {
     #[test]
     fn medium_indents_and_expands_tabs() {
         let (s, d) = (sig(), Mode::default());
-        let out = print(Builtin::Medium, &view(&s, b"Subject\n\nBody\twith tab  \n\n\n", &d));
+        let out = print(
+            Builtin::Medium,
+            &view(&s, b"Subject\n\nBody\twith tab  \n\n\n", &d),
+        );
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "Author: A <a@b>\nDate:   Tue Nov 14 22:13:20 2023 +0000\n\n    Subject\n    \n    Body    with tab\n"
@@ -280,21 +310,32 @@ mod tests {
     fn short_stops_after_the_title() {
         let (s, d) = (sig(), Mode::default());
         let out = print(Builtin::Short, &view(&s, b"One\ntwo\n\nbody\n", &d));
-        assert_eq!(String::from_utf8(out).unwrap(), "Author: A <a@b>\n\n    One\n    two\n");
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Author: A <a@b>\n\n    One\n    two\n"
+        );
     }
 
     #[test]
     fn oneline_joins_the_subject() {
         let (s, d) = (sig(), Mode::default());
-        assert_eq!(print(Builtin::Oneline, &view(&s, b"One\n two\n\nbody\n", &d)), b"One  two");
+        assert_eq!(
+            print(Builtin::Oneline, &view(&s, b"One\n two\n\nbody\n", &d)),
+            b"One  two"
+        );
     }
 
     #[test]
     fn email_has_no_indent() {
         let (s, d) = (sig(), Mode::default());
-        let out = String::from_utf8(print(Builtin::Email, &view(&s, b"Sub\n\nFrom me\n", &d))).unwrap();
+        let out =
+            String::from_utf8(print(Builtin::Email, &view(&s, b"Sub\n\nFrom me\n", &d))).unwrap();
         assert!(out.ends_with("Subject: [PATCH] Sub\n\nFrom me\n"), "{out}");
-        let out = String::from_utf8(print(Builtin::Mboxrd, &view(&s, b"Sub\n\nFrom me\n>From you\n", &d))).unwrap();
+        let out = String::from_utf8(print(
+            Builtin::Mboxrd,
+            &view(&s, b"Sub\n\nFrom me\n>From you\n", &d),
+        ))
+        .unwrap();
         assert!(out.ends_with("\n>From me\n>>From you\n"), "{out}");
     }
 }

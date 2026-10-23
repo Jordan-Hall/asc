@@ -24,7 +24,11 @@ use super::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
 #[derive(clap::Parser, Debug)]
-#[command(name = "check-attr", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "check-attr",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 pub struct Args {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
     pub rest: Vec<OsString>,
@@ -119,7 +123,8 @@ impl AttrSearch {
         };
         let mut collection = MetadataCollection::default();
         let mut buf = Vec::new();
-        let base = Search::new_globals(global, &mut buf, &mut collection).map_err(|e| fatal_io(root, &e))?;
+        let base = Search::new_globals(global, &mut buf, &mut collection)
+            .map_err(|e| fatal_io(root, &e))?;
         let info = sized(common_dir.join("info").join("attributes"))?;
         Ok(Self {
             root: root.to_owned(),
@@ -137,8 +142,15 @@ impl AttrSearch {
     /// `.gitattributes`, never through a link.
     fn dir_file(&self, dir: &[u8]) -> Result<Option<PathBuf>> {
         for name in [".ascattributes", ".gitattributes"] {
-            let rel = if dir.is_empty() { name.as_bytes().to_vec() } else { [dir, b"/", name.as_bytes()].concat() };
-            let Some(abs) = RepoPath::new(rel).ok().and_then(|rp| self.gate.resolve(&rp)) else {
+            let rel = if dir.is_empty() {
+                name.as_bytes().to_vec()
+            } else {
+                [dir, b"/", name.as_bytes()].concat()
+            };
+            let Some(abs) = RepoPath::new(rel)
+                .ok()
+                .and_then(|rp| self.gate.resolve(&rp))
+            else {
                 return Ok(None);
             };
             if let Some(found) = sized(abs)? {
@@ -155,7 +167,10 @@ impl AttrSearch {
         let mut search = if dir.is_empty() {
             self.base.clone()
         } else {
-            let parent = dir.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &dir[..i]);
+            let parent = dir
+                .iter()
+                .rposition(|&c| c == b'/')
+                .map_or(&[][..], |i| &dir[..i]);
             let mut inherited = (*self.search(parent)?).clone();
             if self.info.is_some() {
                 inherited.pop_pattern_list(); // `info/attributes` goes last again below
@@ -164,12 +179,26 @@ impl AttrSearch {
         };
         if let Some(file) = self.dir_file(dir)? {
             search
-                .add_patterns_file(file.clone(), false, Some(&self.root), &mut self.buf, &mut self.collection, true)
+                .add_patterns_file(
+                    file.clone(),
+                    false,
+                    Some(&self.root),
+                    &mut self.buf,
+                    &mut self.collection,
+                    true,
+                )
                 .map_err(|e| fatal_io(&file, &e))?;
         }
         if let Some(info) = &self.info {
             search
-                .add_patterns_file(info.clone(), false, None, &mut self.buf, &mut self.collection, true)
+                .add_patterns_file(
+                    info.clone(),
+                    false,
+                    None,
+                    &mut self.buf,
+                    &mut self.collection,
+                    true,
+                )
                 .map_err(|e| fatal_io(info, &e))?;
         }
         let search = Rc::new(search);
@@ -181,10 +210,15 @@ impl AttrSearch {
     /// in the outcome.
     fn matched(&mut self, path: &[u8], selection: Option<&[String]>) -> Result<()> {
         let trimmed = path.strip_suffix(b"/").unwrap_or(path);
-        let dir = trimmed.iter().rposition(|&c| c == b'/').map_or(&[][..], |i| &trimmed[..i]);
+        let dir = trimmed
+            .iter()
+            .rposition(|&c| c == b'/')
+            .map_or(&[][..], |i| &trimmed[..i]);
         let search = self.search(dir)?;
         match selection {
-            Some(names) => self.outcome.initialize_with_selection(&self.collection, names),
+            Some(names) => self
+                .outcome
+                .initialize_with_selection(&self.collection, names),
             None => self.outcome.initialize(&self.collection),
         }
         search.pattern_matching_relative_path(
@@ -202,7 +236,12 @@ impl AttrSearch {
         Ok(self
             .outcome
             .iter_selected()
-            .map(|m| (m.assignment.name.as_str().to_owned(), State::of(m.assignment.state)))
+            .map(|m| {
+                (
+                    m.assignment.name.as_str().to_owned(),
+                    State::of(m.assignment.state),
+                )
+            })
             .collect())
     }
 
@@ -212,7 +251,12 @@ impl AttrSearch {
         Ok(self
             .outcome
             .iter()
-            .map(|m| (m.assignment.name.as_str().to_owned(), State::of(m.assignment.state)))
+            .map(|m| {
+                (
+                    m.assignment.name.as_str().to_owned(),
+                    State::of(m.assignment.state),
+                )
+            })
             .filter(|(_, s)| *s != State::Unspecified)
             .collect())
     }
@@ -222,7 +266,9 @@ impl AttrSearch {
 fn name_valid(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
 }
 
 #[derive(Default)]
@@ -282,11 +328,17 @@ fn parse(rest: &[OsString]) -> Result<Opts> {
             None => 1,
         }
     };
-    let (names, files) = if o.all { (&[][..], &positional[split..]) } else { (&positional[..split], &positional[split..]) };
+    let (names, files) = if o.all {
+        (&[][..], &positional[split..])
+    } else {
+        (&positional[..split], &positional[split..])
+    };
     for name in names {
         let text = name.to_string_lossy().into_owned();
         if !name_valid(&text) {
-            return Err(CliError::Fatal(format!("{text} is not a valid attribute name")));
+            return Err(CliError::Fatal(format!(
+                "{text} is not a valid attribute name"
+            )));
         }
         o.names.push(text);
     }
@@ -324,7 +376,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         o.paths.iter().map(|p| os_bytes(p)).collect()
     };
     if inputs.len() > MAX_PATHS {
-        return Err(CliError::Fatal(format!("asc: more than {MAX_PATHS} paths given")));
+        return Err(CliError::Fatal(format!(
+            "asc: more than {MAX_PATHS} paths given"
+        )));
     }
     let mut out = io::BufWriter::new(io::stdout().lock());
     for arg in &inputs {
@@ -334,7 +388,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         if arg.ends_with(b"/") {
             keyed.push(b'/');
         }
-        let rows = if o.all { search.all(&keyed)? } else { search.named(&keyed, &o.names)? };
+        let rows = if o.all {
+            search.all(&keyed)?
+        } else {
+            search.named(&keyed, &o.names)?
+        };
         let written = write_rows(&mut out, &o, arg, &rows, quote_high);
         match written {
             Ok(()) => {}
@@ -348,7 +406,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
 }
 
-fn write_rows(out: &mut dyn Write, o: &Opts, path: &[u8], rows: &[(String, State)], quote_high: bool) -> io::Result<()> {
+fn write_rows(
+    out: &mut dyn Write,
+    o: &Opts,
+    path: &[u8],
+    rows: &[(String, State)],
+    quote_high: bool,
+) -> io::Result<()> {
     for (name, state) in rows {
         if o.nul {
             out.write_all(path)?;
@@ -380,7 +444,10 @@ mod tests {
     #[test]
     fn attribute_and_file_split_follows_git() {
         let o = parse(&args(&["text", "a.txt"])).unwrap();
-        assert_eq!((o.names, o.paths), (vec!["text".to_owned()], vec![OsString::from("a.txt")]));
+        assert_eq!(
+            (o.names, o.paths),
+            (vec!["text".to_owned()], vec![OsString::from("a.txt")])
+        );
         let o = parse(&args(&["text", "eol", "--", "a", "b"])).unwrap();
         assert_eq!(o.names, ["text", "eol"]);
         assert_eq!(o.paths.len(), 2);
@@ -392,11 +459,29 @@ mod tests {
 
     #[test]
     fn misuse_is_a_usage_error() {
-        for bad in [&["--"][..], &[][..], &["text"][..], &["-a", "text", "--", "f"][..], &["--stdin", "text", "--", "f"][..]] {
-            assert!(matches!(parse(&args(bad)), Err(CliError::Usage(_))), "{bad:?}");
+        for bad in [
+            &["--"][..],
+            &[][..],
+            &["text"][..],
+            &["-a", "text", "--", "f"][..],
+            &["--stdin", "text", "--", "f"][..],
+        ] {
+            assert!(
+                matches!(parse(&args(bad)), Err(CliError::Usage(_))),
+                "{bad:?}"
+            );
         }
-        assert!(matches!(parse(&args(&["-bad-", "--", "f"])), Err(CliError::Usage(_))));
-        assert!(matches!(parse(&args(&["-x", "f"])), Err(CliError::Usage(_))));
-        assert!(matches!(parse(&args(&["a b", "--", "f"])), Err(CliError::Fatal(_))));
+        assert!(matches!(
+            parse(&args(&["-bad-", "--", "f"])),
+            Err(CliError::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&args(&["-x", "f"])),
+            Err(CliError::Usage(_))
+        ));
+        assert!(matches!(
+            parse(&args(&["a b", "--", "f"])),
+            Err(CliError::Fatal(_))
+        ));
     }
 }

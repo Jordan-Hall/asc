@@ -13,8 +13,8 @@ use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_git::index::{IndexEntry, IndexFile, StatTime};
 use asc_state::state::stage::Leaf;
-use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
 use asc_wc::SafeRoot;
+use asc_wc::ignore::{IgnoreSources, IgnoreStack, shadow_warning};
 use asc_wc::redirect::Redirections;
 use asc_wc::status::Eol;
 
@@ -110,11 +110,17 @@ enum Probe {
     Dir,
     /// Neither a file, a symlink nor a directory: never read.
     Other,
-    File { git: GitOid, symlink: bool, exec: Option<bool> },
+    File {
+        git: GitOid,
+        symlink: bool,
+        exec: Option<bool>,
+    },
 }
 
 fn stat_matches(e: &IndexEntry, meta: &fs::Metadata, index_mtime: Option<SystemTime>) -> bool {
-    let Ok(modified) = meta.modified() else { return false };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
     if e.size != meta.len() as u32 || e.mtime != StatTime::from_system_time(modified) {
         return false;
     }
@@ -140,7 +146,9 @@ fn probe(
     filemode: bool,
 ) -> io::Result<Probe> {
     // A path under a linked ancestor is outside the work tree: it reads as missing.
-    let Some(abs) = gate.resolve(path) else { return Ok(Probe::Missing) };
+    let Some(abs) = gate.resolve(path) else {
+        return Ok(Probe::Missing);
+    };
     let meta = match fs::symlink_metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Err(e),
@@ -155,7 +163,11 @@ fn probe(
     }
     let exec = convert::exec_bit(&meta).filter(|_| filemode);
     if let Some(e) = cached.filter(|e| stat_matches(e, &meta, index_mtime)) {
-        return Ok(Probe::File { git: e.oid, symlink, exec });
+        return Ok(Probe::File {
+            git: e.oid,
+            symlink,
+            exec,
+        });
     }
     let git = if symlink {
         convert::bytes_oid(&convert::link_target(&abs)?)?
@@ -166,7 +178,13 @@ fn probe(
 }
 
 /// Whether the work tree differs from what is staged.
-fn changed(leaf: &Leaf, git: GitOid, symlink: bool, exec: Option<bool>, core_symlinks: bool) -> bool {
+fn changed(
+    leaf: &Leaf,
+    git: GitOid,
+    symlink: bool,
+    exec: Option<bool>,
+    core_symlinks: bool,
+) -> bool {
     let want_link = leaf.kind == Kind::Symlink;
     // Without symlink support a link is a regular file holding its target.
     let as_file = want_link && !symlink && !core_symlinks;
@@ -191,8 +209,11 @@ pub async fn plan(
     let gate = SafeRoot::new(root);
     let index_path = ws.projection.git_dir().join("index");
     let index = IndexFile::read_or_empty(&index_path).unwrap_or_default();
-    let cache: HashMap<&[u8], &IndexEntry> =
-        index.entries.iter().map(|e| (e.path.as_bytes(), e)).collect();
+    let cache: HashMap<&[u8], &IndexEntry> = index
+        .entries
+        .iter()
+        .map(|e| (e.path.as_bytes(), e))
+        .collect();
     let filemode = ctx.config.bool("core.filemode").unwrap_or(cfg!(unix));
     let core_symlinks = ctx.config.bool("core.symlinks").unwrap_or(cfg!(unix));
 
@@ -220,8 +241,9 @@ pub async fn plan(
                 return Ok(());
             }
             let eol = || attrs.lookup(path).map_or(Eol::Keep, |a| a.eol);
-            let found = probe(&gate, path, cached, index.mtime, eol, filemode)
-                .map_err(io_err(&gate.resolve(path).unwrap_or_else(|| root.to_owned())))?;
+            let found = probe(&gate, path, cached, index.mtime, eol, filemode).map_err(io_err(
+                &gate.resolve(path).unwrap_or_else(|| root.to_owned()),
+            ))?;
             let dirty = match (&found, leaf) {
                 (Probe::Missing | Probe::Dir, _) => {
                     plan.ops.push(Op::Remove(path.clone()));
@@ -384,9 +406,17 @@ impl Walker<'_> {
             if !kind.is_file() && !kind.is_symlink() {
                 continue;
             }
-            let attrs = self.attrs.lookup(&child).map_err(|e| CliError::Fatal(e.to_string()))?;
+            let attrs = self
+                .attrs
+                .lookup(&child)
+                .map_err(|e| CliError::Fatal(e.to_string()))?;
             self.plan.note_lfs(&child, &attrs);
-            self.plan.ops.push(Op::Add { path: child, attrs, ita: self.opts.intent, prev: None });
+            self.plan.ops.push(Op::Add {
+                path: child,
+                attrs,
+                ita: self.opts.intent,
+                prev: None,
+            });
         }
         Ok(())
     }

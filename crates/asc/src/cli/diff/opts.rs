@@ -5,8 +5,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use asc_engine::diff::{Algorithm, DiffOptions, RenameOptions};
 use asc_engine::diff::Status;
+use asc_engine::diff::{Algorithm, DiffOptions, RenameOptions};
 
 use crate::cli::common::{CliError, Ctx, Result};
 use crate::msg::Msg;
@@ -31,7 +31,10 @@ impl clap::CommandFactory for RawArgs {
 
 impl clap::FromArgMatches for RawArgs {
     fn from_arg_matches(_: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        Ok(Self { cmd: String::new(), rest: Vec::new() })
+        Ok(Self {
+            cmd: String::new(),
+            rest: Vec::new(),
+        })
     }
 
     fn update_from_arg_matches(&mut self, _: &clap::ArgMatches) -> Result<(), clap::Error> {
@@ -46,8 +49,14 @@ impl clap::Parser for RawArgs {
         T: Into<OsString> + Clone,
     {
         let mut all = itr.into_iter().map(Into::into);
-        let cmd = all.next().map(|c: OsString| c.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Self { cmd, rest: all.collect() })
+        let cmd = all
+            .next()
+            .map(|c: OsString| c.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Self {
+            cmd,
+            rest: all.collect(),
+        })
     }
 }
 
@@ -83,7 +92,10 @@ impl Formats {
     /// Applies the command's default form when none was named, and `-s`.
     pub fn resolve(mut self, default_raw: bool) -> Self {
         if self.none {
-            return Self { none: true, ..Self::default() };
+            return Self {
+                none: true,
+                ..Self::default()
+            };
         }
         if !self.any() {
             if default_raw {
@@ -119,7 +131,8 @@ impl StatusFilter {
     /// Whether a change of this status is shown.
     pub fn keeps(&self, status: Status) -> bool {
         let letter = status.letter();
-        (self.include.is_empty() || self.include.contains(&letter)) && !self.exclude.contains(&letter)
+        (self.include.is_empty() || self.include.contains(&letter))
+            && !self.exclude.contains(&letter)
     }
 }
 
@@ -149,7 +162,9 @@ pub struct Common {
 }
 
 fn unsupported(flag: &str) -> CliError {
-    CliError::Msg(Msg::AscOptionUnsupported { flag: flag.to_owned() })
+    CliError::Msg(Msg::AscOptionUnsupported {
+        flag: flag.to_owned(),
+    })
 }
 
 fn usage(text: String) -> CliError {
@@ -176,7 +191,11 @@ fn rename_threshold(text: &str) -> Option<u8> {
         return None;
     }
     let value: u64 = digits.parse().ok()?;
-    let scaled = if percent { value } else { value * 100 / 10u64.checked_pow(u32::try_from(digits.len()).ok()?)? };
+    let scaled = if percent {
+        value
+    } else {
+        value * 100 / 10u64.checked_pow(u32::try_from(digits.len()).ok()?)?
+    };
     u8::try_from(scaled.min(100)).ok()
 }
 
@@ -218,8 +237,12 @@ pub fn apply_config(ctx: &Ctx, opts: &mut DiffOptions, porcelain: bool) -> Resul
     }
     for key in keys {
         if let Some(value) = ctx.config.get(key) {
-            opts.apply_config(key, &value)
-                .map_err(|e| CliError::Fatal(format!("bad config variable '{}' value '{}'", e.key, e.value)))?;
+            opts.apply_config(key, &value).map_err(|e| {
+                CliError::Fatal(format!(
+                    "bad config variable '{}' value '{}'",
+                    e.key, e.value
+                ))
+            })?;
         }
     }
     Ok(())
@@ -313,8 +336,12 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
             }
             "--renames" => c.renames_flag = Some(true),
             "--find-renames" => {
-                let t = rename_threshold(value.unwrap_or_default()).ok_or_else(|| usage(format!("error: invalid argument to {name}")))?;
-                opts.renames = Some(RenameOptions { threshold: t, ..opts.renames.unwrap_or_default() });
+                let t = rename_threshold(value.unwrap_or_default())
+                    .ok_or_else(|| usage(format!("error: invalid argument to {name}")))?;
+                opts.renames = Some(RenameOptions {
+                    threshold: t,
+                    ..opts.renames.unwrap_or_default()
+                });
                 c.renames_flag = Some(true);
             }
             "--src-prefix" => opts.src_prefix = Some(value.unwrap_or_default().to_owned()),
@@ -323,7 +350,9 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
             "--relative" => {
                 opts.relative_config = true;
                 if let Some(v) = value {
-                    opts.relative = asc_core::path::RepoPath::new(v.trim_end_matches('/').as_bytes().to_vec()).ok();
+                    opts.relative =
+                        asc_core::path::RepoPath::new(v.trim_end_matches('/').as_bytes().to_vec())
+                            .ok();
                 }
             }
             "--no-relative" => {
@@ -362,14 +391,21 @@ pub fn parse(mut opts: DiffOptions, argv: &[OsString]) -> Result<Common> {
             "--diff-filter" => c.filter = Some(StatusFilter::parse(value.unwrap_or_default())),
             "--json" => c.json = true,
             _ => {
-                if let Some(n) = name.strip_prefix("-U").filter(|n| n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty()) {
+                if let Some(n) = name
+                    .strip_prefix("-U")
+                    .filter(|n| n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty())
+                {
                     opts.context = number("-U", n)?;
                 } else if name == "-U" {
                     let v = args.next().and_then(|v| v.to_str()).unwrap_or_default();
                     opts.context = number("-U", v)?;
                 } else if let Some(t) = name.strip_prefix("-M") {
-                    let t = rename_threshold(t).ok_or_else(|| usage("error: invalid argument to -M".into()))?;
-                    opts.renames = Some(RenameOptions { threshold: t, ..opts.renames.unwrap_or_default() });
+                    let t = rename_threshold(t)
+                        .ok_or_else(|| usage("error: invalid argument to -M".into()))?;
+                    opts.renames = Some(RenameOptions {
+                        threshold: t,
+                        ..opts.renames.unwrap_or_default()
+                    });
                     c.renames_flag = Some(true);
                 } else if text.starts_with("--") || text.len() == 2 {
                     c.extra.push(text.to_owned());
@@ -412,25 +448,48 @@ mod tests {
 
     #[test]
     fn formats_default_and_override() {
-        let c = parse(DiffOptions::default(), &args(&["--stat", "-p", "a", "--", "b"])).unwrap();
+        let c = parse(
+            DiffOptions::default(),
+            &args(&["--stat", "-p", "a", "--", "b"]),
+        )
+        .unwrap();
         let f = c.fmt.resolve(false);
         assert!(f.stat && f.patch && !f.raw);
         assert_eq!(c.positional, args(&["a"]));
         assert_eq!(c.paths, args(&["b"]));
-        let none = parse(DiffOptions::default(), &args(&["-s"])).unwrap().fmt.resolve(false);
+        let none = parse(DiffOptions::default(), &args(&["-s"]))
+            .unwrap()
+            .fmt
+            .resolve(false);
         assert!(none.none && !none.patch);
-        assert!(parse(DiffOptions::default(), &[]).unwrap().fmt.resolve(true).raw);
+        assert!(
+            parse(DiffOptions::default(), &[])
+                .unwrap()
+                .fmt
+                .resolve(true)
+                .raw
+        );
     }
 
     #[test]
     fn value_flags() {
         let c = parse(
             DiffOptions::default(),
-            &args(&["-U7", "--stat=100,40,5", "-M60%", "--abbrev=10", "--src-prefix=x/", "--cached"]),
+            &args(&[
+                "-U7",
+                "--stat=100,40,5",
+                "-M60%",
+                "--abbrev=10",
+                "--src-prefix=x/",
+                "--cached",
+            ]),
         )
         .unwrap();
         assert_eq!(c.opts.context, 7);
-        assert_eq!((c.opts.stat_width, c.opts.stat_name_width, c.opts.stat_count), (Some(100), Some(40), Some(5)));
+        assert_eq!(
+            (c.opts.stat_width, c.opts.stat_name_width, c.opts.stat_count),
+            (Some(100), Some(40), Some(5))
+        );
         assert_eq!(c.opts.renames.map(|r| r.threshold), Some(60));
         assert_eq!(c.opts.abbrev, 10);
         assert_eq!(c.opts.src_prefix.as_deref(), Some("x/"));
@@ -446,7 +505,9 @@ mod tests {
     #[test]
     fn status_filter() {
         let f = StatusFilter::parse("ACMR");
-        assert!(f.keeps(Status::Added) && f.keeps(Status::Renamed(90)) && !f.keeps(Status::Deleted));
+        assert!(
+            f.keeps(Status::Added) && f.keeps(Status::Renamed(90)) && !f.keeps(Status::Deleted)
+        );
         let f = StatusFilter::parse("d");
         assert!(!f.keeps(Status::Deleted) && f.keeps(Status::Modified));
     }

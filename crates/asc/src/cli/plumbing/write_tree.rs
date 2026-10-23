@@ -23,7 +23,11 @@ fn fatal(text: impl Into<String>) -> CliError {
 }
 
 /// The changes the stage rows make on top of `base` (intent-to-add rows stage nothing).
-async fn rows_to_changes(ws: &WsCtx, base: TreeId, rows: &[StageRow]) -> Result<Vec<(RepoPath, Change)>> {
+async fn rows_to_changes(
+    ws: &WsCtx,
+    base: TreeId,
+    rows: &[StageRow],
+) -> Result<Vec<(RepoPath, Change)>> {
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
         if r.intent_to_add {
@@ -38,7 +42,9 @@ async fn rows_to_changes(ws: &WsCtx, base: TreeId, rows: &[StageRow]) -> Result<
                 Change::Delete
             }
             (Some(_), Some(git)) if r.kind == Kind::Gitlink => Change::Gitlink { commit: git },
-            (Some(file), Some(git)) => Change::write(r.kind, file, r.size, git, None).map_err(|e| fatal(e.to_string()))?,
+            (Some(file), Some(git)) => {
+                Change::write(r.kind, file, r.size, git, None).map_err(|e| fatal(e.to_string()))?
+            }
             (Some(_), None) => return Err(fatal("asc: a stage row has no git oid")),
         };
         out.push((path, change));
@@ -66,7 +72,10 @@ pub async fn write_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     if !unmerged.is_empty() {
         for r in unmerged {
             if let Some(git) = r.git {
-                eprintln!("error: {}: unmerged ({git})", String::from_utf8_lossy(&r.path));
+                eprintln!(
+                    "error: {}: unmerged ({git})",
+                    String::from_utf8_lossy(&r.path)
+                );
             }
         }
         return Err(fatal("git-write-tree: error building trees"));
@@ -78,11 +87,13 @@ pub async fn write_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     for (path, _) in &changes {
         let bytes = path.as_bytes();
         for (at, b) in bytes.iter().enumerate() {
-            if *b == b'/' && seen.insert(bytes[..at].to_vec())
+            if *b == b'/'
+                && seen.insert(bytes[..at].to_vec())
                 && let Ok(dir) = RepoPath::new(bytes[..at].to_vec())
-                    && let Some(entry) = ws.engine.lookup(root, &dir).await? {
-                        resolver.resolve_entry(&entry);
-                    }
+                && let Some(entry) = ws.engine.lookup(root, &dir).await?
+            {
+                resolver.resolve_entry(&entry);
+            }
         }
     }
     let Object::Tree { oid, .. } = resolver.tree(root).await? else {
@@ -94,7 +105,12 @@ pub async fn write_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             let trimmed = p.trim_end_matches('/');
             let missing = || fatal(format!("git-write-tree: prefix {p} not found"));
             let dir = RepoPath::new(trimmed.as_bytes().to_vec()).map_err(|_| missing())?;
-            let entry = ws.engine.lookup(root, &dir).await?.filter(|e| e.kind == Kind::Dir).ok_or_else(missing)?;
+            let entry = ws
+                .engine
+                .lookup(root, &dir)
+                .await?
+                .filter(|e| e.kind == Kind::Dir)
+                .ok_or_else(missing)?;
             resolver.resolve_entry(&entry);
             entry.git
         }
@@ -129,7 +145,9 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         }
     }
     if trees.len() > 1 {
-        return Err(fatal("asc: read-tree merges of several trees are not supported yet"));
+        return Err(fatal(
+            "asc: read-tree merges of several trees are not supported yet",
+        ));
     }
     if ignore_worktree && !merge && prefix.is_none() {
         return Err(fatal("-i is meaningless without -m, --reset, or --prefix"));
@@ -138,14 +156,19 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         return Err(fatal("passing trees as arguments contradicts --empty"));
     }
     if !empty && trees.is_empty() {
-        eprintln!("warning: read-tree: emptying the index with no arguments is deprecated; use --empty");
+        eprintln!(
+            "warning: read-tree: emptying the index with no arguments is deprecated; use --empty"
+        );
     }
     let ws = ctx.ws()?;
     let resolver = Resolver::new(ctx, ws);
     let new_root = match trees.first() {
         None => CliEngine::empty_tree_id(),
         Some(word) => {
-            let found = resolver.resolve(word).await?.ok_or_else(|| fatal(format!("Not a valid object name {word}")))?;
+            let found = resolver
+                .resolve(word)
+                .await?
+                .ok_or_else(|| fatal(format!("Not a valid object name {word}")))?;
             match resolver.peel(found, ObjectKind::Tree).await? {
                 Some(Object::Tree { id, .. }) => id,
                 _ => return Err(fatal(format!("failed to unpack tree object {word}"))),
@@ -156,7 +179,18 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     index.seed(ctx).await?;
     let mut edits: Vec<Edit> = Vec::new();
     let leaf_of = |change: &Change| match change {
-        Change::Write { kind, file, size, git, .. } => Some(Leaf { kind: *kind, file: *file, size: *size, git: *git }),
+        Change::Write {
+            kind,
+            file,
+            size,
+            git,
+            ..
+        } => Some(Leaf {
+            kind: *kind,
+            file: *file,
+            size: *size,
+            git: *git,
+        }),
         Change::Gitlink { commit } => Some(Leaf {
             kind: Kind::Gitlink,
             file: asc_core::id::FileId::from_bytes([0; 32]),
@@ -168,7 +202,11 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     if let Some(prefix) = prefix {
         let dir = prefix.trim_end_matches('/').to_owned();
         let mut incoming: Vec<(RepoPath, Leaf)> = Vec::new();
-        for (path, change) in ws.engine.leafdiff(CliEngine::empty_tree_id(), new_root, None).await? {
+        for (path, change) in ws
+            .engine
+            .leafdiff(CliEngine::empty_tree_id(), new_root, None)
+            .await?
+        {
             if let Some(leaf) = leaf_of(&change) {
                 let full = format!("{dir}/{path}");
                 let Ok(full) = RepoPath::new(full.clone().into_bytes()) else {
@@ -182,16 +220,27 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
         while let Some(e) = present.next().await? {
             if taken.contains(e.path.as_slice()) {
                 let path = String::from_utf8_lossy(&e.path);
-                return Err(CliError::Raw(format!("error: Entry '{path}' overlaps with '{path}'.  Cannot bind."), 128));
+                return Err(CliError::Raw(
+                    format!("error: Entry '{path}' overlaps with '{path}'.  Cannot bind."),
+                    128,
+                ));
             }
         }
-        edits.extend(incoming.into_iter().map(|(path, leaf)| Edit::Put { path, leaf, ita: false }));
+        edits.extend(incoming.into_iter().map(|(path, leaf)| Edit::Put {
+            path,
+            leaf,
+            ita: false,
+        }));
     } else {
         let mut touched: HashSet<Vec<u8>> = HashSet::new();
         for (path, change) in ws.engine.leafdiff(index.root, new_root, None).await? {
             touched.insert(path.as_bytes().to_vec());
             edits.push(match leaf_of(&change) {
-                Some(leaf) => Edit::Put { path, leaf, ita: false },
+                Some(leaf) => Edit::Put {
+                    path,
+                    leaf,
+                    ita: false,
+                },
                 None => Edit::Drop(path),
             });
         }
@@ -200,7 +249,11 @@ pub async fn read_tree(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
             if touched.insert(row.path.clone()) {
                 let path = RepoPath::new(row.path).map_err(|e| fatal(e.to_string()))?;
                 edits.push(match index.target.head_leaf(ws, &path).await? {
-                    Some(leaf) => Edit::Put { path, leaf, ita: false },
+                    Some(leaf) => Edit::Put {
+                        path,
+                        leaf,
+                        ita: false,
+                    },
                     None => Edit::Drop(path),
                 });
             }

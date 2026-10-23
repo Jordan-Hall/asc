@@ -35,7 +35,14 @@ pub enum Word {
 
 impl Cursor {
     pub fn new(args: &[OsString], usage: &'static str) -> Self {
-        Self { items: args.iter().map(|a| a.to_string_lossy().into_owned()).collect(), at: 0, usage }
+        Self {
+            items: args
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect(),
+            at: 0,
+            usage,
+        }
     }
 
     /// The usage error git prints for a bad option.
@@ -88,7 +95,10 @@ impl Cursor {
                 self.at += 1;
                 Ok(v.clone())
             }
-            None => Err(CliError::Raw(format!("error: option `{name}' requires a value"), 129)),
+            None => Err(CliError::Raw(
+                format!("error: option `{name}' requires a value"),
+                129,
+            )),
         }
     }
 
@@ -126,7 +136,9 @@ pub async fn resolve_target(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Option<
     }
     if !word.contains(['~', '^', '@', ':']) {
         for cand in dwim_candidates(word) {
-            let Ok(name) = RefName::new(cand.into_bytes()) else { continue };
+            let Ok(name) = RefName::new(cand.into_bytes()) else {
+                continue;
+            };
             if let Some(entry) = ws.db.refs().get(ws.repo.key, &name).await? {
                 return Ok(Some(entry.target));
             }
@@ -146,12 +158,20 @@ pub async fn resolve_oid(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Option<Git
 /// The git id of a ref target's object.
 pub async fn object_oid_of(ws: &WsCtx, target: RefTarget) -> Result<GitOid> {
     match target {
-        RefTarget::Changeset(c) => ws.engine.git_commit_of(c).await.map_err(|e| CliError::Fatal(e.to_string())),
+        RefTarget::Changeset(c) => ws
+            .engine
+            .git_commit_of(c)
+            .await
+            .map_err(|e| CliError::Fatal(e.to_string())),
         RefTarget::Tag(t) => {
             let rec = crate::cli::log::refs::tag_record(ws, t).await?;
-            let target_git =
-                ws.engine.git_commit_of(rec.target).await.map_err(|e| CliError::Fatal(e.to_string()))?;
-            let raw = asc_core::git::export_tag(&rec, target_git).map_err(|e| CliError::Fatal(e.to_string()))?;
+            let target_git = ws
+                .engine
+                .git_commit_of(rec.target)
+                .await
+                .map_err(|e| CliError::Fatal(e.to_string()))?;
+            let raw = asc_core::git::export_tag(&rec, target_git)
+                .map_err(|e| CliError::Fatal(e.to_string()))?;
             Ok(asc_core::git::object_oid(ObjectKind::Tag, &raw))
         }
     }

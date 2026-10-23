@@ -35,9 +35,28 @@ pub struct Args {
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "fetch",
     flags: &[
-        "-q", "--quiet", "-v", "--verbose", "-p", "--prune", "--all", "-t", "--tags", "-n", "--no-tags", "--deepen",
-        "--unshallow", "--prefetch", "-f", "--force", "--progress", "--no-progress", "--no-recurse-submodules",
-        "--no-auto-gc", "--no-write-fetch-head", "--atomic",
+        "-q",
+        "--quiet",
+        "-v",
+        "--verbose",
+        "-p",
+        "--prune",
+        "--all",
+        "-t",
+        "--tags",
+        "-n",
+        "--no-tags",
+        "--deepen",
+        "--unshallow",
+        "--prefetch",
+        "-f",
+        "--force",
+        "--progress",
+        "--no-progress",
+        "--no-recurse-submodules",
+        "--no-auto-gc",
+        "--no-write-fetch-head",
+        "--atomic",
     ],
     placeholders: &[],
 }];
@@ -51,7 +70,9 @@ pub(crate) fn fatal(e: impl std::fmt::Display) -> CliError {
 /// An engine sync failure as the CLI reports it.
 pub(crate) fn sync_error(e: SyncError) -> CliError {
     match e {
-        SyncError::RawGit(_) => CliError::Fatal("asc: import this history on the server (asc serve admin import)".into()),
+        SyncError::RawGit(_) => {
+            CliError::Fatal("asc: import this history on the server (asc serve admin import)".into())
+        }
         other => fatal(other),
     }
 }
@@ -71,7 +92,10 @@ pub(crate) struct Opts {
 
 fn parse(argv: &[OsString]) -> Result<Opts> {
     let mut o = Opts::default();
-    let mut it = argv.iter().map(|a| a.to_string_lossy().into_owned()).peekable();
+    let mut it = argv
+        .iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .peekable();
     let mut ended = false;
     while let Some(a) = it.next() {
         if ended || !a.starts_with('-') || a == "-" {
@@ -89,16 +113,32 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             "--unshallow" => o.unshallow = true,
             "--deepen" => {
                 let v = it.next().ok_or_else(|| CliError::Usage(USAGE.to_owned()))?;
-                o.deepen = Some(v.parse().map_err(|_| CliError::Fatal(format!("depth {v} is not a positive number")))?);
+                o.deepen =
+                    Some(v.parse().map_err(|_| {
+                        CliError::Fatal(format!("depth {v} is not a positive number"))
+                    })?);
             }
-            "--prefetch" => o.prefetch.push(it.next().ok_or_else(|| CliError::Usage(USAGE.to_owned()))?),
-            "-f" | "--force" | "--progress" | "--no-progress" | "--no-recurse-submodules" | "--no-auto-gc"
-            | "--no-write-fetch-head" | "--atomic" => {}
+            "--prefetch" => o
+                .prefetch
+                .push(it.next().ok_or_else(|| CliError::Usage(USAGE.to_owned()))?),
+            "-f"
+            | "--force"
+            | "--progress"
+            | "--no-progress"
+            | "--no-recurse-submodules"
+            | "--no-auto-gc"
+            | "--no-write-fetch-head"
+            | "--atomic" => {}
             w if w.starts_with("--deepen=") => {
                 let v = &w["--deepen=".len()..];
-                o.deepen = Some(v.parse().map_err(|_| CliError::Fatal(format!("depth {v} is not a positive number")))?);
+                o.deepen =
+                    Some(v.parse().map_err(|_| {
+                        CliError::Fatal(format!("depth {v} is not a positive number"))
+                    })?);
             }
-            w if w.starts_with("--prefetch=") => o.prefetch.push(w["--prefetch=".len()..].to_owned()),
+            w if w.starts_with("--prefetch=") => {
+                o.prefetch.push(w["--prefetch=".len()..].to_owned())
+            }
             _ => return Err(CliError::Usage(USAGE.to_owned())),
         }
     }
@@ -134,7 +174,9 @@ pub(crate) async fn git_short(ws: &WsCtx, target: Option<RefTarget>, abbrev: usi
             .and_then(|rows| rows.into_iter().next().map(|(o, _)| o)),
         None => None,
     };
-    let text = full.unwrap_or_else(|| GitOid::from_bytes([0; 20])).to_string();
+    let text = full
+        .unwrap_or_else(|| GitOid::from_bytes([0; 20]))
+        .to_string();
     text[..abbrev.min(text.len())].to_owned()
 }
 
@@ -150,12 +192,29 @@ pub(crate) struct Line {
 /// Renders the table the way git's transport does. `pad_from` is fetch's aligned form.
 pub(crate) fn render(lines: &[Line], abbrev: usize, pad_from: bool) -> String {
     let width = 2 * abbrev + 3;
-    let refcol = lines.iter().map(|l| l.from.chars().count()).max().unwrap_or(0).max(10);
+    let refcol = lines
+        .iter()
+        .map(|l| l.from.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(10);
     let mut out = String::new();
     for l in lines {
-        let from = if pad_from { format!("{:<refcol$}", l.from) } else { l.from.clone() };
-        let to = if l.to.is_empty() { String::new() } else { format!(" -> {}", l.to) };
-        let reason = l.reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+        let from = if pad_from {
+            format!("{:<refcol$}", l.from)
+        } else {
+            l.from.clone()
+        };
+        let to = if l.to.is_empty() {
+            String::new()
+        } else {
+            format!(" -> {}", l.to)
+        };
+        let reason = l
+            .reason
+            .as_ref()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
         let line = if l.from.is_empty() {
             format!(" {} {}", l.flag, l.summary)
         } else {
@@ -184,18 +243,30 @@ fn short_local_side(full: &str) -> String {
 
 /// The remote ref a tracking ref `dst` comes from under `specs` (`+src:dst` and `src:dst`).
 fn source_of(specs: &[String], dst: &str) -> Option<String> {
-    specs.iter().filter(|s| !s.starts_with('^')).find_map(|s| reverse_refspec(s, dst))
+    specs
+        .iter()
+        .filter(|s| !s.starts_with('^'))
+        .find_map(|s| reverse_refspec(s, dst))
 }
 
 fn excluded(specs: &[String], src: &str) -> bool {
-    specs.iter().filter_map(|s| s.strip_prefix('^')).any(|pat| match pat.split_once('*') {
-        None => pat == src,
-        Some((pre, post)) => src.len() >= pre.len() + post.len() && src.starts_with(pre) && src.ends_with(post),
-    })
+    specs
+        .iter()
+        .filter_map(|s| s.strip_prefix('^'))
+        .any(|pat| match pat.split_once('*') {
+            None => pat == src,
+            Some((pre, post)) => {
+                src.len() >= pre.len() + post.len() && src.starts_with(pre) && src.ends_with(post)
+            }
+        })
 }
 
 /// Tracking refs of `opened` whose remote counterpart is gone (`--prune`, `remote prune`).
-pub(crate) async fn stale_tracking(ctx: &Ctx, ws: &WsCtx, opened: &Opened) -> Result<Vec<(String, RefTarget)>> {
+pub(crate) async fn stale_tracking(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    opened: &Opened,
+) -> Result<Vec<(String, RefTarget)>> {
     let specs = remote::fetch_refspecs(ctx, &opened.name);
     let present: std::collections::HashSet<String> = opened
         .remote
@@ -226,7 +297,10 @@ fn cli_specs(name: &str, words: &[String]) -> Vec<String> {
             if w.contains(':') {
                 w.clone()
             } else if w.starts_with("refs/") {
-                format!("+{w}:{}", w.replacen("refs/heads/", &format!("refs/remotes/{name}/"), 1))
+                format!(
+                    "+{w}:{}",
+                    w.replacen("refs/heads/", &format!("refs/remotes/{name}/"), 1)
+                )
             } else {
                 format!("+refs/heads/{w}:refs/remotes/{name}/{w}")
             }
@@ -242,26 +316,44 @@ pub(crate) struct Fetched {
 }
 
 /// Fetches from `target` (a remote name or URL) and prints git's table.
-pub(crate) async fn fetch_one(ctx: &Ctx, ws: &WsCtx, target: &str, o: &Opts, words: &[String]) -> Result<Fetched> {
+pub(crate) async fn fetch_one(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    target: &str,
+    o: &Opts,
+    words: &[String],
+) -> Result<Fetched> {
     let opened = remote::open(ctx, ws, target, Intent::Read).await?;
     let mut specs: Vec<String> = if words.is_empty() {
         if opened.configured {
             remote::fetch_refspecs(ctx, &opened.name)
         } else {
-            return Err(CliError::Fatal("asc: fetching from a URL needs a refspec".into()));
+            return Err(CliError::Fatal(
+                "asc: fetching from a URL needs a refspec".into(),
+            ));
         }
     } else {
         cli_specs(&opened.name, words)
     };
     let tag_opt = ctx.config.get(&format!("remote.{}.tagOpt", opened.name));
-    let tags = o.tags.unwrap_or_else(|| tag_opt.as_deref() == Some("--tags"));
+    let tags = o
+        .tags
+        .unwrap_or_else(|| tag_opt.as_deref() == Some("--tags"));
     if tags && !specs.iter().any(|s| s.ends_with("refs/tags/*:refs/tags/*")) {
         specs.push("+refs/tags/*:refs/tags/*".to_owned());
     }
-    let parsed: Vec<Refspec> = specs.iter().map(|s| Refspec::parse(s)).collect::<std::result::Result<_, _>>().map_err(sync_error)?;
+    let parsed: Vec<Refspec> = specs
+        .iter()
+        .map(|s| Refspec::parse(s))
+        .collect::<std::result::Result<_, _>>()
+        .map_err(sync_error)?;
     let boundaries = StateBoundaries::new(ws);
     let opts = remote::options(ctx, &boundaries);
-    let mut report = ws.engine.fetch(&*opened.remote, &parsed, &opts).await.map_err(sync_error)?;
+    let mut report = ws
+        .engine
+        .fetch(&*opened.remote, &parsed, &opts)
+        .await
+        .map_err(sync_error)?;
 
     let prune = o
         .prune
@@ -285,21 +377,29 @@ pub(crate) async fn fetch_one(ctx: &Ctx, ws: &WsCtx, target: &str, o: &Opts, wor
     let mut lines = Vec::new();
     for c in &report.updated {
         let full = String::from_utf8_lossy(c.name.as_bytes()).into_owned();
-        let from = source_of(&specs, &full).map_or_else(|| short_local_side(&full), |s| short_remote_side(&s));
+        let from = source_of(&specs, &full)
+            .map_or_else(|| short_local_side(&full), |s| short_remote_side(&s));
         let to = short_local_side(&full);
         let is_tag = full.starts_with("refs/tags/");
         let (flag, summary) = match c.old {
             None if is_tag => ('*', "[new tag]".to_owned()),
-            None if full.starts_with("refs/remotes/") || full.starts_with("refs/heads/") => ('*', "[new branch]".to_owned()),
+            None if full.starts_with("refs/remotes/") || full.starts_with("refs/heads/") => {
+                ('*', "[new branch]".to_owned())
+            }
             None => ('*', "[new ref]".to_owned()),
             Some(old) => {
                 let ff = match (old, c.new) {
                     (RefTarget::Changeset(a), RefTarget::Changeset(b)) => {
-                        HistoryApi::is_ancestor(&ws.engine, a, b).await.unwrap_or(false)
+                        HistoryApi::is_ancestor(&ws.engine, a, b)
+                            .await
+                            .unwrap_or(false)
                     }
                     _ => false,
                 };
-                let (a, b) = (git_short(ws, Some(old), abbrev).await, git_short(ws, Some(c.new), abbrev).await);
+                let (a, b) = (
+                    git_short(ws, Some(old), abbrev).await,
+                    git_short(ws, Some(c.new), abbrev).await,
+                );
                 if is_tag {
                     ('t', "[tag update]".to_owned())
                 } else if ff {
@@ -310,7 +410,13 @@ pub(crate) async fn fetch_one(ctx: &Ctx, ws: &WsCtx, target: &str, o: &Opts, wor
             }
         };
         let reason = (flag == '+').then(|| "forced update".to_owned());
-        lines.push(Line { flag: if flag == 't' { 't' } else { flag }, summary, from, to, reason });
+        lines.push(Line {
+            flag: if flag == 't' { 't' } else { flag },
+            summary,
+            from,
+            to,
+            reason,
+        });
     }
     let mut rejected = false;
     for r in &report.rejected {
@@ -319,7 +425,8 @@ pub(crate) async fn fetch_one(ctx: &Ctx, ws: &WsCtx, target: &str, o: &Opts, wor
         lines.push(Line {
             flag: '!',
             summary: "[rejected]".into(),
-            from: source_of(&specs, &full).map_or_else(|| short_local_side(&full), |s| short_remote_side(&s)),
+            from: source_of(&specs, &full)
+                .map_or_else(|| short_local_side(&full), |s| short_remote_side(&s)),
             to: short_local_side(&full),
             reason: Some("non-fast-forward".into()),
         });
@@ -344,21 +451,34 @@ pub(crate) async fn fetch_one(ctx: &Ctx, ws: &WsCtx, target: &str, o: &Opts, wor
     }
 
     if let Some(n) = o.deepen {
-        ws.engine.deepen(&*opened.remote, &opts, Some(n)).await.map_err(sync_error)?;
+        ws.engine
+            .deepen(&*opened.remote, &opts, Some(n))
+            .await
+            .map_err(sync_error)?;
     }
     if o.unshallow {
-        ws.engine.unshallow(&*opened.remote, &opts).await.map_err(sync_error)?;
+        ws.engine
+            .unshallow(&*opened.remote, &opts)
+            .await
+            .map_err(sync_error)?;
     }
     if !o.prefetch.is_empty() {
         let spec = Pathspec::parse(o.prefetch.iter().map(String::as_bytes)).map_err(fatal)?;
         for c in &report.updated {
             if let RefTarget::Changeset(cs) = c.new {
                 let root = ws.engine.get_changeset(cs).await?.root;
-                ws.engine.prefetch(&*opened.remote, root, Some(&spec)).await.map_err(sync_error)?;
+                ws.engine
+                    .prefetch(&*opened.remote, root, Some(&spec))
+                    .await
+                    .map_err(sync_error)?;
             }
         }
     }
-    Ok(Fetched { opened, report, rejected })
+    Ok(Fetched {
+        opened,
+        report,
+        rejected,
+    })
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
@@ -367,7 +487,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut failed = false;
     if o.all {
         if !o.words.is_empty() {
-            return Err(CliError::Fatal("fetch --all does not take a repository argument".into()));
+            return Err(CliError::Fatal(
+                "fetch --all does not take a repository argument".into(),
+            ));
         }
         for name in remote::remote_names(ctx) {
             failed |= fetch_one(ctx, ws, &name, &o, &[]).await?.rejected;
@@ -379,7 +501,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         };
         failed = fetch_one(ctx, ws, &target, &o, &words).await?.rejected;
     }
-    Ok(if failed { ExitCode::from(1) } else { ExitCode::SUCCESS })
+    Ok(if failed {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// The changeset a ref names, when it exists locally.
@@ -395,13 +521,22 @@ mod tests {
     use super::*;
 
     fn line(flag: char, summary: &str, from: &str, to: &str) -> Line {
-        Line { flag, summary: summary.into(), from: from.into(), to: to.into(), reason: None }
+        Line {
+            flag,
+            summary: summary.into(),
+            from: from.into(),
+            to: to.into(),
+            reason: None,
+        }
     }
 
     #[test]
     fn fetch_table_is_git_aligned() {
         let text = render(
-            &[line('*', "[new branch]", "master", "origin/master"), line(' ', "1234567..89abcde", "dev", "origin/dev")],
+            &[
+                line('*', "[new branch]", "master", "origin/master"),
+                line(' ', "1234567..89abcde", "dev", "origin/dev"),
+            ],
             7,
             true,
         );
@@ -415,20 +550,32 @@ mod tests {
     fn push_table_is_not_padded() {
         let mut l = line('!', "[rejected]", "master", "master");
         l.reason = Some("fetch first".into());
-        assert_eq!(render(&[l], 7, false), " ! [rejected]        master -> master (fetch first)\n");
+        assert_eq!(
+            render(&[l], 7, false),
+            " ! [rejected]        master -> master (fetch first)\n"
+        );
     }
 
     #[test]
     fn specs_from_the_command_line() {
-        assert_eq!(cli_specs("o", &["m".into()]), vec!["+refs/heads/m:refs/remotes/o/m"]);
+        assert_eq!(
+            cli_specs("o", &["m".into()]),
+            vec!["+refs/heads/m:refs/remotes/o/m"]
+        );
         assert_eq!(cli_specs("o", &["a:b".into()]), vec!["a:b"]);
     }
 
     #[test]
     fn negative_specs_exclude() {
-        let specs = vec!["+refs/heads/*:refs/remotes/o/*".to_owned(), "^refs/heads/agent/*".to_owned()];
+        let specs = vec![
+            "+refs/heads/*:refs/remotes/o/*".to_owned(),
+            "^refs/heads/agent/*".to_owned(),
+        ];
         assert!(excluded(&specs, "refs/heads/agent/x"));
         assert!(!excluded(&specs, "refs/heads/master"));
-        assert_eq!(source_of(&specs, "refs/remotes/o/dev").as_deref(), Some("refs/heads/dev"));
+        assert_eq!(
+            source_of(&specs, "refs/remotes/o/dev").as_deref(),
+            Some("refs/heads/dev")
+        );
     }
 }

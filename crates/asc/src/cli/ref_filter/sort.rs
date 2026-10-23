@@ -59,7 +59,11 @@ pub fn versioncmp(a: &[u8], b: &[u8]) -> Ordering {
                 }
                 j += 1;
             }
-            if at(b, j).is_ascii_digit() { Ordering::Less } else { order(diff) }
+            if at(b, j).is_ascii_digit() {
+                Ordering::Less
+            } else {
+                order(diff)
+            }
         }
         v => order(i32::from(v)),
     }
@@ -72,14 +76,20 @@ fn fold(bytes: &[u8]) -> Vec<u8> {
 fn compare_text(a: &[u8], b: &[u8], ignore_case: bool) -> Ordering {
     let cut = |s: &[u8]| s.iter().position(|&c| c == 0).map_or(s.len(), |p| p);
     let (a, b) = (&a[..cut(a)], &b[..cut(b)]);
-    if ignore_case { fold(a).cmp(&fold(b)) } else { a.cmp(b) }
+    if ignore_case {
+        fold(a).cmp(&fold(b))
+    } else {
+        a.cmp(b)
+    }
 }
 
 /// Sorts `items` by the keys (given in command-line order; the last one is the primary key).
 pub fn sort(items: &mut Vec<Item>, keys: &[SortKey], env: &Env, ignore_case: bool) {
     let ordered: Vec<&SortKey> = keys.iter().rev().collect();
-    let values: Vec<Vec<Value>> =
-        items.iter().map(|item| ordered.iter().map(|k| value(&k.atom, item, env)).collect()).collect();
+    let values: Vec<Vec<Value>> = items
+        .iter()
+        .map(|item| ordered.iter().map(|k| value(&k.atom, item, env)).collect())
+        .collect();
     let mut order: Vec<usize> = (0..items.len()).collect();
     order.sort_by(|&x, &y| {
         for (n, key) in ordered.iter().enumerate() {
@@ -96,7 +106,11 @@ pub fn sort(items: &mut Vec<Item>, keys: &[SortKey], env: &Env, ignore_case: boo
                 return cmp;
             }
         }
-        compare_text(items[x].name.as_bytes(), items[y].name.as_bytes(), ignore_case)
+        compare_text(
+            items[x].name.as_bytes(),
+            items[y].name.as_bytes(),
+            ignore_case,
+        )
     });
     let mut taken: Vec<Option<Item>> = std::mem::take(items).into_iter().map(Some).collect();
     items.extend(order.into_iter().filter_map(|i| taken[i].take()));

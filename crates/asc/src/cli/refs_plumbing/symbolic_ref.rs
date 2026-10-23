@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use asc_core::path::RefName;
 use asc_git::projection::Head;
 use asc_state::state::workspaces;
-use asc_store::refs::{Refs as _, RefTxn};
+use asc_store::refs::{RefTxn, Refs as _};
 
 use super::args::{Cursor, Word};
 use super::check_ref_format::{Rules, valid};
@@ -42,7 +42,11 @@ fn parse(args: &[OsString]) -> Result<Opts> {
                         'd' => o.delete = true,
                         'm' => {
                             let rest: String = chars.by_ref().collect();
-                            o.reason = Some(if rest.is_empty() { cur.value("m", None)? } else { rest });
+                            o.reason = Some(if rest.is_empty() {
+                                cur.value("m", None)?
+                            } else {
+                                rest
+                            });
                         }
                         other => return Err(cur.usage_error(&format!("unknown switch `{other}'"))),
                     }
@@ -62,7 +66,9 @@ fn parse(args: &[OsString]) -> Result<Opts> {
 }
 
 async fn exists(ws: &WsCtx, full: &str) -> Result<bool> {
-    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else { return Ok(false) };
+    let Ok(name) = RefName::new(full.as_bytes().to_vec()) else {
+        return Ok(false);
+    };
     Ok(ws.db.refs().get(ws.repo.key, &name).await?.is_some())
 }
 
@@ -79,7 +85,11 @@ async fn shorten(ws: &WsCtx, full: &str) -> Result<String> {
     ];
     for i in (1..RULES.len()).rev() {
         let (pre, post) = RULES[i];
-        let Some(short) = full.strip_prefix(pre).and_then(|r| r.strip_suffix(post)).filter(|s| !s.is_empty()) else {
+        let Some(short) = full
+            .strip_prefix(pre)
+            .and_then(|r| r.strip_suffix(post))
+            .filter(|s| !s.is_empty())
+        else {
             continue;
         };
         let mut ambiguous = false;
@@ -98,7 +108,14 @@ async fn read(ws: &WsCtx, o: &Opts, name: &str) -> Result<ExitCode> {
         return match ws.projection.read_head()? {
             Head::Branch(b) => {
                 let full = format!("refs/heads/{b}");
-                println!("{}", if o.short { shorten(ws, &full).await? } else { full });
+                println!(
+                    "{}",
+                    if o.short {
+                        shorten(ws, &full).await?
+                    } else {
+                        full
+                    }
+                );
                 Ok(ExitCode::SUCCESS)
             }
             Head::Detached(_) if o.quiet => Ok(ExitCode::from(1)),
@@ -106,7 +123,15 @@ async fn read(ws: &WsCtx, o: &Opts, name: &str) -> Result<ExitCode> {
         };
     }
     // git reads a well-formed name that holds no symbolic ref the same, whether or not it exists.
-    if exists(ws, name).await? || valid(name, Rules { allow_onelevel: true, ..Rules::default() }) {
+    if exists(ws, name).await?
+        || valid(
+            name,
+            Rules {
+                allow_onelevel: true,
+                ..Rules::default()
+            },
+        )
+    {
         if o.quiet {
             return Ok(ExitCode::from(1));
         }
@@ -118,13 +143,19 @@ async fn read(ws: &WsCtx, o: &Opts, name: &str) -> Result<ExitCode> {
 /// Points HEAD at `target` (a branch), keeping the staged state.
 async fn point(ctx: &Ctx, ws: &WsCtx, o: &Opts, target: &str) -> Result<ExitCode> {
     if !target.starts_with("refs/") {
-        return Err(CliError::Fatal("Refusing to point HEAD outside of refs/".into()));
+        return Err(CliError::Fatal(
+            "Refusing to point HEAD outside of refs/".into(),
+        ));
     }
     if !valid(target, Rules::default()) {
-        return Err(CliError::Fatal(format!("Refusing to set 'HEAD' to invalid ref '{target}'")));
+        return Err(CliError::Fatal(format!(
+            "Refusing to set 'HEAD' to invalid ref '{target}'"
+        )));
     }
     let Some(branch) = target.strip_prefix("refs/heads/") else {
-        return Err(CliError::Fatal("asc: HEAD can only name a branch under refs/heads/".into()));
+        return Err(CliError::Fatal(
+            "asc: HEAD can only name a branch under refs/heads/".into(),
+        ));
     };
     let id = ws.workspace.ws.id;
     let before = ws.head_commit().await?;
@@ -143,7 +174,8 @@ async fn point(ctx: &Ctx, ws: &WsCtx, o: &Opts, target: &str) -> Result<ExitCode
         op_id: uuid::Uuid::now_v7(),
     };
     let message = o.reason.clone().unwrap_or_default();
-    ctx.update_local_refs(txn, &message, StagingAfterMove::Keep).await?;
+    ctx.update_local_refs(txn, &message, StagingAfterMove::Keep)
+        .await?;
     let after = ws.head_commit().await?;
     if before != after {
         ext::index_sink()
@@ -158,11 +190,15 @@ pub async fn run(ctx: &Ctx, args: Vec<OsString>) -> Result<ExitCode> {
     let o = parse(&args)?;
     let ws = ctx.ws()?;
     match (o.delete, o.operands.as_slice()) {
-        (true, [_]) => Err(CliError::Fatal("asc: deleting a symbolic ref is not supported".into())),
+        (true, [_]) => Err(CliError::Fatal(
+            "asc: deleting a symbolic ref is not supported".into(),
+        )),
         (false, [name]) => read(ws, &o, name).await,
         (false, [name, target]) => {
             if name != "HEAD" {
-                return Err(CliError::Fatal("asc: only HEAD can be a symbolic ref".into()));
+                return Err(CliError::Fatal(
+                    "asc: only HEAD can be a symbolic ref".into(),
+                ));
             }
             point(ctx, ws, &o, target).await
         }

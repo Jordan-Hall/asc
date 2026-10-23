@@ -8,7 +8,8 @@ use bytes::Bytes;
 use asc_engine::diff::{ContentSource, TreeChange};
 
 /// git's base85 alphabet.
-const ALPHABET: &[u8; 85] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+const ALPHABET: &[u8; 85] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
 
 /// Raw bytes per output line.
 const LINE: usize = 52;
@@ -33,7 +34,10 @@ fn encode85(data: &[u8], out: &mut Vec<u8>) {
 
 /// git's `core.loosecompression`, else `core.compression`, else zlib's fastest level.
 pub fn zlib_level(loose: Option<&str>, general: Option<&str>) -> i32 {
-    let parse = |v: Option<&str>| v.and_then(|v| v.trim().parse::<i32>().ok()).filter(|l| (-1..=9).contains(l));
+    let parse = |v: Option<&str>| {
+        v.and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|l| (-1..=9).contains(l))
+    };
     match parse(loose).or_else(|| parse(general)) {
         Some(-1) => 6,
         Some(level) => level,
@@ -56,7 +60,11 @@ fn body(w: &mut impl Write, content: &[u8], level: i32) -> io::Result<()> {
     writeln!(w, "literal {}", content.len())?;
     for line in packed.chunks(LINE) {
         let n = line.len();
-        let prefix = if n <= 26 { b'A' + (n as u8 - 1) } else { b'a' + (n as u8 - 27) };
+        let prefix = if n <= 26 {
+            b'A' + (n as u8 - 1)
+        } else {
+            b'a' + (n as u8 - 27)
+        };
         let mut text = vec![prefix];
         encode85(line, &mut text);
         text.push(b'\n');
@@ -65,7 +73,10 @@ fn body(w: &mut impl Write, content: &[u8], level: i32) -> io::Result<()> {
     w.write_all(b"\n")
 }
 
-async fn side(src: &dyn ContentSource, entry: &Option<asc_core::object::Entry>) -> asc_engine::diff::Result<Bytes> {
+async fn side(
+    src: &dyn ContentSource,
+    entry: &Option<asc_core::object::Entry>,
+) -> asc_engine::diff::Result<Bytes> {
     match entry {
         Some(e) => src.read(e).await,
         None => Ok(Bytes::new()),
@@ -74,11 +85,27 @@ async fn side(src: &dyn ContentSource, entry: &Option<asc_core::object::Entry>) 
 
 /// git prints the full ids on the `index` line of a binary change, whatever `--abbrev` says.
 fn full_index(patch: &mut Vec<u8>, c: &TreeChange) {
-    let Some(at) = patch.windows(7).position(|w| w == b"\nindex ").map(|i| i + 1) else { return };
-    let end = patch[at..].iter().position(|&b| b == b'\n').map_or(patch.len(), |i| at + i);
+    let Some(at) = patch
+        .windows(7)
+        .position(|w| w == b"\nindex ")
+        .map(|i| i + 1)
+    else {
+        return;
+    };
+    let end = patch[at..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(patch.len(), |i| at + i);
     let line = &patch[at + 6..end];
-    let rest = line.iter().position(|&b| b == b' ').map_or(&[][..], |i| &line[i..]).to_vec();
-    let id = |e: &Option<asc_core::object::Entry>| e.as_ref().map_or_else(|| "0".repeat(40), |e| e.git.to_string());
+    let rest = line
+        .iter()
+        .position(|&b| b == b' ')
+        .map_or(&[][..], |i| &line[i..])
+        .to_vec();
+    let id = |e: &Option<asc_core::object::Entry>| {
+        e.as_ref()
+            .map_or_else(|| "0".repeat(40), |e| e.git.to_string())
+    };
     let mut text = format!("index {}..{}", id(&c.old), id(&c.new)).into_bytes();
     text.extend_from_slice(&rest);
     patch.splice(at..end, text);
@@ -86,9 +113,19 @@ fn full_index(patch: &mut Vec<u8>, c: &TreeChange) {
 
 /// Replaces the trailing `Binary files … differ` line of `patch` (one change's patch text) with
 /// the binary patch body. A patch that does not end that way is text and stays as it is.
-pub async fn upgrade(patch: &mut Vec<u8>, src: &dyn ContentSource, c: &TreeChange, level: i32) -> asc_engine::diff::Result<()> {
-    let Some(without_eol) = patch.len().checked_sub(1) else { return Ok(()) };
-    let start = patch[..without_eol].iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+pub async fn upgrade(
+    patch: &mut Vec<u8>,
+    src: &dyn ContentSource,
+    c: &TreeChange,
+    level: i32,
+) -> asc_engine::diff::Result<()> {
+    let Some(without_eol) = patch.len().checked_sub(1) else {
+        return Ok(());
+    };
+    let start = patch[..without_eol]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
     let last = &patch[start..];
     if !last.starts_with(NOTICE) || !last.ends_with(b" differ\n") {
         return Ok(());
