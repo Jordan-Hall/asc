@@ -944,10 +944,7 @@ impl Renderer<'_, '_> {
             Ph::Source => out.extend_from_slice(self.extras.source.unwrap_or("").as_bytes()),
             Ph::Encoding => out.extend_from_slice(c.encoding.unwrap_or(b"")),
             Ph::Subject => out.extend_from_slice(&split_message(c.message).0),
-            Ph::Sanitized => {
-                let line = c.message.trim_ascii_start().split(|&b| b == b'\n').next().unwrap_or(&[]);
-                out.extend_from_slice(&sanitized(line.trim_ascii_end()));
-            }
+            Ph::Sanitized => out.extend_from_slice(&sanitized(&split_message(c.message).0)),
             Ph::Body => {
                 let (_, body) = split_message(c.message);
                 out.extend_from_slice(&c.message[body.min(c.message.len())..]);
@@ -1020,7 +1017,7 @@ mod tests {
     fn subject_body_and_sanitized() {
         let m = "Fix: the thing.. now\nsecond line\n\nbody text\nmore\n";
         assert_eq!(expand("%s", m), "Fix: the thing.. now second line");
-        assert_eq!(expand("%f", m), "Fix-the-thing.-now");
+        assert_eq!(expand("%f", m), "Fix-the-thing.-now-second-line");
         assert_eq!(expand("%b", m), "body text\nmore\n");
         assert_eq!(expand("%B", m), m);
     }
