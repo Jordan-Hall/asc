@@ -31,11 +31,11 @@ unsafe_code = "deny"
 asc-core = { path = "crates/asc-core" }
 asc-store = { path = "crates/asc-store" }
 asc-engine = { path = "crates/asc-engine" }
-asc-git = { path = "crates/asc-git" }
+asc-git = { path = "crates/asc-git", default-features = false }   # every consumer that wants the git protocol layer names `git-compat` (SPEC 25.9)
 asc-rpc = { path = "crates/asc-rpc" }
 asc-wc = { path = "crates/asc-wc" }
 asc-vfs = { path = "crates/asc-vfs" }
-asc-serve = { path = "crates/asc-serve" }
+asc-serve = { path = "crates/asc-serve", default-features = false }   # `asc` forwards `git-compat` itself (SPEC 25.9)
 asc-ci = { path = "crates/asc-ci" }
 
 # storage
@@ -91,7 +91,7 @@ gix            = { version = "=0.89.0", default-features = false, features = ["m
 gix-config     = "=0.62.1"
 gix-date       = "=0.18.1"     # gix 0.89 family; git date parsing for commit --date (U22)
 gix-sec        = "=0.16.0"     # gix 0.89 family; names the Trust type of gix-config (U20 security)
-windows-sys    = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_ProcessStatus"] }
+windows-sys    = { version = "0.61.2", default-features = false, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp"] }
 # diff / merge
 imara-diff     = "0.2.0"
 similar        = { version = "3.2.0", features = ["inline"] }

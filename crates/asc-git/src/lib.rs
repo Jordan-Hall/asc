@@ -1,6 +1,8 @@
 //! asc-git.
 
 pub mod credential;
+#[cfg(feature = "git-compat")]
+pub mod compat;
 pub mod export;
 pub mod gitremote;
 pub mod import;
