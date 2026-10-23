@@ -195,12 +195,26 @@ impl ImportPush {
         let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
         let owner = crate::refpolicy::owner_of(&ctx.principal);
         let mut expects = Vec::with_capacity(commands.len());
+        let mut quota_owner = None;
         for c in commands {
             let class = policy.classify(owner, &c.name)?;
+            if let (crate::refpolicy::Class::User { owner, .. }, Some(_)) = (&class, c.new) {
+                quota_owner = Some(*owner);
+            }
             expects.push(
                 self.check_old(&entry, &map, c, class.stored(&c.name))
                     .await?,
             );
+        }
+
+        // Quota (SPEC §21.3.7), part 1: an owner already over quota is refused before the import
+        // writes an object. A delete-only push is never refused here.
+        let hooks = self.pipeline.push_hooks();
+        if let Some(owner) = quota_owner {
+            hooks
+                .check_user_quota(ctx, owner)
+                .await
+                .map_err(|d| crate::refauthz::quota_status(&d))?;
         }
 
         let windows_safe = self.refs.windows_safe(&entry).await?;
@@ -208,6 +222,14 @@ impl ImportPush {
         let imported = self
             .import(&entry, &map, quarantine, commands, windows_safe, native)
             .await?;
+        // Part 2: the import records the changesets in the graph itself, so `UpdateRefs` below
+        // finds them known and adds none. Charge what the import added.
+        if let (Some(owner), true) = (quota_owner, imported.added > 0) {
+            hooks
+                .charge_user_refs(ctx, owner, imported.added)
+                .await
+                .map_err(|d| crate::refauthz::quota_status(&d))?;
+        }
 
         // Step 3. The import's fence is released: `UpdateRefs` takes its own, and a queued
         // exclusive GC lock between the two would otherwise deadlock them.
@@ -325,10 +347,11 @@ impl ImportPush {
             .map_err(|e| internal("import lock", &e))?;
 
         let report = import_tips(entry.clone(), map.clone(), quarantine.clone(), tips).await?;
-        let imported = Imported::of(&report, commands)?;
+        let mut imported = Imported::of(&report, commands)?;
 
         let nodes = new_graph_nodes(entry, pool, &imported.changesets).await?;
         let ids: Vec<ChangesetId> = nodes.iter().map(|n| n.id).collect();
+        imported.added = ids.len();
         self.check_paths(entry, &ids, windows_safe, native).await?;
 
         let mut tx = match lock_tx {
@@ -399,6 +422,8 @@ impl ImportPush {
 struct Imported {
     targets: HashMap<String, RefTarget>,
     changesets: Vec<ChangesetId>,
+    /// Changesets the graph did not hold before this import (what the quota charges).
+    added: usize,
 }
 
 impl Imported {
@@ -449,6 +474,7 @@ impl Imported {
         Ok(Self {
             targets,
             changesets,
+            added: 0,
         })
     }
 
