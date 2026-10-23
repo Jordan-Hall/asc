@@ -187,7 +187,7 @@ async fn prepare(env: &Env<'_>, attrs: &mut Attrs, path: RepoPath, leaf: Leaf, i
                 return Ok(skip(format!("'{path}' is not a regular file; not offered by --patch")));
             }
             let staged_link = leaf.kind == Kind::Symlink;
-            if link != staged_link && !(staged_link && !core_symlinks) {
+            if link != staged_link && (core_symlinks || !staged_link) {
                 return Ok(skip(format!("'{path}' changed type; stage it with 'add {path}'")));
             }
             let (bytes, oid) = if link {
