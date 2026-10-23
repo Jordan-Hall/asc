@@ -5,6 +5,10 @@
 //! produces a [`Credential`]. [`AuthInterceptor`] only parses and puts the [`Credential`] into the
 //! request extensions; it never decides anything. The server supplies an [`Authorizer`], and
 //! `RepoService` asks it about the named repository on every RPC.
+//!
+//! An SSH public key is a fourth way to present identity, accepted only by the SSH listener
+//! (SPEC §25.11.3). [`SshKey`] is the algorithm name and the wire blob; this crate has no key
+//! parser, so whoever builds one has already parsed and policy-checked the key.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -12,6 +16,7 @@ use std::fmt;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+use sha2::{Digest, Sha256};
 use tonic::metadata::MetadataValue;
 use tonic::service::Interceptor;
 use tonic::{Request, Status};
@@ -305,6 +310,161 @@ pub trait Authorizer: Send + Sync {
         self.authorize(credential.map(Credential::secret), repo, access)
             .await
     }
+
+    /// Recognises an SSH key at login (SPEC §25.11.3 item 2): `Ok(None)` for an unknown, revoked
+    /// or expired key. The default answers `None`, so an authorizer that does not hold SSH keys
+    /// refuses them. A wrapper must forward this method to its inner authorizer.
+    async fn identify_ssh_key(&self, _key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
+        Ok(None)
+    }
+
+    /// Decides whether an SSH key may do `access` on `repo` (`owner/name`), once per command
+    /// (SPEC §25.11.3 item 3). The default answers [`Decision::Denied`]. An `Err` is a failure of
+    /// the lookup, not a decision: the caller refuses the command. A wrapper must forward this
+    /// method to its inner authorizer.
+    async fn authorize_ssh_key(
+        &self,
+        _key: &SshKey,
+        _repo: &str,
+        _access: Access,
+    ) -> Result<Decision, AuthError> {
+        Ok(Decision::Denied)
+    }
+}
+
+/// Longest accepted SSH public key blob, in bytes. A 16,384-bit RSA key is about 2 KiB.
+pub const MAX_SSH_BLOB: usize = 16 * 1024;
+/// Longest accepted SSH key algorithm name, in bytes.
+pub const MAX_SSH_ALGO: usize = 64;
+/// The prefix of a printed [`SshFingerprint`].
+const FINGERPRINT_PREFIX: &str = "SHA256:";
+
+/// The SHA-256 of an SSH public key's wire blob: the key's identity everywhere (stored, compared,
+/// cached, logged). Printed the way OpenSSH prints it, `SHA256:<unpadded base64>`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SshFingerprint([u8; 32]);
+
+impl SshFingerprint {
+    /// The fingerprint of `blob`.
+    pub fn of_blob(blob: &[u8]) -> Self {
+        Self(Sha256::digest(blob).into())
+    }
+
+    /// A fingerprint from its 32 digest bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// The digest.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Reads `SHA256:<base64>` back. Anything else, including an MD5 fingerprint, is `None`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let rest = text.trim().strip_prefix(FINGERPRINT_PREFIX)?;
+        let raw = STANDARD_NO_PAD.decode(rest.trim_end_matches('=')).ok()?;
+        <[u8; 32]>::try_from(raw).ok().map(Self)
+    }
+}
+
+impl fmt::Display for SshFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{FINGERPRINT_PREFIX}{}", STANDARD_NO_PAD.encode(self.0))
+    }
+}
+
+impl fmt::Debug for SshFingerprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+/// An SSH public key as the listener hands it to the [`Authorizer`]: the algorithm name and the
+/// wire blob (RFC 4253 section 6.6). The blob is public, but it is not logged either: `Debug`
+/// prints the fingerprint. The key's identity is the blob alone; `algo` is a label.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SshKey {
+    algo: String,
+    blob: Vec<u8>,
+}
+
+impl SshKey {
+    /// Accepts a visible-ASCII algorithm name of 1..=[`MAX_SSH_ALGO`] bytes and a blob of
+    /// 1..=[`MAX_SSH_BLOB`] bytes. Neither is parsed here.
+    pub fn new(algo: &str, blob: &[u8]) -> Result<Self, AuthError> {
+        let algo_ok = !algo.is_empty()
+            && algo.len() <= MAX_SSH_ALGO
+            && algo.bytes().all(|b| b.is_ascii_graphic());
+        if !algo_ok || blob.is_empty() || blob.len() > MAX_SSH_BLOB {
+            return Err(AuthError::Malformed);
+        }
+        Ok(Self {
+            algo: algo.to_owned(),
+            blob: blob.to_vec(),
+        })
+    }
+
+    pub fn algo(&self) -> &str {
+        &self.algo
+    }
+
+    /// The wire blob.
+    pub fn blob(&self) -> &[u8] {
+        &self.blob
+    }
+
+    /// The SHA-256 of the blob.
+    pub fn fingerprint(&self) -> SshFingerprint {
+        SshFingerprint::of_blob(&self.blob)
+    }
+}
+
+impl fmt::Debug for SshKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SshKey({}, {})", self.algo, self.fingerprint())
+    }
+}
+
+/// Whose key it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SshKeyKind {
+    /// A user's key: acts as that user, with that user's rights and never more.
+    User,
+    /// A deploy key: bound to one repository, read-only unless registered with write.
+    Deploy,
+}
+
+impl SshKeyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Deploy => "deploy",
+        }
+    }
+}
+
+/// What a recognised key stands for (SPEC §25.11.3 item 2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshIdentity {
+    /// The key's id in the authorizer's records, for the audit record.
+    pub key_id: String,
+    pub kind: SshKeyKind,
+    /// The typed principal the key acts as: the owning user for a user key, the repository for a
+    /// deploy key.
+    pub principal: Principal,
+    /// The one repository (`owner/name`) a deploy key is bound to; `None` for a user key.
+    pub repo: Option<String>,
+}
+
+/// The answer of [`Authorizer::authorize_ssh_key`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Decision {
+    /// The key may do this; it acts as the principal.
+    Allowed(Principal),
+    /// It may not: an unknown, revoked or expired key, or too little access.
+    Denied,
 }
 
 /// Extracts `authorization` (`Basic`, `Bearer` or `token`) into the request extensions as a
@@ -414,6 +574,48 @@ mod tests {
 
     fn secret_of(value: &str) -> String {
         parse(value).unwrap().unwrap().secret().expose().to_owned()
+    }
+
+    #[test]
+    fn fingerprints_print_and_parse_like_openssh() {
+        // `printf abc | sha256sum`, in base64 without padding.
+        let fp = SshFingerprint::of_blob(b"abc");
+        let text = "SHA256:ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0";
+        assert_eq!(fp.to_string(), text);
+        assert_eq!(SshFingerprint::parse(text), Some(fp));
+        assert_eq!(SshFingerprint::parse(&format!("{text}=")), Some(fp));
+        for bad in ["", "SHA256:", "SHA256:AAAA", "MD5:aa:bb", &text[7..]] {
+            assert_eq!(SshFingerprint::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn ssh_keys_are_bounded_and_debug_hides_the_blob() {
+        let key = SshKey::new("ssh-ed25519", &[7; 51]).unwrap();
+        assert_eq!(key.algo(), "ssh-ed25519");
+        assert_eq!(key.fingerprint(), SshFingerprint::of_blob(&[7; 51]));
+        let shown = format!("{key:?}");
+        assert!(
+            shown.contains("SHA256:") && !shown.contains("07"),
+            "{shown}"
+        );
+        assert!(SshKey::new("", &[1]).is_err());
+        assert!(SshKey::new("ssh ed25519", &[1]).is_err());
+        assert!(SshKey::new(&"a".repeat(MAX_SSH_ALGO + 1), &[1]).is_err());
+        assert!(SshKey::new("ssh-ed25519", &[]).is_err());
+        assert!(SshKey::new("ssh-ed25519", &vec![0; MAX_SSH_BLOB]).is_ok());
+        assert!(SshKey::new("ssh-ed25519", &vec![0; MAX_SSH_BLOB + 1]).is_err());
+    }
+
+    #[tokio::test]
+    async fn authorizers_refuse_ssh_keys_until_they_opt_in() {
+        let key = SshKey::new("ssh-ed25519", &[1; 51]).unwrap();
+        let table = StaticTokens::new().with_token("t", "alice", Access::Admin);
+        assert_eq!(table.identify_ssh_key(&key).await, Ok(None));
+        assert_eq!(
+            table.authorize_ssh_key(&key, "o/r", Access::Read).await,
+            Ok(Decision::Denied)
+        );
     }
 
     #[test]

@@ -149,7 +149,7 @@ impl TokenKind {
     }
 }
 
-fn access_str(a: Access) -> &'static str {
+pub(super) fn access_str(a: Access) -> &'static str {
     match a {
         Access::Read => "read",
         Access::Write => "write",
@@ -157,7 +157,7 @@ fn access_str(a: Access) -> &'static str {
     }
 }
 
-fn access_parse(s: &str) -> Option<Access> {
+pub(super) fn access_parse(s: &str) -> Option<Access> {
     match s {
         "read" => Some(Access::Read),
         "write" => Some(Access::Write),
@@ -194,7 +194,7 @@ fn pattern_matches(pattern: &str, repo: &str) -> bool {
 }
 
 /// `*`, `owner/*` or an exact `owner/name`; `exact_only` refuses the globs.
-fn validate_pattern(p: &str, exact_only: bool) -> Result<(), TokenError> {
+pub(super) fn validate_pattern(p: &str, exact_only: bool) -> Result<(), TokenError> {
     let ok = if p == "*" {
         !exact_only
     } else if let Some(owner) = p.strip_suffix("/*") {
@@ -226,13 +226,13 @@ impl fmt::Debug for TokenKey {
     }
 }
 
-fn random_bytes<const N: usize>() -> Result<[u8; N], TokenError> {
+pub(super) fn random_bytes<const N: usize>() -> Result<[u8; N], TokenError> {
     let mut buf = [0u8; N];
     getrandom::fill(&mut buf).map_err(|e| TokenError::Random(e.to_string()))?;
     Ok(buf)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut s, b| {
         let _ = write!(s, "{b:02x}");
@@ -390,7 +390,7 @@ struct Plan {
     expires: Option<i64>,
 }
 
-fn validate_user(u: &str) -> Result<(), TokenError> {
+pub(super) fn validate_user(u: &str) -> Result<(), TokenError> {
     let ok = !u.is_empty()
         && u.len() <= MAX_USER
         && u.bytes()
@@ -525,10 +525,13 @@ fn system_clock() -> Clock {
 
 /// Tokens and identity links in the server database. The schema is migration `0103`.
 pub struct TokenStore {
-    pool: AnyPool,
+    pub(super) pool: AnyPool,
     key: TokenKey,
-    now: Clock,
+    pub(super) now: Clock,
     cache: quick_cache::sync::Cache<[u8; 32], Cached>,
+    /// SSH key lookups by fingerprint (U84, [`super::ssh_keys`]).
+    #[cfg(feature = "git-ssh")]
+    pub(super) ssh_cache: quick_cache::sync::Cache<[u8; 32], super::ssh_keys::SshCached>,
 }
 
 impl TokenStore {
@@ -538,6 +541,8 @@ impl TokenStore {
             key,
             now: system_clock(),
             cache: quick_cache::sync::Cache::new(CACHE_ENTRIES),
+            #[cfg(feature = "git-ssh")]
+            ssh_cache: quick_cache::sync::Cache::new(CACHE_ENTRIES),
         }
     }
 
@@ -681,6 +686,9 @@ impl TokenStore {
                 .execute(&self.pool)
                 .await?;
         self.cache.clear();
+        // A user's SSH keys act with the rights of that user's live tokens.
+        #[cfg(feature = "git-ssh")]
+        self.ssh_cache.clear();
         if done.rows_affected() > 0 {
             tracing::info!(token_id = %id, "token revoked");
             return Ok(true);
@@ -918,6 +926,24 @@ impl Authorizer for TokenStoreAuthz {
             Some(have) if have >= access => Ok(verified.principal.clone()),
             _ => Err(AuthError::Forbidden),
         }
+    }
+
+    #[cfg(feature = "git-ssh")]
+    async fn identify_ssh_key(
+        &self,
+        key: &asc_rpc::auth::SshKey,
+    ) -> Result<Option<asc_rpc::auth::SshIdentity>, AuthError> {
+        self.ssh_identify(key).await
+    }
+
+    #[cfg(feature = "git-ssh")]
+    async fn authorize_ssh_key(
+        &self,
+        key: &asc_rpc::auth::SshKey,
+        repo: &str,
+        access: Access,
+    ) -> Result<asc_rpc::auth::Decision, AuthError> {
+        self.ssh_authorize(key, repo, access).await
     }
 }
 

@@ -5,6 +5,10 @@
 //! `asc serve token create|list|revoke` manages the standalone token store (SPEC §15.1, M30):
 //! `create --repo <r>... [--user <u> | --deploy | --ci] [--read|--write|--admin] [--expires 30d]
 //! [--label <text>]` prints the token on stdout once and its details on stderr.
+//!
+//! `asc serve ssh-key add|list|revoke` manages SSH public keys in the token store (SPEC §25.11.3;
+//! build feature `git-ssh`): `add --user <u> --key-file <pub> [--title <t>] [--expires 30d]`,
+//! `add --repo <r> --deploy [--write] --key-file <pub>`, `list`, `revoke <fingerprint|id>`.
 
 #[cfg(not(feature = "serve"))]
 stub!("serve");
@@ -18,6 +22,8 @@ mod real {
     use std::process::ExitCode;
 
     use asc_rpc::auth::Access;
+    #[cfg(feature = "git-ssh")]
+    use asc_serve::authz::token_cli::SshKeyAddArgs;
     use asc_serve::authz::token_cli::{self, CreateArgs};
     use asc_serve::authz::token_store::TokenKind;
     use asc_serve::{Role, ServeConfig};
@@ -53,6 +59,64 @@ mod real {
             #[command(subcommand)]
             cmd: TokenCmd,
         },
+        /// Manages SSH public keys in the token store (user keys and deploy keys).
+        #[cfg(feature = "git-ssh")]
+        SshKey {
+            #[command(subcommand)]
+            cmd: SshKeyCmd,
+        },
+    }
+
+    #[cfg(feature = "git-ssh")]
+    #[derive(clap::Subcommand, Debug)]
+    pub enum SshKeyCmd {
+        /// Registers a public key (an `authorized_keys` line without options).
+        Add(SshKeyAddFlags),
+        /// Lists keys (never their blobs).
+        List,
+        /// Revokes a key by its `SHA256:` fingerprint or its id.
+        Revoke { key: String },
+    }
+
+    #[cfg(feature = "git-ssh")]
+    #[derive(clap::Args, Debug)]
+    pub struct SshKeyAddFlags {
+        /// The user a user key acts as, with that user's rights.
+        #[arg(long, conflicts_with_all = ["repo", "deploy", "write"], required_unless_present = "deploy")]
+        pub user: Option<String>,
+        /// The one repository (`owner/name`) a deploy key reaches.
+        #[arg(long, requires = "deploy")]
+        pub repo: Option<String>,
+        /// A deploy key: bound to `--repo`, read-only unless `--write`.
+        #[arg(long, requires = "repo")]
+        pub deploy: bool,
+        /// A deploy key may push.
+        #[arg(long, requires = "deploy")]
+        pub write: bool,
+        /// The public key file: one `authorized_keys` line (type, base64, comment).
+        #[arg(long)]
+        pub key_file: PathBuf,
+        /// A note shown by `list` (the key's comment by default).
+        #[arg(long, default_value = "")]
+        pub title: String,
+        /// Lifetime such as `30d`, `12h` or `2w`.
+        #[arg(long)]
+        pub expires: Option<String>,
+    }
+
+    #[cfg(feature = "git-ssh")]
+    impl SshKeyAddFlags {
+        pub fn into_args(self) -> SshKeyAddArgs {
+            SshKeyAddArgs {
+                user: self.user,
+                repo: self.repo,
+                deploy: self.deploy,
+                write: self.write,
+                key_file: self.key_file,
+                title: self.title,
+                expires: self.expires,
+            }
+        }
     }
 
     #[derive(clap::Subcommand, Debug)]
@@ -136,6 +200,8 @@ mod real {
             "--admin",
             "--expires",
             "--label",
+            "--key-file",
+            "--title",
         ],
         placeholders: &[],
     }];
@@ -183,6 +249,24 @@ mod real {
                     print!("{}", token_cli::revoke(&cfg, &id).await.map_err(fatal)?);
                 }
             },
+            #[cfg(feature = "git-ssh")]
+            Some(Sub::SshKey { cmd }) => match cmd {
+                SshKeyCmd::Add(flags) => {
+                    let said = token_cli::ssh_key_add(&cfg, flags.into_args())
+                        .await
+                        .map_err(fatal)?;
+                    print!("{said}");
+                }
+                SshKeyCmd::List => {
+                    print!("{}", token_cli::ssh_key_list(&cfg).await.map_err(fatal)?);
+                }
+                SshKeyCmd::Revoke { key } => {
+                    print!(
+                        "{}",
+                        token_cli::ssh_key_revoke(&cfg, &key).await.map_err(fatal)?
+                    );
+                }
+            },
             None => {
                 let authorizer = asc_serve::authz::authorizer(&cfg).await.map_err(fatal)?;
                 let stop = async {
@@ -194,5 +278,130 @@ mod real {
             }
         }
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+#[cfg(all(test, feature = "serve", feature = "git-ssh"))]
+mod ssh_key_tests {
+    use clap::Parser as _;
+
+    use super::{Args, SshKeyCmd, Sub};
+
+    fn parse(args: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(std::iter::once("serve").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn user_and_deploy_keys_parse() {
+        let a = parse(&[
+            "ssh-key",
+            "add",
+            "--user",
+            "alice",
+            "--key-file",
+            "k.pub",
+            "--title",
+            "t",
+            "--expires",
+            "30d",
+        ])
+        .unwrap();
+        let Some(Sub::SshKey {
+            cmd: SshKeyCmd::Add(f),
+        }) = a.cmd
+        else {
+            panic!("not ssh-key add");
+        };
+        let args = f.into_args();
+        assert_eq!(
+            (args.user.as_deref(), args.deploy, args.write),
+            (Some("alice"), false, false)
+        );
+        assert_eq!(args.expires.as_deref(), Some("30d"));
+
+        let a = parse(&[
+            "ssh-key",
+            "add",
+            "--repo",
+            "acme/web",
+            "--deploy",
+            "--write",
+            "--key-file",
+            "k.pub",
+        ])
+        .unwrap();
+        let Some(Sub::SshKey {
+            cmd: SshKeyCmd::Add(f),
+        }) = a.cmd
+        else {
+            panic!("not ssh-key add");
+        };
+        let args = f.into_args();
+        assert_eq!(
+            (args.repo.as_deref(), args.deploy, args.write),
+            (Some("acme/web"), true, true)
+        );
+        assert!(matches!(
+            parse(&["ssh-key", "revoke", "SHA256:abc"]).unwrap().cmd,
+            Some(Sub::SshKey {
+                cmd: SshKeyCmd::Revoke { .. }
+            })
+        ));
+        assert!(matches!(
+            parse(&["ssh-key", "list"]).unwrap().cmd,
+            Some(Sub::SshKey {
+                cmd: SshKeyCmd::List
+            })
+        ));
+    }
+
+    #[test]
+    fn mixed_or_incomplete_flags_are_refused() {
+        for bad in [
+            &["ssh-key", "add", "--key-file", "k.pub"][..],
+            &["ssh-key", "add", "--user", "a"],
+            &[
+                "ssh-key",
+                "add",
+                "--user",
+                "a",
+                "--repo",
+                "o/r",
+                "--key-file",
+                "k",
+            ],
+            &[
+                "ssh-key",
+                "add",
+                "--user",
+                "a",
+                "--write",
+                "--key-file",
+                "k",
+            ],
+            &[
+                "ssh-key",
+                "add",
+                "--user",
+                "a",
+                "--deploy",
+                "--key-file",
+                "k",
+            ],
+            &["ssh-key", "add", "--repo", "o/r", "--key-file", "k"],
+            &["ssh-key", "add", "--deploy", "--key-file", "k"],
+            &[
+                "ssh-key",
+                "add",
+                "--repo",
+                "o/r",
+                "--write",
+                "--key-file",
+                "k",
+            ],
+            &["ssh-key", "revoke"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
     }
 }

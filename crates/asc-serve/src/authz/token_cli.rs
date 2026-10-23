@@ -9,6 +9,8 @@ use std::fmt::Write as _;
 
 use asc_rpc::auth::Access;
 
+#[cfg(feature = "git-ssh")]
+use crate::authz::ssh_keys;
 use crate::authz::token_store::{
     Grant, NewToken, TokenError, TokenInfo, TokenKey, TokenKind, TokenStore,
 };
@@ -187,6 +189,110 @@ pub async fn revoke(cfg: &ServeConfig, id: &str) -> Result<String, TokenError> {
         format!("revoked {id}; running servers stop accepting it within 5 seconds\n")
     } else {
         format!("{id} was already revoked\n")
+    })
+}
+
+// ------------------------------------------------------------------------------ ssh-key
+
+/// The flags of `asc serve ssh-key add` (SPEC §25.11.3; PLAN U84).
+#[cfg(feature = "git-ssh")]
+#[derive(Clone, Debug)]
+pub struct SshKeyAddArgs {
+    /// The user a user key acts as.
+    pub user: Option<String>,
+    /// The repository a deploy key is bound to.
+    pub repo: Option<String>,
+    /// Registers a deploy key (needs `repo`); without it the key is a user key (needs `user`).
+    pub deploy: bool,
+    /// A deploy key may push.
+    pub write: bool,
+    /// The public key file: one `authorized_keys` line.
+    pub key_file: std::path::PathBuf,
+    pub title: String,
+    /// `30d`, `12h`, `90m`, `3600s` or `2w`.
+    pub expires: Option<String>,
+}
+
+/// Reads at most [`ssh_keys::MAX_KEY_FILE`] bytes of the key file.
+#[cfg(feature = "git-ssh")]
+fn read_key_file(path: &std::path::Path) -> Result<String, TokenError> {
+    use std::io::Read as _;
+    let bad = |e: std::io::Error| TokenError::Invalid(format!("{}: {e}", path.display()));
+    let file = std::fs::File::open(path).map_err(bad)?;
+    let mut bytes = Vec::new();
+    file.take(ssh_keys::MAX_KEY_FILE as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(bad)?;
+    if bytes.len() > ssh_keys::MAX_KEY_FILE {
+        return Err(TokenError::Invalid(format!(
+            "{}: a key file is at most {} bytes",
+            path.display(),
+            ssh_keys::MAX_KEY_FILE
+        )));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| TokenError::Invalid(format!("{}: not a text file", path.display())))
+}
+
+/// `asc serve ssh-key add`.
+#[cfg(feature = "git-ssh")]
+pub async fn ssh_key_add(cfg: &ServeConfig, args: SshKeyAddArgs) -> Result<String, TokenError> {
+    use asc_rpc::auth::SshKeyKind;
+
+    let kind = if args.deploy {
+        SshKeyKind::Deploy
+    } else {
+        if args.repo.is_some() || args.write {
+            return Err(TokenError::Invalid(
+                "`--repo` and `--write` are for deploy keys; add `--deploy`".into(),
+            ));
+        }
+        SshKeyKind::User
+    };
+    let key_file = read_key_file(&args.key_file)?;
+    let expires_in = args.expires.as_deref().map(parse_lifetime).transpose()?;
+    let store = open(cfg, true).await?;
+    let info = store
+        .add_ssh_key(&ssh_keys::NewSshKey {
+            kind,
+            user: args.user.clone(),
+            repo: args.repo,
+            write: args.write,
+            key_file,
+            title: args.title,
+            expires_in,
+            min_rsa_bits: ssh_keys::DEFAULT_MIN_RSA_BITS,
+        })
+        .await?;
+    let grants = match (&kind, args.user.as_deref()) {
+        (SshKeyKind::User, Some(user)) => Some(store.live_grants_of(user).await?),
+        _ => None,
+    };
+    Ok(ssh_keys::add_text(&info, grants))
+}
+
+/// `asc serve ssh-key list`: one line per key, never a blob.
+#[cfg(feature = "git-ssh")]
+pub async fn ssh_key_list(cfg: &ServeConfig) -> Result<String, TokenError> {
+    let store = open(cfg, false).await?;
+    let rows = store.list_ssh_keys().await?;
+    Ok(ssh_keys::list_text(&rows, store.now()))
+}
+
+/// `asc serve ssh-key revoke <fingerprint|id>`.
+#[cfg(feature = "git-ssh")]
+pub async fn ssh_key_revoke(cfg: &ServeConfig, selector: &str) -> Result<String, TokenError> {
+    let store = open(cfg, false).await?;
+    Ok(if store.revoke_ssh_key(selector).await? {
+        format!(
+            "revoked {selector}; running servers stop accepting it within 5 seconds
+"
+        )
+    } else {
+        format!(
+            "{selector} was already revoked
+"
+        )
     })
 }
 

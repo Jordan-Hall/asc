@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 tonic = { workspace = true, features = ["tls-ring", "tls-native-roots", "tls-webpki-roots"] }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
+sha2 = { workspace = true }
 futures = { workspace = true }
 object_store = { workspace = true }
 tokio = { workspace = true }

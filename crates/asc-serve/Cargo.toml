@@ -10,9 +10,12 @@ publish = false
 workspace = true
 
 [features]
-default = ["git-compat"]
+default = ["git-compat", "git-ssh"]
 # The git smart-HTTP layer (SPEC 25); forwards to `asc-git`.
 git-compat = ["asc-git/git-compat"]
+# SSH public keys in the token store and the SSH listener (SPEC 25.11). `russh` is the one SSH
+# library: its `keys` module parses `authorized_keys` lines and fingerprints keys.
+git-ssh = ["git-compat", "dep:russh"]
 # Runs real `turbo` against the server (needs bunx and network).
 it-turbo = []
 
@@ -56,6 +59,9 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 getrandom = "0.4"
+# SSH keys (SPEC 25.11.2). `ring` keeps OpenSSL and a C toolchain out; `rsa` is needed to parse RSA
+# keys and check their size. No compression, no legacy parsers.
+russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }
 
 # The key file's access list (authz/key_file.rs).
 [target.'cfg(windows)'.dependencies]
