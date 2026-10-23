@@ -251,43 +251,85 @@ fn glob(pattern: &str, text: &str) -> bool {
 
 // ------------------------------------------------------------------------------ authorization
 
+/// Who writes user refs in a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UserRefWriter {
+    /// A client (any RPC or push path): the actor must own every user ref the transaction touches,
+    /// whether it writes or deletes it.
+    Client,
+    /// The expiry worker's internal path ([`crate::update::ServerRefs::expire_user_refs`]), which
+    /// no RPC reaches: it may only delete user refs whose expiry is `<= at`, never create or move
+    /// one. It acts for the server, not for the owner.
+    Expiry { at: i64 },
+}
+
 /// Inside the `UpdateRefs` transaction, after the updates applied: every user ref the transaction
-/// writes (creates or moves) must belong to the actor, and the owner must not hold more than
-/// [`MAX_USER_REFS`] user refs in the repository afterwards (`USER_REFS_LIMIT`). Deleting never
-/// fails here, so an owner over the cap can always shrink. Fails closed: a write by an actor with
-/// no verified owner id is `permission_denied`.
+/// touches, deletes included, must belong to the actor (`permission_denied` otherwise; a malformed
+/// `refs/users/` name is `invalid_argument`), and the owner must not hold more than
+/// [`MAX_USER_REFS`] user refs in the repository afterwards (`USER_REFS_LIMIT`). A delete is
+/// exempt from the cap only, so an owner over it can always shrink. Fails closed: an actor with no
+/// verified owner id owns nothing.
+///
+/// For [`UserRefWriter::Expiry`] the ownership test is replaced by "this is a delete of a
+/// well-formed user ref", and a transaction that writes any other ref is refused.
+///
+/// The cap is counted under a per-(repository, owner) lock: on Postgres two transactions that
+/// each add a ref would otherwise both count the old total and both pass.
 pub(crate) async fn check_user_ref_writes(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     repo: asc_store::refs::RepoKey,
     txn: &asc_store::refs::RefTxn,
+    writer: UserRefWriter,
 ) -> Result<(), Status> {
     let actor = owner_of(&Principal {
         id: txn.actor.id.clone(),
     });
     let mut owners: Vec<i64> = Vec::new();
     for u in &txn.updates {
-        let Some(name) = std::str::from_utf8(u.name.as_bytes())
+        let name = std::str::from_utf8(u.name.as_bytes())
             .ok()
-            .filter(|n| n.starts_with(USER_NS))
-        else {
+            .filter(|n| n.starts_with(USER_NS));
+        let Some(name) = name else {
+            if matches!(writer, UserRefWriter::Expiry { .. }) {
+                return Err(Status::permission_denied(
+                    "the expiry path deletes user refs only",
+                ));
+            }
             continue;
         };
-        if u.new.is_none() {
-            continue;
-        }
         let Some((owner, _)) = parse_user_ref(name) else {
             return Err(Status::invalid_argument("malformed user ref name"));
         };
-        if !actor.is_some_and(|a| owns_user_ref(a, name)) {
-            return Err(Status::permission_denied(
-                "a user ref can be written only by its owner",
-            ));
+        match writer {
+            UserRefWriter::Client => {
+                if !actor.is_some_and(|a| owns_user_ref(a, name)) {
+                    return Err(Status::permission_denied(
+                        "a user ref can be changed only by its owner",
+                    ));
+                }
+            }
+            UserRefWriter::Expiry { .. } => {
+                if u.new.is_some() {
+                    return Err(Status::permission_denied(
+                        "the expiry path never creates or moves a user ref",
+                    ));
+                }
+            }
         }
-        if !owners.contains(&owner) {
+        if u.new.is_some() && !owners.contains(&owner) {
             owners.push(owner);
         }
     }
+    // A fixed order, so two transactions that lock several owners cannot deadlock.
+    owners.sort_unstable();
     for owner in owners {
+        if tx.backend_name() == "PostgreSQL" {
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(owner_lock_key(repo.0, owner))
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| internal("refs", &e))?;
+        }
         // `refs/users/<n>/heads/` .. `refs/users/<n>/heads0` ('0' follows '/'): this owner's rows.
         let lo = format!("{USER_NS}{owner}/heads/");
         let hi = format!("{USER_NS}{owner}/heads0");
@@ -304,6 +346,44 @@ pub(crate) async fn check_user_ref_writes(
             return Err(rpc(RpcError::UserRefsLimit(info(vec![format!(
                 "{USER_NS}{owner}/"
             )]))));
+        }
+    }
+    Ok(())
+}
+
+/// The advisory-lock key of `(repo_id, owner)`: the first 64 bits of a BLAKE3 hash, so it is
+/// stable across processes and builds and does not collide with the plain `repo_id` keys other
+/// locks use. SQLite needs none: `BEGIN IMMEDIATE` already serialises writers.
+fn owner_lock_key(repo_id: i64, owner: i64) -> i64 {
+    let mut h = blake3::Hasher::new();
+    h.update(b"asc-serve user-ref cap");
+    h.update(&repo_id.to_le_bytes());
+    h.update(&owner.to_le_bytes());
+    let digest = h.finalize();
+    let bytes = digest.as_bytes();
+    i64::from_le_bytes(std::array::from_fn(|i| bytes[i]))
+}
+
+/// Before the expiry path deletes anything: each named ref must still be expired at `at`
+/// (`ABORTED` when a push refreshed it or removed its expiry since the scan).
+pub(crate) async fn require_expired(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    repo: asc_store::refs::RepoKey,
+    txn: &asc_store::refs::RefTxn,
+    at: i64,
+) -> Result<(), Status> {
+    for u in &txn.updates {
+        let name = String::from_utf8_lossy(u.name.as_bytes()).into_owned();
+        let expires: Option<i64> =
+            sqlx::query_scalar("SELECT expires_at FROM refs WHERE repo_id = $1 AND name = $2")
+                .bind(repo.0)
+                .bind(name)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(|e| internal("refs", &e))?
+                .flatten();
+        if expires.is_none_or(|x| x > at) {
+            return Err(Status::aborted("the ref is no longer expired"));
         }
     }
     Ok(())
@@ -559,5 +639,136 @@ mod tests {
         assert!(RepoPolicy::from_parts(true, Some(r#"[""]"#), "m", "[]").is_err());
         let many = serde_json::to_string(&vec!["a"; MAX_PATTERNS + 1]).unwrap();
         assert!(RepoPolicy::from_parts(true, Some(&many), "m", "[]").is_err());
+    }
+
+    // ---------------------------------------------------------------------- authorization
+
+    use asc_core::id::{ChangesetId, RefTarget};
+    use asc_core::path::RefName;
+    use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
+    use uuid::Uuid;
+
+    fn update(name: &str, new: Option<RefTarget>) -> RefUpdate {
+        RefUpdate {
+            name: RefName::new(name.as_bytes()).unwrap(),
+            expect: Expect::Any,
+            new,
+            expires_at: None,
+        }
+    }
+
+    /// Runs the transaction check for `actor` over `updates` against an empty repository.
+    async fn check(
+        actor: &str,
+        updates: Vec<RefUpdate>,
+        writer: UserRefWriter,
+    ) -> Result<(), Status> {
+        let registry = crate::ingest::testutil::registry().await;
+        let entry = crate::ingest::testutil::repo(&registry).await;
+        let txn = RefTxn {
+            updates,
+            actor: Actor {
+                id: actor.into(),
+                via: "test".into(),
+            },
+            reason: "test".into(),
+            op_id: Uuid::new_v4(),
+        };
+        let mut tx = registry.refs().begin().await.unwrap();
+        check_user_ref_writes(&mut tx, entry.key, &txn, writer).await
+    }
+
+    fn tip() -> Option<RefTarget> {
+        Some(RefTarget::Changeset(ChangesetId::from_bytes([1; 32])))
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_may_delete_a_user_ref() {
+        let delete = |name: &str| vec![update(name, None)];
+        let denied = |r: Result<(), Status>| r.unwrap_err().code();
+        let c = UserRefWriter::Client;
+        // Another owner's ref, whoever asks: a Forgejo user, a deploy key, a token, the worker.
+        for who in ["43:bob", "2:org:5", "pat:42", "42", "asc-expiry", ""] {
+            assert_eq!(
+                denied(check(who, delete("refs/users/42/heads/x"), c).await),
+                tonic::Code::PermissionDenied,
+                "{who:?}"
+            );
+        }
+        // The same refs written or moved are refused as before.
+        assert_eq!(
+            denied(check("43:bob", vec![update("refs/users/42/heads/x", tip())], c).await),
+            tonic::Code::PermissionDenied
+        );
+        // One foreign delete spoils a batch that also holds the actor's own.
+        let both = vec![
+            update("refs/users/43/heads/mine", None),
+            update("refs/users/42/heads/x", None),
+        ];
+        assert_eq!(
+            denied(check("43:bob", both, c).await),
+            tonic::Code::PermissionDenied
+        );
+        // The owner deletes their own, and anyone deletes a shared ref (other checks apply there).
+        check("42:alice", delete("refs/users/42/heads/x"), c)
+            .await
+            .unwrap();
+        check("43:bob", delete("refs/heads/feature"), c)
+            .await
+            .unwrap();
+        // A malformed user ref name is invalid, deletes included.
+        for bad in [
+            "refs/users/alice/heads/x",
+            "refs/users/042/heads/x",
+            "refs/users/42/tags/x",
+            "refs/users/42",
+        ] {
+            assert_eq!(
+                denied(check("42:alice", delete(bad), c).await),
+                tonic::Code::InvalidArgument,
+                "{bad}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_expiry_path_may_delete_user_refs_and_nothing_else() {
+        let e = UserRefWriter::Expiry { at: 10 };
+        let who = "asc-expiry";
+        check(who, vec![update("refs/users/42/heads/agent/x", None)], e)
+            .await
+            .unwrap();
+        // Never a create or a move, not even of the worker's choosing.
+        let r = check(who, vec![update("refs/users/42/heads/agent/x", tip())], e).await;
+        assert_eq!(r.unwrap_err().code(), tonic::Code::PermissionDenied);
+        // Never another kind of ref.
+        for name in ["refs/heads/master", "refs/heads/agent/x", "refs/tags/v1"] {
+            let r = check(who, vec![update(name, None)], e).await;
+            assert_eq!(
+                r.unwrap_err().code(),
+                tonic::Code::PermissionDenied,
+                "{name}"
+            );
+        }
+        let r = check(who, vec![update("refs/users/x/heads/agent/x", None)], e).await;
+        assert_eq!(r.unwrap_err().code(), tonic::Code::InvalidArgument);
+        // The same names are refused to a client that is not the owner.
+        let r = check(
+            who,
+            vec![update("refs/users/42/heads/agent/x", None)],
+            UserRefWriter::Client,
+        )
+        .await;
+        assert_eq!(r.unwrap_err().code(), tonic::Code::PermissionDenied);
+    }
+
+    #[test]
+    fn the_owner_lock_key_is_stable_and_distinguishes_repositories_and_owners() {
+        // Every server process must derive the same key for the same (repo, owner).
+        assert_eq!(owner_lock_key(1, 42), owner_lock_key(1, 42));
+        assert_ne!(owner_lock_key(1, 42), owner_lock_key(1, 43));
+        assert_ne!(owner_lock_key(1, 42), owner_lock_key(2, 42));
+        assert_ne!(owner_lock_key(1, 2), owner_lock_key(2, 1));
+        assert_ne!(owner_lock_key(1, 42), 1);
     }
 }

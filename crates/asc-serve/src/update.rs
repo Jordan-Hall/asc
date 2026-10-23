@@ -31,6 +31,7 @@ use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
 use crate::land::{self, DisjointOnly, OverlapPolicy};
+use crate::refpolicy::UserRefWriter;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::{refauthz, refpolicy};
 
@@ -757,9 +758,92 @@ impl ServerRefs {
         outbox: &[u8],
         land: Option<&land::TxWrites<'_>>,
     ) -> Result<(), Status> {
+        self.commit_as(entry, txn, response, outbox, land, UserRefWriter::Client)
+            .await
+    }
+
+    /// The expiry worker's deletion of expired user refs (SPEC §8.8, §21.5.1), the one writer
+    /// that is not their owner. It is a method of the server, not a request: no RPC, push path or
+    /// `UpdateRefs` field reaches it. It only deletes (each ref only if it still names its
+    /// scanned target and is still expired at `at`), only user refs, in one transaction with the
+    /// same repository guard, `ref_log` row, op result and (empty) outbox row as a client's
+    /// delete. User refs queue no `post_receive`.
+    pub(crate) async fn expire_user_refs(
+        &self,
+        repo: &RepoName,
+        refs: &[(&str, RefTarget)],
+        actor: &str,
+        at: i64,
+    ) -> Result<(), Status> {
+        let entry = self.registry.open(repo).await.map_err(registry_status)?;
+        if entry.mode == RepoMode::Mirror {
+            return Err(rpc(RpcError::MirrorMode(info(vec![repo.to_string()]))));
+        }
+        let mut updates = Vec::with_capacity(refs.len());
+        let mut results = Vec::with_capacity(refs.len());
+        for (name, target) in refs {
+            if refpolicy::parse_user_ref(name).is_none() {
+                return Err(Status::invalid_argument("not a user ref"));
+            }
+            updates.push(RefUpdate {
+                name: RefName::new(name.as_bytes())
+                    .map_err(|e| Status::invalid_argument(e.to_string()))?,
+                expect: Expect::Value(*target),
+                new: None,
+                expires_at: None,
+            });
+            results.push(wire::RefResult {
+                name: (*name).to_owned(),
+                old: Some(wire::RefTarget::from(target)),
+                new: None,
+            });
+        }
+        let response = wire::UpdateRefsResponse {
+            results,
+            rewritten: Vec::new(),
+            message: String::new(),
+        };
+        let txn = RefTxn {
+            updates,
+            actor: Actor {
+                id: actor.to_owned(),
+                via: "asc-expiry".into(),
+            },
+            reason: "expiry".into(),
+            op_id: Uuid::new_v4(),
+        };
+        let outbox = serde_json::to_vec(&OutboxEffects {
+            effects: &[],
+            pusher: actor,
+            refs: Vec::new(),
+        })
+        .map_err(|e| internal("outbox", &e))?;
+        self.commit_as(
+            &entry,
+            &txn,
+            &response,
+            &outbox,
+            None,
+            UserRefWriter::Expiry { at },
+        )
+        .await
+    }
+
+    async fn commit_as(
+        &self,
+        entry: &RepoEntry,
+        txn: &RefTxn,
+        response: &wire::UpdateRefsResponse,
+        outbox: &[u8],
+        land: Option<&land::TxWrites<'_>>,
+        writer: UserRefWriter,
+    ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
         self.registry.guard(&mut tx, entry).await?;
+        if let UserRefWriter::Expiry { at } = writer {
+            refpolicy::require_expired(&mut tx, entry.key, txn, at).await?;
+        }
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
@@ -770,7 +854,7 @@ impl ServerRefs {
         }
         // User refs have no pre-receive, so the owner and the cap are checked here, in the same
         // transaction as the write (SPEC §21.5.1).
-        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn).await?;
+        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer).await?;
         if let Some(land) = land {
             land.apply(&mut tx, entry, txn).await?;
         }
