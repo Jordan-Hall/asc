@@ -24,6 +24,7 @@ use bytes::Bytes;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::object::Change;
 use asc_core::path::RepoPath;
+use asc_core::transport_policy::{Policy, classify, classify_url};
 use asc_engine::blame::{self, Blame, BlameApi};
 use asc_engine::graph::{self, LogQuery};
 use asc_engine::history::{GitMapping, HistoryApi, LogEntries, PageToken};
@@ -141,8 +142,15 @@ pub async fn resolve(
             let u = Url::parse(&url).map_err(|_| bad_url(stored))?;
             match override_server.as_deref() {
                 Some(_) => (u, None),
-                None => match discover::lookup(db, &u).await {
-                    Some(doc) => (u, Some(doc)),
+                None => match discover::lookup(db, &u)
+                    .await
+                    .map_err(|e| CliError::Fatal(e.to_string()))?
+                {
+                    Some(doc) => {
+                        discover::check_origins(&u, &doc, !override_objects.is_empty())
+                            .map_err(CliError::Fatal)?;
+                        (u, Some(doc))
+                    }
                     None => return Ok(Resolution::Git),
                 },
             }
@@ -181,6 +189,12 @@ pub async fn resolve(
         && discover::older_than(env!("CARGO_PKG_VERSION"), min)
     {
         return Err(too_old(min));
+    }
+    for endpoint in std::iter::once(&rpc_url).chain(&objects) {
+        let u = Url::parse(endpoint).map_err(|_| bad_url(endpoint))?;
+        if let Some(why) = transport_refusal(&u, Policy::current()) {
+            return Err(CliError::Fatal(why));
+        }
     }
     Ok(Resolution::Server(Target {
         rpc_url,
@@ -278,18 +292,35 @@ impl ReAsk {
 
 const USER_AGENT: &str = concat!("asc/", env!("CARGO_PKG_VERSION"));
 
-fn loopback(host: &str) -> bool {
-    let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.eq_ignore_ascii_case("localhost")
-        || h.parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
+/// Why `url` may not carry credentials under `policy` (the U89 transport policy: https and
+/// ssh, plain http to the local machine only behind the explicit opt-in), or `None` when it may.
+pub fn transport_refusal(url: &Url, policy: Policy) -> Option<String> {
+    classify_url(url, policy).err().map(|e| format!("asc: {e}"))
+}
+
+/// The transport policy for a URL as stored or typed (`git+…` and `asc+…` included), under the
+/// process settings: an error that names the origin when plain http, `git://` or another scheme
+/// would carry it.
+pub fn check_transport(text: &str) -> CliResult<()> {
+    classify(text, Policy::current())
+        .map(drop)
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))
 }
 
 /// A lazily connected channel to `url`: https with the system roots, plain http only to the
-/// local machine (the same rule as `RpcClient`).
+/// local machine and only when [`LOOPBACK_ENV`] allows it.
 pub fn channel(url: &str) -> CliResult<Channel> {
+    channel_with(url, Policy::current())
+}
+
+fn channel_with(url: &str, policy: Policy) -> CliResult<Channel> {
     let parsed = Url::parse(url).map_err(|_| bad_url(url))?;
-    let host = parsed.host_str().ok_or_else(|| bad_url(url))?;
+    if parsed.host_str().is_none() {
+        return Err(bad_url(url));
+    }
+    if let Some(why) = transport_refusal(&parsed, policy) {
+        return Err(CliError::Fatal(why));
+    }
     let mut endpoint = Endpoint::from_shared(url.to_owned()).map_err(|_| bad_url(url))?;
     match parsed.scheme() {
         "https" => {
@@ -297,12 +328,7 @@ pub fn channel(url: &str) -> CliResult<Channel> {
                 .tls_config(ClientTlsConfig::new().with_enabled_roots())
                 .map_err(|e| CliError::Fatal(format!("asc: tls: {e}")))?;
         }
-        "http" if loopback(host) => {}
-        "http" => {
-            return Err(CliError::Fatal(format!(
-                "asc: refusing to send credentials over plain http to {host}; use https"
-            )));
-        }
+        "http" => {}
         _ => return Err(bad_url(url)),
     }
     Ok(endpoint
@@ -1190,11 +1216,15 @@ mod tests {
 
     #[tokio::test]
     async fn plain_http_is_loopback_only() {
-        assert!(channel("http://127.0.0.1:1").is_ok());
-        assert!(channel("http://localhost:1").is_ok());
-        assert!(channel("http://127.example.com").is_err());
-        assert!(channel("http://localhost.evil").is_err());
-        assert!(channel("ftp://x").is_err());
+        let opted = Policy::LOOPBACK_HTTP;
+        assert!(channel_with("http://127.0.0.1:1", opted).is_ok());
+        assert!(channel_with("http://localhost:1", opted).is_ok());
+        assert!(channel_with("http://127.example.com", opted).is_err());
+        assert!(channel_with("http://localhost.evil", opted).is_err());
+        assert!(channel_with("ftp://x", opted).is_err());
+        // Off by default: not even the local machine.
+        let err = channel_with("http://127.0.0.1:1", Policy::STRICT).unwrap_err();
+        assert!(err.to_string().contains("refusing plain http"), "{err}");
     }
 
     #[test]
