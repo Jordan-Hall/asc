@@ -468,7 +468,16 @@ fn check_url(url: &url::Url, origin: Origin) -> Result<()> {
         ("file", Origin::Discovered) => Err(refused(
             "a seed URL from the server's discovery document must be https, not file:",
         )),
-        ("http", _) => Err(refused("seed URLs must be https, not http:")),
+        // Seeds never take plain http, loopback included: the transport policy names the origin.
+        ("http", _) => Err(refused(
+            match asc_core::transport_policy::classify_url(
+                url,
+                asc_core::transport_policy::Policy::STRICT,
+            ) {
+                Err(why) => why.to_string(),
+                Ok(_) => "seed URLs must be https, not http:".to_owned(),
+            },
+        )),
         (s, _) => Err(refused(format!("unsupported seed scheme {s:?}"))),
     }
 }
@@ -973,6 +982,19 @@ mod tests {
             assert!(matches!(r, Err(SeedError::Refused(_))), "{text}: {r:?}");
         }
         assert!(!dst.exists() || fs::read_dir(&dst).unwrap().next().is_none());
+        // The refusal names the origin and leaves the credentials out.
+        let r = unpack_str(
+            "http://u:hunter2@seeds.example:81/s.tar.zst?t=abc",
+            &dst,
+            None,
+            Origin::Explicit,
+        )
+        .await;
+        let Err(SeedError::Refused(why)) = r else {
+            panic!("{r:?}")
+        };
+        assert!(why.contains("http://seeds.example:81"), "{why}");
+        assert!(!why.contains("hunter2") && !why.contains("abc"), "{why}");
     }
 
     #[tokio::test]

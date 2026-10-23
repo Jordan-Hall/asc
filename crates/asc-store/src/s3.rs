@@ -22,6 +22,8 @@ use object_store::{
     PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, WriteMultipart,
 };
 
+use asc_core::transport_policy::{Policy, Transport, require_network};
+
 use crate::objects::{Error, Result};
 
 /// Values larger than this are uploaded as a multipart upload.
@@ -78,6 +80,17 @@ fn open_inner(
     credentials: Option<S3Credentials>,
     create_fallback: bool,
 ) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    open_under(url, credentials, create_fallback, Policy::current())
+}
+
+/// [`open_inner`] under an explicit transport policy: an `endpoint` is https, or plain http to
+/// the local machine when the policy allows it (U89).
+fn open_under(
+    url: &url::Url,
+    credentials: Option<S3Credentials>,
+    create_fallback: bool,
+    policy: Policy,
+) -> Result<(Arc<dyn ObjectStore>, Path)> {
     let bucket = url
         .host_str()
         .filter(|h| !h.is_empty())
@@ -100,9 +113,13 @@ fn open_inner(
         }
     }
     if let Some(e) = endpoint {
-        builder = builder
-            .with_allow_http(e.starts_with("http://"))
-            .with_endpoint(e);
+        let allow_http = match require_network(&e, policy) {
+            Ok(Transport::Https) => false,
+            Ok(Transport::LoopbackHttp) => true,
+            Ok(_) => return Err(Error::Url("s3 endpoint must be an http(s) url".into())),
+            Err(why) => return Err(Error::Url(format!("s3 endpoint: {why}"))),
+        };
+        builder = builder.with_allow_http(allow_http).with_endpoint(e);
     }
     if let Some(r) = region {
         builder = builder.with_region(r);
@@ -681,7 +698,34 @@ mod tests {
     }
 
     #[test]
+    fn a_plain_http_endpoint_needs_the_opt_in_and_a_loopback_host() {
+        let u = |s: &str| url::Url::parse(s).unwrap();
+        let strict = |s: &str| open_under(&u(s), None, true, Policy::STRICT).err();
+        let dev = |s: &str| open_under(&u(s), None, true, Policy::LOOPBACK_HTTP).err();
+        for e in [
+            "http://minio.example:9000",
+            "http://192.0.2.7:9000",
+            "http://127.example.com",
+        ] {
+            let url = format!("s3://bkt/p?endpoint={e}&region=r");
+            assert!(strict(&url).is_some(), "{e}");
+            assert!(dev(&url).is_some(), "{e} stays refused under the opt-in");
+        }
+        let local = "s3://bkt/p?endpoint=http://127.0.0.1:9000&region=r";
+        assert!(strict(local).is_some(), "loopback http without the opt-in");
+        assert!(dev(local).is_none());
+        let https = "s3://bkt/p?endpoint=https://minio.example:9000&region=r";
+        assert!(strict(https).is_none());
+        // The refusal names the origin and keeps secrets out.
+        let url = "s3://bkt/p?endpoint=http://u:hunter2@minio.example:9000/x&region=r";
+        let why = strict(url).unwrap().to_string();
+        assert!(why.contains("http://minio.example:9000"), "{why}");
+        assert!(!why.contains("hunter2"), "{why}");
+    }
+
+    #[test]
     fn open_parses_url_options() {
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         let u = |s: &str| url::Url::parse(s).unwrap();
         let (_, root) = open(&u(
             "s3://bkt/some/prefix/?endpoint=http://127.0.0.1:9000&region=eu-west-1&path_style=true",
@@ -696,6 +740,7 @@ mod tests {
 
     #[test]
     fn bucket_from_url_dispatches_s3() {
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         assert!(BucketObjects::from_url("s3://bkt/p?endpoint=http://127.0.0.1:1").is_ok());
     }
 }
