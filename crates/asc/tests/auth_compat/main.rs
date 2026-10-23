@@ -236,7 +236,7 @@ async fn the_cache_helper_serves_an_approved_credential() {
     };
     side.configure(Spec::new().credential(cred));
     let request =
-        asc_git::credential::CredentialRequest::new("http", &format!("127.0.0.1:{}", side.port()));
+        asc_git::credential::CredentialRequest::new("http", format!("127.0.0.1:{}", side.port()));
     let stored = asc_git::credential::Credential::new(USER, PASS);
     asc_git::credential::approve(&helpers::real(), &request, &stored, &session).unwrap();
     assert!(side.git(&side.url()).ok, "git read the cached credential");
