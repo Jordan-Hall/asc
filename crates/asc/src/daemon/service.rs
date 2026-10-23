@@ -34,6 +34,7 @@ use tonic::{Request, Response, Status};
 use super::codeintel_overlay::{CodeIntel, ServerAnswer};
 use super::metrics::{Collected, EventLog, Metrics, Source};
 use super::plugin_api::{self, PluginStream};
+use super::plugin_api_stack;
 
 /// Longest id or token text accepted from a client.
 const MAX_TEXT: usize = 64;
@@ -545,6 +546,36 @@ impl WorkspaceRpc for Service {
     async fn stage(&self, req: Request<wire::WsStageRequest>) -> Result<Response<wire::WsStageResponse>, Status> {
         let state = self.state()?;
         plugin_api::stage(state, req.into_inner()).await.map(Response::new)
+    }
+
+    async fn stacks(&self, req: Request<wire::WsStacksRequest>) -> Result<Response<wire::WsStacksResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::stacks(state, req.into_inner()).await.map(Response::new)
+    }
+
+    async fn worktrees(
+        &self,
+        req: Request<wire::WsWorktreesRequest>,
+    ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::worktrees(state, req.into_inner()).await.map(Response::new)
+    }
+
+    async fn conflicts(
+        &self,
+        req: Request<wire::WsConflictsRequest>,
+    ) -> Result<Response<wire::WsConflictsResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::conflicts(state, req.into_inner()).await.map(Response::new)
+    }
+
+    type CommitGraphStream = PluginStream<wire::CommitGraphResponse>;
+    async fn commit_graph(
+        &self,
+        req: Request<wire::WsCommitGraphRequest>,
+    ) -> Result<Response<Self::CommitGraphStream>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::commit_graph(state, req.into_inner()).await.map(Response::new)
     }
 
     type SearchStream = PluginStream<wire::SearchResponse>;
