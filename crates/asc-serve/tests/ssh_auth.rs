@@ -1264,7 +1264,7 @@ async fn the_listener_is_not_bound_unless_every_condition_holds() {
 
     // `provider = "forge"` on the public API alone (Stage 1): not bound.
     let forge = config(&format!(
-        "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"http://forge.example\"\n{ssh2}"
+        "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\n{ssh2}"
     ));
     assert!(
         asc_serve::ssh::start(&forge, true, deps(Arc::default()))

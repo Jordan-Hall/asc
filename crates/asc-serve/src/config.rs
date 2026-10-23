@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
+use asc_core::transport_policy::{Policy, Transport, classify, require_network};
 use asc_rpc::server::RepoName;
 use serde::{Deserialize, Deserializer};
 
@@ -766,6 +767,10 @@ pub struct ServeConfig {
     pub listen: SocketAddr,
     pub public_url: Option<String>,
     pub tls: Option<Tls>,
+    /// The UDP port where an HTTP/3-capable proxy in front of this server serves h3 for
+    /// `public_url`. When set, every response carries `Alt-Svc: h3=":<port>"` (U89). This
+    /// server does not serve QUIC itself, so unset sends no header.
+    pub http3_port: Option<u16>,
     pub admin: AdminConfig,
     pub role: Role,
     /// Bucket URL: `s3://…`, `file:///…` or `memory:///`.
@@ -796,6 +801,7 @@ impl Default for ServeConfig {
             listen: SocketAddr::from(([0, 0, 0, 0], 7890)),
             public_url: None,
             tls: None,
+            http3_port: None,
             admin: AdminConfig::default(),
             role: Role::Primary,
             store: None,
@@ -864,16 +870,17 @@ impl ServeConfig {
             }
             Role::Cache => match &self.upstream {
                 None => return invalid("the cache role needs `upstream`"),
-                Some(u) if !matches!(url_scheme(u), "http" | "https") => {
-                    return invalid("upstream must be an http(s) URL");
-                }
-                Some(_) => {}
+                Some(u) => check_server_url("upstream", u)?,
             },
         }
-        if let Some(url) = &self.public_url
-            && !matches!(url_scheme(url), "http" | "https")
-        {
-            return invalid("public_url must be an http(s) URL");
+        if let Some(url) = &self.public_url {
+            check_server_url("public_url", url)?;
+        }
+        if let Some(forgejo) = &self.forgejo {
+            check_server_url("forgejo.url", &forgejo.url)?;
+        }
+        if self.http3_port == Some(0) {
+            return invalid("http3_port must be a UDP port number");
         }
         if !self.admin.listen.ip().is_loopback() && self.admin.token_file.is_none() {
             return invalid("a non-loopback admin.listen needs admin.token_file");
@@ -908,6 +915,36 @@ impl ServeConfig {
         self.ssh.validate()?;
         self.limits.validate()?;
         self.validate_grants()
+    }
+
+    /// Whether this server may listen as configured (U89). Without `[tls]` it speaks plain http,
+    /// which is only right behind a TLS-terminating proxy: `public_url` must then be the https
+    /// URL clients use. Anything else needs the loopback opt-in (`asc.allowLoopbackHttp` or
+    /// `ASC_ALLOW_LOOPBACK_HTTP=1`), for local development.
+    pub fn validate_listener(&self) -> Result<(), ConfigError> {
+        self.check_listener(Policy::current())
+    }
+
+    fn check_listener(&self, policy: Policy) -> Result<(), ConfigError> {
+        let behind_https_proxy = self
+            .public_url
+            .as_deref()
+            .is_some_and(|u| classify(u, policy) == Ok(Transport::Https));
+        if self.tls.is_some() || behind_https_proxy {
+            return Ok(());
+        }
+        if policy.allows_loopback_http() {
+            tracing::warn!(
+                listen = %self.listen,
+                "serving plain http: only for local development (loopback http opt-in is set)"
+            );
+            return Ok(());
+        }
+        invalid(format!(
+            "asc serve would speak plain http: set [tls], or run behind a TLS-terminating proxy and set public_url to its https URL (for local development on this machine, set {} or {}=1)",
+            asc_core::transport_policy::LOOPBACK_CONFIG_KEY,
+            asc_core::transport_policy::LOOPBACK_ENV
+        ))
     }
 
     fn validate_grants(&self) -> Result<(), ConfigError> {
@@ -949,6 +986,16 @@ impl ServeConfig {
     }
 }
 
+/// A server URL (`field`) that asc may talk to: https, or plain http to the local machine under
+/// the opt-in (U89). The error never repeats credentials, a path or a query.
+fn check_server_url(field: &str, url: &str) -> Result<(), ConfigError> {
+    match require_network(url, Policy::current()) {
+        Ok(Transport::Https | Transport::LoopbackHttp) => Ok(()),
+        Ok(_) => invalid(format!("{field} must be an https URL")),
+        Err(why) => invalid(format!("{field}: {why}")),
+    }
+}
+
 fn url_scheme(s: &str) -> &str {
     s.split_once(':').map_or("", |(scheme, _)| scheme)
 }
@@ -956,6 +1003,67 @@ fn url_scheme(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A primary config with `store` and `extra` appended.
+    fn primary(store: &str, extra: &str) -> Result<ServeConfig, ConfigError> {
+        let head = format!("store = \"{store}\"\ndb = \"sqlite::memory:\"\n");
+        ServeConfig::parse(&format!("{head}{extra}"))
+    }
+
+    #[test]
+    fn plain_http_urls_are_refused_in_the_config() {
+        for (store, extra) in [
+            ("memory:///", "public_url = \"http://asc.example.org\""),
+            ("memory:///", "public_url = \"ftp://asc.example.org\""),
+            ("memory:///", "[forgejo]\nurl = \"http://forgejo:3000\""),
+            (
+                "memory:///",
+                "[forgejo]\nurl = \"http://user:hunter2@forgejo.example:3000/x\"",
+            ),
+        ] {
+            let err = primary(store, extra).expect_err(extra).to_string();
+            assert!(!err.contains("hunter2"), "{err}");
+        }
+        let cache = |upstream: &str| {
+            ServeConfig::parse(&format!("role = \"cache\"\nupstream = \"{upstream}\"\n"))
+        };
+        assert!(cache("http://primary.example:7890").is_err());
+        assert!(cache("https://primary.example:7890").is_ok());
+        assert!(primary("memory:///", "public_url = \"https://asc.example.org\"").is_ok());
+        assert!(primary("memory:///", "[forgejo]\nurl = \"https://forgejo.example\"").is_ok());
+        // The server's own store is the operator's: a Garage next to it may be plain http.
+        assert!(primary("s3://b?endpoint=http://garage-abc:3900", "").is_ok());
+        assert!(primary("s3://b?endpoint=https://garage:3900", "").is_ok());
+    }
+
+    #[test]
+    fn a_plain_http_listener_needs_https_in_front_or_the_dev_opt_in() {
+        let cfg = |extra: &str| primary("memory:///", extra).unwrap();
+        let proxied_h3 = |port: &str| {
+            primary(
+                "memory:///",
+                &format!(
+                    "public_url = \"https://asc.example.org\"
+http3_port = {port}"
+                ),
+            )
+        };
+        // Behind a TLS-terminating proxy (the Coolify setup): plain listener, https public_url.
+        let proxied = cfg("listen = \"0.0.0.0:7890\"\npublic_url = \"https://asc.example.org\"");
+        assert!(proxied.check_listener(Policy::STRICT).is_ok());
+        // The h3 hint is a port; 0 is not one.
+        assert!(proxied_h3("0").is_err());
+        assert_eq!(proxied_h3("443").unwrap().http3_port, Some(443));
+        // With [tls], http or not.
+        let tls = cfg("tls = { cert = \"/c.pem\", key = \"/k.pem\" }");
+        assert!(tls.check_listener(Policy::STRICT).is_ok());
+        // The dev opt-in is the only way to serve plain http without either.
+        let dev = cfg("");
+        assert!(dev.check_listener(Policy::STRICT).is_err());
+        assert!(dev.check_listener(Policy::LOOPBACK_HTTP).is_ok());
+        let msg = dev.check_listener(Policy::STRICT).unwrap_err().to_string();
+        assert!(msg.contains("ASC_ALLOW_LOOPBACK_HTTP"), "{msg}");
+    }
 
     const FULL: &str = r#"
 listen = "127.0.0.1:7890"

@@ -24,12 +24,8 @@ use tonic::server::NamedService;
 /// Repositories kept open at once; the least recently used is dropped beyond this.
 pub const MAX_OPEN_REPOS: usize = 1024;
 /// How long an open repository is trusted before its `repos` row is read again. A delete, a
-/// rename or the end of a fork copy on another replica shows up here after at most this long
-/// (there is no cross-replica notification). A read through a stale entry stays inside the old
-/// repository id's namespace. Every mutation re-checks the row inside its own transaction
-/// ([`Registry::guard`]), so this bounds only how long a read can be stale, not what a write can
-/// reach. This process drops the entry at once on init, fork, rename and delete.
-pub const ENTRY_TTL: Duration = Duration::from_secs(1);
+/// rename or the end of a fork copy on another replica shows up here after at most this long.
+pub const ENTRY_TTL: Duration = Duration::from_secs(5);
 /// Git-map rows written per statement batch.
 const GIT_MAP_BATCH: usize = 500;
 
@@ -194,22 +190,9 @@ impl Registry {
         &self.refs
     }
 
-    /// Drops the cached entry for `name` (after an init, a delete or a rename).
+    /// Drops the cached entry for `name` (after a delete or rename).
     pub fn forget(&self, name: &RepoName) {
         self.open.remove(name.as_str());
-    }
-
-    /// [`guard_repo`], also dropping the cached entry when it is stale.
-    pub async fn guard(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-        entry: &RepoEntry,
-    ) -> Result<(), tonic::Status> {
-        let checked = guard_repo(tx, entry).await;
-        if checked.is_err() {
-            self.forget(&entry.name);
-        }
-        checked
     }
 
     /// The repository `name`. A fork whose copy has not finished is not found: it is readable
@@ -302,10 +285,7 @@ impl Registry {
         .execute(&self.pool)
         .await;
         match inserted {
-            Ok(_) => {
-                self.forget(name);
-                self.open(name).await
-            }
+            Ok(_) => self.open(name).await,
             Err(sqlx::Error::Database(d)) if d.is_unique_violation() => {
                 Err(RegistryError::Exists(name.to_string()))
             }
@@ -338,39 +318,6 @@ impl Registry {
             objects,
             git_map: Arc::new(SqlGitMap::new(self.pool.clone(), ns)),
         }
-    }
-}
-
-/// Checks, inside `tx`, that the `repos` row `entry` was resolved from still exists with the same
-/// id and the same name, and holds it so it cannot change before `tx` ends: `FOR SHARE` on
-/// Postgres (a concurrent rename or delete waits for `tx`, or `tx` waits for it and then sees the
-/// new row), the write lock of `BEGIN IMMEDIATE` on SQLite. Every mutation calls it first. A
-/// missing row is `NOT_FOUND` and a renamed one `FAILED_PRECONDITION`; nothing has been written
-/// by then, and the caller drops `tx`. Ids are never reused, so an equal id is the same
-/// repository.
-pub(crate) async fn guard_repo(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    entry: &RepoEntry,
-) -> Result<(), tonic::Status> {
-    let query = if tx.backend_name() == "PostgreSQL" {
-        "SELECT name FROM repos WHERE id = $1 FOR SHARE"
-    } else {
-        "SELECT name FROM repos WHERE id = $1"
-    };
-    let name: Option<String> = sqlx::query_scalar(query)
-        .bind(entry.key.0)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "repository check failed");
-            tonic::Status::internal("repository check failed")
-        })?;
-    match name {
-        None => Err(tonic::Status::not_found("no such repository")),
-        Some(n) if n != entry.name.as_str() => Err(tonic::Status::failed_precondition(
-            "the repository was renamed or replaced; retry",
-        )),
-        Some(_) => Ok(()),
     }
 }
 

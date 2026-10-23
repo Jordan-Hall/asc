@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use asc_core::id::RefTarget;
+use asc_core::transport_policy::{Policy, classify_url};
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision as SshDecision, Principal,
     Scheme, SshIdentity, SshKey,
@@ -139,6 +140,15 @@ pub struct ForgejoClient {
 impl ForgejoClient {
     /// `base` is the Forgejo root URL (`http` or `https`, without credentials).
     pub fn new(base: &str, internal: Option<InternalToken>) -> Result<Self, ForgejoError> {
+        Self::new_under(base, internal, Policy::current())
+    }
+
+    /// [`ForgejoClient::new`] under an explicit transport policy.
+    pub fn new_under(
+        base: &str,
+        internal: Option<InternalToken>,
+        policy: Policy,
+    ) -> Result<Self, ForgejoError> {
         let base = Url::parse(base).map_err(|e| ForgejoError::Config(format!("url: {e}")))?;
         let ok = matches!(base.scheme(), "http" | "https")
             && base.host_str().is_some()
@@ -147,9 +157,13 @@ impl ForgejoClient {
             && !base.cannot_be_a_base();
         if !ok {
             return Err(ForgejoError::Config(
-                "forgejo.url must be an http(s) URL without credentials".into(),
+                "forgejo.url must be an https URL without credentials".into(),
             ));
         }
+        // https, or plain http to the local machine under the opt-in (U89): the internal token
+        // and every forwarded credential go to this host.
+        classify_url(&base, policy)
+            .map_err(|why| ForgejoError::Config(format!("forgejo.url: {why}")))?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
@@ -1593,5 +1607,34 @@ mod tests {
         assert!(ForgejoClient::new("http://u:p@h/", None).is_err());
         assert!(ForgejoClient::new("ftp://h/", None).is_err());
         assert!(ForgejoClient::new("https://forge.example/", None).is_ok());
+        // Plain http is refused: the internal token goes to this host (U89).
+        for url in [
+            "http://forgejo:3000/",
+            "http://192.0.2.7/",
+            "http://127.0.0.1:3000/",
+        ] {
+            assert!(
+                ForgejoClient::new_under(url, None, Policy::STRICT).is_err(),
+                "{url}"
+            );
+        }
+        assert!(
+            ForgejoClient::new_under("http://127.0.0.1:3000/", None, Policy::LOOPBACK_HTTP).is_ok()
+        );
+        assert!(
+            ForgejoClient::new_under("http://forgejo:3000/", None, Policy::LOOPBACK_HTTP).is_err()
+        );
+        let why = ForgejoClient::new_under(
+            "http://forgejo.example:3000/o?t=hunter2",
+            None,
+            Policy::STRICT,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            why.contains("http://forgejo.example:3000") && !why.contains("hunter2"),
+            "{why}"
+        );
     }
 }
