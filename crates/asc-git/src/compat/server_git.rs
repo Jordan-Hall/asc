@@ -1365,6 +1365,15 @@ mod tests {
         }
     }
 
+    /// `RLIMIT_NPROC` is per UID, so a test that forks in bulk or starts many threads shrinks the
+    /// room of every child spawned at the same moment. Tests that spawn share this gate; the one
+    /// that does that on purpose holds it exclusively.
+    static SPAWN_GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+    fn spawn_gate() -> std::sync::RwLockReadGuard<'static, ()> {
+        SPAWN_GATE.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// A shell running `script` (cmd on Windows, sh elsewhere).
     fn shell(script: &str) -> Command {
         #[cfg(windows)]
@@ -1399,6 +1408,7 @@ mod tests {
 
     #[test]
     fn the_deadline_kills_the_child() {
+        let _gate = spawn_gate();
         let dir = tempfile::tempdir().unwrap();
         let cmd = tree_command(&dir.path().join("m"));
         let child = spawn_supervised(cmd, &limits(400, 60_000), true).unwrap();
@@ -1411,6 +1421,7 @@ mod tests {
 
     #[test]
     fn silence_kills_the_child_but_activity_keeps_it_alive() {
+        let _gate = spawn_gate();
         let dir = tempfile::tempdir().unwrap();
         let cmd = tree_command(&dir.path().join("m"));
         let child = spawn_supervised(cmd, &limits(60_000, 500), true).unwrap();
@@ -1429,6 +1440,7 @@ mod tests {
 
     #[test]
     fn dropping_a_child_kills_it_and_a_requested_kill_is_reported() {
+        let _gate = spawn_gate();
         let dir = tempfile::tempdir().unwrap();
         let child = spawn_supervised(
             tree_command(&dir.path().join("m")),
@@ -1452,6 +1464,7 @@ mod tests {
 
     #[test]
     fn the_whole_tree_dies_with_the_child() {
+        let _gate = spawn_gate();
         // The grandchild writes the marker only after its sleep; killing the tree early means
         // the marker never appears.
         let dir = tempfile::tempdir().unwrap();
@@ -1476,6 +1489,7 @@ mod tests {
 
     #[test]
     fn captured_output_is_bounded_and_complete() {
+        let _gate = spawn_gate();
         let cmd = shell("echo hello");
         let out = run_captured(cmd, b"", &limits(30_000, 30_000)).unwrap();
         assert!(out.status.success());
@@ -1484,6 +1498,7 @@ mod tests {
 
     #[test]
     fn the_memory_limit_stops_a_child_that_outgrows_it() {
+        let _gate = spawn_gate();
         // `git hash-object --stdin` holds the whole blob in memory.
         let git = RealGit::resolve(None, None).expect("real git");
         let hash = || {
@@ -1592,6 +1607,8 @@ mod tests {
     fn a_child_starts_while_the_parent_holds_more_threads_than_the_cap_and_cannot_fork_past_it() {
         use std::sync::mpsc;
 
+        let _gate = SPAWN_GATE.write().unwrap_or_else(PoisonError::into_inner);
+
         let (release, parked) = mpsc::channel::<()>();
         let parked = Arc::new(Mutex::new(parked));
         let threads: Vec<_> = (0..100)
@@ -1604,16 +1621,26 @@ mod tests {
             .collect();
 
         let mut lim = limits(60_000, 60_000);
-        lim.processes = 8;
+        lim.processes = 40;
 
-        let ok = spawn_supervised(shell("exit 0"), &lim, true).expect("spawn with 100+ threads");
-        assert!(ok.wait().unwrap().status.success());
+        // The child's soft limit is relative: more than the 100 parked threads plus the cap.
+        let probe = run_captured(
+            shell("awk '/Max processes/ {print $3}' /proc/self/limits"),
+            b"",
+            &lim,
+        )
+        .unwrap_or_else(|_| panic!("spawn with 100+ threads"));
+        let nproc: u64 = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(nproc >= 100 + 40, "RLIMIT_NPROC {nproc} is not relative");
 
         // Each successful background fork appends a line; a failed fork ends the shell.
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("forks");
         let bomb = shell(&format!(
-            "i=0; while [ $i -lt 100 ]; do sleep 30 & echo x >> '{}'; i=$((i+1)); done",
+            "i=0; while [ $i -lt 400 ]; do sleep 30 & echo x >> '{}'; i=$((i+1)); done",
             log.display()
         ));
         let child = spawn_supervised(bomb, &lim, true).unwrap();
@@ -1624,9 +1651,12 @@ mod tests {
         for t in threads {
             let _ = t.join();
         }
-        // The cap is 8 tasks past the count at spawn; threads of other tests that exit meanwhile
-        // widen it a little, an unlimited child would reach 100.
+        // The cap is 40 tasks past the count at spawn; threads of other tests that exit meanwhile
+        // widen it a little, an unlimited child would reach 400.
         assert!(forks >= 1, "the child forked nothing");
-        assert!(forks < 60, "the child forked {forks} times past a cap of 8");
+        assert!(
+            forks < 200,
+            "the child forked {forks} times past a cap of 40"
+        );
     }
 }

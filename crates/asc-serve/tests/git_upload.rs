@@ -941,9 +941,16 @@ async fn a_private_repo_challenges_then_the_credential_helper_works() {
     // The deploy-token user names are hints; the secret decides.
     for user in ["git", "oauth2", "gitlab-ci-token", ""] {
         let d = git.work(&format!("user-{user}"));
-        let r = git
-            .run(&d, &["clone", "-q", &env.url_with(WEB, user, READ), "c"])
-            .await;
+        // git sends no credential for an empty user name in the URL on every platform, so that
+        // case carries the same Basic header by hand.
+        let header = format!("http.extraHeader=Authorization: {}", basic(user, READ));
+        let r = if user.is_empty() {
+            git.run(&d, &["-c", &header, "clone", "-q", &env.url(WEB), "c"])
+                .await
+        } else {
+            git.run(&d, &["clone", "-q", &env.url_with(WEB, user, READ), "c"])
+                .await
+        };
         assert!(r.ok, "user {user:?}: {}", r.stderr);
     }
 
