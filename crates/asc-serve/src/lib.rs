@@ -4,6 +4,7 @@
 //! handler group on `Extensions::handlers`, a router on `Extensions::http`, a service on
 //! `Extensions::grpc`, or the real [`TextBudget`].
 
+pub mod cache_role;
 pub mod classify;
 pub mod config;
 pub mod forgejo;
@@ -203,6 +204,10 @@ pub async fn serve(
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServeError> {
     cfg.validate()?;
+    if cfg.role == Role::Cache {
+        // No SQL and no store: the cache role authorises through its upstream (U70).
+        return cache_role::serve(cfg, shutdown).await;
+    }
     if cfg.role != Role::Primary {
         return Err(ServeError::RoleUnavailable(cfg.role));
     }
