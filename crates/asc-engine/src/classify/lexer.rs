@@ -113,8 +113,8 @@ impl Lang {
 
 /// Comments that tools or compilers read are not droppable: a change to one is `LOGIC`.
 ///
-/// Matched case-insensitively against the start of the comment's first line, after the comment
-/// markers (`/`, `*`, `#`) are stripped; so `//# sourceMappingURL=` is `sourcemappingurl` and
+/// Matched case-insensitively against the start of every line of a comment, after the comment
+/// markers (`/`, `*`, `#`, `!`, `<!--`, `-->`) are stripped; so `//# sourceMappingURL=` is `sourcemappingurl` and
 /// `/*#__PURE__*/` is `__pure__`.
 const DIRECTIVES: &[&str] = &[
     "go:",
@@ -196,11 +196,6 @@ const DIRECTIVES: &[&str] = &[
     "<![endif",
 ];
 
-/// Prefixes that count on any line of a multi-line comment (a JSDoc block).
-fn line_directive(p: &str) -> bool {
-    p.starts_with('@') || p.starts_with('<')
-}
-
 /// Words that make a comment a legal or minifier notice wherever they appear (terser's rule).
 const ANYWHERE: &[&str] = &["@preserve", "@license", "@lic", "@copyright", "@cc_on"];
 
@@ -212,12 +207,22 @@ fn is_directive(body: &str, hash_style: bool, at_file_start: bool) -> bool {
     if ANYWHERE.iter().any(|w| lower.contains(w)) {
         return true;
     }
-    lower.lines().enumerate().any(|(n, line)| {
-        let line =
-            line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '/' | '*' | '#'));
-        DIRECTIVES
-            .iter()
-            .any(|p| (n == 0 || line_directive(p)) && line.starts_with(p))
+    // Every entry matches at the start of every line, so leading blank lines cannot hide one.
+    lower.lines().any(|line| {
+        let mut line = line;
+        loop {
+            line = line.trim_start_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '/' | '*' | '#' | '!')
+            });
+            match line
+                .strip_prefix("<!--")
+                .or_else(|| line.strip_prefix("-->"))
+            {
+                Some(rest) => line = rest,
+                None => break,
+            }
+        }
+        DIRECTIVES.iter().any(|p| line.starts_with(p))
     })
 }
 

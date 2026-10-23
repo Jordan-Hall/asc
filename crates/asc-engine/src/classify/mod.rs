@@ -1108,6 +1108,44 @@ mod tests {
         assert_eq!(c("a.js", "x = /*#__PURE__*/ f();", "x = f();"), Logic);
     }
 
+    #[test]
+    fn directives_match_on_any_comment_line() {
+        for d in [
+            "/*\n eslint-disable */",
+            "/*\n#__PURE__*/",
+            "/**\n * @license MIT\n */",
+            "/*\n\n  @ts-nocheck\n*/",
+            "/*\n * x\n * prettier-ignore\n */",
+            "/*!\n biome-ignore x */",
+        ] {
+            for f in ["a.js", "a.ts"] {
+                assert_eq!(c(f, "f();\n", &format!("{d}\nf();\n")), Logic, "{f} {d:?}");
+            }
+        }
+        assert_eq!(c("a.go", "f()\n", "/*\n//go:generate x\n*/\nf()\n"), Logic);
+        assert_eq!(
+            c(
+                "a.html",
+                "<p>x</p>\n",
+                "<!--\n prettier-ignore\n-->\n<p>x</p>\n"
+            ),
+            Logic
+        );
+        assert_eq!(
+            c(
+                "a.html",
+                "<p>x</p>\n",
+                "<!--\n<!-- eslint-disable -->\n-->\n<p>x</p>\n"
+            ),
+            Logic
+        );
+        // An ordinary multi-line comment still drops.
+        assert_eq!(
+            c("a.js", "f();\n", "/*\n * Calls f.\n * Twice.\n */\nf();\n"),
+            CommentOnly
+        );
+    }
+
     // Raw and verbatim forms the audit found sound; these pin them.
     #[test]
     fn raw_and_verbatim_forms_stay_sound() {
