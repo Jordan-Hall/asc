@@ -463,11 +463,6 @@ fn check_url(url: &url::Url, origin: Origin) -> Result<()> {
             if url.host().is_some() {
                 return Err(refused("file: seed URL names a host (network share)"));
             }
-            // `file:////host/share` has no host but a `//host/share` path: a share on Windows,
-            // and an ambiguous path elsewhere.
-            if is_unc(url.path()) {
-                return Err(refused("file: seed URL names a network share"));
-            }
             Ok(())
         }
         ("file", Origin::Discovered) => Err(refused(
@@ -991,10 +986,16 @@ mod tests {
             "file://attacker.invalid/share/s.tar.zst",
             r"\\127.0.0.1\seed-test\s.tar.zst",
             "//127.0.0.1/seed-test/s.tar.zst",
-            "file:////127.0.0.1/seed-test/s.tar.zst",
         ] {
             let r = unpack_str(text, &dst, None, Origin::Explicit).await;
             assert!(matches!(r, Err(SeedError::Refused(_))), "{text}: {r:?}");
+        }
+        // Only Windows reads `file:////host/share` as a share; elsewhere the `url` crate yields
+        // the local path `/host/share`.
+        #[cfg(windows)]
+        {
+            let r = unpack_str("file:////127.0.0.1/seed-test/s.tar.zst", &dst, None, Origin::Explicit).await;
+            assert!(matches!(r, Err(SeedError::Refused(_))), "{r:?}");
         }
         // A local file URL and a plain path still work.
         let furl = url::Url::from_file_path(&file).unwrap();
