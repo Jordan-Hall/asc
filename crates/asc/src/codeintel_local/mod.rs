@@ -23,6 +23,7 @@ use std::time::Duration;
 
 pub mod build;
 pub mod cli;
+pub mod embed;
 pub mod query;
 pub mod routed;
 pub mod start;
