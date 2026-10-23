@@ -94,7 +94,7 @@ impl Check {
     fn new(level: Level, name: impl Into<String>, detail: impl Into<String>) -> Self {
         Self {
             level,
-            name: name.into(),
+            name: clean(&name.into()),
             detail: clean(&detail.into()),
             hint: None,
             fix: None,
@@ -1530,6 +1530,14 @@ mod tests {
         assert_eq!(clean("a\x1b[31mb\n"), "a?[31mb?");
         let long = "x".repeat(1000);
         assert_eq!(clean(&long).len(), 403);
+    }
+
+    #[test]
+    fn check_labels_are_sanitised() {
+        let check = Check::info("wf\x1b[31mred\x07.yml", "ok");
+        assert_eq!(check.name, "wf?[31mred?.yml");
+        assert!(!check.name.contains('\x1b'));
+        assert!(!check.name.contains('\x07'));
     }
 
     #[test]
