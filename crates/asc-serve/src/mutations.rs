@@ -803,6 +803,14 @@ struct Slot {
     kind: Kind,
 }
 
+/// What `probe` learned about a file without reading it: its length, kind and, for a tree file,
+/// the content id (`None` for a file already staged in memory).
+struct Probe {
+    len: u64,
+    kind: Kind,
+    id: Option<FileId>,
+}
+
 /// What a patch does to the tree so far: `Some` writes, `None` deletes.
 type Overlay = BTreeMap<RepoPath, Option<Slot>>;
 
@@ -1019,9 +1027,11 @@ impl ServerMutations {
                 ..wire::Conflict::default()
             };
             // The file the hunks apply to.
-            let base_slot = match (&src_path, fp.is_new) {
-                (Some(p), false) => match self.current(o, base, &overlay, p).await? {
-                    Some(slot) => Some(slot),
+            // Existence and size come from metadata alone; content is read only after the
+            // file is under the per-file maximum and its text budget is reserved.
+            let src_probe = match (&src_path, fp.is_new) {
+                (Some(p), false) => match self.probe(o, base, &overlay, p).await? {
+                    Some(probe) => Some(probe),
                     None => {
                         conflicts.push(conflict(wire::ConflictKind::ModifyDelete));
                         continue;
@@ -1031,17 +1041,18 @@ impl ServerMutations {
             };
             if (fp.is_new || fp.is_rename || fp.is_copy)
                 && (fp.is_new || src_path.as_ref() != Some(&dest_path))
-                && self.current(o, base, &overlay, &dest_path).await?.is_some()
+                && self.probe(o, base, &overlay, &dest_path).await?.is_some()
             {
                 conflicts.push(conflict(wire::ConflictKind::AddAdd));
                 continue;
             }
-            if let Some(slot) = &base_slot {
-                guards.push(
-                    self.budget((slot.content.len() as u64).saturating_mul(2))
-                        .await?,
-                );
-            }
+            let base_slot = match (&src_path, src_probe) {
+                (Some(p), Some(probe)) => {
+                    guards.push(self.budget(probe.len.saturating_mul(2)).await?);
+                    Some(self.load(o, &overlay, p, probe).await?)
+                }
+                _ => None,
+            };
             let pre = base_slot.as_ref().map(|s| &s.content[..]);
             let result = match patch::apply_file(pre, fp, opts, &work) {
                 Ok(r) => r.content,
@@ -1124,20 +1135,36 @@ impl ServerMutations {
         Ok(Ok((root, copies)))
     }
 
-    /// The content of `path` as the patch has left it: the overlay first, then the tree.
-    /// Directories, symlinks and gitlinks are refused.
-    async fn current(
+    /// What `path` is as the patch has left it, without reading content: the overlay first, then
+    /// the tree. Directories, symlinks and gitlinks are refused, and so is a file above
+    /// `MAX_CONTENT_BYTES`.
+    async fn probe(
         &self,
         o: &Opened,
         base: TreeId,
         overlay: &Overlay,
         path: &RepoPath,
-    ) -> Result<Option<Slot>, Status> {
+    ) -> Result<Option<Probe>, Status> {
+        let too_large = |len: u64| {
+            if len > MAX_CONTENT_BYTES as u64 {
+                Err(invalid(format!("{path}: the file is too large to patch")))
+            } else {
+                Ok(())
+            }
+        };
         if let Some(slot) = overlay.get(path) {
-            return Ok(slot.as_ref().map(|s| Slot {
-                content: s.content.clone(),
-                kind: s.kind,
-            }));
+            return match slot {
+                None => Ok(None),
+                Some(s) => {
+                    let len = s.content.len() as u64;
+                    too_large(len)?;
+                    Ok(Some(Probe {
+                        len,
+                        kind: s.kind,
+                        id: None,
+                    }))
+                }
+            };
         }
         if path.as_bytes().len() > MAX_TREE_DEPTH * MAX_WALK_PATH_BYTES {
             return Err(invalid("path is too long"));
@@ -1150,15 +1177,40 @@ impl ServerMutations {
                 "{path}: only regular files can be patched"
             )));
         }
-        let content = o
-            .engine
-            .read_file(FileId::from_bytes(entry.id), entry.size)
-            .await
-            .map_err(|e| internal("read file", &e))?;
-        Ok(Some(Slot {
-            content: content.to_vec(),
+        too_large(entry.size)?;
+        Ok(Some(Probe {
+            len: entry.size,
             kind: entry.kind,
+            id: Some(FileId::from_bytes(entry.id)),
         }))
+    }
+
+    /// The content `probe` described. The caller has reserved `probe.len * 2` from the text
+    /// budget first.
+    async fn load(
+        &self,
+        o: &Opened,
+        overlay: &Overlay,
+        path: &RepoPath,
+        probe: Probe,
+    ) -> Result<Slot, Status> {
+        let content = match probe.id {
+            Some(id) => o
+                .engine
+                .read_file(id, probe.len)
+                .await
+                .map_err(|e| internal("read file", &e))?
+                .to_vec(),
+            None => overlay
+                .get(path)
+                .and_then(|s| s.as_ref())
+                .map(|s| s.content.clone())
+                .ok_or_else(|| internal("overlay", &"a staged file vanished"))?,
+        };
+        Ok(Slot {
+            content,
+            kind: probe.kind,
+        })
     }
 }
 
@@ -2314,6 +2366,119 @@ new file mode 100644
                 .unwrap_err();
         assert_eq!(e.code(), tonic::Code::ResourceExhausted);
         assert_eq!(graph_rows(&g).await, 0);
+    }
+
+    /// A changeset whose files are tree entries of the named sizes whose content is then deleted
+    /// from the store, so any read of one fails as an internal error.
+    async fn unreadable(f: &Fx, files: &[(&str, u64)]) -> ChangesetId {
+        use asc_engine::commit::{NewChangeset, PathPolicy};
+        let engine = f.entry.backend.engine();
+        let mut changes = Vec::new();
+        let mut ids = Vec::new();
+        for (p, size) in files {
+            let content = vec![b'a'; *size as usize];
+            let stored = f.m.store_content(&opened(f).await, &content).await.unwrap();
+            ids.push(stored.file);
+            changes.push((
+                RepoPath::new(*p).unwrap(),
+                write(Kind::File, &stored, None).unwrap(),
+            ));
+        }
+        changes.sort_by(|a, b| a.0.cmp(&b.0));
+        let empty = asc_engine::Engine::<
+            asc_store::bucket::BucketObjects,
+            asc_store::sqlrefs::SqlRefs,
+        >::empty_tree_id();
+        let root = engine.apply(empty, &changes).await.unwrap();
+        let cs = engine
+            .create_changeset(
+                NewChangeset {
+                    parents: Vec::new(),
+                    author: crate::ingest::testutil::sig(),
+                    committer: crate::ingest::testutil::sig(),
+                    message: b"m".to_vec(),
+                    extra: Vec::new(),
+                    root,
+                    copies: Vec::new(),
+                },
+                PathPolicy::Native { windows_safe: true },
+            )
+            .await
+            .unwrap();
+        for id in ids {
+            for key in [ObjKey::File(id), ObjKey::ChunkList(id)] {
+                f.entry.objects.delete(&key).await.unwrap();
+            }
+        }
+        cs
+    }
+
+    const BIG_MODIFY: &str = "diff --git a/big b/big
+--- a/big
++++ b/big
+@@ -1 +1 @@
+-a
++b
+";
+
+    #[tokio::test]
+    async fn a_file_above_the_per_file_maximum_is_refused_without_reading_it() {
+        let f = fx().await;
+        let base = unreadable(&f, &[("big", MAX_CONTENT_BYTES as u64 + 1)]).await;
+        let e =
+            f.m.apply_inner(&ctx(), patch_req(base, BIG_MODIFY))
+                .await
+                .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::InvalidArgument, "{e:?}");
+        assert_eq!(graph_rows(&f).await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_reserved_from_the_entry_size_before_the_read() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct Cap(u64, AtomicU64);
+        #[async_trait]
+        impl TextBudget for Cap {
+            async fn acquire(&self, bytes: u64) -> Result<TextGuard, TextBudgetExhausted> {
+                self.1.store(bytes, Ordering::SeqCst);
+                if bytes > self.0 {
+                    Err(TextBudgetExhausted)
+                } else {
+                    Ok(TextGuard::unlimited())
+                }
+            }
+        }
+        let f = fx().await;
+        let cap = Arc::new(Cap(1000, AtomicU64::new(0)));
+        f.hooks.text_budget.set(cap.clone()).ok().unwrap();
+        let base = unreadable(&f, &[("big", 4096)]).await;
+        let e =
+            f.m.apply_inner(&ctx(), patch_req(base, BIG_MODIFY))
+                .await
+                .unwrap_err();
+        // An unreadable blob would be an internal error had the read come first.
+        assert_eq!(e.code(), tonic::Code::ResourceExhausted, "{e:?}");
+        assert_eq!(cap.1.load(Ordering::SeqCst), 2 * 4096);
+        assert_eq!(graph_rows(&f).await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_add_add_check_reads_no_content() {
+        let f = fx().await;
+        let base = unreadable(&f, &[("big", MAX_CONTENT_BYTES as u64)]).await;
+        let add = "diff --git a/big b/big
+new file mode 100644
+--- /dev/null
++++ b/big
+@@ -0,0 +1 @@
++x
+";
+        let got = f.m.apply_inner(&ctx(), patch_req(base, add)).await.unwrap();
+        assert_eq!(
+            got.conflict_details[0].kind,
+            wire::ConflictKind::AddAdd as i32
+        );
+        assert_eq!(graph_rows(&f).await, 0);
     }
 
     #[tokio::test]
