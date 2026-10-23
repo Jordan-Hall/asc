@@ -114,6 +114,7 @@ scenarios! {
     range_diff_basic = "range-diff-basic",
     cherry_basic = "cherry-basic",
     notes_show = "notes-show",
+    stack_invisible = "stack-invisible",
 }
 
 #[test]

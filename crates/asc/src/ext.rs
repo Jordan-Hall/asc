@@ -34,9 +34,24 @@ pub type SinkResult<T = ()> = Result<T, SinkError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct OpId(pub Uuid);
 
+/// The op the running invocation belongs to (set by [`OpSink::begin`], cleared by `end`), so
+/// every ref transaction of one command shares one `op_id` (SPEC §20.3).
+static CURRENT_OP: Mutex<Option<Uuid>> = Mutex::new(None);
+
+/// Makes `op` the id [`OpId::new`] returns, or clears it.
+pub fn set_current_op(op: Option<OpId>) {
+    *CURRENT_OP.lock().unwrap_or_else(|e| e.into_inner()) = op.map(|o| o.0);
+}
+
 impl OpId {
-    /// A fresh operation id.
+    /// The id of the running operation when an [`OpSink`] opened one, else a fresh one.
     pub fn new() -> Self {
+        let current = *CURRENT_OP.lock().unwrap_or_else(|e| e.into_inner());
+        Self(current.unwrap_or_else(Uuid::now_v7))
+    }
+
+    /// An operation id no other operation shares.
+    pub fn fresh() -> Self {
         Self(Uuid::now_v7())
     }
 }

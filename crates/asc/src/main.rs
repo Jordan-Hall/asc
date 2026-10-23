@@ -34,6 +34,8 @@ async fn main() -> ExitCode {
     let _ = ext::set_index_sink(Box::new(index_sink::IndexSink::default()));
     remote::bucket::register();
     remote::server::register();
+    let _ = ext::set_rewrite_sink(Box::new(stack::sinks::Sinks));
+    let _ = ext::set_op_sink(Box::new(stack::sinks::Sinks));
     let _ = ext::set_workspace_factory(Box::new(
         daemon::workspace_factory::DaemonWorkspaceFactory::system(),
     ));
