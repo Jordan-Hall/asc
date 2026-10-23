@@ -2,6 +2,7 @@
 //! an engine [`Remote`], and the `state.db` boundary store behind the history window.
 
 pub mod bucket;
+pub mod git;
 pub mod url;
 
 use std::sync::Arc;
@@ -174,6 +175,11 @@ pub async fn open(ctx: &Ctx, ws: &WsCtx, arg: &str, intent: Intent) -> Result<Op
         None => return Err(no_such_remote(arg)),
     };
     let mode = if is_named { refs_mode(ctx, &name) } else { RefsMode::Local };
+    if let Ok(spec @ (RemoteSpec::Git { .. } | RemoteSpec::Discover { .. })) =
+        url::parse(&stored, mode)
+    {
+        return git::open(ctx, ws, name, stored, is_named, spec, intent);
+    }
     open_url(&ws.db, name, stored, is_named, mode, intent).await
 }
 
