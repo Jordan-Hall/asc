@@ -244,6 +244,10 @@ pub(crate) fn ingest_status(e: IngestError) -> Status {
             rpc(RpcError::PathPolicy(info(vec![path])))
         }
         IngestError::TooLarge => Status::resource_exhausted(e.to_string()),
+        IngestError::Stale { gone: true } => Status::not_found("no such repository"),
+        IngestError::Stale { gone: false } => {
+            Status::failed_precondition("the repository was renamed or replaced; retry")
+        }
         e => internal("ingest", &e),
     }
 }
@@ -290,7 +294,7 @@ pub(crate) struct Planned {
     pub(crate) name: RefName,
     pub(crate) expect: Expect,
     pub(crate) new: Option<RefTarget>,
-    /// A user ref (SPEC §21.5.1): `name` is the stored name, `text` the pushed one. It skips
+    /// A user ref (SPEC Â§21.5.1): `name` is the stored name, `text` the pushed one. It skips
     /// pre-receive, the bridge and the outbox `post_receive`.
     pub(crate) user: bool,
 }
@@ -474,7 +478,7 @@ impl ServerRefs {
             .await
             .map_err(registry_status)?;
 
-        // Step 1, classify (SPEC §21.5.1): a non-shared branch of a branchless repository is the
+        // Step 1, classify (SPEC Â§21.5.1): a non-shared branch of a branchless repository is the
         // pusher's user ref; a tag outside `shared_refs` is `REF_NOT_SHARED`. A LAND names a
         // shared branch and is checked by `land::check_branch`.
         if pushed.is_none() {
@@ -696,6 +700,7 @@ impl ServerRefs {
     ) -> Result<(), Status> {
         let refs = self.registry.refs();
         let mut tx = refs.begin().await.map_err(|e| internal("refs", &e))?;
+        self.registry.guard(&mut tx, entry).await?;
         match refs.update_in_tx(&mut tx, entry.key, txn).await {
             Ok(()) => {}
             Err(RefError::Conflict(c)) => return Err(conflict(c)),
@@ -705,7 +710,7 @@ impl ServerRefs {
             Err(e) => return Err(internal("refs", &e)),
         }
         if let Some(land) = land {
-            land.apply(&mut tx, entry).await?;
+            land.apply(&mut tx, entry, txn).await?;
         }
         let at = now();
         sqlx::query("INSERT INTO op_results (op_id, repo_id, result, at) VALUES ($1, $2, $3, $4)")
