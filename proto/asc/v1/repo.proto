@@ -52,6 +52,7 @@ service Repo {
   rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
   rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
   rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
+  rpc WatchRefs(WatchRefsRequest) returns (stream RefEvent);               // §21.3.8; long-lived, ACL-filtered, resumable; x-asc-op-id not used
 }
 // service Projects (ProjectGraph, Affected, ProjectHashes) is in proto/asc/v1/projects.proto (§12A.8), on the same port.
 
@@ -226,3 +227,8 @@ message RepoConfigRequest { RepoRef repo = 1; string rev = 2; }
 // CLOUD_WORKSPACES_LIMIT, USER_REFS_LIMIT, QUOTA_EXCEEDED and REF_NOT_SHARED. visibility is "private", "internal" or "public".
 message RepoConfigResponse { repeated Autolink autolinks = 1; bool branchless = 2; bool cloud = 3;
   repeated string shared_refs = 4; string visibility = 5; }
+// Ref-update stream (SPEC §21.3.8, U76). patterns: at most 8 globs of at most 128 bytes, `*` matches any run; a name without the
+// refs/ prefix means refs/heads/<name>; empty means master and release/*. resume: an opaque cursor from an earlier RefEvent; empty
+// starts at the newest update. The server sends only refs the caller may read; another user's draft refs never appear.
+message WatchRefsRequest { RepoRef repo = 1; repeated string patterns = 2; bytes resume = 3 [(asc.v1.json) = JSON_KIND_HEX]; }
+message RefEvent { string name = 1; RefTarget old = 2; RefTarget new = 3; bytes resume = 4 [(asc.v1.json) = JSON_KIND_HEX]; }   // old/new absent: ref created/deleted

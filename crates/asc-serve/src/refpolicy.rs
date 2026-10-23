@@ -32,7 +32,8 @@ use crate::update::{info, internal, rpc};
 pub const USER_NS: &str = "refs/users/";
 const HEADS: &str = "refs/heads/";
 /// The roots a shared ref can live under. `refs/pull/*` and `refs/snapshots/*` are server-managed.
-const SHARED_ROOTS: [&str; 4] = ["refs/heads/", "refs/tags/", "refs/pull/", "refs/snapshots/"];
+pub(crate) const SHARED_ROOTS: [&str; 4] =
+    ["refs/heads/", "refs/tags/", "refs/pull/", "refs/snapshots/"];
 /// Most `shared_refs` patterns, and the longest one.
 const MAX_PATTERNS: usize = 256;
 const MAX_PATTERN_LEN: usize = 1024;

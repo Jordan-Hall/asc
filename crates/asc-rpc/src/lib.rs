@@ -19,6 +19,7 @@ pub mod log_meta;
 pub mod projects;
 pub mod retry;
 pub mod server;
+pub mod watch_refs;
 
 /// Generated prost messages and tonic services for package `asc.v1`.
 #[allow(
