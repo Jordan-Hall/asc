@@ -95,7 +95,7 @@ fn pack(preds: &[ChangesetId]) -> Vec<u8> {
 }
 
 fn unpack(b: &[u8]) -> Result<Vec<ChangesetId>> {
-    if b.len() % 32 != 0 || b.len() / 32 > MAX_PREDS {
+    if !b.len().is_multiple_of(32) || b.len() / 32 > MAX_PREDS {
         return Err(Error::Corrupt("preds column"));
     }
     Ok(b.chunks_exact(32)
@@ -389,7 +389,7 @@ impl ChangeIndex {
         }
         let ns = Self::ns_of(tx, repo).await?;
         let olds: Vec<ChangesetId> = pairs.iter().map(|p| p.0).collect();
-        let rows: HashMap<ChangesetId, ChangeRow> = rows_of(&mut **tx, ns, &olds)
+        let rows: HashMap<ChangesetId, ChangeRow> = rows_of(tx, ns, &olds)
             .await?
             .into_iter()
             .map(|r| (r.cs, r))
@@ -478,7 +478,7 @@ impl LogEntryEnricher for ChangeIndex {
             .acquire()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
-        let rows = rows_of(&mut *conn, repo.ns, &ids[..n])
+        let rows = rows_of(&mut conn, repo.ns, &ids[..n])
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         let by_cs: HashMap<ChangesetId, &ChangeRow> = rows.iter().map(|r| (r.cs, r)).collect();
