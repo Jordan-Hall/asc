@@ -270,7 +270,8 @@ async fn added_deleted_and_binary_files_follow_git() {
     r.write("bin.dat", &[0, 9, 9, 9]);
     r.write("new.txt", b"fresh\nlines\n");
     r.write("zero.txt", b"");
-    for args in [&["add", "-N", "new.txt", "zero.txt"][..]] {
+    {
+        let args = &["add", "-N", "new.txt", "zero.txt"][..];
         assert_eq!(r.asc(args).code, 0);
         assert_eq!(r.git(args).code, 0);
     }

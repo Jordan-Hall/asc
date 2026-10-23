@@ -508,7 +508,7 @@ impl FileDiff {
             }
         }
         // Hunks share context, never a change: an overlap is an edit gone wrong.
-        edits.sort_by(|a, b| (a.0.start, a.0.end).cmp(&(b.0.start, b.0.end)));
+        edits.sort_by_key(|a| (a.0.start, a.0.end));
         let mut out = Vec::new();
         let mut pos = 0;
         for (range, lines) in &edits {
