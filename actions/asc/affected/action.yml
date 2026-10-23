@@ -1,0 +1,54 @@
+name: asc/affected
+description: Runs asc ci affected (one Affected RPC) and exposes rust, matrix, turbo_filter, count and the other plan lines as step outputs. Needs no checkout.
+inputs:
+  repo:
+    description: owner/repo.
+    default: ${{ github.repository }}
+  base:
+    description: Base ref.
+    default: master
+  head:
+    description: Head ref.
+    default: ${{ github.sha }}
+  rules:
+    description: Repository path of the rules file, read at the merge base.
+    default: ''
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+outputs:
+  all:
+    description: "true when the plan fell back to everything."
+    value: ${{ steps.run.outputs.all }}
+  count:
+    description: Number of affected projects.
+    value: ${{ steps.run.outputs.count }}
+  matrix:
+    description: Affected matrix (JSON).
+    value: ${{ steps.run.outputs.matrix }}
+  turbo_filter:
+    description: Filter arguments for turbo.
+    value: ${{ steps.run.outputs.turbo_filter }}
+  rust:
+    description: "true when Rust projects are affected."
+    value: ${{ steps.run.outputs.rust }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        IN_REPO: ${{ inputs.repo }}
+        IN_BASE: ${{ inputs.base }}
+        IN_HEAD: ${{ inputs.head }}
+        IN_RULES: ${{ inputs.rules }}
+        ASC_SERVER_URL: ${{ inputs.server }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        rules=()
+        if [ -n "$IN_RULES" ]; then rules=(--rules "$IN_RULES"); fi
+        asc ci affected --repo "$IN_REPO" --base "$IN_BASE" --head "$IN_HEAD" "${rules[@]}" >>"$GITHUB_OUTPUT"

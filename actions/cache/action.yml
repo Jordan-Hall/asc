@@ -1,0 +1,46 @@
+name: cache
+description: ASC fork of actions/cache. Restores from the asc Actions store (/actions/v1). Composite actions have no post step, so save with asc/actions/cache/save (the runner fork saves in its post phase).
+inputs:
+  path:
+    description: Files, directories and globs, newline separated (used by save; accepted here).
+    required: true
+  key:
+    description: Exact key.
+    required: true
+  restore-keys:
+    description: Key prefixes tried in order, newline separated.
+    default: ''
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+outputs:
+  cache-hit:
+    description: "true when the exact key was restored."
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: restore
+      shell: bash
+      env:
+        IN_KEY: ${{ inputs.key }}
+        IN_RESTORE: ${{ inputs.restore-keys }}
+        ASC_REMOTE: ${{ inputs.server }}/${{ github.repository }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        args=()
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then args+=(--restore-keys "$line"); fi
+        done <<<"$IN_RESTORE"
+        if out="$(asc ci cache restore "$IN_KEY" "${args[@]}")"; then
+          case "$out" in
+            *"$IN_KEY"*) echo "cache-hit=true" >>"$GITHUB_OUTPUT" ;;
+            *) echo "cache-hit=false" >>"$GITHUB_OUTPUT" ;;
+          esac
+        else
+          echo "cache-hit=false" >>"$GITHUB_OUTPUT"
+        fi

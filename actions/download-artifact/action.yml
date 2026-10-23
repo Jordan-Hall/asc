@@ -1,0 +1,31 @@
+name: download-artifact
+description: ASC fork of actions/download-artifact, reading from the asc Actions store (also across runs).
+inputs:
+  name:
+    description: Artifact name.
+    required: true
+  path:
+    description: Destination directory.
+    default: '.'
+  token:
+    description: Task token.
+    default: ${{ github.token }}
+  server:
+    description: asc server URL.
+    default: ${{ github.server_url }}
+outputs:
+  download-path:
+    description: Destination directory.
+    value: ${{ inputs.path }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IN_NAME: ${{ inputs.name }}
+        IN_PATH: ${{ inputs.path }}
+        ASC_REMOTE: ${{ inputs.server }}/${{ github.repository }}
+        ASC_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        asc ci artifact download "$IN_NAME" --path "$IN_PATH"

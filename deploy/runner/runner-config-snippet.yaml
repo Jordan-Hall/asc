@@ -1,0 +1,18 @@
+# Forgejo runner config.yaml fragment (SPEC 12.3, 12.7). Merge into the runner's config.
+#
+# The host cache is written only by asc-warm.service and mounted READ-ONLY into every job
+# container, so a job can read warmed objects but cannot poison them. Every read is BLAKE3
+# verified by asc regardless. The job-local writable cache is $RUNNER_TEMP/asc-cache.
+container:
+  # Plain bind mount with the read-only flag. Never mount the cache read-write.
+  options: "-v /var/cache/asc/cache:/var/cache/asc/cache:ro"
+  valid_volumes:
+    - /var/cache/asc/cache
+  # No privileged jobs, no host networking.
+  privileged: false
+  network: ""
+runner:
+  envs:
+    ASC_HOST_CACHE: /var/cache/asc/cache
+    # Public URL of asc serve; https only (plain http is for loopback test setups).
+    ASC_SERVER_URL: https://git.example.com

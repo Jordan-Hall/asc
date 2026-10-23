@@ -1,0 +1,141 @@
+diff --git a/.asc/ci.toml b/.asc/ci.toml
+new file mode 100644
+--- /dev/null
++++ b/.asc/ci.toml
+@@ -0,0 +1,5 @@
++# Plan switches (SPEC 12.2).
++[switches]
++rust = { projects = ["eco:rust"] }
++images = { projects = ["tag:image"] }
++deploys = { projects = ["tag:deploy"] }
+diff --git a/.forgejo/workflows/ci.yml b/.forgejo/workflows/ci.yml
+--- a/.forgejo/workflows/ci.yml
++++ b/.forgejo/workflows/ci.yml
+@@ -30,14 +30,38 @@
+   cancel-in-progress: true
+ 
+ jobs:
++  # The plan: one Affected RPC, no checkout, no install, no turbo (SPEC 12.2).
++  plan:
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    outputs:
++      all: ${{ steps.affected.outputs.all }}
++      rust: ${{ steps.affected.outputs.rust }}
++      matrix: ${{ steps.affected.outputs.matrix }}
++      turbo_filter: ${{ steps.affected.outputs.turbo_filter }}
++      count: ${{ steps.affected.outputs.count }}
++    steps:
++      - name: Install asc
++        uses: asc/actions/asc/setup@v1
++        with:
++          version: ${{ vars.ASC_VERSION }}
++          url: ${{ vars.ASC_URL }}
++          sha256: ${{ vars.ASC_SHA256 }}
++      - name: Plan
++        id: affected
++        uses: asc/actions/asc/affected@v1
++        with:
++          base: ${{ github.base_ref || github.event.before || 'master' }}
++          rules: .asc/ci.toml
++
+   typecheck-and-test:
++    needs: plan
++    if: needs.plan.outputs.count != '0' || needs.plan.outputs.all == 'true'
+     runs-on: ubuntu-latest
+     timeout-minutes: 25
+     steps:
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+-        with:
+-          submodules: recursive
+ 
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+@@ -227,8 +251,6 @@
+     steps:
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+-        with:
+-          submodules: recursive
+ 
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+@@ -257,8 +279,6 @@
+     steps:
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+-        with:
+-          submodules: recursive
+ 
+       # SurrealDB v3 forms only, and every DEFINE ACCESS re-runnable. Comment
+       # lines are stripped first so a migration's explanatory header may name a
+@@ -353,8 +373,6 @@
+     steps:
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+-        with:
+-          submodules: recursive
+ 
+       - name: Install Rust
+         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+@@ -396,8 +414,6 @@
+     steps:
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+-        with:
+-          submodules: recursive
+ 
+       # `dsl-wasm` only compiles for wasm32; the host target alone is not
+       # enough to build it, and a `cargo check --workspace` that skips it is
+@@ -450,3 +466,31 @@
+         run: |
+           ls -l target/release/libdsl_napi.so
+           ls -l js/wasm/dsl_wasm_bg.wasm
++
++  # Post-merge: move green/master to the tested tip (SPEC 12.6). Deploys build only from green/*.
++  green:
++    needs: [typecheck-and-test, generated-artefacts, lint-conventions]
++    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
++    runs-on: ubuntu-latest
++    timeout-minutes: 5
++    concurrency:
++      group: green-master
++      cancel-in-progress: false
++    steps:
++      - name: Install asc
++        uses: asc/actions/asc/setup@v1
++        with:
++          version: ${{ vars.ASC_VERSION }}
++          url: ${{ vars.ASC_URL }}
++          sha256: ${{ vars.ASC_SHA256 }}
++      - name: Move green/master
++        env:
++          ASC_TOKEN: ${{ github.token }}
++          ASC_REPO: ${{ github.repository }}
++          ASC_SERVER_URL: ${{ github.server_url }}
++          TIP: ${{ github.sha }}
++        run: |
++          set -euo pipefail
++          remote="$ASC_SERVER_URL/$ASC_REPO"
++          id="$(asc api Resolve --json "$(printf '{"revspecs":["%s"]}' "$TIP")" --remote "$remote" | jq -r '.ids[0]')"
++          asc api UpdateRefs --remote "$remote" --json             "$(jq -nc --arg id "$id" '{updates:[{name:"refs/heads/green/master",any:true,new:{changeset:$id}}],mode:"UPDATE_MODE_FAST_FORWARD"}')"
+diff --git a/.forgejo/workflows/deploy-affected.yml b/.forgejo/workflows/deploy-affected.yml
+--- a/.forgejo/workflows/deploy-affected.yml
++++ b/.forgejo/workflows/deploy-affected.yml
+@@ -30,11 +30,10 @@
+       - name: Checkout
+         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+         with:
+-          # turbo diffs against a ref, so the history has to be there. The
+-          # submodule carries workspace members, and without it turbo cannot
+-          # read the graph at all.
+-          fetch-depth: 0
+-          submodules: recursive
++          # Deploys build only from green/* (SPEC 12.6). asc answers history from the
++          # server, so there is no fetch-depth and no submodule checkout.
++          ref: green/master
++          base: ${{ github.event.inputs.base || github.event.before || 'HEAD^1' }}
+ 
+       - name: Setup Bun
+         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
