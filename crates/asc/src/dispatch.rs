@@ -687,7 +687,6 @@ mod tests {
         for (arg, want) in [
             ("git", Program::Git),
             ("/usr/bin/git", Program::Git),
-            ("C:\\x\\GIT.EXE", Program::Git),
             ("Git.exe", Program::Git),
             ("asc", Program::Asc),
             ("asc.exe", Program::Asc),
@@ -696,6 +695,9 @@ mod tests {
         ] {
             assert_eq!(Program::from_argv0(OsStr::new(arg)), want, "{arg}");
         }
+        // A backslash separates path components on Windows only.
+        let windows_path = Program::from_argv0(OsStr::new("C:\\x\\GIT.EXE"));
+        assert_eq!(windows_path, if cfg!(windows) { Program::Git } else { Program::Asc });
     }
 
     #[test]
