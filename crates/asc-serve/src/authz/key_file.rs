@@ -1,35 +1,48 @@
 //! The token store's key file: created readable by the server user only, and refused on load when
 //! anyone else could read it.
 //!
-//! * Unix: mode `0600` at creation; a file with any group or other bit is refused.
-//! * Windows: created with a protected DACL (no inherited entries) that allows only the current
-//!   user and `SYSTEM`, and owned by the current user. A file is refused when its owner is not the
-//!   current user (Administrators count only for an elevated administrator, the rule of `git`'s
-//!   `safe.directory`), when its DACL is missing (everyone has access), or when any allow entry
-//!   names another principal.
+//! Both steps close their race windows. A file is created already protected (no moment where it
+//! exists with a looser list), and it is checked through the handle that is then read from, never
+//! through its path (no moment where another file can be swapped in between check and use).
+//!
+//! * Unix: created with `O_CREAT|O_EXCL` and mode `0600`. Opened only if the path is not a symbolic
+//!   link and names the same file the handle refers to; the handle's mode must have no group or
+//!   other bit.
+//! * Windows: created by `CreateFileW(CREATE_NEW)` with a security descriptor that owns the file
+//!   as the current user and carries a protected DACL (no inherited entries) allowing only the
+//!   current user and `SYSTEM`. Opened with `FILE_FLAG_OPEN_REPARSE_POINT`, so a link is opened
+//!   as itself and refused. The handle's owner must be the current user (Administrators count only
+//!   for an elevated administrator, the rule of `git`'s `safe.directory`), its DACL must exist
+//!   (a missing one means everyone has access), and every allow entry must name the current user
+//!   or `SYSTEM`.
 //! * Elsewhere: creation and loading fail, because the file cannot be protected or checked.
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// Creates `path` (never overwriting) as a file only the current user can read, and returns it
-/// open for writing.
+/// Creates `path` (never overwriting) as a file only the current user can read, protected from
+/// the first instant it exists, and returns it open for writing.
 pub(crate) fn create_private(path: &Path) -> io::Result<File> {
     imp::create_private(path)
 }
 
-/// `Ok(())` when only the current user (and the system) can read `path`; else why not.
-pub(crate) fn check_private(path: &Path) -> io::Result<()> {
-    imp::check_private(path)
+/// Opens `path` for reading and checks the opened file: `Ok` only when no one but the current
+/// user (and the system) can read it.
+pub(crate) fn open_private(path: &Path) -> io::Result<File> {
+    imp::open_private(path)
 }
 
 #[cfg(unix)]
 mod imp {
     use std::fs::{File, OpenOptions};
     use std::io;
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
     use std::path::Path;
+
+    fn denied(msg: String) -> io::Error {
+        io::Error::new(io::ErrorKind::PermissionDenied, msg)
+    }
 
     pub fn create_private(path: &Path) -> io::Result<File> {
         OpenOptions::new()
@@ -39,18 +52,66 @@ mod imp {
             .open(path)
     }
 
-    pub fn check_private(path: &Path) -> io::Result<()> {
-        let mode = std::fs::metadata(path)?.permissions().mode();
+    pub fn open_private(path: &Path) -> io::Result<File> {
+        let link = std::fs::symlink_metadata(path)?;
+        if link.file_type().is_symlink() {
+            return Err(denied("the key file is a symbolic link".into()));
+        }
+        let file = File::open(path)?;
+        let meta = file.metadata()?;
+        if (meta.dev(), meta.ino()) != (link.dev(), link.ino()) {
+            return Err(denied("the key file changed while it was opened".into()));
+        }
+        check_private(&file)?;
+        Ok(file)
+    }
+
+    pub fn check_private(file: &File) -> io::Result<()> {
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(denied("the key file is not a regular file".into()));
+        }
+        let mode = meta.permissions().mode();
         if mode & 0o077 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "mode {:04o} lets other users read the key; chmod 600",
-                    mode & 0o7777
-                ),
-            ));
+            return Err(denied(format!(
+                "mode {:04o} lets other users read the key; chmod 600",
+                mode & 0o7777
+            )));
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use super::*;
+
+        #[test]
+        fn created_private_and_checked_on_the_handle() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("k");
+            let file = create_private(&path).unwrap();
+            check_private(&file).unwrap();
+            assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+            drop(file);
+            open_private(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(open_private(&path).is_err());
+            let handle = File::open(&path).unwrap();
+            assert!(check_private(&handle).is_err());
+        }
+
+        #[test]
+        fn a_symbolic_link_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("real");
+            drop(create_private(&real).unwrap());
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(open_private(&link).is_err());
+            open_private(&real).unwrap();
+        }
     }
 }
 
@@ -61,22 +122,37 @@ mod imp {
     use std::fs::{File, OpenOptions};
     use std::io;
     use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
     use std::path::Path;
     use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_SUCCESS, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        GetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
     };
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CheckTokenMembership, CreateWellKnownSid,
-        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorDacl,
-        GetSecurityDescriptorOwner, GetTokenInformation, INHERIT_ONLY_ACE, IsWellKnownSid,
-        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetTokenInformation, INHERIT_ONLY_ACE,
+        IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
+        WinLocalSystemSid,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    fn denied(msg: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{msg}; recreate it with `asc serve token create`"),
+        )
+    }
 
     /// A `TOKEN_USER` buffer; the SID points into it.
     pub struct OwnedSid(Vec<u64>);
@@ -140,10 +216,6 @@ mod imp {
         ok != 0 && member != 0
     }
 
-    fn wide(path: &Path) -> Vec<u16> {
-        path.as_os_str().encode_wide().chain(Some(0)).collect()
-    }
-
     fn sid_string(sid: PSID) -> io::Result<String> {
         let mut text: *mut u16 = null_mut();
         // SAFETY: `text` receives a LocalAlloc'd, NUL-terminated string.
@@ -172,9 +244,11 @@ mod imp {
         }
     }
 
-    /// Gives the file at `path` the owner `user` and a protected DACL allowing `user` and
-    /// `SYSTEM` full access, and nobody else.
-    fn lock_down(path: &Path, user: &OwnedSid) -> io::Result<()> {
+    /// Creates `path` with `CREATE_NEW`, so it never overwrites, and with the descriptor applied by
+    /// the create itself: owned by the current user, a protected DACL allowing the current user
+    /// and `SYSTEM` full access and nobody else.
+    pub fn create_private(path: &Path) -> io::Result<File> {
+        let user = current_user_sid()?;
         let sid = sid_string(user.as_ptr())?;
         let sddl = format!("O:{sid}D:P(A;;FA;;;{sid})(A;;FA;;;SY)");
         let wsddl: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
@@ -192,47 +266,39 @@ mod imp {
             return Err(io::Error::last_os_error());
         }
         let _free = Local(sd);
-        let (mut owner, mut dacl): (PSID, *mut ACL) = (null_mut(), null_mut());
-        let (mut present, mut defaulted) = (0i32, 0i32);
-        // SAFETY: `sd` is a valid absolute-or-relative descriptor; the out pointers are valid and
-        // point into `sd`.
-        let ok = unsafe {
-            GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted) != 0
-                && GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) != 0
+        let attrs = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
         };
-        if !ok || present == 0 || dacl.is_null() || owner.is_null() {
-            return Err(io::Error::other("cannot read the key file descriptor"));
-        }
-        let name = wide(path);
-        // SAFETY: `name` is NUL-terminated; `owner` and `dacl` live as long as `sd`.
-        let status = unsafe {
-            SetNamedSecurityInfoW(
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: `name` is NUL-terminated and `attrs` points at a valid descriptor that outlives
+        // the call.
+        let handle = unsafe {
+            CreateFileW(
                 name.as_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION
-                    | DACL_SECURITY_INFORMATION
-                    | PROTECTED_DACL_SECURITY_INFORMATION,
-                owner,
-                null_mut(),
-                dacl,
+                GENERIC_WRITE,
+                FILE_SHARE_READ,
+                &attrs,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
                 null_mut(),
             )
         };
-        if status != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(status as i32));
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
         }
-        Ok(())
+        // SAFETY: `handle` is a valid, owned file handle that nothing else closes.
+        Ok(unsafe { File::from_raw_handle(handle as _) })
     }
 
-    pub fn create_private(path: &Path) -> io::Result<File> {
-        let user = current_user_sid()?;
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        // The file is empty until the key is written, which happens after this returns.
-        if let Err(e) = lock_down(path, &user) {
-            drop(file);
-            let _ = std::fs::remove_file(path);
-            return Err(e);
-        }
+    pub fn open_private(path: &Path) -> io::Result<File> {
+        // A link is opened as the link itself, and then refused by `check_private`.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        check_private(&file)?;
         Ok(file)
     }
 
@@ -241,22 +307,19 @@ mod imp {
         matches!(ace_type, 1..=3 | 6..=8 | 10 | 12..=20)
     }
 
-    pub fn check_private(path: &Path) -> io::Result<()> {
-        let refuse = |why: &str| {
-            Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("{why}; recreate it with `asc serve token create`"),
-            ))
-        };
+    pub fn check_private(file: &File) -> io::Result<()> {
+        if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(denied("the key file is a link"));
+        }
         let me = current_user_sid()?;
         let system = well_known(WinLocalSystemSid)?;
-        let name = wide(path);
         let (mut owner, mut dacl): (PSID, *mut ACL) = (null_mut(), null_mut());
         let mut sd: PSECURITY_DESCRIPTOR = null_mut();
-        // SAFETY: out-parameters are valid; the descriptor is freed below.
+        // SAFETY: the handle is open for the life of `file`; out-parameters are valid and the
+        // descriptor is freed below.
         let status = unsafe {
-            GetNamedSecurityInfoW(
-                name.as_ptr(),
+            GetSecurityInfo(
+                file.as_raw_handle() as HANDLE,
                 SE_FILE_OBJECT,
                 OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                 &mut owner,
@@ -271,17 +334,19 @@ mod imp {
         }
         let _free = Local(sd);
         if owner.is_null() {
-            return refuse("the key file has no owner");
+            return Err(denied("the key file has no owner"));
         }
         // SAFETY: `owner` and `me` are valid SIDs.
         let owner_ok = unsafe { EqualSid(owner, me.as_ptr()) } != 0
             || (unsafe { IsWellKnownSid(owner, WinBuiltinAdministratorsSid) } != 0
                 && token_is_elevated_admin());
         if !owner_ok {
-            return refuse("the key file is not owned by the current user");
+            return Err(denied("the key file is not owned by the current user"));
         }
         if dacl.is_null() {
-            return refuse("the key file has no access list, so everyone can read it");
+            return Err(denied(
+                "the key file has no access list, so everyone can read it",
+            ));
         }
         // SAFETY: a non-null DACL points at a valid ACL header inside `sd`.
         let count = unsafe { (*dacl).AceCount };
@@ -289,7 +354,7 @@ mod imp {
             let mut ace: *mut c_void = null_mut();
             // SAFETY: `i` is below the ACE count.
             if unsafe { GetAce(dacl, i, &mut ace) } == 0 || ace.is_null() {
-                return refuse("the key file's access list is unreadable");
+                return Err(denied("the key file's access list is unreadable"));
             }
             // SAFETY: every ACE starts with an ACE_HEADER.
             let header = unsafe { *(ace as *const ACE_HEADER) };
@@ -298,7 +363,9 @@ mod imp {
                 continue;
             }
             if header.AceType != 0 {
-                return refuse("the key file's access list has an entry of an unknown kind");
+                return Err(denied(
+                    "the key file's access list has an entry of an unknown kind",
+                ));
             }
             // SAFETY: an ACCESS_ALLOWED_ACE (type 0) holds its SID from `SidStart`.
             let sid = unsafe { std::ptr::addr_of!((*(ace as *const ACCESS_ALLOWED_ACE)).SidStart) }
@@ -309,10 +376,94 @@ mod imp {
             };
             if !ours {
                 let who = sid_string(sid).unwrap_or_else(|_| "another principal".into());
-                return refuse(&format!("the key file grants access to {who}"));
+                return Err(denied(&format!("the key file grants access to {who}")));
             }
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::process::Command;
+
+        use super::*;
+
+        fn icacls(path: &Path, args: &[&str]) -> bool {
+            Command::new("icacls")
+                .arg(path)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        }
+
+        /// The file has its protected list from the moment `create_private` returns: nothing was
+        /// written yet, and the directory's own (looser) list was never applied.
+        #[test]
+        fn a_new_file_has_the_protected_list_immediately() {
+            let dir = tempfile::tempdir().unwrap();
+            // A directory whose list would be inherited by a plain new file.
+            assert!(icacls(dir.path(), &["/grant", "*S-1-1-0:(OI)(CI)R"]));
+            let path = dir.path().join("k");
+            let file = create_private(&path).unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+            check_private(&file).unwrap();
+            let shown = Command::new("icacls").arg(&path).output().unwrap();
+            let shown = String::from_utf8_lossy(&shown.stdout).into_owned();
+            assert!(!shown.contains("Everyone"), "{shown}");
+            assert!(!shown.contains("(I)"), "{shown}");
+            // A plain file in the same directory does inherit the loose list.
+            let plain = dir.path().join("plain");
+            let plain_file = std::fs::File::create(&plain).unwrap();
+            assert!(check_private(&plain_file).is_err());
+            // Creation never overwrites.
+            drop(file);
+            assert_eq!(
+                create_private(&path).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+        }
+
+        /// The check reads the opened handle: a path swapped afterwards does not change what the
+        /// handle says, and a loose file is refused through its own handle.
+        #[test]
+        fn the_check_is_on_the_handle() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("k");
+            drop(create_private(&path).unwrap());
+            let good = open_private(&path).unwrap();
+
+            // Swap a world-readable file in at the same path.
+            std::fs::rename(&path, dir.path().join("k.moved")).unwrap();
+            std::fs::write(&path, "x").unwrap();
+            assert!(icacls(&path, &["/grant", "*S-1-1-0:R"]));
+            assert!(open_private(&path).is_err());
+            // The handle opened earlier is still the protected file.
+            check_private(&good).unwrap();
+            let loose = File::open(&path).unwrap();
+            assert!(check_private(&loose).is_err());
+
+            // A world-readable file is refused after the fact too.
+            let again = dir.path().join("again");
+            drop(create_private(&again).unwrap());
+            let handle = open_private(&again).unwrap();
+            assert!(icacls(&again, &["/grant", "*S-1-1-0:R"]));
+            assert!(check_private(&handle).is_err());
+        }
+
+        #[test]
+        fn a_link_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let real = dir.path().join("real");
+            drop(create_private(&real).unwrap());
+            let link = dir.path().join("link");
+            // Creating a symbolic link needs a privilege; skip where it is missing.
+            if std::os::windows::fs::symlink_file(&real, &link).is_err() {
+                return;
+            }
+            assert!(open_private(&link).is_err());
+            open_private(&real).unwrap();
+        }
     }
 }
 
@@ -328,7 +479,11 @@ mod imp {
         ))
     }
 
-    pub fn check_private(_path: &Path) -> io::Result<()> {
+    pub fn open_private(_path: &Path) -> io::Result<File> {
+        Err(io::Error::other("cannot check a key file on this platform"))
+    }
+
+    pub fn check_private(_file: &File) -> io::Result<()> {
         Err(io::Error::other("cannot check a key file on this platform"))
     }
 }

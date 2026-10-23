@@ -55,6 +55,7 @@ use sha2::Sha256;
 use sqlx::{AnyPool, Row};
 
 use super::key_file;
+use crate::forgejo::INTERNAL_PRINCIPAL;
 
 /// Random bytes in a token secret.
 pub const SECRET_BYTES: usize = 32;
@@ -259,8 +260,7 @@ impl TokenKey {
     /// owner on Windows; see [`super::key_file`]).
     pub fn load(path: &Path) -> Result<Self, TokenError> {
         let bad = |m: String| TokenError::Key(format!("{}: {m}", path.display()));
-        let file = std::fs::File::open(path).map_err(|e| bad(e.to_string()))?;
-        key_file::check_private(path).map_err(|e| bad(e.to_string()))?;
+        let file = key_file::open_private(path).map_err(|e| bad(e.to_string()))?;
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::Read::take(file, 1024), &mut text)
             .map_err(|e| bad(e.to_string()))?;
@@ -797,7 +797,7 @@ impl TokenStore {
         let id = parse_token(token);
         let row = match id {
             Some(id) => sqlx::query(
-                "SELECT principal, digest, CAST(expires AS BIGINT) AS expires, \
+                "SELECT kind, principal, digest, CAST(expires AS BIGINT) AS expires, \
                         CAST(revoked AS BIGINT) AS revoked \
                  FROM auth_tokens WHERE id = $1",
             )
@@ -821,7 +821,8 @@ impl TokenStore {
         if revoked.is_some() || expires.is_some_and(|e| now >= e) {
             return Ok(None);
         }
-        let principal: String = row.try_get("principal").map_err(unavailable)?;
+        let kind: String = row.try_get("kind").map_err(unavailable)?;
+        let stored: String = row.try_get("principal").map_err(unavailable)?;
         let grant_rows =
             sqlx::query("SELECT repo, access FROM auth_token_grants WHERE token_id = $1")
                 .bind(id.to_owned())
@@ -836,12 +837,38 @@ impl TokenStore {
                 grants.push(Grant { repo, access });
             }
         }
+        let Some(principal) = rebuilt_principal(&kind, &stored, &grants, id) else {
+            tracing::warn!(token_id = %id, "refusing a token whose row cannot form a typed principal");
+            return Ok(None);
+        };
         Ok(Some(Arc::new(Verified {
             principal: Principal { id: principal },
             expires,
             grants,
         })))
     }
+}
+
+/// The principal of a verified row, rebuilt with [`principal_id`] from its typed columns. The
+/// stored text is never used as the principal: rows written before principals were typed hold a
+/// bare user name (or anything an operator put there), which could equal `forgejo-internal`. For
+/// a `pat` the stored text only supplies the user name (a leading `pat:` is dropped and the rest
+/// must be a valid user name); a `deploy` principal comes from its single exact grant, a `ci` one
+/// from the token id. `None` refuses the token: an unknown kind, a malformed user or repo, or an
+/// id that is the internal principal or not typed.
+fn rebuilt_principal(kind: &str, stored: &str, grants: &[Grant], token_id: &str) -> Option<String> {
+    let kind = TokenKind::parse(kind)?;
+    let user = stored.strip_prefix("pat:").unwrap_or(stored);
+    let repo = match (kind, grants) {
+        (TokenKind::Deploy, [only]) if validate_pattern(&only.repo, true).is_ok() => &only.repo,
+        (TokenKind::Deploy, _) => return None,
+        _ => "",
+    };
+    if kind == TokenKind::Pat && validate_user(user).is_err() {
+        return None;
+    }
+    let id = principal_id(kind, Some(user), repo, token_id);
+    (id != INTERNAL_PRINCIPAL && id.contains(':')).then_some(id)
 }
 
 /// The public id of a well-formed token, else `None`. Shape only; it proves nothing.
