@@ -1,20 +1,21 @@
 //! The mount: marks the root, starts virtualization with the callbacks, and stops it cleanly.
-//! [`ProjfsProvider`] implements [`Provider`]; the switch and dehydration entry points belong to
-//! U57 and refuse until then.
+//! [`ProjfsProvider`] implements [`Provider`]; the switch, reconcile, dehydration and rename code
+//! live in `switch`, `reconcile`, `dehydrate` and `rename`.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use asc_core::id::FileId;
 use asc_core::path::{Name, RepoPath};
 use asc_store::cachedir::CacheDir;
 use asc_store::objects::Objects;
+use asc_wc::SafeRoot;
 use asc_wc::redirect::Redirections;
 use asc_wc::switch::Plan;
 use asc_wc::times::Switched;
@@ -23,7 +24,8 @@ use tokio::runtime::Handle;
 
 use super::enumerate::Session;
 use super::ffi::{self, Api, Callbacks, Ctx, Guid, NotificationMapping, StartOptions};
-use super::{JournalSink, TimeSource, block, data, enumerate, notify};
+use super::switch::Store;
+use super::{JournalSink, TimeSource, block, data, enumerate, notify, rename};
 use crate::core::{CoreFs, DehydrateOutcome, Provider, Result, SwitchOutcome, VfsError};
 
 /// Most existing redirected directories that get a `PRJ_NOTIFY_NONE` mapping.
@@ -52,9 +54,17 @@ pub struct Config {
 pub(crate) struct Inner {
     pub api: Arc<Api>,
     pub cfg: Config,
-    /// The virtualization root, for the switch and reconcile code of U57.
-    #[allow(dead_code)]
+    /// The virtualization root.
     pub root: PathBuf,
+    /// The gate every work tree path goes through (no link in an ancestor is followed).
+    pub safe: Arc<SafeRoot>,
+    /// The `PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT` of the running instance, for the switch,
+    /// dehydration and reconcile code; zero before the start succeeded.
+    pub ctx: AtomicUsize,
+    /// When this instance started: the read time of files the hydration log has not seen.
+    pub started: SystemTime,
+    /// Directory renames hydrate one at a time (SPEC §10.2 item 6).
+    pub rename_gate: Mutex<()>,
     pub sessions: Mutex<HashMap<Guid, Session>>,
     /// Asynchronous `GetFileData` commands by id; the flag is set by the cancel callback.
     pub commands: Mutex<HashMap<i32, Arc<AtomicBool>>>,
@@ -82,7 +92,7 @@ impl Inner {
         Some(Inflight(self.clone()))
     }
 
-    #[allow(dead_code)] // U57 (update/delete calls) needs the instance GUID.
+    #[allow(dead_code)] // the instance GUID, for diagnostics.
     pub fn guid(&self) -> Guid {
         Guid::from_uuid_bytes(self.cfg.workspace)
     }
@@ -119,6 +129,8 @@ pub struct ProjfsProvider {
     cfg: Mutex<Option<Config>>,
     mounted: Mutex<Option<Mounted>>,
     disk: ProjDisk,
+    /// Where the switch intent is kept, once the daemon says.
+    pub(crate) store: Mutex<Option<Store>>,
 }
 
 impl ProjfsProvider {
@@ -138,18 +150,14 @@ impl ProjfsProvider {
             cfg: Mutex::new(Some(cfg)),
             mounted: Mutex::new(None),
             disk,
+            store: Mutex::new(None),
         })
     }
 
-    /// The running instance (for the switch, reconcile and dehydration code of U57).
-    #[allow(dead_code)] // U57 reaches the running instance through this.
+    /// The running instance (for the switch, reconcile and dehydration code).
     pub(crate) fn inner(&self) -> Option<Arc<Inner>> {
         lock(&self.mounted).as_ref().map(|m| m.inner.clone())
     }
-}
-
-fn unsupported(what: &str) -> VfsError {
-    VfsError::Io(io::Error::new(io::ErrorKind::Unsupported, what.to_owned()))
 }
 
 fn hr_error(what: &str, hr: ffi::Hresult) -> VfsError {
@@ -247,10 +255,15 @@ impl Provider for ProjfsProvider {
             return Err(hr_error("PrjMarkDirectoryAsPlaceholder", hr));
         }
         let redirected = existing_redirections(&root, &cfg.redirections);
+        let safe = Arc::new(SafeRoot::new(root.clone()));
         let inner = Arc::new(Inner {
             api: self.api.clone(),
             cfg,
             root: root.clone(),
+            safe: safe.clone(),
+            ctx: AtomicUsize::new(0),
+            started: SystemTime::now(),
+            rename_gate: Mutex::new(()),
             sessions: Mutex::new(HashMap::new()),
             commands: Mutex::new(HashMap::new()),
             stopping: AtomicBool::new(false),
@@ -270,8 +283,10 @@ impl Provider for ProjfsProvider {
         }));
         let opts = StartOptions {
             flags: ffi::START_USE_NEGATIVE_PATH_CACHE,
-            pool_threads: 0,
-            concurrent_threads: 0,
+            // Pre-hydration of a renamed directory waits on callbacks; the pool leaves threads free
+            // for them (see `rename`).
+            pool_threads: rename::pool_threads(),
+            concurrent_threads: rename::pool_threads(),
             mappings: maps.as_mut_ptr(),
             mapping_count: u32::try_from(maps.len()).unwrap_or(0),
         };
@@ -305,8 +320,9 @@ impl Provider for ProjfsProvider {
             *lock(&self.cfg) = cfg;
             return Err(hr_error("PrjStartVirtualizing", hr));
         }
-        *lock(&self.disk.root) = Some(root.clone());
-        *lock(&self.disk.safe) = Some(Arc::new(asc_wc::SafeRoot::new(root)));
+        inner.ctx.store(ctx as usize, Ordering::SeqCst);
+        *lock(&self.disk.root) = Some(root);
+        *lock(&self.disk.safe) = Some(safe);
         *mounted = Some(Mounted {
             inner,
             raw: raw as usize,
@@ -345,12 +361,12 @@ impl Provider for ProjfsProvider {
         Ok(())
     }
 
-    fn apply_switch(&self, _plan: &Plan, _times: Switched) -> Result<SwitchOutcome> {
-        Err(unsupported("the ProjFS switch is implemented by U57"))
+    fn apply_switch(&self, plan: &Plan, times: Switched) -> Result<SwitchOutcome> {
+        self.apply_plan(plan, times)
     }
 
-    fn dehydrate(&self, _paths: &[RepoPath]) -> Result<DehydrateOutcome> {
-        Err(unsupported("ProjFS dehydration is implemented by U57"))
+    fn dehydrate(&self, paths: &[RepoPath]) -> Result<DehydrateOutcome> {
+        self.dehydrate_paths(paths)
     }
 
     fn disk_state(&self) -> &dyn DiskState {

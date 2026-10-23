@@ -16,10 +16,15 @@ use asc_wc::times::entry_times_of;
 use tokio::runtime::Handle;
 
 pub mod data;
+pub mod dehydrate;
 pub mod enumerate;
 pub mod ffi;
+pub mod nested;
 pub mod notify;
 pub mod provider;
+pub mod reconcile;
+pub mod rename;
+pub mod switch;
 
 pub use ffi::ProviderUnavailable;
 pub use provider::{Config, ProjfsProvider};
@@ -416,5 +421,131 @@ mod redirect {
         assert!(!fx.journal.any_under("node_modules"));
         // The directory is a real one: it is not projected from the tree.
         assert!(nm.join("index.js").is_file());
+    }
+}
+
+/// A daemon that dies in the middle of a switch (SPEC §10.2.8): on restart the intent is re-run.
+#[cfg(test)]
+mod lifecycle {
+    use std::collections::BTreeSet;
+
+    use asc_wc::intent;
+
+    use asc_wc::switch::Mode;
+    use asc_wc::times::Switched;
+
+    use super::switch::lab::{Lab, p};
+    use super::switch::{
+        Request,
+        tests::{T, V1, V2},
+    };
+    use super::*;
+
+    fn work(lab: &Lab) -> BTreeSet<RepoPath> {
+        let plan = lab.plan(V1, V2);
+        plan.updates
+            .iter()
+            .map(|(p, _)| p.clone())
+            .chain(plan.deletes.iter().cloned())
+            .collect()
+    }
+
+    fn stamp(lab: &Lab) {
+        for path in work(lab) {
+            lab.clock.stamp(&path, T);
+        }
+    }
+
+    fn assert_v2(lab: &Lab) {
+        assert_eq!(std::fs::read(lab.at("a.txt")).unwrap(), b"alpha two");
+        assert!(!lab.at("b.txt").exists());
+        assert!(!lab.at("sub").exists(), "{:?}", lab.at("sub"));
+        assert_eq!(std::fs::read(lab.at("new/y.txt")).unwrap(), b"why");
+        assert_eq!(std::fs::read(lab.at("z.txt")).unwrap(), b"zulu");
+        assert_eq!(std::fs::read(lab.at("c.txt")).unwrap(), b"charlie");
+        assert!(
+            lab.rt
+                .block_on(intent::load(&lab.db, lab.ws))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "needs Windows with Client-ProjFS enabled"]
+    fn killed_after_the_intent_is_written() {
+        let Some(mut lab) = Lab::new(V1) else { return };
+        lab.hydrate(V1);
+        stamp(&lab);
+        let (from, to) = (lab.tree(V1), lab.tree(V2));
+        lab.rt
+            .block_on(intent::begin(
+                &lab.db,
+                lab.ws,
+                from,
+                to,
+                "refs/heads/master",
+                &work(&lab),
+            ))
+            .unwrap();
+        // The daemon dies here: no file was touched. It restarts with the old base.
+        lab.restart(from);
+        assert_eq!(std::fs::read(lab.at("a.txt")).unwrap(), b"alpha");
+        let r = lab.provider.resume(T).unwrap().unwrap();
+        assert!(r.complete(), "{r:?}");
+        assert_eq!(r.applied, work(&lab).len());
+        assert_v2(&lab);
+        assert_eq!(lab.core.root(), to);
+    }
+
+    #[test]
+    #[ignore = "needs Windows with Client-ProjFS enabled"]
+    fn killed_halfway_is_repaired_idempotently() {
+        let Some(mut lab) = Lab::new(V1) else { return };
+        lab.hydrate(V1);
+        stamp(&lab);
+        let (from, to) = (lab.tree(V1), lab.tree(V2));
+        // Half of the paths were written before the kill.
+        let mut half = lab.plan(V1, V2);
+        half.updates.retain(|(p, _)| p.as_bytes() == b"a.txt");
+        half.deletes.retain(|p| p.as_bytes() == b"b.txt");
+        let req = Request {
+            mode: Mode::Safe,
+            plan: &half,
+            extra: &BTreeSet::new(),
+            from_root: from,
+            to_root: to,
+            to_head: "refs/heads/master",
+        };
+        lab.provider
+            .switch(&req, Switched { epoch: 2, time: T })
+            .unwrap();
+        assert_eq!(std::fs::read(lab.at("a.txt")).unwrap(), b"alpha two");
+        // ... and the intent still lists all of them, as it did when the process died.
+        lab.rt
+            .block_on(intent::begin(
+                &lab.db,
+                lab.ws,
+                from,
+                to,
+                "refs/heads/master",
+                &work(&lab),
+            ))
+            .unwrap();
+        lab.restart(from);
+        let r = lab.provider.resume(T).unwrap().unwrap();
+        assert!(r.complete(), "{r:?}");
+        assert_v2(&lab);
+        // Running it again changes nothing.
+        assert!(lab.provider.resume(T).unwrap().is_none());
+        assert_v2(&lab);
+        let _ = p("a.txt");
+    }
+
+    #[test]
+    #[ignore = "needs Windows with Client-ProjFS enabled"]
+    fn without_an_intent_there_is_nothing_to_resume() {
+        let Some(lab) = Lab::new(V1) else { return };
+        assert!(lab.provider.resume(T).unwrap().is_none());
     }
 }

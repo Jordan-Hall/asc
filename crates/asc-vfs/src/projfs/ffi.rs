@@ -281,6 +281,74 @@ api! {
     delete_file = "PrjDeleteFile": fn(Ctx, Pcwstr, u32, *mut u32) -> Hresult;
 }
 
+/// `HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)`.
+pub const ERROR_SHARING_VIOLATION: Hresult = win32(32);
+/// `HRESULT_FROM_WIN32(ERROR_DIR_NOT_EMPTY)`.
+pub const ERROR_DIR_NOT_EMPTY: Hresult = win32(145);
+
+/// `PRJ_UPDATE_FAILURE_CAUSES`.
+pub mod failure {
+    pub const DIRTY_METADATA: u32 = 0x1;
+    pub const DIRTY_DATA: u32 = 0x2;
+    pub const TOMBSTONE: u32 = 0x4;
+    pub const READ_ONLY: u32 = 0x8;
+}
+
+impl Api {
+    /// `PrjUpdateFileIfNeeded` for the root-relative NUL terminated `rel`; the second value is
+    /// the failure cause.
+    pub fn update(
+        &self,
+        ctx: usize,
+        rel: &[u16],
+        info: &PlaceholderInfo,
+        flags: u32,
+    ) -> (Hresult, u32) {
+        assert_eq!(rel.last(), Some(&0), "wide path must be NUL terminated");
+        let mut cause = 0u32;
+        // SAFETY: `ctx` came from `PrjStartVirtualizing` and is live while the provider is
+        // mounted (callers hold the mount); the path is NUL terminated; `info` is a full
+        // `PRJ_PLACEHOLDER_INFO` and the size says so.
+        let hr = unsafe {
+            (self.update_file)(
+                ctx as Ctx,
+                rel.as_ptr(),
+                info,
+                u32::try_from(size_of::<PlaceholderInfo>()).unwrap_or(0),
+                flags,
+                &mut cause,
+            )
+        };
+        (hr, cause)
+    }
+
+    /// `PrjDeleteFile` for the root-relative NUL terminated `rel`.
+    pub fn delete(&self, ctx: usize, rel: &[u16], flags: u32) -> (Hresult, u32) {
+        assert_eq!(rel.last(), Some(&0), "wide path must be NUL terminated");
+        let mut cause = 0u32;
+        // SAFETY: as `update`.
+        let hr = unsafe { (self.delete_file)(ctx as Ctx, rel.as_ptr(), flags, &mut cause) };
+        (hr, cause)
+    }
+
+    /// `PrjClearNegativePathCache`.
+    pub fn clear_negative(&self, ctx: usize) -> Hresult {
+        let mut n = 0u32;
+        // SAFETY: as `update`.
+        unsafe { (self.clear_negative_cache)(ctx as Ctx, &mut n) }
+    }
+
+    /// `PrjGetOnDiskFileState` of the NUL terminated absolute `abs`: the `PRJ_FILE_STATE` bits,
+    /// or the failing HRESULT (`ERROR_FILE_NOT_FOUND` for a path that is not on disk).
+    pub fn file_state(&self, abs: &[u16]) -> Result<u32, Hresult> {
+        assert_eq!(abs.last(), Some(&0), "wide path must be NUL terminated");
+        let mut st = 0u32;
+        // SAFETY: NUL terminated path and a valid out pointer.
+        let hr = unsafe { (self.on_disk_state)(abs.as_ptr(), &mut st) };
+        if hr == S_OK { Ok(st) } else { Err(hr) }
+    }
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn SetFileAttributesW(path: Pcwstr, attrs: u32) -> i32;
@@ -294,6 +362,119 @@ pub fn set_attributes(path: &[u16], attrs: u32) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+#[repr(C)]
+struct FindData {
+    attributes: u32,
+    times: [u32; 6],
+    size_high: u32,
+    size_low: u32,
+    reserved: [u32; 2],
+    name: [u16; 260],
+    alternate: [u16; 14],
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn FindFirstFileExW(
+        name: Pcwstr,
+        level: i32,
+        data: *mut FindData,
+        op: i32,
+        filter: *const c_void,
+        flags: u32,
+    ) -> isize;
+    fn FindNextFileW(h: isize, data: *mut FindData) -> i32;
+    fn FindClose(h: isize) -> i32;
+}
+
+/// `FIND_FIRST_EX_ON_DISK_ENTRIES_ONLY`: a virtualization filter lists only what is on disk.
+const FIND_ON_DISK_ENTRIES_ONLY: u32 = 0x4;
+const FIND_EX_INFO_BASIC: i32 = 1;
+const ERROR_NO_MORE_FILES: i32 = 18;
+
+/// One on-disk directory entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnDisk {
+    pub name: String,
+    pub attributes: u32,
+    pub size: u64,
+}
+
+impl OnDisk {
+    pub fn is_dir(&self) -> bool {
+        self.attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    }
+
+    pub fn is_reparse(&self) -> bool {
+        self.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+}
+
+/// The entries of the directory at the NUL terminated wide `dir` that are physically on disk
+/// (placeholders, hydrated and full files, tombstones); entries that are only projected are
+/// not listed and the provider is not asked to enumerate. Stops after `max` entries and
+/// reports whether more existed. Names that are not valid UTF-16 are skipped.
+pub fn read_dir_on_disk(dir: &[u16], max: usize) -> std::io::Result<(Vec<OnDisk>, bool)> {
+    assert_eq!(dir.last(), Some(&0), "wide path must be NUL terminated");
+    let mut pattern: Vec<u16> = dir[..dir.len() - 1].to_vec();
+    if pattern.last() != Some(&u16::from(b'\\')) {
+        pattern.push(u16::from(b'\\'));
+    }
+    pattern.push(u16::from(b'*'));
+    pattern.push(0);
+    // SAFETY: all-zero is a valid `FindData` (plain integers).
+    let mut data: FindData = unsafe { std::mem::zeroed() };
+    // SAFETY: NUL terminated pattern and a valid out buffer.
+    let h = unsafe {
+        FindFirstFileExW(
+            pattern.as_ptr(),
+            FIND_EX_INFO_BASIC,
+            &mut data,
+            0,
+            std::ptr::null(),
+            FIND_ON_DISK_ENTRIES_ONLY,
+        )
+    };
+    if h == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut out = Vec::new();
+    let more = loop {
+        let len = data
+            .name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(data.name.len());
+        if let Ok(name) = String::from_utf16(&data.name[..len])
+            && name != "."
+            && name != ".."
+        {
+            if out.len() >= max {
+                break true;
+            }
+            out.push(OnDisk {
+                name,
+                attributes: data.attributes,
+                size: (u64::from(data.size_high) << 32) | u64::from(data.size_low),
+            });
+        }
+        // SAFETY: `h` is a live find handle and `data` a valid buffer.
+        if unsafe { FindNextFileW(h, &mut data) } == 0 {
+            let e = std::io::Error::last_os_error();
+            // SAFETY: closing the handle opened above.
+            unsafe { FindClose(h) };
+            return if e.raw_os_error() == Some(ERROR_NO_MORE_FILES) {
+                Ok((out, false))
+            } else {
+                Err(e)
+            };
+        }
+    };
+    // SAFETY: closing the handle opened above.
+    unsafe { FindClose(h) };
+    Ok((out, more))
 }
 
 /// Most UTF-16 units read from a path the OS hands to a callback (the NTFS limit).
@@ -386,5 +567,165 @@ mod tests {
         assert_eq!(unsafe { wide_to_string(bad.as_ptr()) }, None);
         // SAFETY: null is allowed.
         assert_eq!(unsafe { wide_to_string(std::ptr::null()) }, None);
+    }
+}
+
+/// A `ReadDirectoryChangesW` listener, for the tests of the watcher visibility rule (SPEC §10.2.8
+/// step 4a).
+#[cfg(test)]
+pub(crate) mod watch {
+    use std::ffi::c_void;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    use super::{Pcwstr, path_to_wide};
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: Pcwstr,
+            access: u32,
+            share: u32,
+            security: *const c_void,
+            disposition: u32,
+            flags: u32,
+            template: isize,
+        ) -> isize;
+        fn ReadDirectoryChangesW(
+            h: isize,
+            buf: *mut u8,
+            len: u32,
+            subtree: i32,
+            filter: u32,
+            returned: *mut u32,
+            overlapped: *mut c_void,
+            routine: *const c_void,
+        ) -> i32;
+        fn CancelIoEx(h: isize, overlapped: *const c_void) -> i32;
+        fn CloseHandle(h: isize) -> i32;
+    }
+
+    const FILE_LIST_DIRECTORY: u32 = 1;
+    const SHARE_ALL: u32 = 7;
+    const OPEN_EXISTING: u32 = 3;
+    const BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    /// File name, directory name, size and last write.
+    const FILTER: u32 = 0x1 | 0x2 | 0x8 | 0x10;
+
+    /// `FILE_ACTION_*`.
+    pub(crate) const ADDED: u32 = 1;
+
+    pub(crate) struct Watcher {
+        h: isize,
+        events: Arc<Mutex<Vec<(u32, String)>>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Watcher {
+        pub(crate) fn new(dir: &std::path::Path) -> std::io::Result<Self> {
+            let w = path_to_wide(dir);
+            // SAFETY: NUL terminated path; the handle is closed in `drop`.
+            let h = unsafe {
+                CreateFileW(
+                    w.as_ptr(),
+                    FILE_LIST_DIRECTORY,
+                    SHARE_ALL,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    BACKUP_SEMANTICS,
+                    0,
+                )
+            };
+            if h == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let sink = events.clone();
+            let thread = std::thread::spawn(move || {
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let mut n = 0u32;
+                    // SAFETY: a valid handle and buffer; synchronous, no overlapped.
+                    let ok = unsafe {
+                        ReadDirectoryChangesW(
+                            h,
+                            buf.as_mut_ptr(),
+                            u32::try_from(buf.len()).unwrap_or(0),
+                            0,
+                            FILTER,
+                            &mut n,
+                            std::ptr::null_mut(),
+                            std::ptr::null(),
+                        )
+                    };
+                    if ok == 0 || n == 0 {
+                        return;
+                    }
+                    let mut at = 0usize;
+                    loop {
+                        let rec = &buf[at..];
+                        if rec.len() < 12 {
+                            break;
+                        }
+                        let next = u32::from_le_bytes([rec[0], rec[1], rec[2], rec[3]]) as usize;
+                        let action = u32::from_le_bytes([rec[4], rec[5], rec[6], rec[7]]);
+                        let bytes = u32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]) as usize;
+                        let Some(raw) = rec.get(12..12 + bytes) else {
+                            break;
+                        };
+                        let units: Vec<u16> = raw
+                            .chunks_exact(2)
+                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                            .collect();
+                        sink.lock()
+                            .unwrap()
+                            .push((action, String::from_utf16_lossy(&units)));
+                        if next == 0 {
+                            break;
+                        }
+                        at += next;
+                    }
+                }
+            });
+            Ok(Self {
+                h,
+                events,
+                thread: Some(thread),
+            })
+        }
+
+        /// Whether `action` for `name` arrives within `timeout`.
+        pub(crate) fn wait_for(&self, action: u32, name: &str, timeout: Duration) -> bool {
+            let until = Instant::now() + timeout;
+            while Instant::now() < until {
+                if self
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(a, n)| *a == action && n.eq_ignore_ascii_case(name))
+                {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            false
+        }
+    }
+
+    impl Drop for Watcher {
+        fn drop(&mut self) {
+            // SAFETY: `h` is the handle opened in `new`; cancelling wakes the blocked read.
+            unsafe {
+                CancelIoEx(self.h, std::ptr::null());
+            }
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+            // SAFETY: the reader thread has ended.
+            unsafe {
+                CloseHandle(self.h);
+            }
+        }
     }
 }
