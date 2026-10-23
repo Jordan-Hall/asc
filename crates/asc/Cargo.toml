@@ -47,6 +47,10 @@ linkme = { workspace = true }
 automod = { workspace = true }
 serde = { workspace = true }
 tonic = { workspace = true }
+minisign-verify = { workspace = true }
+sha2 = { workspace = true }
+reqwest = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

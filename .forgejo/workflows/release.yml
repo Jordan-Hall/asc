@@ -1,0 +1,142 @@
+name: release
+# Tag v<MAJOR>.<MINOR>.<PATCH> -> signed artefacts for four targets, the MSI, the winget manifest and
+# the Linux installer, published as Forgejo generic packages `asc` (SPEC 16.2):
+#   <packages>/asc/<ver>/<file>           artefacts and signatures
+#   <packages>/asc/latest/version         the newest version, read by `asc upgrade` and the daily check
+# `asc.releasesUrl` is https://<forgejo>/api/packages/<owner>/generic/asc.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+env:
+  CARGO_TERM_COLOR: always
+  ASC_RELEASE_PUBKEY: ${{ vars.ASC_RELEASE_PUBKEY }}
+
+jobs:
+  # Release gate: the compat suite (SPEC 17.1) is green on Windows and Linux.
+  gate:
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p asc --test compat
+      - run: "cargo test -p asc upgrade::"
+
+  build:
+    needs: gate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Check the tag against the crate version
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          crate=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="asc"))')
+          test "$ver" = "$crate" || { echo "tag $ver != crate $crate"; exit 1; }
+      - run: cargo build --release --locked -p asc --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          exe=asc; case "${{ matrix.target }}" in *windows*) exe=asc.exe;; esac
+          mkdir -p dist
+          bin="target/${{ matrix.target }}/release/$exe"
+          # The upgrade artefact: a flat zip with the executable.
+          python3 -c "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2], sys.argv[3]); z.close()" \
+            "dist/asc-$ver-${{ matrix.target }}.zip" "$bin" "$exe"
+          case "${{ matrix.target }}" in
+            *linux*) tar -czf "dist/asc-$ver-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" asc ;;
+          esac
+      - name: MSI
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          cargo install cargo-wix --locked --version 0.3.9
+          cargo wix --nocapture --package asc --no-build --target ${{ matrix.target }} --output "dist/asc-$ver-${{ matrix.target }}.msi" packaging/windows/main.wxs
+      - name: MSI puts the shim before Git for Windows (where git)
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}".TrimStart('v')
+          Start-Process msiexec -Wait -ArgumentList "/i","dist\asc-$ver-${{ matrix.target }}.msi","/qn","USE_ASC_SHIM=1"
+          $machine = [Environment]::GetEnvironmentVariable('Path','Machine')
+          $env:Path = [Environment]::ExpandEnvironmentVariables($machine)
+          $first = (where.exe git | Select-Object -First 1)
+          Write-Host "where git: first = $first"
+          if ($first -notlike '*\current\shim\git.exe') { throw "the shim is not first on PATH: $first" }
+          if (-not (Test-Path 'C:\Program Files\ASC\asc\current\asc.exe')) { throw 'current junction missing' }
+          if (-not (Test-Path "C:\Program Files\ASC\asc\$ver\shim")) { throw 'shim dir missing' }
+      - uses: actions/upload-artifact@v3
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v3
+        with:
+          path: dist
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign
+        env:
+          MINISIGN_KEY: ${{ secrets.ASC_MINISIGN_KEY }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          umask 077
+          printf '%s' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          mkdir -p out && find dist -type f -exec cp {} out/ \;
+          for f in out/*; do
+            # The trusted comment names the file, which `asc upgrade` checks.
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -t "file:$(basename "$f") version:$ver" -m "$f" </dev/null
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+      - name: Winget manifest and installer
+        env:
+          RELEASES_URL: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          sha=$(sha256sum "out/asc-$ver-x86_64-pc-windows-msvc.msi" | cut -d' ' -f1 | tr a-f A-F)
+          mkdir -p out/winget
+          for f in packaging/winget/*.yaml; do
+            sed -e "s|@VERSION@|$ver|g" -e "s|@SHA256@|$sha|g" -e "s|@RELEASES_URL@|$RELEASES_URL|g" "$f" > "out/winget/$(basename "$f")"
+          done
+          sed "s|@RELEASE_PUBKEY@|$ASC_RELEASE_PUBKEY|" packaging/linux/install.sh > out/install.sh
+          cp packaging/linux/asc-daemon.service out/asc-daemon.service
+      - name: Upload
+        env:
+          TOKEN: ${{ secrets.FORGEJO_PACKAGES_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          for f in $(find out -type f); do
+            name="${f#out/}"
+            curl -fsS --proto '=https' -X PUT -H "Authorization: token $TOKEN" --upload-file "$f" "$BASE/$ver/$name"
+          done
+          # `latest/version` moves last, so a client never sees a version whose files are missing.
+          curl -sS --proto '=https' -X DELETE -H "Authorization: token $TOKEN" "$BASE/latest/version" || true
+          printf '%s\n' "$ver" > latest-version
+          curl -fsS --proto '=https' -X PUT -H "Authorization: token $TOKEN" --upload-file latest-version "$BASE/latest/version"

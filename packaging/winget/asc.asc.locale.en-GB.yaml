@@ -1,0 +1,10 @@
+PackageIdentifier: asc.asc
+PackageVersion: "@VERSION@"
+PackageLocale: en-GB
+Publisher: ASC
+PackageName: asc
+ShortDescription: Git-compatible source control with changesets, stacks and a virtual working tree.
+License: MIT OR Apache-2.0
+Moniker: asc
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
