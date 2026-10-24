@@ -18,6 +18,7 @@ use server_fixture::{Server, WRITE};
 use support::{Sandbox, text};
 
 const OK: i32 = 0;
+const INVALID_ARGUMENT: i32 = 3;
 const PERMISSION_DENIED: i32 = 7;
 const FAILED_PRECONDITION: i32 = 9;
 const UNIMPLEMENTED: i32 = 12;
@@ -179,8 +180,7 @@ fn routing_is_deny_by_default() {
         (4, "asc.v1.Repo/PutObjects", UNIMPLEMENTED),
         (5, "../etc/passwd", PERMISSION_DENIED),
         (10, "asc.v1.Repo", UNIMPLEMENTED),
-        (6, "asc.v1.Bridge/Run", UNIMPLEMENTED),
-        (7, "asc.v1.Bridge/Token", UNIMPLEMENTED),
+        (7, "asc.v1.Bridge/Token", INVALID_ARGUMENT),
         // The daemon is turned off in this sandbox.
         (8, "asc.v1.Workspace/Ping", FAILED_PRECONDITION),
         // A workspace without a remote has no server.
