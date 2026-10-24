@@ -260,7 +260,7 @@ pub struct WsCtx {
     pub repo: Repo,
     pub engine: CliEngine,
     pub objects: Arc<ObjectStack>,
-    refs: Arc<ReadOnlyRefs<asc_store::sqlrefs::SqlRefs>>,
+    pub(crate) refs: Arc<ReadOnlyRefs<asc_store::sqlrefs::SqlRefs>>,
     local: LocalRefs,
 }
 
