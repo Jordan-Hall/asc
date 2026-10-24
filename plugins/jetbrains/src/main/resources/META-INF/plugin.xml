@@ -10,6 +10,8 @@
     <vcs name="asc" vcsClass="asc.asc.vcs.AscVcs" displayName="asc"/>
     <vcsRootChecker implementation="asc.asc.vcs.AscRootChecker"/>
     <postStartupActivity implementation="asc.asc.vcs.AscMappingActivity"/>
+    <postStartupActivity implementation="asc.asc.vcs.AscWatchStartup"/>
+    <projectService serviceImplementation="asc.asc.vcs.AscWatchService"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
