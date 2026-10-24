@@ -72,3 +72,43 @@ intellijPlatform {
 }
 
 tasks.test { useJUnit() }
+
+// IDE Starter + Driver UI tests (SPEC 24.7.1, nightly): a separate source set, so `test` never downloads an IDE.
+val uiTest: SourceSet by sourceSets.creating {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += sourceSets.main.get().output
+}
+configurations.named("uiTestImplementation") { extendsFrom(configurations.testImplementation.get()) }
+configurations.named("uiTestRuntimeOnly") { extendsFrom(configurations.testRuntimeOnly.get()) }
+
+repositories {
+    maven("https://www.jetbrains.com/intellij-repository/releases")
+    maven("https://cache-redirector.jetbrains.com/intellij-dependencies")
+}
+
+val starterVersion = "253.28294.169"
+dependencies {
+    "uiTestImplementation"(kotlin("test"))
+    "uiTestImplementation"("org.junit.jupiter:junit-jupiter:5.11.4")
+    "uiTestImplementation"("com.jetbrains.intellij.tools:ide-starter-squashed:$starterVersion")
+    "uiTestImplementation"("com.jetbrains.intellij.tools:ide-starter-junit5:$starterVersion")
+    "uiTestImplementation"("com.jetbrains.intellij.driver:driver-client:$starterVersion")
+    "uiTestImplementation"("com.jetbrains.intellij.driver:driver-sdk:$starterVersion")
+    "uiTestImplementation"("com.jetbrains.intellij.driver:driver-model:$starterVersion")
+}
+
+// `./gradlew uiTest` installs the built plugin zip into a fresh IDE through IDE Starter and drives it.
+// ASC_BIN names the asc binary used to build the fixture; ASC_UITEST_DIR moves IDE downloads and logs off the system drive.
+tasks.register<Test>("uiTest") {
+    description = "IDE Starter + Driver UI tests (nightly)."
+    group = "verification"
+    testClassesDirs = uiTest.output.classesDirs
+    classpath = uiTest.runtimeClasspath
+    useJUnitPlatform()
+    dependsOn("buildPlugin")
+    systemProperty("path.to.build.plugin", tasks.named<org.gradle.api.tasks.bundling.Zip>("buildPlugin").get().archiveFile.get().asFile.absolutePath)
+    providers.environmentVariable("ASC_BIN").orNull?.let { systemProperty("asc.bin", it) }
+    providers.environmentVariable("ASC_UITEST_DIR").orNull?.let { systemProperty("ide.starter.dir", it) }
+    jvmArgs("--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.util=ALL-UNNAMED")
+    outputs.upToDateWhen { false }
+}
