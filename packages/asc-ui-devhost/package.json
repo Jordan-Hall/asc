@@ -1,0 +1,23 @@
+{
+  "name": "@asc/asc-ui-devhost",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mock-forgejo": "./src/mock-forgejo.ts"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@asc/asc-client": "workspace:*",
+    "@asc/asc-ui": "workspace:*",
+    "hono": "^4.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
+  }
+}
