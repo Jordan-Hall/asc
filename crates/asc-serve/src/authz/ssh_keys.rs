@@ -49,13 +49,13 @@ use asc_rpc::auth::{
 use russh::keys::ssh_key::{Algorithm, EcdsaCurve, PublicKey, public::KeyData};
 use sqlx::Row;
 
+use super::is_host_service;
 use super::token_cli::format_utc;
 use super::token_store::{
     CACHE_TTL_SECS, DEAD_RETENTION_SECS, Grant, ID_BYTES, TokenError, TokenKind, TokenStore,
     TokenStoreAuthz, access_parse, hex, principal_id, random_bytes, validate_pattern,
     validate_user,
 };
-use crate::forgejo::INTERNAL_PRINCIPAL;
 
 /// The smallest RSA modulus accepted by default (SPEC §25.11.1 `min_rsa_bits`).
 pub const DEFAULT_MIN_RSA_BITS: u32 = 2048;
@@ -376,7 +376,7 @@ pub struct SshCached {
 /// stored text is never an identity: for a user key it only supplies the user name (a leading
 /// `pat:` is dropped and the rest must be a valid user name), a deploy key's principal comes from
 /// its repository column. `None` refuses the row: an unknown kind, a user key with a repository,
-/// a deploy key without a valid exact one, a bad user name, or the internal principal.
+/// a deploy key without a valid exact one, a bad user name, or the host-service principal.
 fn rebuilt(
     kind: &str,
     stored: &str,
@@ -395,7 +395,7 @@ fn rebuilt(
         ),
         _ => return None,
     };
-    (id != INTERNAL_PRINCIPAL && id.contains(':')).then_some((kind, id, repo))
+    (!is_host_service(&id) && id.contains(':')).then_some((kind, id, repo))
 }
 
 fn unavailable(e: sqlx::Error) -> AuthError {

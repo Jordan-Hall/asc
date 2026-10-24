@@ -2526,7 +2526,6 @@ mod tests {
             RealGit::resolve(None, None).expect("git is installed"),
             MirrorConfig {
                 dir: tmp.path().join("mirrors"),
-                secret: None,
                 forgejo_url: Some("https://forge.example".into()),
                 allowed_hosts: Vec::new(),
                 interval: Duration::from_secs(60),
@@ -3334,7 +3333,6 @@ mod tests {
             RealGit::resolve(None, None).expect("git is installed"),
             MirrorConfig {
                 dir: tmp.join("mirrors"),
-                secret: None,
                 forgejo_url: Some("https://forge.example".into()),
                 allowed_hosts: Vec::new(),
                 interval: Duration::from_secs(60),

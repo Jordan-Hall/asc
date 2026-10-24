@@ -51,8 +51,8 @@ use sha2::{Digest, Sha256};
 use tonic::transport::{Channel, Identity, Server, ServerTlsConfig};
 use tonic::{Code, Status};
 
+use crate::authz::{NEGATIVE_TTL, POSITIVE_TTL};
 use crate::config::{CacheConfig, ConfigError, Role, ServeConfig};
-use crate::forgejo::{NEGATIVE_TTL, POSITIVE_TTL};
 use crate::http::Metrics;
 use crate::registry::Extensions;
 use crate::{ServeError, limits};

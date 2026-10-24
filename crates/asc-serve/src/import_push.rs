@@ -14,10 +14,10 @@
 //!    told about rewrites, SPEC §8.5), so a non-fast-forward is git's `(fetch first)` rejection.
 //!
 //! Step 3 is the normal pipeline (authorise, idempotency, mode check, hooks, one SQL transaction
-//! with the outbox). The Forgejo RPC sets `SKIP_PRE` because the caller is Forgejo's own
+//! with the outbox). The host RPC sets `SKIP_PRE` because the caller is the host's own
 //! pre-receive; the in-process entry used by the git protocol layer (U82) never does.
 //!
-//! The RPC accepts only Forgejo's internal token, and only directories inside the configured
+//! The RPC accepts only the host service credential, and only directories inside the configured
 //! `forgejo.repo_root`, under the repository the call names. The paths are untrusted input: they
 //! are canonicalised, checked for containment, and refused if they could add a line to the
 //! alternates file the importer builds from them.
@@ -92,7 +92,7 @@ pub struct PushCommand {
 /// How a push is run.
 #[derive(Clone, Debug, Default)]
 pub struct ImportOptions {
-    /// Send `UpdateRefs` with `SKIP_PRE`: only for Forgejo's internal token (SPEC §8.3 step 1).
+    /// Send `UpdateRefs` with `SKIP_PRE`: only for the host service credential (SPEC §8.3 step 1).
     pub skip_pre: bool,
     /// `GIT_PUSH_OPTION_*`, forwarded to `UpdateRefs`.
     pub push_options: Vec<String>,
@@ -1031,17 +1031,16 @@ impl ImportPushHandler for ImportPushService {
         ctx: &CallCtx,
         req: wire::ImportGitPushRequest,
     ) -> Result<wire::ImportGitPushResponse, Status> {
-        // Forgejo's internal token only (SPEC §15.1). `Access::Admin` alone would let any admin
+        // The host service credential only (SPEC §15.1). `Access::Admin` alone would let any admin
         // token point the server at a directory.
         if !self.pipeline.push_hooks().may_skip_pre(ctx) {
             return Err(Status::permission_denied(
-                "ImportGitPush needs the Forgejo internal token",
+                "ImportGitPush needs the host service credential",
             ));
         }
-        let root = self
-            .repo_root
-            .as_deref()
-            .ok_or_else(|| Status::failed_precondition("forgejo.repo_root is not configured"))?;
+        let root = self.repo_root.as_deref().ok_or_else(|| {
+            Status::failed_precondition("the import repository root is not configured")
+        })?;
         if req.pusher_id < 0 {
             return Err(Status::invalid_argument("bad pusher id"));
         }
@@ -1188,7 +1187,7 @@ mod tests {
     use asc_rpc::auth::Principal;
 
     use super::*;
-    use crate::forgejo::INTERNAL_PRINCIPAL;
+    use crate::authz::{HOST_SERVICE_PRINCIPAL, is_host_service};
     use crate::ingest::testutil::registry;
     use crate::registry::NewRepo;
     use crate::update::{HookRejected, HookRequest, PushHooks};
@@ -1348,7 +1347,7 @@ mod tests {
     #[async_trait]
     impl PushHooks for FakeForgejo {
         fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
-            ctx.principal.id == INTERNAL_PRINCIPAL
+            is_host_service(&ctx.principal.id)
         }
 
         async fn pre_receive(&self, _req: &HookRequest<'_>) -> Result<(), HookRejected> {
@@ -1904,7 +1903,7 @@ mod tests {
         assert_eq!(f.count("SELECT COUNT(*) FROM git_map").await, 0);
         // The internal token skips pre-receive; the hook is not called.
         f.push_as(
-            &ctx_of(INTERNAL_PRINCIPAL),
+            &ctx_of(HOST_SERVICE_PRINCIPAL),
             &[cmd("refs/heads/master", None, Some(&c1))],
             &skip,
         )
@@ -2253,7 +2252,7 @@ mod tests {
         );
         let done = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), request(&r.f, "", &c1))
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), request(&r.f, "", &c1))
             .await
             .unwrap();
         assert_eq!(done.results.len(), 1);
@@ -2263,7 +2262,7 @@ mod tests {
         // The 40-digit hex form of an id is accepted as well.
         req.updates[0].old_git = c1.clone().into_bytes().into();
         r.service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), req)
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), req)
             .await
             .unwrap();
         assert_eq!(r.f.git_of("refs/heads/master").await, c2);
@@ -2272,7 +2271,7 @@ mod tests {
         let side = r.f.forge.commit(Some(&c1), &[("a", "side")]);
         let s = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), request(&r.f, &c2, &side))
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), request(&r.f, &c2, &side))
             .await
             .unwrap_err();
         assert_eq!(s.message(), "! [rejected] refs/heads/master (fetch first)");
@@ -2295,7 +2294,7 @@ mod tests {
         let c1 = none.f.forge.commit(None, &[("a", "1")]);
         let s = none
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), request(&none.f, "", &c1))
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), request(&none.f, "", &c1))
             .await
             .unwrap_err();
         assert_eq!(s.code(), tonic::Code::PermissionDenied);
@@ -2308,7 +2307,7 @@ mod tests {
         let c1 = r.f.forge.commit(None, &[("a", "1")]);
         let s = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), request(&r.f, "", &c1))
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), request(&r.f, "", &c1))
             .await
             .unwrap_err();
         assert_eq!(s.code(), tonic::Code::FailedPrecondition);
@@ -2361,7 +2360,7 @@ mod tests {
         for (what, req) in cases {
             let e = r
                 .service
-                .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), req)
+                .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), req)
                 .await
                 .unwrap_err();
             assert_eq!(e.code(), tonic::Code::PermissionDenied, "{what}: {e:?}");
@@ -2372,7 +2371,7 @@ mod tests {
             q.object_dir = bad.into();
             let e = r
                 .service
-                .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), q)
+                .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), q)
                 .await
                 .unwrap_err();
             assert_eq!(e.code(), tonic::Code::InvalidArgument, "{bad:?}");
@@ -2388,7 +2387,7 @@ mod tests {
         q.updates[0].new_git = vec![1, 2, 3].into();
         let e = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), q)
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), q)
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
@@ -2396,7 +2395,7 @@ mod tests {
         q.pusher_id = -1;
         let e = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), q)
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), q)
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);
@@ -2405,7 +2404,7 @@ mod tests {
         q.updates[0].new_git = vec![0; 20].into();
         let e = r
             .service
-            .import_git_push(&ctx_of(INTERNAL_PRINCIPAL), q)
+            .import_git_push(&ctx_of(HOST_SERVICE_PRINCIPAL), q)
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::InvalidArgument);

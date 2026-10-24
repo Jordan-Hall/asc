@@ -30,7 +30,7 @@ use tonic::metadata::MetadataMap;
 use tonic::{Extensions as TonicExt, Status};
 use uuid::Uuid;
 
-use crate::forgejo::ForgejoIdentity;
+use crate::authz::UserIdentity;
 use crate::registry::{Registry, RegistryError};
 
 /// What `Version.features` adds for the `Review` service.
@@ -95,12 +95,12 @@ pub fn valid_handle(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+'))
 }
 
-/// The handle of the user a principal acts as: the login of a forge-verified user
+/// The handle of the user a principal acts as: the login of a provider-verified user
 /// (`<id>:<login>`) or the user of a personal token (`pat:<user>`). A deploy key, an Actions task,
 /// a CI token, the anonymous caller and every other principal act as no user and have none.
 pub fn handle_of(principal_id: &str) -> Option<String> {
-    if let Some(who) = ForgejoIdentity::parse(principal_id) {
-        return (who.user_id > 0 && who.deploy_key_id == 0).then_some(who.username);
+    if let Some(who) = UserIdentity::parse(principal_id) {
+        return who.is_user().then_some(who.handle);
     }
     let user = principal_id.strip_prefix("pat:")?;
     valid_handle(user).then(|| user.to_owned())

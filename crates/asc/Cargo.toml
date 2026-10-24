@@ -10,13 +10,15 @@ publish = false
 workspace = true
 
 [features]
-default = ["serve", "vfs-projfs", "vfs-fuse", "git-compat", "git-ssh", "http3"]
+default = ["serve", "vfs-projfs", "vfs-fuse", "git-compat", "git-ssh", "http3", "forgejo"]
 # The git smart-HTTP layer (SPEC 25); forwards to `asc-git` and, when `serve` is on, `asc-serve`.
 git-compat = ["asc-git/git-compat", "asc-serve?/git-compat"]
 # SSH public keys in the token store and the SSH listener (SPEC 25.11); the SSH library lives in
 # `asc-serve` only, so this adds `asc serve ssh-key` and nothing to `asc-git`.
 git-ssh = ["git-compat", "asc-serve?/git-ssh"]
 serve = ["dep:asc-serve"]
+# The optional Forgejo adapter of `asc serve` (hooks, `provider = "forgejo"`, push webhook).
+forgejo = ["asc-serve?/forgejo"]
 # HTTP/3 (U89b): the HTTPS client upgrades to h3 after `Alt-Svc`, and `asc serve` listens for QUIC
 # when `[tls]` and `http3_port` are set. Off, no QUIC crate is built.
 http3 = ["asc-rpc/http3", "asc-serve?/http3"]

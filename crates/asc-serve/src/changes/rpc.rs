@@ -612,10 +612,10 @@ impl ChangesRpc {
         ctx: &CallCtx,
         req: wire::SetReviewStateRequest,
     ) -> Result<wire::SetReviewStateResponse, Status> {
-        // Forgejo's internal token only (SPEC §20.5); `Admin` alone is not enough.
+        // The host service's own credential only (SPEC §20.5); `Admin` alone is not enough.
         if !self.pipeline.push_hooks().may_skip_pre(ctx) {
             return Err(Status::permission_denied(
-                "SetReviewState needs the Forgejo internal token",
+                "SetReviewState needs the host service credential",
             ));
         }
         if req.changes.len() > MAX_REVIEW_UPDATES {
@@ -919,7 +919,7 @@ mod tests {
     struct Internal;
     impl PushHooks for Internal {
         fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
-            ctx.principal.id == crate::forgejo::INTERNAL_PRINCIPAL
+            crate::authz::is_host_service(&ctx.principal.id)
         }
     }
 
@@ -968,7 +968,7 @@ mod tests {
         let auth = StaticTokens::new()
             .with_token(READER, "reader", Access::Read)
             .with_token(ADMIN, "admin", Access::Admin)
-            .with_token(FORGE, crate::forgejo::INTERNAL_PRINCIPAL, Access::Admin);
+            .with_token(FORGE, crate::authz::HOST_SERVICE_PRINCIPAL, Access::Admin);
         let svc = ChangesService::new(
             ext.changes.get().unwrap().clone(),
             Arc::new(auth),
@@ -1464,7 +1464,7 @@ mod tests {
 
     fn state(number: u64, st: &str, updated: i64) -> wire::ReviewState {
         wire::ReviewState {
-            forge: "forgejo".into(),
+            host: "forgejo".into(),
             number,
             url: format!("https://forge.example/o/r/pulls/{number}"),
             state: st.into(),

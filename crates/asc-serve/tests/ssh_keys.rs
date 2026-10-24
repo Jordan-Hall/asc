@@ -578,6 +578,13 @@ async fn a_row_without_a_typed_principal_is_refused() {
         f.identify(ED_D).await.unwrap().principal.id,
         "pat:forgejo-internal"
     );
+    // The same holds for the current spelling of the host-service principal.
+    let h = fixture().await;
+    raw_row(&h, "user", "host-service", None, ED_A).await;
+    assert_eq!(
+        h.identify(ED_A).await.unwrap().principal.id,
+        "pat:host-service"
+    );
 
     let g = fixture().await;
     for (i, (kind, principal, repo)) in [

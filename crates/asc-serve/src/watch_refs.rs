@@ -41,8 +41,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tonic::Status;
 
+use crate::authz::UserIdentity;
 use crate::config::Limits;
-use crate::forgejo::ForgejoIdentity;
 use crate::limits::current_peer;
 use crate::refpolicy::{self, SHARED_ROOTS, USER_NS};
 use crate::registry::{Extensions, Registry, RegistryError};
@@ -331,7 +331,7 @@ impl ServerWatch {
 /// Whether the authorizer admitted the caller without a credential of its own (a public
 /// repository): user id 0.
 fn is_anonymous(p: &asc_rpc::auth::Principal) -> bool {
-    ForgejoIdentity::parse(&p.id).is_some_and(|i| i.user_id == 0)
+    UserIdentity::of(p).is_some_and(|i| i.is_anonymous())
 }
 
 fn registry_status(e: RegistryError) -> Status {
