@@ -49,7 +49,7 @@ The app is mounted under the base path `/ui`. Paths below are relative to it. `:
 | `/:owner/:repo/search` and `/search` | Code search, symbols, references | `search` | later (v1.3) |
 | `/inbox` | Review requests, mentions, pinned and snoozed | `inbox` | later (v1.2) |
 | `/settings` | Token, theme, shortcuts; repo settings under `/:owner/:repo/settings` | `settings` | v1: token and theme only |
-| `/signin` | Token entry | in the entry chunk | yes |
+| `/signin` | Token entry | `signin` | yes |
 | anything else | Not found | entry chunk | yes |
 
 Rows marked "later" exist in the route table as a lazy `Planned` screen, so links, shortcuts and the nav are final from v1 and only the screen body changes.
@@ -203,6 +203,11 @@ enabled = false   # serve the web UI under /ui; default off (on in the staging e
 
 The default in code is `false`. The staging example (`deploy/asc-serve.toml.example`) shows it enabled, since the UI is read-only and anonymous visitors only receive static files; every data call needs a credential.
 
+### Markdown and URLs
+
+README text is untrusted. The renderer (`web/src/components/markdown.tsx`) builds React elements, never HTML strings, so raw HTML in a README is shown as text. Every URL a README can produce goes through one function, `classifyHref`: it removes control, whitespace and zero-width characters first (browsers ignore them inside a URL, so `java
+script:` is `javascript:`), then allows only `http:`, `https:` and `mailto:` as external links (`rel="noreferrer noopener" target="_blank"`), `#fragment` as an in-page anchor, and a scheme-less path as a link into the repository. Every other scheme (`javascript:`, `data:`, `vbscript:`, `file:`, `blob:`, any unknown) and protocol-relative forms (`//host`, `\host`) render as plain text. Images are not loaded at all (alt text only), which also removes tracking pixels. The CSP is the second layer: with `script-src 'self'` and no `unsafe-inline`, an injected `javascript:` URL or inline handler would not run even if the first layer failed. Tests cover the obfuscated forms and assert the CSP carries no escape hatch.
+
 ## 9. Authentication
 
 The UI is a pure client of the RPC; it has no session of its own and holds no ambient credential, so there is no CSRF surface.
@@ -218,7 +223,7 @@ These need a decision from the SPEC owner before the UI can leave staging:
 
 1. **Browser RPC endpoint.** SPEC section 24 records "no `tonic-web`; the browser reaches asc through the Forgejo proxy P04". This design needs a gRPC-Web endpoint on the server the UI is served from. Options: (a) add a `tonic-web` layer to `asc serve` (read allowlist only, same `allowlist.json` as P04), (b) keep the proxy and point `grpcWeb` at it (`[web] rpc_base`), losing host neutrality. The scaffold works with either because the transport is a `BridgeTransport`; the UI is tested against a mock until one exists.
 2. **Generated clients.** `review`, `inbox`, `ci` have no generated TS yet (`proto/buf.gen.ts.yaml` generates all protos but the `@asc/asc-client` exports list only repo, changes, cloud, codeintel, projects, workspace). Add subpath exports for the three before v1.2.
-3. **Change titles.** `ChangeInfo` has no title; the change list joins `Stack` with `Log` (`LogEntry.change`, `message`). A title field on `ChangeInfo` would remove the second call.
+3. **Listing changes.** There is no "list changes" RPC and `ChangeInfo` has no title. The v1 change list is derived: `ListRefs` (non-trunk branches and the caller's user refs), one `Stack` per ref (six in parallel, at most 50), and one `Log` per stack for titles (`LogEntry.change`, `message`). A `Changes.List` RPC with titles would replace roughly 2N+1 calls with one.
 4. **Mount path.** `/ui` now, `/` later (section 8).
 5. **Allowlist ownership.** The write RPCs the UI needs from v1.2 (`AddComment`, `ResolveThread`, `SetState`, `RequestMerge`) need the same per-method allowlist and idempotency (`x-asc-op-id`) treatment as the IDE relay.
 
