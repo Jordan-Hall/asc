@@ -56,6 +56,11 @@
         "category": "asc"
       },
       {
+        "command": "asc.diffAgainstStackParent",
+        "title": "Diff against stack parent",
+        "category": "asc"
+      },
+      {
         "command": "asc.showOutput",
         "title": "Show output",
         "category": "asc"

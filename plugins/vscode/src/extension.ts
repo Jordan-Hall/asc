@@ -12,6 +12,7 @@ import {
   resolveAsc,
 } from "./bridge";
 import { detectAscFolders } from "./repo";
+import { registerScm } from "./scm/provider";
 
 export interface Disposable {
   dispose(): void;
@@ -38,6 +39,8 @@ export interface Host {
   };
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;
+  /** Registers the SCM provider, `asc:` file system and decorations (P25). Absent under tests. */
+  registerScm?(bridge: BridgeManager, folders: readonly string[]): Disposable;
 }
 
 export const GIT_PROMPT_BUTTON = "Use asc";
@@ -99,11 +102,17 @@ export async function activateWith(
     }),
   );
 
+  let scmReg: Disposable | null = null;
   const start = async (): Promise<Compat | null> => {
     try {
       const hello = await bridge.hello();
       await host.setContext("asc.mutating", hello.compat.level === "full");
       updateNotice(hello.compat, host, hello.ascVersion);
+      // Read-only views need only plugin.v1, so the SCM registers for every level but too-old.
+      if (hello.compat.level !== "too-old" && host.registerScm && !scmReg) {
+        scmReg = host.registerScm(bridge, ascFolders);
+        subs.push(scmReg);
+      }
       return hello.compat;
     } catch {
       host.log("the asc bridge did not start; check asc.path");
@@ -176,6 +185,10 @@ function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.ExtensionContex
     },
     env: process.env,
     platform: process.platform,
+    registerScm: (bridge, folders) => {
+      const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
+      return reg;
+    },
   };
 }
 
