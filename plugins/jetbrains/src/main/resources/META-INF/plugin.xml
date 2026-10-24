@@ -14,6 +14,8 @@
     <projectService serviceImplementation="asc.asc.vcs.AscWatchService"/>
     <vcs.changes.localCommitExecutor implementation="asc.asc.vcs.AscSubmitExecutor"/>
     <vcs.ignoredFileProvider implementation="asc.asc.vcs.AscIgnoreProvider"/>
+    <directoryIndexExcludePolicy implementation="asc.asc.vcs.AscIndexExcludePolicy"/>
+    <postStartupActivity implementation="asc.asc.vcs.AscHydrationWatch"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
     <statusBarWidgetFactory id="asc.asc.status" implementation="asc.asc.ui.AscStatusBarWidgetFactory"/>
   </extensions>
