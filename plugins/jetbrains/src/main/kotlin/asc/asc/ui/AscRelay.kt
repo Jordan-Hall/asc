@@ -5,43 +5,35 @@ import asc.v1.Changes.RequestMergeRequest
 import asc.v1.Workspace.WsStageRequest
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
-import com.google.gson.JsonNull
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
 import asc.asc.bridge.BridgeException
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
-import java.time.Duration
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 // The JetBrains side of the asc-ui relay (SPEC 24.4.5, 24.4.5.1, 24.5.2, IP-D4). It is a port of
 // packages/asc-client-ts/src/transport/relay.ts: untrusted JSON messages from the JCEF page are forwarded to the
 // bridge only when they match an entry of allowlist.json. Deny by default: an unknown method, a `never` or
-// unclassified RPC, a verb or flag outside the schema, a Forgejo pair outside the list, a body field outside the
+// unclassified RPC, a verb or flag outside the schema, a host API pair outside its provider's list, a body field outside the
 // pair's list or a request over a limit is dropped, logged without its payload and answered PERMISSION_DENIED.
 // The confirmation text is composed here from the parsed request, never taken from the page. The page never
-// sees a token: the Forgejo executor adds it.
+// sees a token: the host API executor adds it.
 //
 // TODO(P48): `Allowlist.kt` is meant to be generated from allowlist.json by the Gradle task `generateAllowlist`.
 // Until that task exists this file parses the same json at runtime ([Allowlist.parse]) from the classpath
 // resource [Allowlist.RESOURCE]; when the resource is missing the relay denies everything.
 //
 // Wire (JSON strings, bytes as standard base64). Page to host: {id, method, bytes, root?}, {id, cancel:true},
-// {id, forgejo:{method, path, body?}}, {id, avatar:url}, {id, host:{op, ...}}. Host to page: {id, reply},
-// {id, end:{code, message, detail?}}, {id, forgejo:{status, body}}, {id, avatar}, {theme:{...}}.
+// {id, hostApi:{provider, method, path, body?}}, {id, avatar:url}, {id, host:{op, ...}}. Host to page: {id, reply},
+// {id, end:{code, message, detail?}}, {id, hostApi:{status, body}}, {id, avatar}, {theme:{...}}.
 
 enum class Confirm { NONE, MODAL }
 
@@ -49,7 +41,7 @@ class WriteEntry(val name: String, val confirm: Confirm, val patchBytes: Long?, 
 
 class VerbEntry(val flags: Map<String, String>, val pos: String, val confirm: Confirm)
 
-class ForgejoPair(val method: String, val path: String, val body: List<String>?, val confirm: Confirm)
+class HostApiPair(val method: String, val path: String, val body: List<String>?, val confirm: Confirm)
 
 /** The checked form of allowlist.json. */
 class Allowlist(
@@ -59,7 +51,7 @@ class Allowlist(
     val maxArgs: Int,
     val maxArgBytes: Int,
     val verbs: Map<String, VerbEntry>,
-    val pairs: List<ForgejoPair>,
+    val providers: Map<String, List<HostApiPair>>,
 ) {
     companion object {
         const val RESOURCE = "/asc/asc/allowlist.json"
@@ -70,7 +62,8 @@ class Allowlist(
             require(root.get("version")?.asIntOrNull() == 1) { "allowlist: version 1 expected" }
             val rpc = obj(root.get("rpc"), "rpc")
             val run = obj(root.get("run"), "run")
-            val forgejo = obj(root.get("forgejo"), "forgejo")
+            val hostApi = obj(root.get("hostApi"), "hostApi")
+            val providerList = obj(hostApi.get("providers"), "providers")
             val write = LinkedHashMap<String, WriteEntry>()
             for (w in arr(rpc.get("write"))) {
                 val o = obj(w, "write entry")
@@ -86,14 +79,17 @@ class Allowlist(
                 e.get("flags")?.let { f -> for ((k, t) in obj(f, "flags").entrySet()) flags[k] = str(t, "flag type") }
                 verbs[name] = VerbEntry(flags, e.get("pos")?.let { str(it, "pos") } ?: "", conf(e.get("confirm"), name))
             }
-            val pairs = arr(forgejo.get("pairs")).map {
-                val o = obj(it, "pair")
-                ForgejoPair(
-                    str(o.get("m"), "pair method"),
-                    str(o.get("p"), "pair path"),
-                    o.get("body")?.let { b -> arr(b).map { s -> str(s, "pair body") } },
-                    conf(o.get("confirm"), "pair"),
-                )
+            val providers = LinkedHashMap<String, List<HostApiPair>>()
+            for ((providerId, prov) in providerList.entrySet()) {
+                providers[providerId] = arr(obj(prov, providerId).get("pairs")).map {
+                    val o = obj(it, "pair")
+                    HostApiPair(
+                        str(o.get("m"), "pair method"),
+                        str(o.get("p"), "pair path"),
+                        o.get("body")?.let { b -> arr(b).map { s -> str(s, "pair body") } },
+                        conf(o.get("confirm"), "pair"),
+                    )
+                }
             }
             return Allowlist(
                 read = arr(rpc.get("read")).map { str(it, "rpc.read") }.toSet(),
@@ -102,7 +98,7 @@ class Allowlist(
                 maxArgs = run.get("maxArgs")?.asIntOrNull() ?: throw IllegalArgumentException("allowlist: run limits missing"),
                 maxArgBytes = run.get("maxArgBytes")?.asIntOrNull() ?: throw IllegalArgumentException("allowlist: run limits missing"),
                 verbs = verbs,
-                pairs = pairs,
+                providers = providers,
             )
         }
 
@@ -151,7 +147,7 @@ sealed interface Parsed {
 
     data class Run(val verb: String, val args: List<String>) : Parsed
 
-    data class Forgejo(val method: String, val template: String, val params: Map<String, String>, val body: JsonObject?) : Parsed
+    data class HostApi(val provider: String, val method: String, val template: String, val params: Map<String, String>, val body: JsonObject?) : Parsed
 }
 
 sealed interface Decision {
@@ -164,7 +160,7 @@ class RunScope(val root: String, val tmpDir: String? = null)
 
 class ForgeScope(val repos: List<String>)
 
-/** The pure checks. Mirrors relay.ts `checkRun`, `checkRpc` and `checkForgejo`; the bridge stays the authority. */
+/** The pure checks. Mirrors relay.ts `checkRun`, `checkRpc` and `checkHostApi`; the bridge stays the authority. */
 object RelayChecks {
     private val USER = Regex("^[A-Za-z0-9._-]{1,40}$")
     private val SEGMENT = Regex("^[A-Za-z0-9._~-]+$")
@@ -316,7 +312,8 @@ object RelayChecks {
         return no("write rpc has no request check")
     }
 
-    fun checkForgejo(al: Allowlist, method: String, path: String, body: JsonElement?, scope: ForgeScope): Decision {
+    fun checkHostApi(al: Allowlist, provider: String, method: String, path: String, body: JsonElement?, scope: ForgeScope): Decision {
+        val pairs = al.providers[provider] ?: return no("host api provider not allowed")
         val q = path.indexOf('?')
         val rawPath = if (q < 0) path else path.substring(0, q)
         val query = if (q < 0) null else path.substring(q + 1)
@@ -327,7 +324,7 @@ object RelayChecks {
         val segs = rawPath.split("/").drop(1)
         if (segs.any { !SEGMENT.matches(it) || it == "." || it == ".." }) return no("bad path")
         val hasBody = body != null && !body.isJsonNull
-        for (pair in al.pairs) {
+        for (pair in pairs) {
             if (pair.method != method) continue
             val want = pair.path.split("/").drop(1)
             if (want.size != segs.size) continue
@@ -360,9 +357,9 @@ object RelayChecks {
             } else if (hasBody) {
                 return no("no body allowed")
             }
-            return Decision.Allow(Parsed.Forgejo(pair.method, pair.path, params, parsedBody), pair.confirm)
+            return Decision.Allow(Parsed.HostApi(provider, pair.method, pair.path, params, parsedBody), pair.confirm)
         }
-        return no("forgejo operation not allowed")
+        return no("host api operation not allowed")
     }
 
     /** Native confirmation text, composed only from the parsed request. */
@@ -370,7 +367,7 @@ object RelayChecks {
         is Parsed.Run -> "Run \"asc ${p.verb}\"" to p.args.map { if (it.length > 120) it.take(117) + "..." else it }
         is Parsed.Write -> (if (p.method.endsWith("RequestMerge")) "Merge change" else "Stage changes") to
             listOf(p.change ?: "${p.paths} path(s)")
-        is Parsed.Forgejo -> {
+        is Parsed.HostApi -> {
             val title = when {
                 p.template.endsWith("/merge") -> "Merge pull request"
                 p.template.endsWith("/reviews/{id}") -> "Submit review"
@@ -387,9 +384,9 @@ fun interface RelayUpstream {
     suspend fun stream(method: String, request: ByteArray, root: String): Flow<ByteArray>
 }
 
-class ForgejoCall(val method: String, val path: String, val body: JsonObject?, val repo: String?)
+class HostApiCall(val provider: String, val method: String, val path: String, val body: JsonObject?, val repo: String?)
 
-class ForgejoResult(val status: Int, val body: JsonElement)
+class HostApiResult(val status: Int, val body: JsonElement)
 
 class RelayLog(val event: String, val reason: String, val what: String? = null)
 
@@ -400,13 +397,13 @@ class RelayDeps(
     val send: (String) -> Unit,
     /** Absolute roots the user opened; a call's root must be one of them (or empty). */
     val roots: () -> List<String>,
-    /** `owner/repo` of the forge repos of the opened roots. */
-    val forgeRepos: () -> List<String>,
+    /** `owner/repo` of the remote repos of the opened roots. */
+    val remoteRepos: () -> List<String>,
     val tmpDir: String? = null,
     /** Shows the native modal. Without it, every entry that needs confirmation is denied. */
     val confirm: (suspend (title: String, targets: List<String>) -> Boolean)? = null,
-    /** Runs a checked Forgejo request and adds the token; without it Forgejo requests are denied. */
-    val forgejo: (suspend (ForgejoCall) -> ForgejoResult)? = null,
+    /** Runs a checked host API request and adds the token, by provider id; an unlisted provider is denied. */
+    val hostApi: Map<String, suspend (HostApiCall) -> HostApiResult> = emptyMap(),
     val log: (RelayLog) -> Unit = {},
 )
 
@@ -471,21 +468,22 @@ class AscRelay(private val scope: CoroutineScope, private val deps: RelayDeps) {
         if (live.size >= MAX_LIVE) return deny(id, RelayLog("dropped", "too many calls"))
         val al = deps.allowlist ?: return deny(id, RelayLog("denied", "no allowlist"))
 
-        if (m.has("forgejo")) {
-            val f = m.get("forgejo")
-            if (f == null || !f.isJsonObject) return deny(id, RelayLog("dropped", "bad forgejo request"))
+        if (m.has("hostApi")) {
+            val f = m.get("hostApi")
+            if (f == null || !f.isJsonObject) return deny(id, RelayLog("dropped", "bad host api request"))
             val fo = f.asJsonObject
+            val provider = fo.get("provider")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
             val method = fo.get("method")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
             val path = fo.get("path")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
-            if (method == null || path == null) return deny(id, RelayLog("dropped", "bad forgejo request"))
-            val d = RelayChecks.checkForgejo(al, method, path, fo.get("body"), ForgeScope(deps.forgeRepos()))
-            if (d !is Decision.Allow) return deny(id, RelayLog("denied", (d as Decision.Deny).reason, "forgejo"))
-            if (deps.forgejo == null || (d.confirm == Confirm.MODAL && deps.confirm == null)) {
-                return deny(id, RelayLog("denied", "unavailable", "forgejo"))
+            if (provider == null || method == null || path == null) return deny(id, RelayLog("dropped", "bad host api request"))
+            val d = RelayChecks.checkHostApi(al, provider, method, path, fo.get("body"), ForgeScope(deps.remoteRepos()))
+            if (d !is Decision.Allow) return deny(id, RelayLog("denied", (d as Decision.Deny).reason, "hostApi"))
+            if (deps.hostApi[provider] == null || (d.confirm == Confirm.MODAL && deps.confirm == null)) {
+                return deny(id, RelayLog("denied", "unavailable", "hostApi"))
             }
-            val pf = d.parsed as Parsed.Forgejo
+            val pf = d.parsed as Parsed.HostApi
             val repo = pf.params["o"]?.let { "$it/${pf.params["r"]}" }
-            launch(id) { runForgejo(id, d, ForgejoCall(method, path, pf.body, repo)) }
+            launch(id) { runHostApi(id, d, HostApiCall(provider, method, path, pf.body, repo)) }
             return
         }
 
@@ -555,103 +553,26 @@ class AscRelay(private val scope: CoroutineScope, private val deps: RelayDeps) {
         }
     }
 
-    private suspend fun runForgejo(id: Long, d: Decision.Allow, call: ForgejoCall) {
+    private suspend fun runHostApi(id: Long, d: Decision.Allow, call: HostApiCall) {
         try {
             if (!confirmed(d)) return end(id, PERMISSION_DENIED, "not confirmed")
-            val r = deps.forgejo?.invoke(call) ?: return end(id, PERMISSION_DENIED, "forgejo is not available")
+            val r = deps.hostApi[call.provider]?.invoke(call) ?: return end(id, PERMISSION_DENIED, "host api is not available")
             val f = JsonObject()
             f.addProperty("status", r.status)
             f.add("body", r.body)
             val o = JsonObject()
             o.addProperty("id", id)
-            o.add("forgejo", f)
+            o.add("hostApi", f)
             deps.send(o.toString())
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            end(id, INTERNAL, "forgejo request failed")
+            end(id, INTERNAL, "host api request failed")
         }
     }
 
     fun close() {
         for (j in live.values) j.cancel()
         live.clear()
-    }
-}
-
-/**
- * Runs a Forgejo request that the relay already matched against the allowlist (SPEC 24.4.5.1, 24.6). The token
- * comes from `Bridge.Token` through [token], is attached here as a bearer header and is never logged, never
- * put in a URL and never returned to the page. https only, no redirects (a redirect could carry the token to
- * another origin), the host must be the forge host of an opened root, and the reply is capped.
- */
-class AscForgejoClient(
-    /** `owner/repo` to forge URL of the opened roots (credentials already removed by the bridge). */
-    private val forges: () -> Map<String, String>,
-    private val token: suspend (host: String) -> String?,
-    private val send: (HttpRequest) -> HttpResponse<java.io.InputStream> = { client.send(it, HttpResponse.BodyHandlers.ofInputStream()) },
-) {
-    companion object {
-        const val MAX_BODY = 8 * 1024 * 1024
-        private val client: HttpClient by lazy {
-            HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).connectTimeout(Duration.ofSeconds(10)).build()
-        }
-
-        /** The request URL, or null when the forge URL is not an https origin without credentials. */
-        fun url(forge: String, path: String): URI? {
-            val base = try {
-                URI(forge.trimEnd('/'))
-            } catch (_: Exception) {
-                return null
-            }
-            if (base.scheme != "https" || base.host == null || base.userInfo != null || base.rawQuery != null || base.rawFragment != null) {
-                return null
-            }
-            val full = try {
-                URI(base.toString() + "/api/v1" + path)
-            } catch (_: Exception) {
-                return null
-            }
-            return if (full.host == base.host && full.port == base.port && full.scheme == "https") full else null
-        }
-    }
-
-    suspend fun call(c: ForgejoCall): ForgejoResult {
-        val map = forges()
-        val forge = (c.repo?.let { map[it] } ?: map.values.firstOrNull()) ?: throw IllegalStateException("no forge")
-        val uri = url(forge, c.path) ?: throw IllegalStateException("forge is not https")
-        val bearer = token(uri.host) ?: return ForgejoResult(401, JsonNull.INSTANCE)
-        return withContext(Dispatchers.IO) {
-            val b = HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30))
-                .header("accept", "application/json").header("authorization", "Bearer $bearer")
-            val body = c.body
-            val req = if (body == null) {
-                b.method(c.method, HttpRequest.BodyPublishers.noBody())
-            } else {
-                b.header("content-type", "application/json").method(c.method, HttpRequest.BodyPublishers.ofString(body.toString()))
-            }.build()
-            val res = send(req)
-            res.body().use { input ->
-                val buf = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(8192)
-                while (true) {
-                    val n = input.read(chunk)
-                    if (n < 0) break
-                    if (buf.size() + n > MAX_BODY) throw IllegalStateException("reply too large")
-                    buf.write(chunk, 0, n)
-                }
-                val text = String(buf.toByteArray(), Charsets.UTF_8)
-                val el: JsonElement = if (text.isBlank()) {
-                    JsonNull.INSTANCE
-                } else {
-                    try {
-                        JsonParser.parseString(text)
-                    } catch (_: Exception) {
-                        com.google.gson.JsonPrimitive(text)
-                    }
-                }
-                ForgejoResult(res.statusCode(), el)
-            }
-        }
     }
 }

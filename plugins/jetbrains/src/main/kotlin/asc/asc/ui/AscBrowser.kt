@@ -293,13 +293,13 @@ class AscBrowser(private val project: Project, initialView: String, private val 
             allowlist = Allowlist.load(),
             send = this::deliver,
             roots = { roots },
-            forgeRepos = { infos.map { it.repo }.filter { it.isNotEmpty() } },
+            remoteRepos = { infos.map { it.repo }.filter { it.isNotEmpty() } },
             tmpDir = System.getProperty("java.io.tmpdir"),
             confirm = { title, targets -> confirm(title, targets) },
-            forgejo = AscForgejoClient(
-                forges = { infos.filter { it.repo.isNotEmpty() && it.forgeUrl.isNotEmpty() }.associate { it.repo to it.forgeUrl } },
+            hostApi = hostApiAdapters(
+                forges = { infos.filter { it.repo.isNotEmpty() && it.remoteUrl.isNotEmpty() }.associate { it.repo to it.remoteUrl } },
                 token = { host -> auth.token(host) },
-            )::call,
+            ),
             log = { e -> com.intellij.openapi.diagnostic.Logger.getInstance(AscBrowser::class.java).info("relay ${e.event}: ${e.reason} ${e.what ?: ""}") },
         )
         relay = AscRelay(scope, deps)
@@ -339,7 +339,7 @@ class AscBrowser(private val project: Project, initialView: String, private val 
         )
         ApplicationManager.getApplication().messageBus.connect(this)
             .subscribe(LafManagerListener.TOPIC, LafManagerListener { pushTheme() })
-        // The root's forge facts (repo, forge url) are needed by the relay's Forgejo scope, so load after Hello.
+        // The root's forge facts (repo, forge url) are needed by the relay's host API scope, so load after Hello.
         scope.launch {
             infos = try {
                 bridge.hello(roots).rootsList
