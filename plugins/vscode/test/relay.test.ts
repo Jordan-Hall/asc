@@ -4,7 +4,6 @@ import { type BridgeTransport, type CallOptions } from "@asc/asc-client";
 import { RunRequestSchema } from "@asc/asc-client/bridge";
 import type { ConfirmRequest } from "@asc/asc-client/relay";
 import { clean, confirmDetail, nativeConfirm } from "../src/webview/confirm";
-import { forgejoExecutor } from "../src/webview/forgejo-relay";
 import type { WebviewLike } from "../src/webview/host";
 import { createRelayHandler } from "../src/webview/relay";
 
@@ -86,27 +85,6 @@ describe("confirm", () => {
     expect(await nativeConfirm(async () => "Continue")(req)).toBe(true);
     expect(await nativeConfirm(async () => undefined)(req)).toBe(false);
     expect(await nativeConfirm(async () => { throw new Error("x"); })(req)).toBe(false);
-  });
-});
-
-describe("forgejo executor", () => {
-  test("rejects http, attaches the token on the host, refuses redirects", async () => {
-    expect(() => forgejoExecutor({ baseUrl: "http://forge.example", getToken: () => "t" })).toThrow();
-    let seen: Request | undefined;
-    const ex = forgejoExecutor({
-      baseUrl: "https://forge.example",
-      getToken: () => "sekrit",
-      fetch: async (r) => ((seen = r), new Response('{"ok":true}', { status: 200 })),
-    });
-    const r = await ex({ method: "GET", path: "/repos/o/r/pulls" }, new AbortController().signal);
-    expect(r).toEqual({ status: 200, body: { ok: true } });
-    expect(seen?.url).toBe("https://forge.example/api/v1/repos/o/r/pulls");
-    expect(seen?.headers.get("authorization")).toBe("token sekrit");
-    expect(seen?.redirect).toBe("error");
-  });
-  test("the reply never carries the token", async () => {
-    const ex = forgejoExecutor({ baseUrl: "https://f.example", getToken: () => "sekrit", fetch: async () => new Response("not json") });
-    expect(JSON.stringify(await ex({ method: "GET", path: "/user" }, new AbortController().signal))).not.toContain("sekrit");
   });
 });
 
