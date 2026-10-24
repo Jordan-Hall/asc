@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 
 /// Tiers that emit logs and metrics (the `tier` log field).
-pub const TIERS: &[&str] = &["cli", "daemon", "warmer", "server", "cache", "forgejo"];
+pub const TIERS: &[&str] = &["cli", "daemon", "warmer", "server", "cache", "host"];
 
 /// Stable JSON log fields, in order.
 pub const LOG_FIELDS: &[&str] = &[
@@ -271,15 +271,15 @@ pub const METRICS: &[Metric] = &[
         labels: "",
     },
     Metric {
-        name: "forgejo_asc_rpc_seconds",
+        name: "host_asc_rpc_seconds",
         kind: "histogram",
-        tiers: "forgejo",
+        tiers: "host",
         labels: "method",
     },
     Metric {
-        name: "forgejo_asc_shadow_mismatch_total",
+        name: "host_asc_shadow_mismatch_total",
         kind: "counter",
-        tiers: "forgejo",
+        tiers: "host",
         labels: "method",
     },
 ];
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn names_are_well_formed() {
         for m in METRICS {
-            assert!(m.name.starts_with("asc_") || m.name.starts_with("forgejo_asc_"));
+            assert!(m.name.starts_with("asc_") || m.name.starts_with("host_asc_"));
             assert!(m.name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'));
             assert!(["counter", "gauge", "histogram"].contains(&m.kind));
             if m.kind == "counter" {
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn alerts_use_only_catalogued_metrics() {
         for tok in ALERTS.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
-            if tok.starts_with("asc_") || tok.starts_with("forgejo_asc_") {
+            if tok.starts_with("asc_") || tok.starts_with("host_asc_") {
                 let base = tok
                     .trim_end_matches("_bucket")
                     .trim_end_matches("_sum")
