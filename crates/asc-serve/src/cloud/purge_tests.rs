@@ -332,6 +332,51 @@ async fn a_purged_object_is_swept_at_the_next_run_unless_a_ref_reaches_it() {
 }
 
 #[tokio::test]
+async fn a_finished_sweep_forgets_the_purge_rows_except_those_a_ref_still_reaches() {
+    let s = svc().await;
+    let f = &s.f;
+    let hooks = Arc::new(PipelineHooks::default());
+    hooks
+        .gc_roots()
+        .register(Arc::new(crate::cloud::expiry::CloudRoots::new(
+            f.reg.pool().clone(),
+        )));
+    let gc = GcService::new(f.reg.clone(), hooks, GcConfig::default());
+    let name = RepoName::parse("o/r").unwrap();
+    let shared = commit(&f.e, &[], &[("d/f", &[5, 5, 5])]).await;
+    set_ref(f, "refs/heads/master", Some(shared)).await;
+    add_head(f, 42, "w", f.css[4], 5, None).await;
+    purge(&s, &[f.css[4]], ALICE).await.unwrap();
+    let rows = || async {
+        sqlx::query_scalar::<_, String>("SELECT key FROM gc_purge")
+            .fetch_all(f.reg.pool())
+            .await
+            .unwrap()
+    };
+    let queued = rows().await;
+    let file = ObjKey::File(FileId::of(&[5, 5, 5])).path();
+    assert!(queued.contains(&file) && queued.contains(&ObjKey::Changeset(f.css[4]).path()));
+
+    // A dry run deletes nothing, so it forgets nothing.
+    let t = SystemTime::now() + Duration::from_secs(60);
+    gc.run_repo(&name, t, true).await.unwrap();
+    assert_eq!(rows().await.len(), queued.len());
+
+    // The first real sweep deletes the changeset and drops its row; the file master reaches
+    // stays listed.
+    gc.run_repo(&name, t + Duration::from_secs(5), false)
+        .await
+        .unwrap();
+    let left = rows().await;
+    assert!(
+        !left.contains(&ObjKey::Changeset(f.css[4]).path()),
+        "swept: {left:?}"
+    );
+    assert!(left.contains(&file), "still reached: {left:?}");
+    assert!(left.len() < queued.len());
+}
+
+#[tokio::test]
 async fn an_owner_purge_does_not_list_an_object_another_draft_holds() {
     let s = svc().await;
     let f = &s.f;
