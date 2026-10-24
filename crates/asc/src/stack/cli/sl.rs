@@ -375,8 +375,7 @@ pub(crate) async fn change_out(l: &Local<'_>, st: &LStacks<'_, '_>, cs: Changese
         },
         state,
         needs_restack: st.needs_restack(cs).await.map_err(stack_err)?,
-        // Local freezing (`stack_frozen`) arrives with `asc stack freeze`.
-        frozen: false,
+        frozen: l.rows.is_frozen(row.change).await.map_err(fatal)?,
         empty: c.changes.is_empty(),
         current: l.env.current == Some(cs),
         worktree: l.env.worktree_at(cs),

@@ -92,6 +92,76 @@ impl StateChanges {
     }
 }
 
+/// Most frozen changes one repository may hold (a named limit; `freeze` fails closed past it).
+pub const MAX_FROZEN: usize = 100_000;
+
+impl StateChanges {
+    /// True when `change` is frozen (SPEC 20.3).
+    pub async fn is_frozen(&self, change: ChangeId) -> Result<bool> {
+        Ok(
+            sqlx::query("SELECT 1 FROM stack_frozen WHERE repo_id = ? AND change = ?")
+                .bind(self.repo.0)
+                .bind(change.as_bytes().to_vec())
+                .fetch_optional(self.db.pool())
+                .await?
+                .is_some(),
+        )
+    }
+
+    /// Every frozen change, at most [`MAX_FROZEN`].
+    pub async fn frozen_set(&self) -> Result<std::collections::HashSet<ChangeId>> {
+        sqlx::query("SELECT change FROM stack_frozen WHERE repo_id = ? LIMIT ?")
+            .bind(self.repo.0)
+            .bind(MAX_FROZEN as i64)
+            .fetch_all(self.db.pool())
+            .await?
+            .iter()
+            .map(|r| {
+                Ok(ChangeId::from_bytes(fixed(
+                    r.try_get(0)?,
+                    "stack_frozen.change",
+                )?))
+            })
+            .collect()
+    }
+
+    /// Freezes `changes` in one transaction; returns how many were not frozen yet. Fails when
+    /// the table would pass [`MAX_FROZEN`].
+    pub async fn freeze(&self, changes: &[ChangeId]) -> Result<usize> {
+        let mut tx = self.db.begin().await?;
+        let mut added = 0;
+        for c in changes {
+            let done =
+                sqlx::query("INSERT OR IGNORE INTO stack_frozen (repo_id, change) VALUES (?, ?)")
+                    .bind(self.repo.0)
+                    .bind(c.as_bytes().to_vec())
+                    .execute(&mut *tx)
+                    .await?;
+            added += usize::try_from(done.rows_affected()).unwrap_or(0);
+        }
+        let held: i64 = sqlx::query("SELECT COUNT(*) FROM stack_frozen WHERE repo_id = ?")
+            .bind(self.repo.0)
+            .fetch_one(&mut *tx)
+            .await?
+            .try_get(0)?;
+        if usize::try_from(held).unwrap_or(usize::MAX) > MAX_FROZEN {
+            return Err(Error::Corrupt("stack_frozen (over the limit)"));
+        }
+        tx.commit().await?;
+        Ok(added)
+    }
+
+    /// Unfreezes `change`; true when it was frozen.
+    pub async fn unfreeze(&self, change: ChangeId) -> Result<bool> {
+        let done = sqlx::query("DELETE FROM stack_frozen WHERE repo_id = ? AND change = ?")
+            .bind(self.repo.0)
+            .bind(change.as_bytes().to_vec())
+            .execute(self.db.pool())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+}
+
 #[async_trait]
 impl ChangeRows for StateChanges {
     async fn insert(&self, row: &ChangeRow, preds: &[ChangesetId]) -> change::Result<bool> {
@@ -243,5 +313,24 @@ mod tests {
         let row = reread.get(cs(2)).await.unwrap().unwrap();
         assert_eq!(row.meta, b.id());
         assert_eq!(reread.preds(cs(2)).await.unwrap(), vec![cs(1)]);
+    }
+
+    #[tokio::test]
+    async fn freezing_is_per_change_idempotent_and_scoped_to_the_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, repo) = open(&dir).await;
+        let rows = StateChanges::new(db.clone(), repo);
+        let (a, b) = (ChangeId::from_bytes([1; 16]), ChangeId::from_bytes([2; 16]));
+        assert!(!rows.is_frozen(a).await.unwrap());
+        assert_eq!(rows.freeze(&[a, b]).await.unwrap(), 2);
+        assert_eq!(rows.freeze(&[a]).await.unwrap(), 0);
+        assert!(rows.is_frozen(a).await.unwrap());
+        assert_eq!(rows.frozen_set().await.unwrap().len(), 2);
+        let elsewhere = StateChanges::new(db, RepoKey(repo.0 + 1));
+        assert!(!elsewhere.is_frozen(a).await.unwrap());
+        assert!(rows.unfreeze(a).await.unwrap());
+        assert!(!rows.unfreeze(a).await.unwrap());
+        assert!(!rows.is_frozen(a).await.unwrap());
+        assert!(rows.is_frozen(b).await.unwrap());
     }
 }

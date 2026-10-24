@@ -429,6 +429,27 @@ fn refuse_in_progress(ws: &WsCtx) -> Result<()> {
     Ok(())
 }
 
+/// A frozen change is never rewritten locally (SPEC §20.3): nothing has moved yet when this
+/// refuses, because the refs move in `apply` only.
+async fn refuse_frozen(ws: &WsCtx, rewriting: impl Iterator<Item = ChangesetId>) -> Result<()> {
+    let rows = asc_state::changes::StateChanges::new(ws.db.clone(), ws.repo.key);
+    let frozen = rows.frozen_set().await.map_err(fatal)?;
+    if frozen.is_empty() {
+        return Ok(());
+    }
+    for cs in rewriting {
+        if let Some(row) = rows.get(cs).await.map_err(fatal)?
+            && frozen.contains(&row.change)
+        {
+            return Err(CliError::Raw(
+                format!("asc: change {} is frozen; run 'asc stack unfreeze' to rewrite it", row.change.short()),
+                1,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Rewrites `steps` onto `onto` until the stack is done or a conflict stops it. `done` holds
 /// the rewrites already made; `op` is the operation record saved when a conflict stops it.
 pub(crate) async fn drive(
@@ -439,6 +460,7 @@ pub(crate) async fn drive(
     mut onto: ChangesetId,
     mut steps: Vec<ChangesetId>,
 ) -> Result<Flow> {
+    refuse_frozen(ws, done.iter().map(|d| d.0).chain(steps.iter().copied())).await?;
     loop {
         if steps.is_empty() {
             return apply(ctx, ws, &op, &done).await.map(Flow::Done);
