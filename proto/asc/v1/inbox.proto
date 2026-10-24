@@ -1,0 +1,82 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// The caller's inbox for one repository: the changes that need their attention (SPEC §24.3.5, §24.4.7).
+// Host-neutral: items come from asc's own review requests, comment threads and check runs (review.proto,
+// ci.proto), keyed by the authenticated user, never by a forge account. Needs a user identity; a service
+// or deploy credential has no inbox (PERMISSION_DENIED). Advertised as Version.features "inbox.v1".
+service Inbox {
+  rpc List(InboxListRequest) returns (InboxListResponse);             // cheap, paged
+  rpc Count(InboxCountRequest) returns (InboxCountResponse);          // cheap; ETag-style poll for a status bar
+  rpc SetState(InboxSetStateRequest) returns (InboxSetStateResponse); // pin and snooze; idempotent, no x-asc-op-id
+}
+
+enum InboxSection {
+  INBOX_SECTION_UNSPECIFIED = 0;
+  INBOX_SECTION_NEEDS_REVIEW = 1;   // a review was requested from you and you have not commented since
+  INBOX_SECTION_RETURNED = 2;       // your change has open threads started by someone else
+  INBOX_SECTION_CHECKS_FAILED = 3;  // the newest check run of your change failed
+  INBOX_SECTION_WAITING = 4;        // you started open threads on a change that is not yours
+}
+
+// One change in one section. A change that fits two sections appears twice.
+message InboxItem {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  InboxSection section = 2;
+  uint32 latest_version = 3;       // 0 when the change has no recorded version
+  string author = 4;               // handle of the first version's actor; empty when unknown
+  int64 updated = 5;               // unix seconds of the newest event that put it here
+  uint32 open_threads = 6;
+  string requested_by = 7;         // NEEDS_REVIEW only
+  bool pinned = 8;
+  int64 snoozed_until = 9;         // unix seconds; 0 = not snoozed
+}
+
+// `sections` empty means all. A snoozed item is hidden until its time passes, unless pinned or `include_snoozed`.
+// `limit` 0 means 50, at most 200.
+message InboxListRequest {
+  RepoRef repo = 1;
+  repeated InboxSection sections = 2;
+  bool include_snoozed = 3;
+  uint32 limit = 4;
+  string page_token = 5;
+}
+// `total` is the number of items the filter matches, before paging. Pinned items first, then newest first.
+message InboxListResponse {
+  repeated InboxItem items = 1;
+  uint32 total = 2;
+  string next_page_token = 3;
+}
+
+message InboxSectionCount {
+  InboxSection section = 1;
+  uint32 count = 2;
+}
+// `if_none_match` is an `etag` from an earlier answer; when it still matches, `not_modified` is true and no counts follow.
+message InboxCountRequest {
+  RepoRef repo = 1;
+  repeated InboxSection sections = 2;
+  string if_none_match = 3;
+}
+message InboxCountResponse {
+  repeated InboxSectionCount counts = 1;
+  uint32 total = 2;
+  string etag = 3;
+  bool not_modified = 4;
+}
+
+// Absent field = leave as is. `pinned = false` unpins; `snoozed_until = 0` clears the snooze. A past time clears it.
+message InboxSetStateRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  optional bool pinned = 3;
+  optional int64 snoozed_until = 4;
+}
+message InboxSetStateResponse {
+  bool pinned = 1;
+  int64 snoozed_until = 2;
+}
