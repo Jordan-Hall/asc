@@ -8,13 +8,14 @@ import { join } from "node:path";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { type BridgeNode, bridge, BridgeError } from "@asc/asc-client";
 import type * as vscodeTypes from "vscode";
+import { FEATURE_CONTEXT_KEYS as FEATURE_KEYS } from "../src/bridge";
 import { activateWith, vscodeHost } from "../src/extension";
 
 interface PackageJson {
   contributes: {
-    commands: { command: string }[];
-    views: Record<string, { id: string; type?: string }[]>;
-    menus: Record<string, { command: string }[]>;
+    commands: { command: string; enablement?: string }[];
+    views: Record<string, { id: string; type?: string; when?: string }[]>;
+    menus: Record<string, { command: string; when?: string }[]>;
     keybindings: { command: string }[];
     mcpServerDefinitionProviders: { id: string }[];
     configuration: { properties: Record<string, unknown> };
@@ -35,7 +36,13 @@ const INTERNAL = new Set([
   "asc.blame.openPr",
   "asc.blame.previous",
   "asc.diffAgainstStackParent",
+  "asc.actions.openLog",
 ]);
+
+const SERVER_FEATURES = ["inbox.v1", "review.v1", "ci.v1"];
+/** The commands and views only an asc server with the matching feature provides. */
+const SERVER_COMMANDS = /^asc[.](inbox|review|actions)[.](?!checkoutStack)/;
+const SERVER_VIEWS = new Set(["asc.inbox", "asc.actions"]);
 
 interface Stub {
   (...a: unknown[]): Stub;
@@ -138,15 +145,16 @@ function ascFolder(): string {
   return d;
 }
 
-/** A bridge whose `Hello` is full; every other call is unsupported. */
-function fakeNode(root: string) {
+/** A bridge whose `Hello` is full; every other call is unsupported. `server` adds the asc serve
+ * features and an asc-server remote for the root. */
+function fakeNode(root: string, server: string[] = [], remoteKind = "asc") {
   return (): BridgeNode => {
     const hello = toBinary(
       bridge.HelloResponseSchema,
       create(bridge.HelloResponseSchema, {
         ascVersion: "9.9",
-        features: ["plugin.v1", "json-verbs.v1"],
-        roots: [{ root, wsId: "ws1" }],
+        features: ["plugin.v1", "json-verbs.v1", ...server],
+        roots: [{ root, wsId: "ws1", repo: "o/r", remoteKind }],
       }),
     );
     return {
@@ -163,13 +171,13 @@ function fakeNode(root: string) {
   };
 }
 
-async function activateFake() {
+async function activateFake(server: string[] = SERVER_FEATURES, remoteKind = "asc") {
   const root = ascFolder();
   const rec: Recorder = { commands: [], treeViews: [], webviewViews: [], contexts: {}, logs: [] };
   const host = vscodeHost(fakeVscode(root, rec), ctx());
   host.memento.set("asc.gitPromptShown", true);
   host.log = (l) => void rec.logs.push(l);
-  const a = await activateWith(host, fakeNode(root));
+  const a = await activateWith(host, fakeNode(root, server, remoteKind));
   await a.started;
   expect(rec.logs).toEqual([]);
   return { a, rec };
@@ -204,6 +212,77 @@ describe("activation wiring", () => {
       const webviews = views.filter((v) => v.type === "webview").map((v) => v.id);
       expect(trees.filter((v) => !rec.treeViews.includes(v))).toEqual([]);
       expect(webviews.filter((v) => !rec.webviewViews.includes(v))).toEqual([]);
+    } finally {
+      a.dispose();
+    }
+  });
+});
+
+describe("asc serve features", () => {
+  test("an asc server advertising the flags registers the inbox, review and actions contributions", async () => {
+    const { a, rec } = await activateFake();
+    try {
+      expect(rec.contexts["asc.feature.inbox"]).toBe(true);
+      expect(rec.contexts["asc.feature.review"]).toBe(true);
+      expect(rec.contexts["asc.feature.ci"]).toBe(true);
+      expect(rec.treeViews).toEqual(expect.arrayContaining(["asc.inbox", "asc.actions"]));
+      expect(rec.commands).toEqual(
+        expect.arrayContaining(["asc.inbox.refresh", "asc.review.showThreads", "asc.actions.refresh"]),
+      );
+    } finally {
+      a.dispose();
+    }
+  });
+
+  test("a flag Hello does not advertise leaves its contributions out and its context key false", async () => {
+    const { a, rec } = await activateFake(["review.v1"]);
+    try {
+      expect(rec.contexts["asc.feature.inbox"]).toBe(false);
+      expect(rec.contexts["asc.feature.review"]).toBe(true);
+      expect(rec.contexts["asc.feature.ci"]).toBe(false);
+      expect(rec.treeViews.filter((v) => SERVER_VIEWS.has(v))).toEqual([]);
+      expect(rec.commands.filter((c) => /^asc\.(inbox|actions)\./.test(c))).toEqual([]);
+      expect(rec.commands).toContain("asc.review.showThreads");
+    } finally {
+      a.dispose();
+    }
+  });
+
+  test("a root without an asc server gets none of them even when the flags are advertised", async () => {
+    const { a, rec } = await activateFake(SERVER_FEATURES, "git");
+    try {
+      expect(Object.values(FEATURE_KEYS).map((k) => rec.contexts[k])).toEqual([false, false, false]);
+      expect(rec.commands.filter((c) => SERVER_COMMANDS.test(c))).toEqual([]);
+      expect(rec.treeViews.filter((v) => SERVER_VIEWS.has(v))).toEqual([]);
+    } finally {
+      a.dispose();
+    }
+  });
+
+  test("every server contribution is gated on its feature context key", () => {
+    const gate = (when: string | undefined, key: string) => when?.includes(key) === true;
+    const byId = new Map(pkg.contributes.commands.map((c) => [c.command, c.enablement]));
+    for (const [id, enablement] of byId) {
+      if (id.startsWith("asc.inbox.")) expect(gate(enablement, "asc.feature.inbox")).toBe(true);
+      if (id.startsWith("asc.review.") && id !== "asc.review.checkoutStack") {
+        expect(gate(enablement, "asc.feature.review")).toBe(true);
+      }
+      if (id.startsWith("asc.actions.")) expect(gate(enablement, "asc.feature.ci")).toBe(true);
+    }
+    const views = Object.values(pkg.contributes.views).flat();
+    expect(gate(views.find((v) => v.id === "asc.inbox")?.when, "asc.feature.inbox")).toBe(true);
+    expect(gate(views.find((v) => v.id === "asc.actions")?.when, "asc.feature.ci")).toBe(true);
+  });
+
+  test("Continue and Abort show in the SCM title only while an operation is paused", async () => {
+    const title = pkg.contributes.menus["scm/title"] ?? [];
+    for (const id of ["asc.continue", "asc.abort"]) {
+      const entry = title.find((m) => m.command === id);
+      expect(entry?.when).toContain("asc.paused");
+    }
+    const { a, rec } = await activateFake();
+    try {
+      expect(rec.contexts["asc.paused"]).toBe(false);
     } finally {
       a.dispose();
     }

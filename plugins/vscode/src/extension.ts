@@ -10,15 +10,21 @@ import {
   type BridgeManagerOptions,
   type Compat,
   createBridgeManager,
+  FEATURE_CONTEXT_KEYS,
+  type HelloInfo,
   nodeIsFile,
   resolveAsc,
+  serverFeatures,
+  serverTargets,
 } from "./bridge";
 import { detectAscFolders } from "./repo";
 import { registerBlame } from "./blame/register";
 import { registerConflicts } from "./conflicts";
 import { registerHydration } from "./hydration";
+import { InboxCountPoller, registerInboxCount } from "./inbox-count";
 import { configureAgents, registerMcp, vscodeMcpApi } from "./mcp";
 import { StackCheckout } from "./review/checkout";
+import { bridgeReviewApi, currentChangeRef, registerReviewComments } from "./review/comments";
 import { registerRevNav } from "./revnav";
 import { registerCommands, vscodeCommandsUi } from "./scm/commands";
 import { registerIgnoreCommand } from "./scm/ignore";
@@ -35,8 +41,15 @@ import { registerStackActions } from "./stack/actions";
 import { registerStackNav } from "./stack/nav";
 import { registerShare } from "./stack/share";
 import { registerTasks } from "./tasks";
+import {
+  bridgeActionsApi,
+  currentChange,
+  registerActions,
+  splitRepo,
+} from "./views/actions";
 import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affected";
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
+import { bridgeInboxApi, InboxModel, registerInbox } from "./views/inbox";
 import { registerOpLog } from "./views/oplog";
 import {
   bridgeViewApi,
@@ -79,8 +92,9 @@ export interface Host {
   /** Registers the asc-ui webview hosts (P28a, P28b). Absent under tests. */
   registerWebviews?(folders: readonly string[], bridge?: BridgeManager): WebviewHost;
   /** Registers the commands, trees, status bar, search, MCP and hydration contributions
-   * (P26-P34, P47a, P49a). The plugin talks to asc only; nothing here knows a forge. Absent under tests. */
-  registerFeatures?(bridge: BridgeManager, folders: readonly string[]): Disposable;
+   * (P26-P34, P47a, P49a). The plugin talks to asc only; nothing here knows a forge. `hello` decides
+   * which asc serve services (inbox, review, ci) register. Absent under tests. */
+  registerFeatures?(bridge: BridgeManager, folders: readonly string[], hello: HelloInfo): Disposable;
 }
 
 export const GIT_PROMPT_BUTTON = "Use asc";
@@ -150,6 +164,11 @@ export async function activateWith(
       const hello = await bridge.hello();
       await host.setContext("asc.mutating", hello.compat.level === "full");
       updateNotice(hello.compat, host, hello.ascVersion);
+      // The server services contribute on the same condition the code registers on (Hello.features).
+      const server = serverFeatures(hello);
+      for (const k of ["inbox", "review", "ci"] as const) {
+        await host.setContext(FEATURE_CONTEXT_KEYS[k], server[k]);
+      }
       // Read-only views need only plugin.v1, so the SCM registers for every level but too-old.
       if (hello.compat.level !== "too-old" && host.registerScm && !scmReg) {
         scmReg = host.registerScm(bridge, ascFolders);
@@ -162,7 +181,7 @@ export async function activateWith(
       if (hello.compat.level !== "too-old" && !registering) {
         registering = true;
         if (host.registerWebviews) subs.push(host.registerWebviews(ascFolders, bridge));
-        if (host.registerFeatures) subs.push(host.registerFeatures(bridge, ascFolders));
+        if (host.registerFeatures) subs.push(host.registerFeatures(bridge, ascFolders, hello));
       }
       return hello.compat;
     } catch (e) {
@@ -206,6 +225,7 @@ interface FeatureEnv {
   ctx: vscodeTypes.ExtensionContext;
   mgr: BridgeManager;
   roots: readonly string[];
+  hello: HelloInfo;
   log(line: string): void;
   ascPath(): string;
 }
@@ -216,7 +236,7 @@ function disposeAll(subs: Sub[]): void {
 
 /** Registers every contribution that is not the SCM provider, blame or the webview hosts. */
 export function registerAll(e: FeatureEnv): Disposable {
-  const { vscode, ctx, mgr, roots, log } = e;
+  const { vscode, ctx, mgr, roots, hello, log } = e;
   const subs: Sub[] = [];
   const cmd = (id: string, fn: (...a: never[]) => unknown): void => {
     subs.push(vscode.commands.registerCommand(id, fn as (...a: unknown[]) => unknown));
@@ -227,6 +247,9 @@ export function registerAll(e: FeatureEnv): Disposable {
   const viewApi = bridgeViewApi(mgr);
   const historyApi = bridgeHistoryApi(mgr);
   const onWatchError = (err: unknown) => log(`asc watch: ${String(err)}`);
+
+  // P31a: stack checkout through `asc stack get`; the asc server decides what a remote supports.
+  const checkout = new StackCheckout(statusApi, { info: ui.info, error: ui.error });
 
   // P26a: create, amend, reword, absorb, stage ranges and hunks, discard, undo, redo.
   subs.push(registerCommands(vscode, mgr, roots, log));
@@ -325,8 +348,6 @@ export function registerAll(e: FeatureEnv): Disposable {
     ),
   );
 
-  // P31a: stack checkout through `asc stack get`; the asc server decides what a remote supports.
-  const checkout = new StackCheckout(statusApi, { info: ui.info, error: ui.error });
   cmd("asc.review.checkoutStack", async () => {
     const t = await vscode.window.showInputBox({
       prompt: "Review number to check out as a stack",
@@ -342,6 +363,83 @@ export function registerAll(e: FeatureEnv): Disposable {
     await checkout.run(root, { kind: "pr", number: n });
     after(root);
   });
+
+  // The asc serve services (inbox.v1, review.v1, ci.v1): each registers only when Hello advertises
+  // it and a root has an asc server, the same condition that sets its `asc.feature.*` context key.
+  const feat = serverFeatures(hello);
+  const targets = serverTargets(hello);
+  const targetOf = (root: string) => targets.find((t) => t.root === root);
+  const serverRoots = targets.map((t) => t.root);
+  if (feat.inbox) {
+    const api = bridgeInboxApi(mgr, () => targets);
+    const model = new InboxModel({
+      api,
+      signedIn: () => targets.length > 0,
+      onError: (err) => log(`asc inbox: ${String(err)}`),
+    });
+    const poller = new InboxCountPoller({
+      api,
+      signedIn: () => targets.length > 0,
+      enabled: () => cfg().get<boolean>("inbox.statusBar", true),
+      onError: (err) => log(`asc inbox count: ${String(err)}`),
+    });
+    subs.push(
+      registerInbox(vscode, model, log, async (item) => {
+        await checkout.run(item.root, { kind: "change", id: item.id });
+        after(item.root);
+      }),
+      registerInboxCount(vscode, poller),
+    );
+  }
+  if (feat.review) {
+    subs.push(
+      registerReviewComments(
+        vscode,
+        bridgeReviewApi(mgr),
+        {
+          current: async (root) => {
+            const t = targetOf(root);
+            return t ? currentChangeRef(mgr, root, t.repo) : undefined;
+          },
+        },
+        serverRoots,
+        log,
+      ),
+    );
+  }
+  if (feat.ci) {
+    const apis = new Map(targets.map((t) => [t.root, bridgeActionsApi(mgr, t)]));
+    subs.push(
+      registerActions(
+        vscode,
+        {
+          async target(root) {
+            const t = targetOf(root);
+            const name = t ? splitRepo(t.repo) : undefined;
+            if (!name) return undefined;
+            const change = await currentChange(mgr, root).catch(() => undefined);
+            return { ...name, ...(change === undefined ? {} : { change }) };
+          },
+          api: (root) => apis.get(root),
+          onStale(root, fn) {
+            const ac = new AbortController();
+            void pump(
+              viewApi,
+              root,
+              ac.signal,
+              (k) => {
+                if (k === "head" || k === "ref" || k === "op-finished") fn();
+              },
+              onWatchError,
+            );
+            return { dispose: () => ac.abort() };
+          },
+        },
+        serverRoots,
+        log,
+      ),
+    );
+  }
 
   return { dispose: () => disposeAll(subs) };
 }
@@ -403,8 +501,8 @@ export function vscodeHost(
     },
     registerBlame: (bridge, folders) =>
       registerBlame(vscode, bridge, folders, (l) => out().appendLine(l)),
-    registerFeatures: (mgr, roots) =>
-      registerAll({ vscode, ctx, mgr, roots, log: (l) => out().appendLine(l), ascPath }),
+    registerFeatures: (mgr, roots, hello) =>
+      registerAll({ vscode, ctx, mgr, roots, hello, log: (l) => out().appendLine(l), ascPath }),
   };
 }
 
