@@ -12,6 +12,8 @@
     <postStartupActivity implementation="asc.asc.vcs.AscMappingActivity"/>
     <postStartupActivity implementation="asc.asc.vcs.AscWatchStartup"/>
     <projectService serviceImplementation="asc.asc.vcs.AscWatchService"/>
+    <vcs.changes.localCommitExecutor implementation="asc.asc.vcs.AscSubmitExecutor"/>
+    <vcs.ignoredFileProvider implementation="asc.asc.vcs.AscIgnoreProvider"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>

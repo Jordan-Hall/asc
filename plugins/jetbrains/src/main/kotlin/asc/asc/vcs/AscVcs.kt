@@ -7,6 +7,8 @@ import com.intellij.openapi.vcs.changes.ChangeProvider
 import com.intellij.openapi.vcs.annotate.AnnotationProvider
 import com.intellij.openapi.vcs.diff.DiffProvider
 import com.intellij.openapi.vcs.history.VcsHistoryProvider
+import com.intellij.openapi.vcs.checkin.CheckinEnvironment
+import com.intellij.openapi.vcs.rollback.RollbackEnvironment
 import com.intellij.openapi.vcs.merge.MergeProvider
 
 /** The `asc` version control system (SPEC 24.5.1). Features arrive with P37b onwards. */
@@ -34,6 +36,14 @@ class AscVcs(project: Project) : AbstractVcs(project, NAME) {
     private val mergeProvider by lazy { AscMergeProvider(project) }
 
     override fun getMergeProvider(): MergeProvider = mergeProvider
+
+    private val checkinEnvironment by lazy { AscCheckinEnvironment(project, this) }
+
+    override fun getCheckinEnvironment(): CheckinEnvironment = checkinEnvironment
+
+    private val rollbackEnvironment by lazy { AscRollbackEnvironment(project) }
+
+    override fun getRollbackEnvironment(): RollbackEnvironment = rollbackEnvironment
 
     companion object {
         const val NAME = "asc"
