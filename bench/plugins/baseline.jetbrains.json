@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "target": "jetbrains",
+  "budgets": {
+    "activationMs": 30,
+    "inertActivationMs": 5,
+    "jvmHeapDeltaMiB": 25,
+    "bridgeRssMiB": 20,
+    "jarBytes": 4194304
+  },
+  "tolerance": { "relative": 0.1, "absoluteMs": 5, "absoluteMiB": 1, "absoluteBytes": 16384 },
+  "measured": {
+    "activationMs": null,
+    "inertActivationMs": null,
+    "jvmHeapDeltaMiB": null,
+    "bridgeRssMiB": null,
+    "jarBytes": null
+  }
+}
