@@ -7,8 +7,13 @@ use std::process::ExitCode;
 use crate::cli::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
+#[path = "../cli/codeintel/scip.rs"]
+mod scip;
+
 const USAGE: &str = "usage: asc codeintel worker [--once] [--now]
        asc codeintel enable-embed [--from <dir>]
+       asc codeintel upload-scip <index.scip> [--rev <revspec>] [--root <dir>]
+       asc codeintel status [--rev <rev>] [--remote <name|url>] [--json]
 
     --once    index the current HEAD and exit
     --now     do not wait for the workspace to be idle
@@ -28,7 +33,7 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "codeintel",
-    flags: &["--once", "--now", "--from"],
+    flags: &["--once", "--now", "--from", "--rev", "--remote", "--json"],
     placeholders: &[],
 }];
 
@@ -45,6 +50,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             }
             super::worker::run(ctx, opts).await
+        }
+        Some("status") => {
+            let rest: Vec<OsString> = words.cloned().collect();
+            crate::cli::codeintel::status::run(ctx, &rest).await
+        }
+        Some("upload-scip") => {
+            let words: Option<Vec<&str>> = words.map(|w| w.to_str()).collect();
+            let words = words.ok_or_else(|| CliError::Usage(USAGE.trim_end().to_owned()))?;
+            scip::run(ctx, words.into_iter()).await
         }
         Some("enable-embed") => {
             let mut from: Option<std::path::PathBuf> = None;
