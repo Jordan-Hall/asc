@@ -349,6 +349,19 @@ impl RequestMerger {
         let op_id = ctx
             .op_id
             .ok_or_else(|| Status::invalid_argument("mutating calls need x-asc-op-id"))?;
+        // Only published versions land: a change with no `change_versions` row is an
+        // unpublished draft (the head read falls back to its changeset at version 0).
+        for l in &links {
+            let published = super::versions::latest(&mut *reader.conn, reader.ns, l.change)
+                .await
+                .map_err(|e| internal("versions", &e))?;
+            if published.is_none_or(|p| p.cs != l.head.cs) {
+                return Ok(refused(format!(
+                    "change {} has no published version; publish it first",
+                    l.change
+                )));
+            }
+        }
         for l in links.iter().skip(1) {
             if !reader.parent_current(&l.head).await? {
                 return Ok(refused(format!(
@@ -723,6 +736,33 @@ mod tests {
         let r = f.run(4, true, WRITER).await.unwrap();
         assert_eq!(state_of(&r), MergeRequestState::Refused);
         assert!(r.reason.contains("sync"));
+        assert_eq!(f.master().await, Some(RefTarget::Changeset(f.a)));
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_change_in_the_prefix_is_refused_not_landed() {
+        let f = fx().await;
+        // Change 5 has a changeset and a meta row but no published version.
+        let c5 = commit(&f.e, &[f.a], &[("five", b"5\n")]).await;
+        let c6 = commit(&f.e, &[c5], &[("six", b"6\n")]).await;
+        let idx = index::ChangeIndex::new(f.reg.clone());
+        let mut tx = f.reg.refs().begin().await.unwrap();
+        idx.write_meta(
+            &mut tx,
+            f.e.key,
+            &ChangeMeta::new(c5, cid(5), vec![], RewriteOp::New),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        publish(&f.reg, &f.e, 6, c6, Some(5)).await;
+        let r = f.run(6, true, WRITER).await.unwrap();
+        assert_eq!(state_of(&r), MergeRequestState::Refused);
+        assert!(r.reason.contains("no published version"), "{}", r.reason);
+        assert_eq!(f.master().await, Some(RefTarget::Changeset(f.a)));
+        // The unpublished change alone is refused the same way.
+        let r = f.run(5, true, WRITER).await.unwrap();
+        assert_eq!(state_of(&r), MergeRequestState::Refused);
         assert_eq!(f.master().await, Some(RefTarget::Changeset(f.a)));
     }
 
