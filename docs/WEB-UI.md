@@ -84,11 +84,11 @@ A chord expires after 1.5 s. Every shortcut also has a visible control. Focus is
 
 ```
 screen -> hook (useQuery / useStream) -> api module -> callUnary / callStream -> BridgeTransport
-                                                         grpcWeb (production) | mock transport (tests, `?mock`)
+                                                         grpcWeb (production) | mock transport (tests, dev, `ASC_WEB_MOCK=1`)
 ```
 
-- The api modules (`web/src/api/repo.ts`, `changes.ts`) are the only code that knows service names. They return plain view models, not protobuf messages, so screens never import generated code.
-- `Api` is created once with a `BridgeTransport`. Production: `grpcWeb({ baseUrl: location.origin, headers })`, where `headers()` adds `authorization: Bearer <token>` per call. Tests and the dev build with `?mock`: `mockTransport(fixtures)`, which implements `BridgeTransport` by decoding the request with the generated schema and answering with encoded fixture messages, so the real encode/decode path is exercised.
+- The api modules (`web/src/api/repo.ts`, `changes.ts`, `review.ts`, `inbox.ts`, `ci.ts`) are the only code that knows service names. They return plain view models, not protobuf messages, so screens never import generated code.
+- `Api` is created once with a `BridgeTransport`. Production: `grpcWeb({ baseUrl: location.origin, headers })`, where `headers()` adds `authorization: Bearer <token>` per call. Tests, `rsbuild dev` and an `ASC_WEB_MOCK=1` build (the demo transport is compiled out of production bundles): `mockTransport(fixtures)`, which implements `BridgeTransport` by decoding the request with the generated schema and answering with encoded fixture messages, so the real encode/decode path is exercised.
 - Repos are addressed with `RepoRef.name = "owner/repo"` and `id_mode = ID_MODE_GIT` for git-compatible repos; the default is the repo's own mode from `RepoConfig`.
 
 ### 4.2 Content addressing is the cache
@@ -199,6 +199,9 @@ Config (`asc-serve.toml`):
 [web]
 enabled = false   # serve the web UI under /ui; default off (on in the staging example)
 # dir = "/opt/asc/web"   # serve this directory instead of the embedded build (development, hotfix)
+# grpc_web = true       # gRPC-Web and Connect unary on the RPC paths; unset, it follows `enabled`
+cors_origins = []       # other browser origins allowed to call the RPC; empty = same-origin only
+# max_request = "1MiB"  # largest gRPC-Web or Connect request body
 ```
 
 The default in code is `false`. The staging example (`deploy/asc-serve.toml.example`) shows it enabled, since the UI is read-only and anonymous visitors only receive static files; every data call needs a credential.
@@ -207,6 +210,28 @@ The default in code is `false`. The staging example (`deploy/asc-serve.toml.exam
 
 README text is untrusted. The renderer (`web/src/components/markdown.tsx`) builds React elements, never HTML strings, so raw HTML in a README is shown as text. Every URL a README can produce goes through one function, `classifyHref`: it removes control, whitespace and zero-width characters first (browsers ignore them inside a URL, so `java
 script:` is `javascript:`), then allows only `http:`, `https:` and `mailto:` as external links (`rel="noreferrer noopener" target="_blank"`), `#fragment` as an in-page anchor, and a scheme-less path as a link into the repository. Every other scheme (`javascript:`, `data:`, `vbscript:`, `file:`, `blob:`, any unknown) and protocol-relative forms (`//host`, `\host`) render as plain text. Images are not loaded at all (alt text only), which also removes tracking pixels. The CSP is the second layer: with `script-src 'self'` and no `unsafe-inline`, an injected `javascript:` URL or inline handler would not run even if the first layer failed. Tests cover the obfuscated forms and assert the CSP carries no escape hatch.
+
+### Browser RPC: gRPC-Web on the RPC listener
+
+Code: `crates/asc-serve/src/web/grpc_web.rs`; wired in `lib.rs` around `limits::guarded_routes`. Decision record: `docs/DECISIONS/0001-grpc-web-on-the-rpc-listener.md`.
+
+The service paths a native client uses (`POST /asc.v1.Repo/ListRefs`) also answer browsers, chosen by `Content-Type`; nothing is mounted at a new path, and the listener, its TLS or trusted-proxy rules and HTTP/3 are the ones the native RPC already has.
+
+| Content type | Served as |
+|---|---|
+| `application/grpc-web`, `application/grpc-web+proto` | gRPC-Web. The request body is the gRPC frame as is. The reply is the gRPC body with the trailers moved into a final `0x80` frame, so server-streaming methods stream frame by frame. A status with no message (auth failure, rate limit) is a lone trailer frame. HTTP status is 200, as for gRPC. |
+| `application/proto` | Connect unary. One message in, one message out. An error is `{"code","message"}` JSON with the Connect code's HTTP status (`unauthenticated` 401, `permission_denied` 403, `resource_exhausted` 429, ...). A streaming method answers `internal`. JSON bodies, Connect streaming and request compression are not served. |
+| `application/grpc-web-text` | 415. `fetch` streams binary, so the base64 variant is not needed. |
+| anything else | untouched (native gRPC, git, HTTP routes) |
+
+The layer sits outside admission and the services. It rewrites the request to native gRPC (`content-type: application/grpc`, `te: trailers`) and hands it on, so the same admission controller (rate limits, in-flight caps, trusted-proxy peer address), the same `Authorizer` and the same per-service limits decide it as for a native call. It adds nothing that skips a check.
+
+- Credentials: `Authorization: Bearer <token>` only. `Cookie` is dropped before the services see it; no response sets a cookie or sends `Access-Control-Allow-Credentials`; the client sends `credentials: "omit"`.
+- CORS: closed by default. A request whose `Origin` is the server's own (its `Host`, or the origin of `public_url`) gets no CORS headers, because it needs none. A cross-origin request is served only if its `Origin` is listed in `[web] cors_origins` (exact match after normalising; https, or http for a loopback host; no path; never `*`, never `null`) and gets that origin echoed with `Vary: Origin` and `Access-Control-Expose-Headers: grpc-status, grpc-message, grpc-status-details-bin, retry-after`. Any other `Origin` gets `403` before the service runs. Preflight (`OPTIONS` with `Access-Control-Request-Method`) answers `204` for listed origins with `Allow-Methods: POST`, a fixed `Allow-Headers` list (`authorization`, `content-type`, `x-grpc-web`, `x-user-agent`, `grpc-timeout`, `x-asc-root`, `x-asc-op-id`, `connect-protocol-version`, `connect-timeout-ms`) and `Max-Age: 600`.
+- Size: a declared `Content-Length` over `[web] max_request` (default 1 MiB) is refused with `RESOURCE_EXHAUSTED` before the body is read; a streamed body is cut off at the same count. Browsers cannot stream a request, so gRPC-Web serves unary and server-streaming methods only. Connect replies are buffered up to 16 MiB; gRPC-Web replies are not buffered.
+- Switch: `[web] grpc_web` unset follows `[web] enabled`. `grpc_web = true` with `enabled = false` serves browsers that bring their own UI; `grpc_web = false` with `enabled = true` keeps the UI off the RPC. `cors_origins` needs the switch on. With the switch off the layer is not installed at all.
+
+Security note: CORS is not the access control. The credential is a bearer token the page holds in memory or `sessionStorage`; there is no ambient credential for a hostile page to ride, so the origin check is defence in depth and keeps stray browsers from reading replies.
 
 ## 9. Authentication
 
@@ -221,8 +246,8 @@ The UI is a pure client of the RPC; it has no session of its own and holds no am
 
 These need a decision from the SPEC owner before the UI can leave staging:
 
-1. **Browser RPC endpoint.** SPEC section 24 records "no `tonic-web`; the browser reaches asc through the Forgejo proxy P04". This design needs a gRPC-Web endpoint on the server the UI is served from. Options: (a) add a `tonic-web` layer to `asc serve` (read allowlist only, same `allowlist.json` as P04), (b) keep the proxy and point `grpcWeb` at it (`[web] rpc_base`), losing host neutrality. The scaffold works with either because the transport is a `BridgeTransport`; the UI is tested against a mock until one exists.
-2. **Generated clients.** `review`, `inbox`, `ci` have no generated TS yet (`proto/buf.gen.ts.yaml` generates all protos but the `@asc/asc-client` exports list only repo, changes, cloud, codeintel, projects, workspace). Add subpath exports for the three before v1.2.
+1. **Browser RPC endpoint.** Resolved: `asc serve` answers gRPC-Web itself (section 8, "Browser RPC"), so the UI needs no Forgejo proxy and no `[web] rpc_base`. This deviates from SPEC section 24 ("no `tonic-web`; the browser reaches asc through the Forgejo proxy P04"). The layer is our own small tower layer, not the `tonic-web` crate (no new dependency, and it adds CORS, a request cap and Connect unary, which `tonic-web` leaves to the caller). The proxy path stays valid for deployments that want it. SPEC is not edited; the record is `docs/DECISIONS/0001-grpc-web-on-the-rpc-listener.md`. Unlike the proxy's read allowlist, the browser may call any RPC its token is authorised for; the write RPCs are the ones a token already may call natively.
+2. **Generated clients.** Resolved: `@asc/asc-client` exports `review`, `inbox` and `ci`, and `web/src/api/{review,inbox,ci}.ts` wrap their read calls (`listThreads`, `listInbox`, `countInbox`, `listRuns`) as view models. The write calls arrive with the v1.2 screens.
 3. **Listing changes.** There is no "list changes" RPC and `ChangeInfo` has no title. The v1 change list is derived: `ListRefs` (non-trunk branches and the caller's user refs), one `Stack` per ref (six in parallel, at most 50), and one `Log` per stack for titles (`LogEntry.change`, `message`). A `Changes.List` RPC with titles would replace roughly 2N+1 calls with one.
 4. **Mount path.** `/ui` now, `/` later (section 8).
 5. **Allowlist ownership.** The write RPCs the UI needs from v1.2 (`AddComment`, `ResolveThread`, `SetState`, `RequestMerge`) need the same per-method allowlist and idempotency (`x-asc-op-id`) treatment as the IDE relay.
@@ -242,4 +267,5 @@ Later: OAuth/PKCE sign-in, mount at `/`, command palette, i18n, offline shell (s
 - Integration: screens rendered with `react-dom/server` against the mock transport (repo home lists entries and README; change list orders a stack bottom to top; blob view streams chunks).
 - Build gate: `size` (budgets above), `no inline script` check on `dist/index.html`.
 - Server: `cargo test -p asc-serve web::` covers ETag/304, immutable cache headers, SPA fallback rules, 404 for missing assets, CSP header presence, encoding negotiation, method handling, and that the router is absent when `[web] enabled = false`.
+- gRPC-Web: `cargo test -p asc-serve --lib web::grpc_web` (translation, CORS, caps, Connect) and `cargo test -p asc-serve --test grpc_web` (a real server on loopback: a unary and a server-streaming call, no token, bad token, cookie ignored, CORS denied and allowed, preflight, request cap, Connect, switch off).
 - Later: Playwright with axe against `asc serve` plus the mock backend; Lighthouse CI for LCP, CLS and INP against the budgets.
