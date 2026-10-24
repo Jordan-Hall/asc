@@ -1,0 +1,10 @@
+# TypeScript messages and service descriptors for @asc/asc-client (SPEC 24.2). Output is generated,
+# gitignored and Turbo-cached. protoc-gen-es v2 emits the service descriptors itself.
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-es
+    out: packages/asc-client-ts/src/gen
+    opt:
+      - target=ts
+      - import_extension=none
