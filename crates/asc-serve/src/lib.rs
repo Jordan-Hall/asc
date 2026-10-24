@@ -58,6 +58,7 @@ pub mod ssh;
 pub mod turbo;
 pub mod update;
 pub mod watch_refs;
+pub mod web;
 
 use std::future::Future;
 use std::path::Path as FsPath;
@@ -385,6 +386,7 @@ pub async fn serve(
     };
     let http_state = http::HttpState::new(pool, outbox.clone(), metrics.clone(), well_known);
     http::register(&ext, http_state.clone());
+    web::register(&ext, &cfg.web)?;
     let turbo = Arc::new(
         turbo::TurboState::open(&cfg, authorizer.clone(), metrics.clone())
             .map_err(|e| ConfigError::Invalid(e.to_string()))?,

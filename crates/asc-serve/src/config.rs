@@ -791,6 +791,28 @@ pub struct AuthConfig {
     pub token_key_file: Option<PathBuf>,
 }
 
+/// `[web]` (docs/WEB-UI.md): the web UI, served read-only as static files under `/ui`. The files are
+/// public; every data call the UI makes is an authenticated RPC.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebConfig {
+    /// Serve the UI. Off by default. Needs the embedded build (`web/dist` present when asc-serve
+    /// was compiled) or `dir`.
+    pub enabled: bool,
+    /// Serve this build directory instead of the embedded one (development, hotfix). It has the
+    /// layout of `web/dist`: `index.html`, `static/`, optional `.br` and `.gz` siblings.
+    pub dir: Option<PathBuf>,
+}
+
+impl WebConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.dir.is_some() && !self.enabled {
+            return invalid("web.dir needs web.enabled = true");
+        }
+        Ok(())
+    }
+}
+
 /// `[[composition_grants]]`: the parent's task tokens may read the child (SPEC §15.5).
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -879,6 +901,8 @@ pub struct ServeConfig {
     pub gc: crate::gc::GcSettings,
     /// `[cloud]` (SPEC §21.3.7): `max_user_refs` and `max_user_bytes`.
     pub cloud: CloudConfig,
+    /// `[web]`: the web UI under `/ui` (docs/WEB-UI.md).
+    pub web: WebConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -906,6 +930,7 @@ impl Default for ServeConfig {
             ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
             cloud: CloudConfig::default(),
+            web: WebConfig::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -1004,6 +1029,7 @@ impl ServeConfig {
         self.ssh.validate()?;
         self.limits.validate()?;
         self.cloud.validate()?;
+        self.web.validate()?;
         self.validate_grants()
     }
 

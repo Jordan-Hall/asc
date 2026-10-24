@@ -26,3 +26,10 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 #   role = "cache"
 #   upstream = "https://asc.example.org"
 #   cache = { memory = "2GiB", disk_dir = "/var/lib/asc/cache", disk = "20GiB" }
+
+# The web UI (docs/WEB-UI.md): static files under /ui; every data call is an authenticated RPC.
+# Off by default. Needs the build embedded at compile time (bun run --cwd web build, then cargo
+# build) or a directory of that build.
+# [web]
+# enabled = true
+# dir = "/opt/asc/web"                # optional: serve this build instead of the embedded one
