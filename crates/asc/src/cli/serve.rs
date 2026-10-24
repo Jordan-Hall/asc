@@ -58,6 +58,11 @@ mod real {
     pub enum Sub {
         /// Applies the database schema, then exits.
         Migrate,
+        /// Operator commands for the ASC cutover (SPEC §14.3): import, verify, outbox, mode.
+        Admin {
+            #[command(subcommand)]
+            cmd: AdminCmd,
+        },
         /// Manages the standalone token store (`[auth] provider = "token_store"`).
         Token {
             #[command(subcommand)]
@@ -74,6 +79,65 @@ mod real {
         Ssh {
             #[command(subcommand)]
             cmd: SshCmd,
+        },
+    }
+
+    #[derive(clap::Subcommand, Debug)]
+    pub enum AdminCmd {
+        /// Imports git history into a mirror-mode repository (the only way history gets in).
+        Import {
+            #[arg(long)]
+            repo: String,
+            /// Creates the repository in mirror mode when it does not exist.
+            #[arg(long)]
+            init: bool,
+            /// The git source, without credentials; the config supplies those.
+            #[arg(long)]
+            source: Option<String>,
+        },
+        /// Checks that every git commit's export equals git; exits 1 on any mismatch.
+        VerifyImport {
+            #[arg(long = "repo", required = true)]
+            repos: Vec<String>,
+        },
+        /// Checks every ref's closure and the git map round trip.
+        Verify {
+            #[arg(long = "repo")]
+            repos: Vec<String>,
+            #[arg(long)]
+            all: bool,
+        },
+        /// Reports, or with `--wait` waits for, the undelivered outbox rows.
+        Outbox {
+            #[command(subcommand)]
+            cmd: OutboxCmd,
+        },
+        /// Sets `repos.mode`, `forgejo_reads` and `bridge`.
+        SetMode {
+            #[arg(long)]
+            repo: String,
+            #[arg(long, value_parser = ["mirror", "primary"])]
+            mode: Option<String>,
+            #[arg(long, value_parser = ["git", "asc"])]
+            forgejo_reads: Option<String>,
+            #[arg(long, value_parser = ["off", "lazy", "eager"])]
+            bridge: Option<String>,
+            /// Skips the clean-import check of a flip to primary.
+            #[arg(long)]
+            force: bool,
+        },
+    }
+
+    #[derive(clap::Subcommand, Debug)]
+    pub enum OutboxCmd {
+        Drain {
+            #[arg(long)]
+            repo: Option<String>,
+            #[arg(long)]
+            wait: bool,
+            /// Seconds to wait.
+            #[arg(long, default_value_t = 300)]
+            timeout: u64,
         },
     }
 
@@ -261,10 +325,63 @@ mod real {
         Ok(cfg)
     }
 
+    async fn admin(cfg: &ServeConfig, cmd: AdminCmd) -> Result<ExitCode> {
+        use asc_serve::admin_cli as ac;
+        use std::time::Duration;
+        let cli = ac::open(cfg).await.map_err(fatal)?;
+        let report = match cmd {
+            AdminCmd::Import { repo, init, source } => {
+                cli.import(&repo, init, source.as_deref()).await
+            }
+            AdminCmd::VerifyImport { repos } => cli.verify_import(&repos).await,
+            AdminCmd::Verify { repos, all } => cli.verify(&repos, all).await,
+            AdminCmd::Outbox {
+                cmd:
+                    OutboxCmd::Drain {
+                        repo,
+                        wait,
+                        timeout,
+                    },
+            } => {
+                cli.outbox_drain(
+                    repo.as_deref(),
+                    wait,
+                    Duration::from_secs(timeout),
+                    ac::DEFAULT_DRAIN_POLL,
+                )
+                .await
+            }
+            AdminCmd::SetMode {
+                repo,
+                mode,
+                forgejo_reads,
+                bridge,
+                force,
+            } => {
+                cli.set_mode(&ac::SetMode {
+                    repo,
+                    mode,
+                    forgejo_reads,
+                    bridge,
+                    force,
+                })
+                .await
+            }
+        }
+        .map_err(fatal)?;
+        print!("{}", report.text);
+        Ok(if report.ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        })
+    }
+
     pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let cfg = config(&a, ctx)?;
         match a.cmd {
             Some(Sub::Migrate) => asc_serve::run_migrate(&cfg).await.map_err(fatal)?,
+            Some(Sub::Admin { cmd }) => return admin(&cfg, cmd).await,
             Some(Sub::Token { cmd }) => match cmd {
                 TokenCmd::Create(flags) => {
                     let made = token_cli::create(&cfg, flags.into_args())
