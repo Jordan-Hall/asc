@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::process::ExitCode;
 
-use asc_core::id::{GitOid, RefTarget};
+use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::path::RefName;
 use asc_engine::history::HistoryApi;
 use asc_engine::sync::{Error as SyncError, PushMode, PushUpdate};
@@ -23,7 +23,11 @@ use super::common::{CliError, Ctx, Result, WsCtx};
 use super::fetch::{Line, current_branch, fatal, git_short, render, sync_error};
 use super::push_land::{self, Landing};
 use super::remote::apply_refs;
+use asc_engine::sync::changes::ChangesExt;
+use asc_state::changes::StateChanges;
+
 use super::switch::{abbrev_len, ref_name, ref_target, resolve_rev, set_config};
+use crate::branchless::push_map;
 use crate::hooks_runner::{Gate, Hook, HookEnv, PushLine, Runner, null_oid};
 use crate::native::NativeSpec;
 use crate::remote::{self, Intent, Opened, StateBoundaries};
@@ -158,6 +162,18 @@ enum Kind {
     Delete,
     UpToDate,
     Rejected(&'static str),
+    /// The server (or the branchless mapping, before sending) refused the ref.
+    RemoteRejected(String),
+}
+
+impl Kind {
+    /// Whether the ref goes to the server.
+    fn sends(&self) -> bool {
+        !matches!(
+            self,
+            Kind::UpToDate | Kind::Rejected(_) | Kind::RemoteRejected(_)
+        )
+    }
 }
 
 struct Plan {
@@ -513,6 +529,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let shown_url = super::url_display::anonymize(&opened.url);
     let abbrev = abbrev_len(ctx);
     let boundaries = StateBoundaries::new(ws);
+    let ext_slot: std::cell::OnceCell<ChangesExt<StateChanges>> = std::cell::OnceCell::new();
     let mut sync_opts = remote::options(ctx, &boundaries);
     let demote = if matches!(ws.repo.repo.remote_url.as_deref(), Some(u) if matches!(&opened.spec, crate::remote::url::RemoteSpec::Bucket { url, .. } if url == u))
     {
@@ -670,11 +687,36 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         });
     }
 
+    // Branchless mode (SPEC §21.4.3): a non-shared branch also submits `trunk..branch` as one
+    // AGit ref per change, in the same `UpdateRefs`. A merge in the range is refused here,
+    // before anything is uploaded or sent.
+    let mut mapping = push_map::Mapping::default();
+    if let Some(s) = &server
+        && !o.all
+        && !land
+    {
+        let candidates: Vec<(String, ChangesetId)> = plans
+            .iter()
+            .filter(|p| matches!(p.kind, Kind::New | Kind::FastForward | Kind::Forced))
+            .filter(|p| p.spec.dst.starts_with("refs/heads/"))
+            .filter_map(|p| match p.new {
+                Some(RefTarget::Changeset(cs)) => Some((p.spec.dst.clone(), cs)),
+                _ => None,
+            })
+            .collect();
+        mapping = push_map::plan(ctx, ws, s, &opened.name, &candidates).await?;
+        for (dst, reason) in &mapping.refused {
+            if let Some(p) = plans.iter_mut().find(|p| &p.spec.dst == dst) {
+                p.kind = Kind::RemoteRejected(reason.clone());
+            }
+        }
+    }
+
     // pre-push: before any upload, with git ids.
     if !o.no_verify && !o.dry_run {
         let mut lines = Vec::new();
         for p in &plans {
-            if matches!(p.kind, Kind::UpToDate | Kind::Rejected(_)) {
+            if !p.kind.sends() {
                 continue;
             }
             lines.push(PushLine {
@@ -708,15 +750,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     }
 
     // The upload and the ref update.
-    let to_send: Vec<&Plan> = plans
-        .iter()
-        .filter(|p| !matches!(p.kind, Kind::UpToDate | Kind::Rejected(_)))
-        .collect();
+    let to_send: Vec<&Plan> = plans.iter().filter(|p| p.kind.sends()).collect();
     let mut raced = false;
+    let mut mapped = false;
+    let mut refusal: Option<String> = None;
     let mut outcome: Option<crate::remote::server::UpdateOutcome> = None;
     if !to_send.is_empty() && !o.dry_run {
         remote::claim_local_refs(ws, &opened).await?;
-        let updates: Vec<PushUpdate> = to_send
+        let mut updates: Vec<PushUpdate> = to_send
             .iter()
             .map(|p| PushUpdate {
                 dst: ref_name(&p.spec.dst).expect("validated above"),
@@ -724,6 +765,27 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 expect: p.old.map_or(Expect::Absent, Expect::Value),
             })
             .collect();
+        let mut options = options.clone();
+        let sent_dsts: Vec<&str> = to_send.iter().map(|p| p.spec.dst.as_str()).collect();
+        let agit = mapping.updates_for(&sent_dsts)?;
+        if !agit.is_empty() {
+            mapped = true;
+            updates.extend(agit);
+            if !options.iter().any(|x| x.starts_with("asc.draft=")) {
+                options.extend(mapping.option.map(str::to_owned));
+            }
+            // The `m/` objects of the changes travel with the closure (C23).
+            let ext = ext_slot.get_or_init(|| {
+                ChangesExt::new(
+                    StateChanges::new(ws.db.clone(), ws.repo.key),
+                    &mapping.features,
+                )
+            });
+            ext.warm(&mapping.changesets_for(&sent_dsts))
+                .await
+                .map_err(fatal)?;
+            sync_opts.ext = ext;
+        }
         if let Some(s) = &server {
             let forcing = o.force
                 || o.lease.is_some()
@@ -761,6 +823,11 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 }
             }
             Err(SyncError::Refs(RefError::Conflict { .. })) => raced = true,
+            // A refusal of the server (a change this user may not update, a hook) fails the
+            // whole update: nothing moved, and the branch line says why.
+            Err(e) if mapped && push_map::refusal_reason(&e).is_some() => {
+                refusal = push_map::refusal_reason(&e);
+            }
             Err(e) => return Err(sync_error(e)),
         }
     }
@@ -789,9 +856,14 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
     // Upstream configuration (`-u`, `push.autoSetupRemote`).
     let mut tracking_notes: Vec<String> = Vec::new();
-    if (o.set_upstream || upstream.is_some()) && opened.configured && !o.dry_run && !raced {
+    if (o.set_upstream || upstream.is_some())
+        && opened.configured
+        && !o.dry_run
+        && !raced
+        && refusal.is_none()
+    {
         for p in &plans {
-            if matches!(p.kind, Kind::Rejected(_)) {
+            if matches!(p.kind, Kind::Rejected(_) | Kind::RemoteRejected(_)) {
                 continue;
             }
             if let Some(branch) = p.src_label.strip_prefix("refs/heads/")
@@ -814,8 +886,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let head_branch = current_branch(ws)?.map(|b| format!("refs/heads/{b}"));
     let mut any_rejected = raced;
     for p in &plans {
-        let kind = if raced && !matches!(p.kind, Kind::UpToDate | Kind::Rejected(_)) {
+        let kind = if raced && p.kind.sends() {
             Kind::Rejected("fetch first")
+        } else if let Some(reason) = refusal.as_ref().filter(|_| p.kind.sends()) {
+            Kind::RemoteRejected(reason.clone())
         } else {
             p.kind.clone()
         };
@@ -872,6 +946,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
             }
             Kind::Delete => ('-', "[deleted]".to_owned(), None),
             Kind::UpToDate => ('=', "[up to date]".to_owned(), None),
+            Kind::RemoteRejected(why) => {
+                any_rejected = true;
+                ('!', "[remote rejected]".to_owned(), Some(why.clone()))
+            }
             Kind::Rejected(why) => {
                 any_rejected = true;
                 let hint = match *why {
