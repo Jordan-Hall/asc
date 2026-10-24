@@ -56,6 +56,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show who last changed each top-level symbol. Off for files over 5,000 lines."
+        },
+        "asc.inbox.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the count of changes that need your review in the status bar."
         }
       }
     },
@@ -122,6 +127,26 @@
         "title": "Toggle inline blame",
         "category": "asc",
         "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.inbox.refresh",
+        "title": "Refresh inbox",
+        "category": "asc inbox"
+      },
+      {
+        "command": "asc.inbox.pin",
+        "title": "Pin",
+        "category": "asc inbox"
+      },
+      {
+        "command": "asc.inbox.unpin",
+        "title": "Unpin",
+        "category": "asc inbox"
+      },
+      {
+        "command": "asc.inbox.snooze",
+        "title": "Snooze",
+        "category": "asc inbox"
       }
     ],
     "views": {
@@ -130,6 +155,13 @@
           "type": "webview",
           "id": "asc.smartlog",
           "name": "asc Smartlog",
+          "when": "asc.workspace"
+        }
+      ],
+      "asc": [
+        {
+          "id": "asc.inbox",
+          "name": "Inbox",
           "when": "asc.workspace"
         }
       ]
@@ -195,7 +227,42 @@
           "highContrastLight": "#d19a3f"
         }
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "asc",
+          "title": "asc",
+          "icon": "icon.png"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "asc.inbox.pin",
+          "when": "view == asc.inbox && viewItem == asc.inbox.item",
+          "group": "inline"
+        },
+        {
+          "command": "asc.inbox.unpin",
+          "when": "view == asc.inbox && viewItem == asc.inbox.pinned",
+          "group": "inline"
+        },
+        {
+          "command": "asc.inbox.snooze",
+          "when": "view == asc.inbox && viewItem =~ /^asc\\.inbox\\.(item|pinned)$/",
+          "group": "inline"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "asc.inbox.refresh",
+          "when": "view == asc.inbox",
+          "group": "navigation"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "bun scripts/bundle.ts",
