@@ -223,6 +223,9 @@ impl Authorizer for Acl {
 struct Recorder {
     pre: Mutex<Vec<(String, Vec<String>)>>,
     refuse: Mutex<Option<String>>,
+    /// SQL run on the database while the hook runs: after the push was classified and imported,
+    /// before asc's reply to git.
+    mutate: Mutex<Option<(sqlx::AnyPool, &'static str)>>,
 }
 
 #[async_trait]
@@ -232,6 +235,10 @@ impl PushHooks for Recorder {
             req.principal.id.clone(),
             req.updates.iter().map(|u| u.name.clone()).collect(),
         ));
+        let mutate = self.mutate.lock().unwrap().clone();
+        if let Some((pool, sql)) = mutate {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
         match self.refuse.lock().unwrap().clone() {
             Some(m) => Err(HookRejected(m)),
             None => Ok(()),
@@ -1160,4 +1167,193 @@ async fn bytes_are_charged_to_the_objects_budget() {
         "{records:?}"
     );
     assert!(env.ref_names(&env.web).await.is_empty());
+}
+
+// ------------------------------------------------------------------------------ fail-closed user refs
+
+fn pkt(text: &str) -> Vec<u8> {
+    format!("{:04x}{text}", text.len() + 4).into_bytes()
+}
+
+fn marker_of(env: &Env) -> PathBuf {
+    env.view_path(&env.solo).join("asc-view-unshared")
+}
+
+/// A mixed push (`master` and a private branch) whose repository policy changes, or breaks,
+/// while the pipeline's hook runs: the private branch is still reported, hidden and marked as
+/// the stored user ref it is, because the answer comes from the call that stored it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_policy_that_changes_after_the_import_cannot_unhide_a_user_ref() {
+    for change in [
+        "UPDATE repos SET shared_refs = 'not json'",
+        "UPDATE repos SET shared_refs = '[\"master\",\"feat\"]'",
+        "UPDATE repos SET default_branch = 'feat'",
+    ] {
+        let env = Env::start("", "").await;
+        let alice = env.client(ALICE);
+        let a = alice.repo("a", &env.url(SOLO)).await;
+        alice
+            .commit(
+                &a, "f", "one
+", "one",
+            )
+            .await;
+        assert!(alice.run(&a, &["push", "origin", "master"]).await.ok);
+        assert!(!marker_of(&env).exists());
+
+        alice
+            .commit(
+                &a, "f", "two
+", "two",
+            )
+            .await;
+        *env.recorder.mutate.lock().unwrap() = Some((env.registry.pool().clone(), change));
+        let r = alice
+            .run(&a, &["push", "origin", "master", "HEAD:refs/heads/feat"])
+            .await;
+        *env.recorder.mutate.lock().unwrap() = None;
+        assert!(r.ok, "{change}: {}", r.stderr);
+        assert!(
+            remote_says(&r.stderr, "asc: stored as your branch 'feat'"),
+            "{change}: {}",
+            r.stderr
+        );
+        assert!(marker_of(&env).exists(), "{change}");
+        let names = env.ref_names(&env.solo).await;
+        assert!(names.iter().any(|n| n.contains("refs/users/42/heads/feat")));
+    }
+}
+
+/// A policy that cannot be read still marks the view before anything is imported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unreadable_policy_marks_the_view_before_the_import() {
+    let env = Env::start("", "").await;
+    let alice = env.client(ALICE);
+    let a = alice.repo("a", &env.url(SOLO)).await;
+    alice
+        .commit(
+            &a, "f", "one
+", "one",
+        )
+        .await;
+    assert!(alice.run(&a, &["push", "origin", "master"]).await.ok);
+    sqlx::query("UPDATE repos SET shared_refs = 'not json'")
+        .execute(env.registry.pool())
+        .await
+        .unwrap();
+    alice
+        .commit(
+            &a, "f", "two
+", "two",
+        )
+        .await;
+    let r = alice
+        .run(&a, &["push", "origin", "HEAD:refs/heads/feat"])
+        .await;
+    assert!(!r.ok, "{}", r.stderr);
+    assert!(marker_of(&env).exists());
+    let names = env.ref_names(&env.solo).await;
+    assert!(!names.iter().any(|n| n.contains("refs/users")), "{names:?}");
+}
+
+/// A push that may store a user ref is refused when the unshared marker cannot be written, and
+/// nothing is stored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_marker_write_refuses_the_push() {
+    let env = Env::start("", "").await;
+    let alice = env.client(ALICE);
+    let a = alice.repo("a", &env.url(SOLO)).await;
+    alice
+        .commit(
+            &a, "f", "one
+", "one",
+        )
+        .await;
+    assert!(alice.run(&a, &["push", "origin", "master"]).await.ok);
+    // A directory where the marker file goes: the write fails.
+    std::fs::create_dir(marker_of(&env)).unwrap();
+    alice
+        .commit(
+            &a, "f", "two
+", "two",
+        )
+        .await;
+    let r = alice
+        .run(&a, &["push", "origin", "HEAD:refs/heads/feat"])
+        .await;
+    assert!(!r.ok, "{}", r.stderr);
+    let names = env.ref_names(&env.solo).await;
+    assert!(!names.iter().any(|n| n.contains("refs/users")), "{names:?}");
+}
+
+/// A protocol v2 session opened before a private push cannot `want` the private commit after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_v2_session_open_during_a_private_push_cannot_fetch_it() {
+    let env = Env::start("", "").await;
+    let alice = env.client(ALICE);
+    let a = alice.repo("a", &env.url(SOLO)).await;
+    alice
+        .commit(
+            &a, "f", "one
+", "one",
+        )
+        .await;
+    assert!(alice.run(&a, &["push", "origin", "master"]).await.ok);
+
+    let mut c = login(&env, BOB).await;
+    let mut ch = start_cmd(
+        &mut c,
+        "git-upload-pack '/acme/solo.git'",
+        Some("version=2"),
+    )
+    .await;
+    let first = first_data(&mut ch).await.expect("an advertisement");
+    assert!(String::from_utf8_lossy(&first).contains("version 2"));
+
+    let secret = alice
+        .commit(
+            &a, "secret", "private
+", "private",
+        )
+        .await;
+    let r = alice
+        .run(&a, &["push", "origin", "HEAD:refs/heads/feat"])
+        .await;
+    assert!(r.ok, "{}", r.stderr);
+    assert!(marker_of(&env).exists());
+
+    let mut request = pkt("command=fetch
+");
+    request.extend(pkt("object-format=sha1
+"));
+    request.extend(b"0001");
+    request.extend(pkt(&format!(
+        "want {secret}
+"
+    )));
+    request.extend(pkt("done
+"));
+    request.extend(b"0000");
+    ch.data(&request[..]).await.unwrap();
+    let (data, stderr) = within(20, async {
+        let (mut data, mut stderr) = (Vec::new(), String::new());
+        while let Some(msg) = ch.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { data: d } => data.extend_from_slice(&d),
+                russh::ChannelMsg::ExtendedData { data: d, .. } => {
+                    stderr.push_str(&String::from_utf8_lossy(&d));
+                }
+                russh::ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        (data, stderr)
+    })
+    .await;
+    assert!(
+        !data.windows(4).any(|w| w == b"PACK"),
+        "a private commit was served over a v2 session: {}",
+        String::from_utf8_lossy(&data)
+    );
+    assert!(stderr.contains("changed"), "{stderr}");
 }

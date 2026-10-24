@@ -666,6 +666,7 @@ impl ServerRefs {
                 name: p.text.clone(),
                 old: current.as_ref().map(wire::RefTarget::from),
                 new: p.new.as_ref().map(wire::RefTarget::from),
+                user: p.user,
             });
             if !p.user {
                 hook_updates.push(HookUpdate {
@@ -814,6 +815,7 @@ impl ServerRefs {
                 name: (*name).to_owned(),
                 old: Some(wire::RefTarget::from(target)),
                 new: None,
+                user: false,
             });
         }
         let response = wire::UpdateRefsResponse {

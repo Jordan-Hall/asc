@@ -602,6 +602,7 @@ pub(crate) async fn run(
                 name: refname.clone(),
                 old: current.as_ref().map(wire::RefTarget::from),
                 new: Some(wire::RefTarget::from(&new)),
+                user: false,
             }],
             rewritten: landing
                 .rewrite
