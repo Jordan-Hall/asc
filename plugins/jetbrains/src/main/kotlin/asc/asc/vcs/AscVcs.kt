@@ -4,7 +4,9 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.AbstractVcs
 import com.intellij.openapi.vcs.VcsKey
 import com.intellij.openapi.vcs.changes.ChangeProvider
+import com.intellij.openapi.vcs.annotate.AnnotationProvider
 import com.intellij.openapi.vcs.diff.DiffProvider
+import com.intellij.openapi.vcs.history.VcsHistoryProvider
 
 /** The `asc` version control system (SPEC 24.5.1). Features arrive with P37b onwards. */
 class AscVcs(project: Project) : AbstractVcs(project, NAME) {
@@ -19,6 +21,14 @@ class AscVcs(project: Project) : AbstractVcs(project, NAME) {
     private val diffProvider by lazy { AscDiffProvider(project) }
 
     override fun getDiffProvider(): DiffProvider = diffProvider
+
+    private val annotationProvider by lazy { AscAnnotationProvider(project) }
+
+    override fun getAnnotationProvider(): AnnotationProvider = annotationProvider
+
+    private val historyProvider by lazy { AscHistoryProvider(project) }
+
+    override fun getVcsHistoryProvider(): VcsHistoryProvider = historyProvider
 
     companion object {
         const val NAME = "asc"
