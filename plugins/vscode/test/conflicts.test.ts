@@ -5,6 +5,7 @@ import {
   type ConflictsState,
   ConflictsModel,
   hasConflictMarkers,
+  isPaused,
   mergeEditorArgs,
   planOpen,
 } from "../src/conflicts";
@@ -42,6 +43,15 @@ describe("conflicts: banner", () => {
     );
     expect(bannerFor({ inProgress: "", conflicts: [] })).toBeNull();
     expect(bannerFor({ inProgress: "rebase", conflicts: [] })?.text).toContain("paused");
+  });
+});
+
+describe("conflicts: paused context", () => {
+  test("an operation in progress is paused, conflicts alone are not", () => {
+    expect(isPaused({ inProgress: "rebase", conflicts: [] })).toBe(true);
+    expect(isPaused({ inProgress: "merge", conflicts: [entry("a")] })).toBe(true);
+    expect(isPaused({ inProgress: "", conflicts: [entry("a")] })).toBe(false);
+    expect(isPaused({ inProgress: "bisect", conflicts: [] })).toBe(false);
   });
 });
 
