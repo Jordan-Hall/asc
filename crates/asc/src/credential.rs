@@ -421,7 +421,11 @@ pub fn failure_message(url: &Url, refused: bool, prompts_disabled: bool) -> Stri
 /// command calls this; libraries pass `Prompt::Never`.
 pub fn terminal_prompt() -> Prompt {
     use std::io::IsTerminal;
-    if std::io::stdin().is_terminal() {
+    use std::sync::OnceLock;
+    // Asked once, at the first call: on Windows the probe blocks while another thread has a
+    // read pending on the same pipe, which is what `asc api --stdio` always has.
+    static TTY: OnceLock<bool> = OnceLock::new();
+    if *TTY.get_or_init(|| std::io::stdin().is_terminal()) {
         Prompt::Allowed
     } else {
         Prompt::Never

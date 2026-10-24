@@ -62,6 +62,8 @@ fn fatal(text: impl std::fmt::Display) -> CliError {
 /// Entry point of `asc api --stdio`.
 pub async fn serve_stdio(ctx: &Ctx) -> Result<ExitCode, CliError> {
     use std::io::IsTerminal;
+    // `terminal_prompt` caches the same probe: it must be asked before the first read is pending.
+    let _ = crate::credential::terminal_prompt();
     if std::io::stdin().is_terminal() {
         return Err(fatal(
             "'asc api --stdio' speaks framed protobuf on standard input and is started by an editor, not by hand",
@@ -259,7 +261,6 @@ impl Bridge {
         if let Some(r) = self.roots.borrow().get(&path) {
             return Ok(r.clone());
         }
-        eprintln!("DBG ctx open");
         let ctx = Ctx::open(self.prog, self.env.clone(), path.clone())
             .await
             .map_err(|e| Status::failed_precondition(e.to_string()))?;
@@ -295,8 +296,8 @@ impl Bridge {
                         "the daemon is turned off (ASC_NO_DAEMON)",
                     ));
                 }
-                let (cfg, proc) = crate::cli::daemon::system()
-                    .map_err(|e| Status::unavailable(e.to_string()))?;
+                let (cfg, proc) =
+                    crate::cli::daemon::system().map_err(|e| Status::unavailable(e.to_string()))?;
                 lifecycle::ensure_running(&cfg, &proc)
                     .await
                     .map_err(|e| Status::unavailable(e.to_string()))?;
@@ -343,15 +344,12 @@ impl Bridge {
         streaming: bool,
         out: &Out,
     ) -> Result<(), Status> {
-        eprintln!("DBG server_of");
         let server = Self::server_of(root).await?;
-        eprintln!("DBG got server");
         let op = uuid::Uuid::now_v7();
         let mut attempt = 0;
         loop {
             let session = server.session();
             let req = session.wire.request(request.clone(), Some(op));
-            eprintln!("DBG upstream");
             match upstream(&session.wire.channel, path, req, streaming).await {
                 Ok(up) => {
                     let r = relay(up, id, out).await;
@@ -423,12 +421,11 @@ impl Bridge {
             info.ws_id = ws.workspace.ws.id.to_string();
         }
         // TODO(B07): the repository's own `branchless` flag; unknown, so the default applies.
-        info.branchless = crate::branchless::mode::Settings::resolve(
-            &state.ctx.config,
-            &state.ctx.env,
-            &|k| std::env::var(k).ok(),
-        )
-        .is_ok_and(|s| s.mode(None) == crate::branchless::mode::Mode::Branchless);
+        info.branchless =
+            crate::branchless::mode::Settings::resolve(&state.ctx.config, &state.ctx.env, &|k| {
+                std::env::var(k).ok()
+            })
+            .is_ok_and(|s| s.mode(None) == crate::branchless::mode::Mode::Branchless);
         let Some(url) = cfg_get(state.ctx.config.file(), "remote.origin.url") else {
             info.remote_kind = "none".to_owned();
             info.server = Connectivity::NotConfigured as i32;

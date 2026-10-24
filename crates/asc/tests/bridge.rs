@@ -47,7 +47,9 @@ impl Bridge {
                     .args(["/F", "/PID", &pid])
                     .output()
             } else {
-                std::process::Command::new("kill").args(["-9", &pid]).output()
+                std::process::Command::new("kill")
+                    .args(["-9", &pid])
+                    .output()
             };
         });
         Self { child }
@@ -201,7 +203,11 @@ fn an_oversized_frame_ends_the_bridge_and_stdout_stays_clean() {
     let out = b.close();
     assert!(!out.status.success());
     assert!(out.stdout.is_empty(), "stdout carries frames only");
-    assert!(text(&out.stderr).contains("16 MiB"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("16 MiB"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 #[test]
