@@ -11,8 +11,9 @@
 //! * a change that needs a restack, or is divergent, stops the run (exit 128), as does a stack
 //!   that rests on a merge, and a change the server already shows as landed or merged. The
 //!   check is local first, so nothing is uploaded for a stack that cannot be submitted;
-//! * reviewer names are checked against the Forgejo user-name alphabet, because they travel in a
-//!   push option and a comma, `=` or control character would change what the option says;
+//! * reviewer names are checked against a conservative handle alphabet (a subset of the server's
+//!   user handles), because they travel in a push option and a comma, `=` or control character
+//!   would change what the option says;
 //! * `--update-only` needs `Changes.ResolveChanges` and sends only the changes that already have
 //!   a PR (the server is told too, with `asc.update_only`); when the server cannot say, nothing is
 //!   sent.
@@ -58,7 +59,7 @@ use crate::stack::json::{VERSION, line};
 pub const MAX_CHANGES: usize = 256;
 /// Most reviewers one submit names.
 pub const MAX_REVIEWERS: usize = 32;
-/// Longest reviewer name (Forgejo's user-name limit).
+/// Longest reviewer handle this client sends (shorter than the server's own limit).
 pub const MAX_REVIEWER_LEN: usize = 40;
 /// Most lines of the server's message that are printed.
 const MAX_MESSAGE_LINES: usize = 200;
@@ -121,8 +122,9 @@ super::verb!(SUBMIT, "submit");
 // ------------------------------------------------------------------------------ pure parts
 
 /// Whether `name` is a reviewer name that cannot change the meaning of the push option it
-/// travels in: Forgejo's user-name alphabet, 1..=[`MAX_REVIEWER_LEN`] bytes, not starting with
-/// a dot or a dash.
+/// travels in: a handle of `[A-Za-z0-9._-]`, 1..=[`MAX_REVIEWER_LEN`] bytes, not starting with a
+/// dot or a dash. The server's `valid_handle` accepts a superset (`@` and `+` too), and `asc` does
+/// not link `asc-serve` by default, so this client keeps its own narrower copy.
 pub fn valid_reviewer(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= MAX_REVIEWER_LEN
