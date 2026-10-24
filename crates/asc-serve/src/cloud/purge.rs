@@ -180,7 +180,7 @@ impl Effect for CacheEvict {
 /// Who asks. A purge needs an owner identity or admin rights.
 #[derive(Clone, Copy, Debug)]
 pub struct Who {
-    /// The verified Forgejo user id, when the credential carries one.
+    /// The provider-verified user id, when the credential carries one.
     pub owner: Option<i64>,
     /// Whether the credential has repo admin.
     pub admin: bool,

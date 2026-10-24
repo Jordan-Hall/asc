@@ -1262,17 +1262,20 @@ async fn the_listener_is_not_bound_unless_every_condition_holds() {
     );
     assert!(!dir2.path().join("hk").exists());
 
-    // `provider = "forge"` on the public API alone (Stage 1): not bound.
-    let forge = config(&format!(
-        "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\n{ssh2}"
-    ));
-    assert!(
-        asc_serve::ssh::start(&forge, true, deps(Arc::default()))
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(!dir2.path().join("hk").exists());
+    // `provider = "forgejo"` on the public API alone (Stage 1): not bound.
+    #[cfg(feature = "forgejo")]
+    {
+        let forge = config(&format!(
+            "[auth]\nprovider = \"forgejo\"\n[forgejo]\nurl = \"https://forge.example\"\n{ssh2}"
+        ));
+        assert!(
+            asc_serve::ssh::start(&forge, true, deps(Arc::default()))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(!dir2.path().join("hk").exists());
+    }
 
     // Off by default.
     let off = config(store);

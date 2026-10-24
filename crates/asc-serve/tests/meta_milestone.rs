@@ -359,7 +359,6 @@ async fn start() -> Server_ {
         real,
         MirrorConfig {
             dir: tmp.path().join("mirrors"),
-            secret: None,
             forgejo_url: None,
             allowed_hosts: Vec::new(),
             interval: Duration::from_secs(3600),

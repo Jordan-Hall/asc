@@ -795,7 +795,7 @@ async fn a_stored_principal_text_is_never_trusted() {
     };
     let p = got(&pat).await.unwrap();
     assert_eq!(p.id, "pat:forgejo-internal");
-    assert_ne!(p.id, asc_serve::forgejo::INTERNAL_PRINCIPAL);
+    assert_ne!(p.id, asc_serve::authz::HOST_SERVICE_PRINCIPAL);
     assert_eq!(got(&deploy).await.unwrap().id, "deploy:acme/web");
     assert_eq!(got(&ci).await.unwrap().id, format!("ci:{}", &ci[4..20]));
 
@@ -905,12 +905,13 @@ async fn look_alike_principals_have_distinct_ids_and_scopes() {
     let put = |hash: &str| format!("/v8/artifacts/{hash}?slug=acme.web&teamId=team_x");
 
     // (user or None for a deploy token, repo grant)
-    let cases: [(Option<&str>, &str); 6] = [
+    let cases: [(Option<&str>, &str); 7] = [
         (Some("deploy_acme_web"), "acme/web"), // cleaned like `deploy:acme/web`
         (None, "acme/web"),                    // deploy:acme/web
         (Some("a.b"), "acme/web"),             // cleaned like a_b
         (Some("a_b"), "acme/web"),
-        (Some("forgejo-internal"), "acme/web"), // must not equal the forge's internal principal
+        (Some("forgejo-internal"), "acme/web"), // must not equal the legacy host service
+        (Some("host-service"), "acme/web"),     // must not equal the host-service principal
         (Some("alice"), "acme/web"),
     ];
     let mut tokens = Vec::new();
@@ -925,7 +926,7 @@ async fn look_alike_principals_have_distinct_ids_and_scopes() {
     let mut ids = std::collections::HashSet::new();
     for t in &tokens {
         let id = f.check(t, "acme/web", Access::Write).await.unwrap().id;
-        assert_ne!(id, asc_serve::forgejo::INTERNAL_PRINCIPAL);
+        assert_ne!(id, asc_serve::authz::HOST_SERVICE_PRINCIPAL);
         assert!(ids.insert(id));
     }
     // Each token writes its own artifact; no other token can read it back.
@@ -1085,6 +1086,8 @@ async fn the_server_refuses_to_start_without_its_key_and_the_cli_validates() {
 fn config_validates_the_auth_keys() {
     let base = "store = \"memory:///\"\ndb = \"sqlite:x.db\"\n";
     assert!(ServeConfig::parse(&format!("{base}[auth]\nprovider = \"token_store\"\n")).is_err());
+    assert!(ServeConfig::parse(&format!("{base}[auth]\nprovider = \"forgejo\"\n")).is_err());
+    // The deprecated spelling names the same provider, so it also needs its section.
     assert!(ServeConfig::parse(&format!("{base}[auth]\nprovider = \"forge\"\n")).is_err());
     assert!(ServeConfig::parse(&format!("{base}[auth]\nprovider = \"nope\"\n")).is_err());
     assert!(ServeConfig::parse(&format!("{base}[auth]\nsurprise = 1\n")).is_err());
@@ -1093,12 +1096,21 @@ fn config_validates_the_auth_keys() {
         "{base}[auth]\nprovider = \"token_store\"\ntoken_key_file = \"/etc/asc/k\"\n"
     ))
     .unwrap();
-    assert!(cfg.forgejo.is_none());
-    // Absent provider with [forgejo] set means forge.
-    let cfg =
-        ServeConfig::parse(&format!("{base}[forgejo]\nurl = \"https://f.example\"\n")).unwrap();
     assert_eq!(
         cfg.auth_provider(),
-        Some(asc_serve::config::AuthProvider::Forge)
+        Some(asc_serve::config::AuthProvider::TokenStore)
     );
+    // A `[forgejo]` section no longer selects the provider: it must be named.
+    #[cfg(feature = "forgejo")]
+    {
+        assert!(cfg.forgejo.is_none());
+        let section = "[forgejo]\nurl = \"https://f.example\"\n";
+        assert!(ServeConfig::parse(&format!("{base}{section}")).is_err());
+        let cfg = ServeConfig::parse(&format!("{base}[auth]\nprovider = \"forgejo\"\n{section}"))
+            .unwrap();
+        assert_eq!(
+            cfg.auth_provider(),
+            Some(asc_serve::config::AuthProvider::Forgejo)
+        );
+    }
 }

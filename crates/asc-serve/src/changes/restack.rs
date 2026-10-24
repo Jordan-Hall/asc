@@ -931,7 +931,7 @@ mod tests {
     struct Internal;
     impl PushHooks for Internal {
         fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
-            ctx.principal.id == crate::forgejo::INTERNAL_PRINCIPAL
+            crate::authz::is_host_service(&ctx.principal.id)
         }
     }
 
@@ -1025,7 +1025,7 @@ mod tests {
             .with_token(WRITER, "writer", Access::Write)
             .with_token(MALLORY, "mallory", Access::Write)
             .with_token(BOB, "7:bob", Access::Write)
-            .with_token(FORGE, crate::forgejo::INTERNAL_PRINCIPAL, Access::Admin);
+            .with_token(FORGE, crate::authz::HOST_SERVICE_PRINCIPAL, Access::Admin);
         let svc = ChangesService::new(
             ext.changes.get().unwrap().clone(),
             Arc::new(auth),
@@ -1197,7 +1197,7 @@ mod tests {
         let (v1, v2) = (f.latest(1).await, f.latest(2).await);
         assert_eq!((v1.v, v1.cs, v1.parent_change), (2, n1, None));
         assert_eq!((v2.v, v2.cs, v2.parent_change), (2, n2, Some(cid(1))));
-        assert_eq!(v1.actor, crate::forgejo::INTERNAL_PRINCIPAL);
+        assert_eq!(v1.actor, crate::authz::HOST_SERVICE_PRINCIPAL);
         // The index knows the new changesets as the same changes.
         for (n, new) in [(1u8, n1), (2, n2)] {
             let q = format!(
@@ -1643,7 +1643,10 @@ mod tests {
             1
         );
         assert_eq!(f.latest(1).await.v, 2);
-        assert_eq!(f.latest(3).await.actor, crate::forgejo::INTERNAL_PRINCIPAL);
+        assert_eq!(
+            f.latest(3).await.actor,
+            crate::authz::HOST_SERVICE_PRINCIPAL
+        );
     }
 
     #[tokio::test]
@@ -1652,7 +1655,10 @@ mod tests {
         // The forge restacked change 3: its latest version is the forge's, its first is the
         // author's, who may restack it again.
         f.run(msg(f.t, vec![item(3)]), FORGE).await.unwrap();
-        assert_eq!(f.latest(3).await.actor, crate::forgejo::INTERNAL_PRINCIPAL);
+        assert_eq!(
+            f.latest(3).await.actor,
+            crate::authz::HOST_SERVICE_PRINCIPAL
+        );
         let e = f.run(msg(f.x, vec![item(3)]), MALLORY).await.unwrap_err();
         assert_eq!(e.code(), tonic::Code::PermissionDenied);
         f.run(msg(f.x, vec![item(3)]), WRITER).await.unwrap();

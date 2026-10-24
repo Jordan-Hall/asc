@@ -1,5 +1,6 @@
 //! U85: `InternalAuthz` identifies and authorises Forgejo user keys and deploy keys through K19,
 //! against a fake Forgejo (SPEC §25.11.3 item 5).
+#![cfg(feature = "forgejo")]
 
 use std::collections::HashMap;
 use std::fmt::Write as _;

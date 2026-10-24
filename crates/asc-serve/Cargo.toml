@@ -10,7 +10,10 @@ publish = false
 workspace = true
 
 [features]
-default = ["git-compat", "git-ssh", "http3"]
+default = ["git-compat", "git-ssh", "http3", "forgejo"]
+# The Forgejo adapter (hooks, authz, SSH key lookup, push webhook, `[forgejo]`, `provider = "forgejo"`).
+# Off, the server knows no forge: `provider = "forgejo"` and `[forgejo]` are rejected at config load.
+forgejo = []
 # HTTP/3 (U89b): a QUIC listener when `[tls]` and `http3_port` are set. rustls on `ring`; the
 # `asc-rpc` client is the one the tests use. Off, none of the QUIC crates is built.
 http3 = ["asc-rpc/http3", "dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls"]

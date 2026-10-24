@@ -54,8 +54,8 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use sqlx::{AnyPool, Row};
 
+use super::is_host_service;
 use super::key_file;
-use crate::forgejo::INTERNAL_PRINCIPAL;
 
 /// Random bytes in a token secret.
 pub const SECRET_BYTES: usize = 32;
@@ -486,7 +486,7 @@ fn plan(req: &NewToken, now: i64) -> Result<Plan, TokenError> {
 // ------------------------------------------------------------------------------ the store
 
 /// The principal id of a token: the kind, a colon and the full identity, so that no user name can
-/// equal a deploy or CI principal, or `forgejo-internal`, and no two principals share an id.
+/// equal a deploy or CI principal, or the host-service principal, and no two principals share an id.
 /// A user name and a repository name never contain `:`. The id is lossless; what turns it into a
 /// path (turbo's `dev-<id>`) must stay injective too, which `Scope::dev` does by hashing.
 pub fn principal_id(kind: TokenKind, user: Option<&str>, repo: &str, token_id: &str) -> String {
@@ -879,11 +879,11 @@ impl TokenStore {
 
 /// The principal of a verified row, rebuilt with [`principal_id`] from its typed columns. The
 /// stored text is never used as the principal: rows written before principals were typed hold a
-/// bare user name (or anything an operator put there), which could equal `forgejo-internal`. For
+/// bare user name (or anything an operator put there), which could equal the host-service principal. For
 /// a `pat` the stored text only supplies the user name (a leading `pat:` is dropped and the rest
 /// must be a valid user name); a `deploy` principal comes from its single exact grant, a `ci` one
 /// from the token id. `None` refuses the token: an unknown kind, a malformed user or repo, or an
-/// id that is the internal principal or not typed.
+/// id that is the host-service principal or not typed.
 fn rebuilt_principal(kind: &str, stored: &str, grants: &[Grant], token_id: &str) -> Option<String> {
     let kind = TokenKind::parse(kind)?;
     let user = stored.strip_prefix("pat:").unwrap_or(stored);
@@ -896,7 +896,7 @@ fn rebuilt_principal(kind: &str, stored: &str, grants: &[Grant], token_id: &str)
         return None;
     }
     let id = principal_id(kind, Some(user), repo, token_id);
-    (id != INTERNAL_PRINCIPAL && id.contains(':')).then_some(id)
+    (!is_host_service(&id) && id.contains(':')).then_some(id)
 }
 
 /// The public id of a well-formed token, else `None`. Shape only; it proves nothing.

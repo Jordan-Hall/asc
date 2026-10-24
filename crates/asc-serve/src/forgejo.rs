@@ -31,19 +31,24 @@ use sqlx::{AnyPool, Row};
 use url::Url;
 use uuid::Uuid;
 
+use crate::authz::{
+    HOST_SERVICE_PRINCIPAL, NEGATIVE_TTL, POSITIVE_TTL, UserIdentity, is_host_service,
+};
 use crate::changes::request_merge::{self, MergeAsk, MergeQueue, QueueError};
 use crate::config::{CompositionGrant, ForgejoConfig, ServeConfig};
+use crate::mirror::Mirror;
 use crate::outbox::{Effect, EffectError, Job, Outbox};
 use crate::registry::{Extensions, Ns, Registry};
 use crate::update::{HookRejected, HookRequest, PushHooks};
 
 #[path = "forgejo_ssh.rs"]
 mod forgejo_ssh;
+#[path = "forgejo_webhook.rs"]
+mod forgejo_webhook;
 pub use forgejo_ssh::{MAX_SSH_LOOKUPS_IN_FLIGHT, SSH_LOOKUP_TIMEOUT, SshLookupLimits, SshSupport};
+pub use forgejo_webhook::{WEBHOOK_PATH, verify_signature};
 
 /// Positive and negative authorisation answers are cached this long (SPEC §15.1).
-pub const POSITIVE_TTL: Duration = Duration::from_secs(60);
-pub const NEGATIVE_TTL: Duration = Duration::from_secs(5);
 /// Most cached authorisation answers.
 const CACHE_ENTRIES: usize = 16 * 1024;
 /// Largest response body read from Forgejo.
@@ -61,8 +66,6 @@ const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 const PUSH_TRIGGER: &str = "asc";
 /// Header carrying the operation id so Forgejo-side retries can be recognised.
 const OP_ID_HEADER: &str = "x-asc-op-id";
-/// The principal of a caller that presented Forgejo's internal token.
-pub const INTERNAL_PRINCIPAL: &str = "forgejo-internal";
 /// `git_map.kind` codes (see `registry::kind_code`).
 const KIND_COMMIT: i32 = 3;
 const KIND_TAG: i32 = 4;
@@ -266,68 +269,6 @@ fn failure_message(what: &str, status: StatusCode, body: &[u8]) -> String {
 
 // ------------------------------------------------------------------------------ identity
 
-/// Who Forgejo says the caller is. Encoded in [`Principal::id`] as `<user_id>:<username>` or
-/// `<user_id>:<username>:<deploy_key_id>` so the ref log, the hooks and the post-receive effect
-/// all agree without any shared state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ForgejoIdentity {
-    pub user_id: i64,
-    pub username: String,
-    pub deploy_key_id: i64,
-}
-
-/// The user id Forgejo gives to every Actions task (`user_model.ActionsUserID`).
-const ACTIONS_USER_ID: i64 = -2;
-
-impl ForgejoIdentity {
-    fn new(user_id: i64, username: &str, deploy_key_id: i64) -> Option<Self> {
-        let name_ok = !username.is_empty()
-            && username.len() <= 255
-            && username.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+')
-            });
-        let id_ok = user_id >= 0 || user_id == ACTIONS_USER_ID;
-        (name_ok && id_ok && deploy_key_id >= 0).then(|| Self {
-            user_id,
-            username: username.to_owned(),
-            deploy_key_id,
-        })
-    }
-
-    /// The anonymous caller.
-    pub fn anonymous() -> Self {
-        Self {
-            user_id: 0,
-            username: "anonymous".into(),
-            deploy_key_id: 0,
-        }
-    }
-
-    /// The text stored in [`Principal::id`].
-    pub fn principal_id(&self) -> String {
-        if self.deploy_key_id == 0 {
-            format!("{}:{}", self.user_id, self.username)
-        } else {
-            format!("{}:{}:{}", self.user_id, self.username, self.deploy_key_id)
-        }
-    }
-
-    /// Parses a [`principal_id`](Self::principal_id); `None` for any other principal.
-    pub fn parse(id: &str) -> Option<Self> {
-        let mut parts = id.split(':');
-        let user_id = parts.next()?.parse().ok()?;
-        let username = parts.next()?;
-        let deploy_key_id = match parts.next() {
-            Some(d) => d.parse().ok()?,
-            None => 0,
-        };
-        if parts.next().is_some() {
-            return None;
-        }
-        Self::new(user_id, username, deploy_key_id)
-    }
-}
-
 /// What the caller may do on one repository.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Perm {
@@ -378,7 +319,7 @@ pub struct TaskInfo {
 #[derive(Clone, Debug)]
 pub struct Decision {
     pub principal: Principal,
-    pub identity: Option<ForgejoIdentity>,
+    pub identity: Option<UserIdentity>,
     pub perm: Perm,
     pub is_actions_task: bool,
     pub task: Option<TaskInfo>,
@@ -390,7 +331,7 @@ impl Decision {
     fn internal() -> Self {
         Self {
             principal: Principal {
-                id: INTERNAL_PRINCIPAL.into(),
+                id: HOST_SERVICE_PRINCIPAL.into(),
             },
             identity: None,
             perm: Perm::Admin,
@@ -400,7 +341,7 @@ impl Decision {
         }
     }
 
-    fn for_identity(identity: ForgejoIdentity, perm: Perm) -> Self {
+    fn for_identity(identity: UserIdentity, perm: Perm) -> Self {
         Self {
             principal: Principal {
                 id: identity.principal_id(),
@@ -667,13 +608,13 @@ impl PublicApiAuthz {
         access: Access,
     ) -> Result<Decision, Fetch> {
         let identity = match login {
-            None => ForgejoIdentity::anonymous(),
+            None => UserIdentity::anonymous(),
             Some(_) => {
                 let (status, body) = self.get(&["api", "v1", "user"], login).await?;
                 match status {
                     StatusCode::OK => {
                         let user: ApiUser = decode(&body).map_err(|e| unavailable(&e))?;
-                        ForgejoIdentity::new(user.id, &user.login, 0)
+                        UserIdentity::new(user.id, &user.login, 0)
                             .ok_or(Fetch::Denied(AuthError::Forbidden))?
                     }
                     StatusCode::UNAUTHORIZED => {
@@ -1015,9 +956,9 @@ impl InternalAuthz {
             return Err(deny());
         }
         let identity = if login.is_none() && a.user_id == 0 && a.username.is_empty() {
-            ForgejoIdentity::anonymous()
+            UserIdentity::anonymous()
         } else {
-            ForgejoIdentity::new(a.user_id, &a.username, a.deploy_key_id).ok_or_else(deny)?
+            UserIdentity::new(a.user_id, &a.username, a.deploy_key_id).ok_or_else(deny)?
         };
         let mut d = Decision::for_identity(identity, perm);
         d.is_actions_task = a.is_actions_task;
@@ -1122,14 +1063,14 @@ pub struct HookOptions {
 
 impl HookOptions {
     /// Options for an asc push: `PushTrigger = "asc"` and the pusher from `identity`.
-    pub fn for_push(identity: Option<&ForgejoIdentity>, push_options: &[String]) -> Self {
+    pub fn for_push(identity: Option<&UserIdentity>, push_options: &[String]) -> Self {
         let mut o = Self {
             push_trigger: PUSH_TRIGGER.into(),
             ..Self::default()
         };
         if let Some(i) = identity {
             o.user_id = i.user_id;
-            o.user_name = i.username.clone();
+            o.user_name = i.handle.clone();
             o.deploy_key_id = i.deploy_key_id;
         }
         for opt in push_options {
@@ -1409,7 +1350,7 @@ impl ForgejoHooks {
             tracing::warn!(error = %e, "cannot build pre-receive options");
             HookRejected("the push cannot be checked by the forge".into())
         };
-        let identity = ForgejoIdentity::parse(&req.principal.id);
+        let identity = UserIdentity::parse(&req.principal.id);
         let entry = self
             .registry
             .open(req.repo)
@@ -1436,7 +1377,7 @@ impl ForgejoHooks {
 #[async_trait]
 impl PushHooks for ForgejoHooks {
     fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
-        ctx.principal.id == INTERNAL_PRINCIPAL
+        is_host_service(&ctx.principal.id)
     }
 
     async fn pre_receive(&self, req: &HookRequest<'_>) -> Result<(), HookRejected> {
@@ -1484,7 +1425,7 @@ impl PostReceiveEffect {
         let ns = Ns::from_bytes(&ns).ok_or_else(|| bad("repository namespace"))?;
         let repo = RepoName::parse(&name).map_err(|_| bad("repository name"))?;
         let pusher = job.doc.get("pusher").and_then(|p| p.as_str()).unwrap_or("");
-        let mut opts = HookOptions::for_push(ForgejoIdentity::parse(pusher).as_ref(), &[]);
+        let mut opts = HookOptions::for_push(UserIdentity::parse(pusher).as_ref(), &[]);
         for r in refs {
             let ref_name = r.get("name").and_then(|n| n.as_str()).unwrap_or("");
             // User refs are private to their owner and never reach the forge (SPEC §21.5.1).
@@ -1592,25 +1533,29 @@ pub fn register(
     Ok(())
 }
 
+/// Serves Forgejo's push webhook ([`WEBHOOK_PATH`]) when `[forgejo] webhook_secret_file` is set
+/// and mirror mode is on; every signed push triggers [`Mirror::trigger`] for the repository it
+/// names. Without a secret only the mirror's poll runs.
+pub fn register_webhook(
+    ext: &Extensions,
+    mirror: Option<&Arc<Mirror>>,
+    cfg: Option<&ForgejoConfig>,
+) -> Result<(), ForgejoError> {
+    let (Some(mirror), Some(path)) = (mirror, cfg.and_then(|c| c.webhook_secret_file.as_deref()))
+    else {
+        return Ok(());
+    };
+    let secret = forgejo_webhook::read_secret(path)?;
+    ext.http
+        .register(forgejo_webhook::router(mirror.clone(), secret));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use asc_core::id::{ChangesetId, TagId};
 
     use super::*;
-
-    #[test]
-    fn identity_round_trips_and_rejects_other_principals() {
-        let i = ForgejoIdentity::new(7, "alice", 0).unwrap();
-        assert_eq!(i.principal_id(), "7:alice");
-        assert_eq!(ForgejoIdentity::parse("7:alice"), Some(i));
-        let d = ForgejoIdentity::new(7, "alice", 3).unwrap();
-        assert_eq!(ForgejoIdentity::parse(&d.principal_id()), Some(d));
-        assert_eq!(ForgejoIdentity::parse(INTERNAL_PRINCIPAL), None);
-        assert_eq!(ForgejoIdentity::parse("1:a:b:c"), None);
-        assert_eq!(ForgejoIdentity::parse("-1:a"), None);
-        assert!(ForgejoIdentity::new(1, "a:b", 0).is_none());
-        assert!(ForgejoIdentity::new(1, "", 0).is_none());
-    }
 
     #[test]
     fn target_hex_round_trips() {

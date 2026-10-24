@@ -50,7 +50,7 @@ use tonic::metadata::MetadataMap;
 use uuid::Uuid;
 
 use super::rpc::{MAX_STACK, Reader};
-use crate::forgejo::ForgejoIdentity;
+use crate::authz::UserIdentity;
 use crate::idmode::IdCodec;
 use crate::registry::{Extensions, Registry, RegistryError};
 use crate::update::{ServerRefs, internal};
@@ -306,7 +306,7 @@ impl RequestMerger {
 
         if let Some(queue) = self.queue.get() {
             // A forge is attached: it decides, and nothing below lands by itself.
-            let identity = ForgejoIdentity::parse(&ctx.principal.id)
+            let identity = UserIdentity::of(&ctx.principal)
                 .filter(|i| i.user_id > 0)
                 .ok_or_else(|| {
                     Status::permission_denied("merging needs a forge user; this caller is not one")
@@ -320,7 +320,7 @@ impl RequestMerger {
             }
             let ask = MergeAsk {
                 user_id: identity.user_id,
-                user_name: identity.username,
+                user_name: identity.handle,
                 change,
                 now: req.now,
                 prefix,
@@ -475,7 +475,7 @@ mod tests {
     struct Internal;
     impl PushHooks for Internal {
         fn may_skip_pre(&self, ctx: &CallCtx) -> bool {
-            ctx.principal.id == crate::forgejo::INTERNAL_PRINCIPAL
+            crate::authz::is_host_service(&ctx.principal.id)
         }
     }
 
@@ -591,7 +591,7 @@ mod tests {
             .with_token(READER, "reader", Access::Read)
             .with_token(WRITER, "writer", Access::Write)
             .with_token(MEMBER, "7:alice", Access::Write)
-            .with_token(FORGE, crate::forgejo::INTERNAL_PRINCIPAL, Access::Admin);
+            .with_token(FORGE, crate::authz::HOST_SERVICE_PRINCIPAL, Access::Admin);
         let svc = ChangesService::new(
             ext.changes.get().unwrap().clone(),
             Arc::new(auth),

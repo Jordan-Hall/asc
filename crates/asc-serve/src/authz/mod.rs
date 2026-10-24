@@ -3,6 +3,7 @@
 //! [`authorizer`] builds the one [`Authorizer`] the `[auth] provider` key names; every surface of
 //! the server (RPC, `/v8`, `/seeds`, admin and `/mcp`) is handed that one value.
 
+pub mod identity;
 pub(crate) mod key_file;
 #[cfg(feature = "git-ssh")]
 pub mod ssh_keys;
@@ -14,8 +15,12 @@ use std::sync::Arc;
 use asc_rpc::auth::Authorizer;
 
 use crate::config::{AuthProvider, ConfigError, Role, ServeConfig};
-use crate::{DenyAll, ServeError, forgejo, migrate};
+use crate::{DenyAll, ServeError, migrate};
 
+pub use identity::{
+    HOST_SERVICE_PRINCIPAL, LEGACY_HOST_SERVICE_PRINCIPAL, NEGATIVE_TTL, POSITIVE_TTL,
+    UserIdentity, is_host_service,
+};
 pub use token_store::{TokenKey, TokenStore, TokenStoreAuthz};
 
 /// Pool size of the token store's own connections.
@@ -44,9 +49,14 @@ pub async fn authorizer(cfg: &ServeConfig) -> Result<Arc<dyn Authorizer>, ServeE
                 pool, key,
             )))))
         }
-        Some(AuthProvider::Forge) => forgejo::authorizer(cfg)
+        #[cfg(feature = "forgejo")]
+        Some(AuthProvider::Forgejo) => crate::forgejo::authorizer(cfg)
             .map_err(|e| invalid(e.to_string()))?
-            .ok_or_else(|| invalid("auth.provider = \"forge\" needs a [forgejo] section".into())),
+            .ok_or_else(|| invalid("auth.provider = \"forgejo\" needs a [forgejo] section".into())),
+        #[cfg(not(feature = "forgejo"))]
+        Some(AuthProvider::Forgejo) => Err(invalid(
+            "auth.provider = \"forgejo\" needs a build with the `forgejo` feature".into(),
+        )),
         None => Ok(Arc::new(DenyAll)),
     }
 }

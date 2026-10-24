@@ -1,4 +1,5 @@
 //! U44: the Forgejo client against a fake Forgejo (an `axum` server that records every call).
+#![cfg(feature = "forgejo")]
 
 mod forgejo {
     use std::collections::{HashMap, HashSet};
@@ -1212,7 +1213,7 @@ mod forgejo {
             .authorize(Some(&tok(INTERNAL)), "o/r", Access::Admin)
             .await
             .unwrap();
-        assert_eq!(p.id, asc_serve::forgejo::INTERNAL_PRINCIPAL);
+        assert_eq!(p.id, asc_serve::authz::HOST_SERVICE_PRINCIPAL);
         assert!(
             fake.calls("/api/internal/asc/authz").is_empty(),
             "answered locally"
@@ -1228,6 +1229,8 @@ mod forgejo {
             client: None,
         };
         assert!(hooks.may_skip_pre(&ctx(&p.id)));
+        // Rows and logs written before the principal was renamed still name the host service.
+        assert!(hooks.may_skip_pre(&ctx("forgejo-internal")));
         assert!(!hooks.may_skip_pre(&ctx("7:alice")));
         // A Forgejo user cannot pose as the internal principal: user ids carry a colon.
         assert!(!hooks.may_skip_pre(&ctx("0:forgejo-internal")));

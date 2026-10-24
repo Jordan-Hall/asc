@@ -65,24 +65,34 @@ pub fn gate(cfg: &ServeConfig, git_live: bool) -> Gate {
     }
     match cfg.auth_provider() {
         Some(AuthProvider::TokenStore) => Gate::Run,
-        Some(AuthProvider::Forge) => {
-            if cfg
-                .forgejo
-                .as_ref()
-                .is_some_and(|f| f.internal_token_file.is_some())
-            {
-                Gate::Run
-            } else {
-                Gate::Skip(
-                    "ssh with provider=forge needs the internal authz endpoint (K19); \
-                     ssh listener not started",
-                )
-            }
-        }
+        Some(AuthProvider::Forgejo) => forgejo_gate(cfg),
         None => Gate::Skip(
             "ssh needs an authorizer that holds SSH keys ([auth] provider); ssh listener not started",
         ),
     }
+}
+
+/// The gate under `provider = "forgejo"`: SSH keys resolve through the internal endpoint only.
+#[cfg(feature = "forgejo")]
+fn forgejo_gate(cfg: &ServeConfig) -> Gate {
+    if cfg
+        .forgejo
+        .as_ref()
+        .is_some_and(|f| f.internal_token_file.is_some())
+    {
+        Gate::Run
+    } else {
+        Gate::Skip(
+            "ssh with provider=forgejo needs the internal authz endpoint (K19); \
+             ssh listener not started",
+        )
+    }
+}
+
+/// Without the `forgejo` feature the provider is refused at config load, so this never runs.
+#[cfg(not(feature = "forgejo"))]
+fn forgejo_gate(_cfg: &ServeConfig) -> Gate {
+    Gate::Skip("provider=forgejo needs the `forgejo` feature; ssh listener not started")
 }
 
 /// What [`start`] needs from the running server.
@@ -191,11 +201,12 @@ mod tests {
         assert!(matches!(gate(&cfg(none), true), Gate::Skip(r) if r.contains("[auth] provider")));
     }
 
+    #[cfg(feature = "forgejo")]
     #[test]
-    fn forge_needs_the_internal_endpoint() {
+    fn forgejo_needs_the_internal_endpoint() {
         let forge = |internal: &str| {
             format!(
-                "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\n{internal}[ssh]\nenabled = true\n"
+                "[auth]\nprovider = \"forgejo\"\n[forgejo]\nurl = \"https://forge.example\"\n{internal}[ssh]\nenabled = true\n"
             )
         };
         let stage1 = forge("");
@@ -203,7 +214,7 @@ mod tests {
             matches!(gate(&cfg(&stage1), true), Gate::Skip(r) if r.contains("internal authz endpoint (K19)"))
         );
         // The [ssh] table must follow [forgejo]; the internal token file is a [forgejo] key.
-        let stage2 = "[auth]\nprovider = \"forge\"\n[forgejo]\nurl = \"https://forge.example\"\ninternal_token_file = \"t\"\n[ssh]\nenabled = true\n";
+        let stage2 = "[auth]\nprovider = \"forgejo\"\n[forgejo]\nurl = \"https://forge.example\"\ninternal_token_file = \"t\"\n[ssh]\nenabled = true\n";
         assert_eq!(gate(&cfg(stage2), true), Gate::Run);
     }
 }

@@ -30,7 +30,7 @@ use sqlx::Row;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-use crate::forgejo::INTERNAL_PRINCIPAL;
+use crate::authz::HOST_SERVICE_PRINCIPAL;
 use crate::registry::{Registry, RepoMode};
 use crate::update::{PipelineHooks, ServerRefs, now};
 
@@ -325,7 +325,7 @@ impl Expirer {
             repo: repo.clone(),
             id_mode: IdMode::Asc,
             principal: Principal {
-                id: INTERNAL_PRINCIPAL.into(),
+                id: HOST_SERVICE_PRINCIPAL.into(),
             },
             op_id: Some(Uuid::new_v4()),
             client: None,

@@ -31,7 +31,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use super::{AuthzAnswer, AuthzCacheConfig, ForgejoClient, ForgejoIdentity, JsonBody, Perm};
+use super::{AuthzAnswer, AuthzCacheConfig, ForgejoClient, JsonBody, Perm};
+use crate::authz::UserIdentity;
 
 /// How long one lookup may take, connecting to reading the last byte. The SSH login itself has
 /// 30 s (SPEC §25.11.3 item 6), so the forge gets a small part of it.
@@ -42,7 +43,7 @@ pub const MAX_SSH_LOOKUPS_IN_FLIGHT: usize = 64;
 /// The most bytes read from one answer. Real answers are under 1 KiB.
 const MAX_SSH_ANSWER: usize = 16 * 1024;
 /// Prefix of the principal of a deploy key before the repository is known. It does not parse as a
-/// [`ForgejoIdentity`], so no hook can mistake it for a Forgejo user.
+/// [`UserIdentity`], so no hook can mistake it for a Forgejo user.
 const DEPLOY_PRINCIPAL: &str = "forgejo-deploy-key:";
 
 /// Whether an authorizer can resolve SSH keys. The U86 start check reads it to refuse
@@ -334,7 +335,7 @@ fn identity_of(body: &[u8]) -> Option<Option<SshIdentity>> {
             if a.user_id <= 0 {
                 return None;
             }
-            let who = ForgejoIdentity::new(a.user_id, &a.username, 0)?;
+            let who = UserIdentity::new(a.user_id, &a.username, 0)?;
             (SshKeyKind::User, who.principal_id())
         }
         // A Forgejo deploy key is one row shared by every repository that uses it, so the
@@ -370,7 +371,7 @@ fn principal_of(body: &[u8], access: Access) -> Option<Option<Principal>> {
     if !Perm::parse(&a.perm).allows(access) || a.user_id <= 0 {
         return Some(None);
     }
-    let who = ForgejoIdentity::new(a.user_id, &a.username, a.deploy_key_id)?;
+    let who = UserIdentity::new(a.user_id, &a.username, a.deploy_key_id)?;
     Some(Some(Principal {
         id: who.principal_id(),
     }))
@@ -394,7 +395,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(dep.kind, SshKeyKind::Deploy);
-        assert!(ForgejoIdentity::parse(&dep.principal.id).is_none());
+        assert!(UserIdentity::parse(&dep.principal.id).is_none());
         // Unknown, and the empty answer, are "no key".
         assert_eq!(identity_of(b"{}"), Some(None));
         assert_eq!(identity_of(br#"{"known":false,"key_id":4}"#), Some(None));

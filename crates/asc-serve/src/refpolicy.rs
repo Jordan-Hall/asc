@@ -25,7 +25,7 @@ use asc_store::refs::{RefEntry, Refs};
 use sqlx::{AnyPool, Row};
 use tonic::Status;
 
-use crate::forgejo::ForgejoIdentity;
+use crate::authz::UserIdentity;
 use crate::update::{info, internal, rpc};
 
 /// The namespace of user refs. A client never names it in an update.
@@ -42,15 +42,15 @@ const MAX_PATTERN_LEN: usize = 1024;
 /// Enforced in the `UpdateRefs` transaction ([`check_user_ref_writes`]).
 pub const MAX_USER_REFS: i64 = 1000;
 
-/// The numeric owner id of a principal, taken only from a verified Forgejo identity: the
+/// The numeric owner id of a principal, taken only from a provider-verified [`UserIdentity`]: the
 /// authorizer encodes `<user_id>:<login>` there, and no other issuer (a token-store or SSH-key
 /// principal is `pat:<user>`, `deploy:<repo>` and so on) can produce that form. A bare number is
 /// not an identity. A deploy key acts for its repository, not for the user who owns it, so it has
 /// no user refs; neither has the anonymous caller, an Actions task, the internal principal or any
 /// other principal.
 pub fn owner_of(principal: &Principal) -> Option<i64> {
-    let who = ForgejoIdentity::parse(&principal.id)?;
-    (who.user_id > 0 && who.deploy_key_id == 0).then_some(who.user_id)
+    let who = UserIdentity::of(principal)?;
+    who.is_user().then_some(who.user_id)
 }
 
 /// The prefix of `owner`'s user refs, `refs/users/<owner>/`.

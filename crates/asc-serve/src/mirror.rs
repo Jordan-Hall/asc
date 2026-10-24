@@ -1,8 +1,9 @@
-//! Mirror mode (SPEC §8.6, PLAN U45): Forgejo stays the source of truth and the server follows.
+//! Mirror mode (SPEC §8.6, PLAN U45): the upstream host stays the source of truth and the server
+//! follows.
 //!
-//! A trigger (the signed `/hooks/forgejo` webhook, or the 60 s poll) runs `git fetch --prune`
-//! into the bare mirror `<cache disk_dir>/mirrors/<repo-id>.git` through [`RealGit`], imports the
-//! new commits incrementally (SPEC §14.1), writes their `cs_graph` rows, and sets the asc refs to
+//! A trigger ([`Mirror::trigger`], called by a host adapter's webhook, or the 60 s poll) runs
+//! `git fetch --prune` into the bare mirror `<cache disk_dir>/mirrors/<repo-id>.git` through
+//! [`RealGit`], imports the new commits incrementally (SPEC §14.1), writes their `cs_graph` rows, and sets the asc refs to
 //! the git refs with `via = mirror`, all in one transaction. One importer per repo runs at a time
 //! (SPEC §14.4 I6): an in-process mutex, plus `pg_advisory_xact_lock(repo_id)` on Postgres.
 //! Imports are idempotent, so duplicate webhooks cost one no-op fetch.
@@ -21,11 +22,6 @@ use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use axum::Router;
-use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
 use base64::Engine as _;
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
@@ -36,8 +32,6 @@ use asc_git::odb::{Odb, OdbError};
 use asc_git::realgit::{RealGit, RealGitError};
 use asc_rpc::server::RepoName;
 use asc_store::refs::{Actor, Expect, RefError, RefTxn, RefUpdate, Refs};
-use hmac::{Hmac, KeyInit, Mac};
-use sha2::Sha256;
 use sqlx::any::Any;
 use sqlx::{AnyPool, Row, Transaction};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -50,14 +44,6 @@ use crate::graph_sql::{self, NewNode};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode, SqlGitMap};
 use crate::update::{GcLock, PipelineHooks};
 
-/// The route Forgejo's push webhook posts to (SPEC §8.6).
-pub const WEBHOOK_PATH: &str = "/hooks/forgejo";
-/// The header carrying the hex HMAC-SHA256 of the body.
-const SIGNATURE_HEADER: &str = "x-forgejo-signature";
-/// Largest accepted webhook body.
-const MAX_WEBHOOK_BYTES: usize = 1 << 20;
-/// Largest webhook secret file.
-const MAX_SECRET_BYTES: u64 = 4096;
 /// Most refs one mirror may hold; a bigger remote is refused rather than half-followed.
 pub const MAX_MIRROR_REFS: usize = 500_000;
 /// Most new changesets whose graph rows one sync records.
@@ -317,7 +303,7 @@ impl MirrorSources {
         }
         if !listed {
             return Err(bad(
-                "host is not the forgejo host or an allowed mirror host",
+                "host is not the configured forge host or an allowed mirror host",
             ));
         }
         Ok(())
@@ -386,8 +372,6 @@ pub fn check_url(url: &str) -> Result<(), MirrorError> {
 pub struct MirrorConfig {
     /// `<cache disk_dir>/mirrors`.
     pub dir: PathBuf,
-    /// The webhook secret; without it the webhook route is not served and only the poll runs.
-    pub secret: Option<Vec<u8>>,
     pub forgejo_url: Option<String>,
     /// Extra hosts a client-supplied mirror URL may name (besides the Forgejo host).
     pub allowed_hosts: Vec<String>,
@@ -401,74 +385,14 @@ impl MirrorConfig {
         let Some(disk) = &cfg.cache.disk_dir else {
             return Ok(None);
         };
-        let secret = match cfg
-            .forgejo
-            .as_ref()
-            .and_then(|f| f.webhook_secret_file.as_deref())
-        {
-            Some(p) => Some(read_secret(p)?),
-            None => None,
-        };
         Ok(Some(Self {
             dir: disk.join("mirrors"),
-            secret,
-            forgejo_url: cfg.forgejo.as_ref().map(|f| f.url.clone()),
+            forgejo_url: cfg.forge_url(),
             allowed_hosts: Vec::new(),
             interval: POLL_INTERVAL,
             fetch_timeout: FETCH_TIMEOUT,
         }))
     }
-}
-
-fn read_secret(path: &Path) -> Result<Vec<u8>, MirrorError> {
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(
-        &mut std::io::Read::take(std::fs::File::open(path)?, MAX_SECRET_BYTES + 1),
-        &mut buf,
-    )?;
-    if buf.len() as u64 > MAX_SECRET_BYTES {
-        return Err(MirrorError::Git("webhook secret file is too large".into()));
-    }
-    while buf.last().is_some_and(|b| matches!(b, b'\n' | b'\r')) {
-        buf.pop();
-    }
-    if buf.is_empty() {
-        return Err(MirrorError::Git("webhook secret file is empty".into()));
-    }
-    Ok(buf)
-}
-
-// ------------------------------------------------------------------------------ webhook auth
-
-fn unhex(s: &str) -> Option<Vec<u8>> {
-    let b = s.as_bytes();
-    if !b.len().is_multiple_of(2) {
-        return None;
-    }
-    let nibble = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    };
-    b.chunks_exact(2)
-        .map(|p| Some(nibble(p[0])? << 4 | nibble(p[1])?))
-        .collect()
-}
-
-/// Whether `signature` (hex, optionally `sha256=`-prefixed) is HMAC-SHA256 of `body` under
-/// `secret`. The comparison is constant time.
-pub fn verify_signature(secret: &[u8], body: &[u8], signature: &str) -> bool {
-    let hex = signature.trim();
-    let hex = hex.strip_prefix("sha256=").unwrap_or(hex);
-    let Some(want) = unhex(hex) else {
-        return false;
-    };
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(secret) else {
-        return false;
-    };
-    mac.update(body);
-    mac.verify_slice(&want).is_ok()
 }
 
 // ------------------------------------------------------------------------------ the mirror
@@ -790,48 +714,15 @@ impl Mirror {
 
     // -------------------------------------------------------------------------- triggers
 
-    /// The webhook and poller entry points share this: sync, mapping errors to a status.
-    async fn webhook(self: Arc<Self>, headers: HeaderMap, body: Bytes) -> StatusCode {
-        let Some(secret) = &self.cfg.secret else {
-            return StatusCode::NOT_FOUND;
-        };
-        let signed = headers
-            .get(SIGNATURE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|s| verify_signature(secret, &body, s));
-        if !signed {
-            return StatusCode::UNAUTHORIZED;
-        }
-        let Some(name) = repo_of_payload(&body) else {
-            return StatusCode::BAD_REQUEST;
-        };
-        // The sync outlives a client that hangs up.
+    /// Syncs `repo` once on behalf of an outside trigger (a host adapter's push webhook). The sync
+    /// runs as its own task, so it outlives a caller that hangs up. Duplicate triggers cost one
+    /// no-op fetch.
+    pub async fn trigger(self: &Arc<Self>, repo: &RepoName) -> Result<SyncReport, MirrorError> {
         let me = self.clone();
-        let task = tokio::spawn(async move { me.sync(&name).await });
-        match task.await {
-            Ok(Ok(_)) => StatusCode::OK,
-            Ok(Err(MirrorError::NotFound(_) | MirrorError::NotMirror(_))) => StatusCode::NOT_FOUND,
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "mirror webhook sync failed");
-                StatusCode::BAD_GATEWAY
-            }
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
-
-    /// The `/hooks/forgejo` router.
-    pub fn router(self: &Arc<Self>) -> Router {
-        Router::new()
-            .route(
-                WEBHOOK_PATH,
-                post(
-                    |State(m): State<Arc<Mirror>>, headers: HeaderMap, body: Bytes| async move {
-                        m.webhook(headers, body).await
-                    },
-                ),
-            )
-            .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BYTES))
-            .with_state(self.clone())
+        let repo = repo.clone();
+        tokio::spawn(async move { me.sync(&repo).await })
+            .await
+            .map_err(|e| MirrorError::Git(format!("sync task: {e}")))?
     }
 
     /// Syncs every mirror repo once.
@@ -872,12 +763,6 @@ impl Mirror {
             }
         })
     }
-}
-
-/// The repository a Forgejo push payload names (`repository.full_name`).
-fn repo_of_payload(body: &[u8]) -> Option<RepoName> {
-    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
-    RepoName::parse(v.get("repository")?.get("full_name")?.as_str()?).ok()
 }
 
 /// Runs `cmd`, returns stdout capped at `cap` bytes (more is an error), and fails on a non-zero
@@ -1148,9 +1033,9 @@ async fn new_graph_nodes(
 
 // ------------------------------------------------------------------------------ registration
 
-/// The one registration line of this unit (called from `lib.rs`). Serves the webhook when a
-/// secret is configured; the caller starts [`Mirror::spawn_poller`] on the result. Returns `None`
-/// (mirror mode off) without `cache.disk_dir` or without a real git.
+/// The one registration line of this unit (called from `lib.rs`). A host adapter that wants push
+/// webhooks routes them to [`Mirror::trigger`]; the caller starts [`Mirror::spawn_poller`] on the
+/// result. Returns `None` (mirror mode off) without `cache.disk_dir` or without a real git.
 pub fn register(
     ext: &Extensions,
     registry: &Arc<Registry>,
@@ -1166,35 +1051,19 @@ pub fn register(
             return Ok(None);
         }
     };
-    let has_secret = mc.secret.is_some();
-    let mirror = Arc::new(Mirror::new(registry.clone(), &ext.pipeline, git, mc));
-    if has_secret {
-        ext.http.register(mirror.router());
-    }
-    Ok(Some(mirror))
+    Ok(Some(Arc::new(Mirror::new(
+        registry.clone(),
+        &ext.pipeline,
+        git,
+        mc,
+    ))))
 }
 
 #[cfg(test)]
 mod tests {
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
-
     use super::*;
     use crate::ingest::testutil::registry;
     use crate::registry::NewRepo;
-
-    const SECRET: &[u8] = b"s3cret";
-
-    fn sign(body: &[u8]) -> String {
-        let mut mac = Hmac::<Sha256>::new_from_slice(SECRET).unwrap();
-        mac.update(body);
-        mac.finalize()
-            .into_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
-    }
 
     fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
         use std::io::Write as _;
@@ -1275,7 +1144,6 @@ mod tests {
             .unwrap();
         let cfg = MirrorConfig {
             dir: tmp.path().join("mirrors"),
-            secret: Some(SECRET.to_vec()),
             forgejo_url: None,
             allowed_hosts: Vec::new(),
             interval: POLL_INTERVAL,
@@ -1305,23 +1173,6 @@ mod tests {
             entry,
             mirror,
         }
-    }
-
-    async fn webhook(f: &Fixture, repo: &str, signature: Option<String>) -> StatusCode {
-        let body =
-            format!(r#"{{"repository":{{"full_name":"{repo}"}},"ref":"refs/heads/master"}}"#);
-        let sig = signature.unwrap_or_else(|| sign(body.as_bytes()));
-        f.mirror
-            .router()
-            .oneshot(
-                Request::post(WEBHOOK_PATH)
-                    .header(SIGNATURE_HEADER, sig)
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
     }
 
     /// The git refs of the upstream, name to oid.
@@ -1533,28 +1384,16 @@ mod tests {
         assert!(args.iter().all(|a| !a.contains("secret-token")));
     }
 
-    #[test]
-    fn signatures_are_verified() {
-        let body = b"{}";
-        let good = sign(body);
-        assert!(verify_signature(SECRET, body, &good));
-        assert!(verify_signature(SECRET, body, &format!("sha256={good}")));
-        assert!(!verify_signature(b"other", body, &good));
-        assert!(!verify_signature(SECRET, b"{ }", &good));
-        assert!(!verify_signature(SECRET, body, ""));
-        assert!(!verify_signature(SECRET, body, "zz"));
-        assert!(!verify_signature(SECRET, body, &good[1..]));
-    }
-
     #[tokio::test]
-    async fn webhook_follows_the_upstream_and_duplicates_are_harmless() {
+    async fn trigger_follows_the_upstream_and_duplicates_are_harmless() {
+        let m = RepoName::parse("o/m").unwrap();
         let f = fixture().await;
         let c1 = push(&f.up, None, "a.txt", "one\n", "refs/heads/master");
         push(&f.up, Some(&c1), "b.txt", "two\n", "refs/heads/feature");
         git(&f.up, &["tag", "-a", "-m", "release", "v1", &c1], b"");
         git(&f.up, &["update-ref", "refs/pull/1/head", &c1], b"");
 
-        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        f.mirror.trigger(&m).await.unwrap();
         let got = asc_refs(&f).await;
         let mut want: Vec<_> = git_refs(&f.up)
             .into_iter()
@@ -1577,13 +1416,13 @@ mod tests {
         assert_eq!(logged, 4);
 
         // The same webhook again changes nothing.
-        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        f.mirror.trigger(&m).await.unwrap();
         assert_eq!(count(&f, "SELECT COUNT(*) FROM ref_log").await, logged);
 
         // A move, a new commit and a deletion all arrive; the ref log says `mirror`.
         let c3 = push(&f.up, Some(&c1), "c.txt", "three\n", "refs/heads/master");
         git(&f.up, &["update-ref", "-d", "refs/heads/feature"], b"");
-        assert_eq!(webhook(&f, "o/m", None).await, StatusCode::OK);
+        f.mirror.trigger(&m).await.unwrap();
         let got = asc_refs(&f).await;
         assert!(got.contains(&("refs/heads/master".to_owned(), c3)));
         assert!(!got.iter().any(|(n, _)| n == "refs/heads/feature"));
@@ -1595,21 +1434,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn webhook_rejects_bad_signatures_and_unknown_repos() {
+    async fn trigger_refuses_unknown_and_primary_repos() {
         let f = fixture().await;
         push(&f.up, None, "a", "x", "refs/heads/master");
-        assert_eq!(
-            webhook(&f, "o/m", Some("00".repeat(32))).await,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(webhook(&f, "o/zzz", None).await, StatusCode::NOT_FOUND);
+        let unknown = RepoName::parse("o/zzz").unwrap();
+        assert!(matches!(
+            f.mirror.trigger(&unknown).await,
+            Err(MirrorError::NotFound(_))
+        ));
         assert!(asc_refs(&f).await.is_empty());
         // A primary repo is not a mirror.
         f.registry
             .create(&RepoName::parse("o/p").unwrap(), &NewRepo::default())
             .await
             .unwrap();
-        assert_eq!(webhook(&f, "o/p", None).await, StatusCode::NOT_FOUND);
+        let primary = RepoName::parse("o/p").unwrap();
+        assert!(matches!(
+            f.mirror.trigger(&primary).await,
+            Err(MirrorError::NotMirror(_))
+        ));
     }
 
     #[tokio::test]

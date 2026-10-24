@@ -1,7 +1,7 @@
 //! The `Cloud` service: `GetWorkspace`, `UpdateWorkspace` and `ListWorkspaces` (SPEC §21.3.5,
 //! `Purge`; PLAN B09, B10).
 //!
-//! A workspace is `(ns, owner, name)`; `owner` is the Forgejo user id taken from the verified
+//! A workspace is `(ns, owner, name)`; `owner` is the provider user id taken from the verified
 //! identity ([`refpolicy::owner_of`]), never from the request. `UpdateWorkspace` is one
 //! transaction: compare-and-swap of `cloud_ws.version`, head rows, the `heads` counter, the
 //! workspace claim in `cloud_usage` and the `op_results` row. A retried `x-asc-op-id` returns the
@@ -48,9 +48,9 @@ use super::Limits;
 use super::expiry::CloudRoots;
 use super::purge::{CacheEvict, CacheTiers, Purger, Who};
 use super::quota::Quota;
+use crate::authz::UserIdentity;
 use crate::changes::index;
 use crate::commit_graph_rpc::{internal, registry_status};
-use crate::forgejo::ForgejoIdentity;
 use crate::idmode::IdCodec;
 use crate::refpolicy;
 use crate::registry::{Extensions, Registry, RepoEntry};
@@ -103,7 +103,7 @@ pub fn workspace_name(raw: &str) -> Result<&str, Status> {
 
 /// Which user a request names. `Ok(None)` is the caller (and the caller has no user identity).
 pub fn parse_owner(principal_id: &str, raw: &str) -> Result<Option<i64>, Status> {
-    let me = ForgejoIdentity::parse(principal_id).filter(|i| i.user_id > 0 && i.deploy_key_id == 0);
+    let me = UserIdentity::parse(principal_id).filter(UserIdentity::is_user);
     if raw.is_empty() {
         return me
             .map(|i| Some(i.user_id))
@@ -116,7 +116,7 @@ pub fn parse_owner(principal_id: &str, raw: &str) -> Result<Option<i64>, Status>
         };
     }
     match me {
-        Some(i) if i.username == raw => Ok(Some(i.user_id)),
+        Some(i) if i.handle == raw => Ok(Some(i.user_id)),
         _ => Err(Status::invalid_argument(
             "owner must be a numeric user id or your own login",
         )),
