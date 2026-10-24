@@ -1079,6 +1079,8 @@ pub async fn serve(cfg: ServeConfig, shutdown: impl Future<Output = ()>) -> Resu
         server = server.tls_config(ServerTlsConfig::new().identity(identity))?;
     }
     let mut server = server.layer(crate::alt_svc::layer(cfg.http3_port));
+    // The same router over QUIC when `[tls]` and `http3_port` are set (U89b); held until return.
+    let _h3 = crate::h3_listener::start(&cfg, &routes)?;
     tracing::info!(listen = %cfg.listen, "asc serve (cache) listening");
     let served = server
         .add_routes(routes)

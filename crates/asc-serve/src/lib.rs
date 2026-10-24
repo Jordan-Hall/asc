@@ -20,6 +20,7 @@ pub mod config;
 pub mod expire;
 pub mod forgejo;
 pub mod gc;
+pub mod h3_listener;
 #[cfg(feature = "git-compat")]
 pub mod git_http;
 #[cfg(feature = "git-compat")]
@@ -397,6 +398,8 @@ pub async fn serve(
     }
     // `Alt-Svc: h3=…` when an h3-capable proxy in front serves HTTP/3 (U89).
     let mut server = server.layer(alt_svc::layer(cfg.http3_port));
+    // The same router over QUIC when `[tls]` and `http3_port` are set (U89b); held until return.
+    let _h3 = h3_listener::start(&cfg, &routes)?;
     tracing::info!(listen = %cfg.listen, "asc serve listening");
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();

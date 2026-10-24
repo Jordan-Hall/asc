@@ -682,6 +682,8 @@ pub struct Limits {
     pub git: GitLimitsConfig,
     /// `[limits.ssh]` (SPEC §25.11.7); honoured only with the feature `git-ssh`.
     pub ssh: SshLimitsConfig,
+    /// `[limits.h3]` (U89b): the QUIC listener; honoured only with the feature `http3`.
+    pub h3: crate::h3_listener::H3LimitsConfig,
 }
 
 impl Default for Limits {
@@ -711,6 +713,7 @@ impl Default for Limits {
             trusted_proxies: Vec::new(),
             git: GitLimitsConfig::default(),
             ssh: SshLimitsConfig::default(),
+            h3: crate::h3_listener::H3LimitsConfig::default(),
         }
     }
 }
@@ -761,6 +764,7 @@ impl Limits {
             return invalid("limits.text_memory and limits.objects_bytes_per_sec must be positive");
         }
         self.ssh.validate()?;
+        self.h3.validate()?;
         self.git.validate()
     }
 }
@@ -802,9 +806,10 @@ pub struct ServeConfig {
     pub listen: SocketAddr,
     pub public_url: Option<String>,
     pub tls: Option<Tls>,
-    /// The UDP port where an HTTP/3-capable proxy in front of this server serves h3 for
-    /// `public_url`. When set, every response carries `Alt-Svc: h3=":<port>"` (U89). This
-    /// server does not serve QUIC itself, so unset sends no header.
+    /// The UDP port where HTTP/3 for `public_url` is served. When set, every response carries
+    /// `Alt-Svc: h3=":<port>"` (U89). With `[tls]` and the feature `http3`, this server serves
+    /// h3 itself on that port (U89b; `[limits.h3]`); otherwise an h3-capable proxy in front of it
+    /// must. Unset sends no header.
     pub http3_port: Option<u16>,
     pub admin: AdminConfig,
     pub role: Role,
