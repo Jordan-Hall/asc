@@ -2176,7 +2176,7 @@ After the request: `approve` once for a credential that `fill` produced and the 
 - Every asc transport is SSH or HTTPS (`asc_core::transport_policy`).
 - Plain `http` is refused unless `asc.allowLoopbackHttp=true` or `ASC_ALLOW_LOOPBACK_HTTP=1` is set, and then only to a loopback address. Untrusted repo config cannot set it.
 - `asc serve` refuses to start without `[tls]` or an `https` `public_url` unless the opt-in is set. The operator's own S3 endpoints (store and turbo) are `https` too.
-- HTTP/3 is preferred: the server advertises `Alt-Svc: h3` when `http3_port` is set, and the client upgrades same-origin only, falling back to h2. gRPC stays on h2.
+- HTTP/3 is preferred (feature `http3`, default on; `--no-default-features` compiles it out). The server advertises `Alt-Svc: h3` when `http3_port` is set. With `[tls]` too, `asc serve` also listens for QUIC on that UDP port and serves the same router as TCP: the same credential edge, admission and peer addresses, under `[limits.h3]` (`max_connections`, `max_streams`, `max_request_bytes`, `max_header_bytes`, `idle_timeout`, `handshake_timeout`, `header_timeout`, `stall_timeout`). TLS 1.3 only, no 0-RTT, and an unvalidated source address gets a retry token first. The client remembers `Alt-Svc` per https origin (bounded, expiring, the origin's own host only), upgrades later requests to the same origin, falls back to h2 on any failure and remembers the failure, checks certificates exactly as on h2, and replays a request on h2 after a failed h3 attempt only when its method is idempotent. gRPC stays on h2. The client routes that use it today are discovery (`/.well-known/asc`) and the Actions store (`/actions/v1`); seed and release downloads follow in U89b-2.
 
 ---
 

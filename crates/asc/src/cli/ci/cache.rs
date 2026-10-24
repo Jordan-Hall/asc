@@ -203,6 +203,8 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
 /// The manifest endpoints over HTTP(S).
 pub struct HttpApi {
     client: reqwest::Client,
+    /// Remembers which https origins serve h3 and sends their requests there (U89b).
+    h3: &'static asc_rpc::h3::Upgrader,
     /// `https://host/actions/v1/<owner>/<repo>`.
     base: String,
     auth: Option<String>,
@@ -223,6 +225,7 @@ impl HttpApi {
             .map_err(|e| CliError::Fatal(format!("asc: http client: {e}")))?;
         Ok(Self {
             client,
+            h3: asc_rpc::h3::Upgrader::shared(),
             base: format!(
                 "{}/actions/v1/{}/{}",
                 server.trim_end_matches('/'),
@@ -231,6 +234,25 @@ impl HttpApi {
             ),
             auth,
         })
+    }
+
+    /// The request as plain HTTP, for h3.
+    fn h3_request(
+        &self,
+        method: &reqwest::Method,
+        url: &str,
+        body: &Bytes,
+    ) -> Option<http::Request<Bytes>> {
+        let mut req = http::Request::builder().method(method).uri(url).header(
+            http::header::USER_AGENT,
+            concat!("asc/", env!("CARGO_PKG_VERSION")),
+        );
+        if let Some(a) = &self.auth {
+            let mut v = http::HeaderValue::from_str(a).ok()?;
+            v.set_sensitive(true);
+            req = req.header(http::header::AUTHORIZATION, v);
+        }
+        req.body(body.clone()).ok()
     }
 
     fn request(&self, method: reqwest::Method, url: String) -> reqwest::RequestBuilder {
@@ -246,31 +268,74 @@ impl HttpApi {
             None => r,
         }
     }
+
+    /// One request, whole answer, body read to at most `limit` bytes. Over h3 when the origin
+    /// advertised it and the last h3 attempt did not fail; otherwise over h1 or h2, whose
+    /// response teaches the next call (U89b).
+    async fn call(
+        &self,
+        method: reqwest::Method,
+        url: String,
+        body: Bytes,
+        limit: usize,
+    ) -> Result<Reply, CiError> {
+        if let Some(req) = self.h3_request(&method, &url, &body) {
+            match self.h3.send(&req, limit).await {
+                asc_rpc::h3::Attempt::Done(r) => return Ok(r),
+                asc_rpc::h3::Attempt::Failed(e) => return Err(api_err(e)),
+                asc_rpc::h3::Attempt::Fallback => {}
+            }
+        }
+        let mut res = self
+            .request(method, url)
+            .body(body)
+            .send()
+            .await
+            .map_err(api_err)?;
+        if let Ok(served_by) = res.url().as_str().parse::<http::Uri>() {
+            self.h3.note_response(&served_by, res.headers());
+        }
+        let (status, headers) = (res.status(), res.headers().clone());
+        let mut out = Vec::new();
+        let mut truncated = res.content_length().is_some_and(|n| n > limit as u64);
+        while !truncated && let Some(chunk) = res.chunk().await.map_err(api_err)? {
+            if out.len() + chunk.len() > limit {
+                truncated = true;
+            } else {
+                out.extend_from_slice(&chunk);
+            }
+        }
+        Ok(Reply {
+            status,
+            headers,
+            body: out.into(),
+            truncated,
+        })
+    }
 }
+
+type Reply = asc_rpc::h3::Reply;
 
 fn api_err(e: impl std::fmt::Display) -> CiError {
     CiError::Api(e.to_string())
 }
 
-/// The body of `res`, at most `limit` bytes.
-async fn bounded(mut res: reqwest::Response, limit: usize) -> Result<Bytes, CiError> {
-    if res.content_length().is_some_and(|n| n > limit as u64) {
+/// The body of a reply that must fit in the limit it was read with.
+fn whole(res: Reply) -> Result<Bytes, CiError> {
+    if res.truncated {
         return Err(CiError::Api("response is too large".into()));
     }
-    let mut out = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(api_err)? {
-        if out.len() + chunk.len() > limit {
-            return Err(CiError::Api("response is too large".into()));
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out.into())
+    Ok(res.body)
 }
 
 /// A failed call as text: the status and the server's short message.
-async fn failure(res: reqwest::Response) -> CiError {
-    let status = res.status();
-    let body = bounded(res, MAX_ERROR_BYTES).await.unwrap_or_default();
+fn failure(res: Reply) -> CiError {
+    let status = res.status;
+    let body = if res.truncated {
+        Bytes::new()
+    } else {
+        res.body
+    };
     let message = serde_json::from_slice::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| v["error"]["message"].as_str().map(str::to_owned))
@@ -314,29 +379,24 @@ impl ManifestApi for HttpApi {
             url.push_str("?overwrite=1");
         }
         let res = self
-            .request(reqwest::Method::PUT, url)
-            .body(body)
-            .send()
-            .await
-            .map_err(api_err)?;
-        match res.status() {
+            .call(reqwest::Method::PUT, url, body, MAX_ERROR_BYTES)
+            .await?;
+        match res.status {
             s if s == reqwest::StatusCode::CREATED || s.is_success() => Ok(true),
             reqwest::StatusCode::CONFLICT => Ok(false),
-            _ => Err(failure(res).await),
+            _ => Err(failure(res)),
         }
     }
 
     async fn get(&self, store: StoreKind, key: &str) -> Result<Option<Bytes>, CiError> {
         let url = format!("{}/{}/{}", self.base, store.as_str(), pct(key));
         let res = self
-            .request(reqwest::Method::GET, url)
-            .send()
-            .await
-            .map_err(api_err)?;
-        match res.status() {
+            .call(reqwest::Method::GET, url, Bytes::new(), MAX_MANIFEST_BYTES)
+            .await?;
+        match res.status {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
-            s if s.is_success() => Ok(Some(bounded(res, MAX_MANIFEST_BYTES).await?)),
-            _ => Err(failure(res).await),
+            s if s.is_success() => Ok(Some(whole(res)?)),
+            _ => Err(failure(res)),
         }
     }
 
@@ -347,22 +407,20 @@ impl ManifestApi for HttpApi {
     ) -> Result<Option<(String, Bytes)>, CiError> {
         let url = format!("{}/{}?prefix={}", self.base, store.as_str(), pct(prefix));
         let res = self
-            .request(reqwest::Method::GET, url)
-            .send()
-            .await
-            .map_err(api_err)?;
-        match res.status() {
+            .call(reqwest::Method::GET, url, Bytes::new(), MAX_MANIFEST_BYTES)
+            .await?;
+        match res.status {
             reqwest::StatusCode::NOT_FOUND => Ok(None),
             s if s.is_success() => {
                 let key = res
-                    .headers()
+                    .headers
                     .get("x-asc-key")
                     .and_then(|v| v.to_str().ok())
                     .and_then(percent_decode)
                     .ok_or_else(|| CiError::Api("response names no key".into()))?;
-                Ok(Some((key, bounded(res, MAX_MANIFEST_BYTES).await?)))
+                Ok(Some((key, whole(res)?)))
             }
-            _ => Err(failure(res).await),
+            _ => Err(failure(res)),
         }
     }
 
@@ -374,14 +432,12 @@ impl ManifestApi for HttpApi {
             pct(prefix)
         );
         let res = self
-            .request(reqwest::Method::GET, url)
-            .send()
-            .await
-            .map_err(api_err)?;
-        if !res.status().is_success() {
-            return Err(failure(res).await);
+            .call(reqwest::Method::GET, url, Bytes::new(), 4 * 1024 * 1024)
+            .await?;
+        if !res.status.is_success() {
+            return Err(failure(res));
         }
-        let body = bounded(res, 4 * 1024 * 1024).await?;
+        let body = whole(res)?;
         serde_json::from_slice(&body).map_err(api_err)
     }
 }
@@ -409,5 +465,159 @@ mod tests {
         assert_eq!(percent_decode("a%2Fb%20c").as_deref(), Some("a/b c"));
         assert_eq!(percent_decode("%zz"), None);
         assert_eq!(percent_decode("%4"), None);
+    }
+}
+
+/// The Actions-store client over HTTP/3 (U89b), against a real `asc serve` h3 listener.
+#[cfg(all(test, feature = "http3", feature = "serve"))]
+mod h3_tests {
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+
+    use axum::Router;
+    use axum::extract::{Path, State};
+    use axum::http::{HeaderMap, StatusCode};
+    use asc_rpc::h3::Upgrader;
+    use asc_serve::h3_listener::{self, H3LimitsConfig};
+    use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, DnType, IsCa, KeyPair};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct Store {
+        entries: Mutex<HashMap<String, Bytes>>,
+        requests: Mutex<usize>,
+    }
+
+    async fn put_key(
+        State(s): State<Arc<Store>>,
+        Path((_, _, _, key)): Path<(String, String, String, String)>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> StatusCode {
+        *s.requests.lock().unwrap() += 1;
+        if headers
+            .get("authorization")
+            .is_none_or(|v| v != "Bearer t0k")
+        {
+            return StatusCode::UNAUTHORIZED;
+        }
+        s.entries.lock().unwrap().insert(key, body);
+        StatusCode::CREATED
+    }
+
+    async fn get_key(
+        State(s): State<Arc<Store>>,
+        Path((_, _, _, key)): Path<(String, String, String, String)>,
+        headers: HeaderMap,
+    ) -> (StatusCode, Bytes) {
+        *s.requests.lock().unwrap() += 1;
+        if headers
+            .get("authorization")
+            .is_none_or(|v| v != "Bearer t0k")
+        {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Bytes::from_static(br#"{"error":{"message":"bad token"}}"#),
+            );
+        }
+        match s.entries.lock().unwrap().get(&key) {
+            Some(b) => (StatusCode::OK, b.clone()),
+            None => (StatusCode::NOT_FOUND, Bytes::new()),
+        }
+    }
+
+    fn server() -> (h3_listener::Handle, u16, Vec<u8>, Arc<Store>) {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca.distinguished_name
+            .push(DnType::CommonName, "asc h3 test ca");
+        let ca = CertifiedIssuer::self_signed(ca, ca_key).unwrap();
+        let leaf_key = KeyPair::generate().unwrap();
+        let mut leaf = CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        leaf.distinguished_name
+            .push(DnType::CommonName, "asc h3 test leaf");
+        let leaf = leaf.signed_by(&leaf_key, &ca).unwrap();
+        let store = Arc::new(Store::default());
+        let router = Router::new()
+            .route(
+                "/actions/v1/{owner}/{repo}/{kind}/{key}",
+                axum::routing::get(get_key).put(put_key),
+            )
+            .with_state(store.clone());
+        let limits = H3LimitsConfig::default();
+        let ep = h3_listener::bind(
+            leaf.pem().as_bytes(),
+            leaf_key.serialize_pem().as_bytes(),
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            &limits,
+        )
+        .unwrap();
+        let handle = h3_listener::spawn(ep, router, limits);
+        let port = handle.local_addr().unwrap().port();
+        (handle, port, ca.der().to_vec(), store)
+    }
+
+    fn api(ca: Vec<u8>, port: u16, token: &str) -> HttpApi {
+        let up = Box::leak(Box::new(Upgrader::with_extra_roots(
+            vec![rustls::pki_types::CertificateDer::from(ca)],
+            Default::default(),
+        )));
+        let mut advert = http::HeaderMap::new();
+        advert.insert(
+            http::header::ALT_SVC,
+            format!("h3=\":{port}\"; ma=60").parse().unwrap(),
+        );
+        up.note_response(&"https://127.0.0.1:8443/".parse().unwrap(), &advert);
+        let mut api = HttpApi::new(
+            "https://127.0.0.1:8443",
+            "o/r",
+            Some(format!("Bearer {token}")),
+        )
+        .unwrap();
+        api.h3 = up;
+        api
+    }
+
+    #[tokio::test]
+    async fn the_store_client_moves_manifests_over_h3_after_alt_svc() {
+        let (_h, port, ca, store) = server();
+        let api = api(ca, port, "t0k");
+        assert!(
+            api.put(
+                StoreKind::Cache,
+                "k1",
+                Bytes::from_static(b"manifest"),
+                false
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            api.get(StoreKind::Cache, "k1").await.unwrap().as_deref(),
+            Some(&b"manifest"[..])
+        );
+        assert_eq!(api.get(StoreKind::Cache, "nope").await.unwrap(), None);
+        assert_eq!(*store.requests.lock().unwrap(), 3, "all three went over h3");
+    }
+
+    #[tokio::test]
+    async fn the_bearer_token_crosses_h3_and_a_refusal_reads_like_h2s() {
+        let (_h, port, ca, store) = server();
+        let api = api(ca, port, "wrong");
+        let err = api
+            .get(StoreKind::Cache, "k1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("401") && err.contains("bad token"), "{err}");
+        assert!(
+            api.put(StoreKind::Cache, "k1", Bytes::from_static(b"x"), false)
+                .await
+                .is_err()
+        );
+        assert!(store.entries.lock().unwrap().is_empty());
     }
 }
