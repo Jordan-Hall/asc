@@ -3,12 +3,17 @@ package asc.asc.vcs
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vcs.AbstractVcs
 import com.intellij.openapi.vcs.VcsKey
+import com.intellij.openapi.vcs.diff.DiffProvider
 
 /** The `asc` version control system (SPEC 24.5.1). Features arrive with P37b onwards. */
 class AscVcs(project: Project) : AbstractVcs(project, NAME) {
     override fun getDisplayName(): String = "asc"
 
     override fun getConfigurable() = null
+
+    private val diffProvider by lazy { AscDiffProvider(project) }
+
+    override fun getDiffProvider(): DiffProvider = diffProvider
 
     companion object {
         const val NAME = "asc"
