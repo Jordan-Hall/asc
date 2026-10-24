@@ -98,6 +98,8 @@ impl<S: NamedService> NamedService for Counting<S> {
 pub struct Server {
     pub addr: SocketAddr,
     calls: Arc<Mutex<Vec<String>>>,
+    handle: tokio::runtime::Handle,
+    registry: Arc<Registry>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -105,6 +107,15 @@ pub struct Server {
 impl Server {
     /// A server holding the empty primary repositories `repos` (`owner/name`).
     pub fn start(repos: &[&str]) -> Self {
+        Self::start_with(repos, false)
+    }
+
+    /// Like [`Server::start`], with the `Changes` service and the change index mounted.
+    pub fn start_with_changes(repos: &[&str]) -> Self {
+        Self::start_with(repos, true)
+    }
+
+    fn start_with(repos: &[&str], changes: bool) -> Self {
         let calls: Arc<Mutex<Vec<String>>> = Arc::default();
         let (addr_tx, addr_rx) = std::sync::mpsc::channel();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -134,7 +145,10 @@ impl Server {
                         .is_ok(),
                     "one objects group"
                 );
-                let _hooks = read::register(&ext, &registry);
+                let hooks = read::register(&ext, &registry);
+                if changes {
+                    asc_serve::changes::register(&ext, &registry, &hooks);
+                }
                 let _warmer = asc_serve::projects::register(&ext, &registry);
                 let auth = Arc::new(
                     StaticTokens::new()
@@ -150,6 +164,15 @@ impl Server {
                     .into_service(),
                     log: log.clone(),
                 };
+                let changes_svc = ext.changes.get().map(|h| Counting {
+                    inner: asc_serve::changes::rpc::ChangesService::new(
+                        h.clone(),
+                        auth.clone(),
+                        ServerInfo::default(),
+                    )
+                    .into_service(),
+                    log: log.clone(),
+                });
                 let svc = Counting {
                     inner: RepoService::new(ext.handlers.clone(), auth, ServerInfo::default())
                         .into_service(),
@@ -159,7 +182,11 @@ impl Server {
                     .await
                     .expect("bind");
                 addr_tx
-                    .send(listener.local_addr().expect("addr"))
+                    .send((
+                        listener.local_addr().expect("addr"),
+                        tokio::runtime::Handle::current(),
+                        registry.clone(),
+                    ))
                     .expect("send");
                 let incoming = futures::stream::unfold(listener, |l| async move {
                     let r = l.accept().await.map(|(s, _)| s);
@@ -167,6 +194,7 @@ impl Server {
                 });
                 let _ = tonic::transport::Server::builder()
                     .add_service(svc)
+                    .add_optional_service(changes_svc)
                     .add_service(projects)
                     .serve_with_incoming_shutdown(incoming, async {
                         let _ = stop_rx.await;
@@ -174,9 +202,11 @@ impl Server {
                     .await;
             });
         });
-        let addr = addr_rx.recv().expect("the server started");
+        let (addr, handle, registry) = addr_rx.recv().expect("the server started");
         Self {
             addr,
+            handle,
+            registry,
             calls,
             shutdown: Some(stop_tx),
             thread: Some(thread),
@@ -204,6 +234,54 @@ impl Server {
     /// Every path served so far, in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    /// Indexes `cs` as a version of `change` on the server (the push path that uploads change
+    /// metadata is the submit unit's): stores the `m/` object, the index row and the version.
+    pub fn seed_change(
+        &self,
+        repo: &str,
+        cs: asc_core::id::ChangesetId,
+        change: asc_core::change::ChangeId,
+        parent: Option<asc_core::change::ChangeId>,
+    ) {
+        let registry = self.registry.clone();
+        let repo = repo.to_owned();
+        self.handle.block_on(async move {
+            let entry = registry
+                .open(&RepoName::parse(&repo).expect("repo name"))
+                .await
+                .expect("open repo");
+            let meta = asc_core::change::ChangeMeta {
+                version: 1,
+                cs,
+                change,
+                preds: Vec::new(),
+                op: asc_core::change::RewriteOp::New,
+            };
+            let index = asc_serve::changes::index::ChangeIndex::new(registry.clone());
+            let mut tx = registry.pool().begin().await.expect("begin");
+            index
+                .write_meta(&mut tx, entry.key, &meta)
+                .await
+                .expect("write meta");
+            asc_serve::changes::versions::append(
+                &mut tx,
+                entry.ns,
+                &asc_serve::changes::versions::NewVersion {
+                    change,
+                    cs,
+                    parent_change: parent,
+                    at: 1_700_000_000,
+                    actor: "alice",
+                    op_id: &[1],
+                    force: false,
+                },
+            )
+            .await
+            .expect("append version");
+            tx.commit().await.expect("commit");
+        });
     }
 
     pub fn forget_calls(&self) {
