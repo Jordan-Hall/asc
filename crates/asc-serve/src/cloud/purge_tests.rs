@@ -316,6 +316,42 @@ async fn a_purged_object_is_swept_at_the_next_run_unless_a_ref_reaches_it() {
 }
 
 #[tokio::test]
+async fn an_owner_purge_does_not_list_an_object_another_draft_holds() {
+    let s = svc().await;
+    let f = &s.f;
+    // Bob's draft holds the same file content as Alice's css[4] but no ref reaches it.
+    let bobs = commit(&f.e, &[], &[("other/name", &[5, 5, 5])]).await;
+    add_head(f, 43, "w", bobs, 5, None).await;
+    add_head(f, 42, "w", f.css[4], 5, None).await;
+    purge(&s, &[f.css[4]], ALICE).await.unwrap();
+    let keys: Vec<String> = sqlx::query_scalar("SELECT key FROM gc_purge")
+        .fetch_all(f.reg.pool())
+        .await
+        .unwrap();
+    assert!(keys.contains(&ObjKey::Changeset(f.css[4]).path()), "{keys:?}");
+    assert!(
+        !keys.contains(&ObjKey::File(FileId::of(&[5, 5, 5])).path()),
+        "the shared file must not be queued: {keys:?}"
+    );
+    // A GC run keeps it.
+    let hooks = Arc::new(PipelineHooks::default());
+    hooks.gc_roots().register(Arc::new(
+        crate::cloud::expiry::CloudRoots::new(f.reg.pool().clone()),
+    ));
+    let gc = GcService::new(f.reg.clone(), hooks, GcConfig::default());
+    let t = SystemTime::now() + Duration::from_secs(60);
+    gc.run_repo(&RepoName::parse("o/r").unwrap(), t, false)
+        .await
+        .unwrap();
+    assert!(
+        f.e.objects
+            .has_many(&[ObjKey::File(FileId::of(&[5, 5, 5]))])
+            .await
+            .unwrap()[0]
+    );
+}
+
+#[tokio::test]
 async fn cache_evict_is_retried_until_every_tier_acknowledges() {
     let s = svc().await;
     let f = &s.f;

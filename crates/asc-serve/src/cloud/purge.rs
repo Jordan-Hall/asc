@@ -65,6 +65,8 @@ pub const MAX_REACH_TIPS: usize = 11_000;
 pub const MAX_REACH_VISITS: usize = 200_000;
 /// Heads of one changeset one purge deletes at most.
 const MAX_HEAD_ROWS: i64 = 1_000;
+/// Other changesets an owner's purge compares objects against at most.
+const MAX_OTHER_CS: usize = 2_000;
 /// Rows per `cs_graph` lookup.
 const GRAPH_BATCH: usize = 100;
 /// Rows per multi-row `gc_purge` insert.
@@ -247,6 +249,16 @@ impl Purger {
             let keys = closure(&*entry.objects, a.cs, &mut total).await?;
             closures.insert(a.cs, keys);
         }
+        if !who.admin && !closures.is_empty() {
+            // Objects are content-addressed: another draft or ingest may hold the same file or
+            // tree. An owner's purge must not queue those for the early sweep (which skips the
+            // age rule and the recent tier), or it could delete data others still want.
+            let mut conn = pool.acquire().await.map_err(sql)?;
+            let others = other_keys(&mut conn, entry, &css).await?;
+            for keys in closures.values_mut() {
+                keys.retain(|k| matches!(k, ObjKey::Changeset(_)) || !others.contains(k));
+            }
+        }
 
         // Phase 2: decide again inside the transaction, so a draft that was submitted or pushed
         // in between is not purged, then write everything at once.
@@ -328,6 +340,41 @@ impl Purger {
             unacked_tiers: self.tiers.names(),
         })
     }
+}
+
+/// The objects of every other draft or not-yet-shared ingested changeset of the repository.
+/// Past [`MAX_OTHER_CS`] changesets the request is refused (fail closed).
+async fn other_keys(
+    conn: &mut AnyConnection,
+    entry: &RepoEntry,
+    purging: &[ChangesetId],
+) -> Result<HashSet<ObjKey>, Status> {
+    let ns = entry.ns.as_bytes().to_vec();
+    let rows = sqlx::query(
+        "SELECT cs FROM cloud_heads WHERE ns = $1          UNION SELECT cs FROM cs_ledger WHERE ns = $1 AND shared = 0          LIMIT $2",
+    )
+    .bind(ns)
+    .bind(i64::try_from(MAX_OTHER_CS + 1).unwrap_or(i64::MAX))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(sql)?;
+    if rows.len() > MAX_OTHER_CS {
+        return Err(Status::failed_precondition(
+            "too many other drafts to check for shared objects; ask a repository admin to purge",
+        ));
+    }
+    let mut out = HashSet::new();
+    for r in &rows {
+        let raw: Vec<u8> = r.try_get("cs").map_err(sql)?;
+        let cs = id_of(&raw).map_err(sql)?;
+        if purging.contains(&cs) {
+            continue;
+        }
+        // Each changeset is bounded separately: only the set matters here.
+        let mut total = 0usize;
+        out.extend(closure(&*entry.objects, cs, &mut total).await?);
+    }
+    Ok(out)
 }
 
 /// Writes the `gc_purge` rows and the `cache_evict` outbox rows of `keys`.
@@ -617,8 +664,8 @@ fn obj(e: asc_store::objects::Error) -> Status {
 }
 
 /// The objects `cs` introduced: the changeset, the files and chunks it wrote, its root tree and
-/// the trees on the paths it changed. Objects shared with other changesets are listed too; GC
-/// keeps whatever a root still reaches. `total` counts the keys of the whole request.
+/// the trees on the paths it changed. Objects shared with other changesets are listed too; an
+/// owner's purge drops those in [`other_keys`], and GC keeps whatever a strict root reaches. `total` counts the keys of the whole request.
 async fn closure(
     objects: &dyn Objects,
     cs: ChangesetId,
