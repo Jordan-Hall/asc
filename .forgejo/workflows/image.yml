@@ -28,7 +28,9 @@ env:
 
 jobs:
   image:
-    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
+    # Only master and v* tags (by push or manual run) reach the trusted runner, the credential and
+    # the registry; any other ref builds untrusted and never publishes.
+    runs-on: ${{ ((github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')))) && 'asc-build-trusted' || 'asc-build' }}
     timeout-minutes: 150
     steps:
       - name: Checkout
@@ -37,7 +39,7 @@ jobs:
       # Before the build, so a wrong credential fails in one clear step rather than after the
       # compile. Skipped for a pull request, which never sees the secret.
       - name: Sign in to the container registry
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) }}
         uses: https://github.com/docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -55,7 +57,7 @@ jobs:
       # Two tags per image, as monorepo does: the commit sha, which is what a deploy pins to,
       # and the name a person reaches for (the branch, or the version for a tag).
       - name: Tag and push
-        if: ${{ github.event_name != 'pull_request' }}
+        if: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) }}
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
