@@ -292,6 +292,36 @@ async fn bounded(mut response: reqwest::Response) -> Option<Vec<u8>> {
     Some(body)
 }
 
+/// `GET target`: over h3 when this https origin has advertised it (U89b), else over h1 or h2.
+/// The body is `None` when it is larger than [`MAX_BODY`]. A response teaches `up` the origin's
+/// `Alt-Svc`, so later requests of this process to the same origin can use h3.
+async fn get(
+    up: &asc_rpc::h3::Upgrader,
+    target: &str,
+) -> Option<(reqwest::StatusCode, Option<Vec<u8>>)> {
+    let user_agent = concat!("asc/", env!("CARGO_PKG_VERSION"));
+    if let Ok(req) = http::Request::get(target)
+        .header(http::header::USER_AGENT, user_agent)
+        .body(bytes::Bytes::new())
+        && let asc_rpc::h3::Attempt::Done(r) = up.send(&req, MAX_BODY).await
+    {
+        return Some((r.status, (!r.truncated).then(|| r.body.to_vec())));
+    }
+    let client = reqwest::Client::builder()
+        .redirect(crate::credential::redirect_policy())
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .user_agent(user_agent)
+        .build()
+        .ok()?;
+    let response = client.get(target).send().await.ok()?;
+    if let Ok(served_by) = response.url().as_str().parse::<http::Uri>() {
+        up.note_response(&served_by, response.headers());
+    }
+    let status = response.status();
+    Some((status, bounded(response).await))
+}
+
 /// The origin (`scheme://host[:port]`) of `url`, as the cache key and the discovery host.
 pub fn origin_of(url: &Url) -> Option<String> {
     let host = url.host_str()?;
@@ -337,19 +367,8 @@ async fn fetch(
     tls: bool,
     policy: Policy,
 ) -> Option<Document> {
-    let client = reqwest::Client::builder()
-        .redirect(crate::credential::redirect_policy())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(10))
-        .user_agent(concat!("asc/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .ok()?;
-    let response = client
-        .get(format!("{}/.well-known/asc", base.unwrap_or(origin)))
-        .send()
-        .await
-        .ok()?;
-    let status = response.status();
+    let target = format!("{}/.well-known/asc", base.unwrap_or(origin));
+    let (status, body) = get(asc_rpc::h3::Upgrader::shared(), &target).await?;
     if status.is_client_error() {
         if tls {
             store(db, origin, "").await;
@@ -359,7 +378,7 @@ async fn fetch(
     if !status.is_success() {
         return None;
     }
-    let body = bounded(response).await?;
+    let body = body?;
     let doc = parse_as(&body, Rules::of(url, policy)).ok()?;
     if tls {
         store(db, origin, std::str::from_utf8(&body).ok()?).await;
@@ -389,7 +408,7 @@ mod tests {
     }
 
     /// A server on the loopback interface that answers every request with `body` and counts them.
-    fn mock(body: &str) -> (String, Arc<AtomicUsize>) {
+    pub(super) fn mock(body: &str) -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let hits = Arc::new(AtomicUsize::new(0));
@@ -600,5 +619,101 @@ connection: close
         assert!(older_than("1.9", "1.10.0"));
         assert!(!older_than("1.0.0", "1.0.0"));
         assert!(!older_than("2.0.0", "1.9.9"));
+    }
+}
+
+/// Discovery over HTTP/3 (U89b), against a real `asc serve` h3 listener with a test CA.
+#[cfg(all(test, feature = "http3", feature = "serve"))]
+mod h3_tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::Router;
+    use axum::http::{HeaderMap, HeaderValue, header};
+    use asc_rpc::h3::Upgrader;
+    use asc_serve::h3_listener::{self, H3LimitsConfig};
+    use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, DnType, IsCa, KeyPair};
+
+    use super::*;
+
+    const DOC: &str = r#"{"server":"https://127.0.0.1:8443","mode":{"o/r":"primary"}}"#;
+
+    /// An h3 listener whose `/.well-known/asc` answers `DOC` and counts its hits.
+    fn server() -> (h3_listener::Handle, u16, Vec<u8>, Arc<AtomicUsize>) {
+        let ca_key = KeyPair::generate().unwrap();
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        ca.distinguished_name
+            .push(DnType::CommonName, "asc h3 test ca");
+        let ca = CertifiedIssuer::self_signed(ca, ca_key).unwrap();
+        let leaf_key = KeyPair::generate().unwrap();
+        let mut leaf = CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        leaf.distinguished_name
+            .push(DnType::CommonName, "asc h3 test leaf");
+        let leaf = leaf.signed_by(&leaf_key, &ca).unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        let router = Router::new().route(
+            "/.well-known/asc",
+            axum::routing::get(move || {
+                h.fetch_add(1, Ordering::SeqCst);
+                async { DOC }
+            }),
+        );
+        let limits = H3LimitsConfig::default();
+        let ep = h3_listener::bind(
+            leaf.pem().as_bytes(),
+            leaf_key.serialize_pem().as_bytes(),
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            &limits,
+        )
+        .unwrap();
+        let handle = h3_listener::spawn(ep, router, limits);
+        let port = handle.local_addr().unwrap().port();
+        (handle, port, ca.der().to_vec(), hits)
+    }
+
+    fn advert(port: u16) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::ALT_SVC,
+            HeaderValue::from_str(&format!("h3=\":{port}\"; ma=60")).unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn discovery_goes_over_h3_once_the_origin_advertised_it() {
+        let (_h, port, ca, hits) = server();
+        let up = Upgrader::with_extra_roots(
+            vec![rustls::pki_types::CertificateDer::from(ca)],
+            Default::default(),
+        );
+        let target = "https://127.0.0.1:8443/.well-known/asc";
+        up.note_response(&target.parse().unwrap(), &advert(port));
+        let (status, body) = get(&up, target).await.expect("answered over h3");
+        assert_eq!(status, 200);
+        assert_eq!(body.as_deref(), Some(DOC.as_bytes()));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn discovery_over_plain_http_is_never_upgraded() {
+        let (_h, port, ca, hits) = server();
+        let up = Upgrader::with_extra_roots(
+            vec![rustls::pki_types::CertificateDer::from(ca)],
+            Default::default(),
+        );
+        let (base, mock_hits) = super::tests::mock(r#"{"server":"http://127.0.0.1:9"}"#);
+        let target = format!("{base}/.well-known/asc");
+        // Even if a header named an h3 service for this plain-http origin, it is not used.
+        up.note_response(&target.parse().unwrap(), &advert(port));
+        let (status, body) = get(&up, &target).await.expect("answered over http");
+        assert_eq!(status, 200);
+        assert!(body.is_some());
+        assert_eq!(mock_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "no h3 request went out");
+        assert!(!up.would_try(&target.parse().unwrap()));
     }
 }
