@@ -47,7 +47,7 @@ export interface Host {
   /** Registers inline blame, hover, CodeLens and the heatmap (P27). Absent under tests. */
   registerBlame?(bridge: BridgeManager, folders: readonly string[]): Disposable;
   /** Registers the asc-ui webview hosts (P28a). Absent under tests. */
-  registerWebviews?(folders: readonly string[]): WebviewHost;
+  registerWebviews?(folders: readonly string[], bridge?: BridgeManager): WebviewHost;
 }
 
 export const GIT_PROMPT_BUTTON = "Use asc";
@@ -127,7 +127,7 @@ export async function activateWith(
         subs.push(blameReg);
       }
       if (hello.compat.level !== "too-old" && host.registerWebviews && !webviews) {
-        webviews = host.registerWebviews(ascFolders);
+        webviews = host.registerWebviews(ascFolders, bridge);
         subs.push(webviews);
       }
       return hello.compat;
@@ -202,7 +202,8 @@ function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.ExtensionContex
     },
     env: process.env,
     platform: process.platform,
-    registerWebviews: (folders) => vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l)),
+    registerWebviews: (folders, bridge) =>
+      vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l), bridge),
     registerScm: (bridge, folders) => {
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
       return reg;
