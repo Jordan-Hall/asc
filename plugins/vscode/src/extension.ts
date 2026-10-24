@@ -13,6 +13,8 @@ import {
 } from "./bridge";
 import { detectAscFolders } from "./repo";
 import { registerScm } from "./scm/provider";
+import type { WebviewHost } from "./webview/host";
+import { vscodeWebviews } from "./webview/vscode-adapter";
 
 export interface Disposable {
   dispose(): void;
@@ -41,6 +43,8 @@ export interface Host {
   platform: NodeJS.Platform;
   /** Registers the SCM provider, `asc:` file system and decorations (P25). Absent under tests. */
   registerScm?(bridge: BridgeManager, folders: readonly string[]): Disposable;
+  /** Registers the asc-ui webview hosts (P28a). Absent under tests. */
+  registerWebviews?(folders: readonly string[]): WebviewHost;
 }
 
 export const GIT_PROMPT_BUTTON = "Use asc";
@@ -103,6 +107,7 @@ export async function activateWith(
   );
 
   let scmReg: Disposable | null = null;
+  let webviews: WebviewHost | null = null;
   const start = async (): Promise<Compat | null> => {
     try {
       const hello = await bridge.hello();
@@ -112,6 +117,10 @@ export async function activateWith(
       if (hello.compat.level !== "too-old" && host.registerScm && !scmReg) {
         scmReg = host.registerScm(bridge, ascFolders);
         subs.push(scmReg);
+      }
+      if (hello.compat.level !== "too-old" && host.registerWebviews && !webviews) {
+        webviews = host.registerWebviews(ascFolders);
+        subs.push(webviews);
       }
       return hello.compat;
     } catch {
@@ -185,6 +194,7 @@ function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.ExtensionContex
     },
     env: process.env,
     platform: process.platform,
+    registerWebviews: (folders) => vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l)),
     registerScm: (bridge, folders) => {
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
       return reg;
