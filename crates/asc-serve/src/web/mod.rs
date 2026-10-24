@@ -8,6 +8,7 @@
 //! The files are public; every data call the UI makes goes through the authenticated RPC.
 
 pub mod assets;
+pub mod grpc_web;
 
 use std::sync::Arc;
 
