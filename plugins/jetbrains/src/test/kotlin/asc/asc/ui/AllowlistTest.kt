@@ -45,8 +45,11 @@ class AllowlistTest {
             assertEquals(v.pos, gen.verbs[k]!!.pos)
             assertEquals(v.confirm, gen.verbs[k]!!.confirm)
         }
-        assertEquals(src.pairs.map { Triple(it.method, it.path, it.confirm) }, gen.pairs.map { Triple(it.method, it.path, it.confirm) })
-        assertEquals(src.pairs.map { it.body }, gen.pairs.map { it.body })
+        assertEquals(src.providers.keys, gen.providers.keys)
+        for ((id, pairs) in src.providers) {
+            assertEquals(pairs.map { Triple(it.method, it.path, it.confirm) }, gen.providers.getValue(id).map { Triple(it.method, it.path, it.confirm) })
+            assertEquals(pairs.map { it.body }, gen.providers.getValue(id).map { it.body })
+        }
         for ((k, w) in src.write) {
             assertEquals(w.confirm, gen.write[k]!!.confirm)
             assertEquals(w.patchBytes, gen.write[k]!!.patchBytes)
@@ -65,6 +68,6 @@ class AllowlistTest {
         val gen = GeneratedAllowlist.parse()
         assertTrue(gen.reject.containsAll(listOf("-c", "--exec", "--force", "--git-dir")))
         assertNull(gen.verbs["push"]?.flags?.get("--force"))
-        assertTrue(gen.pairs.none { it.method == "DELETE" })
+        assertTrue(gen.providers.values.all { ps -> ps.none { it.method == "DELETE" } })
     }
 }

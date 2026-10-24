@@ -45,7 +45,7 @@ class RelayTest {
         assertTrue(al.verbs.containsKey("stack get"))
         assertEquals(Confirm.MODAL, al.verbs["submit"]!!.confirm)
         assertEquals(Confirm.MODAL, al.write["asc.v1.Changes/RequestMerge"]!!.confirm)
-        assertTrue(al.pairs.any { it.path.endsWith("/merge") && it.confirm == Confirm.MODAL })
+        assertTrue(al.providers.getValue("forgejo").any { it.path.endsWith("/merge") && it.confirm == Confirm.MODAL })
     }
 
     @Test fun neverEntriesAreNotReadable() {
@@ -56,7 +56,7 @@ class RelayTest {
     }
 
     @Test fun wrongVersionAndBadConfirmAreRefused() {
-        for (bad in listOf("{}", """{"version":2,"rpc":{},"run":{},"forgejo":{}}""")) {
+        for (bad in listOf("{}", """{"version":2,"rpc":{},"run":{},"hostApi":{"providers":{}}}""")) {
             try {
                 Allowlist.parse(bad)
                 throw AssertionError(bad)
@@ -173,7 +173,7 @@ class RelayTest {
     private val forge = ForgeScope(listOf("o/r"))
 
     private fun fj(method: String, path: String, body: String? = null) =
-        RelayChecks.checkForgejo(al, method, path, body?.let { JsonParser.parseString(it) }, forge)
+        RelayChecks.checkHostApi(al, "forgejo", method, path, body?.let { JsonParser.parseString(it) }, forge)
 
     @Test fun forgejoPairsMatch() {
         ok(fj("GET", "/user"))
@@ -184,10 +184,10 @@ class RelayTest {
     }
 
     @Test fun forgejoDeniesTheRest() {
-        denied(fj("DELETE", "/repos/o/r/pulls/7"), "forgejo operation not allowed")
-        denied(fj("GET", "/admin/users"), "forgejo operation not allowed")
+        denied(fj("DELETE", "/repos/o/r/pulls/7"), "host api operation not allowed")
+        denied(fj("GET", "/admin/users"), "host api operation not allowed")
         denied(fj("GET", "/repos/o/other/pulls/7"), "repo not opened")
-        denied(fj("GET", "/repos/o/r/pulls/x"), "forgejo operation not allowed")
+        denied(fj("GET", "/repos/o/r/pulls/x"), "host api operation not allowed")
         denied(fj("GET", "/repos/o/r/pulls/7/../8"), "bad path")
         denied(fj("GET", "/repos/o/r/pulls/7%2F"), "bad path")
         denied(fj("GET", "/user?a=<b>"), "bad query")
@@ -195,7 +195,7 @@ class RelayTest {
         denied(fj("PATCH", "/repos/o/r/pulls/7", """{"state":"closed"}"""), "body field not allowed")
         denied(fj("POST", "/repos/o/r/pulls/7/reviews", """{"event":"APPROVE"}"""), "pending review only")
         denied(fj("POST", "/repos/o/r/pulls/7/merge", """{"Do":"delete-branch"}"""), "bad merge mode")
-        denied(fj("PATCH", "/repos/o/r", """{"private":false}"""), "forgejo operation not allowed")
+        denied(fj("PATCH", "/repos/o/r", """{"private":false}"""), "host api operation not allowed")
     }
 
     @Test fun confirmationTextComesFromTheParsedRequest() {
@@ -211,6 +211,9 @@ class RelayTest {
         val sent = CopyOnWriteArrayList<JsonObject>()
         val logs = CopyOnWriteArrayList<RelayLog>()
         val upstreamCalls = CopyOnWriteArrayList<Triple<String, ByteArray, String>>()
+        private val hostApiExecutor: suspend (HostApiCall) -> HostApiResult = {
+            HostApiResult(200, JsonParser.parseString("""{"ok":true}"""))
+        }
         val relay = AscRelay(
             CoroutineScope(Dispatchers.Unconfined),
             RelayDeps(
@@ -221,13 +224,13 @@ class RelayTest {
                 allowlist = al,
                 send = { sent.add(JsonParser.parseString(it).asJsonObject) },
                 roots = { listOf(root) },
-                forgeRepos = { listOf("o/r") },
+                remoteRepos = { listOf("o/r") },
                 tmpDir = null,
                 confirm = confirm?.let { answer ->
                     val f: suspend (String, List<String>) -> Boolean = { _, _ -> answer }
                     f
                 },
-                forgejo = { ForgejoResult(200, JsonParser.parseString("""{"ok":true}""")) },
+                hostApi = mapOf("forgejo" to hostApiExecutor),
                 log = { logs.add(it) },
             ),
         )
@@ -323,10 +326,10 @@ class RelayTest {
 
     @Test fun forgejoRunsThroughTheExecutor() {
         val rig = Rig(al, root)
-        rig.relay.handle("""{"id":4,"forgejo":{"method":"GET","path":"/user"}}""")
-        val f = rig.sent.single().getAsJsonObject("forgejo")
+        rig.relay.handle("""{"id":4,"hostApi":{"provider":"forgejo","method":"GET","path":"/user"}}""")
+        val f = rig.sent.single().getAsJsonObject("hostApi")
         assertEquals(200, f.get("status").asInt)
-        rig.relay.handle("""{"id":5,"forgejo":{"method":"DELETE","path":"/repos/o/r/pulls/1"}}""")
+        rig.relay.handle("""{"id":5,"hostApi":{"provider":"forgejo","method":"DELETE","path":"/repos/o/r/pulls/1"}}""")
         assertEquals(AscRelay.PERMISSION_DENIED, rig.sent.last().getAsJsonObject("end").get("code").asInt)
     }
 
