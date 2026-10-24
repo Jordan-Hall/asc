@@ -130,6 +130,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                     ))
                 })?;
             }
+            let extra_jobs = daemon::cloud::extra_jobs(home.clone(), &|k| std::env::var_os(k));
             let _watchdog = daemon::Watchdog::abort_on_hang().map_err(fatal)?;
             daemon::run_hosting(
                 RunConfig {
@@ -143,7 +144,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                     backend: None,
                     settings,
                     hooks: scheduler::Hooks::default(),
-                    extra_jobs: Vec::new(),
+                    extra_jobs,
                 },
                 async {
                     let _ = tokio::signal::ctrl_c().await;
