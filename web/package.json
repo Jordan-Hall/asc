@@ -1,0 +1,29 @@
+{
+  "name": "@asc/asc-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "rsbuild dev",
+    "build": "rsbuild build && bun scripts/post-build.ts && bun scripts/size.ts",
+    "size": "bun scripts/size.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test test"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2",
+    "@asc/asc-client": "workspace:*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@rsbuild/core": "^1.7.3",
+    "@rsbuild/plugin-react": "^1.4.3",
+    "@tailwindcss/postcss": "^4.1.10",
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.1.10"
+  }
+}
