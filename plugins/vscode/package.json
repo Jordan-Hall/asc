@@ -1,0 +1,80 @@
+{
+  "name": "@asc/vscode",
+  "displayName": "ASC",
+  "description": "ASC source control for VS Code",
+  "publisher": "asc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://forge.example.org/asc/source-control"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "workspaceContains:.git",
+    "onFileSystem:asc",
+    "onUri",
+    "onWebviewPanel:asc.graph",
+    "onWebviewPanel:asc.review",
+    "onWebviewPanel:asc.history"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "asc runs only in trusted workspaces because it starts the asc executable.",
+      "restrictedConfigurations": [
+        "asc.path"
+      ]
+    },
+    "virtualWorkspaces": false
+  },
+  "contributes": {
+    "configuration": {
+      "title": "ASC",
+      "properties": {
+        "asc.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Path to the `asc` executable. Empty searches `PATH`, then `$ASC_HOME/bin`."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "asc.restartBridge",
+        "title": "Restart the bridge",
+        "category": "asc"
+      },
+      {
+        "command": "asc.showOutput",
+        "title": "Show output",
+        "category": "asc"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "bun scripts/bundle.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test",
+    "test:e2e": "vscode-test",
+    "package": "bun scripts/bundle.ts && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2",
+    "@asc/asc-client": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/vscode": "1.101.0",
+    "typescript": "5.9.2"
+  }
+}
