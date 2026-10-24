@@ -720,7 +720,7 @@ impl CodeIntelRpc {
             .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
     }
 
-    /// The newest published version of `change`.
+    /// The newest published version of `change` (published versions are visible to every reader).
     async fn change_head(&self, entry: &RepoEntry, change: ChangeId) -> Result<ChangesetId, Status> {
         let mut conn = self.pool().acquire().await.map_err(sql_status)?;
         if let Some(v) = crate::changes::versions::latest(&mut conn, entry.ns, change)
@@ -729,18 +729,8 @@ impl CodeIntelRpc {
         {
             return Ok(v.cs);
         }
-        let css = crate::changes::index::changesets_of(
-            &mut *conn,
-            entry.ns,
-            change,
-            crate::changes::index::MAX_PREDS,
-        )
-        .await
-        .map_err(|e| internal("change index", &e))?;
-        match css.as_slice() {
-            [one] => Ok(*one),
-            _ => Err(Status::not_found("the change has no published version")),
-        }
+        // No fallback to an unpublished changeset: it may be another user's private work.
+        Err(Status::not_found("the change has no published version"))
     }
 
     async fn rules_of(
