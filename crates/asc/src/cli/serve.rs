@@ -112,13 +112,16 @@ mod real {
             #[command(subcommand)]
             cmd: OutboxCmd,
         },
-        /// Sets `repos.mode`, `forgejo_reads` and `bridge`.
+        /// Sets `repos.mode`, `git_reads` and `bridge`.
         SetMode {
             #[arg(long)]
             repo: String,
             #[arg(long, value_parser = ["mirror", "primary"])]
             mode: Option<String>,
             #[arg(long, value_parser = ["git", "asc"])]
+            git_reads: Option<String>,
+            /// Deprecated alias of `--git-reads`.
+            #[arg(long, value_parser = ["git", "asc"], hide = true, conflicts_with = "git_reads")]
             forgejo_reads: Option<String>,
             #[arg(long, value_parser = ["off", "lazy", "eager"])]
             bridge: Option<String>,
@@ -354,6 +357,7 @@ mod real {
             AdminCmd::SetMode {
                 repo,
                 mode,
+                git_reads,
                 forgejo_reads,
                 bridge,
                 force,
@@ -361,7 +365,7 @@ mod real {
                 cli.set_mode(&ac::SetMode {
                     repo,
                     mode,
-                    forgejo_reads,
+                    git_reads: git_reads.or(forgejo_reads),
                     bridge,
                     force,
                 })
