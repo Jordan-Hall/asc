@@ -1,6 +1,5 @@
 syntax = "proto3";
 package asc.v1;
-option go_package = "forgejo.org/modules/ascproto/ascv1";
 import "asc/v1/options.proto";
 import "asc/v1/repo.proto";
 
