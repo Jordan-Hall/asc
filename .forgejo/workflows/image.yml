@@ -17,9 +17,9 @@ on:
 
 concurrency:
   group: image-${{ github.ref }}
-  # The newest push wins: older queued or running builds are cancelled. Work already compiled
-  # survives in the BuildKit cache mounts on the shared dind daemon, so the next build resumes.
-  cancel-in-progress: true
+  # A running image build always finishes (cancelling a 50-minute cold build wastes it); newer
+  # pushes queue behind it. Pushes happen at milestones, not continuously.
+  cancel-in-progress: false
 
 env:
   REGISTRY: forge.example.org
