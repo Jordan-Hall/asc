@@ -116,7 +116,7 @@ export class ActionsLogDocs {
     const known = this.models.get(path);
     if (known) return known;
     const api = this.resolve(p.owner, p.repo);
-    if (!api) throw new ActionsUriError("asc-actions: no signed-in forge for this repository");
+    if (!api) throw new ActionsUriError("asc-actions: no asc server for this repository");
     const m = new ActionsLogModel(p.jobId, api);
     this.models.set(path, m);
     return m;

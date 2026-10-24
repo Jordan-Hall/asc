@@ -1,4 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import type { BridgeNode } from "@asc/asc-client";
+import {
+  CiStatus,
+  JobLogRequestSchema,
+  JobLogResponseSchema,
+  ListRunsResponseSchema,
+} from "@asc/asc-client/ci";
+import type { BridgeManager } from "../src/bridge";
 import {
   ActionsLogDocs,
   ActionsLogModel,
@@ -16,8 +25,11 @@ import { buildTaskSpecs, projectCwd } from "../src/tasks";
 import {
   type ActionsApi,
   ActionsModel,
-  rerunDisabledReason,
+  bridgeActionsApi,
+  describeRun,
+  iconFor,
   type RunRow,
+  splitRepo,
 } from "../src/views/actions";
 import {
   type AffectedApi,
@@ -112,22 +124,22 @@ describe("ci: Actions model", () => {
     id: 1,
     title: "CI",
     status: "success",
-    event: "push",
-    commit: "abc",
+    source: "runner",
+    version: 2,
+    jobs: [{ id: 11, runId: 1, name: "j", status: "success" }],
     ...o,
   });
-  const mk = (runs: RunRow[], calls: { n: number; rerun: number[] }) => {
+  const target = async () => ({ owner: "asc", repo: "asc", change: "k".repeat(32) });
+  const mk = (runs: RunRow[], calls: { n: number; changes: (string | undefined)[] }) => {
     const api = {
-      listRuns: async () => (calls.n++, runs),
-      listJobs: async (id: number) => [{ id: 10 + id, runId: id, name: "j", status: "success" }],
-      rerun: async (id: number) => void calls.rerun.push(id),
+      listRuns: async (change) => (calls.n++, calls.changes.push(change), runs),
       readRange: async () => ({ bytes: new Uint8Array(0), start: 0, total: 0 }),
     } satisfies ActionsApi;
-    return new ActionsModel({ api, target: () => ({ owner: "asc", repo: "asc", headSha: "abc" }) });
+    return new ActionsModel({ api, target });
   };
 
   test("fetches only while visible and refreshes stale on show", async () => {
-    const calls = { n: 0, rerun: [] as number[] };
+    const calls = { n: 0, changes: [] as (string | undefined)[] };
     const m = mk([run()], calls);
     m.markStale();
     await sleep(5);
@@ -136,28 +148,29 @@ describe("ci: Actions model", () => {
     await sleep(5);
     expect(calls.n).toBe(1);
     expect(m.runs.length).toBe(1);
+    expect(m.current?.owner).toBe("asc");
+    expect(calls.changes).toEqual(["k".repeat(32)]);
     m.markStale();
     await sleep(5);
     expect(calls.n).toBe(2);
   });
 
-  test("jobs load once per run", async () => {
-    const m = mk([run()], { n: 0, rerun: [] });
-    const a = await m.loadJobs(1);
-    expect(await m.loadJobs(1)).toBe(a);
+  test("a root without an asc server shows no runs and never calls the api", async () => {
+    const calls = { n: 0, changes: [] as (string | undefined)[] };
+    const m = new ActionsModel({
+      api: mk([run()], calls) as never,
+      target: async () => undefined,
+    });
+    await m.refresh();
+    expect(calls.n).toBe(0);
+    expect(m.runs).toEqual([]);
   });
 
-  test("re-run is refused for an unfinished run and refreshes after a finished one", async () => {
-    const calls = { n: 0, rerun: [] as number[] };
-    const m = mk([run()], calls);
-    m.setVisible(true);
-    await expect(m.rerun(run({ status: "running" }))).rejects.toThrow("not finished");
-    expect(calls.rerun).toEqual([]);
-    expect(rerunDisabledReason("queued")).toBeDefined();
-    await m.rerun(run({ id: 4 }));
-    expect(calls.rerun).toEqual([4]);
-    await sleep(5);
-    expect(calls.n).toBe(2);
+  test("a run row names its status, source and version", () => {
+    expect(describeRun(run()).description).toBe("success  runner  v2");
+    expect(describeRun(run({ title: "", version: 0 })).label).toBe("Run 1");
+    expect(iconFor("failure")).toBe("error");
+    expect(iconFor("queued")).toBe("clock");
   });
 
   test("an error is reported and keeps the old rows", async () => {
@@ -169,11 +182,9 @@ describe("ci: Actions model", () => {
           if (fail) throw new Error("boom");
           return [run()];
         },
-        listJobs: async () => [],
-        rerun: async () => {},
         readRange: async () => ({ bytes: new Uint8Array(0), start: 0, total: 0 }),
       },
-      target: () => ({ owner: "o", repo: "r" }),
+      target: async () => ({ owner: "o", repo: "r" }),
       onError: (e) => errs.push(e),
     });
     await m.refresh();
@@ -181,6 +192,92 @@ describe("ci: Actions model", () => {
     await m.refresh();
     expect(errs.length).toBe(1);
     expect(m.runs.length).toBe(1);
+  });
+});
+
+describe("ci: bridge adapter", () => {
+  function fake(log: Uint8Array) {
+    const seen: string[] = [];
+    const node: BridgeNode = {
+      state: "up",
+      pid: undefined,
+      stderrTail: () => [],
+      close() {},
+      stream: async function* () {},
+      unary: async (o) => {
+        if (o.method === "asc.v1.Ci/ListRuns") {
+          seen.push("runs");
+          return toBinary(
+            ListRunsResponseSchema,
+            create(ListRunsResponseSchema, {
+              runs: [
+                {
+                  id: 5n,
+                  name: "build",
+                  source: "runner",
+                  version: 3,
+                  status: CiStatus.FAILURE,
+                  jobs: [{ id: 9n, name: "unit", status: CiStatus.RUNNING }],
+                },
+              ],
+            }),
+          );
+        }
+        const req = fromBinary(JobLogRequestSchema, o.request);
+        seen.push(`log:${req.runId}:${req.jobId}:${req.maxBytes}:${req.sinceOffset}`);
+        // The server cuts the tail to maxBytes, or answers from sinceOffset on.
+        const from = req.sinceOffset > 0n ? Number(req.sinceOffset) : Math.max(0, log.length - req.maxBytes);
+        const data = log.subarray(from, Math.min(log.length, from + req.maxBytes));
+        return toBinary(
+          JobLogResponseSchema,
+          create(JobLogResponseSchema, {
+            data,
+            offset: BigInt(from),
+            nextOffset: BigInt(from + data.length),
+            size: BigInt(log.length),
+          }),
+        );
+      },
+    };
+    return { seen, mgr: { node: () => node } as unknown as BridgeManager };
+  }
+  const t = { root: "/w", repo: "o/r" };
+  const log = new TextEncoder().encode("0123456789");
+
+  test("runs map status, source and jobs; the log needs the run listed first", async () => {
+    const f = fake(log);
+    const api = bridgeActionsApi(f.mgr, t);
+    await expect(api.readRange(9, { suffix: 4 })).rejects.toThrow("not loaded");
+    const runs = await api.listRuns(undefined);
+    expect(runs).toEqual([
+      {
+        id: 5,
+        title: "build",
+        status: "failure",
+        source: "runner",
+        version: 3,
+        jobs: [{ id: 9, runId: 5, name: "unit", status: "running" }],
+      },
+    ]);
+    const tail = await api.readRange(9, { suffix: 4 });
+    expect([new TextDecoder().decode(tail.bytes), tail.start, tail.total]).toEqual(["6789", 6, 10]);
+    expect(f.seen).toContain("log:5:9:4:0");
+  });
+
+  test("a range reads from its offset; the first bytes read the whole log once", async () => {
+    const f = fake(log);
+    const api = bridgeActionsApi(f.mgr, t);
+    await api.listRuns(undefined);
+    const mid = await api.readRange(9, { start: 2, end: 5 });
+    expect([new TextDecoder().decode(mid.bytes), mid.start]).toEqual(["2345", 2]);
+    const head = await api.readRange(9, { start: 0, end: 2 });
+    expect([new TextDecoder().decode(head.bytes), head.start, head.total]).toEqual(["012", 0, 10]);
+  });
+
+  test("splitRepo needs owner/repo", () => {
+    expect(splitRepo("asc/asc")).toEqual({ owner: "asc", repo: "asc" });
+    expect(splitRepo("asc")).toBeUndefined();
+    expect(splitRepo("/asc")).toBeUndefined();
   });
 });
 
