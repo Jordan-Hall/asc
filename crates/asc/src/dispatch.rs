@@ -696,7 +696,13 @@ pub async fn dispatch(ctx: &Ctx, mut argv: Vec<OsString>) -> Result<ExitCode> {
             }));
         };
         match resolve(ctx.prog, &name, &lookup) {
-            Resolved::Command(_) => return cli::run_command(ctx, argv).await,
+            Resolved::Command(_) => {
+                // A7 (SPEC 24.4.5.1): the bridge puts positionals after `--end-of-options`.
+                if crate::stack::cli::find(&name).is_some() {
+                    cli::common::end_of_options_to_dashes(&mut argv);
+                }
+                return cli::run_command(ctx, argv).await;
+            }
             Resolved::Unavailable(n) => {
                 return Err(CliError::Msg(Msg::AscNotInWorkspace { cmd: n }));
             }

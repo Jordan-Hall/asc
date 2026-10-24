@@ -864,6 +864,21 @@ impl Ctx {
     }
 }
 
+/// A7 (SPEC 24.4.5.1): the first `--end-of-options` of a clap-parsed verb becomes `--`, so the
+/// bridge can put revisions and paths after it whatever they look like. Words after an
+/// earlier `--` are left alone.
+pub fn end_of_options_to_dashes(argv: &mut [std::ffi::OsString]) {
+    for a in argv.iter_mut().skip(1) {
+        if a == "--" {
+            return;
+        }
+        if a == "--end-of-options" {
+            *a = "--".into();
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "../../tests/support/mod.rs"]
 pub(crate) mod support;
