@@ -64,6 +64,11 @@
           "default": "",
           "scope": "machine",
           "markdownDescription": "An `https://` asc server for `asc mcp --remote`, used only when no asc workspace is open."
+        },
+        "asc.inbox.statusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the count of changes that need your review in the status bar."
         }
       }
     },
@@ -488,6 +493,84 @@
         "title": "Configure agents",
         "category": "asc",
         "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.inbox.refresh",
+        "title": "Refresh inbox",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.inbox",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "asc.inbox.pin",
+        "title": "Pin",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.inbox",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "asc.inbox.unpin",
+        "title": "Unpin",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.inbox",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "asc.inbox.snooze",
+        "title": "Snooze",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.inbox",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "asc.inbox.checkout",
+        "title": "Check out stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.inbox && asc.mutating",
+        "icon": "$(repo-pull)"
+      },
+      {
+        "command": "asc.review.showThreads",
+        "title": "Show review threads for the current change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.review"
+      },
+      {
+        "command": "asc.review.requestReview",
+        "title": "Request a review of the current change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.review"
+      },
+      {
+        "command": "asc.review.createComment",
+        "title": "Comment",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.review"
+      },
+      {
+        "command": "asc.review.resolveThread",
+        "title": "Resolve thread",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.review"
+      },
+      {
+        "command": "asc.review.reopenThread",
+        "title": "Reopen thread",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.review"
+      },
+      {
+        "command": "asc.actions.refresh",
+        "title": "Refresh Actions",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.ci",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "asc.actions.loadEarlier",
+        "title": "Load earlier log output",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.feature.ci"
       }
     ],
     "views": {
@@ -500,6 +583,11 @@
         }
       ],
       "asc": [
+        {
+          "id": "asc.inbox",
+          "name": "Inbox",
+          "when": "asc.workspace && asc.feature.inbox"
+        },
         {
           "id": "asc.worktrees",
           "name": "Worktrees",
@@ -514,6 +602,11 @@
           "id": "asc.oplog",
           "name": "Op log",
           "when": "asc.workspace"
+        },
+        {
+          "id": "asc.actions",
+          "name": "Actions",
+          "when": "asc.workspace && asc.feature.ci"
         }
       ],
       "explorer": [
@@ -616,6 +709,26 @@
           "command": "asc.affected.run",
           "when": "view == asc.affected && viewItem == asc.affected.target",
           "group": "inline"
+        },
+        {
+          "command": "asc.inbox.pin",
+          "when": "view == asc.inbox && viewItem == asc.inbox.item",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.inbox.unpin",
+          "when": "view == asc.inbox && viewItem == asc.inbox.pinned",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.inbox.snooze",
+          "when": "view == asc.inbox && viewItem =~ /^asc\\.inbox\\.(item|pinned)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "asc.inbox.checkout",
+          "when": "view == asc.inbox && viewItem =~ /^asc\\.inbox\\.(item|pinned)$/",
+          "group": "inline@3"
         }
       ],
       "view/title": [
@@ -638,6 +751,16 @@
           "command": "asc.fileHistory.lineMode",
           "when": "view == asc.fileHistory",
           "group": "navigation@2"
+        },
+        {
+          "command": "asc.inbox.refresh",
+          "when": "view == asc.inbox",
+          "group": "navigation"
+        },
+        {
+          "command": "asc.actions.refresh",
+          "when": "view == asc.actions",
+          "group": "navigation"
         }
       ],
       "commandPalette": [
@@ -691,6 +814,34 @@
         },
         {
           "command": "asc.worktrees.lock",
+          "when": "false"
+        },
+        {
+          "command": "asc.inbox.pin",
+          "when": "false"
+        },
+        {
+          "command": "asc.inbox.unpin",
+          "when": "false"
+        },
+        {
+          "command": "asc.inbox.snooze",
+          "when": "false"
+        },
+        {
+          "command": "asc.inbox.checkout",
+          "when": "false"
+        },
+        {
+          "command": "asc.review.createComment",
+          "when": "false"
+        },
+        {
+          "command": "asc.review.resolveThread",
+          "when": "false"
+        },
+        {
+          "command": "asc.review.reopenThread",
           "when": "false"
         }
       ],
@@ -827,12 +978,12 @@
         },
         {
           "command": "asc.continue",
-          "when": "scmProvider == asc",
+          "when": "scmProvider == asc && asc.paused",
           "group": "5_paused@1"
         },
         {
           "command": "asc.abort",
-          "when": "scmProvider == asc",
+          "when": "scmProvider == asc && asc.paused",
           "group": "5_paused@2"
         }
       ],
@@ -922,6 +1073,30 @@
           "command": "asc.revnav.next",
           "when": "asc.workspace && (resourceScheme == file || resourceScheme == asc)",
           "group": "navigation@11"
+        },
+        {
+          "command": "asc.actions.loadEarlier",
+          "when": "resourceScheme == asc-actions",
+          "group": "navigation"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "asc.review.resolveThread",
+          "when": "commentController == asc.review && commentThread == asc.thread.open",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.review.reopenThread",
+          "when": "commentController == asc.review && commentThread == asc.thread.resolved",
+          "group": "inline@1"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "asc.review.createComment",
+          "when": "commentController == asc.review",
+          "group": "inline@1"
         }
       ]
     },
