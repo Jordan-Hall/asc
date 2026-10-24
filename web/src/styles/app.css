@@ -1,0 +1,139 @@
+@import "tailwindcss";
+
+/*
+ * ASC tokens (monorepo packages/ui/src/theme.css), trimmed to what this app draws. Colours are
+ * RGB channels so alpha can be applied: rgb(var(--color-border-rgb) / 0.5). Light primary is
+ * #155e75 (--color-primary-button); dark primary is #22d3ee (--color-primary). Values keep the
+ * asc names so the two files can be diffed.
+ */
+:root {
+  --color-primary: 18 84 105;
+  --color-primary-strong: 16 78 98;
+  --color-primary-button: 21 94 117;
+  --color-text-on-primary: 255 255 255;
+  --color-background-rgb: 248 250 252;
+  --color-surface-rgb: 255 255 255;
+  --color-component-rgb: 241 245 249;
+  --color-component-hover-rgb: 226 232 240;
+  --color-border-rgb: 203 213 225;
+  --color-control-border-rgb: 100 116 139;
+  --color-skeleton-rgb: 203 213 225;
+  --color-skeleton-soft-rgb: 226 232 240;
+  --color-text-base: 15 23 42;
+  --color-text-muted: 70 84 103;
+  --color-text-emphasis: 2 6 23;
+  --color-text-link: 8 78 98;
+  --color-text-link-focus-ring: 8 145 178;
+  --color-danger: 150 20 20;
+  --color-warning: 135 62 6;
+  --color-success: 3 94 68;
+  --color-info: 2 87 133;
+  --color-bg-success: 209 250 229;
+  --color-bg-info: 207 250 254;
+  --color-bg-warning: 254 243 199;
+  --color-bg-danger: 254 226 226;
+  --color-bg-default: 241 245 249;
+}
+
+.dark {
+  --color-primary: 34 211 238;
+  --color-primary-strong: 34 211 238;
+  --color-primary-button: 8 145 178;
+  --color-text-on-primary: 15 23 42;
+  --color-background-rgb: 2 6 23;
+  --color-surface-rgb: 15 23 42;
+  --color-component-rgb: 30 41 59;
+  --color-component-hover-rgb: 51 65 85;
+  --color-border-rgb: 51 65 85;
+  --color-control-border-rgb: 148 163 184;
+  --color-skeleton-rgb: 71 85 105;
+  --color-skeleton-soft-rgb: 51 65 85;
+  --color-text-base: 226 232 240;
+  --color-text-muted: 169 181 198;
+  --color-text-emphasis: 248 250 252;
+  --color-text-link: 34 211 238;
+  --color-text-link-focus-ring: 34 211 238;
+  --color-danger: 250 154 154;
+  --color-warning: 251 191 36;
+  --color-success: 52 211 153;
+  --color-info: 65 192 248;
+  --color-bg-success: 6 78 59;
+  --color-bg-info: 22 78 99;
+  --color-bg-warning: 120 53 15;
+  --color-bg-danger: 127 29 29;
+  --color-bg-default: 30 41 59;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-page: rgb(var(--color-background-rgb));
+  --color-surface: rgb(var(--color-surface-rgb));
+  --color-subtle: rgb(var(--color-component-rgb));
+  --color-subtle-hover: rgb(var(--color-component-hover-rgb));
+  --color-line: rgb(var(--color-border-rgb));
+  --color-control: rgb(var(--color-control-border-rgb));
+  --color-skeleton: rgb(var(--color-skeleton-rgb));
+  --color-fg: rgb(var(--color-text-base));
+  --color-fg-muted: rgb(var(--color-text-muted));
+  --color-fg-strong: rgb(var(--color-text-emphasis));
+  --color-link: rgb(var(--color-text-link));
+  --color-brand: rgb(var(--color-primary-button));
+  --color-on-brand: rgb(var(--color-text-on-primary));
+  --color-accent: rgb(var(--color-primary));
+  --color-bad: rgb(var(--color-danger));
+  --color-warn: rgb(var(--color-warning));
+  --color-good: rgb(var(--color-success));
+  --color-note: rgb(var(--color-info));
+  --color-good-bg: rgb(var(--color-bg-success));
+  --color-note-bg: rgb(var(--color-bg-info));
+  --color-warn-bg: rgb(var(--color-bg-warning));
+  --color-danger-bg: rgb(var(--color-bg-danger));
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    scrollbar-gutter: stable;
+    background: rgb(var(--color-background-rgb));
+    color: rgb(var(--color-text-base));
+    font-family: var(--font-sans);
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-text-link-focus-ring));
+    outline-offset: 2px;
+  }
+  a {
+    color: rgb(var(--color-text-link));
+  }
+}
+
+.skeleton {
+  background: rgb(var(--color-skeleton-soft-rgb));
+  border-radius: 0.25rem;
+  animation: asc-pulse 1.4s ease-in-out infinite;
+}
+@keyframes asc-pulse {
+  50% {
+    background: rgb(var(--color-skeleton-rgb));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
+.sr-only-focusable:not(:focus) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}

@@ -6,6 +6,7 @@
       "*.json",
       "packages/**/*.{ts,tsx,js,mjs,json}",
       "plugins/**/*.{ts,tsx,js,mjs,json}",
+      "web/**/*.{ts,tsx,js,mjs,json}",
       "!**/node_modules",
       "!**/dist",
       "!**/.turbo",
