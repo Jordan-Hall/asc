@@ -22,7 +22,10 @@
 //!   default branch), a merge, an unindexed changeset or a root. A change has an open PR when a
 //!   `change_versions` row names it and it has not landed.
 //! * `hidden_grace_days = 0` and `abandon_days = 0` switch the rule off, never "expire at once".
-//! * `gc_purge` rows are kept [`PURGE_RETAIN_DAYS`] days, far past any GC interval.
+//! * A `gc_purge` row is dropped by the first GC sweep that finishes after it was written
+//!   ([`GcRootSource::purge_swept`]), unless a strict root still reaches the object: that row is
+//!   kept, so the object goes at the next sweep after the root is gone, and is pruned after
+//!   [`PURGE_RETAIN_DAYS`] days at the latest.
 //! * Settings are the SPEC defaults until `[cloud]` reaches the server configuration.
 
 use std::sync::Arc;
@@ -46,9 +49,12 @@ pub const INTERVAL: Duration = Duration::from_secs(60 * 60);
 pub const BATCH: i64 = 1_000;
 /// Batches one repository gets per run and rule; the rest waits for the next run.
 pub const MAX_BATCHES: usize = 100;
-/// Days a `gc_purge` row is kept.
+/// Days a `gc_purge` row is kept at most when a sweep never finishes it (its object is still
+/// referenced).
 pub const PURGE_RETAIN_DAYS: i64 = 30;
 const DAY: i64 = 86_400;
+/// Keys per `gc_purge` delete.
+const SWEPT_ROWS: usize = 200;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -461,6 +467,29 @@ impl GcRootSource for CloudRoots {
             }
         }
         Ok(out)
+    }
+
+    /// Forgets the purged keys a finished sweep handled, except rows written after it began.
+    async fn purge_swept(&self, ns: &[u8], keys: &[ObjKey], as_of: i64) -> Result<(), GcError> {
+        for chunk in keys.chunks(SWEPT_ROWS) {
+            let marks = (0..chunk.len())
+                .map(|i| format!("${}", i + 3))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let text = format!(
+                "DELETE FROM gc_purge WHERE ns = $1 AND purged_at <= $2 AND key IN ({marks})"
+            );
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(text))
+                .bind(ns.to_vec())
+                .bind(as_of);
+            for k in chunk {
+                q = q.bind(k.path());
+            }
+            q.execute(&self.pool)
+                .await
+                .map_err(|e| other("gc_purge", &e))?;
+        }
+        Ok(())
     }
 }
 

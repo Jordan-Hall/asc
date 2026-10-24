@@ -164,6 +164,13 @@ pub trait GcRootSource: Send + Sync {
     async fn purged(&self, _ns: &[u8]) -> Result<Vec<ObjKey>> {
         Ok(Vec::new())
     }
+    /// A sweep that started at `as_of` (unix seconds) finished: every key in `keys` came from
+    /// [`purged`](Self::purged) and is now deleted or gone, so the source may forget it. Keys a
+    /// strict root still reaches are not listed and stay purged. Entries purged after `as_of`
+    /// must be kept.
+    async fn purge_swept(&self, _ns: &[u8], _keys: &[ObjKey], _as_of: i64) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// How strongly a key is marked.
@@ -638,6 +645,8 @@ impl Collector<'_> {
         for src in self.extra {
             purge.extend(src.purged(self.ns).await?);
         }
+        // Purged keys that a strict root keeps; the rest are done once the sweep finishes.
+        let mut held: std::collections::HashSet<ObjKey> = std::collections::HashSet::new();
         let mut report = SweepReport {
             dry_run,
             waiting_for_second_mark: prev.is_none(),
@@ -661,6 +670,7 @@ impl Collector<'_> {
                 if purged {
                     // Purged: no age rule, no earlier mark; only a strict root keeps it.
                     if n.get(&key) == Some(&Tier::Strict) {
+                        held.insert(key);
                         continue;
                     }
                 } else {
@@ -700,14 +710,31 @@ impl Collector<'_> {
                     follows,
                 });
                 if batch.len() >= self.cfg.batch {
-                    self.delete_batch(mark, &n, std::mem::take(&mut batch), fence, &mut report)
-                        .await?;
+                    self.delete_batch(
+                        mark,
+                        &n,
+                        std::mem::take(&mut batch),
+                        fence,
+                        &mut report,
+                        &mut held,
+                    )
+                    .await?;
                 }
             }
         }
         if !batch.is_empty() {
-            self.delete_batch(mark, &n, batch, fence, &mut report)
+            self.delete_batch(mark, &n, batch, fence, &mut report, &mut held)
                 .await?;
+        }
+        if !dry_run {
+            // The sweep finished without error: whatever was purged is deleted, gone or kept
+            // by a strict root. The sources forget the first two; the last stay listed.
+            let done: Vec<ObjKey> = purge.into_iter().filter(|k| !held.contains(k)).collect();
+            if !done.is_empty() {
+                for src in self.extra {
+                    src.purge_swept(self.ns, &done, mark.run).await?;
+                }
+            }
         }
         Ok(report)
     }
@@ -727,6 +754,7 @@ impl Collector<'_> {
         batch: Vec<Candidate>,
         fence: &dyn Fence,
         report: &mut SweepReport,
+        held: &mut std::collections::HashSet<ObjKey>,
     ) -> Result<()> {
         let _guard = fence.enter().await?;
         // Everything below sees refs and storage as no push can change them until the guard drops.
@@ -747,6 +775,9 @@ impl Collector<'_> {
                 again.local.contains_key(&c.key)
             };
             if revived {
+                if c.purged {
+                    held.insert(c.key);
+                }
                 report.rescued += 1;
             } else {
                 doomed.push(c.key);
@@ -1571,10 +1602,16 @@ mod tests {
     struct Source {
         roots: Mutex<Vec<ObjKey>>,
         purged: Mutex<Vec<ObjKey>>,
+        /// The keys `purge_swept` was told about, with the `as_of` of each call.
+        swept: Mutex<Vec<(Vec<ObjKey>, i64)>>,
     }
 
     #[async_trait]
     impl GcRootSource for Source {
+        async fn purge_swept(&self, _: &[u8], keys: &[ObjKey], as_of: i64) -> Result<()> {
+            self.swept.lock().unwrap().push((keys.to_vec(), as_of));
+            Ok(())
+        }
         async fn roots(&self, _: &[u8]) -> Result<Vec<ObjKey>> {
             Ok(self.roots.lock().unwrap().clone())
         }
@@ -1856,6 +1893,7 @@ mod tests {
         let src = Arc::new(Source {
             roots: Mutex::new(vec![ObjKey::Changeset(rooted)]),
             purged: Mutex::new(vec![ObjKey::File(yf)]),
+            swept: Mutex::new(Vec::new()),
         });
         let extra: Vec<Arc<dyn GcRootSource>> = vec![src.clone()];
         // Everything is young (no age rule applies to a purge) and there is no earlier mark.
@@ -1872,8 +1910,17 @@ mod tests {
             "only the purged key goes"
         );
         assert!(has(&e, ObjKey::File(rf)).await);
+        {
+            // The source is told the deleted key is done, as of the run that deleted it.
+            let swept = src.swept.lock().unwrap();
+            assert_eq!(swept.len(), 1);
+            assert_eq!(swept[0].0, vec![ObjKey::File(yf)]);
+            assert_eq!(swept[0].1, r.mark.run);
+        }
 
-        // A purged key that a strict root reaches is kept.
+        // A purged key that a strict root reaches is kept, and the source is not told to forget
+        // it; the key already deleted is reported done again (it is gone).
+        src.swept.lock().unwrap().clear();
         src.purged.lock().unwrap().push(ObjKey::File(rf));
         let r =
             e.gc.run(now + Duration::from_secs(60), false, &cfg(), &extra)
@@ -1881,6 +1928,21 @@ mod tests {
                 .unwrap();
         assert_eq!(r.sweep.deleted, 0);
         assert!(has(&e, ObjKey::File(rf)).await);
+        {
+            let swept = src.swept.lock().unwrap();
+            assert_eq!(swept.len(), 1);
+            assert_eq!(
+                swept[0].0,
+                vec![ObjKey::File(yf)],
+                "the rooted key stays listed"
+            );
+        }
+        // A dry run changes nothing and tells no one.
+        src.swept.lock().unwrap().clear();
+        e.gc.run(now + Duration::from_secs(120), true, &cfg(), &extra)
+            .await
+            .unwrap();
+        assert!(src.swept.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
