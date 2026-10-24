@@ -183,7 +183,8 @@ async fn rig(modules: usize, grants: Vec<(&'static str, Vec<&'static str>)>, fil
     set_master(&registry, &child, ccs).await;
     let asc_commit = child.backend.engine().git_commit_of(ccs).await.unwrap();
 
-    let mut modules_text = format!("[submodule \"lib\"]\n\tpath = lib\n\turl = ../secretlib.git\n");
+    let mut modules_text =
+        String::from("[submodule \"lib\"]\n\tpath = lib\n\turl = ../secretlib.git\n");
     let mut links = vec![("lib", asc_commit)];
     for i in 0..modules {
         modules_text.push_str(&format!(
