@@ -45,11 +45,14 @@ pub struct Args {
     pub dry_run: bool,
     #[arg(long)]
     pub json: bool,
+    /// Apply a `StackTodo` (JSON; pick, fold, drop, reword) as one operation; no editor.
+    #[arg(long, value_name = "FILE")]
+    pub todo: Option<std::path::PathBuf>,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "reorder",
-    flags: &["--stack", "-n", "--dry-run", "--json"],
+    flags: &["--stack", "-n", "--dry-run", "--json", "--todo"],
     placeholders: &[],
 }];
 
@@ -123,6 +126,9 @@ async fn edit(ctx: &Ctx, file: &Path, text: &str) -> Result<String> {
 }
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+    if let Some(file) = &a.todo {
+        return super::reorder_todo::run(ctx, &a, file).await;
+    }
     let l = Local::open(ctx).await?;
     let ws = l.ws;
     refuse_busy(ws, "reorder")?;
