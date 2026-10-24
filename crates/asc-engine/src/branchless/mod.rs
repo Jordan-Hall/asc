@@ -11,6 +11,7 @@ use asc_core::id::ChangesetId;
 use crate::stack;
 
 pub mod guard;
+pub mod live;
 pub mod sync;
 pub mod upload;
 pub mod visible;
