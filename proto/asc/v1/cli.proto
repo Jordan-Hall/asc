@@ -1,0 +1,334 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/options.proto";
+
+// cli.proto — the messages of asc-only verbs (SPEC 7, 20.7, 22.3.2, 22.4.2; unit M02).
+//
+// Every `--json` output of an asc-only verb is one of these messages printed in the asc JSON profile
+// `json.profile.v1` (`asc_rpc::json`): snake_case names, lowercase hex ids, change ids as letters
+// k-z, enums as lowercase names without the type prefix. The `*Args` messages are the MCP and
+// bridge inputs of the verbs; they mirror the CLI flags and carry no secret.
+//
+// Reconciliation of the C07 types (`crates/asc/src/stack/json.rs`): `OpResult` and `OpLogResponse`
+// print exactly the SPEC 20.7 shapes, `Signature` (repo.proto) prints `tz`, and `asc op log --json`
+// prints `{"version": 1, "ops": [...]}`. The CLI prints empty lists and `null`s that the profile
+// codec omits; the codec accepts both.
+
+// ---- the result of every mutating verb -------------------------------------------------------
+
+// Zero is "unspecified" so that the profile codec, which leaves out zero values, never drops a
+// real status.
+enum OpStatus {
+  OP_STATUS_UNSPECIFIED = 0;
+  OP_STATUS_OK = 1;          // done
+  OP_STATUS_NOTHING = 2;     // nothing to do (exit 0)
+  OP_STATUS_PAUSED = 3;      // stopped on a conflict (exit 1); `conflicts` lists them
+  OP_STATUS_AMBIGUOUS = 4;   // a fork or several candidates (exit 2); `candidates` lists them
+}
+
+enum SkipReason {
+  SKIP_REASON_UNSPECIFIED = 0;
+  SKIP_REASON_CHECKED_OUT_ELSEWHERE = 1;
+  SKIP_REASON_FROZEN = 2;
+  SKIP_REASON_CONFLICT = 3;
+  SKIP_REASON_MERGE = 4;
+  SKIP_REASON_IMMUTABLE = 5;
+}
+
+message OpRewritten {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes old = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes new = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message OpRefMove {
+  string name = 1;
+  optional bytes old = 2 [(asc.v1.json) = JSON_KIND_HEX];   // absent: the ref was created
+  optional bytes new = 3 [(asc.v1.json) = JSON_KIND_HEX];   // absent: the ref was deleted
+}
+
+message OpSkipped {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  SkipReason reason = 2;
+}
+
+message OpConflict {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH];
+}
+
+message OpCandidate {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes subject = 2 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+
+message OpReview {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint64 number = 2;
+  string url = 3;
+  bool created = 4;
+  uint32 version = 5;
+}
+
+// The printed outcome of a verb and, with `status`, its exit code (0 ok or nothing, 1 paused,
+// 2 ambiguous). `detail` carries the typed fields of the verbs that have them (PLAN P45).
+message OpResult {
+  uint32 version = 1;                        // always 1
+  optional string op = 2;                    // the op-log id of the operation, when one was recorded
+  OpStatus status = 3;
+  repeated OpRewritten rewritten = 4;
+  repeated OpRefMove refs = 5;
+  repeated OpSkipped skipped = 6;
+  repeated OpConflict conflicts = 7;
+  repeated OpCandidate candidates = 8;
+  repeated OpReview reviews = 9;
+  repeated string hints = 10;
+  oneof detail {
+    RestoreDetail restore = 20;
+    SwitchDetail switch = 21;
+    CherryPickDetail cherry_pick = 22;
+    RevertDetail revert = 23;
+    CloneDetail clone = 24;
+    WorktreeAddResult worktree_add = 25;
+    WorktreeRemoveDetail worktree_remove = 26;
+    WorktreeListDetail worktree_list = 27;
+    StashDetail stash = 28;
+    FetchDetail fetch = 29;
+    PullDetail pull = 30;
+    PushDetail push = 31;
+  }
+}
+
+// ---- typed details of the plugin verbs (PLAN P45) --------------------------------------------
+
+message RestoreDetail {
+  repeated bytes paths = 1 [(asc.v1.json) = JSON_KIND_PATH];   // restored paths
+  bool staged = 2;                                            // the index side was restored
+  bool worktree = 3;                                          // the working copy side was restored
+}
+
+message SwitchDetail {
+  string target = 1;                                          // the branch or revision named
+  bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX];              // HEAD after the switch
+  bool created = 3;                                           // `-c` made the branch
+  bool detached = 4;
+}
+
+message CherryPickDetail {
+  repeated bytes picked = 1 [(asc.v1.json) = JSON_KIND_HEX];   // source commits, in order
+  repeated bytes made = 2 [(asc.v1.json) = JSON_KIND_HEX];     // the new commits, in order
+  bytes head = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message RevertDetail {
+  repeated bytes reverted = 1 [(asc.v1.json) = JSON_KIND_HEX];
+  repeated bytes made = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes head = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message CloneDetail {
+  string url = 1;                                             // never carries credentials
+  bytes path = 2 [(asc.v1.json) = JSON_KIND_PATH];
+  string mode = 3;                                            // "virtual" or "plain"
+  string branch = 4;
+  bytes head = 5 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+// The result of `asc worktree add --json` (the MCP `worktree_create` tool).
+message WorktreeAddResult {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  bytes rev = 2 [(asc.v1.json) = JSON_KIND_HEX];               // the commit checked out
+  string ws = 3;                                              // the new workspace id
+  string branch = 4;                                          // empty when detached
+  string mode = 5;                                            // "virtual" or "plain"
+  bool ephemeral = 6;
+  int64 expires_at = 7;                                       // unix seconds; 0 when not ephemeral
+}
+
+message WorktreeRemoveDetail {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  bool forced = 2;
+}
+
+message WorktreeRow {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  string branch = 3;
+  bool locked = 4;
+  bool ephemeral = 5;
+}
+
+message WorktreeListDetail {
+  repeated WorktreeRow worktrees = 1;
+}
+
+message StashEntry {
+  uint32 index = 1;
+  bytes commit = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes message = 3 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+
+message StashDetail {
+  string action = 1;                                          // push, pop, apply, drop, list
+  repeated StashEntry entries = 2;
+}
+
+message FetchedRef {
+  string name = 1;
+  optional bytes old = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  optional bytes new = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message FetchDetail {
+  string remote = 1;                                          // the remote name, never a URL with credentials
+  repeated FetchedRef updated = 2;
+  repeated string pruned = 3;
+}
+
+message PullDetail {
+  FetchDetail fetch = 1;
+  bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  string integrate = 3;                                       // "merge", "rebase" or "fast-forward"
+}
+
+message PushedRef {
+  string name = 1;
+  optional bytes old = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  optional bytes new = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  string status = 4;                                          // "ok", "up-to-date", "rejected"
+  string reason = 5;
+}
+
+message PushDetail {
+  string remote = 1;
+  repeated PushedRef refs = 2;
+}
+
+// ---- asc op log -------------------------------------------------------------------------------
+
+message OpRow {
+  string op = 1;
+  uint64 seq = 2;
+  int64 at = 3;
+  string ws = 4;
+  repeated string argv = 5;                                   // already redacted (SPEC 20.3)
+  repeated OpRefMove refs = 6;
+  optional string snapshot = 7;
+  bool undone = 8;
+}
+
+// `asc op log --json`: a list is always wrapped in an object.
+message OpLogResponse {
+  uint32 version = 1;
+  repeated OpRow ops = 2;
+}
+
+// ---- inputs (MCP tools and the bridge; SPEC 22.3.2) -------------------------------------------
+
+message CreateArgs {
+  string message = 1;                                         // required: no editor runs
+  bool all = 2;
+  optional string onto = 3;
+  bool insert = 4;
+}
+
+message ModifyArgs {
+  optional string message = 1;
+  bool all = 2;
+  optional string into = 3;
+  bool new_change = 4;                                        // `-c`
+}
+
+message AbsorbArgs {
+  bool apply = 1;                                             // false: preview only
+  optional string into = 2;
+}
+
+enum RestackScope {
+  RESTACK_SCOPE_ALL = 0;
+  RESTACK_SCOPE_DOWNSTACK = 1;
+  RESTACK_SCOPE_UPSTACK = 2;
+  RESTACK_SCOPE_ONLY = 3;
+}
+
+message RestackArgs {
+  optional string change = 1;
+  RestackScope scope = 2;
+}
+
+// `undo` and `redo`.
+message UndoArgs {
+  string op = 1;                                              // from an earlier OpResult; STALE_OP unless current
+  bool dry_run = 2;
+}
+
+message SyncArgs {
+  optional bool fetch = 1;                                    // default true
+  optional bool restack = 2;                                  // default true
+  bool delete_merged = 3;
+}
+
+message SubmitArgs {
+  optional string change = 1;
+  bool whole_stack = 2;
+  optional bool draft = 3;                                    // default: asc.stack.submit.draft, else true
+  repeated string reviewers = 4;
+  bool update_only = 5;
+  bool force = 6;
+}
+
+message WorktreeAddArgs {
+  string path = 1;
+  optional string rev = 2;
+  bool ephemeral = 3;
+  optional string ttl = 4;                                    // "7d"
+  optional string mode = 5;                                   // "virtual" or "plain"
+}
+
+message OpLogArgs {
+  uint32 limit = 1;
+}
+
+// ---- the handles forge-facing tools return (SPEC 22.3.4) --------------------------------------
+
+message AscHandles {
+  bytes asc_change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes head = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes merge_base = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes stack_parent = 4 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 5;
+}
+
+// ---- plugin inputs (PLAN P03, P46) ------------------------------------------------------------
+
+enum TodoAction {
+  TODO_ACTION_UNSPECIFIED = 0;
+  TODO_ACTION_PICK = 1;
+  TODO_ACTION_FOLD = 2;
+  TODO_ACTION_DROP = 3;
+  TODO_ACTION_REWORD = 4;
+}
+
+message TodoItem {
+  TodoAction action = 1;
+  string change = 2;                                          // a change-id prefix
+  optional string message = 3;                                // required for reword; optional for fold
+}
+
+// `asc reorder --todo`: ordered bottom to top.
+message StackTodo {
+  repeated TodoItem items = 1;
+}
+
+// One piece of `asc split --hunks`; the last piece takes the remainder.
+message SplitPiece {
+  string message = 1;
+  bytes patch = 2;                                            // a git-apply patch
+  repeated bytes whole_files = 3 [(asc.v1.json) = JSON_KIND_PATH];
+}
+
+message SplitSpec {
+  repeated SplitPiece pieces = 1;
+}

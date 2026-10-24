@@ -160,8 +160,10 @@ impl Status {
     }
 }
 
+/// Printed as the asc JSON profile prints `asc.v1.SkipReason` (lowercase value name without the
+/// type prefix): `checked_out_elsewhere`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum SkipReason {
     CheckedOutElsewhere,
     Frozen,
@@ -353,12 +355,12 @@ mod tests {
     }
 
     #[test]
-    fn skip_reasons_are_kebab_case() {
+    fn skip_reasons_follow_the_profile_enum_names() {
         let s = Skipped {
             change: "c".into(),
             reason: SkipReason::CheckedOutElsewhere,
         };
-        assert_eq!(parse(&s)["reason"], "checked-out-elsewhere");
+        assert_eq!(parse(&s)["reason"], "checked_out_elsewhere");
     }
 
     #[test]
