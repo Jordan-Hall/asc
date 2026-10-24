@@ -18,6 +18,7 @@ pub mod diff;
 pub mod graph;
 pub mod graph_skip;
 pub mod history;
+pub mod interdiff;
 pub mod land;
 pub mod merge;
 pub mod projects;
