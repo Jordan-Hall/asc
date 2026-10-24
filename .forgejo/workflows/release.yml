@@ -186,7 +186,6 @@ jobs:
           for f in $(find out -type f); do
             name="${f#out/}"
             # A re-run replaces the file (the registry answers 409 for an existing one).
-            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
             curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
           done
           rm -f "$RUNNER_TEMP/hdr"
@@ -234,7 +233,6 @@ jobs:
           printf 'Authorization: token %s\n' "$TOKEN" > "$RUNNER_TEMP/hdr"
           for f in $(find out -type f); do
             name="${f#out/}"
-            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
             curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
           done
           rm -f "$RUNNER_TEMP/hdr"
