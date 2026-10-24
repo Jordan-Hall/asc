@@ -10,7 +10,10 @@ publish = false
 workspace = true
 
 [features]
-default = ["git-compat", "git-ssh"]
+default = ["git-compat", "git-ssh", "http3"]
+# HTTP/3 (U89b): a QUIC listener when `[tls]` and `http3_port` are set. rustls on `ring`; the
+# `asc-rpc` client is the one the tests use. Off, none of the QUIC crates is built.
+http3 = ["asc-rpc/http3", "dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls"]
 # The git smart-HTTP layer (SPEC 25); forwards to `asc-git`.
 git-compat = ["asc-git/git-compat"]
 # SSH public keys in the token store and the SSH listener (SPEC 25.11). `russh` is the one SSH
@@ -65,6 +68,10 @@ fs4 = "0.13.1"
 # SSH keys (SPEC 25.11.2). `ring` keeps OpenSSL and a C toolchain out; `rsa` is needed to parse RSA
 # keys and check their size. No compression, no legacy parsers.
 russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"], optional = true }
+quinn = { workspace = true, optional = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["ring"] }
 
 # The key file's access list (authz/key_file.rs).
 [target.'cfg(windows)'.dependencies]
@@ -76,5 +83,6 @@ rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 # Builds gzip request bodies for the upload-pack tests (U81); the backend `zip` already uses.
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
