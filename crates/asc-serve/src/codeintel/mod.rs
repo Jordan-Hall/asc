@@ -8,6 +8,7 @@ pub mod modelgen;
 pub mod ords;
 pub mod queue;
 pub mod rpc;
+pub mod scip;
 pub mod snaps;
 pub mod sweep;
 pub mod warm;
