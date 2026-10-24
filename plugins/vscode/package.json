@@ -46,6 +46,16 @@
           "default": "",
           "scope": "machine",
           "markdownDescription": "Path to the `asc` executable. Empty searches `PATH`, then `$ASC_HOME/bin`."
+        },
+        "asc.blame.inline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the blame of the current line after it."
+        },
+        "asc.blame.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show who last changed each top-level symbol. Off for files over 5,000 lines."
         }
       }
     },
@@ -94,6 +104,24 @@
         "title": "Open search",
         "category": "asc",
         "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.blame.toggleFile",
+        "title": "Toggle file blame",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.blame.toggleHeatmap",
+        "title": "Toggle blame heatmap",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.blame.toggleInline",
+        "title": "Toggle inline blame",
+        "category": "asc",
+        "enablement": "asc.workspace"
       }
     ],
     "views": {
@@ -105,7 +133,69 @@
           "when": "asc.workspace"
         }
       ]
-    }
+    },
+    "colors": [
+      {
+        "id": "asc.blameForeground",
+        "description": "Inline blame text.",
+        "defaults": {
+          "dark": "#8b8b8b99",
+          "light": "#7b7b7b99",
+          "highContrast": "#cccccc",
+          "highContrastLight": "#333333"
+        }
+      },
+      {
+        "id": "asc.heatmap0",
+        "description": "Blame heatmap, age quantile 0 (0 oldest).",
+        "defaults": {
+          "dark": "#3b4a7a",
+          "light": "#3b4a7a",
+          "highContrast": "#3b4a7a",
+          "highContrastLight": "#3b4a7a"
+        }
+      },
+      {
+        "id": "asc.heatmap1",
+        "description": "Blame heatmap, age quantile 1 (0 oldest).",
+        "defaults": {
+          "dark": "#3f6a8a",
+          "light": "#3f6a8a",
+          "highContrast": "#3f6a8a",
+          "highContrastLight": "#3f6a8a"
+        }
+      },
+      {
+        "id": "asc.heatmap2",
+        "description": "Blame heatmap, age quantile 2 (0 oldest).",
+        "defaults": {
+          "dark": "#3f8a7a",
+          "light": "#3f8a7a",
+          "highContrast": "#3f8a7a",
+          "highContrastLight": "#3f8a7a"
+        }
+      },
+      {
+        "id": "asc.heatmap3",
+        "description": "Blame heatmap, age quantile 3 (0 oldest).",
+        "defaults": {
+          "dark": "#8a9a3f",
+          "light": "#8a9a3f",
+          "highContrast": "#8a9a3f",
+          "highContrastLight": "#8a9a3f"
+        }
+      },
+      {
+        "id": "asc.heatmap4",
+        "description": "Blame heatmap, age quantile 4 (0 oldest).",
+        "defaults": {
+          "dark": "#d19a3f",
+          "light": "#d19a3f",
+          "highContrast": "#d19a3f",
+          "highContrastLight": "#d19a3f"
+        }
+      }
+    ]
   },
   "scripts": {
     "build": "bun scripts/bundle.ts",
