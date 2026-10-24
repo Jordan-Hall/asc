@@ -67,3 +67,25 @@ groups:
         expr: increase(forgejo_asc_shadow_mismatch_total[1h]) > 0
         labels: {severity: ticket}
         annotations: {summary: "Forgejo shadow mismatch", runbook: "docs/runbooks/tier-forgejo.md"}
+  - name: asc-codeintel
+    rules:
+      - alert: AscCodeIntelIndexLag
+        expr: asc_ci_index_lag_seconds > 900
+        for: 15m
+        labels: {severity: ticket}
+        annotations: {summary: "Code-intelligence index is over 15 minutes behind", runbook: "docs/runbooks/tier-codeintel.md"}
+      - alert: AscCodeIntelDeadJobs
+        expr: sum(asc_ci_jobs{state="dead"}) > 0
+        for: 30m
+        labels: {severity: ticket}
+        annotations: {summary: "Code-intelligence jobs are dead", runbook: "docs/runbooks/tier-codeintel.md"}
+      - alert: AscCodeIntelQuerySlow
+        expr: histogram_quantile(0.99, sum by (le) (rate(asc_ci_query_seconds_bucket{rpc="Search"}[5m]))) > 2
+        for: 15m
+        labels: {severity: ticket}
+        annotations: {summary: "Code search p99 over 2 seconds", runbook: "docs/runbooks/tier-codeintel.md"}
+      - alert: AscCodeIntelCoverage
+        expr: asc_ci_coverage < 0.95
+        for: 1h
+        labels: {severity: ticket}
+        annotations: {summary: "Less than 95% of the tree is indexed", runbook: "docs/runbooks/tier-codeintel.md"}
