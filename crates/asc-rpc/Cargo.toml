@@ -9,6 +9,12 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = ["http3"]
+# HTTP/3 in the HTTPS client (U89b): `Alt-Svc` upgrade over QUIC with a fall back to h2. rustls on
+# `ring`; certificates are checked by the platform verifier, as reqwest does for h2.
+http3 = ["dep:quinn", "dep:h3", "dep:h3-quinn", "dep:rustls", "dep:rustls-platform-verifier"]
+
 [dependencies]
 asc-core = { workspace = true }
 asc-engine = { workspace = true }
@@ -35,6 +41,12 @@ interprocess = { workspace = true }
 tower = { workspace = true }
 hyper-util = { workspace = true }
 tokio-stream = { workspace = true }
+http = { workspace = true }
+quinn = { workspace = true, optional = true }
+h3 = { workspace = true, optional = true }
+h3-quinn = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["ring"] }
+rustls-platform-verifier = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Memory"] }
@@ -47,6 +59,7 @@ rustix = { workspace = true, features = ["process"] }
 protox = { workspace = true }
 sqlx = { workspace = true }
 tempfile = { workspace = true }
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
 tokio-stream = { workspace = true, features = ["net"] }
 
 [build-dependencies]
