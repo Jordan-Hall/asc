@@ -14,13 +14,15 @@
   "scripts": {
     "build": "bun build src/index.ts --target=browser --format=esm --minify --outdir dist",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test test",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@asc/asc-client": "workspace:*",
     "jotai": "^2.12.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@types/bun": "^1.4.4"
   }
 }
