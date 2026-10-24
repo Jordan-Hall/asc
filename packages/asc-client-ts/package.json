@@ -10,10 +10,13 @@
     "./forgejo": "./src/forgejo/index.ts",
     "./bridge": "./src/gen/asc/v1/bridge_pb.ts",
     "./changes": "./src/gen/asc/v1/changes_pb.ts",
+    "./ci": "./src/gen/asc/v1/ci_pb.ts",
     "./cloud": "./src/gen/asc/v1/cloud_pb.ts",
     "./codeintel": "./src/gen/asc/v1/codeintel_pb.ts",
+    "./inbox": "./src/gen/asc/v1/inbox_pb.ts",
     "./projects": "./src/gen/asc/v1/projects_pb.ts",
     "./repo": "./src/gen/asc/v1/repo_pb.ts",
+    "./review": "./src/gen/asc/v1/review_pb.ts",
     "./workspace": "./src/gen/asc/v1/workspace_pb.ts"
   },
   "sideEffects": false,

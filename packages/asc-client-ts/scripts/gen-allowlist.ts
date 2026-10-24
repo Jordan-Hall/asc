@@ -13,10 +13,13 @@ import { fileURLToPath } from "node:url";
 import type { DescFile } from "@bufbuild/protobuf";
 import { file_asc_v1_bridge } from "../src/gen/asc/v1/bridge_pb";
 import { file_asc_v1_changes } from "../src/gen/asc/v1/changes_pb";
+import { file_asc_v1_ci } from "../src/gen/asc/v1/ci_pb";
 import { file_asc_v1_cloud } from "../src/gen/asc/v1/cloud_pb";
 import { file_asc_v1_codeintel } from "../src/gen/asc/v1/codeintel_pb";
+import { file_asc_v1_inbox } from "../src/gen/asc/v1/inbox_pb";
 import { file_asc_v1_projects } from "../src/gen/asc/v1/projects_pb";
 import { file_asc_v1_repo } from "../src/gen/asc/v1/repo_pb";
+import { file_asc_v1_review } from "../src/gen/asc/v1/review_pb";
 import { file_asc_v1_workspace } from "../src/gen/asc/v1/workspace_pb";
 
 export interface RustVerb {
@@ -36,10 +39,13 @@ export function protoRpcs(): string[] {
   const files: DescFile[] = [
     file_asc_v1_bridge,
     file_asc_v1_changes,
+    file_asc_v1_ci,
     file_asc_v1_cloud,
     file_asc_v1_codeintel,
+    file_asc_v1_inbox,
     file_asc_v1_projects,
     file_asc_v1_repo,
+    file_asc_v1_review,
     file_asc_v1_workspace,
   ];
   return files.flatMap((f) =>

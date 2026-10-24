@@ -51,7 +51,12 @@
       "asc.v1.CodeIntel/Search",
       "asc.v1.CodeIntel/Symbols",
       "asc.v1.CodeIntel/Semantic",
-      "asc.v1.CodeIntel/IndexStatus"
+      "asc.v1.CodeIntel/IndexStatus",
+      "asc.v1.Inbox/List",
+      "asc.v1.Inbox/Count",
+      "asc.v1.Review/ListThreads",
+      "asc.v1.Ci/ListRuns",
+      "asc.v1.Ci/JobLog"
     ],
     "write": [
       {
@@ -65,6 +70,22 @@
       {
         "name": "asc.v1.Changes/RequestMerge",
         "confirm": "modal"
+      },
+      {
+        "name": "asc.v1.Inbox/SetState",
+        "confirm": "none"
+      },
+      {
+        "name": "asc.v1.Review/AddComment",
+        "confirm": "none"
+      },
+      {
+        "name": "asc.v1.Review/ResolveThread",
+        "confirm": "none"
+      },
+      {
+        "name": "asc.v1.Review/RequestReview",
+        "confirm": "none"
       }
     ],
     "run": ["asc.v1.Bridge/Run"],
@@ -102,7 +123,9 @@
       "asc.v1.Bridge/Hello",
       "asc.v1.Bridge/Token",
       "asc.v1.Bridge/StoreToken",
-      "asc.v1.Bridge/Events"
+      "asc.v1.Bridge/Events",
+      "asc.v1.Ci/ReportRun",
+      "asc.v1.Ci/AppendJobLog"
     ]
   },
   "run": {
