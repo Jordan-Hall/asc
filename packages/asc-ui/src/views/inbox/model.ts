@@ -1,7 +1,7 @@
 // Inbox model (SPEC §24.3.5, §24.4.7): pure grouping of `GET /user/asc/inbox` entries into the
 // seven sections, pinned first, snoozed entries hidden until their time passes.
 
-/** The subset of the Forgejo inbox entry the view reads (structurally the swagger type). */
+/** The subset of the host inbox entry the view reads (structurally the host API schema type). */
 export interface InboxPull {
   readonly number?: number;
   readonly title?: string;

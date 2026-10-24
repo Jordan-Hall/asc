@@ -1,10 +1,10 @@
 // The host seam of asc-ui (SPEC §24.1 IP-D1, IP-D10). One implementation per host: the VS Code
-// webview, the JetBrains JCEF window, the Forgejo island and the dev host. Views call the
+// webview, the JetBrains JCEF window, the web island and the dev host. Views call the
 // host only through this interface, so none of them touches `acquireVsCodeApi` or a JCEF query.
 import type { BridgeTransport } from "@asc/asc-client";
 import type { AscToken } from "./theme/tokens";
 
-export type HostKind = "vscode" | "jetbrains" | "forgejo" | "browser";
+export type HostKind = "vscode" | "jetbrains" | "island" | "browser";
 
 /** A file location a view asks the host to open in a native editor. */
 export interface OpenTarget {
