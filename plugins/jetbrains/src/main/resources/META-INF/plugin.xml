@@ -15,5 +15,19 @@
     <vcs.changes.localCommitExecutor implementation="asc.asc.vcs.AscSubmitExecutor"/>
     <vcs.ignoredFileProvider implementation="asc.asc.vcs.AscIgnoreProvider"/>
     <notificationGroup id="asc" displayType="BALLOON"/>
+    <statusBarWidgetFactory id="asc.asc.status" implementation="asc.asc.ui.AscStatusBarWidgetFactory"/>
   </extensions>
+  <actions>
+    <group id="asc.asc.StackActions" text="asc" popup="true">
+      <add-to-group group-id="VcsGroups" anchor="last"/>
+      <action id="asc.asc.Up" class="asc.asc.ui.AscUpAction" text="Move Up the Stack"/>
+      <action id="asc.asc.Down" class="asc.asc.ui.AscDownAction" text="Move Down the Stack"/>
+      <action id="asc.asc.Restack" class="asc.asc.ui.AscRestackAction" text="Restack"/>
+      <action id="asc.asc.Sync" class="asc.asc.ui.AscSyncAction" text="Sync"/>
+      <action id="asc.asc.Submit" class="asc.asc.ui.AscSubmitAction" text="Submit"/>
+      <action id="asc.asc.Absorb" class="asc.asc.ui.AscAbsorbAction" text="Absorb"/>
+      <action id="asc.asc.Undo" class="asc.asc.ui.AscUndoAction" text="Undo"/>
+      <action id="asc.asc.Redo" class="asc.asc.ui.AscRedoAction" text="Redo"/>
+    </group>
+  </actions>
 </idea-plugin>
