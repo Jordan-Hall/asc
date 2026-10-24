@@ -231,9 +231,9 @@ impl ImportPush {
                 .await?;
             if only_user_refs {
                 if quarantine_bytes(&quarantine.object_dir).await > left {
-                    return Err(crate::refauthz::quota_status(&crate::refauthz::QuotaDenied(
-                        "user byte quota".into(),
-                    )));
+                    return Err(crate::refauthz::quota_status(
+                        &crate::refauthz::QuotaDenied("user byte quota".into()),
+                    ));
                 }
                 budget = Some(left);
             }
@@ -252,8 +252,7 @@ impl ImportPush {
                 &map,
                 quarantine,
                 commands,
-                windows_safe,
-                native,
+                (windows_safe, native),
                 (owner.unwrap_or(0), budget),
             )
             .await?;
@@ -351,8 +350,7 @@ impl ImportPush {
         map: &PushMap,
         quarantine: &Quarantine,
         commands: &[PushCommand],
-        windows_safe: bool,
-        native: bool,
+        (windows_safe, native): (bool, bool),
         (ingester, budget): (i64, Option<u64>),
     ) -> Result<Imported, Status> {
         let tips: Vec<Tip> = commands
@@ -379,16 +377,16 @@ impl ImportPush {
             .map_err(|e| internal("import lock", &e))?;
 
         let report = import_tips(entry.clone(), map.clone(), quarantine.clone(), tips).await?;
-        let mut imported = Imported::of(&report, commands)?;
+        let imported = Imported::of(&report, commands)?;
 
         let nodes = new_graph_nodes(entry, pool, &imported.changesets).await?;
         let ids: Vec<ChangesetId> = nodes.iter().map(|n| n.id).collect();
         let costs = self.check_paths(entry, &ids, windows_safe, native).await?;
         let cost = costs.iter().fold(0u64, |a, (_, b)| a.saturating_add(*b));
         if budget.is_some_and(|left| cost > left) {
-            return Err(crate::refauthz::quota_status(&crate::refauthz::QuotaDenied(
-                "user byte quota".into(),
-            )));
+            return Err(crate::refauthz::quota_status(
+                &crate::refauthz::QuotaDenied("user byte quota".into()),
+            ));
         }
 
         let mut tx = match lock_tx {
@@ -2266,7 +2264,7 @@ mod tests {
             .unwrap();
         let e = f
             .push
-            .import(&f.entry, &map, &q, &commands, true, false, (1, None))
+            .import(&f.entry, &map, &q, &commands, (true, false), (1, None))
             .await
             .err()
             .expect("a stale entry is refused");
@@ -2278,7 +2276,7 @@ mod tests {
             .unwrap();
         let e = f
             .push
-            .import(&f.entry, &map, &q, &commands, true, false, (1, None))
+            .import(&f.entry, &map, &q, &commands, (true, false), (1, None))
             .await
             .err()
             .expect("a stale entry is refused");

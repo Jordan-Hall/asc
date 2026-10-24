@@ -370,6 +370,8 @@ impl RequestMerger {
                 )));
             }
         }
+        // The land takes its own connections; holding this one could starve a small pool.
+        drop(conn);
         let top = links.last().expect("the prefix holds the requested change");
         let update = wire::UpdateRefsRequest {
             repo: Some(wire::RepoRef {

@@ -68,7 +68,8 @@ pub const READ_ONLY_MIRROR: &str =
     "asc: this repository is a read-only mirror; push to its upstream repository\n";
 /// Over any limit of §25.11.7.
 pub const BUSY: &str = "asc: too many concurrent operations, retry later\n";
-const PUSH_UNAVAILABLE: &str = "asc: pushing over the git protocol is not available on this server\n";
+const PUSH_UNAVAILABLE: &str =
+    "asc: pushing over the git protocol is not available on this server\n";
 const DISK_LOW: &str = "asc: server disk is low\n";
 const PREPARING: &str = "asc: the repository is being prepared for git; retry shortly\n";
 const MIRROR_MISSING: &str = "asc: the mirror has not been fetched yet; retry shortly\n";
@@ -249,7 +250,9 @@ impl PackExec for GitSshExec {
                 record.version = ran.version;
             }
             Err(refuse) => {
-                let _ = output.stderr(Bytes::from_static(refuse.text.as_bytes())).await;
+                let _ = output
+                    .stderr(Bytes::from_static(refuse.text.as_bytes()))
+                    .await;
                 record.outcome = format!("rejected:{}", refuse.reason);
                 record.exit_status = 1;
                 self.svc.metrics.reject_via(TRANSPORT, refuse.reason);
@@ -288,10 +291,13 @@ impl GitSshExec {
             .map_err(|s| admission_refusal(&s))?;
 
         // 2. The one authorizer decides read; a push asks for write as well.
-        let principal = self.authorize(&req, Access::Read).await.map_err(|r| match r {
-            Denied::No => Refuse::not_found("no_read"),
-            Denied::Lookup => Refuse::new("authz_unavailable", AUTH_UNAVAILABLE),
-        })?;
+        let principal = self
+            .authorize(&req, Access::Read)
+            .await
+            .map_err(|r| match r {
+                Denied::No => Refuse::not_found("no_read"),
+                Denied::Lookup => Refuse::new("authz_unavailable", AUTH_UNAVAILABLE),
+            })?;
         record.principal.clone_from(&principal.id);
 
         // 3. The repository, the mirror gate and the push gates.
@@ -310,10 +316,13 @@ impl GitSshExec {
             if entry.mode == RepoMode::Mirror {
                 return Err(Refuse::new("read_only_mirror", READ_ONLY_MIRROR));
             }
-            principal = self.authorize(&req, Access::Write).await.map_err(|r| match r {
-                Denied::No => Refuse::new("no_write", READ_ONLY_KEY),
-                Denied::Lookup => Refuse::new("authz_unavailable", AUTH_UNAVAILABLE),
-            })?;
+            principal = self
+                .authorize(&req, Access::Write)
+                .await
+                .map_err(|r| match r {
+                    Denied::No => Refuse::new("no_write", READ_ONLY_KEY),
+                    Denied::Lookup => Refuse::new("authz_unavailable", AUTH_UNAVAILABLE),
+                })?;
             record.principal.clone_from(&principal.id);
             let Some(git_push) = self.svc.push.as_ref() else {
                 return Err(Refuse::new("push_unavailable", PUSH_UNAVAILABLE));
@@ -350,10 +359,12 @@ impl GitSshExec {
                     op_id: Some(record.op_id),
                     client: None,
                 };
-                let begun = git_push.begin(ctx, entry.clone(), view.clone()).map_err(|e| {
-                    tracing::warn!(error = %e, "starting a push session");
-                    Refuse::busy("push_sessions")
-                })?;
+                let begun = git_push
+                    .begin(ctx, entry.clone(), view.clone())
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, "starting a push session");
+                        Refuse::busy("push_sessions")
+                    })?;
                 Some(begun)
             }
             _ => None,
@@ -420,7 +431,12 @@ impl GitSshExec {
                 ran.refs = refs_text(&outcome);
                 // asc's refs are committed; bring the view in step (a user ref or a ref that git
                 // set differently is removed or reset) so the next fetch finds it ready.
-                if let Err(e) = self.svc.views.ensure(&entry, self.svc.registry.refs()).await {
+                if let Err(e) = self
+                    .svc
+                    .views
+                    .ensure(&entry, self.svc.registry.refs())
+                    .await
+                {
                     tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
                 }
             }
@@ -603,7 +619,7 @@ async fn pump(
     let forward_guard = AbortOnDrop(forward);
 
     let mut bytes_in = 0u64;
-    let mut cut: Option<Cut> = None;
+    let cut: Option<Cut>;
     let mut input_open = true;
     let mut in_tx = Some(in_tx);
     loop {

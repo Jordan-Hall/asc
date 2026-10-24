@@ -84,14 +84,14 @@ impl StackFeed {
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         g.0 += 1;
         let tick = g.0;
-        if !g.1.contains_key(ns) && g.1.len() >= MAX_FEEDS {
-            if let Some(oldest) =
+        if !g.1.contains_key(ns)
+            && g.1.len() >= MAX_FEEDS
+            && let Some(oldest) =
                 g.1.iter()
                     .min_by_key(|(_, r)| r.touched)
                     .map(|(k, _)| k.clone())
-            {
-                g.1.remove(&oldest);
-            }
+        {
+            g.1.remove(&oldest);
         }
         let ring = g.1.entry(ns.to_vec()).or_default();
         ring.touched = tick;

@@ -264,7 +264,7 @@ impl Purger {
         // in between is not purged, then write everything at once.
         let mut tx = pool.begin().await.map_err(sql)?;
         self.registry.guard(&mut tx, entry).await?;
-        let (accepted, refused) = eligible(&mut *tx, entry, who, &css).await?;
+        let (accepted, refused) = eligible(&mut tx, entry, who, &css).await?;
         let ns = entry.ns.as_bytes().to_vec();
         let mut ws: HashMap<(i64, String), i64> = HashMap::new();
         let mut keys: Vec<ObjKey> = Vec::new();
@@ -310,7 +310,7 @@ impl Purger {
             .await
             .map_err(sql)?;
         }
-        record(&mut *tx, entry, &ns, &keys, at).await?;
+        record(&mut tx, entry, &ns, &keys, at).await?;
         tx.commit().await.map_err(sql)?;
 
         let purged: Vec<ChangesetId> = accepted
@@ -438,7 +438,8 @@ async fn eligible(
     let mut candidates: Vec<Accepted> = Vec::new();
     for &cs in css {
         let owner_filter = if who.admin { None } else { who.owner };
-        let mut text = String::from("SELECT owner, name, change FROM cloud_heads WHERE ns = $1 AND cs = $2");
+        let mut text =
+            String::from("SELECT owner, name, change FROM cloud_heads WHERE ns = $1 AND cs = $2");
         if owner_filter.is_some() {
             text.push_str(" AND owner = $3");
         }
@@ -686,11 +687,7 @@ async fn closure(
             push(&mut out, ObjKey::File(*file), total)?;
             if *size > CHUNK_THRESHOLD {
                 push(&mut out, ObjKey::ChunkList(*file), total)?;
-                if let Some(list) = objects
-                    .get(&ObjKey::ChunkList(*file))
-                    .await
-                    .map_err(obj)?
-                {
+                if let Some(list) = objects.get(&ObjKey::ChunkList(*file)).await.map_err(obj)? {
                     let list: ChunkList = decode_envelope(&list)
                         .map_err(|e| internal("chunk list", &e.to_string()))?;
                     for (chunk, _) in &list.chunks {
@@ -709,14 +706,15 @@ async fn closure(
         let comps: Vec<&[u8]> = path.components().collect();
         let mut cur = changeset.root;
         for comp in comps.iter().take(comps.len().saturating_sub(1)) {
-            if !trees.contains_key(&cur) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = trees.entry(cur) {
                 let tree = match objects.get(&ObjKey::Tree(cur)).await.map_err(obj)? {
                     Some(d) => Some(
-                        decode_envelope::<Tree>(&d).map_err(|e| internal("tree", &e.to_string()))?,
+                        decode_envelope::<Tree>(&d)
+                            .map_err(|e| internal("tree", &e.to_string()))?,
                     ),
                     None => None,
                 };
-                trees.insert(cur, tree);
+                slot.insert(tree);
             }
             let Some(Some(tree)) = trees.get(&cur) else {
                 break;
