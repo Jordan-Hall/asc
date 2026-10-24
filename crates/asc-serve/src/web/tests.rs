@@ -289,6 +289,7 @@ fn disabled_is_absent_and_enabled_without_assets_is_an_error() {
     let cfg = WebConfig {
         enabled: true,
         dir: Some(tmp.path().to_path_buf()),
+        ..WebConfig::default()
     };
     let err = router(&cfg)
         .expect_err("empty dir has no index.html")
@@ -308,6 +309,7 @@ async fn serves_a_directory_with_precompressed_siblings() {
     let cfg = WebConfig {
         enabled: true,
         dir: Some(root),
+        ..WebConfig::default()
     };
     let app = router(&cfg).expect("ok").expect("enabled");
     let res = app

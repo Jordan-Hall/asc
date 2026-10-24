@@ -20,7 +20,6 @@ pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
 pub mod config;
 pub mod expire;
-#[cfg(feature = "forgejo")]
 pub mod forgejo;
 pub mod gc;
 #[cfg(feature = "git-compat")]
@@ -202,7 +201,7 @@ fn register_all(
     ext: &Extensions,
     registry: &Arc<Registry>,
     limits: &config::Limits,
-    import_root: Option<std::path::PathBuf>,
+    forgejo: Option<&config::ForgejoConfig>,
     cloud_cfg: &config::CloudConfig,
     codeintel_cfg: Option<codeintel::rpc::Settings>,
 ) {
@@ -219,7 +218,12 @@ fn register_all(
     let mutations = mutations::register(ext, registry, &hooks);
     mutations::rebase::register(ext, &mutations);
     mutations::land_merge::register(ext, &hooks);
-    import_push::register(ext, registry, mutations, import_root);
+    import_push::register(
+        ext,
+        registry,
+        mutations,
+        forgejo.and_then(|f| f.repo_root.clone()),
+    );
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
     cloud::rpc::register(ext, registry, cloud_cfg.limits());
@@ -355,19 +359,15 @@ pub async fn serve(
         &ext,
         &registry,
         &cfg.limits,
-        cfg.import_repo_root(),
+        cfg.forgejo.as_ref(),
         &cfg.cloud,
         codeintel_settings(&cfg),
     );
     let warmer = projects::register(&ext, &registry);
-    #[cfg(feature = "forgejo")]
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let mirror =
         mirror::register(&ext, &registry, &cfg).map_err(|e| ConfigError::Invalid(e.to_string()))?;
-    #[cfg(feature = "forgejo")]
-    forgejo::register_webhook(&ext, mirror.as_ref(), cfg.forgejo.as_ref())
-        .map_err(|e| ConfigError::Invalid(e.to_string()))?;
     let repo_admin = admin::register(&ext, &registry, mirror.clone());
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
@@ -435,6 +435,8 @@ pub async fn serve(
         ..ServerInfo::default()
     };
     let routes = limits::guarded_routes(&ext, authorizer, admission, info);
+    // gRPC-Web and Connect unary for browsers, in front of admission and the services.
+    let routes = web::grpc_web::wrap(routes, &cfg.web, cfg.public_url.as_deref());
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {

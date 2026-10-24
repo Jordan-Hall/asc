@@ -182,9 +182,6 @@ impl Default for AdminConfig {
     }
 }
 
-/// `[forgejo]`: the optional Forgejo adapter (`provider = "forgejo"`, hooks, mirror webhook).
-/// Built only with the `forgejo` feature.
-#[cfg(feature = "forgejo")]
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForgejoConfig {
@@ -773,50 +770,31 @@ impl Limits {
 }
 
 /// Which `Authorizer` a server runs (`[auth] provider`, SPEC §15.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthProvider {
-    /// Delegation to Forgejo (`"forgejo"`); needs `[forgejo]` and the `forgejo` feature.
-    Forgejo,
+    /// Forge delegation (Forgejo today); needs `[forgejo]`.
+    Forge,
     /// The standalone token store (M30); needs `auth.token_key_file`.
     TokenStore,
-}
-
-impl<'de> Deserialize<'de> for AuthProvider {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let name = String::deserialize(d)?;
-        match name.as_str() {
-            "forgejo" => Ok(Self::Forgejo),
-            "token_store" => Ok(Self::TokenStore),
-            // The name before the Forgejo adapter became optional.
-            "forge" => {
-                tracing::warn!(
-                    "auth.provider = \"forge\" is deprecated; write auth.provider = \"forgejo\""
-                );
-                Ok(Self::Forgejo)
-            }
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &["forgejo", "token_store"],
-            )),
-        }
-    }
 }
 
 /// `[auth]`: the one authorizer for RPC, HTTP routes and MCP.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthConfig {
-    /// `forgejo` or `token_store`; `forge` is a deprecated spelling of `forgejo`. Always explicit:
-    /// a `[forgejo]` section no longer selects it. Absent, every credential is refused.
+    /// `forge` or `token_store`. Absent means `forge` when `[forgejo]` is set, else every
+    /// credential is refused.
     pub provider: Option<AuthProvider>,
     /// The file holding the token store's HMAC key (hex, 32 bytes, mode 0600). Required for
     /// `token_store`; `asc serve token create` makes it when it is missing.
     pub token_key_file: Option<PathBuf>,
 }
 
-/// `[web]` (docs/WEB-UI.md): the web UI, served read-only as static files under `/ui`. The files are
-/// public; every data call the UI makes is an authenticated RPC.
-#[derive(Clone, Debug, Default, Deserialize)]
+/// `[web]` (docs/WEB-UI.md): the web UI, served read-only as static files under `/ui`, and the
+/// browser-facing RPC (gRPC-Web and Connect unary on the RPC paths). The files are public; every
+/// data call the UI makes is an authenticated RPC.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct WebConfig {
     /// Serve the UI. Off by default. Needs the embedded build (`web/dist` present when asc-serve
@@ -825,12 +803,47 @@ pub struct WebConfig {
     /// Serve this build directory instead of the embedded one (development, hotfix). It has the
     /// layout of `web/dist`: `index.html`, `static/`, optional `.br` and `.gz` siblings.
     pub dir: Option<PathBuf>,
+    /// Answer gRPC-Web and Connect unary on the RPC paths. Unset, it follows `enabled`; set it to
+    /// serve browsers without the UI (`true`) or to keep the UI off the RPC (`false`).
+    pub grpc_web: Option<bool>,
+    /// Origins other than the server's own that may call the RPC from a browser (`https://app.example`;
+    /// http only for loopback). Empty by default: same-origin only. Never a wildcard.
+    pub cors_origins: Vec<String>,
+    /// Largest gRPC-Web or Connect request body.
+    pub max_request: ByteSize,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: None,
+            grpc_web: None,
+            cors_origins: Vec::new(),
+            max_request: ByteSize(ByteSize::MIB),
+        }
+    }
 }
 
 impl WebConfig {
+    /// Whether the RPC paths answer browsers: `grpc_web`, which defaults to `enabled`.
+    pub fn grpc_web_enabled(&self) -> bool {
+        self.grpc_web.unwrap_or(self.enabled)
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         if self.dir.is_some() && !self.enabled {
             return invalid("web.dir needs web.enabled = true");
+        }
+        if !self.cors_origins.is_empty() && !self.grpc_web_enabled() {
+            return invalid("web.cors_origins needs web.grpc_web (or web.enabled)");
+        }
+        for o in &self.cors_origins {
+            crate::web::grpc_web::normalise_origin(o)
+                .map_err(|e| ConfigError::Invalid(format!("web.cors_origins: {e}")))?;
+        }
+        if self.max_request.0 == 0 || self.max_request.0 > 64 * ByteSize::MIB {
+            return invalid("web.max_request must be between 1 byte and 64MiB");
         }
         Ok(())
     }
@@ -947,7 +960,6 @@ impl Default for ServeConfig {
             turbo: TurboConfig::default(),
             mcp: McpConfig::default(),
             codeintel: CodeIntelConfig::default(),
-    #[cfg(feature = "forgejo")]
             bucket: BucketConfig::default(),
             limits: Limits::default(),
             git: GitConfig::default(),
@@ -980,7 +992,6 @@ impl ServeConfig {
 
     /// Parses and validates config text.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-            #[cfg(feature = "forgejo")]
         let cfg: Self = toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
         cfg.validate()?;
         Ok(cfg)
@@ -1028,15 +1039,8 @@ impl ServeConfig {
             Some(AuthProvider::TokenStore) if self.auth.token_key_file.is_none() => {
                 return invalid("auth.provider = \"token_store\" needs auth.token_key_file");
             }
-            #[cfg(feature = "forgejo")]
-            Some(AuthProvider::Forgejo) if self.forgejo.is_none() => {
-                return invalid("auth.provider = \"forgejo\" needs a [forgejo] section");
-            }
-            #[cfg(not(feature = "forgejo"))]
-            Some(AuthProvider::Forgejo) => {
-                return invalid(
-                    "auth.provider = \"forgejo\" needs a build with the `forgejo` feature",
-                );
+            Some(AuthProvider::Forge) if self.forgejo.is_none() => {
+                return invalid("auth.provider = \"forge\" needs a [forgejo] section");
             }
             _ => {}
         }
@@ -1058,14 +1062,8 @@ impl ServeConfig {
         if self.cache.disk.0 > 0 && self.cache.disk_dir.is_none() {
             return invalid("cache.disk needs cache.disk_dir");
         }
-        #[cfg(feature = "forgejo")]
         self.ssh.validate()?;
         self.limits.validate()?;
-            if self.auth.provider.is_none() {
-                return invalid(
-                    "[forgejo] does not select the authorizer: set auth.provider to \"forgejo\" or \"token_store\"",
-                );
-            }
         self.cloud.validate()?;
         self.web.validate()?;
         self.validate_grants()
@@ -1125,26 +1123,11 @@ impl ServeConfig {
         Ok(())
     }
 
-    /// The authorizer `[auth] provider` names; `None` refuses every credential.
+    /// The effective authorizer: `[auth] provider`, else `forge` when `[forgejo]` is set.
     pub fn auth_provider(&self) -> Option<AuthProvider> {
-        self.auth.provider
-    }
-
-    /// The Forgejo adapter's base URL, when `[forgejo]` is configured. The mirror falls back to it
-    /// for repositories without an explicit source.
-    pub fn forge_url(&self) -> Option<String> {
-        #[cfg(feature = "forgejo")]
-        return self.forgejo.as_ref().map(|f| f.url.clone());
-        #[cfg(not(feature = "forgejo"))]
-        None
-    }
-
-    /// The directory `ImportGitPush` may import from, when the host adapter configures one.
-    pub fn import_repo_root(&self) -> Option<PathBuf> {
-        #[cfg(feature = "forgejo")]
-        return self.forgejo.as_ref().and_then(|f| f.repo_root.clone());
-        #[cfg(not(feature = "forgejo"))]
-        None
+        self.auth
+            .provider
+            .or_else(|| self.forgejo.is_some().then_some(AuthProvider::Forge))
     }
 
     /// Whether `parent`'s task tokens may read `child` (SPEC §15.5).
@@ -1221,6 +1204,7 @@ mod tests {
         assert!(cache("http://primary.example:7890").is_err());
         assert!(cache("https://primary.example:7890").is_ok());
         assert!(primary("memory:///", "public_url = \"https://asc.example.org\"").is_ok());
+        assert!(primary("memory:///", "[forgejo]\nurl = \"https://forgejo.example\"").is_ok());
         assert!(primary("s3://b?endpoint=https://garage:3900", "").is_ok());
     }
 
@@ -1260,44 +1244,6 @@ http3_port = {port}"
         // Behind a TLS-terminating proxy (the Coolify setup): plain listener, https public_url.
         let proxied = cfg("listen = \"0.0.0.0:7890\"\npublic_url = \"https://asc.example.org\"");
         assert!(proxied.check_listener(Policy::STRICT).is_ok());
-    #[cfg(feature = "forgejo")]
-    #[test]
-    fn the_forgejo_adapter_needs_an_explicit_provider() {
-        let section = "[forgejo]\nurl = \"https://forgejo.example\"\n";
-        // A `[forgejo]` section alone no longer selects the authorizer.
-        let err = primary("memory:///", section).unwrap_err().to_string();
-        assert!(err.contains("auth.provider"), "{err}");
-        let with = |name: &str| {
-            primary(
-                "memory:///",
-                &format!("[auth]\nprovider = \"{name}\"\n{section}"),
-            )
-            .unwrap()
-        };
-        let c = with("forgejo");
-        assert_eq!(c.auth_provider(), Some(AuthProvider::Forgejo));
-        assert_eq!(c.forge_url().as_deref(), Some("https://forgejo.example"));
-        // `forge` is the deprecated spelling of the same provider.
-        assert_eq!(with("forge").auth_provider(), Some(AuthProvider::Forgejo));
-        // The provider needs its section.
-        assert!(primary("memory:///", "[auth]\nprovider = \"forgejo\"\n").is_err());
-    }
-
-    #[cfg(not(feature = "forgejo"))]
-    #[test]
-    fn without_the_forgejo_feature_the_forgejo_provider_is_refused() {
-        let err = primary("memory:///", "[auth]\nprovider = \"forgejo\"\n")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("forgejo"), "{err}");
-        assert!(primary("memory:///", "[forgejo]\nurl = \"https://forgejo.example\"").is_err());
-    }
-
-    #[test]
-    fn unknown_providers_are_refused() {
-        assert!(primary("memory:///", "[auth]\nprovider = \"nope\"\n").is_err());
-    }
-
         // The h3 hint is a port; 0 is not one.
         assert!(proxied_h3("0").is_err());
         assert_eq!(proxied_h3("443").unwrap().http3_port, Some(443));
@@ -1319,6 +1265,9 @@ tls = { cert = "/c.pem", key = "/k.pem" }
 store = "s3://asc?endpoint=https://garage.internal:3900&region=garage&path_style=true"
 db = "postgres://asc_hub@db/forgejo?options=-csearch_path%3Dasc_hub"
 cache = { memory = "4GiB", disk_dir = "/var/cache/asc-serve", disk = "50GiB" }
+[forgejo]
+url = "https://forge.example.org"
+internal_token_file = "/etc/asc/t"
 [turbo]
 pr_retention_days = 7
 [mcp]
@@ -1335,6 +1284,30 @@ text_memory = "1GiB"
 parent = "asc/dds"
 child = "asc/soma"
 "#;
+
+    #[test]
+    fn web_grpc_web_follows_enabled_and_cors_is_closed_by_default() {
+        let parse = |web: &str| {
+            ServeConfig::parse(&format!(
+                "db = \"sqlite::memory:\"\nstore = \"memory:///\"\n[web]\n{web}"
+            ))
+        };
+        let c = parse("enabled = true\ndir = \"/x\"").unwrap();
+        assert!(c.web.grpc_web_enabled());
+        assert!(c.web.cors_origins.is_empty());
+        assert!(!parse("").unwrap().web.grpc_web_enabled());
+        assert!(parse("grpc_web = true").unwrap().web.grpc_web_enabled());
+        let off = parse("enabled = true\ngrpc_web = false").unwrap();
+        assert!(!off.web.grpc_web_enabled());
+        parse("grpc_web = true\ncors_origins = [\"https://app.example\"]").unwrap();
+        // CORS needs the switch, and only exact https origins.
+        assert!(parse("cors_origins = [\"https://app.example\"]").is_err());
+        for bad in ["*", "http://app.example", "https://app.example/x"] {
+            let e = parse(&format!("grpc_web = true\ncors_origins = [{bad:?}]"));
+            assert!(e.is_err(), "{bad}");
+        }
+        assert!(parse("grpc_web = true\nmax_request = 0").is_err());
+    }
 
     #[test]
     fn parses_full_spec_example() {
