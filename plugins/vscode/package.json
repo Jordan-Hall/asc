@@ -25,14 +25,16 @@
     "onUri",
     "onWebviewPanel:asc.graph",
     "onWebviewPanel:asc.review",
-    "onWebviewPanel:asc.history"
+    "onWebviewPanel:asc.history",
+    "onMcpCollection:asc"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
       "description": "asc runs only in trusted workspaces because it starts the asc executable.",
       "restrictedConfigurations": [
-        "asc.path"
+        "asc.path",
+        "asc.mcp.serverUrl"
       ]
     },
     "virtualWorkspaces": false
@@ -57,10 +59,11 @@
           "default": true,
           "description": "Show who last changed each top-level symbol. Off for files over 5,000 lines."
         },
-        "asc.inbox.statusBar": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the count of changes that need your review in the status bar."
+        "asc.mcp.serverUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "An `https://` asc server for `asc mcp --remote`, used only when no asc workspace is open."
         }
       }
     },
@@ -129,24 +132,362 @@
         "enablement": "asc.workspace"
       },
       {
-        "command": "asc.inbox.refresh",
-        "title": "Refresh inbox",
-        "category": "asc inbox"
+        "command": "asc.create",
+        "title": "Create change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
       },
       {
-        "command": "asc.inbox.pin",
-        "title": "Pin",
-        "category": "asc inbox"
+        "command": "asc.amend",
+        "title": "Amend current change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(edit)"
       },
       {
-        "command": "asc.inbox.unpin",
-        "title": "Unpin",
-        "category": "asc inbox"
+        "command": "asc.reword",
+        "title": "Reword current change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
       },
       {
-        "command": "asc.inbox.snooze",
-        "title": "Snooze",
-        "category": "asc inbox"
+        "command": "asc.absorb",
+        "title": "Absorb into stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.undo",
+        "title": "Undo last operation",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "asc.redo",
+        "title": "Redo last undone operation",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(redo)"
+      },
+      {
+        "command": "asc.discard",
+        "title": "Discard changes",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "asc.stageFile",
+        "title": "Stage file",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(add)"
+      },
+      {
+        "command": "asc.unstageFile",
+        "title": "Unstage file",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "asc.stageSelectedRanges",
+        "title": "Stage selected ranges",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.unstageSelectedRanges",
+        "title": "Unstage selected ranges",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stageChange",
+        "title": "Stage change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(add)"
+      },
+      {
+        "command": "asc.unstageChange",
+        "title": "Unstage change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "asc.uncommit",
+        "title": "Uncommit",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.unamend",
+        "title": "Unamend",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.abandon",
+        "title": "Abandon change",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.restack",
+        "title": "Restack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.restackOntoTrunk",
+        "title": "Restack onto trunk",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.openSmartlog",
+        "title": "Open smartlog",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.stashPush",
+        "title": "Stash changes",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stashPushUntracked",
+        "title": "Stash changes including untracked",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stashPop",
+        "title": "Pop stash",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stashApply",
+        "title": "Apply stash",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stashDrop",
+        "title": "Drop stash",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.fetch",
+        "title": "Fetch",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.gitRemote"
+      },
+      {
+        "command": "asc.pull",
+        "title": "Pull",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating && asc.gitRemote"
+      },
+      {
+        "command": "asc.push",
+        "title": "Push",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating && asc.gitRemote"
+      },
+      {
+        "command": "asc.addToAscignore",
+        "title": "Add to .ascignore",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.stackUp",
+        "title": "Stack: go up",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackDown",
+        "title": "Stack: go down",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackTop",
+        "title": "Stack: go to the top",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackBottom",
+        "title": "Stack: go to the bottom",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackRestack",
+        "title": "Restack the stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(versions)"
+      },
+      {
+        "command": "asc.stackSync",
+        "title": "Sync the stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "asc.stackSubmit",
+        "title": "Submit the stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "asc.stackShare",
+        "title": "Copy share link for the current change",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.conflicts.pick",
+        "title": "Open a conflict",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.conflicts.open",
+        "title": "Open conflict",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.conflicts.markResolved",
+        "title": "Mark conflict resolved",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.continue",
+        "title": "Continue the paused operation",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.abort",
+        "title": "Abort the paused operation",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.worktrees.add",
+        "title": "Add worktree",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(add)"
+      },
+      {
+        "command": "asc.worktrees.open",
+        "title": "Open worktree in new window",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(multiple-windows)"
+      },
+      {
+        "command": "asc.worktrees.remove",
+        "title": "Remove worktree",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "asc.worktrees.lock",
+        "title": "Lock worktree",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "asc.oplog.loadMore",
+        "title": "Load more operations",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.fileHistory.loadMore",
+        "title": "Load more history",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.fileHistory.fileMode",
+        "title": "File history: whole file",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(file)"
+      },
+      {
+        "command": "asc.fileHistory.lineMode",
+        "title": "File history: selected lines",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "asc.revnav.previous",
+        "title": "Previous version of this file",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "asc.revnav.next",
+        "title": "Next version of this file",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(arrow-right)"
+      },
+      {
+        "command": "asc.affected.refresh",
+        "title": "Refresh affected projects",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "asc.affected.run",
+        "title": "Run target",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(play)"
+      },
+      {
+        "command": "asc.review.checkoutStack",
+        "title": "Check out stack",
+        "category": "asc",
+        "enablement": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.searchCode",
+        "title": "Search code",
+        "category": "asc",
+        "enablement": "asc.workspace",
+        "icon": "$(search)"
+      },
+      {
+        "command": "asc.configureAgents",
+        "title": "Configure agents",
+        "category": "asc",
+        "enablement": "asc.workspace"
       }
     ],
     "views": {
@@ -160,8 +501,25 @@
       ],
       "asc": [
         {
-          "id": "asc.inbox",
-          "name": "Inbox",
+          "id": "asc.worktrees",
+          "name": "Worktrees",
+          "when": "asc.workspace"
+        },
+        {
+          "id": "asc.affected",
+          "name": "Affected",
+          "when": "asc.workspace"
+        },
+        {
+          "id": "asc.oplog",
+          "name": "Op log",
+          "when": "asc.workspace"
+        }
+      ],
+      "explorer": [
+        {
+          "id": "asc.fileHistory",
+          "name": "asc File History",
           "when": "asc.workspace"
         }
       ]
@@ -240,29 +598,389 @@
     "menus": {
       "view/item/context": [
         {
-          "command": "asc.inbox.pin",
-          "when": "view == asc.inbox && viewItem == asc.inbox.item",
-          "group": "inline"
+          "command": "asc.worktrees.open",
+          "when": "view == asc.worktrees && viewItem =~ /^asc\\.worktree/",
+          "group": "inline@1"
         },
         {
-          "command": "asc.inbox.unpin",
-          "when": "view == asc.inbox && viewItem == asc.inbox.pinned",
-          "group": "inline"
+          "command": "asc.worktrees.remove",
+          "when": "view == asc.worktrees && viewItem == asc.worktree",
+          "group": "inline@2"
         },
         {
-          "command": "asc.inbox.snooze",
-          "when": "view == asc.inbox && viewItem =~ /^asc\\.inbox\\.(item|pinned)$/",
+          "command": "asc.worktrees.lock",
+          "when": "view == asc.worktrees && viewItem == asc.worktree",
+          "group": "1_manage"
+        },
+        {
+          "command": "asc.affected.run",
+          "when": "view == asc.affected && viewItem == asc.affected.target",
           "group": "inline"
         }
       ],
       "view/title": [
         {
-          "command": "asc.inbox.refresh",
-          "when": "view == asc.inbox",
+          "command": "asc.worktrees.add",
+          "when": "view == asc.worktrees",
           "group": "navigation"
+        },
+        {
+          "command": "asc.affected.refresh",
+          "when": "view == asc.affected",
+          "group": "navigation"
+        },
+        {
+          "command": "asc.fileHistory.fileMode",
+          "when": "view == asc.fileHistory",
+          "group": "navigation@1"
+        },
+        {
+          "command": "asc.fileHistory.lineMode",
+          "when": "view == asc.fileHistory",
+          "group": "navigation@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "asc.stageChange",
+          "when": "false"
+        },
+        {
+          "command": "asc.unstageChange",
+          "when": "false"
+        },
+        {
+          "command": "asc.stageFile",
+          "when": "false"
+        },
+        {
+          "command": "asc.unstageFile",
+          "when": "false"
+        },
+        {
+          "command": "asc.discard",
+          "when": "false"
+        },
+        {
+          "command": "asc.addToAscignore",
+          "when": "false"
+        },
+        {
+          "command": "asc.conflicts.open",
+          "when": "false"
+        },
+        {
+          "command": "asc.oplog.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "asc.fileHistory.loadMore",
+          "when": "false"
+        },
+        {
+          "command": "asc.affected.run",
+          "when": "false"
+        },
+        {
+          "command": "asc.worktrees.open",
+          "when": "false"
+        },
+        {
+          "command": "asc.worktrees.remove",
+          "when": "false"
+        },
+        {
+          "command": "asc.worktrees.lock",
+          "when": "false"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "asc.stackSubmit",
+          "when": "scmProvider == asc",
+          "group": "navigation@1"
+        },
+        {
+          "command": "asc.stackSync",
+          "when": "scmProvider == asc",
+          "group": "navigation@2"
+        },
+        {
+          "command": "asc.stackRestack",
+          "when": "scmProvider == asc",
+          "group": "navigation@3"
+        },
+        {
+          "command": "asc.create",
+          "when": "scmProvider == asc",
+          "group": "1_change@1"
+        },
+        {
+          "command": "asc.amend",
+          "when": "scmProvider == asc",
+          "group": "1_change@2"
+        },
+        {
+          "command": "asc.reword",
+          "when": "scmProvider == asc",
+          "group": "1_change@3"
+        },
+        {
+          "command": "asc.absorb",
+          "when": "scmProvider == asc",
+          "group": "1_change@4"
+        },
+        {
+          "command": "asc.undo",
+          "when": "scmProvider == asc",
+          "group": "1_change@5"
+        },
+        {
+          "command": "asc.redo",
+          "when": "scmProvider == asc",
+          "group": "1_change@6"
+        },
+        {
+          "command": "asc.stackUp",
+          "when": "scmProvider == asc",
+          "group": "2_stack@1"
+        },
+        {
+          "command": "asc.stackDown",
+          "when": "scmProvider == asc",
+          "group": "2_stack@2"
+        },
+        {
+          "command": "asc.stackTop",
+          "when": "scmProvider == asc",
+          "group": "2_stack@3"
+        },
+        {
+          "command": "asc.stackBottom",
+          "when": "scmProvider == asc",
+          "group": "2_stack@4"
+        },
+        {
+          "command": "asc.restack",
+          "when": "scmProvider == asc",
+          "group": "2_stack@5"
+        },
+        {
+          "command": "asc.uncommit",
+          "when": "scmProvider == asc",
+          "group": "2_stack@6"
+        },
+        {
+          "command": "asc.unamend",
+          "when": "scmProvider == asc",
+          "group": "2_stack@7"
+        },
+        {
+          "command": "asc.abandon",
+          "when": "scmProvider == asc",
+          "group": "2_stack@8"
+        },
+        {
+          "command": "asc.stackShare",
+          "when": "scmProvider == asc",
+          "group": "2_stack@9"
+        },
+        {
+          "command": "asc.stashPush",
+          "when": "scmProvider == asc",
+          "group": "3_stash@1"
+        },
+        {
+          "command": "asc.stashPushUntracked",
+          "when": "scmProvider == asc",
+          "group": "3_stash@2"
+        },
+        {
+          "command": "asc.stashPop",
+          "when": "scmProvider == asc",
+          "group": "3_stash@3"
+        },
+        {
+          "command": "asc.stashApply",
+          "when": "scmProvider == asc",
+          "group": "3_stash@4"
+        },
+        {
+          "command": "asc.stashDrop",
+          "when": "scmProvider == asc",
+          "group": "3_stash@5"
+        },
+        {
+          "command": "asc.fetch",
+          "when": "scmProvider == asc && asc.gitRemote",
+          "group": "4_remote@1"
+        },
+        {
+          "command": "asc.pull",
+          "when": "scmProvider == asc && asc.gitRemote",
+          "group": "4_remote@2"
+        },
+        {
+          "command": "asc.push",
+          "when": "scmProvider == asc && asc.gitRemote",
+          "group": "4_remote@3"
+        },
+        {
+          "command": "asc.continue",
+          "when": "scmProvider == asc",
+          "group": "5_paused@1"
+        },
+        {
+          "command": "asc.abort",
+          "when": "scmProvider == asc",
+          "group": "5_paused@2"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "asc.stageFile",
+          "when": "scmProvider == asc && scmResourceGroup =~ /^(changes|untracked)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.unstageFile",
+          "when": "scmProvider == asc && scmResourceGroup == staged",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.discard",
+          "when": "scmProvider == asc && scmResourceGroup == changes",
+          "group": "inline@2"
+        },
+        {
+          "command": "asc.stageFile",
+          "when": "scmProvider == asc && scmResourceGroup =~ /^(changes|untracked)$/",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "asc.unstageFile",
+          "when": "scmProvider == asc && scmResourceGroup == staged",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "asc.discard",
+          "when": "scmProvider == asc && scmResourceGroup == changes",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "asc.addToAscignore",
+          "when": "scmProvider == asc && scmResourceGroup == untracked",
+          "group": "2_ignore@1"
+        },
+        {
+          "command": "asc.conflicts.open",
+          "when": "scmProvider == asc && scmResourceGroup == conflicts",
+          "group": "1_conflict@1"
+        },
+        {
+          "command": "asc.conflicts.markResolved",
+          "when": "scmProvider == asc && scmResourceGroup == conflicts",
+          "group": "1_conflict@2"
+        }
+      ],
+      "scm/change/title": [
+        {
+          "command": "asc.stageChange",
+          "when": "originalResourceScheme == asc",
+          "group": "inline@1"
+        },
+        {
+          "command": "asc.unstageChange",
+          "when": "originalResourceScheme == asc",
+          "group": "inline@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "asc.stageSelectedRanges",
+          "when": "asc.workspace && resourceScheme == file && !editorReadonly",
+          "group": "asc@1"
+        },
+        {
+          "command": "asc.unstageSelectedRanges",
+          "when": "asc.workspace && resourceScheme == file && !editorReadonly",
+          "group": "asc@2"
+        },
+        {
+          "command": "asc.diffAgainstStackParent",
+          "when": "asc.workspace && resourceScheme == file",
+          "group": "asc@3"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "asc.revnav.previous",
+          "when": "asc.workspace && (resourceScheme == file || resourceScheme == asc)",
+          "group": "navigation@10"
+        },
+        {
+          "command": "asc.revnav.next",
+          "when": "asc.workspace && (resourceScheme == file || resourceScheme == asc)",
+          "group": "navigation@11"
         }
       ]
-    }
+    },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "asc",
+        "label": "asc"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "asc",
+        "required": [
+          "root",
+          "project",
+          "target"
+        ],
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "The asc workspace root."
+          },
+          "project": {
+            "type": "string",
+            "description": "The project id."
+          },
+          "target": {
+            "type": "string",
+            "description": "The target name."
+          }
+        }
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "asc.stackUp",
+        "key": "ctrl+k ctrl+alt+up",
+        "mac": "cmd+k cmd+alt+up",
+        "when": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackDown",
+        "key": "ctrl+k ctrl+alt+down",
+        "mac": "cmd+k cmd+alt+down",
+        "when": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackTop",
+        "key": "ctrl+k ctrl+alt+home",
+        "mac": "cmd+k cmd+alt+home",
+        "when": "asc.workspace && asc.mutating"
+      },
+      {
+        "command": "asc.stackBottom",
+        "key": "ctrl+k ctrl+alt+end",
+        "mac": "cmd+k cmd+alt+end",
+        "when": "asc.workspace && asc.mutating"
+      }
+    ]
   },
   "scripts": {
     "build": "bun scripts/bundle.ts",
