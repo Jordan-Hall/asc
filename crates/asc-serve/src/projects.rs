@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
-use asc_engine::history::HistoryApi;
 use asc_engine::projects::{self, AffectedQuery};
 use asc_engine::{commit, graph, tree};
 use asc_graph::model::{Ecosystem, ProjectKey};
@@ -175,7 +174,6 @@ impl ServerProjects {
 
     /// Resolves `spec` (`fallback` when empty) to a changeset.
     async fn rev(
-        engine: &Eng,
         ids: &IdCodec,
         entry: &RepoEntry,
         spec: &str,
@@ -185,14 +183,8 @@ impl ServerProjects {
             return Err(Status::invalid_argument("revision is too long"));
         }
         let spec = if spec.is_empty() { fallback } else { spec };
-        let spec = ids.rev_in(spec, &entry.default_branch).await?;
-        engine
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(graph_status)?
-            .into_iter()
-            .next()
-            .flatten()
+        ids.resolve(spec, &entry.default_branch, graph_status)
+            .await?
             .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
     }
 
@@ -224,7 +216,7 @@ impl ProjectsHandler for ServerProjects {
     ) -> Result<wire::ProjectGraphResponse, Status> {
         let selectors = selectors(&req.select)?;
         let (entry, ids, engine) = self.open(ctx).await?;
-        let cs = Self::rev(&engine, &ids, &entry, &req.rev, "HEAD").await?;
+        let cs = Self::rev(&ids, &entry, &req.rev, "HEAD").await?;
         let _permit = self.permit().await?;
         self.note(&entry, cs);
         let view = engine.project_graph(cs).await.map_err(projects_status)?;
@@ -255,8 +247,8 @@ impl ProjectsHandler for ServerProjects {
         // Parse the selectors now so that a bad one fails before any work.
         selectors(&req.select)?;
         let (entry, ids, engine) = self.open(ctx).await?;
-        let base = Self::rev(&engine, &ids, &entry, &req.base, &entry.default_branch).await?;
-        let head = Self::rev(&engine, &ids, &entry, &req.head, "HEAD").await?;
+        let base = Self::rev(&ids, &entry, &req.base, &entry.default_branch).await?;
+        let head = Self::rev(&ids, &entry, &req.head, "HEAD").await?;
         let _permit = self.permit().await?;
         self.note(&entry, head);
         let query = AffectedQuery {
@@ -324,7 +316,7 @@ impl ProjectsHandler for ServerProjects {
     ) -> Result<wire::ProjectHashesResponse, Status> {
         let selectors = selectors(&req.select)?;
         let (entry, ids, engine) = self.open(ctx).await?;
-        let cs = Self::rev(&engine, &ids, &entry, &req.rev, "HEAD").await?;
+        let cs = Self::rev(&ids, &entry, &req.rev, "HEAD").await?;
         let _permit = self.permit().await?;
         self.note(&entry, cs);
         let view = engine.project_graph(cs).await.map_err(projects_status)?;

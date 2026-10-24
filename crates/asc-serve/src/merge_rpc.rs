@@ -322,17 +322,10 @@ impl ServerMutations {
         }
         let source = self.registry.open(&name).await.map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &source).for_viewer(&ctx.principal);
-        let spec = ids.rev_in(&req.head, &source.default_branch).await?;
-        let head = source
-            .backend
-            .engine()
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(graph_status)?
-            .into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))?;
+        let head = ids
+            .resolve(&req.head, &source.default_branch, graph_status)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("unknown revision {:?}", req.head)))?;
         MutationsHandler::copy_closure(
             self,
             ctx,
@@ -1753,10 +1746,28 @@ mod tests {
         let hidden = make(&f, &[r], "hidden", &[("g.txt", Some("secret\n"))]).await;
         let main = make(&f, &[r], "main", &[("f.txt", Some(&with_line(1, "ONE")))]).await;
         set_ref(&f, "refs/users/42/heads/x", hidden).await;
+        // Spellings that still name a commit, then the ones that name a range or a path.
+        for head in [
+            "master..users/42/heads/x",
+            "users/42/heads/x...master",
+            "^users/42/heads/x",
+            "refs/users/42/heads/x@{3}",
+            "users/42/heads/x:g.txt",
+        ] {
+            let q = req(main, hidden, wire::MergeStyle::Merge);
+            let q = wire::MergeRequest {
+                head: head.into(),
+                ..q
+            };
+            let err = f.m.merge_inner(&ctx_as("43:bob"), q).await.unwrap_err();
+            assert_eq!(err.code(), tonic::Code::NotFound, "bob merged {head}");
+        }
         for head in [
             "refs/users/42/heads/x",
             "users/42/heads/x",
             "users/42/heads/x@{0}",
+            "users/42/heads/x~0",
+            "refs/users/42/heads/x^{commit}",
         ] {
             let mut q = req(main, hidden, wire::MergeStyle::Merge);
             q.head = head.into();

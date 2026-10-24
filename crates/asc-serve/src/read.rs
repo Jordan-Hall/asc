@@ -337,17 +337,9 @@ impl Call {
             return Err(Status::invalid_argument("revision is too long"));
         }
         let spec = if spec.is_empty() { "HEAD" } else { spec };
-        let spec = self.ids.rev_in(spec, &self.entry.default_branch).await?;
-        // The codec refused other users' names above; the resolver is told the same rule, so a
-        // ref it reaches some other way (a reflog, a tip) is held to it too.
-        let got = self
-            .engine
-            .resolve_visible(std::slice::from_ref(&spec), &self.ids.ref_visible())
-            .await
-            .map_err(graph_status)?;
-        got.into_iter()
-            .next()
-            .flatten()
+        self.ids
+            .resolve(spec, &self.entry.default_branch, graph_status)
+            .await?
             .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
     }
 

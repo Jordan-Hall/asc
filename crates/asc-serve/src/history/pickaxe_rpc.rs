@@ -18,7 +18,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
 use asc_engine::commit;
-use asc_engine::history::HistoryApi;
 use asc_engine::history::linehist::MAX_FILE_BYTES;
 use asc_engine::history::pickaxe::{self, MAX_NEEDLE_BYTES, Query, Stop};
 use asc_rpc::server::{CallCtx, MAX_STRING, RpcStream, wire};
@@ -27,7 +26,7 @@ use tonic::Status;
 
 use crate::commit_graph_rpc::{commit_status, data_loss, internal, registry_status, store_status};
 use crate::history::linehist_rpc::ServerLineHistory;
-use crate::idmode::{Eng, IdCodec};
+use crate::idmode::IdCodec;
 use crate::read::ReadHooks;
 use crate::registry::{Registry, RepoEntry};
 
@@ -81,7 +80,6 @@ impl ServerPickaxe {
 
     async fn query(
         entry: &RepoEntry,
-        engine: &Eng,
         ids: &IdCodec,
         req: &wire::LogRequest,
     ) -> Result<Query, Status> {
@@ -130,15 +128,11 @@ impl ServerPickaxe {
             if spec.len() > MAX_STRING {
                 return Err(Status::invalid_argument("revision is too long"));
             }
-            let spec = ids.rev_in(spec, &entry.default_branch).await?;
-            engine
-                .resolve(std::slice::from_ref(&spec))
-                .await
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(|| Status::not_found(format!("revision {spec} does not exist")))?
+            ids.resolve(spec, &entry.default_branch, |e| {
+                Status::invalid_argument(e.to_string())
+            })
+            .await?
+            .ok_or_else(|| Status::not_found(format!("revision {spec} does not exist")))?
         };
         Ok(Query {
             rev,
@@ -164,7 +158,7 @@ impl ServerPickaxe {
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
-        let q = Self::query(&entry, &engine, &ids, &req).await?;
+        let q = Self::query(&entry, &ids, &req).await?;
         let page = {
             let _guard = self
                 .hooks
