@@ -1,4 +1,4 @@
-// Actions runs and job logs (SPEC §24.3.5). Pure models; data comes from the Forgejo Actions REST
+// Actions runs and job logs (SPEC §24.3.5). Pure models; data comes from the host Actions REST
 // API (P05) through the host, so nothing here touches the network.
 export type RunTone = "ok" | "fail" | "running" | "pending" | "neutral";
 
