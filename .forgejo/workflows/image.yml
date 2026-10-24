@@ -10,6 +10,7 @@ on:
     branches: [master]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 # Forgejo ignores `permissions:` (capabilities come from Authorized Integrations), so there is no
 # block here. The registry credential is the REGISTRY_TOKEN secret (write:package only);
