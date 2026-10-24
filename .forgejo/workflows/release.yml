@@ -261,7 +261,9 @@ jobs:
   # Runs only for workflow_dispatch with extra_targets=true. Publishes the files under the version but never
   # moves `latest/version`: `asc upgrade` for these targets is a separate decision once runners exist.
   extra-build:
-    if: github.event_name == 'workflow_dispatch' && inputs.extra_targets
+    # Only a v* tag whose name matches the requested version reaches the build, the signing key and
+    # the registry token (a dispatch from a branch never does).
+    if: github.event_name == 'workflow_dispatch' && inputs.extra_targets && startsWith(github.ref, 'refs/tags/v') && format('v{0}', inputs.version) == github.ref_name
     strategy:
       fail-fast: false
       matrix:
@@ -299,6 +301,7 @@ jobs:
 
   extra-publish:
     needs: extra-build
+    if: github.event_name == 'workflow_dispatch' && inputs.extra_targets && startsWith(github.ref, 'refs/tags/v') && format('v{0}', inputs.version) == github.ref_name
     runs-on: asc-build-trusted
     env:
       INPUT_VERSION: ${{ inputs.version }}
@@ -325,7 +328,6 @@ jobs:
           rm -f "$RUNNER_TEMP/minisign.key"
           for f in out/*; do
             name="${f#out/}"
-            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
             curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
           done
           rm -f "$RUNNER_TEMP/hdr"
