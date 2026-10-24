@@ -45,11 +45,14 @@ pub struct Args {
     /// List `on: push` workflow triggers that name non-shared branches (SPEC 21.4.4).
     #[arg(long)]
     pub workflows: bool,
+    /// Print the checks as one JSON object instead of text.
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "doctor",
-    flags: &["--fix", "--store", "--report-reclaimable", "--workflows"],
+    flags: &["--fix", "--store", "--report-reclaimable", "--workflows", "--json"],
     placeholders: &[],
 }];
 
@@ -1110,11 +1113,128 @@ async fn check_remote(ctx: &Ctx) -> Option<Check> {
     )
 }
 
-async fn check_store(url: &str) -> Check {
+/// Most listing entries one integrity sample reads.
+const SAMPLE_SCAN: usize = 4096;
+/// Most objects one integrity sample downloads and verifies.
+const SAMPLE_OBJECTS: usize = 32;
+/// Largest stored object the sample downloads.
+const SAMPLE_MAX_BYTES: u64 = 8 << 20;
+
+/// Why a store URL or endpoint may not be used: https and local paths only, plain http to
+/// the local machine only (transport policy).
+pub(crate) fn store_transport_refusal(url: &url::Url) -> Option<String> {
+    let loopback =
+        |u: &url::Url| crate::credential::Origin::of(u).is_some_and(|o| o.is_loopback());
+    match url.scheme() {
+        "s3" | "https" | "file" | "gs" | "az" | "azure" | "abfs" | "abfss" => None,
+        "http" if loopback(url) => None,
+        other => Some(format!("scheme '{other}' would send data in the clear")),
+    }
+}
+
+fn check_store_transport(url: &url::Url) -> Check {
+    if let Some(why) = store_transport_refusal(url) {
+        return Check::fail("store-transport", why).hint("use an https or s3 store URL");
+    }
+    for var in ["AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT"] {
+        let Ok(v) = std::env::var(var) else { continue };
+        match url::Url::parse(&v) {
+            Ok(e) if store_transport_refusal(&e).is_none() => {}
+            _ => {
+                return Check::fail(
+                    "store-transport",
+                    format!("{var} is not an https endpoint (or loopback)"),
+                )
+                .hint("point the endpoint at an https URL");
+            }
+        }
+    }
+    Check::ok("store-transport", format!("{} is allowed", url.scheme()))
+}
+
+/// Downloads a spread sample of the objects under `root` and checks each against its key.
+async fn integrity_sample(
+    store: &dyn object_store::ObjectStore,
+    root: &object_store::path::Path,
+) -> Check {
+    use asc_store::key::ObjKey;
+    use futures::StreamExt;
+    use object_store::ObjectStoreExt as _;
+    let mut found = Vec::new();
+    let mut scanned = 0usize;
+    let mut list = store.list(Some(root));
+    while let Some(item) = list.next().await {
+        let meta = match item {
+            Ok(m) => m,
+            Err(e) => {
+                return Check::fail("store-integrity", format!("listing failed: {e}"));
+            }
+        };
+        scanned += 1;
+        if meta.size <= SAMPLE_MAX_BYTES
+            && let Some(parts) = meta.location.prefix_match(root)
+        {
+            let rel = parts
+                .map(|p| p.as_ref().to_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            if let Some(key) = ObjKey::parse(&rel) {
+                found.push((key, meta.location.clone()));
+            }
+        }
+        if scanned >= SAMPLE_SCAN {
+            break;
+        }
+    }
+    drop(list);
+    if found.is_empty() {
+        return Check::info("store-integrity", "no objects to sample");
+    }
+    let step = found.len().div_ceil(SAMPLE_OBJECTS);
+    let (mut good, mut bad, mut unread) = (0usize, Vec::new(), 0usize);
+    for (key, loc) in found.iter().step_by(step) {
+        let bytes = match store.get(loc).await {
+            Ok(r) => r.bytes().await,
+            Err(e) => Err(e),
+        };
+        match bytes {
+            Ok(b) => match asc_store::objects::decode_verified(key, &b) {
+                Ok(_) => good += 1,
+                Err(_) => bad.push(key.path()),
+            },
+            Err(_) => unread += 1,
+        }
+    }
+    if !bad.is_empty() {
+        let shown = bad.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        return Check::fail(
+            "store-integrity",
+            format!(
+                "{} of {} sampled objects are corrupt: {shown}",
+                bad.len(),
+                good + bad.len()
+            ),
+        )
+        .hint("run `asc fsck` against the store and restore from a copy");
+    }
+    if unread > 0 {
+        return Check::warn(
+            "store-integrity",
+            format!("{good} verified, {unread} could not be read"),
+        );
+    }
+    Check::ok("store-integrity", format!("{good} sampled objects verified"))
+}
+
+async fn check_store(url: &str) -> Vec<Check> {
     let parsed = match url::Url::parse(url) {
         Ok(u) => u,
-        Err(e) => return Check::fail("store", format!("bad store url: {e}")),
+        Err(e) => return vec![Check::fail("store", format!("bad store url: {e}"))],
     };
+    let mut out = vec![check_store_transport(&parsed)];
+    if out[0].level == Level::Fail {
+        return out;
+    }
     let opened = if parsed.scheme() == "s3" {
         asc_store::s3::open(&parsed).map_err(|e| e.to_string())
     } else {
@@ -1124,19 +1244,123 @@ async fn check_store(url: &str) -> Check {
     };
     let (store, root) = match opened {
         Ok(v) => v,
-        Err(e) => return Check::fail("store", format!("cannot open the store: {e}")),
+        Err(e) => {
+            out.push(Check::fail("store", format!("cannot open the store: {e}")));
+            return out;
+        }
     };
+    {
+        use futures::StreamExt;
+        let mut list = store.list(Some(&root));
+        let first = tokio::time::timeout(Duration::from_secs(20), list.next()).await;
+        out.push(match first {
+            Ok(Some(Err(e))) => {
+                Check::fail("store-connect", format!("cannot list the store: {e}"))
+                    .hint("check the endpoint, the bucket name and the AWS_* credentials")
+            }
+            Ok(_) => Check::ok("store-connect", "the store answers a listing"),
+            Err(_) => Check::fail("store-connect", "the listing did not answer within 20 s"),
+        });
+    }
+    if out.last().is_some_and(|c| c.level == Level::Fail) {
+        return out;
+    }
     let result = tokio::time::timeout(
         Duration::from_secs(60),
         asc_store::probe::probe(&*store, &root),
     )
     .await;
-    match result {
+    out.push(match result {
         Ok(r) if r.create_exclusive => Check::ok("store", r.detail),
         Ok(r) => Check::fail("store", format!("{}: BucketRefs is refused", r.detail))
             .hint("refs for this bucket need a server or the single-writer mode"),
         Err(_) => Check::fail("store", "the probe did not finish within 60 s"),
+    });
+    out.push(
+        match tokio::time::timeout(Duration::from_secs(120), integrity_sample(&*store, &root))
+            .await
+        {
+            Ok(c) => c,
+            Err(_) => Check::warn("store-integrity", "the sample did not finish within 120 s"),
+        },
+    );
+    out
+}
+
+/// The workspace remote's transport (https or ssh only) and whether its token is accepted.
+async fn remote_auth_checks(ctx: &Ctx) -> Vec<Check> {
+    use crate::credential::Prompt;
+    use crate::remote::server;
+    let Some(ws) = ctx.ws_opt() else {
+        return Vec::new();
+    };
+    let Some(url) = ws.repo.repo.remote_url.as_deref() else {
+        return Vec::new();
+    };
+    if ws.repo.repo.remote_kind == RemoteKind::Bucket {
+        return Vec::new();
     }
+    if let Err(e) = server::check_transport(url) {
+        return vec![
+            Check::fail("transport", e.to_string().replace("asc: ", ""))
+                .hint("use an https or ssh remote URL"),
+        ];
+    }
+    let mut out = vec![Check::ok("transport", "the remote uses https or ssh")];
+    let connect = server::connect(
+        ctx.config.file(),
+        &ws.db,
+        ctx.real_git().ok().cloned(),
+        Some("origin"),
+        url,
+        Prompt::Never,
+    );
+    let connected = match tokio::time::timeout(Duration::from_secs(15), connect).await {
+        Ok(Ok(Some(c))) => c,
+        Ok(Ok(None)) => {
+            out.push(Check::info(
+                "token",
+                "git remote: real git holds the credential",
+            ));
+            return out;
+        }
+        Ok(Err(e)) => {
+            out.push(Check::warn("token", e.to_string()));
+            return out;
+        }
+        Err(_) => {
+            out.push(Check::warn(
+                "token",
+                "the server did not answer within 15 s",
+            ));
+            return out;
+        }
+    };
+    let remote = server::ServerRemote::new("origin", connected);
+    let session = remote.session();
+    if session.resolved.is_anonymous() {
+        out.push(Check::info("token", "no credential found: anonymous"));
+        return out;
+    }
+    let source = session.resolved.source();
+    let call = tokio::time::timeout(Duration::from_secs(15), session.client.list_refs_all()).await;
+    out.push(match call {
+        Ok(Ok(_)) => Check::ok("token", format!("accepted (credential from {source})")),
+        Ok(Err(e)) => {
+            let text = e.to_string();
+            let lower = text.to_ascii_lowercase();
+            if lower.contains("unauthenticated") || lower.contains("401") {
+                Check::fail("token", format!("rejected (credential from {source})"))
+                    .hint("sign in again or replace the token")
+            } else if lower.contains("permission") || lower.contains("forbidden") {
+                Check::warn("token", format!("valid but not allowed to read: {text}"))
+            } else {
+                Check::warn("token", format!("could not be checked: {text}"))
+            }
+        }
+        Err(_) => Check::warn("token", "the check did not finish within 15 s"),
+    });
+    out
 }
 
 async fn workspace_checks(ctx: &Ctx) -> Vec<Check> {
@@ -1226,11 +1450,11 @@ async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
     let platform = async { Vec::new() };
     let store_check = async {
         match store {
-            Some(u) => Some(check_store(u).await),
-            None => None,
+            Some(u) => check_store(u).await,
+            None => Vec::new(),
         }
     };
-    let (platform, git, surfaces, daemon, space, ws, store_check) = tokio::join!(
+    let (platform, git, surfaces, daemon, space, ws, store_check, auth) = tokio::join!(
         platform,
         check_real_git(ctx),
         check_git_surfaces(&shim),
@@ -1238,6 +1462,7 @@ async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
         check_free_space(home),
         workspace_checks(ctx),
         store_check,
+        remote_auth_checks(ctx),
     );
     out.extend(git);
     out.push(check_shim(&shim));
@@ -1246,6 +1471,7 @@ async fn gather(ctx: &Ctx, home: &AscHome, store: Option<&str>) -> Vec<Check> {
     out.push(space);
     out.extend(platform);
     out.extend(ws);
+    out.extend(auth);
     out.extend(store_check);
     out
 }
@@ -1273,6 +1499,24 @@ async fn apply_fix(fix: Fix, home: &AscHome) -> std::result::Result<String, Stri
                 .map_err(|e| e.to_string())
         }
     }
+}
+
+fn checks_json(checks: &[Check]) -> serde_json::Value {
+    let items: Vec<_> = checks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "level": c.level.label(),
+                "name": c.name,
+                "detail": c.detail,
+                "fix": c.hint,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "ok": !checks.iter().any(|c| c.level == Level::Fail),
+        "checks": items,
+    })
 }
 
 fn print_checks(checks: &[Check]) {
@@ -1498,13 +1742,21 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             }
         }
         for d in &done {
-            println!("{}", clean(d));
+            if args.json {
+                eprintln!("{}", clean(d));
+            } else {
+                println!("{}", clean(d));
+            }
         }
         if fixed {
             checks = gather(ctx, &home, args.store.as_deref()).await;
         }
     }
-    print_checks(&checks);
+    if args.json {
+        println!("{}", checks_json(&checks));
+    } else {
+        print_checks(&checks);
+    }
     let failed = checks.iter().any(|c| c.level == Level::Fail);
     Ok(if failed {
         ExitCode::FAILURE
@@ -1516,6 +1768,47 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn store_transport_policy() {
+        let u = |s: &str| url::Url::parse(s).unwrap();
+        assert!(store_transport_refusal(&u("s3://bucket/p")).is_none());
+        assert!(store_transport_refusal(&u("https://h/b")).is_none());
+        assert!(store_transport_refusal(&u("http://127.0.0.1:9000/b")).is_none());
+        assert!(store_transport_refusal(&u("http://example.com/b")).is_some());
+        assert!(store_transport_refusal(&u("ftp://example.com/b")).is_some());
+    }
+
+    #[test]
+    fn json_report_shape() {
+        let v = checks_json(&[Check::ok("a", "x"), Check::fail("b", "y").hint("h")]);
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["checks"][1]["level"], "fail");
+        assert_eq!(v["checks"][1]["fix"], "h");
+    }
+
+    #[tokio::test]
+    async fn integrity_sample_flags_corruption() {
+        use asc_core::id::FileId;
+        use asc_store::key::ObjKey;
+        use object_store::ObjectStoreExt as _;
+        let store = object_store::memory::InMemory::new();
+        let root = object_store::path::Path::from("ns");
+        assert_eq!(integrity_sample(&store, &root).await.level, Level::Info);
+        let data = b"hello";
+        let key = ObjKey::File(FileId::of(data));
+        let loc = object_store::path::Path::from(format!("ns/{}", key.path()));
+        store
+            .put(&loc, asc_store::codec::encode_stored(data).into())
+            .await
+            .unwrap();
+        assert_eq!(integrity_sample(&store, &root).await.level, Level::Ok);
+        store
+            .put(&loc, asc_store::codec::encode_stored(b"other").into())
+            .await
+            .unwrap();
+        assert_eq!(integrity_sample(&store, &root).await.level, Level::Fail);
+    }
 
     #[test]
     fn human_sizes() {
