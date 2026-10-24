@@ -288,6 +288,22 @@ impl HiddenRefs {
     }
 }
 
+impl HiddenRefs {
+    /// Releases the names after a sync that finished, but only when the view no longer holds
+    /// them. A sync coalesced onto an earlier run may have started before the push wrote the
+    /// refs, so its success proves nothing: the names stay hidden until a later sync removes
+    /// them (also when the check itself fails).
+    pub fn release_if_gone(self) {
+        let gone = match self.view.server.list_refs(&self.view.dir) {
+            Ok(refs) => !refs.iter().any(|(n, _)| self.names.contains(n)),
+            Err(_) => false,
+        };
+        if !gone {
+            self.until_next_sync();
+        }
+    }
+}
+
 impl Drop for HiddenRefs {
     fn drop(&mut self) {
         let mut hidden = self
@@ -580,11 +596,18 @@ impl GitView {
     }
 
     fn mark_ready(&self) {
-        self.inner
+        // Only names the view no longer holds stop being hidden; a name a stale sync left in
+        // place stays hidden (and when the listing fails, everything does).
+        let present = self.inner.server.list_refs(&self.inner.dir).ok();
+        let mut sticky = self
+            .inner
             .sticky
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(refs) = present {
+            sticky.retain(|n| refs.iter().any(|(r, _)| r == n));
+        }
+        drop(sticky);
         if fs::write(self.inner.dir.join(READY_MARKER), b"").is_ok() {
             self.inner.state.store(READY, Ordering::SeqCst);
         }
@@ -960,7 +983,80 @@ m
         assert!(!text.contains("refs/heads/feat"), "{text}");
         assert!(text.contains("refs/heads/master"), "{text}");
         view.mark_ready();
+        assert!(
+            !advertised(&view).contains("refs/heads/feat"),
+            "still present: stays hidden"
+        );
+        server
+            .update_refs(
+                view.path(),
+                &[RefUpdate::Delete {
+                    name: "refs/heads/feat".into(),
+                }],
+            )
+            .expect("delete");
+        view.mark_ready();
+        server
+            .update_refs(
+                view.path(),
+                &[RefUpdate::Set {
+                    name: "refs/heads/feat".into(),
+                    oid: commit,
+                }],
+            )
+            .expect("reset");
         assert!(advertised(&view).contains("refs/heads/feat"));
+    }
+
+    #[test]
+    fn git_view_release_if_gone_keeps_a_ref_a_stale_sync_left_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (view, server) = view_in(tmp.path());
+        let odb = Odb::open(view.path()).expect("odb");
+        let tree = odb.write_loose(ObjectKind::Tree, b"").expect("tree");
+        let body = format!(
+            "tree {tree}
+author A <a@x> 1700000000 +0000
+committer A <a@x> 1700000000 +0000
+
+m
+"
+        );
+        let commit = odb
+            .write_loose(ObjectKind::Commit, body.as_bytes())
+            .expect("commit");
+        let set = |name: &str| {
+            server
+                .update_refs(
+                    view.path(),
+                    &[RefUpdate::Set {
+                        name: name.into(),
+                        oid: commit,
+                    }],
+                )
+                .expect("refs");
+        };
+        set("refs/heads/master");
+        // The push hides the name, then git writes it; a sync coalesced from before that write
+        // reports success without removing it.
+        let guard = view.hide_refs(vec!["refs/heads/priv".into()]);
+        set("refs/heads/priv");
+        guard.release_if_gone();
+        assert!(!advertised(&view).contains("refs/heads/priv"));
+        // A later sync removes the ref: the name is shown again only because it is gone.
+        server
+            .update_refs(
+                view.path(),
+                &[RefUpdate::Delete {
+                    name: "refs/heads/priv".into(),
+                }],
+            )
+            .expect("delete");
+        view.mark_ready();
+        let guard = view.hide_refs(vec!["refs/heads/priv".into()]);
+        guard.release_if_gone();
+        set("refs/heads/priv");
+        assert!(advertised(&view).contains("refs/heads/priv"));
     }
 
     #[test]
