@@ -1,0 +1,121 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// CI and Actions runs recorded against a change, host-neutral: any runner or forge adapter reports runs with
+// `ReportRun` and `AppendJobLog` using a service credential (repo admin); clients read them with repo read.
+// Advertised as Version.features "ci.v1".
+service Ci {
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);             // cheap, paged; runs carry their jobs
+  rpc JobLog(JobLogRequest) returns (JobLogResponse);                   // cheap; the tail of one job's log
+  rpc ReportRun(ReportRunRequest) returns (ReportRunResponse);          // repo admin; idempotent upsert, no x-asc-op-id
+  rpc AppendJobLog(AppendJobLogRequest) returns (AppendJobLogResponse); // repo admin; x-asc-op-id
+}
+
+enum CiStatus {
+  CI_STATUS_UNSPECIFIED = 0;
+  CI_STATUS_QUEUED = 1;
+  CI_STATUS_RUNNING = 2;
+  CI_STATUS_SUCCESS = 3;
+  CI_STATUS_FAILURE = 4;
+  CI_STATUS_CANCELLED = 5;
+  CI_STATUS_SKIPPED = 6;
+}
+
+message CiJob {
+  uint64 id = 1;
+  string name = 2;
+  CiStatus status = 3;
+  int64 started = 4;
+  int64 finished = 5;
+  string url = 6;
+  uint64 log_size = 7;
+}
+
+// A run is named by the reporter as (`source`, `external_id`); `id` is asc's number for it in this repository.
+message CiRun {
+  uint64 id = 1;
+  string source = 2;
+  string external_id = 3;
+  string name = 4;
+  bytes change = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 6;
+  CiStatus status = 7;
+  int64 created = 8;
+  int64 started = 9;
+  int64 finished = 10;
+  string url = 11;
+  repeated CiJob jobs = 12;
+}
+
+// `change` empty lists runs of every change. `status` unspecified lists all. Newest first. `limit` 0 means 30, at most 100.
+message ListRunsRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  CiStatus status = 3;
+  uint32 limit = 4;
+  string page_token = 5;
+}
+message ListRunsResponse {
+  repeated CiRun runs = 1;
+  string next_page_token = 2;
+}
+
+// The last `max_bytes` of the log (0 means 64 KiB, at most 1 MiB), cut at a line start when it cuts anything.
+// With a nonzero `since_offset` the answer is the bytes from there on (at most `max_bytes`); pass `next_offset`
+// as the next `since_offset` to follow a running job.
+message JobLogRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;
+  uint64 job_id = 3;
+  uint32 max_bytes = 4;
+  uint64 since_offset = 5;
+}
+message JobLogResponse {
+  bytes data = 1 [(asc.v1.json) = JSON_KIND_TEXT];
+  uint64 offset = 2;       // where `data` starts in the whole log
+  uint64 next_offset = 3;  // where `data` ends
+  uint64 size = 4;         // the whole log
+  bool truncated = 5;      // bytes before `offset` exist
+}
+
+// Create or update a run. Jobs are matched by name within the run. `change` must be a known change; `version` 0 =
+// the newest. A finished run is not reopened by a late report.
+message ReportJob {
+  string name = 1;
+  CiStatus status = 2;
+  int64 started = 3;
+  int64 finished = 4;
+  string url = 5;
+}
+message ReportRunRequest {
+  RepoRef repo = 1;
+  string source = 2;
+  string external_id = 3;
+  string name = 4;
+  bytes change = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 6;
+  CiStatus status = 7;
+  int64 started = 8;
+  int64 finished = 9;
+  string url = 10;
+  repeated ReportJob jobs = 11;
+}
+message ReportRunResponse {
+  CiRun run = 1;
+}
+
+// `dropped` is true when the job's log is full and these bytes were not kept.
+message AppendJobLogRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;
+  uint64 job_id = 3;
+  bytes data = 4 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+message AppendJobLogResponse {
+  uint64 size = 1;
+  bool dropped = 2;
+}

@@ -1,0 +1,116 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Review comment threads on a change, stored by asc itself so every client sees the same threads whichever forge,
+// if any, sits in front of the server. Advertised as Version.features "review.v1". Reads need repo read; comments
+// and resolving need repo read and a user identity (comments carry the author's handle); RequestReview needs repo write.
+service Review {
+  rpc ListThreads(ListThreadsRequest) returns (ListThreadsResponse);       // cheap, paged
+  rpc AddComment(AddCommentRequest) returns (AddCommentResponse);          // mutating, x-asc-op-id
+  rpc ResolveThread(ResolveThreadRequest) returns (ResolveThreadResponse); // idempotent, no x-asc-op-id
+  rpc RequestReview(RequestReviewRequest) returns (RequestReviewResponse); // idempotent; feeds the inbox
+}
+
+enum ThreadStatus {
+  THREAD_STATUS_UNSPECIFIED = 0;   // in a request: any status
+  THREAD_STATUS_OPEN = 1;
+  THREAD_STATUS_RESOLVED = 2;
+}
+
+enum DiffSide {
+  DIFF_SIDE_UNSPECIFIED = 0;
+  DIFF_SIDE_OLD = 1;   // the parent side of the change's diff
+  DIFF_SIDE_NEW = 2;   // the change's own side
+}
+
+// Where a thread sits. An empty `path` is a thread on the change as a whole. Lines are 1-based and inclusive;
+// `end_line` 0 means `start_line`.
+message ThreadAnchor {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 version = 2;
+  DiffSide side = 3;
+  uint32 start_line = 4;
+  uint32 end_line = 5;
+}
+
+message ReviewComment {
+  uint64 id = 1;
+  string author = 2;
+  string body = 3;
+  int64 created = 4;
+}
+
+message ReviewThread {
+  uint64 id = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  ThreadAnchor anchor = 3;
+  ThreadStatus status = 4;
+  string opened_by = 5;
+  int64 created = 6;
+  int64 updated = 7;
+  string resolved_by = 8;
+  int64 resolved_at = 9;
+  repeated ReviewComment comments = 10;
+}
+
+// `status` unspecified lists all; `version` 0 lists every version. Oldest thread first. `limit` 0 means 50, at most 200.
+message ListThreadsRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  ThreadStatus status = 3;
+  uint32 version = 4;
+  uint32 limit = 5;
+  string page_token = 6;
+}
+// `open_threads` counts every open thread of the change, whatever the filter.
+message ListThreadsResponse {
+  repeated ReviewThread threads = 1;
+  string next_page_token = 2;
+  uint32 open_threads = 3;
+}
+
+// `thread_id` 0 starts a thread at `anchor` (version 0 = the newest); otherwise the comment is added to that thread
+// and `anchor` is ignored. `body` is 1 to 65536 bytes of UTF-8. A retried x-asc-op-id returns the first answer.
+message AddCommentRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint64 thread_id = 3;
+  ThreadAnchor anchor = 4;
+  string body = 5;
+}
+message AddCommentResponse {
+  ReviewThread thread = 1;
+  uint64 comment_id = 2;
+}
+
+// Whoever has repo write, the change's author and the thread's opener may resolve or reopen a thread.
+message ResolveThreadRequest {
+  RepoRef repo = 1;
+  uint64 thread_id = 2;
+  bool resolved = 3;
+}
+message ResolveThreadResponse {
+  ReviewThread thread = 1;
+}
+
+// `add` and `remove` are user handles (at most 16 each). Adding a pending request again changes nothing; adding a
+// finished one asks again.
+message RequestReviewRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  repeated string add = 3;
+  repeated string remove = 4;
+}
+message ReviewRequestInfo {
+  string reviewer = 1;
+  string requested_by = 2;
+  int64 requested_at = 3;
+  int64 done_at = 4;   // 0 while pending
+}
+message RequestReviewResponse {
+  repeated ReviewRequestInfo requests = 1;
+}
