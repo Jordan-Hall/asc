@@ -61,12 +61,12 @@ groups:
         expr: increase(asc_warm_failures_total[1h]) > 0
         labels: {severity: ticket}
         annotations: {summary: "Warm failures", runbook: "docs/runbooks/tier-warmer.md"}
-  - name: asc-forgejo
+  - name: asc-host
     rules:
       - alert: AscShadowMismatch
-        expr: increase(forgejo_asc_shadow_mismatch_total[1h]) > 0
+        expr: increase(host_asc_shadow_mismatch_total[1h]) > 0
         labels: {severity: ticket}
-        annotations: {summary: "Forgejo shadow mismatch", runbook: "docs/runbooks/tier-forgejo.md"}
+        annotations: {summary: "Host shadow mismatch", runbook: "docs/runbooks/tier-forgejo.md"}
   - name: asc-codeintel
     rules:
       - alert: AscCodeIntelIndexLag

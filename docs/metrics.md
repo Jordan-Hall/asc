@@ -40,5 +40,5 @@ SPEC section 16.1 fixes these names. `crates/asc/src/telemetry.rs` holds the sam
 | `asc_warm_lag_seconds` | gauge | warmer | - | Age of the trunk tip in the host cache. |
 | `asc_warm_objects_total` | counter | warmer | - | Objects warmed. |
 | `asc_warm_failures_total` | counter | warmer | - | Warm failures. |
-| `forgejo_asc_rpc_seconds` | histogram | forgejo | method | Forgejo-side asc RPC latency. |
-| `forgejo_asc_shadow_mismatch_total` | counter | forgejo | method | Shadow-mode mismatches. |
+| `host_asc_rpc_seconds` | histogram | host | method | Host-side asc RPC latency. |
+| `host_asc_shadow_mismatch_total` | counter | host | method | Shadow-mode mismatches. |
