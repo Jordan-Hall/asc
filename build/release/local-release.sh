@@ -218,9 +218,9 @@ if [ "$upload" = 1 ]; then
     chmod 600 "$hdr"
     printf 'Authorization: token %s\n' "$ASC_RELEASE_TOKEN" > "$hdr"
   fi
-  put() { # <local file> <remote path>; a re-run replaces the file
+  put() { # <local file> <remote path>; releases are write-once (only latest/version is replaced)
     if [ "$dry" = 1 ]; then echo "DRY-RUN: PUT $1 -> $RELEASES_URL/$2"; return; fi
-    curl -sS --proto '=https' -X DELETE -H "@$hdr" "$RELEASES_URL/$2" >/dev/null || true
+    case "$2" in latest/version) curl -sS --proto '=https' -X DELETE -H "@$hdr" "$RELEASES_URL/$2" >/dev/null || true ;; esac
     curl -fsS --proto '=https' -X PUT -H "@$hdr" --upload-file "$1" "$RELEASES_URL/$2"
   }
   if [ "$latest_only" = 0 ]; then
