@@ -853,6 +853,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fill_landed_reads_legacy_and_new_rows_of_the_trunk_only() {
+        let d = db().await;
+        // Legacy `land_map` (written before 0106) and `land_map_ref` rows, on the trunk and on
+        // another ref.
+        for (table, cs, refname) in [
+            ("land_map", 1_u32, "refs/heads/main"),
+            ("land_map", 2, "refs/heads/other"),
+            ("land_map_ref", 3, "refs/heads/main"),
+            ("land_map_ref", 4, "refs/heads/other"),
+        ] {
+            let sql = format!(
+                "INSERT INTO {table} (ns, old_cs, new_cs, ref, ref_log_seq, op_id) \
+                 VALUES ($1, $2, $2, $3, 1, $4)"
+            );
+            sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(d.ns.as_bytes().to_vec())
+                .bind(id(cs).as_bytes().to_vec())
+                .bind(refname)
+                .bind(vec![0u8; 16])
+                .execute(&d.pool)
+                .await
+                .unwrap();
+        }
+        let mut w = d.walker(100, 10_000);
+        let mut conn = d.pool.acquire().await.unwrap();
+        let ids = [id(1), id(2), id(3), id(4), id(5)];
+        assert!(w.fill_landed(&mut conn, &ids).await.unwrap());
+        let got: Vec<bool> = ids.iter().map(|cs| w.landed[cs]).collect();
+        assert_eq!(got, [true, false, true, false, false]);
+    }
+
+    #[tokio::test]
     async fn a_node_with_more_parents_than_the_budget_stops_at_the_budget() {
         let d = db().await;
         let parents: Vec<u32> = (10..510).collect();
