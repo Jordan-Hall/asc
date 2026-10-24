@@ -6,6 +6,7 @@
 
 pub mod actions_store;
 pub mod admin;
+pub mod admin_cli;
 pub mod alt_svc;
 pub mod authn;
 pub mod authz;
