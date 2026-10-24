@@ -57,7 +57,11 @@ fn pool() -> &'static DescriptorPool {
 /// Where `method` (`asc.v1.Workspace/Status`) goes, or why it goes nowhere.
 pub fn resolve(method: &str) -> Result<Target, Status> {
     let unknown = || Status::unimplemented("unknown method");
-    if method.len() > 128 || !method.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '_')) {
+    if method.len() > 128
+        || !method
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '_'))
+    {
         return Err(unknown());
     }
     let (service, name) = method.split_once('/').ok_or_else(unknown)?;
@@ -73,10 +77,14 @@ pub fn resolve(method: &str) -> Result<Target, Status> {
     }
     let daemon = DAEMON_SERVICES.contains(&service);
     if !daemon && !SERVER_SERVICES.contains(&service) {
-        return Err(Status::permission_denied("service is not served by the bridge"));
+        return Err(Status::permission_denied(
+            "service is not served by the bridge",
+        ));
     }
     if DENIED.contains(&method) {
-        return Err(Status::permission_denied("method is not served by the bridge"));
+        return Err(Status::permission_denied(
+            "method is not served by the bridge",
+        ));
     }
     let desc = pool()
         .get_service_by_name(service)
@@ -168,9 +176,15 @@ mod tests {
 
     #[test]
     fn everything_else_is_denied() {
-        assert_eq!(code("asc.v1.Workspace/Shutdown"), tonic::Code::PermissionDenied);
-        assert_eq!(code("grpc.reflection.v1.ServerReflection/X"), tonic::Code::PermissionDenied);
-        assert_eq!(code("/asc.v1.Repo/Log"), tonic::Code::Unimplemented);
+        assert_eq!(
+            code("asc.v1.Workspace/Shutdown"),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(
+            code("grpc.reflection.v1.ServerReflection/X"),
+            tonic::Code::PermissionDenied
+        );
+        assert_eq!(code("/asc.v1.Repo/Log"), tonic::Code::PermissionDenied);
         assert_eq!(code("asc.v1.Repo/Nope"), tonic::Code::Unimplemented);
         assert_eq!(code("asc.v1.Repo"), tonic::Code::Unimplemented);
         assert_eq!(code("asc.v1.Repo/Log\n"), tonic::Code::Unimplemented);

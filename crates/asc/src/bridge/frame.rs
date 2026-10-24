@@ -20,7 +20,9 @@ pub enum FrameError {
 }
 
 /// The next frame, or `None` at a clean end of input (EOF between frames).
-pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<BridgeFrame>, FrameError> {
+pub async fn read_frame<R: AsyncRead + Unpin>(
+    r: &mut R,
+) -> Result<Option<BridgeFrame>, FrameError> {
     let mut len = [0u8; 4];
     let mut got = 0;
     while got < len.len() {
