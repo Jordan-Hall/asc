@@ -13,6 +13,7 @@ workspace = true
 asc-serve = { workspace = true }
 asc-core = { workspace = true }
 asc-store = { workspace = true }
+asc-engine = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
