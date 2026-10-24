@@ -50,7 +50,7 @@ export function detailsFromProto(input: DetailsInput): DetailsData {
     ...(r && r.number > 0n
       ? {
           review: {
-            forge: r.forge,
+            host: r.host,
             number: Number(r.number),
             url: r.url,
             state: r.state,

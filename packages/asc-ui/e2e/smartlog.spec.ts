@@ -43,7 +43,7 @@ const data = {
           change("a", undefined, { needsRestack: true }),
           change("b", "a", {
             current: true,
-            review: { forge: "f", number: 7, url: "", state: "open", draft: false, approvals: 1, checks: "passing" },
+            review: { host: "f", number: 7, url: "", state: "open", draft: false, approvals: 1, checks: "passing" },
           }),
           change("c", "b", { frozen: true }),
         ],

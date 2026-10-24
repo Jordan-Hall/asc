@@ -13,7 +13,7 @@ use crate::pb;
 
 /// Longest accepted repeated field in a change message.
 pub const MAX_LIST: usize = 100_000;
-/// Longest accepted free-text field (forge name, URL, state, checks, actor, reason).
+/// Longest accepted free-text field (host name, URL, state, checks, actor, reason).
 pub const MAX_TEXT: usize = 4096;
 
 impl WireId for ChangeId {
@@ -95,10 +95,10 @@ fn paths(v: &[Bytes], what: &'static str) -> Result<Vec<RepoPath>> {
 
 // ----------------------------------------------------------- ReviewState
 
-/// The forge's review summary for a change (`asc.v1.ReviewState`).
+/// The review host's summary for a change (`asc.v1.ReviewState`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewState {
-    pub forge: String,
+    pub host: String,
     pub number: u64,
     pub url: String,
     pub state: String,
@@ -115,7 +115,7 @@ impl TryFrom<&pb::ReviewState> for ReviewState {
 
     fn try_from(r: &pb::ReviewState) -> Result<Self> {
         Ok(Self {
-            forge: text(&r.forge, "ReviewState.forge")?,
+            host: text(&r.host, "ReviewState.host")?,
             number: r.number,
             url: text(&r.url, "ReviewState.url")?,
             state: text(&r.state, "ReviewState.state")?,
@@ -132,7 +132,7 @@ impl TryFrom<&pb::ReviewState> for ReviewState {
 impl From<&ReviewState> for pb::ReviewState {
     fn from(r: &ReviewState) -> Self {
         Self {
-            forge: r.forge.clone(),
+            host: r.host.clone(),
             number: r.number,
             url: r.url.clone(),
             state: r.state.clone(),
@@ -567,7 +567,7 @@ mod tests {
     }
     fn review() -> ReviewState {
         ReviewState {
-            forge: "forgejo".into(),
+            host: "forgejo".into(),
             number: 7,
             url: "https://example.test/pulls/7".into(),
             state: "open".into(),

@@ -80,11 +80,11 @@ message Call { string method = 1;      // "asc.v1.Workspace/Status", "asc.v1.Cha
   bytes request = 2; bool server_stream = 3; string root = 4; /* workspace root; selects ws_id, repo, remote */ }
 message End { int32 code = 1; string message = 2; bytes error_detail = 3; /* asc.v1.ErrorDetail */ }
 service Bridge {
-  rpc Hello(HelloRequest) returns (HelloResponse);   // asc version, features (below), roots → {ws_id, repo, remote kind, forge URL,
-                                                     //  branchless, daemon|server|forge state}
+  rpc Hello(HelloRequest) returns (HelloResponse);   // asc version, features (below), roots → {ws_id, repo, remote kind, remote URL,
+                                                     //  branchless, daemon|server|remote state}
   rpc Run(RunRequest) returns (stream RunEvent);     // verb + args validated against the verb's flag schema; --json added; no stdin;
                                                      //  events: stderr line, OpResult, exit
-  rpc Token(TokenRequest) returns (TokenResponse);   // forge host → bearer; host-only, never relayed to a webview; never prompts
+  rpc Token(TokenRequest) returns (TokenResponse);   // remote host → bearer; host-only, never relayed to a webview; never prompts
   rpc StoreToken(StoreTokenRequest) returns (StoreTokenResponse);  // git credential approve; fails NO_CREDENTIAL_HELPER (§5)
   rpc Events(EventsRequest) returns (stream BridgeEvent);          // connectivity changes, daemon restarts
 }

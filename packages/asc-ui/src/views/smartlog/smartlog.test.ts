@@ -71,7 +71,7 @@ describe("rows", () => {
             change("a", undefined, {
               needsRestack: true,
               frozen: true,
-              review: { forge: "f", number: 7, url: "", state: "open", draft: true, approvals: 0, checks: "passing" },
+              review: { host: "f", number: 7, url: "", state: "open", draft: true, approvals: 0, checks: "passing" },
             }),
           ],
         },

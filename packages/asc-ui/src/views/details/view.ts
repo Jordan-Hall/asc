@@ -77,7 +77,7 @@ export function mountDetails(container: HTMLElement, host: DetailsHost, initial:
     if (data.review) {
       const r = data.review;
       const url = safeUrl(r.url);
-      const label = `${r.forge} #${r.number} ${r.draft ? "draft" : r.state}`;
+      const label = `${r.host} #${r.number} ${r.draft ? "draft" : r.state}`;
       const row = el(doc, "div", "asc-meta", undefined, "review");
       if (url !== undefined) {
         const b = el(doc, "button", "asc-link", label);

@@ -77,7 +77,7 @@ export function bridgeBlameApi(mgr: BridgeManager): BlameApi {
           });
         }
         for (const v of r.reviews) {
-          reviews.push({ forge: v.forge, number: Number(v.number), url: v.url, state: v.state });
+          reviews.push({ host: v.host, number: Number(v.number), url: v.url, state: v.state });
         }
       }
       hunks.sort((a, b) => a.start - b.start);

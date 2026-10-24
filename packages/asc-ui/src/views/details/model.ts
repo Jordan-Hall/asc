@@ -20,7 +20,7 @@ export interface DetailPerson {
 }
 
 export interface DetailReview {
-  readonly forge: string;
+  readonly host: string;
   readonly number: number;
   readonly url: string;
   readonly state: string;

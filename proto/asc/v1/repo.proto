@@ -1,6 +1,5 @@
 syntax = "proto3";
 package asc.v1;
-option go_package = "forgejo.org/modules/ascproto/ascv1";
 import "asc/v1/options.proto";
 
 enum IdMode { ID_MODE_ASC = 0; ID_MODE_GIT = 1; }   // GIT: changeset/tree/file ids are git oids (20 bytes) in and out
@@ -43,7 +42,7 @@ service Repo {
   rpc Apply(ApplyRequest) returns (ApplyResponse);
   rpc CopyClosure(CopyClosureRequest) returns (CopyClosureResponse);
   rpc RepoAdmin(RepoAdminRequest) returns (RepoAdminResponse);
-  rpc ImportGitPush(ImportGitPushRequest) returns (ImportGitPushResponse);   // Forgejo internal token only
+  rpc ImportGitPush(ImportGitPushRequest) returns (ImportGitPushResponse);   // host service token only
   rpc Ingest(IngestRequest) returns (IngestResponse);                        // §8.7
   rpc FindLanding(FindLandingRequest) returns (FindLandingResponse);         // §8.9
   rpc Classify(ClassifyRequest) returns (ClassifyResponse);                  // §8.10
@@ -199,7 +198,7 @@ message ErrorDetail { string code = 1; repeated string paths = 2; bytes actual =
 
 // Stacked changes and history insight (SPEC §20.5, §20.6; amendment made by C17).
 // ErrorDetail.code also carries CHANGE_DIVERGED, CHANGE_FROZEN, LAND_NEEDS_CONTENT_MERGE and CHANGE_NOT_ALLOWED.
-message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
+message ReviewState { string host = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
   uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
 message FileStat { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; uint32 added = 2; uint32 removed = 3; bool binary = 4; }
 message DiffStat { repeated FileStat files = 1; }

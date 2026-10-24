@@ -472,16 +472,16 @@ impl Bridge {
         let Some(url) = cfg_get(state.ctx.config.file(), "remote.origin.url") else {
             info.remote_kind = "none".to_owned();
             info.server = Connectivity::NotConfigured as i32;
-            info.forge = Connectivity::NotConfigured as i32;
+            info.remote = Connectivity::NotConfigured as i32;
             return;
         };
-        info.forge_url = crate::cli::url_display::anonymize(&url);
+        info.remote_url = crate::cli::url_display::anonymize(&url);
         match tokio::time::timeout(HELLO_SERVER_WAIT, Self::server_of(state)).await {
             Ok(Ok(server)) => {
                 info.remote_kind = "asc".to_owned();
                 info.repo = server.target().repo.clone();
                 info.server = Connectivity::Up as i32;
-                info.forge = Connectivity::Up as i32;
+                info.remote = Connectivity::Up as i32;
                 if let Ok(Ok(v)) =
                     tokio::time::timeout(HELLO_SERVER_WAIT, server.client().server_version()).await
                 {
@@ -495,7 +495,7 @@ impl Bridge {
             _ => {
                 info.remote_kind = "unknown".to_owned();
                 info.server = Connectivity::Down as i32;
-                info.forge = Connectivity::Down as i32;
+                info.remote = Connectivity::Down as i32;
             }
         }
     }
@@ -519,7 +519,7 @@ impl Bridge {
                         root: root_name.clone(),
                         daemon: state as i32,
                         server: Connectivity::Unspecified as i32,
-                        forge: Connectivity::Unspecified as i32,
+                        remote: Connectivity::Unspecified as i32,
                     })),
                 };
                 if !send_reply(out, id, Bytes::from(ev.encode_to_vec())).await {

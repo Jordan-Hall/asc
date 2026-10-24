@@ -1,6 +1,5 @@
 syntax = "proto3";
 package asc.v1;
-option go_package = "forgejo.org/modules/ascproto/ascv1";
 
 // bridge.proto — the transport of ASC's IDE plugins (SPEC 24.2, P01a-P01c).
 // `asc api --stdio` carries `u32 little-endian length || BridgeFrame` on stdin and stdout, at most 16 MiB
@@ -55,11 +54,11 @@ message RootInfo {
   string ws_id = 2;               // empty when the root is not an asc workspace
   string repo = 3;
   string remote_kind = 4;         // "none", "asc" or "git"
-  string forge_url = 5;           // credentials removed
+  string remote_url = 5;          // credentials removed
   bool branchless = 6;
   Connectivity daemon = 7;
   Connectivity server = 8;
-  Connectivity forge = 9;
+  Connectivity remote = 9;
   string error = 10;              // why the root could not be opened; the other fields are then empty
 }
 
@@ -83,7 +82,7 @@ message RunEvent {
   }
 }
 
-message TokenRequest { string host = 1; }            // the forge host; host-only, never relayed to a webview
+message TokenRequest { string host = 1; }            // the remote host; host-only, never relayed to a webview
 message TokenResponse { string token = 1; }
 message StoreTokenRequest { string host = 1; string token = 2; }
 message StoreTokenResponse {}
@@ -94,7 +93,7 @@ message ConnectivityChange {
   string root = 1;
   Connectivity daemon = 2;
   Connectivity server = 3;
-  Connectivity forge = 4;
+  Connectivity remote = 4;
 }
 
 message BridgeEvent {

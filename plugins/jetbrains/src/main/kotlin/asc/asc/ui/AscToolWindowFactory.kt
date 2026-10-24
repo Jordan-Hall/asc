@@ -82,12 +82,12 @@ class AscToolWindowFactory : ToolWindowFactory, DumbAware {
             val bridge = ApplicationManager.getApplication().getService(AscBridgeService::class.java)
             ApplicationManager.getApplication().executeOnPooledThread {
                 val info = try {
-                    runBlocking { bridge.hello(roots) }.rootsList.firstOrNull { it.forgeUrl.isNotEmpty() && it.repo.isNotEmpty() }
+                    runBlocking { bridge.hello(roots) }.rootsList.firstOrNull { it.remoteUrl.isNotEmpty() && it.repo.isNotEmpty() }
                 } catch (_: Exception) {
                     null
                 } ?: return@executeOnPooledThread
                 val u = try {
-                    URI(info.forgeUrl.trimEnd('/') + "/" + info.repo)
+                    URI(info.remoteUrl.trimEnd('/') + "/" + info.repo)
                 } catch (_: Exception) {
                     return@executeOnPooledThread
                 }
