@@ -112,6 +112,12 @@ impl HostKeys {
             let key = match open_and_read(path) {
                 Ok(key) => key,
                 Err(HostKeyError::Missing { .. }) if i == 0 => create(path)?,
+                // A concurrent creator made the file but has not written it yet: wait for it.
+                Err(HostKeyError::Unusable { .. })
+                    if i == 0 && std::fs::metadata(path).is_ok_and(|m| m.len() == 0) =>
+                {
+                    reopen_winner(path)?
+                }
                 Err(e) => return Err(e),
             };
             let fingerprint = fingerprint_of(&key);
