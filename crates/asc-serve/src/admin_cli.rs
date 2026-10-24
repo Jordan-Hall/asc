@@ -13,7 +13,7 @@
 //!   mismatches. The report ends with `mismatches: <n>`; a non-zero count fails the command.
 //! * `verify --all` runs the `RepoAdmin.verify` closure and git-map check on every repository.
 //! * `outbox drain --wait` blocks until the running server has delivered every queued effect.
-//! * `set-mode` flips `repos.mode`, `forgejo_reads` and `bridge`, and refuses the flips that
+//! * `set-mode` flips `repos.mode`, `git_reads` and `bridge`, and refuses the flips that
 //!   lose data: to `mirror` while the outbox holds undelivered rows, and to `primary` before a
 //!   clean import.
 //!
@@ -109,7 +109,7 @@ pub struct SetMode {
     /// `mirror` or `primary`.
     pub mode: Option<String>,
     /// `git` or `asc`.
-    pub forgejo_reads: Option<String>,
+    pub git_reads: Option<String>,
     /// `off`, `lazy` or `eager`.
     pub bridge: Option<String>,
     /// Skips the import check of a flip to `primary`. The outbox check has no override.
@@ -469,7 +469,7 @@ impl AdminCli {
 
     // ---------------------------------------------------------------------------- set-mode
 
-    /// `set-mode --repo <r> [--mode m] [--forgejo-reads g] [--bridge b]`.
+    /// `set-mode --repo <r> [--mode m] [--git-reads g] [--bridge b]`.
     pub async fn set_mode(&self, req: &SetMode) -> Result<Report, AdminCliError> {
         let one_of = |what: &str, v: &Option<String>, ok: &[&str]| -> Result<(), AdminCliError> {
             match v {
@@ -481,11 +481,11 @@ impl AdminCli {
             }
         };
         one_of("--mode", &req.mode, &["mirror", "primary"])?;
-        one_of("--forgejo-reads", &req.forgejo_reads, &["git", "asc"])?;
+        one_of("--git-reads", &req.git_reads, &["git", "asc"])?;
         one_of("--bridge", &req.bridge, &["off", "lazy", "eager"])?;
-        if req.mode.is_none() && req.forgejo_reads.is_none() && req.bridge.is_none() {
+        if req.mode.is_none() && req.git_reads.is_none() && req.bridge.is_none() {
             return Err(AdminCliError::Invalid(
-                "give at least one of --mode, --forgejo-reads, --bridge".into(),
+                "give at least one of --mode, --git-reads, --bridge".into(),
             ));
         }
         let name = name_of(&req.repo)?;
@@ -547,13 +547,14 @@ impl AdminCli {
                 .await?;
             let _ = writeln!(said, "{}: mode = {v}", req.repo);
         }
-        if let Some(v) = &req.forgejo_reads {
-            sqlx::query("UPDATE repos SET forgejo_reads = $1 WHERE id = $2")
+        if let Some(v) = &req.git_reads {
+            // `forgejo_reads` is the pre-rename column; keep it in step until a release drops it.
+            sqlx::query("UPDATE repos SET git_reads = $1, forgejo_reads = $1 WHERE id = $2")
                 .bind(v.clone())
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
-            let _ = writeln!(said, "{}: forgejo_reads = {v}", req.repo);
+            let _ = writeln!(said, "{}: git_reads = {v}", req.repo);
         }
         if let Some(v) = &req.bridge {
             sqlx::query("UPDATE repos SET bridge = $1 WHERE id = $2")
@@ -734,7 +735,6 @@ mod tests {
         let dir = tmp.path().join("mirrors");
         let mc = MirrorConfig {
             dir: dir.clone(),
-            secret: None,
             forgejo_url: None,
             allowed_hosts: Vec::new(),
             interval: Duration::from_secs(60),
@@ -946,7 +946,7 @@ mod tests {
         let sql = match col {
             "mode" => "SELECT mode FROM repos WHERE name = 'o/m'",
             "bridge" => "SELECT bridge FROM repos WHERE name = 'o/m'",
-            _ => "SELECT forgejo_reads FROM repos WHERE name = 'o/m'",
+            _ => "SELECT COALESCE(git_reads, forgejo_reads) FROM repos WHERE name = 'o/m'",
         };
         sqlx::query_scalar(sql)
             .fetch_one(f.cli.registry.pool())
@@ -1013,14 +1013,14 @@ mod tests {
             .set_mode(&SetMode {
                 repo: "o/m".into(),
                 bridge: Some("eager".into()),
-                forgejo_reads: Some("asc".into()),
+                git_reads: Some("asc".into()),
                 ..SetMode::default()
             })
             .await
             .unwrap();
         assert!(r.ok, "{}", r.text);
         assert_eq!(column(&f, "bridge").await, "eager");
-        assert_eq!(column(&f, "forgejo_reads").await, "asc");
+        assert_eq!(column(&f, "git_reads").await, "asc");
         for bad in [
             SetMode {
                 repo: "o/m".into(),
