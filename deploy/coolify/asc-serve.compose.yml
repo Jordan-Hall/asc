@@ -129,7 +129,7 @@ configs:
       cache = { memory = "${ASC_CACHE_MEMORY:-512MiB}", disk_dir = "/var/lib/asc/cache", disk = "${ASC_CACHE_DISK:-5GiB}" }
 
       [auth]
-      provider = "forge"
+      provider = "forgejo"
 
       # Basic credentials from plain git go to the forge (SPEC 15.6.2); the token files below are
       # Forgejo's INTERNAL_TOKEN (required at start by `[forgejo]`) and the webhook secret.
