@@ -7,6 +7,7 @@ import com.intellij.openapi.vcs.changes.ChangeProvider
 import com.intellij.openapi.vcs.annotate.AnnotationProvider
 import com.intellij.openapi.vcs.diff.DiffProvider
 import com.intellij.openapi.vcs.history.VcsHistoryProvider
+import com.intellij.openapi.vcs.merge.MergeProvider
 
 /** The `asc` version control system (SPEC 24.5.1). Features arrive with P37b onwards. */
 class AscVcs(project: Project) : AbstractVcs(project, NAME) {
@@ -29,6 +30,10 @@ class AscVcs(project: Project) : AbstractVcs(project, NAME) {
     private val historyProvider by lazy { AscHistoryProvider(project) }
 
     override fun getVcsHistoryProvider(): VcsHistoryProvider = historyProvider
+
+    private val mergeProvider by lazy { AscMergeProvider(project) }
+
+    override fun getMergeProvider(): MergeProvider = mergeProvider
 
     companion object {
         const val NAME = "asc"
