@@ -1,0 +1,11 @@
+{
+  "name": "asc-smoke-probe",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "asc",
+  "contributes": {},
+  "activationEvents": [],
+  "engines": {
+    "vscode": "^1.101.0"
+  }
+}
