@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "target": "vscode",
+  "metrics": {
+    "hostBundleBytes": 145696,
+    "uiInitialGzipBytes": 3729,
+    "uiLazyMaxGzipBytes": 0,
+    "bridgeRssBytes": 19771392
+  }
+}
