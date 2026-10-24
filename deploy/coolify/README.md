@@ -11,6 +11,9 @@ address: **https://asc-staging.example.org**.
 | `garage-provision.sh` | Bucket plus a key that can read and write that one bucket. |
 | `coolify-apply.sh` | Creates or updates the Coolify application. `--dry-run` is the default. |
 
+| `asc-serve.standalone.compose.yml` | The variant that runs on staging today: no Forgejo, token-store auth, SQLite. See "Standalone staging" below. |
+| `forgejo-staging.compose.yml` | ASC Hub (the Forgejo v16 fork) staging, SQLite, own volume. |
+
 Nothing here runs against the platform until you run it. The image is built elsewhere
 (`deploy/Dockerfile.serve`) and pushed to `forge.example.org/asc/asc-serve:<sha12>`.
 
@@ -27,8 +30,9 @@ The compose file assumes these facts about the image. Check them before step 4.
 ## Design notes
 
 - **Configuration.** `asc serve` reads one TOML file (`ASC_SERVE_CONFIG`); secrets in it are file
-  paths, except the Postgres DSN, which is inline. The compose file therefore renders the file, and
-  the two token files, from Compose `configs` with inline content. S3 credentials use the standard
+  paths, except the Postgres DSN, which is inline. The Forgejo-mode compose file renders the file,
+  and the two token files, from Compose `configs` with inline content (the standalone file uses a
+  file mount instead; see below). S3 credentials use the standard
   `AWS_*` variables. Values come from the Coolify environment.
 - **Forge.** `[auth] provider = "forge"` with `[forgejo] url`: a Basic credential from plain `git`
   goes to Forgejo (SPEC 15.6.2). `asc serve` refuses to start with `[forgejo]` and no
@@ -44,6 +48,39 @@ The compose file assumes these facts about the image. Check them before step 4.
 - **Hardening.** Read-only root file system with a `/tmp` tmpfs, `cap_drop: ALL`,
   `no-new-privileges`, a pids limit, CPU and memory limits, and a named volume `asc-state` for
   derived data only (cache, git views).
+
+## Standalone staging (what runs now)
+
+`https://asc-staging.example.org` runs `asc-serve.standalone.compose.yml`. Facts that shaped it:
+
+- `[auth] provider = "token_store"`; the database is SQLite (`sqlite:///var/lib/asc/asc.db`) on the
+  `asc-state` volume, so one replica only; objects go to Garage bucket `asc-staging`
+  (`https://garage.example.org`, https only). `[git] enabled = true`. No SSH listener,
+  although the image is built with `git-ssh`.
+- The config file is a Coolify **file mount** (a `volumes:` entry with `content:`) holding the
+  staging values. Coolify rejects compose `configs:` content in read-only services, which is why
+  the Forgejo-mode file's approach is not used here.
+- Resource limits are `deploy.resources.limits` only (`cpus`, `memory`, `pids`). Coolify rejects
+  `pids_limit` together with `deploy` limits, so use the one form.
+- Services: `asc-garage-init` (one-shot bucket and key; remove `GARAGE_ADMIN_TOKEN` after the first
+  deploy), `asc-migrate`, `asc-bootstrap` (mints the first admin token once into
+  `/var/lib/asc/bootstrap/admin-token`; read it from the Coolify terminal of `ascserve`, store it,
+  delete the file) and `ascserve`.
+- Image: `forge.example.org/asc/asc-serve:${ASC_IMAGE_TAG}`; pin the sha12 printed by the
+  `image` workflow, never a moving tag.
+- Starting a stopped service through the Coolify API is `POST /api/v1/services/{uuid}/start`
+  (the application endpoints do not apply to a service).
+
+### CI notes
+
+- `.forgejo/workflows/image.yml` runs on the `asc-build-trusted` runner for pushes to `master` and
+  `v*` tags and for manual runs of those refs; other refs build on `asc-build` and never publish.
+- The runner needs `docker` with `buildx`.
+- Repository variable `REGISTRY_USER` (the user the token belongs to) and secret `REGISTRY_TOKEN`
+  (a `write:package` token) are required to push.
+- If the runner lives in WSL, WSL stops its distribution when idle: keep a session open or raise
+  `instanceIdleTimeout` in the WSL settings, or the runner goes offline mid-job.
+- A running image build always finishes; newer pushes queue behind it (cold builds take up to 50 minutes).
 
 ## 1. Garage: bucket and key
 
