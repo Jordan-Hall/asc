@@ -8,11 +8,14 @@
 //! (`Hello`, `Events`). Cancelling a call drops the upstream call. Restart and resubscription are
 //! the host's job.
 //!
-//! TODO(P01b): `Bridge.Run` (verb children). TODO(P01c): `Bridge.Token` and `StoreToken`.
+//! `Bridge.Run` (verb children) is in `run`. `Bridge.Token` and `StoreToken` are in `auth`.
 //! TODO(M09): per-root routing through `LocalBackend`, see `route`.
 
+mod argv_schema;
+mod auth;
 mod frame;
 mod route;
+mod run;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,11 +26,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use asc_git::credential::{HelperConfig, RawEntry, section_entries};
 use asc_rpc::ipc::connect;
 use asc_rpc::server::MAX_MESSAGE;
 use asc_rpc::server::wire::{
     BridgeEvent, BridgeFrame, Call, Connectivity, ConnectivityChange, End, HelloRequest,
-    HelloResponse, RootInfo, bridge_event, bridge_frame,
+    HelloResponse, RootInfo, StoreTokenRequest, StoreTokenResponse, TokenRequest, TokenResponse,
+    bridge_event, bridge_frame,
 };
 use prost_reflect::prost::Message as _;
 use tokio::sync::{OnceCell, mpsc};
@@ -237,13 +242,51 @@ impl Bridge {
                 Ok(())
             }
             BridgeMethod::Events => self.events(id, &call.root, out).await,
-            // TODO(P01b): Bridge.Run.
-            BridgeMethod::Run => Err(Status::unimplemented("Bridge.Run is not available yet")),
-            // TODO(P01c): Bridge.Token and Bridge.StoreToken.
-            BridgeMethod::Token | BridgeMethod::StoreToken => Err(Status::unimplemented(
-                "Bridge credentials are not available yet",
-            )),
+            BridgeMethod::Run => run::serve(self.own.clone(), id, call, out).await,
+            BridgeMethod::Token => {
+                let req = TokenRequest::decode(call.request.as_ref())
+                    .map_err(|_| Status::invalid_argument("TokenRequest does not decode"))?;
+                let (real, helpers, _) = self.credentials(&call.root).await?;
+                let token = auth::token(&req.host, real, helpers).await?;
+                let resp = TokenResponse { token };
+                send_reply(out, id, Bytes::from(resp.encode_to_vec())).await;
+                Ok(())
+            }
+            BridgeMethod::StoreToken => {
+                let req = StoreTokenRequest::decode(call.request.as_ref())
+                    .map_err(|_| Status::invalid_argument("StoreTokenRequest does not decode"))?;
+                let (real, helpers, entries) = self.credentials(&call.root).await?;
+                auth::store_token(&req.host, &req.token, real, helpers, &entries).await?;
+                send_reply(
+                    out,
+                    id,
+                    Bytes::from(StoreTokenResponse::default().encode_to_vec()),
+                )
+                .await;
+                Ok(())
+            }
         }
+    }
+
+    /// Real git, the trusted `credential.*` config and its entries for the credential calls.
+    async fn credentials(
+        &self,
+        root: &str,
+    ) -> Result<
+        (
+            Option<asc_git::realgit::RealGit>,
+            HelperConfig,
+            Vec<RawEntry>,
+        ),
+        Status,
+    > {
+        let state = self.root(root).await?;
+        let file = state.ctx.config.file();
+        Ok((
+            state.ctx.real_git().ok().cloned(),
+            HelperConfig::from_file(file),
+            section_entries(file, "credential"),
+        ))
     }
 
     // ------------------------------------------------------------------------------ roots
