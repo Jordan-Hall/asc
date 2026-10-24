@@ -2,7 +2,7 @@
 // Ids are strings (change ids in their text form) so the model is serialisable and comparable.
 
 export interface ReviewInfo {
-  readonly forge: string;
+  readonly host: string;
   readonly number: number;
   readonly url: string;
   readonly state: string;

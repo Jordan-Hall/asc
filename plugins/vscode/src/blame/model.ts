@@ -32,7 +32,7 @@ export interface BlameCommit {
 }
 
 export interface BlameReview {
-  forge: string;
+  host: string;
   number: number;
   url: string;
   state: string;

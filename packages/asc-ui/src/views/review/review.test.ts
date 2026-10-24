@@ -14,7 +14,7 @@ import {
 } from "./model";
 
 const review = (n: number, extra: Record<string, unknown> = {}) => ({
-  forge: "f",
+  host: "f",
   number: n,
   url: "",
   state: "open",

@@ -384,7 +384,7 @@ service Changes {
   rpc SetReviewState(SetReviewStateRequest) returns (SetReviewStateResponse);  // internal token only
   rpc RequestMerge(RequestMergeRequest) returns (RequestMergeResponse);        // mutating; proxies to the forge's queue
 }
-message ReviewState { string forge = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
+message ReviewState { string host = 1; uint64 number = 2; string url = 3; string state = 4; bool draft = 5;
   uint32 approvals = 6; string checks = 7; string queue = 8; uint32 reviewed_version = 9; int64 updated = 10; }
 message ChangeInfo { bytes change = 1; bytes head = 2; bytes git = 3; uint32 version = 4; bytes parent_change = 5;
   bool parent_current = 6; bytes landed_as = 7; ReviewState review = 8; repeated bytes visible = 9; /* >1 = divergent */ }

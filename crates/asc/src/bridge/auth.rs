@@ -2,7 +2,7 @@
 //!
 //! `Token` answers `ASC_TOKEN` when the bridge was started with one (a host-supplied value is
 //! the process environment, so it wins over anything inherited), else `git credential fill`
-//! for the forge host under `Prompt::Never`: `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`,
+//! for the remote host under `Prompt::Never`: `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`,
 //! `GIT_ASKPASS` neutralised, so no Git Credential Manager dialog ever opens. No credential is
 //! `NOT_FOUND`. `StoreToken` first checks that a credential helper other than `store` is set;
 //! with none it fails `NO_CREDENTIAL_HELPER` and writes nothing. The token is never logged,
@@ -25,7 +25,7 @@ const MAX_TOKEN: usize = 16 * 1024;
 /// Longest accepted host.
 const MAX_HOST: usize = 512;
 
-/// The forge origin for `host`: a bare `host[:port]` or an origin URL, https unless the
+/// The remote origin for `host`: a bare `host[:port]` or an origin URL, https unless the
 /// loopback opt-in allows http. No user information, path, query or fragment.
 fn origin_of(host: &str) -> Result<Url, Status> {
     let bad = |why: &str| Status::invalid_argument(format!("host {why}"));
@@ -46,7 +46,7 @@ fn origin_of(host: &str) -> Result<Url, Status> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err(bad("must be a bare forge host or origin"));
+        return Err(bad("must be a bare remote host or origin"));
     }
     if !matches!(url.scheme(), "https" | "http") {
         return Err(bad("must be https"));
@@ -88,7 +88,7 @@ pub async fn token(
     if let Some(t) = env_token(std::env::var_os("ASC_TOKEN"))? {
         return Ok(t);
     }
-    let not_found = || Status::not_found("NOT_FOUND: no credential is stored for the forge host");
+    let not_found = || Status::not_found("NOT_FOUND: no credential is stored for the remote host");
     let Some(real) = real else {
         return Err(not_found());
     };

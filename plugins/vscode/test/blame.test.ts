@@ -41,7 +41,7 @@ const data = (): BlameData => ({
     [A, commit(A, { time: 100 })],
     [B, commit(B, { time: 200_000, author: "Bo" })],
   ]),
-  reviews: [{ forge: "forgejo", number: 7, url: "https://forge.example/pr/7", state: "open" }],
+  reviews: [{ host: "forgejo", number: 7, url: "https://forge.example/pr/7", state: "open" }],
 });
 
 describe("blame: lookup and text", () => {
@@ -98,7 +98,7 @@ describe("blame: hover", () => {
     expect(escapeMd("[x](javascript:1) `c`")).not.toContain("](");
     expect(autolinkMd("see #3", [{ prefix: "#", url: "http://i.example/<num>" }])).toBe("see \\#3");
     const d = data();
-    d.reviews = [{ forge: "f", number: 1, url: "javascript:alert(1)", state: "open" }];
+    d.reviews = [{ host: "f", number: 1, url: "javascript:alert(1)", state: "open" }];
     const h = hoverFor(d, 0, [], 0, { root: "/r", path: "f" });
     expect(h?.actions.some((a) => a.command === "asc.blame.openPr")).toBe(false);
   });

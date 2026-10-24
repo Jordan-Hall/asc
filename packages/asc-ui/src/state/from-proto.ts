@@ -17,7 +17,7 @@ export function stacksFromProto(res: WsStacksResponse): Stacks {
         changes: s.changes.map((c): StackChange => {
           const review: ReviewInfo | undefined = c.review
             ? {
-                forge: c.review.forge,
+                host: c.review.host,
                 number: Number(c.review.number),
                 url: c.review.url,
                 state: c.review.state,
