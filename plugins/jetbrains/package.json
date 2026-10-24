@@ -1,0 +1,12 @@
+{
+  "name": "@asc/asc-jetbrains",
+  "version": "0.0.0",
+  "private": true,
+  "description": "ASC plugin for IntelliJ Platform IDEs (Gradle wrapped as Turbo tasks)",
+  "scripts": {
+    "build": "./gradlew buildPlugin",
+    "typecheck": "./gradlew compileKotlin compileTestKotlin",
+    "test": "./gradlew test --tests asc.asc.bridge.* verifyPlugin",
+    "package": "./gradlew buildPlugin"
+  }
+}
