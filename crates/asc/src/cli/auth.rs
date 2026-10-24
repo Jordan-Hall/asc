@@ -1,11 +1,20 @@
 //! `asc auth status [<url>]` (SPEC §15.6.1): names the source that would supply the credential
 //! for a URL, and never the secret. It is read-only: it resolves under `Prompt::Never` and
-//! tells no helper `approve` or `reject`. There is no `login` or `logout`: a user signs in with
-//! `git credential approve` or the helper's own UI, as with git.
+//! tells no helper `approve` or `reject`.
+//!
+//! `asc auth login --host <url> (--token-stdin | --prompt)` stores a token with the git
+//! credential helpers (`git credential approve`), and `asc auth logout --host <url>` forgets it
+//! (`git credential reject`), as with git. The token is read from stdin, never argv. `--prompt`
+//! lets `git credential fill` ask on the terminal (hidden by git), only when stdin is a TTY.
+//! Only this CLI layer ever prompts; the libraries resolve under `Prompt::Never`.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
 
+use asc_core::transport_policy::Policy;
+use asc_git::credential::{
+    self as helper, Credential, CredentialRequest, HelperConfig, Prompt as HelperPrompt,
+};
 use asc_state::{AscHome, StateDb};
 use url::Url;
 
@@ -15,7 +24,14 @@ use crate::native::NativeSpec;
 use crate::remote::server::{self, Resolution, cfg_get};
 use crate::remote::url::{self as remote_url, RefsMode, RemoteSpec};
 
-const USAGE: &str = "usage: asc auth status [--json] [<url>]";
+const USAGE: &str = "usage: asc auth status [--json] [<url>]
+       asc auth login --host <url> (--token-stdin | --prompt)
+       asc auth logout --host <url>";
+
+/// The user name the token is stored under; the server reads the password as the token.
+const TOKEN_USER: &str = "asc";
+/// Longest token read from stdin.
+const MAX_TOKEN: u64 = 16 * 1024;
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "auth", disable_help_flag = true, disable_version_flag = true)]
@@ -26,7 +42,7 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "auth",
-    flags: &["--json"],
+    flags: &["--json", "--host", "--token-stdin", "--prompt"],
     placeholders: &[],
 }];
 
@@ -160,6 +176,113 @@ fn json(status: &Status) -> serde_json::Value {
     })
 }
 
+/// The credential request for `host`: an https (or opted-in loopback http) origin, no userinfo.
+fn token_request(host: &str) -> Result<CredentialRequest> {
+    let url =
+        Url::parse(host).map_err(|_| CliError::Fatal("asc: --host is not a valid URL".into()))?;
+    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return Err(CliError::Fatal(
+            "asc: --host must be an origin URL without user information".into(),
+        ));
+    }
+    if let Some(why) = server::transport_refusal(&url, Policy::current()) {
+        return Err(CliError::Fatal(why));
+    }
+    if !matches!(url.scheme(), "https" | "http") {
+        return Err(CliError::Fatal("asc: --host must be an https URL".into()));
+    }
+    let mut request = CredentialRequest::new(url.scheme(), url.host_str().unwrap_or_default());
+    request.port = url.port();
+    request.username = Some(TOKEN_USER.to_owned());
+    Ok(request)
+}
+
+fn read_token() -> Result<String> {
+    use std::io::Read;
+    let mut raw = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(MAX_TOKEN + 1)
+        .read_to_end(&mut raw)
+        .map_err(|e| CliError::Fatal(format!("asc: cannot read the token from stdin: {e}")))?;
+    if raw.len() as u64 > MAX_TOKEN {
+        return Err(CliError::Fatal("asc: the token is too long".into()));
+    }
+    let text = String::from_utf8(raw)
+        .map_err(|_| CliError::Fatal("asc: the token is not valid UTF-8".into()))?;
+    let token = text.trim_end_matches(['\r', '\n']);
+    if token.is_empty() || token.contains(['\0', '\r', '\n']) || token != token.trim() {
+        return Err(CliError::Fatal(
+            "asc: the token on stdin must be one non-empty line".into(),
+        ));
+    }
+    Ok(token.to_owned())
+}
+
+/// `login` and `logout`: `args` are the words after the verb.
+fn sign(ctx: &Ctx, login: bool, args: &[String]) -> Result<ExitCode> {
+    use std::io::IsTerminal;
+    let (mut host, mut stdin_token, mut prompt) = (None::<String>, false, false);
+    let mut it = args.iter();
+    while let Some(w) = it.next() {
+        match w.as_str() {
+            "--host" => {
+                if host.replace(it.next().ok_or_else(usage)?.clone()).is_some() {
+                    return Err(usage());
+                }
+            }
+            "--token-stdin" if login => stdin_token = true,
+            "--prompt" if login => prompt = true,
+            w if w.starts_with("--host=") => {
+                if host.replace(w["--host=".len()..].to_owned()).is_some() {
+                    return Err(usage());
+                }
+            }
+            _ => return Err(usage()),
+        }
+    }
+    let host = host.ok_or_else(usage)?;
+    if login && stdin_token == prompt {
+        return Err(usage());
+    }
+    let request = token_request(&host)?;
+    let real = ctx
+        .real_git()
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))?
+        .clone();
+    let helpers = HelperConfig::from_file(ctx.config.file());
+    let session = |prompt| helper::Session {
+        prompt,
+        config: Some(helpers.clone()),
+    };
+    let origin = format!("{}://{}", request.protocol, request.host_attribute());
+    if !login {
+        let cred = Credential::new(TOKEN_USER, "");
+        helper::reject(&real, &request, &cred, &session(HelperPrompt::Never))
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+        println!("signed out of {origin}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let cred = if stdin_token {
+        Credential::new(TOKEN_USER, read_token()?)
+    } else {
+        if !std::io::stdin().is_terminal() {
+            return Err(CliError::Fatal(
+                "asc: --prompt needs a terminal; use --token-stdin".into(),
+            ));
+        }
+        // git itself asks, hidden, through its terminal prompt or askpass.
+        helper::fill(&real, &request, &session(HelperPrompt::Allowed))
+            .map_err(|e| CliError::Fatal(format!("asc: {e}")))?
+            .filter(|c| !c.password.is_empty() || c.credential.is_some())
+            .ok_or_else(|| CliError::Fatal("asc: no token was entered".into()))?
+    };
+    helper::approve(&real, &request, &cred, &session(HelperPrompt::Never))
+        .map_err(|e| CliError::Fatal(format!("asc: {e}")))?;
+    println!("signed in to {origin}");
+    Ok(ExitCode::SUCCESS)
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let words: Vec<String> = a
         .rest
@@ -169,11 +292,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let mut it = words.iter();
     match it.next().map(String::as_str) {
         Some("status") => {}
-        Some("login" | "logout") => {
-            return Err(CliError::Fatal(
-                "asc: there is no 'auth login' or 'auth logout'; sign in with 'git credential approve' or your credential helper"
-                    .into(),
-            ));
+        Some(verb @ ("login" | "logout")) => {
+            let rest: Vec<String> = it.cloned().collect();
+            return sign(ctx, verb == "login", &rest);
         }
         _ => return Err(usage()),
     }
