@@ -146,9 +146,9 @@ services:
         limits:
           cpus: '${ASC_CPU_LIMIT:-2.0}'
           memory: ${ASC_MEM_LIMIT:-2g}
+          pids: 512
         reservations:
           memory: 512m
-    pids_limit: 512
     stop_grace_period: 30s
 
 volumes:
