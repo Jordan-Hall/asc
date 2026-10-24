@@ -12,6 +12,7 @@ pub mod authn;
 pub mod authz;
 pub mod cache_role;
 pub mod changes;
+pub mod ci;
 pub mod classify;
 pub mod cloud;
 pub mod codeintel;
@@ -33,6 +34,7 @@ pub mod history;
 pub mod http;
 pub mod idmode;
 pub mod import_push;
+pub mod inbox;
 pub mod ingest;
 pub mod land;
 pub mod landing;
@@ -49,6 +51,7 @@ pub mod refauthz;
 pub mod refpolicy;
 pub mod reftl;
 pub mod registry;
+pub mod review;
 pub mod seeds;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
@@ -223,6 +226,7 @@ fn register_all(
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
     cloud::rpc::register(ext, registry, cloud_cfg.limits());
+    review::register(ext, registry);
     watch_refs::register(ext, registry, limits);
     // `CodeIntel` (I16) is served when `[codeintel] enabled` and the replica has a disk to keep
     // index segments on; the embedding model is wired by a later unit, so `Semantic` answers
@@ -252,6 +256,19 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
         ext.grpc.register(
             changes::rpc::ChangesService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
+        );
+    }
+    if let Some(h) = ext.review.get() {
+        ext.grpc.register(
+            review::rpc::ReviewService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+        ext.grpc.register(
+            inbox::rpc::InboxService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+        ext.grpc.register(
+            ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
         );
     }
     if let Some(h) = ext.codeintel.get() {
@@ -402,6 +419,7 @@ pub async fn serve(
     }
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
+    features.extend(review::features());
     #[cfg(feature = "git-compat")]
     if git_live {
         features.push(git_http::FEATURE.to_owned());

@@ -535,6 +535,8 @@ pub struct Extensions {
     pub cloud: crate::cloud::rpc::CloudSlot,
     /// The `CodeIntel` service handler (I16); `build_routes` serves it behind the authorizer.
     pub codeintel: crate::codeintel::rpc::CodeIntelSlot,
+    /// The `Review`, `Inbox` and `Ci` handlers; `build_routes` serves them behind the authorizer.
+    pub review: crate::review::ReviewSlot,
 }
 
 impl Extensions {
@@ -550,6 +552,7 @@ impl Extensions {
             changes: Default::default(),
             cloud: Default::default(),
             codeintel: Default::default(),
+            review: Default::default(),
         }
     }
 }
