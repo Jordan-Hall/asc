@@ -41,7 +41,7 @@ use uuid::Uuid;
 
 use super::policy::Verb;
 use super::server::{PackExec, PackIo, PackOut, PackRequest};
-use crate::git_http::{GitServices, ViewWait, served_protocol, sync_view, version_label};
+use crate::git_http::{GitServices, ViewWait, served_protocol_for, sync_view, version_label};
 use crate::git_push::{Busy, PushOutcome};
 use crate::limits::{Admission, PackMeter};
 use crate::registry::{RegistryError, RepoMode};
@@ -336,9 +336,6 @@ impl GitSshExec {
             }
             push_slot = Some(permit);
         }
-        let protocol = served_protocol(service, entry.mode, req.git_protocol.clone());
-        let version = version_label(protocol.as_ref());
-
         // 4. The view.
         let view = sync_view(&self.svc.views, &self.svc.registry, &entry)
             .await
@@ -348,6 +345,15 @@ impl GitSshExec {
                 ViewWait::TooManyViews => Refuse::busy("too_many_views"),
                 ViewWait::Failed(reason) => Refuse::internal(reason),
             })?;
+
+        // A view holding objects no shared ref reaches is served over v0/v1 only (as over HTTP).
+        let protocol = served_protocol_for(
+            service,
+            entry.mode,
+            req.git_protocol.clone(),
+            view.holds_unshared(),
+        );
+        let version = version_label(protocol.as_ref());
 
         // 5. The child.
         let session = match (&push_slot, self.svc.push.as_ref()) {

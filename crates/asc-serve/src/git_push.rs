@@ -846,14 +846,27 @@ impl Inner {
             .await
             .map_err(|status| refusal_of(&status))?;
 
+        // `UpdateRefs` answers with the names the pusher used, so the name a command was stored
+        // under comes from the repository's ref policy, which classified the push the same way.
+        let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), session.entry.key.0)
+            .await
+            .map_err(|e| tracing::error!(repo = %session.entry.name, error = %e, "loading the ref policy after a push"))
+            .ok();
+        let owner = crate::refpolicy::owner_of(&session.ctx.principal);
         let mut lines = Vec::new();
         let mut private = Vec::new();
         for (command, result) in commands.iter().zip(&done.results) {
-            if result.name != command.name && result.name.starts_with("refs/users/") {
+            let stored = policy
+                .as_ref()
+                .and_then(|p| p.classify(owner, &command.name).ok())
+                .map_or_else(
+                    || result.name.clone(),
+                    |class| class.stored(&command.name).to_owned(),
+                );
+            if stored != command.name && stored.starts_with("refs/users/") {
                 private.push(command.name.clone());
             }
-            if let Some(line) =
-                user_ref_line(&command.name, &result.name, &session.entry.default_branch)
+            if let Some(line) = user_ref_line(&command.name, &stored, &session.entry.default_branch)
             {
                 lines.push(line);
             }
