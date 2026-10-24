@@ -1,0 +1,61 @@
+name: jetbrains-release
+# Tag jetbrains-v<MAJOR>.<MINOR>.<PATCH> -> build, verify against IU/RD/RR/PY/WS 2026.1 and 2026.2, sign, publish to the
+# JetBrains Marketplace (SPEC 24.9). `plugins/jetbrains/scripts/release-check.ts` proves everything except the token step.
+# Secrets reach Gradle only as environment variables; none is ever placed in argv or echoed.
+on:
+  push:
+    tags: ["jetbrains-v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version x.y.z for a manual dry run (build, verify, sign; never publishes)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: asc-build-trusted
+    env:
+      GRADLE_OPTS: -Dorg.gradle.daemon=false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - name: Resolve version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then v="${GITHUB_REF_NAME#jetbrains-v}"; else v="${INPUT_VERSION}"; fi
+          case "$v" in [0-9]*.[0-9]*.[0-9]*) ;; *) echo "bad version: $v" >&2; exit 1 ;; esac
+          echo "ORG_GRADLE_PROJECT_pluginVersion=$v" >> "$GITHUB_ENV"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+      - run: bun install --frozen-lockfile
+      - name: Pre-flight checks
+        run: bun plugins/jetbrains/scripts/release-check.ts
+      - name: Test, build and verify
+        working-directory: plugins/jetbrains
+        run: ./gradlew test buildPlugin verifyPlugin
+      - name: Sign
+        working-directory: plugins/jetbrains
+        run: ./gradlew signPlugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.JB_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.JB_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.JB_PRIVATE_KEY_PASSWORD }}
+      - name: Check the built artefact
+        run: bun plugins/jetbrains/scripts/release-check.ts --artefact
+      - name: Publish to the JetBrains Marketplace
+        if: github.event_name == 'push'
+        working-directory: plugins/jetbrains
+        run: ./gradlew publishPlugin
+        env:
+          PUBLISH_TOKEN: ${{ secrets.JB_PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.JB_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.JB_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.JB_PRIVATE_KEY_PASSWORD }}
+      - name: Keep the signed zip
+        if: always()
+        run: ls -l plugins/jetbrains/build/distributions || true
