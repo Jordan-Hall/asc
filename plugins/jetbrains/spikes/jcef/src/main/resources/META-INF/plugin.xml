@@ -1,0 +1,8 @@
+<idea-plugin>
+  <id>asc.asc.spike.jcef</id>
+  <name>asc jcef spike</name>
+  <vendor>ASC</vendor>
+  <description>Spike P54: checks the com.intellij.modules.jcef module id and optional-dependency rule.</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends optional="true" config-file="asc-jcef.xml">com.intellij.modules.jcef</depends>
+</idea-plugin>

@@ -1,0 +1,5 @@
+<idea-plugin>
+  <extensions defaultExtensionNs="com.intellij">
+    <applicationService serviceImplementation="asc.asc.spike.JcefProbe"/>
+  </extensions>
+</idea-plugin>
