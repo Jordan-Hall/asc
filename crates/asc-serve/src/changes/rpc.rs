@@ -112,6 +112,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     let rpc = Arc::new(ChangesRpc {
         registry: registry.clone(),
         pipeline: ext.pipeline.clone(),
+        restack: OnceLock::new(),
     });
     assert!(
         ext.changes.set(rpc),
@@ -136,6 +137,8 @@ struct Head {
 pub struct ChangesRpc {
     registry: Arc<Registry>,
     pipeline: Arc<PipelineHooks>,
+    /// `RestackChanges` (C22), set by [`super::restack::register`].
+    pub(super) restack: OnceLock<Arc<super::restack::Restacker>>,
 }
 
 /// Reads the facts of changes for one call; remembers what it has read.
@@ -743,9 +746,17 @@ impl Changes for ChangesService {
 
     async fn restack_changes(
         &self,
-        _request: Request<wire::RestackChangesRequest>,
+        request: Request<wire::RestackChangesRequest>,
     ) -> Result<Response<wire::RestackChangesResponse>, Status> {
-        Err(later("RestackChanges"))
+        let (meta, ext, msg) = request.into_parts();
+        let mut ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write)
+            .await?;
+        ctx.op_id = super::restack::op_id_of(&meta)?;
+        let Some(handler) = self.rpc.restack.get() else {
+            return Err(later("RestackChanges"));
+        };
+        handler.restack_changes(&ctx, msg).await.map(Response::new)
     }
 
     async fn set_review_state(
