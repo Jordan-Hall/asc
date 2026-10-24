@@ -466,16 +466,12 @@ interface QuickDiffChange {
   modifiedEndLineNumber: number;
 }
 
-/** Registers `asc.create`, `asc.amend`, `asc.reword`, `asc.absorb`, `asc.stageSelectedRanges`,
- * `asc.unstageSelectedRanges`, `asc.stageChange`, `asc.unstageChange`, `asc.stageFile`, `asc.unstageFile`,
- * `asc.discard`, `asc.undo` and `asc.redo`. Call after the feature check passes, next to `registerScm`. */
-export function registerCommands(
+/** The editor side of `CommandsUi`: messages, a modal confirmation and a read-only quick pick. */
+export function vscodeCommandsUi(
   vscode: typeof vscodeTypes,
-  mgr: BridgeManager,
-  roots: readonly string[],
   log: (line: string) => void,
-): CommandsRegistration {
-  const ui: CommandsUi = {
+): CommandsUi {
+  return {
     output: log,
     info: (m) => void vscode.window.showInformationMessage(m),
     warn: (m) => void vscode.window.showWarningMessage(m),
@@ -496,6 +492,18 @@ export function registerCommands(
       return picked?.accept === true;
     },
   };
+}
+
+/** Registers `asc.create`, `asc.amend`, `asc.reword`, `asc.absorb`, `asc.stageSelectedRanges`,
+ * `asc.unstageSelectedRanges`, `asc.stageChange`, `asc.unstageChange`, `asc.stageFile`, `asc.unstageFile`,
+ * `asc.discard`, `asc.undo` and `asc.redo`. Call after the feature check passes, next to `registerScm`. */
+export function registerCommands(
+  vscode: typeof vscodeTypes,
+  mgr: BridgeManager,
+  roots: readonly string[],
+  log: (line: string) => void,
+): CommandsRegistration {
+  const ui = vscodeCommandsUi(vscode, log);
   const cmds = new CommitCommands(bridgeCommandsApi(mgr), ui);
   const norm = (s: string) => (process.platform === "win32" ? s.toLowerCase() : s);
   const slash = (s: string) => s.replace(/\\/g, "/").replace(/\/+$/, "");
