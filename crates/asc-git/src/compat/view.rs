@@ -40,6 +40,11 @@ pub const MAX_VIEW_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const RETRY_AFTER_BUILDING: Duration = Duration::from_secs(5);
 /// The marker file of a view whose first full sync finished.
 const READY_MARKER: &str = "asc-view-ready";
+/// The marker file of a view whose object store holds objects that no shared ref reaches (a push
+/// stored as a user branch). Protocol v2 lets a client `want` any object that exists, so such a
+/// view is served over v0/v1, which check each `want` against the advertised refs. A rebuild
+/// recreates the directory and so clears it.
+const UNSHARED_MARKER: &str = "asc-view-unshared";
 /// The shared-ref namespaces a view holds.
 const VIEW_NAMESPACES: [&str; 2] = ["refs/heads/", "refs/tags/"];
 /// A view directory is `<repo id>.git`.
@@ -256,6 +261,30 @@ struct ViewInner {
     state: AtomicU8,
     sync_lock: Mutex<()>,
     slots: OnceLock<Arc<BuildSlots>>,
+    /// Refs present in the view that are not shared, hidden from every `upload-pack` until the
+    /// next sync removes them (see [`GitView::hide_refs`]).
+    hidden: std::sync::Mutex<Vec<String>>,
+}
+
+/// Names hidden from `upload-pack` by [`GitView::hide_refs`]; they are shown again on drop.
+pub struct HiddenRefs {
+    view: Arc<ViewInner>,
+    names: Vec<String>,
+}
+
+impl Drop for HiddenRefs {
+    fn drop(&mut self) {
+        let mut hidden = self
+            .view
+            .hidden
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for n in &self.names {
+            if let Some(i) = hidden.iter().position(|h| h == n) {
+                hidden.swap_remove(i);
+            }
+        }
+    }
 }
 
 /// One repo's git view.
@@ -358,6 +387,7 @@ impl GitView {
                 state: AtomicU8::new(state),
                 sync_lock: Mutex::new(()),
                 slots: OnceLock::new(),
+                hidden: std::sync::Mutex::new(Vec::new()),
             }),
         }
     }
@@ -369,6 +399,42 @@ impl GitView {
 
     pub fn path(&self) -> &Path {
         &self.inner.dir
+    }
+
+    /// Hides `names` from every `upload-pack` started from now on, until the guard drops. Used
+    /// for the window between git writing a pushed ref into the view and the sync that removes
+    /// it because asc stored it as a private user branch: no other reader may see it.
+    pub fn hide_refs(&self, names: Vec<String>) -> HiddenRefs {
+        self.inner
+            .hidden
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(names.iter().cloned());
+        HiddenRefs {
+            view: self.inner.clone(),
+            names,
+        }
+    }
+
+    fn hidden_now(&self) -> Vec<String> {
+        self.inner
+            .hidden
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Records that the view's object store now holds, or is about to hold, objects no shared
+    /// ref reaches. Call it before git migrates such a push's objects into the view.
+    pub fn mark_unshared(&self) -> Result<(), ViewError> {
+        fs::write(self.inner.dir.join(UNSHARED_MARKER), b"")
+            .map_err(io_err("marking the view as holding unshared objects"))
+    }
+
+    /// Whether the view may hold objects that no shared ref reaches. A mirror is reported as
+    /// holding none here; its protocol is decided separately.
+    pub fn holds_unshared(&self) -> bool {
+        self.inner.kind == ViewKind::Derived && self.inner.dir.join(UNSHARED_MARKER).exists()
     }
 
     pub fn kind(&self) -> ViewKind {
@@ -409,7 +475,13 @@ impl GitView {
             return Err(ViewError::ReadOnlyMirror);
         }
         self.verify_config()?;
-        Ok(self.inner.server.pack(service, &self.inner.dir, req)?)
+        Ok(self.inner.server.pack_hiding(
+            service,
+            &self.inner.dir,
+            req,
+            &[],
+            &self.hidden_now(),
+        )?)
     }
 
     /// [`GitView::spawn_pack`] with extra `ASC_*` environment variables for the child and the
@@ -424,10 +496,13 @@ impl GitView {
             return Err(ViewError::ReadOnlyMirror);
         }
         self.verify_config()?;
-        Ok(self
-            .inner
-            .server
-            .pack_with_env(service, &self.inner.dir, req, env)?)
+        Ok(self.inner.server.pack_hiding(
+            service,
+            &self.inner.dir,
+            req,
+            env,
+            &self.hidden_now(),
+        )?)
     }
 
     /// [`GitView::spawn_pack_with_env`] in session mode ([`ServerGit::session_with_env`]): the
@@ -442,10 +517,13 @@ impl GitView {
             return Err(ViewError::ReadOnlyMirror);
         }
         self.verify_config()?;
-        Ok(self
-            .inner
-            .server
-            .session_with_env(service, &self.inner.dir, protocol, env)?)
+        Ok(self.inner.server.session_hiding(
+            service,
+            &self.inner.dir,
+            protocol,
+            env,
+            &self.hidden_now(),
+        )?)
     }
 
     /// Counts and sizes the objects of a push's quarantine ([`ServerGit::quarantine_stats`]).
@@ -740,4 +818,92 @@ fn write_template_if_different(dir: &Path) -> Result<(), ViewError> {
     fs::write(&tmp, VIEW_CONFIG_TEMPLATE).map_err(io_err("writing the view config"))?;
     fs::rename(&tmp, &path).map_err(io_err("replacing the view config"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use asc_core::git::ObjectKind;
+
+    use super::*;
+    use crate::compat::{FsckMode, GitLimits, ServerGitConfig};
+
+    fn view_in(dir: &Path) -> (GitView, ServerGit) {
+        let server = ServerGit::new(
+            &RealGit::resolve(None, None).expect("real git >= 2.40"),
+            ServerGitConfig {
+                hooks_dir: dir.join("hooks"),
+                state_dir: dir.join("state"),
+                limits: GitLimits::default(),
+                fsck: FsckMode::Strict,
+            },
+        )
+        .expect("server git");
+        let view = GitView::open(&server, &dir.join("views"), 1).expect("view");
+        (view, server)
+    }
+
+    fn advertised(view: &GitView) -> String {
+        let req = PackRequest {
+            advertise_refs: true,
+            protocol: None,
+        };
+        let mut child = view
+            .spawn_pack(PackService::UploadPack, &req)
+            .expect("spawn");
+        child.close_stdin();
+        let mut out = Vec::new();
+        child
+            .stdout
+            .take()
+            .expect("stdout")
+            .read_to_end(&mut out)
+            .expect("read");
+        child.wait().expect("wait");
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn git_view_hidden_refs_are_not_advertised_until_the_guard_drops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (view, server) = view_in(tmp.path());
+        let odb = Odb::open(view.path()).expect("odb");
+        let tree = odb.write_loose(ObjectKind::Tree, b"").expect("tree");
+        let body = format!(
+            "tree {tree}\nauthor A <a@x> 1700000000 +0000\ncommitter A <a@x> 1700000000 +0000\n\nm\n"
+        );
+        let commit = odb
+            .write_loose(ObjectKind::Commit, body.as_bytes())
+            .expect("commit");
+        let set = |name: &str| RefUpdate::Set {
+            name: name.into(),
+            oid: commit,
+        };
+        // `refs/heads/feat` is what git wrote for a push asc stored as a user branch.
+        server
+            .update_refs(
+                view.path(),
+                &[set("refs/heads/master"), set("refs/heads/feat")],
+            )
+            .expect("refs");
+        assert!(advertised(&view).contains("refs/heads/feat"));
+        let guard = view.hide_refs(vec!["refs/heads/feat".into()]);
+        let text = advertised(&view);
+        assert!(text.contains("refs/heads/master"), "{text}");
+        assert!(!text.contains("refs/heads/feat"), "{text}");
+        drop(guard);
+        assert!(advertised(&view).contains("refs/heads/feat"));
+    }
+
+    #[test]
+    fn git_view_unshared_marker_survives_reopen_and_clears_on_a_fresh_view() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (view, server) = view_in(tmp.path());
+        assert!(!view.holds_unshared());
+        view.mark_unshared().unwrap();
+        assert!(view.holds_unshared());
+        let again = GitView::open(&server, &tmp.path().join("views"), 1).unwrap();
+        assert!(again.holds_unshared());
+    }
 }

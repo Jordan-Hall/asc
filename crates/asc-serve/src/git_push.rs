@@ -41,6 +41,7 @@ use asc_git::compat::hook::{
 use asc_git::compat::receive::{
     PushOptions, QUARANTINE_PREFIXES, ReceiveError, check_stats, validate_quarantine, view_objects,
 };
+use asc_git::compat::view::HiddenRefs;
 use asc_git::compat::{Activity, GitLimits, GitView, ViewError};
 use asc_rpc::errors::RpcError;
 use asc_rpc::ipc::{IpcEndpoint, IpcListener, IpcStream, connect_stream};
@@ -333,6 +334,9 @@ struct Session {
     expires: Instant,
     activity: OnceLock<Activity>,
     outcome: Mutex<PushOutcome>,
+    /// The pushed names git is about to write into the view although asc stored them as the
+    /// pusher's private branches. Hidden from every reader until the view is synced.
+    hidden: Mutex<Option<HiddenRefs>>,
 }
 
 impl Session {
@@ -416,6 +420,16 @@ pub struct PushSession {
 }
 
 impl PushSession {
+    /// The refs hidden from readers for this push. The caller keeps the guard until the view has
+    /// been synced after the push and drops it then.
+    pub fn take_hidden(&self) -> Option<HiddenRefs> {
+        self.session
+            .hidden
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     /// The two `ASC_*` variables the hook needs.
     pub fn env(&self) -> [(&'static str, &str); 2] {
         [
@@ -541,6 +555,7 @@ impl GitPush {
             expires: Instant::now() + lifetime,
             activity: OnceLock::new(),
             outcome: Mutex::new(PushOutcome::default()),
+            hidden: Mutex::new(None),
         });
         let token = self.inner.broker.mint(session.clone())?;
         Ok(PushSession {
@@ -801,6 +816,23 @@ impl Inner {
                 alternate_dirs: Vec::new(),
             },
         };
+        // git applies the commands after this hook returns and fails any whose `old` is not the
+        // view's value, or whose name collides with another ref. Refuse those here, before asc
+        // commits, so that asc's store and git's answer to the client cannot disagree.
+        let (views, view_path) = (self.views.clone(), session.view.path().to_path_buf());
+        let in_view = tokio::task::spawn_blocking(move || views.server().list_refs(&view_path))
+            .await
+            .map_err(|e| server_failed("view refs task", &e))?
+            .map_err(|e| server_failed("view refs", &e))?;
+        if let Some(name) = git_would_refuse(&in_view, &commands) {
+            return Err(Refused::new(
+                "view_changed",
+                format!(
+                    "asc: {} changed while you pushed; fetch and push again",
+                    printable(&name, 200)
+                ),
+            ));
+        }
         let opts = ImportOptions {
             skip_pre: false,
             push_options: options.all,
@@ -815,11 +847,28 @@ impl Inner {
             .map_err(|status| refusal_of(&status))?;
 
         let mut lines = Vec::new();
+        let mut private = Vec::new();
         for (command, result) in commands.iter().zip(&done.results) {
+            if result.name != command.name && result.name.starts_with("refs/users/") {
+                private.push(command.name.clone());
+            }
             if let Some(line) =
                 user_ref_line(&command.name, &result.name, &session.entry.default_branch)
             {
                 lines.push(line);
+            }
+        }
+        if !private.is_empty() {
+            // git writes the pushed name into the shared view right after this hook returns, and
+            // moves the push's objects in with it. Until the view is synced no reader may see
+            // that ref, and the objects stay unreachable from any shared ref, so the view is
+            // served over v0/v1 from now on (a `want` is then checked against the visible refs).
+            *session
+                .hidden
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(session.view.hide_refs(private));
+            if let Err(e) = session.view.mark_unshared() {
+                tracing::error!(repo = %session.entry.name, error = %e, "marking the git view as holding unshared objects");
             }
         }
         session.record(PushOutcome {
@@ -836,6 +885,35 @@ impl Inner {
         });
         Ok(HookReply::accept(lines.join("\n")))
     }
+}
+
+/// The first command git will fail after the hook accepted the push, judged from the view's refs
+/// (`in_view`): its `old` is not the view's value (git compares in both directions: a create
+/// needs the ref absent), or its name is a directory of / inside another ref that the push does
+/// not delete. `None` when git can apply every command.
+fn git_would_refuse(in_view: &[(String, GitOid)], commands: &[PushCommand]) -> Option<String> {
+    for c in commands {
+        let current = in_view.iter().find(|(n, _)| *n == c.name).map(|(_, o)| *o);
+        if current != c.old {
+            return Some(c.name.clone());
+        }
+        if c.new.is_none() || current.is_some() {
+            continue;
+        }
+        let deleted = |n: &str| commands.iter().any(|d| d.new.is_none() && d.name == n);
+        let nested = |outer: &str, inner: &str| {
+            inner.len() > outer.len()
+                && inner.starts_with(outer)
+                && inner.as_bytes()[outer.len()] == b'/'
+        };
+        if in_view
+            .iter()
+            .any(|(n, _)| (nested(n, &c.name) || nested(&c.name, n)) && !deleted(n))
+        {
+            return Some(c.name.clone());
+        }
+    }
+    None
 }
 
 fn server_failed(context: &str, e: &dyn std::fmt::Display) -> Refused {
@@ -966,6 +1044,49 @@ mod tests {
             push_per_replica: replica,
             ..GitLimits::default()
         }
+    }
+
+    fn oid(n: u8) -> GitOid {
+        GitOid::from_bytes([n; 20])
+    }
+
+    fn cmd(name: &str, old: Option<u8>, new: Option<u8>) -> PushCommand {
+        PushCommand {
+            name: name.into(),
+            old: old.map(oid),
+            new: new.map(oid),
+        }
+    }
+
+    #[test]
+    fn git_push_is_refused_before_commit_when_git_would_fail_it() {
+        let view = vec![
+            ("refs/heads/a".to_owned(), oid(1)),
+            ("refs/heads/dir/x".to_owned(), oid(2)),
+        ];
+        // What git would accept.
+        assert_eq!(
+            git_would_refuse(&view, &[cmd("refs/heads/a", Some(1), Some(9))]),
+            None
+        );
+        assert_eq!(
+            git_would_refuse(&view, &[cmd("refs/heads/new", None, Some(9))]),
+            None
+        );
+        // `old` is not the view's value, either way.
+        let stale = git_would_refuse(&view, &[cmd("refs/heads/a", Some(5), Some(9))]);
+        assert_eq!(stale.as_deref(), Some("refs/heads/a"));
+        assert!(git_would_refuse(&view, &[cmd("refs/heads/a", None, Some(9))]).is_some());
+        assert!(git_would_refuse(&view, &[cmd("refs/heads/gone", Some(3), None)]).is_some());
+        // A name that is a directory of, or inside, another ref.
+        assert!(git_would_refuse(&view, &[cmd("refs/heads/dir", None, Some(9))]).is_some());
+        assert!(git_would_refuse(&view, &[cmd("refs/heads/a/b", None, Some(9))]).is_some());
+        // Unless the same push deletes the other ref.
+        let both = [
+            cmd("refs/heads/a", Some(1), None),
+            cmd("refs/heads/a/b", None, Some(9)),
+        ];
+        assert_eq!(git_would_refuse(&view, &both), None);
     }
 
     #[test]

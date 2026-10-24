@@ -504,7 +504,22 @@ impl ServerGit {
         req: &PackRequest,
         env: &[(&str, &str)],
     ) -> Result<ServerChild, ServerGitError> {
-        self.pack_child(service, view, req, env, false)
+        self.pack_child(service, view, req, env, false, &[])
+    }
+
+    /// [`ServerGit::pack_with_env`] that also hides `hidden` ref names from an `upload-pack`
+    /// (`transfer.hideRefs`): refs that exist in the view for a moment but are not shared (a
+    /// push stored as a user branch, before the view is synced). Each name must be a full
+    /// `refs/...` name; a hidden ref is neither advertised nor wantable.
+    pub fn pack_hiding(
+        &self,
+        service: PackService,
+        view: &Path,
+        req: &PackRequest,
+        env: &[(&str, &str)],
+        hidden: &[String],
+    ) -> Result<ServerChild, ServerGitError> {
+        self.pack_child(service, view, req, env, false, hidden)
     }
 
     /// The **session mode** of SPEC §25.11.5: `git upload-pack <view>` or `git receive-pack <view>`
@@ -524,7 +539,23 @@ impl ServerGit {
             advertise_refs: false,
             protocol: protocol.cloned(),
         };
-        self.pack_child(service, view, &req, env, true)
+        self.pack_child(service, view, &req, env, true, &[])
+    }
+
+    /// [`ServerGit::session_with_env`] that also hides `hidden` refs ([`ServerGit::pack_hiding`]).
+    pub fn session_hiding(
+        &self,
+        service: PackService,
+        view: &Path,
+        protocol: Option<&GitProtocol>,
+        env: &[(&str, &str)],
+        hidden: &[String],
+    ) -> Result<ServerChild, ServerGitError> {
+        let req = PackRequest {
+            advertise_refs: false,
+            protocol: protocol.cloned(),
+        };
+        self.pack_child(service, view, &req, env, true, hidden)
     }
 
     fn pack_child(
@@ -534,6 +565,7 @@ impl ServerGit {
         req: &PackRequest,
         env: &[(&str, &str)],
         session: bool,
+        hidden: &[String],
     ) -> Result<ServerChild, ServerGitError> {
         for (name, value) in env {
             if !valid_extra_env_name(name) || value.contains('\0') {
@@ -545,9 +577,15 @@ impl ServerGit {
         require_absolute(view)?;
         check_repo_config(view)?;
         let l = &self.inner.limits;
+        if hidden.iter().any(|n| !n.starts_with("refs/") || !valid_ref_name(n)) {
+            return Err(ServerGitError::Config("a hidden ref name is not allowed"));
+        }
         let mut cmd = self.command(&[], req.protocol.as_ref(), true)?;
         match service {
             PackService::UploadPack => {
+                for name in hidden {
+                    cmd.arg("-c").arg(format!("transfer.hideRefs={name}"));
+                }
                 cmd.arg("upload-pack");
                 if !session {
                     cmd.arg("--stateless-rpc");

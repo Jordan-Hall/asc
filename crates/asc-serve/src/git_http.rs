@@ -334,6 +334,26 @@ pub(crate) fn served_protocol(
     }
 }
 
+/// [`served_protocol`] for a request whose view is known: a view that holds objects no shared
+/// ref reaches (a push stored as a user branch left them in its object store) is also served over
+/// v0/v1. Protocol v2 would let any reader `want` those objects; v0/v1 check each `want` against
+/// the advertised refs, so only what the caller's visible refs reach can be fetched.
+pub(crate) fn served_protocol_for(
+    service: Service,
+    mode: RepoMode,
+    protocol: Option<GitProtocol>,
+    unshared: bool,
+) -> Option<GitProtocol> {
+    let v2 = protocol
+        .as_ref()
+        .is_some_and(|p| p.version() == ProtocolVersion::V2);
+    if v2 && unshared {
+        None
+    } else {
+        served_protocol(service, mode, protocol)
+    }
+}
+
 /// The git layer's parts, shared by every transport that serves it (smart HTTP, SSH).
 #[derive(Clone)]
 pub struct GitServices {
@@ -1074,10 +1094,14 @@ impl GitHttp {
                     // git set differently is removed or reset) so the next fetch finds it ready.
                     let (views, registry, entry) =
                         (views.clone(), registry.clone(), p.entry.clone());
+                    // Refs git wrote for a private branch stay hidden from readers until the
+                    // sync below has removed them.
+                    let hidden = p.session.take_hidden();
                     handle.spawn(async move {
                         if let Err(e) = views.ensure(&entry, registry.refs()).await {
                             tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
                         }
+                        drop(hidden);
                     });
                 }
                 if outcome.starts_with("limit:") {
@@ -1245,7 +1269,13 @@ impl GitHttp {
                 ));
             }
         }
-        protocol = served_protocol(service, entry.mode, protocol);
+        // A view that cannot be opened is treated as holding unshared objects; the request then
+        // fails in `ready_view` with the proper answer.
+        let unshared = self
+            .views
+            .view(&entry)
+            .map_or(true, |v| v.holds_unshared());
+        protocol = served_protocol_for(service, entry.mode, protocol, unshared);
         audit.version = version_label(protocol.as_ref());
 
         match endpoint {
@@ -1622,4 +1652,21 @@ fn register_routes(
         tracing::warn!("the git routes were already registered; keeping the first");
     }
     services
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v2() -> Option<GitProtocol> {
+        GitProtocol::parse("version=2")
+    }
+
+    #[test]
+    fn git_http_v2_is_dropped_for_a_view_holding_unshared_objects() {
+        let kept = served_protocol_for(Service::UploadPack, RepoMode::Primary, v2(), false);
+        assert_eq!(kept.map(|p| p.version()), Some(ProtocolVersion::V2));
+        let dropped = served_protocol_for(Service::UploadPack, RepoMode::Primary, v2(), true);
+        assert!(dropped.is_none());
+    }
 }
