@@ -63,6 +63,13 @@ export function bannerFor(state: ConflictsState): Banner | null {
   return { text: `${head} · Continue · Abort`, actions: ["Continue", "Abort"] };
 }
 
+/** True while an operation is paused, so Continue and Abort apply (the `asc.paused` context key). */
+export function isPaused(state: ConflictsState): boolean {
+  return OP_LABEL[state.inProgress] !== undefined;
+}
+
+export const PAUSED_CONTEXT = "asc.paused";
+
 export interface MergeInput {
   uri: string;
   title: string;
@@ -261,8 +268,8 @@ export interface ConflictsRegistration {
 
 /** Registers the status-bar banner and the commands `asc.conflicts.open`, `asc.conflicts.markResolved`,
  * `asc.conflicts.pick`, `asc.continue` and `asc.abort`. The SCM "Conflicts" group is the provider's.
- * TODO(P25): call this from `registerScm` (extension.ts and package.json are not P30 files).
- * TODO(P47a): contribute the commands to `scm/title` and the group context menu. */
+ * The `asc.paused` context key is true while any root has a paused operation; the `scm/title` entries
+ * for Continue and Abort show on it. */
 export function registerConflicts(
   vscode: typeof vscodeTypes,
   mgr: BridgeManager,
@@ -298,7 +305,16 @@ export function registerConflicts(
     const first = models.entries().next().value;
     return first ? { root: first[0], model: first[1], path: null } : null;
   };
+  let paused = false;
+  const setPaused = () => {
+    const now = [...models.values()].some((m) => isPaused(m.state));
+    if (now === paused) return;
+    paused = now;
+    void vscode.commands.executeCommand("setContext", PAUSED_CONTEXT, now);
+  };
+  void vscode.commands.executeCommand("setContext", PAUSED_CONTEXT, false);
   const renderBanner = () => {
+    setPaused();
     for (const m of models.values()) {
       const b = m.banner;
       if (!b) continue;
@@ -435,6 +451,7 @@ export function registerConflicts(
   return {
     dispose() {
       for (const s of subs.splice(0)) s.dispose();
+      void vscode.commands.executeCommand("setContext", PAUSED_CONTEXT, false);
     },
   };
 }
