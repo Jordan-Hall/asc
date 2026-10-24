@@ -4,8 +4,9 @@
 #   docker build -f deploy/Dockerfile.serve -t asc-serve .
 #
 # `asc serve` is a subcommand of the `asc` binary (crates/asc/src/cli/serve.rs), built with the
-# default features: `serve` and `git-compat` (SPEC 25) are on. `git-ssh` is not a Cargo feature
-# yet, so there is no SSH port. The vfs features compile on Linux but the daemon is not run here.
+# default features: `serve` and `git-compat` (SPEC 25) are on. `git-ssh` (default on) adds the SSH
+# git listener; it is off unless `[ssh] enabled = true`, and the port (2222) is published by the
+# deployment, not EXPOSEd here. The vfs features compile on Linux but the daemon is not run here.
 #
 # Both bases are Debian 13 (trixie): its git is 2.47, above the 2.40 floor of asc-git's RealGit
 # (crates/asc-git/src/realgit.rs); bookworm ships 2.39 and would disable the git routes. Bases are

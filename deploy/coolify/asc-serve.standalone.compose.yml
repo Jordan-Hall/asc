@@ -55,6 +55,15 @@ x-asc-serve: &asc-serve
         enabled = true
         view_dir = "/var/lib/asc/gitview"
 
+        # SSH git transport (ssh://git@host:22222/owner/repo). The first host key is generated
+        # once, on first start, into the state volume, so the fingerprint survives redeploys.
+        # Read it from the startup log ("ssh host key") or `asc serve ssh host-key show`.
+        [ssh]
+        enabled = true
+        listen = "0.0.0.0:2222"
+        user = "git"
+        host_key_files = ["/var/lib/asc/ssh/ssh_host_ed25519_key"]
+
 services:
   # One-shot Garage provisioning through the admin API (Garage v2): the bucket, a dedicated key
   # imported with the id and secret this app already holds, and read+write (never owner) on that
@@ -151,6 +160,11 @@ services:
       - backend
     expose:
       - '7890'
+    # SSH git transport. Coolify publishes compose `ports` on the host as written; HTTPS stays
+    # behind Coolify's proxy through SERVICE_FQDN_ASCSERVE_7890. 22222 avoids the host's own sshd
+    # on 22. Open TCP 22222 in the host firewall; no TLS terminates it (SSH is its own channel).
+    ports:
+      - '22222:2222'
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
       interval: 15s

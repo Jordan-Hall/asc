@@ -81,10 +81,15 @@ Needs a server: `asc submit` against a plain git remote exits 128 with an explan
   The server answers 401, then git asks its credential helper (same token as above, as the
   password; use a helper or `http.extraHeader`, never the URL). Pushes go through the same
   checks as `asc push`. With `[git] enabled = false` the git routes answer 403 with `X-Asc-Git`.
-- **SSH:** `git clone ssh://git@<host>:<port>/<owner>/<repo>`. The listener exists in the
-  default build (feature `git-ssh`, config `[ssh]`, default port 2222, off unless
-  `[ssh] enabled = true`). The staging server does not enable it (unverified for any other
-  host).
+- **SSH:** `git clone ssh://git@<host>:<port>/<owner>/<repo>`. The listener is in the default
+  build (feature `git-ssh`, config `[ssh]`, default port 2222, off unless `[ssh] enabled = true`).
+  The staging compose file enables it and publishes container port 2222 as host port 22222:
+  `git clone ssh://git@asc-staging.example.org:22222/<owner>/<repo>` (configured; not
+  verified until deployed). Check the host key on first connect: the server logs
+  `ssh host key` with a `SHA256:...` fingerprint at start, and `asc serve ssh host-key show`
+  prints it with a `known_hosts` line. Compare it with the fingerprint ssh shows before you
+  answer yes; never accept a mismatch. The key lives in the state volume
+  (`/var/lib/asc/ssh/ssh_host_ed25519_key`), so redeploys keep it; `host-key rotate` changes it.
 
 ## 6. Transport policy
 
