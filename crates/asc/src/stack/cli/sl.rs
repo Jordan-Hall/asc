@@ -267,7 +267,7 @@ impl StackEnv for Env<'_> {
         let mut out: Vec<ChangesetId> = self
             .refs
             .iter()
-            .filter(|(k, _)| k.starts_with("refs/heads/"))
+            .filter(|(k, _)| k.starts_with("refs/heads/") || k.starts_with("refs/asc/stack/"))
             .map(|(_, cs)| *cs)
             .collect();
         out.extend(self.ws_heads.iter().copied());

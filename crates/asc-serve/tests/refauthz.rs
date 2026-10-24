@@ -618,7 +618,8 @@ async fn the_charge_is_the_changesets_actually_added_not_the_target_count() {
         .unwrap();
     let charged = used(&f, 42).await;
     assert!(
-        charged >= 3 * CHANGESET_BASE_COST as i64 && charged < 4 * CHANGESET_BASE_COST as i64 + 1024,
+        charged >= 3 * CHANGESET_BASE_COST as i64
+            && charged < 4 * CHANGESET_BASE_COST as i64 + 1024,
         "charged {charged}"
     );
 

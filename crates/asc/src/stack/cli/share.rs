@@ -88,6 +88,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 
     let opts = Opts {
         untracked: true,
+        fold_untracked: true,
         quiet: true,
         verbatim: true,
         message: Some(a.message.clone().unwrap_or_else(|| "asc share".to_owned())),

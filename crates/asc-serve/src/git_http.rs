@@ -184,7 +184,10 @@ impl GitMetrics {
 
     pub(crate) fn reject_via(&self, transport: &str, reason: &str) {
         self.rejected
-            .get_or_create(&Self::labels(&[("transport", transport), ("reason", reason)]))
+            .get_or_create(&Self::labels(&[
+                ("transport", transport),
+                ("reason", reason),
+            ]))
             .inc();
     }
 

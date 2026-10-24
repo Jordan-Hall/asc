@@ -112,6 +112,9 @@ fn stack() -> Stack {
 fn fresh(s: &Stack, name: &str) -> PathBuf {
     let b = s.sb.dir(name);
     ok(&s.sb, &b, &["init", "-q"]);
+    // `a` committed the `.ascignore` its `init` wrote, so the stack carries it; the one this
+    // `init` wrote would be an untracked file in the checkout's way.
+    fs::remove_file(b.join(".ascignore")).ok();
     ok(
         &s.sb,
         &b,
@@ -227,7 +230,7 @@ fn freeze_and_unfreeze_gate_local_rewrites() {
         &s.sb,
         a,
         WRITE,
-        &["modify", "-c", "-m", "feat: three again"],
+        &["modify", "-m", "feat: three again"],
     );
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("frozen"), "{err}");
@@ -247,7 +250,7 @@ fn freeze_and_unfreeze_gate_local_rewrites() {
 
     ok(&s.sb, a, &["stack", "unfreeze"]);
     ok(&s.sb, a, &["stack", "unfreeze", &s.changes[1]]);
-    ok(&s.sb, a, &["modify", "-c", "-m", "feat: three again"]);
+    ok(&s.sb, a, &["modify", "-m", "feat: three again"]);
     assert_ne!(ok(&s.sb, a, &["rev-parse", "HEAD"]).trim(), tip);
     assert!(
         frozen_of(&sl(&s, a)).iter().all(|(_, f)| !f),
@@ -341,6 +344,7 @@ fn snapshots_are_fetched_and_checked_out_without_freezing() {
 fn unknown_and_malformed_targets_fail_cleanly() {
     let s = stack();
     let b = fresh(&s, "b");
+    let pushed = s.server.count("UpdateRefs");
     let unknown = ChangeId::from_bytes([9; 16]).to_string();
     let (code, err) = fail(&s.sb, &b, WRITE, &["stack", "get", &unknown]);
     assert_ne!(code, 0, "{err}");
@@ -352,14 +356,24 @@ fn unknown_and_malformed_targets_fail_cleanly() {
     ok(&s.sb, &b, &["stack", "get", &s.changes[0]]);
     let out = asc_as(&s.sb, &b, READ, &["stack", "get", &s.changes[2]]);
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert_eq!(s.server.count("UpdateRefs"), 0, "{:?}", s.server.calls());
+    assert_eq!(
+        s.server.count("UpdateRefs"),
+        pushed,
+        "{:?}",
+        s.server.calls()
+    );
 }
 
 #[test]
 fn a_plain_git_remote_exits_128() {
     let sb = Sandbox::new();
     let plain = sb.dir("plain.git");
-    ok(&sb, &plain, &["init", "-q", "--bare"]);
+    let made = sb
+        .command("git", &plain)
+        .args(["init", "-q", "--bare"])
+        .output()
+        .expect("spawn git");
+    assert!(made.status.success(), "{}", text(&made.stderr));
     let a = sb.dir("a");
     ok(&sb, &a, &["init", "-q"]);
     ok(

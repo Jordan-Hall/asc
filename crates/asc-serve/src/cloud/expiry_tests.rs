@@ -141,7 +141,10 @@ async fn the_roots_are_every_head_in_grace_and_the_purged_keys() {
     add_head(&f, 43, "w", f.css[1], 5, Some(7)).await;
     add_head(&f, 43, "x", f.css[1], 5, None).await;
     let ns = f.e.ns.as_bytes().to_vec();
-    for k in [ObjKey::File(FileId::of(b"s")).path(), "not-a-key".to_owned()] {
+    for k in [
+        ObjKey::File(FileId::of(b"s")).path(),
+        "not-a-key".to_owned(),
+    ] {
         sqlx::query("INSERT INTO gc_purge (ns, key, purged_at) VALUES ($1, $2, 1)")
             .bind(ns.clone())
             .bind(k)
@@ -183,7 +186,12 @@ async fn expired_heads_release_their_objects_to_the_two_mark_sweep() {
     add_head(&f, 42, "w", young, wall - 200 * D, Some(wall - 10 * D)).await;
     let has = |cs: ChangesetId| {
         let f = &f;
-        async move { f.e.objects.has_many(&[ObjKey::Changeset(cs)]).await.unwrap()[0] }
+        async move {
+            f.e.objects
+                .has_many(&[ObjKey::Changeset(cs)])
+                .await
+                .unwrap()[0]
+        }
     };
     let hour = Duration::from_secs(25 * 3600);
     let t1 = SystemTime::now() + Duration::from_secs(15 * 86_400);
@@ -220,11 +228,10 @@ async fn deleting_the_roots_is_what_exposes_the_object_a_sweep_without_the_sourc
     svc.run_repo(&name, t1 + Duration::from_secs(25 * 3600), false)
         .await
         .unwrap();
-    let alive = f
-        .e
-        .objects
-        .has_many(&[ObjKey::Changeset(draft)])
-        .await
-        .unwrap()[0];
+    let alive =
+        f.e.objects
+            .has_many(&[ObjKey::Changeset(draft)])
+            .await
+            .unwrap()[0];
     assert!(!alive);
 }

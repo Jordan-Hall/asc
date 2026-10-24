@@ -37,6 +37,9 @@ pub struct Opts {
     pub message: Option<String>,
     /// `create <message>`: the message is used as typed, not as `On <branch>: <message>`.
     pub verbatim: bool,
+    /// Put the untracked files in W's own tree instead of a third parent, so the one commit
+    /// is the whole working state (`asc share`).
+    pub fold_untracked: bool,
     pub paths: Vec<OsString>,
 }
 
@@ -186,7 +189,7 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
     }
 
     let changes = stagebuild::rows_to_changes(ws, index, &rows).await?;
-    let w_tree = ws.engine.apply(index, &changes).await?;
+    let mut w_tree = ws.engine.apply(index, &changes).await?;
 
     let empty = CliEngine::empty_tree_id();
     let idents = conflict::identities(ctx)?;
@@ -201,7 +204,14 @@ pub async fn make(ctx: &Ctx, ws: &WsCtx, o: &Opts, notice: bool) -> Result<Optio
     let (i, _) =
         conflict::write_commit(ws, commit(vec![head], format!("index on {line}\n"), index)).await?;
     let mut parents = vec![head, i];
-    if !untracked.is_empty() {
+    if !untracked.is_empty() && o.fold_untracked {
+        let mut urows = Vec::with_capacity(untracked.len());
+        for p in &untracked {
+            urows.push(stagebuild::row_of_path(ws, p, None).await?);
+        }
+        let uchanges = stagebuild::rows_to_changes(ws, w_tree, &urows).await?;
+        w_tree = ws.engine.apply(w_tree, &uchanges).await?;
+    } else if !untracked.is_empty() {
         let mut urows = Vec::with_capacity(untracked.len());
         for p in &untracked {
             urows.push(stagebuild::row_of_path(ws, p, None).await?);

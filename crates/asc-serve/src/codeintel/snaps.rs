@@ -95,12 +95,7 @@ impl Snaps {
         if let Some(s) = self.pinned(ns, kind, m.generation) {
             return Ok(s);
         }
-        let snap = Arc::new(
-            self.replica
-                .snapshot(objects, ns, &m)
-                .await
-                .map_err(ix)?,
-        );
+        let snap = Arc::new(self.replica.snapshot(objects, ns, &m).await.map_err(ix)?);
         let keep: Vec<_> = {
             let mut g = self.lock();
             let now = Instant::now();
@@ -142,7 +137,9 @@ struct VecWeight;
 
 impl quick_cache::Weighter<VecKey, Arc<VectorSegment>> for VecWeight {
     fn weight(&self, key: &VecKey, val: &Arc<VectorSegment>) -> u64 {
-        let per = u64::try_from(val.dims()).unwrap_or(u64::MAX).saturating_add(12);
+        let per = u64::try_from(val.dims())
+            .unwrap_or(u64::MAX)
+            .saturating_add(12);
         let n = u64::try_from(val.len()).unwrap_or(u64::MAX);
         n.saturating_mul(per)
             .saturating_add(u64::try_from(key.1.len()).unwrap_or(0))
@@ -157,7 +154,9 @@ pub struct VecCache {
 
 impl VecCache {
     pub fn new(bytes: u64) -> Self {
-        let items = usize::try_from(bytes / (1 << 16)).unwrap_or(1 << 12).clamp(16, 1 << 16);
+        let items = usize::try_from(bytes / (1 << 16))
+            .unwrap_or(1 << 12)
+            .clamp(16, 1 << 16);
         Self {
             cache: quick_cache::sync::Cache::with_weighter(items, bytes.max(1 << 20), VecWeight),
         }

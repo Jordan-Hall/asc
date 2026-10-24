@@ -1658,8 +1658,15 @@ mod ingest {
     #[tokio::test]
     async fn rev_cannot_name_another_users_ref() {
         let f = fx().await;
-        let a = commit(&f.entry, &[], &[("a", b"1
-")]).await;
+        let a = commit(
+            &f.entry,
+            &[],
+            &[(
+                "a", b"1
+",
+            )],
+        )
+        .await;
         f.m.ingest_inner(&ctx(), request(&[a])).await.unwrap();
         set_ref(&f, "refs/users/9/heads/feat", a).await;
         set_ref(&f, "refs/heads/main", a).await;

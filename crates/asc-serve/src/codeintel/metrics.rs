@@ -110,8 +110,11 @@ impl CiMetrics {
 
     /// Records `indexed` of `total` files in scope (an empty scope is fully covered).
     pub fn set_coverage(&self, indexed: u64, total: u64) {
-        self.coverage
-            .set(if total == 0 { 1.0 } else { ratio(indexed, total) });
+        self.coverage.set(if total == 0 {
+            1.0
+        } else {
+            ratio(indexed, total)
+        });
     }
 }
 

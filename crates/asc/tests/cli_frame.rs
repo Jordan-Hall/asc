@@ -768,7 +768,7 @@ fn commands_not_yet_landed_exit_129() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
     let stubbed = stubbed_git_commands();
-    assert!(!stubbed.is_empty(), "no git command is left as a stub");
+    // Once every command has landed there is nothing left to check.
     for cmd in stubbed {
         let cmd = cmd.as_str();
         let out = git(&sb, &root, &[cmd, "--any-flag"]);

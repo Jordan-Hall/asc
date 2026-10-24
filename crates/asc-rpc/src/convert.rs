@@ -4,6 +4,7 @@
 //! conversion rejects wrong lengths, unknown enum values and invalid paths or signatures.
 
 use bytes::Bytes;
+use asc_core::change::MetaId;
 use asc_core::id::{ChangesetId, ChunkId, FileId, GitOid, RefTarget, TagId, TreeId};
 use asc_core::path::{PathError, RepoPath};
 use asc_core::sig::{SigError, Signature};
@@ -119,6 +120,7 @@ wire_id!(TreeId, 32);
 wire_id!(ChangesetId, 32);
 wire_id!(TagId, 32);
 wire_id!(GitOid, 20);
+wire_id!(MetaId, 32);
 
 /// Decodes an optional id: empty bytes mean absent.
 pub fn opt_id<T: WireId>(b: &[u8]) -> Result<Option<T>> {
@@ -214,7 +216,7 @@ fn opt_mode_id_to_wire<T: WireId>(id: Option<&ModeId<T>>) -> Bytes {
 impl TryFrom<&pb::ObjKey> for ObjKey {
     type Error = ConvertError;
 
-    /// Kinds 0 (unspecified) and 9 (`ChangeMeta`, reserved by SPEC §20.2) are rejected.
+    /// Kind 0 (unspecified) is rejected; 9 is `ChangeMeta` (SPEC §20.2).
     fn try_from(k: &pb::ObjKey) -> Result<Self> {
         let kind = pb::ObjKind::try_from(k.kind).map_err(|_| ConvertError::BadEnum {
             what: "ObjKind",
@@ -228,7 +230,8 @@ impl TryFrom<&pb::ObjKey> for ObjKey {
             pb::ObjKind::Changeset => Self::Changeset(ChangesetId::from_slice(&k.id)?),
             pb::ObjKind::Tag => Self::Tag(TagId::from_slice(&k.id)?),
             pb::ObjKind::GitTreeOverride => Self::GitTreeOverride(GitOid::from_slice(&k.id)?),
-            pb::ObjKind::Unspecified | pb::ObjKind::ChangeMeta => {
+            pb::ObjKind::ChangeMeta => Self::ChangeMeta(MetaId::from_slice(&k.id)?),
+            pb::ObjKind::Unspecified => {
                 return Err(ConvertError::BadEnum {
                     what: "ObjKind",
                     value: k.kind,
@@ -251,11 +254,7 @@ impl TryFrom<&ObjKey> for pb::ObjKey {
             ObjKey::Changeset(i) => (pb::ObjKind::Changeset, i.as_slice()),
             ObjKey::Tag(i) => (pb::ObjKind::Tag, i.as_slice()),
             ObjKey::GitTreeOverride(i) => (pb::ObjKind::GitTreeOverride, i.as_slice()),
-            ObjKey::ChangeMeta(_) => {
-                return Err(ConvertError::Unsupported(
-                    "change meta ObjKey (OBJ_KIND_CHANGE_META, U41)",
-                ));
-            }
+            ObjKey::ChangeMeta(i) => (pb::ObjKind::ChangeMeta, i.as_slice()),
             ObjKey::Derived { .. } => return Err(ConvertError::Unsupported("derived ObjKey")),
         };
         Ok(Self {
@@ -562,8 +561,8 @@ mod tests {
         // Wrong length for the kind, in both directions.
         assert!(ObjKey::try_from(&mk(pb::ObjKind::File as i32, 20)).is_err());
         assert!(ObjKey::try_from(&mk(pb::ObjKind::GitTreeOverride as i32, 32)).is_err());
-        // Unspecified, reserved ChangeMeta (9), removed (8) and unknown kinds.
-        for kind in [0, 8, 9, 10, -1] {
+        // Unspecified, removed (8) and unknown kinds.
+        for kind in [0, 8, 10, -1] {
             assert!(ObjKey::try_from(&mk(kind, 32)).is_err(), "kind {kind}");
         }
         assert_eq!(pb::ObjKind::ChangeMeta as i32, 9);

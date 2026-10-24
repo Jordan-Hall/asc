@@ -626,7 +626,8 @@ impl<'a> Ingestor<'a> {
         let key = ObjKey::Changeset(id);
         let cs = self.engine.get_changeset(id).await.map_err(from_commit)?;
         check_extra(&cs, key)?;
-        self.costs.insert(id, crate::cloud::quota::changeset_cost(&cs));
+        self.costs
+            .insert(id, crate::cloud::quota::changeset_cost(&cs));
         let base = match cs.parents.first() {
             None => RepoEngine::empty_tree_id(),
             Some(&p) => {

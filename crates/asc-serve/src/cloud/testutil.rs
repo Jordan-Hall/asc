@@ -70,13 +70,14 @@ pub(crate) async fn add_head(
 ) {
     let ns = f.e.ns.as_bytes().to_vec();
     // A changeset with no `changes` row (a solo commit in a test) gets an unrelated change.
-    let change: Vec<u8> = sqlx::query_scalar("SELECT change FROM changes WHERE ns = $1 AND cs = $2")
-        .bind(ns.clone())
-        .bind(cs.as_bytes().to_vec())
-        .fetch_optional(f.reg.pool())
-        .await
-        .unwrap()
-        .unwrap_or_else(|| vec![0xee; 16]);
+    let change: Vec<u8> =
+        sqlx::query_scalar("SELECT change FROM changes WHERE ns = $1 AND cs = $2")
+            .bind(ns.clone())
+            .bind(cs.as_bytes().to_vec())
+            .fetch_optional(f.reg.pool())
+            .await
+            .unwrap()
+            .unwrap_or_else(|| vec![0xee; 16]);
     sqlx::query(
         "INSERT INTO cloud_ws (ns, owner, name, version, updated, heads) VALUES ($1, $2, $3, 1, 0, 0) \
          ON CONFLICT (ns, owner, name) DO NOTHING",

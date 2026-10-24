@@ -198,6 +198,11 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
     if !seed.is_empty() {
         clone.extend(["--seed", seed.as_str()]);
     }
+    // A job runs on a machine of its own, so a bucket remote can only be read through its
+    // shared refs (SPEC 3.4); a server URL has no such choice.
+    if url.starts_with("file:") || url.starts_with("s3:") {
+        clone.extend(["--refs", "shared"]);
+    }
     clone.extend([url.as_str(), dir_s.as_str()]);
     r.run(&parent, &clone)?;
 

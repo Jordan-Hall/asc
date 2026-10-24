@@ -564,7 +564,11 @@ async fn read_blob(
     let Ok(p) = RepoPath::new(path.as_bytes().to_vec()) else {
         return Ok(None);
     };
-    let Some(e) = engine.lookup(root, &p).await.map_err(|e| internal("tree", &e))? else {
+    let Some(e) = engine
+        .lookup(root, &p)
+        .await
+        .map_err(|e| internal("tree", &e))?
+    else {
         return Ok(None);
     };
     if !matches!(e.kind, Kind::File | Kind::Exec) || e.size > max {
@@ -676,7 +680,10 @@ impl CodeIntelRpc {
         put(caller.principal.id.as_bytes());
         put(caller.repo.as_str().as_bytes());
         put(&caller.id_mode.to_wire().to_le_bytes());
-        put(&[u8::from(plan.stack_diff_only), u8::from(plan.include_excluded)]);
+        put(&[
+            u8::from(plan.stack_diff_only),
+            u8::from(plan.include_excluded),
+        ]);
         for l in &plan.langs {
             put(l.name().as_bytes());
         }
@@ -721,7 +728,11 @@ impl CodeIntelRpc {
     }
 
     /// The newest published version of `change` (published versions are visible to every reader).
-    async fn change_head(&self, entry: &RepoEntry, change: ChangeId) -> Result<ChangesetId, Status> {
+    async fn change_head(
+        &self,
+        entry: &RepoEntry,
+        change: ChangeId,
+    ) -> Result<ChangesetId, Status> {
         let mut conn = self.pool().acquire().await.map_err(sql_status)?;
         if let Some(v) = crate::changes::versions::latest(&mut conn, entry.ns, change)
             .await
@@ -826,7 +837,13 @@ impl CodeIntelRpc {
             if plan.targets[i].depth < MAX_COMPOSE_DEPTH {
                 let room = MAX_TARGETS - plan.targets.len();
                 match self
-                    .children(caller, &plan.targets[i], &mut seen, room, plan.include_excluded)
+                    .children(
+                        caller,
+                        &plan.targets[i],
+                        &mut seen,
+                        room,
+                        plan.include_excluded,
+                    )
                     .await
                 {
                     Ok(kids) => plan.targets.extend(kids),
@@ -857,8 +874,7 @@ impl CodeIntelRpc {
             if out.len() >= room {
                 break;
             }
-            let Some((include, exclude)) =
-                child_filters(&parent.include, &parent.exclude, &mount)
+            let Some((include, exclude)) = child_filters(&parent.include, &parent.exclude, &mount)
             else {
                 continue;
             };
@@ -892,7 +908,8 @@ impl CodeIntelRpc {
             let Ok(child) = self.registry.open(&name).await else {
                 continue;
             };
-            let git = IdCodec::new(IdMode::Git, &self.registry, &child).for_viewer(&caller.principal);
+            let git =
+                IdCodec::new(IdMode::Git, &self.registry, &child).for_viewer(&caller.principal);
             let Some(Some(cs)) = git
                 .asc_of_git(ObjectKind::Commit, &[entry.git])
                 .await?
@@ -1167,16 +1184,15 @@ impl CodeIntelRpc {
             };
             let need_bytes = from_row.is_none() || context > 0;
             let bytes = if need_bytes {
-                file_bytes(&*t.entry.objects, &hit.file).await.ok().flatten()
+                file_bytes(&*t.entry.objects, &hit.file)
+                    .await
+                    .ok()
+                    .flatten()
             } else {
                 None
             };
             let secret = from_row.or_else(|| bytes.as_deref().map(secret_of));
-            let paths: Vec<Vec<u8>> = hit
-                .paths
-                .iter()
-                .map(|p| t.out_path(p.as_bytes()))
-                .collect();
+            let paths: Vec<Vec<u8>> = hit.paths.iter().map(|p| t.out_path(p.as_bytes())).collect();
             let lang = info
                 .and_then(|i| i.langs.first().map(|l| l.name().to_owned()))
                 .or_else(|| {
@@ -1255,7 +1271,11 @@ impl CodeIntelRpc {
             .map(|(p, l)| [p.as_slice(), &l.to_le_bytes()].concat())
             .unwrap_or_default();
         let kind_bytes: Vec<u8> = req.kinds.join(",").into_bytes();
-        let path_bytes = req.path.as_ref().map(|p| p.as_bytes().to_vec()).unwrap_or_default();
+        let path_bytes = req
+            .path
+            .as_ref()
+            .map(|p| p.as_bytes().to_vec())
+            .unwrap_or_default();
         let digest = self.digest(
             caller,
             &plan,
@@ -1282,7 +1302,10 @@ impl CodeIntelRpc {
         }
 
         if req.op == ci::SymbolOp::Outline {
-            let path = req.path.as_ref().ok_or_else(|| bad("outline needs a path"))?;
+            let path = req
+                .path
+                .as_ref()
+                .ok_or_else(|| bad("outline needs a path"))?;
             let found = self.outline(&plan, path, &kinds, want).await?;
             let rendered = render::render_symbols(&ctx, budget, &found.0, found.1);
             return Ok(wire::SymbolsResponse {
@@ -1379,7 +1402,8 @@ impl CodeIntelRpc {
         } else {
             String::new()
         };
-        let rendered = render::render_symbols(&ctx, budget, &page, truncated || (more && next.is_empty()));
+        let rendered =
+            render::render_symbols(&ctx, budget, &page, truncated || (more && next.is_empty()));
         let coverage = if covered.1 == 0 {
             1.0
         } else {
@@ -1419,8 +1443,13 @@ impl CodeIntelRpc {
             return Err(Status::not_found("no such file"));
         }
         let rel_str = String::from_utf8_lossy(&rel).into_owned();
-        let Some(bytes) =
-            read_blob(t.entry.backend.engine(), t.root, &rel_str, skip::MAX_BYTES as u64).await?
+        let Some(bytes) = read_blob(
+            t.entry.backend.engine(),
+            t.root,
+            &rel_str,
+            skip::MAX_BYTES as u64,
+        )
+        .await?
         else {
             return Err(Status::not_found("no such file"));
         };
@@ -1487,12 +1516,7 @@ impl CodeIntelRpc {
             if row.serving == 0 || kept.is_empty() {
                 continue;
             }
-            let Some(entry) = row
-                .state
-                .models
-                .iter()
-                .find(|m| m.model_gen == row.serving)
-            else {
+            let Some(entry) = row.state.models.iter().find(|m| m.model_gen == row.serving) else {
                 continue;
             };
             if entry.model_id != spec.model_id || entry.calib != calib_hex {
@@ -1501,7 +1525,12 @@ impl CodeIntelRpc {
             }
             let q = self.query_vector(&embed, row.serving, &req.query).await?;
             let mut segs = Vec::new();
-            for s in row.state.segments.iter().filter(|s| s.model_gen == row.serving) {
+            for s in row
+                .state
+                .segments
+                .iter()
+                .filter(|s| s.model_gen == row.serving)
+            {
                 segs.push(self.vecs.get(&gens, &ns, s).await.map_err(ci_status)?);
             }
             let counts = t.docs.counts().await.map_err(sql_status)?;
@@ -1517,7 +1546,11 @@ impl CodeIntelRpc {
                 kept_chunks: est,
                 ns_chunks: counts.chunks,
             };
-            let k_vec = if hybrid_mode { (k * 4).clamp(20, MAX_LIST) } else { k };
+            let k_vec = if hybrid_mode {
+                (k * 4).clamp(20, MAX_LIST)
+            } else {
+                k
+            };
             let model_ref = spec.model_ref(row.serving);
             let outcome = {
                 let kept = kept.clone();
@@ -1533,7 +1566,9 @@ impl CodeIntelRpc {
             let vec_list: Vec<u64> = outcome.hits.iter().map(|h| h.key).collect();
             let scored: Vec<(u64, f64, Vec<&'static str>)> = if hybrid_mode {
                 let bm = self.bm25_list(t, &req.query, &kept).await?;
-                let sym = self.symbol_list(t, &searcher, &snap, &req.query, &kept).await?;
+                let sym = self
+                    .symbol_list(t, &searcher, &snap, &req.query, &kept)
+                    .await?;
                 let fused = hybrid::hybrid(
                     &req.query,
                     &bm,
@@ -1568,7 +1603,10 @@ impl CodeIntelRpc {
                     .collect()
             };
             for (key, score, sources) in scored {
-                if let Some(c) = self.raw_chunk(t, &searcher, &kept, key, score, sources).await? {
+                if let Some(c) = self
+                    .raw_chunk(t, &searcher, &kept, key, score, sources)
+                    .await?
+                {
                     found.push((score, ti, c));
                 }
             }
@@ -1632,8 +1670,12 @@ impl CodeIntelRpc {
             .pop()
             .filter(|v| v.len() == embed.spec().dims)
             .ok_or_else(|| internal("embedding", &"wrong vector count or size"))?;
-        self.qlru
-            .put(model_gen, &calib, text, v.iter().map(|x| f32::from(*x)).collect());
+        self.qlru.put(
+            model_gen,
+            &calib,
+            text,
+            v.iter().map(|x| f32::from(*x)).collect(),
+        );
         Ok(v)
     }
 
@@ -1651,7 +1693,13 @@ impl CodeIntelRpc {
         let (query, kept) = (query.to_owned(), kept.clone());
         tokio::task::spawn_blocking(move || {
             let searchers: Vec<_> = snap.segments.iter().map(|s| s.reader.searcher()).collect();
-            hybrid::bm25(&searchers, &ChunksSchema::build(), &query, Some(&kept), MAX_LIST)
+            hybrid::bm25(
+                &searchers,
+                &ChunksSchema::build(),
+                &query,
+                Some(&kept),
+                MAX_LIST,
+            )
         })
         .await
         .map_err(|e| internal("bm25 task", &e))?
