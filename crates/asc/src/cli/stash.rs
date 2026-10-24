@@ -11,7 +11,7 @@
 //! Not served, and refused with a message: `-p`/`--patch`, `-S`/`--staged`, `-a`/`--all`,
 //! `--pathspec-from-file`, and `show --include-untracked`.
 
-mod apply;
+pub(crate) mod apply;
 pub(crate) mod save;
 pub(crate) mod stack;
 
