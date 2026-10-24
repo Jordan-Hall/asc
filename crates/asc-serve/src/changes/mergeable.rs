@@ -232,7 +232,7 @@ async fn compute(
 }
 
 /// The mergeability of each of `changes` into the target whose tip is `tip`.
-pub async fn mergeability(
+pub(crate) async fn mergeability(
     reader: &mut Reader<'_>,
     tip: ChangesetId,
     changes: &[ChangeId],
@@ -362,8 +362,9 @@ mod tests {
         assert_eq!(m.conflicts.len(), 1);
         assert_eq!(m.conflicts[0].path.as_ref(), b"a");
         assert_eq!(m.conflicts[0].changeset.len(), 32);
-        // The same content on both sides merges clean although the paths intersect.
-        let same = f.trunk_commit(f.base, &[("a", b"a")]).await;
+        // The same content on both sides merges clean although the paths intersect. (The commit
+        // also writes "z": with "a" alone it would be change 1's own changeset, an ancestor.)
+        let same = f.trunk_commit(f.base, &[("a", b"a"), ("z", b"z")]).await;
         assert_eq!(ask(&f, 1, same).await.state, State::CleanMerge as i32);
         assert_eq!(rows(&f).await, 1);
     }

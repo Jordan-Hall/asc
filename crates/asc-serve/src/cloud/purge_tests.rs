@@ -4,11 +4,11 @@ use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use asc_core::id::FileId;
+use asc_rpc::IdMode;
 use asc_rpc::auth::{Access, BearerToken, Credential, StaticTokens};
 use asc_rpc::server::wire::{self, RepoRef};
 use asc_rpc::server::{RepoName, ServerInfo};
 use asc_rpc::services::cloud_server::Cloud;
-use asc_rpc::IdMode;
 use asc_store::gc::GcConfig;
 use sqlx::Row;
 use tonic::Request;
@@ -60,7 +60,10 @@ impl CacheTier for Tier {
         if n < self.fail {
             return Err("tier is down".into());
         }
-        self.seen.lock().unwrap().push((ns.to_owned(), ids.to_vec()));
+        self.seen
+            .lock()
+            .unwrap()
+            .push((ns.to_owned(), ids.to_vec()));
         Ok(())
     }
 }
@@ -102,7 +105,11 @@ fn req(cs: &[ChangesetId], token: &str) -> Request<wire::PurgeRequest> {
     r
 }
 
-async fn purge(s: &Svc, cs: &[ChangesetId], token: &str) -> Result<wire::PurgeResponse, tonic::Status> {
+async fn purge(
+    s: &Svc,
+    cs: &[ChangesetId],
+    token: &str,
+) -> Result<wire::PurgeResponse, tonic::Status> {
     s.svc.purge(req(cs, token)).await.map(|r| r.into_inner())
 }
 
@@ -143,10 +150,7 @@ async fn an_owner_purges_their_own_unsubmitted_draft() {
         .fetch_all(s.f.reg.pool())
         .await
         .unwrap();
-    for k in [
-        ObjKey::Changeset(cs),
-        ObjKey::File(FileId::of(&[5, 5, 5])),
-    ] {
+    for k in [ObjKey::Changeset(cs), ObjKey::File(FileId::of(&[5, 5, 5]))] {
         assert!(keys.contains(&k.path()), "{k:?} in {keys:?}");
     }
     assert!(
@@ -159,8 +163,7 @@ async fn an_owner_purges_their_own_unsubmitted_draft() {
         .await
         .unwrap();
     assert_eq!(row.get::<i64, _>("repo_id"), -s.f.e.key.0);
-    let doc: serde_json::Value =
-        serde_json::from_slice(&row.get::<Vec<u8>, _>("effects")).unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&row.get::<Vec<u8>, _>("effects")).unwrap();
     assert_eq!(doc["effects"][0], EFFECT);
     assert_eq!(doc["ns"], s.f.e.ns.hex());
     assert!(
@@ -203,7 +206,11 @@ async fn an_owner_cannot_purge_another_users_draft_and_cannot_tell_it_exists() {
     let nothing = purge(&s, &[s.f.css[4]], BOB).await.unwrap();
     assert_eq!((theirs.purged, nothing.purged), (0, 0));
     assert_eq!(theirs.refused.len(), 1);
-    assert_eq!(nothing.refused.len(), 1, "the same answer for a draft nobody holds");
+    assert_eq!(
+        nothing.refused.len(),
+        1,
+        "the same answer for a draft nobody holds"
+    );
     assert_eq!(heads(&s.f).await, 1);
     nothing_was_written(&s.f).await;
 }
@@ -247,7 +254,11 @@ async fn an_admin_purges_any_draft_and_a_service_without_admin_or_identity_canno
     // heads of a submitted, ref-reachable changeset.
     let r = purge(&s, &[s.f.css[2]], SERVICE_ADMIN).await.unwrap();
     assert_eq!(r.purged, 1);
-    assert_eq!(heads(&s.f).await, 1, "both owners' heads of css[2] are gone");
+    assert_eq!(
+        heads(&s.f).await,
+        1,
+        "both owners' heads of css[2] are gone"
+    );
     let r = purge(&s, &[s.f.css[3]], ADMIN).await.unwrap();
     assert_eq!(r.purged, 1);
     assert_eq!(heads(&s.f).await, 0);
@@ -286,9 +297,11 @@ async fn a_purged_object_is_swept_at_the_next_run_unless_a_ref_reaches_it() {
     let s = svc().await;
     let f = &s.f;
     let hooks = Arc::new(PipelineHooks::default());
-    hooks.gc_roots().register(Arc::new(
-        crate::cloud::expiry::CloudRoots::new(f.reg.pool().clone()),
-    ));
+    hooks
+        .gc_roots()
+        .register(Arc::new(crate::cloud::expiry::CloudRoots::new(
+            f.reg.pool().clone(),
+        )));
     let gc = GcService::new(f.reg.clone(), hooks, GcConfig::default());
     // master holds the same file content as the draft css[4].
     let shared = commit(&f.e, &[], &[("d/f", &[5, 5, 5])]).await;
@@ -304,7 +317,10 @@ async fn a_purged_object_is_swept_at_the_next_run_unless_a_ref_reaches_it() {
         .await
         .unwrap();
     assert!(report.sweep.purged >= 1, "{report}");
-    assert!(!has(ObjKey::Changeset(f.css[4])).await, "the purged changeset");
+    assert!(
+        !has(ObjKey::Changeset(f.css[4])).await,
+        "the purged changeset"
+    );
     assert!(
         has(ObjKey::File(FileId::of(&[5, 5, 5]))).await,
         "master still reaches this file"
@@ -328,16 +344,21 @@ async fn an_owner_purge_does_not_list_an_object_another_draft_holds() {
         .fetch_all(f.reg.pool())
         .await
         .unwrap();
-    assert!(keys.contains(&ObjKey::Changeset(f.css[4]).path()), "{keys:?}");
+    assert!(
+        keys.contains(&ObjKey::Changeset(f.css[4]).path()),
+        "{keys:?}"
+    );
     assert!(
         !keys.contains(&ObjKey::File(FileId::of(&[5, 5, 5])).path()),
         "the shared file must not be queued: {keys:?}"
     );
     // A GC run keeps it.
     let hooks = Arc::new(PipelineHooks::default());
-    hooks.gc_roots().register(Arc::new(
-        crate::cloud::expiry::CloudRoots::new(f.reg.pool().clone()),
-    ));
+    hooks
+        .gc_roots()
+        .register(Arc::new(crate::cloud::expiry::CloudRoots::new(
+            f.reg.pool().clone(),
+        )));
     let gc = GcService::new(f.reg.clone(), hooks, GcConfig::default());
     let t = SystemTime::now() + Duration::from_secs(60);
     gc.run_repo(&RepoName::parse("o/r").unwrap(), t, false)
@@ -368,7 +389,10 @@ async fn cache_evict_is_retried_until_every_tier_acknowledges() {
     // An ordinary row of the same repository, queued after the purge.
     add_head(f, 42, "w", f.css[4], 5, None).await;
     let r = purge(&s, &[f.css[4]], ALICE).await.unwrap();
-    assert_eq!(r.unacked_tiers, vec!["cacheproxy".to_owned(), "ci-cache".to_owned()]);
+    assert_eq!(
+        r.unacked_tiers,
+        vec!["cacheproxy".to_owned(), "ci-cache".to_owned()]
+    );
     sqlx::query("INSERT INTO outbox (repo_id, op_id, effects, next_at) VALUES ($1, $2, $3, 0)")
         .bind(f.e.key.0)
         .bind(vec![1u8])
@@ -377,14 +401,30 @@ async fn cache_evict_is_retried_until_every_tier_acknowledges() {
         .await
         .unwrap();
     let pending = || async {
-        count(f, "SELECT COUNT(*) FROM outbox WHERE done_at IS NULL AND repo_id < 0").await
+        count(
+            f,
+            "SELECT COUNT(*) FROM outbox WHERE done_at IS NULL AND repo_id < 0",
+        )
+        .await
     };
 
-    let mut at = 1_000_000;
+    // The eviction row is due at the time of the purge (the wall clock).
+    let mut at = i64::try_from(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+        + 1;
     outbox.deliver_due(at).await.unwrap();
     assert_eq!(pending().await, 1, "the down tier has not acknowledged");
     assert_eq!(
-        count(f, "SELECT COUNT(*) FROM outbox WHERE done_at IS NOT NULL AND repo_id > 0").await,
+        count(
+            f,
+            "SELECT COUNT(*) FROM outbox WHERE done_at IS NOT NULL AND repo_id > 0"
+        )
+        .await,
         1,
         "the repository's own rows are not held back by a tier that is down"
     );

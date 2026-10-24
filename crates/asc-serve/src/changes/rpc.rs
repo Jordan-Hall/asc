@@ -147,7 +147,7 @@ pub struct ChangesRpc {
 }
 
 /// Reads the facts of changes for one call; remembers what it has read.
-pub(super) struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     pub(super) conn: &'a mut AnyConnection,
     pub(super) ids: &'a IdCodec,
     pub(super) engine: &'a Arc<Eng>,
@@ -1075,8 +1075,8 @@ mod tests {
 
     /// Points `name` at `cs`, whatever it held.
     async fn set_ref(f: &Fx, name: &str, cs: ChangesetId) {
-        use asc_core::path::RefName;
         use asc_core::id::RefTarget;
+        use asc_core::path::RefName;
         use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
         let txn = RefTxn {
             updates: vec![RefUpdate {
@@ -1109,10 +1109,7 @@ mod tests {
         for spec in FOREIGN {
             let e = f
                 .svc
-                .resolve_changes(req(
-                    resolve(IdMode::Asc, vec![], vec![spec.into()]),
-                    READER,
-                ))
+                .resolve_changes(req(resolve(IdMode::Asc, vec![], vec![spec.into()]), READER))
                 .await
                 .unwrap_err();
             assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
@@ -1580,10 +1577,30 @@ mod tests {
 
     #[tokio::test]
     async fn later_rpcs_answer_unimplemented() {
+        // Only the base handler is registered here, so the three that need their own are absent.
         let f = fx().await;
+        let repo = repo_ref(IdMode::Asc);
         let e = f
             .svc
-            .request_merge(Request::new(wire::RequestMergeRequest::default()))
+            .request_merge(req(
+                wire::RequestMergeRequest {
+                    repo: repo.clone(),
+                    ..Default::default()
+                },
+                ADMIN,
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), tonic::Code::Unimplemented);
+        let e = f
+            .svc
+            .restack_changes(req(
+                wire::RestackChangesRequest {
+                    repo,
+                    ..Default::default()
+                },
+                ADMIN,
+            ))
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::Unimplemented);

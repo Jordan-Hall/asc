@@ -1663,7 +1663,17 @@ mod tests {
     async fn a_restack_without_refs_is_charged_to_the_caller_and_stops_at_the_quota() {
         let f = fx().await;
         let pair = (f.reg.clone(), f.e.clone());
-        publish_as(&pair, 8, f.c[2], None, "7:bob").await;
+        // Its own changeset: one shared with change 3 would belong to change 3.
+        let c8 = commit(
+            &f.e,
+            &[f.a],
+            &[(
+                "eight", b"8
+",
+            )],
+        )
+        .await;
+        publish_as(&pair, 8, c8, None, "7:bob").await;
         let ns = f.e.ns.as_bytes().to_vec();
         // No bytes left: refused before anything is recorded.
         sqlx::query("INSERT INTO cloud_usage (ns, owner, bytes, workspaces) VALUES ($1, 7, $2, 0)")
@@ -1687,11 +1697,15 @@ mod tests {
         let done = f.run(msg(f.t, vec![item(8)]), BOB).await.unwrap();
         assert_eq!(done.rewritten.len(), 1);
         assert_eq!(f.latest(8).await.v, 2);
-        assert_eq!(
-            f.count("SELECT COUNT(*) FROM cs_claim WHERE owner = 7")
-                .await,
-            1
-        );
+        // The claims cover the new changeset and the unshared history under it.
+        let new = f.latest(8).await.cs;
+        let claimed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cs_claim WHERE owner = 7 AND cs = $1")
+                .bind(new.as_bytes().to_vec())
+                .fetch_one(f.reg.pool())
+                .await
+                .unwrap();
+        assert_eq!(claimed, 1);
         assert!(
             f.count("SELECT bytes FROM cloud_usage WHERE owner = 7")
                 .await

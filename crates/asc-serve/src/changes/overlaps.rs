@@ -150,10 +150,13 @@ async fn stack_members(
         }
         root = p;
     }
+    // The ancestors are members already, yet their other children must still be walked.
+    let mut walked = HashSet::from([root]);
     let mut queue = vec![root];
     while let Some(at) = queue.pop() {
         for child in reader.children(at).await? {
-            if members.insert(child) {
+            if walked.insert(child) {
+                members.insert(child);
                 if members.len() > MAX_STACK_WALK {
                     return Err(Status::failed_precondition("the stack is too large"));
                 }
@@ -165,7 +168,7 @@ async fn stack_members(
 }
 
 /// Open changes that touch the same paths as `change` (or as `paths` when given).
-pub async fn overlaps(
+pub(crate) async fn overlaps(
     reader: &mut Reader<'_>,
     req: &wire::OverlapsRequest,
 ) -> Result<Vec<wire::Overlap>, Status> {
@@ -374,6 +377,9 @@ mod tests {
         for c in 1..=5 {
             open(&f, c, &["shared/file.rs", &format!("only{c}")]).await;
         }
+        // An empty request uses the head's own paths (change 2's commit writes "b"); the
+        // unrelated change also touches that file.
+        open(&f, 5, &["shared/file.rs", "only5", "b"]).await;
         // From the middle of the stack: parents, children and forks are all hidden.
         assert_eq!(run(&f, ask(2, &[])).await.unwrap(), vec![5]);
         assert_eq!(run(&f, ask(3, &["shared/file.rs"])).await.unwrap(), vec![5]);
