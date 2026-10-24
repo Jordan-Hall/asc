@@ -105,11 +105,11 @@ impl ServerFiles {
 
 impl FileSource for ServerFiles {
     fn paths(&self, ord: u32) -> Vec<Vec<u8>> {
-        match self.handle.block_on(
-            self.searcher
-                .scope_engine()
-                .locate(self.root, ord, MAX_DOC_PATHS),
-        ) {
+        match self.handle.block_on(self.searcher.scope_engine().locate(
+            self.root,
+            ord,
+            MAX_DOC_PATHS,
+        )) {
             Ok(p) => p.into_iter().map(|p| p.as_bytes().to_vec()).collect(),
             Err(_) => Vec::new(),
         }
@@ -143,7 +143,10 @@ impl FileSource for ServerFiles {
             .block_on(self.engine.lookup(self.root, &p))
             .map_err(src)?;
         let Some(e) = entry else { return Ok(None) };
-        if !matches!(e.kind, asc_core::object::Kind::File | asc_core::object::Kind::Exec) {
+        if !matches!(
+            e.kind,
+            asc_core::object::Kind::File | asc_core::object::Kind::Exec
+        ) {
             return Ok(None);
         }
         Ok(self
@@ -179,10 +182,7 @@ impl FileSource for ServerFiles {
             return Ok(None);
         };
         let ns = self.docs.ns().to_vec();
-        if let Ok(Some(t)) = self
-            .handle
-            .block_on(read_tags(&*self.objects, &ns, &file))
-        {
+        if let Ok(Some(t)) = self.handle.block_on(read_tags(&*self.objects, &ns, &file)) {
             return Ok(Some(Arc::new(t)));
         }
         let Some(lang) = self.lang(ord) else {

@@ -102,7 +102,7 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
     let src = sb.dir("src");
-    ok(&sb, &src, &["init", "-q", "--store", &url]);
+    ok(&sb, &src, &["init", "-q", "--refs", "shared", "--store", &url]);
     commit_file(&sb, &src, "bun.lock", "lock v1\n");
     ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
     let base = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
@@ -189,7 +189,7 @@ fn push_events_get_the_trusted_cache_mode_and_bad_input_is_refused() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
     let src = sb.dir("src");
-    ok(&sb, &src, &["init", "-q", "--store", &url]);
+    ok(&sb, &src, &["init", "-q", "--refs", "shared", "--store", &url]);
     commit_file(&sb, &src, "a.txt", "a\n");
     ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
     let head = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();

@@ -39,9 +39,15 @@ struct Out {
 
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let word = a.rev.as_deref().unwrap_or("HEAD");
-    let cs = crate::cli::restore::resolve_commit(ctx, word)
-        .await?
-        .ok_or_else(|| CliError::Fatal(format!("bad revision '{}'", clean(word))))?;
+    let mut found = crate::cli::restore::resolve_commit(ctx, word).await?;
+    if found.is_none()
+        && word.len() == 40
+        && let Ok(oid) = word.parse()
+    {
+        // The engine's revision resolver does not know git ids; the id map does.
+        found = crate::cli::conflict::changeset_of(ctx.ws()?, oid).await.ok();
+    }
+    let cs = found.ok_or_else(|| CliError::Fatal(format!("bad revision '{}'", clean(word))))?;
     let rows = crate::stack::change_rows(ctx)?;
     let change = rows
         .get(cs)

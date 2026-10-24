@@ -64,8 +64,7 @@ pub struct DocInfo {
 impl DocInfo {
     /// `Some(false)` only when the row is the worker's and the secret flag is clear.
     pub fn secret(&self) -> Option<bool> {
-        self.indexed
-            .then(|| self.flags & Flags::SECRET.bits() != 0)
+        self.indexed.then(|| self.flags & Flags::SECRET.bits() != 0)
     }
 }
 
@@ -132,11 +131,13 @@ impl NsDocs {
         if let Some(o) = self.by_file.get(id) {
             return Ok(Some(o));
         }
-        let row = sqlx::query("SELECT CAST(ord AS BIGINT) AS ord FROM ci_docs WHERE ns = $1 AND file = $2")
-            .bind(self.ns.clone())
-            .bind(id.as_bytes().to_vec())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT CAST(ord AS BIGINT) AS ord FROM ci_docs WHERE ns = $1 AND file = $2",
+        )
+        .bind(self.ns.clone())
+        .bind(id.as_bytes().to_vec())
+        .fetch_optional(&self.pool)
+        .await?;
         let Some(row) = row else { return Ok(None) };
         let ord: i64 = row.try_get("ord")?;
         let Ok(ord) = u32::try_from(ord) else {
@@ -212,7 +213,13 @@ impl NsDocs {
     /// table does not know is absent from the map.
     pub async fn info(&self, ords: &[u32]) -> Result<HashMap<u32, DocInfo>, sqlx::Error> {
         let mut out: HashMap<u32, DocInfo> = HashMap::new();
-        for part in ords.iter().take(MAX_INFO).copied().collect::<Vec<_>>().chunks(IN_BATCH) {
+        for part in ords
+            .iter()
+            .take(MAX_INFO)
+            .copied()
+            .collect::<Vec<_>>()
+            .chunks(IN_BATCH)
+        {
             let marks: Vec<String> = (0..part.len()).map(|i| format!("${}", i + 2)).collect();
             let sql = format!(
                 "SELECT CAST(ord AS BIGINT) AS ord, file, CAST(flags AS BIGINT) AS flags, \
@@ -230,7 +237,8 @@ impl NsDocs {
                 let size: i64 = r.try_get("size")?;
                 let versions: Vec<u8> = r.try_get("versions")?;
                 let file: Vec<u8> = r.try_get("file")?;
-                let (Ok(ord), Ok(file)) = (u32::try_from(ord), <[u8; 32]>::try_from(file.as_slice()))
+                let (Ok(ord), Ok(file)) =
+                    (u32::try_from(ord), <[u8; 32]>::try_from(file.as_slice()))
                 else {
                     continue;
                 };

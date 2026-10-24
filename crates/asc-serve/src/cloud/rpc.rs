@@ -903,7 +903,9 @@ impl Cloud for CloudService {
             .is_ok();
         let owner = refpolicy::owner_of(&ctx.principal);
         if owner.is_none() && !admin {
-            return Err(Status::permission_denied("the commit cloud needs a user identity"));
+            return Err(Status::permission_denied(
+                "the commit cloud needs a user identity",
+            ));
         }
         self.rpc
             .purge(&ctx, owner, admin, msg)

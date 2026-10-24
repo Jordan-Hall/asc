@@ -381,12 +381,16 @@ fn unknown_ops_are_refused() {
 }
 
 #[test]
+#[cfg(unix)] // the hook needs its exec bit
 fn a_vetoed_ref_swap_leaves_the_work_tree_alone() {
     let r = Repo::new();
     r.commit("b.txt", "two\n", "two");
     let two = r.sha("HEAD");
     // A hook that refuses the swap after the checks passed stands in for a racing writer.
-    let hooks = r.root.join(".git").join("hooks");
+    // `.git` is a file naming the git directory.
+    let gitfile = fs::read_to_string(r.root.join(".git")).unwrap();
+    let gitdir = gitfile.trim().strip_prefix("gitdir:").unwrap().trim();
+    let hooks = std::path::Path::new(gitdir).join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("reference-transaction");
     fs::write(

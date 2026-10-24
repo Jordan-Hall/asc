@@ -180,6 +180,19 @@ impl Repo {
             for p in preds {
                 pred_ids.push(cs_of(p).await);
             }
+            // `asc commit` already indexed the commit under a fresh id; the index keeps the
+            // first row, so drop it to give the commit the id this scenario names.
+            for sql in [
+                "DELETE FROM change_preds WHERE repo_id = ? AND cs = ?",
+                "DELETE FROM changes WHERE repo_id = ? AND cs = ?",
+            ] {
+                sqlx::query(sql)
+                    .bind(ws.ws.repo.0)
+                    .bind(cs.as_bytes().to_vec())
+                    .execute(db.pool())
+                    .await
+                    .unwrap();
+            }
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
             let row = ChangeRow {
                 cs,

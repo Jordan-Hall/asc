@@ -233,6 +233,7 @@ fn child(ctx: &Ctx, args: &[&str]) -> Result<Child> {
 /// The first `max` bytes of `r`. The rest is read and thrown away, so the child never blocks on
 /// a full pipe and memory stays bounded.
 fn read_bounded(mut r: impl std::io::Read, max: usize) -> Vec<u8> {
+    use std::io::Read as _;
     let mut buf = Vec::new();
     let _ = r.by_ref().take(max as u64).read_to_end(&mut buf);
     let _ = std::io::copy(&mut r, &mut std::io::sink());

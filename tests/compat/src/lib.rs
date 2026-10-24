@@ -904,7 +904,7 @@ pub struct Normaliser {
 }
 
 impl Normaliser {
-    fn new(root: &Path) -> Self {
+    pub fn new(root: &Path) -> Self {
         let native = root.to_string_lossy().into_owned();
         let slash = native.replace('\\', "/");
         let mut forms = vec![native, slash.clone()];

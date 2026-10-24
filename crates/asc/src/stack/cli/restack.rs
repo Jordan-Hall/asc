@@ -431,7 +431,7 @@ fn refuse_in_progress(ws: &WsCtx) -> Result<()> {
 
 /// A frozen change is never rewritten locally (SPEC §20.3): nothing has moved yet when this
 /// refuses, because the refs move in `apply` only.
-async fn refuse_frozen(ws: &WsCtx, rewriting: impl Iterator<Item = ChangesetId>) -> Result<()> {
+pub(crate) async fn refuse_frozen(ws: &WsCtx, rewriting: impl Iterator<Item = ChangesetId>) -> Result<()> {
     let rows = asc_state::changes::StateChanges::new(ws.db.clone(), ws.repo.key);
     let frozen = rows.frozen_set().await.map_err(fatal)?;
     if frozen.is_empty() {

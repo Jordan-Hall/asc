@@ -297,7 +297,9 @@ async fn unsettled(
              WHERE l.ns = $1 AND l.cs IN ({})",
             placeholders(batch.len(), 3)
         );
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(ns.as_bytes().to_vec()).bind(owner);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(ns.as_bytes().to_vec())
+            .bind(owner);
         for id in &batch {
             q = q.bind(id.as_bytes().to_vec());
         }
@@ -474,7 +476,9 @@ impl UserQuota {
             let sql = format!(
                 "INSERT INTO cs_claim (ns, owner, cs) VALUES {rows} ON CONFLICT DO NOTHING"
             );
-            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(ns.as_bytes().to_vec()).bind(owner);
+            let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(ns.as_bytes().to_vec())
+                .bind(owner);
             for (id, _) in chunk {
                 q = q.bind(id.as_bytes().to_vec());
             }

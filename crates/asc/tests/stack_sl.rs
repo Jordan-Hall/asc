@@ -94,18 +94,75 @@ impl Repo {
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
             let oid: GitOid = sha.parse().unwrap();
-            let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
-                .await
-                .unwrap()
-                .unwrap();
+            let cs = ChangesetId::from_bytes(
+                git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+            // `asc commit` already indexed the commit under a fresh id; the index keeps the
+            // first row, so drop it to give the commit the id this scenario names.
+            for sql in [
+                "DELETE FROM change_preds WHERE repo_id = ? AND cs = ?",
+                "DELETE FROM changes WHERE repo_id = ? AND cs = ?",
+            ] {
+                sqlx::query(sql)
+                    .bind(ws.ws.repo.0)
+                    .bind(cs.as_bytes().to_vec())
+                    .execute(db.pool())
+                    .await
+                    .unwrap();
+            }
             let rows = StateChanges::new(db.clone(), ws.ws.repo);
             let row = ChangeRow {
-                cs: ChangesetId::from_bytes(cs),
+                cs,
                 change: change_id(n),
                 meta: MetaId::from_bytes([n; 32]),
                 op: RewriteOp::New,
             };
             rows.insert(&row, &[]).await.unwrap();
+        });
+    }
+
+    /// Drops the change rows `asc commit` indexed: of `rev`, or of every commit with `None`.
+    fn unindex(&self, rev: Option<&str>) {
+        let sha = rev.map(|r| self.sha(r));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
+            let db = StateDb::open(&home).await.unwrap();
+            let ws = workspaces::list(&db, None).await.unwrap().remove(0);
+            let cs = match sha {
+                Some(sha) => {
+                    let oid: GitOid = sha.parse().unwrap();
+                    let cs = git_map::git_to_asc(&db, ws.ws.repo, oid, ObjectKind::Commit)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                    Some(cs.to_vec())
+                }
+                None => None,
+            };
+            let (preds, changes) = match &cs {
+                Some(_) => (
+                    "DELETE FROM change_preds WHERE repo_id = ? AND cs = ?",
+                    "DELETE FROM changes WHERE repo_id = ? AND cs = ?",
+                ),
+                None => (
+                    "DELETE FROM change_preds WHERE repo_id = ?",
+                    "DELETE FROM changes WHERE repo_id = ?",
+                ),
+            };
+            for sql in [preds, changes] {
+                let mut q = sqlx::query(sql).bind(ws.ws.repo.0);
+                if let Some(cs) = &cs {
+                    q = q.bind(cs.clone());
+                }
+                q.execute(db.pool()).await.unwrap();
+            }
         });
     }
 
@@ -182,6 +239,7 @@ fn sl_text_lists_the_stack_top_down_with_the_current_marker() {
 #[test]
 fn sl_without_indexed_changes_is_empty() {
     let r = Repo::new();
+    r.unindex(None);
     assert_eq!(r.sl_json(&[])["stacks"].as_array().unwrap().len(), 0);
     assert_eq!(r.ok(&["sl"]), "");
 }
@@ -232,6 +290,7 @@ fn a_commit_reachable_from_an_immutable_ref_is_not_a_draft() {
 fn change_id_prints_the_id_or_exits_one() {
     let r = Repo::new();
     r.stack();
+    r.unindex(Some("master"));
     assert_eq!(r.ok(&["change-id"]), format!("{}\n", change_id(2)));
     assert_eq!(
         r.ok(&["change-id", "--short", "HEAD~1"]),

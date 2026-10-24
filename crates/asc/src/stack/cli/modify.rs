@@ -102,6 +102,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let old = draft(ctx, &l, &st, None, "modify").await?;
     drop(st);
     drop(l);
+    restack::refuse_frozen(ws, std::iter::once(old)).await?;
 
     if a.patch {
         let code = create::run_tty(ctx, &["add", "-p"])?;
@@ -146,6 +147,7 @@ async fn into(ctx: &Ctx, a: &Args, word: &str) -> Result<ExitCode> {
     let st = l.stacks().await?;
     let head = st.current_head().ok_or_else(|| CliError::Fatal("asc: modify: HEAD is not on a draft change".into()))?;
     let target = draft(ctx, &l, &st, Some(word), "modify").await?;
+    restack::refuse_frozen(ws, std::iter::once(target)).await?;
     let stack = st.stack_of(head).await.map_err(stack_err)?;
     let below = stack.changes.iter().position(|&c| c == target).is_some_and(|i| i + 1 < stack.changes.len());
     drop(st);

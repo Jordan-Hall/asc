@@ -163,12 +163,9 @@ impl CloudExpirer {
             let cutoff = at.saturating_sub(i64::from(self.settings.abandon_days) * DAY);
             self.hide_stale(ns, branch, cutoff, at, report).await?;
         }
-        report.pruned += crate::cloud::purge::prune(
-            &self.pool,
-            ns,
-            at.saturating_sub(PURGE_RETAIN_DAYS * DAY),
-        )
-        .await?;
+        report.pruned +=
+            crate::cloud::purge::prune(&self.pool, ns, at.saturating_sub(PURGE_RETAIN_DAYS * DAY))
+                .await?;
         Ok(())
     }
 
@@ -195,7 +192,8 @@ impl CloudExpirer {
         let mut per_ws: Vec<((i64, String), i64)> = Vec::new();
         let mut deleted = 0usize;
         for r in &rows {
-            let (owner, name, cs): Head = (r.try_get("owner")?, r.try_get("name")?, r.try_get("cs")?);
+            let (owner, name, cs): Head =
+                (r.try_get("owner")?, r.try_get("name")?, r.try_get("cs")?);
             // Re-check the state: a head unhidden since the read stays.
             let n = sqlx::query(
                 "DELETE FROM cloud_heads WHERE ns = $1 AND owner = $2 AND name = $3 AND cs = $4 \
@@ -357,7 +355,8 @@ async fn open_pr_in_stack(
     cs: &[u8],
     change: &[u8],
 ) -> Result<bool, sqlx::Error> {
-    let ns_id = Ns::from_bytes(ns).ok_or_else(|| sqlx::Error::Decode("namespace is not 16 bytes".into()))?;
+    let ns_id = Ns::from_bytes(ns)
+        .ok_or_else(|| sqlx::Error::Decode("namespace is not 16 bytes".into()))?;
     let mut cur_cs = cs.to_vec();
     let mut cur_change = change.to_vec();
     for _ in 0..asc_engine::stack::MAX_STACK {
@@ -430,7 +429,11 @@ impl GcRootSource for CloudRoots {
             .bind(ns.to_vec())
             .fetch(&self.pool);
         let mut out = Vec::new();
-        while let Some(r) = rows.try_next().await.map_err(|e| other("cloud_heads", &e))? {
+        while let Some(r) = rows
+            .try_next()
+            .await
+            .map_err(|e| other("cloud_heads", &e))?
+        {
             let raw: Vec<u8> = r.try_get("cs").map_err(|e| other("cloud_heads", &e))?;
             // A damaged row must not silently drop a root.
             let id = <[u8; 32]>::try_from(raw.as_slice())
