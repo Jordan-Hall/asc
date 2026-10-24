@@ -1254,6 +1254,11 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
 
     let head_root = root_of(ws, old_commit).await?;
     let target_root = root_of(ws, target).await?;
+    // The work tree is written from the local tiers: a commit another machine made needs its
+    // content fetched first.
+    if old_commit != target {
+        crate::remote::hydrate_move(ctx, ws, head_root, target_root).await;
+    }
     let (index_root, _) = index_tree(ws, head_root).await?;
     let rows = stage::overlay(&ws.db, id, StageSet::Default).await?;
 
