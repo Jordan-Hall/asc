@@ -5,7 +5,7 @@
 //! The walk lists directories under the work tree root without following links and skips the
 //! metadata directories. A `.gitignore` that is a link, is larger than [`MAX_IGNORE`], or whose
 //! directory already holds a different `.ascignore` is left alone with a warning; a `.ascignore`
-//! is never overwritten. `asc migrate branchless` belongs to the branchless units.
+//! is never overwritten. `asc migrate branchless` is `branchless::migrate` (B19).
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -15,7 +15,6 @@ use std::process::ExitCode;
 
 use super::common::{CliError, Ctx, Result};
 use super::doctor::walk_dirs;
-use crate::msg::Msg;
 use crate::native::NativeSpec;
 
 /// Largest ignore file migrated (git itself reads at most 100 MiB; this is a sane bound).
@@ -39,7 +38,7 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "migrate",
-    flags: &["--move"],
+    flags: &["--move", "--prune-merged", "--json"],
     placeholders: &[],
 }];
 
@@ -119,9 +118,9 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     match words.next().as_deref() {
         Some("ignore") => {}
         Some("branchless") => {
-            return Err(CliError::Msg(Msg::AscNotYet {
-                cmd: "migrate branchless".to_owned(),
-            }));
+            let rest: Vec<String> = words.collect();
+            let opts = crate::branchless::migrate::parse(&rest).map_err(CliError::Usage)?;
+            return crate::branchless::migrate::run(ctx, opts).await;
         }
         Some(other) => return Err(usage(&format!("unknown migrate subcommand '{other}'"))),
         None => return Err(CliError::Usage(USAGE.to_owned())),
