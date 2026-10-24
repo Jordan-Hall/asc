@@ -3,6 +3,9 @@ import { existsSync } from "node:fs";
 import type * as vscodeTypes from "vscode";
 import { type Disposable, type PanelLike, registerWebviews, type WebviewHost, type WebviewLike } from "./host";
 import type { PanelKind } from "./panels";
+import type { BridgeManager } from "../bridge";
+import { nativeConfirm } from "./confirm";
+import { createRelayHandler } from "./relay";
 
 const COMMANDS: ReadonlyArray<readonly [string, PanelKind]> = [
   ["asc.openGraph", "graph"],
@@ -17,6 +20,7 @@ export function vscodeWebviews(
   ctx: vscodeTypes.ExtensionContext,
   roots: readonly string[],
   log: (line: string) => void,
+  bridge?: BridgeManager,
 ): WebviewHost {
   const dist = vscode.Uri.joinPath(ctx.extensionUri, "dist", "ui");
   const wrap = (w: vscodeTypes.Webview): WebviewLike => ({
@@ -50,8 +54,20 @@ export function vscodeWebviews(
     dispose: () => p.dispose(),
   });
 
+  // TODO(P28b-auth): pass `forgejo: forgejoExecutor(...)` once the forge URL setting and the token
+  // source (AscForgejoAuth) are wired; until then Forgejo requests are denied (deny by default).
+  const relayHandler = bridge
+    ? createRelayHandler({
+        upstream: () => bridge.node(),
+        roots: () => roots,
+        forgeRepos: () => [],
+        confirm: nativeConfirm((message, options, action) => vscode.window.showWarningMessage(message, options, action)),
+        log,
+      })
+    : undefined;
   const host = registerWebviews({
     roots,
+    ...(relayHandler ? { onRequest: relayHandler } : {}),
     api: {
       distRoot: dist,
       distHasStyle: existsSync(vscode.Uri.joinPath(dist, "index.css").fsPath),
@@ -73,6 +89,7 @@ export function vscodeWebviews(
     open: (k) => host.open(k),
     dispose() {
       for (const c of cmds) c.dispose();
+      relayHandler?.dispose();
       host.dispose();
     },
   };
