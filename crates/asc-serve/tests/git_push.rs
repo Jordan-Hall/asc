@@ -853,8 +853,11 @@ async fn a_lost_race_is_rejected_and_nothing_of_it_is_indexed() {
     let r = pushing.await.unwrap();
     assert!(!r.ok, "{}", r.stderr);
     assert!(r.stderr.contains("remote rejected"), "{}", r.stderr);
+    // The view already shows A's push when the hook runs, so the refusal comes before the commit
+    // ("changed while you pushed"); a race inside the commit is "was changed by someone else".
     assert!(
-        r.stderr.contains("was changed by someone else"),
+        r.stderr.contains("changed while you pushed")
+            || r.stderr.contains("was changed by someone else"),
         "the hook's reason is relayed: {}",
         r.stderr
     );
