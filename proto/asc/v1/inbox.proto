@@ -30,7 +30,7 @@ message InboxItem {
   uint32 latest_version = 3;       // 0 when the change has no recorded version
   string author = 4;               // handle of the first version's actor; empty when unknown
   int64 updated = 5;               // unix seconds of the newest event that put it here
-  uint32 open_threads = 6;
+  uint32 open_threads = 6;         // RETURNED and WAITING only; 0 elsewhere
   string requested_by = 7;         // NEEDS_REVIEW only
   bool pinned = 8;
   int64 snoozed_until = 9;         // unix seconds; 0 = not snoozed

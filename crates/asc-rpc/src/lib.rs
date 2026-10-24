@@ -38,14 +38,20 @@ pub(crate) mod pb {
 pub mod services {
     pub use crate::pb::changes_client;
     pub use crate::pb::changes_server;
+    pub use crate::pb::ci_client;
+    pub use crate::pb::ci_server;
     pub use crate::pb::cloud_client;
     pub use crate::pb::cloud_server;
     pub use crate::pb::code_intel_client;
     pub use crate::pb::code_intel_server;
+    pub use crate::pb::inbox_client;
+    pub use crate::pb::inbox_server;
     pub use crate::pb::projects_client;
     pub use crate::pb::projects_server;
     pub use crate::pb::repo_client;
     pub use crate::pb::repo_server;
+    pub use crate::pb::review_client;
+    pub use crate::pb::review_server;
     pub use crate::pb::workspace_client;
     pub use crate::pb::workspace_server;
 }
