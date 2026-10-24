@@ -8,6 +8,8 @@ docker compose -f deploy/compose.yml up -d --wait
 
 Stop and discard it with `docker compose -f deploy/compose.yml down -v`.
 
+The Coolify deployments (staging) are in `deploy/coolify/README.md`; this bundle is the local one.
+
 ## What it runs
 
 | Service | Role | Host address |

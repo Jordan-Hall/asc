@@ -9,38 +9,83 @@
 - **Built-in project graph and `asc affected`.** asc detects Rust (Cargo), Python (uv, pyproject, requirements), .NET (sln, csproj) and Bun/Node workspaces itself, as derived data per changeset, and computes affected projects (lockfile-aware, with per-project input hashes) locally or on the server. Output formats include JSON, a turbo filter, an nx project list and an Actions matrix.
 - **API-first CI, Scion-style efficiency.** Diffs, merge bases, logs, blame and `Affected` run on the server. A CI plan job needs one RPC and no checkout. Fetches are want-only and resumable, clients keep a bounded history window and ask the server for older history, every cache tier speaks the same RPCs (`asc serve --role cache`), seed snapshots warm cold machines, and a benchmark gate holds asc faster than git. Turbo hashes a virtual checkout without reading any files, and the turbo remote cache, Actions caches and artifacts live in the same object store. ASC's Actions fork (`asc/actions`) makes CI use asc with no workflow edits.
 - **Stacked changes and stacked PRs.** New verbs (`asc create`, `modify`, `absorb`, `restack`, `sync`, `submit`, `sl`, `undo`, …) give Graphite/Sapling/jj-style stacks with stable change ids and an operation log, without changing any git command or git SHA. The Forgejo fork shows stacked PRs natively (each PR's base is its parent, becoming the trunk when the parent merges) and lands stacks atomically through a merge-when-ready queue. Blame, history, commit-graph and worktree data that GitLens/GitKraken users rely on are served through asc's API for ASC's plugins.
-- **Forgejo, fully on asc.** A Forgejo fork reads and writes repositories through `asc serve`, and the git bridge becomes a cache. Cutover is staged and reversible: git-remote mode, then mirror mode, then asc as source of truth, then Forgejo reads through asc, then Forgejo writes through asc.
+- **Forgejo, fully on asc (staged; see docs/STATUS.md).** ASC Hub, a Forgejo fork, reads and writes repositories through `asc serve`, and the git bridge becomes a cache. Cutover is staged and reversible: git-remote mode, then mirror mode, then asc as source of truth, then Forgejo reads through asc, then Forgejo writes through asc.
+
+## Install
+
+Release files are published as Forgejo generic packages at `https://forge.example.org/api/packages/asc/generic/asc` (see [`docs/RELEASING.md`](docs/RELEASING.md)). Only x86_64 Windows and x86_64 Linux ship; there is no macOS or arm build yet.
+
+- **Windows:** the signed MSI (`<ver>/asc-<ver>-x86_64-pc-windows-msvc.msi`), or winget with the manifests in `<ver>/winget/` (package `asc.asc`, `packaging/winget/`). The MSI installs `asc.exe`, the shim directory, the `Client-ProjFS` feature and Defender exclusions, and registers the daemon task (`packaging/windows/`).
+- **Linux:** download `install.sh`, the `.tar.gz` and its `.minisig` from `<ver>/`, then `sh install.sh --tarball asc-<ver>-x86_64-unknown-linux-gnu.tar.gz [--shim] [--no-service]`. It verifies the minisign signature before unpacking and needs `minisign` (`packaging/linux/install.sh`).
+- **Update:** `asc upgrade` (signature-checked).
+- **From source:** Rust 1.95, `cargo build --release -p asc`. Default features are `serve`, `vfs-projfs`, `vfs-fuse`, `git-compat`, `git-ssh` and `http3`.
+
+Real git 2.40 or later must be installed. Run `asc doctor` afterwards. Step by step: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).
+
+## Quick start
+
+```sh
+# a local-only repository, no server
+asc init demo && cd demo
+echo hi > a.txt && asc add a.txt && asc commit -m "first"
+
+# or clone from the staging server (see docs/GETTING-STARTED.md for the token)
+asc clone https://asc-staging.example.org/<owner>/<repo>
+asc create -m "my change"        # start a change (a stack of them is allowed)
+asc submit -s                    # send the stack up as draft changes
+asc sync                         # fetch, fast-forward trunk, drop landed changes, restack
+```
+
+## Server components
+
+| Component | What it is | Where it is documented |
+|---|---|---|
+| `asc` | The client and the one binary: CLI, daemon, `git` shim and `asc serve`. | this repository |
+| `asc serve` | The storage and RPC server (gRPC, HTTP/2, optional HTTP/3), plus smart HTTP and SSH for plain `git`. | [`deploy/`](deploy/README.md), [`deploy/coolify/`](deploy/coolify/README.md) |
+| ASC Hub | The ASC fork of Forgejo v16 (repository `asc/asc-hub`, image `forge.example.org/asc/asc-hub`): web UI, review, Actions, packages. It asks `asc serve` for repository data. | `docs/asc/README.md` in the ASC Hub repository |
+
+See [`docs/STATUS.md`](docs/STATUS.md) for the architecture sketch and what runs where.
 
 ## Documents
 
 | File | Contents |
 |---|---|
-| [`docs/SPEC.md`](docs/SPEC.md) | The authoritative design: data model and byte formats, storage, RPCs, server, daemon and VFS, CLI map and the `git` shim, turbo and CI, project graph and `affected`, Forgejo plan, migration, security, operations, testing, roadmap |
-| [`docs/PLAN.md`](docs/PLAN.md) | Ordered implementation units, each with owned files, dependencies, an acceptance command and a brief |
-| [`docs/CARRY.md`](docs/CARRY.md) | Obligations that built units created for later units; read before every unit |
-| `docs/designs/*.md` | The three competing designs this spec was synthesised from (background only) |
-| `docs/research/*.md` | Research on ASC's repo, Forgejo internals, prior art, the Rust crate stack, turbo/CI, the Scion article, `stacks.md` (the stacked-changes design folded into SPEC §20), and `scion-checklist.md` (the required coverage list, including the user requirements) |
+| [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) | Install, authenticate, clone, the daily loop, plain git against `asc serve` |
+| [`docs/STATUS.md`](docs/STATUS.md) | What is built, what runs where, what is missing |
+| [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | The `git` shim, editor settings, `asc doctor` findings |
+| [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md) | git commands and what asc does differently |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | How a release is built, signed and published |
+| [`docs/SPEC.md`](docs/SPEC.md) | The authoritative design (normative) |
+| [`docs/PLAN.md`](docs/PLAN.md) | Ordered implementation units with acceptance commands (normative) |
+| [`docs/CARRY.md`](docs/CARRY.md) | Obligations that built units created for later units |
+| [`docs/divergences.md`](docs/divergences.md), [`docs/adapter-gaps.md`](docs/adapter-gaps.md) | Where asc differs from pinned git; harness gaps |
+| [`docs/git-fidelity.md`](docs/git-fidelity.md), [`docs/git-quirks.md`](docs/git-quirks.md), [`docs/git-defects.md`](docs/git-defects.md) | The git fidelity method and the quirk decisions |
+| [`docs/api.md`](docs/api.md), `docs/plugin-api*.md` | The RPC/API surface and the IDE plugin API |
+| [`docs/runbooks/`](docs/runbooks) | Per-tier operations runbooks |
+| `docs/designs/*.md`, `docs/research/*.md` | Background: competing designs and research |
 
-## Layout (once the workspace is built)
+## Layout
 
 ```
-crates/asc-core    data model, canonical codec, git rendering, content ingest
-crates/asc-store   Objects/Refs traits; bucket, cache directory, SQL refs, bucket refs
-crates/asc-engine  trees, commits, graph, skip lists, derived data, diff, merge, land, blame, sync, projects
-crates/asc-graph   project graph: detectors (Rust, Python, .NET, Node), lockfiles, ownership, affected
-crates/asc-state   $ASC_HOME, state.db, staging
-crates/asc-git     RealGit, synthetic .git for turbo, import/export, git-remote mode
-crates/asc-rpc     gRPC protocol (proto/asc/v1), server/client, retries and limits, local IPC
-crates/asc-wc      workspaces, status, switch, plain mode, worktrees
-crates/asc-vfs     ProjFS and FUSE providers, submodule composition
-crates/asc-serve   asc serve: refs, outbox, Forgejo hooks, mirror, land, indexes, cache role, seeds, Projects, turbo cache
-crates/asc-ci      asc ci checkout/affected/changed/warm/cache/artifact
-crates/asc-sim     hermetic simulation (tests)
-crates/asc         the single binary (asc, asc daemon, asc serve, and the git shim)
+crates/asc           the single binary (asc, asc daemon, asc serve, the git shim, the api bridge)
+crates/asc-core      data model, canonical codec, git rendering, content ingest
+crates/asc-store     Objects/Refs traits; bucket, cache directory, SQL refs, bucket refs
+crates/asc-engine    trees, commits, graph, derived data, diff, merge, land, blame, sync, projects
+crates/asc-graph     project graph: detectors (Rust, Python, .NET, Node), lockfiles, affected
+crates/asc-state     $ASC_HOME, state.db, staging
+crates/asc-git       RealGit, synthetic .git for turbo, import/export, git compatibility views
+crates/asc-rpc       gRPC protocol (proto/asc/v1), server/client, retries and limits, h2 and h3
+crates/asc-wc        workspaces, status, switch, plain mode, worktrees
+crates/asc-vfs       ProjFS and FUSE providers, submodule composition
+crates/asc-serve     asc serve: refs, land, smart HTTP, SSH, indexes, cache role, Projects, turbo cache
+crates/asc-ci        asc ci checkout/affected/changed/warm/cache/artifact
+crates/asc-codeintel code intelligence: doc model, chunking, secret scanner
+crates/asc-embed     embedding runtime for code intelligence (server only; asc.exe never links it)
+crates/asc-sim       hermetic simulation (tests)
 ```
 
 ## Status
 
-The design is at SPEC v1.3 (audit round 3; stacked changes folded in as SPEC §20). Units U01–U12 and U14 are built and U15 is in progress (`docs/CARRY.md` lists the obligations they created). Next is PLAN unit U01b, the v1.1–v1.3 skeleton delta. Units up to U25 produce a working local-only `asc` (init, add, commit, status, diff, log, branch, switch), installable as `git` and checked by the git compatibility suite, before anything touches the network or a virtual filesystem. The project-graph units G01–G08 deliver `asc affected` locally in the same phase. The stack track (C-units, the S-track of `stacks.md` renamed) adds local stacks after the merge/rebase units (C01–C15), stack sync and submit with the server (C17–C32), and stacked PRs in the Forgejo fork after K17 (C34–C48).
+See [`docs/STATUS.md`](docs/STATUS.md). In short: the local client, stacks, `asc serve`, the git transports and the release pipeline exist and a standalone staging server runs; IDE plugins are in progress; the Forgejo cutover stages are not done.
 
-Toolchain: Rust 1.95 (edition 2024), git ≥ 2.40, and Docker for the S3 and Postgres integration tests. On Windows, the virtual filesystem needs the `Client-ProjFS` optional feature.
+Toolchain: Rust 1.95 (edition 2024), git 2.40 or later, and Docker for the S3 and Postgres integration tests. On Windows, the virtual filesystem needs the `Client-ProjFS` optional feature.
