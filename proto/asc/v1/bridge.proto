@@ -1,0 +1,105 @@
+syntax = "proto3";
+package asc.v1;
+option go_package = "forgejo.org/modules/ascproto/ascv1";
+
+// bridge.proto — the transport of ASC's IDE plugins (SPEC 24.2, P01a-P01c).
+// `asc api --stdio` carries `u32 little-endian length || BridgeFrame` on stdin and stdout, at most 16 MiB
+// per frame. The host (VS Code, JetBrains) spawns one bridge per IDE process, restarts it with backoff and
+// resubscribes `Workspace.Watch` from its last token. Stdout carries frames only; logs go to stderr.
+
+// One frame. `id` pairs a reply with its call; the host picks it, and a reused live id is refused.
+message BridgeFrame {
+  uint32 id = 1;
+  oneof f {
+    Call call = 2;     // host to bridge: start a call
+    bytes reply = 3;   // bridge to host: one response message (a stream sends several)
+    End end = 4;       // bridge to host: the call is over (code 0 is success)
+    bool cancel = 5;   // host to bridge: drop the call (and kill a Run child)
+  }
+}
+
+message Call {
+  string method = 1;         // "asc.v1.Workspace/Status", "asc.v1.Changes/Stack", "asc.v1.Bridge/Run", ...
+  bytes request = 2;         // the encoded request message of the method
+  bool server_stream = 3;    // informative; the descriptor of the method decides
+  string root = 4;           // workspace root: selects ws_id, repo and remote; empty is the bridge's own directory
+}
+
+message End {
+  int32 code = 1;            // a gRPC status code number; 0 is OK
+  string message = 2;
+  bytes error_detail = 3;    // an encoded asc.v1.ErrorDetail when the server sent one
+}
+
+service Bridge {
+  rpc Hello(HelloRequest) returns (HelloResponse);
+  rpc Run(RunRequest) returns (stream RunEvent);
+  rpc Token(TokenRequest) returns (TokenResponse);
+  rpc StoreToken(StoreTokenRequest) returns (StoreTokenResponse);
+  rpc Events(EventsRequest) returns (stream BridgeEvent);
+}
+
+enum Connectivity {
+  CONNECTIVITY_UNSPECIFIED = 0;   // not known (yet)
+  CONNECTIVITY_UP = 1;
+  CONNECTIVITY_DOWN = 2;
+  CONNECTIVITY_NOT_CONFIGURED = 3;   // nothing to connect to (no server, or the daemon is turned off)
+}
+
+message HelloRequest {
+  repeated string roots = 1;      // absolute workspace roots; empty means the bridge's own directory
+}
+
+message RootInfo {
+  string root = 1;
+  string ws_id = 2;               // empty when the root is not an asc workspace
+  string repo = 3;
+  string remote_kind = 4;         // "none", "asc" or "git"
+  string forge_url = 5;           // credentials removed
+  bool branchless = 6;
+  Connectivity daemon = 7;
+  Connectivity server = 8;
+  Connectivity forge = 9;
+  string error = 10;              // why the root could not be opened; the other fields are then empty
+}
+
+message HelloResponse {
+  string asc_version = 1;          // for display only: gate on `features`, never on a version
+  repeated string features = 2;   // bridge flags joined with Repo.Version.features
+  repeated RootInfo roots = 3;
+}
+
+message RunRequest {
+  string verb = 1;
+  repeated string args = 2;       // flags and positionals, split by the host; no shell
+  string root = 3;                // no stdin field: the child's stdin is the null device
+}
+
+message RunEvent {
+  oneof event {
+    string stderr_line = 1;
+    bytes op_result = 2;          // an encoded asc.v1.OpResult (cli.proto)
+    int32 exit = 3;
+  }
+}
+
+message TokenRequest { string host = 1; }            // the forge host; host-only, never relayed to a webview
+message TokenResponse { string token = 1; }
+message StoreTokenRequest { string host = 1; string token = 2; }
+message StoreTokenResponse {}
+
+message EventsRequest {}
+
+message ConnectivityChange {
+  string root = 1;
+  Connectivity daemon = 2;
+  Connectivity server = 3;
+  Connectivity forge = 4;
+}
+
+message BridgeEvent {
+  oneof event {
+    ConnectivityChange connectivity = 1;
+    uint32 daemon_restarted = 2;   // the pid of the new daemon: resubscribe Watch
+  }
+}

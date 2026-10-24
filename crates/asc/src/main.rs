@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 mod branchless;
+mod bridge;
 mod child;
 mod cli;
 mod codeintel_local;

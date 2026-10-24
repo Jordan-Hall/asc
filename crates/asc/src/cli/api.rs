@@ -30,10 +30,12 @@ use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 use tonic::codegen::http::uri::PathAndQuery;
 
 use super::common::{CliError, Ctx, Result};
-use crate::msg::Msg;
 use crate::native::NativeSpec;
 
-const USAGE: &str = "usage: asc api <Rpc> [--json <request>|-] [--remote <name|url>]\n   or: asc api --list\n   or: asc api --docs";
+const USAGE: &str = "usage: asc api <Rpc> [--json <request>|-] [--remote <name|url>]
+   or: asc api --list
+   or: asc api --docs
+   or: asc api --stdio";
 
 /// Largest request read from `--json -`.
 const MAX_REQUEST: u64 = 16 * 1024 * 1024;
@@ -769,9 +771,10 @@ async fn call(ctx: &Ctx, o: &Opts, method: MethodDescriptor) -> Result<ExitCode>
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let o = parse(&a.rest)?;
     if o.stdio {
-        return Err(CliError::Msg(Msg::AscNotYet {
-            cmd: "api --stdio".to_owned(),
-        }));
+        if o.rpc.is_some() || o.json.is_some() || o.remote.is_some() || o.list || o.docs {
+            return Err(usage());
+        }
+        return crate::bridge::serve_stdio(ctx).await;
     }
     if o.list {
         print!("{}", list());
