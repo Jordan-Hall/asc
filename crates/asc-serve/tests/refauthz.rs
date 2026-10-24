@@ -637,3 +637,73 @@ async fn the_charge_is_the_changesets_actually_added_not_the_target_count() {
         .unwrap();
     assert_eq!(used(&f, 42).await, charged);
 }
+
+fn update_req(name: &str, to: &RefTarget) -> wire::UpdateRefsRequest {
+    wire::UpdateRefsRequest {
+        repo: Some(wire::RepoRef {
+            name: "o/r".into(),
+            id_mode: 0,
+        }),
+        updates: vec![wire::RefUpdate {
+            name: name.into(),
+            expect: Some(wire::ref_update::Expect::Absent(true)),
+            new: Some(wire::RefTarget::from(to)),
+            delete: false,
+        }],
+        mode: wire::UpdateMode::FastForward as i32,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_retried_push_cannot_bypass_or_double_the_quota() {
+    let f = fx(true).await;
+    let c1 = with_master(&f).await;
+    let c2 = f.forge.commit(Some(&c1), "two");
+
+    // A refused push, retried with the same op id, is refused again and charges nothing.
+    let tight = pusher(&f, 100, 10);
+    let one = ctx("42:alice", IdMode::Git);
+    for _ in 0..2 {
+        let e = tight
+            .import_git_push(
+                &one,
+                &f.forge.whole(),
+                &[cmd("refs/heads/feat", None, Some(&c2))],
+                &ImportOptions::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(code(&e), "QUOTA_EXCEEDED");
+    }
+    assert_eq!(used(&f, 42).await, 0);
+
+    // A completed push, replayed with the same op id, returns the stored result: no second charge.
+    let refs = server(&f, 1 << 30, 10);
+    let push = pusher(&f, 1 << 30, 10);
+    push_as_alice(&f, &push, "refs/heads/stack", &c2)
+        .await
+        .unwrap();
+    let charged = used(&f, 42).await;
+    assert!(charged > 0);
+    let target = f.stored("refs/users/42/heads/stack").await.unwrap();
+    let again = ctx("42:alice", IdMode::Asc);
+    for _ in 0..3 {
+        refs.update_refs(&again, update_req("refs/heads/copy", &target))
+            .await
+            .unwrap();
+    }
+    assert_eq!(used(&f, 42).await, charged);
+}
+
+#[test]
+fn the_cloud_config_caps_become_the_pipeline_quota() {
+    let cfg: asc_serve::config::CloudConfig =
+        toml::from_str("max_user_refs = 7\nmax_user_bytes = \"2 MiB\"").unwrap();
+    let q = cfg.user_quota();
+    assert_eq!(q.max_user_refs(), 7);
+    assert_eq!(q.quota().limits().max_user_bytes, 2 << 20);
+    let pipeline = PipelineHooks::default();
+    assert!(pipeline.set_user_quota(q).is_ok());
+    assert_eq!(pipeline.user_quota().max_user_refs(), 7);
+}
