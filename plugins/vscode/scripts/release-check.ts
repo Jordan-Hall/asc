@@ -142,8 +142,8 @@ export function checkVsixFiles(files: string[]): string[] {
       f
         .trim()
         .replaceAll("\\", "/")
-        .replace(/^extension//, "")
-        .replace(/^(readme|changelog).md$/i, (m) => m.toUpperCase().replace(/.MD$/, ".md")),
+        .replace(/^extension\//, "")
+        .replace(/^(readme|changelog)\.md$/i, (m) => m.toUpperCase().replace(/\.MD$/, ".md")),
     )
     .filter((f) => f !== "");
   for (const need of VSIX_REQUIRED)
