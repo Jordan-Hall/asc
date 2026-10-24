@@ -1,4 +1,4 @@
-//! Every `bytes` field of the repo, workspace, projects and changes protos carries a
+//! Every `bytes` field of the repo, workspace, projects, changes, inbox, review and ci protos carries a
 //! `(asc.v1.json)` option, so the asc JSON profile (SPEC 22.4.2) never guesses how to print it.
 
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MessageDescriptor};
@@ -8,6 +8,9 @@ const FILES: &[&str] = &[
     "asc/v1/workspace.proto",
     "asc/v1/projects.proto",
     "asc/v1/changes.proto",
+    "asc/v1/inbox.proto",
+    "asc/v1/review.proto",
+    "asc/v1/ci.proto",
 ];
 
 fn walk(m: &MessageDescriptor, has: &dyn Fn(&DynamicMessage) -> bool, miss: &mut Vec<String>) {
