@@ -26,8 +26,8 @@ export {
 } from "./ids";
 export { type GrpcWebOptions, checkBaseUrl, grpcWeb } from "./transport/grpc-web";
 export {
-  type ForgejoReply,
-  type ForgejoRequest,
+  type HostApiReply,
+  type HostApiRequest,
   type HostPort,
   type HostReply,
   type HostRequest,

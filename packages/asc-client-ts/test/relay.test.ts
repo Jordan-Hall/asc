@@ -18,7 +18,7 @@ import { WsStageRequestSchema, WsStatusRequestSchema } from "../src/gen/asc/v1/w
 import {
   type BridgeTransport,
   type CallOptions,
-  type ForgejoRequest,
+  type HostApiRequest,
   type HostReply,
   type HostRequest,
   host,
@@ -70,7 +70,7 @@ describe("gen-allowlist", () => {
 
   test("a Forgejo pair outside the rules fails", () => {
     const a = clone();
-    a.forgejo.pairs.push(
+    a.hostApi.providers.forgejo.pairs.push(
       { m: "DELETE", p: "/repos/{o}/{r}/pulls/{n}" },
       { m: "GET", p: "/admin/users" },
       { m: "PATCH", p: "/repos/{o}/{r}", body: ["name"] },
@@ -122,24 +122,24 @@ function rig(over: Partial<Parameters<typeof relay>[0]> = {}) {
   const up = fakeUpstream();
   const sent: HostReply[] = [];
   const logs: RelayLog[] = [];
-  const forgejoCalls: ForgejoRequest[] = [];
+  const hostApiCalls: HostApiRequest[] = [];
   const r = relay({
     upstream: up.t,
     allowlist: al,
     send: (m) => sent.push(m),
     roots: () => [ROOT],
-    forgeRepos: () => ["acme/app"],
+    remoteRepos: () => ["acme/app"],
     tmpDir: TMP,
     confirm: async () => true,
-    forgejo: async (req) => {
-      forgejoCalls.push(req);
+    hostApi: async (req) => {
+      hostApiCalls.push(req);
       return { status: 200, body: {} };
     },
     log: (e) => logs.push(e),
     ...over,
   });
   const tick = () => new Promise((res) => setTimeout(res, 5));
-  return { r, up, sent, logs, forgejoCalls, tick };
+  return { r, up, sent, logs, hostApiCalls, tick };
 }
 
 const status = toBinary(WsStatusRequestSchema, create(WsStatusRequestSchema, {}));
@@ -259,7 +259,7 @@ describe("relay: rpc", () => {
       allowlist: al,
       send: (m) => sent.push(m),
       roots: () => [ROOT],
-      forgeRepos: () => [],
+      remoteRepos: () => [],
     });
     r.handle({ id: 1, method: "asc.v1.Workspace/Watch", bytes: status });
     r.handle({ id: 1, method: "asc.v1.Workspace/Status", bytes: status });
@@ -353,21 +353,32 @@ describe("relay: Bridge.Run", () => {
   });
 });
 
-describe("relay: Forgejo", () => {
+describe("relay: host API", () => {
   const f = async (method: string, path: string, body?: unknown, over = {}) => {
     const t = rig(over);
-    t.r.handle({ id: 1, forgejo: { method, path, ...(body === undefined ? {} : { body }) } });
+    t.r.handle({
+      id: 1,
+      hostApi: { provider: "forgejo", method, path, ...(body === undefined ? {} : { body }) },
+    });
     await t.tick();
     return t;
   };
 
   test("a listed pair for an opened repo is forwarded", async () => {
     const t = await f("GET", "/repos/acme/app/pulls/12/files?page=2");
-    expect(t.forgejoCalls.length).toBe(1);
-    expect(t.sent[0]).toEqual({ id: 1, forgejo: { status: 200, body: {} } });
+    expect(t.hostApiCalls.length).toBe(1);
+    expect(t.sent[0]).toEqual({ id: 1, hostApi: { status: 200, body: {} } });
     const patch = await f("PATCH", "/repos/acme/app/pulls/3", { title: "t", draft: true });
-    expect(patch.forgejoCalls.length).toBe(1);
-    expect((await f("GET", "/user")).forgejoCalls.length).toBe(1);
+    expect(patch.hostApiCalls.length).toBe(1);
+    expect((await f("GET", "/user")).hostApiCalls.length).toBe(1);
+  });
+
+  test("an unknown provider is dropped", async () => {
+    const t = rig();
+    t.r.handle({ id: 1, hostApi: { provider: "other", method: "GET", path: "/user" } });
+    await t.tick();
+    expect(t.hostApiCalls.length).toBe(0);
+    expect(denied(t.sent, 1)).toBe(true);
   });
 
   test("everything else is dropped", async () => {
@@ -389,7 +400,7 @@ describe("relay: Forgejo", () => {
     ];
     for (const [m, p, b] of cases) {
       const t = await f(m, p, b);
-      expect([m, p, t.forgejoCalls.length]).toEqual([m, p, 0]);
+      expect([m, p, t.hostApiCalls.length]).toEqual([m, p, 0]);
       expect(denied(t.sent, 1)).toBe(true);
     }
   });
@@ -408,7 +419,7 @@ describe("relay: Forgejo", () => {
       },
     );
     expect(asked).toEqual(["Merge pull request"]);
-    expect(t.forgejoCalls.length).toBe(1);
+    expect(t.hostApiCalls.length).toBe(1);
     const s = await f(
       "POST",
       "/repos/acme/app/pulls/3/reviews/9",
@@ -421,8 +432,8 @@ describe("relay: Forgejo", () => {
       },
     );
     expect(asked[1]).toBe("Submit review");
-    expect(s.forgejoCalls.length).toBe(0);
-    const none = await f("GET", "/user", undefined, { forgejo: undefined });
+    expect(s.hostApiCalls.length).toBe(0);
+    const none = await f("GET", "/user", undefined, { hostApi: undefined });
     expect(denied(none.sent, 1)).toBe(true);
   });
 });
@@ -436,7 +447,7 @@ describe("host transport against the relay", () => {
       allowlist: al,
       send: (m) => queueMicrotask(() => toHost(m)),
       roots: () => [ROOT],
-      forgeRepos: () => [],
+      remoteRepos: () => [],
     });
     const t = host({
       post: (m: HostRequest) => queueMicrotask(() => rl.handle(m)),

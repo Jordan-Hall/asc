@@ -59,7 +59,7 @@ export function vscodeWebviews(
     ? createRelayHandler({
         upstream: () => bridge.node(),
         roots: () => roots,
-        forgeRepos: () => [],
+        remoteRepos: () => [],
         confirm: nativeConfirm((message, options, action) => vscode.window.showWarningMessage(message, options, action)),
         log,
       })

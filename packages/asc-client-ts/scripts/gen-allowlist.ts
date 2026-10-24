@@ -203,7 +203,9 @@ export function validateAllowlist(input: ValidateInput): string[] {
   }
 
   // Forgejo pairs.
-  const forgejo = isObj(a.forgejo) ? a.forgejo : {};
+  // The Forgejo adapter's operation list is the `forgejo` provider of the host API section.
+  const providers = isObj(a.hostApi) && isObj(a.hostApi.providers) ? a.hostApi.providers : {};
+  const forgejo = isObj(providers.forgejo) ? providers.forgejo : {};
   const pairs = Array.isArray(forgejo.pairs) ? forgejo.pairs : [];
   if (forgejo.base !== "/api/v1") errors.push('forgejo.base must be "/api/v1"');
   const keys = new Set<string>();

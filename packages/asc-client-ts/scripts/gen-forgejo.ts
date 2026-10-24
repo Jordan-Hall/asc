@@ -291,9 +291,12 @@ async function main(): Promise<void> {
   const allowlist = JSON.parse(
     readFileSync(resolve(root, "src/transport/allowlist.json"), "utf8"),
   ) as {
-    forgejo: { pairs: Pair[] };
+    hostApi: { providers: { forgejo: { pairs: Pair[] } } };
   };
-  const { swagger, overlaid } = filterSwagger(loadSwagger(swaggerPath), allowlist.forgejo.pairs);
+  const { swagger, overlaid } = filterSwagger(
+    loadSwagger(swaggerPath),
+    allowlist.hostApi.providers.forgejo.pairs,
+  );
   for (const o of overlaid)
     process.stderr.write(`gen-forgejo: overlay for ${o} (TODO(C41b)/TODO(P05))\n`);
   const ast = await openapiTS(toOpenApi3(swagger) as unknown as Parameters<typeof openapiTS>[0], {

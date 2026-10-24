@@ -1,10 +1,11 @@
 // `relay` transport: the extension-host side of the `host` transport (SPEC 24.4.5, 24.4.5.1, IP-D4).
 // It receives untrusted webview messages and forwards one to the real bridge transport only when it
 // matches an entry of allowlist.json. Deny by default: an unknown method, an unclassified or `never`
-// RPC, a verb or flag outside the schema, a Forgejo pair outside the list, a body field outside the
-// pair's list, or a request over a limit is dropped, logged without its payload, and answered with
-// PERMISSION_DENIED. Confirmation text is composed here from the parsed request, never taken from the
-// webview. The relay never sees or stores a Forgejo token: the injected `forgejo` executor adds it.
+// RPC, a verb or flag outside the schema, a host API pair outside its provider's list, a body field
+// outside the pair's list, or a request over a limit is dropped, logged without its payload, and
+// answered with PERMISSION_DENIED. Confirmation text is composed here from the parsed request, never
+// taken from the webview. The relay never sees or stores a host API token: the injected `hostApi`
+// executor adds it.
 import { isAbsolute, relative, resolve } from "node:path";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { RunRequestSchema } from "../gen/asc/v1/bridge_pb";
@@ -12,7 +13,7 @@ import { RequestMergeRequestSchema } from "../gen/asc/v1/changes_pb";
 import { WsStageRequestSchema } from "../gen/asc/v1/workspace_pb";
 import { BridgeError, type BridgeTransport } from "./bridge-node";
 import { MAX_FRAME } from "./frame";
-import type { ForgejoReply, ForgejoRequest, HostReply } from "./host";
+import type { HostApiReply, HostApiRequest, HostReply } from "./host";
 
 export type Confirm = "none" | "modal";
 
@@ -26,7 +27,7 @@ export interface VerbEntry {
   pos: string;
   confirm: Confirm;
 }
-export interface ForgejoPair {
+export interface HostApiPair {
   m: string;
   p: string;
   body?: string[];
@@ -41,7 +42,8 @@ export interface Allowlist {
   maxArgs: number;
   maxArgBytes: number;
   verbs: ReadonlyMap<string, VerbEntry>;
-  pairs: readonly ForgejoPair[];
+  /** The allowed operations of each host API provider, by provider id. */
+  providers: ReadonlyMap<string, readonly HostApiPair[]>;
 }
 
 type Json = Record<string, unknown>;
@@ -67,7 +69,8 @@ export function parseAllowlist(json: unknown): Allowlist {
     json.version !== 1 ||
     !isObj(json.rpc) ||
     !isObj(json.run) ||
-    !isObj(json.forgejo)
+    !isObj(json.hostApi) ||
+    !isObj(json.hostApi.providers)
   ) {
     throw new Error("allowlist: version 1 expected");
   }
@@ -99,17 +102,21 @@ export function parseAllowlist(json: unknown): Allowlist {
       confirm: conf(e.confirm, name),
     });
   }
-  const pairs: ForgejoPair[] = [];
-  for (const p of Array.isArray(json.forgejo.pairs) ? json.forgejo.pairs : []) {
-    if (!isObj(p) || typeof p.m !== "string" || typeof p.p !== "string") {
-      throw new Error("allowlist: bad pair");
+  const providers = new Map<string, readonly HostApiPair[]>();
+  for (const [id, prov] of Object.entries(json.hostApi.providers)) {
+    const pairs: HostApiPair[] = [];
+    for (const p of isObj(prov) && Array.isArray(prov.pairs) ? prov.pairs : []) {
+      if (!isObj(p) || typeof p.m !== "string" || typeof p.p !== "string") {
+        throw new Error("allowlist: bad pair");
+      }
+      pairs.push({
+        m: p.m,
+        p: p.p,
+        ...(p.body === undefined ? {} : { body: strs(p.body, "pair body") }),
+        confirm: conf(p.confirm, p.p),
+      });
     }
-    pairs.push({
-      m: p.m,
-      p: p.p,
-      ...(p.body === undefined ? {} : { body: strs(p.body, "pair body") }),
-      confirm: conf(p.confirm, p.p),
-    });
+    providers.set(id, pairs);
   }
   const run = json.run;
   if (typeof run.maxArgs !== "number" || typeof run.maxArgBytes !== "number") {
@@ -122,7 +129,7 @@ export function parseAllowlist(json: unknown): Allowlist {
     maxArgs: run.maxArgs,
     maxArgBytes: run.maxArgBytes,
     verbs,
-    pairs,
+    providers,
   };
 }
 
@@ -132,7 +139,8 @@ export type Parsed =
   | { kind: "write"; method: string; paths: number; patchBytes: number; change?: string }
   | { kind: "run"; verb: string; args: string[] }
   | {
-      kind: "forgejo";
+      kind: "hostApi";
+      provider: string;
       method: string;
       template: string;
       params: Record<string, string>;
@@ -325,7 +333,7 @@ export function checkRpc(
   return no("write rpc has no request check");
 }
 
-// ---- Forgejo ----
+// ---- Host API ----
 
 const SEGMENT = /^[A-Za-z0-9._~-]+$/;
 const MERGE_DO = new Set([
@@ -342,10 +350,16 @@ export interface ForgeScope {
   repos: readonly string[];
 }
 
-export function checkForgejo(al: Allowlist, req: ForgejoRequest, scope: ForgeScope): Decision {
-  if (typeof req.method !== "string" || typeof req.path !== "string") {
-    return no("bad forgejo request");
+export function checkHostApi(al: Allowlist, req: HostApiRequest, scope: ForgeScope): Decision {
+  if (
+    typeof req.provider !== "string" ||
+    typeof req.method !== "string" ||
+    typeof req.path !== "string"
+  ) {
+    return no("bad host api request");
   }
+  const pairs = al.providers.get(req.provider);
+  if (!pairs) return no("host api provider not allowed");
   const [rawPath = "", query] = req.path.split("?", 2) as [string, string | undefined];
   if (/[\\#]|%2e|%2f|%5c|%00/i.test(req.path) || hasControl(req.path) || !rawPath.startsWith("/")) {
     return no("bad path");
@@ -353,7 +367,7 @@ export function checkForgejo(al: Allowlist, req: ForgejoRequest, scope: ForgeSco
   if (query !== undefined && !/^[A-Za-z0-9_.~%=&,+-]*$/.test(query)) return no("bad query");
   const segs = rawPath.split("/").slice(1);
   if (segs.some((s) => !SEGMENT.test(s) || s === "." || s === "..")) return no("bad path");
-  for (const pair of al.pairs) {
+  for (const pair of pairs) {
     if (pair.m !== req.method) continue;
     const want = pair.p.split("/").slice(1);
     if (want.length !== segs.length) continue;
@@ -391,7 +405,8 @@ export function checkForgejo(al: Allowlist, req: ForgejoRequest, scope: ForgeSco
     return {
       ok: true,
       parsed: {
-        kind: "forgejo",
+        kind: "hostApi",
+        provider: req.provider,
         method: pair.m,
         template: pair.p,
         params,
@@ -400,7 +415,7 @@ export function checkForgejo(al: Allowlist, req: ForgejoRequest, scope: ForgeSco
       confirm: pair.confirm,
     };
   }
-  return no("forgejo operation not allowed");
+  return no("host api operation not allowed");
 }
 
 /** Native confirmation text, composed only from the parsed request. */
@@ -416,7 +431,7 @@ export function describe(p: Parsed): { title: string; targets: string[] } {
         title: p.method.endsWith("RequestMerge") ? "Merge change" : "Stage changes",
         targets: p.change ? [p.change] : [`${p.paths} path(s)`],
       };
-    case "forgejo": {
+    case "hostApi": {
       const targets = Object.entries(p.params).map(([k, v]) => `${k}=${v}`);
       const title = p.template.endsWith("/merge")
         ? "Merge pull request"
@@ -441,7 +456,7 @@ export interface ConfirmRequest {
 export interface RelayLog {
   event: "dropped" | "denied" | "upstream-error";
   reason: string;
-  /** The RPC name or "forgejo"; never request payloads. */
+  /** The RPC name or "hostApi"; never request payloads. */
   what?: string | undefined;
 }
 
@@ -453,12 +468,12 @@ export interface RelayOptions {
   /** Absolute roots the user opened; a call's root must be one of them (or empty). */
   roots(): readonly string[];
   /** `owner/repo` of the forge repos of the opened roots. */
-  forgeRepos(): readonly string[];
+  remoteRepos(): readonly string[];
   tmpDir?: string | undefined;
   /** Shows the native modal. Without it, every entry that needs confirmation is denied. */
   confirm?: ((c: ConfirmRequest) => Promise<boolean>) | undefined;
-  /** Runs a checked Forgejo request and adds the token; without it Forgejo requests are denied. */
-  forgejo?: ((req: ForgejoRequest, signal: AbortSignal) => Promise<ForgejoReply>) | undefined;
+  /** Runs a checked host API request and adds the token; without it host API requests are denied. */
+  hostApi?: ((req: HostApiRequest, signal: AbortSignal) => Promise<HostApiReply>) | undefined;
   log?: ((e: RelayLog) => void) | undefined;
 }
 
@@ -526,10 +541,10 @@ export function relay(opts: RelayOptions): Relay {
     }
   }
 
-  async function runForgejo(
+  async function runHostApi(
     id: number,
     d: Extract<Decision, { ok: true }>,
-    req: ForgejoRequest,
+    req: HostApiRequest,
     ac: AbortController,
   ) {
     try {
@@ -537,15 +552,15 @@ export function relay(opts: RelayOptions): Relay {
         opts.send({ id, end: { code: PERMISSION_DENIED, message: "not confirmed" } });
         return;
       }
-      const forgejo = await opts.forgejo?.(req, ac.signal);
-      if (!forgejo) {
-        opts.send({ id, end: { code: PERMISSION_DENIED, message: "forgejo is not available" } });
+      const hostApi = await opts.hostApi?.(req, ac.signal);
+      if (!hostApi) {
+        opts.send({ id, end: { code: PERMISSION_DENIED, message: "host api is not available" } });
       } else if (!ac.signal.aborted) {
-        opts.send({ id, forgejo });
+        opts.send({ id, hostApi });
       }
     } catch {
       if (!ac.signal.aborted)
-        opts.send({ id, end: { code: 13, message: "forgejo request failed" } });
+        opts.send({ id, end: { code: 13, message: "host api request failed" } });
     } finally {
       live.delete(id);
     }
@@ -566,24 +581,30 @@ export function relay(opts: RelayOptions): Relay {
       if (live.has(id)) return deny(id, { event: "dropped", reason: "id in use" }, false);
       if (live.size >= MAX_LIVE) return deny(id, { event: "dropped", reason: "too many calls" });
 
-      if (message.forgejo !== undefined) {
-        const f = message.forgejo;
-        if (!isObj(f) || typeof f.method !== "string" || typeof f.path !== "string") {
-          return deny(id, { event: "dropped", reason: "bad forgejo request" });
+      if (message.hostApi !== undefined) {
+        const f = message.hostApi;
+        if (
+          !isObj(f) ||
+          typeof f.provider !== "string" ||
+          typeof f.method !== "string" ||
+          typeof f.path !== "string"
+        ) {
+          return deny(id, { event: "dropped", reason: "bad host api request" });
         }
-        const req: ForgejoRequest = {
+        const req: HostApiRequest = {
+          provider: f.provider,
           method: f.method,
           path: f.path,
           ...("body" in f ? { body: f.body } : {}),
         };
-        const d = checkForgejo(opts.allowlist, req, { repos: opts.forgeRepos() });
-        if (!d.ok) return deny(id, { event: "denied", reason: d.reason, what: "forgejo" });
-        if (!opts.forgejo || (d.confirm === "modal" && !opts.confirm)) {
-          return deny(id, { event: "denied", reason: "unavailable", what: "forgejo" });
+        const d = checkHostApi(opts.allowlist, req, { repos: opts.remoteRepos() });
+        if (!d.ok) return deny(id, { event: "denied", reason: d.reason, what: "hostApi" });
+        if (!opts.hostApi || (d.confirm === "modal" && !opts.confirm)) {
+          return deny(id, { event: "denied", reason: "unavailable", what: "hostApi" });
         }
         const ac = new AbortController();
         live.set(id, ac);
-        void runForgejo(id, d, req, ac);
+        void runHostApi(id, d, req, ac);
         return;
       }
 

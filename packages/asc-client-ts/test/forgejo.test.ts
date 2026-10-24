@@ -99,7 +99,7 @@ describe("forgejo client", () => {
 });
 
 describe("guard", () => {
-  const guard = createGuard({ pairs: allowlist.forgejo.pairs });
+  const guard = createGuard({ pairs: allowlist.hostApi.providers.forgejo.pairs });
   const denied = (m: string, p: string, body?: unknown) => () => guard.check(m, p, body);
 
   test("DELETE and unlisted paths are denied", () => {
@@ -122,7 +122,7 @@ describe("guard", () => {
   });
 
   test("every allowlist pair matches itself", () => {
-    for (const p of allowlist.forgejo.pairs) {
+    for (const p of allowlist.hostApi.providers.forgejo.pairs) {
       const concrete = `/api/v1${p.p.replace(/\{[^}]*\}/g, "1")}`;
       expect(guard.check(p.m, concrete, undefined).pair.p).toBe(p.p);
     }
