@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "rpc": {
+    "read": [
+      "asc.v1.Workspace/Status",
+      "asc.v1.Workspace/Diff",
+      "asc.v1.Workspace/Log",
+      "asc.v1.Workspace/Blame",
+      "asc.v1.Workspace/Affected",
+      "asc.v1.Workspace/Watch",
+      "asc.v1.Workspace/Stacks",
+      "asc.v1.Workspace/Worktrees",
+      "asc.v1.Workspace/Conflicts",
+      "asc.v1.Workspace/CommitGraph",
+      "asc.v1.Workspace/ReadFile",
+      "asc.v1.Workspace/Search",
+      "asc.v1.Workspace/Symbols",
+      "asc.v1.Workspace/Semantic",
+      "asc.v1.Workspace/IndexStatus",
+      "asc.v1.Repo/Version",
+      "asc.v1.Repo/Log",
+      "asc.v1.Repo/Diff",
+      "asc.v1.Repo/Blame",
+      "asc.v1.Repo/ReadChangeset",
+      "asc.v1.Repo/ReadFile",
+      "asc.v1.Repo/Grep",
+      "asc.v1.Repo/CommitGraph",
+      "asc.v1.Repo/LineHistory",
+      "asc.v1.Repo/Compare",
+      "asc.v1.Repo/RepoConfig",
+      "asc.v1.Repo/ListRefs",
+      "asc.v1.Repo/Resolve",
+      "asc.v1.Repo/MergeBase",
+      "asc.v1.Repo/IsAncestor",
+      "asc.v1.Repo/LastCommits",
+      "asc.v1.Repo/ReadTree",
+      "asc.v1.Repo/Stat",
+      "asc.v1.Repo/CheckAttr",
+      "asc.v1.Repo/WatchRefs",
+      "asc.v1.Changes/ResolveChanges",
+      "asc.v1.Changes/Stack",
+      "asc.v1.Changes/Versions",
+      "asc.v1.Changes/InterDiff",
+      "asc.v1.Changes/Mergeability",
+      "asc.v1.Changes/Overlaps",
+      "asc.v1.Projects/ProjectGraph",
+      "asc.v1.Projects/Affected",
+      "asc.v1.Projects/ProjectHashes",
+      "asc.v1.Cloud/GetWorkspace",
+      "asc.v1.Cloud/ListWorkspaces",
+      "asc.v1.CodeIntel/Search",
+      "asc.v1.CodeIntel/Symbols",
+      "asc.v1.CodeIntel/Semantic",
+      "asc.v1.CodeIntel/IndexStatus"
+    ],
+    "write": [
+      {
+        "name": "asc.v1.Workspace/Stage",
+        "confirm": "none",
+        "limits": {
+          "patchBytes": 1048576,
+          "paths": 10000
+        }
+      },
+      {
+        "name": "asc.v1.Changes/RequestMerge",
+        "confirm": "modal"
+      }
+    ],
+    "run": ["asc.v1.Bridge/Run"],
+    "never": [
+      "asc.v1.Workspace/Ping",
+      "asc.v1.Workspace/Mount",
+      "asc.v1.Workspace/Unmount",
+      "asc.v1.Workspace/Switch",
+      "asc.v1.Workspace/Dehydrate",
+      "asc.v1.Workspace/Prefetch",
+      "asc.v1.Workspace/Journal",
+      "asc.v1.Workspace/ClearJournal",
+      "asc.v1.Workspace/Stats",
+      "asc.v1.Workspace/Shutdown",
+      "asc.v1.Repo/HasObjects",
+      "asc.v1.Repo/GetObjects",
+      "asc.v1.Repo/PutObjects",
+      "asc.v1.Repo/UpdateRefs",
+      "asc.v1.Repo/GitMap",
+      "asc.v1.Repo/Archive",
+      "asc.v1.Repo/Commit",
+      "asc.v1.Repo/Merge",
+      "asc.v1.Repo/Apply",
+      "asc.v1.Repo/CopyClosure",
+      "asc.v1.Repo/RepoAdmin",
+      "asc.v1.Repo/ImportGitPush",
+      "asc.v1.Repo/Ingest",
+      "asc.v1.Repo/FindLanding",
+      "asc.v1.Repo/Classify",
+      "asc.v1.Repo/Rebase",
+      "asc.v1.Changes/RestackChanges",
+      "asc.v1.Changes/SetReviewState",
+      "asc.v1.Cloud/UpdateWorkspace",
+      "asc.v1.Cloud/Purge",
+      "asc.v1.Bridge/Hello",
+      "asc.v1.Bridge/Token",
+      "asc.v1.Bridge/StoreToken",
+      "asc.v1.Bridge/Events"
+    ]
+  },
+  "run": {
+    "reject": [
+      "-c",
+      "-C",
+      "--exec",
+      "--exec-path",
+      "--git-dir",
+      "--work-tree",
+      "--config-env",
+      "--namespace",
+      "--super-prefix",
+      "--upload-pack",
+      "--receive-pack",
+      "--force",
+      "--force-with-lease"
+    ],
+    "aliases": "never",
+    "stdin": "none",
+    "endOfOptions": true,
+    "maxArgs": 64,
+    "maxArgBytes": 65536,
+    "types": {
+      "rev": "^[^-s\u0000-\u001f][^\u0000-\u001f]{0,255}$",
+      "path": "inside root after canonicalisation",
+      "tmpfile": "absolute, inside $ASC_PLUGIN_TMP, written by the host",
+      "user": "^[A-Za-z0-9._-]{1,40}$"
+    },
+    "verbs": {
+      "create": {
+        "flags": {
+          "--no-branch": "bool",
+          "-m": "str:65536",
+          "-a": "bool"
+        },
+        "pos": "path*"
+      },
+      "modify": {
+        "flags": {
+          "--into": "rev",
+          "-m": "str:65536",
+          "-a": "bool"
+        },
+        "pos": "path*"
+      },
+      "reword": {
+        "flags": {
+          "-m": "str:65536"
+        },
+        "pos": "rev?"
+      },
+      "absorb": {
+        "flags": {
+          "-n": "bool",
+          "-f": "bool"
+        }
+      },
+      "move": {
+        "flags": {
+          "--onto": "rev",
+          "--source": "rev",
+          "-n": "bool"
+        }
+      },
+      "reorder": {
+        "flags": {
+          "--todo": "tmpfile"
+        }
+      },
+      "split": {
+        "flags": {
+          "--hunks": "tmpfile"
+        },
+        "pos": "rev?"
+      },
+      "squash": {
+        "flags": {
+          "-m": "str:65536"
+        },
+        "pos": "rev*"
+      },
+      "fold": {
+        "flags": {
+          "-m": "str:65536"
+        },
+        "pos": "rev*"
+      },
+      "restack": {
+        "pos": "rev?"
+      },
+      "sync": {},
+      "continue": {},
+      "abort": {},
+      "up": {
+        "pos": "int:100?"
+      },
+      "down": {
+        "pos": "int:100?"
+      },
+      "top": {},
+      "bottom": {},
+      "submit": {
+        "flags": {
+          "-s": "bool",
+          "--draft": "bool",
+          "--publish": "bool",
+          "--reviewer": "user*",
+          "--update-only": "bool",
+          "--auto-merge": "bool"
+        },
+        "pos": "rev?",
+        "confirm": "modal"
+      },
+      "stack get": {
+        "flags": {
+          "--worktree": "path"
+        },
+        "pos": "rev"
+      },
+      "stack merge": {
+        "flags": {
+          "--now": "bool"
+        },
+        "pos": "rev?",
+        "confirm": "modal"
+      },
+      "stack delete": {
+        "pos": "rev?",
+        "confirm": "modal"
+      },
+      "stack rename": {
+        "pos": "str:80"
+      },
+      "stack freeze": {
+        "pos": "rev?"
+      },
+      "stack unfreeze": {
+        "pos": "rev?"
+      },
+      "hide": {
+        "pos": "rev*",
+        "confirm": "modal"
+      },
+      "unhide": {
+        "pos": "rev*"
+      },
+      "abandon": {
+        "pos": "rev*",
+        "confirm": "modal"
+      },
+      "uncommit": {},
+      "unamend": {},
+      "undo": {},
+      "redo": {},
+      "op log": {
+        "flags": {
+          "-n": "int:500"
+        }
+      },
+      "sl": {
+        "flags": {
+          "--cloud": "bool",
+          "--user": "user"
+        }
+      },
+      "share": {
+        "pos": "rev?"
+      },
+      "switch": {
+        "flags": {
+          "--detach": "bool"
+        },
+        "pos": "rev"
+      },
+      "restore": {
+        "flags": {
+          "--staged": "bool",
+          "--worktree": "bool",
+          "--source": "rev"
+        },
+        "pos": "path+",
+        "confirm": "modal"
+      },
+      "cherry-pick": {
+        "pos": "rev+"
+      },
+      "revert": {
+        "pos": "rev+"
+      },
+      "worktree add": {
+        "flags": {
+          "--ephemeral": "bool"
+        },
+        "pos": "path rev?"
+      },
+      "worktree remove": {
+        "pos": "path",
+        "confirm": "modal"
+      },
+      "stash push": {
+        "flags": {
+          "-u": "bool",
+          "-m": "str:1024"
+        },
+        "pos": "path*"
+      },
+      "stash pop": {},
+      "stash apply": {},
+      "stash list": {},
+      "stash drop": {
+        "confirm": "modal"
+      },
+      "fetch": {
+        "flags": {
+          "--prune": "bool"
+        }
+      },
+      "pull": {
+        "flags": {
+          "--rebase": "bool",
+          "--ff-only": "bool"
+        }
+      },
+      "push": {
+        "flags": {
+          "-u": "bool"
+        },
+        "confirm": "modal"
+      }
+    }
+  },
+  "forgejo": {
+    "base": "/api/v1",
+    "origin": "the forge URL of an opened asc root",
+    "repoScope": "{o}/{r} must be the forge repo of an opened asc root",
+    "pairs": [
+      {
+        "m": "GET",
+        "p": "/user"
+      },
+      {
+        "m": "GET",
+        "p": "/user/asc/inbox"
+      },
+      {
+        "m": "PUT",
+        "p": "/user/asc/inbox/{id}",
+        "body": ["pinned", "snoozed_until"]
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/assignees"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/pulls/{n}"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/pulls/{n}/files"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/pulls/{n}/commits"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/pulls/{n}/reviews"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}/comments"
+      },
+      {
+        "m": "POST",
+        "p": "/repos/{o}/{r}/pulls/{n}/reviews",
+        "body": ["body", "commit_id", "comments"],
+        "note": "pending review only: `event` must be absent"
+      },
+      {
+        "m": "POST",
+        "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}",
+        "body": ["body", "event"],
+        "confirm": "modal",
+        "note": "review submit"
+      },
+      {
+        "m": "PATCH",
+        "p": "/repos/{o}/{r}/pulls/{n}",
+        "body": ["title", "body", "draft"]
+      },
+      {
+        "m": "POST",
+        "p": "/repos/{o}/{r}/pulls/{n}/merge",
+        "body": ["Do", "merge_when_checks_succeed"],
+        "confirm": "modal"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/actions/runs"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/actions/runs/{id}"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/actions/runs/{id}/jobs"
+      },
+      {
+        "m": "GET",
+        "p": "/repos/{o}/{r}/actions/jobs/{id}/logs"
+      },
+      {
+        "m": "POST",
+        "p": "/repos/{o}/{r}/actions/runs/{id}/rerun"
+      }
+    ],
+    "never": [
+      "every DELETE",
+      "/admin/**",
+      "/orgs/**",
+      "/user/keys/**",
+      "/user/applications/**",
+      "/users/*/tokens/**",
+      "PATCH or DELETE /repos/{o}/{r}",
+      "/repos/{o}/{r}/hooks/**",
+      "/repos/{o}/{r}/collaborators/**",
+      "/repos/{o}/{r}/branch_protections/**"
+    ]
+  }
+}
