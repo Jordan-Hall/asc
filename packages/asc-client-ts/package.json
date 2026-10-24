@@ -1,0 +1,30 @@
+{
+  "name": "@asc/asc-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./bridge": "./src/gen/asc/v1/bridge_pb.ts",
+    "./changes": "./src/gen/asc/v1/changes_pb.ts",
+    "./cloud": "./src/gen/asc/v1/cloud_pb.ts",
+    "./codeintel": "./src/gen/asc/v1/codeintel_pb.ts",
+    "./projects": "./src/gen/asc/v1/projects_pb.ts",
+    "./repo": "./src/gen/asc/v1/repo_pb.ts",
+    "./workspace": "./src/gen/asc/v1/workspace_pb.ts"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "codegen": "cd ../.. && buf generate proto --template proto/buf.gen.ts.yaml",
+    "build": "bun build src/index.ts --target=node --format=esm --minify --outdir dist",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "2",
+    "@types/bun": "^1.4.4"
+  }
+}
