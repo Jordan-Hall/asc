@@ -770,6 +770,29 @@ impl Inner {
         }
     }
 
+    /// Whether any command that adds objects may be stored as a user ref. Read-only; a policy
+    /// that cannot be loaded or applied answers `true`.
+    async fn may_store_user_ref(&self, session: &Session, commands: &[PushCommand]) -> bool {
+        let policy = match crate::refpolicy::RepoPolicy::load(
+            self.registry.pool(),
+            session.entry.key.0,
+        )
+        .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(repo = %session.entry.name, error = %e, "loading the ref policy before a push");
+                return true;
+            }
+        };
+        let owner = crate::refpolicy::owner_of(&session.ctx.principal);
+        commands.iter().filter(|c| c.new.is_some()).any(|c| {
+            policy
+                .classify(owner, &c.name)
+                .map_or(true, |class| class.is_user())
+        })
+    }
+
     async fn check_and_import(
         &self,
         session: &Arc<Session>,
@@ -840,33 +863,37 @@ impl Inner {
             import_grade: false,
             via: Some(VIA),
         };
+        // A push that may store a ref as a user ref brings objects no shared ref reaches into the
+        // view. The marker that moves the view to v0/v1 is written BEFORE the import, so no
+        // reader can slip in between, and the push is refused when it cannot be written. A
+        // policy that cannot be read counts as "may be a user ref" (fail closed).
+        if self.may_store_user_ref(session, &commands).await {
+            mark_unshared_or_refuse(&session.view, &session.entry.name)?;
+        }
         let done = self
             .import
             .import_git_push(&session.ctx, &quarantine, &commands, &opts)
             .await
             .map_err(|status| refusal_of(&status))?;
 
-        // `UpdateRefs` answers with the names the pusher used, so the name a command was stored
-        // under comes from the repository's ref policy, which classified the push the same way.
-        let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), session.entry.key.0)
-            .await
-            .map_err(|e| tracing::error!(repo = %session.entry.name, error = %e, "loading the ref policy after a push"))
-            .ok();
-        let owner = crate::refpolicy::owner_of(&session.ctx.principal);
+        // `UpdateRefs` says, per command, whether it stored the ref as a user ref: the one
+        // classification that moved the refs. No second look at the policy is taken, so what is
+        // hidden is exactly what was stored privately. A reply that does not answer every
+        // command is refused (fail closed).
+        if done.results.len() != commands.len() {
+            return Err(server_failed(
+                "push results",
+                &"the result count differs from the command count",
+            ));
+        }
         let mut lines = Vec::new();
         let mut private = Vec::new();
         for (command, result) in commands.iter().zip(&done.results) {
-            let stored = policy
-                .as_ref()
-                .and_then(|p| p.classify(owner, &command.name).ok())
-                .map_or_else(
-                    || result.name.clone(),
-                    |class| class.stored(&command.name).to_owned(),
-                );
-            if stored != command.name && stored.starts_with("refs/users/") {
+            if result.user {
                 private.push(command.name.clone());
             }
-            if let Some(line) = user_ref_line(&command.name, &stored, &session.entry.default_branch)
+            if let Some(line) =
+                user_ref_line(&command.name, result.user, &session.entry.default_branch)
             {
                 lines.push(line);
             }
@@ -880,9 +907,8 @@ impl Inner {
                 .hidden
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(session.view.hide_refs(private));
-            if let Err(e) = session.view.mark_unshared() {
-                tracing::error!(repo = %session.entry.name, error = %e, "marking the git view as holding unshared objects");
-            }
+            // Already written before the import unless the policy moved in between.
+            mark_unshared_or_refuse(&session.view, &session.entry.name)?;
         }
         session.record(PushOutcome {
             result: "ok".into(),
@@ -898,6 +924,15 @@ impl Inner {
         });
         Ok(HookReply::accept(lines.join("\n")))
     }
+}
+
+/// Writes the view's unshared marker, or refuses the push: a push stored as a user ref must not
+/// leave the view served over v2 with objects no shared ref reaches.
+fn mark_unshared_or_refuse(view: &GitView, repo: &dyn std::fmt::Display) -> Result<(), Refused> {
+    view.mark_unshared().map_err(|e| {
+        tracing::error!(repo = %repo, error = %e, "marking the git view as holding unshared objects");
+        server_failed("unshared marker", &e)
+    })
 }
 
 /// The first command git will fail after the hook accepted the push, judged from the view's refs
@@ -936,9 +971,9 @@ fn server_failed(context: &str, e: &dyn std::fmt::Display) -> Refused {
 
 /// The `remote:` line for a plain push that `UpdateRefs` stored as the pusher's own branch
 /// (SPEC §25.6): the pipeline answered with a `refs/users/…` name for a `refs/heads/…` push.
-pub fn user_ref_line(pushed: &str, stored: &str, trunk: &str) -> Option<String> {
+pub fn user_ref_line(pushed: &str, user: bool, trunk: &str) -> Option<String> {
     let branch = pushed.strip_prefix("refs/heads/")?;
-    (stored != pushed && stored.starts_with("refs/users/")).then(|| {
+    user.then(|| {
         format!(
             "asc: stored as your branch '{}'; run 'asc submit' or push HEAD:refs/for/{} to open a draft change",
             printable(branch, 200),
@@ -1187,19 +1222,13 @@ mod tests {
 
     #[test]
     fn user_ref_line_only_for_a_stored_user_branch() {
-        let line = user_ref_line("refs/heads/feat", "refs/users/7/heads/feat", "master").unwrap();
+        let line = user_ref_line("refs/heads/feat", true, "master").unwrap();
         assert_eq!(
             line,
             "asc: stored as your branch 'feat'; run 'asc submit' or push HEAD:refs/for/master to open a draft change"
         );
-        assert_eq!(
-            user_ref_line("refs/heads/feat", "refs/heads/feat", "master"),
-            None
-        );
-        assert_eq!(
-            user_ref_line("refs/tags/v1", "refs/users/7/tags/v1", "master"),
-            None
-        );
+        assert_eq!(user_ref_line("refs/heads/feat", false, "master"), None);
+        assert_eq!(user_ref_line("refs/tags/v1", true, "master"), None);
     }
 
     #[test]

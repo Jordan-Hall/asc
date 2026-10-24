@@ -1098,10 +1098,19 @@ impl GitHttp {
                     // sync below has removed them.
                     let hidden = p.session.take_hidden();
                     handle.spawn(async move {
-                        if let Err(e) = views.ensure(&entry, registry.refs()).await {
-                            tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
+                        match views.ensure(&entry, registry.refs()).await {
+                            Ok(crate::git_view::ViewAnswer::Ready(_)) => drop(hidden),
+                            other => {
+                                if let Err(e) = other {
+                                    tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
+                                }
+                                // The private refs are still in the view: they stay hidden until
+                                // a later sync removes them.
+                                if let Some(h) = hidden {
+                                    h.until_next_sync();
+                                }
+                            }
                         }
-                        drop(hidden);
                     });
                 }
                 if outcome.starts_with("limit:") {
@@ -1271,10 +1280,7 @@ impl GitHttp {
         }
         // A view that cannot be opened is treated as holding unshared objects; the request then
         // fails in `ready_view` with the proper answer.
-        let unshared = self
-            .views
-            .view(&entry)
-            .map_or(true, |v| v.holds_unshared());
+        let unshared = self.views.view(&entry).map_or(true, |v| v.holds_unshared());
         protocol = served_protocol_for(service, entry.mode, protocol, unshared);
         audit.version = version_label(protocol.as_ref());
 

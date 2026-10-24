@@ -1441,6 +1441,7 @@ impl<O: Objects + 'static, R: Refs + 'static> RefsHandler for EngineBackend<O, R
                 name: u.name.clone(),
                 old: current.as_ref().map(pb::RefTarget::from),
                 new: new.as_ref().map(pb::RefTarget::from),
+                user: false,
             });
             updates.push(RefUpdate {
                 name,

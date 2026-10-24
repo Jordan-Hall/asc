@@ -77,7 +77,8 @@ message UpdateRefsRequest { RepoRef repo = 1; repeated RefUpdate updates = 2; Up
   repeated string push_options = 4; HookMode hooks = 5; int64 ttl_seconds = 6;
   bool no_content_merge = 7; }   // no_content_merge: LAND only (§20.5)
 message Rewrite { bytes old = 1 [(asc.v1.json) = JSON_KIND_HEX]; bytes new = 2 [(asc.v1.json) = JSON_KIND_HEX]; }
-message RefResult { string name = 1; RefTarget old = 2; RefTarget new = 3; }
+message RefResult { string name = 1; RefTarget old = 2; RefTarget new = 3;
+  bool user = 4; }   // user: stored as the pusher's user ref (SPEC §21.5.1), under `refs/users/`
 message UpdateRefsResponse { repeated RefResult results = 1; repeated Rewrite rewritten = 2; string message = 3; }
 
 message ResolveRequest { RepoRef repo = 1; repeated string revspecs = 2; }

@@ -144,6 +144,7 @@ impl RefsHandler for Refs {
                 name: format!("refs/pull/{}/head", i + 1),
                 old: None,
                 new: u.new.clone(),
+                user: false,
             })
             .collect();
         Ok(wire::UpdateRefsResponse {

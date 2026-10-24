@@ -264,12 +264,28 @@ struct ViewInner {
     /// Refs present in the view that are not shared, hidden from every `upload-pack` until the
     /// next sync removes them (see [`GitView::hide_refs`]).
     hidden: std::sync::Mutex<Vec<String>>,
+    /// Names kept hidden past their guard ([`HiddenRefs::until_next_sync`]) until a sync
+    /// succeeds.
+    sticky: std::sync::Mutex<Vec<String>>,
 }
 
 /// Names hidden from `upload-pack` by [`GitView::hide_refs`]; they are shown again on drop.
 pub struct HiddenRefs {
     view: Arc<ViewInner>,
     names: Vec<String>,
+}
+
+impl HiddenRefs {
+    /// Keeps the names hidden after this guard is gone, until the view's next successful sync
+    /// (which removes the refs for good). For a sync that failed: showing the refs then would
+    /// publish a private branch.
+    pub fn until_next_sync(self) {
+        self.view
+            .sticky
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(self.names.iter().cloned());
+    }
 }
 
 impl Drop for HiddenRefs {
@@ -388,6 +404,7 @@ impl GitView {
                 sync_lock: Mutex::new(()),
                 slots: OnceLock::new(),
                 hidden: std::sync::Mutex::new(Vec::new()),
+                sticky: std::sync::Mutex::new(Vec::new()),
             }),
         }
     }
@@ -417,11 +434,21 @@ impl GitView {
     }
 
     fn hidden_now(&self) -> Vec<String> {
-        self.inner
+        let mut all = self
+            .inner
             .hidden
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .clone();
+        all.extend(
+            self.inner
+                .sticky
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned(),
+        );
+        all
     }
 
     /// Records that the view's object store now holds, or is about to hold, objects no shared
@@ -475,13 +502,10 @@ impl GitView {
             return Err(ViewError::ReadOnlyMirror);
         }
         self.verify_config()?;
-        Ok(self.inner.server.pack_hiding(
-            service,
-            &self.inner.dir,
-            req,
-            &[],
-            &self.hidden_now(),
-        )?)
+        Ok(self
+            .inner
+            .server
+            .pack_hiding(service, &self.inner.dir, req, &[], &self.hidden_now())?)
     }
 
     /// [`GitView::spawn_pack`] with extra `ASC_*` environment variables for the child and the
@@ -496,13 +520,10 @@ impl GitView {
             return Err(ViewError::ReadOnlyMirror);
         }
         self.verify_config()?;
-        Ok(self.inner.server.pack_hiding(
-            service,
-            &self.inner.dir,
-            req,
-            env,
-            &self.hidden_now(),
-        )?)
+        Ok(self
+            .inner
+            .server
+            .pack_hiding(service, &self.inner.dir, req, env, &self.hidden_now())?)
     }
 
     /// [`GitView::spawn_pack_with_env`] in session mode ([`ServerGit::session_with_env`]): the
@@ -559,6 +580,11 @@ impl GitView {
     }
 
     fn mark_ready(&self) {
+        self.inner
+            .sticky
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         if fs::write(self.inner.dir.join(READY_MARKER), b"").is_ok() {
             self.inner.state.store(READY, Ordering::SeqCst);
         }
@@ -893,6 +919,47 @@ mod tests {
         assert!(text.contains("refs/heads/master"), "{text}");
         assert!(!text.contains("refs/heads/feat"), "{text}");
         drop(guard);
+        assert!(advertised(&view).contains("refs/heads/feat"));
+    }
+
+    #[test]
+    fn git_view_deferred_hidden_refs_stay_hidden_after_the_guard() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (view, server) = view_in(tmp.path());
+        let odb = Odb::open(view.path()).expect("odb");
+        let tree = odb.write_loose(ObjectKind::Tree, b"").expect("tree");
+        let body = format!(
+            "tree {tree}
+author A <a@x> 1700000000 +0000
+committer A <a@x> 1700000000 +0000
+
+m
+"
+        );
+        let commit = odb
+            .write_loose(ObjectKind::Commit, body.as_bytes())
+            .expect("commit");
+        server
+            .update_refs(
+                view.path(),
+                &[
+                    RefUpdate::Set {
+                        name: "refs/heads/master".into(),
+                        oid: commit,
+                    },
+                    RefUpdate::Set {
+                        name: "refs/heads/feat".into(),
+                        oid: commit,
+                    },
+                ],
+            )
+            .expect("refs");
+        view.hide_refs(vec!["refs/heads/feat".into()])
+            .until_next_sync();
+        let text = advertised(&view);
+        assert!(!text.contains("refs/heads/feat"), "{text}");
+        assert!(text.contains("refs/heads/master"), "{text}");
+        view.mark_ready();
         assert!(advertised(&view).contains("refs/heads/feat"));
     }
 

@@ -448,6 +448,7 @@ pub async fn enable(
                 name: full.clone(),
                 old: Some(wire::RefTarget::from(&old)),
                 new: None,
+                user: false,
             });
             effects.push(EffectRef {
                 name: full,
@@ -466,6 +467,7 @@ pub async fn enable(
                     name: stored,
                     old: None,
                     new: Some(wire::RefTarget::from(&old)),
+                    user: true,
                 });
             }
         }

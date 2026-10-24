@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use asc_git::compat::{GitView, KillReason, PackService, ServerChild, Service};
+use asc_git::compat::{GitView, KillReason, PackService, ProtocolVersion, ServerChild, Service};
 use asc_rpc::IdMode;
 use asc_rpc::auth::{Access, Decision, Principal, SshFingerprint};
 use asc_rpc::server::{CallCtx, RepoName};
@@ -77,6 +77,7 @@ const AUTH_UNAVAILABLE: &str = "asc: access could not be checked; retry later\n"
 const INTERNAL: &str = "asc: the git service failed\n";
 const TOO_LARGE: &str = "asc: the push is larger than this server accepts\n";
 const TOO_SLOW: &str = "asc: the git request took too long\n";
+const VIEW_CHANGED: &str = "asc: the repository changed during this session; reconnect and retry\n";
 
 // ------------------------------------------------------------------------------ audit
 
@@ -411,7 +412,14 @@ impl GitSshExec {
         } else {
             limits.fetch_body_bytes
         };
-        let done = pump(child, io, &meter, cap, &view).await;
+        // A v2 upload-pack session outlives the check above: a private push may land while it is
+        // open, and v2 would then let it `want` the private id. It is ended at the next client
+        // bytes after the view is marked.
+        let v2_upload = service == Service::UploadPack
+            && protocol
+                .as_ref()
+                .is_some_and(|p| p.version() == ProtocolVersion::V2);
+        let done = pump(child, io, &meter, cap, &view, v2_upload).await;
 
         // 6. What the hook decided is more precise than how the child ended.
         let mut ran = Ran {
@@ -437,13 +445,24 @@ impl GitSshExec {
                 ran.refs = refs_text(&outcome);
                 // asc's refs are committed; bring the view in step (a user ref or a ref that git
                 // set differently is removed or reset) so the next fetch finds it ready.
-                if let Err(e) = self
+                let hidden = s.take_hidden();
+                match self
                     .svc
                     .views
                     .ensure(&entry, self.svc.registry.refs())
                     .await
                 {
-                    tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
+                    Ok(crate::git_view::ViewAnswer::Ready(_)) => drop(hidden),
+                    other => {
+                        if let Err(e) = other {
+                            tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
+                        }
+                        // The private refs are still in the view: they stay hidden until a later
+                        // sync removes them.
+                        if let Some(h) = hidden {
+                            h.until_next_sync();
+                        }
+                    }
                 }
             }
         }
@@ -506,6 +525,8 @@ enum Cut {
     Budget,
     /// The channel closed.
     Gone,
+    /// A protocol v2 session met a view that has since come to hold unshared objects.
+    Unshared,
 }
 
 struct Pumped {
@@ -551,6 +572,7 @@ async fn pump(
     meter: &PackMeter,
     cap: u64,
     view: &GitView,
+    v2_upload: bool,
 ) -> Pumped {
     let activity = child.activity();
     let stdin = child.stdin.take();
@@ -637,6 +659,10 @@ async fn pump(
             }
             part = io.input.recv(), if input_open => match part {
                 Some(chunk) => {
+                    if v2_upload && view.holds_unshared() {
+                        cut = Some(Cut::Unshared);
+                        break;
+                    }
                     bytes_in = bytes_in.saturating_add(chunk.len() as u64);
                     if bytes_in > cap {
                         cut = Some(Cut::TooLarge);
@@ -715,6 +741,7 @@ async fn pump(
         (Some(Cut::TooLarge), _) => Some(TOO_LARGE),
         (Some(Cut::Budget), _) => Some(BUSY),
         (Some(Cut::Gone), _) => None,
+        (Some(Cut::Unshared), _) => Some(VIEW_CHANGED),
         (None, Some(KillReason::Deadline | KillReason::Idle)) => Some(TOO_SLOW),
         _ => None,
     };
@@ -730,6 +757,7 @@ async fn pump(
         (Some(Cut::TooLarge), _, _) => "limit:push_bytes".to_owned(),
         (Some(Cut::Budget), _, _) => "limit:objects_budget".to_owned(),
         (Some(Cut::Gone), _, _) => "limit:client_gone".to_owned(),
+        (Some(Cut::Unshared), _, _) => "rejected:view_changed".to_owned(),
         (None, Some(KillReason::Deadline | KillReason::Idle), _) => "killed".to_owned(),
         (None, Some(KillReason::Requested), _) => "limit:client_gone".to_owned(),
         (None, None, true) => "ok".to_owned(),
