@@ -20,7 +20,7 @@ export interface RelayHandlerOptions {
   /** Absolute asc workspace roots. */
   roots: () => readonly string[];
   /** `owner/repo` of the forge repos of the roots. */
-  forgeRepos: () => readonly string[];
+  remoteRepos: () => readonly string[];
   confirm: (c: ConfirmRequest) => Promise<boolean>;
   tmpDir?: string | undefined;
   /** Log lines never carry request payloads. */
@@ -50,7 +50,7 @@ export function createRelayHandler(o: RelayHandlerOptions): RequestHandler & { d
         );
       },
       roots: o.roots,
-      forgeRepos: o.forgeRepos,
+      remoteRepos: o.remoteRepos,
       tmpDir: o.tmpDir,
       confirm: o.confirm,
       log: logEvent,

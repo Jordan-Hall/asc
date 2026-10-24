@@ -29,7 +29,7 @@ function fixture(confirm: (t: string) => boolean = () => true) {
   const handler = createRelayHandler({
     upstream: () => upstream,
     roots: () => [],
-    forgeRepos: () => ["o/r"],
+    remoteRepos: () => ["o/r"],
     confirm: async (c) => (asked.push(c.title), confirm(c.title)),
     log: (l) => logs.push(l),
   });
@@ -65,9 +65,9 @@ describe("relay", () => {
     expect(calls.length).toBe(0);
   });
 
-  test("forgejo is denied without an executor", async () => {
+  test("a host api call is denied without an executor", async () => {
     const f = fixture();
-    f.handler(f.w, { id: 5, forgejo: { method: "GET", path: "/repos/o/r/pulls" } });
+    f.handler(f.w, { id: 5, hostApi: { provider: "p", method: "GET", path: "/repos/o/r/pulls" } });
     await f.wait();
     expect(f.sent).toEqual([{ id: 5, end: { code: 7, message: "request not allowed" } }]);
   });

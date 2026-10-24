@@ -9,26 +9,28 @@ import {
   type CallOptions,
 } from "./bridge-node";
 
-/** Webview to host. `forgejo` requests carry no token; the host adds it. */
+/** Webview to host. `hostApi` requests carry no token; the host adds it. */
 export type HostRequest =
   | { id: number; method: string; bytes: Uint8Array; root?: string }
   | { id: number; cancel: true }
-  | { id: number; forgejo: ForgejoRequest };
+  | { id: number; hostApi: HostApiRequest };
 
 /** Host to webview. */
 export type HostReply =
   | { id: number; reply: Uint8Array }
   | { id: number; end: { code: number; message: string; detail?: Uint8Array } }
-  | { id: number; forgejo: ForgejoReply };
+  | { id: number; hostApi: HostApiReply };
 
-export interface ForgejoRequest {
+export interface HostApiRequest {
+  /** Which host API adapter answers (a key of the allowlist's `hostApi.providers`). */
+  provider: string;
   method: string;
-  /** Path below `/api/v1`, with the query string. */
+  /** Path below the provider's API base, with the query string. */
   path: string;
   body?: unknown;
 }
 
-export interface ForgejoReply {
+export interface HostApiReply {
   status: number;
   body: unknown;
 }
@@ -46,15 +48,15 @@ interface Pending {
 }
 
 export interface HostTransport extends BridgeTransport {
-  /** A Forgejo REST call through the host, which checks it against the allowlist and adds the token. */
-  forgejo(request: ForgejoRequest, signal?: AbortSignal): Promise<ForgejoReply>;
+  /** A host API call through the host, which checks it against the allowlist and adds the token. */
+  hostApi(request: HostApiRequest, signal?: AbortSignal): Promise<HostApiReply>;
 }
 
 export function host(port: HostPort): HostTransport {
   let next = 1;
   let state: BridgeState = "up";
   const calls = new Map<number, Pending>();
-  const forgejoCalls = new Map<number, (r: ForgejoReply | BridgeError) => void>();
+  const hostApiCalls = new Map<number, (r: HostApiReply | BridgeError) => void>();
 
   const stop = port.listen((m) => {
     const call = calls.get(m.id);
@@ -62,9 +64,9 @@ export function host(port: HostPort): HostTransport {
     else if ("end" in m) {
       calls.delete(m.id);
       call?.end(m.end.code, m.end.message, m.end.detail ?? new Uint8Array(0));
-    } else if ("forgejo" in m) {
-      forgejoCalls.get(m.id)?.(m.forgejo);
-      forgejoCalls.delete(m.id);
+    } else if ("hostApi" in m) {
+      hostApiCalls.get(m.id)?.(m.hostApi);
+      hostApiCalls.delete(m.id);
     }
   });
 
@@ -128,20 +130,20 @@ export function host(port: HostPort): HostTransport {
       return first;
     },
     stream,
-    forgejo(request, signal) {
+    hostApi(request, signal) {
       const id = next++;
-      return new Promise<ForgejoReply>((resolve, reject) => {
-        forgejoCalls.set(id, (r) => (r instanceof BridgeError ? reject(r) : resolve(r)));
+      return new Promise<HostApiReply>((resolve, reject) => {
+        hostApiCalls.set(id, (r) => (r instanceof BridgeError ? reject(r) : resolve(r)));
         signal?.addEventListener(
           "abort",
           () => {
-            forgejoCalls.delete(id);
+            hostApiCalls.delete(id);
             port.post({ id, cancel: true });
             reject(new BridgeError(1, "cancelled"));
           },
           { once: true },
         );
-        port.post({ id, forgejo: request });
+        port.post({ id, hostApi: request });
       });
     },
     close() {

@@ -358,104 +358,108 @@
       }
     }
   },
-  "forgejo": {
-    "base": "/api/v1",
-    "origin": "the forge URL of an opened asc root",
-    "repoScope": "{o}/{r} must be the forge repo of an opened asc root",
-    "pairs": [
-      {
-        "m": "GET",
-        "p": "/user"
-      },
-      {
-        "m": "GET",
-        "p": "/user/asc/inbox"
-      },
-      {
-        "m": "PUT",
-        "p": "/user/asc/inbox/{id}",
-        "body": ["pinned", "snoozed_until"]
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/assignees"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/pulls/{n}"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/pulls/{n}/files"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/pulls/{n}/commits"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/pulls/{n}/reviews"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}/comments"
-      },
-      {
-        "m": "POST",
-        "p": "/repos/{o}/{r}/pulls/{n}/reviews",
-        "body": ["body", "commit_id", "comments"],
-        "note": "pending review only: `event` must be absent"
-      },
-      {
-        "m": "POST",
-        "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}",
-        "body": ["body", "event"],
-        "confirm": "modal",
-        "note": "review submit"
-      },
-      {
-        "m": "PATCH",
-        "p": "/repos/{o}/{r}/pulls/{n}",
-        "body": ["title", "body", "draft"]
-      },
-      {
-        "m": "POST",
-        "p": "/repos/{o}/{r}/pulls/{n}/merge",
-        "body": ["Do", "merge_when_checks_succeed"],
-        "confirm": "modal"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/actions/runs"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/actions/runs/{id}"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/actions/runs/{id}/jobs"
-      },
-      {
-        "m": "GET",
-        "p": "/repos/{o}/{r}/actions/jobs/{id}/logs"
-      },
-      {
-        "m": "POST",
-        "p": "/repos/{o}/{r}/actions/runs/{id}/rerun"
+  "hostApi": {
+    "providers": {
+      "forgejo": {
+        "base": "/api/v1",
+        "origin": "the forge URL of an opened asc root",
+        "repoScope": "{o}/{r} must be the forge repo of an opened asc root",
+        "pairs": [
+          {
+            "m": "GET",
+            "p": "/user"
+          },
+          {
+            "m": "GET",
+            "p": "/user/asc/inbox"
+          },
+          {
+            "m": "PUT",
+            "p": "/user/asc/inbox/{id}",
+            "body": ["pinned", "snoozed_until"]
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/assignees"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/pulls/{n}"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/pulls/{n}/files"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/pulls/{n}/commits"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/pulls/{n}/reviews"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}/comments"
+          },
+          {
+            "m": "POST",
+            "p": "/repos/{o}/{r}/pulls/{n}/reviews",
+            "body": ["body", "commit_id", "comments"],
+            "note": "pending review only: `event` must be absent"
+          },
+          {
+            "m": "POST",
+            "p": "/repos/{o}/{r}/pulls/{n}/reviews/{id}",
+            "body": ["body", "event"],
+            "confirm": "modal",
+            "note": "review submit"
+          },
+          {
+            "m": "PATCH",
+            "p": "/repos/{o}/{r}/pulls/{n}",
+            "body": ["title", "body", "draft"]
+          },
+          {
+            "m": "POST",
+            "p": "/repos/{o}/{r}/pulls/{n}/merge",
+            "body": ["Do", "merge_when_checks_succeed"],
+            "confirm": "modal"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/actions/runs"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/actions/runs/{id}"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/actions/runs/{id}/jobs"
+          },
+          {
+            "m": "GET",
+            "p": "/repos/{o}/{r}/actions/jobs/{id}/logs"
+          },
+          {
+            "m": "POST",
+            "p": "/repos/{o}/{r}/actions/runs/{id}/rerun"
+          }
+        ],
+        "never": [
+          "every DELETE",
+          "/admin/**",
+          "/orgs/**",
+          "/user/keys/**",
+          "/user/applications/**",
+          "/users/*/tokens/**",
+          "PATCH or DELETE /repos/{o}/{r}",
+          "/repos/{o}/{r}/hooks/**",
+          "/repos/{o}/{r}/collaborators/**",
+          "/repos/{o}/{r}/branch_protections/**"
+        ]
       }
-    ],
-    "never": [
-      "every DELETE",
-      "/admin/**",
-      "/orgs/**",
-      "/user/keys/**",
-      "/user/applications/**",
-      "/users/*/tokens/**",
-      "PATCH or DELETE /repos/{o}/{r}",
-      "/repos/{o}/{r}/hooks/**",
-      "/repos/{o}/{r}/collaborators/**",
-      "/repos/{o}/{r}/branch_protections/**"
-    ]
+    }
   }
 }

@@ -169,7 +169,7 @@ describe("webview host", () => {
     const { api, st, webview } = fakeApi();
     registerWebviews({ api, roots: ["/r"] });
     st.view?.(webview());
-    (st.listeners[0] as (m: unknown) => void)({ id: 1, forgejo: { method: "DELETE", path: "/x" } });
+    (st.listeners[0] as (m: unknown) => void)({ id: 1, hostApi: { provider: "p", method: "DELETE", path: "/x" } });
     await new Promise((r) => setTimeout(r, 10));
     expect(st.logs).toHaveLength(1);
     expect(st.posted).toEqual([]);

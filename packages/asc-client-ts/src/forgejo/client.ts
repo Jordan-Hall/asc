@@ -47,10 +47,10 @@ export interface ForgejoClient {
 export function createForgejoClient(opts: ForgejoClientOptions): ForgejoClient {
   const origin = parseBaseUrl(opts.baseUrl, opts.allowLoopbackHttp ?? false);
   const prefix = origin.pathname.replace(/\/+$/, "");
-  const pairs = opts.pairs ?? (allowlist.forgejo.pairs as ForgejoPair[]);
+  const pairs = opts.pairs ?? (allowlist.hostApi.providers.forgejo.pairs as ForgejoPair[]);
   const guard = createGuard({
     pairs,
-    base: `${prefix}${allowlist.forgejo.base}`,
+    base: `${prefix}${allowlist.hostApi.providers.forgejo.base}`,
     repos: opts.repos ? new Set(opts.repos) : undefined,
   });
   const inner: FetchLike = opts.fetch ?? ((r) => fetch(r));
@@ -89,7 +89,7 @@ export function createForgejoClient(opts: ForgejoClientOptions): ForgejoClient {
   };
 
   const api = createClient<paths>({
-    baseUrl: origin.origin + prefix + allowlist.forgejo.base,
+    baseUrl: origin.origin + prefix + allowlist.hostApi.providers.forgejo.base,
     fetch: guarded,
   });
   return { api, guard };
