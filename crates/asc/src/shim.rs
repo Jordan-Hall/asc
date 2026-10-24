@@ -11,7 +11,6 @@ use asc_git::realgit::RealGit;
 use gix_config::file::{Metadata, init};
 use gix_config::{File, Source};
 
-use crate::dispatch::{self, Program};
 use crate::env::GitEnv;
 
 /// A `GIT_DIR` that names no repository.
@@ -119,7 +118,11 @@ fn expand_home(value: &str) -> PathBuf {
     }
 }
 
-pub(crate) async fn run(args: Vec<OsString>) -> ExitCode {
+/// Runs `args` through real git when the invocation is not asc's, and returns its exit code;
+/// `None` means asc handles it (`dispatch`). This is synchronous on purpose: a fall-through must
+/// not pay for the async runtime or the extension registrations that only asc's own commands
+/// use (SPEC §11.4: the shim adds at most 5 ms on Windows).
+pub(crate) fn fall_through(args: &[OsString]) -> Option<ExitCode> {
     let get = |k: &str| std::env::var_os(k);
     let mut env = GitEnv::from_process();
     let tail = args.get(1..).unwrap_or_default();
@@ -142,14 +145,14 @@ pub(crate) async fn run(args: Vec<OsString>) -> ExitCode {
         route(rest, &cwd, root.as_deref(), &settings)
     };
     match route {
-        Route::Asc => dispatch::run(Program::Git, args).await,
+        Route::Asc => None,
         Route::Real { default_branch } => {
             let add = default_branch && !settings.branch_set;
             // Real git cannot read a workspace's synthetic `.git`; a command that needs no
             // repository must not trip over it. `clone` and `init` ignore the parent anyway.
             let word = rest.first().and_then(|w| w.to_str());
             let hide = root.is_some() && !matches!(word, Some("clone" | "init"));
-            exec_real(&args[1..], add, hide, settings.real_git)
+            Some(exec_real(&args[1..], add, hide, settings.real_git))
         }
     }
 }

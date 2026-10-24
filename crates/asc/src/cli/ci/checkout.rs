@@ -136,6 +136,21 @@ impl Runner<'_> {
     }
 }
 
+impl Runner<'_> {
+    /// The name of a ref whose tip is the git commit `sha`, or `None`.
+    fn ref_at(&self, cwd: &Path, sha: &str) -> Result<Option<String>> {
+        let out = self.try_run(cwd, &["for-each-ref"])?;
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| {
+                let mut words = line.split_whitespace();
+                (words.next() == Some(sha) && words.next() == Some("commit"))
+                    .then(|| words.next().map(str::to_owned))
+                    .flatten()
+            }))
+    }
+}
+
 pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
     let a = Args::try_parse_from(
         std::iter::once(OsString::from("ci checkout")).chain(rest.iter().cloned()),
@@ -212,18 +227,30 @@ pub async fn run(ctx: &Ctx, rest: &[OsString]) -> Result<ExitCode> {
         r.run(&dir, &sp)?;
     }
 
-    // Head: a local ref or sha, else fetched from the server.
-    let head = match r.resolve(&dir, &a.rev)? {
-        Some(h) => h,
+    // Head: a local ref or sha, else fetched from the server. `spec` is what `checkout` is given.
+    let (head, spec) = match r.resolve(&dir, &a.rev)? {
+        Some(h) => (h.clone(), h),
         None => {
             r.run(&dir, &["fetch", "-q", "origin", &a.rev])?;
-            r.resolve(&dir, "FETCH_HEAD")?.ok_or_else(|| {
-                CliError::Fatal(format!("ci checkout: cannot resolve --rev '{}'", a.rev))
-            })?
+            match r.resolve(&dir, "FETCH_HEAD")? {
+                Some(h) => (h.clone(), h),
+                // A git sha that the clone or fetch brought in as a ref tip is not in the
+                // workspace's git map until something walks the history, and `asc fetch` writes
+                // no `FETCH_HEAD`: name the commit by the ref that points at it.
+                None => match r.ref_at(&dir, &a.rev)? {
+                    Some(name) => (a.rev.clone(), name),
+                    None => {
+                        return Err(CliError::Fatal(format!(
+                            "ci checkout: cannot resolve --rev '{}'",
+                            a.rev
+                        )));
+                    }
+                },
+            }
         }
     };
     if r.resolve(&dir, "HEAD")?.as_deref() != Some(head.as_str()) {
-        r.run(&dir, &["checkout", "-q", "--detach", &head])?;
+        r.run(&dir, &["checkout", "-q", "--detach", &spec])?;
     }
 
     // Base: `refs/remotes/origin/<base>` is registered (a branch name), else a sha is used as is.

@@ -72,16 +72,9 @@ fn checkout(
         .env("RUNNER_TEMP", &job.runner_temp)
         .env("GITHUB_ENV", &job.env_file)
         .env("GITHUB_PATH", &job.path_file)
-        .args([
-            "ci",
-            "checkout",
-            "--repo",
-            "asc/dds",
-            "--rev",
-            rev,
-            "--base",
-            base,
-        ])
+        .args(["ci", "checkout", "--repo", "asc/dds", "--base", base])
+        // `--rev=<x>` keeps a value that starts with a dash from being read as a flag.
+        .arg(format!("--rev={rev}"))
         .args([
             "--dir",
             "work",
@@ -102,7 +95,11 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
     let src = sb.dir("src");
-    ok(&sb, &src, &["init", "-q", "--refs", "shared", "--store", &url]);
+    ok(
+        &sb,
+        &src,
+        &["init", "-q", "--refs", "shared", "--store", &url],
+    );
     commit_file(&sb, &src, "bun.lock", "lock v1\n");
     ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
     let base = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
@@ -123,9 +120,22 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
         std::fs::read_to_string(work.join("bun.lock")).unwrap(),
         "lock v1\n"
     );
-    assert_eq!(ok(&sb, &work, &["rev-parse", "HEAD"]).trim(), head);
+    // The clone lives under the job's own `ASC_HOME`, not the sandbox's.
+    let asc_home = job.runner_temp.join("asc-home");
+    let in_job = |args: &[&str]| {
+        let out = sb
+            .asc(&work)
+            .env("ASC_HOME", &asc_home)
+            .envs(IDENT)
+            .args(args)
+            .output()
+            .expect("spawn asc");
+        assert!(out.status.success(), "asc {args:?}: {}", text(&out.stderr));
+        text(&out.stdout)
+    };
+    assert_eq!(in_job(&["rev-parse", "HEAD"]).trim(), head);
     assert_eq!(
-        ok(&sb, &work, &["rev-parse", "--is-shallow-repository"]).trim(),
+        in_job(&["rev-parse", "--is-shallow-repository"]).trim(),
         "false"
     );
 
@@ -141,7 +151,6 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
     ] {
         assert!(env.lines().any(|l| l == line), "missing {line} in {env}");
     }
-    let asc_home = job.runner_temp.join("asc-home");
     assert!(
         env.lines()
             .any(|l| l == format!("ASC_HOME={}", asc_home.display()))
@@ -164,9 +173,12 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
         .path()
         .join(".git")
         .join("config");
-    let cfg = std::fs::read_to_string(common).unwrap();
-    assert!(cfg.contains("ascServer = https://asc.example"), "{cfg}");
-    assert!(cfg.contains("readOnly ="), "{cfg}");
+    // Variable names are case-insensitive, and asc writes them lower-cased.
+    let cfg = std::fs::read_to_string(common)
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(cfg.contains("ascserver = https://asc.example"), "{cfg}");
+    assert!(cfg.contains("readonly ="), "{cfg}");
     assert!(cfg.contains("dir ="), "{cfg}");
     // The empty host cache was never written.
     assert_eq!(std::fs::read_dir(&host).unwrap().count(), 0);
@@ -189,7 +201,11 @@ fn push_events_get_the_trusted_cache_mode_and_bad_input_is_refused() {
     let sb = Sandbox::new();
     let url = bucket_url(&sb.dir("bucket"));
     let src = sb.dir("src");
-    ok(&sb, &src, &["init", "-q", "--refs", "shared", "--store", &url]);
+    ok(
+        &sb,
+        &src,
+        &["init", "-q", "--refs", "shared", "--store", &url],
+    );
     commit_file(&sb, &src, "a.txt", "a\n");
     ok(&sb, &src, &["push", "-q", "-u", "origin", "master"]);
     let head = ok(&sb, &src, &["rev-parse", "HEAD"]).trim().to_owned();
@@ -202,4 +218,19 @@ fn push_events_get_the_trusted_cache_mode_and_bad_input_is_refused() {
     let (bad, _) = checkout(&sb, &url, "--upload-pack=x", "master", "push", &host);
     assert!(!bad.status.success());
     assert!(text(&bad.stderr).contains("--rev is not a usable revision"));
+    // As a separate word the dashed value never reaches the plan: the flag table refuses it.
+    let raw = asc(
+        &sb,
+        &sb.dir("job2"),
+        &[
+            "ci",
+            "checkout",
+            "--repo",
+            "asc/dds",
+            "--rev",
+            "--upload-pack=x",
+        ],
+    );
+    assert!(!raw.status.success());
+    assert!(text(&raw.stderr).contains("'--upload-pack' is not supported"));
 }

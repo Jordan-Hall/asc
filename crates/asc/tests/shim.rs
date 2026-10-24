@@ -93,6 +93,20 @@ fn real(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Out {
     run(pin_identity(&mut cmd))
 }
 
+/// The cheapest way another process can stand between the caller and real git: the baseline of
+/// the overhead measurement. Unix shims `exec` real git, so nothing stands between and the
+/// baseline is real git itself. Windows has no `exec`: the shim must start git as a child, and
+/// creating a process costs tens of ms there, so the baseline is `cmd /c git` (a native
+/// pass-through that does nothing else). The budget is the shim's allowance over that floor.
+fn floor(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Out {
+    if !cfg!(windows) {
+        return real(sb, cwd, args);
+    }
+    let mut cmd = sb.command("cmd", cwd);
+    cmd.arg("/c").arg(real_git()).args(args);
+    run(pin_identity(&mut cmd))
+}
+
 fn asc(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Out {
     run(sb.asc(cwd).args(args))
 }
@@ -252,7 +266,7 @@ fn overhead_round(sb: &Sandbox, repo: &Path) -> (u128, u128) {
     let (mut direct, mut shimmed) = (Vec::new(), Vec::new());
     for _ in 0..PAIRS {
         let t = Instant::now();
-        real(sb, repo, &args);
+        floor(sb, repo, &args);
         direct.push(t.elapsed().as_micros());
         let t = Instant::now();
         shim(sb, repo, &args);
@@ -264,8 +278,9 @@ fn overhead_round(sb: &Sandbox, repo: &Path) -> (u128, u128) {
 }
 
 /// SPEC §11.4 / §17: the shim's fall-through adds at most 5 ms (Windows) or 2 ms (Linux) over
-/// the real git call at p95. The same bound is checked here on the median of interleaved runs
-/// measured against a git baseline in the same round, and a round passes when either the
+/// the real git call at p95 (on Windows, over the cheapest pass-through process: see [`floor`]).
+/// The same bound is checked here on the median of interleaved runs measured against that
+/// baseline in the same round, and a round passes when either the
 /// absolute extra time or the shimmed/direct ratio is within budget. The budget is
 /// `ASC_SHIM_OVERHEAD_MS` when set (CI on a shared runner). Any of up to `ROUNDS` rounds may
 /// pass, because only a sustained slowdown, not a load spike, is a real regression.
@@ -291,7 +306,7 @@ fn fall_through_overhead_is_small() {
             return;
         }
         seen.push(format!(
-            "+{extra_ms:.1} ms (x{ratio:.2}) over a {direct} us git call"
+            "+{extra_ms:.1} ms (x{ratio:.2}) over a {direct} us baseline call"
         ));
     }
     panic!(

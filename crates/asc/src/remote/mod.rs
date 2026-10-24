@@ -438,6 +438,45 @@ pub async fn hydrate_files(
     Ok(fetched)
 }
 
+/// Before a work tree moves from `from` to `to`: brings the content of the files the move
+/// writes that this machine lacks from the `origin` remote. Best effort: a workspace without
+/// that remote, or one that cannot be reached, leaves the move to report what is missing.
+pub async fn hydrate_move(ctx: &Ctx, ws: &WsCtx, from: TreeId, to: TreeId) {
+    let Ok(changes) = ws.engine.leafdiff(from, to, None).await else {
+        return;
+    };
+    let files: Vec<(FileId, u64)> = changes
+        .into_iter()
+        .filter_map(|(_, c)| match c {
+            asc_core::object::Change::Write { file, size, .. } => Some((file, size)),
+            _ => None,
+        })
+        .collect();
+    if files.is_empty() || ctx.config.get("remote.origin.url").is_none() {
+        return;
+    }
+    // Only a move that lacks content opens the remote.
+    let Ok(near) = store_set(ctx, ws) else { return };
+    let keys: Vec<ObjKey> = files
+        .iter()
+        .map(|(f, size)| {
+            if *size > CHUNK_THRESHOLD {
+                ObjKey::ChunkList(*f)
+            } else {
+                ObjKey::File(*f)
+            }
+        })
+        .collect();
+    match near.has_many(&keys).await {
+        Ok(have) if have.iter().all(|h| *h) => return,
+        Err(_) => return,
+        Ok(_) => {}
+    }
+    if let Ok(opened) = open(ctx, ws, "origin", Intent::Read).await {
+        let _ = hydrate_files(ctx, ws, &*opened.remote, &files).await;
+    }
+}
+
 /// Brings every tree below `root` and every file in them into the local store, level by level
 /// with batched downloads (the `clone` checkout; SPEC §6.3 "tree then blob").
 pub async fn hydrate(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, root: TreeId) -> Result<usize> {
