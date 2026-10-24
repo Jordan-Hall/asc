@@ -64,8 +64,48 @@
         "command": "asc.showOutput",
         "title": "Show output",
         "category": "asc"
+      },
+      {
+        "command": "asc.openGraph",
+        "title": "Open graph",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.openReview",
+        "title": "Open review",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.openHistory",
+        "title": "Open history",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.openProject",
+        "title": "Open project graph",
+        "category": "asc",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.openSearch",
+        "title": "Open search",
+        "category": "asc",
+        "enablement": "asc.workspace"
       }
-    ]
+    ],
+    "views": {
+      "scm": [
+        {
+          "type": "webview",
+          "id": "asc.smartlog",
+          "name": "asc Smartlog",
+          "when": "asc.workspace"
+        }
+      ]
+    }
   },
   "scripts": {
     "build": "bun scripts/bundle.ts",
