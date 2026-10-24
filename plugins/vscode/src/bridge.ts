@@ -15,6 +15,17 @@ import {
 /** Needed for any use; `plugin.v1` alone keeps read-only views working. */
 export const FEATURE_PLUGIN = "plugin.v1";
 export const FEATURE_JSON_VERBS = "json-verbs.v1";
+/** Host-neutral asc serve services; each one is registered only when Hello advertises it. */
+export const FEATURE_INBOX = "inbox.v1";
+export const FEATURE_REVIEW = "review.v1";
+export const FEATURE_CI = "ci.v1";
+
+/** The context key each server feature sets, so contributions enable on the same condition the code registers on. */
+export const FEATURE_CONTEXT_KEYS = {
+  inbox: "asc.feature.inbox",
+  review: "asc.feature.review",
+  ci: "asc.feature.ci",
+} as const;
 
 export type Compat =
   /** Everything the plugin needs is present. */
@@ -64,11 +75,49 @@ export function nodeIsFile(p: string): boolean {
   }
 }
 
+export interface HelloRoot {
+  root: string;
+  wsId: string;
+  /** `owner/repo` on the asc server; empty when the root has none. */
+  repo: string;
+  /** `none`, `asc` or `git`. */
+  remoteKind: string;
+}
+
 export interface HelloInfo {
   ascVersion: string;
   features: string[];
-  roots: { root: string; wsId: string }[];
+  roots: HelloRoot[];
   compat: Compat;
+}
+
+/** A root whose remote is an asc server: the only place Inbox, Review and Ci calls can be answered. */
+export interface ServerTarget {
+  root: string;
+  repo: string;
+}
+
+export function serverTargets(h: Pick<HelloInfo, "roots">): ServerTarget[] {
+  return h.roots
+    .filter((r) => r.wsId !== "" && r.remoteKind === "asc" && r.repo !== "")
+    .map((r) => ({ root: r.root, repo: r.repo }));
+}
+
+export interface ServerFeatures {
+  inbox: boolean;
+  review: boolean;
+  ci: boolean;
+}
+
+/** Which server services to register: the flag is in `Hello.features` and a root has an asc server. */
+export function serverFeatures(h: Pick<HelloInfo, "features" | "roots">): ServerFeatures {
+  const has = new Set(h.features);
+  const server = serverTargets(h).length > 0;
+  return {
+    inbox: server && has.has(FEATURE_INBOX),
+    review: server && has.has(FEATURE_REVIEW),
+    ci: server && has.has(FEATURE_CI),
+  };
 }
 
 export interface BridgeManagerOptions {
@@ -124,7 +173,12 @@ export function createBridgeManager(opts: BridgeManagerOptions): BridgeManager {
       helloP ??= callUnary(node(), bridge.Bridge.method.hello, {}).then((r) => ({
         ascVersion: r.ascVersion,
         features: r.features,
-        roots: r.roots.map((x) => ({ root: x.root, wsId: x.wsId })),
+        roots: r.roots.map((x) => ({
+          root: x.root,
+          wsId: x.wsId,
+          repo: x.repo,
+          remoteKind: x.remoteKind,
+        })),
         compat: checkFeatures(r.features),
       }));
       // A failed Hello must not stick: the next caller retries.
