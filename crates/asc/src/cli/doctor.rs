@@ -52,7 +52,13 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "doctor",
-    flags: &["--fix", "--store", "--report-reclaimable", "--workflows", "--json"],
+    flags: &[
+        "--fix",
+        "--store",
+        "--report-reclaimable",
+        "--workflows",
+        "--json",
+    ],
     placeholders: &[],
 }];
 
@@ -1123,8 +1129,7 @@ const SAMPLE_MAX_BYTES: u64 = 8 << 20;
 /// Why a store URL or endpoint may not be used: https and local paths only, plain http to
 /// the local machine only (transport policy).
 pub(crate) fn store_transport_refusal(url: &url::Url) -> Option<String> {
-    let loopback =
-        |u: &url::Url| crate::credential::Origin::of(u).is_some_and(|o| o.is_loopback());
+    let loopback = |u: &url::Url| crate::credential::Origin::of(u).is_some_and(|o| o.is_loopback());
     match url.scheme() {
         "s3" | "https" | "file" | "gs" | "az" | "azure" | "abfs" | "abfss" => None,
         "http" if loopback(url) => None,
@@ -1223,7 +1228,10 @@ async fn integrity_sample(
             format!("{good} verified, {unread} could not be read"),
         );
     }
-    Check::ok("store-integrity", format!("{good} sampled objects verified"))
+    Check::ok(
+        "store-integrity",
+        format!("{good} sampled objects verified"),
+    )
 }
 
 async fn check_store(url: &str) -> Vec<Check> {
@@ -1254,10 +1262,8 @@ async fn check_store(url: &str) -> Vec<Check> {
         let mut list = store.list(Some(&root));
         let first = tokio::time::timeout(Duration::from_secs(20), list.next()).await;
         out.push(match first {
-            Ok(Some(Err(e))) => {
-                Check::fail("store-connect", format!("cannot list the store: {e}"))
-                    .hint("check the endpoint, the bucket name and the AWS_* credentials")
-            }
+            Ok(Some(Err(e))) => Check::fail("store-connect", format!("cannot list the store: {e}"))
+                .hint("check the endpoint, the bucket name and the AWS_* credentials"),
             Ok(_) => Check::ok("store-connect", "the store answers a listing"),
             Err(_) => Check::fail("store-connect", "the listing did not answer within 20 s"),
         });
@@ -1277,8 +1283,7 @@ async fn check_store(url: &str) -> Vec<Check> {
         Err(_) => Check::fail("store", "the probe did not finish within 60 s"),
     });
     out.push(
-        match tokio::time::timeout(Duration::from_secs(120), integrity_sample(&*store, &root))
-            .await
+        match tokio::time::timeout(Duration::from_secs(120), integrity_sample(&*store, &root)).await
         {
             Ok(c) => c,
             Err(_) => Check::warn("store-integrity", "the sample did not finish within 120 s"),
