@@ -3,6 +3,7 @@
 
 pub mod backfill;
 pub mod files;
+pub mod metrics;
 pub mod modelgen;
 pub mod ords;
 pub mod queue;

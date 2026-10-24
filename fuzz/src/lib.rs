@@ -14,6 +14,14 @@ use asc_core::id::{ChangesetId, TreeId};
 use asc_core::object::{Changeset, ChunkList, TagRecord, Tree};
 use asc_core::path::{Name, RefName, RepoPath, casefold, checkout_safe, windows_valid};
 
+/// The SSH listener's command parser, compiled from its own source file. Depending on `asc-serve`
+/// for it would build the whole server (tantivy, sqlx, russh, ...) under the sanitizer for every
+/// target; the file needs only `asc-git` and `asc-rpc`.
+// Only `parse_command` is fuzzed; the rest of the file is the listener's and unused here.
+#[allow(dead_code)]
+#[path = "../../crates/asc-serve/src/ssh/policy.rs"]
+mod ssh_policy;
+
 /// One fuzz target body.
 pub type TargetBody = fn(&[u8]);
 
@@ -184,7 +192,7 @@ pub fn lock_uv(data: &[u8]) {
 
 /// The SSH listener's command parser: whatever it accepts is a plain `owner/name`.
 pub fn ssh_command(data: &[u8]) {
-    use asc_serve::ssh::policy::{MAX_COMMAND_LINE, parse_command};
+    use crate::ssh_policy::{MAX_COMMAND_LINE, parse_command};
     let Ok(command) = parse_command(data) else {
         return;
     };

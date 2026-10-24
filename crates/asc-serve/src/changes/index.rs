@@ -214,7 +214,21 @@ async fn insert_row(
     .bind(pack(&m.preds))
     .execute(&mut **tx)
     .await?;
-    Ok(done.rows_affected() > 0)
+    let wrote = done.rows_affected() > 0;
+    if wrote {
+        // A rewrite or a restack (not a creation or an import) tells stack watchers (C49). The
+        // event is sent before the commit; a rolled back write costs a watcher one needless
+        // refresh and nothing else.
+        let kind = match m.op {
+            RewriteOp::New | RewriteOp::Import => None,
+            RewriteOp::Restack => Some(super::watch::StackEventKind::Restacked),
+            _ => Some(super::watch::StackEventKind::Rewritten),
+        };
+        if let Some(kind) = kind {
+            super::watch::emit(ns, m.change, kind);
+        }
+    }
+    Ok(wrote)
 }
 
 /// The changesets of `ids` that are in `cs_graph`.

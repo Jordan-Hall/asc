@@ -206,7 +206,10 @@ mod tests {
             placeholders: &[],
         };
         let r = |items: &[&str]| route_in(&argv(items), &[&ECHO]);
-        assert_eq!(r(&["rev-parse", "--no-such-flag", "-x", "HEAD"]), Route::Native);
+        assert_eq!(
+            r(&["rev-parse", "--no-such-flag", "-x", "HEAD"]),
+            Route::Native
+        );
         assert_eq!(
             route_log(&["log", "--bogus"]),
             Route::Unsupported(Msg::AscOptionUnsupported {

@@ -143,7 +143,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let (label, bytes) = read_input(ctx, item)?;
         let mut patches = match apply::parse(&bytes, &opts) {
             Ok(v) => v,
-            Err(e) => return Err(CliError::Raw(parse_error(&e, &label, opts.strip, &bytes), 128)),
+            Err(e) => {
+                return Err(CliError::Raw(
+                    parse_error(&e, &label, opts.strip, &bytes),
+                    128,
+                ));
+            }
         };
         if patches.is_empty() {
             return Err(CliError::Raw(
@@ -172,9 +177,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
 /// the source of a rename, a deletion or a mode change, where git reports a missing file. Empty
 /// when git refuses the path too, so the message matches git's byte for byte there.
 fn fidelity_note(patch: &[u8], path: &str) -> &'static str {
-    let hfs_ignorable = |c: char| {
-        matches!(c as u32, 0x200C..=0x200F | 0x202A..=0x202E | 0x206A..=0x206F | 0xFEFF)
-    };
+    let hfs_ignorable =
+        |c: char| matches!(c as u32, 0x200C..=0x200F | 0x202A..=0x202E | 0x206A..=0x206F | 0xFEFF);
     let hfs_only = path.split('/').any(|comp| {
         let kept: String = comp.chars().filter(|&c| !hfs_ignorable(c)).collect();
         kept.len() != comp.len() && kept.eq_ignore_ascii_case(".git")

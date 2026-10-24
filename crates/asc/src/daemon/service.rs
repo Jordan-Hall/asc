@@ -660,47 +660,6 @@ impl WorkspaceRpc for Service {
             .map(Response::new)
     }
 
-    async fn stacks(
-        &self,
-        req: Request<wire::WsStacksRequest>,
-    ) -> Result<Response<wire::WsStacksResponse>, Status> {
-        let state = self.state()?;
-        plugin_api_stack::stacks(state, req.into_inner())
-            .await
-            .map(Response::new)
-    }
-
-    async fn worktrees(
-        &self,
-        req: Request<wire::WsWorktreesRequest>,
-    ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
-        let state = self.state()?;
-        plugin_api_stack::worktrees(state, req.into_inner())
-            .await
-            .map(Response::new)
-    }
-
-    async fn conflicts(
-        &self,
-        req: Request<wire::WsConflictsRequest>,
-    ) -> Result<Response<wire::WsConflictsResponse>, Status> {
-        let state = self.state()?;
-        plugin_api_stack::conflicts(state, req.into_inner())
-            .await
-            .map(Response::new)
-    }
-
-    type CommitGraphStream = PluginStream<wire::CommitGraphResponse>;
-    async fn commit_graph(
-        &self,
-        req: Request<wire::WsCommitGraphRequest>,
-    ) -> Result<Response<Self::CommitGraphStream>, Status> {
-        let state = self.state()?;
-        plugin_api_stack::commit_graph(state, req.into_inner())
-            .await
-            .map(Response::new)
-    }
-
     type SearchStream = PluginStream<wire::SearchResponse>;
     async fn search(
         &self,
@@ -742,6 +701,47 @@ impl WorkspaceRpc for Service {
         self.nudge_local_index(state, &req.ws_id);
         let r = self.codeintel.index_status(state, req).await?;
         Ok(Response::new(r))
+    }
+
+    async fn stacks(
+        &self,
+        req: Request<wire::WsStacksRequest>,
+    ) -> Result<Response<wire::WsStacksResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::stacks(state, req.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn worktrees(
+        &self,
+        req: Request<wire::WsWorktreesRequest>,
+    ) -> Result<Response<wire::WsWorktreesResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::worktrees(state, req.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn conflicts(
+        &self,
+        req: Request<wire::WsConflictsRequest>,
+    ) -> Result<Response<wire::WsConflictsResponse>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::conflicts(state, req.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    type CommitGraphStream = PluginStream<wire::CommitGraphResponse>;
+    async fn commit_graph(
+        &self,
+        req: Request<wire::WsCommitGraphRequest>,
+    ) -> Result<Response<Self::CommitGraphStream>, Status> {
+        let state = self.state()?;
+        plugin_api_stack::commit_graph(state, req.into_inner())
+            .await
+            .map(Response::new)
     }
 
     type ReadFileStream = PluginStream<wire::ReadFileResponse>;

@@ -1,5 +1,5 @@
 //! The `Cloud` service: `GetWorkspace`, `UpdateWorkspace` and `ListWorkspaces` (SPEC §21.3.5,
-//! PLAN B09). `Purge` belongs to B10 and answers `UNIMPLEMENTED` until it registers.
+//! `Purge`; PLAN B09, B10).
 //!
 //! A workspace is `(ns, owner, name)`; `owner` is the Forgejo user id taken from the verified
 //! identity ([`refpolicy::owner_of`]), never from the request. `UpdateWorkspace` is one
@@ -45,6 +45,8 @@ use tonic::{Extensions as TonicExt, Request, Response, Status};
 use uuid::Uuid;
 
 use super::Limits;
+use super::expiry::CloudRoots;
+use super::purge::{CacheEvict, CacheTiers, Purger, Who};
 use super::quota::Quota;
 use crate::changes::index;
 use crate::commit_graph_rpc::{internal, registry_status};
@@ -153,6 +155,7 @@ fn parse_page_token(t: &str) -> Result<Option<Vec<u8>>, Status> {
 pub struct CloudRpc {
     registry: Arc<Registry>,
     quota: Quota,
+    purger: Purger,
 }
 
 /// The place the server's single `Cloud` handler is registered, once (read by `build_routes`).
@@ -173,6 +176,10 @@ impl CloudSlot {
 /// The unit's one line in `register_all`.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, limits: Limits) {
     let rpc = Arc::new(CloudRpc::new(registry.clone(), Quota::local(limits)));
+    // Cloud heads are GC roots and purged drafts are swept early (B10).
+    ext.pipeline
+        .gc_roots()
+        .register(Arc::new(CloudRoots::new(registry.pool().clone())));
     assert!(ext.cloud.set(rpc), "the Cloud handler is registered once");
 }
 
@@ -184,7 +191,54 @@ enum Outcome {
 
 impl CloudRpc {
     pub fn new(registry: Arc<Registry>, quota: Quota) -> Self {
-        Self { registry, quota }
+        let purger = Purger::new(registry.clone(), Arc::new(CacheTiers::default()));
+        Self {
+            registry,
+            quota,
+            purger,
+        }
+    }
+
+    /// The cache tiers `Purge` evicts from; register one per configured cache.
+    pub fn cache_tiers(&self) -> &Arc<CacheTiers> {
+        self.purger.tiers()
+    }
+
+    /// The `cache_evict` outbox effect, for `Outbox::effects().register`.
+    pub fn cache_evict_effect(&self) -> Arc<CacheEvict> {
+        Arc::new(CacheEvict::new(self.purger.tiers().clone()))
+    }
+
+    /// `Cloud.Purge` (SPEC §21.3.7): `owner` is the caller's verified user id, `admin` whether
+    /// the credential has repo admin. The purger decides what each of them may purge.
+    pub async fn purge(
+        &self,
+        ctx: &CallCtx,
+        owner: Option<i64>,
+        admin: bool,
+        req: wire::PurgeRequest,
+    ) -> Result<wire::PurgeResponse, Status> {
+        let (entry, ids) = self.open(ctx).await?;
+        if req.cs.len() > super::purge::MAX_PURGE_CS {
+            return Err(Status::invalid_argument(format!(
+                "name at most {} changesets",
+                super::purge::MAX_PURGE_CS
+            )));
+        }
+        let css = Self::ids_in(&ids, &req.cs).await?;
+        let done = self
+            .purger
+            .purge(&entry, Who { owner, admin }, &css, now())
+            .await?;
+        let mut refused = Vec::with_capacity(done.refused.len());
+        for cs in done.refused {
+            refused.push(ids.changeset_out(cs).await?);
+        }
+        Ok(wire::PurgeResponse {
+            purged: u32::try_from(done.purged.len()).unwrap_or(u32::MAX),
+            refused,
+            unacked_tiers: done.unacked_tiers,
+        })
     }
 
     /// The quota ledger, for `PutObjects`, `Ingest` and `ImportGitPush`.
@@ -835,11 +889,26 @@ impl Cloud for CloudService {
 
     async fn purge(
         &self,
-        _request: Request<wire::PurgeRequest>,
+        request: Request<wire::PurgeRequest>,
     ) -> Result<Response<wire::PurgeResponse>, Status> {
-        Err(Status::unimplemented(
-            "Purge is not available on this server yet",
-        ))
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        // Admin rights are asked of the authorizer; an answer other than yes means no.
+        let admin = self
+            .authorizer
+            .authorize_credential(ext.get::<Credential>(), ctx.repo.as_str(), Access::Admin)
+            .await
+            .is_ok();
+        let owner = refpolicy::owner_of(&ctx.principal);
+        if owner.is_none() && !admin {
+            return Err(Status::permission_denied("the commit cloud needs a user identity"));
+        }
+        self.rpc
+            .purge(&ctx, owner, admin, msg)
+            .await
+            .map(Response::new)
     }
 }
 

@@ -9,7 +9,8 @@
 //! Refused (exit 128): a ref moved since the op, a branch another workspace has checked out
 //! (both unless `-f`), a stale `--op` (`STALE_OP`), and an undo that would leave HEAD on an
 //! unborn branch. Remote effects (push, submit, land) are never undone; a `hint:` names them.
-//! The work tree is saved as a snapshot first, so the undo itself can be redone.
+//! The work tree is saved as a snapshot first, so the undo itself can be redone; when no
+//! snapshot can keep its changes the op is refused unless `-f`. Refs move before the files.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
@@ -239,45 +240,44 @@ pub(crate) async fn target_hex(ws: &WsCtx, t: Option<RefTarget>) -> Option<Strin
     }
 }
 
-/// The `ref_log` movements of one op, oldest first: `(seq, name, old, new)`.
-pub(crate) async fn ref_rows(
-    ws: &WsCtx,
-    op: &Op,
-) -> Result<Vec<(i64, String, Option<RefTarget>, Option<RefTarget>)>> {
+type RefRow = (i64, String, Option<RefTarget>, Option<RefTarget>);
+
+/// The first `cap` `ref_log` movements of one op, oldest first, and whether more exist.
+async fn ref_rows_upto(ws: &WsCtx, op: &Op, cap: usize) -> Result<(Vec<RefRow>, bool)> {
     let rows: Vec<(i64, String, Option<Vec<u8>>, Option<Vec<u8>>)> = sqlx::query_as(
-        "SELECT seq, name, old, new FROM ref_log WHERE repo_id = ? AND op_id = ? \
-         ORDER BY seq LIMIT ?",
+        "SELECT seq, name, old, new FROM ref_log WHERE repo_id = ? AND op_id = ?          ORDER BY seq LIMIT ?",
     )
     .bind(ws.repo.key.0)
     .bind(op.op_id.0.as_bytes().to_vec())
-    .bind((MAX_DELTAS + 1) as i64)
+    .bind(i64::try_from(cap.saturating_add(1)).unwrap_or(i64::MAX))
     .fetch_all(ws.db.pool())
     .await
     .map_err(asc_state::Error::from)?;
-    if rows.len() > MAX_DELTAS {
-        return Err(fatal("the operation moved too many refs"));
-    }
+    let more = rows.len() > cap;
     let dec = |b: Option<Vec<u8>>| -> Result<Option<RefTarget>> {
         b.map(|b| RefTarget::from_bytes(&b).map_err(|_| fatal("corrupt ref_log row")))
             .transpose()
     };
-    rows.into_iter()
+    let rows = rows
+        .into_iter()
+        .take(cap)
         .map(|(s, n, o, w)| Ok((s, n, dec(o)?, dec(w)?)))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok((rows, more))
 }
 
-/// The net movement of every ref the `ops` touched (`HEAD` is tracked by the op rows).
-pub(crate) async fn net_deltas(
-    ws: &WsCtx,
-    ops: &[&Op],
-) -> Result<Vec<(String, Option<RefTarget>, Option<RefTarget>)>> {
-    let mut rows = Vec::new();
-    for op in ops {
-        rows.extend(ref_rows(ws, op).await?);
-        if rows.len() > MAX_DELTAS {
-            return Err(fatal("the operations moved too many refs"));
-        }
+/// The `ref_log` movements of one op, oldest first: `(seq, name, old, new)`.
+pub(crate) async fn ref_rows(ws: &WsCtx, op: &Op) -> Result<Vec<RefRow>> {
+    let (rows, more) = ref_rows_upto(ws, op, MAX_DELTAS).await?;
+    if more {
+        return Err(fatal("the operation moved too many refs"));
     }
+    Ok(rows)
+}
+
+type Net = Vec<(String, Option<RefTarget>, Option<RefTarget>)>;
+
+fn fold_net(mut rows: Vec<RefRow>) -> Net {
     rows.sort_by_key(|r| r.0);
     let mut net: BTreeMap<String, (Option<RefTarget>, Option<RefTarget>)> = BTreeMap::new();
     for (_, name, old, new) in rows {
@@ -288,11 +288,30 @@ pub(crate) async fn net_deltas(
             .and_modify(|e| e.1 = new)
             .or_insert((old, new));
     }
-    Ok(net
-        .into_iter()
+    net.into_iter()
         .filter(|(_, (o, n))| o != n)
         .map(|(k, (o, n))| (k, o, n))
-        .collect())
+        .collect()
+}
+
+/// The net movement of every ref the `ops` touched (`HEAD` is tracked by the op rows).
+pub(crate) async fn net_deltas(ws: &WsCtx, ops: &[&Op]) -> Result<Net> {
+    let mut rows = Vec::new();
+    for op in ops {
+        rows.extend(ref_rows(ws, op).await?);
+        if rows.len() > MAX_DELTAS {
+            return Err(fatal("the operations moved too many refs"));
+        }
+    }
+    Ok(fold_net(rows))
+}
+
+/// The net movement of one op for display: reads at most `cap` `ref_log` rows, so a listing
+/// does bounded work per op. Returns how many rows were read.
+pub(crate) async fn net_deltas_upto(ws: &WsCtx, op: &Op, cap: usize) -> Result<(Net, usize)> {
+    let (rows, _) = ref_rows_upto(ws, op, cap).await?;
+    let n = rows.len();
+    Ok((fold_net(rows), n))
 }
 
 fn stale_op(json: bool, msg: &str) -> CliError {
@@ -428,10 +447,37 @@ pub(crate) fn hints_for(argv: &str) -> Vec<String> {
     out
 }
 
+/// Ref names, branch names and paths come from `state.db`; they are escaped before they reach
+/// the terminal.
 fn stale_ref(name: &str) -> CliError {
     CliError::Fatal(format!(
-        "asc: '{name}' has moved since the operation; use -f to override"
+        "asc: '{}' has moved since the operation; use -f to override",
+        crate::stack::cli::sl::clean(name)
     ))
+}
+
+fn held_msg(branch: &str, path: &str) -> String {
+    format!(
+        "asc: '{}' is checked out in the worktree at '{}'; use -f to override",
+        crate::stack::cli::sl::clean(branch),
+        crate::stack::cli::sl::clean(path)
+    )
+}
+
+fn unborn_msg(verb: &str, branch: &str) -> String {
+    format!(
+        "asc: {verb}: would leave HEAD on the unborn branch '{}'",
+        crate::stack::cli::sl::clean(branch)
+    )
+}
+
+/// Whether the work tree holds changes a snapshot would keep: staged, unstaged or unmerged.
+async fn unsaved_work(ctx: &Ctx, ws: &WsCtx) -> Result<bool> {
+    let parts = WcParts::new(ctx, ws, ws.projection.git_dir().join("index"))?;
+    let st = status::compute(&parts.wc(&ws.engine), &ws.db, &ws.workspace)
+        .await
+        .map_err(|e| CliError::Fatal(e.to_string()))?;
+    Ok(!st.staged.is_empty() || !st.unstaged.is_empty() || !st.unmerged.is_empty())
 }
 
 /// The paths a hard move to `target` must rewrite (as `reset --hard` computes them).
@@ -554,17 +600,13 @@ pub(crate) async fn run_plan(
         }
         if let Some(branch) = d.name.strip_prefix("refs/heads/") {
             if !force && let Some(path) = held_elsewhere(ws, branch).await? {
-                return Err(CliError::Fatal(format!(
-                    "asc: '{branch}' is checked out in the worktree at '{path}'; use -f to override"
-                )));
+                return Err(CliError::Fatal(held_msg(branch, &path)));
             }
             if matches!(&head_ref, Head::Branch(b) if b == branch) {
                 match d.to {
                     Some(RefTarget::Changeset(c)) => new_head = Some(c),
                     _ => {
-                        return Err(CliError::Fatal(format!(
-                            "asc: {verb}: would leave HEAD on the unborn branch '{branch}'"
-                        )));
+                        return Err(CliError::Fatal(unborn_msg(verb, branch)));
                     }
                 }
             }
@@ -616,24 +658,30 @@ pub(crate) async fn run_plan(
         );
     }
 
-    // Save the work tree first, so this op can itself be undone.
+    // Save the work tree first, so this op can itself be undone. A failed snapshot stops the
+    // op; so does changes no snapshot could keep (conflicts, no commit, `asc.opLog` off), unless
+    // forced.
     let log_on = ctx.config.bool("asc.opLog").unwrap_or(true);
     let saved = if log_on {
-        snapshot_now(ctx, ws).await.ok().flatten()
+        snapshot_now(ctx, ws).await?
     } else {
         None
     };
+    if saved.is_none() && !force && unsaved_work(ctx, ws).await? {
+        return Err(CliError::Fatal(format!(
+            "asc: {verb}: the working copy has changes that cannot be saved first;              commit or stash them, or use -f to discard them"
+        )));
+    }
     let head_before = cur_head;
 
+    // Everything the work tree needs is computed before any ref moves.
     let head_root = root_of(ws, cur_head).await?;
     let target_root = root_of(ws, new_head).await?;
     let (index, _) = index_tree(ws, head_root).await?;
     let paths = hard_paths(ctx, index, target_root).await?;
-    sync_worktree(ctx, target_root, &paths, true).await?;
     let gitdir = ws.projection.git_dir().to_owned();
-    crate::cli::seqstate::clear_merge(&gitdir);
-    crate::cli::seqstate::clear_replay(&gitdir);
 
+    // The ref swap goes first: if it fails, nothing else has changed.
     let op_id = ext::OpId::new().0;
     if !updates.is_empty() {
         let txn = RefTxn {
@@ -649,6 +697,24 @@ pub(crate) async fn run_plan(
         )
         .await?;
     }
+    if let Err(e) = sync_worktree(ctx, target_root, &paths, true).await {
+        // The refs moved but the files did not all follow: put the saved work back.
+        if let Some(snap) = saved {
+            let _ = stash_apply::apply(
+                ctx,
+                ws,
+                snap,
+                stash_apply::Opts {
+                    index: true,
+                    quiet: true,
+                },
+            )
+            .await;
+        }
+        return Err(e);
+    }
+    crate::cli::seqstate::clear_merge(&gitdir);
+    crate::cli::seqstate::clear_replay(&gitdir);
     if let Some(snap) = plan.snapshot {
         let clean = stash_apply::apply(
             ctx,
@@ -726,6 +792,17 @@ mod tests {
         assert_eq!(utc(0), "1970-01-01 00:00:00");
         assert_eq!(utc(1_700_000_000), "2023-11-14 22:13:20");
         assert_eq!(utc(951_782_400), "2000-02-29 00:00:00");
+    }
+
+    #[test]
+    fn state_db_text_is_escaped_in_errors() {
+        let evil = "a\u{1b}[31mb";
+        let CliError::Fatal(m) = stale_ref(evil) else {
+            panic!("fatal")
+        };
+        assert!(!m.contains('\u{1b}'), "{m:?}");
+        assert!(!held_msg(evil, "/w\u{1b}]0;x\u{7}").contains(['\u{1b}', '\u{7}']));
+        assert!(!unborn_msg("undo", evil).contains('\u{1b}'));
     }
 
     #[test]

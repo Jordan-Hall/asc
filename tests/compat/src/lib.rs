@@ -14,6 +14,15 @@
 //!
 //! Scenario files may start with `# compat: asc-only`; such a scenario runs on the asc side only
 //! with `asc` on `PATH`, and passes when its script exits 0 (it asserts for itself).
+//!
+//! A scenario with `# compat: branchless=both` on its first five lines runs on the asc side twice,
+//! with `asc.branchless` true and false (`ASC_BRANCHLESS`, SPEC §21.1 BD7; adapter gap A-2): the two
+//! runs must be byte-identical, and each must match the oracle, both up to `allowed.toml`.
+//!
+//! When a case fails, the preflight (`preflight.rs`, adapter gaps A-3, A-5 and A-6) says whether
+//! the machine explains the difference; if it does the case fails as `adapter gap A-n` and the
+//! product is not judged. Hint and usage text is compared with the program name normalised
+//! (SPEC §11.6, adapter gap A-1).
 #![allow(dead_code)] // The harness is included by the test crate; not every item is used.
 
 use std::collections::BTreeMap;
@@ -27,6 +36,9 @@ use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::Deserialize;
+
+pub mod preflight;
+pub use preflight::{Probe, Ran, Verdict};
 
 /// Wall-clock limit for one scenario script on one side.
 pub const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -97,6 +109,8 @@ pub struct Tools {
     pub shim_dir: PathBuf,
     /// `tests/compat`.
     pub suite: PathBuf,
+    /// The preflight verdicts, probed on first use (a case failed, or a self-check asked).
+    preflight: OnceLock<Vec<Verdict>>,
 }
 
 /// Locates `sh`: `ASC_COMPAT_SH`, then `PATH`, then Git for Windows' `usr/bin` above real git.
@@ -257,16 +271,21 @@ fn resolve_oracle(repo: &Path) -> Result<PathBuf, String> {
         }
     };
     if strict {
-        let out = Command::new(&git)
-            .arg("--version")
-            .output()
-            .map_err(|e| format!("adapter gap A-3: cannot run {}: {e}", git.display()))?;
-        let reported = String::from_utf8_lossy(&out.stdout).into_owned();
-        let pins = fs::read_to_string(repo.join("build/git-oracle/pins.env"))
-            .map_err(|e| format!("adapter gap A-3: cannot read pins.env: {e}"))?;
-        check_oracle(&git, &reported, &pins, cfg!(windows))?;
+        check_strict(&git, repo)?;
     }
     Ok(git)
+}
+
+/// Runs `git --version` and checks the oracle against `build/git-oracle/pins.env` (`check_oracle`).
+fn check_strict(git: &Path, repo: &Path) -> Result<(), String> {
+    let out = Command::new(git)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("adapter gap A-3: cannot run {}: {e}", git.display()))?;
+    let reported = String::from_utf8_lossy(&out.stdout).into_owned();
+    let pins = fs::read_to_string(repo.join("build/git-oracle/pins.env"))
+        .map_err(|e| format!("adapter gap A-3: cannot read pins.env: {e}"))?;
+    check_oracle(git, &reported, &pins, cfg!(windows))
 }
 
 impl Tools {
@@ -293,6 +312,7 @@ impl Tools {
                 sh,
                 shim_dir,
                 suite,
+                preflight: OnceLock::new(),
             })
         })
     }
@@ -351,6 +371,7 @@ impl Tools {
             .lines()
             .take(5)
             .any(|l| l.trim() == "# compat: asc-only");
+        let modes = branchless_modes(script);
         let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
         let base = tmp.path().to_owned();
         // ASC_COMPAT_KEEP=1 keeps the fixtures for inspection.
@@ -361,26 +382,86 @@ impl Tools {
         } else {
             Some(tmp)
         };
-        let asc = self.run_side(Side::Asc, script, &base, asc_only)?;
-        if !asc.fall_through.is_empty() {
-            return Err(format!(
-                "{name}: the asc side fell through to real git inside the scenario:\n  {}",
-                asc.fall_through.join("\n  ")
-            ));
+        // The asc side, once per mode (one run with the configured mode unless the scenario asks
+        // for both).
+        let mut ascs: Vec<(Option<bool>, Capture)> = Vec::new();
+        for mode in &modes {
+            let asc = self.run_asc(script, &base, asc_only, *mode)?;
+            if !asc.fall_through.is_empty() {
+                return Err(format!(
+                    "{name}: the asc side{} fell through to real git inside the scenario:\n  {}",
+                    mode_suffix(*mode),
+                    asc.fall_through.join("\n  ")
+                ));
+            }
+            ascs.push((*mode, asc));
         }
         if asc_only {
-            return if asc.exit == 0 {
-                Ok(())
-            } else {
-                Err(format!(
-                    "{name}: asc-only scenario exited {}\n{}",
-                    asc.exit,
-                    text(asc.sections.get("stderr"))
-                ))
-            };
+            for (mode, asc) in &ascs {
+                if asc.exit != 0 {
+                    let report = format!(
+                        "asc-only scenario exited {}{}\n{}",
+                        asc.exit,
+                        mode_suffix(*mode),
+                        text(asc.sections.get("stderr"))
+                    );
+                    let sections = ["exit".to_owned(), "stderr".to_owned()];
+                    return Err(self.attribute(name, &sections, format!("{name}: {report}")));
+                }
+            }
+            return Ok(());
         }
         let git = self.run_side(Side::Git, script, &base, false)?;
-        compare(name, &git, &asc, &self.allowed()?)
+        let allowed = self.allowed()?;
+        let mut failures: Vec<Mismatch> = Vec::new();
+        for (mode, asc) in &ascs {
+            let head = format!(
+                "asc{} differs from git (git = '-', asc = '+')",
+                mode_suffix(*mode)
+            );
+            failures.extend(compare_with(name, &head, &git, asc, &allowed).err());
+        }
+        if let [(_, on), (_, off)] = &ascs[..] {
+            let head = "asc differs between asc.branchless=true and asc.branchless=false (BD7: \
+                        local commands are byte-identical; true = '-', false = '+')";
+            failures.extend(compare_with(name, head, on, off, &allowed).err());
+        }
+        if failures.is_empty() {
+            return Ok(());
+        }
+        let sections: Vec<String> = failures.iter().flat_map(|f| f.sections.clone()).collect();
+        let report: Vec<&str> = failures.iter().map(|f| f.message.as_str()).collect();
+        Err(self.attribute(name, &sections, report.join("\n")))
+    }
+
+    /// The preflight verdicts of this process, probed on first use (A-3, A-5 and A-6).
+    pub fn preflight(&self) -> &[Verdict] {
+        self.preflight.get_or_init(|| preflight::run_all(self))
+    }
+
+    /// `failure` as it is reported: an adapter gap when a failed preflight check explains one of
+    /// the differing `sections`, else unchanged (a product failure).
+    pub fn attribute(&self, case: &str, sections: &[String], failure: String) -> String {
+        match preflight::explanation(self.preflight(), sections) {
+            Some(v) => preflight::adapter_failure(case, v, &failure),
+            None => failure,
+        }
+    }
+
+    /// Runs the script on the asc side under `mode` (`ASC_BRANCHLESS`), in a directory of its own
+    /// when the mode is set.
+    fn run_asc(
+        &self,
+        script: &str,
+        base: &Path,
+        asc_only: bool,
+        mode: Option<bool>,
+    ) -> Result<Capture, String> {
+        let dir = match mode {
+            None => Side::Asc.dir().to_owned(),
+            Some(on) => format!("asc-branchless-{on}"),
+        };
+        self.run_in(Side::Asc, &dir, script, base, asc_only, mode)
     }
 
     /// Runs the script on one side in `<base>/<side>/work` and captures the result.
@@ -391,7 +472,12 @@ impl Tools {
         base: &Path,
         asc_only: bool,
     ) -> Result<Capture, String> {
-        let root = base.join(side.dir());
+        self.run_in(side, side.dir(), script, base, asc_only, None)
+    }
+
+    /// The directories and `PATH` of one run: `<base>/<dir>` holds `work`, `home` and `asc-home`.
+    fn prepare(&self, side: Side, dir: &str, base: &Path) -> Result<Prepared, String> {
+        let root = base.join(dir);
         let (work, home, asc_home) = (root.join("work"), root.join("home"), root.join("asc-home"));
         for d in [&work, &home] {
             fs::create_dir_all(d).map_err(|e| e.to_string())?;
@@ -426,21 +512,52 @@ impl Tools {
             path_dirs.extend(std::env::split_paths(&rest));
         }
         let path = std::env::join_paths(&path_dirs).map_err(|e| e.to_string())?;
+        Ok(Prepared {
+            root,
+            work,
+            home,
+            asc_home,
+            trace,
+            git_path,
+            path,
+        })
+    }
 
-        let mut cmd = Command::new(&self.sh);
+    /// `program` with the fixed scenario environment of `side` (and `mode` on the asc side).
+    fn command(&self, side: Side, p: &Prepared, program: &Path, mode: Option<bool>) -> Command {
+        let mut cmd = Command::new(program);
         scrub(&mut cmd);
-        fixed_env(&mut cmd, &home, &path);
+        fixed_env(&mut cmd, &p.home, &p.path);
         if side == Side::Asc {
-            cmd.env("ASC_HOME", &asc_home)
+            cmd.env("ASC_HOME", &p.asc_home)
                 .env("ASC_REAL_GIT", &self.real_git)
-                .env("ASC_SHIM_TRACE", &trace);
+                .env("ASC_SHIM_TRACE", &p.trace);
+            if let Some(on) = mode {
+                cmd.env("ASC_BRANCHLESS", on.to_string());
+            }
         }
+        cmd
+    }
+
+    fn run_in(
+        &self,
+        side: Side,
+        dir: &str,
+        script: &str,
+        base: &Path,
+        asc_only: bool,
+        mode: Option<bool>,
+    ) -> Result<Capture, String> {
+        let p = self.prepare(side, dir, base)?;
+        let (root, work, trace) = (&p.root, &p.work, &p.trace);
+        let git_path = &p.git_path;
+        let mut cmd = self.command(side, &p, &self.sh, mode);
         let script_path = root.join("scenario.sh");
         fs::write(&script_path, format!("{PRELUDE}\n{script}\n")).map_err(|e| e.to_string())?;
-        cmd.arg(&script_path).current_dir(&work);
+        cmd.arg(&script_path).current_dir(work);
         let out = run_limited(&mut cmd)?;
 
-        let norm = Normaliser::new(&root);
+        let norm = Normaliser::new(root);
         let mut cap = Capture {
             exit: out.code,
             ..Capture::default()
@@ -451,7 +568,7 @@ impl Tools {
             .insert("stderr".into(), norm.apply(&out.stderr));
         cap.sections
             .insert("exit".into(), format!("{}\n", out.code).into_bytes());
-        cap.fall_through = fs::read_to_string(&trace)
+        cap.fall_through = fs::read_to_string(trace)
             .map(|t| t.lines().map(str::to_owned).collect())
             .unwrap_or_default();
         if asc_only {
@@ -466,15 +583,8 @@ impl Tools {
             ("post:ls-files", &["ls-files", "-s"]),
         ];
         let tool = |args: &[&str]| -> Result<Output, String> {
-            let mut c = Command::new(&git_path);
-            scrub(&mut c);
-            fixed_env(&mut c, &home, &path);
-            if side == Side::Asc {
-                c.env("ASC_HOME", &asc_home)
-                    .env("ASC_REAL_GIT", &self.real_git)
-                    .env("ASC_SHIM_TRACE", &trace);
-            }
-            c.args(args).current_dir(&work);
+            let mut c = self.command(side, &p, git_path, mode);
+            c.args(args).current_dir(work);
             run_limited(&mut c)
         };
         for (name, args) in post {
@@ -498,7 +608,7 @@ impl Tools {
             }
         }
         // The work tree bytes.
-        for (rel, bytes) in tree_files(&work)? {
+        for (rel, bytes) in tree_files(work)? {
             cap.sections.insert(format!("post:tree/{rel}"), bytes);
         }
         Ok(cap)
@@ -506,6 +616,65 @@ impl Tools {
 }
 
 type Output = RunOutput;
+
+/// The directories, `PATH` and git of one run (see `Tools::prepare`).
+struct Prepared {
+    root: PathBuf,
+    work: PathBuf,
+    home: PathBuf,
+    asc_home: PathBuf,
+    trace: PathBuf,
+    git_path: PathBuf,
+    path: OsString,
+}
+
+/// The `ASC_BRANCHLESS` values a scenario runs the asc side with: one run with the configured mode
+/// (`[None]`), or `[Some(true), Some(false)]` for `# compat: branchless=both` on the first five
+/// lines (adapter gap A-2).
+pub fn branchless_modes(script: &str) -> Vec<Option<bool>> {
+    if script
+        .lines()
+        .take(5)
+        .any(|l| l.trim() == "# compat: branchless=both")
+    {
+        vec![Some(true), Some(false)]
+    } else {
+        vec![None]
+    }
+}
+
+fn mode_suffix(mode: Option<bool>) -> String {
+    mode.map_or_else(String::new, |on| format!(" (asc.branchless={on})"))
+}
+
+/// The preflight runs its probe scripts the way scenarios run, in a directory of their own.
+impl Probe for Tools {
+    fn run(&self, side: Side, script: &str) -> Result<Ran, String> {
+        let tmp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let p = self.prepare(side, side.dir(), tmp.path())?;
+        let script_path = p.root.join("probe.sh");
+        fs::write(&script_path, format!("{PRELUDE}\n{script}\n")).map_err(|e| e.to_string())?;
+        let mut cmd = self.command(side, &p, &self.sh, None);
+        cmd.arg(&script_path).current_dir(&p.work);
+        let out = run_limited(&mut cmd)?;
+        Ok(Ran {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            code: out.code,
+        })
+    }
+
+    fn oracle(&self) -> Result<String, String> {
+        if std::env::var(ENV_ORACLE_STRICT).is_ok_and(|v| v == "1") {
+            check_strict(&self.real_git, &self.suite.join("../.."))?;
+            Ok(format!("{} is the pinned build", self.real_git.display()))
+        } else {
+            Ok(format!(
+                "{ENV_ORACLE_STRICT} is not 1, so the oracle {} is not checked against the pin",
+                self.real_git.display()
+            ))
+        }
+    }
+}
 
 /// The gitdir files that hold in-progress state (SPEC §4.4).
 const STATE_NAMES: &[&str] = &[
@@ -728,9 +897,10 @@ at() {
 // ---- normalisation --------------------------------------------------------------------------
 
 /// Replaces the side's root path in its native, slash and MSYS spellings, and drops progress lines.
-struct Normaliser {
+pub struct Normaliser {
     paths: Regex,
     progress: Regex,
+    program: Regex,
 }
 
 impl Normaliser {
@@ -755,15 +925,37 @@ impl Normaliser {
             r"(?m)^(remote: )?(Enumerating|Counting|Compressing|Writing|Receiving|Resolving|Unpacking|Checking out|Updating) (objects|files|deltas|reference)[^\n]*\n",
         )
         .expect("progress regex");
-        Self { paths, progress }
+        // SPEC §11.6: hints and usage text name the program as the user invoked it (`git` or
+        // `asc`), and that word is the only thing normalised in them (adapter gap A-1). The
+        // shim is installed as `git`, so the word is `git` after normalising on either side.
+        let program =
+            Regex::new(r"(?m)^((?:hint|usage): |   or: )([^\n]*)$").expect("program regex");
+        Self {
+            paths,
+            progress,
+            program,
+        }
     }
 
-    fn apply(&self, bytes: &[u8]) -> Vec<u8> {
+    pub fn apply(&self, bytes: &[u8]) -> Vec<u8> {
         let s = String::from_utf8_lossy(bytes);
         let s = self.paths.replace_all(&s, "<ROOT>");
         let s = self.progress.replace_all(&s, "");
+        let s = self.program.replace_all(&s, |c: &regex::Captures| {
+            format!("{}{}", &c[1], program_name(&c[2]))
+        });
         s.into_owned().into_bytes()
     }
+}
+
+/// `line` with the program word `asc` (a word of its own, followed by a space and no colon, so
+/// `asc: ` tags and `asc-only` are kept) written as `git`.
+pub fn program_name(line: &str) -> String {
+    static WORD: OnceLock<Regex> = OnceLock::new();
+    let re = WORD.get_or_init(|| Regex::new(r"(^|[^\w./-])asc( |$)").expect("word regex"));
+    // Twice, so adjacent words (`asc asc`) are both seen despite the shared separator.
+    let once = re.replace_all(line, "${1}git${2}");
+    re.replace_all(&once, "${1}git${2}").into_owned()
 }
 
 // ---- comparison ----------------------------------------------------------------------------
@@ -802,10 +994,36 @@ fn filtered(case: &str, section: &str, bytes: &[u8], allowed: &[Allow]) -> Strin
 /// Compares the two captures section by section; the error names each differing section and
 /// shows the first lines that differ.
 pub fn compare(case: &str, git: &Capture, asc: &Capture, allowed: &[Allow]) -> Result<(), String> {
+    compare_with(
+        case,
+        "asc differs from git (git = '-', asc = '+')",
+        git,
+        asc,
+        allowed,
+    )
+    .map_err(|m| m.message)
+}
+
+/// A comparison that failed: the differing section names and the report.
+#[derive(Debug)]
+pub struct Mismatch {
+    pub sections: Vec<String>,
+    pub message: String,
+}
+
+/// [`compare`] for any two captures; `head` is the report's first line after the case name.
+pub fn compare_with(
+    case: &str,
+    head: &str,
+    git: &Capture,
+    asc: &Capture,
+    allowed: &[Allow],
+) -> Result<(), Mismatch> {
     let mut names: Vec<&String> = git.sections.keys().chain(asc.sections.keys()).collect();
     names.sort();
     names.dedup();
     let mut report = String::new();
+    let mut differing = Vec::new();
     for name in names {
         let (a, b) = (git.sections.get(name), asc.sections.get(name));
         let fa = a.map(|x| filtered(case, name, x, allowed));
@@ -813,6 +1031,7 @@ pub fn compare(case: &str, git: &Capture, asc: &Capture, allowed: &[Allow]) -> R
         if fa == fb {
             continue;
         }
+        differing.push(name.clone());
         let _ = writeln!(report, "--- {name}");
         match (&fa, &fb) {
             (Some(_), None) => report.push_str("  present with git only\n"),
@@ -824,9 +1043,10 @@ pub fn compare(case: &str, git: &Capture, asc: &Capture, allowed: &[Allow]) -> R
     if report.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "{case}: asc differs from git (git = '-', asc = '+')\n{report}"
-        ))
+        Err(Mismatch {
+            sections: differing,
+            message: format!("{case}: {head}\n{report}"),
+        })
     }
 }
 

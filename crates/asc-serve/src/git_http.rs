@@ -163,6 +163,35 @@ impl GitMetrics {
             .collect()
     }
 
+    /// A request counted with a `transport` label: how the other transports (SSH) join the same
+    /// series. The smart-HTTP series carry no `transport` label (SPEC §25.11.8).
+    pub(crate) fn request_via(&self, transport: &str, service: &str, version: &str, status: u16) {
+        self.requests
+            .get_or_create(&Self::labels(&[
+                ("transport", transport),
+                ("service", service),
+                ("version", version),
+                ("status", &status.to_string()),
+            ]))
+            .inc();
+    }
+
+    pub(crate) fn bytes_via(&self, transport: &str, dir: &str, n: u64) {
+        self.bytes
+            .get_or_create(&Self::labels(&[("transport", transport), ("dir", dir)]))
+            .inc_by(n);
+    }
+
+    pub(crate) fn reject_via(&self, transport: &str, reason: &str) {
+        self.rejected
+            .get_or_create(&Self::labels(&[("transport", transport), ("reason", reason)]))
+            .inc();
+    }
+
+    pub(crate) fn child_seconds(&self, secs: f64) {
+        self.child_seconds.observe(secs);
+    }
+
     fn request(&self, service: &str, version: &str, status: StatusCode) {
         self.requests
             .get_or_create(&Self::labels(&[
@@ -230,13 +259,87 @@ impl Audit {
     }
 }
 
-fn version_label(p: Option<&GitProtocol>) -> &'static str {
+pub(crate) fn version_label(p: Option<&GitProtocol>) -> &'static str {
     use asc_git::compat::ProtocolVersion::{V0, V1, V2};
     match p.map(GitProtocol::version) {
         None | Some(V0) => "v0",
         Some(V1) => "v1",
         Some(V2) => "v2",
     }
+}
+
+// ------------------------------------------------------------------------------ shared steps
+
+/// Why a repository's git view is not ready to serve. Each transport words its own answer.
+pub(crate) enum ViewWait {
+    /// A large view is building in the background; retry after this long.
+    Building(Duration),
+    /// A mirror repository whose upstream has not been fetched yet.
+    MirrorMissing,
+    /// The replica holds as many views as it may.
+    TooManyViews,
+    /// The view could not be synced or opened; the metric reason.
+    Failed(&'static str),
+}
+
+/// Brings `repo`'s view in step with the shared refs and opens it: the step every transport takes
+/// before it starts a pack child (SPEC §25.2, §25.11.5).
+pub(crate) async fn sync_view(
+    views: &Arc<GitViewService>,
+    registry: &Registry,
+    repo: &Arc<RepoEntry>,
+) -> Result<asc_git::compat::GitView, ViewWait> {
+    match views.ensure(repo, registry.refs()).await {
+        Ok(ViewAnswer::Ready(_)) => {}
+        Ok(ViewAnswer::Building { retry_after }) => return Err(ViewWait::Building(retry_after)),
+        Err(GitViewError::View(ViewError::NotARepository(_))) => {
+            return Err(ViewWait::MirrorMissing);
+        }
+        Err(GitViewError::TooManyViews) => return Err(ViewWait::TooManyViews),
+        Err(e) => {
+            tracing::warn!(repo = %repo.name, error = %e, "syncing the git view");
+            return Err(ViewWait::Failed("view_sync"));
+        }
+    }
+    views.view(repo).map_err(|e| {
+        tracing::warn!(repo = %repo.name, error = %e, "opening the git view");
+        ViewWait::Failed("view_open")
+    })
+}
+
+/// The protocol a request is served over: the client's, except that v2 is dropped where it cannot
+/// or must not be used. The client falls back to v0 by itself.
+///
+/// * Git has no protocol v2 for pushes: a client that asks for it gets v0.
+/// * A mirror holds its upstream's hidden refs (pull requests, ...) with their objects. In
+///   protocol v2 a client may `want` any object that exists, whatever was advertised; v0 and v1
+///   make git check each `want` against the visible refs. A mirror is therefore served over
+///   v0/v1, and the answer is the same for every request of the repo. A derived view holds
+///   shared refs only, so it has nothing to hide.
+pub(crate) fn served_protocol(
+    service: Service,
+    mode: RepoMode,
+    protocol: Option<GitProtocol>,
+) -> Option<GitProtocol> {
+    let v2 = protocol
+        .as_ref()
+        .is_some_and(|p| p.version() == ProtocolVersion::V2);
+    if v2 && (service == Service::ReceivePack || mode == RepoMode::Mirror) {
+        None
+    } else {
+        protocol
+    }
+}
+
+/// The git layer's parts, shared by every transport that serves it (smart HTTP, SSH).
+#[derive(Clone)]
+pub struct GitServices {
+    pub(crate) views: Arc<GitViewService>,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) metrics: Arc<GitMetrics>,
+    pub(crate) limits: Arc<GitLimits>,
+    /// Receive-pack: the hook socket, tokens and push slots. `None` refuses pushes.
+    pub(crate) push: Option<GitPush>,
 }
 
 // ------------------------------------------------------------------------------ state
@@ -812,41 +915,29 @@ impl GitHttp {
 
     /// Brings the view in step, or answers `503`/`500`.
     async fn ready_view(&self, repo: &Arc<RepoEntry>) -> Result<asc_git::compat::GitView, Refusal> {
-        match self.views.ensure(repo, self.registry.refs()).await {
-            Ok(ViewAnswer::Ready(_)) => {}
-            Ok(ViewAnswer::Building { retry_after }) => {
-                return Err(Refusal::retry(
+        sync_view(&self.views, &self.registry, repo)
+            .await
+            .map_err(|wait| match wait {
+                ViewWait::Building(retry_after) => Refusal::retry(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "view_building",
                     retry_after,
                     "asc: the repository is being prepared for git; retry shortly\n",
-                ));
-            }
-            Err(GitViewError::View(ViewError::NotARepository(_))) => {
-                return Err(Refusal::retry(
+                ),
+                ViewWait::MirrorMissing => Refusal::retry(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "mirror_missing",
                     NOT_READY_RETRY,
                     "asc: the mirror has not been fetched yet; retry shortly\n",
-                ));
-            }
-            Err(GitViewError::TooManyViews) => {
-                return Err(Refusal::retry(
+                ),
+                ViewWait::TooManyViews => Refusal::retry(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "too_many_views",
                     NOT_READY_RETRY,
                     "asc: the server is busy; retry shortly\n",
-                ));
-            }
-            Err(e) => {
-                tracing::warn!(repo = %repo.name, error = %e, "syncing the git view");
-                return Err(Refusal::internal("view_sync"));
-            }
-        }
-        self.views.view(repo).map_err(|e| {
-            tracing::warn!(repo = %repo.name, error = %e, "opening the git view");
-            Refusal::internal("view_open")
-        })
+                ),
+                ViewWait::Failed(reason) => Refusal::internal(reason),
+            })
     }
 
     /// Starts `upload-pack` or `receive-pack` on the view and returns the streaming answer (or
@@ -1150,27 +1241,8 @@ impl GitHttp {
                     PUSH_DISABLED,
                 ));
             }
-            // Git has no protocol v2 for pushes: a client that asks for it gets v0.
-            if protocol
-                .as_ref()
-                .is_some_and(|p| p.version() == ProtocolVersion::V2)
-            {
-                protocol = None;
-            }
         }
-
-        // A mirror holds its upstream's hidden refs (pull requests, …) with their objects. In
-        // protocol v2 a client may `want` any object that exists, whatever was advertised; v0 and
-        // v1 make git check each `want` against the visible refs. A mirror is therefore served
-        // over v0/v1: the client falls back by itself, and the answer is the same for every
-        // request of the repo. A derived view holds shared refs only, so it has nothing to hide.
-        if entry.mode == RepoMode::Mirror
-            && protocol
-                .as_ref()
-                .is_some_and(|p| p.version() == ProtocolVersion::V2)
-        {
-            protocol = None;
-        }
+        protocol = served_protocol(service, entry.mode, protocol);
         audit.version = version_label(protocol.as_ref());
 
         match endpoint {
@@ -1485,13 +1557,13 @@ pub fn register(
     registry: Arc<Registry>,
     metrics: &Arc<Metrics>,
     cfg: &ServeConfig,
-) {
+) -> GitServices {
     match HookProgram::current_asc() {
         Ok(hook) => register_with_hook(ext, views, registry, metrics, cfg, &hook),
         Err(e) => {
             // Fetches still work; pushes answer `403` (the hook has no program to run).
             tracing::warn!(error = %e, "cannot find this executable; git pushes are disabled");
-            register_routes(ext, views, registry, metrics, None);
+            register_routes(ext, views, registry, metrics, None)
         }
     }
 }
@@ -1505,7 +1577,7 @@ pub fn register_with_hook(
     metrics: &Arc<Metrics>,
     _cfg: &ServeConfig,
     hook: &HookProgram,
-) {
+) -> GitServices {
     let push = match GitPush::start(views.clone(), registry.clone(), ext.pipeline.clone(), hook) {
         Ok(p) => Some(p),
         Err(e) => {
@@ -1513,7 +1585,7 @@ pub fn register_with_hook(
             None
         }
     };
-    register_routes(ext, views, registry, metrics, push);
+    register_routes(ext, views, registry, metrics, push)
 }
 
 fn register_routes(
@@ -1522,20 +1594,29 @@ fn register_routes(
     registry: Arc<Registry>,
     metrics: &Arc<Metrics>,
     push: Option<GitPush>,
-) {
+) -> GitServices {
     let limits = Arc::new(views.server().limits().clone());
     let metrics = GitMetrics::register(metrics);
+    let services = GitServices {
+        views,
+        registry,
+        metrics,
+        limits,
+        push,
+    };
+    let shared = services.clone();
     let factory: GitRouterFactory = Arc::new(move |authorizer| {
         router(GitHttp {
-            views: views.clone(),
-            registry: registry.clone(),
+            views: shared.views.clone(),
+            registry: shared.registry.clone(),
             authorizer,
-            metrics: metrics.clone(),
-            limits: limits.clone(),
-            push: push.clone(),
+            metrics: shared.metrics.clone(),
+            limits: shared.limits.clone(),
+            push: shared.push.clone(),
         })
     });
     if ext.git.set(factory).is_err() {
         tracing::warn!("the git routes were already registered; keeping the first");
     }
+    services
 }

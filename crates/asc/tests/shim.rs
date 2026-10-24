@@ -244,33 +244,59 @@ fn the_depth_guard_fires() {
     assert!(out.stderr.contains("loop"), "{}", out.stderr);
 }
 
+/// One measurement round: `PAIRS` interleaved (direct, shimmed) runs, so a load spike hits
+/// both sides alike. Returns (median direct us, median shimmed us).
+fn overhead_round(sb: &Sandbox, repo: &Path) -> (u128, u128) {
+    const PAIRS: usize = 21;
+    let args = ["rev-parse", "--git-dir"];
+    let (mut direct, mut shimmed) = (Vec::new(), Vec::new());
+    for _ in 0..PAIRS {
+        let t = Instant::now();
+        real(sb, repo, &args);
+        direct.push(t.elapsed().as_micros());
+        let t = Instant::now();
+        shim(sb, repo, &args);
+        shimmed.push(t.elapsed().as_micros());
+    }
+    direct.sort_unstable();
+    shimmed.sort_unstable();
+    (direct[PAIRS / 2], shimmed[PAIRS / 2])
+}
+
+/// SPEC §11.4 / §17: the shim's fall-through adds at most 5 ms (Windows) or 2 ms (Linux) over
+/// the real git call at p95. The same bound is checked here on the median of interleaved runs
+/// measured against a git baseline in the same round, and a round passes when either the
+/// absolute extra time or the shimmed/direct ratio is within budget. The budget is
+/// `ASC_SHIM_OVERHEAD_MS` when set (CI on a shared runner). Any of up to `ROUNDS` rounds may
+/// pass, because only a sustained slowdown, not a load spike, is a real regression.
 #[test]
 fn fall_through_overhead_is_small() {
+    const ROUNDS: usize = 5;
+    // The shim is a debug binary here and is compared against a git call of tens of ms, so the
+    // ratio form keeps the same SPEC allowance relative to the baseline.
+    const MAX_RATIO: f64 = 1.5;
+    let budget_ms: f64 = std::env::var("ASC_SHIM_OVERHEAD_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if cfg!(windows) { 5.0 } else { 2.0 });
     let sb = Sandbox::new();
     let repo = sb.dir("repo");
     ok(real(&sb, &repo, &["init", "-b", "master"]));
-    let median = |f: &dyn Fn()| {
-        let mut times: Vec<u128> = (0..15)
-            .map(|_| {
-                let t = Instant::now();
-                f();
-                t.elapsed().as_micros()
-            })
-            .collect();
-        times.sort_unstable();
-        times[times.len() / 2]
-    };
-    let direct = median(&|| {
-        real(&sb, &repo, &["rev-parse", "--git-dir"]);
-    });
-    let shimmed = median(&|| {
-        shim(&sb, &repo, &["rev-parse", "--git-dir"]);
-    });
-    // The SPEC §11.4 budget (p95 5 ms) is measured by O05; this guards against a gross slowdown.
-    let extra_ms = shimmed.saturating_sub(direct) / 1000;
-    assert!(
-        extra_ms < 100,
-        "shim adds {extra_ms} ms to a {direct} us git call"
+    let mut seen = Vec::new();
+    for _ in 0..ROUNDS {
+        let (direct, shimmed) = overhead_round(&sb, &repo);
+        let extra_ms = shimmed.saturating_sub(direct) as f64 / 1000.0;
+        let ratio = shimmed as f64 / direct.max(1) as f64;
+        if extra_ms <= budget_ms || ratio <= MAX_RATIO {
+            return;
+        }
+        seen.push(format!(
+            "+{extra_ms:.1} ms (x{ratio:.2}) over a {direct} us git call"
+        ));
+    }
+    panic!(
+        "shim fall-through exceeded {budget_ms} ms and x{MAX_RATIO} in all {ROUNDS} rounds: {}",
+        seen.join("; ")
     );
 }
 

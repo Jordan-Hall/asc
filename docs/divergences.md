@@ -68,16 +68,16 @@ Q-2, Q-4 and Q-5 are `replicate` and have no bullet.
 - **Class:** branchless
 - **Pinned git:** `git push origin <tag>` creates the tag on the remote.
 - **asc (`asc.branchless=true`, the default):** `! [remote rejected] <tag> -> <tag> (asc: ref not shared in this repository)`, exit 1. `asc.branchless=false` or `repos.branchless=false` restores git's behaviour.
-- **Proof:** `tests/compat/scenarios/branchless-push-tag.t` (to write; needs the double run, `A-2`)
-- **Status:** pending Q03
+- **Proof:** `tests/compat/scenarios/branchless-push-tag.t` runs in both modes against a bare git remote (no ref policy) and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. The rejection is server policy (`REF_NOT_SHARED`, `crates/asc-serve/tests/refpolicy.rs`) and its client mapping and printed line are B12; B12 adds the `allowed.toml` entry carrying `D-5` and a proof of the line.
+- **Status:** pending B12
 - **SPEC:** §21.4.2, §20.1 D5, §21.1 BD7
 
 ### D-6 `push --all` does not submit stacks in branchless mode
 - **Class:** branchless
 - **Pinned git:** `git push --all` pushes every local branch as a server branch.
 - **asc (branchless):** each non-shared branch becomes a user ref; shared-pattern branches follow their compare-and-swap rules; no `refs/for` submit, no PR; the output ends with `remote: asc: --all does not submit stacks; use asc submit`.
-- **Proof:** `tests/compat/scenarios/branchless-push-all.t` (to write; needs the double run, `A-2`)
-- **Status:** pending Q03
+- **Proof:** `tests/compat/scenarios/branchless-push-all.t` runs in both modes against a bare git remote and must match git byte for byte, which proves the `asc.branchless=false` half and BD7 for the local commands. No code prints `remote: asc: --all does not submit stacks` yet; that and the user-ref mapping are B12, which adds the `allowed.toml` entry carrying `D-6` and a proof of the line.
+- **Status:** pending B12
 - **SPEC:** §21.4.2
 
 ### D-7 A hook installed through `rev-parse --absolute-git-dir` is not found

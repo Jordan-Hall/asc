@@ -9,6 +9,10 @@
 //! `asc serve ssh-key add|list|revoke` manages SSH public keys in the token store (SPEC §25.11.3;
 //! build feature `git-ssh`): `add --user <u> --key-file <pub> [--title <t>] [--expires 30d]`,
 //! `add --repo <r> --deploy [--write] --key-file <pub>`, `list`, `revoke <fingerprint|id>`.
+//!
+//! `asc serve ssh host-key show|rotate` handles the SSH listener's host keys (SPEC §25.11.6; build
+//! feature `git-ssh`): `show` prints each key's `SHA256:` fingerprint and a `known_hosts` line,
+//! `rotate` writes a new first host key.
 
 #[cfg(not(feature = "serve"))]
 stub!("serve");
@@ -65,6 +69,31 @@ mod real {
             #[command(subcommand)]
             cmd: SshKeyCmd,
         },
+        /// The SSH listener's own settings (host keys).
+        #[cfg(feature = "git-ssh")]
+        Ssh {
+            #[command(subcommand)]
+            cmd: SshCmd,
+        },
+    }
+
+    #[cfg(feature = "git-ssh")]
+    #[derive(clap::Subcommand, Debug)]
+    pub enum SshCmd {
+        /// Shows or rotates the host keys clients are asked to trust.
+        HostKey {
+            #[command(subcommand)]
+            cmd: HostKeyCmd,
+        },
+    }
+
+    #[cfg(feature = "git-ssh")]
+    #[derive(clap::Subcommand, Debug)]
+    pub enum HostKeyCmd {
+        /// Prints each host key's fingerprint and a `known_hosts` line.
+        Show,
+        /// Writes a new host key; clients will see a changed-key warning.
+        Rotate,
     }
 
     #[cfg(feature = "git-ssh")]
@@ -267,6 +296,17 @@ mod real {
                     );
                 }
             },
+            #[cfg(feature = "git-ssh")]
+            Some(Sub::Ssh {
+                cmd: SshCmd::HostKey { cmd },
+            }) => match cmd {
+                HostKeyCmd::Show => {
+                    print!("{}", asc_serve::ssh::host_key_show(&cfg).map_err(fatal)?)
+                }
+                HostKeyCmd::Rotate => {
+                    print!("{}", asc_serve::ssh::host_key_rotate(&cfg).map_err(fatal)?);
+                }
+            },
             None => {
                 let authorizer = asc_serve::authz::authorizer(&cfg).await.map_err(fatal)?;
                 let stop = async {
@@ -285,10 +325,27 @@ mod real {
 mod ssh_key_tests {
     use clap::Parser as _;
 
-    use super::{Args, SshKeyCmd, Sub};
+    use super::{Args, HostKeyCmd, SshCmd, SshKeyCmd, Sub};
 
     fn parse(args: &[&str]) -> Result<Args, clap::Error> {
         Args::try_parse_from(std::iter::once("serve").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn host_key_show_and_rotate_parse() {
+        for (word, want_rotate) in [("show", false), ("rotate", true)] {
+            let a = parse(&["ssh", "host-key", word]).unwrap();
+            let Some(Sub::Ssh {
+                cmd: SshCmd::HostKey { cmd },
+            }) = a.cmd
+            else {
+                panic!("not ssh host-key");
+            };
+            assert_eq!(matches!(cmd, HostKeyCmd::Rotate), want_rotate);
+        }
+        assert!(parse(&["ssh", "host-key"]).is_err());
+        assert!(parse(&["ssh", "host-key", "delete"]).is_err());
+        assert!(parse(&["ssh"]).is_err());
     }
 
     #[test]

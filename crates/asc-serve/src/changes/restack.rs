@@ -377,6 +377,7 @@ impl Restacker {
         if writes && entry.mode == RepoMode::Mirror {
             return Err(rpc(RpcError::MirrorMode(info(vec![ctx.repo.to_string()]))));
         }
+        self.authorize(&entry, ctx, &parsed.items).await?;
         let committer = Self::committer(ctx, &parsed)?;
         let engine = entry.backend.engine().clone();
         if writes
@@ -388,7 +389,7 @@ impl Restacker {
                 .await;
         }
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
-        let onto = self.onto(&ids, &engine, &entry, &req.onto).await?;
+        let onto = self.onto(&ids, &entry, &req.onto).await?;
         let heads = self.heads(&entry, &parsed.items).await?;
 
         // Parents come first, and a caller that names a head other than the change's is stale.
@@ -481,24 +482,62 @@ impl Restacker {
     async fn onto(
         &self,
         ids: &IdCodec,
-        engine: &Eng,
         entry: &RepoEntry,
         spec: &str,
     ) -> Result<ChangesetId, Status> {
         let spec = if spec.is_empty() { "HEAD" } else { spec };
-        // `rev_in` refuses every name that reaches another user's ref.
-        let rev = ids.rev_in(spec, &entry.default_branch).await?;
-        let got = engine
-            .resolve(std::slice::from_ref(&rev))
+        // `resolve` refuses every name that reaches another user's ref and holds the engine's
+        // resolver to the same rule; a ref the caller may not see is `not_found`.
+        ids.resolve(spec, &entry.default_branch, |e| match e {
+            asc_engine::graph::Error::Query(m) => invalid(m),
+            e => internal("resolve", &e),
+        })
+        .await?
+        .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
+    }
+
+    /// Every item is a change the caller owns: it published the latest version or the first one
+    /// (the change's creator). A restack appends versions to the changes it rewrites, so write
+    /// access alone does not open another user's change to it. The forge's internal principal
+    /// restacks on behalf of any author (SPEC §20.5 flow 4, D11); everyone else, the MCP
+    /// `restack` tool included, only their own. A change that is not the caller's is refused
+    /// for a dry run too, which would show its content.
+    async fn authorize(
+        &self,
+        entry: &RepoEntry,
+        ctx: &CallCtx,
+        items: &[Item],
+    ) -> Result<(), Status> {
+        if self.pipeline.push_hooks().may_skip_pre(ctx) {
+            return Ok(());
+        }
+        let mut conn = self
+            .registry
+            .pool()
+            .acquire()
             .await
-            .map_err(|e| match e {
-                asc_engine::graph::Error::Query(m) => invalid(m),
-                e => internal("resolve", &e),
-            })?;
-        got.into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
+            .map_err(|e| internal("database", &e))?;
+        for item in items {
+            let latest = versions::latest(&mut conn, entry.ns, item.change)
+                .await
+                .map_err(|e| internal("versions", &e))?
+                .ok_or_else(|| {
+                    Status::not_found(format!("change {} has no published version", item.change))
+                })?;
+            if latest.actor == ctx.principal.id {
+                continue;
+            }
+            let first = versions::list(&mut conn, entry.ns, item.change, None, 1)
+                .await
+                .map_err(|e| internal("versions", &e))?;
+            if first.first().is_none_or(|v| v.actor != ctx.principal.id) {
+                return Err(Status::permission_denied(format!(
+                    "change {} is not yours to restack",
+                    item.change
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// The newest published version of every item.
@@ -633,15 +672,29 @@ impl Restacker {
         at: i64,
     ) -> Result<(), Status> {
         let targets: Vec<RefTarget> = pairs.iter().map(|p| RefTarget::Changeset(p.1)).collect();
-        Ingestor::new(
+        // The policy of the `Ingest` RPC (SPEC §21.3.7), the only one a call with no ref has:
+        // the caller is recorded as the ingester and pays for what it adds, and a caller with no
+        // bytes left is refused before anything is recorded. The internal principal has no
+        // owner and is not charged.
+        let owner = crate::refpolicy::owner_of(&ctx.principal);
+        let quota = self.pipeline.user_quota();
+        let mut ingestor = Ingestor::new(
             self.registry.pool(),
             self.registry.refs(),
             entry,
             windows_safe,
         )
-        .ingest(&targets, self.pipeline.observer())
-        .await
-        .map_err(ingest_status)?;
+        .by(owner);
+        if let Some(owner) = owner {
+            let left = quota
+                .remaining(self.registry.pool(), entry.ns, owner)
+                .await?;
+            ingestor = ingestor.with_budget(left);
+        }
+        ingestor
+            .ingest(&targets, self.pipeline.observer())
+            .await
+            .map_err(ingest_status)?;
         let mut tx = self
             .registry
             .refs()
@@ -649,6 +702,10 @@ impl Restacker {
             .await
             .map_err(|e| internal("refs", &e))?;
         self.registry.guard(&mut tx, entry).await?;
+        if let Some(owner) = owner {
+            let news: Vec<ChangesetId> = pairs.iter().map(|p| p.1).collect();
+            quota.claim(&mut tx, entry.ns, owner, &news).await?;
+        }
         self.pipeline
             .observer()
             .on_rewritten(&mut tx, entry.key, pairs, RewriteOp::Restack)
@@ -869,6 +926,8 @@ mod tests {
     const READER: &str = "reader-token";
     const WRITER: &str = "writer-token";
     const FORGE: &str = "forge-token";
+    const MALLORY: &str = "mallory-token";
+    const BOB: &str = "bob-token";
 
     struct Internal;
     impl PushHooks for Internal {
@@ -909,6 +968,16 @@ mod tests {
         cs: ChangesetId,
         parent: Option<u8>,
     ) {
+        publish_as(f, n, cs, parent, "writer").await;
+    }
+
+    async fn publish_as(
+        f: &(Arc<Registry>, Arc<RepoEntry>),
+        n: u8,
+        cs: ChangesetId,
+        parent: Option<u8>,
+        actor: &str,
+    ) {
         let idx = index::ChangeIndex::new(f.0.clone());
         let mut tx = f.0.refs().begin().await.unwrap();
         idx.write_meta(
@@ -926,7 +995,7 @@ mod tests {
                 cs,
                 parent_change: parent.map(cid),
                 at: 5,
-                actor: "alice",
+                actor,
                 op_id: b"",
                 force: false,
             },
@@ -955,6 +1024,8 @@ mod tests {
         let auth = StaticTokens::new()
             .with_token(READER, "reader", Access::Read)
             .with_token(WRITER, "writer", Access::Write)
+            .with_token(MALLORY, "mallory", Access::Write)
+            .with_token(BOB, "7:bob", Access::Write)
             .with_token(FORGE, crate::forgejo::INTERNAL_PRINCIPAL, Access::Admin);
         let svc = ChangesService::new(
             ext.changes.get().unwrap().clone(),
@@ -1528,5 +1599,130 @@ mod tests {
             ..msg(f.t, vec![item(1)])
         };
         assert_eq!(f.run(dry, WRITER).await.unwrap().rewritten.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn another_user_cannot_restack_my_change() {
+        let f = fx().await;
+        f.set_ref("refs/pull/1/head", f.c[0]).await;
+        let plain = msg(f.t, vec![item(1)]);
+        let dry = wire::RestackChangesRequest {
+            dry_run: true,
+            ..plain.clone()
+        };
+        // Mallory has write access, and change 2 sits on change 1: neither is hers.
+        for m in [
+            plain,
+            dry,
+            msg(f.t, vec![item_ref(1, f.c[0])]),
+            msg(f.t, vec![item(3), item(1)]),
+            msg(f.t, vec![item(1), item(2)]),
+        ] {
+            let e = f.run(m, MALLORY).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        }
+        assert_eq!(
+            f.ref_of("refs/pull/1/head").await,
+            Some(RefTarget::Changeset(f.c[0]))
+        );
+        assert_eq!(f.count("SELECT COUNT(*) FROM change_versions").await, 3);
+        // The owner and the forge may.
+        assert_eq!(
+            f.run(msg(f.t, vec![item(1)]), WRITER)
+                .await
+                .unwrap()
+                .rewritten
+                .len(),
+            1
+        );
+        assert_eq!(
+            f.run(msg(f.t, vec![item(3)]), FORGE)
+                .await
+                .unwrap()
+                .rewritten
+                .len(),
+            1
+        );
+        assert_eq!(f.latest(1).await.v, 2);
+        assert_eq!(f.latest(3).await.actor, crate::forgejo::INTERNAL_PRINCIPAL);
+    }
+
+    #[tokio::test]
+    async fn a_restack_after_the_forge_stays_with_the_creator() {
+        let f = fx().await;
+        // The forge restacked change 3: its latest version is the forge's, its first is the
+        // author's, who may restack it again.
+        f.run(msg(f.t, vec![item(3)]), FORGE).await.unwrap();
+        assert_eq!(f.latest(3).await.actor, crate::forgejo::INTERNAL_PRINCIPAL);
+        let e = f.run(msg(f.x, vec![item(3)]), MALLORY).await.unwrap_err();
+        assert_eq!(e.code(), tonic::Code::PermissionDenied);
+        f.run(msg(f.x, vec![item(3)]), WRITER).await.unwrap();
+        assert_eq!(f.latest(3).await.v, 3);
+    }
+
+    #[tokio::test]
+    async fn a_restack_without_refs_is_charged_to_the_caller_and_stops_at_the_quota() {
+        let f = fx().await;
+        let pair = (f.reg.clone(), f.e.clone());
+        publish_as(&pair, 8, f.c[2], None, "7:bob").await;
+        let ns = f.e.ns.as_bytes().to_vec();
+        // No bytes left: refused before anything is recorded.
+        sqlx::query("INSERT INTO cloud_usage (ns, owner, bytes, workspaces) VALUES ($1, 7, $2, 0)")
+            .bind(ns.clone())
+            .bind(i64::MAX / 2)
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let e = f.run(msg(f.t, vec![item(8)]), BOB).await.unwrap_err();
+        assert!(
+            asc_rpc::server::status_rpc_error(&e)
+                .is_some_and(|r| format!("{r:?}").contains("QuotaExceeded")),
+            "{e:?}"
+        );
+        assert_eq!(f.latest(8).await.v, 1);
+        // The same call with the bytes back is charged to bob.
+        sqlx::query("UPDATE cloud_usage SET bytes = 0 WHERE owner = 7")
+            .execute(f.reg.pool())
+            .await
+            .unwrap();
+        let done = f.run(msg(f.t, vec![item(8)]), BOB).await.unwrap();
+        assert_eq!(done.rewritten.len(), 1);
+        assert_eq!(f.latest(8).await.v, 2);
+        assert_eq!(
+            f.count("SELECT COUNT(*) FROM cs_claim WHERE owner = 7")
+                .await,
+            1
+        );
+        assert!(
+            f.count("SELECT bytes FROM cloud_usage WHERE owner = 7")
+                .await
+                > 0
+        );
+    }
+
+    #[tokio::test]
+    async fn onto_naming_another_users_ref_is_not_found() {
+        let f = fx().await;
+        f.set_ref("refs/users/9/heads/feat", f.t).await;
+        f.set_ref("refs/heads/main", f.t).await;
+        for spec in [
+            "refs/users/9/heads/feat",
+            "users/9/heads/feat",
+            "refs/users/9/heads/feat~0",
+            "refs/users/9/heads/feat^{}",
+            "refs/users/9/heads/feat@{0}",
+        ] {
+            for who in [WRITER, MALLORY] {
+                let mut m = msg(f.t, vec![item(1)]);
+                m.onto = spec.into();
+                let e = f.run(m, who).await.unwrap_err();
+                assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
+            }
+        }
+        assert_eq!(f.latest(1).await.v, 1);
+        // A shared ref still resolves.
+        let mut m = msg(f.t, vec![item(1)]);
+        m.onto = "refs/heads/main".into();
+        assert_eq!(f.run(m, WRITER).await.unwrap().rewritten.len(), 1);
     }
 }

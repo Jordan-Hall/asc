@@ -247,6 +247,73 @@ fn seeds_draft_heads_from_unmerged_tips_idempotently() {
 }
 
 #[test]
+fn a_hidden_head_beyond_the_list_cap_is_not_queued_again() {
+    let r = fixture();
+    r.clear_rows();
+    r.migrate(&[]);
+    let feat = r.cs_of("feat");
+    // `feat` becomes hidden and leaves the queue; more than MAX_SEEDS newer hidden rows push it
+    // out of any capped listing of hidden heads.
+    let queued = r.with_db(async |db, repo| {
+        sqlx::query("UPDATE draft_heads SET hidden_at = 1 WHERE repo_id = ? AND cs = ?")
+            .bind(repo.0)
+            .bind(feat.as_bytes().to_vec())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM cloud_queue WHERE repo_id = ? AND cs = ?")
+            .bind(repo.0)
+            .bind(feat.as_bytes().to_vec())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10001)              INSERT INTO draft_heads (repo_id, cs, change, added, hidden_at)              SELECT ?, randomblob(32), randomblob(32), 1, 2000000000 FROM n",
+        )
+        .bind(repo.0)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let q: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM cloud_queue WHERE repo_id = ? AND cs = ?")
+                .bind(repo.0)
+                .bind(feat.as_bytes().to_vec())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        q
+    });
+    assert_eq!(queued, 0);
+    let v = r.migrate(&[]);
+    assert!(
+        !v["seeded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["changeset"] == feat.to_string()),
+        "a hidden head is not seeded again: {v}"
+    );
+    let (q, hidden): (i64, i64) = r.with_db(async |db, repo| {
+        let q = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_queue WHERE repo_id = ? AND cs = ?")
+            .bind(repo.0)
+            .bind(feat.as_bytes().to_vec())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        let h = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM draft_heads WHERE repo_id = ? AND cs = ? AND hidden_at = 1",
+        )
+        .bind(repo.0)
+        .bind(feat.as_bytes().to_vec())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        (q, h)
+    });
+    assert_eq!((q, hidden), (0, 1), "not requeued, still hidden");
+}
+
+#[test]
 fn only_heads_are_seeded_when_branches_stack() {
     let r = fixture();
     r.ok(&["switch", "feat"]);

@@ -43,7 +43,9 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
 }];
 
 fn usage(text: &str) -> CliError {
-    CliError::Usage(format!("usage: asc landed <rev> [--ref <ref>] [--remote <name>] [--json]\n{text}"))
+    CliError::Usage(format!(
+        "usage: asc landed <rev> [--ref <ref>] [--remote <name>] [--json]\n{text}"
+    ))
 }
 
 fn hex(bytes: &[u8]) -> String {

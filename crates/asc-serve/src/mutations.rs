@@ -270,15 +270,9 @@ impl ServerMutations {
             return Err(invalid("revision is too long"));
         }
         let spec = if spec.is_empty() { "HEAD" } else { spec };
-        let spec = o.ids.rev_in(spec, &o.entry.default_branch).await?;
-        let got = o
-            .engine
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(graph_status)?;
-        got.into_iter()
-            .next()
-            .flatten()
+        o.ids
+            .resolve(spec, &o.entry.default_branch, graph_status)
+            .await?
             .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
     }
 
@@ -305,6 +299,51 @@ impl ServerMutations {
             cs: id,
         };
         self.ingest_with(o, &[id], &observer).await
+    }
+
+    /// The `Ingest` RPC (SPEC §21.3.7): step 4 with the caller recorded as the ingester, then the
+    /// caller pays for the closure of `ids` (`cloud_usage` through `UserQuota::claim`). A
+    /// caller with no bytes left is refused before anything is recorded. A caller with no
+    /// verified owner id is not charged and records no ingester; whoever later names the
+    /// changesets from a user ref pays for them.
+    async fn ingest_charged(
+        &self,
+        ctx: &CallCtx,
+        o: &Opened,
+        ids: &[ChangesetId],
+    ) -> Result<(), Status> {
+        let owner = crate::refpolicy::owner_of(&ctx.principal);
+        let quota = self.pipeline.user_quota();
+        let targets: Vec<RefTarget> = ids.iter().map(|&c| RefTarget::Changeset(c)).collect();
+        let mut ingestor = Ingestor::new(
+            self.registry.pool(),
+            self.registry.refs(),
+            &o.entry,
+            o.windows_safe,
+        )
+        .by(owner);
+        if let Some(owner) = owner {
+            let left = quota
+                .remaining(self.registry.pool(), o.entry.ns, owner)
+                .await?;
+            ingestor = ingestor.with_budget(left);
+        }
+        ingestor
+            .ingest(&targets, self.pipeline.observer())
+            .await
+            .map_err(ingest_status)?;
+        if let Some(owner) = owner {
+            let mut tx = self
+                .registry
+                .refs()
+                .begin()
+                .await
+                .map_err(|e| internal("refs", &e))?;
+            self.registry.guard(&mut tx, &o.entry).await?;
+            quota.claim(&mut tx, o.entry.ns, owner, ids).await?;
+            tx.commit().await.map_err(|e| internal("commit", &e))?;
+        }
+        Ok(())
     }
 
     async fn ingest_with(
@@ -829,7 +868,7 @@ impl ServerMutations {
             }
         }
         let _gc = self.fence().await?;
-        self.ingest_ids(&o, &ids).await?;
+        self.ingest_charged(ctx, &o, &ids).await?;
         Ok(wire::IngestResponse {
             ingested: ids
                 .iter()
@@ -842,7 +881,7 @@ impl ServerMutations {
 // ------------------------------------------------------------------------------ Apply
 
 /// The wire form of a merge conflict. `source` is the changeset being picked or reverted.
-fn conflict_wire(source: Option<ChangesetId>, c: &Conflict) -> wire::Conflict {
+pub(crate) fn conflict_wire(source: Option<ChangesetId>, c: &Conflict) -> wire::Conflict {
     use wire::ConflictKind as W;
     let id = |e: &Option<Entry>| match e {
         Some(e) if matches!(e.kind, Kind::File | Kind::Exec | Kind::Symlink) => {
@@ -2749,6 +2788,66 @@ new file mode 100644
         );
         assert_eq!(ref_target(&f, b_ref).await, Some(RefTarget::Changeset(b1)));
         assert_eq!(ref_target(&f, a_ref).await, Some(RefTarget::Changeset(c2)));
+    }
+
+    /// Another user's ref is not a base: not an Apply `onto`, not the changeset a pick takes,
+    /// not a Commit `parent`, in any spelling. The owner still reaches it.
+    #[tokio::test]
+    async fn another_users_ref_is_not_a_base() {
+        let f = fx().await;
+        let base = lines(&f).await;
+        ingest_one(&f, base).await;
+        set_ref(&f, "refs/users/42/heads/x", base).await;
+        let (bob, alice) = ("43:bob", "42:alice");
+        let foreign = [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+            "refs/users/42/heads/x@{3}",
+            "users/42/heads/x~0",
+            "users/42/heads/x^{commit}",
+            "master..users/42/heads/x",
+            "users/42/heads/x...master",
+            "^users/42/heads/x",
+        ];
+        for spec in foreign {
+            let mut onto = patch_req(base, MODIFY);
+            onto.onto = spec.into();
+            let mut source = pick(base, base, wire::ApplyMode::CherryPick);
+            source.changeset = spec.into();
+            let commit = wire::CommitRequest {
+                repo: repo_ref(),
+                parent: spec.into(),
+                ops: vec![put("a", b"1")],
+                message: Bytes::from_static(b"msg\n"),
+                author: Some(sig()),
+                committer: Some(sig()),
+                ..wire::CommitRequest::default()
+            };
+            for (what, err) in [
+                (
+                    "onto",
+                    f.m.apply_inner(&ctx_as(bob), onto.clone()).await.err(),
+                ),
+                (
+                    "changeset",
+                    f.m.apply_inner(&ctx_as(bob), source.clone()).await.err(),
+                ),
+                (
+                    "parent",
+                    f.m.commit_inner(&ctx_as(bob), commit.clone()).await.err(),
+                ),
+            ] {
+                let err = err.unwrap_or_else(|| panic!("bob used {spec} as {what}"));
+                assert_eq!(err.code(), tonic::Code::NotFound, "{what} {spec}");
+            }
+        }
+        for spec in ["refs/users/42/heads/x", "users/42/heads/x"] {
+            let mut onto = patch_req(base, MODIFY);
+            onto.onto = spec.into();
+            let got = f.m.apply_inner(&ctx_as(alice), onto).await.unwrap();
+            assert!(!got.result.is_empty(), "the owner applies onto {spec}");
+        }
     }
 
     #[tokio::test]

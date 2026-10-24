@@ -66,6 +66,10 @@ pub enum IngestError {
     PathPolicy { path: String, why: &'static str },
     #[error("push adds more than {MAX_NEW_CHANGESETS} changesets")]
     TooLarge,
+    /// The new changesets cost more than the pusher has left (SPEC §21.3.7, `QUOTA_EXCEEDED`);
+    /// nothing was recorded.
+    #[error("{0}")]
+    QuotaExceeded(String),
     #[error("store: {0}")]
     Store(String),
     #[error("database: {0}")]
@@ -342,6 +346,14 @@ pub struct Ingestor<'a> {
     max_changes: usize,
     /// Trees fully checked during this ingest.
     verified: HashSet<TreeId>,
+    /// The verified owner id of the principal ingesting (0 for none), recorded in `cs_ledger`.
+    ingester: i64,
+    /// Most bytes the new changesets may cost (SPEC §21.3.7); `None` for no limit here.
+    budget: Option<u64>,
+    /// [`changeset_cost`] of every changeset checked.
+    costs: HashMap<ChangesetId, u64>,
+    /// What the last successful [`Ingestor::ingest`] recorded.
+    added_bytes: u64,
 }
 
 impl<'a> Ingestor<'a> {
@@ -361,7 +373,32 @@ impl<'a> Ingestor<'a> {
             windows_safe,
             max_changes: MAX_VERIFIED_CHANGES,
             verified: HashSet::new(),
+            ingester: 0,
+            budget: None,
+            costs: HashMap::new(),
+            added_bytes: 0,
         }
+    }
+
+    /// Records `owner`, the verified owner id of the ingesting principal, in `cs_ledger` for every
+    /// changeset this ingest adds, so what stays unreferenced is attributable and whoever later
+    /// names it from a user ref pays for it.
+    pub fn by(mut self, owner: Option<i64>) -> Self {
+        self.ingester = owner.filter(|&o| o > 0).unwrap_or(0);
+        self
+    }
+
+    /// Refuses (with [`IngestError::QuotaExceeded`], before any row is written) an ingest whose
+    /// new changesets cost more than `bytes`.
+    pub fn with_budget(mut self, bytes: u64) -> Self {
+        self.budget = Some(bytes);
+        self
+    }
+
+    /// The bytes the last successful ingest charged to `cs_ledger`: the sum of
+    /// [`changeset_cost`] over the changesets it added.
+    pub fn added_bytes(&self) -> u64 {
+        self.added_bytes
     }
 
     /// Lowers the `changes` cap, so a test can reach it without half a million leaves.
@@ -436,7 +473,18 @@ impl<'a> Ingestor<'a> {
             self.index_tag(*t, tag).await?;
         }
         if order.is_empty() {
+            self.added_bytes = 0;
             return Ok(order);
+        }
+        let ledger: Vec<(ChangesetId, u64)> = order
+            .iter()
+            .map(|id| (*id, self.costs.get(id).copied().unwrap_or(0)))
+            .collect();
+        let cost = ledger.iter().fold(0u64, |a, (_, b)| a.saturating_add(*b));
+        if let Some(budget) = self.budget
+            && cost > budget
+        {
+            return Err(IngestError::QuotaExceeded("user byte quota".into()));
         }
         let rows: Vec<NewNode<'_>> = nodes
             .iter()
@@ -461,10 +509,12 @@ impl<'a> Ingestor<'a> {
                 _ => IngestError::Store(s.message().to_owned()),
             })?;
         graph_sql::insert_nodes(&mut tx, self.entry.ns, &rows).await?;
+        crate::cloud::quota::record(&mut tx, self.entry.ns, self.ingester, &ledger).await?;
         observer
             .on_ingested(&mut tx, self.entry.key, &order, &closure)
             .await?;
         tx.commit().await?;
+        self.added_bytes = cost;
         Ok(order)
     }
 
@@ -576,6 +626,7 @@ impl<'a> Ingestor<'a> {
         let key = ObjKey::Changeset(id);
         let cs = self.engine.get_changeset(id).await.map_err(from_commit)?;
         check_extra(&cs, key)?;
+        self.costs.insert(id, crate::cloud::quota::changeset_cost(&cs));
         let base = match cs.parents.first() {
             None => RepoEngine::empty_tree_id(),
             Some(&p) => {

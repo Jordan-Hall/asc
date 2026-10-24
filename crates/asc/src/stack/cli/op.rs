@@ -13,7 +13,7 @@ use asc_state::oplog::Op;
 
 use super::sl::{clean, fatal};
 use super::undo::{
-    Delta, Plan, all_ops, hints_for, net_deltas, op_name, resolve_op, run_plan, target_hex,
+    Delta, Plan, all_ops, hints_for, net_deltas, net_deltas_upto, op_name, resolve_op, run_plan, target_hex,
     undone_set, utc,
 };
 use crate::cli::common::{CliError, Ctx, Result, WsCtx};
@@ -24,9 +24,16 @@ use crate::stack::json::{OpLog, OpRow, RefMove, line};
 
 /// Default and largest `op log` page.
 const DEFAULT_LIMIT: usize = 100;
-const MAX_LIMIT: usize = 10_000;
+const MAX_LIMIT: usize = 1_000;
 /// Most ref movements one row lists.
 const MAX_ROW_REFS: usize = 200;
+/// Most `ref_log` rows one `op log` or `op show` reads and resolves in all.
+const MAX_LOG_REFS: usize = 5_000;
+
+/// The page size for `-n`: the default when absent, never above [`MAX_LIMIT`].
+fn log_limit(n: Option<usize>) -> usize {
+    n.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT)
+}
 
 #[derive(clap::Parser, Debug)]
 #[command(name = "op", disable_help_flag = true, disable_version_flag = true)]
@@ -76,11 +83,12 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let ops = all_ops(ws).await?;
     match a.cmd {
         Sub::Log { limit, json } => {
-            let n = limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT);
+            let n = log_limit(limit);
             let undone = undone_set(&ops);
             let mut rows = Vec::new();
+            let mut budget = MAX_LOG_REFS;
             for o in ops.iter().rev().take(n) {
-                rows.push(row(ws, o, undone.contains(&o.seq.0)).await?);
+                rows.push(row(ws, o, undone.contains(&o.seq.0), &mut budget).await?);
             }
             if json {
                 emit(ctx, &line(&OpLog::new(rows)).map_err(fatal)?)
@@ -95,7 +103,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Sub::Show { op, json } => {
             let o = resolve_op(&ops, &op)?;
             let undone = undone_set(&ops);
-            let r = row(ws, o, undone.contains(&o.seq.0)).await?;
+            let r = row(ws, o, undone.contains(&o.seq.0), &mut { MAX_LOG_REFS }).await?;
             if json {
                 return emit(ctx, &line(&OpLog::new(vec![r])).map_err(fatal)?);
             }
@@ -157,9 +165,17 @@ fn head_line(r: &OpRow) -> String {
     )
 }
 
-async fn row(ws: &WsCtx, o: &Op, undone: bool) -> Result<OpRow> {
+/// One row. `budget` is what is left of the command's `ref_log` reads; a row past it lists no
+/// refs.
+async fn row(ws: &WsCtx, o: &Op, undone: bool, budget: &mut usize) -> Result<OpRow> {
     let mut refs = Vec::new();
-    for (name, old, new) in net_deltas(ws, &[o]).await?.into_iter().take(MAX_ROW_REFS) {
+    let (net, read) = if *budget == 0 {
+        (Vec::new(), 0)
+    } else {
+        net_deltas_upto(ws, o, *budget).await?
+    };
+    *budget -= read;
+    for (name, old, new) in net.into_iter().take(MAX_ROW_REFS) {
         refs.push(RefMove {
             name,
             old: target_hex(ws, old).await,
@@ -221,4 +237,18 @@ fn emit(ctx: &Ctx, text: &str) -> Result<ExitCode> {
     out.write_all(text.as_bytes())?;
     out.finish()?;
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_limit_is_bounded() {
+        assert_eq!(log_limit(None), DEFAULT_LIMIT);
+        assert_eq!(log_limit(Some(3)), 3);
+        assert_eq!(log_limit(Some(usize::MAX)), MAX_LIMIT);
+        assert_eq!(log_limit(Some(10_000)), MAX_LIMIT);
+        const { assert!(MAX_LIMIT * MAX_ROW_REFS > MAX_LOG_REFS, "the total budget binds") };
+    }
 }

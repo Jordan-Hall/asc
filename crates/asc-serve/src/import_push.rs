@@ -68,6 +68,8 @@ const MAX_PUSH_OPTION_LEN: usize = 1024;
 const GRAPH_BATCH: usize = 256;
 /// Bytes of an import error shown to the caller.
 const MAX_ERROR_BYTES: usize = 512;
+/// Most files and directories of a quarantine looked at when sizing it for the quota.
+const MAX_QUARANTINE_ENTRIES: usize = 200_000;
 
 // ------------------------------------------------------------------------------ inputs
 
@@ -199,10 +201,15 @@ impl ImportPush {
         let owner = crate::refpolicy::owner_of(&ctx.principal);
         let mut expects = Vec::with_capacity(commands.len());
         let mut quota_owner = None;
+        // Whether every ref the push writes is a user ref, so that what it imports is the
+        // pusher's alone to pay for.
+        let mut only_user_refs = true;
         for c in commands {
             let class = policy.classify(owner, &c.name)?;
             if let (crate::refpolicy::Class::User { owner, .. }, Some(_)) = (&class, c.new) {
                 quota_owner = Some(*owner);
+            } else if c.new.is_some() {
+                only_user_refs = false;
             }
             expects.push(
                 self.check_old(&entry, &map, c, class.stored(&c.name))
@@ -210,29 +217,46 @@ impl ImportPush {
             );
         }
 
-        // Quota (SPEC §21.3.7), part 1: an owner already over quota is refused before the import
-        // writes an object. A delete-only push is never refused here.
-        let hooks = self.pipeline.push_hooks();
+        // Quota (SPEC §21.3.7), part 1: an owner with no bytes left is refused before the import
+        // writes an object, and so is a user-ref push whose pack alone is larger than what is
+        // left (a pack is never larger than what it holds). The exact charge is taken by
+        // `UpdateRefs` below, in the transaction that moves the refs. A delete-only push is never
+        // refused here.
+        let mut budget = None;
         if let Some(owner) = quota_owner {
-            hooks
-                .check_user_quota(ctx, owner)
-                .await
-                .map_err(|d| crate::refauthz::quota_status(&d))?;
+            let left = self
+                .pipeline
+                .user_quota()
+                .remaining(self.registry.pool(), entry.ns, owner)
+                .await?;
+            if only_user_refs {
+                if quarantine_bytes(&quarantine.object_dir).await > left {
+                    return Err(crate::refauthz::quota_status(&crate::refauthz::QuotaDenied(
+                        "user byte quota".into(),
+                    )));
+                }
+                budget = Some(left);
+            }
         }
 
         let windows_safe = self.refs.windows_safe(&entry).await?;
         let native = !opts.import_grade && self.has_refs(&entry).await?;
+        // Part 2: the import records the changesets in the graph itself, each with a ledger row
+        // naming the pusher, so `UpdateRefs` below finds them known and adds none; it charges the
+        // owner for what the refs newly reach, in the transaction that moves them. If it refuses,
+        // the changesets stay in the graph, unreferenced and unclaimed: whoever later names them
+        // from a user ref pays for them, so they are not free to adopt.
         let imported = self
-            .import(&entry, &map, quarantine, commands, windows_safe, native)
+            .import(
+                &entry,
+                &map,
+                quarantine,
+                commands,
+                windows_safe,
+                native,
+                (owner.unwrap_or(0), budget),
+            )
             .await?;
-        // Part 2: the import records the changesets in the graph itself, so `UpdateRefs` below
-        // finds them known and adds none. Charge what the import added.
-        if let (Some(owner), true) = (quota_owner, imported.added > 0) {
-            hooks
-                .charge_user_refs(ctx, owner, imported.added)
-                .await
-                .map_err(|d| crate::refauthz::quota_status(&d))?;
-        }
 
         // Step 3. The import's fence is released: `UpdateRefs` takes its own, and a queued
         // exclusive GC lock between the two would otherwise deadlock them.
@@ -329,6 +353,7 @@ impl ImportPush {
         commands: &[PushCommand],
         windows_safe: bool,
         native: bool,
+        (ingester, budget): (i64, Option<u64>),
     ) -> Result<Imported, Status> {
         let tips: Vec<Tip> = commands
             .iter()
@@ -358,8 +383,13 @@ impl ImportPush {
 
         let nodes = new_graph_nodes(entry, pool, &imported.changesets).await?;
         let ids: Vec<ChangesetId> = nodes.iter().map(|n| n.id).collect();
-        imported.added = ids.len();
-        self.check_paths(entry, &ids, windows_safe, native).await?;
+        let costs = self.check_paths(entry, &ids, windows_safe, native).await?;
+        let cost = costs.iter().fold(0u64, |a, (_, b)| a.saturating_add(*b));
+        if budget.is_some_and(|left| cost > left) {
+            return Err(crate::refauthz::quota_status(&crate::refauthz::QuotaDenied(
+                "user byte quota".into(),
+            )));
+        }
 
         let mut tx = match lock_tx {
             Some(t) => t,
@@ -382,6 +412,9 @@ impl ImportPush {
         graph_sql::insert_nodes(&mut tx, entry.ns, &rows)
             .await
             .map_err(|e| internal("cs_graph", &e))?;
+        crate::cloud::quota::record(&mut tx, entry.ns, ingester, &costs)
+            .await
+            .map_err(|e| internal("cs_ledger", &e))?;
         if !ids.is_empty() {
             let mut closure: Vec<ObjKey> = ids.iter().map(|&c| ObjKey::Changeset(c)).collect();
             closure.extend(report.tags.iter().map(|(_, t)| ObjKey::Tag(*t)));
@@ -404,8 +437,9 @@ impl ImportPush {
         ids: &[ChangesetId],
         windows_safe: bool,
         native: bool,
-    ) -> Result<(), Status> {
+    ) -> Result<Vec<(ChangesetId, u64)>, Status> {
         let engine = entry.backend.engine();
+        let mut costs = Vec::with_capacity(ids.len());
         for &id in ids {
             let cs = engine
                 .get_changeset(id)
@@ -419,9 +453,41 @@ impl ImportPush {
             if native && windows_safe {
                 check_windows_paths(entry, &cs).await?;
             }
+            costs.push((id, crate::cloud::quota::changeset_cost(&cs)));
         }
-        Ok(())
+        Ok(costs)
     }
+}
+
+/// Bytes of the files under a push's quarantine directory (loose objects and packs), at most
+/// [`MAX_QUARANTINE_ENTRIES`] entries looked at; more counts as unbounded.
+async fn quarantine_bytes(dir: &Path) -> u64 {
+    let dir = dir.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut total = 0u64;
+        let mut seen = 0usize;
+        let mut stack = vec![dir];
+        while let Some(d) = stack.pop() {
+            let Ok(read) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in read.flatten() {
+                seen += 1;
+                if seen > MAX_QUARANTINE_ENTRIES {
+                    return u64::MAX;
+                }
+                let Ok(meta) = e.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(e.path());
+                } else {
+                    total = total.saturating_add(meta.len());
+                }
+            }
+        }
+        total
+    })
+    .await
+    .unwrap_or(u64::MAX)
 }
 
 /// What an import produced: the asc target of each pushed ref, and the changesets to record.
@@ -429,8 +495,6 @@ impl ImportPush {
 struct Imported {
     targets: HashMap<String, RefTarget>,
     changesets: Vec<ChangesetId>,
-    /// Changesets the graph did not hold before this import (what the quota charges).
-    added: usize,
 }
 
 impl Imported {
@@ -481,7 +545,6 @@ impl Imported {
         Ok(Self {
             targets,
             changesets,
-            added: 0,
         })
     }
 
@@ -2203,7 +2266,7 @@ mod tests {
             .unwrap();
         let e = f
             .push
-            .import(&f.entry, &map, &q, &commands, true, false)
+            .import(&f.entry, &map, &q, &commands, true, false, (1, None))
             .await
             .err()
             .expect("a stale entry is refused");
@@ -2215,7 +2278,7 @@ mod tests {
             .unwrap();
         let e = f
             .push
-            .import(&f.entry, &map, &q, &commands, true, false)
+            .import(&f.entry, &map, &q, &commands, true, false, (1, None))
             .await
             .err()
             .expect("a stale entry is refused");

@@ -14,7 +14,7 @@
 //! Fail closed: with no `master` (local or `origin/master`) nothing is classified, because every
 //! branch would look like a draft; a store or graph error stops the run before any ref changes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 use asc_core::change::ChangeId;
@@ -257,6 +257,25 @@ pub async fn migrate(ctx: &Ctx, opts: Opts) -> Result<Report> {
                 "asc: migrate branchless: more than {MAX_PRUNE} merged branches; nothing was deleted"
             )));
         }
+        // `seed` can take long: look again, so a branch a worktree took meanwhile is kept.
+        let current = match ws.projection.read_head()? {
+            Head::Branch(b) => Some(b),
+            Head::Detached(_) => None,
+        };
+        let mut keep: Vec<&Branch> = Vec::with_capacity(prune.len());
+        for b in prune {
+            let held = current.as_deref() == Some(b.name.as_str())
+                || held_anywhere(ws, &b.name).await?.is_some();
+            if held {
+                report.protected.push(b.name.clone());
+            } else {
+                keep.push(b);
+            }
+        }
+        let prune = keep;
+        if prune.is_empty() {
+            return Ok(report);
+        }
         let mut updates = Vec::with_capacity(prune.len());
         for b in &prune {
             updates.push(RefUpdate {
@@ -283,12 +302,50 @@ pub async fn migrate(ctx: &Ctx, opts: Opts) -> Result<Report> {
     Ok(report)
 }
 
+/// Refuses a run whose distinct draft tips cannot all be seeded: finding the heads compares
+/// every pair of tips, so the count is capped before that work starts. Nothing has changed yet.
+fn check_tip_count(n: usize) -> Result<()> {
+    if n > MAX_SEEDS {
+        return Err(CliError::Fatal(format!(
+            "asc: migrate branchless: more than {MAX_SEEDS} unmerged branch tips; nothing was changed"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `draft_heads` (visible or hidden) already has a row for `cs`.
+async fn has_head(ws: &WsCtx, cs: ChangesetId) -> Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM draft_heads WHERE repo_id = ? AND cs = ?")
+        .bind(ws.repo.key.0)
+        .bind(cs.as_bytes().to_vec())
+        .fetch_optional(ws.db.pool())
+        .await
+        .map_err(fatal)?;
+    Ok(row.is_some())
+}
+
+/// [`has_head`] inside the seeding transaction.
+async fn has_head_tx(
+    tx: &mut asc_state::state::Tx,
+    repo: asc_store::refs::RepoKey,
+    cs: ChangesetId,
+) -> Result<bool> {
+    let row = sqlx::query("SELECT 1 FROM draft_heads WHERE repo_id = ? AND cs = ?")
+        .bind(repo.0)
+        .bind(cs.as_bytes().to_vec())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(fatal)?;
+    Ok(row.is_some())
+}
+
 async fn seed(ctx: &Ctx, ws: &WsCtx, tips: &[&Branch], report: &mut Report) -> Result<()> {
     // The first branch (by name) that names a tip scopes its change id.
     let mut scope: HashMap<ChangesetId, &Branch> = HashMap::new();
     for b in tips {
         scope.entry(b.tip).or_insert(b);
     }
+    check_tip_count(scope.len())?;
     let mut distinct: Vec<ChangesetId> = scope.keys().copied().collect();
     distinct.sort();
     // Heads: tips no other tip contains.
@@ -310,24 +367,12 @@ async fn seed(ctx: &Ctx, ws: &WsCtx, tips: &[&Branch], report: &mut Report) -> R
         }
     }
     let d = Drafts::new(ws.repo.key);
-    let mut have: HashSet<ChangesetId> = HashSet::new();
-    have.extend(
-        d.visible(&ws.db, MAX_SEEDS)
-            .await
-            .map_err(fatal)?
-            .into_iter()
-            .map(|h| h.cs),
-    );
-    have.extend(
-        d.hidden(&ws.db, MAX_SEEDS)
-            .await
-            .map_err(fatal)?
-            .into_iter()
-            .map(|h| h.cs),
-    );
+    // Candidates: heads with no row at read time. The pool read only saves the id derivation;
+    // the transaction below decides again, so a row written meanwhile (or beyond any list cap)
+    // is never queued a second time.
     let mut todo = Vec::new();
     for h in heads {
-        if have.contains(&h) {
+        if has_head(ws, h).await? {
             report.already_seeded += 1;
         } else if todo.len() >= MAX_SEEDS {
             report.seed_truncated = true;
@@ -339,19 +384,26 @@ async fn seed(ctx: &Ctx, ws: &WsCtx, tips: &[&Branch], report: &mut Report) -> R
     let qmax = queue_max(ctx);
     let at = now();
     let mut tx = ws.db.begin().await.map_err(fatal)?;
-    for (cs, change) in &todo {
+    let mut seeded = Vec::with_capacity(todo.len());
+    for (cs, change) in todo {
+        if has_head_tx(&mut tx, ws.repo.key, cs).await? {
+            report.already_seeded += 1;
+            continue;
+        }
         let parents = ws
             .engine
-            .get_changeset(*cs)
+            .get_changeset(cs)
             .await
             .map_err(fatal)?
             .parents
             .clone();
-        d.new_changeset(&mut tx, *cs, *change, &parents, at, qmax)
+        d.new_changeset(&mut tx, cs, change, &parents, at, qmax)
             .await
             .map_err(fatal)?;
+        seeded.push((cs, change));
     }
     tx.commit().await.map_err(fatal)?;
+    let todo = seeded;
     report.seeded = todo;
     Ok(())
 }
@@ -408,6 +460,12 @@ mod tests {
 
     fn w(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn tip_count_over_the_seed_cap_is_refused_before_any_graph_work() {
+        assert!(check_tip_count(MAX_SEEDS).is_ok());
+        assert!(check_tip_count(MAX_SEEDS + 1).is_err());
     }
 
     #[test]

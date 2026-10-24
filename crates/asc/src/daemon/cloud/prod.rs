@@ -30,11 +30,11 @@ use tonic::codec::CompressionEncoding;
 
 use super::{
     Clock, CloudSync, Due, FEATURE_CLOUD, Facts, Phase, RpcCloudStore, StateRows, Step,
-    SystemClock, Uplink, Uplinks, note, repos_of, workspace_name,
+    SystemClock, Uplink, Uplinks, note, repos_of, tracing_note, workspace_name,
 };
 use crate::branchless::mode::{CloudSetting, RepoPolicy, Settings as ModeSettings};
 use crate::cli::common::{Ctx, Gate, WsCtx};
-use crate::cli::config;
+use crate::cli::config::{self, ConfigSnapshot, LocalConfig};
 use crate::cli::safe_dir::owned_by_current_user;
 use crate::credential::Prompt;
 use crate::daemon::scheduler::parse_size;
@@ -43,9 +43,12 @@ use crate::env::GitEnv;
 use crate::remote::server::{self, ServerRemote};
 use crate::remote::{StateBoundaries, StoreDemote, options, store_set};
 
-/// How long an opened repository is kept before it is opened again (credentials, config and the
-/// advertised features are read afresh).
+/// How long an opened repository (or the finding that there is nothing to open) is kept before it
+/// is opened again (credentials and the advertised features are read afresh). Settings are not
+/// part of it: the job reads them before every run.
 const KEEP: Duration = Duration::from_secs(300);
+/// Workspace directories of one repo tried when looking for one that really holds it.
+const MAX_CANDIDATES: usize = 16;
 /// Ancestors of a queue head whose `ChangeMeta` ids are loaded for the closure.
 const WARM_MAX: usize = 4096;
 
@@ -53,7 +56,7 @@ const WARM_MAX: usize = 4096;
 pub struct ProdUplinks {
     home: AscHome,
     db: tokio::sync::OnceCell<StateDb>,
-    open: Mutex<HashMap<RepoKey, (Instant, Arc<dyn Uplink>)>>,
+    open: Mutex<HashMap<RepoKey, (Instant, Option<Arc<dyn Uplink>>)>>,
 }
 
 impl ProdUplinks {
@@ -99,7 +102,7 @@ impl Uplinks for ProdUplinks {
             .get(&repo)
             && at.elapsed() < KEEP
         {
-            return Ok(Some(link.clone()));
+            return Ok(link.clone());
         }
         let db = self.db().await?;
         let Some(row) = repos::get(&db, repo)
@@ -119,42 +122,80 @@ impl Uplinks for ProdUplinks {
         let list = workspaces::list(&db, Some(repo))
             .await
             .map_err(|e| note(&e.to_string()))?;
-        let Some(path) = list
+        let paths: Vec<PathBuf> = list
             .iter()
             .map(|w| PathBuf::from(&w.ws.path))
-            .find(|p| p.is_dir())
-        else {
-            return Ok(None);
-        };
+            .filter(|p| p.is_dir())
+            .take(MAX_CANDIDATES)
+            .collect();
         // The context's futures are not `Send` (the trust gate holds plain `dyn Fn`s), so the
-        // whole open runs on a blocking thread.
-        let home = self.home.clone();
-        let handle = tokio::runtime::Handle::current();
-        let Some(inner) =
-            tokio::task::spawn_blocking(move || handle.block_on(open_inner(home, path, url)))
-                .await
-                .map_err(|e| note(&e.to_string()))??
-        else {
-            return Ok(None);
-        };
-        let link: Arc<dyn Uplink> = Arc::new(RepoUplink {
-            inner: Arc::new(inner),
-        });
+        // whole open runs on a blocking thread. The first directory that really holds `repo`
+        // wins; a row of `state.db` can outlive the directory it names.
+        let mut link: Option<Arc<dyn Uplink>> = None;
+        for path in paths {
+            let home = self.home.clone();
+            let url = url.clone();
+            let handle = tokio::runtime::Handle::current();
+            let opened = tokio::task::spawn_blocking(move || {
+                handle.block_on(open_inner(home, path, repo, url))
+            })
+            .await
+            .map_err(|e| note(&e.to_string()))??;
+            if let Some(inner) = opened {
+                link = Some(Arc::new(RepoUplink {
+                    inner: Arc::new(inner),
+                }));
+                break;
+            }
+        }
         self.open
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(repo, (Instant::now(), link.clone()));
-        Ok(Some(link))
+        Ok(link)
     }
 }
 
+/// Whether the workspace opened at a directory is a workspace of `repo`, whose server is at
+/// `url`. The connection is made from `url` (the repo's row) while the queue, drafts and heads
+/// are those of the repo the directory holds; if the two differ, B's drafts would be sent to
+/// A's server and workspace.
+pub(super) fn binds(
+    held: RepoKey,
+    held_url: Option<&str>,
+    held_kind: RemoteKind,
+    repo: RepoKey,
+    url: &str,
+) -> bool {
+    held == repo && held_kind == RemoteKind::Server && held_url == Some(url)
+}
+
 /// Opens the repository at `path` and connects to its server. `None` for a git remote or a
-/// mirror-mode repository: cloud is off there.
-async fn open_inner(home: AscHome, path: PathBuf, url: String) -> Result<Option<Inner>, String> {
+/// mirror-mode repository (cloud is off there), and for a directory that does not hold `repo`
+/// with the remote `url`.
+pub(super) async fn open_inner(
+    home: AscHome,
+    path: PathBuf,
+    repo: RepoKey,
+    url: String,
+) -> Result<Option<Inner>, String> {
     let ctx = open_ctx(&home, path).await?;
-    let settings = ModeSettings::resolve(&ctx.config, &ctx.env, &|k| std::env::var(k).ok())?;
+    let ws = ctx.ws().map_err(|e| note(&format!("{e:?}")))?;
+    if !binds(
+        ws.repo.key,
+        ws.repo.repo.remote_url.as_deref(),
+        ws.repo.repo.remote_kind,
+        repo,
+        &url,
+    ) {
+        tracing_note(
+            repo,
+            "a workspace directory of this repo holds another repo or remote; not used",
+        );
+        return Ok(None);
+    }
     let real = ctx.real_git().ok().cloned();
-    let db = ctx.ws().map_err(|e| note(&format!("{e:?}")))?.db.clone();
+    let db = ws.db.clone();
     // No prompt: a daemon never asks anything (SPEC §9.1).
     let Some(connected) = server::connect(ctx.config.file(), &db, real, None, &url, Prompt::Never)
         .await
@@ -165,7 +206,6 @@ async fn open_inner(home: AscHome, path: PathBuf, url: String) -> Result<Option<
     Ok(Some(Inner {
         ctx,
         remote: Arc::new(ServerRemote::new("cloud", connected)),
-        settings,
         features: Mutex::default(),
         clock: Arc::new(SystemClock),
     }))
@@ -192,10 +232,16 @@ async fn open_ctx(home: &AscHome, path: PathBuf) -> Result<Ctx, String> {
     Ok(ctx)
 }
 
-struct Inner {
+/// Whether a repo is public given the `visibility` the server reports. Only `private` and
+/// `internal` are not: an empty, unknown or differently written value counts as public, so a
+/// server that does not (yet) fill the field never gets drafts of a public repo.
+pub(super) fn is_public(visibility: &str) -> bool {
+    !matches!(visibility, "private" | "internal")
+}
+
+pub(super) struct Inner {
     ctx: Ctx,
     remote: Arc<ServerRemote>,
-    settings: ModeSettings,
     features: Mutex<Vec<String>>,
     clock: Arc<dyn Clock>,
 }
@@ -214,15 +260,32 @@ impl Inner {
         Ok(StateRows::new(ws.db.clone(), ws.repo.key))
     }
 
-    fn syncer(&self, rows: StateRows) -> CloudSync<RpcCloudStore> {
-        let name = workspace_name(&self.settings.workspace);
+    /// The user's settings from the config files as they are now.
+    fn fresh_settings(&self) -> Result<ModeSettings, String> {
+        let ws = self.ws()?;
+        let local = LocalConfig {
+            common_dir: ws.projection.common_dir(),
+            toplevel: ws.projection.toplevel(),
+        };
+        let config = ConfigSnapshot::load_with(
+            &self.ctx.env,
+            &|k| std::env::var_os(k),
+            Some(&local),
+            &owned_by_current_user,
+        )
+        .map_err(|e| note(&format!("{e:?}")))?;
+        ModeSettings::resolve(&config, &self.ctx.env, &|k| std::env::var(k).ok())
+    }
+
+    fn syncer(&self, rows: StateRows) -> Result<CloudSync<RpcCloudStore>, String> {
+        let name = workspace_name(&self.fresh_settings()?.workspace);
         let wire = self.remote.session().wire.clone();
-        CloudSync::new(
+        Ok(CloudSync::new(
             rows,
             RpcCloudStore::new(wire, name.clone()),
             name,
             self.clock.clone(),
-        )
+        ))
     }
 
     fn guard(&self) -> Result<Guard, String> {
@@ -290,7 +353,7 @@ impl Inner {
         else {
             return Ok(None);
         };
-        let syncer = self.syncer(rows.clone());
+        let syncer = self.syncer(rows.clone())?;
         let guard = self.guard()?;
         let ignored = self.ignored(ws);
         let boundaries = StateBoundaries::new(ws);
@@ -337,7 +400,7 @@ impl Inner {
 impl Uplink for RepoUplink {
     async fn facts(&self) -> Result<Facts, String> {
         let i = &self.inner;
-        let settings = i.settings.clone();
+        let settings = i.fresh_settings()?;
         let off = RepoPolicy {
             branchless: false,
             cloud: false,
@@ -387,10 +450,14 @@ impl Uplink for RepoUplink {
             policy: RepoPolicy {
                 branchless: conf.branchless,
                 cloud: conf.cloud,
-                public: conf.visibility == "public",
+                public: is_public(&conf.visibility),
             },
             cloud_v1,
         })
+    }
+
+    async fn settings(&self) -> Result<ModeSettings, String> {
+        self.inner.fresh_settings()
     }
 
     async fn ping(&self) -> Result<(), String> {
@@ -444,6 +511,6 @@ impl Uplink for RepoUplink {
 
     async fn sync(&self) -> Result<(), String> {
         let rows = self.inner.rows()?;
-        self.inner.syncer(rows).run().await.map(|_| ())
+        self.inner.syncer(rows)?.run().await.map(|_| ())
     }
 }

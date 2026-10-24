@@ -379,6 +379,8 @@ impl Clock for TickClock {
 #[derive(Default)]
 struct Script {
     facts: Option<Result<Facts, String>>,
+    /// What `settings()` answers; the settings of `facts` when unset.
+    settings: Option<ModeSettings>,
     ping: VecDeque<Result<(), String>>,
     due: VecDeque<Due>,
     uploads: VecDeque<Result<Option<Step>, String>>,
@@ -414,6 +416,18 @@ impl Uplink for FakeLink {
         let mut s = self.0.lock().unwrap();
         s.calls.push("facts".into());
         s.facts.clone().unwrap_or_else(|| Ok(facts()))
+    }
+
+    async fn settings(&self) -> Result<ModeSettings, String> {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push("settings".into());
+        if let Some(settings) = &s.settings {
+            return Ok(settings.clone());
+        }
+        match &s.facts {
+            Some(Ok(f)) => Ok(f.settings.clone()),
+            Some(Err(_)) | None => Ok(facts().settings),
+        }
     }
 
     async fn ping(&self) -> Result<(), String> {
@@ -703,4 +717,208 @@ async fn facts_are_cached_so_an_idle_tick_asks_the_server_nothing() {
     clock.advance(FACTS_TTL_SECS);
     job.run_phase(Phase::Upload).await.unwrap();
     assert_eq!(link.calls("facts"), 2);
+}
+
+// ------------------------------------------------------------------------------ B14 review fixes
+
+#[tokio::test]
+async fn cloud_off_stops_uploads_at_the_next_tick_not_when_the_cached_facts_expire() {
+    let link = FakeLink::with(|s| {
+        s.due.push_back(due(1, 0));
+        s.uploads.push_back(Ok(Some(Step::Uploaded)));
+    });
+    let clock = TickClock::new(1_000);
+    let job = job(&link, &clock);
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert!(link.calls("upload") >= 1, "on: the queue drains");
+
+    for edit in [
+        (|s: &mut ModeSettings| s.cloud = CloudSetting::Off) as fn(&mut ModeSettings),
+        |s| s.branchless = false,
+    ] {
+        let mut off = facts().settings;
+        edit(&mut off);
+        {
+            let mut s = link.0.lock().unwrap();
+            s.settings = Some(off);
+            s.due.push_back(due(3, 0));
+            s.uploads.push_back(Ok(Some(Step::Uploaded)));
+        }
+        let before = link.calls("upload");
+        clock.advance(5);
+        job.run_phase(Phase::Upload).await.unwrap();
+        job.sync_request().store(true, Ordering::SeqCst);
+        job.run_phase(Phase::Upload).await.unwrap();
+        job.run_phase(Phase::Sync).await.unwrap();
+        assert_eq!(
+            link.calls("upload"),
+            before,
+            "nothing is sent once the user switched it off"
+        );
+        assert_eq!(link.calls("sync"), 0, "and nothing is synced");
+        assert_eq!(
+            link.calls("facts"),
+            1,
+            "the cached answer of the server was not what stopped it"
+        );
+        let mut s = link.0.lock().unwrap();
+        s.settings = None;
+        s.due.clear();
+        s.uploads.clear();
+    }
+}
+
+#[tokio::test]
+async fn a_failing_facts_call_is_not_repeated_every_tick() {
+    let link = FakeLink::with(|s| {
+        s.facts = Some(Err("DeadlineExceeded: slow".into()));
+    });
+    let clock = TickClock::new(1_000);
+    let job = job(&link, &clock);
+    job.run_phase(Phase::Upload).await.unwrap();
+    job.run_phase(Phase::Upload).await.unwrap();
+    job.run_phase(Phase::Sync).await.unwrap();
+    assert_eq!(link.calls("facts"), 1, "the repo waits for its backoff");
+    clock.advance(1);
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(link.calls("facts"), 2);
+}
+
+struct FailingLinks(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl Uplinks for FailingLinks {
+    async fn repos(&self, _: Phase, _: i64) -> Result<Vec<RepoKey>, String> {
+        Ok(vec![RepoKey(1)])
+    }
+
+    async fn open(&self, _: RepoKey) -> Result<Option<Arc<dyn Uplink>>, String> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Err("no usable workspace".into())
+    }
+}
+
+#[tokio::test]
+async fn a_repo_that_cannot_be_opened_is_not_reopened_every_tick() {
+    let links = Arc::new(FailingLinks(Default::default()));
+    let clock = TickClock::new(1_000);
+    let job = CloudJob::with_policy(
+        links.clone(),
+        clock.clone(),
+        RetryPolicy {
+            jitter: || 0.0,
+            ..policy()
+        },
+    );
+    let opens = || links.0.load(Ordering::SeqCst);
+    job.run_phase(Phase::Upload).await.unwrap();
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(opens(), 1);
+    clock.advance(1);
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(opens(), 2);
+}
+
+#[test]
+fn only_a_private_or_internal_repo_is_not_public() {
+    assert!(!prod::is_public("private"));
+    assert!(!prod::is_public("internal"));
+    // Fail closed: what the server leaves empty, or writes in a way we do not know, is public.
+    for v in [
+        "", "public", "Public", "PRIVATE", "Private", " private", "private ", "secret", "\0",
+    ] {
+        assert!(prod::is_public(v), "{v:?} counts as public");
+    }
+}
+
+#[test]
+fn a_directory_binds_only_to_the_repo_and_remote_it_holds() {
+    let url = "asc+https://h/acme/a";
+    let k = RepoKey;
+    assert!(prod::binds(k(1), Some(url), RemoteKind::Server, k(1), url));
+    assert!(
+        !prod::binds(k(2), Some(url), RemoteKind::Server, k(1), url),
+        "another repo"
+    );
+    assert!(
+        !prod::binds(
+            k(1),
+            Some("asc+https://h/acme/b"),
+            RemoteKind::Server,
+            k(1),
+            url
+        ),
+        "another remote"
+    );
+    assert!(!prod::binds(k(1), None, RemoteKind::Server, k(1), url));
+    assert!(!prod::binds(
+        k(1),
+        Some(url),
+        RemoteKind::GitRemote,
+        k(1),
+        url
+    ));
+}
+
+mod binding {
+    use asc_state::state::workspaces::{self, Mode, NewWorkspace};
+    use asc_state::{RepoId, WorkspaceId};
+
+    use super::*;
+    use crate::cli::common::support::Fixture;
+
+    const URL_A: &str = "asc+http://127.0.0.1:1/acme/a";
+
+    /// Repo A (an asc server repo) whose workspace row names the directory of the fixture, which
+    /// holds the fixture repo B.
+    async fn a_row_pointing_at_b() -> (Fixture, RepoKey) {
+        let f = Fixture::new().await;
+        let a = asc_state::state::repos::insert(
+            &f.db,
+            &NewRepo {
+                id: RepoId::new(),
+                name: "a".into(),
+                ns: vec![1],
+                remote_url: Some(URL_A.into()),
+                remote_kind: RemoteKind::Server,
+                default_branch: "master".into(),
+                windows_safe: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(a, f.repo);
+        // The same directory spelled another way: the old row of A outlived A.
+        let path = f.root.join(".").display().to_string();
+        workspaces::insert(
+            &f.db,
+            &NewWorkspace {
+                id: WorkspaceId::new(),
+                repo: a,
+                path: path.clone(),
+                mount: path,
+                mode: Mode::Plain,
+                head: "refs/heads/master".into(),
+                base_cs: None,
+                sparse: None,
+                ephemeral_until: None,
+            },
+        )
+        .await
+        .unwrap();
+        (f, a)
+    }
+
+    #[tokio::test]
+    async fn a_directory_of_another_repo_is_never_connected_to_the_server_of_this_one() {
+        let (f, a) = a_row_pointing_at_b().await;
+        let opened = prod::open_inner(f.home.clone(), f.root.clone(), a, URL_A.into())
+            .await
+            .map(|o| o.is_some());
+        assert_eq!(opened, Ok(false), "the directory holds repo B, not A");
+
+        let uplinks = prod::ProdUplinks::new(f.home.clone());
+        let link = uplinks.open(a).await.map(|l| l.is_some());
+        assert_eq!(link, Ok(false), "A has no usable workspace");
+    }
 }

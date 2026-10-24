@@ -7,6 +7,7 @@
 //! `[ssh] enabled`.
 //!
 //! * [`auth`]: the login: user name, key policy, `identify_ssh_key` at the offer.
+//! * [`exec`]: the [`PackExec`] that runs the two commands through the git layer (U87).
 //! * [`policy`]: the command parser and the request table; no shell, nothing but two commands.
 //! * [`host_key`]: host keys with the M30 key-file protections, `show` and `rotate`.
 //! * [`limits`]: admission before authentication and the named caps of `[limits.ssh]`.
@@ -15,6 +16,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod exec;
 pub mod host_key;
 pub mod limits;
 pub mod policy;
@@ -25,6 +27,7 @@ use std::sync::Arc;
 use asc_rpc::auth::Authorizer;
 
 pub use audit::{Audit, AuditSink, SshMetrics, TracingAudit};
+pub use exec::{GitAuditSink, GitRecord, GitSshExec, TracingGitAudit};
 pub use server::{
     Out, PackExec, PackIo, PackOut, PackRequest, SshDeps, SshError, SshServer, Unavailable,
 };

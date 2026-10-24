@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "asc_engine::history::HistoryApi::resolve", reason = "resolves every ref, including other users'; resolve a client's revision with IdCodec::resolve" },
+    { path = "asc_engine::Engine::resolve_visible", reason = "the ref filter belongs to the caller's IdCodec; resolve a client's revision with IdCodec::resolve" },
+]

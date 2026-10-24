@@ -22,6 +22,7 @@ use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision as SshDecision, Principal,
     Scheme, SshIdentity, SshKey,
 };
+use asc_rpc::changes::MergeOutcome;
 use asc_rpc::server::{CallCtx, MAX_REF_UPDATES, RepoName};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,7 @@ use sqlx::{AnyPool, Row};
 use url::Url;
 use uuid::Uuid;
 
+use crate::changes::request_merge::{self, MergeAsk, MergeQueue, QueueError};
 use crate::config::{CompositionGrant, ForgejoConfig, ServeConfig};
 use crate::outbox::{Effect, EffectError, Job, Outbox};
 use crate::registry::{Extensions, Ns, Registry};
@@ -1269,6 +1271,55 @@ impl HookClient {
     }
 }
 
+/// `RequestMerge` (PLAN C50): the forge's queue is asked through the same internal channel, in
+/// the other direction. The body and the answer are documented in `changes::request_merge`.
+#[async_trait]
+impl MergeQueue for HookClient {
+    async fn request_merge(
+        &self,
+        repo: &RepoName,
+        ask: &MergeAsk,
+        op_id: Option<Uuid>,
+    ) -> Result<MergeOutcome, QueueError> {
+        let (owner, name) = repo.as_str().split_once('/').unwrap_or_default();
+        let sent = async {
+            let mut req = self.client.internal_request(&[
+                "api",
+                "internal",
+                "asc",
+                "request-merge",
+                owner,
+                name,
+            ])?;
+            if let Some(op) = op_id {
+                req = req.header(OP_ID_HEADER, op.to_string());
+            }
+            ForgejoClient::send(req.json_body(&request_merge::forge_body(ask))?).await
+        }
+        .await;
+        let (status, body) = match sent {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "request-merge call failed");
+                return Err(QueueError::Unavailable);
+            }
+        };
+        match status {
+            StatusCode::OK => request_merge::parse_forge_answer(&body),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(QueueError::Denied(
+                failure_message("request-merge", status, &body),
+            )),
+            _ => {
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "request-merge answered with a failure status"
+                );
+                Err(QueueError::Unavailable)
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------------------ git ids
 
 /// Maps asc ref targets to the git ids Forgejo knows (`git_map`, SPEC §8.2).
@@ -1528,6 +1579,9 @@ pub fn register(
         ));
     }
     let hooks = HookClient::new(client);
+    // With a forge attached, `RequestMerge` is the forge's queue and never lands by itself.
+    request_merge::attach_queue(ext, Arc::new(hooks.clone()))
+        .map_err(|e| ForgejoError::Config(e.into()))?;
     ext.pipeline
         .set_push_hooks(Arc::new(ForgejoHooks::new(hooks.clone(), registry.clone())))
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;

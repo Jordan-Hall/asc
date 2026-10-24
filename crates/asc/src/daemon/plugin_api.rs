@@ -55,6 +55,7 @@ use tokio::io::{
 use tonic::Status;
 
 use super::service::{Mounted, State, parse_id, parse_paths};
+use super::watch_stack;
 
 /// A server stream of the plugin API.
 pub type PluginStream<T> = BoxStream<'static, Result<T, Status>>;
@@ -869,26 +870,34 @@ struct Pos {
     ops: i64,
     head: u64,
     stage: u64,
+    /// Newest `changes` row seen (`KIND_STACK`, C49).
+    stack: i64,
 }
 
 impl std::fmt::Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "v1.{}.{}.{}.{}.{:016x}.{:016x}",
-            self.epoch, self.journal, self.refs, self.ops, self.head, self.stage
+            "v1.{}.{}.{}.{}.{:016x}.{:016x}.{}",
+            self.epoch, self.journal, self.refs, self.ops, self.head, self.stage, self.stack
         )
     }
 }
 
 impl Pos {
-    fn parse(text: &str) -> Result<Self, Status> {
+    /// A token of seven parts (before C49) has no stack cursor: `stack` is `None`.
+    fn parse(text: &str) -> Result<(Self, bool), Status> {
         let wrong = || bad("malformed watch token");
         if text.len() > MAX_TOKEN {
             return Err(wrong());
         }
         let parts: Vec<&str> = text.split('.').collect();
-        let &[v, epoch, journal, refs, ops, head, stage] = parts.as_slice() else {
+        let (main, stack) = match parts.as_slice() {
+            [main @ .., last] if parts.len() == 8 => (main, Some(*last)),
+            main if main.len() == 7 => (main, None),
+            _ => return Err(wrong()),
+        };
+        let &[v, epoch, journal, refs, ops, head, stage] = main else {
             return Err(wrong());
         };
         let dec = |s: &str| {
@@ -908,14 +917,22 @@ impl Pos {
         if v != "v1" {
             return Err(wrong());
         }
-        Ok(Self {
-            epoch: dec(epoch)?,
-            journal: dec(journal)?,
-            refs: i64::try_from(dec(refs)?).map_err(|_| wrong())?,
-            ops: i64::try_from(dec(ops)?).map_err(|_| wrong())?,
-            head: hex(head)?,
-            stage: hex(stage)?,
-        })
+        let stack_pos = match stack {
+            Some(h) => i64::try_from(dec(h)?).map_err(|_| wrong())?,
+            None => 0,
+        };
+        Ok((
+            Self {
+                epoch: dec(epoch)?,
+                journal: dec(journal)?,
+                refs: i64::try_from(dec(refs)?).map_err(|_| wrong())?,
+                ops: i64::try_from(dec(ops)?).map_err(|_| wrong())?,
+                head: hex(head)?,
+                stage: hex(stage)?,
+                stack: stack_pos,
+            },
+            stack.is_some(),
+        ))
     }
 }
 
@@ -970,6 +987,9 @@ async fn current_pos(state: &State, m: &Mounted) -> Result<Pos, Status> {
         ops: max_seq(state, "op_log", m.row.ws.repo).await?,
         head: head_print(&row.ws.head, row.ws.base_cs),
         stage: stage_print(state, m).await?,
+        stack: watch_stack::max_rowid(&state.db, m.row.ws.repo)
+            .await
+            .map_err(unavailable)?,
     })
 }
 
@@ -1144,7 +1164,22 @@ async fn poll(
         }
     }
 
-    // 5. Staging.
+    // 5. Rewritten and restacked changes (C49).
+    let stacked = watch_stack::poll(&state.db, repo, pos.stack)
+        .await
+        .map_err(unavailable)?;
+    pos.stack = stacked.next;
+    if stacked.overflow {
+        events.push(event(Kind::Resync, pos));
+    }
+    for (change, op) in stacked.events {
+        let mut e = event(Kind::Stack, pos);
+        e.change = change;
+        e.op = op.into();
+        events.push(e);
+    }
+
+    // 6. Staging.
     let stage = stage_print(state, m).await?;
     if stage != pos.stage {
         pos.stage = stage;
@@ -1182,7 +1217,7 @@ pub async fn watch(
 ) -> Result<PluginStream<wire::WatchEvent>, Status> {
     use wire::watch_event::Kind;
     let m = mounted(state, &r.ws_id)?;
-    let requested = if r.since_token.is_empty() {
+    let mut requested = if r.since_token.is_empty() {
         None
     } else {
         Some(Pos::parse(&r.since_token)?)
@@ -1193,6 +1228,11 @@ pub async fn watch(
         .await
         .map_err(unavailable)?
         .ok_or_else(|| Status::not_found("the workspace is gone"))?;
+    // A token without a stack cursor resumes from now: rewrites made in between are not replayed.
+    if let Some((p, false)) = &mut requested {
+        p.stack = now.stack;
+    }
+    let requested = requested.map(|(p, _)| p);
     let mut pos = requested.unwrap_or(now);
     let mut first = Vec::new();
     // A token from a log that is behind it (state reset) cannot be honoured.
@@ -1494,8 +1534,15 @@ mod tests {
             ops: 2,
             head: 0xdead_beef,
             stage: 7,
+            stack: 9,
         };
-        assert_eq!(Pos::parse(&p.to_string()).unwrap(), p);
+        assert_eq!(Pos::parse(&p.to_string()).unwrap(), (p, true));
+        // A token from before C49 has no stack cursor.
+        let old = "v1.3.17.40.2.00000000deadbeef.0000000000000007";
+        let (q, has_stack) = Pos::parse(old).unwrap();
+        assert!(!has_stack && q.stack == 0 && q.journal == 17);
+        assert!(Pos::parse(&format!("{old}.-1")).is_err());
+        assert!(Pos::parse(&format!("{old}.1.2")).is_err());
         for junk in [
             "",
             "v1",

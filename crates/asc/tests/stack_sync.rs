@@ -224,6 +224,35 @@ fn dash_d_deletes_the_merged_branches() {
 }
 
 #[test]
+fn dash_d_removes_the_branch_settings_with_the_branch() {
+    let r = Repo::new();
+    r.stack();
+    r.upstream("one", "one", "one (landed)");
+    r.ok(&["config", "set", "branch.one-br.remote", "origin"]);
+    r.ok(&["config", "set", "branch.one-br.merge", "refs/heads/one-br"]);
+    let o = r.asc(&["sync", "-d"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!r.branches().contains(&"one-br".to_owned()));
+    let left = r.asc(&["config", "get", "branch.one-br.remote"]);
+    assert_ne!(left.code, 0, "the branch section must go: {}", left.stdout);
+}
+
+#[test]
+fn a_remote_named_like_an_option_is_not_fetched_from() {
+    let r = Repo::new();
+    r.git(&r.root, &["remote", "remove", "origin"]);
+    let url = r.bare.to_str().unwrap().to_owned();
+    r.git(
+        &r.root,
+        &["config", "remote.--upload-pack=touch pwned.url", &url],
+    );
+    let o = r.asc(&["sync"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert!(!o.stdout.contains("Fetched"), "{}", o.stdout);
+    assert!(!r.root.join("pwned").exists());
+}
+
+#[test]
 fn dry_run_and_no_fetch_change_nothing() {
     let r = Repo::new();
     r.stack();
