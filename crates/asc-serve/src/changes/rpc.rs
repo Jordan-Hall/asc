@@ -33,7 +33,6 @@ use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
 use asc_core::path::RefName;
-use asc_engine::history::HistoryApi;
 use asc_rpc::auth::{Access, AuthInterceptor, Authorizer, Credential};
 use asc_rpc::changes::ReviewUpdates;
 use asc_rpc::server::{CallCtx, ClientVersion, MAX_MESSAGE, MAX_STRING, RepoName, ServerInfo, wire};
@@ -1072,6 +1071,74 @@ mod tests {
         assert_eq!(c3.visible.len(), 1);
         assert_eq!(c3.git.len(), 20);
         assert!(c3.landed_as.is_empty() && c3.review.is_none());
+    }
+
+    /// Points `name` at `cs`, whatever it held.
+    async fn set_ref(f: &Fx, name: &str, cs: ChangesetId) {
+        use asc_core::path::RefName;
+        use asc_core::id::RefTarget;
+        use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs as _};
+        let txn = RefTxn {
+            updates: vec![RefUpdate {
+                name: RefName::new(name.as_bytes().to_vec()).unwrap(),
+                expect: Expect::Any,
+                new: Some(RefTarget::Changeset(cs)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "t".into(),
+                via: "test".into(),
+            },
+            reason: "test".into(),
+            op_id: uuid::Uuid::new_v4(),
+        };
+        f.reg.refs().update(f.e.key, &txn).await.unwrap();
+    }
+
+    const FOREIGN: [&str; 3] = [
+        "refs/users/9/heads/feat",
+        "users/9/heads/feat",
+        "refs/users/9/heads/feat@{0}",
+    ];
+
+    /// Guard (B08d): `ResolveChanges.revs` resolves through the viewer-filtered `IdCodec`.
+    #[tokio::test]
+    async fn resolve_changes_revs_cannot_name_another_users_ref() {
+        let f = fx().await;
+        set_ref(&f, "refs/users/9/heads/feat", f.css[0]).await;
+        for spec in FOREIGN {
+            let e = f
+                .svc
+                .resolve_changes(req(
+                    resolve(IdMode::Asc, vec![], vec![spec.into()]),
+                    READER,
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
+        }
+    }
+
+    /// Guard (B08d): `Stack` at a revision resolves through the viewer-filtered `IdCodec`.
+    #[tokio::test]
+    async fn stack_at_rev_cannot_name_another_users_ref() {
+        let f = fx().await;
+        set_ref(&f, "refs/users/9/heads/feat", f.css[0]).await;
+        for spec in FOREIGN {
+            let e = f
+                .svc
+                .stack(req(
+                    wire::StackRequest {
+                        repo: repo_ref(IdMode::Asc),
+                        target: String::new(),
+                        at: Some(wire::stack_request::At::Rev(spec.into())),
+                    },
+                    READER,
+                ))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
+        }
     }
 
     #[tokio::test]
