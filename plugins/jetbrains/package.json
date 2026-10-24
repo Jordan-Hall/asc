@@ -7,6 +7,7 @@
     "build": "./gradlew buildPlugin",
     "typecheck": "./gradlew compileKotlin compileTestKotlin",
     "test": "./gradlew test --tests asc.asc.bridge.* verifyPlugin",
-    "package": "./gradlew buildPlugin"
+    "package": "./gradlew buildPlugin",
+    "release-check": "bun scripts/release-check.ts"
   }
 }
