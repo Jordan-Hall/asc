@@ -1,10 +1,9 @@
 // Status-bar inbox count (SPEC 24.4.7). A light poll that is independent of the Inbox view:
-// `GET /user/asc/inbox?section=needs_review&limit=1` with `If-None-Match`, reading `X-Total-Count`
-// (API addition A6, unit P58). It runs once on window focus and after a review action, then every
-// 5 minutes while the window is focused and the user is signed in, and stops on blur or when
-// `asc.inbox.statusBar` is false. The item is stale (dimmed, "updated N min ago") when the last
-// success is older than 15 minutes or the forge is offline. Editor-free; `registerInboxCount`
-// is the only `vscode` user.
+// `asc.v1.Inbox/Count` for the needs-review section with its `if_none_match` etag (feature
+// `inbox.v1`). It runs once on window focus and after a review action, then every 5 minutes while
+// the window is focused and an asc server is reachable, and stops on blur or when `asc.inbox.statusBar`
+// is false. The item is stale (dimmed, "updated N min ago") when the last success is older than
+// 15 minutes or the server is offline. Editor-free; `registerInboxCount` is the only `vscode` user.
 import type * as vscodeTypes from "vscode";
 
 export const POLL_MS = 5 * 60 * 1000;
@@ -15,7 +14,7 @@ export type CountResult =
   | { readonly status: "not-modified" };
 
 export interface CountApi {
-  /** One conditional request. Rejects when the forge is unreachable or the user is not signed in. */
+  /** One conditional request. Rejects when the server is unreachable or the caller has no user identity. */
   needsReviewCount(etag: string | undefined, signal: AbortSignal): Promise<CountResult>;
 }
 
@@ -26,7 +25,7 @@ export interface Timers {
 
 export interface InboxCountOptions {
   api: CountApi;
-  /** Whether a token exists for the forge; polling stops when false. */
+  /** Whether an asc server is configured for the workspace; polling stops when false. */
   signedIn: () => boolean;
   /** `asc.inbox.statusBar`. */
   enabled: () => boolean;
@@ -144,9 +143,9 @@ export class InboxCountPoller {
     const when =
       mins === undefined
         ? this.offline
-          ? "forge offline"
+          ? "server offline"
           : "not updated yet"
-        : `updated ${mins} min ago${this.offline ? ", forge offline" : ""}`;
+        : `updated ${mins} min ago${this.offline ? ", server offline" : ""}`;
     const n = t === undefined ? "-" : String(t);
     return {
       text: `$(git-pull-request) ${n}`,
