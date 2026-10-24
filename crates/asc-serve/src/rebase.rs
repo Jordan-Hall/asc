@@ -257,19 +257,10 @@ impl ServerMutations {
             .await
             .map_err(|e| hide_missing(registry_status(e)))?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &source).for_viewer(&ctx.principal);
-        let spec = ids
-            .rev_in(&req.head, &source.default_branch)
+        let head = ids
+            .resolve(&req.head, &source.default_branch, graph_status)
             .await
-            .map_err(hide_missing)?;
-        let head = source
-            .backend
-            .engine()
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(|e| hide_missing(graph_status(e)))?
-            .into_iter()
-            .next()
-            .flatten()
+            .map_err(hide_missing)?
             .ok_or_else(refused)?;
         MutationsHandler::copy_closure(
             self,
@@ -1035,9 +1026,23 @@ mod tests {
         let (base, _a, b, onto) = stack(&f).await;
         set_ref(&f, "refs/users/42/heads/x", b).await;
         for head in [
+            "master..users/42/heads/x",
+            "users/42/heads/x...master",
+            "^users/42/heads/x",
+            "refs/users/42/heads/x@{3}",
+        ] {
+            let mut q = req(base, b, onto);
+            q.head = head.into();
+            q.dry_run = true;
+            let err = f.m.rebase(&ctx_as("43:bob"), q).await.unwrap_err();
+            assert_eq!(err.code(), tonic::Code::NotFound, "bob rebased {head}");
+        }
+        for head in [
             "refs/users/42/heads/x",
             "users/42/heads/x",
             "users/42/heads/x@{0}",
+            "users/42/heads/x~0",
+            "refs/users/42/heads/x^{commit}",
         ] {
             let mut q = req(base, b, onto);
             q.head = head.into();

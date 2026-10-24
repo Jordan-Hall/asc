@@ -19,7 +19,6 @@ use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
 use asc_engine::commit;
 use asc_engine::derive::Gen;
-use asc_engine::history::HistoryApi;
 use asc_engine::history::linehist::{self, MAX_FILE_BYTES, Query, Stop};
 use asc_rpc::server::{CallCtx, MAX_STRING, RpcStream, wire};
 use futures::stream::{self, StreamExt};
@@ -99,7 +98,6 @@ impl ServerLineHistory {
 
     async fn query(
         entry: &RepoEntry,
-        engine: &Eng,
         ids: &IdCodec,
         req: &wire::LineHistoryRequest,
     ) -> Result<Query, Status> {
@@ -127,15 +125,11 @@ impl ServerLineHistory {
                 return Err(Status::invalid_argument("revision is too long"));
             }
             let spec = if req.rev.is_empty() { "HEAD" } else { &req.rev };
-            let spec = ids.rev_in(spec, &entry.default_branch).await?;
-            engine
-                .resolve(std::slice::from_ref(&spec))
-                .await
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
-                .into_iter()
-                .next()
-                .flatten()
-                .ok_or_else(|| Status::not_found(format!("revision {} does not exist", req.rev)))?
+            ids.resolve(spec, &entry.default_branch, |e| {
+                Status::invalid_argument(e.to_string())
+            })
+            .await?
+            .ok_or_else(|| Status::not_found(format!("revision {} does not exist", req.rev)))?
         };
         Ok(Query {
             rev,
@@ -161,7 +155,7 @@ impl ServerLineHistory {
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
-        let q = Self::query(&entry, &engine, &ids, &req).await?;
+        let q = Self::query(&entry, &ids, &req).await?;
         let page = {
             let _guard = self
                 .hooks

@@ -16,7 +16,6 @@ use bytes::Bytes;
 use asc_core::id::ChangesetId;
 use asc_core::object::{Entry, Kind};
 use asc_engine::diff::TreeChange;
-use asc_engine::history::HistoryApi;
 use asc_engine::history::compare::{self, Comparison, MAX_TOKEN_BYTES, Query};
 use asc_rpc::IdMode;
 use asc_rpc::server::{CallCtx, MAX_STRING, wire};
@@ -122,25 +121,16 @@ impl ServerCompare {
         Self { registry }
     }
 
-    async fn rev(
-        entry: &RepoEntry,
-        engine: &Eng,
-        ids: &IdCodec,
-        spec: &str,
-    ) -> Result<ChangesetId, Status> {
+    async fn rev(entry: &RepoEntry, ids: &IdCodec, spec: &str) -> Result<ChangesetId, Status> {
         if spec.len() > MAX_STRING {
             return Err(Status::invalid_argument("revision is too long"));
         }
         let shown = if spec.is_empty() { "HEAD" } else { spec };
-        let resolved = ids.rev_in(shown, &entry.default_branch).await?;
-        engine
-            .resolve(std::slice::from_ref(&resolved))
-            .await
-            .map_err(|e| Status::invalid_argument(e.to_string()))?
-            .into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| Status::not_found(format!("revision {shown} does not exist")))
+        ids.resolve(shown, &entry.default_branch, |e| {
+            Status::invalid_argument(e.to_string())
+        })
+        .await?
+        .ok_or_else(|| Status::not_found(format!("revision {shown} does not exist")))
     }
 
     async fn entries(
@@ -177,8 +167,8 @@ impl ServerCompare {
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
-        let a = Self::rev(&entry, &engine, &ids, &req.a).await?;
-        let b = Self::rev(&entry, &engine, &ids, &req.b).await?;
+        let a = Self::rev(&entry, &ids, &req.a).await?;
+        let b = Self::rev(&entry, &ids, &req.b).await?;
         let got: Comparison = engine
             .compare(&Query {
                 a,

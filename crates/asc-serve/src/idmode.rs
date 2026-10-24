@@ -350,6 +350,32 @@ impl IdCodec {
         Ok(out)
     }
 
+    /// Resolves the revision `spec` to the one commit it names, as this call's viewer may see it.
+    ///
+    /// The only way production code turns a client's revision into a changeset: [`rev_in`]
+    /// checks every name in the spec, and the resolver itself is told [`ref_visible`], so a ref
+    /// it reaches some other way (a dwim form, a reflog, a tip) is held to the same rule.
+    /// `None` when the spec names nothing. `on_engine` maps an engine failure to the caller's
+    /// status; a refusal from the codec is returned as it is.
+    ///
+    /// [`rev_in`]: Self::rev_in
+    /// [`ref_visible`]: Self::ref_visible
+    pub async fn resolve(
+        &self,
+        spec: &str,
+        default_branch: &str,
+        on_engine: impl FnOnce(asc_engine::graph::Error) -> Status,
+    ) -> Result<Option<ChangesetId>, Status> {
+        let spec = self.rev_in(spec, default_branch).await?;
+        #[allow(clippy::disallowed_methods)]
+        let got = self
+            .engine
+            .resolve_visible(std::slice::from_ref(&spec), &self.ref_visible())
+            .await
+            .map_err(on_engine)?;
+        Ok(got.into_iter().next().flatten())
+    }
+
     /// Refuses a name that can resolve to another user's ref, whichever dwim form reaches it
     /// (`refs/users/..`, `users/..`, with or without `@{n}`). `not_found`, the same answer as
     /// for a ref that does not exist, so the refusal does not say whether the ref is there.
@@ -744,6 +770,88 @@ mod tests {
             let err = owner.rev_in("users/421/heads/x", "master").await;
             assert_eq!(err.unwrap_err().code(), tonic::Code::NotFound);
             assert!(!owner.ref_visible()("refs/users/421/heads/x"));
+        }
+    }
+
+    fn viewers(r: &Arc<Registry>, e: &RepoEntry, mode: IdMode) -> [IdCodec; 4] {
+        [
+            IdCodec::new(mode, r, e).for_viewer(&principal("43:bob")),
+            IdCodec::new(mode, r, e).for_viewer(&principal("alice")),
+            IdCodec::new(mode, r, e).for_viewer(&principal("pat:42")),
+            IdCodec::new(mode, r, e),
+        ]
+    }
+
+    async fn set_ref(r: &Registry, e: &RepoEntry, name: &str, cs: ChangesetId) {
+        use asc_core::id::RefTarget;
+        use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
+        let txn = RefTxn {
+            updates: vec![RefUpdate {
+                name: asc_core::path::RefName::new(name.as_bytes().to_vec()).unwrap(),
+                expect: Expect::Any,
+                new: Some(RefTarget::Changeset(cs)),
+                expires_at: None,
+            }],
+            actor: Actor {
+                id: "t".into(),
+                via: "test".into(),
+            },
+            reason: "test".into(),
+            op_id: uuid::Uuid::new_v4(),
+        };
+        r.refs().update(e.key, &txn).await.unwrap();
+    }
+
+    fn engine_status(e: asc_engine::graph::Error) -> Status {
+        Status::internal(e.to_string())
+    }
+
+    /// The one resolver of a client's revision answers for the ref's owner and for nobody else,
+    /// in every spelling that can name a commit.
+    #[tokio::test]
+    async fn resolve_reaches_another_users_ref_in_no_spelling() {
+        let (r, e, c) = setup().await;
+        set_ref(&r, &e, "refs/users/42/heads/x", c).await;
+        set_ref(&r, &e, "refs/heads/master", c).await;
+        let specs = [
+            "refs/users/42/heads/x",
+            "users/42/heads/x",
+            "users/42/heads/x@{0}",
+            "refs/users/42/heads/x@{0}",
+            "refs/users/42/heads/x@{3}",
+            "users/42/heads/x~0",
+            "users/42/heads/x^0",
+            "users/42/heads/x^{commit}",
+            "refs/users/42/heads/x^{commit}",
+        ];
+        let ranges = [
+            "master..users/42/heads/x",
+            "users/42/heads/x...master",
+            "^users/42/heads/x",
+            "users/42/heads/x:a.txt",
+        ];
+        for mode in [IdMode::Git, IdMode::Asc] {
+            for codec in &viewers(&r, &e, mode) {
+                for spec in specs.iter().chain(&ranges) {
+                    let err = codec
+                        .resolve(spec, "master", engine_status)
+                        .await
+                        .expect_err(&format!("{mode:?} {spec} must be refused"));
+                    assert_eq!(err.code(), tonic::Code::NotFound, "{spec}");
+                }
+                let shared = codec.resolve("master", "master", engine_status).await;
+                assert_eq!(shared.unwrap(), Some(c), "shared refs still resolve");
+            }
+            let owner = IdCodec::new(mode, &r, &e).for_viewer(&principal("42:alice"));
+            for spec in ["refs/users/42/heads/x", "users/42/heads/x"] {
+                let got = owner.resolve(spec, "master", engine_status).await.unwrap();
+                assert_eq!(got, Some(c), "the owner resolves {spec}");
+            }
+            let err = owner
+                .resolve("users/421/heads/x", "master", engine_status)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), tonic::Code::NotFound);
         }
     }
 }

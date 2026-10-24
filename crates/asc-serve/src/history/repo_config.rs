@@ -14,7 +14,6 @@ use std::sync::Arc;
 use asc_core::id::FileId;
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
-use asc_engine::history::HistoryApi;
 use asc_rpc::server::{CallCtx, MAX_STRING, wire};
 use tonic::Status;
 
@@ -101,14 +100,11 @@ impl ServerRepoConfig {
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
         let shown = if req.rev.is_empty() { "HEAD" } else { &req.rev };
-        let spec = ids.rev_in(shown, &entry.default_branch).await?;
-        let cs = engine
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(|e| Status::invalid_argument(e.to_string()))?
-            .into_iter()
-            .next()
-            .flatten()
+        let cs = ids
+            .resolve(shown, &entry.default_branch, |e| {
+                Status::invalid_argument(e.to_string())
+            })
+            .await?
             .ok_or_else(|| Status::not_found(format!("revision {shown} does not exist")))?;
         let root = engine.get_changeset(cs).await.map_err(commit_status)?.root;
         let path = RepoPath::new(REVIEW_TOML).map_err(|e| internal("review.toml path", &e))?;

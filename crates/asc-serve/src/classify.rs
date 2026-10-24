@@ -329,24 +329,13 @@ impl ServerClassify {
         Self { registry, hooks }
     }
 
-    async fn rev(
-        engine: &Eng,
-        ids: &IdCodec,
-        entry: &RepoEntry,
-        spec: &str,
-    ) -> Result<ChangesetId, Status> {
+    async fn rev(ids: &IdCodec, entry: &RepoEntry, spec: &str) -> Result<ChangesetId, Status> {
         if spec.len() > MAX_STRING {
             return Err(Status::invalid_argument("revision is too long"));
         }
         let spec = if spec.is_empty() { "HEAD" } else { spec };
-        let spec = ids.rev_in(spec, &entry.default_branch).await?;
-        engine
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(graph_status)?
-            .into_iter()
-            .next()
-            .flatten()
+        ids.resolve(spec, &entry.default_branch, graph_status)
+            .await?
             .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))
     }
 
@@ -390,8 +379,8 @@ impl ClassifyHandler for ServerClassify {
             .map_err(registry_status)?;
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry).for_viewer(&ctx.principal);
         let engine = entry.backend.engine().clone();
-        let mut base = Self::rev(&engine, &ids, &entry, &req.base).await?;
-        let head = Self::rev(&engine, &ids, &entry, &req.head).await?;
+        let mut base = Self::rev(&ids, &entry, &req.base).await?;
+        let head = Self::rev(&ids, &entry, &req.head).await?;
         if req.merge_base {
             base = *engine
                 .merge_base(base, &[head], false)

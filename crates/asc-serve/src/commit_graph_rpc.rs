@@ -25,7 +25,6 @@ use asc_engine::commit;
 use asc_engine::commit_graph::{self, DEFAULT_PAGE, MAX_PAGE, Start, lanes};
 use asc_engine::derive::{self, diffstat};
 use asc_engine::graph;
-use asc_engine::history::HistoryApi;
 use asc_rpc::server::{CallCtx, InsightsHandler, MAX_LIST, MAX_STRING, RpcStream, wire};
 use asc_store::objects;
 use asc_store::refs::Refs;
@@ -224,7 +223,6 @@ impl ServerCommitGraph {
     }
 
     async fn rev(
-        engine: &Eng,
         ids: &IdCodec,
         entry: &RepoEntry,
         spec: &str,
@@ -233,12 +231,7 @@ impl ServerCommitGraph {
             return Err(Status::invalid_argument("revision is too long"));
         }
         let spec = if spec.is_empty() { "HEAD" } else { spec };
-        let spec = ids.rev_in(spec, &entry.default_branch).await?;
-        let got = engine
-            .resolve(std::slice::from_ref(&spec))
-            .await
-            .map_err(graph_status)?;
-        Ok(got.into_iter().next().flatten())
+        ids.resolve(spec, &entry.default_branch, graph_status).await
     }
 
     /// Changeset targets of the refs under `prefix`, by name.
@@ -269,7 +262,6 @@ impl ServerCommitGraph {
     /// The start and hidden points of a first page.
     async fn starts(
         &self,
-        engine: &Eng,
         ids: &IdCodec,
         entry: &RepoEntry,
         req: &wire::CommitGraphRequest,
@@ -283,14 +275,14 @@ impl ServerCommitGraph {
         let trunk_ref = format!("refs/heads/{}", entry.default_branch);
         let mut include = Vec::new();
         for s in &req.include {
-            match Self::rev(engine, ids, entry, s).await? {
+            match Self::rev(ids, entry, s).await? {
                 Some(id) => include.push(id),
                 None => return Err(Status::not_found(format!("unknown revision {s:?}"))),
             }
         }
         let mut exclude = Vec::new();
         for s in &req.exclude {
-            match Self::rev(engine, ids, entry, s).await? {
+            match Self::rev(ids, entry, s).await? {
                 Some(id) => exclude.push(id),
                 None => return Err(Status::not_found(format!("unknown revision {s:?}"))),
             }
@@ -319,9 +311,9 @@ impl ServerCommitGraph {
             }
         } else if include.is_empty() {
             match preset {
-                P::Current => include.extend(Self::rev(engine, ids, entry, "HEAD").await?),
+                P::Current => include.extend(Self::rev(ids, entry, "HEAD").await?),
                 P::Smart => {
-                    include.extend(Self::rev(engine, ids, entry, "HEAD").await?);
+                    include.extend(Self::rev(ids, entry, "HEAD").await?);
                     let heads = heads().await?;
                     if let Some(e) = too_many(heads.len()) {
                         return Err(e);
@@ -547,7 +539,7 @@ impl InsightsHandler for ServerCommitGraph {
         };
         let token_is_none = token.is_none();
         let (include, exclude) = match token {
-            None => self.starts(&engine, &ids, &entry, &req).await?,
+            None => self.starts(&ids, &entry, &req).await?,
             Some(_) => (Vec::new(), Vec::new()),
         };
         let start = match &token {
