@@ -50,6 +50,9 @@ const SERVICES: &[&str] = &[
     "asc.v1.Changes",
     "asc.v1.Cloud",
     "asc.v1.CodeIntel",
+    "asc.v1.Inbox",
+    "asc.v1.Review",
+    "asc.v1.Ci",
 ];
 
 #[derive(clap::Parser, Debug)]

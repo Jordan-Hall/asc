@@ -26,6 +26,9 @@ const SERVER_SERVICES: &[&str] = &[
     "asc.v1.Projects",
     "asc.v1.Cloud",
     "asc.v1.CodeIntel",
+    "asc.v1.Inbox",
+    "asc.v1.Review",
+    "asc.v1.Ci",
 ];
 /// Daemon methods a plugin must never call: they stop or reconfigure the daemon for every client.
 const DENIED: &[&str] = &["asc.v1.Workspace/Shutdown"];
@@ -172,6 +175,24 @@ mod tests {
             resolve("asc.v1.Changes/Versions"),
             Ok(Target::Server(_))
         ));
+    }
+
+    #[test]
+    fn inbox_review_and_ci_go_to_the_server() {
+        for m in [
+            "asc.v1.Inbox/List",
+            "asc.v1.Inbox/Count",
+            "asc.v1.Inbox/SetState",
+            "asc.v1.Review/ListThreads",
+            "asc.v1.Review/AddComment",
+            "asc.v1.Review/ResolveThread",
+            "asc.v1.Review/RequestReview",
+            "asc.v1.Ci/ListRuns",
+            "asc.v1.Ci/JobLog",
+        ] {
+            assert!(matches!(resolve(m), Ok(Target::Server(_))), "{m}");
+        }
+        assert_eq!(code("asc.v1.Inbox/Nope"), tonic::Code::Unimplemented);
     }
 
     #[test]
