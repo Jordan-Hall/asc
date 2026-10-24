@@ -621,36 +621,21 @@ fn stubbed_git_commands() -> Vec<String> {
     found
 }
 
-fn a_stubbed_git_command() -> String {
-    stubbed_git_commands()
-        .into_iter()
-        .next()
-        .expect("no git command is left as a stub; update stubbed_git_commands")
-}
-
 // ---- dispatch (argv[0] = git) -----------------------------------------------------------
 
 #[test]
 fn git_prefers_aliases_then_git_externals_then_asc_verbs() {
     let sb = Sandbox::new();
     let root = init_repo(&sb, "repo");
-    let stubbed = a_stubbed_git_command();
-    append_global(&sb, &format!("[alias]\n\tgraph = {stubbed} list\n"));
-    // `git graph` is the alias (it expands to a command that has not landed).
+    // An alias to a command that is implemented: `graph` is also an asc-only verb.
+    append_global(&sb, "[alias]\n\tgraph = rev-parse --is-inside-work-tree\n");
+    // `git graph` is the alias.
     let out = git(&sb, &root, &["graph"]);
-    assert_eq!(out.code, 129);
-    assert_eq!(
-        out.stderr,
-        format!("fatal: asc: '{stubbed}' is not supported yet\n")
-    );
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert_eq!(out.stdout, "true\n");
     // Under `asc`, the asc-only verb `graph` wins: the alias is not expanded.
     let out = asc(&sb, &root, &["graph"]);
-    assert!(
-        !out.stderr
-            .contains(&format!("'{stubbed}' is not supported yet")),
-        "{}",
-        out.stderr
-    );
+    assert_ne!(out.stdout, "true\n", "{}", out.stderr);
 
     // A `git-affected` script on PATH wins over the asc-only `affected` when invoked as git.
     let bindir = sb.dir("bin");

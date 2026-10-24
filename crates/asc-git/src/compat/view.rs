@@ -23,6 +23,7 @@ use asc_store::refs::Refs;
 use futures::lock::Mutex;
 
 use super::limits::INLINE_BUILD_OBJECTS;
+use super::pktline::GitProtocol;
 use super::server_git::{
     PackRequest, PackService, QuarantineStats, RefUpdate, ServerChild, ServerGit, ServerGitError,
     check_repo_config, private_dir, valid_ref_name,
@@ -427,6 +428,24 @@ impl GitView {
             .inner
             .server
             .pack_with_env(service, &self.inner.dir, req, env)?)
+    }
+
+    /// [`GitView::spawn_pack_with_env`] in session mode ([`ServerGit::session_with_env`]): the
+    /// child holds one full-duplex stream open, as SSH needs.
+    pub fn spawn_session_with_env(
+        &self,
+        service: PackService,
+        protocol: Option<&GitProtocol>,
+        env: &[(&str, &str)],
+    ) -> Result<ServerChild, ViewError> {
+        if self.inner.kind == ViewKind::Mirror && service == PackService::ReceivePack {
+            return Err(ViewError::ReadOnlyMirror);
+        }
+        self.verify_config()?;
+        Ok(self
+            .inner
+            .server
+            .session_with_env(service, &self.inner.dir, protocol, env)?)
     }
 
     /// Counts and sizes the objects of a push's quarantine ([`ServerGit::quarantine_stats`]).

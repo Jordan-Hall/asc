@@ -46,7 +46,7 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::{Extensions as TonicExt, Request, Response, Status};
 
 use super::index::{self, MAX_PREDS};
-use super::{fixed, versions};
+use super::{fixed, mergeable, overlaps, versions};
 use crate::commit_graph_rpc::{commit_status, internal};
 use crate::idmode::{Eng, IdCodec};
 use crate::registry::{Extensions, Ns, Registry, RegistryError, RepoEntry};
@@ -112,7 +112,9 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
     let rpc = Arc::new(ChangesRpc {
         registry: registry.clone(),
         pipeline: ext.pipeline.clone(),
+        interdiff: OnceLock::new(),
         restack: OnceLock::new(),
+        request_merge: OnceLock::new(),
     });
     assert!(
         ext.changes.set(rpc),
@@ -123,36 +125,40 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>) {
 // ------------------------------------------------------------------------------ handler
 
 /// What the index says about one change.
-struct Head {
+pub(super) struct Head {
     /// The newest published version, else the first visible changeset.
-    cs: ChangesetId,
+    pub(super) cs: ChangesetId,
     /// The newest version number, 0 when nothing was published.
     version: u32,
-    parent: Option<ChangeId>,
+    pub(super) parent: Option<ChangeId>,
     /// Changesets of the change that no other one of it names as a predecessor.
-    visible: Vec<ChangesetId>,
+    pub(super) visible: Vec<ChangesetId>,
 }
 
 /// The handler behind [`ChangesService`].
 pub struct ChangesRpc {
     registry: Arc<Registry>,
     pipeline: Arc<PipelineHooks>,
+    /// `InterDiff` (C20), set by [`super::interdiff::register`].
+    pub(super) interdiff: OnceLock<Arc<super::interdiff::InterDiffer>>,
     /// `RestackChanges` (C22), set by [`super::restack::register`].
     pub(super) restack: OnceLock<Arc<super::restack::Restacker>>,
+    /// `RequestMerge` (C50), set by [`super::request_merge::register`].
+    pub(super) request_merge: OnceLock<Arc<super::request_merge::RequestMerger>>,
 }
 
 /// Reads the facts of changes for one call; remembers what it has read.
-struct Reader<'a> {
-    conn: &'a mut AnyConnection,
-    ids: &'a IdCodec,
-    engine: &'a Eng,
-    ns: Ns,
-    land_ref: String,
-    heads: HashMap<ChangeId, Option<Arc<Head>>>,
+pub(super) struct Reader<'a> {
+    pub(super) conn: &'a mut AnyConnection,
+    pub(super) ids: &'a IdCodec,
+    pub(super) engine: &'a Arc<Eng>,
+    pub(super) ns: Ns,
+    pub(super) land_ref: String,
+    pub(super) heads: HashMap<ChangeId, Option<Arc<Head>>>,
 }
 
 impl Reader<'_> {
-    async fn head(&mut self, change: ChangeId) -> Result<Option<Arc<Head>>, Status> {
+    pub(super) async fn head(&mut self, change: ChangeId) -> Result<Option<Arc<Head>>, Status> {
         if let Some(h) = self.heads.get(&change) {
             return Ok(h.clone());
         }
@@ -196,13 +202,16 @@ impl Reader<'_> {
         Ok(head)
     }
 
-    async fn landed(&mut self, change: ChangeId) -> Result<Option<ChangesetId>, Status> {
+    pub(super) async fn landed(&mut self, change: ChangeId) -> Result<Option<ChangesetId>, Status> {
         index::landed_as(&mut *self.conn, self.ns, change, &self.land_ref)
             .await
             .map_err(index_status)
     }
 
-    async fn review(&mut self, change: ChangeId) -> Result<Option<wire::ReviewState>, Status> {
+    pub(super) async fn review(
+        &mut self,
+        change: ChangeId,
+    ) -> Result<Option<wire::ReviewState>, Status> {
         let row = sqlx::query("SELECT state FROM review_state WHERE ns = $1 AND change = $2")
             .bind(self.ns.as_bytes().to_vec())
             .bind(change.as_bytes().to_vec())
@@ -221,12 +230,9 @@ impl Reader<'_> {
         }
     }
 
-    /// The `ChangeInfo` of `change`; `None` when the index does not know it.
-    async fn info(&mut self, change: ChangeId) -> Result<Option<wire::ChangeInfo>, Status> {
-        let Some(head) = self.head(change).await? else {
-            return Ok(None);
-        };
-        let parent_current = match head.parent {
+    /// True when `head` still sits on the newest version of its parent change.
+    pub(super) async fn parent_current(&mut self, head: &Head) -> Result<bool, Status> {
+        Ok(match head.parent {
             None => true,
             Some(p) => match self.head(p).await? {
                 None => false,
@@ -241,7 +247,15 @@ impl Reader<'_> {
                         .is_some_and(|f| ph.visible.contains(f) || *f == ph.cs)
                 }
             },
+        })
+    }
+
+    /// The `ChangeInfo` of `change`; `None` when the index does not know it.
+    async fn info(&mut self, change: ChangeId) -> Result<Option<wire::ChangeInfo>, Status> {
+        let Some(head) = self.head(change).await? else {
+            return Ok(None);
         };
+        let parent_current = self.parent_current(&head).await?;
         let landed = self.landed(change).await?;
         let review = self.review(change).await?;
         let git = self.ids.git_of(head.cs).await?;
@@ -269,7 +283,7 @@ impl Reader<'_> {
     }
 
     /// Changes whose newest version names `parent` as parent, sorted by id.
-    async fn children(&mut self, parent: ChangeId) -> Result<Vec<ChangeId>, Status> {
+    pub(super) async fn children(&mut self, parent: ChangeId) -> Result<Vec<ChangeId>, Status> {
         let rows = sqlx::query(
             "SELECT DISTINCT change FROM change_versions WHERE ns = $1 AND parent_change = $2 \
              LIMIT $3",
@@ -346,14 +360,11 @@ impl ChangesRpc {
             if spec.len() > MAX_STRING {
                 return Err(Status::invalid_argument("revision is too long"));
             }
-            let spec = ids.rev_in(spec, &entry.default_branch).await?;
-            let Some(cs) = engine
-                .resolve(std::slice::from_ref(&spec))
-                .await
-                .map_err(|e| Status::invalid_argument(e.to_string()))?
-                .into_iter()
-                .next()
-                .flatten()
+            let Some(cs) = ids
+                .resolve(spec, &entry.default_branch, |e| {
+                    Status::invalid_argument(e.to_string())
+                })
+                .await?
             else {
                 continue;
             };
@@ -398,14 +409,11 @@ impl ChangesRpc {
                 if spec.len() > MAX_STRING {
                     return Err(Status::invalid_argument("revision is too long"));
                 }
-                let spec = ids.rev_in(spec, &entry.default_branch).await?;
-                let cs = engine
-                    .resolve(std::slice::from_ref(&spec))
-                    .await
-                    .map_err(|e| Status::invalid_argument(e.to_string()))?
-                    .into_iter()
-                    .next()
-                    .flatten()
+                let cs = ids
+                    .resolve(spec, &entry.default_branch, |e| {
+                        Status::invalid_argument(e.to_string())
+                    })
+                    .await?
                     .ok_or_else(|| Status::not_found(format!("unknown revision {spec:?}")))?;
                 index::rows_of(&mut conn, entry.ns, &[cs])
                     .await
@@ -548,6 +556,58 @@ impl ChangesRpc {
         })
     }
 
+    async fn mergeability(
+        &self,
+        ctx: &CallCtx,
+        req: wire::MergeabilityRequest,
+    ) -> Result<wire::MergeabilityResponse, Status> {
+        if req.changes.is_empty() || req.changes.len() > mergeable::MAX_HEADS {
+            return Err(Status::invalid_argument(format!(
+                "ask for 1 to {} changes per call",
+                mergeable::MAX_HEADS
+            )));
+        }
+        let changes: Vec<ChangeId> = req
+            .changes
+            .iter()
+            .map(|c| change_of(c))
+            .collect::<Result<_, _>>()?;
+        let (entry, ids, engine) = self.open(ctx).await?;
+        let (_, land_ref) = Self::land_ref(&entry, &req.target)?;
+        let tip = mergeable::trunk_tip(&self.registry, &entry, &land_ref).await?;
+        let mut conn = self.registry.pool().acquire().await.map_err(sql_status)?;
+        let mut reader = Reader {
+            conn: &mut conn,
+            ids: &ids,
+            engine: &engine,
+            ns: entry.ns,
+            land_ref,
+            heads: HashMap::new(),
+        };
+        let results = mergeable::mergeability(&mut reader, tip, &changes, now()).await?;
+        Ok(wire::MergeabilityResponse { results })
+    }
+
+    async fn overlaps(
+        &self,
+        ctx: &CallCtx,
+        req: wire::OverlapsRequest,
+    ) -> Result<wire::OverlapsResponse, Status> {
+        let (entry, ids, engine) = self.open(ctx).await?;
+        let (_, land_ref) = Self::land_ref(&entry, &req.target)?;
+        let mut conn = self.registry.pool().acquire().await.map_err(sql_status)?;
+        let mut reader = Reader {
+            conn: &mut conn,
+            ids: &ids,
+            engine: &engine,
+            ns: entry.ns,
+            land_ref,
+            heads: HashMap::new(),
+        };
+        let overlaps = overlaps::overlaps(&mut reader, &req).await?;
+        Ok(wire::OverlapsResponse { overlaps })
+    }
+
     async fn set_review_state(
         &self,
         ctx: &CallCtx,
@@ -584,7 +644,26 @@ impl ChangesRpc {
             }
             rows.push((*change, bytes, state.updated));
         }
+        // What each update does to the overlap index: an open request records the head's paths,
+        // a closed or merged one forgets the change (SPEC §20.4).
+        let engine = entry.backend.engine().clone();
+        let mut plans = Vec::with_capacity(rows.len());
+        for (change, state) in &updates.entries {
+            let plan = match overlaps::lifecycle(&state.state) {
+                overlaps::Lifecycle::Open => {
+                    let mut conn = self.registry.pool().acquire().await.map_err(sql_status)?;
+                    match overlaps::head_paths(&mut conn, &engine, entry.ns, *change).await? {
+                        Some(paths) => overlaps::Plan::Record(paths),
+                        None => overlaps::Plan::Keep,
+                    }
+                }
+                overlaps::Lifecycle::Closed => overlaps::Plan::Close,
+                overlaps::Lifecycle::Unknown => overlaps::Plan::Keep,
+            };
+            plans.push(plan);
+        }
         let mut tx = self.registry.pool().begin().await.map_err(sql_status)?;
+        let mut applied = Vec::with_capacity(rows.len());
         for (change, _, _) in &rows {
             let known = index::changesets_of(&mut *tx, entry.ns, *change, 1)
                 .await
@@ -593,11 +672,9 @@ impl ChangesRpc {
                 return Err(Status::not_found(format!("unknown change {change}")));
             }
         }
-        for (change, bytes, updated) in rows {
-            sqlx::query(
-                "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, $4) \
-                 ON CONFLICT (ns, change) DO UPDATE SET state = excluded.state, \
-                 updated = excluded.updated WHERE review_state.updated <= excluded.updated",
+        for ((change, bytes, updated), plan) in rows.into_iter().zip(plans) {
+            let done = sqlx::query(
+                "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, $4)                  ON CONFLICT (ns, change) DO UPDATE SET state = excluded.state,                  updated = excluded.updated WHERE review_state.updated <= excluded.updated",
             )
             .bind(entry.ns.as_bytes().to_vec())
             .bind(change.as_bytes().to_vec())
@@ -606,8 +683,30 @@ impl ChangesRpc {
             .execute(&mut *tx)
             .await
             .map_err(sql_status)?;
+            // A stale update (an older `updated`) changed nothing and must not move the index.
+            if done.rows_affected() == 0 {
+                continue;
+            }
+            applied.push(change);
+            match plan {
+                overlaps::Plan::Record(paths) => {
+                    overlaps::record(&mut tx, entry.ns, change, &paths)
+                        .await
+                        .map_err(sql_status)?;
+                }
+                overlaps::Plan::Close => {
+                    overlaps::close(&mut tx, entry.ns, change)
+                        .await
+                        .map_err(sql_status)?;
+                }
+                overlaps::Plan::Keep => {}
+            }
         }
         tx.commit().await.map_err(sql_status)?;
+        // Stack watchers refresh the review state of the changes that really changed (C49).
+        for change in applied {
+            super::watch::emit(entry.ns, change, super::watch::StackEventKind::ReviewState);
+        }
         Ok(wire::SetReviewStateResponse {})
     }
 }
@@ -725,23 +824,38 @@ impl Changes for ChangesService {
 
     async fn inter_diff(
         &self,
-        _request: Request<wire::InterDiffRequest>,
+        request: Request<wire::InterDiffRequest>,
     ) -> Result<Response<Self::InterDiffStream>, Status> {
-        Err(later("InterDiff"))
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read)
+            .await?;
+        let Some(handler) = self.rpc.interdiff.get() else {
+            return Err(later("InterDiff"));
+        };
+        handler.inter_diff(&ctx, msg).await.map(Response::new)
     }
 
     async fn mergeability(
         &self,
-        _request: Request<wire::MergeabilityRequest>,
+        request: Request<wire::MergeabilityRequest>,
     ) -> Result<Response<wire::MergeabilityResponse>, Status> {
-        Err(later("Mergeability"))
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read)
+            .await?;
+        self.rpc.mergeability(&ctx, msg).await.map(Response::new)
     }
 
     async fn overlaps(
         &self,
-        _request: Request<wire::OverlapsRequest>,
+        request: Request<wire::OverlapsRequest>,
     ) -> Result<Response<wire::OverlapsResponse>, Status> {
-        Err(later("Overlaps"))
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read)
+            .await?;
+        self.rpc.overlaps(&ctx, msg).await.map(Response::new)
     }
 
     async fn restack_changes(
@@ -775,9 +889,17 @@ impl Changes for ChangesService {
 
     async fn request_merge(
         &self,
-        _request: Request<wire::RequestMergeRequest>,
+        request: Request<wire::RequestMergeRequest>,
     ) -> Result<Response<wire::RequestMergeResponse>, Status> {
-        Err(later("RequestMerge"))
+        let (meta, ext, msg) = request.into_parts();
+        let mut ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Write)
+            .await?;
+        ctx.op_id = super::request_merge::op_id_of(&meta)?;
+        let Some(handler) = self.rpc.request_merge.get() else {
+            return Err(later("RequestMerge"));
+        };
+        handler.request_merge(&ctx, msg).await.map(Response::new)
     }
 }
 
@@ -1339,6 +1461,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_review_state_feeds_stack_watchers_only_for_applied_updates() {
+        use super::super::watch::{StackEventKind, peek};
+        let f = fx().await;
+        let kinds = |n: u8| {
+            peek(f.e.ns, 0)
+                .events
+                .iter()
+                .filter(|e| e.change == cid(n))
+                .map(|e| e.kind)
+                .collect::<Vec<_>>()
+        };
+        // A rejected call (one unknown change) emits nothing.
+        set(&f, &[1, 9], vec![state(1, "open", 1), state(2, "open", 1)])
+            .await
+            .unwrap_err();
+        assert!(peek(f.e.ns, 0).events.is_empty());
+        set(&f, &[1], vec![state(7, "merged", 200)]).await.unwrap();
+        assert_eq!(kinds(1), vec![StackEventKind::ReviewState]);
+        // A stale update changed nothing, so it is not an event either.
+        set(&f, &[1], vec![state(7, "open", 150)]).await.unwrap();
+        assert_eq!(kinds(1).len(), 1);
+    }
+
+    #[tokio::test]
     async fn set_review_state_validates_before_writing() {
         let f = fx().await;
         // One unknown change: nothing is written.
@@ -1370,7 +1516,7 @@ mod tests {
         let f = fx().await;
         let e = f
             .svc
-            .overlaps(Request::new(wire::OverlapsRequest::default()))
+            .request_merge(Request::new(wire::RequestMergeRequest::default()))
             .await
             .unwrap_err();
         assert_eq!(e.code(), tonic::Code::Unimplemented);

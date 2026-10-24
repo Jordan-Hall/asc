@@ -20,6 +20,7 @@ pub mod plugin_api_read;
 pub mod plugin_api_stack;
 pub mod scheduler;
 pub mod service;
+pub mod watch_stack;
 pub mod workspace_factory;
 
 pub use service::Service;

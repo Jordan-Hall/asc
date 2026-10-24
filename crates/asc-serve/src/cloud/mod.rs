@@ -1,8 +1,11 @@
 //! The commit cloud on the server (SPEC §21.3, PLAN B09): per-user workspaces of draft heads,
 //! the `Cloud` RPCs, and the quota ledger that ingest and `PutObjects` charge.
 //!
-//! Later branchless units add their own `pub mod` lines here (`expiry`, `purge`).
+//! `expiry` is the hourly worker and the GC roots of cloud heads, `purge` is `Cloud.Purge` and
+//! cache eviction (PLAN B10).
 
+pub mod expiry;
+pub mod purge;
 pub mod quota;
 pub mod rpc;
 
@@ -27,3 +30,6 @@ impl Default for Limits {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testutil;

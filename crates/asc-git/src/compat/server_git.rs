@@ -504,6 +504,37 @@ impl ServerGit {
         req: &PackRequest,
         env: &[(&str, &str)],
     ) -> Result<ServerChild, ServerGitError> {
+        self.pack_child(service, view, req, env, false)
+    }
+
+    /// The **session mode** of SPEC §25.11.5: `git upload-pack <view>` or `git receive-pack <view>`
+    /// without `--stateless-rpc`, for a transport that keeps one full-duplex stream open (SSH).
+    /// The child writes its own advertisement first and then reads the client's commands, so
+    /// `advertise_refs` has no meaning here and is refused. The environment, every `-c`, the hook
+    /// directory, the child limits and the process-tree kill are those of
+    /// [`ServerGit::pack_with_env`]; `env` takes only `ASC_*` names.
+    pub fn session_with_env(
+        &self,
+        service: PackService,
+        view: &Path,
+        protocol: Option<&GitProtocol>,
+        env: &[(&str, &str)],
+    ) -> Result<ServerChild, ServerGitError> {
+        let req = PackRequest {
+            advertise_refs: false,
+            protocol: protocol.cloned(),
+        };
+        self.pack_child(service, view, &req, env, true)
+    }
+
+    fn pack_child(
+        &self,
+        service: PackService,
+        view: &Path,
+        req: &PackRequest,
+        env: &[(&str, &str)],
+        session: bool,
+    ) -> Result<ServerChild, ServerGitError> {
         for (name, value) in env {
             if !valid_extra_env_name(name) || value.contains('\0') {
                 return Err(ServerGitError::Config(
@@ -517,13 +548,18 @@ impl ServerGit {
         let mut cmd = self.command(&[], req.protocol.as_ref(), true)?;
         match service {
             PackService::UploadPack => {
-                cmd.arg("upload-pack")
-                    .arg("--stateless-rpc")
-                    .arg("--strict");
+                cmd.arg("upload-pack");
+                if !session {
+                    cmd.arg("--stateless-rpc");
+                }
+                cmd.arg("--strict");
                 cmd.arg(format!("--timeout={}", l.idle_timeout.as_secs().max(1)));
             }
             PackService::ReceivePack => {
-                cmd.arg("receive-pack").arg("--stateless-rpc");
+                cmd.arg("receive-pack");
+                if !session {
+                    cmd.arg("--stateless-rpc");
+                }
             }
         }
         if req.advertise_refs {

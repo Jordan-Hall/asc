@@ -597,6 +597,10 @@ pub enum Step {
 pub trait Uplink: Send + Sync {
     /// What the server says about the repo (`Version`, `RepoConfig`) and the user's settings.
     async fn facts(&self) -> Result<Facts, String>;
+    /// The user's settings, read from the config files now. The job asks before every run, so
+    /// `asc.cloud=off` or `asc.branchless=false` stops uploads at the next tick, not when a cached
+    /// answer of the server expires.
+    async fn settings(&self) -> Result<ModeSettings, String>;
     /// A cheap call that succeeds when the server is reachable.
     async fn ping(&self) -> Result<(), String>;
     /// The oldest pending entry due at `now`.
@@ -619,8 +623,9 @@ pub trait Uplink: Send + Sync {
 /// Where the job finds repositories.
 #[async_trait]
 pub trait Uplinks: Send + Sync {
-    /// Repositories worth a look now: with a due queue entry for an upload run, every repo with
-    /// a cloud remote for a sync run.
+    /// Repositories worth a look now. An implementation may return every repo with a cloud
+    /// remote for either phase: the job caches what the server says, backs off on failure and
+    /// leaves an idle repo at the cost of a config read.
     async fn repos(&self, phase: Phase, now: i64) -> Result<Vec<RepoKey>, String>;
     /// `None` when the repo has no asc server remote (local-only, bucket, git remote, mirror
     /// mode): cloud is off.
@@ -647,6 +652,10 @@ struct RepoState {
     next_sync: i64,
     sync_failures: u32,
     refused: bool,
+    /// Consecutive failures to open the repo, read its settings or ask the server for its facts,
+    /// and the time before which the repo is left alone.
+    setup_failures: u32,
+    setup_until: i64,
 }
 
 /// What a run did, for the log line.
@@ -739,9 +748,25 @@ impl CloudJob {
             tally.paused += 1;
             return Ok(());
         }
-        let Some(link) = self.links.open(repo).await? else {
+        let waiting = self.with_state(repo, |s| now < s.setup_until);
+        if waiting {
+            tally.paused += 1;
             return Ok(());
+        }
+        let link = match self.links.open(repo).await {
+            Ok(Some(link)) => link,
+            Ok(None) => return Ok(()),
+            Err(e) => return self.setup_failed(repo, now, &e),
         };
+        // The settings are read afresh on every run: they are the user's, not the server's, and
+        // `asc.cloud=off` must stop uploads at once. Only the server's answers are cached.
+        let settings = match link.settings().await {
+            Ok(s) => s,
+            Err(e) => return self.setup_failed(repo, now, &e),
+        };
+        if settings.cloud == mode::CloudSetting::Off || !settings.branchless {
+            return Ok(());
+        }
         // Facts come from the server; they are cached so the idle tick costs no request.
         let cached = self.with_state(repo, |s| {
             s.facts
@@ -749,16 +774,25 @@ impl CloudJob {
                 .filter(|(at, _)| now - at < FACTS_TTL_SECS)
                 .map(|(_, f)| f.clone())
         });
-        let facts = match cached {
+        let mut facts = match cached {
             Some(f) => f,
             None => match link.facts().await {
                 Ok(f) => {
                     self.with_state(repo, |s| s.facts = Some((now, f.clone())));
                     f
                 }
-                Err(e) => return self.on_failure(repo, None, &link, &e, now, tally).await,
+                Err(e) => {
+                    let done = self.on_failure(repo, None, &link, &e, now, tally).await;
+                    if classify(&note(&e)) != Class::Offline {
+                        // An unwell server is not asked again every tick.
+                        let _ = self.setup_failed(repo, now, &e);
+                    }
+                    return done;
+                }
             },
         };
+        self.with_state(repo, |s| s.setup_failures = 0);
+        facts.settings = settings;
         match gate(&facts) {
             Gate::On => {}
             Gate::Off => return Ok(()),
@@ -834,6 +868,19 @@ impl CloudJob {
             }
         }
         Ok(())
+    }
+
+    /// A failure to open the repo, read its settings or ask for its facts: the repo is left
+    /// alone for the backoff of §21.3.3 (1 s doubling to 5 min), so a broken repo costs one
+    /// attempt per wait and not one per tick.
+    fn setup_failed(&self, repo: RepoKey, now: i64, text: &str) -> Result<(), String> {
+        let failures = self.with_state(repo, |s| {
+            s.setup_failures = s.setup_failures.saturating_add(1);
+            s.setup_failures
+        });
+        let wait = delay_secs(&self.policy, failures, None);
+        self.with_state(repo, |s| s.setup_until = now + wait);
+        Err(note(text))
     }
 
     /// Applies the retry policy of §21.3.3 to a failure. Returns `Err` with the text so the

@@ -11,8 +11,8 @@ pub mod authn;
 pub mod authz;
 pub mod cache_role;
 pub mod changes;
-pub mod cloud;
 pub mod classify;
+pub mod cloud;
 pub mod codeintel;
 pub mod commit_graph_markers;
 pub mod commit_graph_rpc;
@@ -20,7 +20,6 @@ pub mod config;
 pub mod expire;
 pub mod forgejo;
 pub mod gc;
-pub mod h3_listener;
 #[cfg(feature = "git-compat")]
 pub mod git_http;
 #[cfg(feature = "git-compat")]
@@ -28,6 +27,7 @@ pub mod git_push;
 #[cfg(feature = "git-compat")]
 pub mod git_view;
 pub mod graph_sql;
+pub mod h3_listener;
 pub mod history;
 pub mod http;
 pub mod idmode;
@@ -178,15 +178,35 @@ impl Authorizer for DenyAll {
 
 // ------------------------------------------------------------------------------ startup
 
+/// The `CodeIntel` settings when `[codeintel] enabled` and `cache.disk_dir` names the disk the
+/// replica keeps index segments on (`<disk_dir>/ci`).
+fn codeintel_settings(cfg: &config::ServeConfig) -> Option<codeintel::rpc::Settings> {
+    if !cfg.codeintel.enabled {
+        return None;
+    }
+    let Some(dir) = cfg.cache.disk_dir.as_ref() else {
+        tracing::warn!("[codeintel] enabled needs cache.disk_dir; CodeIntel is not served");
+        return None;
+    };
+    Some(codeintel::rpc::Settings::new(dir.join("ci")))
+}
+
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
 fn register_all(
     ext: &Extensions,
     registry: &Arc<Registry>,
     limits: &config::Limits,
     forgejo: Option<&config::ForgejoConfig>,
+    cloud_cfg: &config::CloudConfig,
+    codeintel_cfg: Option<codeintel::rpc::Settings>,
 ) {
     limits::register(ext, limits);
     update::register(ext, registry);
+    // `[cloud] max_user_refs` and `max_user_bytes` bind every user-ref push and cloud ingest,
+    // with or without Forgejo (SPEC §21.3.7).
+    if ext.pipeline.set_user_quota(cloud_cfg.user_quota()).is_err() {
+        tracing::warn!("the user quota was already set");
+    }
     landing::register(ext, registry);
     let hooks = read::register(ext, registry);
     classify::register(ext, registry, &hooks);
@@ -201,8 +221,16 @@ fn register_all(
     );
     commit_graph_rpc::register(ext, registry, &hooks);
     changes::register(ext, registry, &hooks);
-    cloud::rpc::register(ext, registry, cloud::Limits::default());
+    cloud::rpc::register(ext, registry, cloud_cfg.limits());
     watch_refs::register(ext, registry, limits);
+    // `CodeIntel` (I16) is served when `[codeintel] enabled` and the replica has a disk to keep
+    // index segments on; the embedding model is wired by a later unit, so `Semantic` answers
+    // `FAILED_PRECONDITION` until then.
+    if let Some(settings) = codeintel_cfg
+        && let Err(e) = codeintel::rpc::register(ext, registry, settings, None)
+    {
+        tracing::error!(error = %e, "CodeIntel is not served");
+    }
 }
 
 /// Builds the combined gRPC and HTTP routes for `ext`.
@@ -222,6 +250,12 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
     if let Some(h) = ext.changes.get() {
         ext.grpc.register(
             changes::rpc::ChangesService::new(h.clone(), authorizer.clone(), info.clone())
+                .into_service(),
+        );
+    }
+    if let Some(h) = ext.codeintel.get() {
+        ext.grpc.register(
+            codeintel::rpc::CodeIntelService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
@@ -302,7 +336,14 @@ pub async fn serve(
         outbox::OutboxConfig::default(),
     ));
     let ext = Extensions::new();
-    register_all(&ext, &registry, &cfg.limits, cfg.forgejo.as_ref());
+    register_all(
+        &ext,
+        &registry,
+        &cfg.limits,
+        cfg.forgejo.as_ref(),
+        &cfg.cloud,
+        codeintel_settings(&cfg),
+    );
     let warmer = projects::register(&ext, &registry);
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
         .map_err(|e| ConfigError::Invalid(e.to_string()))?;
@@ -312,13 +353,10 @@ pub async fn serve(
     // The git protocol layer (SPEC §25): the views, then the routes that serve them. With the
     // layer off, `build_routes` serves the disabled stub and `Version` omits `git.smart_http`.
     #[cfg(feature = "git-compat")]
-    let git_live = match git_view::register(&registry, &outbox, &cfg) {
-        Some(views) => {
-            git_http::register(&ext, views, registry.clone(), &metrics, &cfg);
-            true
-        }
-        None => false,
-    };
+    let git_services = git_view::register(&registry, &outbox, &cfg)
+        .map(|views| git_http::register(&ext, views, registry.clone(), &metrics, &cfg));
+    #[cfg(feature = "git-compat")]
+    let git_live = git_services.is_some();
     #[cfg(not(feature = "git-compat"))]
     if cfg.git.enabled {
         tracing::warn!("git-compat is not compiled in; git protocol disabled");
@@ -348,7 +386,11 @@ pub async fn serve(
             authorizer: authorizer.clone(),
             admission: admission.clone(),
             metrics: metrics.clone(),
-            exec: Arc::new(ssh::Unavailable),
+            // The pack commands run through the git layer, with the HTTP admission controller.
+            exec: match git_services {
+                Some(services) => Arc::new(ssh::GitSshExec::new(services, admission.clone())),
+                None => Arc::new(ssh::Unavailable),
+            },
         },
     )
     .await
@@ -401,17 +443,27 @@ pub async fn serve(
     // The same router over QUIC when `[tls]` and `http3_port` are set (U89b); held until return.
     let _h3 = h3_listener::start(&cfg, &routes)?;
     tracing::info!(listen = %cfg.listen, "asc serve listening");
+    // Purged drafts are evicted from every cache tier by the outbox (B10).
+    if let Some(cloud) = ext.cloud.get() {
+        outbox.effects().register(cloud.cache_evict_effect());
+    }
     let worker = tokio::spawn(outbox.run());
     let sweeper = turbo.spawn_sweeper();
     let actions_sweeper = actions.spawn_sweeper();
     let warming = warmer.spawn();
     let poller = mirror.as_ref().map(mirror::Mirror::spawn_poller);
     let admin_worker = repo_admin.spawn_worker();
-    #[cfg(feature = "git-ssh")]
-    let ssh_task = ssh.map(|server| tokio::spawn(server.run(std::future::pending())));
     // Expired agent refs and snapshots are deleted through the normal pipeline (SPEC §8.8).
     let expiry =
         Arc::new(expire::Expirer::new(registry.clone(), ext.pipeline.clone())).spawn_worker();
+    // Hidden cloud heads expire and stale ones are hidden (SPEC §21.2.4).
+    let cloud_expiry = Arc::new(cloud::expiry::CloudExpirer::new(
+        registry.pool().clone(),
+        cloud::expiry::Settings::default(),
+    ))
+    .spawn_worker();
+    #[cfg(feature = "git-ssh")]
+    let ssh_task = ssh.map(|server| tokio::spawn(server.run(std::future::pending())));
     // Collection deletes data, so it runs only when `[gc] enabled` is set.
     let collector = if cfg.gc.enabled {
         let service = Arc::new(gc::GcService::new(
@@ -436,6 +488,7 @@ pub async fn serve(
     actions_sweeper.abort();
     warming.abort();
     expiry.abort();
+    cloud_expiry.abort();
     if let Some(p) = poller {
         p.abort();
     }

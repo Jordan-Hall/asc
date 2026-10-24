@@ -6,8 +6,12 @@
 //! * [`versions`] holds `change_versions`: the version log with the `CHANGE_DIVERGED` lease, and
 //!   the [`GcRootSource`](asc_store::gc::GcRootSource) that keeps every published version alive.
 //!
+//! * [`overlaps`] holds `open_paths` and `Overlaps`; [`mergeable`] holds the one-row-per-head
+//!   `mergeable` table and `Mergeability` (C21).
+//! * [`interdiff`] serves `InterDiff` (C20).
+//! * [`request_merge`] serves `RequestMerge` (C50): the forge's queue, or a direct land.
 //! * [`rpc`] serves the `Changes` service (C19): `ResolveChanges`, `Stack`, `Versions`,
-//!   `SetReviewState`.
+//!   `SetReviewState`, and (C21) `Mergeability` and `Overlaps`.
 //!
 //! [`register`] is the unit's one line in `register_all`.
 
@@ -19,9 +23,17 @@ use crate::read::ReadHooks;
 use crate::registry::{Extensions, Registry};
 
 pub mod index;
+pub mod interdiff;
+pub mod mergeable;
+pub mod overlaps;
+pub mod request_merge;
 pub mod restack;
 pub mod rpc;
 pub mod versions;
+pub mod watch;
+
+#[cfg(test)]
+pub(crate) mod testkit;
 
 /// `$from, $from+1, ...` for `n` placeholders.
 pub(crate) fn placeholders(from: usize, n: usize) -> String {
@@ -50,5 +62,7 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
             registry.pool().clone(),
         )));
     rpc::register(ext, registry);
+    interdiff::register(ext, registry, hooks);
     restack::register(ext, registry, hooks);
+    request_merge::register(ext, registry);
 }

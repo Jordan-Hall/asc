@@ -203,19 +203,40 @@ struct Child {
 /// Runs `asc <args>` with the output captured.
 fn child(ctx: &Ctx, args: &[&str]) -> Result<Child> {
     let exe = std::env::current_exe().map_err(|e| fatal(format!("cannot find asc: {e}")))?;
-    let out = ctx
+    let mut run = ctx
         .child(exe)?
         .args(["-c", "advice.mergeConflict=false"])
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| fatal(format!("cannot run asc: {e}")))?;
-    let text = |b: &[u8]| String::from_utf8_lossy(&b[..b.len().min(MAX_CHILD)]).into_owned();
+    let (Some(out), Some(err)) = (run.stdout.take(), run.stderr.take()) else {
+        return Err(fatal("cannot read the output of asc"));
+    };
+    let out = std::thread::spawn(move || read_bounded(out, MAX_CHILD));
+    let err = std::thread::spawn(move || read_bounded(err, MAX_CHILD));
+    let status = run
+        .wait()
+        .map_err(|e| fatal(format!("cannot run asc: {e}")))?;
+    let text = |h: std::thread::JoinHandle<Vec<u8>>| {
+        String::from_utf8_lossy(&h.join().unwrap_or_default()).into_owned()
+    };
     Ok(Child {
-        code: out.status.code().unwrap_or(1),
-        stdout: text(&out.stdout),
-        stderr: text(&out.stderr),
+        code: status.code().unwrap_or(1),
+        stdout: text(out),
+        stderr: text(err),
     })
+}
+
+/// The first `max` bytes of `r`. The rest is read and thrown away, so the child never blocks on
+/// a full pipe and memory stays bounded.
+fn read_bounded(mut r: impl std::io::Read, max: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = r.by_ref().take(max as u64).read_to_end(&mut buf);
+    let _ = std::io::copy(&mut r, &mut std::io::sink());
+    buf
 }
 
 /// The first part of a child's error text, safe to print.
@@ -262,7 +283,13 @@ fn busy(ws: &WsCtx) -> Result<()> {
 
 /// The remote to fetch from and ask: the first trunk's remote, else `origin`, else the first.
 fn pick_remote(ctx: &Ctx) -> Option<String> {
-    let names = remote::remote_names(ctx);
+    choose_remote(remote::remote_names(ctx))
+}
+
+/// `origin`, else the first name. A name that starts with `-` could be read as an option by the
+/// child, so it is never used.
+fn choose_remote(mut names: Vec<String>) -> Option<String> {
+    names.retain(|n| !n.starts_with('-'));
     if names.iter().any(|n| n == "origin") {
         return Some("origin".to_owned());
     }
@@ -392,7 +419,10 @@ async fn fast_forward(ctx: &Ctx, a: &Args, rep: &mut Report) -> Result<()> {
         let done = if here.as_deref() == Some(t.name.as_str()) {
             child(ctx, &["merge", "--ff-only", "-q", &tip])?
         } else {
-            child(ctx, &["branch", "-f", &t.name, &tip])?
+            // Only while the branch still holds the commit it was checked against.
+            let old = l.git_id(local).await?;
+            let argv = move_args(&t.name, &tip, &old);
+            child(ctx, &argv.each_ref().map(String::as_str))?
         };
         if done.code == 0 {
             rep.fast_forwarded.push(moved);
@@ -723,7 +753,14 @@ fn collect_rows(stdout: &str, rep: &mut Report) {
 
 // ---------------------------------------------------------------- branches
 
-async fn merged_branches(ctx: &Ctx, landed: &BTreeSet<String>, rep: &mut Report) -> Result<()> {
+/// The branches that `sync -d` may delete, each with the git id it was judged merged at.
+type MergedTips = Vec<(String, String)>;
+
+async fn merged_branches(
+    ctx: &Ctx,
+    landed: &BTreeSet<String>,
+    rep: &mut Report,
+) -> Result<MergedTips> {
     let l = Local::open(ctx).await?;
     let ws = l.ws;
     let entries = ws.db.refs().list(ws.repo.key, "refs/heads/").await?;
@@ -738,7 +775,7 @@ async fn merged_branches(ctx: &Ctx, landed: &BTreeSet<String>, rep: &mut Report)
         .into_iter()
         .map(|(b, _)| b)
         .collect();
-    let mut merged = BTreeSet::new();
+    let mut merged = std::collections::BTreeMap::new();
     for e in entries {
         let RefTarget::Changeset(tip) = e.target else {
             continue;
@@ -765,13 +802,39 @@ async fn merged_branches(ctx: &Ctx, landed: &BTreeSet<String>, rep: &mut Report)
         // A branch level with the trunk is merged only when it had a remote branch that is gone
         // (a fresh branch also sits on the tip), or when its change was found landed.
         if is_merged || landed.contains(name) || (at_tip && gone) {
-            merged.insert(name.to_owned());
+            merged.insert(name.to_owned(), tip);
         } else if gone {
             rep.cannot_tell.push(name.to_owned());
         }
     }
-    rep.merged_branches = merged.into_iter().collect();
-    Ok(())
+    let mut tips = Vec::with_capacity(merged.len());
+    for (name, tip) in merged {
+        tips.push((name, l.git_id(tip).await?));
+    }
+    rep.merged_branches = tips.iter().map(|(n, _)| n.clone()).collect();
+    Ok(tips)
+}
+
+/// `asc update-ref` arguments that move `branch` to `new` only while it holds `old`.
+fn move_args(branch: &str, new: &str, old: &str) -> [String; 5] {
+    [
+        "update-ref".to_owned(),
+        "--".to_owned(),
+        format!("refs/heads/{branch}"),
+        new.to_owned(),
+        old.to_owned(),
+    ]
+}
+
+/// `asc update-ref` arguments that delete `branch` only while it holds `tip`.
+fn delete_args(branch: &str, tip: &str) -> [String; 5] {
+    [
+        "update-ref".to_owned(),
+        "-d".to_owned(),
+        "--".to_owned(),
+        format!("refs/heads/{branch}"),
+        tip.to_owned(),
+    ]
 }
 
 /// Whether the branch tracks a remote branch that no longer exists.
@@ -812,7 +875,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         && !a.dry_run
         && let Some(r) = &remote_name
     {
-        let run = child(ctx, &["fetch", "-q", "--prune", r])?;
+        let run = child(ctx, &["fetch", "-q", "--prune", "--", r])?;
         if run.code != 0 {
             return Err(CliError::Raw(
                 format!("asc: sync: fetch failed\n{}", shown(&run)),
@@ -843,11 +906,25 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         restack_all(ctx, &mut rep).await?;
     }
 
-    merged_branches(ctx, &landed.branches, &mut rep).await?;
+    let tips = merged_branches(ctx, &landed.branches, &mut rep).await?;
     if a.delete && !a.dry_run {
-        for b in std::mem::take(&mut rep.merged_branches) {
-            let run = child(ctx, &["branch", "-D", &b])?;
+        rep.merged_branches.clear();
+        for (b, tip) in tips {
+            // Another workspace may have taken the branch since it was judged merged.
+            if let Some(path) = crate::cli::switch::held_anywhere(ws, &b).await? {
+                rep.skipped.push(Skipped {
+                    what: format!("branch {b}"),
+                    reason: format!("checked out in another workspace ({path})"),
+                });
+                rep.merged_branches.push(b);
+                continue;
+            }
+            // Deleted only while it still holds the commit that was judged merged; a commit
+            // made since then makes the delete fail instead of being lost.
+            let argv = delete_args(&b, &tip);
+            let run = child(ctx, &argv.each_ref().map(String::as_str))?;
             if run.code == 0 {
+                crate::cli::switch::remove_branch_section(ctx, &b).await;
                 rep.deleted_branches.push(b);
             } else {
                 rep.skipped.push(Skipped {
@@ -866,4 +943,42 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         print!("{}", render(&rep));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_name_that_looks_like_an_option_is_never_chosen() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(choose_remote(names(&["--upload-pack=x"])), None);
+        assert_eq!(
+            choose_remote(names(&["-o", "up"])).as_deref(),
+            Some("up")
+        );
+        assert_eq!(
+            choose_remote(names(&["--x", "origin"])).as_deref(),
+            Some("origin")
+        );
+        assert_eq!(choose_remote(names(&["b", "a"])).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn the_trunk_move_and_branch_delete_name_the_value_they_were_checked_against() {
+        let m = move_args("master", "new", "old");
+        assert_eq!(m, ["update-ref", "--", "refs/heads/master", "new", "old"]);
+        let d = delete_args("topic", "tip");
+        assert_eq!(d, ["update-ref", "-d", "--", "refs/heads/topic", "tip"]);
+    }
+
+    #[test]
+    fn child_output_is_bounded_and_the_rest_drained() {
+        let data = vec![b'x'; 100];
+        assert_eq!(read_bounded(&data[..], 10).len(), 10);
+        assert_eq!(read_bounded(&data[..], 1000).len(), 100);
+        let mut r = &data[..];
+        let _ = read_bounded(&mut r, 10);
+        assert!(r.is_empty(), "the remainder must be drained");
+    }
 }

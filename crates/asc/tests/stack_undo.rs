@@ -379,3 +379,54 @@ fn unknown_ops_are_refused() {
     assert_eq!(r.asc(&["op", "show", "zz"]).code, 128);
     assert_eq!(r.asc(&["op", "restore", "@"]).code, 128);
 }
+
+#[test]
+fn a_vetoed_ref_swap_leaves_the_work_tree_alone() {
+    let r = Repo::new();
+    r.commit("b.txt", "two\n", "two");
+    let two = r.sha("HEAD");
+    // A hook that refuses the swap after the checks passed stands in for a racing writer.
+    let hooks = r.root.join(".git").join("hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join("reference-transaction");
+    fs::write(
+        &hook,
+        "#!/bin/sh\ncat > /dev/null\nif [ \"$1\" = prepared ]; then exit 1; fi\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let o = r.asc(&["undo"]);
+    assert_ne!(o.code, 0, "{}", o.stdout);
+    assert_eq!(r.sha("HEAD"), two);
+    assert_eq!(r.read("b.txt"), "two\n", "the files stay as they were");
+    assert_eq!(r.status(), "");
+}
+
+#[test]
+fn changes_that_no_snapshot_keeps_are_not_wiped_without_force() {
+    let r = Repo::new();
+    r.commit("b.txt", "two\n", "two");
+    r.ok(&["config", "asc.opLog", "false"]);
+    r.write("a.txt", "dirty\n");
+    let o = r.asc(&["undo"]);
+    assert_eq!(o.code, 128, "{}", o.stderr);
+    assert!(o.stderr.contains("cannot be saved"), "{}", o.stderr);
+    assert_eq!(r.read("a.txt"), "dirty\n");
+    assert!(r.root.join("b.txt").exists());
+    assert_eq!(r.asc(&["undo", "-f"]).code, 0);
+    assert!(!r.root.join("b.txt").exists());
+}
+
+#[test]
+fn op_log_clamps_a_huge_limit() {
+    let r = Repo::new();
+    r.commit("b.txt", "2\n", "two");
+    let v: Value =
+        serde_json::from_str(&r.ok(&["op", "log", "-n", "18446744073709551615", "--json"]))
+            .unwrap();
+    assert!(v["ops"].as_array().unwrap().len() <= 1_000);
+}

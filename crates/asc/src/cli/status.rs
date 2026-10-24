@@ -33,6 +33,7 @@ use prost_reflect::{DescriptorPool, DynamicMessage, Value};
 
 use super::common::{CliEngine, CliError, Ctx, Result, WsCtx};
 use super::json::JsonLines;
+use super::rebase_todo::RebaseInfo;
 use crate::msg::Msg;
 use crate::native::NativeSpec;
 
@@ -456,6 +457,7 @@ enum State {
     Rebase {
         branch: Option<String>,
         onto: Option<String>,
+        info: Option<Box<RebaseInfo>>,
     },
     Bisect(Option<String>),
 }
@@ -1173,7 +1175,11 @@ fn in_progress(git_dir: &Path) -> Option<State> {
         let branch = read_trim(git_dir.join(dir).join("head-name"))
             .map(|b| b.strip_prefix("refs/heads/").unwrap_or(&b).to_owned());
         let onto = read_trim(git_dir.join(dir).join("onto")).map(|o| short_oid(&o));
-        return Some(State::Rebase { branch, onto });
+        // A rebase on the sequencer lists what is done and what is left.
+        let info = super::rebase_todo::read_info(git_dir, 7)
+            .filter(|i| i.interactive)
+            .map(Box::new);
+        return Some(State::Rebase { branch, onto, info });
     }
     if git_dir.join("MERGE_HEAD").exists() {
         return Some(State::Merge);
@@ -1333,7 +1339,10 @@ fn state_text(s: &State, unmerged: bool, hints: bool) -> String {
             ));
             format!("You are currently {noun} commit {commit}.\n")
         }
-        State::Rebase { branch, onto } => {
+        State::Rebase {
+            info: Some(info), ..
+        } => info.block(unmerged, hints, "git"),
+        State::Rebase { branch, onto, .. } => {
             if unmerged {
                 hint("fix conflicts and then run \"git rebase --continue\"");
                 hint("use \"git rebase --skip\" to skip this patch");
@@ -1386,14 +1395,19 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     let o = p.o;
     match &r.branch.head {
         HeadKind::Branch(name) => p.line(&format!("On branch {name}")),
-        HeadKind::Detached => {
-            let at = r
-                .branch
-                .oid
-                .map(|o| short_oid(&o.to_string()))
-                .unwrap_or_default();
-            p.line(&format!("HEAD detached at {at}"));
-        }
+        HeadKind::Detached => match &r.state {
+            Some(State::Rebase {
+                info: Some(info), ..
+            }) => p.line(&info.head_line()),
+            _ => {
+                let at = r
+                    .branch
+                    .oid
+                    .map(|o| short_oid(&o.to_string()))
+                    .unwrap_or_default();
+                p.line(&format!("HEAD detached at {at}"));
+            }
+        },
     }
     if let Some(up) = &r.branch.upstream {
         let text = p.named(&tracking_text(up, o.hints));

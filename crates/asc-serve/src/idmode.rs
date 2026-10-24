@@ -854,4 +854,44 @@ mod tests {
             assert_eq!(err.code(), tonic::Code::NotFound);
         }
     }
+
+    /// A revision reaches the engine's resolver only through [`IdCodec::resolve`]: every other
+    /// resolver in the crate answers for every user's refs. Same rule as `clippy.toml`.
+    #[test]
+    fn nothing_but_the_codec_resolves_a_client_revision() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        walk(&root.join("src"), &mut files);
+        walk(&root.join("tests"), &mut files);
+        let mut offenders = Vec::new();
+        for file in files {
+            if file.file_name().is_some_and(|n| n == "idmode.rs") {
+                continue;
+            }
+            let text: String = std::fs::read_to_string(&file)
+                .unwrap()
+                .split_whitespace()
+                .collect();
+            for needle in [
+                ".rev_in(",
+                ".resolve_visible(",
+                ".resolve(std::slice::from_ref(",
+            ] {
+                if text.contains(needle) {
+                    offenders.push(format!("{} uses {needle}", file.display()));
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:#?}");
+    }
 }

@@ -531,7 +531,10 @@ pub struct Extensions {
     pub pipeline: Arc<crate::update::PipelineHooks>,
     /// The `Changes` service handler (C19); `build_routes` serves it behind the authorizer.
     pub changes: crate::changes::rpc::ChangesSlot,
+    /// The `Cloud` service handler (B09); `build_routes` serves it behind the authorizer.
     pub cloud: crate::cloud::rpc::CloudSlot,
+    /// The `CodeIntel` service handler (I16); `build_routes` serves it behind the authorizer.
+    pub codeintel: crate::codeintel::rpc::CodeIntelSlot,
 }
 
 impl Extensions {
@@ -546,6 +549,7 @@ impl Extensions {
             pipeline: Arc::default(),
             changes: Default::default(),
             cloud: Default::default(),
+            codeintel: Default::default(),
         }
     }
 }

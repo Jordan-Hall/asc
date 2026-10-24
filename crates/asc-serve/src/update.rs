@@ -5,7 +5,7 @@
 //! shared GC lock, which is held until the step-8 transaction commits (SPEC §3.6). LAND mode is
 //! the [`crate::land`] unit.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,7 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tonic::Status;
 use uuid::Uuid;
 
+use crate::cloud::quota::{self, UserQuota};
 use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
@@ -95,35 +96,6 @@ pub trait PushHooks: Send + Sync {
     /// from authz): a land that would rewrite a signed stack is then refused (SPEC §8.5 step 4).
     async fn require_signed(&self, _ctx: &CallCtx, _branch: &str) -> bool {
         false
-    }
-
-    /// `[cloud] max_user_refs`: user refs per user per repository (`USER_REFS_LIMIT`).
-    fn max_user_refs(&self) -> usize {
-        crate::refauthz::DEFAULT_MAX_USER_REFS
-    }
-
-    /// Quota for a user-ref push, asked BEFORE anything is ingested (SPEC §21.3.7): an owner who
-    /// is already over quota is refused before any object is written for the push.
-    async fn check_user_quota(
-        &self,
-        _ctx: &CallCtx,
-        _owner: i64,
-    ) -> Result<(), crate::refauthz::QuotaDenied> {
-        Ok(())
-    }
-
-    /// Charges a user-ref push to the owner's quota (SPEC §21.3.7), after the ingest: user refs
-    /// skip pre-receive, so this is their size policy. `new_changesets` is how many changesets the
-    /// push actually added to the repository (not how many it names: changesets the repository
-    /// already held cost nothing). An implementation records the usage even when it refuses, so a
-    /// retry, which then adds nothing, is still refused by [`PushHooks::check_user_quota`].
-    async fn charge_user_refs(
-        &self,
-        _ctx: &CallCtx,
-        _owner: i64,
-        _new_changesets: usize,
-    ) -> Result<(), crate::refauthz::QuotaDenied> {
-        Ok(())
     }
 
     /// Effects the step-8 transaction queues in the outbox, in order.
@@ -197,6 +169,7 @@ impl GcLock {
 pub struct PipelineHooks {
     observer: OnceLock<Arc<dyn IngestObserver>>,
     push: OnceLock<Arc<dyn PushHooks>>,
+    quota: OnceLock<UserQuota>,
     overlap: OnceLock<Arc<dyn OverlapPolicy>>,
     gc: GcLock,
     gc_roots: crate::gc::GcRoots,
@@ -211,6 +184,18 @@ impl PipelineHooks {
     /// Installs the Forgejo hooks (U44); fails (returning them) when some are set.
     pub fn set_push_hooks(&self, h: Arc<dyn PushHooks>) -> Result<(), Arc<dyn PushHooks>> {
         self.push.set(h)
+    }
+
+    /// Installs the per-user quota (`[cloud] max_user_refs` and `max_user_bytes`, SPEC §21.3.7);
+    /// fails (returning it) when one is set. Without one the SPEC defaults apply: user-ref pushes
+    /// are never unmetered.
+    pub fn set_user_quota(&self, q: UserQuota) -> Result<(), UserQuota> {
+        self.quota.set(q)
+    }
+
+    /// The quota every user-ref push is checked against and charged to.
+    pub fn user_quota(&self) -> &UserQuota {
+        self.quota.get().unwrap_or_else(|| UserQuota::defaults())
     }
 
     /// Installs the land overlap policy (U68 content merge); fails (returning it) when one is set.
@@ -276,6 +261,7 @@ pub(crate) fn ingest_status(e: IngestError) -> Status {
             rpc(RpcError::PathPolicy(info(vec![path])))
         }
         IngestError::TooLarge => Status::resource_exhausted(e.to_string()),
+        IngestError::QuotaExceeded(what) => refauthz::quota_status(&refauthz::QuotaDenied(what)),
         IngestError::Stale { gone: true } => Status::not_found("no such repository"),
         IngestError::Stale { gone: false } => {
             Status::failed_precondition("the repository was renamed or replaced; retry")
@@ -570,14 +556,21 @@ impl ServerRefs {
 
         // The per-user ref cap (SPEC §21.3.2) is enforced once, inside the step-8 transaction
         // under the per-(repo, owner) lock (`refpolicy::check_user_ref_writes`).
-        // Quota (SPEC §21.3.7), part 1: an owner already over quota is refused before ingest
-        // writes anything. A delete-only push is never refused here, so an owner can shrink.
+        // Quota (SPEC §21.3.7), part 1: an owner with no bytes left is refused before ingest
+        // writes anything, and a push made only of user refs may add no more than what is left.
+        // A delete-only push is never refused here, so an owner can shrink. The charge itself is
+        // taken in the step-8 transaction (`commit_as`), for what the user refs newly reach.
         let quota_owner = user_owner.filter(|_| planned.iter().any(|p| p.user && p.new.is_some()));
+        let mut budget = None;
         if let Some(owner) = quota_owner {
-            hooks
-                .check_user_quota(ctx, owner)
-                .await
-                .map_err(|d| refauthz::quota_status(&d))?;
+            let left = self
+                .hooks
+                .user_quota()
+                .remaining(self.registry.pool(), entry.ns, owner)
+                .await?;
+            if planned.iter().all(|p| p.user || p.new.is_none()) {
+                budget = Some(left);
+            }
         }
 
         if pushed.is_some() && rewrites.is_some() {
@@ -595,22 +588,22 @@ impl ServerRefs {
         })?;
         let targets: Vec<RefTarget> = planned.iter().filter_map(|p| p.new).collect();
         let windows_safe = self.windows_safe(&entry).await?;
-        let added = Ingestor::new(
+        // The ingesting principal is recorded for every changeset added, so a closure left
+        // dangling by a refused push is charged to whoever later names it from a user ref.
+        let mut ingestor = Ingestor::new(
             self.registry.pool(),
             self.registry.refs(),
             &entry,
             windows_safe,
         )
-        .ingest(&targets, self.hooks.observer())
-        .await
-        .map_err(ingest_status)?;
-        // Quota, part 2 (SPEC §21.3.7): charge what the ingest actually added.
-        if let (Some(owner), false) = (quota_owner, added.is_empty()) {
-            hooks
-                .charge_user_refs(ctx, owner, added.len())
-                .await
-                .map_err(|d| refauthz::quota_status(&d))?;
+        .by(user_owner);
+        if let Some(left) = budget {
+            ingestor = ingestor.with_budget(left);
         }
+        ingestor
+            .ingest(&targets, self.hooks.observer())
+            .await
+            .map_err(ingest_status)?;
 
         let graph = Graph::new(SqlGraph::new(
             self.registry.pool().clone(),
@@ -854,6 +847,38 @@ impl ServerRefs {
         .await
     }
 
+    /// Marks what shared refs reach as shared, then charges each user-ref owner for the changesets
+    /// the owner's refs newly make reachable (`UserQuota::claim`). Reads no object but tags.
+    async fn settle_quota(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+        entry: &RepoEntry,
+        txn: &RefTxn,
+        quota: &UserQuota,
+    ) -> Result<(), Status> {
+        let mut shared = Vec::new();
+        let mut users: BTreeMap<i64, Vec<RefTarget>> = BTreeMap::new();
+        for u in &txn.updates {
+            let Some(new) = u.new else { continue };
+            let name = std::str::from_utf8(u.name.as_bytes()).unwrap_or_default();
+            match refpolicy::parse_user_ref(name) {
+                Some((owner, _)) if name.starts_with(refpolicy::USER_NS) => {
+                    users.entry(owner).or_default().push(new);
+                }
+                _ => shared.push(new),
+            }
+        }
+        if !shared.is_empty() {
+            let roots = quota::roots_of(&*entry.objects, &shared).await?;
+            quota::mark_shared(&mut *tx, entry.ns, &roots).await?;
+        }
+        for (owner, targets) in users {
+            let roots = quota::roots_of(&*entry.objects, &targets).await?;
+            quota.claim(&mut *tx, entry.ns, owner, &roots).await?;
+        }
+        Ok(())
+    }
+
     async fn commit_as(
         &self,
         entry: &RepoEntry,
@@ -879,8 +904,13 @@ impl ServerRefs {
         }
         // User refs have no pre-receive, so the owner and the cap are checked here, in the same
         // transaction as the write (SPEC §21.5.1).
-        let max_user_refs = self.hooks.push_hooks().max_user_refs();
-        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer, max_user_refs).await?;
+        let quota = self.hooks.user_quota();
+        refpolicy::check_user_ref_writes(&mut tx, entry.key, txn, writer, quota.max_user_refs())
+            .await?;
+        // Quota (SPEC §21.3.7), part 2, in this transaction: a shared ref settles its closure
+        // (shared history costs a user nothing), then each owner is charged what their refs newly
+        // make reachable. A refusal, or any later failure, rolls the charge back with the refs.
+        self.settle_quota(&mut tx, entry, txn, quota).await?;
         if let Some(land) = land {
             land.apply(&mut tx, entry, txn).await?;
         }

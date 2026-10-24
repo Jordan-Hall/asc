@@ -799,6 +799,51 @@ pub struct CompositionGrant {
     pub child: String,
 }
 
+/// `[cloud]` (SPEC §21.3.2, §21.3.7): the per-user caps of user-ref pushes and cloud ingest.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CloudConfig {
+    /// User refs one user may hold in one repository (`USER_REFS_LIMIT`).
+    pub max_user_refs: usize,
+    /// Bytes one user may have charged in one repository (`QUOTA_EXCEEDED`).
+    pub max_user_bytes: ByteSize,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        let limits = crate::cloud::Limits::default();
+        Self {
+            max_user_refs: crate::refauthz::DEFAULT_MAX_USER_REFS,
+            max_user_bytes: ByteSize(limits.max_user_bytes),
+        }
+    }
+}
+
+impl CloudConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.max_user_refs == 0 || self.max_user_bytes.0 == 0 {
+            return invalid("cloud.max_user_refs and cloud.max_user_bytes must be positive");
+        }
+        Ok(())
+    }
+
+    /// The caps as the quota ledger takes them.
+    pub fn limits(&self) -> crate::cloud::Limits {
+        crate::cloud::Limits {
+            max_user_bytes: self.max_user_bytes.0,
+            ..crate::cloud::Limits::default()
+        }
+    }
+
+    /// The quota every user-ref push and cloud ingest is checked against and charged to.
+    pub fn user_quota(&self) -> crate::cloud::quota::UserQuota {
+        crate::cloud::quota::UserQuota::new(
+            crate::cloud::quota::Quota::local(self.limits()),
+            self.max_user_refs,
+        )
+    }
+}
+
 /// The whole `asc-serve.toml`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -832,6 +877,8 @@ pub struct ServeConfig {
     /// `[ssh]` (SPEC §25.11); honoured only with the feature `git-ssh`.
     pub ssh: SshConfig,
     pub gc: crate::gc::GcSettings,
+    /// `[cloud]` (SPEC §21.3.7): `max_user_refs` and `max_user_bytes`.
+    pub cloud: CloudConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -858,6 +905,7 @@ impl Default for ServeConfig {
             git: GitConfig::default(),
             ssh: SshConfig::default(),
             gc: crate::gc::GcSettings::default(),
+            cloud: CloudConfig::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -955,6 +1003,7 @@ impl ServeConfig {
         }
         self.ssh.validate()?;
         self.limits.validate()?;
+        self.cloud.validate()?;
         self.validate_grants()
     }
 

@@ -21,8 +21,8 @@ asc-graph = { path = "../crates/asc-graph" }
 asc-engine = { path = "../crates/asc-engine" }
 asc-store = { path = "../crates/asc-store" }
 asc-git = { path = "../crates/asc-git" }
-asc-rpc = { path = "../crates/asc-rpc" }
-asc-serve = { path = "../crates/asc-serve" }
+# No `http3`: the fuzz bodies need the descriptor set, JSON codec and name types, not QUIC.
+asc-rpc = { path = "../crates/asc-rpc", default-features = false }
 libfuzzer-sys = "0.4.13"
 prost-reflect = "0.16.5"
 serde_json = "1.0.154"

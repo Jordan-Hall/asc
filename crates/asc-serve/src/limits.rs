@@ -329,7 +329,7 @@ pub enum Caller {
 }
 
 impl Caller {
-    fn principal(id: &str) -> Self {
+    pub(crate) fn principal(id: &str) -> Self {
         Self::Verified(*blake3::hash(id.as_bytes()).as_bytes())
     }
 }
@@ -1027,6 +1027,26 @@ impl Admission {
         Ok(permit)
     }
 
+    /// Admits one git pack command that arrives on a stream transport (SSH, SPEC §25.11.7) from
+    /// `principal`, a principal the authorizer has recognised. A fetch is the `git` class: one
+    /// of `limits.git`'s per-principal and per-replica fetch slots, held until the permit is
+    /// dropped. A push is a `cheap` call here; its own caps are the push slots (U82). The meter
+    /// charges the command's bytes, in and out, to the principal's `objects` bucket as they move.
+    pub(crate) fn admit_pack(
+        &self,
+        principal: &str,
+        fetch: bool,
+    ) -> Result<(Permit, PackMeter), Status> {
+        let who = Caller::principal(principal);
+        let class = if fetch { Class::Git } else { Class::Cheap };
+        let permit = self.admit(who, class, 1)?;
+        let meter = PackMeter {
+            limiter: self.objects.clone(),
+            who,
+        };
+        Ok((permit, meter))
+    }
+
     /// The meter for the body bytes of an `objects` call, or `None` for any other call.
     fn meter(&self, who: Caller, class: Class) -> Option<Meter> {
         (matches!(class, Class::Objects | Class::Git) && who != Caller::Service).then(|| Meter {
@@ -1083,6 +1103,22 @@ pub struct AdmissionService<S> {
 struct Meter {
     limiter: Arc<Tiered>,
     who: Caller,
+}
+
+/// Charges the bytes of one git pack command on a stream transport to its principal.
+#[derive(Clone)]
+pub(crate) struct PackMeter {
+    limiter: Arc<Tiered>,
+    who: Caller,
+}
+
+impl PackMeter {
+    /// Takes `bytes` from the principal's `objects` bucket; the error is the status to give back.
+    pub(crate) fn charge(&self, bytes: u64) -> Result<(), Status> {
+        self.limiter
+            .charge_at(&self.who, bytes, Instant::now())
+            .map_err(rate_limited)
+    }
 }
 
 type BodyError = Box<dyn std::error::Error + Send + Sync>;
