@@ -1099,7 +1099,13 @@ impl GitHttp {
                     let hidden = p.session.take_hidden();
                     handle.spawn(async move {
                         match views.ensure(&entry, registry.refs()).await {
-                            Ok(crate::git_view::ViewAnswer::Ready(_)) => drop(hidden),
+                            Ok(crate::git_view::ViewAnswer::Ready(_)) => {
+                                // The run may have started before the push wrote its refs
+                                // (coalesced); only names the view lost are shown again.
+                                if let Some(h) = hidden {
+                                    h.release_if_gone();
+                                }
+                            }
                             other => {
                                 if let Err(e) = other {
                                     tracing::warn!(repo = %entry.name, error = %e, "syncing the git view after a push");
