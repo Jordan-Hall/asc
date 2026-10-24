@@ -6,6 +6,9 @@ use crate::import::{GitCommit, Importer, history};
 use crate::model::{Bugs, Cs, Fail, MIN_AGE_MS, MIRROR, R, REPO, SimKey, rerr, rn, viol};
 use crate::world::{Phase, Role, World};
 
+mod cloud;
+pub use cloud::{CloudBug, CloudReport, run_cloud};
+
 use asc_core::id::RefTarget;
 use asc_store::refs::Refs;
 
@@ -19,10 +22,11 @@ pub enum Scenario {
     VersionSkew,
     CacheStampede,
     ImportCrash,
+    Cloud,
 }
 
 impl Scenario {
-    pub const ALL: [Scenario; 7] = [
+    pub const ALL: [Scenario; 8] = [
         Self::ConcurrentLand,
         Self::WebhookStorm,
         Self::GcTraffic,
@@ -30,6 +34,7 @@ impl Scenario {
         Self::VersionSkew,
         Self::CacheStampede,
         Self::ImportCrash,
+        Self::Cloud,
     ];
 
     pub fn name(self) -> &'static str {
@@ -41,6 +46,7 @@ impl Scenario {
             Self::VersionSkew => "version_skew",
             Self::CacheStampede => "cache_stampede",
             Self::ImportCrash => "import_crash",
+            Self::Cloud => "cloud",
         }
     }
 
@@ -242,6 +248,7 @@ pub async fn run(scenario: Scenario, seed: u64, bugs: Bugs) -> Result<Report, (u
             bugs,
         ),
         Scenario::ImportCrash => World::new(seed, &[Role::Primary, Role::Primary], flaky(), bugs),
+        Scenario::Cloud => World::new(seed, &[Role::Primary], FaultPlan::default(), bugs),
     };
     let res = match scenario {
         Scenario::ConcurrentLand => concurrent_land(&mut w).await,
@@ -251,6 +258,7 @@ pub async fn run(scenario: Scenario, seed: u64, bugs: Bugs) -> Result<Report, (u
         Scenario::VersionSkew => version_skew(&mut w).await,
         Scenario::CacheStampede => cache_stampede(&mut w).await,
         Scenario::ImportCrash => import_crash(&mut w, bugs).await,
+        Scenario::Cloud => cloud::cloud(&mut w).await,
     };
     match res {
         Ok(()) => Ok(w.report(scenario)),
