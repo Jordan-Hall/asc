@@ -127,6 +127,7 @@ scenarios! {
     rev_parse_unknown_option = "rev-parse-unknown-option",
     branchless_push_tag = "branchless-push-tag",
     branchless_push_all = "branchless-push-all",
+    branchless_push = "branchless-push",
 }
 
 #[test]
