@@ -5,6 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./relay": "./src/transport/relay.ts",
+    "./allowlist.json": "./src/transport/allowlist.json",
+    "./forgejo": "./src/forgejo/index.ts",
     "./bridge": "./src/gen/asc/v1/bridge_pb.ts",
     "./changes": "./src/gen/asc/v1/changes_pb.ts",
     "./cloud": "./src/gen/asc/v1/cloud_pb.ts",
@@ -17,14 +20,18 @@
   "scripts": {
     "codegen": "cd ../.. && buf generate proto --template proto/buf.gen.ts.yaml",
     "build": "bun build src/index.ts --target=node --format=esm --minify --outdir dist",
+    "gen-allowlist": "bun scripts/gen-allowlist.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "bun test"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "2"
+    "@bufbuild/protobuf": "2",
+    "openapi-fetch": "0.14.0"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "2",
-    "@types/bun": "^1.4.4"
+    "@types/bun": "^1.4.4",
+    "openapi-typescript": "7.8.0",
+    "typescript": "5.9.2"
   }
 }
