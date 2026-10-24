@@ -199,6 +199,16 @@ impl ImportPush {
         // classifies the same names again; this pass finds the stored value for the CAS.
         let policy = crate::refpolicy::RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
         let owner = crate::refpolicy::owner_of(&ctx.principal);
+        // A push whose answer was lost (the git child was killed or the client went away after
+        // asc committed) is sent again under a new op id: it is the same push when every ref
+        // already holds what the commands ask for because this principal's push stored it.
+        if let Some(via) = opts.via
+            && let Some(results) = self
+                .already_applied(&entry, ctx, via, &map, &policy, owner, commands)
+                .await?
+        {
+            return Ok(wire::ImportGitPushResponse { results });
+        }
         let mut expects = Vec::with_capacity(commands.len());
         let mut quota_owner = None;
         // Whether every ref the push writes is a user ref, so that what it imports is the
@@ -300,6 +310,67 @@ impl ImportPush {
             }),
             Err(s) => Err(fetch_first(s)),
         }
+    }
+
+    /// The results of `commands` when each of them was already applied by an earlier push of the
+    /// same principal through `via`: its ref holds the requested value (or is absent for a
+    /// deletion) and the newest ref log row of the ref is that principal's `via` update to it.
+    /// `None` when any command was not, so that the push runs as a new one. Nothing is written,
+    /// and no hook runs again.
+    #[allow(clippy::too_many_arguments)]
+    async fn already_applied(
+        &self,
+        entry: &RepoEntry,
+        ctx: &CallCtx,
+        via: &str,
+        map: &PushMap,
+        policy: &crate::refpolicy::RepoPolicy,
+        owner: Option<i64>,
+        commands: &[PushCommand],
+    ) -> Result<Option<Vec<wire::RefResult>>, Status> {
+        let mut results = Vec::with_capacity(commands.len());
+        for c in commands {
+            let class = policy.classify(owner, &c.name)?;
+            let name = RefName::new(class.stored(&c.name).as_bytes())
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+            let refs = self.registry.refs();
+            let current = refs
+                .get(entry.key, &name)
+                .await
+                .map_err(|e| internal("refs", &e))?
+                .map(|e| e.target);
+            let wanted = match c.new {
+                Some(oid) => match map.target_of(oid).await? {
+                    Some(t) => Some(t),
+                    None => return Ok(None),
+                },
+                None => None,
+            };
+            if wanted != current {
+                return Ok(None);
+            }
+            let log = refs
+                .log(entry.key, &name, 1)
+                .await
+                .map_err(|e| internal("ref log", &e))?;
+            let by_this_push = log.first().is_some_and(|row| {
+                row.new == current && row.actor.id == ctx.principal.id && row.actor.via == via
+            });
+            if !by_this_push {
+                return Ok(None);
+            }
+            let old = match c.old {
+                Some(oid) => map.target_of(oid).await?,
+                None => None,
+            };
+            results.push(wire::RefResult {
+                name: c.name.clone(),
+                old: old.as_ref().map(wire::RefTarget::from),
+                new: current.as_ref().map(wire::RefTarget::from),
+                user: class.is_user(),
+            });
+        }
+        Ok(Some(results))
     }
 
     /// The target the ref held when the pusher read it must equal `command.old`; returns the
@@ -1576,6 +1647,97 @@ mod tests {
         // Another op id is a new push and does conflict.
         let s = f.push(&commands).await.unwrap_err();
         assert_eq!(code(&s), "REF_CONFLICT");
+    }
+
+    #[tokio::test]
+    async fn a_push_sent_again_after_its_answer_was_lost_is_answered_and_changes_nothing() {
+        let f = fx().await;
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let c2 = f.forge.commit(Some(&c1), &[("a", "2")]);
+        let alice = ctx_of("alice");
+        let opts = ImportOptions {
+            via: Some("git-push"),
+            ..ImportOptions::default()
+        };
+        let create = [cmd("refs/heads/topic", None, Some(&c1))];
+        let first = f.push_as(&alice, &create, &opts).await.unwrap();
+        let (log, outbox) = (
+            f.count("SELECT COUNT(*) FROM ref_log").await,
+            f.outbox().await,
+        );
+
+        // The client never saw the answer and pushes again: a new session, so a new op id.
+        let again = f
+            .push_as(&ctx_of("alice"), &create, &opts)
+            .await
+            .expect("the same push is answered, not refused as stale");
+        assert_eq!(first, again);
+        assert_eq!(f.count("SELECT COUNT(*) FROM ref_log").await, log);
+        assert_eq!(f.outbox().await, outbox, "no second post-receive event");
+
+        // It is the same push only for the principal whose push stored it, and only through the
+        // git push route.
+        let s = f.push_as(&ctx_of("bob"), &create, &opts).await.unwrap_err();
+        assert_eq!(code(&s), "REF_CONFLICT");
+        let s = f
+            .push_as(&ctx_of("alice"), &create, &ImportOptions::default())
+            .await
+            .unwrap_err();
+        assert_eq!(code(&s), "REF_CONFLICT");
+
+        // Once the ref has moved on, the old push is stale again.
+        f.push_as(
+            &ctx_of("alice"),
+            &[cmd("refs/heads/topic", Some(&c1), Some(&c2))],
+            &opts,
+        )
+        .await
+        .unwrap();
+        let s = f
+            .push_as(&ctx_of("alice"), &create, &opts)
+            .await
+            .unwrap_err();
+        assert_eq!(code(&s), "REF_CONFLICT");
+
+        // A deletion sent again is answered too.
+        let delete = [cmd("refs/heads/topic", Some(&c2), None)];
+        let first = f.push_as(&ctx_of("alice"), &delete, &opts).await.unwrap();
+        let again = f.push_as(&ctx_of("alice"), &delete, &opts).await.unwrap();
+        assert_eq!(first, again);
+        assert!(f.target("refs/heads/topic").await.is_none());
+        assert_eq!(f.count("SELECT COUNT(*) FROM ref_log").await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_user_ref_push_sent_again_is_answered_as_a_user_ref() {
+        // A user ref is not advertised, so the client never learns that its push landed and
+        // sends the same create again: the case the retry rule exists for.
+        let f = fx().await;
+        sqlx::query("UPDATE repos SET branchless = TRUE")
+            .execute(f.registry.pool())
+            .await
+            .unwrap();
+        let c1 = f.forge.commit(None, &[("a", "1")]);
+        let opts = ImportOptions {
+            via: Some("git-push"),
+            ..ImportOptions::default()
+        };
+        let create = [cmd("refs/heads/feat", None, Some(&c1))];
+        let first = f
+            .push_as(&ctx_of("42:alice"), &create, &opts)
+            .await
+            .unwrap();
+        assert!(first.results[0].user, "{first:?}");
+        let again = f
+            .push_as(&ctx_of("42:alice"), &create, &opts)
+            .await
+            .expect("the same create is answered, not refused as stale");
+        assert_eq!(first, again);
+        assert_eq!(f.count("SELECT COUNT(*) FROM ref_log").await, 1);
+        // Another user's identical push is a push of their own: their branch, their ref.
+        let other = f.push_as(&ctx_of("43:bob"), &create, &opts).await.unwrap();
+        assert!(other.results[0].user);
+        assert_eq!(f.count("SELECT COUNT(*) FROM ref_log").await, 2);
     }
 
     #[tokio::test]

@@ -21,6 +21,13 @@
 //! 4. the answer goes back to the hook, which prints a refusal on stderr (git relays it as
 //!    `remote:` lines and reports `pre-receive hook declined`) and exits 0 or 1.
 //!
+//! asc commits in step 3, before git applies the commands. If git then fails or its child is killed
+//! (a deadline, the idle watchdog, a client that went away), asc's refs are ahead of the client's
+//! belief: the view is synced from asc's refs after the child ends, so the next fetch shows the
+//! push, and a client that sends it again is answered from the ref log by
+//! [`ImportPush::import_git_push`] (same principal, same values, nothing written twice). This
+//! matters most for a user ref, which is never advertised, so the client cannot see that it landed.
+//!
 //! A hook outcome is all-or-nothing for the whole push. Every limit here is a named constant or a
 //! `[limits.git]` value; every refusal text is built from fixed words (a ref name or path from the
 //! client is made printable first), never from an internal error.
