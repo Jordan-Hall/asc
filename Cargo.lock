@@ -961,6 +961,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "asc-core",
+ "asc-engine",
  "asc-serve",
  "asc-store",
  "futures",
