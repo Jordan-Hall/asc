@@ -14,6 +14,8 @@ use asc_git::realgit::RealGit;
 use asc_rpc::IdMode;
 use asc_rpc::auth::Principal;
 use asc_rpc::server::{CallCtx, RefsHandler, RepoName, status_rpc_error, wire};
+use asc_serve::cloud::Limits;
+use asc_serve::cloud::quota::{CHANGESET_BASE_COST, Quota, UserQuota};
 use asc_serve::import_push::{ImportOptions, ImportPush, PushCommand, Quarantine};
 use asc_serve::migrate;
 use asc_serve::registry::{NewRepo, Registry, RepoEntry};
@@ -420,75 +422,45 @@ async fn the_1001st_user_ref_gets_user_refs_limit_and_other_users_are_unaffected
     .unwrap();
 }
 
-struct Quota {
-    refuse: bool,
-    /// Refuse in `check_user_quota`, before anything is ingested.
-    over_quota: bool,
-    max: usize,
-    charged: AtomicUsize,
-    charges: AtomicUsize,
-    checks: AtomicUsize,
-}
-
-impl Quota {
-    fn build(refuse: bool, over_quota: bool, max: usize) -> Arc<Self> {
-        Arc::new(Self {
-            refuse,
-            over_quota,
-            max,
-            charged: AtomicUsize::new(0),
-            charges: AtomicUsize::new(0),
-            checks: AtomicUsize::new(0),
-        })
-    }
-
-    /// A cap of 2 user refs; `refuse` makes the charge fail.
-    fn new(refuse: bool) -> Arc<Self> {
-        Self::build(refuse, false, 2)
-    }
-}
-
-#[async_trait]
-impl PushHooks for Quota {
-    fn max_user_refs(&self) -> usize {
-        self.max
-    }
-
-    async fn check_user_quota(
-        &self,
-        _ctx: &CallCtx,
-        owner: i64,
-    ) -> Result<(), asc_serve::refauthz::QuotaDenied> {
-        assert_eq!(owner, 42);
-        self.checks.fetch_add(1, Ordering::SeqCst);
-        if self.over_quota {
-            Err(asc_serve::refauthz::QuotaDenied("already over quota".into()))
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn charge_user_refs(
-        &self,
-        _ctx: &CallCtx,
-        owner: i64,
-        new_changesets: usize,
-    ) -> Result<(), asc_serve::refauthz::QuotaDenied> {
-        assert_eq!(owner, 42);
-        self.charges.fetch_add(1, Ordering::SeqCst);
-        self.charged.fetch_add(new_changesets, Ordering::SeqCst);
-        if self.refuse {
-            Err(asc_serve::refauthz::QuotaDenied("over quota".into()))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn pusher(f: &Fx, quota: Arc<Quota>) -> ImportPush {
+/// A pipeline whose user quota allows `bytes` per user per repository and `max` user refs.
+fn pipeline_with(bytes: u64, max: usize) -> Arc<PipelineHooks> {
     let pipeline = Arc::new(PipelineHooks::default());
-    assert!(pipeline.set_push_hooks(quota).is_ok());
-    ImportPush::new(f.registry.clone(), pipeline)
+    let limits = Limits {
+        max_user_bytes: bytes,
+        ..Limits::default()
+    };
+    assert!(
+        pipeline
+            .set_user_quota(UserQuota::new(Quota::local(limits), max))
+            .is_ok()
+    );
+    pipeline
+}
+
+fn pusher(f: &Fx, bytes: u64, max: usize) -> ImportPush {
+    ImportPush::new(f.registry.clone(), pipeline_with(bytes, max))
+}
+
+/// Bytes charged to `owner` in the fixture repository.
+async fn used(f: &Fx, owner: i64) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT bytes FROM cloud_usage WHERE ns = $1 AND owner = $2")
+        .bind(f.entry.ns.as_bytes().to_vec())
+        .bind(owner)
+        .fetch_optional(f.registry.pool())
+        .await
+        .unwrap()
+        .unwrap_or(0)
+}
+
+/// Marks `owner` as having used `bytes` already.
+async fn set_used(f: &Fx, owner: i64, bytes: i64) {
+    sqlx::query("INSERT INTO cloud_usage (ns, owner, bytes, workspaces) VALUES ($1, $2, $3, 0)")
+        .bind(f.entry.ns.as_bytes().to_vec())
+        .bind(owner)
+        .bind(bytes)
+        .execute(f.registry.pool())
+        .await
+        .unwrap();
 }
 
 async fn push_as_alice(
@@ -512,18 +484,17 @@ async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
     let c1 = with_master(&f).await;
     let c2 = f.forge.commit(Some(&c1), "two");
 
-    let refusing = Quota::new(true);
-    let push = pusher(&f, refusing.clone());
+    // A byte cap too small for even one changeset: the push is refused and nothing is charged.
+    let push = pusher(&f, 100, 2);
     let e = push_as_alice(&f, &push, "refs/heads/feat", &c2)
         .await
         .unwrap_err();
     assert_eq!(code(&e), "QUOTA_EXCEEDED");
     assert!(f.stored("refs/users/42/heads/feat").await.is_none());
-    assert!(refusing.charged.load(Ordering::SeqCst) >= 1);
+    assert_eq!(used(&f, 42).await, 0);
 
     // With the quota open, this server's cap (2) applies.
-    let open = Quota::new(false);
-    let push = pusher(&f, open);
+    let push = pusher(&f, 1 << 30, 2);
     push_as_alice(&f, &push, "refs/heads/a", &c2).await.unwrap();
     push_as_alice(&f, &push, "refs/heads/b", &c2).await.unwrap();
     let e = push_as_alice(&f, &push, "refs/heads/c", &c2)
@@ -532,10 +503,8 @@ async fn a_user_ref_push_is_charged_to_the_quota_and_a_refusal_moves_nothing() {
     assert_eq!(code(&e), "USER_REFS_LIMIT");
 }
 
-fn server(f: &Fx, hooks: Arc<Quota>) -> ServerRefs {
-    let pipeline = Arc::new(PipelineHooks::default());
-    assert!(pipeline.set_push_hooks(hooks).is_ok());
-    ServerRefs::new(f.registry.clone(), pipeline)
+fn server(f: &Fx, bytes: u64, max: usize) -> ServerRefs {
+    ServerRefs::new(f.registry.clone(), pipeline_with(bytes, max))
 }
 
 async fn count(f: &Fx, sql: &'static str) -> i64 {
@@ -550,7 +519,7 @@ async fn concurrent_creates_near_the_configured_cap_end_at_or_below_it() {
     let f = fx(true).await;
     with_master(&f).await;
     let target = f.stored("refs/heads/master").await.unwrap();
-    let refs = server(&f, Quota::build(false, false, 3));
+    let refs = server(&f, 1 << 30, 3);
     seed_user_refs(&f, 42, 1).await;
 
     let names: Vec<String> = (0..8).map(|i| format!("refs/heads/c{i}")).collect();
@@ -581,29 +550,30 @@ async fn an_over_quota_owner_is_refused_before_anything_is_ingested() {
     let graph = count(&f, "SELECT COUNT(*) FROM cs_graph").await;
     let mapped = count(&f, "SELECT COUNT(*) FROM git_map").await;
 
-    let over = Quota::build(false, true, 10);
+    // Alice has used her whole byte cap.
+    let cap = 10_000;
+    set_used(&f, 42, cap as i64).await;
     // The git push: the import writes nothing.
-    let push = pusher(&f, over.clone());
+    let push = pusher(&f, cap, 10);
     let e = push_as_alice(&f, &push, "refs/heads/feat", &c2)
         .await
         .unwrap_err();
     assert_eq!(code(&e), "QUOTA_EXCEEDED");
     assert_eq!(count(&f, "SELECT COUNT(*) FROM cs_graph").await, graph);
     assert_eq!(count(&f, "SELECT COUNT(*) FROM git_map").await, mapped);
-    assert_eq!(over.charges.load(Ordering::SeqCst), 0);
+    assert_eq!(used(&f, 42).await, cap as i64);
 
     // UpdateRefs: the quota is asked before the closure is read, so a target that does not exist
     // is still QUOTA_EXCEEDED (an ingest would have said it is missing).
     let ghost = RefTarget::Changeset(asc_core::id::ChangesetId::from_bytes([9; 32]));
-    let refs = server(&f, over.clone());
+    let refs = server(&f, cap, 10);
     let e = f
         .update_with(&refs, "42:alice", "refs/heads/ghost", ghost)
         .await
         .unwrap_err();
     assert_eq!(code(&e), "QUOTA_EXCEEDED");
     assert!(f.stored("refs/users/42/heads/ghost").await.is_none());
-    assert_eq!(over.charges.load(Ordering::SeqCst), 0);
-    assert!(over.checks.load(Ordering::SeqCst) >= 2);
+    assert_eq!(used(&f, 42).await, cap as i64);
 
     // A delete is never refused for quota, so an over-quota owner can shrink.
     seed_user_refs(&f, 42, 1).await;
@@ -641,28 +611,28 @@ async fn the_charge_is_the_changesets_actually_added_not_the_target_count() {
     let c3 = f.forge.commit(Some(&c2), "three");
     let c4 = f.forge.commit(Some(&c3), "four");
 
-    let q = Quota::build(false, false, 10);
-    let push = pusher(&f, q.clone());
-    // One ref, three new changesets.
+    let push = pusher(&f, 1 << 30, 10);
+    // One ref, three new changesets: each costs at least the fixed charge.
     push_as_alice(&f, &push, "refs/heads/stack", &c4)
         .await
         .unwrap();
-    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
-    assert!(q.checks.load(Ordering::SeqCst) >= 1);
+    let charged = used(&f, 42).await;
+    assert!(
+        charged >= 3 * CHANGESET_BASE_COST as i64 && charged < 4 * CHANGESET_BASE_COST as i64 + 1024,
+        "charged {charged}"
+    );
 
     // The same history under a second name adds nothing, so nothing is charged.
     push_as_alice(&f, &push, "refs/heads/again", &c4)
         .await
         .unwrap();
-    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
-    assert_eq!(q.charges.load(Ordering::SeqCst), 1);
+    assert_eq!(used(&f, 42).await, charged);
 
     // UpdateRefs to a changeset the repository already holds adds nothing either.
-    let refs = server(&f, q.clone());
+    let refs = server(&f, 1 << 30, 10);
     let target = f.stored("refs/heads/master").await.unwrap();
     f.update_with(&refs, "42:alice", "refs/heads/third", target)
         .await
         .unwrap();
-    assert_eq!(q.charged.load(Ordering::SeqCst), 3);
-    assert_eq!(q.charges.load(Ordering::SeqCst), 1);
+    assert_eq!(used(&f, 42).await, charged);
 }
