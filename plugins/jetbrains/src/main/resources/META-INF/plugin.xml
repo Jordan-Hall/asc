@@ -7,5 +7,9 @@
   <depends>com.intellij.modules.vcs</depends>
   <extensions defaultExtensionNs="com.intellij">
     <applicationService serviceImplementation="asc.asc.bridge.AscBridgeService"/>
+    <vcs name="asc" vcsClass="asc.asc.vcs.AscVcs" displayName="asc"/>
+    <vcsRootChecker implementation="asc.asc.vcs.AscRootChecker"/>
+    <postStartupActivity implementation="asc.asc.vcs.AscMappingActivity"/>
+    <notificationGroup id="asc" displayType="BALLOON"/>
   </extensions>
 </idea-plugin>
