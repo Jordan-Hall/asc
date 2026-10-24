@@ -12,6 +12,7 @@ import {
   resolveAsc,
 } from "./bridge";
 import { detectAscFolders } from "./repo";
+import { registerBlame } from "./blame/register";
 import { registerScm } from "./scm/provider";
 import type { WebviewHost } from "./webview/host";
 import { vscodeWebviews } from "./webview/vscode-adapter";
@@ -43,6 +44,8 @@ export interface Host {
   platform: NodeJS.Platform;
   /** Registers the SCM provider, `asc:` file system and decorations (P25). Absent under tests. */
   registerScm?(bridge: BridgeManager, folders: readonly string[]): Disposable;
+  /** Registers inline blame, hover, CodeLens and the heatmap (P27). Absent under tests. */
+  registerBlame?(bridge: BridgeManager, folders: readonly string[]): Disposable;
   /** Registers the asc-ui webview hosts (P28a). Absent under tests. */
   registerWebviews?(folders: readonly string[]): WebviewHost;
 }
@@ -107,6 +110,7 @@ export async function activateWith(
   );
 
   let scmReg: Disposable | null = null;
+  let blameReg: Disposable | null = null;
   let webviews: WebviewHost | null = null;
   const start = async (): Promise<Compat | null> => {
     try {
@@ -117,6 +121,10 @@ export async function activateWith(
       if (hello.compat.level !== "too-old" && host.registerScm && !scmReg) {
         scmReg = host.registerScm(bridge, ascFolders);
         subs.push(scmReg);
+      }
+      if (hello.compat.level !== "too-old" && host.registerBlame && !blameReg) {
+        blameReg = host.registerBlame(bridge, ascFolders);
+        subs.push(blameReg);
       }
       if (hello.compat.level !== "too-old" && host.registerWebviews && !webviews) {
         webviews = host.registerWebviews(ascFolders);
@@ -199,6 +207,8 @@ function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.ExtensionContex
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
       return reg;
     },
+    registerBlame: (bridge, folders) =>
+      registerBlame(vscode, bridge, folders, (l) => out().appendLine(l)),
   };
 }
 
