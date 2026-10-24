@@ -1653,6 +1653,28 @@ mod ingest {
         }
     }
 
+    /// Guard (B08d): `rev` resolves through the viewer-filtered `IdCodec`, so no mutation can
+    /// take another owner's `refs/users/<id>/..` as a parent, `onto` or source.
+    #[tokio::test]
+    async fn rev_cannot_name_another_users_ref() {
+        let f = fx().await;
+        let a = commit(&f.entry, &[], &[("a", b"1
+")]).await;
+        f.m.ingest_inner(&ctx(), request(&[a])).await.unwrap();
+        set_ref(&f, "refs/users/9/heads/feat", a).await;
+        set_ref(&f, "refs/heads/main", a).await;
+        let o = f.m.open(&ctx_as("7:mallory")).await.unwrap();
+        for spec in [
+            "refs/users/9/heads/feat",
+            "users/9/heads/feat",
+            "refs/users/9/heads/feat@{0}",
+        ] {
+            let e = f.m.rev(&o, spec).await.unwrap_err();
+            assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
+        }
+        assert_eq!(f.m.rev(&o, "refs/heads/main").await.unwrap(), a);
+    }
+
     #[tokio::test]
     async fn without_a_ref_then_diff_and_merge_base_by_id_succeed_and_ref_log_is_unchanged() {
         let f = fx().await;

@@ -46,7 +46,6 @@ use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::{Change, Changeset, Entry, Kind};
 use asc_core::sig::Signature;
 use asc_engine::commit::{NewChangeset, PathPolicy};
-use asc_engine::history::HistoryApi as _;
 use asc_engine::merge::{self, Conflict, ConflictKind};
 use asc_engine::rebase::Rebased;
 use asc_rpc::errors::RpcError;
@@ -1712,11 +1711,16 @@ mod tests {
             "refs/users/9/heads/feat^{}",
             "refs/users/9/heads/feat@{0}",
         ] {
-            for who in [WRITER, MALLORY] {
+            // The owner is refused the foreign ref; a caller who does not own the change is
+            // refused earlier, on ownership, which names nothing about `onto`.
+            for (who, code) in [
+                (WRITER, tonic::Code::NotFound),
+                (MALLORY, tonic::Code::PermissionDenied),
+            ] {
                 let mut m = msg(f.t, vec![item(1)]);
                 m.onto = spec.into();
                 let e = f.run(m, who).await.unwrap_err();
-                assert_eq!(e.code(), tonic::Code::NotFound, "{spec}");
+                assert_eq!(e.code(), code, "{spec}");
             }
         }
         assert_eq!(f.latest(1).await.v, 1);
