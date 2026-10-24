@@ -6,4 +6,5 @@ pub mod heads_sink;
 pub mod local_gc;
 pub mod migrate;
 pub mod mode;
+pub mod pull;
 pub mod push_map;
