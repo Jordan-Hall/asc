@@ -50,6 +50,7 @@ use crate::registry::{Extensions, Ns, Registry, RegistryError, RepoEntry, RepoMo
 use crate::update::{PipelineHooks, ServerRefs, info, ingest_status, internal, rpc};
 
 pub mod branchless;
+pub mod legacy_shared;
 
 /// Most changesets one `CopyClosure` may name.
 pub const MAX_COPY_CHANGESETS: usize = MAX_LIST;
