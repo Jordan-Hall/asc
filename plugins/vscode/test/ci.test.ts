@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { createForgejoClient } from "@asc/asc-client/forgejo";
 import {
   ActionsLogDocs,
   ActionsLogModel,
@@ -17,8 +16,6 @@ import { buildTaskSpecs, projectCwd } from "../src/tasks";
 import {
   type ActionsApi,
   ActionsModel,
-  forgejoActionsApi,
-  parseContentRange,
   rerunDisabledReason,
   type RunRow,
 } from "../src/views/actions";
@@ -107,88 +104,6 @@ describe("ci: asc-actions log documents", () => {
     expect(await docs.provide("/asc/asc/job/3.log")).toBe("hello\n");
     expect(api.calls.length).toBe(1);
     expect(docs.provide("/other/asc/job/3.log")).rejects.toThrow(ActionsUriError);
-  });
-});
-
-describe("ci: Forgejo Actions adapter", () => {
-  const seen: { url: string; method: string; range: string | null; auth: string | null }[] = [];
-  const json = (b: unknown, status = 200, h: Record<string, string> = {}) =>
-    new Response(JSON.stringify(b), {
-      status,
-      headers: { "content-type": "application/json", ...h },
-    });
-  const client = (fetchImpl: (u: URL, r: Request) => Response) =>
-    createForgejoClient({
-      baseUrl: "https://forge.example",
-      getToken: () => "tok-secret",
-      repos: ["asc/asc"],
-      fetch: async (req) => {
-        seen.push({
-          url: req.url,
-          method: req.method,
-          range: req.headers.get("range"),
-          auth: req.headers.get("authorization"),
-        });
-        return fetchImpl(new URL(req.url), req);
-      },
-    });
-
-  test("lists runs filtered by head sha and jobs", async () => {
-    seen.length = 0;
-    const c = client((u) =>
-      u.pathname.endsWith("/jobs")
-        ? json([{ id: 9, name: "build", status: "success" }])
-        : json({
-            workflow_runs: [
-              { id: 5, title: "CI", status: "failure", event: "push", commit_sha: "abcdef0123456789" },
-            ],
-          }),
-    );
-    const api = forgejoActionsApi(c, "asc", "asc");
-    const runs = await api.listRuns("abcdef0123456789");
-    expect(runs).toEqual([
-      { id: 5, title: "CI", status: "failure", event: "push", commit: "abcdef0123456789" },
-    ]);
-    expect(seen[0]?.url).toContain("head_sha=abcdef0123456789");
-    expect(seen[0]?.auth).toBe("token tok-secret");
-    expect(await api.listJobs(5)).toEqual([{ id: 9, runId: 5, name: "build", status: "success" }]);
-  });
-
-  test("reads a log tail with a suffix Range and a 206 Content-Range", async () => {
-    seen.length = 0;
-    const body = enc.encode("tail text\n");
-    const c = client(
-      () =>
-        new Response(body, {
-          status: 206,
-          headers: { "content-range": `bytes 90-99/100`, "content-type": "text/plain" },
-        }),
-    );
-    const r = await forgejoActionsApi(c, "asc", "asc").readRange(9, { suffix: 64 });
-    expect(seen[0]?.range).toBe("bytes=-64");
-    expect(r.start).toBe(90);
-    expect(r.total).toBe(100);
-    expect(new TextDecoder().decode(r.bytes)).toBe("tail text\n");
-  });
-
-  test("a server that ignores Range is cut client side", async () => {
-    const c = client(() => new Response(enc.encode("0123456789"), { status: 200 }));
-    const api = forgejoActionsApi(c, "asc", "asc");
-    const t = await api.readRange(1, { suffix: 4 });
-    expect([t.start, t.total, new TextDecoder().decode(t.bytes)]).toEqual([6, 10, "6789"]);
-    const e = await api.readRange(1, { start: 2, end: 4 });
-    expect([e.start, new TextDecoder().decode(e.bytes)]).toEqual([2, "234"]);
-  });
-
-  test("a repository outside the opened roots is denied", async () => {
-    const c = client(() => json({}));
-    expect(forgejoActionsApi(c, "evil", "repo").listRuns(undefined)).rejects.toThrow();
-  });
-
-  test("content-range parsing", () => {
-    expect(parseContentRange("bytes 0-9/10")).toEqual({ start: 0, total: 10 });
-    expect(parseContentRange("bytes */10")).toBeUndefined();
-    expect(parseContentRange(null)).toBeUndefined();
   });
 });
 

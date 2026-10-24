@@ -8,7 +8,6 @@ import {
   type Timers,
 } from "../src/inbox-count";
 import {
-  forgejoInboxApi,
   type InboxApi,
   type InboxEntry,
   InboxModel,
@@ -226,57 +225,3 @@ describe("inbox: tree", () => {
   });
 });
 
-describe("inbox: forgejo api", () => {
-  function api(handler: (r: Request) => Response) {
-    const seen: Request[] = [];
-    const a = forgejoInboxApi({
-      baseUrl: "https://forge.example",
-      getToken: () => "sekret",
-      fetch: async (r) => (seen.push(r), handler(r)),
-    });
-    return { a, seen };
-  }
-
-  test("count reads X-Total-Count and sends the conditional header and token", async () => {
-    const { a, seen } = api(
-      () => new Response("[]", { headers: { "x-total-count": "7", etag: '"t"' } }),
-    );
-    const r = await a.needsReviewCount('"old"', new AbortController().signal);
-    expect(r).toEqual({ status: "ok", total: 7, etag: '"t"' });
-    const req = seen[0];
-    const u = new URL(req?.url ?? "");
-    expect(u.pathname).toBe("/api/v1/user/asc/inbox");
-    expect(u.searchParams.get("section")).toBe("needs_review");
-    expect(u.searchParams.get("limit")).toBe("1");
-    expect(req?.headers.get("if-none-match")).toBe('"old"');
-    expect(req?.headers.get("authorization")).toBe("token sekret");
-    expect(req?.url).not.toContain("sekret");
-  });
-
-  test("count maps 304, rejects a missing header and an error status", async () => {
-    const s = new AbortController().signal;
-    expect(await api(() => new Response(null, { status: 304 })).a.needsReviewCount("x", s)).toEqual(
-      { status: "not-modified" },
-    );
-    await expect(api(() => new Response("[]")).a.needsReviewCount(undefined, s)).rejects.toThrow(
-      "X-Total-Count",
-    );
-    await expect(
-      api(() => new Response("no", { status: 500 })).a.needsReviewCount(undefined, s),
-    ).rejects.toThrow("HTTP 500");
-  });
-
-  test("list parses entries; a non-https base url is refused", async () => {
-    const { a } = api(
-      () =>
-        new Response(JSON.stringify([entry(1, "ready")]), {
-          headers: { "content-type": "application/json", etag: '"l"' },
-        }),
-    );
-    const r = await a.list(undefined, new AbortController().signal);
-    expect(r.status === "ok" && r.entries).toHaveLength(1);
-    expect(() =>
-      forgejoInboxApi({ baseUrl: "http://forge.example", getToken: () => "t" }),
-    ).toThrow();
-  });
-});

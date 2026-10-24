@@ -12,7 +12,6 @@ import {
   type RelayLog,
   relay,
 } from "@asc/asc-client/relay";
-import type { ForgejoReply, ForgejoRequest } from "@asc/asc-client";
 import type { RequestHandler, WebviewLike } from "./host";
 
 export interface RelayHandlerOptions {
@@ -23,8 +22,6 @@ export interface RelayHandlerOptions {
   /** `owner/repo` of the forge repos of the roots. */
   forgeRepos: () => readonly string[];
   confirm: (c: ConfirmRequest) => Promise<boolean>;
-  /** Absent: Forgejo requests are denied. */
-  forgejo?: ((req: ForgejoRequest, signal: AbortSignal) => Promise<ForgejoReply>) | undefined;
   tmpDir?: string | undefined;
   /** Log lines never carry request payloads. */
   log: (line: string) => void;
@@ -56,7 +53,6 @@ export function createRelayHandler(o: RelayHandlerOptions): RequestHandler & { d
       forgeRepos: o.forgeRepos,
       tmpDir: o.tmpDir,
       confirm: o.confirm,
-      forgejo: o.forgejo,
       log: logEvent,
     });
     r = created;

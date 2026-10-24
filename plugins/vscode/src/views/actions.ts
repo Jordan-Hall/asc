@@ -1,12 +1,10 @@
 // Actions tree (SPEC 24.4.7): runs of the current change's head commit, their jobs, and a read-only
-// `asc-actions:` log per job. Data comes from the Forgejo Actions REST API through the deny-by-default
-// client; "Re-run" is the only write. Models are editor-free; `registerActions` is the vscode user.
-import type { ForgejoClient } from "@asc/asc-client/forgejo";
+// `asc-actions:` log per job. Data comes through `ActionsApi`, which an asc serve RPC implements; the
+// plugin knows no forge, so this module is not wired until that RPC exists.
+// "Re-run" is the only write. Models are editor-free; `registerActions` is the vscode user.
 import type * as vscodeTypes from "vscode";
 import {
   ActionsLogDocs,
-  type LogRange,
-  type LogRangeRequest,
   type LogReadApi,
   SCHEME,
   toActionsUri,
@@ -32,7 +30,7 @@ export interface JobRow {
 }
 
 /** `owner/repo` and the head commit of the current change (Actions context `asc_change`, C40). */
-export interface ForgeTarget {
+export interface RemoteTarget {
   owner: string;
   repo: string;
   headSha?: string;
@@ -92,7 +90,7 @@ export function describeRun(r: RunRow): { label: string; description: string; to
 
 export interface ActionsModelOptions {
   api: ActionsApi;
-  target: () => ForgeTarget | undefined;
+  target: () => RemoteTarget | undefined;
   onError?: (e: unknown) => void;
 }
 
@@ -167,96 +165,19 @@ export class ActionsModel {
   }
 }
 
-// --- the Forgejo adapter ----------------------------------------------------------------------------
-
-const num = (n: number | undefined): number => (typeof n === "number" && Number.isFinite(n) ? n : 0);
-
-/** `Content-Range: bytes a-b/total`. */
-export function parseContentRange(h: string | null): { start: number; total: number } | undefined {
-  const m = h ? /^bytes (\d+)-\d+\/(\d+)$/.exec(h.trim()) : null;
-  return m ? { start: Number(m[1]), total: Number(m[2]) } : undefined;
-}
-
-export function forgejoActionsApi(client: ForgejoClient, owner: string, repo: string): ActionsApi {
-  const path = { o: owner, r: repo };
-  const api = client.api;
-  return {
-    async listRuns(headSha, signal) {
-      const { data, error } = await api.GET("/repos/{o}/{r}/actions/runs", {
-        params: { path, query: { limit: 30, ...(headSha ? { head_sha: headSha } : {}) } },
-        ...(signal ? { signal } : {}),
-      });
-      if (error || !data) throw new Error("could not list Actions runs");
-      return (data.workflow_runs ?? []).map((r) => ({
-        id: num(r.id),
-        title: r.title ?? "",
-        status: r.status ?? "",
-        event: r.event ?? "",
-        commit: r.commit_sha ?? "",
-      }));
-    },
-    async listJobs(runId, signal) {
-      const { data, error } = await api.GET("/repos/{o}/{r}/actions/runs/{id}/jobs", {
-        params: { path: { ...path, id: runId } },
-        ...(signal ? { signal } : {}),
-      });
-      if (error || !data) throw new Error("could not list Actions jobs");
-      return data.map((j) => ({
-        id: num(j.id),
-        runId,
-        name: j.name ?? "",
-        status: j.status ?? "",
-      }));
-    },
-    async rerun(runId) {
-      // TODO(P05): the generated operation names its path parameters owner/repo/run_id while the
-      // path template uses o/r/id; the cast keeps the template, and the guard still checks the pair.
-      const post = api.POST as unknown as (
-        p: string,
-        init: { params: { path: Record<string, string | number> } },
-      ) => Promise<{ error?: unknown }>;
-      const { error } = await post("/repos/{o}/{r}/actions/runs/{id}/rerun", {
-        params: { path: { ...path, id: runId } },
-      });
-      if (error) throw new Error("could not re-run");
-    },
-    async readRange(jobId, range: LogRangeRequest, signal): Promise<LogRange> {
-      const rangeHeader =
-        "suffix" in range ? `bytes=-${range.suffix}` : `bytes=${range.start}-${range.end}`;
-      const { data, response, error } = await api.GET("/repos/{o}/{r}/actions/jobs/{id}/logs", {
-        params: { path: { ...path, id: jobId } },
-        headers: { range: rangeHeader },
-        parseAs: "arrayBuffer",
-        ...(signal ? { signal } : {}),
-      });
-      if (error || !data) throw new Error("could not read the job log");
-      const bytes = new Uint8Array(data as unknown as ArrayBuffer);
-      const cr = parseContentRange(response.headers.get("content-range"));
-      if (response.status === 206 && cr) return { bytes, start: cr.start, total: cr.total };
-      // The server ignored Range and sent the whole log: cut the requested part here.
-      const total = bytes.length;
-      if ("suffix" in range) {
-        const s = Math.max(0, total - range.suffix);
-        return { bytes: bytes.subarray(s), start: s, total };
-      }
-      return { bytes: bytes.subarray(range.start, range.end + 1), start: range.start, total };
-    },
-  };
-}
-
 // --- the editor adapter -----------------------------------------------------------------------------
 
 export interface ActionsHost {
-  /** The forge repository and head commit for an asc root; undefined when not signed in or unknown. */
-  target(root: string): ForgeTarget | undefined;
-  api(t: ForgeTarget): ActionsApi | undefined;
+  /** The remote repository and head commit for an asc root; undefined when unknown. */
+  target(root: string): RemoteTarget | undefined;
+  api(t: RemoteTarget): ActionsApi | undefined;
   /** Head or operation events for a root (the `Workspace.Watch` pump). */
   onStale(root: string, fn: () => void): Disposable;
 }
 
 type Node =
-  | { kind: "run"; model: ActionsModel; target: ForgeTarget; run: RunRow }
-  | { kind: "job"; target: ForgeTarget; job: JobRow };
+  | { kind: "run"; model: ActionsModel; target: RemoteTarget; run: RunRow }
+  | { kind: "job"; target: RemoteTarget; job: JobRow };
 
 export function registerActions(
   vscode: typeof vscodeTypes,
@@ -272,7 +193,7 @@ export function registerActions(
   const hostApi = (root: string): ActionsApi => {
     const t = host.target(root);
     const api = t ? host.api(t) : undefined;
-    if (!api) throw new Error("sign in to the forge to see Actions");
+    if (!api) throw new Error("the server offers no Actions for this workspace");
     return api;
   };
   const models = roots.map((root) => {

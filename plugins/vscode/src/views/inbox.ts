@@ -1,11 +1,10 @@
-// Inbox tree (SPEC 24.4.4, 24.4.7): the Forgejo inbox in the `asc` container. It has no event stream,
-// so it fetches on show and on window focus, then every 60 s only while visible, with `If-None-Match`
-// (a 304 keeps the last list). Pin and snooze go through `PUT /user/asc/inbox/{id}`. The token is
-// attached by the guarded Forgejo client and never logged. `InboxModel` is editor-free;
+// Inbox tree (SPEC 24.4.4, 24.4.7): the review inbox in the `asc` container. It has no event stream,
+// so it fetches on show and on window focus, then every 60 s only while visible, with an ETag (a
+// not-modified reply keeps the last list). The plugin knows no forge: `InboxApi` is implemented over
+// an asc serve RPC, and until that RPC exists this module is not wired. `InboxModel` is editor-free;
 // `registerInbox` is the only `vscode` user.
-import { createForgejoClient, type FetchLike } from "@asc/asc-client/forgejo";
 import type * as vscodeTypes from "vscode";
-import type { CountApi, CountResult } from "../inbox-count";
+import type { CountApi } from "../inbox-count";
 
 export const REFRESH_MS = 60_000;
 
@@ -44,65 +43,6 @@ export interface InboxApi extends CountApi {
     body: { pinned?: boolean; snoozed_until?: string },
     signal?: AbortSignal,
   ): Promise<void>;
-}
-
-export interface InboxApiOptions {
-  baseUrl: string;
-  getToken: () => string | undefined | Promise<string | undefined>;
-  repos?: Iterable<string>;
-  fetch?: FetchLike;
-}
-
-const cond = (etag: string | undefined): Record<string, string> =>
-  etag ? { "If-None-Match": etag } : {};
-
-/** The inbox API over the deny-by-default Forgejo client (https only, allowlisted pairs). */
-export function forgejoInboxApi(o: InboxApiOptions): InboxApi {
-  const { api } = createForgejoClient({
-    baseUrl: o.baseUrl,
-    getToken: o.getToken,
-    ...(o.repos ? { repos: o.repos } : {}),
-    ...(o.fetch ? { fetch: o.fetch } : {}),
-  });
-  return {
-    async list(etag, signal) {
-      const r = await api.GET("/user/asc/inbox", {
-        params: { query: { limit: 50 } },
-        headers: cond(etag),
-        signal,
-      });
-      if (r.response.status === 304) return { status: "not-modified" };
-      if (!r.response.ok || !r.data) throw new Error(`inbox: HTTP ${r.response.status}`);
-      return {
-        status: "ok",
-        entries: r.data as InboxEntry[],
-        etag: r.response.headers.get("etag") ?? undefined,
-      };
-    },
-    async needsReviewCount(etag, signal): Promise<CountResult> {
-      const r = await api.GET("/user/asc/inbox", {
-        params: { query: { section: "needs_review", limit: 1 } },
-        headers: cond(etag),
-        signal,
-      });
-      if (r.response.status === 304) return { status: "not-modified" };
-      if (!r.response.ok) throw new Error(`inbox count: HTTP ${r.response.status}`);
-      const raw = r.response.headers.get("x-total-count");
-      const total = raw === null ? Number.NaN : Number(raw);
-      if (!Number.isSafeInteger(total) || total < 0) {
-        throw new Error("inbox count: no X-Total-Count");
-      }
-      return { status: "ok", total, etag: r.response.headers.get("etag") ?? undefined };
-    },
-    async update(id, body, signal) {
-      const r = await api.PUT("/user/asc/inbox/{id}", {
-        params: { path: { id } },
-        body,
-        ...(signal ? { signal } : {}),
-      });
-      if (!r.response.ok) throw new Error(`inbox update: HTTP ${r.response.status}`);
-    },
-  };
 }
 
 export interface InboxItem {

@@ -54,8 +54,7 @@ export function vscodeWebviews(
     dispose: () => p.dispose(),
   });
 
-  // TODO(P28b-auth): pass `forgejo: forgejoExecutor(...)` once the forge URL setting and the token
-  // source (AscForgejoAuth) are wired; until then Forgejo requests are denied (deny by default).
+  // The webview reaches asc only: the relay allowlist has no remote-service request kind here.
   const relayHandler = bridge
     ? createRelayHandler({
         upstream: () => bridge.node(),
