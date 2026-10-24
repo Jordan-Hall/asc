@@ -1,25 +1,44 @@
 name: release
-# Tag v<MAJOR>.<MINOR>.<PATCH> -> signed artefacts for four targets, the MSI, the winget manifest and
-# the Linux installer, published as Forgejo generic packages `asc` (SPEC 16.2):
+# Tag v<MAJOR>.<MINOR>.<PATCH> -> signed artefacts, published as Forgejo generic packages `asc` (SPEC 16.2):
 #   <packages>/asc/<ver>/<file>           artefacts and signatures
 #   <packages>/asc/latest/version         the newest version, read by `asc upgrade` and the daily check
 # `asc.releasesUrl` is https://<forgejo>/api/packages/<owner>/generic/asc.
+#
+# Runners that exist: one Linux runner (labels asc-build-trusted, asc-build-trusted-ubuntu-latest) and an
+# optional Windows host runner (asc-build-trusted-windows-latest). There are no macOS or arm64 runners.
+#   Linux x86_64   gate-linux -> build-linux -> publish-linux      zip, tar.gz, install.sh, service unit
+#   Windows x86_64 gate-windows -> build-windows -> publish-windows zip, MSI, winget manifests
+# The two chains are independent: each publishes its own files as it finishes, so a missing or offline
+# Windows runner never blocks the Linux release. `latest/version` moves in `publish-latest` only after BOTH
+# chains published, so a client never sees a version whose files are missing (SPEC 16.2). If one chain was
+# skipped or failed, re-run the failed jobs; `bash build/release/local-release.sh --latest-only` moves it by hand.
+#
+# aarch64-unknown-linux-gnu and aarch64-apple-darwin are in the manual-only `extra-*` jobs below: no runner
+# with those labels is registered, so a tag push must not queue jobs that never start. Run the workflow by
+# hand (workflow_dispatch, extra_targets=true, version) once such runners exist.
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      extra_targets:
+        description: "Build aarch64-linux and aarch64-darwin (needs runners that are not registered by default)"
+        type: boolean
+        default: false
+      version:
+        description: "Version x.y.z for a manual run (must equal the crate version)"
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
   ASC_RELEASE_PUBKEY: ${{ vars.ASC_RELEASE_PUBKEY }}
 
 jobs:
-  # Release gate: the compat suite (SPEC 17.1) is green on Windows and Linux.
-  gate:
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: asc-build-trusted-${{ matrix.os }}
+  # Release gate: the compat suite (SPEC 17.1) is green on each platform that is released.
+  gate-linux:
+    if: github.event_name == 'push'
+    runs-on: asc-build-trusted-ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
@@ -29,59 +48,92 @@ jobs:
       - run: cargo test -p asc --test compat
       - run: "cargo test -p asc upgrade::"
 
-  build:
-    needs: gate
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - { target: x86_64-pc-windows-msvc, os: windows-latest }
-          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
-          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
-          - { target: aarch64-apple-darwin, os: macos-latest }
-    runs-on: asc-build-trusted-${{ matrix.os }}
+  gate-windows:
+    if: github.event_name == 'push'
+    runs-on: asc-build-trusted-windows-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         with:
           toolchain: 1.95.0
-          targets: ${{ matrix.target }}
+      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test -p asc --test compat
+      - run: "cargo test -p asc upgrade::"
+
+  build-linux:
+    needs: gate-linux
+    runs-on: asc-build-trusted-ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-unknown-linux-gnu
       - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ matrix.target }}
+          key: x86_64-unknown-linux-gnu
       - name: Check the tag against the crate version
         shell: bash
         run: |
           ver="${GITHUB_REF_NAME#v}"
           crate=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="asc"))')
           test "$ver" = "$crate" || { echo "tag $ver != crate $crate"; exit 1; }
-      - run: cargo build --release --locked -p asc --target ${{ matrix.target }}
+      - run: cargo build --release --locked -p asc --target "$TARGET"
       - name: Package
         shell: bash
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          exe=asc; case "${{ matrix.target }}" in *windows*) exe=asc.exe;; esac
           mkdir -p dist
-          bin="target/${{ matrix.target }}/release/$exe"
           # The upgrade artefact: a flat zip with the executable.
           python3 -c "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2], sys.argv[3]); z.close()" \
-            "dist/asc-$ver-${{ matrix.target }}.zip" "$bin" "$exe"
-          case "${{ matrix.target }}" in
-            *linux*) tar -czf "dist/asc-$ver-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" asc ;;
-          esac
+            "dist/asc-$ver-$TARGET.zip" "target/$TARGET/release/asc" asc
+          tar -czf "dist/asc-$ver-$TARGET.tar.gz" -C "target/$TARGET/release" asc
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
+        with:
+          name: dist-x86_64-unknown-linux-gnu
+          path: dist/*
+
+  build-windows:
+    needs: gate-windows
+    runs-on: asc-build-trusted-windows-latest
+    env:
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-pc-windows-msvc
+      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: x86_64-pc-windows-msvc
+      - name: Check the tag against the crate version
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          crate=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="asc"))')
+          test "$ver" = "$crate" || { echo "tag $ver != crate $crate"; exit 1; }
+      - run: cargo build --release --locked -p asc --target ${{ env.TARGET }}
+      - name: Package
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          python3 -c "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2], sys.argv[3]); z.close()" \
+            "dist/asc-$ver-$TARGET.zip" "target/$TARGET/release/asc.exe" asc.exe
       - name: MSI
-        if: contains(matrix.target, 'windows')
         shell: pwsh
         run: |
           $ver = "${env:GITHUB_REF_NAME}".TrimStart('v')
           cargo install cargo-wix --locked --version 0.3.9
-          cargo wix --nocapture --package asc --no-build --target ${{ matrix.target }} --output "dist/asc-$ver-${{ matrix.target }}.msi" packaging/windows/main.wxs
+          cargo wix --nocapture --package asc --no-build --target ${{ env.TARGET }} --output "dist/asc-$ver-${{ env.TARGET }}.msi" packaging/windows/main.wxs
       - name: MSI puts the shim before Git for Windows (where git)
-        if: contains(matrix.target, 'windows')
         shell: pwsh
         run: |
           $ver = "${env:GITHUB_REF_NAME}".TrimStart('v')
-          Start-Process msiexec -Wait -ArgumentList "/i","dist\asc-$ver-${{ matrix.target }}.msi","/qn","USE_ASC_SHIM=1"
+          Start-Process msiexec -Wait -ArgumentList "/i","dist\asc-$ver-${{ env.TARGET }}.msi","/qn","USE_ASC_SHIM=1"
           $machine = [Environment]::GetEnvironmentVariable('Path','Machine')
           $env:Path = [Environment]::ExpandEnvironmentVariables($machine)
           $first = (where.exe git | Select-Object -First 1)
@@ -91,16 +143,17 @@ jobs:
           if (-not (Test-Path "C:\Program Files\ASC\asc\$ver\shim")) { throw 'shim dir missing' }
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
         with:
-          name: dist-${{ matrix.target }}
+          name: dist-x86_64-pc-windows-msvc
           path: dist/*
 
-  publish:
-    needs: build
+  publish-linux:
+    needs: build-linux
     runs-on: asc-build-trusted
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
         with:
+          name: dist-x86_64-unknown-linux-gnu
           path: dist
       - name: Install minisign
         run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
@@ -117,7 +170,51 @@ jobs:
             minisign -S -s "$RUNNER_TEMP/minisign.key" -t "file:$(basename "$f") version:$ver" -m "$f" </dev/null
           done
           rm -f "$RUNNER_TEMP/minisign.key"
-      - name: Winget manifest and installer
+      - name: Linux installer
+        run: |
+          sed "s|@RELEASE_PUBKEY@|$ASC_RELEASE_PUBKEY|" packaging/linux/install.sh > out/install.sh
+          cp packaging/linux/asc-daemon.service out/asc-daemon.service
+      - name: Upload
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          # The token goes in a 0600 header file, never in argv.
+          umask 077
+          printf 'Authorization: token %s\n' "$TOKEN" > "$RUNNER_TEMP/hdr"
+          for f in $(find out -type f); do
+            name="${f#out/}"
+            # A re-run replaces the file (the registry answers 409 for an existing one).
+            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
+            curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
+          done
+          rm -f "$RUNNER_TEMP/hdr"
+
+  publish-windows:
+    needs: build-windows
+    runs-on: asc-build-trusted
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+        with:
+          name: dist-x86_64-pc-windows-msvc
+          path: dist
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign
+        env:
+          MINISIGN_KEY: ${{ secrets.ASC_MINISIGN_KEY }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          umask 077
+          printf '%s' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          mkdir -p out && find dist -type f -exec cp {} out/ \;
+          for f in out/*; do
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -t "file:$(basename "$f") version:$ver" -m "$f" </dev/null
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+      - name: Winget manifest
         env:
           RELEASES_URL: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
         run: |
@@ -127,19 +224,108 @@ jobs:
           for f in packaging/winget/*.yaml; do
             sed -e "s|@VERSION@|$ver|g" -e "s|@SHA256@|$sha|g" -e "s|@RELEASES_URL@|$RELEASES_URL|g" "$f" > "out/winget/$(basename "$f")"
           done
-          sed "s|@RELEASE_PUBKEY@|$ASC_RELEASE_PUBKEY|" packaging/linux/install.sh > out/install.sh
-          cp packaging/linux/asc-daemon.service out/asc-daemon.service
       - name: Upload
         env:
           TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
         run: |
           ver="${GITHUB_REF_NAME#v}"
+          umask 077
+          printf 'Authorization: token %s\n' "$TOKEN" > "$RUNNER_TEMP/hdr"
           for f in $(find out -type f); do
             name="${f#out/}"
-            curl -fsS --proto '=https' -X PUT -H "Authorization: token $TOKEN" --upload-file "$f" "$BASE/$ver/$name"
+            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
+            curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
           done
-          # `latest/version` moves last, so a client never sees a version whose files are missing.
-          curl -sS --proto '=https' -X DELETE -H "Authorization: token $TOKEN" "$BASE/latest/version" || true
+          rm -f "$RUNNER_TEMP/hdr"
+
+  # `latest/version` moves last and only when both platforms published (needs = all must succeed).
+  publish-latest:
+    needs: [publish-linux, publish-windows]
+    runs-on: asc-build-trusted
+    steps:
+      - name: Move latest/version
+        env:
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          umask 077
+          printf 'Authorization: token %s\n' "$TOKEN" > "$RUNNER_TEMP/hdr"
+          curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/latest/version" >/dev/null || true
           printf '%s\n' "$ver" > latest-version
-          curl -fsS --proto '=https' -X PUT -H "Authorization: token $TOKEN" --upload-file latest-version "$BASE/latest/version"
+          curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file latest-version "$BASE/latest/version"
+          rm -f "$RUNNER_TEMP/hdr"
+
+  # ---- Manual only: targets without a registered runner. Skipped on tag pushes. ----
+  # Runs only for workflow_dispatch with extra_targets=true. Publishes the files under the version but never
+  # moves `latest/version`: `asc upgrade` for these targets is a separate decision once runners exist.
+  extra-build:
+    if: github.event_name == 'workflow_dispatch' && inputs.extra_targets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm, exe: asc }
+          - { target: aarch64-apple-darwin, os: macos-latest, exe: asc }
+    runs-on: asc-build-trusted-${{ matrix.os }}
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - name: Check the version against the crate version
+        shell: bash
+        run: |
+          crate=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="asc"))')
+          test "$INPUT_VERSION" = "$crate" || { echo "version '$INPUT_VERSION' != crate $crate"; exit 1; }
+      - run: cargo build --release --locked -p asc --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          python3 -c "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2], sys.argv[3]); z.close()" \
+            "dist/asc-$INPUT_VERSION-${{ matrix.target }}.zip" "target/${{ matrix.target }}/release/${{ matrix.exe }}" "${{ matrix.exe }}"
+          case "${{ matrix.target }}" in
+            *linux*) tar -czf "dist/asc-$INPUT_VERSION-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" asc ;;
+          esac
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3.2.1
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+
+  extra-publish:
+    needs: extra-build
+    runs-on: asc-build-trusted
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3.0.2
+        with:
+          path: dist
+      - name: Install minisign
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+      - name: Sign and upload
+        env:
+          MINISIGN_KEY: ${{ secrets.ASC_MINISIGN_KEY }}
+          TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          BASE: ${{ github.server_url }}/api/packages/${{ github.repository_owner }}/generic/asc
+        run: |
+          ver="$INPUT_VERSION"
+          umask 077
+          printf '%s' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          printf 'Authorization: token %s\n' "$TOKEN" > "$RUNNER_TEMP/hdr"
+          mkdir -p out && find dist -type f -exec cp {} out/ \;
+          for f in out/*; do
+            minisign -S -s "$RUNNER_TEMP/minisign.key" -t "file:$(basename "$f") version:$ver" -m "$f" </dev/null
+          done
+          rm -f "$RUNNER_TEMP/minisign.key"
+          for f in out/*; do
+            name="${f#out/}"
+            curl -sS --proto '=https' -X DELETE -H "@$RUNNER_TEMP/hdr" "$BASE/$ver/$name" >/dev/null || true
+            curl -fsS --proto '=https' -X PUT -H "@$RUNNER_TEMP/hdr" --upload-file "$f" "$BASE/$ver/$name"
+          done
+          rm -f "$RUNNER_TEMP/hdr"
