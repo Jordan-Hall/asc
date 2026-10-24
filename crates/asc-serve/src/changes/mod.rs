@@ -19,6 +19,7 @@ use crate::read::ReadHooks;
 use crate::registry::{Extensions, Registry};
 
 pub mod index;
+pub mod restack;
 pub mod rpc;
 pub mod versions;
 
@@ -49,4 +50,5 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, hooks: &Arc<ReadHook
             registry.pool().clone(),
         )));
     rpc::register(ext, registry);
+    restack::register(ext, registry, hooks);
 }
