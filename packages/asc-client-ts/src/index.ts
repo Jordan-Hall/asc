@@ -24,3 +24,14 @@ export {
   shortChangeId,
   toHex,
 } from "./ids";
+export { type GrpcWebOptions, checkBaseUrl, grpcWeb } from "./transport/grpc-web";
+export {
+  type ForgejoReply,
+  type ForgejoRequest,
+  type HostPort,
+  type HostReply,
+  type HostRequest,
+  type HostTransport,
+  host,
+} from "./transport/host";
+// The relay (node-only, it checks paths) is the subpath `@asc/asc-client/relay`.
