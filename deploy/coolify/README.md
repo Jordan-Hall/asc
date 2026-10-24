@@ -34,7 +34,7 @@ The compose file assumes these facts about the image. Check them before step 4.
   and the two token files, from Compose `configs` with inline content (the standalone file uses a
   file mount instead; see below). S3 credentials use the standard
   `AWS_*` variables. Values come from the Coolify environment.
-- **Forge.** `[auth] provider = "forge"` with `[forgejo] url`: a Basic credential from plain `git`
+- **Forge.** `[auth] provider = "forgejo"` with `[forgejo] url`: a Basic credential from plain `git`
   goes to Forgejo (SPEC 15.6.2). `asc serve` refuses to start with `[forgejo]` and no
   `internal_token_file`, so Forgejo's `INTERNAL_TOKEN` is required.
 - **Git.** `[git] enabled = true` serves smart-HTTP (SPEC 25). Set `ASC_GIT_ENABLED=false` for the
