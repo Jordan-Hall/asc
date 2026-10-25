@@ -33,6 +33,7 @@ asc-store = { workspace = true }
 asc-engine = { workspace = true }
 asc-graph = { workspace = true }
 asc-codeintel = { path = "../asc-codeintel" }
+asc-mcp = { workspace = true }
 roaring = { workspace = true }
 blake3 = { workspace = true }
 async-trait = { workspace = true }

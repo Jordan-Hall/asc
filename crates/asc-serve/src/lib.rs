@@ -41,6 +41,7 @@ pub mod land;
 pub mod landing;
 pub mod limits;
 pub mod mainline;
+pub mod mcp;
 pub mod migrate;
 pub mod mirror;
 pub mod mutations;
@@ -403,6 +404,7 @@ pub async fn serve(
     );
     turbo::register(&ext, turbo.clone());
     let actions = actions_store::register(&ext, &turbo, &registry);
+    mcp::register(&ext, &cfg);
     // Admission runs before authentication; `guarded_routes` also lets it learn which bearer
     // tokens the authorizer accepts, so that only those callers get a bucket of their own.
     let admission = Arc::new(limits::Admission::new(&cfg.limits));
