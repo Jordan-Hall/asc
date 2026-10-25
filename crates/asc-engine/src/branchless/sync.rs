@@ -306,7 +306,18 @@ pub async fn sync<S: CloudStore>(
             base_version: doc.version,
             ..merged.remote.clone()
         };
-        match store.update(&update.op_id(), &update).await {
+        let op_id = update.op_id();
+        let mut sent = store.update(&op_id, &update).await;
+        if matches!(sent, Err(StoreError::Other(_))) {
+            // The failure is ambiguous: the server may have applied the update and lost the
+            // answer. Sending the same request again is safe, because the op id makes it
+            // idempotent: an applied update answers with its version, an unapplied one is
+            // applied or loses the CAS. Giving up here would leave `cloud_base` behind the
+            // server, and a head another machine hid meanwhile would then read as a local
+            // addition and come back.
+            sent = store.update(&op_id, &update).await;
+        }
+        match sent {
             Ok(version) => return Ok(finish(version)),
             Err(StoreError::VersionConflict { .. }) => continue,
             Err(e) => return Err(Error::Store(e.to_string())),
@@ -501,6 +512,63 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Conflict(3)));
+    }
+
+    /// Applies updates like `Mem`, remembers answers by op id (the server's idempotency), and
+    /// loses the answer of the first applied update.
+    #[derive(Default)]
+    struct Lossy {
+        inner: Mem,
+        answers: Mutex<HashMap<String, u64>>,
+        lose: Mutex<bool>,
+    }
+
+    #[async_trait]
+    impl CloudStore for Lossy {
+        async fn get(&self) -> Result<CloudDoc, StoreError> {
+            self.inner.get().await
+        }
+
+        async fn update(&self, op_id: &str, u: &CloudUpdate) -> Result<u64, StoreError> {
+            if let Some(v) = self.answers.lock().unwrap().get(op_id) {
+                return Ok(*v);
+            }
+            let v = self.inner.update(op_id, u).await?;
+            self.answers.lock().unwrap().insert(op_id.to_owned(), v);
+            if std::mem::take(&mut *self.lose.lock().unwrap()) {
+                return Err(StoreError::Other("response lost".into()));
+            }
+            Ok(v)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lost_update_response_does_not_resurrect_a_head_hidden_elsewhere() {
+        let store = Lossy::default();
+        *store.lose.lock().unwrap() = true;
+        let local = LocalState {
+            heads: vec![head(1)],
+            ..LocalState::default()
+        };
+        // The update lands, its answer is lost; the same request is sent again and settles.
+        let out = sync(&store, &local, SyncOptions::default()).await.unwrap();
+        assert_eq!(out.base, BTreeSet::from([cs(1)]));
+        // Another machine hides the head.
+        let hide = CloudUpdate {
+            base_version: out.version,
+            hide: vec![cs(1)],
+            ..CloudUpdate::default()
+        };
+        store.update(&hide.op_id(), &hide).await.unwrap();
+        // The next sync reads the head as hidden elsewhere, not as a new local one.
+        let local = LocalState {
+            heads: vec![head(1)],
+            base: out.base,
+            ..LocalState::default()
+        };
+        let out = sync(&store, &local, SyncOptions::default()).await.unwrap();
+        assert_eq!(out.local.hide, vec![cs(1)]);
+        assert!(visible(&index(&store.get().await.unwrap().heads)).is_empty());
     }
 
     #[tokio::test]
