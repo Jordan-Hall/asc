@@ -120,6 +120,8 @@ pub(crate) async fn resolve_commit(ctx: &Ctx, spec: &str) -> Result<Option<Chang
         Err(asc_engine::graph::Error::Engine(_)) | Err(asc_engine::graph::Error::Missing(_)) => {
             Ok(None)
         }
+        // `master~1` on a root commit names nothing; git reports it as an unknown revision.
+        Err(asc_engine::graph::Error::Remote(m)) if m.contains(" has no parent number ") => Ok(None),
         Err(e) => Err(fatal(e)),
     }
 }
@@ -383,6 +385,7 @@ pub(crate) struct WcParts {
     ignore: IgnoreSources,
     sparse: Option<Sparse>,
     symlinks: bool,
+    ignore_case: bool,
     root: PathBuf,
     index: PathBuf,
 }
@@ -416,6 +419,7 @@ impl WcParts {
             ignore,
             sparse: ws.workspace.ws.sparse.as_deref().map(Sparse::parse),
             symlinks: ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows)),
+            ignore_case: ctx.ignore_case(),
             root,
             index,
         })
@@ -431,6 +435,7 @@ impl WcParts {
             root: &self.root,
             index_path: &self.index,
             symlinks: self.symlinks,
+            ignore_case: self.ignore_case,
             sparse: self.sparse.as_ref(),
             redirections: &self.redirections,
             ignore: &self.ignore,
