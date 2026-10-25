@@ -1,0 +1,8 @@
+{
+  "name": "asc-mcp-inspector-job",
+  "private": true,
+  "description": "Pinned MCP inspector CLI for the asc mcp conformance job (PLAN M16).",
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "2.12.0"
+  }
+}

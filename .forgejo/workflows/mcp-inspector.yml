@@ -1,0 +1,39 @@
+name: mcp-inspector
+# MCP conformance and budget gate (SPEC 16.4, 22.5, PLAN M16): the pinned inspector CLI drives
+# `asc mcp` over stdio, and the ignored budget tests gate RSS and the tools/list estimate.
+# actions/checkout is aliased to `asc ci checkout` (SPEC 12.7); the inspector comes from the
+# committed lockfile with `npm ci` (no floating npx).
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "crates/asc-mcp/**"
+      - "crates/asc/src/mcp/**"
+      - "crates/asc-serve/src/mcp/**"
+      - "proto/**"
+      - ".forgejo/workflows/mcp-inspector.yml"
+  pull_request:
+    paths:
+      - "crates/asc-mcp/**"
+      - "crates/asc/src/mcp/**"
+      - "crates/asc-serve/src/mcp/**"
+      - "proto/**"
+      - ".forgejo/workflows/mcp-inspector.yml"
+
+jobs:
+  inspector:
+    runs-on: ${{ github.event_name == 'pull_request' && 'asc-build' || 'asc-build-trusted' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: https://github.com/dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+      - uses: https://github.com/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release -p asc
+      - run: npm ci --ignore-scripts --prefix crates/asc/tests/inspector
+      - name: Inspector tools/list against asc mcp
+        run: |
+          crates/asc/tests/inspector/node_modules/.bin/mcp-inspector --cli \
+            "$PWD/target/release/asc" mcp --method tools/list > "$RUNNER_TEMP/tools.json"
+          test -s "$RUNNER_TEMP/tools.json"
+      - name: Budgets (idle RSS, 8 concurrent 25k-token diffs, tools/list tokens)
+        run: cargo test --release -p asc --test mcp_budgets -- --include-ignored
