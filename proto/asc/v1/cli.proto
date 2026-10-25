@@ -290,6 +290,81 @@ message OpLogArgs {
   uint32 limit = 1;
 }
 
+// ---- branchless tools (SPEC 21.7; unit B22) ----------------------------------------------------
+
+// `hide` and `unhide` take change prefixes or revisions; the result is an `OpResult`.
+message HideArgs {
+  repeated string revs = 1;                                   // required, at most 1024
+  bool dry_run = 2;
+}
+
+message UnhideArgs {
+  repeated string ids = 1;                                    // required, at most 1024
+  bool dry_run = 2;
+}
+
+// `drafts`: `asc sl --json --cloud`. Labels, subjects and branch names are untrusted data.
+message DraftsArgs {
+  optional string user = 1;                                   // another user's cloud workspaces (needs repo write)
+  bool all = 2;                                               // also landed and obsolete changes
+}
+
+message DraftsChange {
+  string change = 1;
+  string short = 2;
+  string commit = 3;
+  string subject = 4;
+  string state = 5;                                           // draft, landed, obsolete or divergent
+  bool needs_restack = 6;
+  bool current = 7;
+  repeated string branches = 8;
+}
+
+message DraftsStack {
+  string trunk = 1;
+  string base = 2;
+  uint32 behind = 3;
+  repeated DraftsChange changes = 4;
+}
+
+message DraftsResult {
+  uint32 version = 1;
+  repeated DraftsStack stacks = 2;
+}
+
+// `cloud_status`: `asc cloud status --json`.
+message CloudStatusEntry {
+  string cs = 1;
+  string state = 2;                                           // pending, held, failed or too_large
+  int64 attempts = 3;
+  optional string error = 4;
+}
+
+message CloudStatusQueue {
+  uint32 pending = 1;
+  uint32 held = 2;
+  uint32 failed = 3;
+  uint32 too_large = 4;
+  uint32 total = 5;
+  uint32 max = 6;
+  bool full = 7;
+}
+
+message CloudStatusResult {
+  uint32 version = 1;
+  string state = 2;                                           // off, synced, pending or attention
+  string summary = 3;
+  string cloud = 4;                                           // auto, on or off
+  bool branchless = 5;
+  string workspace = 6;
+  optional int64 synced_version = 7;
+  optional int64 last_sync = 8;
+  CloudStatusQueue queue = 9;
+  repeated CloudStatusEntry entries = 10;
+  uint32 visible_heads = 11;
+  uint32 hidden_heads = 12;
+}
+
 // ---- the handles forge-facing tools return (SPEC 22.3.4) --------------------------------------
 
 message AscHandles {

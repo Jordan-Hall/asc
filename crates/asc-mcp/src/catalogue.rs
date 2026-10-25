@@ -488,7 +488,10 @@ mod tests {
         let local = names(&write_ctx(Surface::Stdio, WriteLevel::Local));
         assert_eq!(
             local,
-            ["stage", "create", "modify", "absorb", "restack", "undo", "redo", "worktree_create"]
+            [
+                "stage", "create", "modify", "absorb", "restack", "undo", "redo", "hide", "unhide",
+                "worktree_create"
+            ]
         );
         let remote = names(&write_ctx(Surface::Stdio, WriteLevel::Remote));
         assert!(remote.contains(&"sync") && remote.contains(&"submit"));
