@@ -81,6 +81,7 @@ crates/asc-serve     asc serve: refs, land, smart HTTP, SSH, indexes, cache role
 crates/asc-ci        asc ci checkout/affected/changed/warm/cache/artifact
 crates/asc-codeintel code intelligence: doc model, chunking, secret scanner
 crates/asc-embed     embedding runtime for code intelligence (server only; asc.exe never links it)
+crates/asc-mcp       MCP protocol layer (skeleton; the MCP track is in progress)
 crates/asc-sim       hermetic simulation (tests)
 ```
 
