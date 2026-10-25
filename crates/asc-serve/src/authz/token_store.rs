@@ -979,6 +979,19 @@ impl Authorizer for TokenStoreAuthz {
         }
     }
 
+    async fn authenticate(
+        &self,
+        credential: Option<&asc_rpc::auth::Credential>,
+    ) -> Result<Principal, AuthError> {
+        let credential = credential.ok_or(AuthError::Unauthenticated)?;
+        Ok(self
+            .store
+            .verify(credential.secret().expose())
+            .await?
+            .principal
+            .clone())
+    }
+
     #[cfg(feature = "git-ssh")]
     async fn identify_ssh_key(
         &self,

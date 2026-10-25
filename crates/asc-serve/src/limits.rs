@@ -613,6 +613,26 @@ impl Authorizer for RecordingAuthorizer {
         answer
     }
 
+    /// Forwards to the inner authorizer and records the verdict like a repository decision, so a
+    /// token that authenticates is charged by principal.
+    async fn authenticate(
+        &self,
+        credential: Option<&Credential>,
+    ) -> Result<Principal, AuthError> {
+        let answer = self.inner.authenticate(credential).await;
+        if let Some(c) = credential {
+            let secret = c.secret().expose();
+            match &answer {
+                Ok(p) => self.ids.verified.record(secret, &p.id),
+                Err(_) => self.ids.verified.forget(&token_hash(secret)),
+            }
+            self.ids
+                .bootstrap
+                .settle(&token_hash(secret), answer.is_ok());
+        }
+        answer
+    }
+
     /// SSH keys are the inner authorizer's to recognise; the listener's own admission limits
     /// them (U86), so this only forwards.
     async fn identify_ssh_key(

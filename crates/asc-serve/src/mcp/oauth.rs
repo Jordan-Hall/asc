@@ -636,7 +636,8 @@ impl OauthAuthorizer {
         Self { inner, verifier, directory }
     }
 
-    async fn jwt(&self, token: &str, repo: &str, access: Access) -> Result<Principal, AuthError> {
+    /// Verifies a JWT and maps its subject to a linked user: no repository involved.
+    async fn jwt_user(&self, token: &str) -> Result<(String, Verified), AuthError> {
         let v = self.verifier.verify(token).await?;
         let mapped = self
             .directory
@@ -644,6 +645,11 @@ impl OauthAuthorizer {
             .await?
             .ok_or(AuthError::Unauthenticated)?;
         let id = user_principal(&mapped).ok_or(AuthError::Unauthenticated)?;
+        Ok((id, v))
+    }
+
+    async fn jwt(&self, token: &str, repo: &str, access: Access) -> Result<Principal, AuthError> {
+        let (id, v) = self.jwt_user(token).await?;
         // A scope claim can only narrow: write needs `asc:write` when the token names scopes.
         if access > Access::Read
             && v.scope.as_deref().is_some_and(|s| !s.split(' ').any(|x| x == "asc:write"))
@@ -689,6 +695,17 @@ impl Authorizer for OauthAuthorizer {
             return self.jwt(c.secret().expose(), repo, access).await;
         }
         self.inner.authorize_credential(credential, repo, access).await
+    }
+
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        if let Some(c) = credential
+            && c.scheme() == Scheme::Bearer
+            && self.verifier.claimed_issuer(c.secret().expose()).is_some()
+        {
+            let (id, _) = self.jwt_user(c.secret().expose()).await?;
+            return Ok(Principal { id });
+        }
+        self.inner.authenticate(credential).await
     }
 
     async fn identify_ssh_key(
