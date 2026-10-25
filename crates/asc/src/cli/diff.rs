@@ -513,6 +513,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     c.opts.sides = sides;
     let mut built = built;
     if sides.1 == SideKind::Worktree {
+        warn_lf_to_crlf(ctx, ws, &built).await;
         built.changes = sides::detect_renames(built.changes, &local, &c.opts).await?;
     }
     finish(
@@ -529,6 +530,57 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
         },
     )
     .await
+}
+
+/// git converts a changed work tree file as it reads it, and warns when `core.autocrlf=true` would
+/// turn its lone LFs into CRLFs on the next checkout. A binary file, one without lone LFs and one
+/// whose index content already holds a CR are left alone.
+async fn warn_lf_to_crlf(ctx: &Ctx, ws: &WsCtx, built: &Built) {
+    if ctx.config.bool("core.autocrlf") != Some(true) {
+        return;
+    }
+    let root = ws.projection.toplevel();
+    for change in &built.changes {
+        let (Some(new), Some(old)) = (&change.new, &change.old) else {
+            continue;
+        };
+        if new.kind == asc_core::object::Kind::Symlink {
+            continue;
+        }
+        let Ok(data) = std::fs::read(asc_wc::plain::fs_path(root, &change.path)) else {
+            continue;
+        };
+        if !has_lone_lf_text(&data) {
+            continue;
+        }
+        let in_index = ws
+            .engine
+            .read_file(asc_core::id::FileId::from_bytes(old.id), old.size)
+            .await;
+        if in_index.is_ok_and(|b| b.contains(&b'\r')) {
+            continue;
+        }
+        eprintln!(
+            "warning: in the working copy of '{}', LF will be replaced by CRLF the next time Git touches it",
+            String::from_utf8_lossy(change.path.as_bytes())
+        );
+    }
+}
+
+/// Text (no NUL, no lone CR) with at least one LF that no CR precedes.
+fn has_lone_lf_text(data: &[u8]) -> bool {
+    if data.contains(&0) {
+        return false;
+    }
+    let mut lone_lf = false;
+    for (i, &b) in data.iter().enumerate() {
+        match b {
+            b'\r' if data.get(i + 1) != Some(&b'\n') => return false,
+            b'\n' if i == 0 || data[i - 1] != b'\r' => lone_lf = true,
+            _ => {}
+        }
+    }
+    lone_lf
 }
 
 async fn run_no_index(ctx: &Ctx, mut c: Common, fmt: Formats) -> Result<ExitCode> {
@@ -562,4 +614,19 @@ async fn run_no_index(ctx: &Ctx, mut c: Common, fmt: Formats) -> Result<ExitCode
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_lone_lf_text;
+
+    #[test]
+    fn lone_lf_text_is_what_autocrlf_would_change() {
+        assert!(has_lone_lf_text(b"a\nb\n"));
+        assert!(has_lone_lf_text(b"a\r\nb\n"));
+        assert!(!has_lone_lf_text(b"a\r\nb\r\n"));
+        assert!(!has_lone_lf_text(b"no newline"));
+        assert!(!has_lone_lf_text(b"a\nb\0"));
+        assert!(!has_lone_lf_text(b"a\rb\n"));
+    }
 }
