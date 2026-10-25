@@ -3,6 +3,7 @@
 
 pub mod backfill;
 pub mod embedder;
+pub mod features;
 pub mod files;
 pub mod metrics;
 pub mod modelgen;
