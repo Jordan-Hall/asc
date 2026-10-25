@@ -6,20 +6,25 @@
 //! (ties by committer time, then changeset id), and numbered from 1. `interdiff` renders
 //! `Engine::interdiff` (PLAN C20) with the ordinary diff output forms.
 //!
-//! TODO(C20-server): the server's `Changes.Versions` / `Changes.InterDiff` need an asc server
-//! client in the CLI, which no unit provides yet. Until then every version is reported as
-//! unpublished (`published: false`) and only local versions can be named.
+//! `published` comes from the server's `Changes.Versions` of the change, asked when the default
+//! remote is an asc server. Offline, on a plain git remote, with no remote or on any failure the
+//! answer is `false` for every version and nothing is printed: the local log is the fallback.
+//! `Changes.InterDiff` is not asked; `interdiff` is computed locally.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
 
+use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
 use asc_engine::change::{ChangeRow, ChangeRows, MAX_ROWS};
 use asc_engine::diff::SideKind;
 use asc_engine::interdiff::Side;
+use asc_rpc::ModeId;
+use asc_rpc::server::wire;
+use asc_rpc::services::changes_client::ChangesClient;
 
 use super::sl::{Local, clean, fatal};
 use crate::cli::common::{CliError, Ctx, Result};
@@ -27,9 +32,11 @@ use crate::cli::diff::opts::{Common, apply_config, parse};
 use crate::cli::diff::sides::Built;
 use crate::cli::diff::work::LocalFiles;
 use crate::cli::diff::{Emit, finish, pathspec};
+use crate::cli::fetch::default_remote;
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
 use crate::native::NativeSpec;
+use crate::remote::{self, Intent};
 use crate::stack::json::{Evolog, VersionRow, line};
 
 #[derive(clap::Parser, Debug)]
@@ -119,6 +126,76 @@ async fn versions(l: &Local<'_>, change: ChangeId) -> Result<Vec<Version>> {
     Ok(order.into_iter().filter_map(|i| slots[i].take()).collect())
 }
 
+/// The server may be slow or gone; evolog never waits longer than this for it.
+const SERVER_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// Largest message accepted from the server.
+const MAX_MESSAGE: usize = 8 << 20;
+/// Pages of `Versions` read, and versions kept.
+const MAX_PAGES: usize = 64;
+
+/// The versions the server has recorded for `change`: changeset ids and git ids as hex.
+#[derive(Default)]
+struct Published {
+    cs: HashSet<ChangesetId>,
+    git: HashSet<String>,
+}
+
+/// Asks `Changes.Versions` of the default remote. `None` when there is no asc server to ask or
+/// the ask fails for any reason (offline fallback).
+async fn published(ctx: &Ctx, l: &Local<'_>, change: ChangeId) -> Option<Published> {
+    let name = default_remote(ctx, l.ws).ok()?;
+    ctx.config.get(&format!("remote.{name}.url"))?;
+    let ask = async {
+        let opened = remote::open(ctx, l.ws, &name, Intent::Read).await.ok()?;
+        let server = opened.server.clone()?;
+        let wire_conn = server.session().wire.clone();
+        let mut client = ChangesClient::new(wire_conn.channel.clone())
+            .max_decoding_message_size(MAX_MESSAGE)
+            .max_encoding_message_size(MAX_MESSAGE);
+        let mut out = Published::default();
+        let mut token = String::new();
+        for _ in 0..MAX_PAGES {
+            let req = wire_conn.request(
+                wire::VersionsRequest {
+                    repo: Some(wire::RepoRef {
+                        name: wire_conn.repo.clone(),
+                        id_mode: asc_rpc::IdMode::Asc.to_wire(),
+                    }),
+                    change: Bytes::copy_from_slice(change.as_bytes()),
+                    page_token: token,
+                },
+                None,
+            );
+            let page = client.versions(req).await.ok()?.into_inner();
+            for v in &page.versions {
+                if let Ok(c) = ModeId::<ChangesetId>::from_wire(&v.cs) {
+                    match c {
+                        ModeId::Asc(cs) => {
+                            out.cs.insert(cs);
+                        }
+                        ModeId::Git(g) => {
+                            out.git.insert(g.to_string());
+                        }
+                    }
+                }
+                if !v.git.is_empty() {
+                    out.git
+                        .insert(v.git.iter().map(|b| format!("{b:02x}")).collect());
+                }
+            }
+            if page.next_page_token.is_empty() {
+                return Some(out);
+            }
+            token = page.next_page_token;
+        }
+        Some(out)
+    };
+    tokio::time::timeout(SERVER_BUDGET, ask)
+        .await
+        .ok()
+        .flatten()
+}
+
 fn actor_of(name: &[u8], email: &[u8]) -> String {
     format!(
         "{} <{}>",
@@ -195,6 +272,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let st = l.stacks().await?;
     let (_, row) = super::info::resolve_change(ctx, &l, &st, word.as_deref()).await?;
     let vs = versions(&l, row.change).await?;
+    let known = published(ctx, &l, row.change).await;
     let mut rows = Vec::with_capacity(vs.len());
     for (i, v) in vs.iter().enumerate() {
         let c = l.ws.engine.get_changeset(v.cs).await.map_err(fatal)?;
@@ -202,14 +280,18 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         for p in &v.preds {
             preds.push(l.git_id(*p).await?);
         }
+        let commit = l.git_id(v.cs).await?;
+        let is_published = known
+            .as_ref()
+            .is_some_and(|k| k.cs.contains(&v.cs) || k.git.contains(&commit));
         rows.push(VersionRow {
             version: u32::try_from(i + 1).map_err(|_| fatal("too many versions"))?,
-            commit: l.git_id(v.cs).await?,
+            commit,
             op: format!("{:?}", v.row.op).to_lowercase(),
             at: c.committer.time(),
             actor: actor_of(c.committer.name(), c.committer.email()),
             preds,
-            published: false, // TODO(C20-server): from Changes.Versions.
+            published: is_published,
         });
     }
     if json {
@@ -240,13 +322,20 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 },
                 _ => side(&l, vs[i - 1].cs).await?,
             };
-            let changes = l
-                .ws
-                .engine
-                .interdiff(from, to, None, &c.opts)
-                .await
-                .map_err(fatal)?;
-            print(ctx, &l, &mut c, changes, PagerWant::Never, Some(head.as_bytes())).await?;
+            let changes =
+                l.ws.engine
+                    .interdiff(from, to, None, &c.opts)
+                    .await
+                    .map_err(fatal)?;
+            print(
+                ctx,
+                &l,
+                &mut c,
+                changes,
+                PagerWant::Never,
+                Some(head.as_bytes()),
+            )
+            .await?;
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -297,11 +386,15 @@ async fn interdiff(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
     let (f, t) = (pick(from)?, pick(to)?);
     let spec = pathspec(ctx, &c.paths)?;
-    let changes = l
-        .ws
-        .engine
-        .interdiff(side(&l, f).await?, side(&l, t).await?, spec.as_ref(), &c.opts)
-        .await
-        .map_err(fatal)?;
+    let changes =
+        l.ws.engine
+            .interdiff(
+                side(&l, f).await?,
+                side(&l, t).await?,
+                spec.as_ref(),
+                &c.opts,
+            )
+            .await
+            .map_err(fatal)?;
     print(ctx, &l, &mut c, changes, PagerWant::Auto, None).await
 }
