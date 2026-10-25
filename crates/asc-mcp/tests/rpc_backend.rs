@@ -191,8 +191,8 @@ fn args_for(tool: &str) -> Value {
     }
 }
 
-/// Tools no RPC serves here: `op_log` runs a child verb; `search` is wired by M15.
-const NOT_RPC: [&str; 2] = ["op_log", "search"];
+/// Tools no RPC serves here: `op_log`, `drafts` and `cloud_status` run child verbs; `search` is wired by M15.
+const NOT_RPC: [&str; 4] = ["op_log", "search", "drafts", "cloud_status"];
 
 #[tokio::test]
 async fn each_read_tool_reaches_its_rpc_with_the_connection_injected() {

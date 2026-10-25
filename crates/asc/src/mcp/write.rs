@@ -40,6 +40,8 @@ use crate::cli::common::Ctx;
 const MAX_MESSAGE: usize = 64 * 1024;
 /// Longest revision, change id, path or other word.
 const MAX_WORD: usize = 4096;
+/// Most revisions of one `hide` or `unhide`.
+const MAX_HIDE: usize = 1024;
 /// Most reviewers of one `submit`.
 const MAX_REVIEWERS: usize = 64;
 /// Time a child gets between the polite stop and the kill.
@@ -109,7 +111,9 @@ fn has_remote(ctx: &Ctx) -> bool {
 // ------------------------------------------------------------------------------ arguments
 
 fn no_ctl(key: &str, s: &str) -> Result<(), ToolError> {
-    if s.chars().any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t')) {
+    if s.chars()
+        .any(|c| c == '\0' || (c.is_control() && c != '\n' && c != '\t'))
+    {
         return Err(bad(format!("{key} holds a control character")));
     }
     Ok(())
@@ -268,7 +272,11 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
             }
         }
         "undo" | "redo" => {
-            argv.extend([os(tool), os("--json"), os(format!("--op={}", op_arg(args)?))]);
+            argv.extend([
+                os(tool),
+                os("--json"),
+                os(format!("--op={}", op_arg(args)?)),
+            ]);
             if flag(args, "dry_run")? {
                 argv.push(os("--dry-run"));
             }
@@ -296,7 +304,9 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
                 None => {}
             }
             if let Some(list) = args.get("reviewers").filter(|v| !v.is_null()) {
-                let list = list.as_array().ok_or_else(|| bad("reviewers must be an array"))?;
+                let list = list
+                    .as_array()
+                    .ok_or_else(|| bad("reviewers must be an array"))?;
                 if list.len() > MAX_REVIEWERS {
                     return Err(bad("too many reviewers"));
                 }
@@ -305,9 +315,12 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
                     let ok = !r.is_empty()
                         && r.len() <= 128
                         && !r.starts_with('-')
-                        && r.chars().all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c));
+                        && r.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c));
                     if !ok {
-                        return Err(bad("a reviewer name has characters a user name cannot have"));
+                        return Err(bad(
+                            "a reviewer name has characters a user name cannot have",
+                        ));
                     }
                     argv.push(os(format!("--reviewer={r}")));
                 }
@@ -322,6 +335,37 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
                 argv.push(os(v));
             }
         }
+        "hide" | "unhide" => {
+            // B05: `asc hide <rev>...` and `asc unhide <id>...`, `--json` OpResult, undoable.
+            argv.extend([os(tool), os("--json")]);
+            if flag(args, "dry_run")? {
+                argv.push(os("--dry-run"));
+            }
+            let key = if tool == "hide" { "revs" } else { "ids" };
+            let list = args
+                .get(key)
+                .filter(|v| !v.is_null())
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(format!("{key} must be a non-empty array")))?;
+            if list.is_empty() || list.len() > MAX_HIDE {
+                return Err(bad(format!("{key} holds 1 to {MAX_HIDE} entries")));
+            }
+            // An entry that begins with `-` is refused, so none can become a flag.
+            for v in list {
+                let v = v
+                    .as_str()
+                    .ok_or_else(|| bad(format!("{key} must be strings")))?;
+                if v.is_empty() || v.len() > MAX_WORD || v.starts_with('-') {
+                    return Err(bad(format!(
+                        "{key} entries are revisions or change prefixes"
+                    )));
+                }
+                if v.chars().any(char::is_control) {
+                    return Err(bad(format!("{key} holds a control character")));
+                }
+                argv.push(os(v));
+            }
+        }
         "worktree_create" => {
             argv.extend([os("worktree"), os("add"), os("--json")]);
             let ephemeral = flag(args, "ephemeral")?;
@@ -333,8 +377,7 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
                 argv.push(os("--ephemeral"));
             }
             if let Some(t) = ttl {
-                let ok = t.len() <= 16
-                    && t.chars().all(|c| c.is_ascii_alphanumeric());
+                let ok = t.len() <= 16 && t.chars().all(|c| c.is_ascii_alphanumeric());
                 if !ok {
                     return Err(bad("ttl is a number and s, m, h, d or w"));
                 }
@@ -352,7 +395,11 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
                 argv.push(os(rev));
             }
         }
-        other => return Err(ToolError::not_available(format!("{other} is not a verb tool"))),
+        other => {
+            return Err(ToolError::not_available(format!(
+                "{other} is not a verb tool"
+            )));
+        }
     }
     Ok(Plan { argv, json })
 }
@@ -375,7 +422,11 @@ pub fn stage_paths(args: &Value) -> Result<Vec<String>, ToolError> {
                     return Err(bad(format!("{key} lists too many paths")));
                 }
                 for p in a {
-                    out.push(p.as_str().ok_or_else(|| bad(format!("{key} must hold strings")))?.to_owned());
+                    out.push(
+                        p.as_str()
+                            .ok_or_else(|| bad(format!("{key} must hold strings")))?
+                            .to_owned(),
+                    );
                 }
             }
             Some(_) => return Err(bad(format!("{key} must be an array"))),
@@ -394,7 +445,12 @@ fn strip<'a>(p: &'a str, prefix: &str) -> &'a str {
 }
 
 fn patch_paths(patch: &str, out: &mut Vec<String>) -> Result<(), ToolError> {
-    let quoted = || ToolError::new(code::PATH_POLICY, "quoted or unreadable paths in a patch are refused");
+    let quoted = || {
+        ToolError::new(
+            code::PATH_POLICY,
+            "quoted or unreadable paths in a patch are refused",
+        )
+    };
     for line in patch.lines() {
         if let Some(rest) = line.strip_prefix("diff --git ") {
             if rest.contains('"') {
@@ -405,7 +461,12 @@ fn patch_paths(patch: &str, out: &mut Vec<String>) -> Result<(), ToolError> {
             for (i, _) in rest.match_indices(" b/") {
                 any = true;
                 out.push(strip(&rest[..i], "a/").to_owned());
-                out.push(rest[i + 1..].strip_prefix("b/").unwrap_or(&rest[i + 1..]).to_owned());
+                out.push(
+                    rest[i + 1..]
+                        .strip_prefix("b/")
+                        .unwrap_or(&rest[i + 1..])
+                        .to_owned(),
+                );
             }
             if !any {
                 return Err(quoted());
@@ -468,7 +529,12 @@ async fn drain<R: AsyncRead + Unpin>(mut r: R, cap: usize) -> (Vec<u8>, bool) {
 }
 
 fn clean(s: &str, max: usize) -> String {
-    redact(&s.chars().filter(|c| !c.is_control() || *c == ' ').take(max).collect::<String>())
+    redact(
+        &s.chars()
+            .filter(|c| !c.is_control() || *c == ' ')
+            .take(max)
+            .collect::<String>(),
+    )
 }
 
 /// Runs one verb to its end. The supervision runs as its own task so that a cancelled call (whose
@@ -487,7 +553,10 @@ async fn supervise(
     cancel: impl std::future::Future<Output = ()> + Send,
 ) -> Result<Finished, ToolError> {
     tokio::pin!(cancel);
-    let verb = argv.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
+    let verb = argv
+        .first()
+        .map(|a| a.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let exe = std::env::current_exe()
         .map_err(|e| ToolError::internal(format!("cannot find the asc binary: {e}")))?;
     let mut c = tokio::process::Command::new(exe);
@@ -538,7 +607,9 @@ async fn supervise(
         err_task.abort();
         let freed = recover_locks(&root, started);
         if freed > 0 {
-            eprintln!("asc mcp: asc {verb}: removed {freed} stale lock file(s) left by the stopped child");
+            eprintln!(
+                "asc mcp: asc {verb}: removed {freed} stale lock file(s) left by the stopped child"
+            );
         }
         return Err(ToolError::internal(format!(
             "asc {verb} was cancelled or ran longer than {} s; it was stopped and its locks recovered",
@@ -559,10 +630,18 @@ async fn supervise(
         .unwrap_or_default();
     let code = status.code().unwrap_or(-1);
     if !stderr.is_empty() {
-        eprintln!("asc mcp: asc {verb}: {}", clean(&String::from_utf8_lossy(&stderr), MAX_ERROR_TEXT));
+        eprintln!(
+            "asc mcp: asc {verb}: {}",
+            clean(&String::from_utf8_lossy(&stderr), MAX_ERROR_TEXT)
+        );
     }
     drop(group);
-    Ok(Finished { code, stdout, stderr, over })
+    Ok(Finished {
+        code,
+        stdout,
+        stderr,
+        over,
+    })
 }
 
 #[cfg(unix)]
@@ -574,7 +653,12 @@ mod group {
 
     impl Group {
         pub fn new(child: &tokio::process::Child) -> Self {
-            Self(child.id().and_then(|p| i32::try_from(p).ok()).and_then(Pid::from_raw))
+            Self(
+                child
+                    .id()
+                    .and_then(|p| i32::try_from(p).ok())
+                    .and_then(Pid::from_raw),
+            )
         }
 
         pub fn term(&self) {
@@ -686,14 +770,22 @@ fn git_dirs(root: &Path) -> Option<(PathBuf, PathBuf)> {
         let text = std::fs::read_to_string(&dot).ok()?;
         let p = text.lines().next()?.strip_prefix("gitdir:")?.trim();
         let p = Path::new(p);
-        if p.is_absolute() { p.to_path_buf() } else { root.join(p) }
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        }
     } else {
         return None;
     };
     let common = match std::fs::read_to_string(gitdir.join("commondir")) {
         Ok(t) => {
             let p = Path::new(t.trim());
-            if p.is_absolute() { p.to_path_buf() } else { gitdir.join(p) }
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                gitdir.join(p)
+            }
         }
         Err(_) => gitdir.clone(),
     };
@@ -722,7 +814,9 @@ fn recover_locks(root: &Path, since: SystemTime) -> usize {
     let mut stack = vec![(common.join("refs"), 0usize)];
     let mut seen = 0usize;
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in rd.flatten() {
             seen += 1;
             if seen > MAX_LOCK_SCAN {
@@ -761,14 +855,32 @@ fn error_result(f: &Finished) -> Value {
     let err_text = String::from_utf8_lossy(&f.stderr);
     let own = last_json(&f.stderr).or_else(|| last_json(&f.stdout));
     if let Some(e) = own.as_ref().and_then(|v| v.get("error")) {
-        let c = e.get("code").and_then(Value::as_str).unwrap_or(code::INTERNAL);
-        let m = e.get("message").and_then(Value::as_str).unwrap_or("the command failed");
-        let c = if c.chars().all(|c| c.is_ascii_uppercase() || c == '_') { c } else { code::INTERNAL };
+        let c = e
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or(code::INTERNAL);
+        let m = e
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("the command failed");
+        let c = if c.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+            c
+        } else {
+            code::INTERNAL
+        };
         return json!({ "error": { "code": c, "message": clean(m, MAX_ERROR_TEXT) } });
     }
-    let c = if err_text.contains("STALE_OP") { code::STALE_OP } else { code::INTERNAL };
+    let c = if err_text.contains("STALE_OP") {
+        code::STALE_OP
+    } else {
+        code::INTERNAL
+    };
     let m = clean(&err_text, MAX_ERROR_TEXT);
-    let m = if m.is_empty() { format!("the command failed with exit code {}", f.code) } else { m };
+    let m = if m.is_empty() {
+        format!("the command failed with exit code {}", f.code)
+    } else {
+        m
+    };
     json!({ "error": { "code": c, "message": m } })
 }
 
@@ -781,7 +893,10 @@ fn reply_for(f: &Finished, ok_result: impl FnOnce() -> Value) -> Result<Reply, T
             exit_code: f.code,
             result: last_json(&f.stdout).unwrap_or_else(ok_result),
         }),
-        c => Ok(Reply::Verb { exit_code: c, result: error_result(f) }),
+        c => Ok(Reply::Verb {
+            exit_code: c,
+            result: error_result(f),
+        }),
     }
 }
 
@@ -791,14 +906,22 @@ async fn op_head(root: &Path, ctx: &CallContext) -> Option<(String, Value)> {
     let f = run(root, argv, ctx).await.ok()?;
     let v = last_json(&f.stdout)?;
     let row = v.get("ops")?.as_array()?.first()?;
-    Some((row.get("op")?.as_str()?.to_owned(), row.get("refs").cloned().unwrap_or_else(|| json!([]))))
+    Some((
+        row.get("op")?.as_str()?.to_owned(),
+        row.get("refs").cloned().unwrap_or_else(|| json!([])),
+    ))
 }
 
 /// Runs the write tool `tool` in the worktree at `root`.
 ///
 /// # Errors
 /// Invalid arguments, a child that cannot start, or one that was cancelled or ran too long.
-pub async fn call(root: &Path, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
+pub async fn call(
+    root: &Path,
+    tool: &str,
+    args: &Value,
+    ctx: &CallContext,
+) -> Result<Reply, ToolError> {
     let p = plan(tool, args)?;
     if p.json {
         let f = run(root, p.argv, ctx).await?;
@@ -823,7 +946,10 @@ pub async fn call(root: &Path, tool: &str, args: &Value, ctx: &CallContext) -> R
             result["hints"] = json!([note]);
         }
     }
-    Ok(Reply::Verb { exit_code: f.code, result })
+    Ok(Reply::Verb {
+        exit_code: f.code,
+        result,
+    })
 }
 
 #[cfg(test)]
@@ -831,15 +957,58 @@ mod tests {
     use super::*;
 
     fn argv(tool: &str, args: &Value) -> Vec<String> {
-        plan(tool, args).unwrap().argv.iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        plan(tool, args)
+            .unwrap()
+            .argv
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
     fn create_needs_a_message_and_passes_it_as_one_argument() {
         assert!(plan("create", &json!({})).is_err());
         assert!(plan("create", &json!({"message": "  "})).is_err());
-        let a = argv("create", &json!({"message": "-x --force\nbody", "all": true, "insert": true}));
-        assert_eq!(a, ["create", "--message=-x --force\nbody", "-a", "--insert"]);
+        let a = argv(
+            "create",
+            &json!({"message": "-x --force\nbody", "all": true, "insert": true}),
+        );
+        assert_eq!(
+            a,
+            ["create", "--message=-x --force\nbody", "-a", "--insert"]
+        );
+    }
+
+    #[test]
+    fn hide_and_unhide_pass_flags_first_and_entries_last() {
+        assert_eq!(
+            argv("hide", &json!({"revs": ["abc", "def"], "dry_run": true})),
+            ["hide", "--json", "--dry-run", "abc", "def"]
+        );
+        assert_eq!(
+            argv("unhide", &json!({"ids": ["kk"]})),
+            ["unhide", "--json", "kk"]
+        );
+    }
+
+    #[test]
+    fn hide_refuses_flag_like_empty_and_control_revisions() {
+        for bad in [
+            json!("-x"),
+            json!(""),
+            json!(
+                "a
+b"
+            ),
+            json!(1),
+        ] {
+            assert!(plan("hide", &json!({"revs": [bad]})).is_err());
+        }
+        assert!(plan("hide", &json!({})).is_err());
+        assert!(plan("hide", &json!({"revs": []})).is_err());
+        assert!(plan("unhide", &json!({"ids": "kk"})).is_err());
+        let many: Vec<String> = (0..1025).map(|i| format!("r{i}")).collect();
+        assert!(plan("unhide", &json!({"ids": many})).is_err());
     }
 
     #[test]
@@ -862,15 +1031,27 @@ mod tests {
         assert!(plan("undo", &json!({})).is_err());
         assert!(plan("undo", &json!({"op": "--force"})).is_err());
         assert!(plan("undo", &json!({"op": "x y"})).is_err());
-        let a = argv("undo", &json!({"op": "0123abcd", "dry_run": true, "force": true}));
+        let a = argv(
+            "undo",
+            &json!({"op": "0123abcd", "dry_run": true, "force": true}),
+        );
         assert_eq!(a, ["undo", "--json", "--op=0123abcd", "--dry-run"]);
-        assert_eq!(argv("redo", &json!({"op": "0123abcd"})), ["redo", "--json", "--op=0123abcd"]);
+        assert_eq!(
+            argv("redo", &json!({"op": "0123abcd"})),
+            ["redo", "--json", "--op=0123abcd"]
+        );
     }
 
     #[test]
     fn absorb_previews_unless_applied() {
-        assert_eq!(argv("absorb", &json!({})), ["absorb", "--json", "--dry-run"]);
-        assert_eq!(argv("absorb", &json!({"apply": true})), ["absorb", "--json"]);
+        assert_eq!(
+            argv("absorb", &json!({})),
+            ["absorb", "--json", "--dry-run"]
+        );
+        assert_eq!(
+            argv("absorb", &json!({"apply": true})),
+            ["absorb", "--json"]
+        );
     }
 
     #[test]
@@ -887,8 +1068,22 @@ mod tests {
     fn worktree_paths_stay_out_of_metadata_directories() {
         assert!(plan("worktree_create", &json!({"path": "../w/.git/x"})).is_err());
         assert!(plan("worktree_create", &json!({"path": "w", "ttl": "7d"})).is_err());
-        let a = argv("worktree_create", &json!({"path": "../w", "ephemeral": true, "ttl": "7d", "mode": "plain"}));
-        assert_eq!(a, ["worktree", "add", "--json", "--ephemeral", "--ttl=7d", "--mode=plain", "../w"]);
+        let a = argv(
+            "worktree_create",
+            &json!({"path": "../w", "ephemeral": true, "ttl": "7d", "mode": "plain"}),
+        );
+        assert_eq!(
+            a,
+            [
+                "worktree",
+                "add",
+                "--json",
+                "--ephemeral",
+                "--ttl=7d",
+                "--mode=plain",
+                "../w"
+            ]
+        );
     }
 
     #[test]
@@ -897,7 +1092,11 @@ mod tests {
         let got = stage_paths(&json!({"add": ["y"], "patch": p})).unwrap();
         assert!(got.contains(&"y".to_owned()) && got.contains(&"x.txt".to_owned()));
         let evil = "diff --git a/../x b/../x\n--- a/../x\n+++ b/../x\n";
-        assert!(stage_paths(&json!({"patch": evil})).unwrap().contains(&"../x".to_owned()));
+        assert!(
+            stage_paths(&json!({"patch": evil}))
+                .unwrap()
+                .contains(&"../x".to_owned())
+        );
         assert!(stage_paths(&json!({"patch": "diff --git \"a/q\" \"b/q\"\n"})).is_err());
         assert!(stage_paths(&json!({"add": "x"})).is_err());
     }
@@ -910,7 +1109,11 @@ mod tests {
         std::fs::write(git.join("index.lock"), b"").unwrap();
         std::fs::write(git.join("refs/heads/topic.lock"), b"").unwrap();
         let future = SystemTime::now() + Duration::from_secs(3600);
-        assert_eq!(recover_locks(d.path(), future), 0, "locks older than the child stay");
+        assert_eq!(
+            recover_locks(d.path(), future),
+            0,
+            "locks older than the child stay"
+        );
         assert!(git.join("index.lock").exists());
         let past = SystemTime::now() - Duration::from_secs(3600);
         assert_eq!(recover_locks(d.path(), past), 2);
@@ -922,7 +1125,9 @@ mod tests {
         let f = Finished {
             code: 128,
             stdout: Vec::new(),
-            stderr: br#"{"version":1,"error":{"code":"STALE_OP","message":"op is not the latest"}}"#.to_vec(),
+            stderr:
+                br#"{"version":1,"error":{"code":"STALE_OP","message":"op is not the latest"}}"#
+                    .to_vec(),
             over: false,
         };
         assert_eq!(error_result(&f)["error"]["code"], "STALE_OP");

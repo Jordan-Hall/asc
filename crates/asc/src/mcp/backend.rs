@@ -482,6 +482,36 @@ fn check_paths(gate: &Gate, tool: &str, args: &Value) -> Result<(), ToolError> {
 
 // ------------------------------------------------------------------------------ local verbs
 
+/// The argv of the branchless read tools. `user` is a user name: it cannot start with `-` or hold
+/// anything but the characters of a name, so it cannot become a flag.
+fn branchless_argv(tool: &str, args: &Value) -> Result<Vec<OsString>, ToolError> {
+    match tool {
+        "cloud_status" => Ok(os(&["cloud", "status", "--json"])),
+        "drafts" => {
+            let mut a = os(&["sl", "--json", "--cloud"]);
+            if flag(args, "all") {
+                a.push("-a".into());
+            }
+            if let Some(u) = args.get("user").filter(|v| !v.is_null()) {
+                let u = u.as_str().ok_or_else(|| invalid("user must be a string"))?;
+                let ok = !u.is_empty()
+                    && u.len() <= 128
+                    && !u.starts_with('-')
+                    && u.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_.@".contains(c));
+                if !ok {
+                    return Err(invalid("user has characters a user name cannot have"));
+                }
+                a.push(format!("--user={u}").into());
+            }
+            Ok(a)
+        }
+        other => Err(ToolError::not_available(format!(
+            "{other} is not a branchless read"
+        ))),
+    }
+}
+
 fn os(items: &[&str]) -> Vec<OsString> {
     items.iter().map(OsString::from).collect()
 }
@@ -807,6 +837,25 @@ impl Inner {
         Ok(Reply::Messages(
             stream::iter([Ok(page(&content, total, args))]).boxed(),
         ))
+    }
+
+    /// `drafts` (`asc sl --json --cloud`) and `cloud_status` (`asc cloud status --json`), SPEC 21.7.
+    /// The child prints one JSON document. Labels, subjects and branch names in it are data from
+    /// other machines; they go to the client as strings and are never read as instructions here.
+    async fn branchless_read(
+        &self,
+        t: &Target,
+        tool: &str,
+        args: &Value,
+        ctx: &CallContext,
+    ) -> Result<Reply, ToolError> {
+        let a = branchless_argv(tool, args)?;
+        let out = self
+            .run_ok(t.gate.root(), a, MAX_CHILD_OUT, ctx, &format!("asc {tool}"))
+            .await?;
+        let doc: Value = serde_json::from_slice(out.trim_ascii())
+            .map_err(|_| ToolError::internal(format!("asc {tool} printed bad JSON")))?;
+        Ok(Reply::Messages(stream::iter([Ok(doc)]).boxed()))
     }
 
     async fn worktrees(&self, args: &Value) -> Result<Reply, ToolError> {
@@ -1273,6 +1322,7 @@ impl McpBackend for LocalBackend {
             "grep" => inner.grep(&target, args, ctx).await,
             "read_file" => inner.read_file(&target, args, ctx).await,
             "worktrees" => inner.worktrees(args).await,
+            "drafts" | "cloud_status" => inner.branchless_read(&target, tool, args, ctx).await,
             _ => inner.workspace(def, tool, args, ctx, &target).await,
         }
     }
@@ -1307,6 +1357,33 @@ mod tests {
         assert_eq!(tz_minutes("+0130"), 90);
         assert_eq!(tz_minutes("-0500"), -300);
         assert_eq!(tz_minutes("+0000"), 0);
+    }
+
+    #[test]
+    fn branchless_reads_build_fixed_argv() {
+        let v = |t: &str, a: Value| -> Vec<String> {
+            branchless_argv(t, &a)
+                .unwrap()
+                .iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(v("cloud_status", json!({})), ["cloud", "status", "--json"]);
+        assert_eq!(v("drafts", json!({})), ["sl", "--json", "--cloud"]);
+        assert_eq!(
+            v("drafts", json!({"all": true, "user": "ann.b@x"})),
+            ["sl", "--json", "--cloud", "-a", "--user=ann.b@x"]
+        );
+        for bad in [
+            "-x", "", "a b", "a
+b", "--user=x",
+        ] {
+            assert!(
+                branchless_argv("drafts", &json!({"user": bad})).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(branchless_argv("drafts", &json!({"user": 1})).is_err());
     }
 
     #[test]
