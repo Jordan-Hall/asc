@@ -618,8 +618,9 @@ surfaces = ["http"]
 rpc = "UpdateRefs refs/for/<trunk>/asc-<change>"
 request = ""
 response = "asc.v1.UpdateRefsResponse"
-required = ["changes"]
+required = ["repo", "changes"]
 add = [
+  { name = "repo", type = "string", description = "Repository as owner/name." },
   { name = "changes", type = "string[]", description = "Change ids to submit." },
   { name = "draft", type = "boolean", description = "Submit as drafts." },
   { name = "reviewers", type = "string[]", description = "Reviewer names." },
@@ -654,3 +655,43 @@ hidden = ["committer_name", "committer_email", "committer_time"]
 limits = [{ field = "dry_run", default = true }]
 needs = "server_write"
 description = "Restack changes onto a new base. dry_run defaults to true."
+
+[[tool]]
+name = "land"
+toolset = "write"
+surfaces = ["http"]
+rpc = "UpdateRefs (UPDATE_MODE_LAND)"
+request = ""
+response = "asc.v1.UpdateRefsResponse"
+required = ["repo", "branch"]
+add = [
+  { name = "repo", type = "string", description = "Repository as owner/name." },
+  { name = "changes", type = "string[]", description = "Change ids of one stack; the last is the tip. Give changes or tip." },
+  { name = "tip", type = "string", description = "Revision of the stack tip. Give changes or tip." },
+  { name = "branch", type = "string", description = "Branch to land on; it must be one the repository accepts land requests on." },
+  { name = "dry_run", type = "boolean", description = "Preview only (default true). Send false to land." },
+]
+add_out = [
+  { name = "dry_run", type = "boolean", description = "Whether this was a preview." },
+  { name = "would_land", type = "boolean", description = "Whether the stack merges without conflicts." },
+  { name = "conflicts", type = "string[]", description = "Paths that conflict (preview)." },
+  { name = "changed_protected", type = "string[]", description = "Protected paths the stack changes (preview)." },
+]
+limits = [{ field = "changes", max_items = 100 }, { field = "dry_run", default = true }]
+ann = ["destructive", "open_world"]
+confirm = "always"
+needs = "server_write_mcp"
+description = "Land a stack on a branch through the server's land pipeline: protections, required approvals, path rules and hooks apply. dry_run defaults to true and previews conflicts; always asks for confirmation. Conflicts come back as data."
+
+[[tool]]
+name = "classify"
+toolset = "stack"
+surfaces = ["stdio", "http"]
+rpc = "Repo.Classify"
+request = "asc.v1.ClassifyRequest"
+response = "asc.v1.ClassifyResponse"
+shaped = true
+worktree = true
+ann = ["read_only"]
+add_out = [{ name = "omitted_files", type = "integer", description = "Files beyond the 300 listed or the token budget." }]
+description = "Class of each changed file between base and head (rename, mode, whitespace, comment, docs, generated, lockfile, test, logic) and the overall class. At most 300 files."

@@ -532,7 +532,7 @@ mod tests {
         ctx.server_write = true;
         assert_eq!(names(&ctx), ["submit", "rebase", "restack"]);
         ctx.server_mcp_write = true;
-        assert_eq!(names(&ctx), ["commit", "submit", "rebase", "restack"]);
+        assert_eq!(names(&ctx), ["commit", "submit", "rebase", "restack", "land"]);
     }
 
     #[test]
