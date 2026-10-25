@@ -783,6 +783,37 @@ impl TokenStore {
         .await?)
     }
 
+    /// The strongest access the user in `principal` (`pat:<user>`, or a bare user name) holds on
+    /// `repo` through live personal tokens: the rights an OIDC subject linked to that user gets
+    /// (M33). `None` when no live token grant covers `repo`. A database failure is `Forbidden`.
+    pub async fn user_access(&self, principal: &str, repo: &str) -> Result<Option<Access>, AuthError> {
+        let now = self.now();
+        let user = principal.strip_prefix("pat:").unwrap_or(principal);
+        let rows = sqlx::query(
+            "SELECT g.repo AS repo, g.access AS access              FROM auth_tokens t JOIN auth_token_grants g ON g.token_id = t.id              WHERE t.kind = 'pat' AND (t.principal = $1 OR t.principal = $2)              AND t.revoked IS NULL AND (t.expires IS NULL OR t.expires > $3) LIMIT 1024",
+        )
+        .bind(format!("pat:{user}"))
+        .bind(user.to_owned())
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "user access lookup failed");
+            AuthError::Forbidden
+        })?;
+        let mut best = None;
+        for r in rows {
+            let pattern: String = r.try_get("repo").map_err(|_| AuthError::Forbidden)?;
+            let access: String = r.try_get("access").map_err(|_| AuthError::Forbidden)?;
+            if let Some(access) = access_parse(&access)
+                && (Grant { repo: pattern, access }).covers(repo)
+            {
+                best = best.max(Some(access));
+            }
+        }
+        Ok(best)
+    }
+
     /// Looks `token` up and checks it. `Unauthenticated` for anything that is not a live token.
     async fn verify(&self, token: &str) -> Result<Arc<Verified>, AuthError> {
         let now = self.now();

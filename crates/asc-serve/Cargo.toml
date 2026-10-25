@@ -69,6 +69,8 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 getrandom = "0.4"
+# JWT signature checks for the optional MCP OAuth path (mcp/oauth.rs); already built for rustls.
+ring = "0.17.14"
 # Free space of the volume that holds the git views (`min_free_disk`, SPEC 25.5).
 fs4 = "0.13.1"
 # SSH keys (SPEC 25.11.2). `ring` keeps OpenSSL and a C toolchain out; `rsa` is needed to parse RSA

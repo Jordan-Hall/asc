@@ -221,6 +221,8 @@ pub struct McpConfig {
     pub hmac_keys: Vec<PathBuf>,
     pub max_tokens: u32,
     pub max_inflight_per_principal: u32,
+    /// `[mcp.oauth]` (M33): absent means no OAuth.
+    pub oauth: Option<crate::mcp::oauth::McpOauthConfig>,
 }
 
 impl Default for McpConfig {
@@ -232,6 +234,7 @@ impl Default for McpConfig {
             hmac_keys: Vec::new(),
             max_tokens: 6000,
             max_inflight_per_principal: 8,
+            oauth: None,
         }
     }
 }
@@ -1089,6 +1092,9 @@ impl ServeConfig {
         }
         if self.mcp.enabled && !MCP_AUTH_LAYER {
             return invalid("mcp.enabled = true is refused until the auth layer exists");
+        }
+        if let Some(oauth) = &self.mcp.oauth {
+            oauth.validate().map_err(|e| ConfigError::Invalid(format!("mcp.oauth: {e}")))?;
         }
         if self.mcp.write && !self.mcp.enabled {
             return invalid("mcp.write needs mcp.enabled");
