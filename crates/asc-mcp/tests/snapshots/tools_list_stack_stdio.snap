@@ -1,0 +1,358 @@
+---
+source: crates/asc-mcp/src/catalogue.rs
+expression: tools_list_json(ctx)
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "The stack a change belongs to, bottom to top, selected by change id, revision or review number.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": [
+              "change"
+            ]
+          },
+          {
+            "required": [
+              "rev"
+            ]
+          },
+          {
+            "required": [
+              "review"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "change"
+                  ]
+                },
+                {
+                  "required": [
+                    "rev"
+                  ]
+                },
+                {
+                  "required": [
+                    "review"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "change": {
+            "pattern": "^([k-z]{2})+$",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "description": "Changes listed.",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rev": {
+            "type": "string"
+          },
+          "review": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "stack",
+      "outputSchema": {
+        "properties": {
+          "base": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          },
+          "trunk": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Versions of a change, newest first. Page with page_token.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "pattern": "^([k-z]{2})+$",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Versions listed.",
+            "maximum": 20,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page_token": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "change_versions",
+      "outputSchema": {
+        "properties": {
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "next_page_token": {
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          },
+          "versions": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Recent operations of this repository, newest first, with the op id that undo takes. Arguments are redacted.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "op_log",
+      "outputSchema": {
+        "properties": {
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "ops": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Conflicted paths in the working copy with the sides of each conflict.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "description": "Conflicts listed.",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paths": {
+            "description": "Limit to these paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "conflicts",
+      "outputSchema": {
+        "properties": {
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Worktrees of this repository; worktree arguments of other tools must be one of these paths.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "description": "Worktrees listed.",
+            "maximum": 100,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "worktrees",
+      "outputSchema": {
+        "properties": {
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          },
+          "worktrees": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

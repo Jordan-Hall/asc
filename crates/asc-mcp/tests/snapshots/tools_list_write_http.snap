@@ -1,0 +1,711 @@
+---
+source: crates/asc-mcp/src/catalogue.rs
+expression: tools_list_json(ctx)
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a changeset from file operations. update_ref must be empty (a draft change) or refs/for/*; any other value is refused.",
+      "inputSchema": {
+        "$defs": {
+          "FileOp": {
+            "oneOf": [
+              {
+                "required": [
+                  "put_content"
+                ]
+              },
+              {
+                "required": [
+                  "put_file_id"
+                ]
+              },
+              {
+                "required": [
+                  "delete"
+                ]
+              },
+              {
+                "required": [
+                  "move_from"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "put_content"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "put_file_id"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "delete"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "move_from"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "delete": {
+                "type": "boolean"
+              },
+              "mode": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "move_from": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "put_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "put_file_id": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "RefTarget": {
+            "oneOf": [
+              {
+                "required": [
+                  "changeset"
+                ]
+              },
+              {
+                "required": [
+                  "tag"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "changeset"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "tag"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "changeset": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              },
+              "tag": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "expect": {
+            "$ref": "#/$defs/RefTarget"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b64"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "ops": {
+            "items": {
+              "$ref": "#/$defs/FileOp"
+            },
+            "type": "array"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "repo": {
+            "description": "Repository as owner/name.",
+            "pattern": "^[^/]+/[^/]+$",
+            "type": "string",
+            "x-mcp-header": "Repo"
+          },
+          "update_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "type": "object"
+      },
+      "name": "commit",
+      "outputSchema": {
+        "properties": {
+          "git": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Upload changes for review through the push pipeline. Always asks for confirmation.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {
+            "description": "Change ids to submit.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "draft": {
+            "description": "Submit as drafts.",
+            "type": "boolean"
+          },
+          "force": {
+            "description": "Overwrite a diverged remote version.",
+            "type": "boolean"
+          },
+          "reviewers": {
+            "description": "Reviewer names.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changes"
+        ],
+        "type": "object"
+      },
+      "name": "submit",
+      "outputSchema": {
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Rebase head onto onto and report conflicts. dry_run defaults to true; update_ref must be empty or refs/for/*.",
+      "inputSchema": {
+        "$defs": {
+          "FileOp": {
+            "oneOf": [
+              {
+                "required": [
+                  "put_content"
+                ]
+              },
+              {
+                "required": [
+                  "put_file_id"
+                ]
+              },
+              {
+                "required": [
+                  "delete"
+                ]
+              },
+              {
+                "required": [
+                  "move_from"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "put_content"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "put_file_id"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "delete"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "move_from"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "delete": {
+                "type": "boolean"
+              },
+              "mode": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "move_from": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "put_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "put_file_id": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "RefTarget": {
+            "oneOf": [
+              {
+                "required": [
+                  "changeset"
+                ]
+              },
+              {
+                "required": [
+                  "tag"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "changeset"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "tag"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "changeset": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              },
+              "tag": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "RepoRef": {
+            "properties": {
+              "id_mode": {
+                "enum": [
+                  "asc",
+                  "git"
+                ]
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "Resolution": {
+            "properties": {
+              "changeset": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              },
+              "op": {
+                "$ref": "#/$defs/FileOp"
+              },
+              "path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "b64": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "b64"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "type": "boolean"
+          },
+          "expect": {
+            "$ref": "#/$defs/RefTarget"
+          },
+          "head": {
+            "type": "string"
+          },
+          "head_repo": {
+            "$ref": "#/$defs/RepoRef"
+          },
+          "onto": {
+            "type": "string"
+          },
+          "repo": {
+            "description": "Repository as owner/name.",
+            "pattern": "^[^/]+/[^/]+$",
+            "type": "string",
+            "x-mcp-header": "Repo"
+          },
+          "resolutions": {
+            "items": {
+              "$ref": "#/$defs/Resolution"
+            },
+            "type": "array"
+          },
+          "update_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "type": "object"
+      },
+      "name": "rebase",
+      "outputSchema": {
+        "properties": {
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "result": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Restack changes onto a new base. dry_run defaults to true.",
+      "inputSchema": {
+        "$defs": {
+          "RefTarget": {
+            "oneOf": [
+              {
+                "required": [
+                  "changeset"
+                ]
+              },
+              {
+                "required": [
+                  "tag"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "changeset"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "tag"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ],
+            "properties": {
+              "changeset": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              },
+              "tag": {
+                "pattern": "^([0-9a-f]{2})+$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "RestackItem": {
+            "properties": {
+              "change": {
+                "pattern": "^([k-z]{2})+$",
+                "type": "string"
+              },
+              "expect": {
+                "$ref": "#/$defs/RefTarget"
+              },
+              "update_ref": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "atomic": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/RestackItem"
+            },
+            "type": "array"
+          },
+          "onto": {
+            "type": "string"
+          },
+          "repo": {
+            "description": "Repository as owner/name.",
+            "pattern": "^[^/]+/[^/]+$",
+            "type": "string",
+            "x-mcp-header": "Repo"
+          }
+        },
+        "required": [
+          "repo"
+        ],
+        "type": "object"
+      },
+      "name": "restack",
+      "outputSchema": {
+        "properties": {
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "patch_unchanged": {
+            "items": {
+              "pattern": "^([k-z]{2})+$",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

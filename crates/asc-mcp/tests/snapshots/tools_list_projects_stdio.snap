@@ -1,0 +1,104 @@
+---
+source: crates/asc-mcp/src/catalogue.rs
+expression: tools_list_json(ctx)
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Projects of the repository at a revision and the dependency edges between them.",
+      "inputSchema": {
+        "$defs": {
+          "Ecosystem": {
+            "enum": [
+              "unspecified",
+              "rust",
+              "python",
+              "dotnet",
+              "node",
+              "declared"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 500,
+            "description": "Projects listed.",
+            "maximum": 500,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rev": {
+            "type": "string"
+          },
+          "select": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "types": {
+            "items": {
+              "$ref": "#/$defs/Ecosystem"
+            },
+            "type": "array"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "project_graph",
+      "outputSchema": {
+        "properties": {
+          "changeset": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "graph_id": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "projects": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

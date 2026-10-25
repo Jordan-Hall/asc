@@ -1,0 +1,2492 @@
+---
+source: crates/asc-mcp/src/catalogue.rs
+expression: tools_list_json(ctx)
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Stage or unstage paths, or apply a patch to the index. Ignored paths are never staged.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "add": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "b64": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "b64"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b64"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "remove": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "b64": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "b64"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "stage",
+      "outputSchema": {
+        "properties": {
+          "status": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a change on top of the current one with the given message. No editor runs, so the message is required.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "insert": {
+            "type": "boolean"
+          },
+          "message": {
+            "description": "required: no editor runs",
+            "type": "string"
+          },
+          "onto": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "create",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Amend the current change with the working-copy edits (all stages everything), or start a new change with new_change.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all": {
+            "type": "boolean"
+          },
+          "into": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "new_change": {
+            "description": "`-c`",
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "modify",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Move working-copy hunks into the changes of the stack that last touched those lines. Previews unless apply is true.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "apply": {
+            "description": "false: preview only",
+            "type": "boolean"
+          },
+          "into": {
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "absorb",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Rebase changes onto their updated parents. scope selects all, downstack, upstack or only the given change.",
+      "inputSchema": {
+        "$defs": {
+          "RestackScope": {
+            "enum": [
+              "all",
+              "downstack",
+              "upstack",
+              "only"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/$defs/RestackScope"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "restack",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Undo one operation, named by the op id from your earlier result. Refused with STALE_OP unless it is the latest in the op log.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "op": {
+            "description": "from an earlier OpResult; STALE_OP unless current",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "name": "undo",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Redo the latest undone operation, named by its op id.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "op": {
+            "description": "from an earlier OpResult; STALE_OP unless current",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "name": "redo",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Add a worktree at path for a revision, optionally ephemeral with a ttl such as 7d.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "ephemeral": {
+            "type": "boolean"
+          },
+          "mode": {
+            "description": "\"virtual\" or \"plain\"",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "string"
+          },
+          "ttl": {
+            "description": "\"7d\"",
+            "type": "string"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "worktree_create",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Fetch, restack onto the updated trunk and optionally delete merged changes. Asks for confirmation when delete_merged is true.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "delete_merged": {
+            "type": "boolean"
+          },
+          "fetch": {
+            "description": "default true",
+            "type": "boolean"
+          },
+          "restack": {
+            "description": "default true",
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "sync",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false
+      },
+      "description": "Upload a change or the whole stack for review. Always asks for confirmation. Drafts unless draft is false.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "type": "string"
+          },
+          "draft": {
+            "description": "default: asc.stack.submit.draft, else true",
+            "type": "boolean"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "reviewers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "update_only": {
+            "type": "boolean"
+          },
+          "whole_stack": {
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "submit",
+      "outputSchema": {
+        "$defs": {
+          "OpStatus": {
+            "enum": [
+              "unspecified",
+              "ok",
+              "nothing",
+              "paused",
+              "ambiguous"
+            ]
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "restore"
+            ]
+          },
+          {
+            "required": [
+              "switch"
+            ]
+          },
+          {
+            "required": [
+              "cherry_pick"
+            ]
+          },
+          {
+            "required": [
+              "revert"
+            ]
+          },
+          {
+            "required": [
+              "clone"
+            ]
+          },
+          {
+            "required": [
+              "worktree_add"
+            ]
+          },
+          {
+            "required": [
+              "worktree_remove"
+            ]
+          },
+          {
+            "required": [
+              "worktree_list"
+            ]
+          },
+          {
+            "required": [
+              "stash"
+            ]
+          },
+          {
+            "required": [
+              "fetch"
+            ]
+          },
+          {
+            "required": [
+              "pull"
+            ]
+          },
+          {
+            "required": [
+              "push"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "restore"
+                  ]
+                },
+                {
+                  "required": [
+                    "switch"
+                  ]
+                },
+                {
+                  "required": [
+                    "cherry_pick"
+                  ]
+                },
+                {
+                  "required": [
+                    "revert"
+                  ]
+                },
+                {
+                  "required": [
+                    "clone"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_add"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_remove"
+                  ]
+                },
+                {
+                  "required": [
+                    "worktree_list"
+                  ]
+                },
+                {
+                  "required": [
+                    "stash"
+                  ]
+                },
+                {
+                  "required": [
+                    "fetch"
+                  ]
+                },
+                {
+                  "required": [
+                    "pull"
+                  ]
+                },
+                {
+                  "required": [
+                    "push"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "candidates": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "cherry_pick": {
+            "type": "object"
+          },
+          "clone": {
+            "type": "object"
+          },
+          "conflicts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "fetch": {
+            "type": "object"
+          },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "op": {
+            "type": "string"
+          },
+          "pull": {
+            "type": "object"
+          },
+          "push": {
+            "type": "object"
+          },
+          "refs": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "restore": {
+            "type": "object"
+          },
+          "revert": {
+            "type": "object"
+          },
+          "reviews": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "rewritten": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "skipped": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stash": {
+            "type": "object"
+          },
+          "status": {
+            "$ref": "#/$defs/OpStatus"
+          },
+          "switch": {
+            "type": "object"
+          },
+          "version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree_add": {
+            "type": "object"
+          },
+          "worktree_list": {
+            "type": "object"
+          },
+          "worktree_remove": {
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

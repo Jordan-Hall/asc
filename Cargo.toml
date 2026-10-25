@@ -9,6 +9,7 @@ members = [
     "crates/asc-engine",
     "crates/asc-git",
     "crates/asc-rpc",
+    "crates/asc-mcp",
     "crates/asc-wc",
     "crates/asc-vfs",
     "crates/asc-serve",
@@ -39,6 +40,7 @@ asc-vfs = { path = "crates/asc-vfs" }
 asc-serve = { path = "crates/asc-serve", default-features = false }   # `asc` forwards `git-compat` itself (SPEC 25.9)
 asc-ci = { path = "crates/asc-ci" }
 asc-codeintel = { path = "crates/asc-codeintel" }
+asc-mcp = { path = "crates/asc-mcp" }
 
 # storage
 object_store   = { version = "0.14.2", default-features = false, features = ["fs", "aws"] }
@@ -128,6 +130,8 @@ thiserror      = "2.0.21"
 anyhow         = "1.0.104"
 tracing        = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+# mcp (M03): no `macros`, no `schemars`, no `auth` (SPEC 22.7.1)
+rmcp           = { version = "3.6.0", default-features = false, features = ["server", "base64", "transport-io", "transport-async-rw", "transport-streamable-http-server", "elicitation", "request-state"] }
 # test
 insta          = "1.49.0"
 proptest       = "1.12.0"
