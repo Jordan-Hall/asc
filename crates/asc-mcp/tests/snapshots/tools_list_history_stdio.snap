@@ -1,0 +1,310 @@
+---
+source: crates/asc-mcp/src/catalogue.rs
+expression: tools_list_json(ctx)
+---
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Commits that changed a line range of a file (git log -L). Without a range, lines 1 to 200.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "end_line": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "page_token": {
+            "description": "Continuation from the previous page.",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b64"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "rev": {
+            "type": "string"
+          },
+          "scan_budget": {
+            "default": 10000,
+            "maximum": 50000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "start_line": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "line_history",
+      "outputSchema": {
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entries": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "next_page_token": {
+            "type": "string"
+          },
+          "resume_token": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Difference between two versions of one change (from_v to to_v), as a patch cut at hunk boundaries.",
+      "inputSchema": {
+        "$defs": {
+          "DiffFormat": {
+            "enum": [
+              "names",
+              "status",
+              "stat",
+              "numstat",
+              "patch",
+              "raw"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "pattern": "^([k-z]{2})+$",
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "format": {
+            "$ref": "#/$defs/DiffFormat"
+          },
+          "from_v": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "default": 6000,
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to_v": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "interdiff",
+      "outputSchema": {
+        "properties": {
+          "changes": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "b64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "b64"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Commits ahead and behind between a and b; three_dot compares from the merge base. Up to 50 per side.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "ahead_page_token": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          },
+          "behind_page_token": {
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "maximum": 50,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "three_dot": {
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "compare",
+      "outputSchema": {
+        "properties": {
+          "ahead": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ahead_entries": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "ahead_next": {
+            "type": "string"
+          },
+          "behind": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "behind_entries": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "behind_next": {
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "merge_base": {
+            "pattern": "^([0-9a-f]{2})+$",
+            "type": "string"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ]
+}

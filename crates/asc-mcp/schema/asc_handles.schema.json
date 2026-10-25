@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "asc_change": {
+      "pattern": "^([k-z]{2})+$",
+      "type": "string"
+    },
+    "head": {
+      "pattern": "^([0-9a-f]{2})+$",
+      "type": "string"
+    },
+    "merge_base": {
+      "pattern": "^([0-9a-f]{2})+$",
+      "type": "string"
+    },
+    "stack_parent": {
+      "pattern": "^([k-z]{2})+$",
+      "type": "string"
+    },
+    "version": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "type": "object"
+}
