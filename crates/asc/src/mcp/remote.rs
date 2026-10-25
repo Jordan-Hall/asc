@@ -193,7 +193,11 @@ impl Narrow {
             if self.read_only {
                 return false;
             }
-        } else if self.toolsets.as_ref().is_some_and(|t| !t.contains(&def.toolset)) {
+        } else if self
+            .toolsets
+            .as_ref()
+            .is_some_and(|t| !t.contains(&def.toolset))
+        {
             return false;
         }
         self.tools.as_ref().is_none_or(|t| t.contains(name))
@@ -203,8 +207,15 @@ impl Narrow {
         if !self.active() {
             return;
         }
-        if let Some(tools) = reply.pointer_mut("/result/tools").and_then(Value::as_array_mut) {
-            tools.retain(|t| t.get("name").and_then(Value::as_str).is_some_and(|n| self.allows(n)));
+        if let Some(tools) = reply
+            .pointer_mut("/result/tools")
+            .and_then(Value::as_array_mut)
+        {
+            tools.retain(|t| {
+                t.get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| self.allows(n))
+            });
         }
     }
 }
@@ -239,9 +250,13 @@ impl Proxy {
     async fn fail_auth(&self, id: Option<&Value>, refused: bool) {
         let host = &self.host;
         let text = if refused {
-            format!("the server at {host} refused the credential; run git credential approve for {host}")
+            format!(
+                "the server at {host} refused the credential; run git credential approve for {host}"
+            )
         } else {
-            format!("the server at {host} needs a credential and none was found; run git credential approve for {host}")
+            format!(
+                "the server at {host} needs a credential and none was found; run git credential approve for {host}"
+            )
         };
         self.error_reply(id, -32001, &text).await;
         let _ = self.fatal.send(format!("asc mcp: {text}"));
@@ -283,9 +298,13 @@ impl Proxy {
         let id = msg.get("id").cloned();
         let method = msg.get("method").and_then(Value::as_str).map(str::to_owned);
         if method.as_deref() == Some("tools/call") {
-            let name = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or_default();
+            let name = msg
+                .pointer("/params/name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if !self.narrow.allows(name) {
-                self.error_reply(id.as_ref(), -32602, &format!("unknown tool: {name}")).await;
+                self.error_reply(id.as_ref(), -32602, &format!("unknown tool: {name}"))
+                    .await;
                 return;
             }
             if let Some(cap) = self.max_tokens {
@@ -294,7 +313,10 @@ impl Proxy {
                     .and_then(Value::as_object_mut)
                     .map(|p| p.entry("arguments").or_insert_with(|| json!({})));
                 if let Some(args) = args.and_then(Value::as_object_mut) {
-                    let cur = args.get("max_tokens").and_then(Value::as_u64).unwrap_or(cap);
+                    let cur = args
+                        .get("max_tokens")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(cap);
                     args.insert("max_tokens".into(), json!(cur.min(cap)));
                 }
             }
@@ -306,7 +328,12 @@ impl Proxy {
                 Ok(r) => r,
                 Err(e) => {
                     let why = e.without_url().to_string();
-                    self.error_reply(id.as_ref(), PROXY_ERROR, &format!("cannot reach the server: {why}")).await;
+                    self.error_reply(
+                        id.as_ref(),
+                        PROXY_ERROR,
+                        &format!("cannot reach the server: {why}"),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -350,7 +377,8 @@ impl Proxy {
                 return;
             }
             credential::report_result(&resolved, true);
-            self.relay_success(resp, method.as_deref(), id.as_ref()).await;
+            self.relay_success(resp, method.as_deref(), id.as_ref())
+                .await;
             return;
         }
     }
@@ -384,7 +412,12 @@ impl Proxy {
         self.error_reply(id, PROXY_ERROR, &text).await;
     }
 
-    async fn relay_success(&self, mut resp: reqwest::Response, method: Option<&str>, id: Option<&Value>) {
+    async fn relay_success(
+        &self,
+        mut resp: reqwest::Response,
+        method: Option<&str>,
+        id: Option<&Value>,
+    ) {
         let list = method == Some("tools/list");
         let ctype = resp
             .headers()
@@ -400,13 +433,19 @@ impl Proxy {
                 Ok(None) => break,
                 Err(e) => {
                     let why = e.without_url().to_string();
-                    self.error_reply(id, PROXY_ERROR, &format!("the server's reply broke off: {why}")).await;
+                    self.error_reply(
+                        id,
+                        PROXY_ERROR,
+                        &format!("the server's reply broke off: {why}"),
+                    )
+                    .await;
                     return;
                 }
             };
             buf.extend_from_slice(&chunk);
             if buf.len() > MAX_REPLY {
-                self.error_reply(id, PROXY_ERROR, "the server's reply is too large").await;
+                self.error_reply(id, PROXY_ERROR, "the server's reply is too large")
+                    .await;
                 return;
             }
             if sse {
@@ -426,7 +465,8 @@ impl Proxy {
         } else if id.is_some() && !matches!(method, Some(m) if m.starts_with("notifications/")) {
             // 202 or an empty body for a request that expects an answer.
             if method.is_some() {
-                self.error_reply(id, PROXY_ERROR, "the server sent no reply").await;
+                self.error_reply(id, PROXY_ERROR, "the server sent no reply")
+                    .await;
             }
         }
     }
@@ -453,7 +493,9 @@ fn header_safe(s: &str) -> bool {
 fn drain_events(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     loop {
-        let text = String::from_utf8_lossy(buf).replace("\r\n", "\n").replace('\r', "\n");
+        let text = String::from_utf8_lossy(buf)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n");
         let Some(end) = text.find("\n\n") else {
             return out;
         };
@@ -473,7 +515,11 @@ fn drain_events(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {
 // ------------------------------------------------------------------ the session
 
 /// Reads JSON-RPC lines from `input` and proxies them until it closes or a credential is lost.
-async fn pump<R>(proxy: Arc<Proxy>, mut input: BufReader<R>, mut fatal_rx: mpsc::UnboundedReceiver<String>) -> Result<()>
+async fn pump<R>(
+    proxy: Arc<Proxy>,
+    mut input: BufReader<R>,
+    mut fatal_rx: mpsc::UnboundedReceiver<String>,
+) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -493,10 +539,16 @@ where
         match read {
             Ok(0) => break Ok(()),
             Ok(_) if buf.len() > MAX_LINE => {
-                break Err(CliError::Fatal("asc mcp: a message from the host is too large".into()));
+                break Err(CliError::Fatal(
+                    "asc mcp: a message from the host is too large".into(),
+                ));
             }
             Ok(_) => {}
-            Err(e) => break Err(CliError::Fatal(format!("asc mcp: cannot read standard input: {e}"))),
+            Err(e) => {
+                break Err(CliError::Fatal(format!(
+                    "asc mcp: cannot read standard input: {e}"
+                )));
+            }
         }
         let line = String::from_utf8_lossy(&buf);
         let line = line.trim();
@@ -506,18 +558,25 @@ where
         let msg: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(_) => {
-                proxy.error_reply(Some(&Value::Null), -32700, "parse error").await;
+                proxy
+                    .error_reply(Some(&Value::Null), -32700, "parse error")
+                    .await;
                 continue;
             }
         };
         if !msg.is_object() {
-            proxy.error_reply(Some(&Value::Null), -32600, "one JSON-RPC message per line").await;
+            proxy
+                .error_reply(Some(&Value::Null), -32600, "one JSON-RPC message per line")
+                .await;
             continue;
         }
         let method = msg.get("method").and_then(Value::as_str);
         if method == Some("notifications/cancelled") {
             if let Some(rid) = msg.pointer("/params/requestId") {
-                let handle = inflight.lock().unwrap_or_else(|p| p.into_inner()).remove(&rid.to_string());
+                let handle = inflight
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&rid.to_string());
                 if let Some(h) = handle {
                     h.abort();
                 }
@@ -539,7 +598,10 @@ where
             drop(permit);
         });
         if let Some(k) = key {
-            inflight.lock().unwrap_or_else(|p| p.into_inner()).insert(k, handle);
+            inflight
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(k, handle);
         }
     };
     if outcome.is_ok() {
@@ -561,7 +623,8 @@ where
 /// An unusable URL, a credential error before the first request, or the loss of the credential
 /// during the session.
 pub async fn serve(ctx: &Ctx, raw_url: &str, flags: Flags) -> Result<ExitCode> {
-    let url = endpoint(raw_url, Policy::current()).map_err(|e| CliError::Fatal(format!("asc mcp: {e}")))?;
+    let url = endpoint(raw_url, Policy::current())
+        .map_err(|e| CliError::Fatal(format!("asc mcp: {e}")))?;
     let real_out = super::guard::take_stdout()
         .map_err(|e| CliError::Fatal(format!("asc mcp: cannot protect standard output: {e}")))?;
     let client = reqwest::Client::builder()
@@ -620,12 +683,23 @@ mod tests {
     fn endpoint_rules() {
         assert_eq!(ep("https://h.example").unwrap(), "https://h.example/mcp");
         assert_eq!(ep("https://h.example/").unwrap(), "https://h.example/mcp");
-        assert_eq!(ep("https://h.example/mcp").unwrap(), "https://h.example/mcp");
-        assert_eq!(ep("https://h.example/asc/").unwrap(), "https://h.example/asc/mcp");
-        assert!(ep("http://h.example").is_err());
-        assert!(ep("http://127.0.0.1:1").is_err(), "loopback http needs the opt-in");
         assert_eq!(
-            endpoint("http://127.0.0.1:8080", Policy::LOOPBACK_HTTP).unwrap().as_str(),
+            ep("https://h.example/mcp").unwrap(),
+            "https://h.example/mcp"
+        );
+        assert_eq!(
+            ep("https://h.example/asc/").unwrap(),
+            "https://h.example/asc/mcp"
+        );
+        assert!(ep("http://h.example").is_err());
+        assert!(
+            ep("http://127.0.0.1:1").is_err(),
+            "loopback http needs the opt-in"
+        );
+        assert_eq!(
+            endpoint("http://127.0.0.1:8080", Policy::LOOPBACK_HTTP)
+                .unwrap()
+                .as_str(),
             "http://127.0.0.1:8080/mcp"
         );
         assert!(endpoint("http://h.example", Policy::LOOPBACK_HTTP).is_err());
@@ -637,7 +711,9 @@ mod tests {
 
     #[test]
     fn sse_events_split_and_join_data_lines() {
-        let mut b = b"event: message\ndata: {\"a\":1}\n\ndata: x\r\ndata: y\r\n\r\n: ping\n\ndata: part".to_vec();
+        let mut b =
+            b"event: message\ndata: {\"a\":1}\n\ndata: x\r\ndata: y\r\n\r\n: ping\n\ndata: part"
+                .to_vec();
         let got = drain_events(&mut b);
         assert_eq!(got, vec![b"{\"a\":1}".to_vec(), b"x\ny".to_vec()]);
         assert_eq!(b, b"data: part");
@@ -647,15 +723,26 @@ mod tests {
     fn narrowing_removes_only() {
         let none = Narrow::default();
         assert!(none.allows("anything_the_server_lists"));
-        let ro = Narrow { read_only: true, ..Narrow::default() };
+        let ro = Narrow {
+            read_only: true,
+            ..Narrow::default()
+        };
         assert!(ro.allows("log"));
         assert!(!ro.allows("commit"));
         assert!(!ro.allows("not_a_known_tool"));
-        let only = Narrow { tools: Some(BTreeSet::from(["log".to_owned()])), ..Narrow::default() };
+        let only = Narrow {
+            tools: Some(BTreeSet::from(["log".to_owned()])),
+            ..Narrow::default()
+        };
         assert!(only.allows("log") && !only.allows("status"));
         let mut list = json!({ "result": { "tools": [{ "name": "log" }, { "name": "commit" }, { "name": "show" }] } });
         ro.filter_list(&mut list);
-        let names: Vec<&str> = list["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, ["log", "show"]);
     }
 }
