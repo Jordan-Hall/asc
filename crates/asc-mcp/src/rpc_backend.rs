@@ -322,8 +322,9 @@ fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
 impl McpBackend for RpcBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let def = catalogue::find(tool, self.surface).ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
-        // Only read tools reach the wire: writes are M32/B22, `search` is M15 (TODO(M15)).
-        if !def.ann.read_only || def.needs != Needs::None {
+        // Only read tools reach the wire: writes are M32/B22; `search` (feature-gated) is served by
+        // `search::SearchTool` over a `CodeIntelClient`, wired by I21.
+        if !def.ann.read_only || def.needs != Needs::None || def.requires_feature.is_some() {
             return Err(ToolError::not_available(format!("{tool} is not served over RPC")));
         }
         let method = self
