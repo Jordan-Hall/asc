@@ -14,6 +14,7 @@ pub mod cloud;
 pub mod codeintel_overlay;
 pub mod install;
 pub mod lifecycle;
+pub mod live;
 pub mod metrics;
 pub mod plugin_api;
 pub mod plugin_api_read;
