@@ -1,6 +1,6 @@
 # Status
 
-Honest state as of 2026-10-24 (branch `asc/v16`). Items marked (unverified) were not checked
+Honest state as of 2026-10-24 (branch `master`; `asc/v16` is the ASC Hub fork branch). Items marked (unverified) were not checked
 against a running system when this page was written. SPEC and PLAN are the design; this page is
 what exists.
 
@@ -17,8 +17,8 @@ what exists.
   (feature `git-ssh`, default on, off in config), HTTP/3 (feature `http3`, needs `[tls]`).
 - Release pipeline: split Linux and Windows chains, signed write-once artefacts, MSI, winget
   manifests, `install.sh`, `asc upgrade` (`docs/RELEASING.md`).
-- `asc api` for the IDE plugins; the `crates/asc/src/bridge/` frame bridge is uncommitted work
-  at the time of writing (unverified).
+- `asc api` for the IDE plugins; the `crates/asc/src/bridge/` frame bridge is committed (its
+  `Bridge.Run` decodes `OpResult` from `cli.proto`; not yet run against a live host, unverified).
 
 ## What runs where
 
@@ -62,7 +62,12 @@ staging `asc serve` is not yet wired to ASC Hub.
   design; the staging server runs standalone. Repository registration for `asc/soma` and
   `asc/dds` and the `/.well-known/asc` proxy route are not done (`deploy/coolify/README.md`).
 - SSH on staging: enabled in the compose file (`[ssh]`, host key in the state volume, port `22222:2222`); not deployed yet, so unverified end to end.
-- `asc doctor --store` is a stub per `deploy/coolify/README.md` (unverified whether still true).
+- `asc doctor --store` is implemented (`crates/asc/src/cli/doctor.rs`: store transport checks and an
+  integrity sample of stored objects, plus the create-exclusive probe). Its result against the
+  staging bucket is not recorded here (unverified).
+- Not built yet: MCP tools (`asc mcp` is a stub; `crates/asc-mcp` is a protocol skeleton), `asc cloud`,
+  `asc live`, the `UploadScip` RPC (TODO(I16) in `crates/asc/src/cli/codeintel/scip.rs`) and the
+  Semantic embedder.
 - PLAN unit completion is tracked in `docs/PLAN.md` and `docs/CARRY.md`, not here.
 
 ## Known gaps in git compatibility
