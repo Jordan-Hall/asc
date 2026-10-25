@@ -1390,7 +1390,11 @@ pub(crate) async fn perform(ctx: &Ctx, m: Move) -> Result<ExitCode> {
     };
 
     // What the move carried across (git prints it as `diff-index --name-status`).
-    if !quiet && !m.opts.force && !m.keep_tree && target.is_some() {
+    // A branch made (or reset) at HEAD with no start point merges nothing, so git lists nothing;
+    // a named start point goes through the full switch and lists what it carried.
+    let in_place_branch = matches!(&m.dest, Dest::Create { start: Some(s), .. } if s.label == "HEAD")
+        && old_commit == target;
+    if !quiet && !m.opts.force && !m.keep_tree && !in_place_branch && target.is_some() {
         show_local_changes(ctx, ws, target).await?;
     }
 

@@ -17,7 +17,9 @@ use asc_core::path::RepoPath;
 use futures::TryStreamExt;
 
 use super::common::{CliError, Ctx, Result, WsCtx};
-use super::restore::{Spec, index_tree, root_of, stage_from_tree, sync_worktree, worktree_paths};
+use super::restore::{
+    Spec, index_tree, root_of, stage_from_tree, sync_worktree, tool, worktree_paths,
+};
 use super::switch::{
     Cmd, Dest, Move, Opts, Rev, RevKind, abbrev_len, bad_branch_name, create_tracking, fatal,
     guess_remote, parse, perform, report_tracking, resolve_rev, valid_branch_name,
@@ -313,9 +315,13 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
                 p.words.len()
             )));
         }
-        let rev = resolve_rev(ctx, ws, word)
-            .await?
-            .ok_or_else(|| CliError::Fatal(format!("invalid reference: {word}")))?;
+        // A word that names no commit is taken for a path, which `--detach` refuses.
+        let rev = resolve_rev(ctx, ws, word).await?.ok_or_else(|| {
+            CliError::Fatal(format!(
+                "{} checkout: --detach does not take a path argument '{word}'",
+                tool(ctx)
+            ))
+        })?;
         let mv = Move {
             dest: Dest::Detach { commit: rev.commit },
             opts: o,
