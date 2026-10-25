@@ -25,6 +25,8 @@ COPY proto ./proto
 # Read at build time: tests/turbo is a workspace member, and the asc binary embeds the cheatsheet
 # (help_git.rs) and the Windows packaging files (upgrade.rs).
 COPY tests/turbo ./tests/turbo
+# bench/asc-bench is a workspace member: cargo reads its manifest even for `-p asc`.
+COPY bench/asc-bench ./bench/asc-bench
 COPY docs/CHEATSHEET.md ./docs/CHEATSHEET.md
 COPY packaging/windows ./packaging/windows
 # Cache mounts persist on the CI docker daemon, so a later (or interrupted-then-retried) build
