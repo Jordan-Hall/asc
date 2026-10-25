@@ -243,6 +243,24 @@ fn confirmation_rules_follow_the_catalogue() {
     assert!(!needs_confirmation(commit, &json!({ "update_ref": "refs/heads/x" }), m));
 }
 
+#[test]
+fn update_ref_of_commit_and_rebase_is_empty_or_refs_for() {
+    for tool in ["commit", "rebase"] {
+        let def = catalogue::find(tool, Surface::Http).unwrap();
+        for ok in [json!({}), json!({ "update_ref": "" }), json!({ "update_ref": "refs/for/master" })] {
+            assert!(check_update_ref(def, &ok).is_ok(), "{tool} {ok}");
+        }
+        for bad in ["master", "refs/heads/master", "refs/for/", "refs/for/../heads/m", "refs/for//x", "refs/tags/v"] {
+            let e = check_update_ref(def, &json!({ "update_ref": bad })).unwrap_err();
+            assert_eq!(e.code, INVALID_PARAMS, "{tool} {bad}");
+        }
+        assert!(check_update_ref(def, &json!({ "update_ref": 5 })).is_err());
+    }
+    // Other tools are not touched.
+    let restack = catalogue::find("restack", Surface::Http).unwrap();
+    assert!(check_update_ref(restack, &json!({ "update_ref": "refs/heads/x" })).is_ok());
+}
+
 fn long_items(n: usize) -> Vec<Value> {
     (0..n).map(|i| json!({ "commits": [format!("{i}{}", "x".repeat(100))] })).collect()
 }
