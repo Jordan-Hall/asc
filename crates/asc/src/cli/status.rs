@@ -1840,6 +1840,12 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     let mut lock = stdout.lock();
     // A closed pipe is the reader's choice, not a failure of status.
     let _ = lock.write_all(&p.out).and_then(|()| lock.flush());
+    // B31: the live-conflict notice goes to stderr, so no stdout format changes.
+    if matches!(o.format, Format::Long | Format::Short | Format::V1) {
+        if let Some(n) = super::live::notice(&ws.home, &ws.workspace.ws.id.to_string()) {
+            eprintln!("{n}");
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 

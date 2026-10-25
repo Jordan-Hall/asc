@@ -227,6 +227,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "projects",
     "graph",
     "landed",
+    "live",
     "api",
     "watch",
     "search",
