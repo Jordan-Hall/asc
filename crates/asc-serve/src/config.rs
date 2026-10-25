@@ -947,6 +947,7 @@ pub struct ServeConfig {
     pub upstream: Option<String>,
     pub cache: CacheConfig,
     pub auth: AuthConfig,
+    #[cfg(feature = "forgejo")]
     pub forgejo: Option<ForgejoConfig>,
     pub turbo: TurboConfig,
     pub mcp: McpConfig,
@@ -979,11 +980,11 @@ impl Default for ServeConfig {
             upstream: None,
             cache: CacheConfig::default(),
             auth: AuthConfig::default(),
+            #[cfg(feature = "forgejo")]
             forgejo: None,
             turbo: TurboConfig::default(),
             mcp: McpConfig::default(),
             codeintel: CodeIntelConfig::default(),
-    #[cfg(feature = "forgejo")]
             bucket: BucketConfig::default(),
             limits: Limits::default(),
             git: GitConfig::default(),
@@ -1016,7 +1017,6 @@ impl ServeConfig {
 
     /// Parses and validates config text.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
-            #[cfg(feature = "forgejo")]
         let cfg: Self = toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
         cfg.validate()?;
         Ok(cfg)
@@ -1051,8 +1051,14 @@ impl ServeConfig {
         if let Some(url) = &self.public_url {
             check_server_url("public_url", url)?;
         }
+        #[cfg(feature = "forgejo")]
         if let Some(forgejo) = &self.forgejo {
             check_server_url("forgejo.url", &forgejo.url)?;
+            if self.auth.provider.is_none() {
+                return invalid(
+                    "[forgejo] does not select the authorizer: set auth.provider to \"forgejo\" or \"token_store\"",
+                );
+            }
         }
         if self.http3_port == Some(0) {
             return invalid("http3_port must be a UDP port number");
@@ -1094,14 +1100,8 @@ impl ServeConfig {
         if self.cache.disk.0 > 0 && self.cache.disk_dir.is_none() {
             return invalid("cache.disk needs cache.disk_dir");
         }
-        #[cfg(feature = "forgejo")]
         self.ssh.validate()?;
         self.limits.validate()?;
-            if self.auth.provider.is_none() {
-                return invalid(
-                    "[forgejo] does not select the authorizer: set auth.provider to \"forgejo\" or \"token_store\"",
-                );
-            }
         self.cloud.validate()?;
         self.web.validate()?;
         self.validate_grants()
@@ -1260,42 +1260,6 @@ mod tests {
         assert!(primary("s3://b?endpoint=https://garage:3900", "").is_ok());
     }
 
-    #[test]
-    fn the_store_endpoint_is_https_or_opted_in_loopback() {
-        // No exception for the server's own store: plain http to a private host is refused at
-        // load, and the error names the origin only.
-        let err = primary("s3://b?endpoint=http://u:hunter2@garage-abc:3900/x", "")
-            .expect_err("plain http to a private host")
-            .to_string();
-        assert!(err.contains("http://garage-abc:3900"), "{err}");
-        assert!(!err.contains("hunter2"), "{err}");
-        assert!(primary("s3://b?endpoint=ftp://garage:3900", "").is_err());
-        let loopback = "s3://b?endpoint=http://127.0.0.1:3900";
-        assert!(check_store_endpoint(loopback, Policy::STRICT).is_err());
-        assert!(check_store_endpoint(loopback, Policy::LOOPBACK_HTTP).is_ok());
-        let private = "s3://b?endpoint=http://garage-abc:3900";
-        assert!(check_store_endpoint(private, Policy::LOOPBACK_HTTP).is_err());
-        assert!(
-            check_store_endpoint("s3://b?endpoint=https://garage:3900", Policy::STRICT).is_ok()
-        );
-        assert!(check_store_endpoint("memory:///", Policy::STRICT).is_ok());
-    }
-
-    #[test]
-    fn a_plain_http_listener_needs_https_in_front_or_the_dev_opt_in() {
-        let cfg = |extra: &str| primary("memory:///", extra).unwrap();
-        let proxied_h3 = |port: &str| {
-            primary(
-                "memory:///",
-                &format!(
-                    "public_url = \"https://asc.example.org\"
-http3_port = {port}"
-                ),
-            )
-        };
-        // Behind a TLS-terminating proxy (the Coolify setup): plain listener, https public_url.
-        let proxied = cfg("listen = \"0.0.0.0:7890\"\npublic_url = \"https://asc.example.org\"");
-        assert!(proxied.check_listener(Policy::STRICT).is_ok());
     #[cfg(feature = "forgejo")]
     #[test]
     fn the_forgejo_adapter_needs_an_explicit_provider() {
@@ -1334,6 +1298,42 @@ http3_port = {port}"
         assert!(primary("memory:///", "[auth]\nprovider = \"nope\"\n").is_err());
     }
 
+    #[test]
+    fn the_store_endpoint_is_https_or_opted_in_loopback() {
+        // No exception for the server's own store: plain http to a private host is refused at
+        // load, and the error names the origin only.
+        let err = primary("s3://b?endpoint=http://u:hunter2@garage-abc:3900/x", "")
+            .expect_err("plain http to a private host")
+            .to_string();
+        assert!(err.contains("http://garage-abc:3900"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
+        assert!(primary("s3://b?endpoint=ftp://garage:3900", "").is_err());
+        let loopback = "s3://b?endpoint=http://127.0.0.1:3900";
+        assert!(check_store_endpoint(loopback, Policy::STRICT).is_err());
+        assert!(check_store_endpoint(loopback, Policy::LOOPBACK_HTTP).is_ok());
+        let private = "s3://b?endpoint=http://garage-abc:3900";
+        assert!(check_store_endpoint(private, Policy::LOOPBACK_HTTP).is_err());
+        assert!(
+            check_store_endpoint("s3://b?endpoint=https://garage:3900", Policy::STRICT).is_ok()
+        );
+        assert!(check_store_endpoint("memory:///", Policy::STRICT).is_ok());
+    }
+
+    #[test]
+    fn a_plain_http_listener_needs_https_in_front_or_the_dev_opt_in() {
+        let cfg = |extra: &str| primary("memory:///", extra).unwrap();
+        let proxied_h3 = |port: &str| {
+            primary(
+                "memory:///",
+                &format!(
+                    "public_url = \"https://asc.example.org\"
+http3_port = {port}"
+                ),
+            )
+        };
+        // Behind a TLS-terminating proxy (the Coolify setup): plain listener, https public_url.
+        let proxied = cfg("listen = \"0.0.0.0:7890\"\npublic_url = \"https://asc.example.org\"");
+        assert!(proxied.check_listener(Policy::STRICT).is_ok());
         // The h3 hint is a port; 0 is not one.
         assert!(proxied_h3("0").is_err());
         assert_eq!(proxied_h3("443").unwrap().http3_port, Some(443));
