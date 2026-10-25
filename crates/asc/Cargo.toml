@@ -32,6 +32,7 @@ asc-engine = { workspace = true }
 asc-graph = { workspace = true }
 asc-git = { workspace = true }
 asc-rpc = { workspace = true }
+asc-mcp = { workspace = true }
 asc-wc = { workspace = true }
 asc-ci = { workspace = true }
 asc-codeintel = { workspace = true }
@@ -89,4 +90,4 @@ asc-vfs = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Effective uid for the safe.directory gate (cli/safe_dir.rs).
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "stdio"] }

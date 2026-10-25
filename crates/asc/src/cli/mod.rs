@@ -10,33 +10,6 @@ use std::process::ExitCode;
 
 use crate::native::{self, NativeSpec, Route};
 
-/// Defines the stub of a command: no flags are served, so the native table routes every
-/// invocation to the "not supported yet" error before `run` is reached.
-macro_rules! stub {
-    ($name:literal) => {
-        #[derive(clap::Parser, Debug)]
-        #[command(name = $name, disable_help_flag = true, disable_version_flag = true)]
-        pub struct Args {
-            #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
-            pub rest: Vec<std::ffi::OsString>,
-        }
-
-        /// Nothing is served until the owning unit lands.
-        pub const NATIVE: &[$crate::native::NativeSpec] = &[];
-
-        pub async fn run(
-            _ctx: &$crate::cli::common::Ctx,
-            _args: Args,
-        ) -> $crate::cli::common::Result<std::process::ExitCode> {
-            Err($crate::cli::common::CliError::Msg(
-                $crate::msg::Msg::AscNotYet {
-                    cmd: $name.to_owned(),
-                },
-            ))
-        }
-    };
-}
-
 pub mod common;
 pub mod config;
 pub mod conflict;

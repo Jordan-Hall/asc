@@ -16,6 +16,7 @@ mod env;
 mod ext;
 mod hooks_runner;
 mod index_sink;
+mod mcp;
 mod msg;
 mod native;
 mod refs_guard;
