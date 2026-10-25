@@ -17,6 +17,7 @@ members = [
     "crates/asc-embed",
     "crates/asc-codeintel",
     "crates/asc",
+    "bench/asc-bench",
     "tests/turbo",
 ]
 
