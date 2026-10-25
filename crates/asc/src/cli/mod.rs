@@ -42,6 +42,7 @@ pub mod config;
 pub mod conflict;
 pub mod init;
 pub mod json;
+pub mod json_verbs;
 pub mod output;
 pub mod pager;
 pub mod safe_dir;
@@ -69,6 +70,7 @@ pub mod ci;
 pub mod claude_hook;
 pub mod clean;
 pub mod clone;
+pub mod codeintel;
 pub mod commit;
 pub mod commit_tree;
 pub mod count_objects;
@@ -143,7 +145,8 @@ pub mod worktree;
 
 use common::{CliError, Ctx, Result};
 
-use crate::codeintel_local::cli as codeintel;
+use crate::codeintel_local::cli as codeintel_cmd;
+use codeintel::{search, semantic, sym};
 
 /// The future a command returns.
 pub type BoxFut<'a> = Pin<Box<dyn Future<Output = Result<ExitCode>> + 'a>>;
@@ -268,7 +271,10 @@ pub static COMMANDS: &[Command] = &[
     entry!("sparse", sparse),
     entry!("debug", debug),
     entry!("ci", ci),
-    entry!("codeintel", codeintel),
+    entry!("codeintel", codeintel_cmd),
+    entry!("search", search),
+    entry!("sym", sym),
+    entry!("semantic", semantic),
     entry!("affected", affected),
     entry!("projects", projects),
     entry!("graph", graph),
@@ -310,6 +316,10 @@ pub async fn run_command(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
         .and_then(|a| a.to_str())
         .unwrap_or_default()
         .to_owned();
+    // P45: the `--json` forms of the plugin verbs run the verb and print its `OpResult`.
+    if json_verbs::wants(&argv) {
+        return json_verbs::run(ctx, argv).await;
+    }
     if let Route::Unsupported(msg) = native::route(&argv) {
         return Err(CliError::Msg(msg));
     }
