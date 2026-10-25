@@ -38,6 +38,7 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--tools",
         "--max-tokens",
         "--remote",
+        "--scope",
     ],
     placeholders: &[],
 }];
@@ -102,6 +103,9 @@ fn parse(argv: &[OsString]) -> Result<Flags> {
 }
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
+    if args.rest.first().is_some_and(|a| a == "install") {
+        return crate::mcp::install::run(ctx, &args.rest[1..]);
+    }
     let flags = parse(&args.rest)?;
     crate::mcp::serve(ctx, flags).await
 }
