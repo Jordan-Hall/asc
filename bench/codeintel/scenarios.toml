@@ -1,0 +1,27 @@
+# SPEC 23.9 query scenarios. Run: cargo run -p asc-bench-codeintel --release -- --suite codeintel-quick
+# kind: literal | regex | icase | word. `rare` patterns match in about one file per thousand,
+# `common` ones in nearly every file. The generator plants the rare and the regex targets.
+[[query]]
+name = "literal-rare"
+kind = "literal"
+pattern = "zqrare_marker_7731"
+
+[[query]]
+name = "literal-common"
+kind = "literal"
+pattern = "for"
+
+[[query]]
+name = "regex"
+kind = "regex"
+pattern = '\bfoo\w+Bar\b'
+
+[[query]]
+name = "case-insensitive"
+kind = "icase"
+pattern = "ZQRARE_MARKER_7731"
+
+[[query]]
+name = "word"
+kind = "word"
+pattern = "handle_request"
