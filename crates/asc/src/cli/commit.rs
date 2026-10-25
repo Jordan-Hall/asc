@@ -33,6 +33,7 @@ use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate};
 use self::message::Cleanup;
 use super::common::{CliEngine, CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::format::date::Mode as DateMode;
+use super::seqstate::{self, Sequence};
 use super::status;
 use crate::ext::{self, OpId};
 use crate::hooks_runner::{Gate, Hook, HookEnv, MsgSource, RewriteKind, Runner};
@@ -565,7 +566,24 @@ async fn flow(
     std::fs::write(&edit_file, &buf)?;
     // git stops here, before prepare-commit-msg and the editor, when nothing would be committed.
     if !a.amend && !a.allow_empty && merge.is_empty() && root == head_root {
-        std::io::stdout().write_all(&status::long_text(ctx, ws, None).await?)?;
+        let report = nothing_report(ctx, ws, use_set, &rows).await?;
+        std::io::stdout().write_all(&report)?;
+        if seqstate::exists(&gitdir, "CHERRY_PICK_HEAD") {
+            let (t, sequenced) = (super::restore::tool(ctx), Sequence::exists(&gitdir));
+            eprint!(
+                "The previous cherry-pick is now empty, possibly due to conflict resolution.\n\
+                 If you wish to commit it anyway, use:\n\n    {t} commit --allow-empty\n\n{}",
+                if sequenced {
+                    format!(
+                        "and then use:\n\n    {t} cherry-pick --continue\n\n\
+                         to resume cherry-picking the remaining commits.\n\
+                         If you wish to skip this commit, use:\n\n    {t} cherry-pick --skip\n\n"
+                    )
+                } else {
+                    format!("Otherwise, please use '{t} cherry-pick --skip'\n")
+                }
+            );
+        }
         return Ok(Flow::Abort(1));
     }
     let prepare = Hook::PrepareCommitMsg {
@@ -782,6 +800,25 @@ async fn flow(
         print_summary(ws, &summary, first_parent_root, root).await?;
     }
     Ok(Flow::Committed)
+}
+
+/// The "nothing to commit" report. A partial commit (`<paths>`, `--only`, `--include`) reports
+/// against its temporary index, so staged work outside the named paths is not shown as staged.
+async fn nothing_report(
+    ctx: &Ctx,
+    ws: &WsCtx,
+    set: StageSet,
+    rows: &[stage::StageRow],
+) -> Result<Vec<u8>> {
+    if set == StageSet::Default {
+        return status::long_text(ctx, ws, None).await;
+    }
+    let id = ws.workspace.ws.id;
+    let kept = stage::overlay(&ws.db, id, StageSet::Default).await?;
+    stage::replace(&ws.db, id, StageSet::Default, rows).await?;
+    let report = status::long_text(ctx, ws, None).await;
+    stage::replace(&ws.db, id, StageSet::Default, &kept).await?;
+    report
 }
 
 /// git's `author_date_is_interesting`: the author date came from a commit being amended or from
