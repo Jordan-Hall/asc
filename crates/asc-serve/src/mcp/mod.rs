@@ -15,6 +15,7 @@
 pub mod audit;
 pub mod auth;
 pub mod backend;
+pub mod forge;
 pub mod land;
 pub mod limits;
 pub mod oauth;
