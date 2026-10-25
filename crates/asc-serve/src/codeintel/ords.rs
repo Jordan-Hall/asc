@@ -148,6 +148,11 @@ impl NsDocs {
         Ok(Some(ord))
     }
 
+    /// The ord of `id` when the table knows it; unlike [`Self::assign`] this adds nothing.
+    pub async fn ord_of(&self, id: &FileId) -> Result<Option<u32>, sqlx::Error> {
+        self.lookup(id).await
+    }
+
     /// The ord of `id`, assigning the next dense ord when the table does not know it; the new
     /// doc gets a `file` job at interactive priority.
     pub async fn assign(&self, id: FileId) -> Result<u32, DocError> {
