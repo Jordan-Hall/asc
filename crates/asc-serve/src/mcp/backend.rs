@@ -46,20 +46,21 @@ use tonic::metadata::{Ascii, MetadataValue};
 use tonic::service::Routes;
 use tonic::{Code, Request, Status};
 
+use super::write;
 use crate::limits::{Admission, Caller, Class, class_of};
 
 /// Largest message accepted from a handler.
-const MAX_MESSAGE: usize = 17 * 1024 * 1024;
+pub(super) const MAX_MESSAGE: usize = 17 * 1024 * 1024;
 /// Longest a call may run.
-const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Longest handler-supplied error text kept.
 const MAX_ERROR_TEXT: usize = 512;
 /// Arguments the MCP layer owns; they are never part of a wire request.
 const PLUMBING: [&str; 5] = ["cursor", "max_tokens", "worktree", "repo", "ws_id"];
 /// The one message for a repository that is missing or not readable.
-const REPO_NOT_FOUND: &str = "repository not found";
+pub(super) const REPO_NOT_FOUND: &str = "repository not found";
 /// Retry hint for a principal over its in-flight cap.
-const INFLIGHT_RETRY_MS: u64 = 500;
+pub(super) const INFLIGHT_RETRY_MS: u64 = 500;
 /// Prefix of the per-call credential. A caller-supplied token with this prefix still has to carry
 /// the instance secret.
 const CALL_PREFIX: &str = "ascmcp";
@@ -74,10 +75,22 @@ pub trait RepoGate: Send + Sync + 'static {
     async fn can_read(&self, principal: &str, repo: &str) -> bool;
 }
 
+/// Whether a principal may write a repository (`owner/name`). Installed with
+/// [`ServeBackend::with_writes`]; without it no write tool runs. The `[mcp] write` switch is the
+/// decision to install it, and the answer is the authorizer's `Access::Write`, never the token's
+/// scope text alone. A principal that may not even read answers the same `NOT_FOUND` as a missing
+/// repository.
+#[async_trait]
+pub trait WriteGate: Send + Sync + 'static {
+    /// `true` only when `principal` may write `repo`.
+    async fn can_write(&self, principal: &str, repo: &str) -> bool;
+}
+
 // ------------------------------------------------------------------------------ authorizer
 
 #[derive(Clone)]
 struct Grant {
+    access: Access,
     principal: String,
     repo: String,
 }
@@ -107,12 +120,12 @@ impl ServeAuthorizer {
         Arc::new(Self { inner, secret, next: AtomicU64::new(1), grants: Mutex::new(HashMap::new()) })
     }
 
-    fn mint(self: &Arc<Self>, principal: &str, repo: &str) -> CallGrant {
+    pub(super) fn mint(self: &Arc<Self>, principal: &str, repo: &str, access: Access) -> CallGrant {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.grants
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, Grant { principal: principal.to_owned(), repo: repo.to_owned() });
+            .insert(id, Grant { access, principal: principal.to_owned(), repo: repo.to_owned() });
         CallGrant { owner: Arc::clone(self), id, token: format!("{CALL_PREFIX}.{}.{id}", self.secret) }
     }
 
@@ -134,8 +147,8 @@ impl ServeAuthorizer {
 
     fn decide(grant: Option<Grant>, repo: &str, access: Access) -> Result<Principal, AuthError> {
         let grant = grant.ok_or(AuthError::Unauthenticated)?;
-        // Read on the one repository the call was gated for, nothing else.
-        if access > Access::Read || grant.repo != repo {
+        // The access the call was gated for, on the one repository it was gated for, nothing more.
+        if access > grant.access || grant.repo != repo {
             return Err(AuthError::Forbidden);
         }
         Ok(Principal { id: grant.principal })
@@ -147,10 +160,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// A minted credential; the grant is revoked when it drops.
-struct CallGrant {
+pub(super) struct CallGrant {
     owner: Arc<ServeAuthorizer>,
     id: u64,
-    token: String,
+    pub(super) token: String,
 }
 
 impl Drop for CallGrant {
@@ -192,18 +205,18 @@ impl Authorizer for ServeAuthorizer {
 // ------------------------------------------------------------------------------ in flight
 
 /// In-flight calls per principal on this instance.
-struct Inflight {
+pub(super) struct Inflight {
     max: usize,
     count: Mutex<HashMap<String, usize>>,
 }
 
-struct InflightGuard {
+pub(super) struct InflightGuard {
     owner: Arc<Inflight>,
     key: String,
 }
 
 impl Inflight {
-    fn acquire(self: &Arc<Self>, principal: &str) -> Option<InflightGuard> {
+    pub(super) fn acquire(self: &Arc<Self>, principal: &str) -> Option<InflightGuard> {
         let mut map = self.count.lock().unwrap_or_else(PoisonError::into_inner);
         let n = map.entry(principal.to_owned()).or_insert(0);
         if *n >= self.max {
@@ -230,12 +243,13 @@ impl Drop for InflightGuard {
 
 /// The `McpBackend` of `asc serve`.
 pub struct ServeBackend {
-    routes: Routes,
-    pool: Arc<DescriptorPool>,
-    scope: Arc<ServeAuthorizer>,
-    gate: Arc<dyn RepoGate>,
-    admission: Arc<Admission>,
-    inflight: Arc<Inflight>,
+    pub(super) routes: Routes,
+    pub(super) pool: Arc<DescriptorPool>,
+    pub(super) scope: Arc<ServeAuthorizer>,
+    pub(super) gate: Arc<dyn RepoGate>,
+    pub(super) writes: Option<Arc<dyn WriteGate>>,
+    pub(super) admission: Arc<Admission>,
+    pub(super) inflight: Arc<Inflight>,
 }
 
 impl std::fmt::Debug for ServeBackend {
@@ -265,14 +279,23 @@ impl ServeBackend {
             pool: Arc::new(pool),
             scope,
             gate,
+            writes: None,
             admission,
             inflight: Arc::new(Inflight { max: max_inflight.max(1) as usize, count: Mutex::new(HashMap::new()) }),
         }
     }
 
+    /// Serves the write tools of SPEC 22.3.3 (`commit`, `submit`, `rebase`, `restack`), each
+    /// gated by `gate`. Call it only when `[mcp] write` is set.
+    #[must_use]
+    pub fn with_writes(mut self, gate: Arc<dyn WriteGate>) -> Self {
+        self.writes = Some(gate);
+        self
+    }
+
     /// The method a catalogue row's `rpc` names: the first alternative that is not a `Workspace`
     /// (daemon) call.
-    fn method(&self, rpc: &str) -> Option<MethodDescriptor> {
+    pub(super) fn method(&self, rpc: &str) -> Option<MethodDescriptor> {
         let alt = rpc.split(" / ").map(str::trim).find(|a| !a.starts_with("Workspace."))?;
         let (svc, method) = alt.split_once('.').unwrap_or(("Repo", alt));
         let service = self.pool.get_service_by_name(&format!("asc.v1.{svc}"))?;
@@ -287,7 +310,7 @@ impl ServeBackend {
         Some(class_of(&format!("/{}/{}", m.parent_service().full_name(), m.name())).unwrap_or(Class::Expensive))
     }
 
-    fn build(
+    pub(super) fn build(
         def: &ToolDef,
         method: &MethodDescriptor,
         repo: &str,
@@ -350,7 +373,7 @@ impl ServeBackend {
 }
 
 /// Sets `repo` from the gated name, always with `id_mode = GIT`. The arguments never decide it.
-fn set_repo(msg: &mut DynamicMessage, name: &str) {
+pub(super) fn set_repo(msg: &mut DynamicMessage, name: &str) {
     let Some(f) = msg.descriptor().get_field_by_name("repo") else { return };
     let Kind::Message(d) = f.kind() else { return };
     let mut repo = DynamicMessage::new(d);
@@ -359,7 +382,7 @@ fn set_repo(msg: &mut DynamicMessage, name: &str) {
     msg.set_field_by_name("repo", PbValue::Message(repo));
 }
 
-fn clean(s: &str) -> String {
+pub(super) fn clean(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).take(MAX_ERROR_TEXT).collect()
 }
 
@@ -368,7 +391,7 @@ fn retry_ms(s: &Status) -> u64 {
 }
 
 /// Maps a handler failure to the tool error the model sees.
-fn map_status(s: &Status) -> ToolError {
+pub(super) fn map_status(s: &Status) -> ToolError {
     if let Some(e) = status_rpc_error(s) {
         let mut t = ToolError::new(e.code(), clean(s.message()));
         t.paths = e.info().paths.iter().map(|p| clean(p)).collect();
@@ -392,7 +415,7 @@ fn map_status(s: &Status) -> ToolError {
     }
 }
 
-fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
+pub(super) fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
     json::encode(m).map_err(|e| ToolError::internal(format!("response cannot be shown: {e}")))
 }
 
@@ -400,7 +423,10 @@ fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
 impl McpBackend for ServeBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let def = catalogue::find(tool, Surface::Http).ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
-        // Only read tools run here: writes are M32 and B22, `search` is M15.
+        // The server write tools (M14) have their own path. `land` is M32, `search` is M15.
+        if write::is_write_tool(def) {
+            return write::call(self, def, args, ctx).await;
+        }
         if !def.ann.read_only || def.needs != Needs::None {
             return Err(ToolError::not_available(format!("{tool} is not served by this endpoint")));
         }
@@ -428,7 +454,7 @@ impl McpBackend for ServeBackend {
         let permit = self.admission.admit(Caller::principal(principal), class, 1).map_err(|s| map_status(&s))?;
 
         let request = Self::build(def, &method, repo.as_str(), args, ctx)?;
-        let grant = self.scope.mint(principal, repo.as_str());
+        let grant = self.scope.mint(principal, repo.as_str(), Access::Read);
         let mut req = Request::new(request);
         req.set_timeout(CALL_TIMEOUT);
         let meta = req.metadata_mut();
@@ -501,7 +527,7 @@ mod tests {
     #[tokio::test]
     async fn a_call_credential_is_bound_to_one_principal_repo_and_read() {
         let s = scope();
-        let g = s.mint("alice", "acme/app");
+        let g = s.mint("alice", "acme/app", Access::Read);
         let t = tok(&g.token);
         assert_eq!(s.authorize(Some(&t), "acme/app", Access::Read).await.unwrap().id, "alice");
         // Another repository, or more than read, is refused.
@@ -512,7 +538,7 @@ mod tests {
     #[tokio::test]
     async fn a_forged_or_spent_credential_is_refused() {
         let s = scope();
-        let g = s.mint("alice", "acme/app");
+        let g = s.mint("alice", "acme/app", Access::Read);
         let id = g.id;
         // Right shape, wrong secret: handed to the real authorizer, which refuses it.
         let forged = tok(&format!("{CALL_PREFIX}.{}.{id}", "0".repeat(64)));
