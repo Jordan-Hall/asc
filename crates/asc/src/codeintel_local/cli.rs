@@ -7,12 +7,11 @@ use std::process::ExitCode;
 use crate::cli::common::{CliError, Ctx, Result};
 use crate::native::NativeSpec;
 
-#[path = "../cli/codeintel/scip.rs"]
-mod scip;
+use crate::cli::codeintel::scip;
 
 const USAGE: &str = "usage: asc codeintel worker [--once] [--now]
        asc codeintel enable-embed [--from <dir>]
-       asc codeintel upload-scip <index.scip> [--rev <revspec>] [--root <dir>]
+       asc codeintel upload-scip <index.scip> [--rev <revspec>] [--root <dir>] [--remote <name|url>]
        asc codeintel status [--rev <rev>] [--remote <name|url>] [--json]
 
     --once    index the current HEAD and exit
@@ -33,7 +32,9 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "codeintel",
-    flags: &["--once", "--now", "--from", "--rev", "--remote", "--json"],
+    flags: &[
+        "--once", "--now", "--from", "--rev", "--root", "--remote", "--json",
+    ],
     placeholders: &[],
 }];
 
