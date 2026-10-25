@@ -15,8 +15,11 @@
 pub mod audit;
 pub mod auth;
 pub mod backend;
+pub mod land;
 pub mod limits;
+pub mod oauth;
 pub mod prm;
+pub mod write;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -262,8 +265,8 @@ pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router 
 // TODO(M12b): build `ServeBackend` and the `Handler`, then `ext.http.register(router(..))`.
 pub fn register(ext: &Extensions, cfg: &ServeConfig) {
     // The metadata document is always served (SPEC 22.7.3), enabled or not.
-    // TODO(M33): pass the `[mcp.oauth]` issuers; none is configured today.
-    prm::register(ext, cfg, Vec::new());
+    let issuers = cfg.mcp.oauth.as_ref().map(|o| o.issuer.clone()).unwrap_or_default();
+    prm::register(ext, cfg, issuers);
     if cfg.role != Role::Primary || !cfg.mcp.enabled {
         return;
     }
