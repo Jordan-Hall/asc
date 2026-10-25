@@ -95,6 +95,7 @@ pub mod import;
 pub mod install_shim;
 pub mod interpret_trailers;
 pub mod landed;
+pub mod live;
 pub mod log;
 pub mod ls_remote;
 pub mod mcp;
@@ -279,6 +280,7 @@ pub static COMMANDS: &[Command] = &[
     entry!("projects", projects),
     entry!("graph", graph),
     entry!("landed", landed),
+    entry!("live", live),
     entry!("api", api),
     entry!("watch", watch),
     entry!("mcp", mcp),

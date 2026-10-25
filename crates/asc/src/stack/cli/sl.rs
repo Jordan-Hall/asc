@@ -532,6 +532,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         out.write_all(render(&sl).as_bytes())?;
     }
     out.finish()?;
+    // B31: the live-conflict notice goes to stderr, so `--json` and the graph stay clean.
+    if !a.json
+        && let Some(n) = ctx
+            .ws()
+            .ok()
+            .and_then(|w| crate::cli::live::notice(&w.home, &w.workspace.ws.id.to_string()))
+    {
+        eprintln!("{n}");
+    }
     Ok(ExitCode::SUCCESS)
 }
 
