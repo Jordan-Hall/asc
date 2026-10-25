@@ -7,9 +7,9 @@
 //! [`MAX_CHILDREN`] children run at once (the rest queue), stderr is kept to [`STDERR_CAP`]
 //! and cancelling the call drops the child, which kills it.
 //!
-//! TODO(M02): `cli.proto` (`OpResult`) is not in the descriptor set yet. Until it is, the
-//! child's JSON line cannot be decoded, so no `op_result` event is sent and the host sees the
-//! `exit` event only. The decode below starts working when the message appears.
+//! The child's last stdout line is decoded as `asc.v1.OpResult` (`cli.proto`, in the descriptor
+//! set) and sent as an `op_result` event before the `exit` event. If the message is missing from
+//! the descriptor set, no `op_result` event is sent.
 //! TODO(P45): verbs without a `--json` form print human text; the decode then fails with
 //! `INTERNAL` once `OpResult` exists.
 
