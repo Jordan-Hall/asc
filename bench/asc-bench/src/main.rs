@@ -1,6 +1,7 @@
 //! `asc-bench`: runs git and asc on the same scenarios, prints the table and
 //! fails when the gate of SPEC 16.4 is not met.
 
+use asc_bench::cloud;
 use asc_bench::run::{Tool, run_suite, suite};
 use asc_bench::{Baseline, gate, release_markdown, table};
 use clap::Parser;
@@ -96,6 +97,28 @@ fn main() -> ExitCode {
         }
     };
     print!("{}", table(&rows));
+    let remote = std::env::var("ASC_BENCH_REMOTE").ok();
+    let run_cloud_scenarios = o.only.is_some() || remote.is_some();
+    let cloud_rows = if run_cloud_scenarios {
+        let early = std::fs::read_to_string(&o.baseline)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Baseline>(&t).ok())
+            .unwrap_or_default();
+        let work = scratch.path().join("cloud");
+        let _ = std::fs::create_dir_all(&work);
+        cloud::run_cloud(
+            asc.as_ref(),
+            o.only.as_deref(),
+            remote.as_deref(),
+            &early,
+            &work,
+        )
+    } else {
+        Vec::new()
+    };
+    if !cloud_rows.is_empty() {
+        print!("{}", cloud::table(&cloud_rows));
+    }
     if let Some(j) = &o.json
         && let Err(e) = serde_json::to_vec_pretty(&rows)
             .map_err(|e| e.to_string())
@@ -118,7 +141,8 @@ fn main() -> ExitCode {
         println!("\n{}", release_markdown(rel, &gv, &cv, &machine, &rows));
     }
     if o.update_baseline {
-        let b = Baseline::from_rows(&rows);
+        let mut b = Baseline::from_rows(&rows);
+        b.entries.extend(cloud::baseline_entries(&cloud_rows));
         match serde_json::to_string_pretty(&b)
             .map_err(|e| e.to_string())
             .and_then(|s| std::fs::write(&o.baseline, s + "\n").map_err(|e| e.to_string()))
@@ -143,7 +167,8 @@ fn main() -> ExitCode {
         },
         Err(_) => Baseline::default(),
     };
-    let violations = gate(&rows, &baseline, o.allow_unsupported);
+    let mut violations = gate(&rows, &baseline, o.allow_unsupported);
+    violations.extend(cloud::gate_cloud(&cloud_rows, o.allow_unsupported));
     if violations.is_empty() {
         println!("\ngate: pass");
         ExitCode::SUCCESS

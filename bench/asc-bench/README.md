@@ -15,6 +15,12 @@ fails the gate unless `--allow-unsupported` is given (local runs only). The asc 
 
 `--update-baseline` rewrites the baseline from the run. `--release v1.0 ` prints the `docs/BENCHMARKS.md` section.
 
+Commit-cloud scenarios (PLAN B25) live in `bench/scenarios/branchless.toml`: commit latency with the daemon
+uploading (cloud on against off), time from commit to visible on the server (p50 < 2 s, p95 < 10 s) and push of
+an already uploaded stack. They run with `--only branchless` (or whenever `ASC_BENCH_REMOTE` is set). The last two
+need `ASC_BENCH_REMOTE`, an https or ssh URL without a password, and a running asc daemon; otherwise they fail the
+gate as unsupported (skipped with `--allow-unsupported`). `--update-baseline` stores them as `cloud/<name>`.
+
 Not yet scenarios: push/fetch, CI checkout plus affected, turbo `--dry` (need the remote/CI wiring of
 B25 and U62 consumers), the medium and HUGE workloads (nightly, `--suite full` adds 100x), peak RSS,
 server CPU and cold/warm cache columns. `bench/git-baseline` (BENCH0/BENCH1) stays as the node harness.

@@ -4,6 +4,7 @@
 //! the renderers) so they are unit tested without spawning anything. `synth` (`bench/gen`) is
 //! the deterministic repository generator, `run` executes scenarios.
 
+pub mod cloud;
 pub mod run;
 pub mod synth;
 

@@ -1,0 +1,38 @@
+# Benchmark scenarios for the commit cloud (SPEC 21.3.6, PLAN B25).
+# Run: cargo run -p asc-bench --release -- --suite quick --only branchless
+#
+# commit_latency    : `asc commit` with asc.cloud=on against asc.cloud=off on the same repo;
+#                     on must stay within noise_pct of off (differences under floor_ms are noise).
+# time_to_visible   : commit, then poll `asc cloud status --json` until the daemon has synced a newer
+#                     workspace version; needs ASC_BENCH_REMOTE (https or ssh URL) and a running daemon.
+# push_uploaded     : `asc push` of a stack that is already uploaded; needs ASC_BENCH_REMOTE;
+#                     checked against bench/baseline.json (the one HasObjects + one UpdateRefs request
+#                     count is asserted by the B14 server tests, not measurable from the client).
+# `files` is the number of changed files per commit (the budget applies to <= 10).
+
+[[scenario]]
+name = "branchless-commit-upload"
+kind = "commit_latency"
+runs = 20
+files = 5
+[scenario.budget]
+noise_pct = 10.0
+floor_ms = 5.0
+
+[[scenario]]
+name = "branchless-time-to-visible"
+kind = "time_to_visible"
+runs = 20
+files = 10
+timeout_s = 30
+[scenario.budget]
+p50_ms = 2000.0
+p95_ms = 10000.0
+
+[[scenario]]
+name = "branchless-push-uploaded"
+kind = "push_uploaded"
+runs = 10
+files = 5
+timeout_s = 30
+[scenario.budget]
