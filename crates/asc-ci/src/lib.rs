@@ -7,4 +7,5 @@ pub mod changed;
 pub mod checkout;
 pub mod env;
 pub mod rules;
+pub mod stack_base;
 pub mod warm;
