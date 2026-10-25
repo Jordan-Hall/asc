@@ -350,6 +350,7 @@ impl<B: McpBackend> Handler<B> {
             Some(_) => return Err(RpcError::invalid_params("arguments must be an object")),
         };
         validate_args(def, inner.cfg.surface, &args)?;
+        check_update_ref(def, &args)?;
         let position = match args.get("cursor").and_then(Value::as_str) {
             Some(c) => Some(inner.keys.open(name, &args, c)?),
             None => None,
@@ -636,6 +637,34 @@ fn merge_json(dst: &mut Value, src: Value) {
 fn render_text(structured: &Value, mode: TextMode) -> String {
     match mode {
         TextMode::Json | TextMode::Git => structured.to_string(),
+    }
+}
+
+/// A server `commit` or `rebase` may name only an empty `update_ref` (the changeset becomes a
+/// draft change, SPEC 8.7) or one under `refs/for/` (SPEC 22.3.3). Anything else, `master` and
+/// every branch included, is -32602 before the call is confirmed or run. Dot components and
+/// control characters are refused so a path trick cannot leave `refs/for/`.
+fn check_update_ref(def: &ToolDef, args: &Value) -> Result<(), RpcError> {
+    if !matches!(def.confirm, Confirm::RefsFor | Confirm::RefsApply) {
+        return Ok(());
+    }
+    let r = match args.get("update_ref") {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(s)) => s.as_str(),
+        Some(_) => return Err(RpcError::invalid_params("update_ref must be a string")),
+    };
+    if r.is_empty() {
+        return Ok(());
+    }
+    let ok = r.strip_prefix("refs/for/").is_some_and(|rest| {
+        !rest.is_empty()
+            && !r.contains(|c: char| c.is_control() || c == '\\' || c == ' ')
+            && rest.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+    });
+    if ok {
+        Ok(())
+    } else {
+        Err(RpcError::invalid_params("update_ref must be empty or refs/for/<branch>; branches are never written"))
     }
 }
 
