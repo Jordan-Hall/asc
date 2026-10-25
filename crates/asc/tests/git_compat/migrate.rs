@@ -59,7 +59,14 @@ fn source(git: &Git) -> (PathBuf, Vec<(String, &'static str)>) {
     );
     let signed_id = git.ok_stdin(
         &s,
-        &["hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
         signed.as_bytes(),
     );
     git.ok(&s, &["update-ref", "refs/heads/signed", &signed_id]);
@@ -82,7 +89,14 @@ fn source(git: &Git) -> (PathBuf, Vec<(String, &'static str)>) {
     );
     let unsorted_id = git.ok_stdin(
         &s,
-        &["hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+        &[
+            "hash-object",
+            "-t",
+            "commit",
+            "-w",
+            "--literally",
+            "--stdin",
+        ],
         unsorted.as_bytes(),
     );
     git.ok(&s, &["update-ref", "refs/heads/unsorted", &unsorted_id]);
@@ -111,6 +125,10 @@ fn asc(git: &Git, cwd: &Path, token: Option<&str>, args: &[&str]) -> std::proces
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("ASC_ALLOW_LOOPBACK_HTTP", "1")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
         .args(args);
     if let Some(t) = token {
         cmd.env("ASC_TOKEN", t);
@@ -166,7 +184,8 @@ fn migrate() -> Migrated {
         mask(&refused.stderr)
     );
     assert!(
-        !git.ok(&git.work("ls"), &["ls-remote", &url]).contains("unsorted"),
+        !git.ok(&git.work("ls"), &["ls-remote", &url])
+            .contains("unsorted"),
         "the refused push left no ref"
     );
     git.ok(&old, &["update-ref", "-d", "refs/heads/unsorted"]);
@@ -177,13 +196,16 @@ fn migrate() -> Migrated {
     assert!(!refused.ok, "a push holding a blob tag is refused");
     for (name, ty) in &skipped {
         assert!(
-            refused.stderr.contains(&format!("{name}: asc cannot represent a ref to a {ty}")),
+            refused
+                .stderr
+                .contains(&format!("{name}: asc cannot represent a ref to a {ty}")),
             "{name} is listed: {}",
             mask(&refused.stderr)
         );
     }
     assert!(
-        !git.ok(&git.work("ls"), &["ls-remote", &url]).contains("refs/"),
+        !git.ok(&git.work("ls"), &["ls-remote", &url])
+            .contains("refs/"),
         "the refused push stored nothing"
     );
     for (name, _) in &skipped {
@@ -207,7 +229,15 @@ fn migrate() -> Migrated {
 
 #[test]
 fn a_mirror_clone_pushed_to_asc_and_cloned_back_matches_ref_for_ref() {
-    let Migrated { git, old, url, skipped, pushed, stack, .. } = migrate();
+    let Migrated {
+        git,
+        old,
+        url,
+        skipped,
+        pushed,
+        stack,
+        ..
+    } = migrate();
     let _stack = &stack;
     let _ = &pushed;
     let want = refs_of(&git, &old);
@@ -238,19 +268,34 @@ fn a_mirror_clone_pushed_to_asc_and_cloned_back_matches_ref_for_ref() {
     }
 }
 
-/// `asc clone` of the migrated repository: every branch and tag has the same id. `asc serve`
-/// registers no primary object group yet, so `asc clone` of it fails with `has_objects is not
-/// available on this server`.
+/// `asc clone` of the migrated repository: every branch and tag has the same id.
 #[test]
-#[ignore = "TODO(server objects): asc serve registers no primary objects group, so asc clone cannot read it"]
 fn asc_clone_of_a_migrated_repo_matches_ref_for_ref() {
-    let Migrated { stack, git, write, old, skipped, .. } = migrate();
+    let Migrated {
+        stack,
+        git,
+        write,
+        old,
+        skipped,
+        ..
+    } = migrate();
     let want = refs_of(&git, &old);
     let ascd = git.work("ascclone");
     let server = format!("http://127.0.0.1:{}/acme/web", stack.port);
-    let out = asc(&git, &ascd, Some(&write.secret), &["clone", "-q", &server, "w"]);
-    assert!(out.status.success(), "asc clone: {}", mask(&lossy(&out.stderr)));
+    let out = asc(
+        &git,
+        &ascd,
+        Some(&write.secret),
+        &["clone", "-q", &server, "w"],
+    );
+    assert!(
+        out.status.success(),
+        "asc clone: {}",
+        mask(&lossy(&out.stderr))
+    );
     let ascw = ascd.join("w");
+    // `asc clone` follows branches; the tags come with an explicit `fetch --tags`.
+    asc_ok(&git, &ascw, &write.secret, &["fetch", "-q", "--tags", "origin"]);
     let mut mismatches = Vec::new();
     for line in &want {
         let (name, sha) = line.split_once(' ').unwrap();
@@ -265,12 +310,71 @@ fn asc_clone_of_a_migrated_repo_matches_ref_for_ref() {
         // An annotated tag: either the tag object or the commit it peels to is acceptable.
         let peeled = git.ok(&old, &["rev-parse", &format!("{name}^{{commit}}")]);
         let o = asc(&git, &ascw, Some(&write.secret), &["rev-parse", &spec]);
-        let got = o.status.success().then(|| lossy(&o.stdout).trim().to_owned());
+        let got = o
+            .status
+            .success()
+            .then(|| lossy(&o.stdout).trim().to_owned());
         match got {
             Some(got) if got == *sha || got == peeled => {}
             other => mismatches.push(format!("{name}: want {sha}, asc {other:?}")),
         }
     }
-    assert!(mismatches.is_empty(), "asc clone mismatches: {mismatches:#?}");
+    assert!(
+        mismatches.is_empty(),
+        "asc clone mismatches: {mismatches:#?}"
+    );
+}
 
+fn asc_ok(git: &Git, cwd: &Path, token: &str, args: &[&str]) -> String {
+    let out = asc(git, cwd, Some(token), args);
+    assert!(
+        out.status.success(),
+        "asc {args:?}: {}",
+        mask(&lossy(&out.stderr))
+    );
+    lossy(&out.stdout).trim().to_owned()
+}
+
+/// The whole native loop against `asc serve`: `asc push` uploads objects and moves the ref, `asc
+/// clone` reads them back, and a later `asc push` is picked up by `asc fetch`.
+#[test]
+fn asc_push_clone_and_fetch_loop_through_asc_serve() {
+    let stack = Stack::start();
+    stack.create_repo("acme/web", "");
+    let write = stack.token(&["--user", "alice", "--repo", "acme/*", "--write"]);
+    let git = Git::new();
+    let server = format!("http://127.0.0.1:{}/acme/web", stack.port);
+    let tok = write.secret.as_str();
+
+    let a = git.work("a");
+    asc_ok(&git, &a, tok, &["init", "-q"]);
+    std::fs::write(a.join("one.txt"), "one
+").unwrap();
+    asc_ok(&git, &a, tok, &["add", "one.txt"]);
+    asc_ok(&git, &a, tok, &["commit", "-q", "-m", "one"]);
+    asc_ok(&git, &a, tok, &["remote", "add", "origin", &server]);
+    asc_ok(&git, &a, tok, &["push", "-q", "origin", "HEAD:refs/heads/master"]);
+    let first = asc_ok(&git, &a, tok, &["rev-parse", "HEAD"]);
+
+    let b = git.work("b");
+    asc_ok(&git, &b, tok, &["clone", "-q", &server, "w"]);
+    let bw = b.join("w");
+    assert_eq!(
+        std::fs::read_to_string(bw.join("one.txt")).unwrap(),
+        "one
+",
+        "the clone has the file"
+    );
+    assert_eq!(asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]), first);
+
+    std::fs::write(a.join("two.txt"), "two
+").unwrap();
+    asc_ok(&git, &a, tok, &["add", "two.txt"]);
+    asc_ok(&git, &a, tok, &["commit", "-q", "-m", "two"]);
+    asc_ok(&git, &a, tok, &["push", "-q", "origin", "HEAD:refs/heads/master"]);
+    let second = asc_ok(&git, &a, tok, &["rev-parse", "HEAD"]);
+    assert_ne!(first, second);
+
+    asc_ok(&git, &bw, tok, &["fetch", "-q", "origin"]);
+    assert_eq!(asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]), second);
 }
