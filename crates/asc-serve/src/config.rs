@@ -242,6 +242,10 @@ pub struct EmbedConfig {
     pub model: String,
     pub device: String,
     pub provider: String,
+    /// The directory of the `asc-embed` helper, `model/` and `calibration.bin` (the layout
+    /// `asc codeintel enable-embed` installs). Without it `Semantic` answers
+    /// `FAILED_PRECONDITION` and says how to configure it.
+    pub dir: Option<PathBuf>,
 }
 
 impl Default for EmbedConfig {
@@ -250,6 +254,7 @@ impl Default for EmbedConfig {
             model: "jina-embeddings-v2-base-code".into(),
             device: "cpu".into(),
             provider: "local".into(),
+            dir: None,
         }
     }
 }
@@ -1394,6 +1399,25 @@ child = "asc/soma"
             assert!(e.is_err(), "{bad}");
         }
         assert!(parse("grpc_web = true\nmax_request = 0").is_err());
+    }
+
+    #[test]
+    fn codeintel_embed_dir_is_optional_and_names_the_model_directory() {
+        let parse = |embed: &str| {
+            ServeConfig::parse(&format!(
+                "db = \"sqlite::memory:\"
+store = \"memory:///\"
+[codeintel]
+enabled = true
+[codeintel.embed]
+{embed}"
+            ))
+        };
+        assert_eq!(parse("").unwrap().codeintel.embed.dir, None);
+        let c = parse("dir = \"/opt/asc/embed\"").unwrap();
+        assert_eq!(c.codeintel.embed.dir, Some(PathBuf::from("/opt/asc/embed")));
+        assert_eq!(c.codeintel.embed.model, "jina-embeddings-v2-base-code");
+        assert!(parse("directory = \"/x\"").is_err());
     }
 
     #[test]

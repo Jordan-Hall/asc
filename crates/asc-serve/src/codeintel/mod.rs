@@ -2,6 +2,7 @@
 //! units add their own `pub mod` lines.
 
 pub mod backfill;
+pub mod embedder;
 pub mod files;
 pub mod metrics;
 pub mod modelgen;
