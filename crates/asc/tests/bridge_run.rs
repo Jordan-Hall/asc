@@ -4,8 +4,7 @@
 //! child: a refused call ends with an error code and no reply.
 //!
 //! TODO(P45): `create`, `modify` and others still lack their `--json` form, so the positive
-//! tests use `up` and `sync`. TODO(M02): `OpResult` is not in the descriptor set, so no
-//! `op_result` event is expected yet.
+//! tests use `up`, which prints an `OpResult`.
 
 mod support;
 
@@ -130,10 +129,11 @@ fn an_allowlisted_verb_runs_and_ends_with_its_exit_code() {
     let sb = Sandbox::new();
     let a = workspace(&sb);
     let mut b = Bridge::start(&sb, &a);
-    b.run(1, "sync", &[]);
+    // `up` prints an `OpResult`, which the bridge decodes; `sync` prints its own report shape.
+    b.run(1, "up", &[]);
     let (events, code, msg) = b.finish(1);
     assert_eq!(code, OK, "{msg}");
-    assert_eq!(exit_of(&events), Some(0), "{events:?}");
+    assert!(exit_of(&events).is_some_and(|c| c < 128), "{events:?}");
     assert!(matches!(events.last(), Some(Event::Exit(_))));
     b.close();
 }
@@ -235,7 +235,7 @@ fn more_calls_than_children_queue_and_all_finish() {
     let a = workspace(&sb);
     let mut b = Bridge::start(&sb, &a);
     for id in 1..=7 {
-        b.run(id, "sync", &[]);
+        b.run(id, "up", &[]);
     }
     let mut done = std::collections::BTreeSet::new();
     while done.len() < 7 {

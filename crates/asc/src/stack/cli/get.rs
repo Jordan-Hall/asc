@@ -820,9 +820,11 @@ mod tests {
         let ok = confine_worktree(&base, &root, Path::new("sibling")).unwrap();
         assert_eq!(ok, base.join("sibling"));
         assert!(confine_worktree(&base, &root, Path::new("repo/inside")).is_ok());
+        // From inside the work tree, `..` reaches a sibling: still under the parent.
+        assert!(confine_worktree(&root, &root, Path::new("../sibling")).is_ok());
         for bad in ["../escape", "../../x", "/definitely/elsewhere"] {
             assert!(
-                confine_worktree(&root, &root, Path::new(bad)).is_err(),
+                confine_worktree(&base, &root, Path::new(bad)).is_err(),
                 "{bad}"
             );
         }

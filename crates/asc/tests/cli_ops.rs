@@ -714,5 +714,8 @@ async fn migrate_ignore_copies_then_moves() {
         asc(&f, &["migrate", "ignore", "--bogus"]).status.code(),
         Some(129)
     );
-    assert!(!asc(&f, &["migrate", "branchless"]).status.success());
+    // `migrate branchless` is its own verb now (B19; tests/branchless_migrate.rs covers it).
+    let b = asc(&f, &["migrate", "branchless"]);
+    ok(&b);
+    assert!(out(&b).contains("draft heads"), "{}", out(&b));
 }

@@ -988,6 +988,9 @@ mod edge {
     }
 
     fn rpc(edge: &Edge, resolved: &Resolved) -> RpcClient {
+        // The edge serves plain http on the loopback interface, which the transport policy
+        // refuses unless asked; this process is the test's own client.
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         RpcClient::connect(
             &format!("http://{}", edge.addr),
             "acme/web",
