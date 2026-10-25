@@ -225,6 +225,13 @@ pub async fn replay(ctx: &Ctx, replay: Replay, f: Flags) -> Result<ExitCode> {
         if !f.commits.is_empty() {
             return Err(usage(replay));
         }
+        // `--quit` forgets whatever there is, and succeeds when there is nothing.
+        if f.quit {
+            Sequence::remove(&gitdir);
+            seqstate::remove(&gitdir, "CHERRY_PICK_HEAD");
+            seqstate::remove(&gitdir, "REVERT_HEAD");
+            return Ok(ExitCode::SUCCESS);
+        }
         let in_progress =
             Sequence::exists(&gitdir) || seqstate::replay_in_progress(&gitdir).is_some();
         if !in_progress {
@@ -242,13 +249,8 @@ pub async fn replay(ctx: &Ctx, replay: Replay, f: Flags) -> Result<ExitCode> {
             resume(ctx, ws, &gitdir, replay).await
         } else if f.skip {
             skip(ctx, ws, &gitdir, replay).await
-        } else if f.abort {
-            abort(ctx, ws, &gitdir, replay).await
         } else {
-            Sequence::remove(&gitdir);
-            seqstate::remove(&gitdir, "CHERRY_PICK_HEAD");
-            seqstate::remove(&gitdir, "REVERT_HEAD");
-            Ok(ExitCode::SUCCESS)
+            abort(ctx, ws, &gitdir, replay).await
         };
     }
     if f.commits.is_empty() {
@@ -371,7 +373,6 @@ async fn drive(
     mut seq: Sequence,
     multi: bool,
 ) -> Result<ExitCode> {
-    let mut first = true;
     while let Some(item) = seq.todo.first().cloned() {
         let id = match item.oid {
             Some(oid) => conflict::changeset_of(ws, oid).await?,
@@ -379,9 +380,9 @@ async fn drive(
                 fatal(format!("sequencer/todo: cannot resolve '{}'", item.abbrev))
             })?,
         };
-        // Staged changes from an earlier no-commit step are expected; the first step starts clean.
-        let staged_ok = seq.opts.no_commit && !first;
-        first = false;
+        // With `-n` the merge starts from the index, so staged changes are expected (git refuses
+        // them only for a replay that commits).
+        let staged_ok = seq.opts.no_commit;
         match step(ctx, ws, gitdir, item.replay, id, &seq.opts, staged_ok).await? {
             Step::Stopped => {
                 if multi {
@@ -608,13 +609,14 @@ async fn step(
     let allowed = opts.keep_redundant || (originally_empty && opts.allow_empty);
     if outcome.root == head_root && !allowed {
         seqstate::write(gitdir, "MERGE_MSG", &text)?;
+        // Both run `git commit`, which leaves the message it was to commit.
+        seqstate::write(gitdir, "COMMIT_EDITMSG", &text)?;
         if replay == Replay::Pick {
             seqstate::write(gitdir, replay.head_file(), format!("{git}\n").as_bytes())?;
             stopped_empty(ctx, ws, replay).await?;
         } else {
-            // A revert runs `git commit`, which fails with its "nothing to commit" status and
-            // leaves no REVERT_HEAD.
-            seqstate::write(gitdir, "COMMIT_EDITMSG", &text)?;
+            // A revert's `git commit` fails with its "nothing to commit" status and leaves no
+            // REVERT_HEAD.
             let status = super::status::long_text(ctx, ws, None).await?;
             std::io::stdout().write_all(&status)?;
         }
