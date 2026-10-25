@@ -651,6 +651,7 @@ dependencies = [
  "asc-engine",
  "asc-git",
  "asc-graph",
+ "asc-mcp",
  "asc-rpc",
  "asc-serve",
  "asc-state",
@@ -700,6 +701,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -867,14 +869,24 @@ dependencies = [
 name = "asc-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "base64 0.23.1",
  "asc-rpc",
+ "futures",
+ "getrandom 0.4.3",
+ "hmac",
  "insta",
  "prost-reflect",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror",
+ "tokio",
+ "tokio-util",
  "toml",
+ "tonic",
+ "tower",
 ]
 
 [[package]]
@@ -936,6 +948,7 @@ dependencies = [
  "asc-engine",
  "asc-git",
  "asc-graph",
+ "asc-mcp",
  "asc-rpc",
  "asc-store",
  "flate2",
@@ -951,6 +964,7 @@ dependencies = [
  "postcard",
  "prometheus-client",
  "prost",
+ "prost-reflect",
  "quick_cache",
  "quinn",
  "rcgen",
@@ -968,6 +982,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "tonic",
  "tower",

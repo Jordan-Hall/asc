@@ -12,6 +12,7 @@
 //! The endpoint never authenticates itself: the auth layer (M13) puts an [`McpPrincipal`] in the
 //! request extensions, and a request without one is refused with 401.
 
+pub mod backend;
 pub mod limits;
 
 use std::collections::HashSet;

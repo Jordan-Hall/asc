@@ -34,6 +34,8 @@ asc-engine = { workspace = true }
 asc-graph = { workspace = true }
 asc-codeintel = { path = "../asc-codeintel" }
 asc-mcp = { workspace = true }
+prost-reflect = { workspace = true }
+tokio-util = { workspace = true }
 roaring = { workspace = true }
 blake3 = { workspace = true }
 async-trait = { workspace = true }
