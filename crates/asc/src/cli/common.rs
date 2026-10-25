@@ -632,6 +632,14 @@ pub async fn discover(env: &GitEnv, cwd: &Path, gate: &Gate<'_>) -> Result<Optio
 }
 
 impl Ctx {
+    /// `core.ignorecase`: whether names that differ only in case are one name. `git init` sets it
+    /// from the file system; without the key a Windows or macOS volume is taken as insensitive.
+    pub fn ignore_case(&self) -> bool {
+        self.config
+            .bool("core.ignorecase")
+            .unwrap_or(cfg!(any(windows, target_os = "macos")))
+    }
+
     /// Builds the context for an invocation in `cwd`.
     pub async fn open(prog: Program, env: GitEnv, cwd: PathBuf) -> Result<Self> {
         // A daemon of another version goes before `state.db` is opened (SPEC §9.1).

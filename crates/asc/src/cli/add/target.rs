@@ -193,6 +193,66 @@ impl Target {
         })
     }
 
+    /// The tracked path that is `path` apart from case (`core.ignorecase`), if there is one and
+    /// `path` itself is not tracked: a staged row, else a HEAD entry found by walking the tree one
+    /// name at a time, an exact name before a case-insensitive one.
+    pub async fn case_alias(&self, ws: &WsCtx, path: &RepoPath) -> Result<Option<RepoPath>> {
+        if !matches!(self.staged(ws, path).await?, Staged::Absent) {
+            return Ok(None);
+        }
+        let fold = |b: &[u8]| String::from_utf8_lossy(b).to_lowercase();
+        let want = fold(path.as_bytes());
+        for (key, rows) in &self.rows {
+            if fold(key) == want
+                && matches!(row_state(rows), Staged::Leaf { .. })
+                && let Ok(alias) = RepoPath::new(key.clone())
+            {
+                return Ok(Some(alias));
+            }
+        }
+        let mut found: Vec<u8> = Vec::new();
+        let mut tree = self.root;
+        let names: Vec<&[u8]> = path.as_bytes().split(|&b| b == b'/').collect();
+        for (i, name) in names.iter().enumerate() {
+            let entries = ws.engine.get_tree(tree).await?;
+            let hit = entries
+                .entries()
+                .iter()
+                .find(|e| e.name.as_bytes() == *name)
+                .or_else(|| {
+                    entries
+                        .entries()
+                        .iter()
+                        .find(|e| fold(e.name.as_bytes()) == fold(name))
+                });
+            let Some(e) = hit else {
+                return Ok(None);
+            };
+            if !found.is_empty() {
+                found.push(b'/');
+            }
+            found.extend_from_slice(e.name.as_bytes());
+            if i + 1 == names.len() {
+                let alias = RepoPath::new(found).ok();
+                return Ok(match alias {
+                    Some(a)
+                        if e.kind != Kind::Dir
+                            && a != *path
+                            && matches!(self.staged(ws, &a).await?, Staged::Leaf { .. }) =>
+                    {
+                        Some(a)
+                    }
+                    _ => None,
+                });
+            }
+            if e.kind != Kind::Dir {
+                return Ok(None);
+            }
+            tree = TreeId::from_bytes(e.id);
+        }
+        Ok(None)
+    }
+
     /// Calls `f` for every tracked path selected by `spec` (staged, not a staged delete):
     /// HEAD's entries in tree order, then the rows of paths HEAD lacks. HEAD subtrees outside
     /// the spec's prefixes are never read.

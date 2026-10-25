@@ -193,6 +193,9 @@ pub async fn stat_dirty_rows(
         root,
         index_path: &index_path,
         symlinks: config.bool("core.symlinks").unwrap_or(!cfg!(windows)),
+        ignore_case: config
+            .bool("core.ignorecase")
+            .unwrap_or(cfg!(any(windows, target_os = "macos"))),
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &ignore,
