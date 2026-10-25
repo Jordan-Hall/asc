@@ -379,7 +379,9 @@ async fn cloud_with(
                 "{name} did not converge: {} head(s) lost, {} resurrected {:?} (expected {})",
                 expect.difference(&got).count(),
                 got.difference(&expect).count(),
-                got.difference(&expect).map(|c| c.as_bytes()[0]).collect::<Vec<_>>(),
+                got.difference(&expect)
+                    .map(|c| c.as_bytes()[0])
+                    .collect::<Vec<_>>(),
                 expect.len()
             ));
         }
@@ -390,9 +392,7 @@ async fn cloud_with(
 /// The scenario inside the world: the world's RNG drives it, the world's trace records it.
 pub async fn cloud(w: &mut World) -> R<()> {
     let mut rng = w.rng.fork();
-    match // TODO(B11): lost responses stay off until `sync` re-reads after an ambiguous update
-    // error (see `cloud_lost_response_after_write_converges`).
-    cloud_with(&mut rng, 1000, CloudBug::None, false).await {
+    match cloud_with(&mut rng, 1000, CloudBug::None, true).await {
         Ok(rep) => {
             w.step += rep.steps;
             w.note(0xC10D, rep.trace);
@@ -432,12 +432,11 @@ mod tests {
     }
 
     /// A response lost after a successful write leaves the machine's `cloud_base` stale. If the
-    /// other machine hides the head before the next sync, the three-way merge reads the head as
-    /// a local addition and unhides it on the server (found by this test; the fix is in
-    /// `asc_engine::branchless::sync::sync`, which should re-read after an ambiguous update error
-    /// and let the idempotent merge settle the base). Remove `ignore` with that fix.
+    /// other machine hides the head before the next sync, the three-way merge would read the head
+    /// as a local addition and unhide it on the server. `asc_engine::branchless::sync::sync`
+    /// sends the same (idempotent) request again after an ambiguous update error, which settles
+    /// the base within the same sync.
     #[test]
-    #[ignore = "defect in B11 sync: a lost update response resurrects a head hidden elsewhere"]
     fn cloud_lost_response_after_write_converges() {
         for seed in 1..=60 {
             let rep = block(run_cloud(seed, 1000, CloudBug::None, true))
