@@ -11,11 +11,15 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 asc-rpc = { workspace = true }
+getrandom = "0.4"
+hmac = { workspace = true }
 prost-reflect = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 [build-dependencies]
