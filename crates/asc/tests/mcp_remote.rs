@@ -133,7 +133,11 @@ impl Running {
                     .await;
             });
         });
-        Self { addr: addr_rx.recv().unwrap(), stop: Some(stop), thread: Some(thread) }
+        Self {
+            addr: addr_rx.recv().unwrap(),
+            stop: Some(stop),
+            thread: Some(thread),
+        }
     }
 
     fn url(&self) -> String {
@@ -168,7 +172,10 @@ impl Server {
             let public = format!("http://{addr}");
             let policy = HttpPolicy::new(addr, Some(&public), &[], &[]);
             let handler = Handler::new(
-                Stub { calls: c2, dropped: d2 },
+                Stub {
+                    calls: c2,
+                    dropped: d2,
+                },
                 HandlerConfig::new(Surface::Http),
                 KeyRing::random().unwrap(),
             );
@@ -180,13 +187,22 @@ impl Server {
             let app = scope_layer(
                 layer(
                     mcp::router(handler, policy),
-                    McpAuth::new(authz.clone(), Arc::new(MemoryAudit::default()), &metadata_url(&public)),
+                    McpAuth::new(
+                        authz.clone(),
+                        Arc::new(MemoryAudit::default()),
+                        &metadata_url(&public),
+                    ),
                 ),
                 authz,
             );
             app.layer(axum::middleware::from_fn_with_state(s2, record))
         });
-        Self { http, seen, calls, dropped }
+        Self {
+            http,
+            seen,
+            calls,
+            dropped,
+        }
     }
 
     fn url(&self) -> String {
@@ -235,7 +251,12 @@ fn spawn_proxy(sb: &Sandbox, args: &[&str], token: Option<&str>, loopback_http: 
         }
     });
     let stdin = child.stdin.take();
-    Proxy { child, stdin, lines, stderr }
+    Proxy {
+        child,
+        stdin,
+        lines,
+        stderr,
+    }
 }
 
 impl Proxy {
@@ -246,7 +267,10 @@ impl Proxy {
     }
 
     fn recv(&self) -> Value {
-        let l = self.lines.recv_timeout(WAIT).expect("a line from asc mcp --remote");
+        let l = self
+            .lines
+            .recv_timeout(WAIT)
+            .expect("a line from asc mcp --remote");
         serde_json::from_str(&l).unwrap_or_else(|_| panic!("not JSON: {l}"))
     }
 
@@ -285,7 +309,10 @@ fn wait(child: &mut Child) -> std::process::ExitStatus {
         if let Some(s) = child.try_wait().unwrap() {
             return s;
         }
-        assert!(std::time::Instant::now() < end, "asc mcp --remote did not exit");
+        assert!(
+            std::time::Instant::now() < end,
+            "asc mcp --remote did not exit"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -339,7 +366,9 @@ impl Helper {
     }
 
     fn log(&self) -> String {
-        std::fs::read_to_string(self.dir.join("log")).unwrap_or_default().replace("\r\n", "\n")
+        std::fs::read_to_string(self.dir.join("log"))
+            .unwrap_or_default()
+            .replace("\r\n", "\n")
     }
 
     fn ops(&self) -> Vec<String> {
@@ -369,19 +398,31 @@ fn discover_list_and_calls_forward_both_ways_without_workspace_tools() {
     // `status` is a workspace tool: it exists on stdio only.
     assert!(!names.contains(&"status".to_owned()), "{names:?}");
     for n in &names {
-        let def = asc_mcp::catalogue::TOOLS.iter().find(|d| d.name == *n && d.on(Surface::Http));
+        let def = asc_mcp::catalogue::TOOLS
+            .iter()
+            .find(|d| d.name == *n && d.on(Surface::Http));
         assert!(def.is_some(), "{n} is not an HTTP tool");
     }
 
     let call = p.call(3, "tools/call", log_args("c1"));
     assert_eq!(call["id"], 3);
-    assert_eq!(call["result"]["structuredContent"]["tool"], "read_file", "{call}");
-    assert_eq!(call["result"]["structuredContent"]["principal"], "writer", "{call}");
+    assert_eq!(
+        call["result"]["structuredContent"]["tool"], "read_file",
+        "{call}"
+    );
+    assert_eq!(
+        call["result"]["structuredContent"]["principal"], "writer",
+        "{call}"
+    );
     assert_eq!(server.calls.load(Ordering::SeqCst), 1);
 
     // Every request carried the token and the routing headers of the body.
     let seen = server.seen.all();
-    assert!(seen.iter().all(|s| s.authorization.as_deref() == Some(&format!("Bearer {WRITE}"))), "{seen:?}");
+    assert!(
+        seen.iter()
+            .all(|s| s.authorization.as_deref() == Some(&format!("Bearer {WRITE}"))),
+        "{seen:?}"
+    );
     let last = seen.last().unwrap();
     assert_eq!(last.mcp_method.as_deref(), Some("tools/call"));
     assert_eq!(last.mcp_name.as_deref(), Some("read_file"));
@@ -416,18 +457,26 @@ fn cancellation_closes_the_request_and_the_server_stops_the_call() {
     let server = Server::start();
     let sb = Sandbox::new();
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], Some(READ), true);
-    p.send(&json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": log_args("slow") }));
+    p.send(
+        &json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": log_args("slow") }),
+    );
     // The stub is inside the call once it has counted it.
     let end = std::time::Instant::now() + WAIT;
     while server.calls.load(Ordering::SeqCst) == 0 {
-        assert!(std::time::Instant::now() < end, "the call never reached the backend");
+        assert!(
+            std::time::Instant::now() < end,
+            "the call never reached the backend"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(server.dropped.load(Ordering::SeqCst), 0);
     p.send(&json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 9 } }));
     let end = std::time::Instant::now() + WAIT;
     while server.dropped.load(Ordering::SeqCst) == 0 {
-        assert!(std::time::Instant::now() < end, "the server never saw the cancellation");
+        assert!(
+            std::time::Instant::now() < end,
+            "the server never saw the cancellation"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(p.silent(), "a cancelled request gets no reply");
@@ -444,14 +493,20 @@ fn credentials_come_from_asc_token_else_the_git_credential_helper() {
 
     // ASC_TOKEN wins and the helper is never asked.
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], Some(WRITE), true);
-    assert_eq!(p.call(1, "tools/call", log_args("c1"))["result"]["structuredContent"]["principal"], "writer");
+    assert_eq!(
+        p.call(1, "tools/call", log_args("c1"))["result"]["structuredContent"]["principal"],
+        "writer"
+    );
     drop(p);
     assert!(helper.ops().is_empty(), "{:?}", helper.ops());
 
     // Without it the helper is asked for the server host, and told it worked afterwards.
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], None, true);
     let reply = p.call(1, "tools/call", log_args("c1"));
-    assert_eq!(reply["result"]["structuredContent"]["principal"], "reader", "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["principal"], "reader",
+        "{reply}"
+    );
     let _ = p.finish();
     assert_eq!(helper.ops(), ["get", "store"], "{}", helper.log());
     let host = format!("host={}", server.http.addr);
@@ -468,28 +523,59 @@ fn a_401_rejects_and_asks_the_helper_once_more_then_succeeds_or_fails_with_the_h
     let helper = Helper::install(&sb, &["bad-token-0000000000", READ]);
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], None, true);
     let reply = p.call(1, "tools/call", log_args("c1"));
-    assert_eq!(reply["result"]["structuredContent"]["principal"], "reader", "{reply}");
+    assert_eq!(
+        reply["result"]["structuredContent"]["principal"], "reader",
+        "{reply}"
+    );
     let _ = p.finish();
-    assert_eq!(helper.ops(), ["get", "erase", "get", "store"], "{}", helper.log());
+    assert_eq!(
+        helper.ops(),
+        ["get", "erase", "get", "store"],
+        "{}",
+        helper.log()
+    );
 
     // A bad token every time: one re-ask, then the session fails with the hint.
     let sb = Sandbox::new();
     let helper = Helper::install(&sb, &["bad-token-0000000000"]);
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], None, true);
     let reply = p.call(1, "tools/call", log_args("c1"));
-    let msg = reply["error"]["message"].as_str().unwrap_or_else(|| panic!("{reply}"));
-    assert!(msg.contains(&format!("run git credential approve for {host}")), "{msg}");
+    let msg = reply["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{reply}"));
+    assert!(
+        msg.contains(&format!("run git credential approve for {host}")),
+        "{msg}"
+    );
     let (status, err) = p.finish();
     assert!(!status.success());
-    assert!(err.contains(&format!("run git credential approve for {host}")), "{err}");
-    assert_eq!(helper.ops(), ["get", "erase", "get", "erase"], "{}", helper.log());
-    assert_eq!(server.calls.load(Ordering::SeqCst), 1, "only the good call reached the backend");
+    assert!(
+        err.contains(&format!("run git credential approve for {host}")),
+        "{err}"
+    );
+    assert_eq!(
+        helper.ops(),
+        ["get", "erase", "get", "erase"],
+        "{}",
+        helper.log()
+    );
+    assert_eq!(
+        server.calls.load(Ordering::SeqCst),
+        1,
+        "only the good call reached the backend"
+    );
 
     // No credential at all: the same hint.
     let sb = Sandbox::new();
     let mut p = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], None, true);
     let reply = p.call(1, "tools/list", json!({}));
-    assert!(reply["error"]["message"].as_str().unwrap().contains("git credential approve"), "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("git credential approve"),
+        "{reply}"
+    );
     let (status, _) = p.finish();
     assert!(!status.success());
 }
@@ -507,16 +593,18 @@ fn the_credential_never_goes_to_a_redirect_target_on_another_origin() {
     let red_seen = Arc::new(Recorder::default());
     let r2 = red_seen.clone();
     let redirector = Running::start(move |_| {
-        Router::new().fallback(move || {
-            let target = target.clone();
-            async move {
-                let mut r = Response::new(axum::body::Body::empty());
-                *r.status_mut() = StatusCode::TEMPORARY_REDIRECT;
-                r.headers_mut().insert(header::LOCATION, HeaderValue::from_str(&target).unwrap());
-                r
-            }
-        })
-        .layer(axum::middleware::from_fn_with_state(r2, record))
+        Router::new()
+            .fallback(move || {
+                let target = target.clone();
+                async move {
+                    let mut r = Response::new(axum::body::Body::empty());
+                    *r.status_mut() = StatusCode::TEMPORARY_REDIRECT;
+                    r.headers_mut()
+                        .insert(header::LOCATION, HeaderValue::from_str(&target).unwrap());
+                    r
+                }
+            })
+            .layer(axum::middleware::from_fn_with_state(r2, record))
     });
     let sb = Sandbox::new();
     // A custom header is not "sensitive" to an HTTP client, so only the origin binding stops it.
@@ -525,18 +613,35 @@ fn the_credential_never_goes_to_a_redirect_target_on_another_origin() {
         "[http]\n\textraHeader = X-Asc-Test-Extra: do-not-leak\n",
     )
     .unwrap();
-    let mut p = spawn_proxy(&sb, &["mcp", "--remote", &redirector.url()], Some(WRITE), true);
+    let mut p = spawn_proxy(
+        &sb,
+        &["mcp", "--remote", &redirector.url()],
+        Some(WRITE),
+        true,
+    );
     let reply = p.call(1, "tools/call", log_args("c1"));
-    assert!(reply["error"]["message"].as_str().unwrap().contains("redirect"), "{reply}");
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("redirect"),
+        "{reply}"
+    );
     drop(p);
     // The credential and the header did go to the origin that was asked...
     let asked = red_seen.all();
     assert_eq!(asked.len(), 1, "{asked:?}");
     assert_eq!(asked[0].extra.as_deref(), Some("do-not-leak"));
-    assert_eq!(asked[0].authorization.as_deref(), Some(&*format!("Bearer {WRITE}")));
+    assert_eq!(
+        asked[0].authorization.as_deref(),
+        Some(&*format!("Bearer {WRITE}"))
+    );
     // ...and nothing followed the redirect.
     let leaked = evil_seen.all();
-    assert!(leaked.is_empty(), "the redirect target was contacted: {leaked:?}");
+    assert!(
+        leaked.is_empty(),
+        "the redirect target was contacted: {leaked:?}"
+    );
 }
 
 #[test]
@@ -546,35 +651,75 @@ fn read_only_and_toolsets_narrow_the_list_and_hidden_calls_never_leave() {
 
     let mut full = spawn_proxy(&sb, &["mcp", "--remote", &server.url()], Some(WRITE), true);
     let all = tool_names(&full.call(1, "tools/list", json!({ "repo": "acme/widgets" })));
-    assert!(all.contains(&"commit".to_owned()) || all.iter().any(|n| {
-        asc_mcp::catalogue::TOOLS.iter().any(|d| d.name == *n && d.toolset == asc_mcp::catalogue::Toolset::Write)
-    }), "a writer sees a write tool: {all:?}");
+    assert!(
+        all.contains(&"commit".to_owned())
+            || all.iter().any(|n| {
+                asc_mcp::catalogue::TOOLS
+                    .iter()
+                    .any(|d| d.name == *n && d.toolset == asc_mcp::catalogue::Toolset::Write)
+            }),
+        "a writer sees a write tool: {all:?}"
+    );
     drop(full);
 
-    let mut ro = spawn_proxy(&sb, &["mcp", "--remote", &server.url(), "--read-only"], Some(WRITE), true);
+    let mut ro = spawn_proxy(
+        &sb,
+        &["mcp", "--remote", &server.url(), "--read-only"],
+        Some(WRITE),
+        true,
+    );
     let names = tool_names(&ro.call(1, "tools/list", json!({ "repo": "acme/widgets" })));
     assert!(!names.is_empty());
-    assert!(names.iter().all(|n| {
-        asc_mcp::catalogue::TOOLS
-            .iter()
-            .find(|d| d.name == *n && d.on(Surface::Http))
-            .is_some_and(|d| d.toolset != asc_mcp::catalogue::Toolset::Write)
-    }), "{names:?}");
+    assert!(
+        names.iter().all(|n| {
+            asc_mcp::catalogue::TOOLS
+                .iter()
+                .find(|d| d.name == *n && d.on(Surface::Http))
+                .is_some_and(|d| d.toolset != asc_mcp::catalogue::Toolset::Write)
+        }),
+        "{names:?}"
+    );
     let before = server.calls.load(Ordering::SeqCst);
     let write_tool = all
         .iter()
         .find(|n| !names.contains(n))
         .expect("a write tool that read-only hides");
-    let reply = ro.call(2, "tools/call", json!({ "name": write_tool, "arguments": { "repo": "acme/widgets" } }));
+    let reply = ro.call(
+        2,
+        "tools/call",
+        json!({ "name": write_tool, "arguments": { "repo": "acme/widgets" } }),
+    );
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
-    assert_eq!(server.calls.load(Ordering::SeqCst), before, "a hidden tool never reaches the server");
+    assert_eq!(
+        server.calls.load(Ordering::SeqCst),
+        before,
+        "a hidden tool never reaches the server"
+    );
     // The refused call was not even sent.
-    assert!(!server.seen.all().iter().any(|s| s.mcp_name.as_deref() == Some(write_tool)));
+    assert!(
+        !server
+            .seen
+            .all()
+            .iter()
+            .any(|s| s.mcp_name.as_deref() == Some(write_tool))
+    );
     drop(ro);
 
-    let mut only = spawn_proxy(&sb, &["mcp", "--remote", &server.url(), "--tools", "read_file"], Some(READ), true);
-    assert_eq!(tool_names(&only.call(1, "tools/list", json!({}))), ["read_file"]);
-    let reply = only.call(2, "tools/call", json!({ "name": "ls_tree", "arguments": { "repo": "acme/widgets" } }));
+    let mut only = spawn_proxy(
+        &sb,
+        &["mcp", "--remote", &server.url(), "--tools", "read_file"],
+        Some(READ),
+        true,
+    );
+    assert_eq!(
+        tool_names(&only.call(1, "tools/list", json!({}))),
+        ["read_file"]
+    );
+    let reply = only.call(
+        2,
+        "tools/call",
+        json!({ "name": "ls_tree", "arguments": { "repo": "acme/widgets" } }),
+    );
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
 }
 
@@ -593,8 +738,14 @@ fn plain_http_and_malformed_urls_are_refused_before_any_credential_is_read() {
         let p = spawn_proxy(&sb, &["mcp", "--remote", url], Some(WRITE), loopback);
         let (status, err) = p.finish();
         assert!(!status.success(), "{url}");
-        assert!(err.contains("asc mcp") || err.contains("--remote"), "{url}: {err}");
-        assert!(!err.contains("pw") || !err.contains("user:pw"), "{url}: {err}");
+        assert!(
+            err.contains("asc mcp") || err.contains("--remote"),
+            "{url}: {err}"
+        );
+        assert!(
+            !err.contains("pw") || !err.contains("user:pw"),
+            "{url}: {err}"
+        );
     }
     assert!(helper.ops().is_empty());
 }
