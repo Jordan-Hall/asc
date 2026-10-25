@@ -27,12 +27,20 @@ const IDENT: [(&str, &str); 6] = [
 ];
 
 fn asc(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
-    sb.asc(cwd).envs(IDENT).args(args).output().expect("spawn asc")
+    sb.asc(cwd)
+        .envs(IDENT)
+        .args(args)
+        .output()
+        .expect("spawn asc")
 }
 
 fn ok(sb: &Sandbox, cwd: &Path, args: &[&str]) -> String {
     let out = asc(sb, cwd, args);
-    assert!(out.status.success(), "asc {args:?} failed: {}", text(&out.stderr));
+    assert!(
+        out.status.success(),
+        "asc {args:?} failed: {}",
+        text(&out.stderr)
+    );
     text(&out.stdout)
 }
 
@@ -91,7 +99,11 @@ fn clone_edit_commit_switch_without_downloads() {
     let first = t.elapsed();
     let t = Instant::now();
     assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), "");
-    assert!(t.elapsed() < Duration::from_millis(50), "status took {:?} (first {first:?})", t.elapsed());
+    assert!(
+        t.elapsed() < Duration::from_millis(50),
+        "status took {:?} (first {first:?})",
+        t.elapsed()
+    );
 
     std::fs::write(ws.join("a.txt"), "a2\n").unwrap();
     std::fs::write(ws.join("new.txt"), "n\n").unwrap();
@@ -116,9 +128,28 @@ fn worktree_add_is_fast_and_git_verbs_work_through_the_shim() {
 
     let wt = ws.join(".claude").join("worktrees").join("w1");
     let t = Instant::now();
-    ok(&sb, &ws, &["worktree", "add", "--mode", "virtual", "-b", "w1", wt.to_str().unwrap()]);
-    assert!(t.elapsed() < Duration::from_secs(1), "worktree add took {:?}", t.elapsed());
-    assert_eq!(std::fs::read_to_string(wt.join("src").join("b.txt")).unwrap(), "b\n");
+    ok(
+        &sb,
+        &ws,
+        &[
+            "worktree",
+            "add",
+            "--mode",
+            "virtual",
+            "-b",
+            "w1",
+            wt.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        t.elapsed() < Duration::from_secs(1),
+        "worktree add took {:?}",
+        t.elapsed()
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join("src").join("b.txt")).unwrap(),
+        "b\n"
+    );
 
     // The git-compatible verbs agree with the plain implementation's output shapes.
     assert_eq!(ok(&sb, &wt, &["status", "--porcelain=v2", "-z"]), "");
@@ -126,7 +157,11 @@ fn worktree_add_is_fast_and_git_verbs_work_through_the_shim() {
     std::fs::write(wt.join("a.txt"), "w\n").unwrap();
     assert!(ok(&sb, &wt, &["diff"]).contains("+w"));
 
-    ok(&sb, &ws, &["worktree", "remove", "--force", wt.to_str().unwrap()]);
+    ok(
+        &sb,
+        &ws,
+        &["worktree", "remove", "--force", wt.to_str().unwrap()],
+    );
     assert!(!wt.exists());
 }
 
@@ -138,9 +173,15 @@ fn convert_to_plain_keeps_edits() {
     let ws = virtual_clone(&sb, &url);
     std::fs::write(ws.join("a.txt"), "edited\n").unwrap();
     ok(&sb, &ws, &["worktree", "convert", "--plain"]);
-    assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "edited\n");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("a.txt")).unwrap(),
+        "edited\n"
+    );
     assert_eq!(ok(&sb, &ws, &["status", "--porcelain"]), " M a.txt\n");
-    assert_eq!(std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(), "b\n");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("src").join("b.txt")).unwrap(),
+        "b\n"
+    );
 }
 
 #[test]
@@ -152,7 +193,10 @@ fn tree_without_turbo_json_has_no_index_and_status_matches_git() {
     // SPEC §9.4: no turbo.json, so asc.turboIndex renders no `index` file.
     let gitdir = ok(&sb, &ws, &["rev-parse", "--git-dir"]);
     let gitdir = ws.join(gitdir.trim());
-    assert!(!gitdir.join("index").exists(), "unexpected index in {gitdir:?}");
+    assert!(
+        !gitdir.join("index").exists(),
+        "unexpected index in {gitdir:?}"
+    );
     std::fs::write(ws.join("a.txt"), "x\n").unwrap();
     let asc_status = ok(&sb, &ws, &["status", "--porcelain=v2"]);
     assert!(asc_status.contains("a.txt"));
