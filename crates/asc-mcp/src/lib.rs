@@ -5,10 +5,16 @@
 //! - [`schema`]: JSON Schema 2020-12 for the asc JSON profile, generated from the proto descriptors.
 //! - [`shape`]: the token budget, stream folding and structure-preserving truncation (SPEC 22.6.2).
 //! - [`cursor`]: HMAC-sealed cursors and the key ring.
+//! - [`handler`], [`backend`], [`config`], [`errors`]: the request handler over a backend trait, the
+//!   `asc.mcp.*` trust rules and the error mapping (M05).
 //! - [`catalogue`]: the tool table built from `tools.toml` by `build.rs`, gated by [`catalogue::Context`].
 
+pub mod backend;
 pub mod catalogue;
+pub mod config;
 pub mod cursor;
+pub mod errors;
+pub mod handler;
 pub mod schema;
 pub mod shape;
 
