@@ -38,7 +38,8 @@ The compose file assumes these facts about the image. Check them before step 4.
   goes to Forgejo (SPEC 15.6.2). `asc serve` refuses to start with `[forgejo]` and no
   `internal_token_file`, so Forgejo's `INTERNAL_TOKEN` is required.
 - **Git.** `[git] enabled = true` serves smart-HTTP (SPEC 25). Set `ASC_GIT_ENABLED=false` for the
-  403 stub. There is no SSH listener in this deployment.
+  403 stub. The Forgejo-mode file has no SSH listener; the standalone staging file enables one
+  (host port 22222 to container 2222, see "Standalone staging").
 - **Admin.** The admin listener keeps its loopback default: no metrics route, no token. Use
   `docker exec` for `/readyz` detail.
 - **Network.** `ascserve` is on the application's own Coolify network (holding only this app and
@@ -55,8 +56,9 @@ The compose file assumes these facts about the image. Check them before step 4.
 
 - `[auth] provider = "token_store"`; the database is SQLite (`sqlite:///var/lib/asc/asc.db`) on the
   `asc-state` volume, so one replica only; objects go to Garage bucket `asc-staging`
-  (`https://garage.example.org`, https only). `[git] enabled = true`. No SSH listener,
-  although the image is built with `git-ssh`.
+  (`https://garage.example.org`, https only). `[git] enabled = true`. SSH git is
+  configured (`[ssh]`, `listen = "0.0.0.0:2222"`, published as host port 22222; host key in the
+  state volume). It is not yet deployed or verified end to end.
 - The config file is a Coolify **file mount** (a `volumes:` entry with `content:`) holding the
   staging values. Coolify rejects compose `configs:` content in read-only services, which is why
   the Forgejo-mode file's approach is not used here.
@@ -200,8 +202,8 @@ asc clone $H/asc/soma /tmp/soma-asc                            # native asc clon
 Use a git credential helper or `http.extraHeader` for the PAT, never a token in the URL. With
 `ASC_GIT_ENABLED=false` the git commands answer 403 with `X-Asc-Git`.
 
-`asc doctor` is a stub until U40 (`crates/asc/src/cli/doctor.rs`), so `--store` may print nothing
-useful yet. Its probe puts a `probe/<uuid>` key twice with `Create`; the second put must fail with
+`asc doctor --store` is implemented (`crates/asc/src/cli/doctor.rs`: store transport checks and an
+integrity sample of stored objects). Its probe puts a `probe/<uuid>` key twice with `Create`; the second put must fail with
 `AlreadyExists`, and SPEC expects Garage v2 to fail it. That matters only when a bucket holds refs
 (`BucketRefs`). Here refs live in Postgres and the bucket holds objects, but record the result.
 
