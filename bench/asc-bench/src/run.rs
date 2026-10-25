@@ -67,8 +67,8 @@ impl Tool {
         })
     }
 
-    /// Run `args` in `cwd`; returns wall time and bounded stderr text on success.
-    pub fn run(&self, cwd: &Path, args: &[String]) -> Result<Duration, Fail> {
+    /// The isolated, non-interactive command line for `args` in `cwd` (stdio not set).
+    pub fn command(&self, cwd: &Path, args: &[String]) -> Command {
         let mut cmd = Command::new(&self.exe);
         cmd.args([
             "-c",
@@ -87,9 +87,14 @@ impl Tool {
         .env("GIT_AUTHOR_EMAIL", "bench@example.invalid")
         .env("GIT_COMMITTER_NAME", "bench")
         .env("GIT_COMMITTER_EMAIL", "bench@example.invalid")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stdin(Stdio::null());
+        cmd
+    }
+
+    /// Run `args` in `cwd`; returns wall time and bounded stderr text on success.
+    pub fn run(&self, cwd: &Path, args: &[String]) -> Result<Duration, Fail> {
+        let mut cmd = self.command(cwd, args);
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped());
         let start = Instant::now();
         let mut child = cmd
             .spawn()
