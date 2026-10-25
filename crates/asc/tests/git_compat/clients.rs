@@ -1001,13 +1001,25 @@ mod security {
         let before = metric_total(&rig);
         // Three requests of different kinds: an allowed discovery, a refused push discovery
         // and an anonymous one. Each is one record, whatever its answer.
-        let w = format!("Basic {}", b64(format!("x-access-token:{}", rig.write.secret).as_bytes()));
-        let r = format!("Basic {}", b64(format!("x-access-token:{}", rig.read.secret).as_bytes()));
+        let w = format!(
+            "Basic {}",
+            b64(format!("x-access-token:{}", rig.write.secret).as_bytes())
+        );
+        let r = format!(
+            "Basic {}",
+            b64(format!("x-access-token:{}", rig.read.secret).as_bytes())
+        );
         let info = "/acme/web.git/info/refs?service=git-upload-pack";
         let push = "/acme/web.git/info/refs?service=git-receive-pack";
         let addr = rig.stack.addr();
-        assert_eq!(http(addr, "GET", info, &[("Authorization", &w)], b"").status, 200);
-        assert_eq!(http(addr, "GET", push, &[("Authorization", &r)], b"").status, 403);
+        assert_eq!(
+            http(addr, "GET", info, &[("Authorization", &w)], b"").status,
+            200
+        );
+        assert_eq!(
+            http(addr, "GET", push, &[("Authorization", &r)], b"").status,
+            403
+        );
         assert_eq!(http(addr, "GET", info, &[], b"").status, 401);
         let after = metric_total(&rig);
         assert_eq!(after - before, 3, "one metric and audit record per request");
@@ -1130,7 +1142,10 @@ mod security {
     fn a_mirror_repository_is_read_only_over_git() {
         let stack = Stack::start();
         // `mode = "mirror"` needs the mirror service; a server without it refuses the init.
-        stack.create_repo("acme/web", "\"mode\":\"mirror\",\"defaultBranch\":\"trunk\"");
+        stack.create_repo(
+            "acme/web",
+            "\"mode\":\"mirror\",\"defaultBranch\":\"trunk\"",
+        );
         let write = stack.token(&["--user", "alice", "--repo", "acme/*", "--write"]);
         let a = basic("x-access-token", &write.secret);
         let push = http(

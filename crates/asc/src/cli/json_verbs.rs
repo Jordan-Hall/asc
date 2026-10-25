@@ -141,7 +141,9 @@ fn child_argv(argv: &[OsString]) -> Result<Vec<OsString>> {
             ended = true;
         }
         if ended && bare && a.to_string_lossy().starts_with('-') && a != "--" {
-            return Err(fatal("an operand after --end-of-options cannot start with '-'"));
+            return Err(fatal(
+                "an operand after --end-of-options cannot start with '-'",
+            ));
         }
         out.push(a.clone());
     }
@@ -420,7 +422,11 @@ async fn run_here(ctx: &Ctx, argv: Vec<OsString>) -> Result<ExitCode> {
         snap(&target).await
     };
     let op_after = if cloning { None } else { last_op(&dir).await };
-    let op = if op_after != op_before { op_after } else { None };
+    let op = if op_after != op_before {
+        op_after
+    } else {
+        None
+    };
 
     let built: Option<(Res, u8)> = match verb.as_str() {
         "restore" => ok_only(&ran, restore(rest)),
@@ -567,7 +573,9 @@ async fn pick(
         d["head"] = json!(h);
     }
     if ran.code != 0 {
-        let status = probe(dir, &["status", "--porcelain"]).await.unwrap_or_default();
+        let status = probe(dir, &["status", "--porcelain"])
+            .await
+            .unwrap_or_default();
         let paths: BTreeSet<&str> = status
             .lines()
             .filter(|l| {
@@ -680,12 +688,7 @@ async fn wt_rows(ctx: &Ctx) -> Result<Vec<WtRow>> {
     Ok(rows)
 }
 
-async fn worktree(
-    ctx: &Ctx,
-    sub: &str,
-    rest: &[OsString],
-    ran: &Run,
-) -> Result<Option<(Res, u8)>> {
+async fn worktree(ctx: &Ctx, sub: &str, rest: &[OsString], ran: &Run) -> Result<Option<(Res, u8)>> {
     if ran.code != 0 {
         return Ok(None);
     }
@@ -750,7 +753,11 @@ async fn worktree(
 
 async fn stash_entries(dir: &Path) -> Vec<Value> {
     let max = format!("--max-count={MAX_ITEMS}");
-    let Some(t) = probe(dir, &["log", "-g", &max, "--format=%H%x1f%gs", "refs/stash"]).await
+    let Some(t) = probe(
+        dir,
+        &["log", "-g", &max, "--format=%H%x1f%gs", "refs/stash"],
+    )
+    .await
     else {
         return Vec::new();
     };
@@ -872,7 +879,9 @@ async fn pull(dir: &Path, rest: &[OsString], before: &Snap, after: &Snap) -> Res
     let rebase = match explicit {
         Some(r) => r,
         None => matches!(
-            probe(dir, &["config", "--get", "pull.rebase"]).await.as_deref(),
+            probe(dir, &["config", "--get", "pull.rebase"])
+                .await
+                .as_deref(),
             Some("true" | "merges" | "interactive")
         ),
     };
@@ -1012,7 +1021,14 @@ mod tests {
     #[test]
     fn child_argv_drops_json_and_maps_end_of_options() {
         assert_eq!(
-            child_argv(&os(&["restore", "--json", "-S", "--end-of-options", "--json"])).unwrap(),
+            child_argv(&os(&[
+                "restore",
+                "--json",
+                "-S",
+                "--end-of-options",
+                "--json"
+            ]))
+            .unwrap(),
             os(&["restore", "-S", "--", "--json"])
         );
         assert_eq!(

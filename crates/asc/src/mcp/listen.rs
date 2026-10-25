@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use asc_mcp::backend::McpBackend;
-use asc_mcp::errors::{INVALID_PARAMS, INVALID_REQUEST, INTERNAL_ERROR, RpcError};
+use asc_mcp::errors::{INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, RpcError};
 use asc_mcp::handler::{Caller, Handler, MAX_MESSAGE_BYTES, Notifier};
 use asc_rpc::ipc::WorkspaceClient;
 use asc_rpc::server::wire::{self, watch_event::Kind};
@@ -115,7 +115,9 @@ fn parse_uri(uri: &str, ws_id: &str, gate: &Gate) -> Result<Resource, RpcError> 
         .split_once('/')
         .ok_or_else(|| bad("a subscribed URI names a resource after the workspace"))?;
     if ws != ws_id {
-        return Err(bad("the workspace is not the one this server was started in"));
+        return Err(bad(
+            "the workspace is not the one this server was started in",
+        ));
     }
     match tail {
         "status" => Ok(Resource::Status),
@@ -224,7 +226,12 @@ pub async fn open_watch(channel: Channel, ws_id: &str) -> Result<Events, RpcErro
             since_token: String::new(),
         })
         .await
-        .map_err(|e| RpcError::new(INTERNAL_ERROR, format!("the watch stream failed: {}", e.message())))?;
+        .map_err(|e| {
+            RpcError::new(
+                INTERNAL_ERROR,
+                format!("the watch stream failed: {}", e.message()),
+            )
+        })?;
     Ok(s.into_inner().boxed())
 }
 
@@ -264,7 +271,10 @@ impl Subscription {
     pub async fn run(self, mut events: Events, out: &Notifier) -> Result<(), RpcError> {
         while let Some(ev) = events.next().await {
             let ev = ev.map_err(|e| {
-                RpcError::new(INTERNAL_ERROR, format!("the watch stream failed: {}", e.message()))
+                RpcError::new(
+                    INTERNAL_ERROR,
+                    format!("the watch stream failed: {}", e.message()),
+                )
             })?;
             for uri in self.updates(&ev) {
                 let n = json!({
@@ -323,7 +333,11 @@ async fn read_line<R: AsyncBufRead + Unpin>(
         }
         r.consume(take);
         if found {
-            return Ok(if too_long { Line::TooLong } else { Line::Complete });
+            return Ok(if too_long {
+                Line::TooLong
+            } else {
+                Line::Complete
+            });
         }
     }
 }
@@ -561,13 +575,13 @@ mod tests {
         let g = gate(d.path());
         let s = open(&Listens::default(), &["asc://ws/w1/smartlog"], &g).unwrap();
         let (tx, mut rx) = mpsc::channel(8);
-        let events: Events = futures::stream::iter([
-            Ok(ev(Kind::Stack, &[])),
-            Ok(ev(Kind::Paths, &["x"])),
-        ])
-        .boxed();
+        let events: Events =
+            futures::stream::iter([Ok(ev(Kind::Stack, &[])), Ok(ev(Kind::Paths, &["x"]))]).boxed();
         let r = s.run(events, &tx).await;
-        assert!(r.is_err(), "an ended stream is reported so the client listens again");
+        assert!(
+            r.is_err(),
+            "an ended stream is reported so the client listens again"
+        );
         drop(tx);
         let mut n = 0;
         while let Some(m) = rx.recv().await {

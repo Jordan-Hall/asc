@@ -103,7 +103,10 @@ fn a_failed_cloud_pull_leaves_fetch_identical_to_no_daemon() {
     same(&reference, &cloud_off, "asc.cloud=off");
     let branches = c.run(&["fetch"], Daemon::Unreachable, &["asc.branchless=false"]);
     same(&reference, &branches, "asc.branchless=false");
-    assert!(!c.marker().exists(), "no daemon answered, so no ask is left");
+    assert!(
+        !c.marker().exists(),
+        "no daemon answered, so no ask is left"
+    );
 }
 
 #[test]

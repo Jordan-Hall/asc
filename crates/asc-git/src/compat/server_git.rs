@@ -577,7 +577,10 @@ impl ServerGit {
         require_absolute(view)?;
         check_repo_config(view)?;
         let l = &self.inner.limits;
-        if hidden.iter().any(|n| !n.starts_with("refs/") || !valid_ref_name(n)) {
+        if hidden
+            .iter()
+            .any(|n| !n.starts_with("refs/") || !valid_ref_name(n))
+        {
             return Err(ServerGitError::Config("a hidden ref name is not allowed"));
         }
         let mut cmd = self.command(&[], req.protocol.as_ref(), true)?;

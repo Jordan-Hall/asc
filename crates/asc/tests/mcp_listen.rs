@@ -265,8 +265,10 @@ fn bad_and_hidden_uris_and_the_limits_are_refused() {
         json!({ "resourceSubscriptions": [status.clone()] }),
     );
     assert!(is_error(&v, -32600), "{v}");
-    s.send(&json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
-        "params": { "requestId": a } }));
+    s.send(
+        &json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": { "requestId": a } }),
+    );
     std::thread::sleep(Duration::from_millis(500));
     let c = listen(&mut s, &[status]);
     assert!(

@@ -184,14 +184,7 @@ fn plain_pushes_follow_the_branchless_rules() {
     // The trunk is a shared ref: a write token pushes it, a read token is refused.
     let r = git.run(&a, &["push", "origin", "master"]);
     assert!(r.ok, "trunk push: {}", mask(&r.stderr));
-    let r = git.run(
-        &a,
-        &[
-            "push",
-            &stack.url(BOB),
-            "HEAD:refs/heads/master",
-        ],
-    );
+    let r = git.run(&a, &["push", &stack.url(BOB), "HEAD:refs/heads/master"]);
     assert!(!r.ok, "a read token does not push the trunk");
 
     // `git push origin HEAD` on a non-shared branch: a user ref, the line, no change.
@@ -201,7 +194,8 @@ fn plain_pushes_follow_the_branchless_rules() {
     let r = git.run(&a, &["push", "origin", "HEAD"]);
     assert!(r.ok, "{}", mask(&r.stderr));
     assert!(
-        r.stderr.contains("remote: asc: stored as your branch 'feat'"),
+        r.stderr
+            .contains("remote: asc: stored as your branch 'feat'"),
         "{}",
         mask(&r.stderr)
     );
@@ -236,7 +230,8 @@ fn plain_pushes_follow_the_branchless_rules() {
     let r = git.run(&a, &["push", "origin", "HEAD:refs/for/master"]);
     assert!(!r.ok, "refs/for without the forge is refused");
     assert!(
-        r.stderr.contains("remote: asc: refs/for/master is not a shared ref"),
+        r.stderr
+            .contains("remote: asc: refs/for/master is not a shared ref"),
         "{}",
         mask(&r.stderr)
     );

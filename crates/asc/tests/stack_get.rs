@@ -226,12 +226,7 @@ fn freeze_and_unfreeze_gate_local_rewrites() {
     assert!(again.contains("\"changed\":false"), "{again}");
 
     // A frozen change is not amended, and no ref moves.
-    let (code, err) = fail(
-        &s.sb,
-        a,
-        WRITE,
-        &["modify", "-m", "feat: three again"],
-    );
+    let (code, err) = fail(&s.sb, a, WRITE, &["modify", "-m", "feat: three again"]);
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("frozen"), "{err}");
     assert_eq!(ok(&s.sb, a, &["rev-parse", "HEAD"]).trim(), tip);

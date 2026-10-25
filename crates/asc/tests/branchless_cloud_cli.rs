@@ -53,7 +53,11 @@ impl Client {
 
     fn ok(&self, args: &[&str]) -> std::process::Output {
         let out = self.run(args);
-        assert!(out.status.success(), "asc {args:?} failed: {}", text(&out.stderr));
+        assert!(
+            out.status.success(),
+            "asc {args:?} failed: {}",
+            text(&out.stderr)
+        );
         out
     }
 
@@ -70,13 +74,20 @@ impl Client {
 
     /// `(workspace name, version)` of the `cloud_state` row, if any.
     fn cloud_state(&self) -> Option<(String, i64)> {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
             asc_state::drafts::Drafts::new(
-                asc_state::state::repos::get(&db, ws.ws.repo).await.unwrap().unwrap().key,
+                asc_state::state::repos::get(&db, ws.ws.repo)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .key,
             )
             .cloud_state(&db)
             .await
@@ -86,12 +97,19 @@ impl Client {
     }
 
     fn set_cloud_state(&self, name: &str, version: i64) {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let home = AscHome::open(self.sb.asc_home.clone()).unwrap();
             let db = StateDb::open(&home).await.unwrap();
             let ws = workspaces::list(&db, None).await.unwrap().remove(0);
-            let key = asc_state::state::repos::get(&db, ws.ws.repo).await.unwrap().unwrap().key;
+            let key = asc_state::state::repos::get(&db, ws.ws.repo)
+                .await
+                .unwrap()
+                .unwrap()
+                .key;
             asc_state::drafts::Drafts::new(key)
                 .set_cloud_state(
                     &db,
@@ -126,7 +144,11 @@ fn status_reads_the_queue_without_the_network() {
     assert_eq!(after["state"], "pending", "{after}");
     assert!(after["queue"]["pending"].as_i64().unwrap() >= 1);
     assert!(after["visible_heads"].as_i64().unwrap() >= 1);
-    assert!(server.calls().is_empty(), "status contacted the server: {:?}", server.calls());
+    assert!(
+        server.calls().is_empty(),
+        "status contacted the server: {:?}",
+        server.calls()
+    );
 
     let text_out = text(&c.ok(&["cloud", "status"]).stdout);
     assert!(text_out.starts_with("cloud: "), "{text_out}");
@@ -149,7 +171,11 @@ fn sync_reports_a_server_without_a_cloud_and_exits_non_zero() {
     let c = Client::new(&server.url("acme/app"));
     c.commit("one.txt");
     let out = c.run(&["cloud", "sync"]);
-    assert!(!out.status.success(), "sync must fail loudly: {}", text(&out.stdout));
+    assert!(
+        !out.status.success(),
+        "sync must fail loudly: {}",
+        text(&out.stdout)
+    );
     let err = text(&out.stderr);
     assert!(err.contains("no commit cloud"), "{err}");
     assert_eq!(rpc_calls(&server, "PutObjects"), 0, "nothing is uploaded");
@@ -165,8 +191,15 @@ fn sync_with_the_cloud_off_uploads_nothing_and_says_why() {
     server.forget_calls();
     let out = c.run(&["-c", "asc.cloud=off", "cloud", "sync"]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("cloud is off"), "{}", text(&out.stderr));
-    assert_eq!(server.count("PutObjects") + server.count("UpdateWorkspace"), 0);
+    assert!(
+        text(&out.stderr).contains("cloud is off"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(
+        server.count("PutObjects") + server.count("UpdateWorkspace"),
+        0
+    );
 }
 
 #[test]
@@ -175,13 +208,21 @@ fn list_reports_a_server_without_a_cloud() {
     let c = Client::new(&server.url("acme/app"));
     let out = c.run(&["cloud", "list"]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("no commit cloud"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("no commit cloud"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 /// A pushed base commit, then one draft change on a feature branch.
 fn draft(c: &Client, name: &str) {
-    std::fs::write(c.root.join("base.txt"), "base
-").unwrap();
+    std::fs::write(
+        c.root.join("base.txt"),
+        "base
+",
+    )
+    .unwrap();
     c.ok(&["add", "base.txt"]);
     c.ok(&["commit", "-q", "-m", "base"]);
     c.ok(&["push", "origin", "master"]);
@@ -194,7 +235,9 @@ fn draft(c: &Client, name: &str) {
 /// `(change id, changeset id)` of the draft at HEAD.
 fn head_ids(c: &Client) -> (String, String) {
     let change = text(&c.ok(&["change-id", "HEAD"]).stdout).trim().to_owned();
-    let cs = text(&c.ok(&["rev-parse", "--asc", "HEAD"]).stdout).trim().to_owned();
+    let cs = text(&c.ok(&["rev-parse", "--asc", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
     (change, cs)
 }
 
@@ -234,7 +277,11 @@ fn purge_with_yes_reports_a_server_without_a_cloud_and_keeps_the_heads() {
     let heads = c.status_json()["visible_heads"].as_i64().unwrap();
     let out = c.run(&["cloud", "purge", "--yes", &change[..8]]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("no commit cloud"), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("no commit cloud"),
+        "{}",
+        text(&out.stderr)
+    );
     // The server did not purge, so the local heads are not hidden on its behalf.
     assert_eq!(c.status_json()["visible_heads"].as_i64().unwrap(), heads);
 }
@@ -269,7 +316,11 @@ fn release_of_an_entry_that_is_not_waiting_is_refused() {
     draft(&c, "one.txt");
     let (change, cs) = head_ids(&c);
     server.forget_calls();
-    for word in ["ffffffff".to_owned(), change[..8].to_owned(), cs[..12].to_owned()] {
+    for word in [
+        "ffffffff".to_owned(),
+        change[..8].to_owned(),
+        cs[..12].to_owned(),
+    ] {
         let out = c.run(&["cloud", "release", &word]);
         assert!(!out.status.success(), "{word}");
     }

@@ -295,7 +295,12 @@ fn asc_clone_of_a_migrated_repo_matches_ref_for_ref() {
     );
     let ascw = ascd.join("w");
     // `asc clone` follows branches; the tags come with an explicit `fetch --tags`.
-    asc_ok(&git, &ascw, &write.secret, &["fetch", "-q", "--tags", "origin"]);
+    asc_ok(
+        &git,
+        &ascw,
+        &write.secret,
+        &["fetch", "-q", "--tags", "origin"],
+    );
     let mut mismatches = Vec::new();
     for line in &want {
         let (name, sha) = line.split_once(' ').unwrap();
@@ -348,12 +353,21 @@ fn asc_push_clone_and_fetch_loop_through_asc_serve() {
 
     let a = git.work("a");
     asc_ok(&git, &a, tok, &["init", "-q"]);
-    std::fs::write(a.join("one.txt"), "one
-").unwrap();
+    std::fs::write(
+        a.join("one.txt"),
+        "one
+",
+    )
+    .unwrap();
     asc_ok(&git, &a, tok, &["add", "one.txt"]);
     asc_ok(&git, &a, tok, &["commit", "-q", "-m", "one"]);
     asc_ok(&git, &a, tok, &["remote", "add", "origin", &server]);
-    asc_ok(&git, &a, tok, &["push", "-q", "origin", "HEAD:refs/heads/master"]);
+    asc_ok(
+        &git,
+        &a,
+        tok,
+        &["push", "-q", "origin", "HEAD:refs/heads/master"],
+    );
     let first = asc_ok(&git, &a, tok, &["rev-parse", "HEAD"]);
 
     let b = git.work("b");
@@ -365,16 +379,31 @@ fn asc_push_clone_and_fetch_loop_through_asc_serve() {
 ",
         "the clone has the file"
     );
-    assert_eq!(asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]), first);
+    assert_eq!(
+        asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]),
+        first
+    );
 
-    std::fs::write(a.join("two.txt"), "two
-").unwrap();
+    std::fs::write(
+        a.join("two.txt"),
+        "two
+",
+    )
+    .unwrap();
     asc_ok(&git, &a, tok, &["add", "two.txt"]);
     asc_ok(&git, &a, tok, &["commit", "-q", "-m", "two"]);
-    asc_ok(&git, &a, tok, &["push", "-q", "origin", "HEAD:refs/heads/master"]);
+    asc_ok(
+        &git,
+        &a,
+        tok,
+        &["push", "-q", "origin", "HEAD:refs/heads/master"],
+    );
     let second = asc_ok(&git, &a, tok, &["rev-parse", "HEAD"]);
     assert_ne!(first, second);
 
     asc_ok(&git, &bw, tok, &["fetch", "-q", "origin"]);
-    assert_eq!(asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]), second);
+    assert_eq!(
+        asc_ok(&git, &bw, tok, &["rev-parse", "origin/master"]),
+        second
+    );
 }

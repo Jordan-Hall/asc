@@ -60,12 +60,19 @@ fn project_scope_merges_and_is_idempotent() {
     )
     .unwrap();
     for _ in 0..2 {
-        assert!(r.run(&["mcp", "install", "--scope", "project"]).status.success());
+        assert!(
+            r.run(&["mcp", "install", "--scope", "project"])
+                .status
+                .success()
+        );
     }
     let doc = r.mcp_json();
     assert_eq!(doc["mcpServers"]["other"]["command"], "x");
     assert_eq!(doc["extra"], true);
-    assert_eq!(doc["mcpServers"]["asc"]["args"], json!(["mcp", "--read-only"]));
+    assert_eq!(
+        doc["mcpServers"]["asc"]["args"],
+        json!(["mcp", "--read-only"])
+    );
 }
 
 #[test]
@@ -79,7 +86,11 @@ fn remote_entry_is_https_only_and_not_doubled() {
         let out = r.run(&["mcp", "install", "--remote", bad]);
         assert!(!out.status.success(), "{bad}");
         assert!(!r.root.join(".mcp.json").exists());
-        assert!(!text(&out.stderr).contains("secret"), "{}", text(&out.stderr));
+        assert!(
+            !text(&out.stderr).contains("secret"),
+            "{}",
+            text(&out.stderr)
+        );
     }
     assert!(
         r.run(&["mcp", "install", "--remote", "https://hub.example"])
@@ -105,7 +116,10 @@ fn malformed_file_is_not_clobbered() {
     std::fs::write(r.root.join(".mcp.json"), b"{ not json").unwrap();
     let out = r.run(&["mcp", "install"]);
     assert!(!out.status.success());
-    assert_eq!(std::fs::read(r.root.join(".mcp.json")).unwrap(), b"{ not json");
+    assert_eq!(
+        std::fs::read(r.root.join(".mcp.json")).unwrap(),
+        b"{ not json"
+    );
 }
 
 #[test]
@@ -133,17 +147,31 @@ fn user_scope_writes_keys_and_never_widens() {
     let out = r.run(&["mcp", "install", "--scope", "user"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let after = std::fs::read_to_string(&cfg).unwrap();
-    assert!(after.starts_with("[asc \"mcp\"]\n\twrite = local\n"), "{after}");
+    assert!(
+        after.starts_with("[asc \"mcp\"]\n\twrite = local\n"),
+        "{after}"
+    );
     assert!(after.contains("toolsets = core") && after.contains("confirm = destructive"));
     assert!(!after.contains("write = false"), "{after}");
     // The project is untouched, and a second run changes nothing.
     assert!(!r.root.join(".mcp.json").exists());
-    assert!(r.run(&["mcp", "install", "--scope", "user"]).status.success());
+    assert!(
+        r.run(&["mcp", "install", "--scope", "user"])
+            .status
+            .success()
+    );
     assert_eq!(std::fs::read_to_string(&cfg).unwrap(), after);
     // --remote has no meaning for the user scope.
     assert!(
-        !r.run(&["mcp", "install", "--scope", "user", "--remote", "https://h.example"])
-            .status
-            .success()
+        !r.run(&[
+            "mcp",
+            "install",
+            "--scope",
+            "user",
+            "--remote",
+            "https://h.example"
+        ])
+        .status
+        .success()
     );
 }

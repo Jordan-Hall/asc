@@ -53,7 +53,12 @@ impl Repo {
 
     fn ok(&self, args: &[&str]) -> String {
         let out = self.run_in(&self.root, args);
-        assert_eq!(out.status.code(), Some(0), "asc {args:?}: {}", text(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "asc {args:?}: {}",
+            text(&out.stderr)
+        );
         text(&out.stdout)
     }
 
@@ -112,7 +117,13 @@ fn switch_prints_the_branch_and_the_head() {
     assert_eq!(v["switch"]["target"], "topic");
     assert_eq!(v["switch"]["created"], true);
     assert_eq!(v["switch"]["head"], head);
-    assert!(v["refs"].as_array().unwrap().iter().any(|m| m["name"] == "refs/heads/topic"));
+    assert!(
+        v["refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "refs/heads/topic")
+    );
     let v = r.json(&["switch", "--json", "master"]);
     assert_eq!(v["switch"]["target"], "master");
     let v = r.json(&["switch", "--json", "--detach", "--end-of-options", "topic"]);
@@ -150,7 +161,11 @@ fn a_conflicting_cherry_pick_pauses_with_exit_one() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["status"], "paused");
     assert!(
-        v["hints"].as_array().unwrap().iter().any(|h| h == "conflict in a.txt"),
+        v["hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h == "conflict in a.txt"),
         "{v}"
     );
 }
@@ -173,12 +188,23 @@ fn stash_prints_its_action_and_entries() {
     assert_eq!(v["stash"]["entries"].as_array().unwrap().len(), 1);
     let v = r.json(&["stash", "list", "--json"]);
     assert_eq!(v["stash"]["action"], "list");
-    assert!(v["stash"]["entries"][0]["message"].as_str().unwrap().contains("wip"));
+    assert!(
+        v["stash"]["entries"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("wip")
+    );
     let v = r.json(&["stash", "pop", "--json"]);
     assert_eq!(v["stash"]["action"], "pop");
-    assert!(v["stash"]["entries"].is_null() || v["stash"]["entries"].as_array().unwrap().is_empty());
-    fs::write(r.root.join("a.txt"), "one
-").unwrap();
+    assert!(
+        v["stash"]["entries"].is_null() || v["stash"]["entries"].as_array().unwrap().is_empty()
+    );
+    fs::write(
+        r.root.join("a.txt"),
+        "one
+",
+    )
+    .unwrap();
     let v = r.json(&["stash", "push", "--json"]);
     assert_eq!(v["status"], "nothing", "a clean tree stashes nothing: {v}");
 }
@@ -234,7 +260,10 @@ fn fetch_pull_push_clone_print_typed_results_and_no_credentials() {
     assert_eq!(v["push"]["remote"], "origin");
     let row = &v["push"]["refs"][0];
     assert_eq!(row["name"], "refs/heads/master");
-    assert!(["ok", "up-to-date"].contains(&row["status"].as_str().unwrap()), "{v}");
+    assert!(
+        ["ok", "up-to-date"].contains(&row["status"].as_str().unwrap()),
+        "{v}"
+    );
     let v = r.json(&["fetch", "--json", "origin"]);
     assert_eq!(v["fetch"]["remote"], "origin");
     let v = r.json(&["pull", "--json", "origin", "master"]);

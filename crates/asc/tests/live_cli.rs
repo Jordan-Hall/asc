@@ -106,7 +106,11 @@ fn verbs_fail_with_the_daemon_absent_message() {
         assert!(text(&out.stderr).contains(ABSENT), "{}", text(&out.stderr));
     }
     // ASC_NO_DAEMON gives the same answer, and nothing was written.
-    let out = rig.cmd(&["live", "pause"]).env("ASC_NO_DAEMON", "1").output().unwrap();
+    let out = rig
+        .cmd(&["live", "pause"])
+        .env("ASC_NO_DAEMON", "1")
+        .output()
+        .unwrap();
     assert!(!out.status.success() && text(&out.stderr).contains(ABSENT));
     assert!(!Path::new(&rig.sb.asc_home.join("live")).exists());
 }
@@ -121,7 +125,10 @@ fn pause_survives_a_daemon_restart_and_resume_clears_it() {
 
     assert!(rig.asc(&["live", "pause"]).status.success());
     let w = rig.current();
-    assert_eq!((w["paused"].clone(), w["mode"].clone()), (true.into(), "paused".into()));
+    assert_eq!(
+        (w["paused"].clone(), w["mode"].clone()),
+        (true.into(), "paused".into())
+    );
     assert_eq!(w["pauseReason"], "user");
     let text_out = text(&rig.asc(&["live", "status"]).stdout);
     assert!(text_out.contains("paused (user)"), "{text_out}");
@@ -157,10 +164,18 @@ fn the_conflict_notice_shows_in_status_and_sl_until_resume() {
     std::fs::write(state_path(&rig, &id), state.to_string()).unwrap();
 
     let status = rig.asc(&["status"]);
-    assert!(text(&status.stderr).contains("asc live resume"), "{}", text(&status.stderr));
+    assert!(
+        text(&status.stderr).contains("asc live resume"),
+        "{}",
+        text(&status.stderr)
+    );
     assert!(!text(&status.stdout).contains("asc live resume"));
     let sl = rig.asc(&["sl"]);
-    assert!(text(&sl.stderr).contains("asc live resume"), "{}", text(&sl.stderr));
+    assert!(
+        text(&sl.stderr).contains("asc live resume"),
+        "{}",
+        text(&sl.stderr)
+    );
     // Machine formats stay clean.
     assert!(none(&rig.asc(&["status", "--porcelain=v2"])));
     assert!(none(&rig.asc(&["sl", "--json"])));
