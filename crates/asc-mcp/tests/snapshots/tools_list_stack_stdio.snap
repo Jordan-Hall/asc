@@ -463,6 +463,86 @@ expression: tools_list_json(ctx)
         },
         "type": "object"
       }
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Class of each changed file between base and head (rename, mode, whitespace, comment, docs, generated, lockfile, test, logic) and the overall class. At most 300 files.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "base": {
+            "type": "string"
+          },
+          "cursor": {
+            "description": "Continuation from a previous reply's next_cursor.",
+            "type": "string"
+          },
+          "head": {
+            "type": "string"
+          },
+          "max_tokens": {
+            "description": "Cap on the reply size in tokens (estimated as bytes / 3).",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "merge_base": {
+            "type": "boolean"
+          },
+          "worktree": {
+            "description": "Worktree path from the worktrees tool; omit for the launch workspace.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "classify",
+      "outputSchema": {
+        "$defs": {
+          "ChangeClass": {
+            "enum": [
+              "rename_only",
+              "mode_only",
+              "whitespace_only",
+              "comment_only",
+              "docs",
+              "generated",
+              "lockfile",
+              "test",
+              "logic"
+            ]
+          }
+        },
+        "properties": {
+          "files": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Pass as cursor to continue.",
+            "type": "string"
+          },
+          "omitted_files": {
+            "description": "Files beyond the 300 listed or the token budget.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "overall": {
+            "$ref": "#/$defs/ChangeClass"
+          },
+          "truncated": {
+            "description": "True when the reply was cut; see next_cursor.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
     }
   ]
 }
