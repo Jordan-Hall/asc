@@ -193,6 +193,10 @@ impl Authorizer for ServeAuthorizer {
         self.inner.authorize_credential(credential, repo, access).await
     }
 
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        self.inner.authenticate(credential).await
+    }
+
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {
         self.inner.identify_ssh_key(key).await
     }

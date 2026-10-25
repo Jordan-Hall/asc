@@ -311,6 +311,17 @@ pub trait Authorizer: Send + Sync {
             .await
     }
 
+    /// Who the credential is, with no repository to decide on: the check behind a message that
+    /// names none (`initialize`, `tools/list`, a tool without a `repo`). A valid credential gives
+    /// its [`Principal`]; no credential, an unknown, revoked or expired one gives
+    /// [`AuthError::Unauthenticated`]. The default is fail-closed and always answers
+    /// `Unauthenticated`, so an authorizer that cannot name a caller without a repository accepts
+    /// nothing; one that can overrides it. A wrapper must forward this method to its inner
+    /// authorizer.
+    async fn authenticate(&self, _credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        Err(AuthError::Unauthenticated)
+    }
+
     /// Recognises an SSH key at login (SPEC §25.11.3 item 2): `Ok(None)` for an unknown, revoked
     /// or expired key. The default answers `None`, so an authorizer that does not hold SSH keys
     /// refuses them. A wrapper must forward this method to its inner authorizer.
@@ -547,6 +558,16 @@ impl Authorizer for StaticTokens {
         }
         Ok(grant.principal.clone())
     }
+
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        let secret = credential
+            .ok_or(AuthError::Unauthenticated)?
+            .secret();
+        self.grants
+            .get(blake3::hash(secret.expose().as_bytes()).as_bytes())
+            .map(|g| g.principal.clone())
+            .ok_or(AuthError::Unauthenticated)
+    }
 }
 
 #[cfg(test)]
@@ -762,6 +783,19 @@ mod tests {
                 .await,
             Err(AuthError::Unauthenticated)
         );
+    }
+
+    #[tokio::test]
+    async fn authenticate_names_a_valid_credential_and_refuses_the_rest() {
+        let auth = StaticTokens::new().with_token("rw", "alice", Access::Read);
+        let ok = parse("Bearer rw").unwrap();
+        assert_eq!(auth.authenticate(ok.as_ref()).await.unwrap().id, "alice");
+        let bad = parse("Bearer nope").unwrap();
+        assert_eq!(
+            auth.authenticate(bad.as_ref()).await,
+            Err(AuthError::Unauthenticated)
+        );
+        assert_eq!(auth.authenticate(None).await, Err(AuthError::Unauthenticated));
     }
 
     #[test]

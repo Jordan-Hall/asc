@@ -498,6 +498,41 @@ impl AuthzCore {
     }
 }
 
+impl AuthzCore {
+    /// Who `login` is, with no repository: `GET /api/v1/user` with the caller's own credential.
+    /// The internal token is the host service. Cached under the empty repository name, which no
+    /// real repository has, so it never shares an entry with a repository decision. Anonymous, or
+    /// any answer but a clear user, is refused.
+    async fn authenticate(
+        &self,
+        client: &ForgejoClient,
+        login: Option<Login<'_>>,
+    ) -> Result<Principal, AuthError> {
+        let Some(l) = login else {
+            return Err(AuthError::Unauthenticated);
+        };
+        let decision = self
+            .resolve(login, "", Access::Read, || async {
+                let req = l.apply(client.http.get(client.url(&["api", "v1", "user"])));
+                let (status, body) = ForgejoClient::send(req).await.map_err(|e| unavailable(&e))?;
+                match status {
+                    StatusCode::OK => {
+                        let user: ApiUser = decode(&body).map_err(|e| unavailable(&e))?;
+                        let identity = UserIdentity::new(user.id, &user.login, 0)
+                            .ok_or(Fetch::Denied(AuthError::Unauthenticated))?;
+                        Ok(Decision::for_identity(identity, Perm::None))
+                    }
+                    StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
+                        Err(Fetch::Denied(AuthError::Unauthenticated))
+                    }
+                    _ => Err(Fetch::Unavailable),
+                }
+            })
+            .await?;
+        Ok(decision.principal.clone())
+    }
+}
+
 fn parse_repo(repo: &str) -> Result<RepoName, AuthError> {
     RepoName::parse(repo).map_err(|_| AuthError::Forbidden)
 }
@@ -730,6 +765,12 @@ impl Authorizer for PublicApiAuthz {
             .await?
             .principal
             .clone())
+    }
+
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        self.core
+            .authenticate(&self.client, credential.map(Login::of))
+            .await
     }
 
     /// Stage 1 has only the public API, which cannot map a key to a user: SSH keys are
@@ -990,6 +1031,14 @@ impl Authorizer for InternalAuthz {
             .await?
             .principal
             .clone())
+    }
+
+    /// The public API names the caller as well as the internal route does, and the internal
+    /// route needs a repository.
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        self.core
+            .authenticate(&self.client, credential.map(Login::of))
+            .await
     }
 
     async fn identify_ssh_key(&self, key: &SshKey) -> Result<Option<SshIdentity>, AuthError> {

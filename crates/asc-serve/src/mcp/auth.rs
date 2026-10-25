@@ -14,10 +14,10 @@
 //! * The `Authorization` header is removed once it is used, so nothing downstream can forward it
 //!   (no passthrough). It is never logged, audited or put in an error.
 //! * Every tool call writes one [`AuditRecord`].
-//!
-//! TODO(M13): `initialize`, `tools/list` and tools without a `repo` have no repository to
-//! authorise; they pass with the unbound principal [`UNBOUND`] (which owns nothing), and M13's
-//! scope-filtered listing needs a repo-free authenticate on the authorizer.
+//! * `initialize`, `tools/list` and tools without a `repo` have no repository to authorise, so
+//!   they take one [`Authorizer::authenticate`] call: the credential must name a real principal,
+//!   which is the one in the request extensions and the audit record. An authorizer that cannot
+//!   name a caller refuses them (the trait default fails closed).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,13 +25,13 @@ use std::time::Instant;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use asc_mcp::catalogue;
 use asc_mcp::errors::{ToolError, code};
 use asc_mcp::schema::Surface as McpSurface;
-use asc_rpc::auth::{Access, AuthError, Authorizer};
+use asc_rpc::auth::{Access, AuthError, Authorizer, Credential, Principal};
 use serde_json::{Value, json};
 
 use super::McpPrincipal;
@@ -39,8 +39,6 @@ use super::audit::{AuditRecord, AuditSink, Mode, Outcome};
 use super::limits;
 use crate::authn::{self, Surface};
 
-/// The principal id of a message that names no repository to authorise.
-pub const UNBOUND: &str = "mcp:unbound";
 /// The text of `NOT_FOUND`, the same as `ServeBackend` gives for a missing repository.
 const REPO_NOT_FOUND: &str = "repository not found";
 
@@ -157,6 +155,23 @@ fn record(auth: &McpAuth, principal: Option<String>, c: &Call, outcome: Outcome,
     });
 }
 
+/// The repo-free check: who the credential is, or the refusal to send. `Malformed` is a 400;
+/// anything that does not name a caller (`Unauthenticated`, and a `Forbidden` from a lookup that
+/// failed) is a 401 with the challenge.
+async fn identify(
+    auth: &McpAuth,
+    credential: &Credential,
+    headers: &HeaderMap,
+) -> Result<Principal, (Outcome, Response)> {
+    match auth.authorizer.authenticate(Some(credential)).await {
+        Ok(p) => Ok(p),
+        Err(AuthError::Malformed) => Err((Outcome::BadRequest, status_only(StatusCode::BAD_REQUEST))),
+        Err(AuthError::Unauthenticated | AuthError::Forbidden) => {
+            Err((Outcome::Unauthenticated, authn::unauthorized(&auth.surface, headers)))
+        }
+    }
+}
+
 async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Response {
     if req.method() != Method::POST {
         return next.run(req).await;
@@ -193,15 +208,27 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
         return authn::unauthorized(&auth.surface, &parts.headers);
     };
 
-    let mut principal = McpPrincipal { id: UNBOUND.to_owned(), write: false };
+    let principal;
     let mut closing: Option<Call> = None;
     match call {
-        None => {}
+        None => match identify(&auth, &credential, &parts.headers).await {
+            Ok(p) => principal = McpPrincipal { id: p.id, write: false },
+            Err((_, res)) => return res,
+        },
         Some(Err((m, c))) => {
             record(&auth, None, &c, Outcome::BadRequest, started);
             return invalid_params(&c.id, m);
         }
-        Some(Ok(c)) if c.repo.is_none() => closing = Some(c),
+        Some(Ok(c)) if c.repo.is_none() => match identify(&auth, &credential, &parts.headers).await {
+            Ok(p) => {
+                principal = McpPrincipal { id: p.id, write: false };
+                closing = Some(c);
+            }
+            Err((outcome, res)) => {
+                record(&auth, None, &c, outcome, started);
+                return res;
+            }
+        },
         Some(Ok(c)) => {
             let repo = c.repo.as_deref().unwrap_or_default();
             match auth.authorizer.authorize_credential(Some(&credential), repo, access_of(c.mode)).await {
@@ -232,7 +259,7 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
         }
     }
 
-    let who = (principal.id != UNBOUND).then(|| principal.id.clone());
+    let who = Some(principal.id.clone());
     let mut req = Request::from_parts(parts, Body::from(bytes));
     // No passthrough: nothing downstream can see, log or forward the credential.
     req.headers_mut().remove(header::AUTHORIZATION);

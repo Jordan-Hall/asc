@@ -18,7 +18,7 @@ use axum::http::{Request, Response, StatusCode, header};
 use base64::Engine as _;
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal, StaticTokens};
 use asc_serve::mcp::audit::{MemoryAudit, Mode, Outcome};
-use asc_serve::mcp::auth::{McpAuth, UNBOUND, layer};
+use asc_serve::mcp::auth::{McpAuth, layer};
 use asc_serve::mcp::McpPrincipal;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -68,6 +68,20 @@ impl Authorizer for Counting {
             self.seen.lock().unwrap().push((c.secret().expose().to_owned(), repo.to_owned(), access));
         }
         self.authorize(credential.map(Credential::secret), repo, access).await
+    }
+
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
+        self.inner.authenticate(credential).await
+    }
+}
+
+/// An authorizer that does not implement `authenticate`: the trait default must refuse.
+struct NoAuthenticate(StaticTokens);
+
+#[async_trait]
+impl Authorizer for NoAuthenticate {
+    async fn authorize(&self, token: Option<&BearerToken>, repo: &str, access: Access) -> Result<Principal, AuthError> {
+        self.0.authorize(token, repo, access).await
     }
 }
 
@@ -251,14 +265,69 @@ async fn every_call_writes_one_audit_record_with_its_outcome() {
     );
 }
 
+fn init() -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} })
+}
+
+fn list() -> Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" })
+}
+
 #[tokio::test]
-async fn messages_without_a_repo_pass_unbound_and_still_need_a_credential() {
+async fn messages_without_a_repo_act_as_the_authenticated_principal() {
     let (app, audit, seen) = app(Counting::new());
-    let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-    assert_eq!(send(&app, None, "/mcp", &list).await.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(send(&app, Some(&bearer(READ_TOKEN)), "/mcp", &list).await.status(), StatusCode::OK);
-    let (p, _, _) = seen.last.lock().unwrap().clone().unwrap();
-    let p = p.unwrap();
-    assert_eq!((p.id.as_str(), p.write), (UNBOUND, false));
+    assert_eq!(send(&app, None, "/mcp", &list()).await.status(), StatusCode::UNAUTHORIZED);
+    for (msg, token, who) in [(init(), READ_TOKEN, "reader"), (list(), WRITE_TOKEN, "writer")] {
+        assert_eq!(send(&app, Some(&bearer(token)), "/mcp", &msg).await.status(), StatusCode::OK);
+        let (p, _, _) = seen.last.lock().unwrap().clone().unwrap();
+        let p = p.unwrap();
+        assert_eq!((p.id.as_str(), p.write), (who, false));
+    }
+    let r = send(&app, Some(&basic("alice", READ_TOKEN)), "/mcp", &list()).await;
+    assert_eq!(r.status(), StatusCode::OK);
     assert!(audit.records().is_empty(), "only tool calls are audited");
+}
+
+#[tokio::test]
+async fn a_bogus_token_on_a_repo_free_message_is_a_401() {
+    let (app, _, seen) = app(Counting::new());
+    for msg in [init(), list()] {
+        for h in [bearer("bogus-token-0123456789"), basic("alice", "bogus-token-0123456789")] {
+            let r = send(&app, Some(&h), "/mcp", &msg).await;
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{msg}");
+            assert!(r.headers().get_all(header::WWW_AUTHENTICATE).iter().count() >= 1);
+        }
+        assert_eq!(send(&app, None, "/mcp", &msg).await.status(), StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(seen.hits.load(Ordering::SeqCst), 0, "the endpoint never ran");
+}
+
+#[tokio::test]
+async fn a_repo_free_tool_call_is_authenticated_and_audited_as_the_real_principal() {
+    let (app, audit, seen) = app(Counting::new());
+    let whoami = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": { "name": "whoami", "arguments": {} } });
+    let bogus = send(&app, Some(&bearer("bogus-token-0123456789")), "/mcp", &whoami).await;
+    assert_eq!(bogus.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(seen.hits.load(Ordering::SeqCst), 0);
+    let ok = send(&app, Some(&bearer(READ_TOKEN)), "/mcp", &whoami).await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let rec = audit.records();
+    assert_eq!(rec.len(), 2, "{rec:?}");
+    assert_eq!((rec[0].principal.as_deref(), rec[0].outcome), (None, Outcome::Unauthenticated));
+    assert_eq!((rec[1].principal.as_deref(), rec[1].outcome), (Some("reader"), Outcome::Allowed(200)));
+}
+
+#[tokio::test]
+async fn an_authorizer_without_authenticate_refuses_repo_free_messages() {
+    let authz: Arc<dyn Authorizer> = Arc::new(NoAuthenticate(
+        StaticTokens::new().with_token(READ_TOKEN, "reader", Access::Read),
+    ));
+    let (app, _, seen) = app(authz);
+    for msg in [init(), list()] {
+        let r = send(&app, Some(&bearer(READ_TOKEN)), "/mcp", &msg).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "fail closed: {msg}");
+    }
+    // A repository call still works: it is decided by `authorize`.
+    assert_eq!(send(&app, Some(&bearer(READ_TOKEN)), "/mcp", &call("log", "acme/widgets")).await.status(), StatusCode::OK);
+    assert_eq!(seen.hits.load(Ordering::SeqCst), 1);
 }
