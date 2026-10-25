@@ -627,7 +627,15 @@ async fn offline_pauses_the_queue_without_touching_a_row_and_probes_with_backoff
         s.uploads.push_back(Ok(Some(Step::Uploaded)));
     });
     let clock = TickClock::new(1_000);
-    let job = job(&link, &clock);
+    // The ceiling of each wait (no jitter below it), so the second pause is visibly longer.
+    let job = CloudJob::with_policy(
+        Arc::new(FakeLinks(Some(link.clone()))),
+        clock.clone(),
+        RetryPolicy {
+            jitter: || 1.0,
+            ..policy()
+        },
+    );
 
     let t = job.run_phase(Phase::Upload).await.unwrap();
     assert_eq!((t.paused, t.failed), (1, 0));
@@ -685,6 +693,30 @@ async fn the_head_sync_runs_every_five_minutes_and_on_request() {
     clock.advance(SYNC_EVERY.as_secs() as i64);
     job.run_phase(Phase::Sync).await.unwrap();
     assert_eq!(link.calls("sync"), 3);
+}
+
+#[tokio::test]
+async fn the_fetch_marker_forces_one_sync_and_is_consumed() {
+    let link = Arc::new(FakeLink::default());
+    let clock = TickClock::new(1_000);
+    let run = tempfile::tempdir().unwrap();
+    let marker = run.path().join(crate::branchless::pull::MARKER);
+    let job = job(&link, &clock).with_marker(run.path());
+
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(link.calls("sync"), 0, "no marker, no sync");
+    std::fs::write(&marker, b"").unwrap();
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(link.calls("sync"), 1, "fetch asked");
+    assert!(!marker.exists(), "the ask is consumed");
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(link.calls("sync"), 1, "one ask, one sync");
+
+    // Something that is not a plain file is never an ask.
+    std::fs::create_dir(&marker).unwrap();
+    job.run_phase(Phase::Upload).await.unwrap();
+    assert_eq!(link.calls("sync"), 1);
+    assert!(marker.is_dir());
 }
 
 #[tokio::test]

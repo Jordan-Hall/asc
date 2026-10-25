@@ -20,6 +20,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -677,6 +678,9 @@ pub struct CloudJob {
     locks: Mutex<HashMap<RepoKey, Arc<tokio::sync::Mutex<()>>>>,
     /// Set by a `git fetch` or `asc sl` ask: the next upload tick also syncs.
     sync_now: Arc<AtomicBool>,
+    /// The request marker `git fetch` leaves in `run` (B15): found on an upload tick it sets
+    /// `sync_now` and is removed.
+    marker: Option<PathBuf>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -700,6 +704,23 @@ impl CloudJob {
             state: Mutex::default(),
             locks: Mutex::default(),
             sync_now: Arc::default(),
+            marker: None,
+        }
+    }
+
+    /// Reads the fetch ask from `<run>/cloud-sync-request` (B15).
+    pub fn with_marker(mut self, run: &Path) -> Self {
+        self.marker = Some(run.join(crate::branchless::pull::MARKER));
+        self
+    }
+
+    /// Consumes the fetch ask: the marker is removed and the next sync is forced. A marker that
+    /// is not a plain file (a link, a directory) is ignored, never followed.
+    fn take_marker(&self) {
+        let Some(path) = &self.marker else { return };
+        let plain = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+        if plain && std::fs::remove_file(path).is_ok() {
+            self.sync_now.store(true, Ordering::Release);
         }
     }
 
@@ -723,6 +744,9 @@ impl CloudJob {
         let mut repos = self.links.repos(phase, now).await?;
         repos.truncate(MAX_REPOS);
         let mut tally = Tally::default();
+        if phase == Phase::Upload {
+            self.take_marker();
+        }
         let force_sync = phase == Phase::Upload && self.sync_now.swap(false, Ordering::AcqRel);
         for repo in repos {
             let lock = self.repo_lock(repo);
@@ -963,10 +987,14 @@ pub fn extra_jobs(
     if no_daemon(get) {
         return Vec::new();
     }
-    let job = Arc::new(CloudJob::new(
-        Arc::new(prod::ProdUplinks::new(home)),
-        Arc::new(SystemClock),
-    ));
+    let run = home.run();
+    let job = Arc::new(
+        CloudJob::new(
+            Arc::new(prod::ProdUplinks::new(home)),
+            Arc::new(SystemClock),
+        )
+        .with_marker(&run),
+    );
     vec![
         (
             Spec {

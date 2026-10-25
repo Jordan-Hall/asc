@@ -501,6 +501,8 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         };
         failed = fetch_one(ctx, ws, &target, &o, &words).await?.rejected;
     }
+    // Best-effort and silent: a non-blocking ask to the daemon for a cloud pull (B15).
+    crate::branchless::pull::after_fetch(ctx).await;
     Ok(if failed {
         ExitCode::from(1)
     } else {

@@ -7,10 +7,8 @@
 //! The ask is a marker file in the user's private `run` directory. A marker is never created
 //! when the directory is absent (no daemon ever ran), and a link in its place is refused.
 //!
-//! TODO(B15-daemon): the daemon task (`daemon::cloud`, B14) must consume the marker and set
-//! `CloudJob::sync_request()`; `Watch KIND_CLOUD` for the workspace owner is emitted from
-//! `daemon::plugin_api`. Neither file belongs to B15, and `cli/fetch.rs` must call
-//! [`after_fetch`] once its own work has finished.
+//! The daemon's `cloud_upload` task (`daemon::cloud`) finds the marker on its next tick, removes
+//! it and forces one sync. `cli/fetch.rs` calls [`after_fetch`] once its own work has finished.
 
 use std::future::Future;
 use std::io;
