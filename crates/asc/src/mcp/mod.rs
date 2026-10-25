@@ -11,7 +11,10 @@
 //! cannot corrupt the stream. Children the server starts get a null stdin and piped stdout.
 
 pub mod backend;
+pub mod install;
+pub mod listen;
 pub mod pathgate;
+pub mod write;
 
 use std::collections::BTreeSet;
 use std::process::ExitCode;
@@ -108,7 +111,8 @@ fn config_entries(ctx: &Ctx) -> Vec<Entry> {
         }
         let layer = match section.meta().source {
             Source::GitInstallation | Source::System => Layer::System,
-            Source::User => Layer::User,
+            // The global files: `$XDG_CONFIG_HOME/git/config` (`Git`) and `~/.gitconfig` (`User`).
+            Source::Git | Source::User => Layer::User,
             Source::Worktree => Layer::Worktree,
             _ => Layer::Repo,
         };
@@ -130,23 +134,25 @@ pub async fn serve(ctx: &Ctx, flags: Flags) -> Result<ExitCode> {
         .map_err(|e| CliError::Fatal(format!("asc mcp: cannot protect standard output: {e}")))?;
     stray_output_for_tests();
     let ws = ctx.ws()?;
-    let backend = backend::LocalBackend::open(ctx, ws).await?;
-
-    let mut config = McpConfig::resolve(&config_entries(ctx), &flags);
-    // TODO(M10): the write tools. Until the child-verb writer exists, none is listed.
-    config.write = asc_mcp::catalogue::WriteLevel::None;
+    let config = McpConfig::resolve(&config_entries(ctx), &flags);
+    let uploads = write::workspace_uploads(ctx);
+    let backend = backend::LocalBackend::open(ctx, ws)
+        .await?
+        .with_write(config.write, uploads);
     let mut cfg = HandlerConfig::new(Surface::Stdio);
+    cfg.workspace_uploads = uploads;
     cfg.config = config;
     cfg.features = BTreeSet::new();
     let keys = KeyRing::random().map_err(|e| CliError::Fatal(format!("asc mcp: {e}")))?;
-    let handler = Handler::new(backend, cfg, keys);
-    handler
-        .serve(
-            BufReader::new(tokio::io::stdin()),
-            tokio::fs::File::from_std(real_out),
-            Caller::default(),
-        )
-        .await?;
+    let handler = Handler::new(backend.clone(), cfg, keys);
+    listen::serve(
+        handler,
+        backend,
+        BufReader::new(tokio::io::stdin()),
+        tokio::fs::File::from_std(real_out),
+        Caller::default(),
+    )
+    .await?;
     Ok(ExitCode::SUCCESS)
 }
 
