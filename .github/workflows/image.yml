@@ -1,0 +1,50 @@
+name: image
+# `asc serve` image on GitHub Container Registry (private package):
+#   push to master -> ghcr.io/<owner>/asc-serve:<sha12> and :master
+#   tag v*         -> :<sha12> and :<version>
+#   pull_request   -> build only, nothing published
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Sign in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tags
+        id: tags
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/asc-serve"
+          sha="${GITHUB_SHA::12}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name="${GITHUB_REF_NAME#v}"; else name="$(echo "$GITHUB_REF_NAME" | tr '/' '-')"; fi
+          printf 'list=%s:%s,%s:%s\n' "$image" "$sha" "$image" "$name" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile.serve
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.list }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
