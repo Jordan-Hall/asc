@@ -10,8 +10,11 @@
 //! The child's last stdout line is decoded as `asc.v1.OpResult` (`cli.proto`, in the descriptor
 //! set) and sent as an `op_result` event before the `exit` event. If the message is missing from
 //! the descriptor set, no `op_result` event is sent.
-//! TODO(P45): verbs without a `--json` form print human text; the decode then fails with
-//! `INTERNAL` once `OpResult` exists.
+//! A stack verb that prints a report of its own (`sync`, `restack`, `squash`, ...) is mapped to an
+//! `OpResult` by `shape`; `sl` and `op log` have no `OpResult` and are refused with
+//! `FAILED_PRECONDITION` before a child starts.
+//! TODO(P45): verbs without a `--json` form (`create`, `modify`, `reword`, `continue`, `abort`,
+//! `stack rename`) print human text or a usage error; the decode then fails with `INTERNAL`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,7 +30,7 @@ use tokio::sync::Semaphore;
 use tonic::Status;
 
 use super::argv_schema::{self, Refusal, Scope};
-use super::{MAX_ROOT, Out, send_reply};
+use super::{MAX_ROOT, Out, send_reply, shape};
 
 /// Most children at once per bridge.
 const MAX_CHILDREN: usize = 4;
@@ -193,8 +196,9 @@ async fn read_capped<R: AsyncRead + Unpin>(r: R, cap: usize) -> Option<Vec<u8>> 
     (buf.len() <= cap).then_some(buf)
 }
 
-/// Encodes the child's JSON result as an `OpResult`, when the message exists.
-fn op_result(stdout: &[u8]) -> Result<Option<Vec<u8>>, Status> {
+/// Encodes the child's JSON result of `verb` as an `OpResult`, when the message exists. A verb
+/// that prints its own report instead is mapped by [`shape::adapt`].
+fn op_result(verb: &str, stdout: &[u8]) -> Result<Option<Vec<u8>>, Status> {
     let Some(desc) = op_result_desc() else {
         return Ok(None);
     };
@@ -204,8 +208,14 @@ fn op_result(stdout: &[u8]) -> Result<Option<Vec<u8>>, Status> {
     };
     let value: serde_json::Value = serde_json::from_str(last)
         .map_err(|_| Status::internal("the verb printed a result that is not JSON"))?;
-    let msg = asc_rpc::json::decode(&desc, &value)
-        .map_err(|_| Status::internal("the verb printed a result that is not an OpResult"))?;
+    let not_op_result = || Status::internal("the verb printed a result that is not an OpResult");
+    let msg = match asc_rpc::json::decode(&desc, &value) {
+        Ok(msg) => msg,
+        Err(_) => {
+            let adapted = shape::adapt(verb, &value).ok_or_else(not_op_result)?;
+            asc_rpc::json::decode(&desc, &adapted).map_err(|_| not_op_result())?
+        }
+    };
     Ok(Some(msg.encode_to_vec()))
 }
 
@@ -230,6 +240,10 @@ pub async fn serve(own: PathBuf, id: u32, call: Call, out: &Out) -> Result<(), S
         },
     )
     .map_err(refuse)?;
+    // A read-only verb whose output is not an `OpResult` has a typed path of its own.
+    if let Some(why) = shape::reads_elsewhere(&req.verb) {
+        return Err(Status::failed_precondition(why));
+    }
     let exe =
         std::env::current_exe().map_err(|_| Status::unavailable("cannot find the asc binary"))?;
 
@@ -268,7 +282,7 @@ pub async fn serve(own: PathBuf, id: u32, call: Call, out: &Out) -> Result<(), S
         .unwrap_or(-1);
     // Exit 1 (paused on a conflict) and 2 (ambiguous) carry an OpResult; the others may not.
     if let Some(bytes) = captured {
-        match op_result(&bytes) {
+        match op_result(&req.verb, &bytes) {
             Ok(Some(encoded)) => {
                 event(out, id, run_event::Event::OpResult(encoded.into())).await;
             }

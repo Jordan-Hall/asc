@@ -3,8 +3,9 @@
 //! environment and a null stdin, and streams `RunEvent`s. The injection corpus never starts a
 //! child: a refused call ends with an error code and no reply.
 //!
-//! TODO(P45): `create`, `modify` and others still lack their `--json` form, so the positive
-//! tests use `up`, which prints an `OpResult`.
+//! The stack verbs that print a report of their own (`sync`, `restack`, `abandon`, ...) end with
+//! a typed `OpResult` too; `sl` and `op log` have none and are refused before a child starts.
+//! TODO(P45): `create`, `modify` and others still lack their `--json` form.
 
 mod support;
 
@@ -20,6 +21,7 @@ use support::{Sandbox, text};
 
 const OK: i32 = 0;
 const INVALID_ARGUMENT: i32 = 3;
+const FAILED_PRECONDITION: i32 = 9;
 const PERMISSION_DENIED: i32 = 7;
 
 struct Bridge {
@@ -129,7 +131,7 @@ fn an_allowlisted_verb_runs_and_ends_with_its_exit_code() {
     let sb = Sandbox::new();
     let a = workspace(&sb);
     let mut b = Bridge::start(&sb, &a);
-    // `up` prints an `OpResult`, which the bridge decodes; `sync` prints its own report shape.
+    // `up` prints an `OpResult`, which the bridge decodes as it is.
     b.run(1, "up", &[]);
     let (events, code, msg) = b.finish(1);
     assert_eq!(code, OK, "{msg}");
@@ -244,6 +246,139 @@ fn more_calls_than_children_queue_and_all_finish() {
             assert_eq!(e.code, OK, "{}", e.message);
             done.insert(f.id);
         }
+    }
+    b.close();
+}
+
+/// The call's `OpResult` event, decoded and printed in the asc JSON profile.
+fn op_result_of(events: &[Event]) -> serde_json::Value {
+    let bytes = events
+        .iter()
+        .find_map(|e| match e {
+            Event::OpResult(b) => Some(b.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no op_result event in {events:?}"));
+    let pool = prost_reflect::DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap();
+    let desc = pool.get_message_by_name("asc.v1.OpResult").unwrap();
+    let msg = prost_reflect::DynamicMessage::decode(desc, bytes.as_ref()).expect("an OpResult");
+    asc_rpc::json::encode(&msg).expect("the profile prints it")
+}
+
+fn configure_identity(sb: &Sandbox) {
+    std::fs::write(
+        sb.user.join(".gitconfig"),
+        "[user]\n\tname = T\n\temail = t@example.com\n",
+    )
+    .unwrap();
+}
+
+fn ok(sb: &Sandbox, cwd: &Path, args: &[&str]) -> String {
+    let out = sb.run(cwd, args);
+    assert!(out.status.success(), "asc {args:?}: {}", text(&out.stderr));
+    text(&out.stdout)
+}
+
+/// A workspace on `feat` with one change on top of `master`.
+fn stacked(sb: &Sandbox) -> std::path::PathBuf {
+    configure_identity(sb);
+    let a = workspace(sb);
+    std::fs::write(a.join("a.txt"), "a\n").unwrap();
+    ok(sb, &a, &["add", "a.txt"]);
+    ok(sb, &a, &["commit", "-m", "base"]);
+    ok(sb, &a, &["switch", "-c", "feat"]);
+    std::fs::write(a.join("b.txt"), "b\n").unwrap();
+    ok(sb, &a, &["add", "b.txt"]);
+    ok(sb, &a, &["create", "-m", "one"]);
+    a
+}
+
+#[test]
+fn sync_ends_with_a_typed_op_result() {
+    // `sync --json` prints its own report; the bridge maps it to the `OpResult` of SPEC §24.2.
+    let sb = Sandbox::new();
+    let a = stacked(&sb);
+    let mut b = Bridge::start(&sb, &a);
+    b.run(1, "sync", &[]);
+    let (events, code, msg) = b.finish(1);
+    assert_eq!(code, OK, "{msg}");
+    assert_eq!(exit_of(&events), Some(0), "{events:?}");
+    let r = op_result_of(&events);
+    assert_eq!(r["version"], 1, "{r}");
+    assert_eq!(r["status"], "nothing", "{r}");
+    assert!(matches!(events.last(), Some(Event::Exit(0))));
+    b.close();
+}
+
+#[test]
+fn sync_reports_the_trunk_it_fast_forwarded() {
+    let sb = Sandbox::new();
+    let a = stacked(&sb);
+    let git = |dir: &Path, args: &[&str]| {
+        let out = sb.command("git", dir).args(args).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", text(&out.stderr));
+    };
+    let bare = sb.dir("remote.git");
+    let other = sb.dir("other");
+    git(&bare, &["init", "-q", "--bare", "-b", "master"]);
+    let url = bare.to_str().unwrap().to_owned();
+    ok(&sb, &a, &["remote", "add", "origin", &url]);
+    ok(&sb, &a, &["push", "origin", "master"]);
+    git(&other, &["clone", "-q", &url, "."]);
+    std::fs::write(other.join("up.txt"), "up\n").unwrap();
+    git(&other, &["add", "up.txt"]);
+    git(&other, &["commit", "-q", "-m", "upstream"]);
+    git(&other, &["push", "-q", "origin", "HEAD:master"]);
+
+    let mut b = Bridge::start(&sb, &a);
+    b.run(1, "sync", &[]);
+    let (events, code, msg) = b.finish(1);
+    assert_eq!(code, OK, "{msg}");
+    assert_eq!(exit_of(&events), Some(0), "{events:?}");
+    let r = op_result_of(&events);
+    assert_eq!(r["status"], "ok", "{r}");
+    let moved = &r["refs"][0];
+    assert_eq!(moved["name"], "refs/heads/master", "{r}");
+    assert_eq!(moved["new"].as_str().map(str::len), Some(40), "{r}");
+    assert_ne!(moved["old"], moved["new"], "{r}");
+    b.close();
+}
+
+#[test]
+fn stack_verbs_with_reports_of_their_own_end_with_an_op_result() {
+    let sb = Sandbox::new();
+    let a = stacked(&sb);
+    let mut b = Bridge::start(&sb, &a);
+    // (verb, args, expected status): `restack` prints `rewrites`, `stack freeze` a `frozen`
+    // flag and `abandon` the `verb`/`changes` report.
+    let calls: [(&str, &[&str], &str); 3] = [
+        ("restack", &[], "nothing"),
+        ("stack freeze", &[], "ok"),
+        ("abandon", &[], "ok"),
+    ];
+    for (id, (verb, args, status)) in (1..).zip(calls) {
+        b.run(id, verb, args);
+        let (events, code, msg) = b.finish(id);
+        assert_eq!(code, OK, "{verb}: {msg}");
+        assert_eq!(exit_of(&events), Some(0), "{verb}: {events:?}");
+        let r = op_result_of(&events);
+        assert_eq!(r["status"], status, "{verb}: {r}");
+    }
+    b.close();
+}
+
+#[test]
+fn sl_and_op_log_are_refused_before_a_child_starts() {
+    // Neither prints an `OpResult`; `sl` is read with `Workspace.Stacks`, and `RunEvent` has no
+    // field for an `OpLogResponse`.
+    let sb = Sandbox::new();
+    let a = workspace(&sb);
+    let mut b = Bridge::start(&sb, &a);
+    for (id, verb) in (1..).zip(["sl", "op log"]) {
+        b.run(id, verb, &[]);
+        let (events, code, msg) = b.finish(id);
+        assert!(events.is_empty(), "{verb}: {events:?}");
+        assert_eq!(code, FAILED_PRECONDITION, "{verb}: {msg}");
     }
     b.close();
 }

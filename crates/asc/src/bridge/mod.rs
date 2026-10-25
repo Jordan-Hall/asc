@@ -16,6 +16,7 @@ mod auth;
 mod frame;
 mod route;
 mod run;
+mod shape;
 
 use std::cell::RefCell;
 use std::collections::HashMap;

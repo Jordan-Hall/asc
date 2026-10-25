@@ -96,6 +96,9 @@ super::verb!(SYNC, "sync");
 struct Moved {
     trunk: String,
     to: String,
+    /// The full ids the trunk moved from and to (`Bridge.Run` maps them to an `OpResult`).
+    old: String,
+    new: String,
 }
 
 #[derive(Serialize, Default)]
@@ -111,6 +114,8 @@ struct Dropped {
 struct Restacked {
     change: String,
     subject: String,
+    old: String,
+    new: String,
 }
 
 #[derive(Serialize, Default)]
@@ -409,9 +414,12 @@ async fn fast_forward(ctx: &Ctx, a: &Args, rep: &mut Report) -> Result<()> {
             continue;
         }
         let tip = l.git_id(t.tip).await?;
+        let old = l.git_id(local).await?;
         let moved = Moved {
             trunk: t.name.clone(),
             to: tip.chars().take(12).collect(),
+            old: old.clone(),
+            new: tip.clone(),
         };
         if a.dry_run {
             rep.fast_forwarded.push(moved);
@@ -421,7 +429,6 @@ async fn fast_forward(ctx: &Ctx, a: &Args, rep: &mut Report) -> Result<()> {
             child(ctx, &["merge", "--ff-only", "-q", &tip])?
         } else {
             // Only while the branch still holds the commit it was checked against.
-            let old = l.git_id(local).await?;
             let argv = move_args(&t.name, &tip, &old);
             child(ctx, &argv.each_ref().map(String::as_str))?
         };
@@ -700,6 +707,8 @@ async fn restack_all(ctx: &Ctx, rep: &mut Report) -> Result<()> {
                             rep.restacked.push(Restacked {
                                 change: r.change,
                                 subject: r.subject,
+                                old: r.old,
+                                new: r.new,
                             });
                         }
                     }
@@ -748,6 +757,8 @@ fn collect_rows(stdout: &str, rep: &mut Report) {
         rep.restacked.push(Restacked {
             change: text("change"),
             subject: text("subject"),
+            old: text("old"),
+            new: text("new"),
         });
     }
 }
