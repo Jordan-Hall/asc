@@ -2,11 +2,13 @@
 //!
 //! ```text
 //! asc mcp [--read-only] [--write[=local|remote]] [--toolsets <list>] [--tools <list>] [--max-tokens <n>]
+//! asc mcp --remote <https-url> [--read-only] [--toolsets <list>] [--tools <list>] [--max-tokens <n>]
 //! ```
 //!
 //! Standard input and output carry newline-delimited JSON-RPC only; everything else goes to
 //! standard error (see `crate::mcp`). Every flag can only narrow what `asc.mcp.*` configuration
-//! grants (SPEC 22.1, M-D4). `asc mcp install` is M09b and `asc mcp --remote` is M31.
+//! grants (SPEC 22.1, M-D4). `asc mcp install` is M09b and `asc mcp --remote` (M31, `crate::mcp::remote`) is the stdio
+//! proxy to a hosted `asc serve` `/mcp`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -47,9 +49,10 @@ fn usage() -> CliError {
     CliError::Usage(USAGE.to_owned())
 }
 
-/// Parses the arguments into narrowing flags.
-fn parse(argv: &[OsString]) -> Result<Flags> {
+/// Parses the arguments into narrowing flags and the `--remote` URL, if given.
+fn parse(argv: &[OsString]) -> Result<(Flags, Option<String>)> {
     let mut flags = Flags::default();
+    let mut remote = None;
     let mut it = argv.iter().map(|a| a.to_string_lossy().into_owned());
     let value = |it: &mut dyn Iterator<Item = String>, inline: Option<String>| {
         inline.or_else(|| it.next()).ok_or_else(usage)
@@ -86,11 +89,7 @@ fn parse(argv: &[OsString]) -> Result<Flags> {
                 let v = value(&mut it, inline)?;
                 flags.max_tokens = Some(v.parse().map_err(|_| usage())?);
             }
-            "--remote" => {
-                return Err(CliError::Msg(Msg::AscNotYet {
-                    cmd: "mcp --remote".to_owned(),
-                }));
-            }
+            "--remote" if remote.is_none() => remote = Some(value(&mut it, inline)?),
             "install" => {
                 return Err(CliError::Msg(Msg::AscNotYet {
                     cmd: "mcp install".to_owned(),
@@ -99,15 +98,18 @@ fn parse(argv: &[OsString]) -> Result<Flags> {
             _ => return Err(usage()),
         }
     }
-    Ok(flags)
+    Ok((flags, remote))
 }
 
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
     if args.rest.first().is_some_and(|a| a == "install") {
         return crate::mcp::install::run(ctx, &args.rest[1..]);
     }
-    let flags = parse(&args.rest)?;
-    crate::mcp::serve(ctx, flags).await
+    let (flags, remote) = parse(&args.rest)?;
+    match remote {
+        Some(url) => crate::mcp::remote::serve(ctx, &url, flags).await,
+        None => crate::mcp::serve(ctx, flags).await,
+    }
 }
 
 #[cfg(test)]
@@ -117,7 +119,7 @@ mod tests {
     use super::*;
 
     fn p(items: &[&str]) -> Result<Flags> {
-        parse(&items.iter().map(OsString::from).collect::<Vec<_>>())
+        parse(&items.iter().map(OsString::from).collect::<Vec<_>>()).map(|(f, _)| f)
     }
 
     #[test]
@@ -156,9 +158,17 @@ mod tests {
         ] {
             assert!(matches!(p(bad), Err(CliError::Usage(_))), "{bad:?}");
         }
-        assert!(matches!(
-            p(&["--remote", "https://x"]),
-            Err(CliError::Msg(_))
-        ));
+        assert!(matches!(p(&["--remote"]), Err(CliError::Usage(_))));
+    }
+
+    #[test]
+    fn remote_takes_one_url() {
+        let argv = |items: &[&str]| items.iter().map(OsString::from).collect::<Vec<_>>();
+        let (flags, remote) = parse(&argv(&["--remote", "https://x", "--read-only"])).unwrap();
+        assert_eq!(remote.as_deref(), Some("https://x"));
+        assert!(flags.read_only);
+        let (_, remote) = parse(&argv(&["--remote=https://y"])).unwrap();
+        assert_eq!(remote.as_deref(), Some("https://y"));
+        assert!(parse(&argv(&["--remote", "a", "--remote", "b"])).is_err());
     }
 }

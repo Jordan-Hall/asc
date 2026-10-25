@@ -14,6 +14,7 @@ pub mod backend;
 pub mod install;
 pub mod listen;
 pub mod pathgate;
+pub mod remote;
 pub mod write;
 
 use std::collections::BTreeSet;
