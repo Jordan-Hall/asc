@@ -44,6 +44,7 @@ pub mod mainline;
 pub mod migrate;
 pub mod mirror;
 pub mod mutations;
+pub mod objects;
 pub mod outbox;
 pub mod projects;
 pub mod projects_warm;
@@ -194,7 +195,9 @@ fn codeintel_settings(cfg: &config::ServeConfig) -> Option<codeintel::rpc::Setti
         tracing::warn!("[codeintel] enabled needs cache.disk_dir; CodeIntel is not served");
         return None;
     };
-    Some(codeintel::rpc::Settings::new(dir.join("ci")))
+    let mut settings = codeintel::rpc::Settings::new(dir.join("ci"));
+    settings.embed = codeintel::embedder::Setup::from_config(&cfg.codeintel.embed);
+    Some(settings)
 }
 
 /// One registration line per unit goes here (PLAN "Stubs and extension points").
@@ -207,6 +210,8 @@ fn register_all(
     codeintel_cfg: Option<codeintel::rpc::Settings>,
 ) {
     limits::register(ext, limits);
+    // `HasObjects`, `GetObjects` and `PutObjects`: what clone, fetch and push move objects with.
+    objects::register(ext, registry);
     update::register(ext, registry);
     // `[cloud] max_user_refs` and `max_user_bytes` bind every user-ref push and cloud ingest,
     // with or without Forgejo (SPEC §21.3.7).
@@ -226,10 +231,15 @@ fn register_all(
     review::register(ext, registry);
     watch_refs::register(ext, registry, limits);
     // `CodeIntel` (I16) is served when `[codeintel] enabled` and the replica has a disk to keep
-    // index segments on; the embedding model is wired by a later unit, so `Semantic` answers
-    // `FAILED_PRECONDITION` until then.
+    // index segments on. `Semantic` needs `[codeintel.embed] dir`; without it, it answers
+    // `FAILED_PRECONDITION` and says how to set it.
     if let Some(settings) = codeintel_cfg
-        && let Err(e) = codeintel::rpc::register(ext, registry, settings, None)
+        && let Err(e) = codeintel::rpc::register(
+            ext,
+            registry,
+            settings.clone(),
+            codeintel::embedder::open(settings.embed.as_ref()),
+        )
     {
         tracing::error!(error = %e, "CodeIntel is not served");
     }
