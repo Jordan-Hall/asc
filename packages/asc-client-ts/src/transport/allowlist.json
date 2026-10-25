@@ -103,6 +103,7 @@
       "asc.v1.Repo/HasObjects",
       "asc.v1.Repo/GetObjects",
       "asc.v1.Repo/PutObjects",
+      "asc.v1.CodeIntel/UploadScip",
       "asc.v1.Repo/UpdateRefs",
       "asc.v1.Repo/GitMap",
       "asc.v1.Repo/Archive",

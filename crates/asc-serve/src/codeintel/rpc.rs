@@ -1,5 +1,5 @@
-//! The `CodeIntel` service: `Search`, `Symbols`, `Semantic` and `IndexStatus` (PLAN I16, SPEC
-//! §23.4.1, §23.7).
+//! The `CodeIntel` service: `Search`, `Symbols`, `Semantic`, `IndexStatus` and `UploadScip`
+//! (PLAN I16 and I31, SPEC §23.4.1, §23.6, §23.7).
 //!
 //! * **Authorisation first.** The service shell authorises `Read` on the scope's repository
 //!   before anything else is looked at. A composed repository (a gitlink in `.gitmodules`,
@@ -17,6 +17,13 @@
 //!   the filters and the query, so a token cannot be replayed for another request or principal.
 //!   A token resumes on the snapshot of its generation while that is still pinned (see
 //!   `snaps`), else `FAILED_PRECONDITION: stale page token`.
+//! * **SCIP upload.** `UploadScip` needs `Write` on the repository, checked on the header
+//!   before a data byte is read. The revision resolves through the same viewer-checked resolver
+//!   as a query, the index is bounded by [`scip::MAX_INDEX_BYTES`] and [`MAX_UPLOAD_PART`], and
+//!   [`MAX_UPLOADS`] uploads run at once on a replica. Only documents whose path exists in the
+//!   revision are kept, keyed by `FileId` (`scip`). `Symbols` answers `def` and `refs` from the
+//!   uploaded rows first (`confidence = precise`), through the same scope, path rules and secret
+//!   flags as the tag results, then adds the tag results the precise rows do not cover.
 //! * **Limits.** Namespaces per query, composition depth, `.gitmodules` size, scans without a
 //!   trigram, concurrent semantic queries, symbol paging depth and the work of every executor
 //!   are named constants. The admission layer applies the `codeintel` and `semantic` rate
@@ -65,6 +72,7 @@ use asc_rpc::codeintel as ci;
 use asc_rpc::server::{ClientVersion, MAX_MESSAGE, MAX_STRING, RepoName, ServerInfo, wire};
 use asc_rpc::services::code_intel_server::{CodeIntel, CodeIntelServer};
 use asc_rpc::{IdMode, RpcError};
+use futures::{StreamExt as _, TryStreamExt as _};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use sqlx::AnyPool;
@@ -76,6 +84,7 @@ use tonic::{Extensions as TonicExt, Request, Response, Status};
 use super::files::{NsSearcher, ServerFiles, file_bytes, secret_of};
 use super::modelgen::{ModelGens, QueryLru};
 use super::ords::{DocInfo, NsDocs, can_block};
+use super::scip;
 use super::snaps::{DEFAULT_VECTOR_BYTES, Snaps, VecCache};
 use super::worker::{EmbedModel, SqlManifest, current_versions, ns_name, read_chunk_rows};
 use crate::idmode::{Eng, IdCodec};
@@ -106,6 +115,14 @@ const MAX_SYM_IDENTS: usize = 8;
 const MAX_SYM_HITS: usize = 20;
 /// Candidates the BM25 and vector lists contribute to a hybrid search, at most.
 const MAX_LIST: usize = 200;
+/// `UploadScip` calls running at once on this replica (each holds up to a full index in memory).
+pub const MAX_UPLOADS: usize = 2;
+/// Largest data part of an `UploadScip` stream.
+pub const MAX_UPLOAD_PART: usize = 4 << 20;
+/// How long the server waits for the next part of an `UploadScip` stream.
+const UPLOAD_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Paths reported for one file of a precise symbol.
+const MAX_PRECISE_PATHS: usize = 3;
 const KIND_SEARCH: u8 = 1;
 const KIND_SYMBOLS: u8 = 2;
 const TOKEN_MAC: usize = 32;
@@ -189,6 +206,9 @@ pub struct Settings {
     pub vector_cache_bytes: u64,
     /// The page-token MAC key; random per process when `None`.
     pub page_key: Option<[u8; 32]>,
+    /// The embedding model of `Semantic` (`[codeintel.embed] dir`); `None` leaves it
+    /// unavailable, with the message that says how to configure it.
+    pub embed: Option<super::embedder::Setup>,
 }
 
 impl Settings {
@@ -197,6 +217,7 @@ impl Settings {
             replica_dir: replica_dir.into(),
             vector_cache_bytes: DEFAULT_VECTOR_BYTES,
             page_key: None,
+            embed: None,
         }
     }
 }
@@ -378,6 +399,7 @@ pub struct CodeIntelRpc {
     qlru: QueryLru,
     key: [u8; 32],
     semantic: Arc<Semaphore>,
+    uploads: Arc<Semaphore>,
     scans: Arc<ScanGate>,
 }
 
@@ -608,6 +630,7 @@ impl CodeIntelRpc {
             qlru: QueryLru::new(super::modelgen::LRU_BYTES),
             key,
             semantic: Arc::new(Semaphore::new(MAX_SEMANTIC)),
+            uploads: Arc::new(Semaphore::new(MAX_UPLOADS)),
             scans: Arc::new(ScanGate {
                 total: Arc::new(Semaphore::new(MAX_SCANS)),
                 per: Mutex::new(HashMap::new()),
@@ -1362,6 +1385,17 @@ impl CodeIntelRpc {
                     None
                 }
             });
+            let precise = self
+                .precise(
+                    t,
+                    &searcher,
+                    &kept,
+                    &req.name,
+                    req.op,
+                    &kinds,
+                    q.at.as_ref(),
+                )
+                .await?;
             let op = req.op;
             let got = tokio::task::spawn_blocking(move || {
                 let engine = SymbolEngine::new(&snap, &files, &NoProjects);
@@ -1377,7 +1411,14 @@ impl CodeIntelRpc {
             .map_err(|e| internal("symbols task", &e))?
             .map_err(symbol_status)?;
             truncated |= got.truncated;
-            for mut s in got.symbols {
+            // Precise rows lead; a tag result at the same place says the same thing.
+            let covered_by_precise: HashSet<(Vec<u8>, u32)> =
+                precise.iter().map(|s| (s.path.clone(), s.line)).collect();
+            let tagged = got
+                .symbols
+                .into_iter()
+                .filter(|s| !covered_by_precise.contains(&(s.path.clone(), s.line)));
+            for mut s in precise.into_iter().chain(tagged) {
                 if !plan.langs.is_empty()
                     && !lang::detect(&String::from_utf8_lossy(&s.path), b"")
                         .is_some_and(|l| plan.langs.contains(&l))
@@ -1416,6 +1457,123 @@ impl CodeIntelRpc {
             next_page_token: next,
             est_tokens: rendered.est_tokens,
         })
+    }
+
+    /// The uploaded-SCIP symbols (`confidence = precise`) of a `def` or `refs` query in one
+    /// namespace, restricted to `kept` (the scope, path rules, tombstones and ACL the tag results
+    /// pass too) and to files the doc table knows. `refs` is answered precisely only when the
+    /// definition is unambiguous (named by `at`, or the one precise symbol of that name); else
+    /// the tag results stand alone. A name pattern or a kind filter never matches a precise row.
+    #[allow(clippy::too_many_arguments)]
+    async fn precise(
+        &self,
+        t: &Target,
+        searcher: &NsSearcher,
+        kept: &RoaringBitmap,
+        name: &str,
+        op: ci::SymbolOp,
+        kinds: &[TagKind],
+        at: Option<&(Vec<u8>, u32)>,
+    ) -> Result<Vec<symbols::Symbol>, Status> {
+        if !matches!(op, ci::SymbolOp::Def | ci::SymbolOp::Refs)
+            || !kinds.is_empty()
+            || name.is_empty()
+            || name.contains('*')
+        {
+            return Ok(Vec::new());
+        }
+        let store = scip::Store::new(self.pool().clone(), t.docs.ns());
+        let defs = store.named(name, true).await.map_err(scip_status)?;
+        if defs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut places: HashMap<FileId, Option<(u32, Vec<RepoPath>, Option<bool>)>> =
+            HashMap::new();
+        // Resolve the files of `hits` once: ord, paths in this revision, secret flag.
+        for h in &defs {
+            self.place(t, searcher, kept, &mut places, h.file).await?;
+        }
+        let in_scope = |h: &scip::Hit| places.get(&h.file).is_some_and(Option::is_some);
+        let defs: Vec<scip::Hit> = defs.into_iter().filter(|h| in_scope(h)).collect();
+        let mut hits = defs.clone();
+        if op == ci::SymbolOp::Refs {
+            let chosen: Vec<&scip::Hit> = match at {
+                Some((path, line)) => defs
+                    .iter()
+                    .filter(|h| {
+                        (h.line + 1..=h.end_line + 1).contains(line)
+                            && places[&h.file].as_ref().is_some_and(|(_, paths, _)| {
+                                paths.iter().any(|p| p.as_bytes() == path.as_slice())
+                            })
+                    })
+                    .collect(),
+                None => defs.iter().collect(),
+            };
+            let symbols: HashSet<&str> = chosen.iter().map(|h| h.symbol.as_str()).collect();
+            let symbols: Vec<&str> = symbols.into_iter().collect();
+            let [symbol] = symbols[..] else {
+                return Ok(Vec::new());
+            };
+            let refs = store.refs_to(symbol).await.map_err(scip_status)?;
+            for h in &refs {
+                self.place(t, searcher, kept, &mut places, h.file).await?;
+            }
+            hits = refs
+                .into_iter()
+                .filter(|h| places.get(&h.file).is_some_and(Option::is_some))
+                .collect();
+        }
+        let mut out = Vec::new();
+        for h in hits {
+            let Some(Some((_, paths, secret))) = places.get(&h.file) else {
+                continue;
+            };
+            for p in paths {
+                out.push(symbols::Symbol {
+                    name: h.name.clone(),
+                    kind: String::new(),
+                    is_def: h.is_def,
+                    path: p.as_bytes().to_vec(),
+                    line: h.line + 1,
+                    end_line: h.end_line + 1,
+                    signature: Vec::new(),
+                    container: String::new(),
+                    doc: Vec::new(),
+                    confidence: scip::PRECISE,
+                    secret: *secret,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Records where `file` sits in the target's revision, once: its ord, up to
+    /// [`MAX_PRECISE_PATHS`] paths and secret flag; `None` when it is not in the kept scope.
+    async fn place(
+        &self,
+        t: &Target,
+        searcher: &NsSearcher,
+        kept: &RoaringBitmap,
+        places: &mut HashMap<FileId, Option<(u32, Vec<RepoPath>, Option<bool>)>>,
+        file: FileId,
+    ) -> Result<(), Status> {
+        if places.contains_key(&file) {
+            return Ok(());
+        }
+        let ord = t.docs.ord_of(&file).await.map_err(sql_status)?;
+        let Some(ord) = ord.filter(|o| kept.contains(*o)) else {
+            places.insert(file, None);
+            return Ok(());
+        };
+        let paths = searcher
+            .scope_engine()
+            .locate(t.root, ord, MAX_PRECISE_PATHS)
+            .await
+            .map_err(|e| internal("locate", &e))?;
+        let info = t.docs.info(&[ord]).await.map_err(sql_status)?;
+        let secret = info.get(&ord).and_then(DocInfo::secret);
+        places.insert(file, Some((ord, paths, secret)));
+        Ok(())
     }
 
     /// `outline`: the tags of one file, no index. The file belongs to the deepest namespace
@@ -1468,6 +1626,92 @@ impl CodeIntelRpc {
         Ok((got.symbols, got.truncated))
     }
 
+    // -------------------------------------------------------------------------- UploadScip
+
+    /// Takes one of the [`MAX_UPLOADS`] slots, or answers `RESOURCE_EXHAUSTED`.
+    pub fn upload_slot(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Status> {
+        self.uploads
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Status::resource_exhausted("too many index uploads in flight"))
+    }
+
+    /// Validates `bytes` (a SCIP index) against the revision the header names and stores the
+    /// documents that match it, keyed by `FileId`. The caller has been authorised for `Write`.
+    pub async fn upload_scip(
+        &self,
+        caller: &Caller,
+        header: wire::UploadScipHeader,
+        bytes: Vec<u8>,
+    ) -> Result<wire::UploadScipResponse, Status> {
+        let root = match header.root.as_str() {
+            "" => None,
+            r if r.len() > MAX_STRING => return Err(bad("root is too long")),
+            r => Some(
+                RepoPath::new(r.as_bytes()).map_err(|_| bad("root is not a repository path"))?,
+            ),
+        };
+        let entry = self
+            .registry
+            .open(&caller.repo)
+            .await
+            .map_err(registry_status)?;
+        let cs = self.resolve_rev(caller, &entry, &header.rev).await?;
+        let engine = entry.backend.engine();
+        let tree = engine
+            .get_changeset(cs)
+            .await
+            .map_err(|e| Status::not_found(format!("changeset {cs} is unavailable: {e}")))?
+            .root;
+        let index = tokio::task::spawn_blocking(move || scip::decode(&bytes))
+            .await
+            .map_err(|e| internal("scip decode task", &e))?
+            .map_err(scip_status)?;
+        let paths = scip::document_paths(&index, root.as_ref()).map_err(scip_status)?;
+        // The `FileId` each document path has in the revision; an absent path is dropped.
+        let mut revision: std::collections::BTreeMap<RepoPath, FileId> = Default::default();
+        let found = futures::stream::iter(paths)
+            .map(|p| async move {
+                let e = engine
+                    .lookup(tree, &p)
+                    .await
+                    .map_err(|e| internal("tree", &e))?;
+                Ok::<_, Status>(e.and_then(|e| {
+                    matches!(e.kind, Kind::File | Kind::Exec).then(|| (p, FileId::from_bytes(e.id)))
+                }))
+            })
+            .buffered(32)
+            .try_collect::<Vec<_>>()
+            .await?;
+        revision.extend(found.into_iter().flatten());
+        let parsed = tokio::task::spawn_blocking(move || {
+            scip::parse_index(index, root.as_ref(), &|p| revision.get(p).copied())
+        })
+        .await
+        .map_err(|e| internal("scip parse task", &e))?
+        .map_err(scip_status)?;
+        let store = scip::Store::new(self.pool().clone(), entry.ns.as_bytes());
+        let done = store.ingest(&parsed).await.map_err(scip_status)?;
+        let ids =
+            IdCodec::new(caller.id_mode, &self.registry, &entry).for_viewer(&caller.principal);
+        tracing::info!(
+            repo = %caller.repo,
+            documents = done.docs,
+            occurrences = done.occurrences,
+            unknown_path = parsed.unknown_path,
+            stale = parsed.stale,
+            "scip index uploaded"
+        );
+        Ok(wire::UploadScipResponse {
+            changeset: Bytes::from(ids.changeset_out(cs).await?.to_vec()),
+            documents: u32::try_from(done.docs).unwrap_or(u32::MAX),
+            occurrences: u32::try_from(done.occurrences).unwrap_or(u32::MAX),
+            unknown_path: u32::try_from(parsed.unknown_path).unwrap_or(u32::MAX),
+            stale: u32::try_from(parsed.stale).unwrap_or(u32::MAX),
+            skipped_occurrences: u32::try_from(parsed.skipped_occs).unwrap_or(u32::MAX),
+        })
+    }
+
     // -------------------------------------------------------------------------- Semantic
 
     pub async fn semantic(
@@ -1481,9 +1725,7 @@ impl CodeIntelRpc {
             .try_acquire_owned()
             .map_err(|_| Status::resource_exhausted("too many semantic queries in flight"))?;
         let Some(embed) = self.embed.clone() else {
-            return Err(Status::failed_precondition(
-                "semantic search is not available on this server",
-            ));
+            return Err(Status::failed_precondition(super::embedder::NOT_CONFIGURED));
         };
         let plan = self.plan(caller, &req.scope).await?;
         let k = match req.k {
@@ -1992,6 +2234,62 @@ fn symbol_out(s: render::SymbolOut) -> wire::Symbol {
 
 // ------------------------------------------------------------------------------ service
 
+/// The next message of an `UploadScip` stream, within [`UPLOAD_IDLE`].
+async fn next_part(
+    stream: &mut tonic::Streaming<wire::UploadScipRequest>,
+) -> Result<Option<wire::upload_scip_request::Part>, Status> {
+    match tokio::time::timeout(UPLOAD_IDLE, stream.message()).await {
+        Err(_) => Err(Status::deadline_exceeded("the upload stalled")),
+        Ok(Err(s)) => Err(s),
+        Ok(Ok(m)) => Ok(m.and_then(|m| m.part)),
+    }
+}
+
+/// The data parts of an `UploadScip` stream: exactly `size` bytes, no part over
+/// [`MAX_UPLOAD_PART`], the whole under [`scip::MAX_INDEX_BYTES`].
+async fn collect_upload(
+    size: u64,
+    stream: &mut tonic::Streaming<wire::UploadScipRequest>,
+) -> Result<Vec<u8>, Status> {
+    let size = usize::try_from(size)
+        .ok()
+        .filter(|n| *n <= scip::MAX_INDEX_BYTES)
+        .ok_or_else(|| {
+            Status::resource_exhausted(format!(
+                "the index is over the {} byte limit",
+                scip::MAX_INDEX_BYTES
+            ))
+        })?;
+    if size == 0 {
+        return Err(bad("the index is empty"));
+    }
+    let mut out = Vec::with_capacity(size.min(MAX_UPLOAD_PART));
+    while let Some(part) = next_part(stream).await? {
+        let wire::upload_scip_request::Part::Data(data) = part else {
+            return Err(bad("only the first message is a header"));
+        };
+        if data.len() > MAX_UPLOAD_PART || out.len() + data.len() > size {
+            return Err(bad("the index is larger than its header says"));
+        }
+        out.extend_from_slice(&data);
+    }
+    if out.len() != size {
+        return Err(bad("the index is shorter than its header says"));
+    }
+    Ok(out)
+}
+
+fn scip_status(e: scip::ScipError) -> Status {
+    use scip::ScipError as E;
+    match e {
+        E::TooLarge(_) | E::TooManyDocs(_) | E::TooManyOccs => {
+            Status::resource_exhausted(e.to_string())
+        }
+        E::Decode(_) | E::BadPath(_) => bad(e.to_string()),
+        E::Store(_) => internal("scip store", &e),
+    }
+}
+
 /// The `asc.v1.CodeIntel` tonic service.
 pub struct CodeIntelService {
     rpc: Arc<CodeIntelRpc>,
@@ -2025,9 +2323,20 @@ impl CodeIntelService {
         ext: &TonicExt,
         scope: Option<&wire::Scope>,
     ) -> Result<Caller, Status> {
-        let repo = scope
-            .and_then(|s| s.repo.as_ref())
-            .ok_or_else(|| bad("missing repo"))?;
+        self.caller_for(meta, ext, scope.and_then(|s| s.repo.as_ref()), Access::Read)
+            .await
+    }
+
+    /// [`Self::caller`] for a request that names its repository outside a `Scope`, with the
+    /// access the method needs (`UploadScip` writes).
+    async fn caller_for(
+        &self,
+        meta: &MetadataMap,
+        ext: &TonicExt,
+        repo: Option<&wire::RepoRef>,
+        access: Access,
+    ) -> Result<Caller, Status> {
+        let repo = repo.ok_or_else(|| bad("missing repo"))?;
         let name = RepoName::parse(&repo.name)?;
         let id_mode = IdMode::from_wire(repo.id_mode).map_err(rpc_error)?;
         let client = match meta.get("x-asc-client") {
@@ -2047,7 +2356,7 @@ impl CodeIntelService {
         let credential = ext.get::<Credential>().cloned();
         let principal = self
             .authorizer
-            .authorize_credential(credential.as_ref(), name.as_str(), Access::Read)
+            .authorize_credential(credential.as_ref(), name.as_str(), access)
             .await?;
         Ok(Caller {
             authorizer: self.authorizer.clone(),
@@ -2107,5 +2416,26 @@ impl CodeIntel for CodeIntelService {
         let caller = self.caller(&meta, &ext, msg.scope.as_ref()).await?;
         let req = ci::IndexStatusRequest::try_from(&msg).map_err(rpc_error)?;
         self.rpc.index_status(&caller, req).await.map(Response::new)
+    }
+
+    async fn upload_scip(
+        &self,
+        request: Request<tonic::Streaming<wire::UploadScipRequest>>,
+    ) -> Result<Response<wire::UploadScipResponse>, Status> {
+        let (meta, ext, mut stream) = request.into_parts();
+        // The header names the repository: authorise `Write` on it before any data is read.
+        let first = next_part(&mut stream).await?;
+        let Some(wire::upload_scip_request::Part::Header(header)) = first else {
+            return Err(bad("the first message must be the header"));
+        };
+        let caller = self
+            .caller_for(&meta, &ext, header.repo.as_ref(), Access::Write)
+            .await?;
+        let _slot = self.rpc.upload_slot()?;
+        let bytes = collect_upload(header.size, &mut stream).await?;
+        self.rpc
+            .upload_scip(&caller, header, bytes)
+            .await
+            .map(Response::new)
     }
 }

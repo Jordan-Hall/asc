@@ -286,3 +286,9 @@ CPU: query embedding
 
 cheap
 
+### UploadScip
+
+`asc.v1.UploadScipRequest` -> `asc.v1.UploadScipResponse` (client stream)
+
+write permission on the repository (v1.x)
+

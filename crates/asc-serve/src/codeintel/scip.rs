@@ -10,8 +10,9 @@
 //! `FileId`, so they follow the content to any revision or path that holds it.
 //!
 //! Hits carry `confidence = "precise"` ([`PRECISE`]); the search-based tags keep `import_match`
-//! and `name_match`. The `Symbols` handler merges [`Store::defs`] and [`Store::refs`] ahead of
-//! the tag results (TODO(I16): one call site in `rpc.rs`, which the upload tier does not own).
+//! and `name_match`. The `Symbols` handler (`rpc.rs`) merges [`Store::named`] and
+//! [`Store::refs_to`] ahead of the tag results, restricted to the same scope as they are,
+//! and the `UploadScip` RPC calls [`upload_index`] after its write authorisation.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -36,6 +37,8 @@ pub const MAX_SYMBOL_BYTES: usize = 1024;
 pub const MAX_PATH_BYTES: usize = 4096;
 /// Hits one lookup returns.
 pub const MAX_HITS: usize = 1000;
+/// Rows one lookup reads before it filters them to a scope.
+pub const MAX_ROWS: i64 = 20_000;
 /// Documents per transaction of an ingest.
 const DOCS_PER_TX: usize = 200;
 macro_rules! select_hits {
@@ -43,7 +46,7 @@ macro_rules! select_hits {
         concat!(
             "SELECT file, name, symbol, CAST(is_def AS BIGINT) AS is_def, CAST(line AS BIGINT) AS line,              CAST(col AS BIGINT) AS col, CAST(end_line AS BIGINT) AS end_line, CAST(end_col AS BIGINT) AS end_col              FROM ci_scip WHERE ns = $1 AND ",
             $cond,
-            " ORDER BY file, line, col"
+            " ORDER BY file, line, col LIMIT $3"
         )
     };
 }
@@ -203,6 +206,49 @@ pub fn symbol_name(symbol: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Decodes an uploaded index, refusing one over the size or document bounds.
+pub fn decode(bytes: &[u8]) -> Result<WireIndex, ScipError> {
+    if bytes.len() > MAX_INDEX_BYTES {
+        return Err(ScipError::TooLarge(bytes.len()));
+    }
+    let index = wire::Index::decode(bytes).map_err(|e| ScipError::Decode(e.to_string()))?;
+    if index.documents.len() > MAX_DOCS {
+        return Err(ScipError::TooManyDocs(index.documents.len()));
+    }
+    Ok(index)
+}
+
+/// The repository path of a document: `rel` below `root` (the directory the indexer ran in).
+fn doc_path(root: Option<&RepoPath>, rel: &str) -> Result<RepoPath, ScipError> {
+    let bad = || ScipError::BadPath(rel.chars().take(64).collect());
+    if rel.len() > MAX_PATH_BYTES {
+        return Err(bad());
+    }
+    let rel_path = RepoPath::new(rel.as_bytes()).map_err(|_| bad())?;
+    match root {
+        Some(r) => {
+            let mut full = r.as_bytes().to_vec();
+            full.push(b'/');
+            full.extend_from_slice(rel_path.as_bytes());
+            RepoPath::new(full).map_err(|_| bad())
+        }
+        None => Ok(rel_path),
+    }
+}
+
+/// The repository path of every document of `index`, so the caller can look their `FileId`s up
+/// in the revision before [`parse_index`] runs. Fails on a path that is not a repository path.
+pub fn document_paths(
+    index: &WireIndex,
+    root: Option<&RepoPath>,
+) -> Result<Vec<RepoPath>, ScipError> {
+    index
+        .documents
+        .iter()
+        .map(|d| doc_path(root, &d.relative_path))
+        .collect()
+}
+
 /// Validates and filters an uploaded index against one revision.
 ///
 /// `root` is the repository directory the indexer ran in (the SCIP `project_root`), or `None`
@@ -213,33 +259,20 @@ pub fn parse(
     root: Option<&RepoPath>,
     resolve: &dyn Fn(&RepoPath) -> Option<FileId>,
 ) -> Result<Parsed, ScipError> {
-    if bytes.len() > MAX_INDEX_BYTES {
-        return Err(ScipError::TooLarge(bytes.len()));
-    }
-    let index = wire::Index::decode(bytes).map_err(|e| ScipError::Decode(e.to_string()))?;
-    if index.documents.len() > MAX_DOCS {
-        return Err(ScipError::TooManyDocs(index.documents.len()));
-    }
+    parse_index(decode(bytes)?, root, resolve)
+}
+
+/// [`parse`] for an index that [`decode`] already read.
+pub fn parse_index(
+    index: WireIndex,
+    root: Option<&RepoPath>,
+    resolve: &dyn Fn(&RepoPath) -> Option<FileId>,
+) -> Result<Parsed, ScipError> {
     let mut out = Parsed::default();
     let mut seen: HashSet<RepoPath> = HashSet::new();
     let mut total = 0usize;
     for d in index.documents {
-        if d.relative_path.len() > MAX_PATH_BYTES {
-            return Err(ScipError::BadPath(
-                d.relative_path.chars().take(64).collect(),
-            ));
-        }
-        let rel = RepoPath::new(d.relative_path.as_bytes())
-            .map_err(|_| ScipError::BadPath(d.relative_path.clone()))?;
-        let path = match root {
-            Some(r) => {
-                let mut full = r.as_bytes().to_vec();
-                full.push(b'/');
-                full.extend_from_slice(rel.as_bytes());
-                RepoPath::new(full).map_err(|_| ScipError::BadPath(d.relative_path.clone()))?
-            }
-            None => rel,
-        };
+        let path = doc_path(root, &d.relative_path)?;
         let Some(file) = resolve(&path) else {
             out.unknown_path += 1;
             continue;
@@ -380,12 +413,32 @@ impl Store {
 
     /// Definitions named `name`, restricted to `scope` (the files of the query's scope).
     pub async fn defs(&self, name: &str, scope: &HashSet<FileId>) -> Result<Vec<Hit>, ScipError> {
-        self.by(select_hits!("name = $2 AND is_def = 1"), name, scope).await
+        self.by(select_hits!("name = $2 AND is_def = 1"), name, Some(scope))
+            .await
     }
 
     /// References to every symbol named `name`.
     pub async fn refs(&self, name: &str, scope: &HashSet<FileId>) -> Result<Vec<Hit>, ScipError> {
-        self.by(select_hits!("name = $2 AND is_def = 0"), name, scope).await
+        self.by(select_hits!("name = $2 AND is_def = 0"), name, Some(scope))
+            .await
+    }
+
+    /// Definitions (`is_def`) or references named `name` in any file of the namespace, at most
+    /// [`MAX_ROWS`] rows read. The caller filters them to its scope.
+    pub async fn named(&self, name: &str, is_def: bool) -> Result<Vec<Hit>, ScipError> {
+        let sql = if is_def {
+            select_hits!("name = $2 AND is_def = 1")
+        } else {
+            select_hits!("name = $2 AND is_def = 0")
+        };
+        self.by(sql, name, None).await
+    }
+
+    /// References to exactly `symbol` in any file of the namespace, at most [`MAX_ROWS`] rows
+    /// read. The caller filters them to its scope.
+    pub async fn refs_to(&self, symbol: &str) -> Result<Vec<Hit>, ScipError> {
+        self.by(select_hits!("symbol = $2 AND is_def = 0"), symbol, None)
+            .await
     }
 
     /// References to exactly `symbol` (the precise join once a definition is chosen).
@@ -394,21 +447,27 @@ impl Store {
         symbol: &str,
         scope: &HashSet<FileId>,
     ) -> Result<Vec<Hit>, ScipError> {
-        self.by(select_hits!("symbol = $2 AND is_def = 0"), symbol, scope).await
+        self.by(
+            select_hits!("symbol = $2 AND is_def = 0"),
+            symbol,
+            Some(scope),
+        )
+        .await
     }
 
     async fn by(
         &self,
         sql: &'static str,
         key: &str,
-        scope: &HashSet<FileId>,
+        scope: Option<&HashSet<FileId>>,
     ) -> Result<Vec<Hit>, ScipError> {
         let rows = sqlx::query(sql)
-        .bind(self.ns.clone())
-        .bind(key.to_owned())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_err)?;
+            .bind(self.ns.clone())
+            .bind(key.to_owned())
+            .bind(MAX_ROWS)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_err)?;
         let num = |r: &sqlx::any::AnyRow, c: &str| -> Result<u32, ScipError> {
             let v: i64 = r.try_get(c).map_err(store_err)?;
             u32::try_from(v).map_err(|_| ScipError::Store(format!("bad {c}")))
@@ -420,7 +479,7 @@ impl Store {
                 continue;
             };
             let file = FileId::from_bytes(arr);
-            if !scope.contains(&file) {
+            if scope.is_some_and(|s| !s.contains(&file)) {
                 continue;
             }
             out.push(Hit {
@@ -454,16 +513,25 @@ impl Store {
     }
 }
 
-/// The upload handler's body: parse against a revision map, then store.
-/// TODO(I16): the `UploadScip` RPC resolves `revision` from the request scope after the write
-/// authorisation check and calls this.
+/// The upload handler's body: parse against a revision map, then store. The `UploadScip` RPC
+/// resolves `revision` from the request's revision after the write authorisation check.
 pub async fn upload(
     store: &Store,
     bytes: &[u8],
     root: Option<&RepoPath>,
     revision: &BTreeMap<RepoPath, FileId>,
 ) -> Result<(Parsed, Ingested), ScipError> {
-    let parsed = parse(bytes, root, &|p| revision.get(p).copied())?;
+    upload_index(store, decode(bytes)?, root, revision).await
+}
+
+/// [`upload`] for an index that [`decode`] already read (the RPC needs its document paths first).
+pub async fn upload_index(
+    store: &Store,
+    index: WireIndex,
+    root: Option<&RepoPath>,
+    revision: &BTreeMap<RepoPath, FileId>,
+) -> Result<(Parsed, Ingested), ScipError> {
+    let parsed = parse_index(index, root, &|p| revision.get(p).copied())?;
     let done = store.ingest(&parsed).await?;
     Ok((parsed, done))
 }

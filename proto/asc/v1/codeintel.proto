@@ -108,7 +108,7 @@ message Symbol {
   bytes signature = 7 [(asc.v1.json) = JSON_KIND_TEXT];
   string container = 8;
   bytes doc = 9 [(asc.v1.json) = JSON_KIND_TEXT];
-  string confidence = 10;   // import_match or name_match
+  string confidence = 10;   // precise (uploaded SCIP), import_match or name_match
 }
 
 message SymbolsResponse {
@@ -170,10 +170,38 @@ message IndexStatusResponse {
   repeated IndexStatus indexes = 2;
 }
 
-// Read permission on every namespace searched. Rate class `codeintel` (SPEC §23.4.1).
+// SCIP upload (SPEC §23.6 CI-D3, PLAN I31): compiler-grade definitions and references built by a language
+// indexer and keyed by FileId. The index is a SCIP `Index` message, sent as raw bytes in order: one header,
+// then data parts of at most 4 MiB, 64 MiB in all. The server keeps a document only when its path exists in the
+// revision and its embedded text (if any) matches that file.
+message UploadScipHeader {
+  RepoRef repo = 1;
+  string rev = 2;      // the revision the index was built at; empty means the repository default
+  string root = 3;     // directory the indexer ran in, relative to the repository root; empty means the root
+  uint64 size = 4;     // total index bytes that follow; at most 64 MiB
+}
+
+message UploadScipRequest {
+  oneof part {
+    UploadScipHeader header = 1;   // first message only
+    bytes data = 2 [(asc.v1.json) = JSON_KIND_DATA];
+  }
+}
+
+message UploadScipResponse {
+  bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HEX];   // the revision the documents were matched against
+  uint32 documents = 2;           // documents stored
+  uint32 occurrences = 3;         // occurrences stored
+  uint32 unknown_path = 4;        // documents dropped: path not in the revision
+  uint32 stale = 5;               // documents dropped: embedded text differs from the revision's file
+  uint32 skipped_occurrences = 6; // occurrences dropped: malformed range, local or oversize symbol
+}
+
+// Read permission on every namespace searched (`UploadScip`: write permission on the repository). Rate class `codeintel` (SPEC §23.4.1).
 service CodeIntel {
   rpc Search(SearchRequest) returns (stream SearchResponse);   // expensive without trigrams
   rpc Symbols(SymbolsRequest) returns (SymbolsResponse);
   rpc Semantic(SemanticRequest) returns (SemanticResponse);    // CPU: query embedding
   rpc IndexStatus(IndexStatusRequest) returns (IndexStatusResponse);   // cheap
+  rpc UploadScip(stream UploadScipRequest) returns (UploadScipResponse);   // write permission on the repository (v1.x)
 }

@@ -387,3 +387,31 @@ async fn a_workspace_scope_is_refused_over_the_network() {
     };
     assert_eq!(e.code(), tonic::Code::InvalidArgument);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn semantic_without_a_configured_model_says_how_to_configure_one() {
+    let rig = rig(0, grants(), 1).await;
+    let mut req = Request::new(wire::SemanticRequest {
+        scope: search_req(MAIN_WORD, 10, "").scope,
+        query: "find the zebra".to_owned(),
+        k: 3,
+        ..Default::default()
+    });
+    req.extensions_mut().insert(cred(READER));
+    let e = rig.svc.semantic(req).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        e.message().contains("[codeintel.embed] dir") && e.message().contains("calibration.bin"),
+        "{}",
+        e.message()
+    );
+    // The caller still has to be allowed to read the repository first.
+    let mut req = Request::new(wire::SemanticRequest {
+        scope: search_req(MAIN_WORD, 10, "").scope,
+        query: "x".to_owned(),
+        ..Default::default()
+    });
+    req.extensions_mut().insert(cred("stranger"));
+    let e = rig.svc.semantic(req).await.unwrap_err();
+    assert_eq!(e.code(), tonic::Code::Unauthenticated);
+}
