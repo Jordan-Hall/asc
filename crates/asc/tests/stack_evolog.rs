@@ -248,3 +248,17 @@ fn evolog_patch_prints_each_version() {
     assert!(out.contains("+2"), "{out}");
     assert!(out.contains("+1"), "{out}");
 }
+
+#[test]
+fn evolog_falls_back_to_local_versions_when_the_server_is_unreachable() {
+    let r = Repo::new();
+    r.versions();
+    // Nothing listens on port 1.
+    r.ok(&["remote", "add", "origin", "asc+http://127.0.0.1:1/acme/app"]);
+    let v: Value = serde_json::from_str(r.ok(&["evolog", "--json"]).trim()).expect("json");
+    let vs = v["versions"].as_array().unwrap();
+    assert_eq!(vs.len(), 2);
+    assert_eq!(vs[0]["published"], false);
+    assert_eq!(vs[1]["published"], false);
+    assert_eq!(r.asc(&["evolog"]).stderr, "");
+}
