@@ -21,6 +21,7 @@ pub mod prompts;
 pub mod resources;
 pub mod rpc_backend;
 pub mod schema;
+pub mod search;
 pub mod shape;
 
 pub use catalogue::ASC_HANDLES_SCHEMA;
