@@ -43,13 +43,16 @@ pub struct Args {
     /// The message of a lower piece; repeat, bottom first.
     #[arg(short = 'm', long = "message")]
     pub message: Vec<String>,
+    /// Split from a `SplitSpec` (JSON file) with no prompt (unit P46).
+    #[arg(long = "hunks", value_name = "SPEC")]
+    pub hunks: Option<std::path::PathBuf>,
     #[arg(long)]
     pub json: bool,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "split",
-    flags: &["--change", "--by-file", "--by-hunk", "--by-commit", "-m", "--message", "--json"],
+    flags: &["--change", "--by-file", "--by-hunk", "--by-commit", "--hunks", "-m", "--message", "--json"],
     placeholders: &[],
 }];
 
@@ -62,7 +65,10 @@ fn with_newline(mut s: String) -> Vec<u8> {
     s.into_bytes()
 }
 
-pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+pub async fn run(ctx: &Ctx, mut a: Args) -> Result<ExitCode> {
+    if let Some(file) = a.hunks.take() {
+        return super::split_hunks::run(ctx, a, &file).await;
+    }
     if a.by_hunk {
         return Err(CliError::Raw(
             "asc: split: --by-hunk needs a prompt, which asc never opens; use --by-file".into(),
