@@ -48,6 +48,10 @@ struct Job {
     runner_temp: std::path::PathBuf,
     env_file: std::path::PathBuf,
     path_file: std::path::PathBuf,
+    /// Where the `git` shim goes: on `asc`'s own volume, because a hardlink cannot cross volumes
+    /// (SPEC §11.4) and the sandbox may be on another drive than the build directory.
+    shim: std::path::PathBuf,
+    _shim_root: tempfile::TempDir,
 }
 
 fn checkout(
@@ -59,10 +63,18 @@ fn checkout(
     host: &Path,
 ) -> (Output, Job) {
     let cwd = sb.dir("job");
+    let exe_dir = Path::new(support::asc_binary().expect("integration tests only"))
+        .parent()
+        .expect("the binary has a directory");
+    let shim_root = tempfile::tempdir_in(exe_dir).expect("a directory beside asc");
     let job = Job {
         runner_temp: cwd.join("tmp"),
         env_file: cwd.join("github_env"),
         path_file: cwd.join("github_path"),
+        shim: std::path::absolute(shim_root.path())
+            .expect("an absolute path")
+            .join("asc-shim"),
+        _shim_root: shim_root,
     };
     let out = sb
         .asc(&cwd)
@@ -73,6 +85,8 @@ fn checkout(
         .env("GITHUB_ENV", &job.env_file)
         .env("GITHUB_PATH", &job.path_file)
         .args(["ci", "checkout", "--repo", "asc/dds", "--base", base])
+        .arg("--shim-dir")
+        .arg(&job.shim)
         // `--rev=<x>` keeps a value that starts with a dash from being read as a flag.
         .arg(format!("--rev={rev}"))
         .args([
@@ -156,7 +170,7 @@ fn checkout_materialises_exports_and_persists_the_tier_stack() {
             .any(|l| l == format!("ASC_HOME={}", asc_home.display()))
     );
     let path = std::fs::read_to_string(&job.path_file).unwrap();
-    let shim = job.runner_temp.join("asc-shim");
+    let shim = job.shim.clone();
     assert_eq!(path.trim(), shim.display().to_string());
     assert!(
         shim.join(if cfg!(windows) { "git.exe" } else { "git" })

@@ -468,13 +468,13 @@ fn credential_failures_follow_git_and_auth_status_names_the_source() {
 }
 
 #[test]
-fn there_is_no_login() {
+fn auth_login_without_a_host_is_a_usage_error() {
     let sb = Sandbox::new();
     let d = sb.dir("d");
     let out = asc_as(&sb, &d, None, &["auth", "login"]);
-    assert_eq!(out.status.code(), Some(128));
+    assert_eq!(out.status.code(), Some(129));
     assert!(
-        text(&out.stderr).contains("no 'auth login'"),
+        text(&out.stderr).contains("asc auth login --host <url>"),
         "{}",
         text(&out.stderr)
     );

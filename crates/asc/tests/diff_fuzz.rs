@@ -15,6 +15,10 @@ use fuzz::compare::{self, Outcome};
 use fuzz::ops::{self, Op};
 use harness::Tools;
 
+/// The sequences and shrink runs of a run that sets no `ASC_FUZZ_*` knob.
+const GATE_SEEDS: usize = 8;
+const GATE_SHRINK: usize = 10;
+
 fn tools() -> &'static Tools {
     match Tools::get(env!("CARGO_BIN_EXE_asc")) {
         Ok(t) => t,
@@ -28,7 +32,16 @@ fn tools() -> &'static Tools {
 #[test]
 fn differential_fuzz() {
     let tools = tools();
-    let cfg = fuzz::Config::from_env();
+    let mut cfg = fuzz::Config::from_env();
+    // A plain `cargo test` or gate run is bounded: a failing sequence is shrunk with dozens of
+    // full runs, so a run that finds many differences once took 17 minutes. The PR run sets
+    // `ASC_FUZZ_SEEDS=25` (and `ASC_FUZZ_SHRINK`) explicitly.
+    if std::env::var_os("ASC_FUZZ_SEEDS").is_none() {
+        cfg.seeds = cfg.seeds.min(GATE_SEEDS);
+    }
+    if std::env::var_os("ASC_FUZZ_SHRINK").is_none() {
+        cfg.shrink_budget = cfg.shrink_budget.min(GATE_SHRINK);
+    }
     let sum = fuzz::run(tools, &cfg);
     println!("{}", sum.line(&cfg));
     if sum.is_clean() {
