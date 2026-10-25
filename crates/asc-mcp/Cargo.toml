@@ -11,8 +11,10 @@ build = "build.rs"
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
 base64 = { workspace = true }
 asc-rpc = { workspace = true }
+futures = { workspace = true }
 getrandom = "0.4"
 hmac = { workspace = true }
 prost-reflect = { workspace = true }
@@ -21,6 +23,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
 
 [build-dependencies]
 asc-rpc = { workspace = true }
