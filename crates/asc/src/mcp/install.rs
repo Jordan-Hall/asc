@@ -182,7 +182,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    let tmp = dir.join(format!(".asc-mcp-install.{}.{stamp}.tmp", std::process::id()));
+    let tmp = dir.join(format!(
+        ".asc-mcp-install.{}.{stamp}.tmp",
+        std::process::id()
+    ));
     let written = (|| {
         // `create_new` never follows a pre-planted link or overwrites a file.
         let mut f = std::fs::OpenOptions::new()
@@ -274,8 +277,11 @@ fn user_config_path() -> Result<PathBuf> {
 /// # Errors
 /// `existing` does not parse as git config; it is then left untouched.
 pub fn user_update(existing: &str) -> Result<Option<String>> {
-    let file = gix_config::File::try_from(existing)
-        .map_err(|e| fatal(format!("the user config does not parse ({e}); not changing it")))?;
+    let file = gix_config::File::try_from(existing).map_err(|e| {
+        fatal(format!(
+            "the user config does not parse ({e}); not changing it"
+        ))
+    })?;
     let missing: Vec<_> = USER_KEYS
         .iter()
         .filter(|(k, _)| file.raw_value_by("asc", Some("mcp".into()), *k).is_err())
@@ -376,7 +382,13 @@ mod tests {
         }
         assert!(parse(&a(&["--remote", "http://127.0.0.1:1"]), true).is_ok());
         assert!(parse(&a(&["--remote", "http://h.example"]), true).is_err());
-        assert!(parse(&a(&["--scope", "user", "--remote", "https://h.example"]), false).is_err());
+        assert!(
+            parse(
+                &a(&["--scope", "user", "--remote", "https://h.example"]),
+                false
+            )
+            .is_err()
+        );
         assert!(parse(&a(&["--scope", "x"]), false).is_err());
     }
 

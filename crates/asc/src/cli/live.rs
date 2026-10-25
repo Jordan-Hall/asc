@@ -206,7 +206,13 @@ pub fn paused(home: &AscHome, id: &str) -> bool {
 }
 
 /// Pauses worktree `id` because a live run hit a conflict (called by the daemon).
-pub fn record_conflict(home: &AscHome, id: &str, worktree: &str, repo: i64, detail: &str) -> Result<()> {
+pub fn record_conflict(
+    home: &AscHome,
+    id: &str,
+    worktree: &str,
+    repo: i64,
+    detail: &str,
+) -> Result<()> {
     let mut s = load(home, id).unwrap_or_else(|| State::fresh(worktree, repo));
     s.paused = true;
     s.reason = Some(Reason::Conflict);
@@ -350,7 +356,10 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                     .map(|(i, s, cur)| json_of(s, mode, i, *cur))
                     .collect();
                 let doc = serde_json::json!({ "worktrees": list });
-                println!("{}", serde_json::to_string(&doc).map_err(|e| io_err("encode", e))?);
+                println!(
+                    "{}",
+                    serde_json::to_string(&doc).map_err(|e| io_err("encode", e))?
+                );
             } else {
                 for (_, s, _) in &rows {
                     println!("{}", describe(s, mode));

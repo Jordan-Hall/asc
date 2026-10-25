@@ -17,8 +17,6 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use support::{Sandbox, text};
 
-
-
 fn git_env(c: &mut Command) -> &mut Command {
     c.env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
@@ -378,10 +376,7 @@ fn create_modify_restack_undo_round_trip() {
     .unwrap();
     let mut s = Server::start(&r, &[], false);
     // The explicit op: an older one is stale, the newest is accepted.
-    assert_eq!(
-        s.error_code("undo", json!({ "op": create_op })),
-        "STALE_OP"
-    );
+    assert_eq!(s.error_code("undo", json!({ "op": create_op })), "STALE_OP");
     let latest = {
         let log: Value = serde_json::from_str(&r.asc(&["op", "log", "--json", "-n", "1"])).unwrap();
         log["ops"][0]["op"].as_str().unwrap().to_owned()
@@ -452,8 +447,10 @@ fn a_cancelled_child_leaves_no_index_lock() {
     s.send(&json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call",
         "params": { "name": "create", "arguments": { "message": "slow", "all": true } } }));
     wait_for("the hook's lock", 60, || lock.exists());
-    s.send(&json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
-        "params": { "requestId": id } }));
+    s.send(
+        &json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": { "requestId": id } }),
+    );
     wait_for("lock recovery", 60, || !lock.exists());
     // The server is still serving.
     let st = s.ok("status", json!({}));
