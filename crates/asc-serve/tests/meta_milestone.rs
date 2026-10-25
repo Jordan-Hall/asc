@@ -382,7 +382,15 @@ async fn start() -> Server_ {
     assert_eq!(mirror.sync(&name).await.unwrap().commits, 0);
 
     let auth = StaticTokens::new().with_token(TOKEN, "reader", Access::Read);
-    let routes = build_routes(&ext, Arc::new(auth), ServerInfo::default());
+    let routes = build_routes(
+        &ext,
+        Arc::new(auth),
+        // What `asc serve` lists for the projects service (the handler adds the JSON profile).
+        ServerInfo {
+            features: vec![projects::feature()],
+            ..ServerInfo::default()
+        },
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let incoming = futures::stream::unfold(listener, |l| async move {
@@ -1038,7 +1046,7 @@ async fn metadata_rpcs_equal_the_git_cli_on_500_random_pairs() {
         .unwrap()
         .into_inner();
     assert!(!v.server_version.is_empty());
-    assert!(v.features.iter().any(|f| f == "projects.v1") || v.features.is_empty());
+    assert!(v.features.iter().any(|f| f == "projects.v1"), "{:?}", v.features);
 
     // ---- ListRefs equals for-each-ref
     // `ListRefs` speaks asc ids; the git map turns them into the oids the CLI prints.

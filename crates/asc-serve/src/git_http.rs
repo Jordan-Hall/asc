@@ -1284,16 +1284,18 @@ impl GitHttp {
                 ));
             }
         }
-        // A view that cannot be opened is treated as holding unshared objects; the request then
-        // fails in `ready_view` with the proper answer.
-        let unshared = self.views.view(&entry).map_or(true, |v| v.holds_unshared());
-        protocol = served_protocol_for(service, entry.mode, protocol, unshared);
+        // Whether the view holds unshared objects is asked only where a v2 answer could expose
+        // them (an upload-pack advertisement or request), and not for the bare `0000` probe, which
+        // opens no view. Until then the version is the one the repo mode allows.
+        protocol = served_protocol(service, entry.mode, protocol);
         audit.version = version_label(protocol.as_ref());
 
         match endpoint {
             Endpoint::InfoRefs => {
                 // A push advertisement: the same disk and view gates as the push itself would
                 // meet are not applied here (discovery is cheap); the view must be ready.
+                protocol = self.unshared_aware(&entry, service, protocol);
+                audit.version = version_label(protocol.as_ref());
                 let view = self.ready_view(&entry).await?;
                 let prefix = advertisement_prefix(service, protocol.as_ref());
                 let response = self
@@ -1358,6 +1360,8 @@ impl GitHttp {
                     }
                     UploadBody::Request(b) => b,
                 };
+                protocol = self.unshared_aware(&entry, service, protocol);
+                audit.version = version_label(protocol.as_ref());
                 let view = self.ready_view(&entry).await?;
                 let response = self
                     .stream_pack(
@@ -1381,6 +1385,25 @@ impl GitHttp {
                     .await
             }
         }
+    }
+
+    /// `protocol` after the unshared-objects rule ([`served_protocol_for`]). A view that cannot be
+    /// opened is treated as holding unshared objects; the request then fails in `ready_view` with
+    /// the proper answer. Only a v2 request needs the view, so any other opens none here.
+    fn unshared_aware(
+        &self,
+        entry: &Arc<RepoEntry>,
+        service: Service,
+        protocol: Option<GitProtocol>,
+    ) -> Option<GitProtocol> {
+        if !protocol
+            .as_ref()
+            .is_some_and(|p| p.version() == ProtocolVersion::V2)
+        {
+            return protocol;
+        }
+        let unshared = self.views.view(entry).map_or(true, |v| v.holds_unshared());
+        served_protocol_for(service, entry.mode, protocol, unshared)
     }
 
     /// `POST git-receive-pack`: the probe, the push slot and disk gates, then the push streamed to

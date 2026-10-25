@@ -368,6 +368,8 @@ mod forgejo {
     }
 
     fn client(url: &str, internal: bool) -> Arc<ForgejoClient> {
+        // Tests that never call `start()` (a dead loopback port) still need the http opt-in.
+        asc_core::transport_policy::set_config_allow_loopback_http(true);
         let token = internal.then(|| InternalToken::new(INTERNAL).unwrap());
         Arc::new(ForgejoClient::new(url, token).unwrap())
     }
