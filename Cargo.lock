@@ -693,6 +693,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "asc-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "asc-ci"
 version = "0.1.0"
 dependencies = [

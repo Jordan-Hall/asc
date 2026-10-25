@@ -1,0 +1,24 @@
+name: bench
+on:
+  pull_request:
+    paths: ["bench/**", "crates/**", "Cargo.toml", "Cargo.lock"]
+  schedule:
+    - cron: "0 3 * * *"
+jobs:
+  gate:
+    runs-on: linux
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build -p asc --release --locked
+      - name: quick suite (PR)
+        if: github.event_name == 'pull_request'
+        run: ASC_BIN="$PWD/target/release/asc" cargo run -p asc-bench --release --locked -- --suite quick --json bench-results.json
+      - name: full suite (nightly)
+        if: github.event_name == 'schedule'
+        run: ASC_BIN="$PWD/target/release/asc" cargo run -p asc-bench --release --locked -- --suite full --json bench-results.json
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: bench-results
+          path: bench-results.json
