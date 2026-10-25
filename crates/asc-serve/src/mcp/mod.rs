@@ -16,6 +16,7 @@ pub mod audit;
 pub mod auth;
 pub mod backend;
 pub mod limits;
+pub mod prm;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -260,7 +261,9 @@ pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router 
 /// never serves `/mcp`, so it answers 404.
 // TODO(M12b): build `ServeBackend` and the `Handler`, then `ext.http.register(router(..))`.
 pub fn register(ext: &Extensions, cfg: &ServeConfig) {
-    let _ = ext;
+    // The metadata document is always served (SPEC 22.7.3), enabled or not.
+    // TODO(M33): pass the `[mcp.oauth]` issuers; none is configured today.
+    prm::register(ext, cfg, Vec::new());
     if cfg.role != Role::Primary || !cfg.mcp.enabled {
         return;
     }
@@ -386,7 +389,11 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
     if is_request {
         msg["id"] = server_id.clone();
     }
-    let caller = Caller { principal: Some(who.id), server_write: who.write };
+    // A `tools/list` may show the write tools when `prm::scope_layer` saw write on the named repo;
+    // every call is authorised again, so this never grants more than the listing.
+    let listing_write = parts.extensions.get::<prm::ListWrite>().is_some()
+        && msg.get("method").and_then(Value::as_str) == Some("tools/list");
+    let caller = Caller { principal: Some(who.id), server_write: who.write || listing_write };
     let sse = is_request && wants_sse(&parts.headers, &msg);
     let (tx, rx) = mpsc::channel::<Value>(32);
     let done = Arc::new(AtomicBool::new(false));
