@@ -495,6 +495,16 @@ registry! {
 
 // ------------------------------------------------------------------------------ service
 
+/// The features `Version` reports: the server's own, plus the JSON profile every server speaks
+/// (`json.profile.v1`, SPEC 22.4; PLAN M12b), once and last.
+fn advertised_features(own: &[String]) -> Vec<String> {
+    let mut features: Vec<String> = own.to_vec();
+    if !features.iter().any(|f| f == crate::json::PROFILE) {
+        features.push(crate::json::PROFILE.to_owned());
+    }
+    features
+}
+
 /// The `asc.v1.Repo` service.
 pub struct RepoService {
     handlers: Arc<RepoHandlers>,
@@ -702,7 +712,7 @@ repo_impl! {
                 .info
                 .min_client
                 .map_or_else(String::new, |v| v.to_string()),
-            features: self.info.features.clone(),
+            features: advertised_features(&self.info.features),
         }))
     }
 

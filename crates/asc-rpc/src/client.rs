@@ -2051,7 +2051,7 @@ mod tests {
         let v = rpc.server_version().await.unwrap();
         assert_eq!(v.server_version, "9.9.9");
         assert_eq!(v.min_client, "99.0.0");
-        assert_eq!(v.features, ["x.v1"]);
+        assert_eq!(v.features, ["x.v1", "json.profile.v1"]);
         let e = rpc
             .has_objects(&[ObjKey::File(FileId::of(b"x"))])
             .await
