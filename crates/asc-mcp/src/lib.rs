@@ -7,14 +7,19 @@
 //! - [`cursor`]: HMAC-sealed cursors and the key ring.
 //! - [`handler`], [`backend`], [`config`], [`errors`]: the request handler over a backend trait, the
 //!   `asc.mcp.*` trust rules and the error mapping (M05).
+//! - [`resources`], [`prompts`]: the `asc://` resources, templates, completion and the five prompts (M07).
 //! - [`catalogue`]: the tool table built from `tools.toml` by `build.rs`, gated by [`catalogue::Context`].
 
 pub mod backend;
 pub mod catalogue;
 pub mod config;
+pub mod confirm;
 pub mod cursor;
 pub mod errors;
 pub mod handler;
+pub mod prompts;
+pub mod resources;
+pub mod rpc_backend;
 pub mod schema;
 pub mod shape;
 
