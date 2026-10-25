@@ -16,7 +16,8 @@
 //! - Tools that need an asc server (`Repo`, `Changes`, `Projects`) answer `NOT_AVAILABLE`.
 //!   TODO(U77): route them through `RpcBackend::with_server` once the resolved credential of the
 //!   remote is exposed; today `ServerRemote` keeps it private.
-//! - Writes are M10; none is served here.
+//! - Write tools (M10): `stage` goes to the workspace like a read; the verb tools run as
+//!   [child verbs](super::write). A tool above the configured write level is refused here too.
 //!
 //! Every `path` and `paths` argument passes the [path gate](super::pathgate) first, and a
 //! `worktree` argument is accepted only if it is one of this repository's worktrees.
@@ -29,7 +30,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
-use asc_mcp::catalogue::{self, Needs, ToolDef};
+use asc_mcp::catalogue::{self, Needs, ToolDef, Toolset, WriteLevel};
 use asc_mcp::cursor::Position;
 use asc_mcp::errors::{ToolError, code};
 use asc_mcp::rpc_backend::RpcBackend;
@@ -102,6 +103,9 @@ struct Inner {
     sources: IgnoreSources,
     route: Route,
     pool: DescriptorPool,
+    /// The write level the user granted, and whether this workspace uploads drafts at once.
+    write: WriteLevel,
+    uploads: bool,
 }
 
 /// The `McpBackend` for a workspace on this machine.
@@ -140,8 +144,49 @@ impl LocalBackend {
                 sources: crate::cli::check_ignore::ignore_sources(ctx, ws),
                 route,
                 pool,
+                write: WriteLevel::None,
+                uploads: false,
             }),
         })
+    }
+
+    /// Sets the write level and the upload state the write tools are checked against. Call it
+    /// before the backend is cloned.
+    #[must_use]
+    pub fn with_write(mut self, write: WriteLevel, uploads: bool) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.write = write;
+            inner.uploads = uploads;
+        }
+        self
+    }
+}
+
+impl LocalBackend {
+    /// The launch workspace's id, the only `{ws}` an `asc://ws/…` subscription may name (M11).
+    #[must_use]
+    pub fn ws_id(&self) -> &str {
+        &self.inner.ws_id
+    }
+
+    /// A path gate for the launch worktree (M11: subscribed file URIs pass it).
+    #[must_use]
+    pub fn gate(&self) -> Gate {
+        Gate::new(self.inner.root.clone(), self.inner.sources.clone())
+    }
+
+    /// The daemon channel with the launch workspace mounted, for `Workspace.Watch` (M11).
+    ///
+    /// # Errors
+    /// `NOT_AVAILABLE` under `ASC_NO_DAEMON` (no daemon, so no event stream) or when the daemon
+    /// cannot be started.
+    pub async fn watch_channel(&self) -> Result<Channel, ToolError> {
+        match &self.inner.route {
+            Route::Daemon(d) => d.mount(&self.inner.ws_id).await,
+            Route::InProcess(_) => Err(ToolError::not_available(
+                "subscriptions need the daemon's Watch stream; ASC_NO_DAEMON is set",
+            )),
+        }
     }
 }
 
@@ -463,6 +508,33 @@ fn signature(name: &str, email: &str, date: &str) -> Value {
 }
 
 impl Inner {
+    /// A write tool (M10). The handler lists and confirms; this checks the level again.
+    async fn write_tool(
+        &self,
+        def: &ToolDef,
+        tool: &str,
+        args: &Value,
+        ctx: &CallContext,
+    ) -> Result<Reply, ToolError> {
+        if !super::write::permitted(def, self.write, self.uploads) {
+            return Err(ToolError::not_available(format!(
+                "{tool} is not enabled: asc.mcp.write is set in user config"
+            )));
+        }
+        let target = self.target(args).await?;
+        if tool == "stage" {
+            check_paths(&target.gate, tool, args)?;
+            for p in super::write::stage_paths(args)? {
+                target
+                    .gate
+                    .check(&p, Disk::Revision, false)
+                    .map_err(|r| refusal(&r))?;
+            }
+            return self.workspace(def, tool, args, ctx, &target).await;
+        }
+        super::write::call(target.gate.root(), tool, args, ctx).await
+    }
+
     async fn show(&self, t: &Target, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let rev = rev_arg(args, "rev", "HEAD")?;
         let max_changes = usize::try_from(uint(args, "max_changes", 300, 300)).unwrap_or(300);
@@ -1074,6 +1146,7 @@ impl Inner {
             "Log" => many(out, plugin_api::log(&state, to_wire(&msg)?).await),
             "Blame" => many(out, plugin_api::blame(&state, to_wire(&msg)?).await),
             "Affected" => one(out, plugin_api::affected(&state, to_wire(&msg)?).await),
+            "Stage" => one(out, plugin_api::stage(&state, to_wire(&msg)?).await),
             "Stacks" => one(out, plugin_api_stack::stacks(&state, to_wire(&msg)?).await),
             "Conflicts" => one(
                 out,
@@ -1184,7 +1257,9 @@ impl McpBackend for LocalBackend {
         let inner = &*self.inner;
         let def = catalogue::find(tool, Surface::Stdio)
             .ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
-        // TODO(M10): the write tools run as child verbs.
+        if def.toolset == Toolset::Write {
+            return inner.write_tool(def, tool, args, ctx).await;
+        }
         if !def.ann.read_only || def.needs != Needs::None {
             return Err(ToolError::not_available(format!(
                 "{tool} is not served by this build"
