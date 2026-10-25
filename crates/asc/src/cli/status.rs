@@ -652,6 +652,7 @@ async fn gather(ctx: &Ctx, ws: &WsCtx, o: &Opts) -> Result<Report> {
         root: &root,
         index_path: &index_path,
         symlinks,
+        ignore_case: ctx.ignore_case(),
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &sources,

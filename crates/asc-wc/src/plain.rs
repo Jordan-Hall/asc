@@ -111,6 +111,9 @@ pub struct Wc<'a, O: Objects, R: Refs> {
     pub index_path: &'a Path,
     /// `core.symlinks`: whether to create real symlinks (else a text file holding the target).
     pub symlinks: bool,
+    /// `core.ignorecase`: tracked names also match work tree names of another case, as on a case
+    /// insensitive file system.
+    pub ignore_case: bool,
     pub sparse: Option<&'a Sparse>,
     pub redirections: &'a Redirections,
     pub ignore: &'a IgnoreSources,
@@ -650,6 +653,7 @@ pub(crate) mod testutil {
                 root: &self.root,
                 index_path: &self.index,
                 symlinks: self.symlinks,
+                ignore_case: false,
                 sparse: self.sparse.as_ref(),
                 redirections: &self.redirections,
                 ignore: &self.ignore,

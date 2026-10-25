@@ -521,8 +521,11 @@ fn unstaged<O: Objects, R: Refs>(
 
 struct Finder<'a> {
     redirections: &'a crate::redirect::Redirections,
+    /// The tracked names; lower-cased, and looked up lower-cased, when `fold` is set.
     tracked_files: &'a HashSet<Vec<u8>>,
     tracked_dirs: &'a HashSet<Vec<u8>>,
+    /// `core.ignorecase`: a work tree name matches a tracked name of another case.
+    fold: bool,
     ignore: IgnoreStack,
     untracked: Vec<Untracked>,
     shadowed: Vec<String>,
@@ -539,11 +542,31 @@ fn name_bytes(n: &std::ffi::OsStr) -> Vec<u8> {
     n.to_string_lossy().into_owned().into_bytes()
 }
 
+/// `name` as a lookup key among the tracked names: lower-cased under `core.ignorecase`.
+fn fold_key(name: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(name).to_lowercase().into_bytes()
+}
+
 fn untracked<O: Objects, R: Refs>(wc: &Wc<'_, O, R>, w: &mut Walk) -> Result<()> {
+    let folded = |set: &HashSet<Vec<u8>>| set.iter().map(|k| fold_key(k)).collect();
+    let (files, dirs): (HashSet<Vec<u8>>, HashSet<Vec<u8>>) = if wc.ignore_case {
+        (folded(&w.tracked_files), folded(&w.tracked_dirs))
+    } else {
+        (HashSet::new(), HashSet::new())
+    };
     let mut f = Finder {
         redirections: wc.redirections,
-        tracked_files: &w.tracked_files,
-        tracked_dirs: &w.tracked_dirs,
+        tracked_files: if wc.ignore_case {
+            &files
+        } else {
+            &w.tracked_files
+        },
+        tracked_dirs: if wc.ignore_case {
+            &dirs
+        } else {
+            &w.tracked_dirs
+        },
+        fold: wc.ignore_case,
         ignore: IgnoreStack::new(wc.root, wc.ignore),
         untracked: Vec::new(),
         shadowed: Vec::new(),
@@ -590,7 +613,11 @@ impl Finder<'_> {
             if self.ignore.is_ignored(&child_abs, is_dir) {
                 continue;
             }
-            let key = child.as_bytes();
+            let key = &if self.fold {
+                fold_key(child.as_bytes())
+            } else {
+                child.as_bytes().to_vec()
+            };
             if !is_dir {
                 if self.tracked_files.contains(key) {
                     continue;

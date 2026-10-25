@@ -247,7 +247,10 @@ async fn check(
     }
     let dst_abs =
         path_of(gate, dst).ok_or_else(|| fail("destination is beyond a symbolic link"))?;
-    if fs::symlink_metadata(&dst_abs).is_ok() && !dest.force {
+    // On a case-insensitive file system the destination of a case-only rename "exists" as the
+    // source itself.
+    let same_name = ctx.ignore_case() && src.eq_ignore_ascii_case(dst);
+    if fs::symlink_metadata(&dst_abs).is_ok() && !same_name && !dest.force {
         return Err(fail("destination exists"));
     }
     if dest.must_be_dir {

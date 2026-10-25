@@ -294,6 +294,24 @@ pub async fn plan(
         walker.dir(None, root)?;
     }
 
+    // Under `core.ignorecase` a work tree name that is a tracked name apart from case is that
+    // tracked path, not a new one: git leaves such a name alone (the tracked pass above already
+    // planned the tracked path if its content changed).
+    if ctx.ignore_case() {
+        let mut kept = Vec::with_capacity(plan.ops.len());
+        for op in std::mem::take(&mut plan.ops) {
+            let new_name = matches!(&op, Op::Add { path, prev: None, .. } if !tracked.contains(path.as_bytes()));
+            if new_name
+                && let Op::Add { path, .. } = &op
+                && target.case_alias(ws, path).await?.is_some()
+            {
+                continue;
+            }
+            kept.push(op);
+        }
+        plan.ops = kept;
+    }
+
     for (item, hit) in spec.includes().iter().zip(&seen) {
         let literal = item.literal();
         let exists = literal.is_some_and(|p| {

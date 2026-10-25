@@ -235,6 +235,7 @@ async fn needing_update(ctx: &Ctx, ws: &WsCtx) -> Result<Vec<String>> {
         root: &root,
         index_path: &index_path,
         symlinks: ctx.config.bool("core.symlinks").unwrap_or(!cfg!(windows)),
+        ignore_case: ctx.ignore_case(),
         sparse: sparse.as_ref(),
         redirections: &redirections,
         ignore: &sources,
