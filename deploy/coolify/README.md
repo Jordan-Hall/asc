@@ -207,6 +207,29 @@ integrity sample of stored objects). Its probe puts a `probe/<uuid>` key twice w
 `AlreadyExists`, and SPEC expects Garage v2 to fail it. That matters only when a bucket holds refs
 (`BucketRefs`). Here refs live in Postgres and the bucket holds objects, but record the result.
 
+## Logs
+
+`asc serve` writes its logs to stderr, so Coolify's log view and `docker logs` show them at once.
+
+- `ASC_LOG` (compose passes it as `RUST_LOG`) is the level filter; the default is `info`. Use
+  `info,asc_serve=debug` to see more of the server, or `info,asc_serve::access=off` to drop the
+  access log.
+- `ASC_LOG_FORMAT=json` (or `[log] format = "json"` in `asc-serve.toml`) writes one JSON object per
+  line. The default is human-readable text. The variable wins over the config file.
+- At start the server logs `asc serve starting` (version, role, listen addresses, `public_url`,
+  store scheme and bucket, database kind, auth provider) and, once every listener is up,
+  `asc serve ready` (git, ssh with host key fingerprints, mcp, web, h3, migration state). Neither
+  line holds a credential, DSN, query string or key.
+- Each HTTP or RPC request gets one line on target `asc_serve::access`: method, path (no query),
+  status, `latency_ms`, `principal` (when the request authenticated), `request_id` and, for gRPC,
+  `grpc_status`. The same id goes back in the `x-request-id` response header; a caller may send its
+  own (letters, digits, `-`, `_`, `.`, 64 characters at most). `/healthz`, `/readyz` and `/metrics`
+  log at `debug`. 4xx responses and failed RPCs log at `warn`, 5xx at `error`. gRPC streaming
+  calls report the status of the response headers.
+- Authorization headers, tokens and request bodies are never logged. Refused credentials show as
+  a count (`authorization refused ... refused_total=N`, one `warn` per 100) and the 401 or 403 in
+  the access log.
+
 ## 7. Rollback
 
 - **Bad image:** set `ASC_IMAGE_TAG` back to the previous sha12 (in the Coolify UI, or edit the env
