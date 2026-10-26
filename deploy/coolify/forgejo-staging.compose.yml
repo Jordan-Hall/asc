@@ -11,7 +11,10 @@ services:
       - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
       - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
       - FORGEJO__server__HTTP_PORT=3000
-      - FORGEJO__DEFAULT__APP_NAME=ASC Hub
+      # Root-level keys need four underscores (an empty section). The first start wrote the image
+      # default into the data volume's app.ini, so these must be set explicitly.
+      - FORGEJO____APP_NAME=ASC Hub
+      - FORGEJO____APP_SLOGAN=Source hosting for asc
       - FORGEJO__server__DISABLE_SSH=true
       - FORGEJO__ui__DEFAULT_THEME=asc-auto
       - FORGEJO__ui__THEMES=asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
