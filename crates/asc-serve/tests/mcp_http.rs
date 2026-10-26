@@ -10,6 +10,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode, header};
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
+use asc_mcp::config::{McpConfig, parse_toolsets};
 use asc_mcp::cursor::KeyRing;
 use asc_mcp::errors::ToolError;
 use asc_mcp::handler::{Handler, HandlerConfig};
@@ -455,4 +456,38 @@ async fn cache_role_answers_404() {
     )
     .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+/// I21: the `search` tool is listed over HTTP only while the server advertises `search.v1`.
+#[tokio::test]
+async fn search_is_listed_only_with_the_search_v1_feature() {
+    for (features, listed) in [(&[][..], false), (&["search.v1"][..], true)] {
+        let mut hc = HandlerConfig::new(Surface::Http);
+        hc.config = McpConfig {
+            toolsets: parse_toolsets("core,search"),
+            ..McpConfig::default()
+        };
+        hc.features = features.iter().map(|f| (*f).to_owned()).collect();
+        let handler = Handler::new(Stub::default(), hc, KeyRing::random().unwrap());
+        let policy = HttpPolicy::new(
+            "127.0.0.1:8443".parse().unwrap(),
+            Some("https://asc.example.org"),
+            &[],
+            &[],
+        );
+        let app = mcp::router(handler, policy);
+        let b = rpc(1, "tools/list", json!({}));
+        let r = send(&app, post(&b).body(Body::from(b.to_string())).unwrap()).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = body_json(r).await;
+        let names: Vec<&str> = v["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert_eq!(names.contains(&"search"), listed, "{features:?}: {names:?}");
+        // Whatever the features, the default read tools stay.
+        assert!(names.contains(&"log"), "{names:?}");
+    }
 }

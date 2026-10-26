@@ -453,6 +453,7 @@ pub async fn serve(
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
     features.extend(review::features());
+    features.extend(codeintel::features::features(&ext.codeintel));
     #[cfg(feature = "git-compat")]
     if git_live {
         features.push(git_http::FEATURE.to_owned());
