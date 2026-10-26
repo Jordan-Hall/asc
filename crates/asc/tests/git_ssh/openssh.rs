@@ -116,11 +116,13 @@ fn every_key_type_the_agent_and_a_config_alias_log_in() {
         }
     }
 
-    // A `Host` alias carrying Port and IdentityFile; the command line adds neither.
+    // A `Host` alias carrying Port and IdentityFile; the command line adds neither. OpenSSH on
+    // Unix finds the user config through the passwd entry, not `HOME`, so `-F` names the file.
     let ssh_dir = git.home.path().join(".ssh");
     std::fs::create_dir_all(&ssh_dir).unwrap();
+    let config = ssh_dir.join("config");
     std::fs::write(
-        ssh_dir.join("config"),
+        &config,
         format!(
             "Host ascalias\n  HostName 127.0.0.1\n  Port {}\n  User git\n  IdentityFile {}\n  IdentitiesOnly yes\n",
             rig.stack.ssh_port,
@@ -128,7 +130,7 @@ fn every_key_type_the_agent_and_a_config_alias_log_in() {
         ),
     )
     .unwrap();
-    let cmd = tools.command(None, None, &kh, &[]);
+    let cmd = tools.command(None, None, &kh, &[&format!("-F \"{}\"", fwd(&config))]);
     let c = git.work("alias");
     git.ssh_ok(&c, &cmd, &["clone", "-q", "git@ascalias:acme/web.git", "w"]);
     assert_eq!(git.head(&c.join("w")), sha);
