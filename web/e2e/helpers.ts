@@ -45,6 +45,10 @@ export async function axeViolations(page: Page): Promise<string[]> {
 
 /** The demo repository of the mock transport (src/api/fixtures.ts). */
 export const R = "/ui/asc/demo";
+/** The clock of the visual suite: a Monday afternoon, local time. */
+export const DEMO_NOW = new Date(2026, 9, 26, 14, 0, 0);
+/** The repositories the signed-in viewer of the visual suite has opened, newest first. */
+export const DEMO_RECENT = ["acme/payments", "acme/web-app", "acme/infra", "acme/design-system"];
 /** Routes captured by the visual suite; `signedIn` sets a session token before load. */
 export const VISUAL_ROUTES: { name: string; path: string; signedIn: boolean }[] = [
   { name: "landing", path: "/ui/", signedIn: false },

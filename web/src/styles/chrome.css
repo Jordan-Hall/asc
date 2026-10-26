@@ -15,6 +15,7 @@
   top: 0;
   z-index: 30;
   padding-top: env(safe-area-inset-top, 0px);
+  line-height: normal;
 }
 .hd-in {
   box-sizing: border-box;
@@ -374,7 +375,6 @@
 .nl-group {
   display: flex;
   flex-direction: column;
-  margin-bottom: 14px;
 }
 .nl-h {
   font-size: 12px;
@@ -393,15 +393,14 @@
   font-size: 14px;
   color: var(--c-334155);
   text-decoration: none;
-  min-height: 32px;
-  box-sizing: border-box;
 }
 .nl-group a:hover {
   background: var(--c-e7edf3);
   text-decoration: none;
   color: var(--c-0f172a);
 }
-.nl-group a[aria-current="page"] {
+.nl-group a[aria-current="page"],
+.nl-group a[data-active] {
   background: var(--c-e1ecf0);
   font-weight: 600;
   color: var(--c-0f172a);

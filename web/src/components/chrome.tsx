@@ -8,17 +8,16 @@ import {
   type RefObject,
   useContext,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { useHome } from "../api/home";
 import { useApp } from "../api/queries";
 import { useAgents } from "../lib/agents";
 import { useToken } from "../lib/auth";
 import { useMobile } from "../lib/media";
 import { openPalette } from "../lib/palette";
-import { useQueries } from "../lib/query";
 import { useRecent } from "../lib/recent";
 import { Link, useLocation, useNavigate, useParams, useRouteId } from "../lib/router";
 import { THEME_CHOICES, useTheme } from "../lib/theme";
@@ -26,20 +25,9 @@ import { useViewer } from "../lib/viewer";
 import { Icon, LogoMark } from "./icons";
 import { Menu, type MenuEntry } from "./menu";
 
-/** Number of changes whose turn is the viewer's, across the repositories this browser knows. */
+/** Number of things that need the viewer, across the repositories this browser knows. */
 export function useInboxTotal(enabled: boolean): number {
-  const { queries } = useApp();
-  const recent = useRecent();
-  const qs = useMemo(
-    () => (enabled ? recent.slice(0, 5).map((r) => queries.inboxCount(r)) : []),
-    [enabled, recent, queries],
-  );
-  const entries = useQueries(qs);
-  // Section 4 is "waiting on others": not the viewer's turn, so it does not count.
-  return entries.reduce(
-    (n, e) => n + (e.data ? e.data.total - (e.data.bySection.get(4) ?? 0) : 0),
-    0,
-  );
+  return useHome(enabled).needs.length;
 }
 
 interface Spec {
@@ -268,7 +256,7 @@ function SearchBox(props: {
       <label className="hd-sr" htmlFor="global-search">
         Search
       </label>
-      <Icon name="search" size={14} />
+      <span aria-hidden="true">⌕</span>
       <input
         id="global-search"
         ref={props.inputRef}
@@ -364,32 +352,37 @@ function MobileHeader(props: { onMenu: () => void }): ReactNode {
 
 const REPO_COLORS = ["#125469", "#7c3aed", "#047857", "#b45309", "#be185d", "#475569"];
 
-/** The colour square beside a repository name; stable per name. */
-export function repoColor(name: string): string {
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return REPO_COLORS[h % REPO_COLORS.length] ?? "#125469";
+/** The colour square beside a repository name: by place in the list, as in the boards. */
+export function repoColor(index: number): string {
+  return REPO_COLORS[index % REPO_COLORS.length] ?? "#125469";
 }
 
 /** The "Work", "Repositories" lists, used by the drawer and the dashboard sidebar. */
-export function NavLists(props: { onNavigate?: () => void }): ReactNode {
+export function NavLists(props: { onNavigate?: () => void; highlight?: string }): ReactNode {
   const recent = useRecent();
   const { on } = useAgents();
-  const total = useInboxTotal(true);
+  const home = useHome();
+  const total = home.needs.length;
   const { pathname } = useLocation();
   const cur = (p: string) => (pathname === p ? "page" : undefined);
   return (
     <>
       <div className="nl-group">
         <div className="nl-h">Work</div>
-        <Link to="/inbox" aria-current={cur("/inbox")} onClick={props.onNavigate}>
+        <Link
+          to="/inbox"
+          aria-current={cur("/inbox")}
+          data-active={props.highlight === "/inbox" ? "" : undefined}
+          onClick={props.onNavigate}
+        >
           Inbox <span className="nl-n">{total > 0 ? total : ""}</span>
         </Link>
         <Link to="/stacks" aria-current={cur("/stacks")} onClick={props.onNavigate}>
-          My stacks
+          My stacks <span className="nl-n">{home.stacks.length > 0 ? home.stacks.length : ""}</span>
         </Link>
         <Link to="/reviews" aria-current={cur("/reviews")} onClick={props.onNavigate}>
-          Review requests
+          Review requests{" "}
+          <span className="nl-n">{home.reviewRequests > 0 ? home.reviewRequests : ""}</span>
         </Link>
         {on ? (
           <Link to="/agents" aria-current={cur("/agents")} onClick={props.onNavigate}>
@@ -399,9 +392,9 @@ export function NavLists(props: { onNavigate?: () => void }): ReactNode {
       </div>
       <div className="nl-group">
         <div className="nl-h">Repositories</div>
-        {recent.slice(0, 4).map((r) => (
+        {recent.slice(0, 4).map((r, i) => (
           <Link key={r} to={`/${r}`} onClick={props.onNavigate}>
-            <span className="nl-sq" style={{ background: repoColor(r) }} />
+            <span className="nl-sq" style={{ background: repoColor(i) }} />
             {r}
           </Link>
         ))}

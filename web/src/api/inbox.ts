@@ -18,6 +18,8 @@ export interface InboxItemView {
   updated: number;
   openThreads: number;
   pinned: boolean;
+  /** Who asked for the review (NEEDS_REVIEW only). */
+  requestedBy: string;
 }
 
 export interface InboxView {
@@ -57,6 +59,7 @@ export async function listInbox(
       updated: Number(i.updated),
       openThreads: i.openThreads,
       pinned: i.pinned,
+      requestedBy: i.requestedBy,
     })),
   };
 }
