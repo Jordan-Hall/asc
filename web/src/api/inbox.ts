@@ -1,6 +1,11 @@
 // The caller's inbox over asc.v1.Inbox (the `inbox.v1` feature). Reads only.
-import { type BridgeTransport, callUnary, type CallParams, changeIdToString } from "@asc/asc-client";
-import { Inbox, InboxSection } from "@asc/asc-client/inbox";
+import {
+  type BridgeTransport,
+  callUnary,
+  type CallParams,
+  changeIdToString,
+} from "@asc/asc-client";
+import { Inbox, type InboxSection } from "@asc/asc-client/inbox";
 
 export type { InboxSection };
 

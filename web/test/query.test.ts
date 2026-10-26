@@ -88,6 +88,7 @@ describe("QueryCache", () => {
     const unsub = cache.subscribe("a", () => undefined);
     await tick();
     unsub();
+    await tick();
     expect(aborted).toBe(true);
     expect(cache.size).toBe(0);
   });

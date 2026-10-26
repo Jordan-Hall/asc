@@ -1,7 +1,7 @@
 // A small query cache: one in-flight run per key, stale-while-revalidate, streams that publish
 // partial data, and an LRU bound. Keys are strings built by `keyOf`; content-addressed reads pass
 // `staleMs: Infinity` and are never refetched (docs/WEB-UI.md section 4).
-import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
+import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
 
 export type Status = "pending" | "ready" | "error";
 
@@ -163,11 +163,15 @@ export class QueryCache {
     return () => {
       slot.subs.delete(cb);
       slot.retained -= 1;
-      if (slot.retained === 0 && slot.abortOnRelease && slot.controller) {
+      if (slot.retained > 0 || !slot.abortOnRelease) return;
+      // Deferred one microtask: React re-subscribes in the same commit (StrictMode, a changed
+      // callback), and aborting at once would drop the run it is about to subscribe to again.
+      queueMicrotask(() => {
+        if (slot.retained > 0 || !slot.controller) return;
         slot.controller.abort();
         slot.controller = undefined;
         if (this.slots.get(key) === slot) this.slots.delete(key);
-      }
+      });
     };
   }
 
@@ -241,8 +245,10 @@ export function useCache(): QueryCache {
 /** Subscribes to one key, starting the run on first use. */
 export function useQuery<T>(key: string, runner: Runner<T>, opts?: QueryOptions): Entry<T> {
   const cache = useCache();
+  // Stable per key: a new function each render makes React unsubscribe and resubscribe every time.
+  const subscribe = useCallback((cb: () => void) => cache.subscribe(key, cb), [cache, key]);
   const entry = useSyncExternalStore(
-    (cb) => cache.subscribe(key, cb),
+    subscribe,
     () => cache.ensure(key, runner, opts),
     () => cache.peek<T>(key),
   );

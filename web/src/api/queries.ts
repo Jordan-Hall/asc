@@ -38,6 +38,28 @@ export interface Queries {
   changes(repo: string): Query<ChangeListView>;
 }
 
+/**
+ * Runs `inner` once under a content-addressed key and mirrors its partial results to `outer`.
+ * A mutable query (a ref lookup) wraps one immutable read; if the mutable run is replaced while the
+ * read is still streaming (the page remounted, or a second tab of the same key), the new run joins
+ * the read in flight and still shows the first screenful instead of waiting for the end.
+ */
+export function mirror<T>(
+  cache: QueryCache,
+  key: string,
+  inner: Runner<T>,
+  outer: { signal: AbortSignal; emit(data: T): void },
+): Promise<T> {
+  const done = cache.fetch(key, inner, FOREVER);
+  const seen = cache.peek<T>(key).data;
+  if (seen !== undefined) outer.emit(seen);
+  const stop = cache.subscribe(key, () => {
+    const data = cache.peek<T>(key).data;
+    if (data !== undefined && !outer.signal.aborted) outer.emit(data);
+  });
+  return done.finally(stop);
+}
+
 export function createQueries(ctx: Ctx): Queries {
   const { transport: t, cache } = ctx;
 
@@ -62,21 +84,11 @@ export function createQueries(ctx: Ctx): Queries {
       run: async ({ signal, emit }) => {
         const id = await idOf(repo, rev, signal);
         // The listing of an id never changes: keep it for good.
-        return cache.fetch(
+        return mirror(
+          cache,
           keyOf("tree-at", repo, id, path),
-          ({ emit: inner, signal: s }) =>
-            readTree(
-              t,
-              repo,
-              id,
-              path,
-              (v) => {
-                inner(v);
-                emit(v);
-              },
-              { signal: s },
-            ),
-          FOREVER,
+          ({ emit: inner, signal: s }) => readTree(t, repo, id, path, inner, { signal: s }),
+          { signal, emit },
         );
       },
     }),
@@ -99,21 +111,11 @@ export function createQueries(ctx: Ctx): Queries {
       opts: { staleMs: REF_STALE_MS, abortOnRelease: true },
       run: async ({ signal, emit }) => {
         const id = await idOf(repo, rev, signal);
-        return cache.fetch(
+        return mirror(
+          cache,
           keyOf("file-at", repo, id, path),
-          ({ emit: inner, signal: s }) =>
-            readFile(
-              t,
-              repo,
-              id,
-              path,
-              (v) => {
-                inner(v);
-                emit(v);
-              },
-              { signal: s },
-            ),
-          FOREVER,
+          ({ emit: inner, signal: s }) => readFile(t, repo, id, path, inner, { signal: s }),
+          { signal, emit },
         );
       },
     }),

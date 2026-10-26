@@ -32,7 +32,13 @@ export default defineConfig({
     scriptLoading: "defer",
     tags: [
       // External, blocking, before first paint: sets the theme class. No inline script (CSP).
-      { tag: "script", attrs: { src: "theme-init.js" }, head: true, append: false },
+      {
+        tag: "script",
+        attrs: { src: `${BASE}/theme-init.js` },
+        head: true,
+        append: false,
+        publicPath: false,
+      },
     ],
   },
   output: {
@@ -44,7 +50,7 @@ export default defineConfig({
     inlineScripts: false,
     inlineStyles: false,
     distPath: {
-      root: "dist",
+      root: process.env.ASC_WEB_OUT ?? "dist",
       js: "static/js",
       css: "static/css",
       svg: "static/img",
