@@ -172,7 +172,7 @@ async fn forward_lines<R: AsyncRead + Unpin>(mut r: R, out: &Out, id: u32, cap: 
     }
 }
 
-async fn emit(out: &Out, id: u32, line: &mut Vec<u8>, sent: &mut usize, cap: usize) {
+async fn emit(out: &Out, id: u32, line: &mut [u8], sent: &mut usize, cap: usize) {
     if *sent >= cap {
         return;
     }

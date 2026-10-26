@@ -240,11 +240,13 @@ pub(crate) async fn target_hex(ws: &WsCtx, t: Option<RefTarget>) -> Option<Strin
     }
 }
 
+/// A `ref_log` row as stored: seq, name, old and new target bytes.
+type RawRefRow = (i64, String, Option<Vec<u8>>, Option<Vec<u8>>);
 type RefRow = (i64, String, Option<RefTarget>, Option<RefTarget>);
 
 /// The first `cap` `ref_log` movements of one op, oldest first, and whether more exist.
 async fn ref_rows_upto(ws: &WsCtx, op: &Op, cap: usize) -> Result<(Vec<RefRow>, bool)> {
-    let rows: Vec<(i64, String, Option<Vec<u8>>, Option<Vec<u8>>)> = sqlx::query_as(
+    let rows: Vec<RawRefRow> = sqlx::query_as(
         "SELECT seq, name, old, new FROM ref_log WHERE repo_id = ? AND op_id = ?          ORDER BY seq LIMIT ?",
     )
     .bind(ws.repo.key.0)
