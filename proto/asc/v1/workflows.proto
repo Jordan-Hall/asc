@@ -1,0 +1,241 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/agents.proto";
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Workflows (build-out feature "workflows"; docs/BUILDOUT.md): agent work that starts on an event and runs steps in order. A
+// definition is a file `.asc/workflows/<name>.toml` on trunk, so a change to a workflow is reviewed like code and the server
+// runs the version on the trunk tip, never the one in an update. The server keeps only whether a workflow is enabled and the
+// runs. A step is an agent task, a wait for approval by a person, or a wait for checks; a step cannot run commands. Every
+// agent step runs as an agent run (agents.proto) with its own token and budget, and the workflow budget caps their sum.
+// Advertised as Version.features "workflows.v1". ErrorDetail.code also carries WORKFLOW_INVALID (INVALID_ARGUMENT; `paths`
+// holds "<line>: <message>") and WORKFLOW_DISABLED (FAILED_PRECONDITION).
+service Workflows {
+  rpc ListDefinitions(ListWorkflowDefinitionsRequest) returns (ListWorkflowDefinitionsResponse);   // repo read
+  rpc GetDefinition(GetWorkflowDefinitionRequest) returns (GetWorkflowDefinitionResponse);        // repo read
+  rpc Validate(ValidateWorkflowRequest) returns (ValidateWorkflowResponse);       // repo read; no state is kept
+  rpc SetEnabled(SetWorkflowEnabledRequest) returns (SetWorkflowEnabledResponse); // maintainer; idempotent
+  rpc Trigger(TriggerWorkflowRequest) returns (TriggerWorkflowResponse);          // repo write; mutating, x-asc-op-id
+  rpc ListRuns(ListWorkflowRunsRequest) returns (ListWorkflowRunsResponse);       // repo read; paged
+  rpc GetRun(GetWorkflowRunRequest) returns (GetWorkflowRunResponse);             // repo read
+  rpc CancelRun(CancelWorkflowRunRequest) returns (CancelWorkflowRunResponse);    // run starter or maintainer; idempotent
+  rpc DecideApproval(DecideWorkflowApprovalRequest) returns (DecideWorkflowApprovalResponse);   // named approver; mutating, x-asc-op-id
+  rpc WatchRun(WatchWorkflowRunRequest) returns (stream WorkflowRunEvent);        // repo read; long-lived, resumable
+}
+
+enum WorkflowTriggerKind {
+  WORKFLOW_TRIGGER_KIND_UNSPECIFIED = 0;
+  WORKFLOW_TRIGGER_KIND_MANUAL = 1;
+  WORKFLOW_TRIGGER_KIND_CHANGE_OPENED = 2;
+  WORKFLOW_TRIGGER_KIND_CHANGE_UPDATED = 3;
+  WORKFLOW_TRIGGER_KIND_CHECK_FAILED = 4;
+  WORKFLOW_TRIGGER_KIND_COMMENT_MENTION = 5;   // a review comment that mentions `@agent-<name>`
+  WORKFLOW_TRIGGER_KIND_SCHEDULE = 6;          // `cron`, UTC, five fields, at most every 15 minutes
+}
+
+message WorkflowTrigger {
+  WorkflowTriggerKind kind = 1;
+  repeated string branches = 2;      // globs of the target branch
+  repeated string paths = 3;         // globs; the trigger fires when the event touches one
+  string cron = 4;
+  string agent = 5;                  // COMMENT_MENTION: the agent name the mention must carry
+}
+
+enum WorkflowStepKind {
+  WORKFLOW_STEP_KIND_UNSPECIFIED = 0;
+  WORKFLOW_STEP_KIND_AGENT = 1;       // an agent run with `prompt`
+  WORKFLOW_STEP_KIND_APPROVAL = 2;    // waits for one of `approvers`
+  WORKFLOW_STEP_KIND_CHECKS = 3;      // waits for the named checks on the newest change of the run
+}
+
+message WorkflowStep {
+  string id = 1;                     // [a-z0-9_-], unique within the workflow
+  WorkflowStepKind kind = 2;
+  repeated string needs = 3;         // step ids that must succeed first
+  string agent = 4;                  // AGENT
+  string prompt = 5;                 // AGENT; may hold {{input.<name>}}, {{change}} and {{event.<field>}}; at most 16 KiB
+  repeated string paths = 6;         // AGENT: write scope, narrowed by the policy
+  AgentBudgetLimits limits = 7;      // AGENT
+  repeated string approvers = 8;     // APPROVAL: policy subjects
+  repeated string checks = 9;        // CHECKS
+  uint32 timeout_seconds = 10;       // 0 means 1 hour for AGENT and 7 days for APPROVAL
+  bool continue_on_failure = 11;
+}
+
+message WorkflowInput {
+  string name = 1;
+  string description = 2;
+  bool required = 3;
+  string default_value = 4;
+}
+
+message WorkflowDefinition {
+  string name = 1;                   // the file stem
+  string path = 2;
+  bytes source = 3 [(asc.v1.json) = JSON_KIND_HEX];   // the trunk changeset it was read from
+  string description = 4;
+  repeated WorkflowTrigger triggers = 5;
+  repeated WorkflowInput inputs = 6;
+  repeated WorkflowStep steps = 7;
+  AgentBudgetLimits limits = 8;      // the sum over all steps
+  uint32 max_parallel_runs = 9;      // 0 means 1
+  bool enabled = 10;                 // server state, not in the file
+  bool valid = 11;
+  string error = 12;                 // when not valid
+}
+
+message ListWorkflowDefinitionsRequest {
+  RepoRef repo = 1;
+}
+message ListWorkflowDefinitionsResponse {
+  repeated WorkflowDefinition definitions = 1;
+}
+
+message GetWorkflowDefinitionRequest {
+  RepoRef repo = 1;
+  string name = 2;
+}
+message GetWorkflowDefinitionResponse {
+  WorkflowDefinition definition = 1;
+  bytes text = 2 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+
+message WorkflowDiagnostic {
+  string code = 1;
+  string message = 2;
+  uint32 line = 3;
+  uint32 column = 4;
+}
+message ValidateWorkflowRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  bytes text = 3 [(asc.v1.json) = JSON_KIND_TEXT];   // at most 64 KiB
+}
+message ValidateWorkflowResponse {
+  bool valid = 1;
+  repeated WorkflowDiagnostic diagnostics = 2;
+  WorkflowDefinition definition = 3;
+}
+
+message SetWorkflowEnabledRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  bool enabled = 3;
+}
+message SetWorkflowEnabledResponse {
+  WorkflowDefinition definition = 1;
+}
+
+enum WorkflowRunState {
+  WORKFLOW_RUN_STATE_UNSPECIFIED = 0;   // in a request: any state
+  WORKFLOW_RUN_STATE_QUEUED = 1;
+  WORKFLOW_RUN_STATE_RUNNING = 2;
+  WORKFLOW_RUN_STATE_WAITING_APPROVAL = 3;
+  WORKFLOW_RUN_STATE_SUCCEEDED = 4;
+  WORKFLOW_RUN_STATE_FAILED = 5;
+  WORKFLOW_RUN_STATE_CANCELLED = 6;
+}
+enum WorkflowStepState {
+  WORKFLOW_STEP_STATE_UNSPECIFIED = 0;
+  WORKFLOW_STEP_STATE_PENDING = 1;
+  WORKFLOW_STEP_STATE_RUNNING = 2;
+  WORKFLOW_STEP_STATE_WAITING = 3;
+  WORKFLOW_STEP_STATE_SUCCEEDED = 4;
+  WORKFLOW_STEP_STATE_FAILED = 5;
+  WORKFLOW_STEP_STATE_SKIPPED = 6;
+  WORKFLOW_STEP_STATE_CANCELLED = 7;
+}
+message WorkflowStepRun {
+  string id = 1;
+  WorkflowStepState state = 2;
+  uint64 agent_run_id = 3;           // AGENT
+  int64 started = 4;
+  int64 finished = 5;
+  string decided_by = 6;             // APPROVAL
+  string comment = 7;
+  string error = 8;                  // sanitised
+}
+message WorkflowRun {
+  uint64 id = 1;
+  string repo = 2;
+  string workflow = 3;
+  bytes source = 4 [(asc.v1.json) = JSON_KIND_HEX];   // the definition version that runs
+  WorkflowRunState state = 5;
+  WorkflowTriggerKind trigger = 6;
+  string started_by = 7;
+  bytes change = 8 [(asc.v1.json) = JSON_KIND_CHANGE];   // the change the event was about, if any
+  map<string, string> inputs = 9;
+  repeated WorkflowStepRun steps = 10;
+  AgentBudgetUsage usage = 11;
+  int64 created = 12;
+  int64 finished = 13;
+  string error = 14;
+}
+
+// `inputs` are checked against the definition: unknown names and a missing required one are refused; each value is at
+// most 4 KiB. `change` is an optional context for the prompts.
+message TriggerWorkflowRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  map<string, string> inputs = 3;
+  bytes change = 4 [(asc.v1.json) = JSON_KIND_CHANGE];
+}
+message TriggerWorkflowResponse {
+  WorkflowRun run = 1;
+}
+
+message ListWorkflowRunsRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  repeated WorkflowRunState states = 3;
+  uint32 limit = 4;                  // 0 means 30, at most 100
+  string page_token = 5;
+}
+message ListWorkflowRunsResponse {
+  repeated WorkflowRun runs = 1;
+  string next_page_token = 2;
+}
+
+message GetWorkflowRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message GetWorkflowRunResponse {
+  WorkflowRun run = 1;
+}
+
+message CancelWorkflowRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  string reason = 3;
+}
+message CancelWorkflowRunResponse {
+  WorkflowRun run = 1;
+}
+
+// Only a person admitted by the step's `approvers` decides; an agent never does, and the person who started the run does
+// not approve their own run unless the step names them.
+message DecideWorkflowApprovalRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  string step = 3;
+  bool approve = 4;
+  string comment = 5;                // at most 1,024 bytes
+}
+message DecideWorkflowApprovalResponse {
+  WorkflowRun run = 1;
+}
+
+message WatchWorkflowRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  uint64 after_seq = 3;
+}
+message WorkflowRunEvent {
+  uint64 seq = 1;
+  int64 time_ms = 2;
+  WorkflowRun run = 3;               // the run as of this event
+  string step = 4;                   // the step that changed, if any
+}

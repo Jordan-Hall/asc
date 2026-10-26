@@ -1,0 +1,107 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/codeintel.proto";
+import "asc/v1/common.proto";
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Cross-repository search and the symbol panel (build-out feature "cross-search"; docs/BUILDOUT.md). The server searches only
+// repositories the caller may read, decided for each repository on every call; a repository the caller cannot read is not
+// reported as skipped or counted, so a search cannot reveal that it exists. Matching text is untrusted file content. The hub's
+// JSON search API is these calls in the asc JSON profile (SPEC 22.4.2). Advertised as Version.features "cross-search.v1".
+// ErrorDetail.code also carries SEARCH_TOO_BROAD (INVALID_ARGUMENT: the pattern is shorter than 3 bytes or matches everything).
+service CrossSearch {
+  rpc Search(CrossSearchRequest) returns (stream CrossSearchResponse);   // read on each repository searched; expensive; rate class `codeintel`
+  rpc LookupSymbol(LookupSymbolRequest) returns (LookupSymbolResponse);  // read on each repository; cheap (index)
+  rpc SymbolPanel(SymbolPanelRequest) returns (SymbolPanelResponse);     // repo read, plus read on repositories that reference it
+}
+
+// Where to search. `repos` (at most 64, "owner/repo") takes precedence; otherwise `scope` is a user, an organisation or the
+// instance (every repository the caller can read). `rev` is the default branch of each repository unless set.
+message CrossSearchTarget {
+  OwnerRef scope = 1;
+  repeated string repos = 2;
+  string rev = 3;
+}
+
+message CrossSearchRequest {
+  CrossSearchTarget target = 1;
+  string pattern = 2;                    // 3 to 512 bytes
+  SearchMode mode = 3;
+  bool case_sensitive = 4;
+  uint32 context_lines = 5;              // at most 5
+  repeated string paths = 6;
+  repeated string exclude_paths = 7;
+  repeated string langs = 8;
+  Budget budget = 9;
+  string page_token = 10;
+}
+message RepoHits {
+  RepoRef repo = 1;
+  string rev = 2;
+  ResolvedScope scope = 3;
+  repeated FileHit files = 4;
+}
+message CrossSearchResponse {
+  repeated RepoHits repos = 1;
+  bool truncated = 2;
+  string next_page_token = 3;
+  uint32 searched_repos = 4;             // readable repositories searched so far
+  uint32 unindexed_repos = 5;            // readable repositories searched without an index (slower)
+  uint32 est_tokens = 6;
+}
+
+enum SymbolMatch {
+  SYMBOL_MATCH_EXACT = 0;
+  SYMBOL_MATCH_PREFIX = 1;
+  SYMBOL_MATCH_FUZZY = 2;
+}
+message SymbolHit {
+  RepoRef repo = 1;
+  string rev = 2;
+  Symbol symbol = 3;
+  float score = 4;
+}
+message LookupSymbolRequest {
+  CrossSearchTarget target = 1;
+  string name = 2;                       // 1 to 256 bytes
+  SymbolMatch match = 3;
+  repeated string kinds = 4;
+  repeated string langs = 5;
+  bool definitions_only = 6;
+  uint32 limit = 7;                      // 0 means 50, at most 200
+  string page_token = 8;
+}
+message LookupSymbolResponse {
+  repeated SymbolHit hits = 1;
+  bool truncated = 2;
+  string next_page_token = 3;
+}
+
+// Names a symbol either by `name` (every definition of it) or by the position of a definition. The panel holds the definition,
+// its documentation, references in the repository grouped by file, callers, and, with `cross_repo`, references in other
+// repositories the caller can read.
+message SymbolPanelRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  string name = 3;
+  bytes path = 4 [(asc.v1.json) = JSON_KIND_PATH];
+  uint32 line = 5;
+  bool cross_repo = 6;
+  Budget budget = 7;
+}
+message SymbolReferences {
+  RepoRef repo = 1;
+  bytes path = 2 [(asc.v1.json) = JSON_KIND_PATH];
+  repeated Symbol references = 3;
+}
+message SymbolPanelResponse {
+  ResolvedScope scope = 1;
+  repeated SymbolHit definitions = 2;    // more than one when the name is ambiguous
+  repeated SymbolReferences references = 3;
+  repeated SymbolReferences callers = 4;
+  repeated SymbolReferences cross_repo = 5;
+  bool truncated = 6;
+  uint32 est_tokens = 7;
+}

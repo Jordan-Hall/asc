@@ -1,0 +1,126 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Whole-stack operations (build-out feature "stacks"; docs/BUILDOUT.md): restack a stack onto a moved trunk, revert a landed
+// stack, and read or undo a ref's history. `Changes.RestackChanges` stays the low-level primitive; `Stacks.Restack` finds
+// the items, orders them, resolves conflicts the caller supplied and moves every ref in one atomic update. Nothing here pushes to
+// trunk: a revert is a new stack of changes under review, and an undo of a protected ref is refused. Advertised as
+// Version.features "stacks.v1". ErrorDetail.code also carries STACK_NOT_LANDED (FAILED_PRECONDITION), REVERT_CONFLICT
+// (ABORTED, `conflicts` filled), REF_UNDO_PROTECTED (PERMISSION_DENIED) and REF_LOG_EXPIRED (OUT_OF_RANGE).
+service Stacks {
+  rpc Restack(RestackStackRequest) returns (RestackStackResponse);         // repo write; mutating, x-asc-op-id
+  rpc RevertLanded(RevertLandedRequest) returns (RevertLandedResponse);    // repo write; mutating, x-asc-op-id
+  rpc ListRefLog(ListRefLogRequest) returns (ListRefLogResponse);          // repo read; cheap, paged
+  rpc UndoRef(UndoRefRequest) returns (UndoRefResponse);                   // repo write (own refs) or maintainer; mutating, x-asc-op-id
+}
+
+enum RestackItemState {
+  RESTACK_ITEM_STATE_UNSPECIFIED = 0;
+  RESTACK_ITEM_STATE_REWRITTEN = 1;      // a new head, same change id, version + 1
+  RESTACK_ITEM_STATE_UNCHANGED = 2;      // already on its parent; also a patch-identical rewrite
+  RESTACK_ITEM_STATE_CONFLICT = 3;       // needs a resolution
+  RESTACK_ITEM_STATE_BLOCKED = 4;        // an ancestor in the stack conflicts
+  RESTACK_ITEM_STATE_SKIPPED_LANDED = 5; // already on the target
+  RESTACK_ITEM_STATE_SKIPPED_FROZEN = 6; // CHANGE_FROZEN: under queue or locked
+}
+
+// `change` is any change of the stack: the whole stack it belongs to is restacked, the changes above it included. `onto`
+// empty means the stack's trunk tip. With `dry_run` nothing is stored. Without `allow_partial` one conflict or frozen change
+// makes the whole call fail with LAND_CONFLICT or CHANGE_FROZEN and nothing moves.
+message RestackStackRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string onto = 3;
+  repeated Resolution resolutions = 4;
+  bool dry_run = 5;
+  bool allow_partial = 6;
+}
+message RestackItemResult {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  RestackItemState state = 2;
+  bytes old_head = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes new_head = 4 [(asc.v1.json) = JSON_KIND_HEX];
+  uint32 new_version = 5;
+  repeated Conflict conflicts = 6;
+}
+message RestackStackResponse {
+  bytes onto = 1 [(asc.v1.json) = JSON_KIND_HEX];   // the target tip the stack now stands on
+  repeated RestackItemResult items = 2;             // bottom to top
+  repeated Rewrite rewritten = 3;
+  bool applied = 4;                                 // false for a dry run or when nothing moved
+}
+
+// `at` names the landed stack: its top change, or a trunk changeset the stack landed as. The call reverts the
+// landed changes from the top down onto `onto` (empty: the trunk tip) and stores the reverts as a stack of new changes in
+// `refs/users/<caller>`; it never moves trunk. `squash` makes one revert change for the whole stack.
+message RevertLandedRequest {
+  RepoRef repo = 1;
+  oneof at {
+    bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+    bytes landed_as = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  }
+  bytes bottom = 4 [(asc.v1.json) = JSON_KIND_CHANGE];   // revert only from this change up; empty: the whole stack
+  string onto = 5;
+  bool squash = 6;
+  bytes message = 7 [(asc.v1.json) = JSON_KIND_TEXT];    // empty: 'Revert "<subject>"' per change
+  bool dry_run = 8;
+}
+message RevertedChange {
+  bytes original = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes landed_as = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes revert_change = 3 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes revert_changeset = 4 [(asc.v1.json) = JSON_KIND_HEX];
+  repeated Conflict conflicts = 5;
+}
+message RevertLandedResponse {
+  repeated RevertedChange reverts = 1;        // top of the landed stack first
+  bytes stack_top = 2 [(asc.v1.json) = JSON_KIND_CHANGE];   // the topmost new change; empty on a dry run
+  string ref = 3;                             // where the reverts are stored
+  bool applied = 4;
+}
+
+// Newest first. `ref` is a ref name or a prefix ending in "/". `limit` 0 means 50, at most 200.
+message ListRefLogRequest {
+  RepoRef repo = 1;
+  string ref = 2;
+  string actor = 3;
+  int64 since = 4;
+  int64 until = 5;
+  uint32 limit = 6;
+  string page_token = 7;
+}
+message RefLogEntry {
+  uint64 seq = 1;
+  string ref = 2;
+  RefTarget old = 3;
+  RefTarget new = 4;
+  int64 time = 5;
+  string actor = 6;
+  string via = 7;                 // push, land, undo, revert, restack, merge-queue, agent
+  string op_id = 8;
+  bool undoable = 9;
+  string undo_blocked_reason = 10;
+}
+message ListRefLogResponse {
+  repeated RefLogEntry entries = 1;
+  string next_page_token = 2;
+}
+
+// Puts `ref` back to the value it had before entry `seq`, with the ref's current value as the compare-and-swap guard (so
+// a ref that moved since is VERSION_CONFLICT). A protected ref (trunk, a release branch, a shared ref) is never undone; use
+// `RevertLanded`. Another user's `refs/users/` ref needs a maintainer.
+message UndoRefRequest {
+  RepoRef repo = 1;
+  string ref = 2;
+  uint64 seq = 3;
+  bool dry_run = 4;
+  string reason = 5;              // at most 256 bytes; goes to the audit log
+}
+message UndoRefResponse {
+  RefResult result = 1;
+  uint64 new_seq = 2;
+  bool applied = 3;
+}

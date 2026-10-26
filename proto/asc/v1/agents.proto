@@ -1,0 +1,278 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Agents (build-out features "agent-runs" and "agent-tokens"; docs/BUILDOUT.md). Agents are optional and off unless the
+// instance and the repository both enable them. An agent never pushes trunk: everything it produces is a stack of changes
+// in the agent's own user refs (`refs/users/<agent id>/`, SPEC 21.5.1), under review like a person's work, and landing needs the approvals and checks the policy
+// asks of anyone. What an agent may write is the intersection of its token's paths, the policy `[agents]` scope and the
+// policy path rules. Budgets are enforced by the server on every ref update and every provider call, never by the agent.
+// Advertised as Version.features "agents.v1" and "agent-tokens.v1". ErrorDetail.code also carries AGENTS_DISABLED
+// (FAILED_PRECONDITION), AGENT_TOKEN_EXPIRED, AGENT_TOKEN_REVOKED (UNAUTHENTICATED), AGENT_SCOPE_DENIED (PERMISSION_DENIED;
+// `paths` lists the refused paths), BUDGET_EXCEEDED (RESOURCE_EXHAUSTED; `paths[0]` is changes, tokens, cost, paths or
+// runtime) and RUN_NOT_ACTIVE (FAILED_PRECONDITION).
+
+// ---------------------------------------------------------------------------------------------------- budgets
+
+// Zero in a request means "the default": the policy `[agents.budgets]` value, then the instance default. No limit is unlimited
+// unless both of those are unlimited too; `AgentBudgetUsage` and the policy decide what is left.
+message AgentBudgetLimits {
+  uint32 max_changes = 1;            // changes created over the life of the run or token
+  uint64 max_tokens = 2;             // input plus output model tokens
+  uint64 max_cost_micro_usd = 3;
+  uint32 max_paths = 4;              // distinct paths written
+  uint32 max_runtime_seconds = 5;
+}
+message AgentBudgetUsage {
+  uint32 changes = 1;
+  uint64 tokens = 2;
+  uint64 cost_micro_usd = 3;
+  uint32 paths = 4;
+  uint32 runtime_seconds = 5;
+  uint64 requests = 6;
+}
+
+// ---------------------------------------------------------------------------------------------------- runs
+
+service Agents {
+  rpc CreateRun(CreateAgentRunRequest) returns (CreateAgentRunResponse);   // repo write; mutating, x-asc-op-id
+  rpc ListRuns(ListAgentRunsRequest) returns (ListAgentRunsResponse);      // repo read; cheap, paged
+  rpc GetRun(GetAgentRunRequest) returns (GetAgentRunResponse);            // repo read
+  rpc CancelRun(CancelAgentRunRequest) returns (CancelAgentRunResponse);   // run owner or maintainer; idempotent
+  rpc SendInput(SendAgentInputRequest) returns (SendAgentInputResponse);   // run owner; mutating, x-asc-op-id
+  rpc WatchRun(WatchAgentRunRequest) returns (stream AgentRunEvent);       // repo read; long-lived, resumable
+}
+
+enum AgentRunState {
+  AGENT_RUN_STATE_UNSPECIFIED = 0;       // in a request: any state
+  AGENT_RUN_STATE_QUEUED = 1;
+  AGENT_RUN_STATE_RUNNING = 2;
+  AGENT_RUN_STATE_WAITING_INPUT = 3;     // the agent asked a question
+  AGENT_RUN_STATE_SUCCEEDED = 4;         // finished; its changes (if any) wait for review
+  AGENT_RUN_STATE_FAILED = 5;
+  AGENT_RUN_STATE_CANCELLED = 6;
+  AGENT_RUN_STATE_BUDGET_EXCEEDED = 7;
+  AGENT_RUN_STATE_EXPIRED = 8;           // ran past `max_runtime_seconds` or its token expired
+}
+
+message AgentRun {
+  uint64 id = 1;
+  string repo = 2;
+  string agent = 3;                      // [a-z0-9-], 1 to 40 characters; becomes the principal name "agent:<name>"
+  string title = 4;
+  AgentRunState state = 5;
+  string target = 6;                     // the branch the changes are meant for; never written directly
+  bytes base = 7 [(asc.v1.json) = JSON_KIND_HEX];
+  string ai_key_id = 8;
+  string model = 9;
+  AgentBudgetLimits limits = 10;
+  AgentBudgetUsage usage = 11;
+  repeated bytes changes = 12 [(asc.v1.json) = JSON_KIND_CHANGE];   // bottom to top
+  string created_by = 13;                // the person who started it
+  int64 created = 14;
+  int64 started = 15;
+  int64 finished = 16;
+  string failure_code = 17;              // an ErrorDetail code or a short slug; empty unless failed
+  string failure_message = 18;           // sanitised
+  string token_id = 19;                  // the run's own agent token
+  uint64 workflow_run_id = 20;           // 0 unless a workflow started it
+  string workflow_step = 21;
+}
+
+// `task` is 1 to 65,536 bytes. `paths` narrows the write scope further; globs the policy does not admit are refused with
+// AGENT_SCOPE_DENIED. `ai_key_id` empty means the repository owner's default key. `base` empty means the tip of `target`.
+message CreateAgentRunRequest {
+  RepoRef repo = 1;
+  string agent = 2;
+  string title = 3;
+  string task = 4;
+  string target = 5;
+  string base = 6;
+  repeated string paths = 7;
+  string ai_key_id = 8;
+  string model = 9;
+  AgentBudgetLimits limits = 10;
+}
+message CreateAgentRunResponse {
+  AgentRun run = 1;
+}
+
+// Newest first. `limit` 0 means 30, at most 100.
+message ListAgentRunsRequest {
+  RepoRef repo = 1;
+  repeated AgentRunState states = 2;
+  string agent = 3;
+  string created_by = 4;
+  uint32 limit = 5;
+  string page_token = 6;
+}
+message ListAgentRunsResponse {
+  repeated AgentRun runs = 1;
+  string next_page_token = 2;
+}
+
+message GetAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message GetAgentRunResponse {
+  AgentRun run = 1;
+}
+
+message CancelAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  string reason = 3;                     // at most 256 bytes
+}
+message CancelAgentRunResponse {
+  AgentRun run = 1;
+}
+
+// Answers a WAITING_INPUT run or adds a steering message to a RUNNING one. `text` is 1 to 16,384 bytes.
+message SendAgentInputRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  string text = 3;
+}
+message SendAgentInputResponse {
+  AgentRun run = 1;
+}
+
+enum AgentRunEventKind {
+  AGENT_RUN_EVENT_KIND_UNSPECIFIED = 0;
+  AGENT_RUN_EVENT_KIND_STATE = 1;          // `state` changed
+  AGENT_RUN_EVENT_KIND_MESSAGE = 2;        // text from the agent
+  AGENT_RUN_EVENT_KIND_INPUT = 3;          // text from a person
+  AGENT_RUN_EVENT_KIND_TOOL_CALL = 4;
+  AGENT_RUN_EVENT_KIND_TOOL_RESULT = 5;
+  AGENT_RUN_EVENT_KIND_CHANGE = 6;         // a change was created or updated
+  AGENT_RUN_EVENT_KIND_USAGE = 7;
+  AGENT_RUN_EVENT_KIND_ERROR = 8;
+}
+// `text` is untrusted output of a model and of tools; it is shown as text and never as markup. It has been through the
+// repository's secret rules, which mask what they find.
+message AgentRunEvent {
+  uint64 run_id = 1;
+  uint64 seq = 2;                          // per run, from 1
+  AgentRunEventKind kind = 3;
+  int64 time_ms = 4;
+  AgentRunState state = 5;
+  string text = 6;
+  string tool = 7;
+  bytes change = 8 [(asc.v1.json) = JSON_KIND_CHANGE];
+  AgentBudgetUsage usage = 9;
+}
+// `after_seq` 0 starts at the first event; the stream ends when the run is finished and all events were sent.
+message WatchAgentRunRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  uint64 after_seq = 3;
+}
+
+// ---------------------------------------------------------------------------------------------------- tokens
+
+// Credentials for agents that run outside the server (a developer's own agent, CI). The secret is shown once, at creation,
+// as `ascat_` followed by 43 base64url characters; only its SHA-256 is stored, so a lost secret is replaced, not recovered.
+service AgentTokens {
+  rpc CreateToken(CreateAgentTokenRequest) returns (CreateAgentTokenResponse);   // repo admin; mutating, x-asc-op-id
+  rpc ListTokens(ListAgentTokensRequest) returns (ListAgentTokensResponse);      // repo admin
+  rpc GetToken(GetAgentTokenRequest) returns (GetAgentTokenResponse);            // repo admin, or the token itself
+  rpc RevokeToken(RevokeAgentTokenRequest) returns (RevokeAgentTokenResponse);   // repo admin; idempotent
+  rpc SetBudget(SetAgentTokenBudgetRequest) returns (SetAgentTokenBudgetResponse);   // repo admin; may raise or lower
+  rpc ReportUsage(ReportAgentUsageRequest) returns (ReportAgentUsageResponse);   // the agent token itself; mutating, x-asc-op-id
+}
+
+enum AgentTokenState {
+  AGENT_TOKEN_STATE_UNSPECIFIED = 0;     // in a request: any state
+  AGENT_TOKEN_STATE_ACTIVE = 1;
+  AGENT_TOKEN_STATE_EXPIRED = 2;
+  AGENT_TOKEN_STATE_REVOKED = 3;
+  AGENT_TOKEN_STATE_EXHAUSTED = 4;       // a budget is spent
+}
+
+message AgentToken {
+  string id = 1;                         // "at_" + 20 characters
+  string repo = 2;
+  string name = 3;                       // 1 to 64 bytes
+  string agent = 4;
+  repeated string paths = 5;             // write globs; never wider than the policy admits
+  uint32 max_changes_per_run = 6;
+  AgentTokenState state = 7;
+  string created_by = 8;
+  int64 created = 9;
+  int64 expires_at = 10;
+  int64 revoked_at = 11;
+  int64 last_used = 12;
+  AgentBudgetLimits limits = 13;
+  AgentBudgetUsage usage = 14;
+  string secret_hint = 15;               // last 4 characters of the secret
+}
+
+// `ttl_seconds` 0 means 1 hour, at most 90 days: a token always expires. `paths` empty means the policy `[agents] default_scope`.
+message CreateAgentTokenRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  string agent = 3;
+  repeated string paths = 4;
+  uint32 max_changes_per_run = 5;
+  uint32 ttl_seconds = 6;
+  AgentBudgetLimits limits = 7;
+}
+message CreateAgentTokenResponse {
+  AgentToken token = 1;
+  string secret = 2;                     // shown once; no other call returns it
+}
+
+message ListAgentTokensRequest {
+  RepoRef repo = 1;
+  repeated AgentTokenState states = 2;
+  uint32 limit = 3;                      // 0 means 50, at most 200
+  string page_token = 4;
+}
+message ListAgentTokensResponse {
+  repeated AgentToken tokens = 1;
+  string next_page_token = 2;
+}
+
+message GetAgentTokenRequest {
+  RepoRef repo = 1;
+  string id = 2;
+}
+message GetAgentTokenResponse {
+  AgentToken token = 1;
+  AgentBudgetUsage remaining = 2;        // limit minus usage, saturating at 0; unset fields have no limit
+}
+
+message RevokeAgentTokenRequest {
+  RepoRef repo = 1;
+  string id = 2;
+  string reason = 3;                     // at most 256 bytes
+}
+message RevokeAgentTokenResponse {
+  AgentToken token = 1;
+}
+
+message SetAgentTokenBudgetRequest {
+  RepoRef repo = 1;
+  string id = 2;
+  AgentBudgetLimits limits = 3;
+}
+message SetAgentTokenBudgetResponse {
+  AgentToken token = 1;
+}
+
+// The agent reports what a provider call used; the server adds it atomically to the token's usage and to the run's. A report
+// that crosses a limit is recorded in full and answered BUDGET_EXCEEDED, and the token is EXHAUSTED from then on.
+message ReportAgentUsageRequest {
+  RepoRef repo = 1;
+  uint64 input_tokens = 2;
+  uint64 output_tokens = 3;
+  uint64 cost_micro_usd = 4;
+  uint64 requests = 5;
+}
+message ReportAgentUsageResponse {
+  AgentBudgetUsage usage = 1;
+  AgentBudgetUsage remaining = 2;
+}

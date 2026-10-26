@@ -1,0 +1,26 @@
+syntax = "proto3";
+package asc.v1;
+
+// Shared building blocks of the build-out services (docs/BUILDOUT.md). Additive to asc.v1: nothing here changes an
+// existing message.
+
+// What a resource belongs to. A secret (storage credential, AI key, signing key) is scoped to exactly one owner, and
+// a lookup by another caller answers NOT_FOUND, never PERMISSION_DENIED, so owners cannot be probed.
+enum OwnerKind {
+  OWNER_KIND_UNSPECIFIED = 0;   // never valid in a request; the server answers INVALID_ARGUMENT
+  OWNER_KIND_USER = 1;          // `name` is a user handle
+  OWNER_KIND_ORG = 2;           // `name` is an organisation name
+  OWNER_KIND_REPO = 3;          // `name` is "owner/repo"
+  OWNER_KIND_INSTANCE = 4;      // the whole server; `name` is empty; site administrators only
+}
+
+message OwnerRef {
+  OwnerKind kind = 1;
+  string name = 2;
+}
+
+// Who did something. `kind` is one of user, agent, deploy, ci, host or system (the server itself).
+message PrincipalRef {
+  string kind = 1;
+  string name = 2;
+}

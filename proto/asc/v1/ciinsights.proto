@@ -1,0 +1,158 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// CI failure grouping and flaky-test history (build-out feature "ci-insights"; docs/BUILDOUT.md). Runners report test cases
+// with `ReportTestCases`; the server normalises each failure message (numbers, ids, paths, timestamps removed) and hashes it
+// into a `signature`. Failures with one signature form a group. A test is flaky in a window when it both passed and failed on the
+// same head, or failed and then passed on a retry. Advertised as Version.features "ci-insights.v1". Log and message text is
+// untrusted and may hold secrets a runner printed; the server masks values of the repository's secret rules before storing.
+service CiInsights {
+  rpc ReportTestCases(ReportTestCasesRequest) returns (ReportTestCasesResponse);   // repo admin (service credential); idempotent per (run, job)
+  rpc ListFailureGroups(ListFailureGroupsRequest) returns (ListFailureGroupsResponse);   // repo read; paged
+  rpc GetFailureGroup(GetFailureGroupRequest) returns (GetFailureGroupResponse);   // repo read; paged occurrences
+  rpc SetFailureGroupState(SetFailureGroupStateRequest) returns (SetFailureGroupStateResponse);   // repo write; mutating, x-asc-op-id
+  rpc FlakyHistory(FlakyHistoryRequest) returns (FlakyHistoryResponse);            // repo read
+  rpc ListFlakyTests(ListFlakyTestsRequest) returns (ListFlakyTestsResponse);      // repo read; paged
+}
+
+enum TestOutcome {
+  TEST_OUTCOME_UNSPECIFIED = 0;
+  TEST_OUTCOME_PASSED = 1;
+  TEST_OUTCOME_FAILED = 2;
+  TEST_OUTCOME_SKIPPED = 3;
+  TEST_OUTCOME_ERROR = 4;         // the test did not run to a verdict
+}
+
+message TestCase {
+  string name = 1;                // full name: suite and test, at most 512 bytes
+  TestOutcome outcome = 2;
+  uint32 attempt = 3;             // 1 = first try; a retry has a higher number
+  uint32 duration_ms = 4;
+  string message = 5;             // failure message, at most 8 KiB
+}
+
+// At most 5,000 cases per call and 16 MiB. A call for a (run, job) replaces the cases it reported before.
+message ReportTestCasesRequest {
+  RepoRef repo = 1;
+  uint64 run_id = 2;
+  uint64 job_id = 3;
+  repeated TestCase cases = 4;
+}
+message ReportTestCasesResponse {
+  uint32 stored = 1;
+  uint32 groups_touched = 2;
+}
+
+enum FailureGroupState {
+  FAILURE_GROUP_STATE_UNSPECIFIED = 0;   // in a request: any state
+  FAILURE_GROUP_STATE_OPEN = 1;
+  FAILURE_GROUP_STATE_ACKNOWLEDGED = 2;
+  FAILURE_GROUP_STATE_QUARANTINED = 3;   // a failure here does not block landing; the policy must allow quarantine
+  FAILURE_GROUP_STATE_RESOLVED = 4;
+}
+
+message FailureGroup {
+  uint64 id = 1;
+  string signature = 2;           // hex of the normalised-message hash
+  string title = 3;               // the normalised first line
+  string test_name = 4;           // empty for a job-level failure
+  string job_name = 5;
+  FailureGroupState state = 6;
+  uint32 occurrences = 7;
+  uint32 changes_affected = 8;
+  int64 first_seen = 9;
+  int64 last_seen = 10;
+  bool flaky = 11;
+  string note = 12;
+}
+
+// Most recently seen first. `limit` 0 means 30, at most 100.
+message ListFailureGroupsRequest {
+  RepoRef repo = 1;
+  repeated FailureGroupState states = 2;
+  bool flaky_only = 3;
+  string job_name = 4;
+  string test_name = 5;
+  int64 since = 6;
+  uint32 limit = 7;
+  string page_token = 8;
+}
+message ListFailureGroupsResponse {
+  repeated FailureGroup groups = 1;
+  string next_page_token = 2;
+}
+
+message FailureOccurrence {
+  uint64 run_id = 1;
+  uint64 job_id = 2;
+  bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE];
+  uint32 version = 4;
+  bytes head = 5 [(asc.v1.json) = JSON_KIND_HEX];
+  uint32 attempt = 6;
+  int64 at = 7;
+  string message = 8;
+}
+message GetFailureGroupRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  uint32 limit = 3;               // occurrences; 0 means 20, at most 100
+  string page_token = 4;
+}
+message GetFailureGroupResponse {
+  FailureGroup group = 1;
+  repeated FailureOccurrence occurrences = 2;
+  string next_page_token = 3;
+}
+
+// `note` is at most 1,024 bytes. QUARANTINED needs a maintainer.
+message SetFailureGroupStateRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  FailureGroupState state = 3;
+  string note = 4;
+}
+message SetFailureGroupStateResponse {
+  FailureGroup group = 1;
+}
+
+message FlakyBucket {
+  int64 start = 1;                // unix seconds, day aligned (UTC)
+  uint32 runs = 2;
+  uint32 failures = 3;
+  uint32 flaky_flips = 4;         // pass and fail on one head
+}
+// `window_days` 0 means 30, at most 180.
+message FlakyHistoryRequest {
+  RepoRef repo = 1;
+  string test_name = 2;
+  string job_name = 3;            // one of the two is required
+  uint32 window_days = 4;
+}
+message FlakyHistoryResponse {
+  repeated FlakyBucket buckets = 1;
+  double flake_rate = 2;          // flaky flips over runs in the window
+  bool flaky = 3;                 // rate at or above the repository threshold (default 0.02, policy [ci] flaky_threshold)
+  int64 first_flaky = 4;
+}
+
+message FlakyTest {
+  string test_name = 1;
+  string job_name = 2;
+  double flake_rate = 3;
+  uint32 runs = 4;
+  int64 last_flip = 5;
+  uint64 group_id = 6;
+}
+message ListFlakyTestsRequest {
+  RepoRef repo = 1;
+  uint32 window_days = 2;
+  uint32 limit = 3;               // 0 means 30, at most 100
+  string page_token = 4;
+}
+message ListFlakyTestsResponse {
+  repeated FlakyTest tests = 1;
+  string next_page_token = 2;
+}
