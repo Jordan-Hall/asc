@@ -384,7 +384,10 @@ mod real {
     pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         let cfg = config(&a, ctx)?;
         match a.cmd {
-            Some(Sub::Migrate) => asc_serve::run_migrate(&cfg).await.map_err(fatal)?,
+            Some(Sub::Migrate) => {
+                asc_serve::logging::init(&cfg.log);
+                asc_serve::run_migrate(&cfg).await.map_err(fatal)?;
+            }
             Some(Sub::Admin { cmd }) => return admin(&cfg, cmd).await,
             Some(Sub::Token { cmd }) => match cmd {
                 TokenCmd::Create(flags) => {
@@ -429,6 +432,8 @@ mod real {
                 }
             },
             None => {
+                // The server's one subscriber: RUST_LOG, `ASC_LOG_FORMAT` / `[log] format`, stderr.
+                asc_serve::logging::init(&cfg.log);
                 let authorizer = asc_serve::authz::authorizer(&cfg).await.map_err(fatal)?;
                 let stop = async {
                     let _ = tokio::signal::ctrl_c().await;
