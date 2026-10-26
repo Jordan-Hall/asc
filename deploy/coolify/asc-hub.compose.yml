@@ -27,8 +27,10 @@
 # Storage layout (all named volumes; Coolify keeps them across deploys):
 #   hub-data     /var/lib/gitea               hub database (SQLite), app.ini, sessions, attachments.
 #   hub-repos    /var/lib/gitea/git/repositories   the hub's bare repositories (the git bridge). asc
-#                mounts it READ-ONLY at the same path: ImportGitPush reads a push quarantine there
-#                (`[forgejo] repo_root`). asc never sees hub-data (app.ini, database).
+#                mounts it READ-WRITE at the same path: ImportGitPush reads a push quarantine there
+#                (`[forgejo] repo_root`), and with BRIDGE=eager asc's `bridge_promote` effect writes the
+#                objects and refs of web-UI edits and merges into the bare repository, so that
+#                `git clone` sees them. asc never sees hub-data (app.ini, database).
 #   asc-state     /var/lib/asc                  asc.db (SQLite), objects/ (store = file://), cache.
 #   hub-secrets  /run/asc-hub                  the internal token and the webhook secret, 0400. The hub and
 #                asc mount it read-only.
@@ -77,6 +79,9 @@ x-hub-env: &hub-env
   # network namespace). BRIDGE: see README ("Known limits").
   FORGEJO__asc__ENABLED: 'true'
   FORGEJO__asc__SERVER_URL: http://127.0.0.1:7890
+  # What /.well-known/asc and the Actions context announce: the hub's own public URL, which
+  # proxies asc to clients. SERVER_URL above is loopback and only the hub dials it.
+  FORGEJO__asc__PUBLIC_URL: ${ASC_HUB_ROOT_URL:?public https URL of the hub, for example https://hub.example.org}
   FORGEJO__asc__WRITER: asc
   FORGEJO__asc__NEW_REPOSITORIES: asc
   FORGEJO__asc__BRIDGE: ${ASC_HUB_BRIDGE:-eager}
@@ -153,6 +158,9 @@ services:
       ASC_CACHE_DISK: ${ASC_CACHE_DISK:-2GiB}
       ASC_TEXT_MEMORY: ${ASC_TEXT_MEMORY:-256MiB}
       ASC_GIT_ENABLED: ${ASC_GIT_ENABLED:-false}
+      # Same variable as the hub's [asc] BRIDGE. eager turns on asc's bridge_promote (and the git
+      # layer it runs on); lazy and off leave the hub's bare repositories to the hub.
+      ASC_BRIDGE: ${ASC_HUB_BRIDGE:-eager}
     command:
       - |
         set -eu
@@ -165,6 +173,11 @@ services:
         }
         [ "$${#INTERNAL_TOKEN}" -ge 24 ] || { echo "hub-init: the internal token is missing or short (SERVICE_PASSWORD_INTERNALTOKEN)"; exit 1; }
         [ "$${#WEBHOOK_SECRET}" -ge 24 ] || { echo "hub-init: the webhook secret is missing or short (SERVICE_PASSWORD_WEBHOOKSECRET)"; exit 1; }
+        case "$$ASC_BRIDGE" in
+          eager) ASC_BRIDGE_PROMOTE=true; ASC_GIT_ENABLED=true ;;
+          lazy|off) ASC_BRIDGE_PROMOTE=false ;;
+          *) echo "hub-init: ASC_HUB_BRIDGE must be eager, lazy or off"; exit 1 ;;
+        esac
         mkdir -p /var/lib/asc/objects /var/lib/asc/cache /var/lib/asc/gitview /var/lib/asc/home
         own /var/lib/asc
         mkdir -p /var/lib/gitea/git/repositories
@@ -195,6 +208,7 @@ services:
         internal_token_file = "/run/asc-hub/internal-token"
         webhook_secret_file = "/run/asc-hub/webhook-secret"
         repo_root = "/var/lib/gitea/git/repositories"
+        bridge_promote = $$ASC_BRIDGE_PROMOTE
 
         [limits]
         text_memory = "$$ASC_TEXT_MEMORY"
@@ -290,8 +304,9 @@ services:
       - asc-state:/var/lib/asc
       - hub-secrets:/run/asc-hub:ro
       - asc-runtime:/run/asc-runtime:ro
-      # Read-only, at the hub's own path: the push quarantine named by the hub is read here.
-      - hub-repos:/var/lib/gitea/git/repositories:ro
+      # At the hub's own path: the push quarantine named by the hub is read here, and
+      # bridge_promote writes the bridge here (same uid 1000 as the hub's git).
+      - hub-repos:/var/lib/gitea/git/repositories
     # /readyz fails when the database does not answer or the outbox lags (SPEC 16.1).
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
