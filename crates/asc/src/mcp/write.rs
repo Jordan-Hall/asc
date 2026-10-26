@@ -18,10 +18,10 @@
 //! is left to hold one). The supervisor is its own task: the handler drops the call future the
 //! moment a call is cancelled, and the task still finishes the shutdown.
 //!
-//! **Results.** `restack`, `absorb`, `undo`, `redo`, `sync`, `submit` and `worktree add` print an
-//! `OpResult` with `--json`.
-//! TODO(C11): `create` and `modify` have no `--json` yet; their result is built here from the op
-//! log head before and after (`op`, `refs`, `status` `ok` or `nothing`).
+//! **Results.** Every verb runs with `--json` and the tool returns an `OpResult`. `create`,
+//! `modify`, `undo`, `redo` and `worktree add` print one themselves. `restack`, `absorb`,
+//! `sync`, `submit` and `hide` print a report of their own, which [`shaped`] maps to an
+//! `OpResult` with the same code `Bridge.Run` uses.
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -34,6 +34,7 @@ use asc_mcp::errors::{ToolError, code, redact};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 
+use crate::bridge::shape;
 use crate::cli::common::Ctx;
 
 /// Longest commit message.
@@ -173,8 +174,6 @@ fn os(s: impl Into<OsString>) -> OsString {
 pub struct Plan {
     /// `argv[0]` is the verb; the executable is not part of it.
     pub argv: Vec<OsString>,
-    /// Whether the verb prints an `OpResult` with `--json`.
-    pub json: bool,
 }
 
 fn op_arg(args: &Value) -> Result<String, ToolError> {
@@ -209,15 +208,13 @@ fn new_worktree_path(p: &str) -> Result<(), ToolError> {
 /// flag.
 pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
     let mut argv: Vec<OsString> = Vec::new();
-    let mut json = true;
     match tool {
         "create" => {
-            json = false;
             let m = opt_text(args, "message", MAX_MESSAGE)?;
             let m = m
                 .filter(|m| !m.trim().is_empty())
                 .ok_or_else(|| bad("message is required: no editor runs"))?;
-            argv.extend([os("create"), os(format!("--message={m}"))]);
+            argv.extend([os("create"), os("--json"), os(format!("--message={m}"))]);
             if flag(args, "all")? {
                 argv.push(os("-a"));
             }
@@ -229,8 +226,7 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
             }
         }
         "modify" => {
-            json = false;
-            argv.push(os("modify"));
+            argv.extend([os("modify"), os("--json")]);
             if let Some(m) = opt_text(args, "message", MAX_MESSAGE)? {
                 argv.push(os(format!("--message={m}")));
             }
@@ -401,7 +397,7 @@ pub fn plan(tool: &str, args: &Value) -> Result<Plan, ToolError> {
             )));
         }
     }
-    Ok(Plan { argv, json })
+    Ok(Plan { argv })
 }
 
 // ------------------------------------------------------------------------------ stage inputs
@@ -884,32 +880,45 @@ fn error_result(f: &Finished) -> Value {
     json!({ "error": { "code": c, "message": m } })
 }
 
-fn reply_for(f: &Finished, ok_result: impl FnOnce() -> Value) -> Result<Reply, ToolError> {
+/// The `OpResult` form of `report`, what `tool` printed. A verb that prints an `OpResult`
+/// itself (it has `rewritten`) is not touched; a report of an older verb is mapped by
+/// `Bridge.Run`'s [`shape::adapt`]; any other shape stays as it is.
+fn shaped(tool: &str, report: Value) -> Value {
+    if report.get("rewritten").is_some() {
+        return report;
+    }
+    shape::adapt(tool, &report).unwrap_or(report)
+}
+
+/// The result when a verb that exited `code` printed no result line: `ok` for a clean exit,
+/// else `nothing` with the first words of its stderr as the hint.
+fn silent_result(f: &Finished) -> Value {
+    if f.code == 0 {
+        return json!({ "version": 1, "status": "ok" });
+    }
+    let mut v = json!({ "version": 1, "status": "nothing" });
+    let note = clean(&String::from_utf8_lossy(&f.stderr), MAX_ERROR_TEXT);
+    if !note.is_empty() {
+        v["hints"] = json!([note]);
+    }
+    v
+}
+
+fn reply_for(tool: &str, f: &Finished) -> Result<Reply, ToolError> {
     if f.over {
         return Err(ToolError::budget("the answer of the verb is too large"));
     }
     match f.code {
         0..=2 => Ok(Reply::Verb {
             exit_code: f.code,
-            result: last_json(&f.stdout).unwrap_or_else(ok_result),
+            result: last_json(&f.stdout)
+                .map_or_else(|| silent_result(f), |report| shaped(tool, report)),
         }),
         c => Ok(Reply::Verb {
             exit_code: c,
             result: error_result(f),
         }),
     }
-}
-
-/// The newest op: `(id, refs)`.
-async fn op_head(root: &Path, ctx: &CallContext) -> Option<(String, Value)> {
-    let argv = ["op", "log", "--json", "-n", "1"].map(os).to_vec();
-    let f = run(root, argv, ctx).await.ok()?;
-    let v = last_json(&f.stdout)?;
-    let row = v.get("ops")?.as_array()?.first()?;
-    Some((
-        row.get("op")?.as_str()?.to_owned(),
-        row.get("refs").cloned().unwrap_or_else(|| json!([])),
-    ))
 }
 
 /// Runs the write tool `tool` in the worktree at `root`.
@@ -923,33 +932,8 @@ pub async fn call(
     ctx: &CallContext,
 ) -> Result<Reply, ToolError> {
     let p = plan(tool, args)?;
-    if p.json {
-        let f = run(root, p.argv, ctx).await?;
-        return reply_for(&f, || json!({ "version": 1, "status": "ok" }));
-    }
-    // TODO(C11): `create` and `modify` print no `--json`; build the OpResult from the op log.
-    let before = op_head(root, ctx).await.map(|h| h.0);
     let f = run(root, p.argv, ctx).await?;
-    if f.code > 2 || f.over {
-        return reply_for(&f, || json!({}));
-    }
-    let after = op_head(root, ctx).await;
-    let mut result = match after {
-        Some((op, refs)) if before.as_deref() != Some(op.as_str()) => {
-            json!({ "version": 1, "status": "ok", "op": op, "refs": refs })
-        }
-        _ => json!({ "version": 1, "status": "nothing" }),
-    };
-    if f.code != 0 {
-        let note = clean(&String::from_utf8_lossy(&f.stderr), MAX_ERROR_TEXT);
-        if !note.is_empty() {
-            result["hints"] = json!([note]);
-        }
-    }
-    Ok(Reply::Verb {
-        exit_code: f.code,
-        result,
-    })
+    reply_for(tool, &f)
 }
 
 #[cfg(test)]
@@ -975,7 +959,13 @@ mod tests {
         );
         assert_eq!(
             a,
-            ["create", "--message=-x --force\nbody", "-a", "--insert"]
+            [
+                "create",
+                "--json",
+                "--message=-x --force\nbody",
+                "-a",
+                "--insert"
+            ]
         );
     }
 
@@ -1118,6 +1108,45 @@ b"
         let past = SystemTime::now() - Duration::from_secs(3600);
         assert_eq!(recover_locks(d.path(), past), 2);
         assert!(!git.join("index.lock").exists() && !git.join("refs/heads/topic.lock").exists());
+    }
+
+    #[test]
+    fn a_report_of_its_own_becomes_an_op_result_and_an_op_result_stays() {
+        let sync = json!({
+            "version": 1,
+            "fast_forwarded": [{
+                "trunk": "main",
+                "old": "aa",
+                "new": "bb",
+                "to": "origin/main"
+            }],
+            "restacked": [],
+        });
+        let r = shaped("sync", sync);
+        assert_eq!(r["status"], "ok", "{r}");
+        assert_eq!(r["refs"][0]["name"], "refs/heads/main", "{r}");
+        assert!(r["rewritten"].is_array() && r["hints"].is_array(), "{r}");
+        let quiet = shaped("sync", json!({ "version": 1 }));
+        assert_eq!(quiet["status"], "nothing", "{quiet}");
+
+        let own = json!({ "version": 1, "status": "ok", "op": "x1", "rewritten": [], "refs": [] });
+        assert_eq!(shaped("create", own.clone()), own);
+        let unknown = json!({ "version": 1, "something": 1 });
+        assert_eq!(shaped("worktree_create", unknown.clone()), unknown);
+    }
+
+    #[test]
+    fn a_verb_that_printed_no_result_is_ok_on_exit_zero_and_nothing_otherwise() {
+        let done = |code: i32, err: &[u8]| Finished {
+            code,
+            stdout: Vec::new(),
+            stderr: err.to_vec(),
+            over: false,
+        };
+        assert_eq!(silent_result(&done(0, b""))["status"], "ok");
+        let stopped = silent_result(&done(1, b"hook said no"));
+        assert_eq!(stopped["status"], "nothing");
+        assert_eq!(stopped["hints"][0], "hook said no");
     }
 
     #[test]

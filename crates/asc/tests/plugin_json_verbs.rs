@@ -298,3 +298,83 @@ fn clone_prints_url_path_and_head() {
     assert_eq!(d["head"], r.head());
     assert!(!d["url"].as_str().unwrap().contains('@'));
 }
+
+/// A branch `feat` off the base commit.
+fn on_feature(r: &Repo) {
+    r.ok(&["switch", "-q", "-c", "feat"]);
+}
+
+#[test]
+fn create_modify_reword_and_stack_rename_print_an_op_result() {
+    let r = Repo::new();
+    on_feature(&r);
+    fs::write(r.root.join("b.txt"), "b\n").unwrap();
+    r.ok(&["add", "b.txt"]);
+    let created = r.json(&["create", "--json", "-m", "one"]);
+    assert_eq!(created["status"], "ok", "{created}");
+    let op = created["op"].as_str().expect("create names its op");
+    assert!(!op.is_empty());
+    assert_eq!(r.ok(&["log", "-1", "--format=%s"]).trim(), "one");
+    let head = r.head();
+
+    fs::write(r.root.join("b.txt"), "bb\n").unwrap();
+    let modified = r.json(&["modify", "--json", "-a"]);
+    assert_eq!(modified["status"], "ok", "{modified}");
+    assert_ne!(modified["op"], created["op"]);
+    assert_ne!(r.head(), head, "the amend moved HEAD");
+    assert!(
+        modified["refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "refs/heads/feat"),
+        "{modified}"
+    );
+
+    let reworded = r.json(&["reword", "--json", "-m", "two"]);
+    assert_eq!(reworded["status"], "ok", "{reworded}");
+    assert_eq!(r.ok(&["log", "-1", "--format=%s"]).trim(), "two");
+    let same = r.json(&["reword", "--json", "-m", "two"]);
+    assert_eq!(same["status"], "nothing", "{same}");
+
+    let renamed = r.json(&["stack", "rename", "--json", "renamed"]);
+    assert_eq!(renamed["status"], "ok", "{renamed}");
+    assert!(
+        renamed["refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "refs/heads/renamed"),
+        "{renamed}"
+    );
+}
+
+#[test]
+fn a_failing_stack_verb_prints_no_result_and_keeps_its_exit_code() {
+    let r = Repo::new();
+    let out = r.run_in(&r.root, &["reword", "--json", "-m", "x", "nosuchchange"]);
+    assert_ne!(out.status.code(), Some(0));
+    assert_eq!(text(&out.stdout), "", "{}", text(&out.stderr));
+    let out = r.run_in(&r.root, &["abort", "--json"]);
+    assert_ne!(out.status.code(), Some(0), "nothing to abort");
+    assert_eq!(text(&out.stdout), "");
+}
+
+#[test]
+fn a_modify_that_pauses_a_restack_prints_paused_and_abort_prints_ok() {
+    let r = Repo::new();
+    on_feature(&r);
+    fs::write(r.root.join("c.txt"), "1\n").unwrap();
+    r.ok(&["add", "c.txt"]);
+    r.json(&["create", "--json", "-m", "one"]);
+    fs::write(r.root.join("c.txt"), "2\n").unwrap();
+    r.ok(&["add", "c.txt"]);
+    r.json(&["create", "--json", "-m", "two"]);
+    r.ok(&["down"]);
+    fs::write(r.root.join("c.txt"), "X\n").unwrap();
+    let (v, code) = r.json_in(&r.root, &["modify", "--json", "-a"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["status"], "paused", "{v}");
+    let aborted = r.json(&["abort", "--json"]);
+    assert_eq!(aborted["status"], "ok", "{aborted}");
+}

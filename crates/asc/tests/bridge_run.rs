@@ -5,7 +5,7 @@
 //!
 //! The stack verbs that print a report of their own (`sync`, `restack`, `abandon`, ...) end with
 //! a typed `OpResult` too; `sl` and `op log` have none and are refused before a child starts.
-//! TODO(P45): `create`, `modify` and others still lack their `--json` form.
+//! `create`, `modify`, `reword`, `abort` and `stack rename` print their own `OpResult`.
 
 mod support;
 
@@ -380,5 +380,45 @@ fn sl_and_op_log_are_refused_before_a_child_starts() {
         assert!(events.is_empty(), "{verb}: {events:?}");
         assert_eq!(code, FAILED_PRECONDITION, "{verb}: {msg}");
     }
+    b.close();
+}
+
+#[test]
+fn create_modify_reword_and_stack_rename_end_with_an_op_result() {
+    let sb = Sandbox::new();
+    let a = stacked(&sb);
+    std::fs::write(a.join("b.txt"), "bb
+").unwrap();
+    ok(&sb, &a, &["add", "b.txt"]);
+    let mut b = Bridge::start(&sb, &a);
+    // `-m=` keeps the value one word; `stack rename` takes the new name after the flags.
+    let calls: [(&str, &[&str]); 4] = [
+        ("modify", &[]),
+        ("reword", &["-m=two"]),
+        ("create", &["-m=three"]),
+        ("stack rename", &["renamed"]),
+    ];
+    for (id, (verb, args)) in (1..).zip(calls) {
+        b.run(id, verb, args);
+        let (events, code, msg) = b.finish(id);
+        assert_eq!(code, OK, "{verb}: {msg}");
+        assert_eq!(exit_of(&events), Some(0), "{verb}: {events:?}");
+        let r = op_result_of(&events);
+        assert_eq!(r["status"], "ok", "{verb}: {r}");
+        assert!(r["op"].as_str().is_some_and(|o| !o.is_empty()), "{verb}: {r}");
+    }
+    b.close();
+}
+
+#[test]
+fn abort_with_nothing_to_abort_ends_with_its_exit_code_and_no_result() {
+    let sb = Sandbox::new();
+    let a = stacked(&sb);
+    let mut b = Bridge::start(&sb, &a);
+    b.run(1, "abort", &[]);
+    let (events, code, msg) = b.finish(1);
+    assert_eq!(code, OK, "{msg}");
+    assert_ne!(exit_of(&events), Some(0), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, Event::OpResult(_))), "{events:?}");
     b.close();
 }

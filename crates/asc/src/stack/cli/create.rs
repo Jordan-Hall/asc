@@ -78,11 +78,12 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--no-branch",
         "-n",
         "--no-verify",
+        "--json",
     ],
     placeholders: &[],
 }];
 
-super::verb!(CREATE, "create");
+super::verb!(CREATE, "create", json: super::json_op::Done::IfLogged);
 
 /// Runs `asc <args>` with the terminal inherited (the editor and `add -p` need it).
 pub(crate) fn run_tty(ctx: &Ctx, args: &[&str]) -> Result<i32> {

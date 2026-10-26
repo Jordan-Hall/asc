@@ -13,8 +13,10 @@
 //! A stack verb that prints a report of its own (`sync`, `restack`, `squash`, ...) is mapped to an
 //! `OpResult` by `shape`; `sl` and `op log` have no `OpResult` and are refused with
 //! `FAILED_PRECONDITION` before a child starts.
-//! TODO(P45): verbs without a `--json` form (`create`, `modify`, `reword`, `continue`, `abort`,
-//! `stack rename`) print human text or a usage error; the decode then fails with `INTERNAL`.
+//! `create`, `modify`, `reword`, `abort` and `stack rename` print an `OpResult` of their own
+//! (`stack::cli::json_op`), so the decode needs no mapping for them.
+//! TODO(P45): `continue` has no `--json` form yet; it prints human text and the decode then
+//! fails with `INTERNAL`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

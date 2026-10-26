@@ -19,6 +19,7 @@ use asc_store::refs::{Expect, RefTxn, RefUpdate, Refs as _};
 
 use super::abandon;
 use super::info::{resolve_change, sub};
+use super::json_op::Done;
 use super::restack::{Flow, dirty, reattach, refuse_dirty, run_asc};
 use super::reword::{move_refs, refuse_busy};
 use super::rewrite::{Made, emit, finish, locate};
@@ -141,7 +142,7 @@ mod rename {
     }
 }
 use rename::run as run_rename;
-sub!(STACK_RENAME, "rename", rename::Args, run_rename);
+sub!(STACK_RENAME, "rename", rename::Args, run_rename, json: Done::IfLogged);
 
 // ---------------------------------------------------------------- delete
 

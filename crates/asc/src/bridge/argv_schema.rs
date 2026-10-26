@@ -489,7 +489,7 @@ pub fn build(verb: &str, args: &[String], scope: &Scope<'_>) -> Result<Vec<Strin
             }
             (t, Some(v)) => {
                 let v = check(t, &format!("the value of '{}'", shown(name)), v, scope)?;
-                flags.push(format!("{name}={v}"));
+                flags.push(format!("{}={v}", long_form(name)));
             }
         }
     }
@@ -502,6 +502,16 @@ pub fn build(verb: &str, args: &[String], scope: &Scope<'_>) -> Result<Vec<Strin
         out.extend(pos);
     }
     Ok(out)
+}
+
+/// The form of a flag the child is given. A short flag with a value (`-m=text`) reads as a
+/// cluster of short flags to the native router, so the one short flag that takes a value here
+/// goes as its long name.
+fn long_form(name: &str) -> &str {
+    match name {
+        "-m" => "--message",
+        other => other,
+    }
 }
 
 fn positionals(entry: &Verb, given: &[&str], scope: &Scope<'_>) -> Result<Vec<String>, Refusal> {
@@ -573,7 +583,7 @@ mod tests {
                 "modify",
                 "--json",
                 "--into=abc",
-                "-m=hello",
+                "--message=hello",
                 "-a",
                 "--end-of-options",
                 "src/a.rs"

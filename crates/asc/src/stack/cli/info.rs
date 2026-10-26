@@ -41,8 +41,17 @@ pub static SUBS: [Sub];
 
 /// Registers a `stack` sub-verb: `sub!(SLOT, "word", Args, run)`, where `Args` is a clap
 /// parser named like the word and `run` is `async fn(&Ctx, Args) -> Result<ExitCode>`.
+/// `sub!(SLOT, "word", Args, run, json: Done::IfLogged)` also gives it a `--json` form that
+/// prints an `OpResult` (see `json_op`).
 macro_rules! sub {
     ($slot:ident, $name:literal, $args:ty, $run:ident) => {
+        $crate::stack::cli::info::sub!(@go $slot, $name, $args, $run,
+            ::std::option::Option::<$crate::stack::cli::json_op::Done>::None);
+    };
+    ($slot:ident, $name:literal, $args:ty, $run:ident, json: $done:expr) => {
+        $crate::stack::cli::info::sub!(@go $slot, $name, $args, $run, ::std::option::Option::Some($done));
+    };
+    (@go $slot:ident, $name:literal, $args:ty, $run:ident, $json:expr) => {
         #[allow(unsafe_code)] // linkme places the entry in a link section.
         #[::linkme::distributed_slice($crate::stack::cli::info::SUBS)]
         static $slot: $crate::stack::cli::info::Sub = $crate::stack::cli::info::Sub {
@@ -53,6 +62,11 @@ macro_rules! sub {
                     argv: ::std::vec::Vec<::std::ffi::OsString>,
                 ) -> $crate::cli::BoxFut<'a> {
                     ::std::boxed::Box::pin(async move {
+                        if let ::std::option::Option::Some(done) = $json
+                            && let ::std::option::Option::Some(plain) = $crate::stack::cli::json_op::strip(&argv)
+                        {
+                            return $crate::stack::cli::json_op::run(ctx, &["stack"], plain, done).await;
+                        }
                         let args = <$args as ::clap::Parser>::try_parse_from(argv).map_err(|e| {
                             $crate::cli::common::CliError::Usage(e.render().to_string().trim_end().to_owned())
                         })?;

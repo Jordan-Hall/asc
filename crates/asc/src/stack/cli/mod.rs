@@ -15,9 +15,18 @@ pub static VERBS: [Command];
 
 /// Registers the verb of the file it is called in: `verb!(SLOT, "word")`, where the file
 /// defines `Args` (a clap parser), `NATIVE` and `async fn run(&Ctx, Args) -> Result<ExitCode>`.
+///
+/// `verb!(SLOT, "word", json: Done::IfLogged)` also gives the verb a `--json` form that prints
+/// an `OpResult` (see [`json_op`]); `NATIVE` then lists `--json` and `Args` does not.
 #[allow(unused_macros)]
 macro_rules! verb {
     ($slot:ident, $name:literal) => {
+        $crate::stack::cli::verb!(@go $slot, $name, ::std::option::Option::<$crate::stack::cli::json_op::Done>::None);
+    };
+    ($slot:ident, $name:literal, json: $done:expr) => {
+        $crate::stack::cli::verb!(@go $slot, $name, ::std::option::Option::Some($done));
+    };
+    (@go $slot:ident, $name:literal, $json:expr) => {
         #[allow(unsafe_code)] // linkme places the entry in a link section.
         #[::linkme::distributed_slice($crate::stack::cli::VERBS)]
         static $slot: $crate::cli::Command = $crate::cli::Command {
@@ -29,6 +38,11 @@ macro_rules! verb {
                     argv: ::std::vec::Vec<::std::ffi::OsString>,
                 ) -> $crate::cli::BoxFut<'a> {
                     ::std::boxed::Box::pin(async move {
+                        if let ::std::option::Option::Some(done) = $json
+                            && let ::std::option::Option::Some(plain) = $crate::stack::cli::json_op::strip(&argv)
+                        {
+                            return $crate::stack::cli::json_op::run(ctx, &[], plain, done).await;
+                        }
                         let args = <Args as ::clap::Parser>::try_parse_from(argv).map_err(|e| {
                             $crate::cli::common::CliError::Usage(
                                 e.render().to_string().trim_end().to_owned(),
