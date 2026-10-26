@@ -243,55 +243,60 @@ fn register_all(
     }
 }
 
-/// Builds the combined gRPC and HTTP routes for `ext`.
-pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
+/// The gRPC services of `ext` behind `authorizer`. They are added to a copy of `ext.grpc`, so the
+/// call can be made again with another authorizer (the public routes and the in-process routes
+/// of the MCP backend).
+pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
+    let mut grpc = ext.grpc.routes();
     if let Some(h) = ext.projects.get() {
-        ext.grpc.register(
+        grpc = grpc.add_service(
             asc_rpc::projects::ProjectsService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
     if let Some(h) = ext.cloud.get() {
-        ext.grpc.register(
+        grpc = grpc.add_service(
             cloud::rpc::CloudService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
     if let Some(h) = ext.changes.get() {
-        ext.grpc.register(
+        grpc = grpc.add_service(
             changes::rpc::ChangesService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
     if let Some(h) = ext.review.get() {
-        ext.grpc.register(
-            review::rpc::ReviewService::new(h.clone(), authorizer.clone(), info.clone())
-                .into_service(),
-        );
-        ext.grpc.register(
-            inbox::rpc::InboxService::new(h.clone(), authorizer.clone(), info.clone())
-                .into_service(),
-        );
-        ext.grpc.register(
-            ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
-        );
+        grpc = grpc
+            .add_service(
+                review::rpc::ReviewService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                inbox::rpc::InboxService::new(h.clone(), authorizer.clone(), info.clone())
+                    .into_service(),
+            )
+            .add_service(
+                ci::rpc::CiService::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+            );
     }
     if let Some(h) = ext.codeintel.get() {
-        ext.grpc.register(
+        grpc = grpc.add_service(
             codeintel::rpc::CodeIntelService::new(h.clone(), authorizer.clone(), info.clone())
                 .into_service(),
         );
     }
+    grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())
+}
+
+/// Builds the combined gRPC and HTTP routes for `ext`.
+pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: ServerInfo) -> Routes {
     // The live git routes when the layer runs (U81), else the disabled stub (U78, SPEC §25.9).
     let git_hosts = ext
         .git
         .router(authorizer.clone())
         .unwrap_or_else(|| authn::git_router(authorizer.clone()));
-    ext.grpc
-        .register(RepoService::new(ext.handlers.clone(), authorizer, info).into_service());
-    let router = ext
-        .grpc
-        .routes()
+    let router = build_grpc(ext, authorizer, info)
         .into_axum_router()
         .merge(ext.http.router())
         // `/<owner>/<repo>/info/refs` and the pack paths (U81; the stub of U78 when disabled).
@@ -464,10 +469,32 @@ pub async fn serve(
     if ssh.is_some() {
         features.push(ssh::FEATURE.to_owned());
     }
+    // `/mcp` is advertised exactly when it is mounted.
+    let mcp_on = mcp::enabled(&cfg);
+    if mcp_on {
+        features.push(mcp::FEATURE.to_owned());
+    }
     let info = ServerInfo {
         features,
         ..ServerInfo::default()
     };
+    if mcp_on {
+        // The backend calls the gRPC services in process, behind a per-call credential only the
+        // backend can mint, and charges admission itself, by principal (SPEC 22.7.2).
+        let scope = mcp::backend::ServeAuthorizer::new(Arc::new(DenyAll));
+        mcp::mount(
+            &ext,
+            mcp::Deps {
+                cfg: &cfg,
+                authorizer: authorizer.clone(),
+                registry: registry.clone(),
+                admission: admission.clone(),
+                routes: build_grpc(&ext, scope.clone(), info.clone()),
+                scope,
+                features: &info.features,
+            },
+        )?;
+    }
     let routes = limits::guarded_routes(&ext, authorizer, admission, info);
     // gRPC-Web and Connect unary for browsers, in front of admission and the services.
     let routes = web::grpc_web::wrap(routes, &cfg.web, cfg.public_url.as_deref());
@@ -514,6 +541,13 @@ pub async fn serve(
     // Purged drafts are evicted from every cache tier by the outbox (B10).
     if let Some(cloud) = ext.cloud.get() {
         outbox.effects().register(cloud.cache_evict_effect());
+    }
+    // A push queues its files for the indexing workers (SPEC §23.5); with `[codeintel]` off the
+    // outbox keeps its no-op for the effect.
+    if cfg.codeintel.enabled {
+        outbox
+            .effects()
+            .register(codeintel::source::enqueue_effect(&registry));
     }
     let worker = tokio::spawn(outbox.run());
     // The indexing workers (SPEC §23.5) run beside `CodeIntel` whenever `[codeintel] enabled`.

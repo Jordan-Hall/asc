@@ -415,7 +415,7 @@ async fn clients_sharing_an_id_do_not_see_each_other() {
 }
 
 #[tokio::test]
-async fn enabled_is_refused_while_no_auth_layer_exists() {
+async fn enabled_needs_the_public_url_the_challenge_names() {
     let base = "store = \"memory:///\"
 db = \"sqlite::memory:\"
 ";
@@ -426,7 +426,15 @@ enabled = true"
     ))
     .unwrap_err()
     .to_string();
-    assert!(err.contains("auth layer"), "{err}");
+    assert!(err.contains("public_url"), "{err}");
+    let ok = ServeConfig::parse(&format!(
+        "{base}public_url = \"https://asc.example.org\"
+[mcp]
+enabled = true"
+    ))
+    .unwrap();
+    assert!(mcp::enabled(&ok));
+    assert!(!mcp::enabled(&ServeConfig::parse(base).unwrap()));
 }
 
 #[tokio::test]
@@ -448,6 +456,7 @@ async fn cache_role_answers_404() {
         ..ServeConfig::default()
     };
     cfg.mcp.enabled = true;
+    assert!(!mcp::enabled(&cfg), "the cache role never mounts /mcp");
     let ext = asc_serve::registry::Extensions::new();
     mcp::register(&ext, &cfg);
     let r = send(

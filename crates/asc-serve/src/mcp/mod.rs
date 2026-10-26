@@ -8,14 +8,18 @@
 //! `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` and `Mcp-Param-Repo` headers must agree with
 //! it (-32020). Bodies are capped at 1 MiB (4 MiB for `commit`).
 //!
-//! The mount is off by default and refused while no auth layer exists (`config::MCP_AUTH_LAYER`).
-//! The endpoint never authenticates itself: the auth layer (M13) puts an [`McpPrincipal`] in the
-//! request extensions, and a request without one is refused with 401.
+//! The mount is off by default (`[mcp] enabled`, primary role only) and [`mount`] composes the
+//! whole stack in `serve()`: the credential edge and per-call authorisation ([`auth::layer`]),
+//! the scope-filtered `tools/list` ([`prm::scope_layer`]), this endpoint, and the backend over the
+//! server's own gRPC services ([`backend::ServeBackend`], wrapped in [`land::LandBackend`]). The
+//! endpoint never authenticates itself: the auth layer puts an [`McpPrincipal`] in the request
+//! extensions, and a request without one is refused with 401.
 
 pub mod audit;
 pub mod auth;
 pub mod backend;
 pub mod forge;
+pub mod gate;
 pub mod land;
 pub mod limits;
 pub mod oauth;
@@ -32,21 +36,34 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode, header};
 use asc_mcp::backend::McpBackend;
-use asc_mcp::handler::{Caller, Handler, Notifier, SUPPORTED_VERSIONS};
+use asc_mcp::config::{McpConfig, parse_toolsets};
+use asc_mcp::cursor::KeyRing;
+use asc_mcp::handler::{Caller, Handler, HandlerConfig, Notifier, SUPPORTED_VERSIONS};
+use asc_mcp::schema::Surface;
+use asc_mcp::shape::HARD_MAX_TOKENS;
+use asc_rpc::auth::Authorizer;
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tonic::service::Routes;
 
-use crate::config::{Role, ServeConfig};
-use crate::registry::Extensions;
+use self::backend::{ServeAuthorizer, ServeBackend};
+use self::land::{LandBackend, RegistryLandPolicy};
+use crate::authz::{TokenKey, TokenStore};
+use crate::config::{AuthProvider, ConfigError, Role, ServeConfig};
+use crate::limits::Admission;
+use crate::registry::{Extensions, Registry};
 
 /// JSON-RPC code for a header that disagrees with the body.
 pub const HEADER_MISMATCH: i32 = -32020;
 /// The mount path.
 pub const PATH: &str = "/mcp";
 
-/// Set in the request extensions by the auth layer (M13): who is calling.
-// TODO(M13): the authorizer layer constructs this from the verified token.
+/// `Version.features` entry of a server that mounts `/mcp`.
+pub const FEATURE: &str = "mcp.v1";
+
+/// Set in the request extensions by the auth layer ([`auth::layer`]) from the verified credential:
+/// who is calling.
 #[derive(Debug, Clone)]
 pub struct McpPrincipal {
     /// The authenticated principal id.
@@ -280,12 +297,16 @@ pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router 
         .with_state(state)
 }
 
-/// The one-line registration in `lib.rs`. Mounts nothing unless `[mcp] enabled` on the primary
-/// role (config validation already refuses `enabled` while no auth layer exists); the cache role
-/// never serves `/mcp`, so it answers 404.
-// TODO(M12b): build `ServeBackend` and the `Handler`, then `ext.http.register(router(..))`.
+/// Whether this server mounts `/mcp`: `[mcp] enabled` on the primary role. The cache role never
+/// serves it and answers 404.
+#[must_use]
+pub fn enabled(cfg: &ServeConfig) -> bool {
+    cfg.role == Role::Primary && cfg.mcp.enabled
+}
+
+/// The one-line registration in `lib.rs`: the protected-resource metadata, which is served on the
+/// primary role whether or not `/mcp` is mounted (SPEC 22.7.3). [`mount`] adds the endpoint.
 pub fn register(ext: &Extensions, cfg: &ServeConfig) {
-    // The metadata document is always served (SPEC 22.7.3), enabled or not.
     let issuers = cfg
         .mcp
         .oauth
@@ -293,12 +314,167 @@ pub fn register(ext: &Extensions, cfg: &ServeConfig) {
         .map(|o| o.issuer.clone())
         .unwrap_or_default();
     prm::register(ext, cfg, issuers);
-    if cfg.role != Role::Primary || !cfg.mcp.enabled {
-        return;
+}
+
+/// What [`mount`] needs from `serve()`.
+pub struct Deps<'a> {
+    pub cfg: &'a ServeConfig,
+    /// The server's one authorizer: a token valid for git is valid for MCP.
+    pub authorizer: Arc<dyn Authorizer>,
+    /// The repository registry (the `land` policy reads it).
+    pub registry: Arc<Registry>,
+    /// The SPEC 16.3 admission controller the public listener uses; the backend charges the
+    /// rate class of each call to the principal.
+    pub admission: Arc<Admission>,
+    /// The gRPC services as the backend calls them in process. They must have been built with
+    /// `scope` as their authorizer and must not sit behind the admission layer.
+    pub routes: Routes,
+    pub scope: Arc<ServeAuthorizer>,
+    /// `Version.features` of this server, which decides which tools are listed.
+    pub features: &'a [String],
+}
+
+/// Mounts the stateless `/mcp` endpoint on `ext` when [`enabled`]; mounts nothing otherwise.
+///
+/// # Errors
+/// A setting that cannot be served: no `public_url`, a missing or unreadable `[mcp] hmac_keys`
+/// file, or `[mcp.oauth]` without a token store to map OIDC subjects to principals. The server
+/// then does not start, because a half-configured authenticator must not serve.
+pub fn mount(ext: &Extensions, d: Deps<'_>) -> Result<(), ConfigError> {
+    let cfg = d.cfg;
+    if !enabled(cfg) {
+        return Ok(());
     }
-    tracing::error!(
-        "mcp.enabled is set but the MCP backend is not wired (M12b); /mcp is not mounted"
+    let public_url = cfg
+        .public_url
+        .as_deref()
+        .ok_or_else(|| ConfigError::Invalid("mcp.enabled needs public_url".into()))?;
+    // OAuth is one more way to present a credential to the same authorizer.
+    let authorizer = oauth_authorizer(cfg, public_url, &d)?;
+    let keys = key_ring(&cfg.mcp.hmac_keys)?;
+    let auth = auth::McpAuth::new(
+        Arc::clone(&authorizer),
+        Arc::new(audit::TracingAudit),
+        &prm::metadata_url(public_url),
     );
+    let gate = Arc::new(auth.gate());
+    let mut backend = ServeBackend::new(
+        d.routes,
+        d.scope,
+        gate.clone(),
+        d.admission,
+        cfg.mcp.max_inflight_per_principal,
+    );
+    if cfg.mcp.write {
+        backend = backend.with_writes(gate);
+    }
+    let backend = LandBackend::new(backend, Arc::new(RegistryLandPolicy(d.registry)));
+
+    let mut hc = HandlerConfig::new(Surface::Http);
+    hc.config = McpConfig {
+        // The remote client narrows what it shows; the server lists every read toolset it can
+        // serve (a tool whose feature is absent is not listed).
+        toolsets: parse_toolsets("all"),
+        max_tokens: u64::from(cfg.mcp.max_tokens).min(HARD_MAX_TOKENS),
+        ..McpConfig::default()
+    };
+    hc.features = d.features.iter().cloned().collect();
+    hc.server_mcp_write = cfg.mcp.write;
+    let handler = Handler::new(backend, hc, keys);
+
+    let policy = HttpPolicy::new(
+        cfg.listen,
+        cfg.public_url.as_deref(),
+        &[],
+        &cfg.mcp.allowed_origins,
+    );
+    let app = prm::scope_layer(auth::layer(router(handler, policy), auth), authorizer);
+    ext.http.register(app);
+    tracing::info!(write = cfg.mcp.write, "mcp mounted at {PATH}");
+    Ok(())
+}
+
+/// The authorizer `/mcp` uses: the server's, wrapped for OIDC access tokens when `[mcp.oauth]`
+/// names issuers. OIDC subjects map to principals through the token store's `auth_identity`, so
+/// that needs `auth.provider = "token_store"`.
+fn oauth_authorizer(
+    cfg: &ServeConfig,
+    public_url: &str,
+    d: &Deps<'_>,
+) -> Result<Arc<dyn Authorizer>, ConfigError> {
+    let Some(oauth) = cfg.mcp.oauth.as_ref().filter(|o| !o.issuer.is_empty()) else {
+        return Ok(Arc::clone(&d.authorizer));
+    };
+    let directory: Arc<dyn oauth::IdentityDirectory> =
+        match (cfg.auth_provider(), &cfg.auth.token_key_file) {
+            (Some(AuthProvider::TokenStore), Some(key)) => {
+                let key = TokenKey::load(key).map_err(|e| ConfigError::Invalid(e.to_string()))?;
+                Arc::new(TokenStore::new(d.registry.pool().clone(), key))
+            }
+            _ => {
+                return Err(ConfigError::Invalid(
+                    "mcp.oauth needs auth.provider = \"token_store\": OIDC subjects map to \
+                     principals through auth_identity"
+                        .into(),
+                ));
+            }
+        };
+    oauth::wrap(
+        Some(oauth),
+        Some(public_url),
+        Arc::clone(&d.authorizer),
+        directory,
+        Arc::new(oauth::HttpKeySource::new()),
+    )
+    .map_err(|e| ConfigError::Invalid(format!("mcp.oauth: {e}")))
+}
+
+/// Longest key file read: 32 raw bytes, or 64 hex digits and a newline.
+const MAX_KEY_FILE: u64 = 129;
+
+/// The cursor keys: the files of `[mcp] hmac_keys` (32 random bytes each, raw or as 64 hex digits;
+/// the first signs, all verify). With no file the ring is random for this process, so a cursor
+/// does not outlive it or reach another replica and is then refused (-32602). A key file that is
+/// missing, readable by others or malformed is an error, never skipped.
+fn key_ring(files: &[std::path::PathBuf]) -> Result<KeyRing, ConfigError> {
+    if files.is_empty() {
+        tracing::warn!(
+            "mcp.hmac_keys is empty: cursors are sealed with a key private to this process"
+        );
+        return KeyRing::random().map_err(|e| ConfigError::Invalid(format!("mcp cursor key: {e}")));
+    }
+    let mut keys = Vec::with_capacity(files.len());
+    for path in files {
+        let bad = |m: &str| ConfigError::Invalid(format!("mcp.hmac_keys {}: {m}", path.display()));
+        let file = crate::authz::key_file::open_private(path).map_err(|e| bad(&e.to_string()))?;
+        let mut raw = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(file, MAX_KEY_FILE + 1), &mut raw)
+            .map_err(|e| bad(&e.to_string()))?;
+        if raw.len() as u64 > MAX_KEY_FILE {
+            return Err(bad("too long for a 32-byte key"));
+        }
+        let key = if raw.len() == 32 {
+            raw
+        } else {
+            std::str::from_utf8(&raw)
+                .ok()
+                .and_then(|t| unhex(t.trim()))
+                .filter(|k| k.len() == 32)
+                .ok_or_else(|| bad("not a 32-byte key"))?
+        };
+        keys.push(key);
+    }
+    KeyRing::from_keys(&keys).map_err(|e| ConfigError::Invalid(format!("mcp.hmac_keys: {e}")))
+}
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) || !s.is_ascii() {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 fn plain(status: StatusCode) -> Response<Body> {
@@ -398,6 +574,8 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
             .insert(header::WWW_AUTHENTICATE, "Bearer".parse().expect("static"));
         return r;
     };
+    // The authorisation of this call lives as long as the call does, on every reply path.
+    let vouch = parts.extensions.get::<Arc<gate::Vouch>>().cloned();
     let ct = parts
         .headers
         .get(header::CONTENT_TYPE)
@@ -481,6 +659,7 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
 
     if !sse {
         let reply = st.svc.call(msg, caller, tx).await;
+        drop(vouch);
         done.store(true, Ordering::SeqCst);
         drop(guard);
         drop(rx);
@@ -494,6 +673,7 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
     let done2 = Arc::clone(&done);
     tokio::spawn(async move {
         let reply = svc.call(msg, caller, tx.clone()).await;
+        drop(vouch);
         done2.store(true, Ordering::SeqCst);
         if let Some(v) = reply {
             let _ = tx.send(v).await;

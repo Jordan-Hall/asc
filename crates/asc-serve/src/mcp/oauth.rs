@@ -19,8 +19,8 @@
 //!   size and time bounded, and are cached.
 //! * No token is forwarded anywhere, logged, or put in an error.
 //!
-//! TODO(M12b): the `/mcp` mount composes `wrap(..)` around the authorizer it gives `auth::layer`.
-//! asc serve's own issuer (authorization code with PKCE ending in an M30 token) is v1.x.
+//! [`super::mount`] composes [`wrap`] around the authorizer it gives `auth::layer` when
+//! `[mcp.oauth]` names issuers. asc serve's own issuer (authorization code with PKCE ending in an M30 token) is v1.x.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
