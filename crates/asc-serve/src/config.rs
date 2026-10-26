@@ -15,8 +15,6 @@ use serde::{Deserialize, Deserializer};
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 /// Most `[[composition_grants]]` entries.
 pub const MAX_GRANTS: usize = 10_000;
-/// Whether the MCP auth layer exists (M13). Until it does, `mcp.enabled = true` is refused.
-pub const MCP_AUTH_LAYER: bool = false;
 
 /// Why a config was refused.
 #[derive(Debug, thiserror::Error)]
@@ -1111,8 +1109,9 @@ impl ServeConfig {
             }
             _ => {}
         }
-        if self.mcp.enabled && !MCP_AUTH_LAYER {
-            return invalid("mcp.enabled = true is refused until the auth layer exists");
+        // The 401 challenge and the metadata document name the resource by absolute URL.
+        if self.mcp.enabled && self.public_url.is_none() {
+            return invalid("mcp.enabled needs public_url (the resource the 401 challenge names)");
         }
         if let Some(oauth) = &self.mcp.oauth {
             oauth

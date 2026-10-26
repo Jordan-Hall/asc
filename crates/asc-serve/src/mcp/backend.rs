@@ -73,8 +73,10 @@ const CALL_PREFIX: &str = "ascmcp";
 
 /// Whether a principal may read a repository. The answer for a missing repository must equal the
 /// answer for an unreadable one (`false`).
-// TODO(M29): the authenticator on the git `Authorizer` implements this with one
-// `Authorizer::authorize(token, repo, Read)` per call, through the shared cache entry.
+///
+/// In production this is [`super::gate::LedgerGate`]: the authenticator authorises the call with
+/// one `Authorizer::authorize_credential(credential, repo, Read)` (through the shared cache
+/// entry) and the gate answers from that decision.
 #[async_trait]
 pub trait RepoGate: Send + Sync + 'static {
     /// `true` only when `principal` may read `repo` (`owner/name`).

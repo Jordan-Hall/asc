@@ -14,6 +14,10 @@
 //! * The `Authorization` header is removed once it is used, so nothing downstream can forward it
 //!   (no passthrough). It is never logged, audited or put in an error.
 //! * Every tool call writes one [`AuditRecord`].
+//! * The decision of a repository-bearing call is kept in the [`Ledger`] as a [`Vouch`] for as
+//!   long as the call runs (the endpoint holds it), and the backend's repository gates
+//!   ([`McpAuth::gate`]) answer from it: the backend serves a repository only for the very call
+//!   the authorizer allowed.
 //! * `initialize`, `tools/list` and tools without a `repo` have no repository to authorise, so
 //!   they take one [`Authorizer::authenticate`] call: the credential must name a real principal,
 //!   which is the one in the request extensions and the audit record. An authorizer that cannot
@@ -36,6 +40,7 @@ use serde_json::{Value, json};
 
 use super::McpPrincipal;
 use super::audit::{AuditRecord, AuditSink, Mode, Outcome};
+use super::gate::{Ledger, LedgerGate, Vouch};
 use super::limits;
 use crate::authn::{self, Surface};
 
@@ -48,6 +53,7 @@ pub struct McpAuth {
     authorizer: Arc<dyn Authorizer>,
     audit: Arc<dyn AuditSink>,
     surface: Surface,
+    ledger: Arc<Ledger>,
 }
 
 impl McpAuth {
@@ -63,7 +69,15 @@ impl McpAuth {
             surface: Surface::Mcp {
                 resource_metadata: resource_metadata.into(),
             },
+            ledger: Ledger::new(),
         }
+    }
+
+    /// The gates the backend of this endpoint must be built with: they open only for a call this
+    /// authenticator has authorised.
+    #[must_use]
+    pub fn gate(&self) -> LedgerGate {
+        LedgerGate::new(Arc::clone(&self.ledger))
     }
 }
 
@@ -265,6 +279,7 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
 
     let principal;
     let mut closing: Option<Call> = None;
+    let mut vouch: Option<Arc<Vouch>> = None;
     match call {
         None => match identify(&auth, &credential, &parts.headers).await {
             Ok(p) => {
@@ -301,6 +316,7 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
                 .await
             {
                 Ok(p) => {
+                    vouch = Some(Arc::new(auth.ledger.vouch(&p.id, repo, c.mode)));
                     principal = McpPrincipal {
                         id: p.id,
                         write: c.mode == Mode::Write,
@@ -339,6 +355,9 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
     // No passthrough: nothing downstream can see, log or forward the credential.
     req.headers_mut().remove(header::AUTHORIZATION);
     req.extensions_mut().insert(principal);
+    if let Some(v) = vouch {
+        req.extensions_mut().insert(v);
+    }
     let res = next.run(req).await;
     if let Some(c) = closing {
         record(
