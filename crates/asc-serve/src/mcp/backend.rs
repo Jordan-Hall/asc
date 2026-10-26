@@ -31,6 +31,7 @@ use asc_mcp::cursor::Position;
 use asc_mcp::errors::{ToolError, code};
 use asc_mcp::rpc_backend::DynCodec;
 use asc_mcp::schema::Surface;
+use asc_mcp::search;
 use asc_rpc::IdMode;
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshIdentity,
@@ -515,7 +516,7 @@ impl McpBackend for ServeBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let def = catalogue::find(tool, Surface::Http)
             .ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
-        // The server write tools (M14) have their own path. `land` is M32, `search` is M15.
+        // The server write tools (M14) have their own path. `land` is M32.
         if write::is_write_tool(def) {
             return write::call(self, def, args, ctx).await;
         }
@@ -524,7 +525,21 @@ impl McpBackend for ServeBackend {
                 "{tool} is not served by this endpoint"
             )));
         }
-        let method = self.method(def.rpc).ok_or_else(|| {
+        // `search` is one of three `CodeIntel` RPCs, chosen by `mode` (unit I21).
+        let search = if def.name == "search" {
+            let page = match &ctx.position {
+                Some(Position::Page { token }) => Some(token.as_str()),
+                _ => None,
+            };
+            Some(search::plan(args, ctx.budget_bytes, page)?)
+        } else {
+            None
+        };
+        let method = match &search {
+            Some(plan) => self.method(&format!("CodeIntel.{}", plan.rpc.method())),
+            None => self.method(def.rpc),
+        }
+        .ok_or_else(|| {
             ToolError::not_available(format!("{tool} is not served by this endpoint"))
         })?;
         let Some(principal) = ctx.principal.as_deref() else {
@@ -557,7 +572,10 @@ impl McpBackend for ServeBackend {
             .admit(Caller::principal(principal), class, 1)
             .map_err(|s| map_status(&s))?;
 
-        let request = Self::build(def, &method, repo.as_str(), args, ctx)?;
+        let request = match &search {
+            Some(plan) => search::wire_request(plan, &method, repo.as_str(), IdMode::Git)?,
+            None => Self::build(def, &method, repo.as_str(), args, ctx)?,
+        };
         let grant = self.scope.mint(principal, repo.as_str(), Access::Read);
         let mut req = Request::new(request);
         req.set_timeout(CALL_TIMEOUT);
@@ -609,9 +627,12 @@ impl McpBackend for ServeBackend {
         let budget = ctx.budget_bytes;
         // The slot, the admission permit and the credential live as long as the stream.
         let holds = (slot, permit, grant);
+        let shape = search.is_some();
         let messages = raw
             .skip(skip)
             .map(|r| r.map_err(|s| map_status(&s)).and_then(|m| encode_msg(&m)))
+            // `search` replies carry `scope`, `coverage` and `est_tokens` whatever the service sent.
+            .map(move |r| if shape { r.map(search::finish) } else { r })
             .scan((0u64, false, holds), move |(used, done, _holds), item| {
                 if *done {
                     return futures::future::ready(None);
