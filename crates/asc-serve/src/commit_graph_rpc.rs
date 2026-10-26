@@ -121,6 +121,10 @@ fn page_status(e: commit_graph::Error) -> Status {
 pub(crate) fn registry_status(e: RegistryError) -> Status {
     match e {
         RegistryError::NotFound(_) => Status::not_found("no such repository"),
+        e if e.unavailable().is_some() => {
+            tracing::warn!(error = %e, "repository storage unavailable");
+            Status::unavailable(e.unavailable().unwrap_or("storage unavailable"))
+        }
         e => internal("registry", &e),
     }
 }
