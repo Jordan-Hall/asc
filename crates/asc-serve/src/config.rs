@@ -208,6 +208,13 @@ pub struct ForgejoConfig {
     pub internal_token_file: Option<PathBuf>,
     pub webhook_secret_file: Option<PathBuf>,
     pub repo_root: Option<PathBuf>,
+    /// Keep the host's bare git directories under `repo_root` current: after every ref update a
+    /// host writer made, the `bridge_promote` outbox effect exports the new tips into
+    /// `<repo_root>/<owner>/<name>.git` and sets those refs to asc's values. Needs `repo_root`,
+    /// a writable mount of it and `[git] enabled`. Set it exactly when the host's bridge mode is
+    /// `eager`; with `lazy` or `off` the host builds or refuses the directory itself.
+    #[serde(default)]
+    pub bridge_promote: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1081,6 +1088,18 @@ impl ServeConfig {
         #[cfg(feature = "forgejo")]
         if let Some(forgejo) = &self.forgejo {
             check_server_url("forgejo.url", &forgejo.url)?;
+            if forgejo.bridge_promote {
+                if forgejo.repo_root.as_ref().is_none_or(|r| !r.has_root()) {
+                    return invalid("forgejo.bridge_promote needs an absolute forgejo.repo_root");
+                }
+                if !self.git.enabled {
+                    return invalid("forgejo.bridge_promote needs [git] enabled = true");
+                }
+                #[cfg(not(feature = "git-compat"))]
+                return invalid(
+                    "forgejo.bridge_promote needs a build with the `git-compat` feature",
+                );
+            }
             if self.auth.provider.is_none() {
                 return invalid(
                     "[forgejo] does not select the authorizer: set auth.provider to \"forgejo\" or \"token_store\"",
@@ -1212,6 +1231,19 @@ impl ServeConfig {
     pub fn import_repo_root(&self) -> Option<PathBuf> {
         #[cfg(feature = "forgejo")]
         return self.forgejo.as_ref().and_then(|f| f.repo_root.clone());
+        #[cfg(not(feature = "forgejo"))]
+        None
+    }
+
+    /// The directory whose bare git directories the `bridge_promote` effect keeps current, when
+    /// the host adapter asks for it.
+    pub fn bridge_promote_root(&self) -> Option<PathBuf> {
+        #[cfg(feature = "forgejo")]
+        return self
+            .forgejo
+            .as_ref()
+            .filter(|f| f.bridge_promote)
+            .and_then(|f| f.repo_root.clone());
         #[cfg(not(feature = "forgejo"))]
         None
     }

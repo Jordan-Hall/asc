@@ -992,6 +992,12 @@ async fn check_windows_paths(entry: &RepoEntry, cs: &Changeset) -> Result<(), St
 
 // ------------------------------------------------------------------------------ the RPC
 
+/// The `via` of the ref log row of an `ImportGitPush`: a push the host's own git is still
+/// finishing. The host moves its git directory's refs itself when its hook returns, so the
+/// `bridge_promote` effect leaves these rows alone (a promotion that won the race would make
+/// git's compare-and-set on the same ref fail).
+pub const HOST_PUSH_VIA: &str = "host-git-push";
+
 /// The `import_push` handler group: `Ingest` (U48a) and `ImportGitPush`.
 pub struct ImportPushService {
     mutations: Arc<ServerMutations>,
@@ -1052,6 +1058,7 @@ impl ImportPushHandler for ImportPushService {
             .collect::<Result<Vec<_>, _>>()?;
         let opts = ImportOptions {
             skip_pre: true,
+            via: Some(HOST_PUSH_VIA),
             ..ImportOptions::default()
         };
         self.push

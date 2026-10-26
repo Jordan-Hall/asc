@@ -18,12 +18,14 @@ use asc_core::codec::decode_envelope;
 use asc_core::git::{ObjectKind, export_tag, object_oid};
 use asc_core::id::{GitOid, RefTarget, TagId};
 use asc_core::object::TagRecord;
+use asc_core::path::RefName;
 use asc_git::compat::view::{RefSource, SourceError};
 use asc_git::compat::{
-    BuildSlots, FsckMode, GitView, Readiness, ServerGit, ServerGitConfig, ServerGitError,
-    SourceRef, SyncReport, ViewError,
+    BuildSlots, FsckMode, GitView, Readiness, RefUpdate, ServerGit, ServerGitConfig,
+    ServerGitError, SourceRef, SyncReport, ViewError,
 };
-use asc_git::export::ExportRoot;
+use asc_git::export::{ExportReport, ExportRoot, Exporter};
+use asc_git::odb::Odb;
 use asc_git::realgit::{RealGit, RealGitError};
 use asc_rpc::coalesce::Coalesce;
 use asc_store::key::ObjKey;
@@ -317,6 +319,65 @@ impl GitViewService {
         .await?
     }
 
+    /// Brings the host's git directory `dir` (the bridge) in step with `plan`: exports what the
+    /// new tips need that `dir` lacks, then sets the planned refs in one `update-ref`
+    /// transaction. Refs outside the plan are not touched, and no git hook runs. Repeating a
+    /// plan changes nothing.
+    pub async fn promote(
+        self: &Arc<Self>,
+        repo: &Arc<RepoEntry>,
+        dir: PathBuf,
+        plan: PromotePlan,
+    ) -> Result<SyncReport, GitViewError> {
+        let (this, repo) = (self.clone(), repo.clone());
+        on_blocking_thread(move || async move {
+            let mut exported = ExportReport::default();
+            if !plan.sets.is_empty() {
+                let roots: Vec<ExportRoot> = plan.sets.iter().map(|s| s.root).collect();
+                let odb = Odb::open(&dir).map_err(ViewError::from)?;
+                let exporter =
+                    Exporter::new(repo.backend.engine(), &*repo.objects, &this.git, &dir);
+                exported = exporter
+                    .export(&roots, &odb)
+                    .await
+                    .map_err(ViewError::from)?;
+                for (set, tip) in plan.sets.iter().zip(&exported.tips) {
+                    if *tip != set.git {
+                        return Err(ViewError::TipMismatch {
+                            name: set.name.clone(),
+                            expected: set.git,
+                            actual: *tip,
+                        }
+                        .into());
+                    }
+                }
+            }
+            let mut updates: Vec<RefUpdate> = plan
+                .sets
+                .iter()
+                .map(|s| RefUpdate::Set {
+                    name: s.name.clone(),
+                    oid: s.git,
+                })
+                .collect();
+            updates.extend(
+                plan.deletes
+                    .iter()
+                    .map(|name| RefUpdate::Delete { name: name.clone() }),
+            );
+            this.server.update_refs(&dir, &updates)?;
+            Ok(SyncReport {
+                noop: false,
+                refs_set: plan.sets.len(),
+                refs_deleted: plan.deletes.len(),
+                head_changed: false,
+                written: exported.written,
+                skipped: exported.skipped,
+            })
+        })
+        .await?
+    }
+
     /// `asc serve admin git-view prune`: removes the views of repos that no longer exist; returns
     /// the repo ids removed.
     pub async fn prune(&self) -> Result<Vec<i64>, GitViewError> {
@@ -345,20 +406,35 @@ pub fn register(
     cfg: &ServeConfig,
 ) -> Option<Arc<GitViewService>> {
     let mirror_dir = cfg.cache.disk_dir.as_ref().map(|d| d.join("mirrors"));
+    let promote_root = cfg.bridge_promote_root();
     match GitViewService::start(cfg, registry.pool().clone(), mirror_dir) {
         Ok(Some(service)) => {
             GitViewSyncEffect::new(service.clone(), registry.clone()).register(outbox);
+            if let Some(root) = promote_root {
+                BridgePromoteEffect::new(service.clone(), registry.clone(), root).register(outbox);
+            }
             tracing::info!(view_dir = %service.view_dir().display(), "git protocol views are ready");
             Some(service)
         }
         Ok(None) => {
             tracing::info!("git protocol disabled: [git] enabled = false");
+            fail_promotions(promote_root, outbox, "[git] enabled = false");
             None
         }
         Err(e) => {
             tracing::warn!("{e}");
+            fail_promotions(promote_root, outbox, &e.to_string());
             None
         }
+    }
+}
+
+/// With a bridge to keep but no git layer, promotion rows must fail rather than pass as done.
+fn fail_promotions(root: Option<PathBuf>, outbox: &crate::outbox::Outbox, why: &str) {
+    if root.is_some() {
+        outbox
+            .effects()
+            .register(Arc::new(PromoteUnavailable(why.to_owned())));
     }
 }
 
@@ -373,27 +449,41 @@ fn source_err(e: impl std::fmt::Display) -> SourceError {
     e.to_string().into()
 }
 
-impl SqlRefSource {
-    /// The git id of a tag object: what the export renders for it.
-    async fn tag_git(&self, id: TagId) -> Result<GitOid, SourceError> {
-        let data = self
-            .repo
-            .objects
-            .get(&ObjKey::Tag(id))
-            .await
-            .map_err(source_err)?
-            .ok_or_else(|| source_err(format!("tag {id} is missing")))?;
-        let rec: TagRecord = decode_envelope(&data).map_err(source_err)?;
-        let target = self
-            .repo
-            .backend
-            .engine()
-            .git_commit_of(rec.target)
-            .await
-            .map_err(source_err)?;
-        let raw = export_tag(&rec, target).map_err(source_err)?;
-        Ok(object_oid(ObjectKind::Tag, &raw))
-    }
+/// The git id of a tag object: what the export renders for it.
+async fn tag_git(repo: &RepoEntry, id: TagId) -> Result<GitOid, SourceError> {
+    let data = repo
+        .objects
+        .get(&ObjKey::Tag(id))
+        .await
+        .map_err(source_err)?
+        .ok_or_else(|| source_err(format!("tag {id} is missing")))?;
+    let rec: TagRecord = decode_envelope(&data).map_err(source_err)?;
+    let target = repo
+        .backend
+        .engine()
+        .git_commit_of(rec.target)
+        .await
+        .map_err(source_err)?;
+    let raw = export_tag(&rec, target).map_err(source_err)?;
+    Ok(object_oid(ObjectKind::Tag, &raw))
+}
+
+/// What to export for a ref's target, and the git id asc's map records for it.
+async fn export_target(
+    repo: &RepoEntry,
+    target: RefTarget,
+) -> Result<(ExportRoot, GitOid), SourceError> {
+    Ok(match target {
+        RefTarget::Changeset(c) => (
+            ExportRoot::Changeset(c),
+            repo.backend
+                .engine()
+                .git_commit_of(c)
+                .await
+                .map_err(source_err)?,
+        ),
+        RefTarget::Tag(t) => (ExportRoot::Tag(t), tag_git(repo, t).await?),
+    })
 }
 
 #[async_trait]
@@ -409,18 +499,7 @@ impl RefSource for SqlRefSource {
             {
                 let name = String::from_utf8(e.name.as_bytes().to_vec())
                     .map_err(|_| source_err("a ref name is not UTF-8"))?;
-                let (target, git) = match e.target {
-                    RefTarget::Changeset(c) => (
-                        ExportRoot::Changeset(c),
-                        self.repo
-                            .backend
-                            .engine()
-                            .git_commit_of(c)
-                            .await
-                            .map_err(source_err)?,
-                    ),
-                    RefTarget::Tag(t) => (ExportRoot::Tag(t), self.tag_git(t).await?),
-                };
+                let (target, git) = export_target(&self.repo, e.target).await?;
                 out.push(SourceRef { name, target, git });
             }
         }
@@ -489,6 +568,231 @@ impl Effect for GitViewSyncEffect {
             .await
             .map(|_| ())
             .map_err(|e| fail(&e))
+    }
+}
+
+// ------------------------------------------------------------------------------ bridge_promote
+
+/// The outbox effect that keeps the host's git directory current (SPEC §8.3 `bridge_promote`).
+pub const PROMOTE_EFFECT: &str = "bridge_promote";
+/// Ref namespaces the host's git directory holds: shared branches, tags and the pull heads the
+/// host writes. Private refs (`refs/users/*`, drafts, snapshots) never leave asc.
+const BRIDGE_NAMESPACES: [&str; 3] = ["refs/heads/", "refs/tags/", "refs/pull/"];
+/// Refs one promotion moves: an `UpdateRefs` request cannot name more.
+const MAX_PROMOTE_REFS: usize = asc_rpc::server::MAX_REF_UPDATES;
+
+/// One ref to set in the bridge: the export that produces its target and the git id that must
+/// come out of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromoteSet {
+    pub name: String,
+    pub root: ExportRoot,
+    pub git: GitOid,
+}
+
+/// What a promotion does to the bridge, from asc's current refs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromotePlan {
+    pub sets: Vec<PromoteSet>,
+    pub deletes: Vec<String>,
+}
+
+/// The `<root>/<owner>/<name>.git` directory of `repo` (the host lowercases both parts). It
+/// must be a plain directory inside `root` that holds a bare repository.
+fn bridge_dir(root: &Path, repo: &str) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("the bridge root must be an absolute path".into());
+    }
+    let (owner, name) = repo
+        .split_once('/')
+        .ok_or_else(|| "invalid repository name".to_owned())?;
+    for part in [owner, name] {
+        if part.is_empty() || part == "." || part == ".." || part.contains(['/', '\\', '\0']) {
+            return Err("invalid repository name".into());
+        }
+    }
+    let dir = root
+        .join(owner.to_lowercase())
+        .join(format!("{}.git", name.to_lowercase()));
+    let meta = std::fs::symlink_metadata(&dir)
+        .map_err(|e| format!("the bridge directory of {repo} is not readable: {e}"))?;
+    if !meta.file_type().is_dir() {
+        return Err(format!("the bridge of {repo} is not a plain directory"));
+    }
+    let inside = match (std::fs::canonicalize(&dir), std::fs::canonicalize(root)) {
+        (Ok(d), Ok(r)) => d.starts_with(r),
+        _ => false,
+    };
+    if !inside {
+        return Err(format!("the bridge of {repo} is outside the bridge root"));
+    }
+    if !dir.join("HEAD").is_file() || !dir.join("objects").is_dir() {
+        return Err(format!("the bridge of {repo} is not a bare git repository"));
+    }
+    Ok(dir)
+}
+
+/// The ref names of a row the bridge holds, sorted and without repeats.
+fn promoted_names(doc: &serde_json::Value) -> Result<Vec<String>, EffectError> {
+    let refs = doc
+        .get("refs")
+        .and_then(|r| r.as_array())
+        .ok_or_else(|| EffectError("outbox row has no refs".into()))?;
+    if refs.len() > MAX_PROMOTE_REFS {
+        return Err(EffectError("outbox row lists too many refs".into()));
+    }
+    let mut names: Vec<String> = refs
+        .iter()
+        .filter_map(|r| r.get("name").and_then(|n| n.as_str()))
+        .filter(|n| BRIDGE_NAMESPACES.iter().any(|ns| n.starts_with(ns)))
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// `bridge_promote`: after a host writer moved shared refs, exports the new tips into the host's
+/// git directory and sets its refs to **asc's current** values, so a plain `git clone` of the host
+/// sees them. Idempotent (a repeat finds every object and ref in place), bounded by the row's ref
+/// list, and silent about everything but names and counts. A missing or unusable directory is an
+/// error: the row is retried with backoff until the host makes the directory right.
+///
+/// The `ImportGitPush` rows are skipped: the host's git moves its refs itself when its hook
+/// returns ([`crate::import_push::HOST_PUSH_VIA`]).
+pub struct BridgePromoteEffect {
+    service: Arc<GitViewService>,
+    registry: Arc<crate::registry::Registry>,
+    root: PathBuf,
+}
+
+impl BridgePromoteEffect {
+    pub fn new(
+        service: Arc<GitViewService>,
+        registry: Arc<crate::registry::Registry>,
+        root: PathBuf,
+    ) -> Self {
+        Self {
+            service,
+            registry,
+            root,
+        }
+    }
+
+    /// Registers the effect, replacing the placeholder.
+    pub fn register(self, outbox: &crate::outbox::Outbox) {
+        outbox.effects().register(Arc::new(self));
+    }
+
+    /// Whether the host's own git wrote this row's refs.
+    async fn host_wrote_it(&self, job: &Job) -> Result<bool, sqlx::Error> {
+        let row = sqlx::query("SELECT via FROM ref_log WHERE repo_id = $1 AND op_id = $2 LIMIT 1")
+            .bind(job.repo_id)
+            .bind(job.op_id.clone())
+            .fetch_optional(self.registry.pool())
+            .await?;
+        match row {
+            Some(r) => Ok(r.try_get::<String, _>("via")? == crate::import_push::HOST_PUSH_VIA),
+            None => Ok(false),
+        }
+    }
+
+    /// asc's current value of every named ref, as the bridge should hold it.
+    async fn plan(&self, repo: &RepoEntry, names: &[String]) -> Result<PromotePlan, EffectError> {
+        let fail = |e: &dyn std::fmt::Display| EffectError(e.to_string());
+        let mut plan = PromotePlan::default();
+        for name in names {
+            let ref_name = RefName::new(name.as_bytes().to_vec()).map_err(|e| fail(&e))?;
+            match self
+                .registry
+                .refs()
+                .get(repo.key, &ref_name)
+                .await
+                .map_err(|e| fail(&e))?
+            {
+                Some(entry) => {
+                    let (root, git) = export_target(repo, entry.target)
+                        .await
+                        .map_err(|e| fail(&e))?;
+                    plan.sets.push(PromoteSet {
+                        name: name.clone(),
+                        root,
+                        git,
+                    });
+                }
+                None => plan.deletes.push(name.clone()),
+            }
+        }
+        Ok(plan)
+    }
+}
+
+#[async_trait]
+impl Effect for BridgePromoteEffect {
+    fn kind(&self) -> &'static str {
+        PROMOTE_EFFECT
+    }
+
+    async fn run(&self, job: &Job) -> Result<(), EffectError> {
+        let fail = |e: &dyn std::fmt::Display| EffectError(e.to_string());
+        let names = promoted_names(&job.doc)?;
+        if names.is_empty() {
+            return Ok(());
+        }
+        let row = sqlx::query("SELECT name FROM repos WHERE id = $1")
+            .bind(job.repo_id)
+            .fetch_optional(self.registry.pool())
+            .await
+            .map_err(|e| fail(&e))?;
+        // A deleted repo has no bridge to keep.
+        let Some(row) = row else {
+            return Ok(());
+        };
+        let name: String = row.try_get("name").map_err(|e| fail(&e))?;
+        let name = asc_rpc::server::RepoName::parse(&name).map_err(|e| fail(&e))?;
+        let repo = self.registry.open(&name).await.map_err(|e| fail(&e))?;
+        // A mirror repo is written by its source, never by a host writer.
+        if repo.mode == RepoMode::Mirror || self.host_wrote_it(job).await.map_err(|e| fail(&e))? {
+            return Ok(());
+        }
+        let plan = self.plan(&repo, &names).await?;
+        let (root, repo_name) = (self.root.clone(), repo.name.as_str().to_owned());
+        let dir = tokio::task::spawn_blocking(move || bridge_dir(&root, &repo_name))
+            .await
+            .map_err(|e| fail(&e))?
+            .map_err(EffectError)?;
+        let report = self
+            .service
+            .promote(&repo, dir, plan)
+            .await
+            .map_err(|e| fail(&e))?;
+        tracing::info!(
+            event = "bridge.promoted",
+            repo = %repo.name,
+            refs_set = report.refs_set,
+            refs_deleted = report.refs_deleted,
+            written = report.written,
+            "bridge promoted"
+        );
+        Ok(())
+    }
+}
+
+/// Stands in for [`BridgePromoteEffect`] when the git layer cannot start: the rows fail and are
+/// retried (the outbox lag alarm fires) instead of being accepted and dropped.
+struct PromoteUnavailable(String);
+
+#[async_trait]
+impl Effect for PromoteUnavailable {
+    fn kind(&self) -> &'static str {
+        PROMOTE_EFFECT
+    }
+
+    async fn run(&self, _job: &Job) -> Result<(), EffectError> {
+        Err(EffectError(format!(
+            "the bridge cannot be promoted: {}",
+            self.0
+        )))
     }
 }
 
