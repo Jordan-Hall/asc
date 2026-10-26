@@ -89,7 +89,9 @@ export function group(entries: readonly InboxEntry[], now: number): InboxGroup[]
     const items = entries
       .filter((e) => e.section === id && !isSnoozed(e, now))
       .toSorted(
-        (a, b) => Number(b.pinned === true) - Number(a.pinned === true) || (b.updated ?? 0) - (a.updated ?? 0),
+        (a, b) =>
+          Number(b.pinned === true) - Number(a.pinned === true) ||
+          (b.updated ?? 0) - (a.updated ?? 0),
       )
       .map((e) => ({
         root: e.root,
@@ -276,11 +278,19 @@ async function pollRoots<T>(
 }
 
 /** Inbox calls over the bridge, one set per asc-server root. `targets` is read on every call. */
-export function bridgeInboxApi(mgr: BridgeManager, targets: () => readonly ServerTarget[]): InboxApi {
+export function bridgeInboxApi(
+  mgr: BridgeManager,
+  targets: () => readonly ServerTarget[],
+): InboxApi {
   const listCache = new Map<string, Cached<InboxEntry[]>>();
   const countCache = new Map<string, Cached<number>>();
 
-  const count = (t: ServerTarget, sections: InboxSection[], ifNoneMatch: string, signal: AbortSignal) =>
+  const count = (
+    t: ServerTarget,
+    sections: InboxSection[],
+    ifNoneMatch: string,
+    signal: AbortSignal,
+  ) =>
     callUnary(
       mgr.node(),
       Inbox.method.count,
@@ -396,7 +406,7 @@ export function registerInbox(
   const view = vscode.window.createTreeView("asc.inbox", { treeDataProvider: provider });
   const fail = (what: string) => (e: unknown) => {
     log(`asc inbox ${what}: ${String(e)}`);
-    void vscode.window.showErrorMessage(`asc: could not ${what} the inbox entry.`);
+    void vscode.window.showErrorMessage(`ASC: could not ${what} the inbox entry.`);
   };
   const item = (n?: Node) => (n?.kind === "item" ? n.i : undefined);
   const subs: { dispose(): unknown }[] = [

@@ -31,32 +31,18 @@ import { registerIgnoreCommand } from "./scm/ignore";
 import { registerScm } from "./scm/provider";
 import { bridgeRemoteApi, registerRemoteCommands } from "./scm/remote";
 import { registerStashCommands } from "./scm/stash";
-import {
-  bridgeStatusApi,
-  registerStackEditCommands,
-  registerStatusBar,
-} from "./scm/statusbar";
+import { bridgeStatusApi, registerStackEditCommands, registerStatusBar } from "./scm/statusbar";
 import { registerSearch } from "./search";
 import { registerStackActions } from "./stack/actions";
 import { registerStackNav } from "./stack/nav";
 import { registerShare } from "./stack/share";
 import { registerTasks } from "./tasks";
-import {
-  bridgeActionsApi,
-  currentChange,
-  registerActions,
-  splitRepo,
-} from "./views/actions";
+import { bridgeActionsApi, currentChange, registerActions, splitRepo } from "./views/actions";
 import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affected";
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
 import { bridgeInboxApi, InboxModel, registerInbox } from "./views/inbox";
 import { registerOpLog } from "./views/oplog";
-import {
-  bridgeViewApi,
-  pump,
-  registerWorktrees,
-  wsIdFor,
-} from "./views/worktrees";
+import { bridgeViewApi, pump, registerWorktrees, wsIdFor } from "./views/worktrees";
 import type { WebviewHost } from "./webview/host";
 import { vscodeWebviews } from "./webview/vscode-adapter";
 
@@ -94,7 +80,11 @@ export interface Host {
   /** Registers the commands, trees, status bar, search, MCP and hydration contributions
    * (P26-P34, P47a, P49a). The plugin talks to asc only; nothing here knows a forge. `hello` decides
    * which asc serve services (inbox, review, ci) register. Absent under tests. */
-  registerFeatures?(bridge: BridgeManager, folders: readonly string[], hello: HelloInfo): Disposable;
+  registerFeatures?(
+    bridge: BridgeManager,
+    folders: readonly string[],
+    hello: HelloInfo,
+  ): Disposable;
 }
 
 export const GIT_PROMPT_BUTTON = "Use asc";
@@ -185,7 +175,9 @@ export async function activateWith(
       }
       return hello.compat;
     } catch (e) {
-      host.log(`the asc bridge did not start or a feature failed to register; check asc.path: ${String(e)}`);
+      host.log(
+        `the asc bridge did not start or a feature failed to register; check asc.path: ${String(e)}`,
+      );
       return null;
     }
   };
@@ -290,7 +282,7 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerOpLog(vscode, viewApi, roots, log),
     registerFileHistory(vscode, historyApi, roots, log),
     registerRevNav(vscode, historyApi, roots, log),
-    // P34: "asc: Search code".
+    // P34: "ASC: Search code".
     registerSearch(vscode, mgr, roots, log),
   );
 
@@ -339,7 +331,8 @@ export function registerAll(e: FeatureEnv): Disposable {
             { wsId: await wsIdFor(mgr, root) },
             { root, ...(signal ? { signal } : {}) },
           );
-          const rows = (l: typeof r.byPath) => l.map((c) => ({ key: c.key, count: Number(c.count) }));
+          const rows = (l: typeof r.byPath) =>
+            l.map((c) => ({ key: c.key, count: Number(c.count) }));
           return { byPath: rows(r.byPath), byProcess: rows(r.byProcess) };
         },
       },
@@ -358,7 +351,7 @@ export function registerAll(e: FeatureEnv): Disposable {
     const root =
       roots.length === 1
         ? roots[0]
-        : await vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+        : await vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
     if (!root) return;
     await checkout.run(root, { kind: "pr", number: n });
     after(root);
@@ -444,13 +437,10 @@ export function registerAll(e: FeatureEnv): Disposable {
   return { dispose: () => disposeAll(subs) };
 }
 
-export function vscodeHost(
-  vscode: typeof vscodeTypes,
-  ctx: vscodeTypes.ExtensionContext,
-): Host {
+export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.ExtensionContext): Host {
   let channel: vscodeTypes.OutputChannel | undefined;
   const out = () => {
-    channel ??= vscode.window.createOutputChannel("asc", { log: true });
+    channel ??= vscode.window.createOutputChannel("ASC", { log: true });
     ctx.subscriptions.push(channel);
     return channel;
   };

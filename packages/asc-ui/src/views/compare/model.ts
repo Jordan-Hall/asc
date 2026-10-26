@@ -51,7 +51,8 @@ export function compareRequest(
   heads: Readonly<Record<string, string>>,
   threeDot?: boolean,
 ): CompareRequestArgs {
-  const rev = (s: CompareSide): string => (s.kind === "revision" ? s.value : (heads[s.value] ?? s.value));
+  const rev = (s: CompareSide): string =>
+    s.kind === "revision" ? s.value : (heads[s.value] ?? s.value);
   const both = a.kind === "revision" && b.kind === "revision";
   return { a: rev(a), b: rev(b), threeDot: threeDot ?? !both };
 }

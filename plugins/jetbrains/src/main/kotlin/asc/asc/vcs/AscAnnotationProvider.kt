@@ -149,8 +149,8 @@ class AscAnnotationProvider(private val project: Project) : AnnotationProvider {
 
     override fun annotate(file: VirtualFile): FileAnnotation {
         val root = ProjectLevelVcsManager.getInstance(project).getVcsRootFor(file)?.path
-            ?: throw VcsException("asc: ${file.path} is not under an asc root")
-        val rel = AscPaths.relative(root, file.path) ?: throw VcsException("asc: ${file.path} is outside $root")
+            ?: throw VcsException("ASC: ${file.path} is not under an ASC root")
+        val rel = AscPaths.relative(root, file.path) ?: throw VcsException("ASC: ${file.path} is outside $root")
         val docs = FileDocumentManager.getInstance()
         val doc = docs.getCachedDocument(file)
         val dirty = doc != null && docs.isDocumentUnsaved(doc)
@@ -160,12 +160,12 @@ class AscAnnotationProvider(private val project: Project) : AnnotationProvider {
         try {
             return runBlockingCancellable {
                 val info = bridge.hello(listOf(root)).rootsList.firstOrNull { it.wsId.isNotEmpty() }
-                    ?: throw VcsException("asc: no workspace for $root")
+                    ?: throw VcsException("ASC: no workspace for $root")
                 val lines = AscBlame.load(calls, root, info.wsId, rel, buffer, AscBlame.lineCount(text))
                 AscFileAnnotation(project, file, lines, text, AscContent.head(calls, root, info.wsId))
             }
         } catch (e: BridgeException) {
-            throw VcsException("asc: ${e.message}")
+            throw VcsException("ASC: ${e.message}")
         }
     }
 }

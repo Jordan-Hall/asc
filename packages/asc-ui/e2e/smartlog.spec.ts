@@ -10,10 +10,14 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-smartlog-")), "smartlog.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -43,7 +47,15 @@ const data = {
           change("a", undefined, { needsRestack: true }),
           change("b", "a", {
             current: true,
-            review: { host: "f", number: 7, url: "", state: "open", draft: false, approvals: 1, checks: "passing" },
+            review: {
+              host: "f",
+              number: 7,
+              url: "",
+              state: "open",
+              draft: false,
+              approvals: 1,
+              checks: "passing",
+            },
           }),
           change("c", "b", { frozen: true }),
         ],
@@ -65,10 +77,15 @@ async function start(page: Page, conflicts = 0): Promise<void> {
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundle, type: "module" });
   await page.waitForFunction(() => typeof window.ascStart === "function");
-  await page.evaluate(([d, c]) => window.ascStart(d as never, c as number), [data, conflicts] as const);
+  await page.evaluate(([d, c]) => window.ascStart(d as never, c as number), [
+    data,
+    conflicts,
+  ] as const);
 }
 
-test("rows show PR, divergent, frozen and worktree state; hidden and cloud are toggled", async ({ page }) => {
+test("rows show PR, divergent, frozen and worktree state; hidden and cloud are toggled", async ({
+  page,
+}) => {
   await start(page);
   await expect(page.getByTestId("row-b").locator('[data-badge="pr"]')).toHaveText("#7 open");
   await expect(page.getByTestId("row-c").locator('[data-badge="frozen"]')).toBeVisible();
@@ -85,13 +102,21 @@ test("rows show PR, divergent, frozen and worktree state; hidden and cloud are t
 test("disabled buttons state their reason", async ({ page }) => {
   await start(page);
   const checkout = page.getByTestId("row-x").locator('[data-action="checkout"]');
-  await expect(checkout).toHaveAttribute("title", "Uncommitted changes: create or stash them first");
-  await expect(page.getByTestId("row-c").locator('[data-action="abandon"]')).toHaveAttribute("title", "Frozen");
+  await expect(checkout).toHaveAttribute(
+    "title",
+    "Uncommitted changes: create or stash them first",
+  );
+  await expect(page.getByTestId("row-c").locator('[data-action="abandon"]')).toHaveAttribute(
+    "title",
+    "Frozen",
+  );
   const create = page.getByTestId("row-uncommitted").locator('[data-action="create"]');
   await expect(create).toHaveAttribute("title", "Select at least one file");
 });
 
-test("uncommitted files are checked, then create runs with exactly those paths", async ({ page }) => {
+test("uncommitted files are checked, then create runs with exactly those paths", async ({
+  page,
+}) => {
   await start(page);
   await page.locator('input[data-path="src/b.ts"]').check();
   await page.getByTestId("row-uncommitted").locator('[data-action="create"]').click();
@@ -107,7 +132,9 @@ test("drag shows the predicted-conflict badge, then enqueues the move", async ({
   expect(calls.moves).toEqual([{ change: "x", onto: { kind: "change", id: "b" } }]);
 });
 
-test("a frozen change cannot be dragged and a change cannot drop on its descendant", async ({ page }) => {
+test("a frozen change cannot be dragged and a change cannot drop on its descendant", async ({
+  page,
+}) => {
   await start(page);
   await expect(page.getByTestId("row-c")).toHaveAttribute("draggable", "false");
   await page.getByLabel("Show hidden").check();
@@ -120,7 +147,10 @@ test("double click checks out an enabled change", async ({ page }) => {
   await page.goto("/");
   await page.addScriptTag({ content: bundle, type: "module" });
   await page.waitForFunction(() => typeof window.ascStart === "function");
-  await page.evaluate((d) => window.ascStart({ ...(d as object), uncommitted: [], extras: {} } as never, 0), data);
+  await page.evaluate(
+    (d) => window.ascStart({ ...(d as object), uncommitted: [], extras: {} } as never, 0),
+    data,
+  );
   await page.getByTestId("row-x").dblclick();
   const runs = await page.evaluate(() => window.ascSmartlog.calls.runs);
   expect(runs).toEqual([{ verb: "switch", change: "x" }]);

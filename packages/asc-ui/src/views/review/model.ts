@@ -208,7 +208,9 @@ export function mergeState(stacks: Stacks, id: string, data: ReviewData["changes
   if (r.draft) return no("Pull request is a draft");
   const below = (stack?.changes ?? []).slice(0, at.index).find((b) => data[b.id]?.merged !== true);
   if (below) {
-    return no(`Merge ${below.review ? `#${below.review.number}` : below.subject} first (stack order)`);
+    return no(
+      `Merge ${below.review ? `#${below.review.number}` : below.subject} first (stack order)`,
+    );
   }
   const d = data[id];
   if (d?.mergeability === "conflicts") return no("Conflicts with the target");

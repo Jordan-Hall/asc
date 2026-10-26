@@ -35,8 +35,12 @@ function useDashboardData(recent: readonly string[]) {
   const inboxKey = recent.slice(0, INBOX_REPOS).join("\n");
   const changeNames = useMemo(() => (changeKey ? changeKey.split("\n") : []), [changeKey]);
   const inboxNames = useMemo(() => (inboxKey ? inboxKey.split("\n") : []), [inboxKey]);
-  const changes = useQueries(useMemo(() => changeNames.map((n) => queries.changes(n)), [changeNames, queries]));
-  const inbox = useQueries(useMemo(() => inboxNames.map((n) => queries.inbox(n)), [inboxNames, queries]));
+  const changes = useQueries(
+    useMemo(() => changeNames.map((n) => queries.changes(n)), [changeNames, queries]),
+  );
+  const inbox = useQueries(
+    useMemo(() => inboxNames.map((n) => queries.inbox(n)), [inboxNames, queries]),
+  );
   const rows = changes.flatMap((e, i) =>
     (e.data?.stacks ?? []).flatMap((s) =>
       s.changes.filter((c) => !c.landed).map((row) => ({ repo: changeNames[i] ?? "", row })),
@@ -100,16 +104,40 @@ function Stats(props: { data: Data; firstRepo: string | undefined }): ReactNode 
   return (
     <ul className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="At a glance">
       <li>
-        <Stat to="/inbox" icon="inbox" label="Your turn" value={loadingInbox ? undefined : own} tone="turn" />
+        <Stat
+          to="/inbox"
+          icon="inbox"
+          label="Your turn"
+          value={loadingInbox ? undefined : own}
+          tone="turn"
+        />
       </li>
       <li>
-        <Stat to={changesTo} icon="layers" label="Open changes" value={loadingChanges ? undefined : rows.length} tone="plain" />
+        <Stat
+          to={changesTo}
+          icon="layers"
+          label="Open changes"
+          value={loadingChanges ? undefined : rows.length}
+          tone="plain"
+        />
       </li>
       <li>
-        <Stat to={changesTo} icon="alert" label="Checks failing" value={loadingChanges ? undefined : rows.filter((r) => isFailing(r.row)).length} tone="bad" />
+        <Stat
+          to={changesTo}
+          icon="alert"
+          label="Checks failing"
+          value={loadingChanges ? undefined : rows.filter((r) => isFailing(r.row)).length}
+          tone="bad"
+        />
       </li>
       <li>
-        <Stat to={changesTo} icon="merge" label="Ready to land" value={loadingChanges ? undefined : rows.filter((r) => isReady(r.row)).length} tone="good" />
+        <Stat
+          to={changesTo}
+          icon="merge"
+          label="Ready to land"
+          value={loadingChanges ? undefined : rows.filter((r) => isReady(r.row)).length}
+          tone="good"
+        />
       </li>
     </ul>
   );
@@ -118,8 +146,16 @@ function Stats(props: { data: Data; firstRepo: string | undefined }): ReactNode 
 // --- your turn ----------------------------------------------------------------------------------
 
 const SECTION: Record<number, { label: string; tone: string; turn: boolean }> = {
-  1: { label: "Review requested", tone: "bg-[rgb(var(--color-accent-emerald)/0.16)] text-signal", turn: true },
-  2: { label: "Feedback to address", tone: "bg-[rgb(var(--color-accent-emerald)/0.16)] text-signal", turn: true },
+  1: {
+    label: "Review requested",
+    tone: "bg-[rgb(var(--color-accent-emerald)/0.16)] text-signal",
+    turn: true,
+  },
+  2: {
+    label: "Feedback to address",
+    tone: "bg-[rgb(var(--color-accent-emerald)/0.16)] text-signal",
+    turn: true,
+  },
   3: { label: "Checks failed", tone: "bg-danger-bg text-bad", turn: true },
   4: { label: "Waiting on others", tone: "bg-subtle-hover text-fg-muted", turn: false },
 };
@@ -165,7 +201,11 @@ function TurnRow(props: { repo: string; item: InboxItemView }): ReactNode {
 
 function YourTurn(props: { data: Data }): ReactNode {
   const items = props.data.turn
-    .toSorted((a, b) => Number(SECTION[b.item.section]?.turn) - Number(SECTION[a.item.section]?.turn) || b.item.updated - a.item.updated)
+    .toSorted(
+      (a, b) =>
+        Number(SECTION[b.item.section]?.turn) - Number(SECTION[a.item.section]?.turn) ||
+        b.item.updated - a.item.updated,
+    )
     .slice(0, 6);
   return (
     <section aria-labelledby="turn-h" className={`${CARD} overflow-hidden`}>
@@ -178,7 +218,12 @@ function YourTurn(props: { data: Data }): ReactNode {
         </Link>
       </div>
       {props.data.loadingInbox && items.length === 0 ? (
-        <div role="status" aria-busy="true" aria-label="Loading your turn" className="space-y-3 p-4">
+        <div
+          role="status"
+          aria-busy="true"
+          aria-label="Loading your turn"
+          className="space-y-3 p-4"
+        >
           {[0, 1, 2].map((i) => (
             <Bar key={i} width={`${90 - i * 14}%`} height={18} />
           ))}
@@ -189,12 +234,18 @@ function YourTurn(props: { data: Data }): ReactNode {
             <Icon name="check" size={20} />
           </span>
           <p className="text-sm font-semibold text-fg-strong">Nothing waiting on you</p>
-          <p className="mt-1 text-sm text-fg-muted">Reviews, feedback and failed checks show up here.</p>
+          <p className="mt-1 text-sm text-fg-muted">
+            Reviews, feedback and failed checks show up here.
+          </p>
         </div>
       ) : (
         <ul className="divide-y divide-line">
           {items.map((t) => (
-            <TurnRow key={`${t.repo}:${t.item.change}:${t.item.section}`} repo={t.repo} item={t.item} />
+            <TurnRow
+              key={`${t.repo}:${t.item.change}:${t.item.section}`}
+              repo={t.repo}
+              item={t.item}
+            />
           ))}
         </ul>
       )}
@@ -205,9 +256,27 @@ function YourTurn(props: { data: Data }): ReactNode {
 // --- recent changes -----------------------------------------------------------------------------
 
 function ChecksIcon(props: { checks: string }): ReactNode {
-  if (props.checks === "success") return <span className="inline-flex items-center gap-1 text-good"><Icon name="check" size={13} />Checks passed</span>;
-  if (props.checks === "failure") return <span className="inline-flex items-center gap-1 text-bad"><Icon name="x" size={13} />Checks failed</span>;
-  if (props.checks === "pending") return <span className="inline-flex items-center gap-1 text-warn"><Icon name="clock" size={13} />Checks running</span>;
+  if (props.checks === "success")
+    return (
+      <span className="inline-flex items-center gap-1 text-good">
+        <Icon name="check" size={13} />
+        Checks passed
+      </span>
+    );
+  if (props.checks === "failure")
+    return (
+      <span className="inline-flex items-center gap-1 text-bad">
+        <Icon name="x" size={13} />
+        Checks failed
+      </span>
+    );
+  if (props.checks === "pending")
+    return (
+      <span className="inline-flex items-center gap-1 text-warn">
+        <Icon name="clock" size={13} />
+        Checks running
+      </span>
+    );
   return null;
 }
 
@@ -267,7 +336,11 @@ function RecentChanges(props: { data: Data; empty: boolean }): ReactNode {
       {loadingChanges && ranked.length === 0 && !props.empty ? (
         <div role="status" aria-busy="true" aria-label="Loading changes">
           {[0, 1, 2].map((i) => (
-            <div key={i} className="flex items-center gap-3 border-b border-line px-4" style={{ height: ROW }}>
+            <div
+              key={i}
+              className="flex items-center gap-3 border-b border-line px-4"
+              style={{ height: ROW }}
+            >
               <Bar width="2rem" height={32} />
               <div className="flex-1 space-y-2">
                 <Bar width={`${60 - i * 8}%`} height={14} />
@@ -320,13 +393,26 @@ function RepoRow(props: { name: string }): ReactNode {
           {repo}
         </Link>
         <div className="truncate text-xs text-fg-muted" style={{ height: 18 }}>
-          {commit.data ? commit.data.subject : failed ? "Not available" : <Bar width="55%" height={12} />}
+          {commit.data ? (
+            commit.data.subject
+          ) : failed ? (
+            "Not available"
+          ) : (
+            <Bar width="55%" height={12} />
+          )}
         </div>
       </div>
-      <div className="hidden w-32 items-center gap-1.5 text-xs text-fg-muted md:flex" style={{ height: 18 }}>
+      <div
+        className="hidden w-32 items-center gap-1.5 text-xs text-fg-muted md:flex"
+        style={{ height: 18 }}
+      >
         {lang ? (
           <>
-            <span aria-hidden="true" className="h-3 w-3 rounded-full" style={{ background: lang.color }} />
+            <span
+              aria-hidden="true"
+              className="h-3 w-3 rounded-full"
+              style={{ background: lang.color }}
+            />
             {lang.name}
           </>
         ) : null}
@@ -376,11 +462,17 @@ function OpenForm(): ReactNode {
           aria-describedby="open-repo-err"
           className="h-9 min-w-0 flex-1 rounded-lg border border-control bg-page px-3 text-sm"
         />
-        <button type="submit" className="h-9 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand">
+        <button
+          type="submit"
+          className="h-9 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand"
+        >
           Open
         </button>
       </div>
-      <p id="open-repo-err" className={`mt-1 min-h-5 text-sm ${invalid ? "text-bad" : "text-transparent"}`}>
+      <p
+        id="open-repo-err"
+        className={`mt-1 min-h-5 text-sm ${invalid ? "text-bad" : "text-transparent"}`}
+      >
         {invalid ? "Use the form owner/repo." : "."}
       </p>
     </form>
@@ -412,7 +504,9 @@ function Repositories(props: { names: readonly string[] }): ReactNode {
       </div>
       {shown.length === 0 ? (
         <p className="px-4 py-10 text-center text-sm text-fg-muted">
-          {props.names.length === 0 ? "No repositories yet." : `No repository matches “${filter.trim()}”.`}
+          {props.names.length === 0
+            ? "No repositories yet."
+            : `No repository matches “${filter.trim()}”.`}
         </p>
       ) : (
         <ul className="divide-y divide-line" aria-label="Repositories">
@@ -464,7 +558,9 @@ function Side(): ReactNode {
               <span className="flex items-center gap-1 whitespace-nowrap">
                 {t.keys.map((k, i) => (
                   <span key={k} className="flex items-center gap-1">
-                    {i > 0 && t.keys[0] !== "Ctrl" ? <span className="text-xs text-fg-muted">then</span> : null}
+                    {i > 0 && t.keys[0] !== "Ctrl" ? (
+                      <span className="text-xs text-fg-muted">then</span>
+                    ) : null}
                     <Kbd>{k}</Kbd>
                   </span>
                 ))}
@@ -488,7 +584,8 @@ function Onboarding(): ReactNode {
       </h2>
       <p className="mx-auto mt-1 max-w-md text-sm text-fg-muted">
         Type a name such as <code className="font-mono">acme/app</code> in the box, or press{" "}
-        <Kbd>Ctrl</Kbd> <Kbd>K</Kbd>. The repositories you open are listed here, in this browser only.
+        <Kbd>Ctrl</Kbd> <Kbd>K</Kbd>. The repositories you open are listed here, in this browser
+        only.
       </p>
       <button
         type="button"

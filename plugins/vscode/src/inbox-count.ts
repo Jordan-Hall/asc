@@ -150,7 +150,7 @@ export class InboxCountPoller {
     return {
       text: `$(git-pull-request) ${n}`,
       dimmed,
-      tooltip: `asc: ${n} ${t === 1 ? "change needs" : "changes need"} your review (${when})`,
+      tooltip: `ASC: ${n} ${t === 1 ? "change needs" : "changes need"} your review (${when})`,
     };
   }
 

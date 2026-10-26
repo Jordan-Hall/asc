@@ -1,7 +1,14 @@
 // Commit details model (SPEC §24.3.3): message, files, change, PR, versions. Pure functions;
 // the DOM lives in view.ts and the wire mapping in from-proto.ts.
 
-export type FileStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typechange" | "unknown";
+export type FileStatus =
+  | "added"
+  | "modified"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "typechange"
+  | "unknown";
 
 export interface DetailFile {
   readonly path: string;

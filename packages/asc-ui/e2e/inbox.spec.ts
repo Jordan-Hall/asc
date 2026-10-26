@@ -10,10 +10,14 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-inbox-")), "inbox.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -23,7 +27,12 @@ const seed = [
   { id: 1, section: "needs_review", pull_request: pr(1, "Add stack view") },
   { id: 2, section: "needs_review", pull_request: pr(2, "Fix restack") },
   { id: 3, section: "ready", pinned: true, pull_request: pr(3, "Ready one") },
-  { id: 4, section: "drafts", snoozed_until: "2026-02-01T00:00:00Z", pull_request: pr(4, "Snoozed draft") },
+  {
+    id: 4,
+    section: "drafts",
+    snoozed_until: "2026-02-01T00:00:00Z",
+    pull_request: pr(4, "Snoozed draft"),
+  },
 ];
 
 async function start(page: Page): Promise<void> {
@@ -31,7 +40,10 @@ async function start(page: Page): Promise<void> {
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundle, type: "module" });
   await page.waitForFunction(() => typeof window.ascStartInbox === "function");
-  await page.evaluate(([d, n]) => window.ascStartInbox(d as never, n as number), [seed, now] as const);
+  await page.evaluate(([d, n]) => window.ascStartInbox(d as never, n as number), [
+    seed,
+    now,
+  ] as const);
 }
 
 test("sections show entries; snoozed hidden until toggled", async ({ page }) => {

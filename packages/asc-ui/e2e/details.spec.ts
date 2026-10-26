@@ -10,10 +10,14 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-details-")), "details.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -25,7 +29,13 @@ const details = {
   author: person,
   signature: "G",
   change: "kxyzkxyzkxyz",
-  review: { forge: "forgejo", number: 42, url: "https://forge.example/o/r/pulls/42", state: "open", draft: false },
+  review: {
+    forge: "forgejo",
+    number: 42,
+    url: "https://forge.example/o/r/pulls/42",
+    state: "open",
+    draft: false,
+  },
   versions: [
     { v: 2, rev: "bbbb00000000", at: 1_700_000_100, actor: "amy" },
     { v: 1, rev: "aaaa00000000", at: 1_700_000_000, actor: "amy" },
@@ -61,7 +71,9 @@ async function start(page: Page): Promise<void> {
   await page.evaluate((d) => window.ascDetailsStart(d as never), { details, compare });
 }
 
-test("details show subject, body, change, signature and totals; markup stays text", async ({ page }) => {
+test("details show subject, body, change, signature and totals; markup stays text", async ({
+  page,
+}) => {
   await start(page);
   await expect(page.getByTestId("subject")).toHaveText("Fix the parser");
   await expect(page.getByTestId("body")).toContainText("<img src=x onerror=alert(1)>");
@@ -72,7 +84,9 @@ test("details show subject, body, change, signature and totals; markup stays tex
   await expect(page.getByTestId("files-head").first()).toHaveText("4 files changed, +13 -1");
 });
 
-test("files open their diff, rename shows both paths, all changes opens the multi-diff", async ({ page }) => {
+test("files open their diff, rename shows both paths, all changes opens the multi-diff", async ({
+  page,
+}) => {
   await start(page);
   await expect(page.getByTestId("file-src/new.ts")).toContainText("src/old.ts → src/new.ts");
   await expect(page.getByTestId("file-img.png")).toContainText("binary");
@@ -105,5 +119,7 @@ test("compare needs both sides, then renders ahead, behind and files", async ({ 
   await expect(page.getByTestId("ahead-c2")).toBeVisible();
   await expect(page.getByTestId("behind-d1")).toBeVisible();
   const c = await page.evaluate(() => window.ascDetailsCalls.compares);
-  expect(c).toEqual([{ a: { kind: "revision", value: "main" }, b: { kind: "stack", value: "topic" } }]);
+  expect(c).toEqual([
+    { a: { kind: "revision", value: "main" }, b: { kind: "stack", value: "topic" } },
+  ]);
 });

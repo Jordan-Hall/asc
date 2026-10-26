@@ -389,7 +389,7 @@ export function registerActions(
         );
         await vscode.window.showTextDocument(doc, { preview: true });
       } catch (e) {
-        void vscode.window.showErrorMessage(`asc: could not open the log: ${String(e)}`);
+        void vscode.window.showErrorMessage(`ASC: could not open the log: ${String(e)}`);
       }
     }),
     vscode.commands.registerCommand("asc.actions.loadEarlier", async () => {
@@ -399,7 +399,7 @@ export function registerActions(
         await docs.loadEarlier(uri.path);
         docChanged.fire(uri);
       } catch (e) {
-        void vscode.window.showErrorMessage(`asc: could not load earlier output: ${String(e)}`);
+        void vscode.window.showErrorMessage(`ASC: could not load earlier output: ${String(e)}`);
       }
     }),
   );

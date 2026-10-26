@@ -31,7 +31,11 @@ function badge(doc: Document, kind: string, text: string): HTMLElement {
   return b;
 }
 
-export function mountHistory(container: HTMLElement, host: HistoryHost, initial: HistoryData): HistoryView {
+export function mountHistory(
+  container: HTMLElement,
+  host: HistoryHost,
+  initial: HistoryData,
+): HistoryView {
   const doc = container.ownerDocument;
   const root = doc.createElement("div");
   root.className = "asc-history";
@@ -95,7 +99,8 @@ export function mountHistory(container: HTMLElement, host: HistoryHost, initial:
       meta.className = "asc-dot";
       meta.textContent = `${node.entry.author} · ${new Date(node.entry.time * 1000).toISOString().slice(0, 10)}`;
       li.append(track, subject, meta);
-      if (node.renamedFrom !== undefined) li.append(badge(doc, "rename", `renamed from ${node.renamedFrom}`));
+      if (node.renamedFrom !== undefined)
+        li.append(badge(doc, "rename", `renamed from ${node.renamedFrom}`));
       if (node.binary) li.append(badge(doc, "binary", "binary"));
       const open = (): void => host.openDiff(node.path, node.entry.id);
       li.addEventListener("dblclick", open);

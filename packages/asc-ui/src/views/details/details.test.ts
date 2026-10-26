@@ -44,8 +44,16 @@ test("only https URLs are links", () => {
 test("compare request resolves heads and picks the dot form", () => {
   const rev = { kind: "revision", value: "main" } as const;
   const stack = { kind: "stack", value: "top1" } as const;
-  expect(compareRequest(rev, { kind: "revision", value: "x" }, {})).toEqual({ a: "main", b: "x", threeDot: false });
-  expect(compareRequest(rev, stack, { top1: "deadbeef" })).toEqual({ a: "main", b: "deadbeef", threeDot: true });
+  expect(compareRequest(rev, { kind: "revision", value: "x" }, {})).toEqual({
+    a: "main",
+    b: "x",
+    threeDot: false,
+  });
+  expect(compareRequest(rev, stack, { top1: "deadbeef" })).toEqual({
+    a: "main",
+    b: "deadbeef",
+    threeDot: true,
+  });
   expect(compareRequest(rev, rev, {}, true).threeDot).toBe(true);
 });
 
@@ -53,6 +61,13 @@ test("compare summary and pairs", () => {
   expect(summary({ ahead: 0, behind: 0 })).toBe("No differences in history");
   expect(summary({ ahead: 2, behind: 1 })).toBe("2 ahead, 1 behind");
   const req = { a: "m", b: "t", threeDot: true };
-  expect(comparePairs({ mergeBase: "mb", files: [{ path: "f", status: "modified" }] }, req)[0]?.leftRev).toBe("mb");
-  expect(comparePairs({ mergeBase: "mb", files: [{ path: "f", status: "modified" }] }, { ...req, threeDot: false })[0]?.leftRev).toBe("m");
+  expect(
+    comparePairs({ mergeBase: "mb", files: [{ path: "f", status: "modified" }] }, req)[0]?.leftRev,
+  ).toBe("mb");
+  expect(
+    comparePairs(
+      { mergeBase: "mb", files: [{ path: "f", status: "modified" }] },
+      { ...req, threeDot: false },
+    )[0]?.leftRev,
+  ).toBe("m");
 });

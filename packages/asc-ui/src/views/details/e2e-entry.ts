@@ -30,12 +30,16 @@ window.ascDetailsStart = ({ details, compare }) => {
   const d = document.createElement("div");
   const c = document.createElement("div");
   document.body.append(d, c);
-  mountDetails(d, {
-    openDiff: (f) => void calls.diffs.push(f.path),
-    openAllChanges: (x) => void calls.all.push(x.id),
-    openRevision: (r) => void calls.revs.push(r),
-    openReview: (u) => void calls.reviews.push(u),
-  }, details);
+  mountDetails(
+    d,
+    {
+      openDiff: (f) => void calls.diffs.push(f.path),
+      openAllChanges: (x) => void calls.all.push(x.id),
+      openRevision: (r) => void calls.revs.push(r),
+      openReview: (u) => void calls.reviews.push(u),
+    },
+    details,
+  );
   const view = mountCompare(c, {
     compare: (a, b) => {
       calls.compares.push({ a, b });

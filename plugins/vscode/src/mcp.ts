@@ -135,7 +135,7 @@ export async function configureAgents(
 ): Promise<string> {
   const root = roots[0];
   if (ascPath === null) return "asc was not found; set asc.path.";
-  if (root === undefined) return "Open an asc workspace to configure agents.";
+  if (root === undefined) return "Open an ASC workspace to configure agents.";
   try {
     await run(ascPath, installArgs(), root);
     return "Agents configured for this project (asc mcp install --scope project).";

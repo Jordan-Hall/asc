@@ -97,12 +97,13 @@ export class ActionsLogModel {
   text(): string {
     let from = 0;
     // A range can start inside a UTF-8 sequence: drop its continuation bytes.
-    if (this.start > 0) while (from < this.buf.length && ((this.buf[from] ?? 0) & 0xc0) === 0x80) from++;
+    if (this.start > 0)
+      while (from < this.buf.length && ((this.buf[from] ?? 0) & 0xc0) === 0x80) from++;
     const body = sanitizeLog(new TextDecoder("utf-8").decode(this.buf.subarray(from)));
     if (!this.loaded) return "";
     if (this.start === 0) return body;
     const hidden = this.start + from;
-    return `... ${hidden} earlier bytes not shown (run "asc: Load earlier log output")\n${body}`;
+    return `... ${hidden} earlier bytes not shown (run "ASC: Load earlier log output")\n${body}`;
   }
 }
 

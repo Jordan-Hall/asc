@@ -316,7 +316,8 @@ export function minimapModel(store: PageStore): MinimapModel {
   const span = Math.max(1, exact ? (store.total as number) : heldEnd);
   const ticks: MinimapTick[] = [];
   if (exact) {
-    for (const m of store.refMarkers) if (m.row >= 0 && m.row < span) ticks.push({ name: m.name, at: m.row / span });
+    for (const m of store.refMarkers)
+      if (m.row >= 0 && m.row < span) ticks.push({ name: m.name, at: m.row / span });
   }
   const loaded = pages.map((p) => ({
     from: (p * PAGE_SIZE) / span,
@@ -394,7 +395,12 @@ export function navigate(store: PageStore, from: number, key: NavKey, count: num
 }
 
 /** Next held row after `from` (wrapping once) that matches the search text. */
-export function searchRow(store: PageStore, from: number, text: string, dir: 1 | -1 = 1): number | undefined {
+export function searchRow(
+  store: PageStore,
+  from: number,
+  text: string,
+  dir: 1 | -1 = 1,
+): number | undefined {
   const q = text.trim().toLowerCase();
   if (q === "") return undefined;
   const count = store.rowCount;
@@ -434,7 +440,9 @@ export function menuItems(row: GraphRow): MenuItem[] {
   return [
     item("cherry-pick", "Cherry-pick"),
     item("revert", "Revert"),
-    row.wip ? { id: "copy-id", label: "Copy id", enabled: false, reason: REASON_WIP } : { id: "copy-id", label: "Copy id", enabled: true },
+    row.wip
+      ? { id: "copy-id", label: "Copy id", enabled: false, reason: REASON_WIP }
+      : { id: "copy-id", label: "Copy id", enabled: true },
   ];
 }
 

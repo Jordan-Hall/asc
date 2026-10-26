@@ -151,7 +151,9 @@ export function inlineText(data: BlameData, line: number, nowSec: number): strin
  * Uncommitted lines are the newest bucket.
  */
 export function ageBuckets(data: BlameData, buckets = 5): Map<BlameHunk, number> {
-  const times = [...new Set([...data.commits.values()].map((c) => c.time))].toSorted((a, b) => a - b);
+  const times = [...new Set([...data.commits.values()].map((c) => c.time))].toSorted(
+    (a, b) => a - b,
+  );
   const out = new Map<BlameHunk, number>();
   for (const h of data.hunks) {
     const c = data.commits.get(h.origin);
@@ -240,7 +242,11 @@ export function hoverFor(
     }
   }
   if (c.changeId !== "") {
-    actions.push({ label: "Copy change id", command: "asc.blame.copyChangeId", args: [c.changeId] });
+    actions.push({
+      label: "Copy change id",
+      command: "asc.blame.copyChangeId",
+      args: [c.changeId],
+    });
   }
   return { markdown: lines.join("\n"), actions };
 }

@@ -87,7 +87,11 @@ export function mountSubmitDialog(
     return l;
   }
 
-  function checkbox(testid: string, checked: boolean, onChange: (v: boolean) => void): HTMLInputElement {
+  function checkbox(
+    testid: string,
+    checked: boolean,
+    onChange: (v: boolean) => void,
+  ): HTMLInputElement {
     const c = doc.createElement("input");
     c.type = "checkbox";
     c.dataset.testid = testid;

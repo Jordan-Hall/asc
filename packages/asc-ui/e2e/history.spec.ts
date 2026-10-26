@@ -10,14 +10,23 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-history-")), "history.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
-const st = (path: string, added: number, removed: number) => ({ path, added, removed, binary: false });
+const st = (path: string, added: number, removed: number) => ({
+  path,
+  added,
+  removed,
+  binary: false,
+});
 const wt = (wsId: string, o: Record<string, unknown>) => ({
   wsId,
   path: `/repo-${wsId}`,
@@ -72,7 +81,9 @@ test("double click opens the diff at the followed path", async ({ page }) => {
   expect(diffs).toEqual([{ path: "src/old.ts", rev: "r1" }]);
 });
 
-test("worktrees: disabled remove states its reason, enabled remove calls the host", async ({ page }) => {
+test("worktrees: disabled remove states its reason, enabled remove calls the host", async ({
+  page,
+}) => {
   await start(page);
   await expect(page.getByTestId("wt-m").locator('[data-action="remove"]')).toHaveAttribute(
     "title",

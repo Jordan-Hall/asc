@@ -44,7 +44,8 @@ export function parseCloudStatus(bytes: Uint8Array | null): CloudStatus | null {
   if (typeof v !== "object" || v === null) return null;
   const o = v as Record<string, unknown>;
   if (o.state === "off") return { state: "off", pending: 0, attention: 0 };
-  const q = typeof o.queue === "object" && o.queue !== null ? (o.queue as Record<string, unknown>) : null;
+  const q =
+    typeof o.queue === "object" && o.queue !== null ? (o.queue as Record<string, unknown>) : null;
   if (q === null) return null;
   const pending = count(q.pending);
   const attention = Math.min(count(q.held) + count(q.failed) + count(q.too_large), MAX_COUNT);
@@ -74,9 +75,18 @@ export function cloudView(s: CloudStatus | null, serverOffline: boolean): CloudV
     };
   }
   if (s.state === "attention") {
-    return { text: `${s.attention} need attention`, tooltip: "asc cloud: drafts held or failed to upload", visible: true };
+    return {
+      text: `${s.attention} need attention`,
+      tooltip: "asc cloud: drafts held or failed to upload",
+      visible: true,
+    };
   }
-  if (s.state === "pending") return { text: `${s.pending} pending`, tooltip: "asc cloud: drafts waiting to upload", visible: true };
+  if (s.state === "pending")
+    return {
+      text: `${s.pending} pending`,
+      tooltip: "asc cloud: drafts waiting to upload",
+      visible: true,
+    };
   return { text: "synced", tooltip: "asc cloud: all drafts uploaded", visible: true };
 }
 

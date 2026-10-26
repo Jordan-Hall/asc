@@ -67,7 +67,10 @@ export function withGraphActions(o: GraphActionsOptions): RequestHandler {
       ok = false;
     }
     if (!ok) {
-      await webview.postMessage({ id: parsed.id, end: { code: PERMISSION_DENIED, message: "not confirmed" } });
+      await webview.postMessage({
+        id: parsed.id,
+        end: { code: PERMISSION_DENIED, message: "not confirmed" },
+      });
       return true;
     }
     return o.inner(webview, message);

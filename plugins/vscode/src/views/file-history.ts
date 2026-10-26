@@ -283,7 +283,10 @@ export function registerFileHistory(
 ): { dispose(): void } {
   const subs: { dispose(): unknown }[] = [];
   const ac = new AbortController();
-  const model = new FileHistoryModel({ api, onError: (e) => log(`asc file history: ${String(e)}`) });
+  const model = new FileHistoryModel({
+    api,
+    onError: (e) => log(`asc file history: ${String(e)}`),
+  });
   const changed = new vscode.EventEmitter<void>();
   subs.push(
     changed,

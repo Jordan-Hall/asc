@@ -108,7 +108,7 @@ describe("per-process notification", () => {
     expect(o?.process).toBe("rg.exe");
     expect(findOffender(stats(), 5000)).toBeNull();
     expect(hydrationMessage(o as NonNullable<typeof o>)).toContain(
-      "Use asc: Search code, or exclude folders",
+      "Use ASC: Search code, or exclude folders",
     );
     expect(sanitizeLabel("a\u001b[31mb\n")).toBe("a [31mb");
   });

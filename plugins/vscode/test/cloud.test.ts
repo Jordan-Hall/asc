@@ -19,18 +19,30 @@ describe("cloud: status item", () => {
     expect(cloudView(parseCloudStatus(q({ pending: 3 })), true).text).toBe("offline");
   });
   test("held or failed rows read as needing attention", () => {
-    expect(cloudView(parseCloudStatus(q({ pending: 2, held: 1, failed: 1 })), false).text).toBe("2 need attention");
+    expect(cloudView(parseCloudStatus(q({ pending: 2, held: 1, failed: 1 })), false).text).toBe(
+      "2 need attention",
+    );
   });
   test("cloud off hides the item", () => {
     expect(cloudView(parseCloudStatus(enc({ state: "off" })), false).visible).toBe(false);
     expect(cloudView(null, false).visible).toBe(false);
   });
   test("untrusted output: no text shown, counts clamped, junk rejected", () => {
-    const hostile = enc({ state: "synced", summary: "<script>", queue: { pending: 1e99, held: -4, failed: "x" } });
+    const hostile = enc({
+      state: "synced",
+      summary: "<script>",
+      queue: { pending: 1e99, held: -4, failed: "x" },
+    });
     const v = cloudView(parseCloudStatus(hostile), false);
     expect(v.text).toBe(`${MAX_COUNT} pending`);
     expect(v.text + v.tooltip).not.toContain("script");
-    for (const bad of [null, new Uint8Array(), new TextEncoder().encode("{"), enc([]), enc({ state: "synced" })]) {
+    for (const bad of [
+      null,
+      new Uint8Array(),
+      new TextEncoder().encode("{"),
+      enc([]),
+      enc({ state: "synced" }),
+    ]) {
       expect(parseCloudStatus(bad)).toBeNull();
     }
   });

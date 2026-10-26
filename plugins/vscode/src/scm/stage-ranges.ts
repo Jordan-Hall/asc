@@ -107,7 +107,12 @@ export function diffLines(base: string[], target: string[]): DiffOp[] {
 /** Whether the op belongs to the selection. An op on the numbered side is selected when its line is
  * in a range. An op on the other side (a deletion when numbering the target) sits between lines, so it
  * is selected when the line it precedes is in a range. */
-function selected(op: DiffOp, ranges: readonly LineRange[], points: readonly LineRange[], side: Side) {
+function selected(
+  op: DiffOp,
+  ranges: readonly LineRange[],
+  points: readonly LineRange[],
+  side: Side,
+) {
   if (op.kind === "eq") return false;
   const own = side === "target" ? op.kind === "add" : op.kind === "del";
   const n = side === "target" ? op.targetNo : op.baseNo;
@@ -117,7 +122,11 @@ function selected(op: DiffOp, ranges: readonly LineRange[], points: readonly Lin
 
 /** Which ops the selection takes, in op order. Numbering the base side, a replacement's additions
  * follow its deletions, so they are taken with the deletion directly before them. */
-export function selectOps(ops: readonly DiffOp[], ranges: readonly LineRange[], side: Side): boolean[] {
+export function selectOps(
+  ops: readonly DiffOp[],
+  ranges: readonly LineRange[],
+  side: Side,
+): boolean[] {
   const points = ranges.filter((r) => r.end < r.start);
   const real = ranges.filter((r) => r.end >= r.start);
   const out: boolean[] = [];
@@ -223,7 +232,11 @@ export function buildHunkPatch(
   return patchFromOps(path, ops, take);
 }
 
-export function patchFromOps(path: string, ops: readonly DiffOp[], take: readonly boolean[]): string | null {
+export function patchFromOps(
+  path: string,
+  ops: readonly DiffOp[],
+  take: readonly boolean[],
+): string | null {
   if (!take.some(Boolean)) return null;
   // Effective ops: what the patch says about each line.
   const eff: { kind: OpKind; text: string }[] = [];
@@ -267,8 +280,8 @@ export function patchFromOps(path: string, ops: readonly DiffOp[], take: readonl
       if (e.kind !== "del") newLen++;
       body += lineOut(e.kind === "eq" ? " " : e.kind === "del" ? "-" : "+", e.text);
     }
-    const oldStart = oldLen === 0 ? oldBefore[from] ?? 0 : (oldBefore[from] ?? 0) + 1;
-    const newStart = newLen === 0 ? newBefore[from] ?? 0 : (newBefore[from] ?? 0) + 1;
+    const oldStart = oldLen === 0 ? (oldBefore[from] ?? 0) : (oldBefore[from] ?? 0) + 1;
+    const newStart = newLen === 0 ? (newBefore[from] ?? 0) : (newBefore[from] ?? 0) + 1;
     out += `@@ -${oldStart}${oldLen === 1 ? "" : `,${oldLen}`} +${newStart}${newLen === 1 ? "" : `,${newLen}`} @@\n${body}`;
   }
   return out;

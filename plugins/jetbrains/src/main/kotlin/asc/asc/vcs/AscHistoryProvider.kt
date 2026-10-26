@@ -142,15 +142,15 @@ class AscHistoryProvider(private val project: Project) : VcsHistoryProvider {
         try {
             runBlockingCancellable { block() }
         } catch (e: BridgeException) {
-            throw VcsException("asc: ${e.message}")
+            throw VcsException("ASC: ${e.message}")
         }
 
     private fun ctx(path: FilePath): Ctx {
         val root = ProjectLevelVcsManager.getInstance(project).getVcsRootFor(path)?.path
-            ?: throw VcsException("asc: ${path.path} is not under an asc root")
-        val rel = AscPaths.relative(root, path.path) ?: throw VcsException("asc: ${path.path} is outside $root")
+            ?: throw VcsException("ASC: ${path.path} is not under an ASC root")
+        val rel = AscPaths.relative(root, path.path) ?: throw VcsException("ASC: ${path.path} is outside $root")
         val info = guard { bridge.hello(listOf(root)) }.rootsList.firstOrNull { it.wsId.isNotEmpty() }
-            ?: throw VcsException("asc: no workspace for $root")
+            ?: throw VcsException("ASC: no workspace for $root")
         return Ctx(root, rel, info.wsId)
     }
 
@@ -175,7 +175,7 @@ class AscHistoryProvider(private val project: Project) : VcsHistoryProvider {
         val page = guard { AscHistory.lineHistory(calls, c.root, c.rel, "", startLine, endLine) }
         for (e in page.entries) partner.acceptRevision(AscFileRevision(e, c.rel, c.root, c.wsId, calls))
         if (page.truncated) {
-            partner.reportException(VcsException("asc: the line history scan budget ran out; the list is partial"))
+            partner.reportException(VcsException("ASC: the line history scan budget ran out; the list is partial"))
         }
         partner.finished()
     }

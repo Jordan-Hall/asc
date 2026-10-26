@@ -13,10 +13,16 @@ export interface Decoration {
 export function decorationFor(xy: string): Decoration | null {
   const x = xy[0] ?? ".";
   const y = xy[1] ?? ".";
-  if (xy === "??") return { badge: "U", tooltip: "Untracked", color: "gitDecoration.untrackedResourceForeground" };
-  if (xy === "!!") return { badge: "I", tooltip: "Ignored", color: "gitDecoration.ignoredResourceForeground" };
+  if (xy === "??")
+    return { badge: "U", tooltip: "Untracked", color: "gitDecoration.untrackedResourceForeground" };
+  if (xy === "!!")
+    return { badge: "I", tooltip: "Ignored", color: "gitDecoration.ignoredResourceForeground" };
   if (isConflict(xy)) {
-    return { badge: "!", tooltip: "Conflict", color: "gitDecoration.conflictingResourceForeground" };
+    return {
+      badge: "!",
+      tooltip: "Conflict",
+      color: "gitDecoration.conflictingResourceForeground",
+    };
   }
   const c = y !== "." && y !== " " ? y : x;
   switch (c) {

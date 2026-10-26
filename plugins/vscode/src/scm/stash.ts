@@ -59,7 +59,7 @@ export class StashCommands {
     return this.r.serial(root, async () => {
       const msg = opts.message?.trim() ?? "";
       if (msg.length > STASH_MESSAGE_MAX || msg.includes("\0")) {
-        this.ui.warn("asc: the stash message is too long.");
+        this.ui.warn("ASC: the stash message is too long.");
         return { ok: false, reason: "invalid" };
       }
       if (!(await this.r.gate())) return { ok: false, reason: "disabled" };
@@ -119,7 +119,7 @@ export function registerStashCommands(
     const hit = rootUri ? roots.find((r) => r === rootUri.fsPath) : undefined;
     if (hit) return hit;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
   const reg = (id: string, fn: (root: string) => Promise<unknown>) =>
     subs.push(

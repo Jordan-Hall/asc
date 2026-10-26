@@ -88,10 +88,14 @@ export function mountSplitDialog(
     tabs.className = "asc-sp-pieces";
     for (let k = 0; k < state.pieces; k++) {
       const last = k === state.pieces - 1;
-      const tab = button(`${last ? "Remainder" : `Piece ${k + 1}`} (${counts[k] ?? 0})`, "piece", () => {
-        active = k;
-        render();
-      });
+      const tab = button(
+        `${last ? "Remainder" : `Piece ${k + 1}`} (${counts[k] ?? 0})`,
+        "piece",
+        () => {
+          active = k;
+          render();
+        },
+      );
       tab.classList.add("asc-sp-piece");
       tab.dataset.testid = `sp-piece-${k}`;
       tab.setAttribute("aria-pressed", String(k === active));

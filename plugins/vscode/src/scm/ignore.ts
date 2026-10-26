@@ -77,49 +77,54 @@ export function registerIgnoreCommand(
   };
   const at = (root: vscodeTypes.Uri, dir: string): vscodeTypes.Uri =>
     vscode.Uri.joinPath(root, ...(dir === "" ? [] : dir.split("/")), ".ascignore");
-  return vscode.commands.registerCommand("asc.addToAscignore", async (a?: unknown, ...rest: unknown[]) => {
-    const uris = [a, ...rest.flat()]
-      .map((x) =>
-        x instanceof vscode.Uri ? x : (x as { resourceUri?: vscodeTypes.Uri } | undefined)?.resourceUri,
-      )
-      .filter((u): u is vscodeTypes.Uri => u !== undefined);
-    const edit = new vscode.WorkspaceEdit();
-    let n = 0;
-    for (const uri of uris) {
-      const hit = relOf(uri.fsPath);
-      if (!hit) continue;
-      let isDir = false;
-      try {
-        isDir = ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.Directory) !== 0;
-      } catch {
-        // Gone already: treat it as a file.
-      }
-      const rootUri = vscode.Uri.file(hit.root);
-      const plan = await planIgnore(hit.rel, isDir, async (dir) => {
+  return vscode.commands.registerCommand(
+    "asc.addToAscignore",
+    async (a?: unknown, ...rest: unknown[]) => {
+      const uris = [a, ...rest.flat()]
+        .map((x) =>
+          x instanceof vscode.Uri
+            ? x
+            : (x as { resourceUri?: vscodeTypes.Uri } | undefined)?.resourceUri,
+        )
+        .filter((u): u is vscodeTypes.Uri => u !== undefined);
+      const edit = new vscode.WorkspaceEdit();
+      let n = 0;
+      for (const uri of uris) {
+        const hit = relOf(uri.fsPath);
+        if (!hit) continue;
+        let isDir = false;
         try {
-          return new TextDecoder().decode(await vscode.workspace.fs.readFile(at(rootUri, dir)));
+          isDir = ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.Directory) !== 0;
         } catch {
-          return null;
+          // Gone already: treat it as a file.
         }
-      });
-      if (!plan) {
-        log(`asc: cannot add ${hit.rel} to .ascignore`);
-        continue;
+        const rootUri = vscode.Uri.file(hit.root);
+        const plan = await planIgnore(hit.rel, isDir, async (dir) => {
+          try {
+            return new TextDecoder().decode(await vscode.workspace.fs.readFile(at(rootUri, dir)));
+          } catch {
+            return null;
+          }
+        });
+        if (!plan) {
+          log(`ASC: cannot add ${hit.rel} to .ascignore`);
+          continue;
+        }
+        if (plan.already) continue;
+        const file = at(rootUri, plan.dir);
+        if (!plan.exists) edit.createFile(file, { ignoreIfExists: true });
+        let end = new vscode.Position(0, 0);
+        if (plan.exists) {
+          const doc = await vscode.workspace.openTextDocument(file);
+          end = doc.lineAt(doc.lineCount - 1).range.end;
+        }
+        edit.insert(file, end, plan.insert);
+        n++;
       }
-      if (plan.already) continue;
-      const file = at(rootUri, plan.dir);
-      if (!plan.exists) edit.createFile(file, { ignoreIfExists: true });
-      let end = new vscode.Position(0, 0);
-      if (plan.exists) {
-        const doc = await vscode.workspace.openTextDocument(file);
-        end = doc.lineAt(doc.lineCount - 1).range.end;
+      if (n > 0) {
+        await vscode.workspace.applyEdit(edit);
+        await vscode.workspace.saveAll(false);
       }
-      edit.insert(file, end, plan.insert);
-      n++;
-    }
-    if (n > 0) {
-      await vscode.workspace.applyEdit(edit);
-      await vscode.workspace.saveAll(false);
-    }
-  });
+    },
+  );
 }

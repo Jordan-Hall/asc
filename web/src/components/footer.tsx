@@ -15,7 +15,11 @@ const THEMES: readonly { value: ThemePref; label: string; icon: "system" | "sun"
 function ThemeSwitch(): ReactNode {
   const { pref, setPref } = useTheme();
   return (
-    <div role="radiogroup" aria-label="Theme" className="inline-flex rounded-lg border border-line p-0.5">
+    <div
+      role="radiogroup"
+      aria-label="Theme"
+      className="inline-flex rounded-lg border border-line p-0.5"
+    >
       {THEMES.map((t) => (
         <button
           key={t.value}
@@ -26,7 +30,9 @@ function ThemeSwitch(): ReactNode {
           title={t.label}
           onClick={() => setPref(t.value)}
           className={`inline-flex h-7 w-8 items-center justify-center rounded-md ${
-            pref === t.value ? "bg-subtle-hover text-fg-strong" : "text-fg-muted hover:text-fg-strong"
+            pref === t.value
+              ? "bg-subtle-hover text-fg-strong"
+              : "text-fg-muted hover:text-fg-strong"
           }`}
         >
           <Icon name={t.icon} size={14} />
@@ -66,7 +72,7 @@ export function Footer(props: { rich: boolean; onHelp: () => void }): ReactNode 
           <div className="max-w-xs">
             <div className="mb-3 flex items-center gap-2 text-lg font-bold text-fg-strong">
               <LogoMark size={28} />
-              asc
+              ASC
             </div>
             <p className="text-sm text-fg-muted">
               Source control built on changesets and stacked review. Plain git can still clone it.
@@ -95,7 +101,11 @@ export function Footer(props: { rich: boolean; onHelp: () => void }): ReactNode 
                 </Link>
               </li>
               <li>
-                <button type="button" className={`${FOOT_LINK} text-left`} onClick={() => openPalette()}>
+                <button
+                  type="button"
+                  className={`${FOOT_LINK} text-left`}
+                  onClick={() => openPalette()}
+                >
                   Open a repository
                 </button>
               </li>
@@ -115,7 +125,7 @@ export function Footer(props: { rich: boolean; onHelp: () => void }): ReactNode 
       >
         <span className="inline-flex items-center gap-2 font-semibold text-fg-strong">
           <LogoMark size={20} />
-          asc
+          ASC
         </span>
         {props.rich ? null : (
           <nav aria-label="Footer" className="flex flex-wrap gap-x-5 gap-y-2">

@@ -7,14 +7,7 @@ import { parseRepoName, remember } from "../lib/recent";
 import { Link, useNavigate } from "../lib/router";
 import { repoHref } from "../lib/paths";
 import { useTitle } from "../lib/title";
-import {
-  AgentsArt,
-  HeroWindow,
-  InboxArt,
-  ReviewArt,
-  SearchArt,
-  StacksArt,
-} from "./landing-art";
+import { AgentsArt, HeroWindow, InboxArt, ReviewArt, SearchArt, StacksArt } from "./landing-art";
 import "../styles/landing.css";
 
 const WRAP = "mx-auto w-full max-w-7xl px-4 sm:px-6";
@@ -88,9 +81,7 @@ function Feature(props: {
 }): ReactNode {
   return (
     <section id={props.id} className={props.tinted ? "border-y border-line bg-subtle/50" : ""}>
-      <div
-        className={`${WRAP} grid items-center gap-10 py-16 md:py-24 lg:grid-cols-2 lg:gap-16`}
-      >
+      <div className={`${WRAP} grid items-center gap-10 py-16 md:py-24 lg:grid-cols-2 lg:gap-16`}>
         <div className={props.flip ? "lg:order-2" : ""}>
           <Eyebrow icon={props.icon}>{props.eyebrow}</Eyebrow>
           <h2 className="text-3xl font-bold tracking-tight text-fg-strong sm:text-4xl">
@@ -208,10 +199,26 @@ function Hero(): ReactNode {
 }
 
 const FACTS: readonly { icon: IconName; title: string; text: string }[] = [
-  { icon: "terminal", title: "git clone just works", text: "Smart HTTP and SSH for every plain git client." },
-  { icon: "layers", title: "Stable change ids", text: "A change keeps its id through amend, rebase and restack." },
-  { icon: "bolt", title: "One API for everything", text: "The web app, the CLI and agents call the same RPC." },
-  { icon: "shield", title: "Immutable history", text: "Content-addressed objects, so reads are cached for good." },
+  {
+    icon: "terminal",
+    title: "git clone just works",
+    text: "Smart HTTP and SSH for every plain git client.",
+  },
+  {
+    icon: "layers",
+    title: "Stable change ids",
+    text: "A change keeps its id through amend, rebase and restack.",
+  },
+  {
+    icon: "bolt",
+    title: "One API for everything",
+    text: "The web app, the CLI and agents call the same RPC.",
+  },
+  {
+    icon: "shield",
+    title: "Immutable history",
+    text: "Content-addressed objects, so reads are cached for good.",
+  },
 ];
 
 function Facts(): ReactNode {
@@ -243,7 +250,10 @@ function Terminal(props: { title: string; lines: readonly Line[]; label: string 
     .join("\n");
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-[rgb(var(--color-background-rgb))] shadow-sm">
-      <div className="flex items-center gap-2 border-b border-line bg-subtle px-4" style={{ height: 40 }}>
+      <div
+        className="flex items-center gap-2 border-b border-line bg-subtle px-4"
+        style={{ height: 40 }}
+      >
         <Icon name="terminal" size={14} className="text-fg-muted" />
         <span className="flex-1 text-sm font-medium text-fg-strong">{props.title}</span>
         <CopyButton text={plain} label={props.label} />
@@ -282,7 +292,7 @@ function CloneSection(): ReactNode {
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow icon="terminal">Git-compatible</Eyebrow>
           <h2 className="text-3xl font-bold tracking-tight text-fg-strong sm:text-4xl">
-            Clone it with git. Stack it with asc.
+            Clone it with git. Stack it with ASC.
           </h2>
           <p className="mt-4 text-lg leading-relaxed text-fg-muted">
             Every repository answers plain git over smart HTTP and SSH, so editors, CI and scripts
@@ -374,10 +384,7 @@ function Grid(): ReactNode {
         </div>
         <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {GRID.map((g) => (
-            <li
-              key={g.title}
-              className="lp-card rounded-2xl border border-line bg-surface p-6"
-            >
+            <li key={g.title} className="lp-card rounded-2xl border border-line bg-surface p-6">
               <span className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--color-primary)/0.12)] text-link">
                 <Icon name={g.icon} size={20} />
               </span>
@@ -435,7 +442,8 @@ export default function Landing(): ReactNode {
         bullets={[
           "Change ids survive amend, rebase and restack.",
           <>
-            Each change is reviewed against its parent, not against <code className={code}>main</code>.
+            Each change is reviewed against its parent, not against{" "}
+            <code className={code}>main</code>.
           </>,
           <>
             <code className={code}>asc sync</code> drops what landed and restacks what is left.
@@ -494,7 +502,7 @@ export default function Landing(): ReactNode {
         icon="bot"
         eyebrow="Agents and MCP"
         title="Built for agents as well as people"
-        lead="asc ships an MCP server on the same API the web app uses. Give an agent a scoped token and it can read a stack, review a change or prepare a submit, with write tools off until you turn them on."
+        lead="ASC ships an MCP server on the same API the web app uses. Give an agent a scoped token and it can read a stack, review a change or prepare a submit, with write tools off until you turn them on."
         bullets={[
           "Remote MCP over HTTP with OAuth, or local over stdio.",
           <>

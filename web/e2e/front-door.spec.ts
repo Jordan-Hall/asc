@@ -108,10 +108,7 @@ test.describe("product page", () => {
   test("section links scroll to their section", async ({ page, isMobile }) => {
     test.skip(isMobile, "the section links are in a menu on small screens");
     await page.goto("/ui/", { waitUntil: "networkidle" });
-    await page
-      .getByRole("banner")
-      .getByRole("link", { name: "Inbox" })
-      .click();
+    await page.getByRole("banner").getByRole("link", { name: "Inbox" }).click();
     await expect(page).toHaveURL(/#inbox$/);
     await expect(page.locator("#inbox")).toBeInViewport();
   });
@@ -241,7 +238,9 @@ test.describe("signed in", () => {
 
   test("a repository you open is added to the dashboard", async ({ page }) => {
     await page.goto("/ui/asc/engine", { waitUntil: "networkidle" });
-    const recent = await page.evaluate(() => JSON.parse(localStorage.getItem("asc-recent") ?? "[]"));
+    const recent = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("asc-recent") ?? "[]"),
+    );
     expect(recent[0]).toBe("asc/engine");
   });
 

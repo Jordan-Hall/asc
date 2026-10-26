@@ -11,7 +11,11 @@ function failure(what: string, status: number): Error {
 }
 
 /** Logins that can be assigned in `owner/repo`; bounded and de-duplicated. */
-export async function loadAssignees(client: ForgejoClient, owner: string, repo: string): Promise<string[]> {
+export async function loadAssignees(
+  client: ForgejoClient,
+  owner: string,
+  repo: string,
+): Promise<string[]> {
   const { data, response } = await client.api.GET("/repos/{o}/{r}/assignees", {
     params: { path: { o: owner, r: repo } },
   });

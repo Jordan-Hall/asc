@@ -179,7 +179,7 @@ export class StackEditCommands {
   abandon(root: string, revs: readonly string[] = []): Promise<CommandResult> {
     return this.r.serial(root, async () => {
       if (revs.length > ABANDON_MAX || !revs.every(validRev)) {
-        this.ui.warn("asc: those revisions cannot be abandoned from here.");
+        this.ui.warn("ASC: those revisions cannot be abandoned from here.");
         return { ok: false, reason: "invalid" };
       }
       if (!(await this.r.gate())) return { ok: false, reason: "disabled" };
@@ -302,7 +302,7 @@ export function registerStackEditCommands(
   const pick = async (a: unknown): Promise<string | undefined> => {
     if (typeof a === "string" && roots.includes(a)) return a;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
   const reg = (id: string, fn: (root: string) => Promise<unknown>) =>
     subs.push(

@@ -83,7 +83,12 @@ function Running(): ReactNode {
       aria-hidden="true"
     >
       <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeOpacity=".3" strokeWidth="1.6" />
-      <path d="M6 1.5A4.5 4.5 0 0 1 10.5 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path
+        d="M6 1.5A4.5 4.5 0 0 1 10.5 6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }
@@ -137,7 +142,8 @@ const STACK: readonly StackItem[] = [
 ];
 
 function Node(props: { kind: StackItem["node"] }): ReactNode {
-  const base = "relative z-10 mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full";
+  const base =
+    "relative z-10 mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full";
   switch (props.kind) {
     case "done":
       return (
@@ -207,7 +213,9 @@ function Ln(props: {
   children: ReactNode;
 }): ReactNode {
   return (
-    <div className={`lp-line ${props.kind === "add" ? "lp-add" : props.kind === "del" ? "lp-del" : ""}`}>
+    <div
+      className={`lp-line ${props.kind === "add" ? "lp-add" : props.kind === "del" ? "lp-del" : ""}`}
+    >
       <span>{props.n}</span>
       <span>{props.sign ?? " "}</span>
       <span>{props.children}</span>
@@ -219,13 +227,13 @@ function SignInDiff(): ReactNode {
   return (
     <div className="lp-code">
       <Ln n="40">
-        <span className="tk-k">const</span> [token, setToken] = <span className="tk-f">useState</span>(
-        <span className="tk-s">""</span>);
+        <span className="tk-k">const</span> [token, setToken] ={" "}
+        <span className="tk-f">useState</span>(<span className="tk-s">""</span>);
       </Ln>
       <Ln n="41" sign="-" kind="del">
         {"  "}
-        <span className="tk-k">const</span> <span className="tk-f">onSubmit</span> = () =&gt;
-        auth.<span className="tk-f">signIn</span>(token);
+        <span className="tk-k">const</span> <span className="tk-f">onSubmit</span> = () =&gt; auth.
+        <span className="tk-f">signIn</span>(token);
       </Ln>
       <Ln n="41" sign="+" kind="add">
         {"  "}
@@ -235,14 +243,16 @@ function SignInDiff(): ReactNode {
         {"    "}auth.<span className="tk-f">signIn</span>(token, remember);
       </Ln>
       <Ln n="43" sign="+" kind="add">
-        {"    "}<span className="tk-f">setToken</span>(<span className="tk-s">""</span>);
+        {"    "}
+        <span className="tk-f">setToken</span>(<span className="tk-s">""</span>);
       </Ln>
       <Ln n="44" sign="+" kind="add">
         {"  };"}
       </Ln>
       <Ln n="45">
         {"  "}
-        <span className="tk-k">return</span> &lt;<span className="tk-f">form</span> onSubmit={"{onSubmit}"}&gt;…
+        <span className="tk-k">return</span> &lt;<span className="tk-f">form</span> onSubmit=
+        {"{onSubmit}"}&gt;…
       </Ln>
     </div>
   );
@@ -258,7 +268,9 @@ function Thread(props: { resolved?: boolean }): ReactNode {
             <span className="font-semibold text-fg-strong">Ada</span>
             <span className="text-fg-muted">on line 43 · v2</span>
           </div>
-          <p className="mt-1 text-fg">Clear the field here so the token does not sit in state after submit.</p>
+          <p className="mt-1 text-fg">
+            Clear the field here so the token does not sit in state after submit.
+          </p>
         </div>
       </div>
       <div className="flex gap-2.5 border-t border-line bg-subtle/60 p-3">
@@ -280,7 +292,9 @@ function ChangeHeader(): ReactNode {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
       <div className="min-w-0">
-        <div className="truncate text-[15px] font-semibold text-fg-strong">auth: sign-in screen</div>
+        <div className="truncate text-[15px] font-semibold text-fg-strong">
+          auth: sign-in screen
+        </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Chip tone="note">Open</Chip>
           <Chip tone="turn">Your turn</Chip>
@@ -328,8 +342,8 @@ export function HeroWindow(): ReactNode {
             <div className="flex items-center gap-2 px-4 py-2 text-[12px] text-fg-muted">
               <Icon name="clock" size={13} />
               <span>
-                Showing <span className="font-semibold text-fg-strong">v2 → v3</span>: only what changed since you last
-                looked
+                Showing <span className="font-semibold text-fg-strong">v2 → v3</span>: only what
+                changed since you last looked
               </span>
             </div>
             <FileHeader path="src/routes/signin.tsx" stat="+5 −1" />
@@ -372,7 +386,9 @@ export function StacksArt(): ReactNode {
       <div aria-hidden="true">
         <div className="border-b border-line px-4 py-3">
           <div className="text-[15px] font-semibold text-fg-strong">feature-auth</div>
-          <div className="mt-0.5 text-[12px] text-fg-muted">4 changes onto main · 1 landed · restacked just now</div>
+          <div className="mt-0.5 text-[12px] text-fg-muted">
+            4 changes onto main · 1 landed · restacked just now
+          </div>
         </div>
         <StackPanel />
         <div className="mx-3 mb-3 flex items-center gap-2 rounded-lg border border-line bg-subtle px-3 py-2 font-mono text-[12px] text-fg">
@@ -518,7 +534,9 @@ export function SearchArt(): ReactNode {
             </span>
           </span>
         </div>
-        <div className="px-4 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">Definition</div>
+        <div className="px-4 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+          Definition
+        </div>
         <div className="mx-3 overflow-hidden rounded-lg border border-line">
           <div className="flex items-center gap-2 bg-subtle px-3 py-1.5 text-[12px]">
             <Icon name="file" size={13} className="text-fg-muted" />
@@ -529,7 +547,8 @@ export function SearchArt(): ReactNode {
           </div>
           <div className="lp-code">
             <Ln n="18">
-              <span className="tk-k">export function</span> <span className="lp-hit tk-f">parseToken</span>(raw:{" "}
+              <span className="tk-k">export function</span>{" "}
+              <span className="lp-hit tk-f">parseToken</span>(raw:{" "}
               <span className="tk-f">string</span>) {"{"}
             </Ln>
           </div>
@@ -589,7 +608,9 @@ export function AgentsArt(): ReactNode {
           </div>
           <div className={row}>
             <span className="text-fg-muted">←</span>
-            <span className="text-fg-muted">3 files · +86 −12 · 1 open thread · checks passing</span>
+            <span className="text-fg-muted">
+              3 files · +86 −12 · 1 open thread · checks passing
+            </span>
           </div>
           <div className={row}>
             <span className="text-signal">agent</span>

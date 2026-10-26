@@ -76,8 +76,22 @@ function useCommands(query: string, helpOpen: () => void): Command[] {
       page("repo-settings", "Repository settings", `${here}/settings`, "gear");
     }
     out.push(
-      { id: "go-home", group: "Go to", label: "Dashboard", icon: "repo", hint: "g h", run: go("/") },
-      { id: "go-inbox", group: "Go to", label: "Inbox", icon: "inbox", hint: "g i", run: go("/inbox") },
+      {
+        id: "go-home",
+        group: "Go to",
+        label: "Dashboard",
+        icon: "repo",
+        hint: "g h",
+        run: go("/"),
+      },
+      {
+        id: "go-inbox",
+        group: "Go to",
+        label: "Inbox",
+        icon: "inbox",
+        hint: "g i",
+        run: go("/inbox"),
+      },
       { id: "go-search", group: "Go to", label: "Search", icon: "search", run: go("/search") },
       {
         id: "go-settings",
@@ -145,10 +159,10 @@ function filter(all: readonly Command[], query: string): Command[] {
         : c.group === "Search"
           ? 100
           : Math.min(
-            ...[fuzzy(q, c.label), fuzzy(q, c.keywords ?? ""), fuzzy(q, c.group)].map((v) =>
-              v < 0 ? Number.POSITIVE_INFINITY : v,
-            ),
-          );
+              ...[fuzzy(q, c.label), fuzzy(q, c.keywords ?? ""), fuzzy(q, c.group)].map((v) =>
+                v < 0 ? Number.POSITIVE_INFINITY : v,
+              ),
+            );
     if (Number.isFinite(s)) scored.push({ c, s, i });
   });
   scored.sort((a, b) => a.s - b.s || a.i - b.i);

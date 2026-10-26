@@ -34,7 +34,10 @@ window.ascStart = (data, conflicts) => {
     {
       enqueueMove(change, onto) {
         calls.moves.push({ change, onto });
-        return { ok: true, op: { id: 1, mutation: { kind: "move", change, onto }, label: "move", status: "queued" } };
+        return {
+          ok: true,
+          op: { id: 1, mutation: { kind: "move", change, onto }, label: "move", status: "queued" },
+        };
       },
       async predictMove(change, onto): Promise<MovePrediction> {
         calls.predictions.push({ change, onto });

@@ -226,7 +226,8 @@ describe("ci: bridge adapter", () => {
         const req = fromBinary(JobLogRequestSchema, o.request);
         seen.push(`log:${req.runId}:${req.jobId}:${req.maxBytes}:${req.sinceOffset}`);
         // The server cuts the tail to maxBytes, or answers from sinceOffset on.
-        const from = req.sinceOffset > 0n ? Number(req.sinceOffset) : Math.max(0, log.length - req.maxBytes);
+        const from =
+          req.sinceOffset > 0n ? Number(req.sinceOffset) : Math.max(0, log.length - req.maxBytes);
         const data = log.subarray(from, Math.min(log.length, from + req.maxBytes));
         return toBinary(
           JobLogResponseSchema,
@@ -345,7 +346,10 @@ describe("ci: Affected and Run target", () => {
     const api: AffectedApi = {
       affected: async () => (
         n++,
-        { all: false, projects: [{ id: "a", name: "a", root: "a", direct: true, reasons: [], targets: [] }] }
+        {
+          all: false,
+          projects: [{ id: "a", name: "a", root: "a", direct: true, reasons: [], targets: [] }],
+        }
       ),
     };
     const m = new AffectedModel({ root: "/w", api });

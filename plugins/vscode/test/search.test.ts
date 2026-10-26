@@ -9,7 +9,13 @@ import {
   SearchSession,
 } from "../src/search";
 
-const hit = (i: number): SearchHit => ({ root: "/r", path: `f${i}.ts`, line: i + 1, col: 0, text: `  line ${i} ` });
+const hit = (i: number): SearchHit => ({
+  root: "/r",
+  path: `f${i}.ts`,
+  line: i + 1,
+  col: 0,
+  text: `  line ${i} `,
+});
 
 function fake(over: Partial<SearchApi> = {}): SearchApi & { aborted: number; grepCalls: number } {
   const f = {

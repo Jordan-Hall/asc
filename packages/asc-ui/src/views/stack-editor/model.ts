@@ -49,7 +49,11 @@ const replaceAt = (items: readonly EditorItem[], i: number, item: EditorItem): E
   items.map((x, k) => (k === i ? item : x));
 
 /** Why `action` cannot be set on `id`; undefined when it can. */
-export function actionBlockedReason(s: EditorState, id: string, action: TodoAction): string | undefined {
+export function actionBlockedReason(
+  s: EditorState,
+  id: string,
+  action: TodoAction,
+): string | undefined {
   const i = s.items.findIndex((x) => x.id === id);
   const it = s.items[i];
   if (!it) return "Unknown change";
@@ -123,7 +127,8 @@ export function commitBlockedReason(s: EditorState): string | undefined {
   if (s.items.every((x) => x.action === "drop")) return "Dropping every change: use abandon";
   for (const x of s.items) {
     if (x.id.length < MIN_ID) return "A change id is too short";
-    if (x.action === "reword" && x.message.trim() === "") return `Reword of ${x.id} needs a message`;
+    if (x.action === "reword" && x.message.trim() === "")
+      return `Reword of ${x.id} needs a message`;
     if (x.message.length > MAX_MESSAGE) return `The message of ${x.id} is too long`;
     if (x.message.includes("\0")) return `The message of ${x.id} has a NUL byte`;
   }

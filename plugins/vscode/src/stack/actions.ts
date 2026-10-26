@@ -52,7 +52,7 @@ export function registerStackActions(
     const hit = rootUri ? roots.find((r) => r === rootUri.fsPath) : undefined;
     if (hit) return hit;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
   const reg = (id: string, fn: (root: string) => Promise<unknown>) =>
     subs.push(

@@ -58,7 +58,12 @@ function fake(over: Partial<CommandsApi> = {}) {
 }
 
 function fakeUi(confirm = true, review = true) {
-  const log = { out: [] as string[], info: [] as string[], warn: [] as string[], err: [] as string[] };
+  const log = {
+    out: [] as string[],
+    info: [] as string[],
+    warn: [] as string[],
+    err: [] as string[],
+  };
   const ui: CommandsUi = {
     output: (l) => void log.out.push(l),
     info: (m) => void log.info.push(m),
@@ -123,7 +128,10 @@ describe("commit: create, amend, reword", () => {
   });
   test("exit 1 is a conflict and exit 2 is ambiguous, with no error toast", async () => {
     const f = fake();
-    f.outcomes.push({ exit: 1, stderr: [], opResult: null }, { exit: 2, stderr: [], opResult: null });
+    f.outcomes.push(
+      { exit: 1, stderr: [], opResult: null },
+      { exit: 2, stderr: [], opResult: null },
+    );
     const u = fakeUi();
     const c = new CommitCommands(f.api, u.ui);
     expect(await c.amend(ROOT)).toEqual({ ok: false, reason: "conflict" });
@@ -166,7 +174,9 @@ describe("commit: absorb", () => {
     f.outcomes.push({
       exit: 0,
       stderr: [],
-      opResult: enc.encode(JSON.stringify({ status: "ok", rewritten: [{ change: "abc", subject: "fix" }] })),
+      opResult: enc.encode(
+        JSON.stringify({ status: "ok", rewritten: [{ change: "abc", subject: "fix" }] }),
+      ),
     });
     const c = new CommitCommands(f.api, fakeUi(true, true).ui);
     expect(await c.absorb(ROOT)).toEqual({ ok: true });
@@ -196,7 +206,10 @@ describe("commit: discard", () => {
   test("asks first and restores both stage and worktree", async () => {
     const f = fake();
     const c = new CommitCommands(f.api, fakeUi(true).ui);
-    await c.discard(ROOT, [{ path: "a.ts", xy: ".M" }, { path: "-weird", xy: "M." }]);
+    await c.discard(ROOT, [
+      { path: "a.ts", xy: ".M" },
+      { path: "-weird", xy: "M." },
+    ]);
     expect(f.runs).toEqual([
       { verb: "restore", args: ["--staged", "--worktree", "a.ts", "./-weird"] },
     ]);
@@ -221,7 +234,10 @@ describe("commit: discard", () => {
   });
   test("many paths run in chunks under the argument cap", async () => {
     const f = fake();
-    const files = Array.from({ length: RESTORE_CHUNK * 2 + 1 }, (_, i) => ({ path: `f${i}`, xy: ".M" }));
+    const files = Array.from({ length: RESTORE_CHUNK * 2 + 1 }, (_, i) => ({
+      path: `f${i}`,
+      xy: ".M",
+    }));
     await new CommitCommands(f.api, fakeUi(true).ui).discard(ROOT, files);
     expect(f.runs.length).toBe(3);
     for (const r of f.runs) expect(r.args.length).toBeLessThanOrEqual(64);
@@ -331,7 +347,9 @@ describe("commit: stage through the api", () => {
     f.files.set("index:a.txt", "a\nb\n");
     f.files.set("work:a.txt", "a\nB\n");
     const c = new CommitCommands(f.api, fakeUi().ui);
-    expect(await c.stageRanges(ROOT, "a.txt", [{ start: 2, end: 2 }], "stage")).toEqual({ ok: true });
+    expect(await c.stageRanges(ROOT, "a.txt", [{ start: 2, end: 2 }], "stage")).toEqual({
+      ok: true,
+    });
     expect(f.stages[0]?.patch).toContain("+B\n");
     f.files.set("work:new.txt", "x\n");
     await c.stageRanges(ROOT, "new.txt", [{ start: 1, end: 1 }], "stage");

@@ -196,7 +196,12 @@ export function mountSearch(
     form.append(modes, box, scope, value, cs, go);
 
     const cov = coverageSummary(coverage, feats);
-    const covEl = el(doc, "div", cov.partial ? "asc-coverage asc-partial" : "asc-coverage", cov.text);
+    const covEl = el(
+      doc,
+      "div",
+      cov.partial ? "asc-coverage asc-partial" : "asc-coverage",
+      cov.text,
+    );
     covEl.dataset.testid = "coverage";
 
     const statusEl = el(doc, "div", "asc-status", status);

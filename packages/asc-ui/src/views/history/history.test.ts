@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { actionState, type WorktreeRow } from "../worktrees/model";
 import { layoutHistory, MAX_SIZE, MIN_SIZE, sizeFor } from "./model";
 
-const e = (id: string, author: string, stats?: { path: string; added: number; removed: number }[]) => ({
+const e = (
+  id: string,
+  author: string,
+  stats?: { path: string; added: number; removed: number }[],
+) => ({
   id,
   subject: id,
   author,
@@ -55,7 +59,9 @@ const wt = (o: Partial<WorktreeRow>): WorktreeRow => ({
 });
 
 test("remove states its reason", () => {
-  expect(actionState(wt({ main: true }), "remove").reason).toBe("The main worktree cannot be removed");
+  expect(actionState(wt({ main: true }), "remove").reason).toBe(
+    "The main worktree cannot be removed",
+  );
   expect(actionState(wt({ dirty: 2 }), "remove").reason).toBe("Uncommitted changes");
   expect(actionState(wt({ locked: "ci" }), "remove").reason).toBe("Locked: ci");
   expect(actionState(wt({}), "remove").enabled).toBe(true);

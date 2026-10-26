@@ -31,8 +31,7 @@ export interface RelayHandlerOptions {
 export function createRelayHandler(o: RelayHandlerOptions): RequestHandler & { dispose(): void } {
   const allowlist = o.allowlist ?? parseAllowlist(allowlistJson);
   const relays = new Map<WebviewLike, Relay>();
-  const logEvent = (e: RelayLog) =>
-    o.log(`relay ${e.event}: ${e.what ?? "-"}: ${e.reason}`);
+  const logEvent = (e: RelayLog) => o.log(`relay ${e.event}: ${e.what ?? "-"}: ${e.reason}`);
 
   const forWebview = (w: WebviewLike): Relay => {
     let r = relays.get(w);

@@ -9,10 +9,14 @@ let bundle = "";
 
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-ci-")), "ci.js");
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -25,8 +29,22 @@ const data = {
   jobs: { 1: [{ id: 10, name: "unit", status: "success" }] },
   logs: { 10: longLog },
   affected: [
-    { id: "b", name: "pkg-b", root: "b", direct: false, reasons: ["depends on pkg-a"], targets: {} },
-    { id: "a", name: "pkg-a", root: "a", direct: true, reasons: ["files changed"], targets: { build: ["bun", "run", "build"] } },
+    {
+      id: "b",
+      name: "pkg-b",
+      root: "b",
+      direct: false,
+      reasons: ["depends on pkg-a"],
+      targets: {},
+    },
+    {
+      id: "a",
+      name: "pkg-a",
+      root: "a",
+      direct: true,
+      reasons: ["files changed"],
+      targets: { build: ["bun", "run", "build"] },
+    },
   ],
   projects: [
     { id: "a", name: "pkg-a", deps: [] },
@@ -45,7 +63,10 @@ async function start(page: Page): Promise<void> {
 test("runs list shows status; a running run cannot be re-run and says why", async ({ page }) => {
   await start(page);
   await expect(page.getByTestId("run-1").locator('[data-badge="status"]')).toHaveText("success");
-  await expect(page.getByTestId("run-2").locator('[data-action="rerun"]')).toHaveAttribute("title", "Run has not finished");
+  await expect(page.getByTestId("run-2").locator('[data-action="rerun"]')).toHaveAttribute(
+    "title",
+    "Run has not finished",
+  );
   await page.getByTestId("run-1").locator('[data-action="rerun"]').click();
   expect(await page.evaluate(() => window.ascCi.calls.reruns)).toEqual([1]);
 });

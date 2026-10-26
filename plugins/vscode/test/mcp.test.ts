@@ -40,7 +40,9 @@ describe("mcp definitions", () => {
     expect(definitions(ASC, [], "https://forge.example")).toEqual([
       { label: "asc-remote", command: ASC, args: ["mcp", "--remote", "https://forge.example"] },
     ]);
-    expect(definitions(ASC, ["/a"], "https://forge.example").some((x) => x.args.includes("--remote"))).toBe(false);
+    expect(
+      definitions(ASC, ["/a"], "https://forge.example").some((x) => x.args.includes("--remote")),
+    ).toBe(false);
   });
   test("refuses http, credentials, junk and a missing asc", () => {
     expect(isSafeServerUrl("http://forge.example")).toBe(false);

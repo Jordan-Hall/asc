@@ -79,23 +79,34 @@ describe("actions", () => {
     expect(mergeState(stacks, "a", {}).enabled).toBe(true);
     expect(mergeState(stacks, "b", {}).reason).toBe("Merge #1 first (stack order)");
     expect(mergeState(stacks, "b", { a: { versions: [], merged: true } }).enabled).toBe(true);
-    expect(mergeState(stacks, "c", { a: { versions: [], merged: true }, b: { versions: [], merged: true } }).reason).toBe(
-      "Needs an approval",
-    );
+    expect(
+      mergeState(stacks, "c", {
+        a: { versions: [], merged: true },
+        b: { versions: [], merged: true },
+      }).reason,
+    ).toBe("Needs an approval");
   });
   test("conflicts and restack block merge", () => {
     expect(mergeState(stacks, "a", { a: { versions: [], mergeability: "conflicts" } }).reason).toBe(
       "Conflicts with the target",
     );
-    expect(mergeState(stacks, "a", { a: { versions: [], mergeability: "needs_restack" } }).reason).toBe(
-      "Needs restack first",
-    );
+    expect(
+      mergeState(stacks, "a", { a: { versions: [], mergeability: "needs_restack" } }).reason,
+    ).toBe("Needs restack first");
   });
   test("approve refuses own, draft and closed", () => {
     const a = change("a", undefined, { review: review(1) });
-    expect(approveState(a, { versions: [], own: true }).reason).toBe("You cannot approve your own change");
-    expect(approveState(change("a", undefined, { review: review(1, { draft: true }) }), undefined).enabled).toBe(false);
-    expect(approveState(change("a", undefined, { review: review(1, { state: "closed" }) }), undefined).enabled).toBe(false);
+    expect(approveState(a, { versions: [], own: true }).reason).toBe(
+      "You cannot approve your own change",
+    );
+    expect(
+      approveState(change("a", undefined, { review: review(1, { draft: true }) }), undefined)
+        .enabled,
+    ).toBe(false);
+    expect(
+      approveState(change("a", undefined, { review: review(1, { state: "closed" }) }), undefined)
+        .enabled,
+    ).toBe(false);
     expect(approveState(change("a"), undefined).reason).toBe("No pull request for this change");
     expect(approveState(a, undefined).enabled).toBe(true);
   });
@@ -107,9 +118,19 @@ describe("navigator and comments", () => {
       stacks,
       selected: "b",
       changes: {
-        b: { versions: [v(1)], mergeability: "conflicts", conflictPaths: ["x.ts"], overlaps: [{ change: "z", pr: 9, paths: ["y.ts"] }] },
+        b: {
+          versions: [v(1)],
+          mergeability: "conflicts",
+          conflictPaths: ["x.ts"],
+          overlaps: [{ change: "z", pr: 9, paths: ["y.ts"] }],
+        },
       },
-      comments: { b: [{ id: "1", path: "x.ts", author: "u", body: "hm", resolved: false }, { id: "2", path: "x.ts", author: "u", body: "ok", resolved: true }] },
+      comments: {
+        b: [
+          { id: "1", path: "x.ts", author: "u", body: "hm", resolved: false },
+          { id: "2", path: "x.ts", author: "u", body: "ok", resolved: true },
+        ],
+      },
     });
     expect(rows.map((r) => r.id)).toEqual(["a", "b", "c"]);
     const b = rows[1];
@@ -123,6 +144,9 @@ describe("navigator and comments", () => {
       { id: "2", path: "a", line: 5, author: "u", body: "", resolved: false },
       { id: "3", path: "b", line: 2, author: "u", body: "", resolved: false },
     ]);
-    expect(g.map((x) => [x.path, x.comments.map((c) => c.id)])).toEqual([["a", ["2"]], ["b", ["3", "1"]]]);
+    expect(g.map((x) => [x.path, x.comments.map((c) => c.id)])).toEqual([
+      ["a", ["2"]],
+      ["b", ["3", "1"]],
+    ]);
   });
 });

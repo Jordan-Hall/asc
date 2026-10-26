@@ -10,10 +10,14 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-review-")), "review.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -84,7 +88,11 @@ async function start(page: Page, confirm = true): Promise<void> {
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundle, type: "module" });
   await page.waitForFunction(() => typeof window.ascStartReview === "function");
-  await page.evaluate(([d, f, c]) => window.ascStartReview(d as never, f as never, c as boolean), [data, files, confirm] as const);
+  await page.evaluate(([d, f, c]) => window.ascStartReview(d as never, f as never, c as boolean), [
+    data,
+    files,
+    confirm,
+  ] as const);
 }
 
 test("navigator shows PR, mergeability, overlap and comment badges", async ({ page }) => {
@@ -94,7 +102,9 @@ test("navigator shows PR, mergeability, overlap and comment badges", async ({ pa
   await expect(a.locator('[data-badge="mergeability"]')).toHaveText("merges cleanly");
   await expect(a.locator('[data-badge="overlap"]')).toHaveText("overlaps 1");
   await expect(a.locator('[data-badge="comments"]')).toHaveText("1 open");
-  await expect(page.getByTestId("nav-b").locator('[data-badge="mergeability"]')).toHaveText("conflicts");
+  await expect(page.getByTestId("nav-b").locator('[data-badge="mergeability"]')).toHaveText(
+    "conflicts",
+  );
 });
 
 test("default interdiff is previous against latest and lists the files", async ({ page }) => {
@@ -107,7 +117,9 @@ test("default interdiff is previous against latest and lists the files", async (
   expect(opened).toEqual([{ change: "a", path: "src/new.ts", pick: { from: 2, to: 3 } }]);
 });
 
-test("since my last review picks the last reviewed version against the latest", async ({ page }) => {
+test("since my last review picks the last reviewed version against the latest", async ({
+  page,
+}) => {
   await start(page);
   await page.locator('[data-action="since-last-review"]').click();
   await expect(page.getByTestId("version-from")).toHaveValue("1");
@@ -131,7 +143,10 @@ test("comment list shows open and resolved threads", async ({ page }) => {
 test("merge states its reason, and only runs after the host confirms", async ({ page }) => {
   await start(page, false);
   await page.getByTestId("nav-b").click();
-  await expect(page.locator('[data-action="merge"]')).toHaveAttribute("title", "Merge #1 first (stack order)");
+  await expect(page.locator('[data-action="merge"]')).toHaveAttribute(
+    "title",
+    "Merge #1 first (stack order)",
+  );
   await page.getByTestId("nav-a").click();
   await page.locator('[data-action="merge"]').click();
   let calls = await page.evaluate(() => window.ascReview.calls);

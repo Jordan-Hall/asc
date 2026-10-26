@@ -276,7 +276,10 @@ describe("review: stack checkout", () => {
         },
         canMutate: async () => mutate,
       },
-      { info: (m) => void out.push(`i:${m}`), error: (m, l) => void out.push(`e:${m}|${l.join(",")}`) },
+      {
+        info: (m) => void out.push(`i:${m}`),
+        error: (m, l) => void out.push(`e:${m}|${l.join(",")}`),
+      },
     );
     return { sc, runs, out };
   };

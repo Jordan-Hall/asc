@@ -26,7 +26,14 @@ const q = (over: Partial<SearchQuery> = {}): SearchQuery => ({
   caseSensitive: false,
   ...over,
 });
-const item = (n: number): ResultItem => ({ path: `f${n}`, line: n, text: "", cols: [], length: 0, redacted: false });
+const item = (n: number): ResultItem => ({
+  path: `f${n}`,
+  line: n,
+  text: "",
+  cols: [],
+  length: 0,
+  redacted: false,
+});
 
 describe("feature gating", () => {
   test("modes beyond exact need search.v1", () => {
@@ -52,9 +59,13 @@ describe("feature gating", () => {
 describe("queryBlockedReason", () => {
   test("states the reason", () => {
     expect(queryBlockedReason(q({ text: " " }), on)).toBe(REASON_EMPTY);
-    expect(queryBlockedReason(q({ scope: { kind: "change", value: "" } }), on)).toBe(REASON_SCOPE_VALUE);
+    expect(queryBlockedReason(q({ scope: { kind: "change", value: "" } }), on)).toBe(
+      REASON_SCOPE_VALUE,
+    );
     expect(queryBlockedReason(q({ mode: "semantic" }), off)).toBe(REASON_NO_SEARCH_V1);
-    expect(queryBlockedReason(q({ scope: { kind: "stack", value: "a" } }), off)).toBe(REASON_NO_SEARCH_V1);
+    expect(queryBlockedReason(q({ scope: { kind: "stack", value: "a" } }), off)).toBe(
+      REASON_NO_SEARCH_V1,
+    );
     expect(queryBlockedReason(q(), on)).toBeUndefined();
   });
 });

@@ -14,7 +14,10 @@ function person(s: Signature | undefined): DetailPerson {
     : { name: "", email: "", time: 0 };
 }
 
-export function filesFromProto(changes: readonly PathChange[], stats: readonly FileStat[] = []): DetailFile[] {
+export function filesFromProto(
+  changes: readonly PathChange[],
+  stats: readonly FileStat[] = [],
+): DetailFile[] {
   const byPath = new Map(stats.map((s) => [decoder.decode(s.path), s]));
   return changes.map((c): DetailFile => {
     const path = decoder.decode(c.path);

@@ -17,7 +17,7 @@ export interface ShareUi {
 export async function shareCurrent(snap: StackSnap | null, ui: ShareUi): Promise<string | null> {
   const link = snap === null ? null : shareLink(snap.short);
   if (link === null) {
-    ui.warn("asc: there is no current change to share.");
+    ui.warn("ASC: there is no current change to share.");
     return null;
   }
   await ui.copy(link);
@@ -35,7 +35,7 @@ export function registerShare(
     const root =
       roots.length === 1
         ? roots[0]
-        : await vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+        : await vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
     if (!root) return;
     await shareCurrent(await stack(root), {
       copy: async (t) => vscode.env.clipboard.writeText(t),
