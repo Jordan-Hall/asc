@@ -27,9 +27,20 @@ enum RestackItemState {
   RESTACK_ITEM_STATE_SKIPPED_FROZEN = 6; // CHANGE_FROZEN: under queue or locked
 }
 
+// A change and the head the caller saw for it, to pin an apply to a reviewed plan (RestackStackRequest.expected_heads).
+message ExpectedHead {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes old_head = 2 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
 // `change` is any change of the stack: the whole stack it belongs to is restacked, the changes above it included. `onto`
 // empty means the stack's trunk tip. With `dry_run` nothing is stored. Without `allow_partial` one conflict or frozen change
 // makes the whole call fail with LAND_CONFLICT or CHANGE_FROZEN and nothing moves.
+//
+// `expected_heads` pins an apply to the plan the caller reviewed (a dry run): one entry per change the call is expected to
+// rewrite, with the head the caller saw. The apply is refused with ABORTED and REF_CONFLICT (`paths` the change ids at
+// fault) when a listed change has another head now, a change the call would rewrite is not listed, or a listed change
+// is no longer in the stack. Empty means no pin; a dry run ignores it. Restacks of one stack run one at a time.
 message RestackStackRequest {
   RepoRef repo = 1;
   bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
@@ -37,6 +48,7 @@ message RestackStackRequest {
   repeated Resolution resolutions = 4;
   bool dry_run = 5;
   bool allow_partial = 6;
+  repeated ExpectedHead expected_heads = 7;
 }
 message RestackItemResult {
   bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
