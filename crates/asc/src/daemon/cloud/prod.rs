@@ -163,7 +163,7 @@ impl Uplinks for ProdUplinks {
 /// `url`. The connection is made from `url` (the repo's row) while the queue, drafts and heads
 /// are those of the repo the directory holds; if the two differ, B's drafts would be sent to
 /// A's server and workspace.
-pub(super) fn binds(
+pub(crate) fn binds(
     held: RepoKey,
     held_url: Option<&str>,
     held_kind: RemoteKind,
@@ -216,7 +216,7 @@ pub(super) async fn open_inner(
 
 /// A context for the workspace at `path`, built the way `Ctx::open` builds one but without the
 /// version-skew check (that stops this very daemon).
-async fn open_ctx(home: &AscHome, path: PathBuf) -> Result<Ctx, String> {
+pub(crate) async fn open_ctx(home: &AscHome, path: PathBuf) -> Result<Ctx, String> {
     let env = GitEnv::from_process();
     let get = |k: &str| std::env::var_os(k);
     let safe = config::safe_directories(&env, &get).map_err(|e| note(&format!("{e:?}")))?;

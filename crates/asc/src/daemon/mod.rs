@@ -4,7 +4,8 @@
 //! endpoint, a pid file in `$ASC_HOME/run`, `Ping` and `Shutdown`, and the watchdog that aborts
 //! the process when a provider callback hangs. The `Workspace` service is in [`service`] and the
 //! background tasks in [`scheduler`] (U53b); the observability endpoint and log are in
-//! [`metrics`]. The client half (autostart, version skew, liveness) is in [`lifecycle`].
+//! [`metrics`]. Live updates (SPEC §21.3.8) are [`live`]: a supervisor started with the
+//! scheduler keeps one driver per asc server repository. The client half (autostart, version skew, liveness) is in [`lifecycle`].
 //!
 //! Every connection is local and already restricted to the current user by the transport (a
 //! DACL on the Windows pipe, uid check on the Unix socket), so each RPC is authorised by that
@@ -226,7 +227,8 @@ pub struct Hosting {
     pub backend: Option<Arc<dyn service::VirtualBackend>>,
     pub settings: scheduler::Settings,
     pub hooks: scheduler::Hooks,
-    /// Tasks of later units (the uploader, the live subscription) added to the built-in ones.
+    /// Tasks of later units (the uploader) added to the built-in ones. The live drivers are not
+    /// scheduler tasks: [`live::prod::Supervisor`] starts them.
     pub extra_jobs: Vec<(scheduler::Spec, Arc<dyn scheduler::Job>)>,
 }
 
@@ -263,6 +265,7 @@ async fn run_with(
     let stop = Arc::new(Notify::new());
 
     let mut running = None;
+    let mut live = None;
     let mut metrics_stop = None;
     let state = match hosting {
         None => None,
@@ -275,6 +278,7 @@ async fn run_with(
                     .unwrap_or_else(|_| metrics::EventLog::none()),
             );
             let meter = Arc::new(metrics::Metrics::new());
+            let home = h.home.clone();
             let state = service::State::new(db, h.home, h.backend, meter.clone(), events.clone());
             state.restore().await;
             let mut tasks = scheduler::builtin(state.clone(), &h.settings, &h.hooks);
@@ -284,6 +288,9 @@ async fn run_with(
                 }
             }
             running = Some(tasks.start(meter.clone(), events.clone()));
+            // Live updates (SPEC §21.3.8): one driver per asc server repository, each running
+            // `asc live run` in the worktrees on ref updates, cloud wake-ups and the poll fallback.
+            live = live::prod::Supervisor::start(home, h.settings.asc_exe.clone(), events.clone());
             if let Some(listener) = metrics_listener {
                 let (tx, rx) = tokio::sync::watch::channel(false);
                 tokio::spawn(metrics::serve(listener, meter, state.clone(), rx));
@@ -308,6 +315,9 @@ async fn run_with(
         .await;
     if let Some(tx) = metrics_stop {
         let _ = tx.send(true);
+    }
+    if let Some(live) = live {
+        live.stop().await;
     }
     if let Some(running) = running {
         running.stop().await;
