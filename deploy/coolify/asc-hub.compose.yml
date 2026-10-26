@@ -180,7 +180,13 @@ services:
         esac
         mkdir -p /var/lib/asc/objects /var/lib/asc/cache /var/lib/asc/gitview /var/lib/asc/home
         own /var/lib/asc
-        mkdir -p /var/lib/gitea/git/repositories
+        # The hub's data volume holds the nested mount point /var/lib/gitea/git/repositories: Docker
+        # creates that parent (git) as root, and the hub's own setup then fails with
+        # 'not writable'. Make the parents uid 1000 here, before the hub starts.
+        mkdir -p /var/lib/gitea/git/repositories /var/lib/gitea/data /var/lib/gitea/custom
+        for d in /var/lib/gitea /var/lib/gitea/git /var/lib/gitea/data /var/lib/gitea/custom; do
+          [ "$$(stat -c %u "$$d")" = "$$U" ] || chown "$$U:$$U" "$$d"
+        done
         own /var/lib/gitea/git/repositories
         if [ -n "$$ASC_S3_ENDPOINT" ]; then
           STORE="s3://$$ASC_S3_BUCKET?endpoint=$$ASC_S3_ENDPOINT&region=$$ASC_S3_REGION&path_style=true"
@@ -228,6 +234,7 @@ services:
         echo "hub-init: ready"
     volumes:
       - asc-state:/var/lib/asc
+      - hub-data:/var/lib/gitea
       - hub-repos:/var/lib/gitea/git/repositories
       - hub-secrets:/run/asc-hub
       - asc-runtime:/run/asc-runtime
