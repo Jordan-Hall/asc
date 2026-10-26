@@ -42,3 +42,28 @@ export async function axeViolations(page: Page): Promise<string[]> {
     return r.violations.map((v) => `${v.id} x${v.nodes.length} at ${v.nodes[0]?.target.join(" ")}`);
   });
 }
+
+/** The demo repository of the mock transport (src/api/fixtures.ts). */
+export const R = "/ui/asc/demo";
+export const ROUTES: Record<string, string> = {
+  landing: "/ui/",
+  signin: "/ui/signin",
+  settings: "/ui/settings",
+  inbox: "/ui/inbox",
+  search: "/ui/search",
+  "new-repo": "/ui/new",
+  repo: R,
+  tree: `${R}/tree/main/src`,
+  blob: `${R}/blob/main/src/index.ts`,
+  "blob-big": `${R}/blob/main/data/big.txt`,
+  blame: `${R}/blame/main/src/index.ts`,
+  history: `${R}/commits/main`,
+  commit: `${R}/commit/d69a79a966`,
+  changes: `${R}/changes`,
+  review: `${R}/changes/c1`,
+  actions: `${R}/actions`,
+  run: `${R}/actions/runs/1`,
+  "repo-search": `${R}/search`,
+  "repo-settings": `${R}/settings`,
+  "not-found": "/ui/no/such/page/at/all",
+};

@@ -117,7 +117,8 @@ test.describe("product page", () => {
     test.skip(!isMobile, "desktop shows the links inline");
     await page.goto("/ui/", { waitUntil: "networkidle" });
     await page.getByRole("button", { name: "Sections" }).click();
-    await expect(page.getByRole("menuitem")).toHaveCount(6);
+    // Five sections; the sixth, Agents, appears with "Show agent features".
+    await expect(page.getByRole("menuitem")).toHaveCount(5);
     await page.keyboard.press("Escape");
     await expect(page.getByRole("menu")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Sections" })).toBeFocused();
@@ -219,7 +220,9 @@ test.describe("signed in", () => {
 
     await button.click();
     await page.getByRole("menuitem", { name: "Sign out" }).click();
-    await expect(page.getByRole("heading", { name: /Review them in order/ })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /Source control for people and their agents/ }),
+    ).toBeVisible();
     expect(await page.evaluate(() => sessionStorage.getItem("asc-token"))).toBeNull();
   });
 

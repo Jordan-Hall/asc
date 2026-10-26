@@ -3,34 +3,9 @@
 // warning, no failed or 4xx/5xx request (a CSP violation is a console error), no horizontal page
 // scroll, one h1, and no axe-core violation at WCAG 2.2 AA plus best practice.
 import { expect, test } from "@playwright/test";
-import { axeViolations, watch } from "./helpers";
+import { axeViolations, ROUTES, R, watch } from "./helpers";
 
 const shots = process.env.ASC_E2E_SHOTS;
-
-/** The demo repository of the mock transport (src/api/fixtures.ts). */
-const R = "/ui/asc/demo";
-const ROUTES: Record<string, string> = {
-  landing: "/ui/",
-  signin: "/ui/signin",
-  settings: "/ui/settings",
-  inbox: "/ui/inbox",
-  search: "/ui/search",
-  "new-repo": "/ui/new",
-  repo: R,
-  tree: `${R}/tree/main/src`,
-  blob: `${R}/blob/main/src/index.ts`,
-  "blob-big": `${R}/blob/main/data/big.txt`,
-  blame: `${R}/blame/main/src/index.ts`,
-  history: `${R}/commits/main`,
-  commit: `${R}/commit/d69a79a966`,
-  changes: `${R}/changes`,
-  review: `${R}/changes/c1`,
-  actions: `${R}/actions`,
-  run: `${R}/actions/runs/1`,
-  "repo-search": `${R}/search`,
-  "repo-settings": `${R}/settings`,
-  "not-found": "/ui/no/such/page/at/all",
-};
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(scheme, () => {
@@ -120,12 +95,13 @@ test.describe("interaction", () => {
     isMobile,
   }) => {
     test.skip(isMobile, "no hardware keyboard");
-    await page.goto("/ui/", { waitUntil: "networkidle" });
+    // The signed-out product page has no search box; any other page does.
+    await page.goto("/ui/settings", { waitUntil: "networkidle" });
     await page.keyboard.press("/");
     await expect(page.getByRole("searchbox")).toBeFocused();
     await page.keyboard.type("g?");
     await expect(page.getByRole("dialog")).toHaveCount(0);
-    await expect(page).toHaveURL(/\/ui\/$/);
+    await expect(page).toHaveURL(/\/ui\/settings$/);
   });
 
   test("skip link moves focus to the main landmark", async ({ page, isMobile }) => {
@@ -141,11 +117,11 @@ test.describe("interaction", () => {
 
   test("theme choice persists across a reload and applies before paint", async ({ page }) => {
     await page.goto("/ui/settings", { waitUntil: "networkidle" });
-    await page.getByLabel("Dark").check();
+    await page.locator("main").getByLabel("Dark").check();
     await expect(page.locator("html")).toHaveClass(/dark/);
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.locator("html")).toHaveClass(/dark/);
-    await page.getByLabel("Light").check();
+    await page.locator("main").getByLabel("Light").check();
     await page.reload({ waitUntil: "networkidle" });
     await expect(page.locator("html")).not.toHaveClass(/dark/);
   });
@@ -158,7 +134,8 @@ test.describe("interaction", () => {
     expect(page.url()).not.toContain("secret-token-value");
     const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }));
     expect(stored).not.toContain("secret-token-value");
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await page.getByRole("button", { name: "Account menu" }).click();
+    await expect(page.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
   });
 
   test("the served page has the strict CSP and no inline script", async ({ page }) => {
