@@ -1165,8 +1165,8 @@ impl ServeConfig {
         self.limits.validate()?;
         self.cloud.validate()?;
         self.web.validate()?;
-        self.netguard.validate().or_else(|m| invalid(m))?;
-        self.storage.validate().or_else(|m| invalid(m))?;
+        self.netguard.validate().or_else(invalid)?;
+        self.storage.validate().or_else(invalid)?;
         self.validate_grants()
     }
 
