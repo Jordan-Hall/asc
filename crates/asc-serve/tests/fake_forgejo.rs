@@ -725,7 +725,7 @@ mod forgejo {
         assert_eq!(own.principal.id, "-2:gitea-actions");
         // Repository names compare exactly: the registry is case-sensitive, so another case
         // is another repo even when Forgejo answers "allowed" for it.
-        for other in ["asc/DDS", "asc/dds", "asc/DDS"] {
+        for other in ["asc/DDS", "ASC/dds", "ASC/DDS"] {
             fake.with(|i| {
                 i.authz
                     .insert(("task".into(), other.into()), task("asc/dds"));
@@ -741,7 +741,7 @@ mod forgejo {
         fake.with(|i| {
             i.authz
                 .insert(("task".into(), "asc/asc".into()), task("asc/asc"));
-            for other in ["asc/ASC", "asc/ASC"] {
+            for other in ["asc/ASC", "ASC/asc", "ASC/ASC"] {
                 i.authz
                     .insert(("task".into(), other.into()), task("asc/asc"));
             }
@@ -749,7 +749,7 @@ mod forgejo {
         with.decide(Some(&t), "asc/asc", Access::Write)
             .await
             .unwrap();
-        for other in ["asc/ASC", "asc/ASC"] {
+        for other in ["asc/ASC", "ASC/asc", "ASC/ASC"] {
             assert_eq!(
                 with.decide(Some(&t), other, Access::Read)
                     .await
@@ -758,17 +758,21 @@ mod forgejo {
                 "{other}"
             );
         }
-        // A composition grant matches both names exactly.
+        // A composition grant matches both names exactly: case-folded grants do not match.
         let folded = internal_authz(
             &url,
             vec![
                 CompositionGrant {
-                    parent: "asc/dds".into(),
+                    parent: "asc/DDS".into(),
                     child: "asc/soma".into(),
                 },
                 CompositionGrant {
-                    parent: "asc/DDS".into(),
-                    child: "asc/soma".into(),
+                    parent: "asc/dds".into(),
+                    child: "asc/SOMA".into(),
+                },
+                CompositionGrant {
+                    parent: "ASC/DDS".into(),
+                    child: "ASC/SOMA".into(),
                 },
             ],
         );
