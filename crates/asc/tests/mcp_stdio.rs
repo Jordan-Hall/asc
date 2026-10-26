@@ -586,3 +586,262 @@ fn daemon_route_starts_the_daemon() {
     assert_eq!(f["data"], json!("alpha\nbeta\ngamma\n"));
     s.finish();
 }
+
+/// I21: `search` is an opt-in toolset that is listed only while the server `origin` names
+/// advertises `search.v1`. With no origin, or one that cannot be reached, it is not listed, and the
+/// start does not wait on the network for long.
+#[test]
+fn search_is_not_listed_without_a_server_that_advertises_it() {
+    let r = repo();
+    r.asc(&["config", "--local", "asc.mcp.toolsets", "core,search"]);
+    let mut s = Server::start(&r, &[], false);
+    let names = tool_names(&mut s);
+    assert!(names.iter().any(|n| n == "grep"), "{names:?}");
+    assert!(!names.iter().any(|n| n == "search"), "{names:?}");
+    // A call to an unlisted tool is refused like an unknown one.
+    let denied = s.call("search", json!({ "query": "needle", "mode": "text" }));
+    assert!(denied.get("error").is_some(), "{denied}");
+    s.finish();
+
+    r.asc(&[
+        "config",
+        "--local",
+        "remote.origin.url",
+        "https://127.0.0.1:1/acme/app",
+    ]);
+    let started = std::time::Instant::now();
+    let mut s = Server::start(&r, &[], false);
+    let names = tool_names(&mut s);
+    assert!(!names.iter().any(|n| n == "search"), "{names:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "start waited too long"
+    );
+    s.finish();
+}
+
+// ---- search (I21) -----------------------------------------------------------------------------
+
+/// An `asc.v1.CodeIntel` stand-in on loopback that also reports its features in `Repo.Version`.
+mod codeintel {
+    use std::net::SocketAddr;
+    use std::sync::{Arc, Mutex};
+    use std::thread::JoinHandle;
+
+    use bytes::Bytes;
+    use asc_rpc::auth::StaticTokens;
+    use asc_rpc::server::{RepoHandlers, RepoService, ServerInfo, wire};
+    use asc_rpc::services::code_intel_server::{CodeIntel, CodeIntelServer};
+    use tonic::{Request, Response, Status};
+
+    #[derive(Default)]
+    pub struct Seen {
+        pub search: Vec<wire::SearchRequest>,
+        pub auth: Vec<Option<String>>,
+    }
+
+    #[derive(Clone)]
+    struct Fake(Arc<Mutex<Seen>>);
+
+    type SearchStream =
+        futures::stream::Iter<std::vec::IntoIter<Result<wire::SearchResponse, Status>>>;
+
+    fn unused<T>() -> Result<T, Status> {
+        Err(Status::unimplemented("not part of this test"))
+    }
+
+    #[tonic::async_trait]
+    impl CodeIntel for Fake {
+        type SearchStream = SearchStream;
+
+        async fn search(
+            &self,
+            r: Request<wire::SearchRequest>,
+        ) -> Result<Response<Self::SearchStream>, Status> {
+            let auth = r
+                .metadata()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let mut seen = self.0.lock().unwrap();
+            seen.auth.push(auth);
+            seen.search.push(r.into_inner());
+            let hit = |path: &'static [u8]| wire::FileHit {
+                path: Bytes::from_static(path),
+                matches: vec![wire::LineMatch {
+                    line: 1,
+                    text: Bytes::from_static(b"pub fn needle() {}"),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let resp = wire::SearchResponse {
+                scope: Some(wire::ResolvedScope {
+                    changeset: Bytes::from_static(&[0xab, 0xcd]),
+                    coverage: 0.5,
+                    ..Default::default()
+                }),
+                // `.env` is ignored by the work tree's rules: the tool must not show it.
+                files: vec![hit(b"src/lib.rs"), hit(b".env")],
+                ..Default::default()
+            };
+            Ok(Response::new(futures::stream::iter(vec![Ok(resp)])))
+        }
+
+        async fn symbols(
+            &self,
+            _: Request<wire::SymbolsRequest>,
+        ) -> Result<Response<wire::SymbolsResponse>, Status> {
+            unused()
+        }
+
+        async fn semantic(
+            &self,
+            _: Request<wire::SemanticRequest>,
+        ) -> Result<Response<wire::SemanticResponse>, Status> {
+            unused()
+        }
+
+        async fn upload_scip(
+            &self,
+            _: Request<tonic::Streaming<wire::UploadScipRequest>>,
+        ) -> Result<Response<wire::UploadScipResponse>, Status> {
+            unused()
+        }
+
+        async fn index_status(
+            &self,
+            _: Request<wire::IndexStatusRequest>,
+        ) -> Result<Response<wire::IndexStatusResponse>, Status> {
+            unused()
+        }
+    }
+
+    pub struct Server {
+        pub addr: SocketAddr,
+        pub seen: Arc<Mutex<Seen>>,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    impl Server {
+        pub fn start(features: &[&str]) -> Self {
+            let seen = Arc::new(Mutex::new(Seen::default()));
+            let fake = Fake(seen.clone());
+            let info = ServerInfo {
+                features: features.iter().map(|f| (*f).to_owned()).collect(),
+                ..ServerInfo::default()
+            };
+            let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+            let (stop, stop_rx) = tokio::sync::oneshot::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(1)
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                rt.block_on(async move {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                        .await
+                        .expect("bind");
+                    addr_tx.send(listener.local_addr().unwrap()).unwrap();
+                    let incoming = futures::stream::unfold(listener, |l| async move {
+                        let r = l.accept().await.map(|(s, _)| s);
+                        Some((r, l))
+                    });
+                    let repo = RepoService::new(
+                        Arc::new(RepoHandlers::new()),
+                        Arc::new(StaticTokens::new()),
+                        info,
+                    );
+                    let _ = tonic::transport::Server::builder()
+                        .add_service(CodeIntelServer::new(fake))
+                        .add_service(repo.into_service())
+                        .serve_with_incoming_shutdown(incoming, async {
+                            let _ = stop_rx.await;
+                        })
+                        .await;
+                });
+            });
+            Self {
+                addr: addr_rx.recv().unwrap(),
+                seen,
+                stop: Some(stop),
+                thread: Some(thread),
+            }
+        }
+
+        pub fn url(&self) -> String {
+            format!("asc+http://{}/acme/app", self.addr)
+        }
+    }
+
+    impl Drop for Server {
+        fn drop(&mut self) {
+            if let Some(s) = self.stop.take() {
+                let _ = s.send(());
+            }
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+}
+
+#[test]
+fn search_is_served_by_the_origin_that_advertises_search_v1() {
+    use asc_rpc::server::wire;
+
+    let r = repo();
+    let server = codeintel::Server::start(&["search.v1"]);
+    r.asc(&["config", "--local", "asc.mcp.toolsets", "core,search"]);
+    r.asc(&["config", "--local", "remote.origin.url", &server.url()]);
+    let mut s = Server::start(&r, &[("ASC_TOKEN", "origin-token")], false);
+    let names = tool_names(&mut s);
+    assert!(names.iter().any(|n| n == "search"), "{names:?}");
+
+    let found = s.ok("search", json!({ "query": "needle", "mode": "text" }));
+    // The reply contract: scope, coverage and an estimate on every mode.
+    assert_eq!(found["coverage"], json!(0.5), "{found}");
+    assert!(found["est_tokens"].as_u64().unwrap() > 0, "{found}");
+    assert_eq!(found["scope"]["changeset"], json!("abcd"), "{found}");
+    // The work tree's rules hide `.env`; the other hit stays.
+    let files = found["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{found}");
+    assert_eq!(files[0]["path"], json!("src/lib.rs"));
+    assert!(!found.to_string().contains(".env"));
+
+    // The request: the connection's repository, the default branch, the credential.
+    let seen = server.seen.lock().unwrap();
+    let q = &seen.search[0];
+    assert_eq!(q.pattern, "needle");
+    let scope = q.scope.as_ref().unwrap();
+    assert_eq!(scope.repo.as_ref().unwrap().name, "acme/app");
+    assert!(matches!(
+        &scope.at,
+        Some(wire::scope::At::Rev(r)) if r == "HEAD"
+    ));
+    assert_eq!(seen.auth[0].as_deref(), Some("Bearer origin-token"));
+    drop(seen);
+
+    // A path outside the repository never leaves the process.
+    let code = s.error_code(
+        "search",
+        json!({ "query": "needle", "mode": "text", "paths": ["../x"] }),
+    );
+    assert_eq!(code, "PATH_POLICY");
+    assert_eq!(server.seen.lock().unwrap().search.len(), 1);
+    s.finish();
+}
+
+#[test]
+fn search_is_not_listed_when_the_origin_lacks_search_v1() {
+    let r = repo();
+    let server = codeintel::Server::start(&[]);
+    r.asc(&["config", "--local", "asc.mcp.toolsets", "core,search"]);
+    r.asc(&["config", "--local", "remote.origin.url", &server.url()]);
+    let mut s = Server::start(&r, &[("ASC_TOKEN", "origin-token")], false);
+    let names = tool_names(&mut s);
+    assert!(!names.iter().any(|n| n == "search"), "{names:?}");
+    s.finish();
+}

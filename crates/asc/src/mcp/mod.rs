@@ -15,11 +15,13 @@ pub mod install;
 pub mod listen;
 pub mod pathgate;
 pub mod remote;
+pub mod search;
 pub mod write;
 
 use std::collections::BTreeSet;
 use std::process::ExitCode;
 
+use asc_mcp::catalogue::Toolset;
 use asc_mcp::config::{Entry, Flags, Layer, McpConfig};
 use asc_mcp::cursor::KeyRing;
 use asc_mcp::handler::{Caller, Handler, HandlerConfig};
@@ -137,13 +139,23 @@ pub async fn serve(ctx: &Ctx, flags: Flags) -> Result<ExitCode> {
     let ws = ctx.ws()?;
     let config = McpConfig::resolve(&config_entries(ctx), &flags);
     let uploads = write::workspace_uploads(ctx);
+    // `search` is an opt-in toolset that needs the server's `search.v1`: ask only then.
+    let search = search::ServerSearch::new(ctx, ws);
+    let mut features = BTreeSet::new();
+    if config.toolsets.contains(&Toolset::Search)
+        && let Some(s) = &search
+        && s.advertises().await
+    {
+        features.insert(asc_mcp::search::FEATURE.to_owned());
+    }
     let backend = backend::LocalBackend::open(ctx, ws)
         .await?
-        .with_write(config.write, uploads);
+        .with_write(config.write, uploads)
+        .with_search(search);
     let mut cfg = HandlerConfig::new(Surface::Stdio);
     cfg.workspace_uploads = uploads;
     cfg.config = config;
-    cfg.features = BTreeSet::new();
+    cfg.features = features;
     let keys = KeyRing::random().map_err(|e| CliError::Fatal(format!("asc mcp: {e}")))?;
     let handler = Handler::new(backend.clone(), cfg, keys);
     listen::serve(
