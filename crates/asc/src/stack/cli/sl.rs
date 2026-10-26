@@ -19,7 +19,9 @@ use asc_state::state::workspaces;
 use asc_store::refs::Refs;
 use asc_store::sqlrefs::SqlRefs;
 use futures::TryStreamExt;
+use serde::Serialize;
 
+use super::cloud::{self, WorkspaceOut};
 use crate::cli::common::{CliError, Ctx, ObjectStack, Result, WsCtx};
 use crate::cli::output::Output;
 use crate::cli::pager::PagerWant;
@@ -42,11 +44,17 @@ pub struct Args {
     /// Review data (needs an asc server).
     #[arg(long)]
     pub remote: bool,
+    /// Also list the cloud workspaces' heads (needs a server with a commit cloud).
+    #[arg(long)]
+    pub cloud: bool,
+    /// With `--cloud`: another user's workspaces (needs repo write).
+    #[arg(long, requires = "cloud")]
+    pub user: Option<String>,
     #[arg(long)]
     pub json: bool,
 }
 
-const FLAGS: &[&str] = &["-s", "-a", "-r", "--revset", "--remote", "--json"];
+const FLAGS: &[&str] = &["-s", "-a", "-r", "--revset", "--remote", "--cloud", "--user", "--json"];
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "sl", flags: FLAGS, placeholders: &[] }];
 
@@ -518,7 +526,23 @@ fn render(sl: &Sl) -> String {
     out
 }
 
+/// `--json` with `--cloud`: the `Workspace.Stacks` document plus the `cloud` workspaces. Without
+/// `--cloud` the key is absent, so the plain document keeps its shape.
+#[derive(Serialize)]
+struct SlOut<'a> {
+    #[serde(flatten)]
+    sl: &'a Sl,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cloud: Option<&'a [WorkspaceOut]>,
+}
+
 pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
+    // Asked first: a server without a commit cloud fails the verb before anything is printed.
+    let listed = if a.cloud {
+        Some(cloud::workspaces(ctx, None, a.user.as_deref(), a.all).await?)
+    } else {
+        None
+    };
     let l = Local::open(ctx).await?;
     let st = l.stacks().await?;
     if a.remote {
@@ -527,9 +551,15 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     let sl = build(&l, &st, &a).await?;
     let mut out = Output::open(ctx, "sl", PagerWant::Never)?;
     if a.json {
-        out.write_all(json::line(&sl).map_err(fatal)?.as_bytes())?;
+        let doc = SlOut { sl: &sl, cloud: listed.as_deref() };
+        out.write_all(json::line(&doc).map_err(fatal)?.as_bytes())?;
     } else {
         out.write_all(render(&sl).as_bytes())?;
+        if let Some(list) = &listed {
+            out.write_all(format!("
+cloud:
+{}", cloud::render_workspaces(list)).as_bytes())?;
+        }
     }
     out.finish()?;
     // B31: the live-conflict notice goes to stderr, so `--json` and the graph stay clean.
@@ -561,6 +591,18 @@ mod tests {
     #[test]
     fn clean_removes_escapes() {
         assert_eq!(clean("a\u{1b}[31mb"), "a?[31mb");
+    }
+
+    #[test]
+    fn cloud_key_is_absent_unless_asked_for() {
+        let sl = Sl::new(Vec::new(), Vec::new());
+        let plain = serde_json::to_value(SlOut { sl: &sl, cloud: None }).unwrap();
+        assert!(plain.get("cloud").is_none());
+        assert_eq!(plain["version"], json::VERSION);
+        let none: &[WorkspaceOut] = &[];
+        let asked = serde_json::to_value(SlOut { sl: &sl, cloud: Some(none) }).unwrap();
+        assert_eq!(asked["cloud"], serde_json::json!([]));
+        assert!(asked["stacks"].is_array());
     }
 
     #[test]

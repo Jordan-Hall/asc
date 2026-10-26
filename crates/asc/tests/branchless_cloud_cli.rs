@@ -327,3 +327,37 @@ fn release_of_an_entry_that_is_not_waiting_is_refused() {
     // The entry is pending, not held: refused before any connection.
     assert!(server.calls().is_empty(), "{:?}", server.calls());
 }
+
+#[test]
+fn sl_cloud_reports_a_server_without_a_cloud_before_printing_anything() {
+    let server = Server::start(&["acme/app"]);
+    let c = Client::new(&server.url("acme/app"));
+    c.commit("one.txt");
+    for args in [
+        &["sl", "--cloud"][..],
+        &["sl", "--cloud", "--json"],
+        &["sl", "--cloud", "--user", "bob", "-a"],
+    ] {
+        let out = c.run(args);
+        assert!(!out.status.success(), "{args:?} must fail loudly");
+        let err = text(&out.stderr);
+        assert!(err.contains("no commit cloud"), "{args:?}: {err}");
+        assert!(text(&out.stdout).is_empty(), "{args:?}: {}", text(&out.stdout));
+    }
+}
+
+#[test]
+fn sl_user_needs_cloud_and_plain_sl_json_has_no_cloud_key() {
+    let server = Server::start(&["acme/app"]);
+    let c = Client::new(&server.url("acme/app"));
+    server.forget_calls();
+    let out = c.run(&["sl", "--user", "bob"]);
+    assert!(!out.status.success(), "--user alone must be refused");
+    assert!(server.calls().is_empty(), "{:?}", server.calls());
+
+    let out = c.ok(&["sl", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(text(&out.stdout).trim()).unwrap();
+    assert!(v.get("cloud").is_none(), "{v}");
+    assert!(v["stacks"].is_array(), "{v}");
+    assert!(server.calls().is_empty(), "plain sl never contacts the server");
+}
