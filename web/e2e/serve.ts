@@ -3,7 +3,7 @@
 // (docs/WEB-UI.md section 8): extension-less paths get index.html, unknown files 404, and the CSP is
 // read from crates/asc-serve/src/web/mod.rs so the suite cannot drift from the server.
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { extname, normalize } from "node:path/posix";
 
 const webDir = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
@@ -52,13 +52,24 @@ Bun.serve({
     const { pathname } = new URL(req.url);
     if (pathname === "/ui") return Response.redirect("/ui/", 308);
     if (!pathname.startsWith("/ui/")) return new Response("not found", { status: 404 });
-    const rel = normalize(decodeURIComponent(pathname.slice(4))).replace(/^([/\\]|\.\.)+/, "");
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(pathname.slice(4));
+    } catch {
+      return new Response("bad request", { status: 400 });
+    }
+    // No backslashes, NUL or ".." segments: nothing that can leave the build directory.
+    if (/[\\\0]/.test(decoded) || decoded.split("/").includes("..")) {
+      return new Response("not found", { status: 404 });
+    }
+    const rel = normalize(decoded).replace(/^\/+/, "");
     const ext = extname(rel);
     // Same rule as asc-serve: a nested source-file path that a browser opens is a client route.
     const navigation = (req.headers.get("accept") ?? "").includes("text/html");
     const sourceFile = ext !== "" && rel.includes("/") && !rel.startsWith("static/") && navigation;
     if (ext && !sourceFile) {
-      const file = join(out, rel);
+      const file = resolve(out, rel);
+      if (!file.startsWith(resolve(out) + sep)) return new Response("not found", { status: 404 });
       if (!existsSync(file) || !statSync(file).isFile()) {
         return new Response("not found", { status: 404 });
       }
