@@ -22,6 +22,9 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_INCREMENTAL: '0'
+      # Tests compare against the pinned git only (docs/git-fidelity.md); ASC_GIT_ORACLE and
+      # ASC_REAL_GIT are appended to the job environment by the "Pinned git oracle" step.
+      ASC_ORACLE_STRICT: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Free disk space
@@ -31,6 +34,29 @@ jobs:
       - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The pinned git is built from its sha256-verified tarball; the build is cached on the pins.
+      - name: Pinned git oracle cache
+        id: oracle-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/asc-oracle
+          key: git-oracle-${{ runner.os }}-${{ hashFiles('build/git-oracle/pins.env', 'build/git-oracle/oracle.sh') }}
+      - name: Pinned git oracle build tools
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libcurl4-openssl-dev zlib1g-dev xz-utils curl
+      - name: Pinned git oracle
+        run: |
+          set -euo pipefail
+          bash build/git-oracle/oracle.sh fetch
+          bash build/git-oracle/oracle.sh verify
+          bash build/git-oracle/oracle.sh env | tee -a "$GITHUB_ENV"
+      # Saved here, not at the end of the job, so a failing test run still keeps the build.
+      - name: Pinned git oracle cache save
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/asc-oracle
+          key: ${{ steps.oracle-cache.outputs.cache-primary-key }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
