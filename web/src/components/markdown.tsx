@@ -169,6 +169,8 @@ export interface MarkdownProps {
   source: string;
   /** Renders a link; the default is a plain anchor. */
   link?: LinkRenderer;
+  /** Added to every heading level, so a document nested under a page's own headings keeps the outline in order. */
+  headingOffset?: number;
 }
 
 const plainLink: LinkRenderer = (target, children, key) => (
@@ -182,14 +184,18 @@ const plainLink: LinkRenderer = (target, children, key) => (
   </a>
 );
 
-export default function Markdown({ source, link = plainLink }: MarkdownProps): ReactNode {
+export default function Markdown({
+  source,
+  link = plainLink,
+  headingOffset = 0,
+}: MarkdownProps): ReactNode {
   const blocks = parseBlocks(source);
   return (
     <div className="space-y-3 leading-relaxed">
       {blocks.map((b, i) => {
         switch (b.t) {
           case "h": {
-            const Tag = `h${Math.min(6, b.level)}` as "h1";
+            const Tag = `h${Math.min(6, b.level + headingOffset)}` as "h1";
             return (
               <Tag
                 key={i}
@@ -205,6 +211,8 @@ export default function Markdown({ source, link = plainLink }: MarkdownProps): R
             return (
               <pre
                 key={i}
+                // Focusable so a keyboard user can scroll a long line.
+                tabIndex={0}
                 className="overflow-x-auto rounded-md border border-line bg-subtle p-3 font-mono text-sm"
               >
                 <code>{b.text}</code>

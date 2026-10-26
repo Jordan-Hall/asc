@@ -185,7 +185,11 @@ export function Shell(props: { children: ReactNode }): ReactNode {
           className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4"
           style={{ height: 56 }}
         >
-          <Link to="/" className="text-lg font-bold text-fg-strong no-underline">
+          <Link
+            to="/"
+            aria-label="asc dashboard"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-brand text-sm font-bold text-on-brand no-underline"
+          >
             asc
           </Link>
           <form
@@ -210,11 +214,18 @@ export function Shell(props: { children: ReactNode }): ReactNode {
           </form>
           <span className="flex-1 sm:hidden" />
           <Link
+            to={`${repoPath ?? ""}/search`}
+            aria-label="Search"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-fg no-underline hover:bg-subtle-hover sm:hidden"
+          >
+            <Icon name="search" />
+          </Link>
+          <Link
             to="/inbox"
             className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-fg no-underline hover:bg-subtle-hover"
           >
             <Icon name="inbox" />
-            <span className="hidden sm:inline">Inbox</span>
+            <span className="sr-only sm:not-sr-only">Inbox</span>
           </Link>
           <ThemeButton />
           {token ? (

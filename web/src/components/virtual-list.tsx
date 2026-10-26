@@ -14,6 +14,8 @@ export interface VirtualListProps {
   className?: string;
   /** Reserve this many rows of height even when there are fewer (no shift while streaming). */
   minRows?: number;
+  /** No rule between rows (code lines). */
+  borderless?: boolean;
   /** Scroll this row into view once it exists (a #L12 anchor). */
   revealIndex?: number | undefined;
 }
@@ -78,7 +80,7 @@ export function VirtualList(props: VirtualListProps): ReactNode {
         key={i}
         role="listitem"
         data-row={i}
-        className="absolute inset-x-0 border-b border-line"
+        className={`absolute inset-x-0 ${props.borderless ? "" : "border-b border-line"}`}
         style={{ top: i * rowHeight, height: rowHeight }}
       >
         {renderRow(i, i === current)}
