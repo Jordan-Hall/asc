@@ -303,3 +303,8 @@ html {
     scroll-behavior: auto !important;
   }
 }
+
+/* The header is ink in every theme, so its focus ring is the cyan accent, which reads on ink. */
+.hdr :focus-visible {
+  outline-color: rgb(var(--color-accent-fill));
+}

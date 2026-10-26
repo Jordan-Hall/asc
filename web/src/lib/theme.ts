@@ -8,6 +8,13 @@ export type Theme = "light" | "dark";
 
 export const THEME_KEY = "asc-theme";
 
+/** The three themes in menu order, with the words people see. */
+export const THEME_CHOICES: readonly { value: ThemePref; label: string }[] = [
+  { value: "asc-auto", label: "Match system" },
+  { value: "asc-light", label: "Light" },
+  { value: "asc-dark", label: "Dark" },
+];
+
 /** Unknown values mean asc-auto. The bare "light" and "dark" of earlier versions still parse. */
 export function parsePref(raw: string | null | undefined): ThemePref {
   if (raw === "asc-light" || raw === "light") return "asc-light";
