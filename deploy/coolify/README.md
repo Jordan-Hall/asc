@@ -43,7 +43,9 @@ Postgres. SQLite holds the hub's database and asc's; asc's objects are files on 
    `hub` service to the host in `ASC_HUB_ROOT_URL`. Give `asc` no domain.
 3. Open the SSH port (`ASC_HUB_SSH_PORT`, default 22224) in the host firewall.
 4. Deploy. Coolify generates `SERVICE_PASSWORD_INTERNALTOKEN` (the secret the hub and asc share) and
-   `SERVICE_PASSWORD_WEBHOOKSECRET`; `hub-init` writes them to 0400 files on the `hub-runtime` volume.
+   `SERVICE_PASSWORD_WEBHOOKSECRET`; `hub-init` writes them to 0400 files on the `hub-secrets` volume (the hub and asc mount it read-only).
+   `asc-serve.toml`, which holds the asc database URL, goes to the separate `asc-runtime` volume that only `asc` and
+   `asc-migrate` mount: the hub cannot read it.
 5. Read the first admin password once, in the Coolify terminal of `hub`:
    `cat /var/lib/gitea/bootstrap/admin-password`. Sign in as `ADMIN_USER`, change the password
    (the account must), then delete the file. It is never printed to a log. Registration is off
