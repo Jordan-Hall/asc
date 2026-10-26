@@ -46,6 +46,7 @@ pub mod mcp;
 pub mod migrate;
 pub mod mirror;
 pub mod mutations;
+pub mod netguard;
 pub mod objects;
 pub mod outbox;
 pub mod projects;
