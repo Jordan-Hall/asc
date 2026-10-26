@@ -1,10 +1,11 @@
 name: image
 # `asc serve` as a container image in the Forgejo registry (deploy/Dockerfile.serve):
-#   push to master  ->  forge.example.org/asc/asc-serve:<sha12> and :master
+#   push to master  ->  <registry>/asc/asc-serve:<sha12> and :master
 #   tag v*          ->  :<sha12> and :<version> (the tag without its leading v)
 #   pull_request    ->  build only: no sign-in, and the credential is never referenced
 # Needs the repository secret REGISTRY_TOKEN (a token with write:package) and the
-# repository variable REGISTRY_USER (the user the token belongs to).
+# repository variable REGISTRY_USER (the user the token belongs to), and the repository variable
+# REGISTRY_HOST (the registry host name, never committed).
 on:
   push:
     branches: [master]
@@ -23,8 +24,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: forge.example.org
-  IMAGE: forge.example.org/asc/asc-serve
+  REGISTRY: ${{ vars.REGISTRY_HOST }}
+  IMAGE: ${{ vars.REGISTRY_HOST }}/asc/asc-serve
 
 jobs:
   image:

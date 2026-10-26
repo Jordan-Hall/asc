@@ -14,7 +14,7 @@
 # Values live in the Coolify application's environment, never in this file.
 
 x-asc-serve: &asc-serve
-  image: ${ASC_IMAGE_REPO:-forge.example.org/asc/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
+  image: ${ASC_IMAGE_REPO:?image repository, e.g. forge.example.org/asc/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
   user: '${ASC_RUN_UID:-10001}:${ASC_RUN_UID:-10001}'
   read_only: true
   tmpfs:
@@ -39,8 +39,8 @@ x-asc-serve: &asc-serve
       read_only: true
       content: |
         listen = "0.0.0.0:7890"
-        public_url = 'https://asc-staging.example.org'
-        store = 's3://asc-staging?endpoint=https://garage.example.org&region=garage&path_style=true'
+        public_url = '${ASC_PUBLIC_URL:?public https URL, e.g. https://asc-staging.example.org}'
+        store = 's3://asc-staging?endpoint=${ASC_S3_ENDPOINT:?S3 endpoint}&region=garage&path_style=true'
         db = 'sqlite:///var/lib/asc/asc.db?mode=rwc'
         cache = { memory = "512MiB", disk_dir = "/var/lib/asc/cache", disk = "5GiB" }
 

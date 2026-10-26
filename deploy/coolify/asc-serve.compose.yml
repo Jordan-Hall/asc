@@ -1,7 +1,7 @@
 # asc serve, staging, as a Coolify "Docker Compose" application (SPEC Stage 1).
 #
 # Not part of the monorepo estate: the image is built elsewhere (deploy/Dockerfile.serve) and
-# pushed to forge.example.org/asc/asc-serve:<sha12>. Coolify only pulls and runs it.
+# pushed to <registry>/asc/asc-serve:<sha12>. Coolify only pulls and runs it.
 #
 # No Postgres container: the database is a schema (`asc`) on Forgejo's Postgres, reached through
 # the DSN secret ASC_DATABASE_URL. No bucket container either: Garage already runs on the platform.
@@ -16,7 +16,7 @@
 # A value that contains `'` breaks the TOML literal strings: keep secrets URL-safe.
 
 x-asc-serve: &asc-serve
-  image: ${ASC_IMAGE_REPO:-forge.example.org/asc/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
+  image: ${ASC_IMAGE_REPO:?image repository, e.g. forge.example.org/asc/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
   # Must be the user Dockerfile.serve creates; the configs below are owned by it, mode 0400.
   user: '${ASC_RUN_UID:-10001}:${ASC_RUN_UID:-10001}'
   read_only: true
@@ -135,7 +135,7 @@ configs:
       # Basic credentials from plain git go to the forge (SPEC 15.6.2); the token files below are
       # Forgejo's INTERNAL_TOKEN (required at start by `[forgejo]`) and the webhook secret.
       [forgejo]
-      url = '${ASC_FORGEJO_URL:-https://forge.example.org}'
+      url = '${ASC_FORGEJO_URL:?public https URL of the hub or Forgejo, e.g. https://forge.example.org}'
       internal_token_file = "/etc/asc/forgejo-internal-token"
       webhook_secret_file = "/etc/asc/webhook-secret"
 

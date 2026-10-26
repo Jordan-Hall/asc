@@ -3,13 +3,13 @@
 # Set ASC_HUB_IMAGE_TAG to the sha12 tag of the image; ASC_HUB_IMAGE_REPO to ghcr.io/jordan-hall/asc-hub for the GitHub build.
 services:
   forgejo:
-    image: ${ASC_HUB_IMAGE_REPO:-forge.example.org/asc/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
+    image: ${ASC_HUB_IMAGE_REPO:?image repository, e.g. forge.example.org/asc/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag}
     restart: unless-stopped
     environment:
       - SERVICE_FQDN_FORGEJO_3000
       - FORGEJO__database__DB_TYPE=sqlite3
       - FORGEJO__database__PATH=/var/lib/gitea/data/forgejo.db
-      - FORGEJO__server__ROOT_URL=https://forge-staging.example.org
+      - FORGEJO__server__ROOT_URL=${ASC_HUB_ROOT_URL:?public https URL of the hub}
       - FORGEJO__server__HTTP_PORT=3000
       # Root-level keys need four underscores (an empty section). The first start wrote the image
       # default into the data volume's app.ini, so these must be set explicitly.
