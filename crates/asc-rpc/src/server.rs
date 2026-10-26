@@ -213,12 +213,31 @@ fn code_of(e: &RpcError) -> tonic::Code {
         | RpcError::ChangeFrozen(_)
         | RpcError::LandNeedsContentMerge(_) => Code::FailedPrecondition,
         RpcError::InvalidObject(_) | RpcError::PathPolicy(_) => Code::InvalidArgument,
-        RpcError::ChangeNotAllowed(_) => Code::PermissionDenied,
+        RpcError::ChangeNotAllowed(_)
+        | RpcError::PolicyDenied(_)
+        | RpcError::RefUndoProtected(_)
+        | RpcError::AgentScopeDenied(_) => Code::PermissionDenied,
+        RpcError::PolicyInvalid(_)
+        | RpcError::SignatureInvalid(_)
+        | RpcError::StorageEndpointBlocked(_)
+        | RpcError::AiEndpointBlocked(_)
+        | RpcError::WorkflowInvalid(_)
+        | RpcError::SearchTooBroad(_) => Code::InvalidArgument,
+        RpcError::RevertConflict(_)
+        | RpcError::MigrationActive(_)
+        | RpcError::RotationActive(_) => Code::Aborted,
+        RpcError::RefLogExpired(_) => Code::OutOfRange,
+        RpcError::VaultLocked(_) => Code::Unavailable,
+        RpcError::QueueEntryExists(_) => Code::AlreadyExists,
+        RpcError::AgentTokenExpired(_) | RpcError::AgentTokenRevoked(_) => Code::Unauthenticated,
         RpcError::RateLimited(_)
         | RpcError::CloudHeadsLimit(_)
         | RpcError::CloudWorkspacesLimit(_)
         | RpcError::UserRefsLimit(_)
-        | RpcError::QuotaExceeded(_) => Code::ResourceExhausted,
+        | RpcError::QuotaExceeded(_)
+        | RpcError::SigningKeyLimit(_)
+        | RpcError::AiCapReached(_)
+        | RpcError::BudgetExceeded(_) => Code::ResourceExhausted,
         RpcError::Unknown { .. } => Code::Unknown,
         _ => Code::FailedPrecondition,
     }
