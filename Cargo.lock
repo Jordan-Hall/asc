@@ -301,6 +301,7 @@ dependencies = [
  "regex",
  "serde",
  "sha1",
+ "ssh-key",
  "thiserror",
  "toml",
  "url",
