@@ -22,11 +22,26 @@
 
 ## Install
 
-Release files are published as Forgejo generic packages at `https://forge.example.org/api/packages/asc/generic/asc` (see [`docs/RELEASING.md`](docs/RELEASING.md)). Only x86_64 Windows and x86_64 Linux ship; there is no macOS or arm build yet.
+Releases are built for Linux (x86_64, aarch64), macOS (x86_64, aarch64) and Windows (x86_64) by `.github/workflows/release.yml`, attached to the GitHub release, and mirrored to whatever host serves your downloads (`scripts/release/publish-to-hub.sh`). The installers read that host from `ASC_DOWNLOAD_BASE_URL`: the directory that holds `latest/version` and `<version>/`. There is no built-in host name; use the one your ASC Hub (or any static file host) serves. Full detail, verification and the layout: [`docs/RELEASE.md`](docs/RELEASE.md).
 
-- **Windows:** the signed MSI (`<ver>/asc-<ver>-x86_64-pc-windows-msvc.msi`), or winget with the manifests in `<ver>/winget/` (package `asc.asc`, `packaging/winget/`). The MSI installs `asc.exe`, the shim directory, the `Client-ProjFS` feature and Defender exclusions, and registers the daemon task (`packaging/windows/`).
-- **Linux:** download `install.sh`, the `.tar.gz` and its `.minisig` from `<ver>/`, then `sh install.sh --tarball asc-<ver>-x86_64-unknown-linux-gnu.tar.gz [--shim] [--no-service]`. It verifies the minisign signature before unpacking and needs `minisign` (`packaging/linux/install.sh`).
-- **Update:** `asc upgrade` (signature-checked).
+```sh
+# Linux and macOS: installs to ~/.local/share/asc-install and links ~/.local/bin/asc
+export ASC_DOWNLOAD_BASE_URL=https://downloads.example.org/asc
+sh scripts/install.sh            # --dry-run shows the plan; --version X.Y.Z pins a version
+```
+
+```powershell
+# Windows: installs to %LOCALAPPDATA%\Programs\asc and puts its current directory on the user PATH
+$env:ASC_DOWNLOAD_BASE_URL = 'https://downloads.example.org/asc'
+./scripts/install.ps1            # -DryRun shows the plan; -Version X.Y.Z pins a version
+```
+
+- **Integrity and trust.** The installers verify the archive against `SHA256SUMS`. Set `ASC_RELEASE_PUBKEY` (the minisign public key of your release) to also require a valid signature on `SHA256SUMS`; without it the checksum proves only that the download matches what the host published. Plain `http` is refused except on the loopback interface with `ASC_ALLOW_LOOPBACK_HTTP=1`.
+- **Package managers.** Each release carries a Homebrew formula (`asc.rb`), a Scoop manifest (`asc.scoop.json`) and winget manifests (`winget-asc.asc*.yaml`), rendered from `packaging/`.
+- **Windows MSI and Linux service.** The MSI and the systemd unit of the Forgejo release flow are described in [`docs/RELEASING.md`](docs/RELEASING.md).
+- **Editors.** `asc-vscode-<ver>.vsix` and `asc-jetbrains-<ver>.zip` are attached to each release.
+- **Update:** `asc self-update` (also `asc upgrade`; signature-checked, side by side, same source variable). It updates installs made by `install.sh`, `install.ps1` or the MSI; for Homebrew, Scoop or winget installs use that tool.
+- **Version:** `asc --version` prints the version, the git it found and the commit it was built from.
 - **From source:** Rust 1.95, `cargo build --release -p asc`. Default features are `serve`, `vfs-projfs`, `vfs-fuse`, `git-compat`, `git-ssh` and `http3`.
 
 Real git 2.40 or later must be installed. Run `asc doctor` afterwards. Step by step: [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md).

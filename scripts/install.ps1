@@ -23,7 +23,7 @@
 .PARAMETER Version
   Install this MAJOR.MINOR.PATCH instead of latest/version.
 .PARAMETER Prefix
-  Default: $env:LOCALAPPDATA\asc
+  Default: $env:LOCALAPPDATA\Programs\asc (not $env:LOCALAPPDATA\asc, which is the asc data directory)
 .PARAMETER DryRun
   Resolve and print the plan; download no archive and write nothing.
 .PARAMETER NoModifyPath
@@ -84,7 +84,7 @@ $target = 'x86_64-pc-windows-msvc'
 
 if (-not $Prefix) {
   if (-not $env:LOCALAPPDATA) { Fail 'LOCALAPPDATA is not set; pass -Prefix' }
-  $Prefix = Join-Path $env:LOCALAPPDATA 'asc'
+  $Prefix = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'asc'
 }
 if ($Prefix -match '[%"^&]') { Fail 'the install prefix has characters that cannot be used for a junction' }
 
