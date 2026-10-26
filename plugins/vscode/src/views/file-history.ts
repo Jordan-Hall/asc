@@ -6,7 +6,7 @@ import { callStream, toHex } from "@asc/asc-client";
 import { Workspace } from "@asc/asc-client/workspace";
 import { Repo } from "@asc/asc-client/repo";
 import type * as vscodeTypes from "vscode";
-import type { BridgeManager } from "../bridge";
+import { type BridgeManager, serverRepoFor } from "../bridge";
 import { toAscUri } from "../fs/ascfs";
 import { bridgeWatch, pump, type WatchApi, wsIdFor } from "./worktrees";
 
@@ -241,12 +241,17 @@ export function bridgeHistoryApi(mgr: BridgeManager): HistoryApi & WatchApi {
           if (r.nextPageToken) next = r.nextPageToken;
         }
       } else {
-        // TODO(C30a): `Repo.LineHistory` needs a repo name the workspace does not expose yet.
+        // Line history is answered by the asc server (`Repo.LineHistory`, with a scan budget); a root
+        // without one says so instead of showing an empty list.
+        const name = await serverRepoFor(mgr, root);
+        if (name === null) {
+          throw new Error("line history needs an asc server for this repository");
+        }
         for await (const r of callStream(
           mgr.node(),
           Repo.method.lineHistory,
           {
-            repo: { name: "" },
+            repo: { name },
             rev: "HEAD",
             path: enc.encode(q.path),
             startLine: q.lines.start,

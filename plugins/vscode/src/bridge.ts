@@ -103,6 +103,18 @@ export function serverTargets(h: Pick<HelloInfo, "roots">): ServerTarget[] {
     .map((r) => ({ root: r.root, repo: r.repo }));
 }
 
+/**
+ * The `owner/repo` an asc server knows the root by, for the `Repo.*` calls; null when the root has no asc
+ * server (a git remote or a local-only repository), where those calls cannot be answered.
+ */
+export async function serverRepoFor(
+  mgr: Pick<BridgeManager, "hello">,
+  root: string,
+): Promise<string | null> {
+  const h = await mgr.hello();
+  return serverTargets(h).find((t) => t.root === root)?.repo ?? null;
+}
+
 export interface ServerFeatures {
   inbox: boolean;
   review: boolean;
