@@ -98,12 +98,12 @@ from = "lint-staged"
 exit = 0
 
 [[step]]
-git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (1effcacb)", "55691b5d391db0ac082c20a16da41851aa23e210"]
+git = ["-c", "submodule.recurse=false", "stash", "store", "--quiet", "--message", "lint-staged automatic backup (1effcacb)", "ced5bca41000ba2e0aead72921683ef6953e9e6b"]
 from = "lint-staged"
 exit = 0
 
 [[step]]
-git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "55691b5d391db0ac082c20a16da41851aa23e210"]
+git = ["-c", "submodule.recurse=false", "rev-parse", "--short", "ced5bca41000ba2e0aead72921683ef6953e9e6b"]
 from = "lint-staged"
 exit = 0
 

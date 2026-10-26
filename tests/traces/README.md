@@ -62,3 +62,7 @@ hook as a script that repeats the recorded calls and deletes it after the step.
   or are fixed up by the converter (`mkdir` before `git diff --output`).
 * lint-staged picks a random hash for its backup; a trace keeps the value of its own
   recording, so re-recording rewrites it.
+* Commit and stash ids named in a trace (`stash store <id>`, a hook argument) are the ids the replay
+  scenario produces under the fixed identity and dates. They change whenever a fixture file changes
+  (a rename of text in a scripted file, say): run the trace with `ASC_TRACES_KEEP=1` and copy the
+  new ids from the scenario output.
