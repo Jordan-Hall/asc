@@ -16,7 +16,7 @@
 # A value that contains `'` breaks the TOML literal strings: keep secrets URL-safe.
 
 x-asc-serve: &asc-serve
-  image: forge.example.org/asc/asc-serve:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
+  image: ${ASC_IMAGE_REPO:-forge.example.org/asc/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the image}
   # Must be the user Dockerfile.serve creates; the configs below are owned by it, mode 0400.
   user: '${ASC_RUN_UID:-10001}:${ASC_RUN_UID:-10001}'
   read_only: true
