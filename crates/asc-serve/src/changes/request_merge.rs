@@ -39,12 +39,12 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 
-use async_trait::async_trait;
 use asc_core::change::ChangeId;
 use asc_core::id::RefTarget;
 use asc_rpc::IdMode;
 use asc_rpc::changes::{MergeOutcome, MergeRequestState};
 use asc_rpc::server::{CallCtx, MAX_STRING, RepoName, wire};
+use async_trait::async_trait;
 use tonic::Status;
 use tonic::metadata::MetadataMap;
 use uuid::Uuid;

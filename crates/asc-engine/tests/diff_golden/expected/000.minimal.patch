@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 4f2d9f1..df9d3db 100644
+index 31dd852..7054ead 100644
 --- a/file
 +++ b/file
 @@ -49,6 +49,7 @@ pub mod modules;

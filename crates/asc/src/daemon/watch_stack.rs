@@ -10,11 +10,11 @@
 
 use std::collections::HashSet;
 
-use bytes::Bytes;
 use asc_core::change::RewriteOp;
 use asc_engine::change::rewrite_op_from_i64;
 use asc_state::state::StateDb;
 use asc_store::refs::RepoKey;
+use bytes::Bytes;
 use sqlx::Row as _;
 
 /// Most `changes` rows one poll reads. A burst past this sends one `RESYNC`.

@@ -309,6 +309,6 @@ mod tests {
 
     const GOLDEN: (usize, &str) = (
         17,
-        "62f06f3c56ae1227d6177886836100ce1acb42577282f36c32ab0b562a3277a3",
+        "53d8c820f6e680332197b907646a53c5713ede17674728327279005c9f1f9b2d",
     );
 }

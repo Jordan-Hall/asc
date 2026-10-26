@@ -6,9 +6,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use axum::Router;
-use axum::body::Body;
-use axum::http::{Request, Response, StatusCode, header};
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::config::{McpConfig, parse_toolsets};
 use asc_mcp::cursor::KeyRing;
@@ -19,6 +16,9 @@ use asc_serve::config::{CacheConfig, ServeConfig};
 use asc_serve::http::Metrics;
 use asc_serve::mcp::limits::{MAX_BODY, MAX_COMMIT_BODY};
 use asc_serve::mcp::{self, HttpPolicy, McpPrincipal};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, Response, StatusCode, header};
 use futures::StreamExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -236,7 +236,11 @@ async fn origin_is_checked_when_present() {
 async fn host_outside_the_allowlist_is_421() {
     let (app, stub) = app();
     let b = log_call(1, None);
-    for host in ["evil.example.net", "127.0.0.1:9", "asc.example.org.evil.net"] {
+    for host in [
+        "evil.example.net",
+        "127.0.0.1:9",
+        "asc.example.org.evil.net",
+    ] {
         let req = Request::builder()
             .method("POST")
             .uri("/mcp")

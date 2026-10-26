@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 4542392..975f6f9 100644
+index de3ce99..6350cac 100644
 --- a/file
 +++ b/file
 @@ -58,6 +58,26 @@ replacing means overwriting an unknown teacher with a known one.

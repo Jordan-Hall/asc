@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 3c82f81..80759fd 100644
+index e1b9dd8..9f0e707 100644
 --- a/file
 +++ b/file
 @@ -7,6 +7,8 @@ import {

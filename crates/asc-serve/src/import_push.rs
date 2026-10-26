@@ -26,7 +26,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use async_trait::async_trait;
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, GitOid, RefTarget, TagId, TreeId};
 use asc_core::object::{Change, Changeset, Kind, Tree};
@@ -41,6 +40,7 @@ use asc_rpc::server::{
 };
 use asc_store::key::ObjKey;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use sqlx::{AnyPool, Row};
 use tokio::sync::Mutex;
 use tonic::Status;

@@ -4,8 +4,8 @@
 
 use std::io::{self, Write};
 
-use bytes::Bytes;
 use asc_engine::diff::{ContentSource, TreeChange};
+use bytes::Bytes;
 
 /// git's base85 alphabet.
 const ALPHABET: &[u8; 85] =

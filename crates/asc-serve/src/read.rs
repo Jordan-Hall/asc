@@ -12,8 +12,6 @@ use std::io::{self, Write};
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::codec::decode_envelope;
 use asc_core::content::{CHUNK_THRESHOLD, ChunkAssembler};
 use asc_core::id::{ChangesetId, ChunkId, FileId, GitOid, TreeId};
@@ -34,6 +32,8 @@ use asc_rpc::server::{
 };
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
@@ -3260,11 +3260,18 @@ mod tests {
         .await;
         assert!(data == big[3_000_000..5_500_000], "ranged read");
         // Past the end the range is empty and the total is still reported.
-        let (data, total) =
-            read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 99, 5).await;
+        let (data, total) = read_all(
+            &f,
+            IdMode::Asc,
+            rev_path(&format!("{rev}:small.txt")),
+            99,
+            5,
+        )
+        .await;
         assert!(data.is_empty());
         assert_eq!(total, 10);
-        let (data, _) = read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 3, 4).await;
+        let (data, _) =
+            read_all(&f, IdMode::Asc, rev_path(&format!("{rev}:small.txt")), 3, 4).await;
         assert_eq!(data, b"3456");
         // By file id, chunked or not.
         let id = FileId::of(&big);

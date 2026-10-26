@@ -212,9 +212,7 @@ fn respond(s: &WebState, path: &str, method: &Method, headers: &HeaderMap) -> Re
     }
     let found = match s.assets.get(path) {
         Some(a) if !path.is_empty() => Some((a, path)),
-        _ if is_route(path, headers) => {
-            s.assets.get("index.html").map(|a| (a, "index.html"))
-        }
+        _ if is_route(path, headers) => s.assets.get("index.html").map(|a| (a, "index.html")),
         _ => None,
     };
     let Some((asset, name)) = found else {

@@ -17,7 +17,9 @@ use asc_core::id::TreeId;
 use asc_core::object::Changeset;
 use asc_core::sig::Signature;
 use asc_engine::diff::format::write_summary;
-use asc_engine::diff::{DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_patch, write_stat};
+use asc_engine::diff::{
+    DiffCtx, DiffOptions, NoAttributes, RenameOptions, write_patch, write_stat,
+};
 
 use super::common::{CliEngine, CliError, Ctx, Result, WsCtx};
 use super::format::date::Mode;

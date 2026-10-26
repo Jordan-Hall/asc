@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 20cd2aa..1a02654 100644
+index 15532e6..13aa437 100644
 --- a/file
 +++ b/file
 @@ -24,7 +24,19 @@ dev = [

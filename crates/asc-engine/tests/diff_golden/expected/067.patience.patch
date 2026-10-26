@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 78388c2..af47cdc 100644
+index 872dcc3..ce88311 100644
 --- a/file
 +++ b/file
 @@ -24,3 +24,22 @@ test('rewrites Domino paths inside scripts and css urls', () => {

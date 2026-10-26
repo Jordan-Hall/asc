@@ -915,7 +915,8 @@ mod worktrees_and_hooks {
         // The refused move leaves HEAD where it was.
         assert_eq!(w.asc(&["branch", "--show-current"]).stdout, "master\n");
         assert_eq!(
-            w.asc(&["rev-parse", "--verify", "-q", "refs/heads/n2"]).code,
+            w.asc(&["rev-parse", "--verify", "-q", "refs/heads/n2"])
+                .code,
             1
         );
         assert_eq!(read(&w.f.root, "f.txt"), "two\n");

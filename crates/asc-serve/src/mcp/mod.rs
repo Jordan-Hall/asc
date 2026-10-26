@@ -31,10 +31,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use axum::Router;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::{HeaderMap, Method, Request, Response, StatusCode, header};
 use asc_mcp::backend::McpBackend;
 use asc_mcp::config::{McpConfig, parse_toolsets};
 use asc_mcp::cursor::KeyRing;
@@ -42,6 +38,10 @@ use asc_mcp::handler::{Caller, Handler, HandlerConfig, Notifier, SUPPORTED_VERSI
 use asc_mcp::schema::Surface;
 use asc_mcp::shape::HARD_MAX_TOKENS;
 use asc_rpc::auth::Authorizer;
+use axum::Router;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{HeaderMap, Method, Request, Response, StatusCode, header};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;

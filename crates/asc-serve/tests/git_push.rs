@@ -21,8 +21,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use base64::Engine as _;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RefName;
 use asc_git::compat::hook::{ENV_ENDPOINT, ENV_TOKEN, HookCommand, HookInput, HookRequest};
@@ -39,6 +37,8 @@ use asc_serve::registry::{Extensions, NewRepo, Registry, RepoEntry, RepoMode};
 use asc_serve::update::{HookRejected, HookRequest as PipelineRequest, PushHooks};
 use asc_serve::{git_http, migrate};
 use asc_store::refs::Refs;
+use async_trait::async_trait;
+use base64::Engine as _;
 use sqlx::Row;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::transport::Server;

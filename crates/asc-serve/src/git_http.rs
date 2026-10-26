@@ -43,12 +43,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use axum::Router;
-use axum::body::{Body, BodyDataStream, Bytes};
-use axum::extract::{Path, Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::any;
 use asc_git::compat::pktline;
 use asc_git::compat::upload::{
     advertisement_prefix, advertisement_type, body_encoding, content_type_matches,
@@ -61,6 +55,12 @@ use asc_git::compat::{
 use asc_rpc::IdMode;
 use asc_rpc::auth::{Access, AuthError, Authorizer, Credential, Principal};
 use asc_rpc::server::{CallCtx, RepoName};
+use axum::Router;
+use axum::body::{Body, BodyDataStream, Bytes};
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::any;
 use futures::StreamExt;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
@@ -89,7 +89,8 @@ const NOT_READY_RETRY: Duration = Duration::from_secs(5);
 /// The text when pushing is not served although the principal may write.
 const PUSH_DISABLED: &str = "asc: pushing over the git protocol is not available on this server\n";
 /// The text when a principal already has its pushes running (`429`).
-const PUSH_BUSY_PRINCIPAL: &str = "asc: too many pushes are running for your account; retry later\n";
+const PUSH_BUSY_PRINCIPAL: &str =
+    "asc: too many pushes are running for your account; retry later\n";
 /// The text when the replica has all its push slots in use (`503`).
 const PUSH_BUSY_REPLICA: &str = "asc: the server is busy with other pushes; retry later\n";
 /// The text when the volume of the git views is nearly full (SPEC §25.5).

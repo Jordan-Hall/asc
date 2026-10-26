@@ -11,12 +11,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
-use async_trait::async_trait;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
 use asc_engine::branchless::sync::{
     CloudDoc, CloudHead, CloudStore, CloudUpdate, Error, LocalState, StoreError, SyncOptions, sync,
 };
+use async_trait::async_trait;
 
 use crate::model::{R, viol};
 use crate::rng::Rng;

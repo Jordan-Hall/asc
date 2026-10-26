@@ -10,7 +10,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::change::RewriteOp;
 use asc_core::codec::decode_envelope;
 use asc_core::content::ChunkAssembler;
@@ -27,6 +26,7 @@ use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::RepoKey;
 use asc_store::sqlrefs::SqlRefs;
+use async_trait::async_trait;
 use sqlx::any::Any;
 use sqlx::{AnyPool, Row, Transaction};
 
@@ -1072,14 +1072,13 @@ pub(crate) mod testutil {
         files: &[(&str, &[u8])],
     ) -> ChangesetId {
         let engine = e.backend.engine();
-        let base =
-            match parents.first() {
-                Some(&p) => engine.get_changeset(p).await.unwrap().root,
-                None => asc_engine::Engine::<
-                    asc_store::bucket::BucketObjects,
-                    asc_store::sqlrefs::SqlRefs,
-                >::empty_tree_id(),
-            };
+        let base = match parents.first() {
+            Some(&p) => engine.get_changeset(p).await.unwrap().root,
+            None => asc_engine::Engine::<
+                asc_store::bucket::BucketObjects,
+                asc_store::sqlrefs::SqlRefs,
+            >::empty_tree_id(),
+        };
         let root = tree(e, base, files).await;
         engine
             .create_changeset(

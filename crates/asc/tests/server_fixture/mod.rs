@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 
-use async_trait::async_trait;
 use asc_rpc::auth::{Access, StaticTokens};
-use asc_rpc::server::{CallCtx, ObjectsHandler, RepoName, RepoService, RpcStream, ServerInfo, wire};
+use asc_rpc::server::{
+    CallCtx, ObjectsHandler, RepoName, RepoService, RpcStream, ServerInfo, wire,
+};
 use asc_serve::registry::{Extensions, NewRepo, Registry};
 use asc_serve::{migrate, read, update};
+use async_trait::async_trait;
 use tonic::Status;
 use tonic::codegen::{Service, http};
 use tonic::server::NamedService;

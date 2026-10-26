@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index fcdbecb..fd2f164 100644
+index 68e2579..9972817 100644
 --- a/file
 +++ b/file
 @@ -9,7 +9,12 @@ describe('the corpus only teaches the language that exists', () => {

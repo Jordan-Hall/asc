@@ -46,9 +46,6 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bytes::Bytes;
 use asc_codeintel::config::{CodeintelConfig, MAX_CONFIG_BYTES};
 use asc_codeintel::hybrid::{self, HybridOptions};
 use asc_codeintel::index::schema::{ChunksSchema, IndexKind};
@@ -72,6 +69,9 @@ use asc_rpc::codeintel as ci;
 use asc_rpc::server::{ClientVersion, MAX_MESSAGE, MAX_STRING, RepoName, ServerInfo, wire};
 use asc_rpc::services::code_intel_server::{CodeIntel, CodeIntelServer};
 use asc_rpc::{IdMode, RpcError};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use bytes::Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
@@ -1996,7 +1996,8 @@ impl CodeIntelRpc {
                         continue;
                     };
                     let file = FileId::from_bytes(e.id);
-                    let Some(ord) = asc_codeintel::scope::OrdSource::get(&*files.docs, &file) else {
+                    let Some(ord) = asc_codeintel::scope::OrdSource::get(&*files.docs, &file)
+                    else {
                         continue;
                     };
                     let Ok(Some(rows)) =

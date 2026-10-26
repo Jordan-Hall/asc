@@ -12,13 +12,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use asc_rpc::auth::{Access, AuthError, Authorizer};
+use asc_store::seed::{self, SeedManifest};
 use async_trait::async_trait;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use asc_rpc::auth::{Access, AuthError, Authorizer};
-use asc_store::seed::{self, SeedManifest};
 use futures::StreamExt;
 use object_store::path::Path as StorePath;
 use object_store::signer::Signer;
@@ -475,14 +475,14 @@ pub fn register(ext: &Extensions, state: Arc<SeedsState>) {
 
 #[cfg(test)]
 mod tests {
-    use axum::body::Body;
-    use axum::http::Request;
     use asc_core::id::FileId;
     use asc_rpc::auth::StaticTokens;
     use asc_store::cachedir::CacheDir;
     use asc_store::codec::encode_stored;
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
+    use axum::body::Body;
+    use axum::http::Request;
     use object_store::memory::InMemory;
     use tower::ServiceExt;
 

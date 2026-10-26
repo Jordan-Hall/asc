@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index ff92e87..a38bc95 100644
+index 2153b7d..ee1b335 100644
 --- a/file
 +++ b/file
 @@ -27,6 +27,10 @@ describe('checkRule — every external source is probed', () => {

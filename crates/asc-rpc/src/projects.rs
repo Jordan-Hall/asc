@@ -9,8 +9,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, OnceLock};
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
 use asc_engine::projects::{
@@ -21,6 +19,8 @@ use asc_graph::model::{
     DepKind, Ecosystem, Fingerprint, InputHashes, Issue, MAX_PROJECTS, Project, ProjectGraph,
     ProjectKey, ProjectKind, SetId,
 };
+use async_trait::async_trait;
+use bytes::Bytes;
 use tonic::metadata::MetadataMap;
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Extensions, Request, Response, Status};

@@ -119,11 +119,11 @@ pub mod history_boundary {
 
 /// `git_map`: `(git oid, kind) -> asc id` (SPEC §5).
 pub mod git_map {
-    use async_trait::async_trait;
     use asc_core::git::ObjectKind;
     use asc_core::id::GitOid;
     use asc_engine::derive::{Error as DeriveError, GitMapRow, GitMapSink};
     use asc_store::refs::RepoKey;
+    use async_trait::async_trait;
     use sqlx::Row;
 
     use super::{Error, Result, StateDb, fixed};
@@ -171,13 +171,14 @@ pub mod git_map {
         git: GitOid,
         kind: ObjectKind,
     ) -> Result<Option<[u8; 32]>> {
-        let asc: Option<Vec<u8>> =
-            sqlx::query_scalar("SELECT asc FROM git_map WHERE repo_id = ? AND git = ? AND kind = ?")
-                .bind(repo.0)
-                .bind(git.as_bytes().to_vec())
-                .bind(kind_to_i64(kind))
-                .fetch_optional(db.pool())
-                .await?;
+        let asc: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT asc FROM git_map WHERE repo_id = ? AND git = ? AND kind = ?",
+        )
+        .bind(repo.0)
+        .bind(git.as_bytes().to_vec())
+        .bind(kind_to_i64(kind))
+        .fetch_optional(db.pool())
+        .await?;
         asc.map(|b| fixed(b, "git_map.asc")).transpose()
     }
 

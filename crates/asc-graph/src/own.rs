@@ -110,10 +110,7 @@ mod tests {
                 "name=analysis-pipeline-api",
             ),
             ("apps/analysis-pipeline/pipeline-api/src/main.rs", "x"),
-            (
-                "packages/dsl/compiler/node.fake",
-                "name=@asc/dsl-compiler",
-            ),
+            ("packages/dsl/compiler/node.fake", "name=@asc/dsl-compiler"),
             ("packages/dsl/compiler/native/rust.fake", "name=dsl-core"),
         ])
     }
@@ -146,10 +143,7 @@ mod tests {
         let dets = crate::detect::testkit::detectors();
         let o = Ownership::new(&g, &dets).unwrap();
         // Root package.json has a name, so it owns everything not owned deeper.
-        assert_eq!(
-            names(&g, o.owners(&rp("docs/a.md"))),
-            ["node:@asc/private"]
-        );
+        assert_eq!(names(&g, o.owners(&rp("docs/a.md"))), ["node:@asc/private"]);
         let t = Tree::new(&[("a/rust.fake", "name=a")]);
         let (g, _) = build(&t, &[], ResolvedConfig::default());
         let o = Ownership::new(&g, &dets).unwrap();

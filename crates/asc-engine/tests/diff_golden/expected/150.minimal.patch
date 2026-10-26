@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 3bde16e..c786dd9 100644
+index a8ecd67..62dc838 100644
 --- a/file
 +++ b/file
 @@ -12,6 +12,7 @@ import { renderMetricPage } from '../pages/metric.js';

@@ -3,7 +3,6 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::content::{Body, ingest};
 use asc_core::id::ChangesetId;
 use asc_core::object::{Change, Kind};
@@ -14,6 +13,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, Refs, RepoKey};
+use async_trait::async_trait;
 
 use crate::Engine;
 use crate::commit::{NewChangeset, PathPolicy};

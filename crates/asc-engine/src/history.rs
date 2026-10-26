@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use asc_core::codec::decode_envelope;
 use asc_core::id::{ChangesetId, GitOid, RefTarget, TagId};
 use asc_core::object::{Change, Changeset, TagRecord};
@@ -17,6 +16,7 @@ use asc_core::path::RefName;
 use asc_store::key::{KeyClass, KeyPrefix, ObjKey};
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use futures::TryStreamExt;
 
 use crate::derive::{Derived, Gen, GitCommit};
@@ -608,7 +608,6 @@ pub(crate) mod testkit {
     use std::path::Path;
     use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
-    use bytes::Bytes;
     use asc_core::codec::Enveloped;
     use asc_core::content::{Body, ingest};
     use asc_core::id::TreeId;
@@ -618,6 +617,7 @@ pub(crate) mod testkit {
     use asc_store::codec::encode_stored;
     use asc_store::refs::{Actor, Expect, RefEntry, RefTxn, RefUpdate, RepoKey};
     use asc_store::sqlrefs::SqlRefs;
+    use bytes::Bytes;
     use futures::stream::BoxStream;
     use sqlx::any::AnyPoolOptions;
 
@@ -951,7 +951,8 @@ mod tests {
 
     async fn local_graph(
         e: &Eng,
-    ) -> Graph<HistorySource<'_, asc_store::bucket::BucketObjects, asc_store::sqlrefs::SqlRefs>> {
+    ) -> Graph<HistorySource<'_, asc_store::bucket::BucketObjects, asc_store::sqlrefs::SqlRefs>>
+    {
         Graph::new(
             HistorySource::load(e, &MemBoundaries::default())
                 .await

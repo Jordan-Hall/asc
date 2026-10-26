@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 33cde18..36f84ca 100644
+index 9b1e20c..bc5b086 100644
 --- a/file
 +++ b/file
 @@ -149,4 +149,33 @@ describe('runtime smoke', () => {

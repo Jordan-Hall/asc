@@ -7,7 +7,9 @@ use data_encoding::BASE64;
 use sha1::{Digest, Sha1};
 
 use crate::id::{ChangesetId, GitOid, TreeId};
-use crate::object::{AscGitExtra, Change, Changeset, Kind, ObjectError, SortedMap, TagRecord, Tree};
+use crate::object::{
+    AscGitExtra, Change, Changeset, Kind, ObjectError, SortedMap, TagRecord, Tree,
+};
 use crate::path::RepoPath;
 use crate::sig::{SigError, Signature};
 

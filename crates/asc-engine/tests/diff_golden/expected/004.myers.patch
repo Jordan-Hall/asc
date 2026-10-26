@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index cc9affd..055c39e 100644
+index 98c8734..6664496 100644
 --- a/file
 +++ b/file
 @@ -24,7 +24,7 @@ function compileLater(file: string) {

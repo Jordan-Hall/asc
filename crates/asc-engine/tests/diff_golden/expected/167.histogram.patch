@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index f65632d..f761d03 100644
+index 2dad8c6..de40b8d 100644
 --- a/file
 +++ b/file
 @@ -27,11 +27,14 @@ export {

@@ -54,7 +54,10 @@ fn client(sb: &Sandbox, url: &str) -> std::path::PathBuf {
 
 fn id_of(stdout: &str) -> String {
     let first = stdout.lines().next().unwrap_or_default();
-    first.strip_prefix("asc:").expect("asc:<id> line").to_owned()
+    first
+        .strip_prefix("asc:")
+        .expect("asc:<id> line")
+        .to_owned()
 }
 
 #[test]

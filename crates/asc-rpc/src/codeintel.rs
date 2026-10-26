@@ -4,10 +4,10 @@
 //! peer is untrusted. Responses are built by the server (I16), so only [`ResolvedScope`] has a
 //! decoding direction here, for clients that cite an immutable scope.
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::{ChangesetId, TreeId};
 use asc_core::path::RepoPath;
+use bytes::Bytes;
 
 use crate::convert::{ConvertError, IdMode, ModeId, Result, WireId};
 use crate::pb;

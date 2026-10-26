@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 37add08..4ab2dd9 100644
+index 2e358f7..5644e9c 100644
 --- a/file
 +++ b/file
 @@ -2,6 +2,7 @@ import { hc } from 'hono/client';

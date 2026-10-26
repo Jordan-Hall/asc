@@ -12,9 +12,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use async_trait::async_trait;
 use asc_core::id::ChangesetId;
 use asc_core::path::{Name, RepoPath};
+use async_trait::async_trait;
 use sqlx::any::Any;
 use sqlx::{AnyPool, Row, Transaction};
 

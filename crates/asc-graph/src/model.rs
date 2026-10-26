@@ -505,13 +505,13 @@ pub trait Derived: Serialize + DeserializeOwned {
 
     /// Canonical envelope bytes.
     fn to_envelope(&self) -> Vec<u8> {
-        let out = vec![b'c', b'g', Self::KIND, Self::VERSION];
+        let out = vec![b'a', b's', Self::KIND, Self::VERSION];
         postcard::to_extend(self, out).expect("in-memory encode cannot fail")
     }
 
     /// Strict decode: wrong kind, trailing bytes and non-canonical forms are errors.
     fn from_envelope(bytes: &[u8]) -> Result<Self, ModelError> {
-        let [b'c', b'g', kind, version, payload @ ..] = bytes else {
+        let [b'a', b's', kind, version, payload @ ..] = bytes else {
             return Err(ModelError::BadMagic);
         };
         if *kind != Self::KIND {
@@ -650,7 +650,7 @@ mod tests {
         ])
         .unwrap();
         let env = set.to_envelope();
-        assert_eq!(env[..4], [b'c', b'g', 20, 1]);
+        assert_eq!(env[..4], [b'a', b's', 20, 1]);
         assert_eq!(
             hex(&env),
             "63671401020a436172676f2e746f6d6c0002020202020202020202020202020202020202020202020202020202020202020c7061636b6167652e6a736f6e000101010101010101010101010101010101010101010101010101010101010101"
@@ -666,7 +666,7 @@ mod tests {
     fn golden_parsed() {
         let p = Parsed(Value::map([("name".into(), Value::Str("x".into()))]).unwrap());
         let env = p.to_envelope();
-        assert_eq!(env[..4], [b'c', b'g', 21, 1]);
+        assert_eq!(env[..4], [b'a', b's', 21, 1]);
         assert_eq!(hex(&env), "636715010701046e616d65050178");
         assert_eq!(Parsed::from_envelope(&env).unwrap(), p);
     }
@@ -691,7 +691,7 @@ mod tests {
     fn golden_pgraph() {
         let g = sample_graph();
         let env = g.to_envelope();
-        assert_eq!(env[..4], [b'c', b'g', 22, 1]);
+        assert_eq!(env[..4], [b'a', b's', 22, 1]);
         assert_eq!(
             hex(&env),
             "636716010200136372617465732f612f436172676f2e746f6d6c01610001086372617465732f61010310706b672f7061636b6167652e6a736f6e01000707070707070707070707070707070707070707070707070707070707070707000000000000000000000000000000000000000000000000000000000000000001017400000310706b672f7061636b6167652e6a736f6e0162000103706b670000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000010c782f436172676f2e746f6d6c03626164"
@@ -703,7 +703,7 @@ mod tests {
     fn golden_phash() {
         let h = InputHashes(vec![(key(Ecosystem::Rust, "a/Cargo.toml"), [9; 32])]);
         let env = h.to_envelope();
-        assert_eq!(env[..4], [b'c', b'g', 23, 1]);
+        assert_eq!(env[..4], [b'a', b's', 23, 1]);
         assert_eq!(
             hex(&env),
             "6367170101000c612f436172676f2e746f6d6c0909090909090909090909090909090909090909090909090909090909090909"
@@ -764,7 +764,7 @@ mod tests {
 
     /// Envelope of `depth` levels: `depth - 1` single-element arrays around `Null`.
     fn nested_parsed(depth: usize) -> Vec<u8> {
-        let mut b = vec![b'c', b'g', KIND_PARSED, 1];
+        let mut b = vec![b'a', b's', KIND_PARSED, 1];
         for _ in 1..depth {
             b.extend_from_slice(&[6, 1]);
         }
@@ -785,7 +785,7 @@ mod tests {
             );
         }
         // Maps count too.
-        let mut b = vec![b'c', b'g', KIND_PARSED, 1];
+        let mut b = vec![b'a', b's', KIND_PARSED, 1];
         for _ in 0..200 {
             b.extend_from_slice(&[7, 1, 1, b'k']);
         }

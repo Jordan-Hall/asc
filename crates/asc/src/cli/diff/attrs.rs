@@ -9,12 +9,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use async_trait::async_trait;
-use bstr::ByteSlice;
-use bytes::Bytes;
 use asc_core::path::RepoPath;
 use asc_engine::diff::{self, Attributes, DiffAttr};
 use asc_wc::SafeRoot;
+use async_trait::async_trait;
+use bstr::ByteSlice;
+use bytes::Bytes;
 use gix_attributes::glob::pattern::Case;
 use gix_attributes::search::{MetadataCollection, Outcome};
 use gix_attributes::{Search, StateRef};

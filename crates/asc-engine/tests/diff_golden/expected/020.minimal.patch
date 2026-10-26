@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index b83afa1..88a9a8d 100644
+index b7de0df..fb9fcb0 100644
 --- a/file
 +++ b/file
 @@ -85,6 +85,48 @@ pub fn accepts_expression(src: &str) -> bool {

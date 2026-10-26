@@ -9,7 +9,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use asc_core::git::{ObjectKind, blob_oid};
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::{Change, Kind};
@@ -28,6 +27,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+use bytes::Bytes;
 use prost::Message as _;
 use tonic::transport::Channel;
 use tonic::{Code, Request};

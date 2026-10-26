@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::FileId;
 use asc_core::object::Entry;
+use async_trait::async_trait;
+use bytes::Bytes;
 
 use super::{ContentSource, Error, Result};
 

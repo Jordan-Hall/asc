@@ -16,8 +16,8 @@
 use std::ffi::OsString;
 use std::time::Duration;
 
-use bytes::Bytes;
 use asc_rpc::server::wire;
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, BufReader};
 use tonic::Status;

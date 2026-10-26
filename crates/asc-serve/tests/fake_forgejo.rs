@@ -6,12 +6,6 @@ mod forgejo {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use axum::Router;
-    use axum::body::Bytes;
-    use axum::extract::State;
-    use axum::http::{HeaderMap, Method, StatusCode, Uri};
-    use base64::Engine as _;
-    use base64::engine::general_purpose::STANDARD;
     use asc_core::git::ObjectKind;
     use asc_core::id::{ChangesetId, GitOid, RefTarget};
     use asc_engine::derive::{GitMapRow, GitMapSink};
@@ -28,6 +22,12 @@ mod forgejo {
     use asc_serve::outbox::{Effect, Job};
     use asc_serve::registry::{NewRepo, Registry, SqlGitMap};
     use asc_serve::update::{HookRequest, HookUpdate, PushHooks};
+    use axum::Router;
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, Method, StatusCode, Uri};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
     use serde_json::{Value, json};
     use uuid::Uuid;
 

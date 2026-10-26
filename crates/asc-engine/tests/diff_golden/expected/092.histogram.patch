@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index bd5c676..144fb10 100644
+index f5e7301..da0cfb7 100644
 --- a/file
 +++ b/file
 @@ -25,6 +25,8 @@ export type AddFieldHandler = (

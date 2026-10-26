@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 511928f..9c8de51 100644
+index e6a3906..fb7c75f 100644
 --- a/file
 +++ b/file
 @@ -42,6 +42,27 @@ pub use dsl_core::ast_json::{parse_expr_json, parse_program_json};

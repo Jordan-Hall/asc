@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 36c85f7..502ff95 100644
+index 6d0520a..80bdc65 100644
 --- a/file
 +++ b/file
 @@ -94,9 +94,16 @@ services:

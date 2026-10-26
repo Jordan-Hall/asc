@@ -252,7 +252,10 @@ mod tests {
 
     #[test]
     fn another_host_is_ignored() {
-        assert_eq!(parse("h3=\"evil.example:443\"", "asc.example"), Advert::None);
+        assert_eq!(
+            parse("h3=\"evil.example:443\"", "asc.example"),
+            Advert::None
+        );
         // The next entry for the right host is still used.
         assert_eq!(
             parse("h3=\"evil.example:443\", h3=\":444\"; ma=5", "asc.example"),

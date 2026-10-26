@@ -11,13 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 
-use async_trait::async_trait;
 use asc_core::git::ObjectKind;
 use asc_core::id::{GitOid, RefTarget};
 use asc_git::realgit::RealGit;
 use asc_state::state::git_map;
 use asc_state::{AscHome, StateDb};
 use asc_store::refs::RepoKey;
+use async_trait::async_trait;
 
 use crate::child;
 use crate::cli::common::{self, CliError, Ctx};

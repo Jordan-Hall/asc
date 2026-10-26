@@ -16,13 +16,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use async_trait::async_trait;
-use axum::body::Body;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use bytes::Bytes;
 use asc_core::content::CHUNK_THRESHOLD;
 use asc_core::id::FileId;
 use asc_core::object::Kind;
@@ -32,6 +25,13 @@ use asc_rpc::server::RepoName;
 use asc_store::gc::{GcError, GcRootSource};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use axum::body::Body;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use bytes::Bytes;
 use futures::TryStreamExt;
 use object_store::path::Path as StorePath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions};
@@ -916,11 +916,11 @@ pub fn register(
 mod tests {
     use std::sync::Mutex;
 
-    use axum::http::Request;
     use asc_rpc::auth::StaticTokens;
     use asc_store::bucket::BucketObjects;
     use asc_store::codec::encode_stored;
     use asc_store::gc::{BucketGc, GcConfig};
+    use axum::http::Request;
     use object_store::memory::InMemory;
     use tower::ServiceExt;
 

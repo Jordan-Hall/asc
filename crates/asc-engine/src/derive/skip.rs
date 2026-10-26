@@ -3,11 +3,11 @@
 //! `ptrs[k]` is the first-parent ancestor `4^(k+1)` steps back. The list stops at the first
 //! level whose ancestor does not exist, so it has at most `log4(depth)` entries.
 
-use async_trait::async_trait;
 use asc_core::id::ChangesetId;
 use asc_core::object::Changeset;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use super::{Derived, Error, Result};
 use crate::Engine;

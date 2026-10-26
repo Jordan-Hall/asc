@@ -1,8 +1,8 @@
 //! Tests of the `Ci` service.
 
-use bytes::Bytes;
 use asc_rpc::server::wire;
 use asc_rpc::services::ci_server::Ci;
+use bytes::Bytes;
 use tonic::Status;
 
 use crate::review::tests::{ADMIN, BOB, CAROL, Fx, cbytes, code, fx, repo_ref, req};

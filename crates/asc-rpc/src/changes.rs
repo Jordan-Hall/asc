@@ -3,10 +3,10 @@
 //! Change ids are 16 bytes ([`ChangeId`]); changeset ids follow the request's id mode and are
 //! decoded by length ([`ModeId`]). Every list and string is bounded, because the peer is untrusted.
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::path::RepoPath;
+use bytes::Bytes;
 
 use crate::convert::{Conflict, ConvertError, ModeId, Result, WireId, opt_id, opt_id_to_wire};
 use crate::pb;

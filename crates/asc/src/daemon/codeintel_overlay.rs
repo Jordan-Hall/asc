@@ -26,8 +26,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_codeintel::chunk;
 use asc_codeintel::lang::{self, Lang};
 use asc_codeintel::render::{self, RawChunk, RawFileHit, RawLine, RenderCtx};
@@ -43,6 +41,8 @@ use asc_rpc::codeintel as ci;
 use asc_rpc::server::wire;
 use asc_state::WorkspaceId;
 use asc_wc::safe_path::{SafeRoot, is_link};
+use async_trait::async_trait;
+use bytes::Bytes;
 use regex::bytes::RegexBuilder;
 use tonic::Status;
 

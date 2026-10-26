@@ -14,8 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use base64::Engine as _;
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body as Content, ingest};
 use asc_core::git::{ObjectKind, export_tag, object_oid};
@@ -37,6 +35,8 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+use async_trait::async_trait;
+use base64::Engine as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
@@ -267,14 +267,13 @@ impl Env {
                 self.file(repo, content).await,
             ));
         }
-        let base =
-            match parent {
-                Some(p) => engine.get_changeset(p).await.unwrap().root,
-                None => asc_engine::Engine::<
-                    asc_store::bucket::BucketObjects,
-                    asc_store::sqlrefs::SqlRefs,
-                >::empty_tree_id(),
-            };
+        let base = match parent {
+            Some(p) => engine.get_changeset(p).await.unwrap().root,
+            None => asc_engine::Engine::<
+                asc_store::bucket::BucketObjects,
+                asc_store::sqlrefs::SqlRefs,
+            >::empty_tree_id(),
+        };
         let root = engine.apply(base, &changes).await.unwrap();
         engine
             .create_changeset(
@@ -1734,7 +1733,8 @@ async fn a_large_repo_answers_503_with_retry_after_while_its_view_builds() {
     let env = Env::start("", &[]).await;
     env.seed().await;
     // Enough graph rows that the estimate passes the inline threshold (as in the view tests).
-    let rows = asc_git::compat::INLINE_BUILD_OBJECTS / asc_serve::git_view::OBJECTS_PER_CHANGESET + 1;
+    let rows =
+        asc_git::compat::INLINE_BUILD_OBJECTS / asc_serve::git_view::OBJECTS_PER_CHANGESET + 1;
     let mut tx = env.registry.pool().begin().await.unwrap();
     for i in 0..rows {
         let mut cs = [0u8; 32];

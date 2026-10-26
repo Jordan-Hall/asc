@@ -487,8 +487,9 @@ async fn url_userinfo_is_basic_and_asc_never_approves_it() {
         .git
         .git(&p.git.url_with_userinfo(&format!("{USER}:{PASS}")));
     assert!(g.ok, "git failed: {}", g.stderr);
-    let c =
-        p.asc.asc(
+    let c = p
+        .asc
+        .asc(
             &p.asc.url_with_userinfo(&format!("{USER}:{PASS}")),
             Prompt::Never,
         )
@@ -519,9 +520,10 @@ async fn token_as_user_name_is_basic_with_an_empty_password() {
     .await;
     let g = p.git.git(&p.git.url_with_userinfo(CANARY));
     assert!(g.ok, "git failed: {}", g.stderr.replace(CANARY, "***"));
-    let c =
-        p.asc.asc(&p.asc.url_with_userinfo(CANARY), Prompt::Never)
-            .await;
+    let c = p
+        .asc
+        .asc(&p.asc.url_with_userinfo(CANARY), Prompt::Never)
+        .await;
     assert!(c.ok, "asc failed: {}", c.message);
     p.assert_same_accepted_authorization("TOKEN@host");
 }
@@ -831,7 +833,8 @@ async fn credential_helper_from_a_foreign_repo_config_is_ignored() {
             );
         } else {
             assert!(
-                p.asc.host
+                p.asc
+                    .host
                     .requests()
                     .iter()
                     .all(|r| r.authorization().is_none())
@@ -849,7 +852,6 @@ async fn credential_helper_from_a_foreign_repo_config_is_ignored() {
 mod edge {
     use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use asc_rpc::auth::{
         Access, AuthError, Authorizer, BearerToken, Credential, Principal, Scheme as WireScheme,
         StaticTokens,
@@ -857,6 +859,7 @@ mod edge {
     use asc_rpc::client::{CallError, PushMode, RpcClient};
     use asc_rpc::server::ServerInfo;
     use asc_serve::registry::Extensions;
+    use async_trait::async_trait;
     use tonic::Code;
 
     use super::*;

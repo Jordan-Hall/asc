@@ -15,7 +15,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::change::{ChangeId, ChangeMeta, MetaId, RewriteOp};
 use asc_core::codec::{Enveloped, decode_envelope};
 use asc_core::id::ChangesetId;
@@ -27,6 +26,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::RepoKey;
+use async_trait::async_trait;
 use sqlx::any::{Any, AnyRow};
 use sqlx::{Executor, Row, Transaction};
 use tonic::Status;

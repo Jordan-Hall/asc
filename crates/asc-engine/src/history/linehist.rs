@@ -19,12 +19,12 @@
 
 use std::ops::Range;
 
-use bytes::Bytes;
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::{Change, Entry, Kind};
 use asc_core::path::RepoPath;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use bytes::Bytes;
 
 use crate::blame::{NoIndex, PathIndex};
 use crate::diff::line::{self, Algorithm, Hunk};

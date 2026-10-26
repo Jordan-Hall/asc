@@ -13,8 +13,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::codec::{Enveloped, decode_envelope};
 use asc_core::content::{Body, CHUNK_THRESHOLD, ChunkAssembler, ingest};
 use asc_core::id::FileId;
@@ -23,6 +21,8 @@ use asc_core::path::{RepoPath, checkout_safe};
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 /// The only manifest version.
@@ -859,10 +859,10 @@ pub(crate) mod testutil {
     use std::sync::Mutex;
     use std::time::SystemTime;
 
-    use bytes::Bytes;
     use asc_store::codec::decode_stored_capped;
     use asc_store::key::{KeyPrefix, ObjKey};
     use asc_store::objects::{Error as ObjError, Objects, Result as ObjResult};
+    use bytes::Bytes;
     use futures::stream::{BoxStream, StreamExt};
 
     use super::*;

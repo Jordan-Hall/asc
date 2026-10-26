@@ -227,8 +227,8 @@ impl Objects for BucketObjects {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use asc_core::id::FileId;
+    use bytes::Bytes;
     use futures::TryStreamExt;
 
     use super::*;

@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 1153fe5..80ed1fc 100644
+index 8f43723..62cbc2b 100644
 --- a/file
 +++ b/file
 @@ -25,7 +25,24 @@ heads = 8

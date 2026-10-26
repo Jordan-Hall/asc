@@ -594,8 +594,8 @@ async fn download(url: &url::Url, to: &Path, redirect_scheme: &'static str) -> R
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use asc_core::id::FileId;
+    use bytes::Bytes;
 
     use super::*;
     use crate::cachedir::CacheDir;

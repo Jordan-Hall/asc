@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use async_trait::async_trait;
 use asc_core::git::blob_oid;
 use asc_core::id::TreeId;
 use asc_core::object::Kind;
@@ -39,6 +38,7 @@ use asc_wc::redirect::Redirections;
 use asc_wc::switch::{self as plan, Dirty};
 use asc_wc::times::{floor_seconds, record_switch};
 use asc_wc::vstatus::{DiskKind, DiskState, MAX_HASH_BYTES, PathState};
+use async_trait::async_trait;
 use tokio::runtime::Handle;
 
 use super::cloud::prod::open_ctx;

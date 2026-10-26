@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index d2c9fe1..006ebcb 100644
+index d83e708..6949eac 100644
 --- a/file
 +++ b/file
 @@ -75,7 +75,6 @@ test.describe.serial('the progress panel navigates', () => {

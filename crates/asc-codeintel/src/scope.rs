@@ -25,7 +25,6 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
 use asc_core::id::{ChangesetId, FileId, TreeId};
 use asc_core::object::{Change, Kind};
 use asc_core::path::{Name, RepoPath};
@@ -36,6 +35,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
+use bytes::Bytes;
 use roaring::RoaringBitmap;
 
 use crate::config::CodeintelConfig;

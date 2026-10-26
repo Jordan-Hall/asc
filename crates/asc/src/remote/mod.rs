@@ -11,7 +11,6 @@ pub mod url;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::codec::decode_envelope;
 use asc_core::content::CHUNK_THRESHOLD;
 use asc_core::id::{ChangesetId, FileId, TreeId};
@@ -28,6 +27,7 @@ use asc_store::key::ObjKey;
 use asc_store::objects::{Objects, decode_verified};
 use asc_store::refs::RepoKey;
 use asc_store::storeset::StoreSet;
+use async_trait::async_trait;
 
 use crate::cli::common::{CliError, Ctx, Result, WsCtx};
 use url::{RefsMode, RemoteSpec};
@@ -392,7 +392,9 @@ async fn pull(ctx: &Ctx, ws: &WsCtx, remote: &dyn Remote, keys: Vec<ObjKey>) -> 
         got.insert(key);
     }
     if let Some(k) = want.iter().find(|k| !got.contains(k)) {
-        return Err(CliError::Fatal(format!("asc: the remote does not have {k}")));
+        return Err(CliError::Fatal(format!(
+            "asc: the remote does not have {k}"
+        )));
     }
     Ok(want.len())
 }

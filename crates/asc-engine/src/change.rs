@@ -7,9 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
-use async_trait::async_trait;
 use asc_core::change::{ChangeId, ChangeMeta, MetaId, RewriteOp};
 use asc_core::id::ChangesetId;
+use async_trait::async_trait;
 use uuid::Uuid;
 
 /// Most predecessors one changeset may record.

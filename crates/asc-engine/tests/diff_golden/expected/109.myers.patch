@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 056b687..ade2320 100644
+index 7a0b13f..5e89df1 100644
 --- a/file
 +++ b/file
 @@ -104,8 +104,12 @@ export interface CoreFieldSchema {

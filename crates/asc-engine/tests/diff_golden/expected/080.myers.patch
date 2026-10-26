@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 692f4d6..5a279ef 100644
+index 692f4d6..61b4455 100644
 --- a/file
 +++ b/file
 @@ -43,7 +43,17 @@ interface StubOptions {

@@ -5,7 +5,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body, ingest};
 use asc_core::git::{
@@ -25,6 +24,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, Refs, RepoKey};
+use async_trait::async_trait;
 
 struct NoRefs;
 

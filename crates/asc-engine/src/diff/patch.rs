@@ -2,8 +2,8 @@
 
 use std::io::Write;
 
-use bytes::Bytes;
 use asc_core::object::Kind;
+use bytes::Bytes;
 
 use super::format::{names, quote_c_style};
 use super::line::{self, LineDiff, is_binary};

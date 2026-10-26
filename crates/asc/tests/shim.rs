@@ -294,6 +294,15 @@ fn fall_through_overhead_is_small() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(if cfg!(windows) { 5.0 } else { 2.0 });
+    // Wall-clock bounds are not meaningful on a shared CI runner: there the check runs only when
+    // a budget is given (`ASC_SHIM_OVERHEAD_MS`) or `ASC_SHIM_PERF=1` asks for it.
+    if std::env::var_os("CI").is_some()
+        && std::env::var_os("ASC_SHIM_OVERHEAD_MS").is_none()
+        && std::env::var_os("ASC_SHIM_PERF").is_none()
+    {
+        eprintln!("skipped: wall-clock check on CI (set ASC_SHIM_PERF=1 or ASC_SHIM_OVERHEAD_MS)");
+        return;
+    }
     let sb = Sandbox::new();
     let repo = sb.dir("repo");
     ok(real(&sb, &repo, &["init", "-b", "master"]));

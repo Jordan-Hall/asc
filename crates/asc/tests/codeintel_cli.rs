@@ -11,9 +11,9 @@ use std::process::Output;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use bytes::Bytes;
 use asc_rpc::server::wire;
 use asc_rpc::services::code_intel_server::{CodeIntel, CodeIntelServer};
+use bytes::Bytes;
 use serde_json::Value;
 use support::{Sandbox, text};
 use tonic::{Request, Response, Status};

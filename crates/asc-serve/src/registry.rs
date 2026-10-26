@@ -8,7 +8,6 @@ use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use asc_core::path::RefName;
 use asc_engine::derive::{Error as DeriveError, GitMapRow, GitMapSink};
 use asc_rpc::auth::Authorizer;
@@ -16,6 +15,7 @@ use asc_rpc::server::{EngineBackend, RepoHandlers, RepoName};
 use asc_store::bucket::BucketObjects;
 use asc_store::refs::RepoKey;
 use asc_store::sqlrefs::SqlRefs;
+use async_trait::async_trait;
 use object_store::ObjectStore;
 use object_store::path::Path;
 use sqlx::{AnyPool, Row};

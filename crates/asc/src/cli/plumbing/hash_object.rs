@@ -6,7 +6,6 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
-use bytes::Bytes;
 use asc_core::content::{Body, Ingested, ingest};
 use asc_core::git::ObjectKind;
 use asc_core::id::GitOid;
@@ -17,6 +16,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects as _;
 use asc_wc::status::Eol;
+use bytes::Bytes;
 
 use super::objects::{hash, kind_named};
 use super::usage;

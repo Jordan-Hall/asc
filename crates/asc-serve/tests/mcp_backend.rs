@@ -6,7 +6,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::errors::ToolError;
 use asc_mcp::rpc_backend::DynCodec;
@@ -19,6 +18,7 @@ use asc_rpc::server::{
 use asc_serve::config::Limits;
 use asc_serve::limits::{Admission, Class};
 use asc_serve::mcp::backend::{RepoGate, ServeAuthorizer, ServeBackend};
+use async_trait::async_trait;
 use futures::StreamExt as _;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Value, json};

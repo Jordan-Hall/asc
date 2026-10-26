@@ -13,7 +13,6 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use bytes::Bytes;
 use asc_core::codec::Enveloped;
 use asc_core::content::{Body, Ingested, ingest};
 use asc_core::object::Kind;
@@ -24,6 +23,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_wc::SafeRoot;
+use bytes::Bytes;
 
 use self::attrs::Attrs;
 use self::scan::{Op, Opts};
@@ -300,11 +300,11 @@ pub(crate) async fn store(_ctx: &Ctx, ws: &WsCtx, got: &Ingested) -> Result<()> 
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use async_trait::async_trait;
     use asc_git::projection::Projection;
     use asc_state::state::repos::{self, NewRepo, RemoteKind};
     use asc_state::state::workspaces::{self, Mode, NewWorkspace};
     use asc_state::{AscHome, RepoId, StateDb, WorkspaceId};
+    use async_trait::async_trait;
 
     use super::*;
     use crate::cli::common::Gate;

@@ -269,7 +269,8 @@ impl<'a> Run<'a> {
             .iter()
             .map(|c| &c.path)
             .filter(|p| {
-                matches!(p.as_bytes(), b".asc/projects.toml" | b".asc/ci.toml") || globs.is_ignored(p)
+                matches!(p.as_bytes(), b".asc/projects.toml" | b".asc/ci.toml")
+                    || globs.is_ignored(p)
             })
             .min()
             .cloned())
@@ -765,10 +766,7 @@ mod tests {
     fn asc() -> Tree {
         Tree::new(&[
             ("node.fake", "name=@asc/private"),
-            (
-                "packages/dsl/compiler/node.fake",
-                "name=@asc/dsl-compiler",
-            ),
+            ("packages/dsl/compiler/node.fake", "name=@asc/dsl-compiler"),
             (
                 "packages/dsl/compiler/rust/core/rust.fake",
                 "name=dsl-core\ndep=dsl-ir",
@@ -820,10 +818,7 @@ mod tests {
                 "node:analysis-pipeline-api"
             ]
         );
-        assert_eq!(
-            reasons(&a, "node:@asc/dsl-compiler"),
-            ["dep:rust:dsl-core"]
-        );
+        assert_eq!(reasons(&a, "node:@asc/dsl-compiler"), ["dep:rust:dsl-core"]);
         // The wrapper's own sources do not reach the native crates.
         let a = run(&t, &edited(&t, "packages/dsl/compiler/index.ts", "x"));
         assert_eq!(

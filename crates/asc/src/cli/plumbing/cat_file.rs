@@ -121,7 +121,11 @@ fn not_valid(name: &str) -> CliError {
 }
 
 /// `cat-file -p` of a tree: `ls-tree`'s lines with full ids.
-async fn pretty_tree(r: &Resolver<'_>, id: asc_core::id::TreeId, out: &mut dyn Write) -> Result<()> {
+async fn pretty_tree(
+    r: &Resolver<'_>,
+    id: asc_core::id::TreeId,
+    out: &mut dyn Write,
+) -> Result<()> {
     let names = Names {
         terminator: b'\n',
         quote_high: r.ctx.config.bool("core.quotePath").unwrap_or(true),

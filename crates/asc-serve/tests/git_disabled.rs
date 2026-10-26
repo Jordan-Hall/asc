@@ -9,15 +9,15 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
+use asc_rpc::server::ServerInfo;
+use asc_serve::build_routes;
+use asc_serve::registry::Extensions;
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
-use asc_rpc::server::ServerInfo;
-use asc_serve::build_routes;
-use asc_serve::registry::Extensions;
 use tower::ServiceExt;
 
 const READER: &str = "reader-secret-token";

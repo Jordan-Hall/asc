@@ -10,9 +10,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use async_trait::async_trait;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
+use async_trait::async_trait;
 
 /// Server `max_heads_per_workspace` (SPEC §21.3.2); a merged set above it is refused.
 pub const MAX_HEADS: usize = 10_000;

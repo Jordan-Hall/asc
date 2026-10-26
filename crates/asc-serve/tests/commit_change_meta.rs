@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use asc_core::change::RewriteOp;
 use asc_core::id::ChangesetId;
 use asc_rpc::auth::{Access, BearerToken, Credential, Principal, StaticTokens};
@@ -18,6 +17,7 @@ use asc_serve::migrate;
 use asc_serve::mutations::ServerMutations;
 use asc_serve::read::ReadHooks;
 use asc_serve::registry::{Extensions, NewRepo, Registry, RepoEntry};
+use bytes::Bytes;
 use tonic::Request;
 use uuid::Uuid;
 

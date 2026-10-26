@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 4cfeb6a..6835758 100644
+index bf48ce6..a95da6b 100644
 --- a/file
 +++ b/file
 @@ -12,7 +12,11 @@ Checks that a NELA risk API and the NELA risk calculator website give the scores
@@ -15,7 +15,7 @@ index 4cfeb6a..6835758 100644
  
  Exit code 0 when every row passes, 1 when any row fails, 2 on a run error. Reports land in `reports/` as JSON and Excel.
  
-@@ -30,7 +34,7 @@ The ASC Audit patient form calls the same risk API from tab 3 (pre-op) and tab
+@@ -30,7 +34,7 @@ The ASC Audit patient form calls the same risk API from tab 3 (pre-op) and tab 6
      NELA_SITE_URL=https://nela-risk-tool.example.org bun run test:e2e:form
      DOMINO_FORM_URL=https://www.example.org/RCOA/NELAUAT2.nsf/PatientEmlapV13 bunx playwright test domino.spec
  

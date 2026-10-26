@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 205f132..4b0ee45 100644
+index 034a614..a3dc68b 100644
 --- a/file
 +++ b/file
 @@ -2,7 +2,15 @@ import { Table } from 'surrealdb';

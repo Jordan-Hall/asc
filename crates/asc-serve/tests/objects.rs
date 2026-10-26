@@ -7,7 +7,6 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
 use asc_core::id::FileId;
 use asc_core::transport_policy::Policy;
 use asc_rpc::auth::{Access, BearerToken, StaticTokens};
@@ -19,6 +18,7 @@ use asc_serve::registry::{NewRepo, Registry};
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use bytes::Bytes;
 use tonic::Code;
 
 const WRITE: &str = "w-token";

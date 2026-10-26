@@ -372,7 +372,7 @@ mod tests {
             p
         });
         let bytes = m.to_envelope();
-        assert_eq!(&bytes[..4], &[b'c', b'g', 6, 1]);
+        assert_eq!(&bytes[..4], &[b'a', b's', 6, 1]);
         let back: ChangeMeta = decode_envelope(&bytes).unwrap();
         assert_eq!(back, m);
         assert_eq!(back.to_envelope(), bytes);

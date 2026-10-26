@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 4fe9a0b..4650b0c 100644
+index 36852c6..f617650 100644
 --- a/file
 +++ b/file
 @@ -73,9 +73,8 @@ export function createReportingRouter(base: string, deps: RouteDependencies): Ro

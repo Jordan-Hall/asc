@@ -228,7 +228,9 @@ fn valid_role_name(n: &str) -> Result<(), PolicyError> {
     if ok {
         Ok(())
     } else {
-        bad(format!("role name {n:?} is not lower-case letters, digits, - and _"))
+        bad(format!(
+            "role name {n:?} is not lower-case letters, digits, - and _"
+        ))
     }
 }
 
@@ -293,7 +295,9 @@ impl PathGlob {
         for s in text.split('/') {
             match s {
                 "" | "." | ".." => {
-                    return bad(format!("path pattern {text:?} has an empty, `.` or `..` segment"));
+                    return bad(format!(
+                        "path pattern {text:?} has an empty, `.` or `..` segment"
+                    ));
                 }
                 "**" => segments.push(Seg::Deep),
                 s if s.contains("**") => {
@@ -510,11 +514,13 @@ impl Policy {
     /// pattern, an undefined role, or no maintainer is an error, and nothing partial is returned.
     pub fn parse(bytes: &[u8]) -> Result<Self, PolicyError> {
         if bytes.len() > MAX_POLICY_BYTES {
-            return bad(format!("the policy file is larger than {MAX_POLICY_BYTES} bytes"));
+            return bad(format!(
+                "the policy file is larger than {MAX_POLICY_BYTES} bytes"
+            ));
         }
         let text = std::str::from_utf8(bytes).or_else(|_| bad("the policy file is not UTF-8"))?;
-        let raw: RawPolicy =
-            toml::from_str(text).map_err(|e| PolicyError(format!("policy.toml: {}", e.message())))?;
+        let raw: RawPolicy = toml::from_str(text)
+            .map_err(|e| PolicyError(format!("policy.toml: {}", e.message())))?;
         if raw.version != POLICY_VERSION {
             return bad(format!(
                 "policy version {} is not supported (this server reads {POLICY_VERSION})",
@@ -540,7 +546,9 @@ impl Policy {
         }
         for c in &raw.trunk.require_checks {
             if c.is_empty() || c.len() > MAX_NAME_LEN || c.chars().any(char::is_control) {
-                return bad("a required check name is empty, too long or holds a control character");
+                return bad(
+                    "a required check name is empty, too long or holds a control character",
+                );
             }
         }
         if raw.paths.len() > MAX_PATH_RULES {
@@ -590,9 +598,7 @@ impl Policy {
     fn subject_matches(&self, who: &Who, s: &Subject) -> bool {
         match s {
             Subject::Anyone => true,
-            Subject::Of { kind, glob } => {
-                who.kind == Some(*kind) && name_glob(glob, &who.name)
-            }
+            Subject::Of { kind, glob } => who.kind == Some(*kind) && name_glob(glob, &who.name),
             Subject::Role(r) => self.is_member(who, r),
         }
     }
@@ -623,7 +629,9 @@ impl Policy {
             reason,
         };
         if touches_policy(path) && !self.is_maintainer(who) {
-            return Err(deny("the repository policy can be changed only by a maintainer".into()));
+            return Err(deny(
+                "the repository policy can be changed only by a maintainer".into(),
+            ));
         }
         let rules = || self.paths.iter().filter(|r| r.glob.matches(path));
         if who.is_agent() {
@@ -635,8 +643,13 @@ impl Policy {
                 // A rule that names agents, and this one, extends the scope.
                 let granted = rules().any(|r| {
                     r.write.iter().any(|s| {
-                        matches!(s, Subject::Of { kind: Kind::Agent, .. })
-                            && self.subject_matches(who, s)
+                        matches!(
+                            s,
+                            Subject::Of {
+                                kind: Kind::Agent,
+                                ..
+                            }
+                        ) && self.subject_matches(who, s)
                     })
                 });
                 if !in_scope && !granted {
@@ -652,7 +665,11 @@ impl Policy {
                     if r.write.is_empty() {
                         "nobody".to_owned()
                     } else {
-                        r.write.iter().map(Subject::render).collect::<Vec<_>>().join(", ")
+                        r.write
+                            .iter()
+                            .map(Subject::render)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     }
                 )));
             }
@@ -778,30 +795,84 @@ strategy = "rebase-disjoint"
         let head = "version = 1\n[roles]\nmaintainer = [\"user:a\"]\n";
         let cases: Vec<(String, &str)> = vec![
             (String::new(), "empty file"),
-            ("version = 2\n[roles]\nmaintainer = [\"user:a\"]\n".into(), "version"),
-            ("version = 1\n[roles]\nmaintainer = []\n".into(), "empty maintainers"),
+            (
+                "version = 2\n[roles]\nmaintainer = [\"user:a\"]\n".into(),
+                "version",
+            ),
+            (
+                "version = 1\n[roles]\nmaintainer = []\n".into(),
+                "empty maintainers",
+            ),
             ("version = 1\n".into(), "no roles"),
-            ("version = 1\n[roles]\nreviewer = [\"user:a\"]\n".into(), "no maintainer"),
+            (
+                "version = 1\n[roles]\nreviewer = [\"user:a\"]\n".into(),
+                "no maintainer",
+            ),
             (format!("{head}[trunk]\nbogus = 1\n"), "unknown trunk key"),
             (format!("{head}bogus = 1\n"), "unknown top-level key"),
-            (format!("{head}[agents]\nbogus = []\n"), "unknown agents key"),
-            (format!("{head}[agents.budgets]\nmax_changes_per_run = 0\n"), "zero budget"),
-            (format!("{head}[agents.budgets]\nmax_changes_per_run = 100001\n"), "huge budget"),
-            (format!("{head}[trunk]\nrequire_approvals = 17\n"), "too many approvals"),
-            (format!("{head}[trunk]\nrequire_approvals = -1\n"), "negative"),
-            (format!("{head}[merge]\nstrategy = \"squash\"\n"), "unknown strategy"),
-            (format!("{head}[paths.\"a\"]\nwrite = [\"role:ghost\"]\n"), "undefined role"),
-            (format!("{head}[paths.\"a\"]\nwrite = [\"nobody\"]\n"), "bad subject"),
-            (format!("{head}[paths.\"a\"]\nwrite = [\"robot:x\"]\n"), "unknown kind"),
+            (
+                format!("{head}[agents]\nbogus = []\n"),
+                "unknown agents key",
+            ),
+            (
+                format!("{head}[agents.budgets]\nmax_changes_per_run = 0\n"),
+                "zero budget",
+            ),
+            (
+                format!("{head}[agents.budgets]\nmax_changes_per_run = 100001\n"),
+                "huge budget",
+            ),
+            (
+                format!("{head}[trunk]\nrequire_approvals = 17\n"),
+                "too many approvals",
+            ),
+            (
+                format!("{head}[trunk]\nrequire_approvals = -1\n"),
+                "negative",
+            ),
+            (
+                format!("{head}[merge]\nstrategy = \"squash\"\n"),
+                "unknown strategy",
+            ),
+            (
+                format!("{head}[paths.\"a\"]\nwrite = [\"role:ghost\"]\n"),
+                "undefined role",
+            ),
+            (
+                format!("{head}[paths.\"a\"]\nwrite = [\"nobody\"]\n"),
+                "bad subject",
+            ),
+            (
+                format!("{head}[paths.\"a\"]\nwrite = [\"robot:x\"]\n"),
+                "unknown kind",
+            ),
             (format!("{head}[paths.\"../a\"]\nwrite = []\n"), "dotdot"),
             (format!("{head}[paths.\"/a\"]\nwrite = []\n"), "absolute"),
-            (format!("{head}[paths.\"a//b\"]\nwrite = []\n"), "empty segment"),
-            (format!("{head}[paths.\"a**\"]\nwrite = []\n"), "partial doublestar"),
+            (
+                format!("{head}[paths.\"a//b\"]\nwrite = []\n"),
+                "empty segment",
+            ),
+            (
+                format!("{head}[paths.\"a**\"]\nwrite = []\n"),
+                "partial doublestar",
+            ),
             (format!("{head}[paths.\"a\"]\n"), "missing write"),
-            (format!("{head}[trunk]\nrequire_checks = [\"\"]\n"), "empty check"),
-            ("version = 1\n[roles]\nmaintainer = [\"role:maintainer\"]\n".into(), "role in role"),
-            ("version = 1\n[roles]\nmaintainer = [\"*\"]\n".into(), "everyone is a maintainer"),
-            ("version = 1\n[roles]\nMaint = [\"user:a\"]\n".into(), "role name"),
+            (
+                format!("{head}[trunk]\nrequire_checks = [\"\"]\n"),
+                "empty check",
+            ),
+            (
+                "version = 1\n[roles]\nmaintainer = [\"role:maintainer\"]\n".into(),
+                "role in role",
+            ),
+            (
+                "version = 1\n[roles]\nmaintainer = [\"*\"]\n".into(),
+                "everyone is a maintainer",
+            ),
+            (
+                "version = 1\n[roles]\nMaint = [\"user:a\"]\n".into(),
+                "role name",
+            ),
         ];
         for (text, why) in cases {
             assert!(Policy::parse(text.as_bytes()).is_err(), "{why}");
@@ -814,7 +885,9 @@ strategy = "rebase-disjoint"
     #[test]
     fn lists_are_bounded() {
         let head = "version = 1\n[roles]\nmaintainer = [\"user:a\"]\n";
-        let many: Vec<String> = (0..=MAX_SUBJECTS).map(|i| format!("\"user:u{i}\"")).collect();
+        let many: Vec<String> = (0..=MAX_SUBJECTS)
+            .map(|i| format!("\"user:u{i}\""))
+            .collect();
         let t = format!("version = 1\n[roles]\nmaintainer = [{}]\n", many.join(","));
         assert!(Policy::parse(t.as_bytes()).is_err());
         let checks: Vec<String> = (0..=MAX_CHECKS).map(|i| format!("\"c{i}\"")).collect();
@@ -825,7 +898,10 @@ strategy = "rebase-disjoint"
             t.push_str(&format!("[paths.\"p{i}\"]\nwrite = []\n"));
         }
         assert!(Policy::parse(t.as_bytes()).is_err());
-        let long = format!("{head}[paths.\"{}\"]\nwrite = []\n", "a".repeat(MAX_GLOB_LEN + 1));
+        let long = format!(
+            "{head}[paths.\"{}\"]\nwrite = []\n",
+            "a".repeat(MAX_GLOB_LEN + 1)
+        );
         assert!(Policy::parse(long.as_bytes()).is_err());
     }
 
@@ -908,9 +984,20 @@ strategy = "rebase-disjoint"
     fn the_policy_file_needs_a_maintainer_whatever_the_rules_say() {
         let open = "version = 1\n[roles]\nmaintainer = [\"user:alice\"]\n[paths.\".asc/**\"]\nwrite = [\"*\"]\n";
         let p = Policy::parse(open.as_bytes()).unwrap();
-        for path in [".asc/policy.toml", ".ASC/Policy.toml", ".asc", ".asc/policy.toml/x"] {
-            assert!(p.check_write(&user("carol"), path.as_bytes()).is_err(), "{path}");
-            assert!(p.check_write(&user("alice"), path.as_bytes()).is_ok(), "{path}");
+        for path in [
+            ".asc/policy.toml",
+            ".ASC/Policy.toml",
+            ".asc",
+            ".asc/policy.toml/x",
+        ] {
+            assert!(
+                p.check_write(&user("carol"), path.as_bytes()).is_err(),
+                "{path}"
+            );
+            assert!(
+                p.check_write(&user("alice"), path.as_bytes()).is_ok(),
+                "{path}"
+            );
         }
         // Other files under .asc follow the rules.
         assert!(p.check_write(&user("carol"), b".asc/review.toml").is_ok());

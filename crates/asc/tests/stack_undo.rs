@@ -387,10 +387,12 @@ fn a_vetoed_ref_swap_leaves_the_work_tree_alone() {
     r.commit("b.txt", "two\n", "two");
     let two = r.sha("HEAD");
     // A hook that refuses the swap after the checks passed stands in for a racing writer.
-    // `.git` is a file naming the git directory.
-    let gitfile = fs::read_to_string(r.root.join(".git")).unwrap();
-    let gitdir = gitfile.trim().strip_prefix("gitdir:").unwrap().trim();
-    let hooks = std::path::Path::new(gitdir).join("hooks");
+    // Hooks live under the common directory, which is not always the git directory the `.git`
+    // file names.
+    let hooks = asc_git::projection::Projection::open(&r.root)
+        .unwrap()
+        .common_dir()
+        .join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("reference-transaction");
     fs::write(

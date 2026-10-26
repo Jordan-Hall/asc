@@ -17,8 +17,8 @@ use std::io::{Read, Write};
 use std::process::ExitCode;
 use std::sync::OnceLock;
 
-use bytes::Buf;
 use asc_rpc::server::MAX_MESSAGE;
+use bytes::Buf;
 use prost_reflect::prost::Message as _;
 use prost_reflect::{
     DescriptorPool, DynamicMessage, EnumDescriptor, FieldDescriptor, Kind, MapKey,
@@ -115,7 +115,8 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
 fn pool() -> &'static DescriptorPool {
     static POOL: OnceLock<DescriptorPool> = OnceLock::new();
     POOL.get_or_init(|| {
-        DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("the built-in descriptor set decodes")
+        DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET)
+            .expect("the built-in descriptor set decodes")
     })
 }
 

@@ -346,7 +346,10 @@ impl Lab {
             }
             Side::Asc => {
                 self.shim(&root, &["init"]).ok("shim init");
-                assert!(root.join(".git").is_file(), "an asc workspace has a gitfile");
+                assert!(
+                    root.join(".git").is_file(),
+                    "an asc workspace has a gitfile"
+                );
             }
         }
         write_fixture(&root);

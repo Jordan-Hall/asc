@@ -12,7 +12,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use asc_git::realgit::RealGit;
 use asc_rpc::auth::{Access, StaticTokens};
 use asc_rpc::server::{RepoName, ServerInfo, wire};
@@ -21,6 +20,7 @@ use asc_rpc::services::repo_client::RepoClient;
 use asc_serve::mirror::{Mirror, MirrorConfig, MirrorTarget};
 use asc_serve::registry::{Extensions, NewRepo, Registry, RepoMode};
 use asc_serve::{build_routes, migrate, projects, read};
+use bytes::Bytes;
 use futures::TryStreamExt as _;
 use tonic::transport::{Channel, Server};
 use tonic::{Code, Request};

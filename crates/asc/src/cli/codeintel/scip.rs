@@ -10,8 +10,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use bytes::Bytes;
 use asc_rpc::server::wire;
+use bytes::Bytes;
 
 use super::{call_server, clean_str, client, with_stdout};
 use crate::cli::common::{CliError, Ctx, Result};

@@ -15,7 +15,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use asc_git::realgit::RealGit;
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
 use asc_rpc::server::{RepoName, ServerInfo};
@@ -28,6 +27,7 @@ use asc_serve::outbox::{Effect, Job, Outbox, OutboxConfig};
 use asc_serve::registry::{Extensions, NewRepo, Registry};
 use asc_serve::update::PushHooks;
 use asc_serve::{git_http, migrate};
+use async_trait::async_trait;
 use sqlx::Row;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;

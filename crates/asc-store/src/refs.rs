@@ -1,8 +1,8 @@
 //! The `Refs` trait and its transaction types (SPEC 3.2, 3.4).
 
-use async_trait::async_trait;
 use asc_core::id::RefTarget;
 use asc_core::path::RefName;
+use async_trait::async_trait;
 use uuid::Uuid;
 
 /// Numeric id of a repository in the ref store.

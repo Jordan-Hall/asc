@@ -1,8 +1,8 @@
 diff --git a/file b/file
-index 6aa412a..bd8616c 100644
+index 1be5187..86bac34 100644
 --- a/file
 +++ b/file
-@@ -10,6 +10,7 @@ import { createRouter, defineComponent, type RouterInstance } from '@asc/route
+@@ -10,6 +10,7 @@ import { createRouter, defineComponent, type RouterInstance } from '@asc/router'
  import { renderOverview } from '../pages/overview.js';
  import { renderMetricPage } from '../pages/metric.js';
  import { renderExplorePage } from '../pages/explore.js';

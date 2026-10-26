@@ -9,9 +9,6 @@
 
 use std::sync::Arc;
 
-use axum::Router;
-use axum::body::Body;
-use axum::http::{Request, Response, StatusCode, header};
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::cursor::KeyRing;
 use asc_mcp::errors::ToolError;
@@ -23,6 +20,9 @@ use asc_serve::mcp::audit::MemoryAudit;
 use asc_serve::mcp::auth::{McpAuth, layer};
 use asc_serve::mcp::prm::{self, Prm, metadata_url, scope_layer};
 use asc_serve::mcp::{self, HttpPolicy};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, Response, StatusCode, header};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

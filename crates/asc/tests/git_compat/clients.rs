@@ -10,6 +10,17 @@ use regex::Regex;
 use crate::harness::*;
 use crate::plain::Plain;
 
+/// Marks a script written by a test as runnable, which git needs to exec it as a helper on Unix.
+fn make_executable(script: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = script;
+}
+
 /// One asc server and one plain git server, each holding an empty `acme/web` (and `acme/lib`).
 pub struct Rig {
     pub stack: Stack,
@@ -206,7 +217,10 @@ fn fetch_and_pull_ff_only_match_a_plain_server() {
     seed(git, &src, &rig.asc("acme/web"));
     seed(git, &src, &rig.plain("acme/web"));
     let mut out = Vec::new();
-    for (who, url) in [("asc", rig.asc("acme/web")), ("plain", rig.plain("acme/web"))] {
+    for (who, url) in [
+        ("asc", rig.asc("acme/web")),
+        ("plain", rig.plain("acme/web")),
+    ] {
         let base = git.work(who);
         git.ok(&base, &["clone", "-q", &url, "w"]);
         let w = base.join("w");
@@ -402,7 +416,10 @@ fn shallow_clones_and_partial_clones_match_a_plain_server() {
     seed(git, &src, &rig.asc("acme/web"));
     seed(git, &src, &rig.plain("acme/web"));
     let mut results: Vec<Vec<String>> = Vec::new();
-    for (who, url) in [("asc", rig.asc("acme/web")), ("plain", rig.plain("acme/web"))] {
+    for (who, url) in [
+        ("asc", rig.asc("acme/web")),
+        ("plain", rig.plain("acme/web")),
+    ] {
         let mut seen = Vec::new();
         let base = git.work(who);
         let r = git.run(&base, &["clone", "-q", "--depth", "1", &url, "s"]);
@@ -768,6 +785,7 @@ mod credentials {
             ),
         )
         .unwrap();
+        make_executable(&ask.join("ask.sh"));
         let ask_path = fwd(&ask.join("ask.sh"));
         let r = ls(git, &url, &[("GIT_ASKPASS", &ask_path)]);
         assert!(r.ok, "askpass: {}", mask(&r.stderr));
@@ -778,6 +796,7 @@ mod credentials {
             "#!/bin/sh\ncase \"$1\" in\n  Password*) echo '';;\nesac\n",
         )
         .unwrap();
+        make_executable(&ask.join("empty.sh"));
         let token_only = format!("http://{secret}@{host}/acme/web.git");
         let r = ls(
             git,

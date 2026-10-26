@@ -20,9 +20,9 @@
 //! text budget first. Stored objects are only the rewritten changesets and the marked files of a
 //! conflict; GC removes the latter when nothing refers to them.
 
-use async_trait::async_trait;
 use asc_engine::land::NoMergeGlobs;
 use asc_engine::merge::{ConflictStyle, MergeOptions};
+use async_trait::async_trait;
 
 use super::*;
 use crate::idmode::Eng;

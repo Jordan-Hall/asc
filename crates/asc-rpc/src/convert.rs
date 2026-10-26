@@ -3,12 +3,12 @@
 //! Ids are checked by length and `IdMode`: 32 bytes is an asc id, 20 bytes a git oid. Every
 //! conversion rejects wrong lengths, unknown enum values and invalid paths or signatures.
 
-use bytes::Bytes;
 use asc_core::change::MetaId;
 use asc_core::id::{ChangesetId, ChunkId, FileId, GitOid, RefTarget, TagId, TreeId};
 use asc_core::path::{PathError, RepoPath};
 use asc_core::sig::{SigError, Signature};
 use asc_store::key::ObjKey;
+use bytes::Bytes;
 
 use crate::pb;
 

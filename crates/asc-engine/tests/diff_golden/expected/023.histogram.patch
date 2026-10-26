@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index a34be0f..ebf3914 100644
+index cffac84..1f2c0c5 100644
 --- a/file
 +++ b/file
 @@ -34,6 +34,7 @@ pub mod diagnostics;

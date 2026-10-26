@@ -7,8 +7,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_codeintel::config::CodeintelConfig;
 use asc_codeintel::doc::{DocError, OrdTable};
 use asc_codeintel::scope::{OrdSource, ScopeEngine, ScopeQuery};
@@ -25,6 +23,8 @@ use asc_store::codec::encode_stored;
 use asc_store::key::{KeyPrefix, ObjKey};
 use asc_store::objects::{Objects, Result as OResult};
 use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, Refs, RepoKey};
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::BoxStream;
 use roaring::RoaringBitmap;
 

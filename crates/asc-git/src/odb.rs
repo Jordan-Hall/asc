@@ -5,9 +5,9 @@
 
 use std::path::Path;
 
-use bytes::Bytes;
 use asc_core::git::{ObjectKind, blob_oid, object_oid};
 use asc_core::id::GitOid;
+use bytes::Bytes;
 use gix::objs::{Exists, Find, Write};
 
 /// Why an object could not be read or written.

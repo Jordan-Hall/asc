@@ -4,8 +4,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use asc_rpc::server::wire;
+use async_trait::async_trait;
 use tonic::{Code, Status};
 
 use crate::daemon::codeintel_overlay::ServerAnswer;

@@ -10,8 +10,6 @@ use std::process::{Command, ExitCode};
 use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::{ChangesetId, FileId, GitOid, RefTarget};
 use asc_core::object::{Change, Kind};
 use asc_core::path::RefName;
@@ -29,6 +27,8 @@ use asc_store::objects::{Objects, Result as ObjResult};
 use asc_store::refs::{Expect, RefError, RefTxn, RefUpdate, Refs};
 use asc_store::storeset::StoreSet;
 use asc_store::tiered::Tiered;
+use async_trait::async_trait;
+use bytes::Bytes;
 use futures::stream::{BoxStream, StreamExt};
 
 use super::config::{self, ConfigSnapshot, LocalConfig};
@@ -419,9 +419,12 @@ impl WsCtx {
                     let Some(RefTarget::Changeset(cs)) = u.new else {
                         return Err(CliError::Fatal("asc: HEAD cannot be deleted".into()));
                     };
-                    let rows =
-                        asc_state::state::git_map::asc_to_git(&self.db, self.repo.key, cs.as_bytes())
-                            .await?;
+                    let rows = asc_state::state::git_map::asc_to_git(
+                        &self.db,
+                        self.repo.key,
+                        cs.as_bytes(),
+                    )
+                    .await?;
                     let oid: GitOid = rows
                         .into_iter()
                         .find(|(_, k)| *k == asc_core::git::ObjectKind::Commit)

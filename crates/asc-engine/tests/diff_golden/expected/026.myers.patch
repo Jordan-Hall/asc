@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index fb5e332..b3e0bba 100644
+index 910b932..45af807 100644
 --- a/file
 +++ b/file
 @@ -141,6 +141,6 @@ declare module '#dsl-wasm' {

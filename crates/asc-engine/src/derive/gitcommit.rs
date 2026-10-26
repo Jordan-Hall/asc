@@ -1,11 +1,11 @@
 //! `gitcommit.v1`: the git commit id of a changeset (SPEC §5).
 
-use async_trait::async_trait;
 use asc_core::git::{ObjectKind, export_commit, object_oid, tree_oid};
 use asc_core::id::{ChangesetId, GitOid};
 use asc_core::object::Changeset;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use super::sink::{GitMapRow, GitMapSink};
 use super::{Derived, Error, Result};

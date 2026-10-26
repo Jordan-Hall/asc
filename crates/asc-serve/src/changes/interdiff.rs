@@ -17,7 +17,6 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::FileId;
 use asc_core::object::{Entry, Kind};
@@ -28,6 +27,7 @@ use asc_engine::interdiff::{self, Side};
 use asc_engine::tree::Pathspec;
 use asc_rpc::IdMode;
 use asc_rpc::server::{CallCtx, MAX_LIST, MAX_STRING, RpcStream, wire};
+use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream;
 use tokio::sync::mpsc;
@@ -353,12 +353,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use asc_core::change::{ChangeMeta, RewriteOp};
     use asc_core::id::ChangesetId;
     use asc_rpc::auth::{Access, BearerToken, Credential, StaticTokens};
     use asc_rpc::server::{ServerInfo, wire::RepoRef};
     use asc_rpc::services::changes_server::Changes;
+    use async_trait::async_trait;
     use futures::TryStreamExt;
     use tonic::Request;
 

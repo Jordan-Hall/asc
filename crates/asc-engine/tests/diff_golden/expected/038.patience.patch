@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 38a5487..7c64be7 100644
+index 77c5b0e..89a31c7 100644
 --- a/file
 +++ b/file
 @@ -17,19 +17,14 @@ export interface Attachment {

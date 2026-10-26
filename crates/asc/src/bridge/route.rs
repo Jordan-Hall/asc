@@ -53,7 +53,8 @@ pub enum Target {
 fn pool() -> &'static DescriptorPool {
     static POOL: OnceLock<DescriptorPool> = OnceLock::new();
     POOL.get_or_init(|| {
-        DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("the built-in descriptor set decodes")
+        DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET)
+            .expect("the built-in descriptor set decodes")
     })
 }
 

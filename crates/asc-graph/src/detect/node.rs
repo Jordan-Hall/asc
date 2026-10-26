@@ -746,10 +746,7 @@ mod tests {
             deps(&g, "@asc/dsl-compiler"),
             ["Optional:node:@asc/dsl-compiler-linux-x64-gnu"]
         );
-        assert_eq!(
-            deps(&g, "analysis-pipeline-api"),
-            ["Normal:node:@asc/soma"]
-        );
+        assert_eq!(deps(&g, "analysis-pipeline-api"), ["Normal:node:@asc/soma"]);
         // `@soma/budgets` has no member without the gitlink: the edge is dropped.
         assert!(deps(&g, "@asc/soma").is_empty());
     }

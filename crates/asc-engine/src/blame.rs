@@ -10,13 +10,13 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::{Change, Entry, Kind};
 use asc_core::path::{PathError, RepoPath};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use crate::derive::{self, DerivedKeyed, read_memo, write_memo};
 use crate::diff::line::{self, Algorithm};

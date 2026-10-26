@@ -23,12 +23,12 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use asc_rpc::client::RpcClient;
 use asc_state::state::repos::{self, RemoteKind};
 use asc_state::state::workspaces;
 use asc_state::{AscHome, StateDb};
 use asc_store::refs::RepoKey;
+use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncReadExt as _};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;

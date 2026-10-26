@@ -223,12 +223,7 @@ mod tests {
                 "analysis-pipeline-api",
                 &["deploy"],
             ),
-            proj(
-                Ecosystem::Node,
-                "packages/ui/package.json",
-                "@asc/ui",
-                &[],
-            ),
+            proj(Ecosystem::Node, "packages/ui/package.json", "@asc/ui", &[]),
             proj(Ecosystem::Python, "pyproject.toml", "asc-soma", &[]),
         ]
     }

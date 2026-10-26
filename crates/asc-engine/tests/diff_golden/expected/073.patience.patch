@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 8585cb7..d4621bf 100644
+index 3301709..1ddc5b8 100644
 --- a/file
 +++ b/file
 @@ -68,12 +68,12 @@ const inRoom = (ctx: Viewer, canEdit: boolean) =>

@@ -9,9 +9,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 
-use async_trait::async_trait;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
+use async_trait::async_trait;
 
 use crate::change::{self, ChangeRow, ChangeRows};
 use crate::graph::{self, Graph, GraphSource, JumpIndex};

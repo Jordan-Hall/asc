@@ -543,8 +543,7 @@ impl GitPush {
     /// that cannot be measured is treated as full: a push fails closed.
     pub fn disk_ok(&self) -> bool {
         let need = self.inner.limits.min_free_disk;
-        need == 0
-            || fs4::available_space(self.inner.views.view_dir()).is_ok_and(|free| free >= need)
+        need == 0 || free_space_near(self.inner.views.view_dir()).is_some_and(|free| free >= need)
     }
 
     /// Starts a session for a push by `ctx.principal` to `entry`'s `view`.
@@ -586,6 +585,14 @@ impl GitPush {
     pub fn endpoint(&self) -> &str {
         &self.inner.endpoint
     }
+}
+
+/// Free bytes on the volume that holds `dir`. The view directory is created lazily, so before the
+/// first view exists the nearest existing ancestor stands in for it (they share a volume).
+fn free_space_near(dir: &Path) -> Option<u64> {
+    dir.ancestors()
+        .find(|p| p.is_dir())
+        .and_then(|p| fs4::available_space(p).ok())
 }
 
 async fn accept_loop(inner: Arc<Inner>, listener: IpcListener) {

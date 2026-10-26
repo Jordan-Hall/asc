@@ -407,7 +407,7 @@ mod tests {
             ".asc./info /exclude",
             "ASC~1/info/exclude",
             ".asc::$DATA/info",
-            ".c\u{200c}g/info/x",
+            ".a\u{200c}sc/info/x",
             ".asc",
             ".ASC",
             ".asc.",

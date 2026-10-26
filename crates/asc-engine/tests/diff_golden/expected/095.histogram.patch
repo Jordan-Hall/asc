@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 75085d9..7a2ea5e 100644
+index 5e2ecc9..1505bc6 100644
 --- a/file
 +++ b/file
 @@ -12,25 +12,33 @@ Analytics and reporting service for ASC. Provides:

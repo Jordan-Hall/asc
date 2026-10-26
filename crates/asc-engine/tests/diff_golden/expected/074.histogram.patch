@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 099fdbb..b7f69cf 100644
+index 6328bdf..1ed7e29 100644
 --- a/file
 +++ b/file
 @@ -76,6 +76,14 @@ export interface SchemaFormElement extends JsonFormElement {

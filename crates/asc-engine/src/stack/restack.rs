@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use async_trait::async_trait;
 use asc_core::codec::Enveloped;
 use asc_core::git::{EXTRA_GIT_GPGSIG, export_commit, tree_oid};
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
@@ -24,6 +23,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -336,10 +336,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::SystemTime;
 
-    use bytes::Bytes;
     use asc_store::bucket::BucketObjects;
     use asc_store::key::KeyPrefix;
     use asc_store::refs::RepoKey;
+    use bytes::Bytes;
     use futures::stream::BoxStream;
 
     use super::*;

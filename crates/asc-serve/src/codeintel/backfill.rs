@@ -17,11 +17,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use sqlx::{AnyPool, Row};
 
 use super::modelgen::{CiError, Result};

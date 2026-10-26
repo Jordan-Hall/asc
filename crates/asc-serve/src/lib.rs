@@ -68,9 +68,9 @@ use std::future::Future;
 use std::path::Path as FsPath;
 use std::sync::{Arc, OnceLock};
 
-use async_trait::async_trait;
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
 use asc_rpc::server::{RepoService, ServerInfo};
+use async_trait::async_trait;
 use tonic::service::Routes;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 

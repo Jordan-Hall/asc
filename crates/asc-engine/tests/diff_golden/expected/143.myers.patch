@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 8d82ed1..fdc2f0f 100644
+index c417e76..4d8edbb 100644
 --- a/file
 +++ b/file
 @@ -24,25 +24,29 @@ on:

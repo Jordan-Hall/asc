@@ -62,7 +62,10 @@ pub fn run_pair(tools: &Tools, script: &str) -> Result<Pair, String> {
             asc,
         )
     });
-    Ok(Pair { git: git?, asc: asc? })
+    Ok(Pair {
+        git: git?,
+        asc: asc?,
+    })
 }
 
 /// Runs and classifies `script` as case `name` (the name selects the `allowed.toml` entries that

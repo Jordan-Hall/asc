@@ -1,5 +1,5 @@
 diff --git a/file b/file
-index 3be02d2..351109c 100644
+index dd6d7ac..2dc76cd 100644
 --- a/file
 +++ b/file
 @@ -5,12 +5,14 @@ A modern, intuitive schema designer inspired by SurveyMonkey, JotForm, and Typef

@@ -2,9 +2,9 @@
 
 use std::future::Future;
 
-use bytes::Bytes;
 use asc_core::git::{ObjectKind, object_oid};
 use asc_core::id::{ChunkId, FileId};
+use bytes::Bytes;
 
 use crate::codec::{decode_stored_capped, encode_stored};
 use crate::key::{KeyPrefix, ObjKey};

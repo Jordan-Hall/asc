@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use bytes::Bytes;
 use asc_core::git::tree_oid;
 use asc_core::id::TreeId;
 use asc_core::object::{Entry, Kind, Tree};
 use asc_core::path::{Name, PathError, RepoPath, casefold};
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt, TryStreamExt};
 
@@ -489,9 +489,9 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::path::Path;
 
-    use async_trait::async_trait;
     use asc_core::id::FileId;
     use asc_core::object::Kind;
+    use async_trait::async_trait;
     use futures::TryStreamExt;
 
     use super::*;

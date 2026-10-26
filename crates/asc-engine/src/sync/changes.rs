@@ -195,12 +195,12 @@ impl<R: ChangeRows> SyncExt for ChangesExt<R> {
 mod tests {
     use std::collections::HashMap;
 
-    use async_trait::async_trait;
-    use bytes::Bytes;
     use asc_core::change::RewriteOp;
     use asc_core::codec::Enveloped;
     use asc_store::codec::encode_stored;
     use asc_store::refs::{RefEntry, RefUpdate};
+    use async_trait::async_trait;
+    use bytes::Bytes;
     use futures::stream::{self, BoxStream};
 
     use super::*;
