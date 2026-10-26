@@ -492,7 +492,10 @@ mod tests {
         // reports each ref as deleted (`new` null) and names the ref it removed.
         let rows = f.outbox().await;
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["effects"], serde_json::json!(["post_receive"]));
+        assert_eq!(
+            rows[0]["effects"],
+            serde_json::json!(["post_receive", "codeintel.enqueue"])
+        );
         let refs = rows[0]["refs"].as_array().unwrap();
         assert_eq!(refs.len(), 2);
         for r in refs {

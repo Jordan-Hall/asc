@@ -155,7 +155,8 @@ impl Outbox {
             cfg,
             wake: Notify::new(),
         };
-        // Until U44 and the bridge arrive, `UpdateRefs` rows list only these.
+        // Kinds a row may list. Each is a no-op until its owner registers the real effect:
+        // `serve()` does so for `codeintel.enqueue` when `[codeintel]` is enabled.
         for kind in [
             "post_receive",
             "bridge_promote",
