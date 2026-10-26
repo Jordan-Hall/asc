@@ -28,8 +28,8 @@ use crate::catalogue::{self, Confirm, Context, ToolDef};
 use crate::config::{ConfirmMode, McpConfig, TextMode};
 use crate::cursor::{KeyRing, Position};
 use crate::errors::{
-    INVALID_PARAMS, INVALID_REQUEST, INTERNAL_ERROR, METHOD_NOT_FOUND, Outcome, PARSE_ERROR, RpcError, ToolError,
-    map_exit,
+    INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Outcome, PARSE_ERROR,
+    RpcError, ToolError, map_exit,
 };
 use crate::schema::Surface;
 use crate::shape::{Budget, effective_max_tokens};
@@ -94,7 +94,8 @@ impl HandlerConfig {
 #[async_trait::async_trait]
 pub trait ConfirmGate: Send + Sync + 'static {
     /// `Ok` lets the call run; an error is returned to the client as the call's result.
-    async fn confirm(&self, tool: &ToolDef, args: &Value, caller: &Caller) -> Result<(), ToolError>;
+    async fn confirm(&self, tool: &ToolDef, args: &Value, caller: &Caller)
+    -> Result<(), ToolError>;
 }
 
 /// The gate until M06: nothing is confirmed.
@@ -103,7 +104,12 @@ pub struct RefuseConfirm;
 
 #[async_trait::async_trait]
 impl ConfirmGate for RefuseConfirm {
-    async fn confirm(&self, tool: &ToolDef, _args: &Value, _caller: &Caller) -> Result<(), ToolError> {
+    async fn confirm(
+        &self,
+        tool: &ToolDef,
+        _args: &Value,
+        _caller: &Caller,
+    ) -> Result<(), ToolError> {
         Err(ToolError::needs_confirmation(format!(
             "{} needs the user's confirmation, which this client cannot give",
             tool.name
@@ -129,7 +135,9 @@ pub struct Handler<B> {
 
 impl<B> Clone for Handler<B> {
     fn clone(&self) -> Self {
-        Self { inner: Arc::clone(&self.inner) }
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
     }
 }
 
@@ -150,7 +158,14 @@ impl<B: McpBackend> Handler<B> {
     /// A handler with the fail-closed confirmation gate.
     #[must_use]
     pub fn new(backend: B, cfg: HandlerConfig, keys: KeyRing) -> Self {
-        Self::with_limits(backend, cfg, keys, Box::new(RefuseConfirm), MAX_INFLIGHT, MAX_QUEUE)
+        Self::with_limits(
+            backend,
+            cfg,
+            keys,
+            Box::new(RefuseConfirm),
+            MAX_INFLIGHT,
+            MAX_QUEUE,
+        )
     }
 
     /// A handler with its own confirmation gate and limits (tests use small limits).
@@ -180,7 +195,9 @@ impl<B: McpBackend> Handler<B> {
     /// The catalogue context this caller sees.
     fn context(&self, caller: &Caller) -> Context {
         let c = &self.inner.cfg;
-        let mut ctx = c.config.context(c.surface, &c.features, c.workspace_uploads);
+        let mut ctx = c
+            .config
+            .context(c.surface, &c.features, c.workspace_uploads);
         ctx.server_write = caller.server_write;
         ctx.server_mcp_write = c.server_mcp_write;
         ctx
@@ -197,25 +214,44 @@ impl<B: McpBackend> Handler<B> {
     }
 
     fn unregister(&self, id: &Value) {
-        self.inner.inflight.lock().unwrap_or_else(PoisonError::into_inner).remove(&id_key(id));
+        self.inner
+            .inflight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id_key(id));
     }
 
     fn cancel(&self, id: &Value) {
-        let map = self.inner.inflight.lock().unwrap_or_else(PoisonError::into_inner);
+        let map = self
+            .inner
+            .inflight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(t) = map.get(&id_key(id)) {
             t.cancel();
         }
     }
 
     fn cancel_all(&self) {
-        for t in self.inner.inflight.lock().unwrap_or_else(PoisonError::into_inner).values() {
+        for t in self
+            .inner
+            .inflight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
             t.cancel();
         }
     }
 
     /// Handles one message and returns the response, if the message was a request. A request that
     /// is cancelled gets no response.
-    pub async fn handle_message(&self, msg: Value, caller: &Caller, out: &Notifier) -> Option<Value> {
+    pub async fn handle_message(
+        &self,
+        msg: Value,
+        caller: &Caller,
+        out: &Notifier,
+    ) -> Option<Value> {
         match parse(&msg) {
             Parsed::Invalid(resp) => Some(resp),
             Parsed::Notification { method, params } => {
@@ -224,7 +260,8 @@ impl<B: McpBackend> Handler<B> {
             }
             Parsed::Request { id, method, params } => {
                 let token = self.register(&id);
-                self.run_request(id, &method, params, caller, out, token).await
+                self.run_request(id, &method, params, caller, out, token)
+                    .await
             }
         }
     }
@@ -301,8 +338,14 @@ impl<B: McpBackend> Handler<B> {
 
     /// The pre-2026 handshake, for hosts that still send `initialize`.
     fn initialize(&self, params: &Value) -> Value {
-        let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or_default();
-        let version = SUPPORTED_VERSIONS.iter().find(|v| **v == asked).unwrap_or(&SUPPORTED_VERSIONS[0]);
+        let asked = params
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let version = SUPPORTED_VERSIONS
+            .iter()
+            .find(|v| **v == asked)
+            .unwrap_or(&SUPPORTED_VERSIONS[0]);
         json!({
             "protocolVersion": version,
             "capabilities": { "tools": { "listChanged": false } },
@@ -321,7 +364,11 @@ impl<B: McpBackend> Handler<B> {
 
     fn tools_list(&self, caller: &Caller) -> Value {
         let surface = self.inner.cfg.surface;
-        let tools: Vec<Value> = self.listed(caller).iter().map(|l| catalogue::tool_json(l, surface)).collect();
+        let tools: Vec<Value> = self
+            .listed(caller)
+            .iter()
+            .map(|l| catalogue::tool_json(l, surface))
+            .collect();
         json!({ "tools": tools })
     }
 
@@ -360,7 +407,9 @@ impl<B: McpBackend> Handler<B> {
             && let Err(e) = self.check_worktree(w).await
         {
             return match e {
-                WorktreeError::Invalid => Err(RpcError::invalid_params("worktree is not a worktree of this workspace")),
+                WorktreeError::Invalid => Err(RpcError::invalid_params(
+                    "worktree is not a worktree of this workspace",
+                )),
                 WorktreeError::Backend(e) => Ok(e.to_result()),
             };
         }
@@ -377,7 +426,10 @@ impl<B: McpBackend> Handler<B> {
             return Ok(e.to_result());
         }
 
-        let max_tokens = effective_max_tokens(args.get("max_tokens").and_then(Value::as_u64), inner.cfg.config.max_tokens);
+        let max_tokens = effective_max_tokens(
+            args.get("max_tokens").and_then(Value::as_u64),
+            inner.cfg.config.max_tokens,
+        );
         let progress = progress_token(&params).map(|t| Progress::new(out.clone(), t));
         let ctx = CallContext {
             principal: caller.principal.clone(),
@@ -390,10 +442,12 @@ impl<B: McpBackend> Handler<B> {
             Ok(r) => r,
             Err(e) => return Ok(e.to_result()),
         };
-        Ok(match self.shape(name, &args, position, max_tokens, reply).await {
-            Ok(v) => v,
-            Err(e) => e.to_result(),
-        })
+        Ok(
+            match self.shape(name, &args, position, max_tokens, reply).await {
+                Ok(v) => v,
+                Err(e) => e.to_result(),
+            },
+        )
     }
 
     async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ToolError> {
@@ -414,9 +468,20 @@ impl<B: McpBackend> Handler<B> {
 
     async fn check_worktree(&self, requested: &str) -> Result<(), WorktreeError> {
         let wanted = std::fs::canonicalize(requested).map_err(|_| WorktreeError::Invalid)?;
-        let known = self.inner.backend.worktrees().await.map_err(WorktreeError::Backend)?;
-        let known_ok = known.iter().any(|k| std::fs::canonicalize(k).is_ok_and(|k| k == wanted));
-        if known_ok { Ok(()) } else { Err(WorktreeError::Invalid) }
+        let known = self
+            .inner
+            .backend
+            .worktrees()
+            .await
+            .map_err(WorktreeError::Backend)?;
+        let known_ok = known
+            .iter()
+            .any(|k| std::fs::canonicalize(k).is_ok_and(|k| k == wanted));
+        if known_ok {
+            Ok(())
+        } else {
+            Err(WorktreeError::Invalid)
+        }
     }
 
     /// Folds a backend reply into a `tools/call` result under the shared budget.
@@ -468,13 +533,23 @@ impl<B: McpBackend> Handler<B> {
                         Some(Position::Index { index }) => index,
                         _ => 0,
                     };
-                    let next = self.inner.keys.seal(tool, args, Position::Index { index: start + kept });
+                    let next = self.inner.keys.seal(
+                        tool,
+                        args,
+                        Position::Index {
+                            index: start + kept,
+                        },
+                    );
                     obj.insert("next_cursor".into(), Value::String(next));
                 }
                 Value::Object(obj)
             }
         };
-        let structured = if structured.is_object() { structured } else { json!({ "result": structured }) };
+        let structured = if structured.is_object() {
+            structured
+        } else {
+            json!({ "result": structured })
+        };
         let text = render_text(&structured, cfg.text_mode);
         Ok(json!({
             "content": [{ "type": "text", "text": text }],
@@ -514,7 +589,9 @@ impl<B: McpBackend> Handler<B> {
                 Ok(Line::Eof) => break Ok(()),
                 Ok(Line::TooLong) => {
                     let e = RpcError::new(INVALID_REQUEST, "message too large");
-                    let _ = tx.send(json!({ "jsonrpc": "2.0", "id": null, "error": e.to_json() })).await;
+                    let _ = tx
+                        .send(json!({ "jsonrpc": "2.0", "id": null, "error": e.to_json() }))
+                        .await;
                 }
                 Ok(Line::Complete) => {
                     if buf.iter().all(u8::is_ascii_whitespace) {
@@ -522,19 +599,28 @@ impl<B: McpBackend> Handler<B> {
                     }
                     let parsed = match serde_json::from_slice::<Value>(&buf) {
                         Ok(v) => parse(&v),
-                        Err(_) => Parsed::Invalid(error_response(&Value::Null, PARSE_ERROR, "parse error")),
+                        Err(_) => Parsed::Invalid(error_response(
+                            &Value::Null,
+                            PARSE_ERROR,
+                            "parse error",
+                        )),
                     };
                     match parsed {
                         Parsed::Invalid(resp) => {
                             let _ = tx.send(resp).await;
                         }
-                        Parsed::Notification { method, params } => self.notification(&method, &params),
+                        Parsed::Notification { method, params } => {
+                            self.notification(&method, &params)
+                        }
                         Parsed::Request { id, method, params } => {
                             // Register before spawning so a cancellation that follows cannot miss it.
                             let token = self.register(&id);
                             let (h, tx2, caller) = (self.clone(), tx.clone(), Arc::clone(&caller));
                             tasks.spawn(async move {
-                                if let Some(resp) = h.run_request(id, &method, params, &caller, &tx2, token).await {
+                                if let Some(resp) = h
+                                    .run_request(id, &method, params, &caller, &tx2, token)
+                                    .await
+                                {
                                     let _ = tx2.send(resp).await;
                                 }
                             });
@@ -558,8 +644,15 @@ enum WorktreeError {
 }
 
 enum Parsed {
-    Request { id: Value, method: String, params: Value },
-    Notification { method: String, params: Value },
+    Request {
+        id: Value,
+        method: String,
+        params: Value,
+    },
+    Notification {
+        method: String,
+        params: Value,
+    },
     Invalid(Value),
 }
 
@@ -569,10 +662,20 @@ fn error_response(id: &Value, code: i32, message: &str) -> Value {
 
 fn parse(msg: &Value) -> Parsed {
     let Some(obj) = msg.as_object() else {
-        return Parsed::Invalid(error_response(&Value::Null, INVALID_REQUEST, "a message must be a JSON object"));
+        return Parsed::Invalid(error_response(
+            &Value::Null,
+            INVALID_REQUEST,
+            "a message must be a JSON object",
+        ));
     };
     let id = obj.get("id").cloned();
-    let bad = |m: &str| Parsed::Invalid(error_response(id.as_ref().unwrap_or(&Value::Null), INVALID_REQUEST, m));
+    let bad = |m: &str| {
+        Parsed::Invalid(error_response(
+            id.as_ref().unwrap_or(&Value::Null),
+            INVALID_REQUEST,
+            m,
+        ))
+    };
     if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return bad("jsonrpc must be \"2.0\"");
     }
@@ -582,16 +685,24 @@ fn parse(msg: &Value) -> Parsed {
     };
     let params = obj.get("params").cloned().unwrap_or(Value::Null);
     match id {
-        Some(id) if id.is_string() || id.is_number() => {
-            Parsed::Request { id, method: method.to_owned(), params }
-        }
+        Some(id) if id.is_string() || id.is_number() => Parsed::Request {
+            id,
+            method: method.to_owned(),
+            params,
+        },
         Some(_) => bad("id must be a string or a number"),
-        None => Parsed::Notification { method: method.to_owned(), params },
+        None => Parsed::Notification {
+            method: method.to_owned(),
+            params,
+        },
     }
 }
 
 fn progress_token(params: &Value) -> Option<Value> {
-    params.pointer("/_meta/progressToken").filter(|t| t.is_string() || t.is_number()).cloned()
+    params
+        .pointer("/_meta/progressToken")
+        .filter(|t| t.is_string() || t.is_number())
+        .cloned()
 }
 
 /// Whether the call must be confirmed before it runs (SPEC 22.5).
@@ -600,7 +711,10 @@ pub fn needs_confirmation(def: &ToolDef, args: &Value, mode: ConfirmMode) -> boo
     if mode == ConfirmMode::Never {
         return false;
     }
-    let update_ref = args.get("update_ref").and_then(Value::as_str).unwrap_or_default();
+    let update_ref = args
+        .get("update_ref")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     match def.confirm {
         Confirm::Never => false,
         Confirm::Always => true,
@@ -659,12 +773,16 @@ fn check_update_ref(def: &ToolDef, args: &Value) -> Result<(), RpcError> {
     let ok = r.strip_prefix("refs/for/").is_some_and(|rest| {
         !rest.is_empty()
             && !r.contains(|c: char| c.is_control() || c == '\\' || c == ' ')
-            && rest.split('/').all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+            && rest
+                .split('/')
+                .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
     });
     if ok {
         Ok(())
     } else {
-        Err(RpcError::invalid_params("update_ref must be empty or refs/for/<branch>; branches are never written"))
+        Err(RpcError::invalid_params(
+            "update_ref must be empty or refs/for/<branch>; branches are never written",
+        ))
     }
 }
 
@@ -689,7 +807,9 @@ fn validate_args(def: &ToolDef, surface: Surface, args: &Value) -> Result<(), Rp
     let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
     for (k, v) in obj {
         match props.and_then(|p| p.get(k)) {
-            None if closed => return Err(RpcError::invalid_params(format!("unknown argument: {k}"))),
+            None if closed => {
+                return Err(RpcError::invalid_params(format!("unknown argument: {k}")));
+            }
             None => {}
             Some(s) => check_type(k, v, s)?,
         }
@@ -698,19 +818,33 @@ fn validate_args(def: &ToolDef, surface: Surface, args: &Value) -> Result<(), Rp
 }
 
 fn check_type(name: &str, v: &Value, schema: &Value) -> Result<(), RpcError> {
-    let Some(ty) = schema.get("type").and_then(Value::as_str) else { return Ok(()) };
+    let Some(ty) = schema.get("type").and_then(Value::as_str) else {
+        return Ok(());
+    };
     let ok = match ty {
         "string" => v.is_string(),
         "boolean" => v.is_boolean(),
         "integer" => {
-            v.is_u64() || (v.is_i64() && schema.get("minimum").and_then(Value::as_i64).is_none_or(|m| v.as_i64() >= Some(m)))
+            v.is_u64()
+                || (v.is_i64()
+                    && schema
+                        .get("minimum")
+                        .and_then(Value::as_i64)
+                        .is_none_or(|m| v.as_i64() >= Some(m)))
         }
         "number" => v.is_number(),
         "array" => v.is_array(),
         "object" => v.is_object(),
         _ => true,
     };
-    if ok { Ok(()) } else { Err(RpcError::new(INVALID_PARAMS, format!("argument {name} must be of type {ty}"))) }
+    if ok {
+        Ok(())
+    } else {
+        Err(RpcError::new(
+            INVALID_PARAMS,
+            format!("argument {name} must be of type {ty}"),
+        ))
+    }
 }
 
 enum Line {
@@ -721,7 +855,11 @@ enum Line {
 
 /// Reads up to a newline into `buf` without ever holding more than `cap` bytes; an over-long line
 /// is consumed to its newline and reported as [`Line::TooLong`].
-async fn read_line_capped<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>, cap: usize) -> io::Result<Line> {
+async fn read_line_capped<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> io::Result<Line> {
     let mut too_long = false;
     let mut any = false;
     loop {
@@ -751,7 +889,11 @@ async fn read_line_capped<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>,
         }
         r.consume(take);
         if found {
-            return Ok(if too_long { Line::TooLong } else { Line::Complete });
+            return Ok(if too_long {
+                Line::TooLong
+            } else {
+                Line::Complete
+            });
         }
     }
 }

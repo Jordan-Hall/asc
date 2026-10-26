@@ -25,7 +25,12 @@ mod stack_base {
 
     #[test]
     fn hostile_merge_base_is_rejected() {
-        for bad in ["abc", "master", &format!("{}\nX=1", "a".repeat(40)), &"A".repeat(40)] {
+        for bad in [
+            "abc",
+            "master",
+            &format!("{}\nX=1", "a".repeat(40)),
+            &"A".repeat(40),
+        ] {
             assert_eq!(
                 StackBase::resolve(&pr(Some(bad), "master")),
                 Err(StackBaseError::MergeBase)

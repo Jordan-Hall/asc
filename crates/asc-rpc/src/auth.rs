@@ -560,9 +560,7 @@ impl Authorizer for StaticTokens {
     }
 
     async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
-        let secret = credential
-            .ok_or(AuthError::Unauthenticated)?
-            .secret();
+        let secret = credential.ok_or(AuthError::Unauthenticated)?.secret();
         self.grants
             .get(blake3::hash(secret.expose().as_bytes()).as_bytes())
             .map(|g| g.principal.clone())
@@ -795,7 +793,10 @@ mod tests {
             auth.authenticate(bad.as_ref()).await,
             Err(AuthError::Unauthenticated)
         );
-        assert_eq!(auth.authenticate(None).await, Err(AuthError::Unauthenticated));
+        assert_eq!(
+            auth.authenticate(None).await,
+            Err(AuthError::Unauthenticated)
+        );
     }
 
     #[test]

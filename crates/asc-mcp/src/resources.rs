@@ -149,7 +149,8 @@ fn name_ok(s: &str) -> bool {
         && s != "."
         && s != ".."
         && !s.starts_with('-')
-        && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
 /// A revision or change reference: no option-like prefix, whitespace, separators or controls.
@@ -158,7 +159,9 @@ fn rev_ok(s: &str) -> bool {
         && s.len() <= 256
         && !s.starts_with('-')
         && !s.contains("..")
-        && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-' | b'@' | b'~' | b'^' | b':'))
+        && s.bytes().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-' | b'@' | b'~' | b'^' | b':')
+        })
 }
 
 fn is_full_id(rev: &str) -> bool {
@@ -181,7 +184,9 @@ fn path_of(segs: &[&str]) -> Result<String, RpcError> {
     for s in segs {
         let d = decode(s)?;
         if !component_ok(&d) {
-            return Err(bad("path in resource URI is not a plain repository-relative path"));
+            return Err(bad(
+                "path in resource URI is not a plain repository-relative path",
+            ));
         }
         parts.push(d);
     }
@@ -196,10 +201,14 @@ fn plain_path(p: &str) -> bool {
 fn parse_query(q: &str, allowed: &[&str]) -> Result<Vec<(String, String)>, RpcError> {
     let mut out: Vec<(String, String)> = Vec::new();
     for pair in q.split('&').filter(|p| !p.is_empty()) {
-        let (k, v) = pair.split_once('=').ok_or_else(|| bad("malformed query in resource URI"))?;
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| bad("malformed query in resource URI"))?;
         let k = decode(k)?;
         if !allowed.contains(&k.as_str()) || out.iter().any(|(e, _)| *e == k) {
-            return Err(bad("unsupported or repeated query parameter in resource URI"));
+            return Err(bad(
+                "unsupported or repeated query parameter in resource URI",
+            ));
         }
         out.push((k, decode(v)?));
     }
@@ -218,12 +227,20 @@ fn ws_ok(ws: &str) -> bool {
 }
 
 fn no_query(q: Option<&str>) -> Result<(), RpcError> {
-    if q.is_some() { Err(bad("this resource takes no query")) } else { Ok(()) }
+    if q.is_some() {
+        Err(bad("this resource takes no query"))
+    } else {
+        Ok(())
+    }
 }
 
 fn rev_of(s: &str) -> Result<String, RpcError> {
     let r = decode(s)?;
-    if rev_ok(&r) { Ok(r) } else { Err(bad("invalid revision in resource URI")) }
+    if rev_ok(&r) {
+        Ok(r)
+    } else {
+        Err(bad("invalid revision in resource URI"))
+    }
 }
 
 impl Resource {
@@ -235,7 +252,9 @@ impl Resource {
         if uri.len() > MAX_URI_BYTES || uri.contains('#') {
             return Err(bad("unsupported resource URI"));
         }
-        let rest = uri.strip_prefix(SCHEME).ok_or_else(|| bad("resource URIs use the asc:// scheme"))?;
+        let rest = uri
+            .strip_prefix(SCHEME)
+            .ok_or_else(|| bad("resource URIs use the asc:// scheme"))?;
         let (path_part, query) = match rest.split_once('?') {
             Some((p, q)) => (p, Some(q)),
             None => (rest, None),
@@ -269,7 +288,13 @@ impl Resource {
                 {
                     return Err(bad("start_line is after end_line"));
                 }
-                Ok(Self::Blob { repo, rev: rev_of(segs[3])?, path: path_of(&segs[4..])?, start_line, end_line })
+                Ok(Self::Blob {
+                    repo,
+                    rev: rev_of(segs[3])?,
+                    path: path_of(&segs[4..])?,
+                    start_line,
+                    end_line,
+                })
             }
             ("tree", n) if n >= 4 => {
                 let mut after = None;
@@ -285,15 +310,26 @@ impl Resource {
                 } else {
                     &segs[4..]
                 };
-                Ok(Self::Tree { repo, rev: rev_of(segs[3])?, path: path_of(tail)?, after })
+                Ok(Self::Tree {
+                    repo,
+                    rev: rev_of(segs[3])?,
+                    path: path_of(tail)?,
+                    after,
+                })
             }
             ("commit", 4) => {
                 no_query(query)?;
-                Ok(Self::Commit { repo, rev: rev_of(segs[3])? })
+                Ok(Self::Commit {
+                    repo,
+                    rev: rev_of(segs[3])?,
+                })
             }
             ("change", 4) => {
                 no_query(query)?;
-                Ok(Self::Change { repo, change: rev_of(segs[3])? })
+                Ok(Self::Change {
+                    repo,
+                    change: rev_of(segs[3])?,
+                })
             }
             _ => Err(bad("unsupported resource URI")),
         }
@@ -312,7 +348,10 @@ impl Resource {
             ("smartlog", 3) => no_query(query).map(|()| Self::WsSmartlog { ws }),
             ("file", n) if n > 3 => {
                 no_query(query)?;
-                Ok(Self::WsFile { ws, path: path_of(&segs[3..])? })
+                Ok(Self::WsFile {
+                    ws,
+                    path: path_of(&segs[3..])?,
+                })
             }
             _ => Err(bad("unsupported resource URI")),
         }
@@ -324,7 +363,11 @@ impl Resource {
     pub fn ttl_ms(&self) -> u64 {
         match self {
             Self::Blob { rev, .. } | Self::Tree { rev, .. } | Self::Commit { rev, .. } => {
-                if is_full_id(rev) { TTL_IMMUTABLE_MS } else { TTL_MOVABLE_MS }
+                if is_full_id(rev) {
+                    TTL_IMMUTABLE_MS
+                } else {
+                    TTL_MOVABLE_MS
+                }
             }
             Self::Change { .. } => TTL_MOVABLE_MS,
             Self::WsStatus { .. } | Self::WsSmartlog { .. } | Self::WsFile { .. } => 0,
@@ -348,7 +391,13 @@ impl Resource {
             a
         }
         match self {
-            Self::Blob { repo, rev, path, start_line, end_line } => {
+            Self::Blob {
+                repo,
+                rev,
+                path,
+                start_line,
+                end_line,
+            } => {
                 let mut a = json!({ "rev": rev, "path": path });
                 if let Some(s) = start_line {
                     a["start_line"] = json!(s);
@@ -358,7 +407,12 @@ impl Resource {
                 }
                 ("read_file", with_repo(repo, a))
             }
-            Self::Tree { repo, rev, path, after } => {
+            Self::Tree {
+                repo,
+                rev,
+                path,
+                after,
+            } => {
                 let mut a = json!({ "rev": rev, "path": path, "recursive": false });
                 if let Some(x) = after {
                     a["after"] = json!(x);
@@ -366,10 +420,16 @@ impl Resource {
                 ("ls_tree", with_repo(repo, a))
             }
             Self::Commit { repo, rev } => ("show", with_repo(repo, json!({ "rev": rev }))),
-            Self::Change { repo, change } => ("change_info", with_repo(repo, json!({ "changes": [change] }))),
+            Self::Change { repo, change } => (
+                "change_info",
+                with_repo(repo, json!({ "changes": [change] })),
+            ),
             Self::WsStatus { ws } => ("status", json!({ "worktree": ws })),
             Self::WsSmartlog { ws } => ("smartlog", json!({ "worktree": ws })),
-            Self::WsFile { ws, path } => ("read_file", json!({ "worktree": ws, "rev": "", "path": path })),
+            Self::WsFile { ws, path } => (
+                "read_file",
+                json!({ "worktree": ws, "rev": "", "path": path }),
+            ),
         }
     }
 }
@@ -397,7 +457,9 @@ pub fn encode_segment(s: &str) -> String {
 /// `ws` is the launch worktree; a server without a workspace passes `None` and lists nothing.
 #[must_use]
 pub fn list(ws: Option<&str>) -> Value {
-    let Some(ws) = ws else { return json!({ "resources": [] }) };
+    let Some(ws) = ws else {
+        return json!({ "resources": [] });
+    };
     let enc = encode_segment(ws);
     json!({ "resources": [
         { "uri": format!("asc://ws/{enc}/status"), "name": "status",
@@ -412,9 +474,7 @@ pub fn list(ws: Option<&str>) -> Value {
 /// The `resources/templates/list` result (SPEC 22.3.5 table).
 #[must_use]
 pub fn templates() -> Value {
-    let t = |tpl: &str, name: &str, desc: &str| {
-        json!({ "uriTemplate": tpl, "name": name, "description": desc, "annotations": annotations() })
-    };
+    let t = |tpl: &str, name: &str, desc: &str| json!({ "uriTemplate": tpl, "name": name, "description": desc, "annotations": annotations() });
     json!({ "resourceTemplates": [
         t("asc://{owner}/{name}/blob/{rev}/{+path}{?start_line,end_line}", "blob",
           "File text at a revision (read_file rules; binary files are refused)."),
@@ -428,7 +488,13 @@ pub fn templates() -> Value {
 }
 
 fn call_ctx(budget_bytes: u64, cancel: &CancellationToken) -> CallContext {
-    CallContext { principal: None, budget_bytes, position: None, cancel: cancel.clone(), progress: None }
+    CallContext {
+        principal: None,
+        budget_bytes,
+        position: None,
+        cancel: cancel.clone(),
+        progress: None,
+    }
 }
 
 /// Merges a message stream (repeated fields concatenated, scalars last-wins) within `budget`.
@@ -445,7 +511,9 @@ async fn collect(reply: Reply, budget: u64) -> Result<Value, ToolError> {
                 let m = m?;
                 used = used.saturating_add(m.to_string().len() as u64);
                 if used > budget {
-                    return Err(ToolError::budget("the resource is larger than the read budget; use a range or a page"));
+                    return Err(ToolError::budget(
+                        "the resource is larger than the read budget; use a range or a page",
+                    ));
                 }
                 if let Value::Object(o) = m {
                     for (k, v) in o {
@@ -467,7 +535,14 @@ async fn check_ws<B: McpBackend>(backend: &B, ws: &str) -> Result<(), ToolError>
     let refuse = || ToolError::new("INVALID_ARGUMENT", "ws is not a worktree of this workspace");
     let wanted = std::fs::canonicalize(Path::new(ws)).map_err(|_| refuse())?;
     let known = backend.worktrees().await?;
-    if known.iter().any(|k| std::fs::canonicalize(k).is_ok_and(|k| k == wanted)) { Ok(()) } else { Err(refuse()) }
+    if known
+        .iter()
+        .any(|k| std::fs::canonicalize(k).is_ok_and(|k| k == wanted))
+    {
+        Ok(())
+    } else {
+        Err(refuse())
+    }
 }
 
 /// Errors of [`read`]: a malformed URI is a JSON-RPC error, a failed read a tool error.
@@ -496,14 +571,28 @@ pub async fn read<B: McpBackend>(
         check_ws(backend, ws).await.map_err(ReadError::Tool)?;
     }
     let (tool, args) = res.tool_call();
-    let reply = backend.call(tool, &args, &call_ctx(budget_bytes, cancel)).await.map_err(ReadError::Tool)?;
-    let v = collect(reply, budget_bytes).await.map_err(ReadError::Tool)?;
+    let reply = backend
+        .call(tool, &args, &call_ctx(budget_bytes, cancel))
+        .await
+        .map_err(ReadError::Tool)?;
+    let v = collect(reply, budget_bytes)
+        .await
+        .map_err(ReadError::Tool)?;
     let (text, mime) = match &res {
         Resource::Blob { .. } | Resource::WsFile { .. } => {
             if v.get("binary").and_then(Value::as_bool).unwrap_or(false) {
-                return Err(ReadError::Tool(ToolError::new("BINARY_FILE", "binary files are not served as resources")));
+                return Err(ReadError::Tool(ToolError::new(
+                    "BINARY_FILE",
+                    "binary files are not served as resources",
+                )));
             }
-            (v.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(), "text/plain")
+            (
+                v.get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                "text/plain",
+            )
         }
         _ => (v.to_string(), "application/json"),
     };
@@ -527,8 +616,13 @@ pub async fn complete<B: McpBackend>(
     budget_bytes: u64,
     cancel: &CancellationToken,
 ) -> Result<Value, RpcError> {
-    let arg = params.get("argument").ok_or_else(|| bad("argument is required"))?;
-    let name = arg.get("name").and_then(Value::as_str).ok_or_else(|| bad("argument.name is required"))?;
+    let arg = params
+        .get("argument")
+        .ok_or_else(|| bad("argument is required"))?;
+    let name = arg
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("argument.name is required"))?;
     let typed = arg.get("value").and_then(Value::as_str).unwrap_or("");
     if typed.len() > 1024 || typed.chars().any(char::is_control) {
         return Err(bad("argument.value is invalid"));
@@ -536,16 +630,24 @@ pub async fn complete<B: McpBackend>(
     if params.pointer("/ref/type").and_then(Value::as_str) != Some("ref/resource") {
         return Err(bad("only ref/resource completion is supported"));
     }
-    let ctx_arg = |k: &str| params.pointer(&format!("/context/arguments/{k}")).and_then(Value::as_str);
+    let ctx_arg = |k: &str| {
+        params
+            .pointer(&format!("/context/arguments/{k}"))
+            .and_then(Value::as_str)
+    };
     let mut values: Vec<String> = Vec::new();
     match name {
         "rev" if "HEAD".starts_with(typed) => values.push("HEAD".to_owned()),
         "path" => {
-            let rev = ctx_arg("rev").filter(|r| rev_ok(r)).ok_or_else(|| bad("complete rev before path"))?;
+            let rev = ctx_arg("rev")
+                .filter(|r| rev_ok(r))
+                .ok_or_else(|| bad("complete rev before path"))?;
             let (dir, prefix) = typed.rsplit_once('/').unwrap_or(("", typed));
             // `prefix` only filters names and is never joined into a path; `dir` is the path.
             if !plain_path(dir) {
-                return Err(bad("argument.value is not a plain repository-relative path"));
+                return Err(bad(
+                    "argument.value is not a plain repository-relative path",
+                ));
             }
             let mut a = json!({ "rev": rev, "path": dir, "recursive": false, "limit": 1000 });
             if let (Some(o), Some(n)) = (ctx_arg("owner"), ctx_arg("name")) {
@@ -554,16 +656,39 @@ pub async fn complete<B: McpBackend>(
                 }
                 a["repo"] = json!(format!("{o}/{n}"));
             }
-            let reply = backend.call("ls_tree", &a, &call_ctx(budget_bytes, cancel)).await.map_err(|e| bad(&e.message))?;
-            let v = collect(reply, budget_bytes).await.map_err(|e| bad(&e.message))?;
-            for e in v.get("entries").and_then(Value::as_array).into_iter().flatten() {
-                let Some(n) = e.get("name").or_else(|| e.get("path")).and_then(Value::as_str) else { continue };
+            let reply = backend
+                .call("ls_tree", &a, &call_ctx(budget_bytes, cancel))
+                .await
+                .map_err(|e| bad(&e.message))?;
+            let v = collect(reply, budget_bytes)
+                .await
+                .map_err(|e| bad(&e.message))?;
+            for e in v
+                .get("entries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(n) = e
+                    .get("name")
+                    .or_else(|| e.get("path"))
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
                 let n = n.rsplit('/').next().unwrap_or(n);
                 if !component_ok(n) || !n.starts_with(prefix) {
                     continue;
                 }
-                let is_dir = matches!(e.get("type").and_then(Value::as_str), Some("tree" | "dir" | "directory"));
-                let full = if dir.is_empty() { n.to_owned() } else { format!("{dir}/{n}") };
+                let is_dir = matches!(
+                    e.get("type").and_then(Value::as_str),
+                    Some("tree" | "dir" | "directory")
+                );
+                let full = if dir.is_empty() {
+                    n.to_owned()
+                } else {
+                    format!("{dir}/{n}")
+                };
                 values.push(if is_dir { format!("{full}/") } else { full });
             }
         }
@@ -572,7 +697,9 @@ pub async fn complete<B: McpBackend>(
     values.sort();
     let total = values.len();
     values.truncate(MAX_COMPLETIONS);
-    Ok(json!({ "completion": { "values": values, "total": total, "hasMore": total > MAX_COMPLETIONS } }))
+    Ok(
+        json!({ "completion": { "values": values, "total": total, "hasMore": total > MAX_COMPLETIONS } }),
+    )
 }
 
 #[cfg(test)]
@@ -592,15 +719,29 @@ mod tests {
 
     impl Fake {
         fn new(reply: Value) -> Self {
-            Self { reply, calls: Mutex::new(vec![]), worktrees: vec![] }
+            Self {
+                reply,
+                calls: Mutex::new(vec![]),
+                worktrees: vec![],
+            }
         }
     }
 
     #[async_trait::async_trait]
     impl McpBackend for Fake {
-        async fn call(&self, tool: &str, args: &Value, _: &CallContext) -> Result<Reply, ToolError> {
-            self.calls.lock().unwrap().push((tool.to_owned(), args.clone()));
-            Ok(Reply::Messages(Box::pin(stream::iter(vec![Ok(self.reply.clone())]))))
+        async fn call(
+            &self,
+            tool: &str,
+            args: &Value,
+            _: &CallContext,
+        ) -> Result<Reply, ToolError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((tool.to_owned(), args.clone()));
+            Ok(Reply::Messages(Box::pin(stream::iter(vec![Ok(self
+                .reply
+                .clone())]))))
         }
 
         async fn worktrees(&self) -> Result<Vec<PathBuf>, ToolError> {
@@ -609,7 +750,10 @@ mod tests {
     }
 
     fn rt<F: std::future::Future>(f: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(f)
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
     }
 
     #[test]
@@ -628,8 +772,12 @@ mod tests {
     #[test]
     fn templates_match_spec() {
         let t = templates();
-        let uris: Vec<&str> =
-            t["resourceTemplates"].as_array().unwrap().iter().map(|x| x["uriTemplate"].as_str().unwrap()).collect();
+        let uris: Vec<&str> = t["resourceTemplates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["uriTemplate"].as_str().unwrap())
+            .collect();
         assert_eq!(uris.len(), 7);
         assert!(uris.contains(&"asc://{owner}/{name}/blob/{rev}/{+path}{?start_line,end_line}"));
         assert!(uris.contains(&"asc://ws/{ws}/file/{+path}"));
@@ -638,7 +786,10 @@ mod tests {
     #[test]
     fn parses_each_shape() {
         let id = "a".repeat(40);
-        let r = Resource::parse(&format!("asc://local/repo/blob/{id}/src/a%20b.rs?start_line=2&end_line=9")).unwrap();
+        let r = Resource::parse(&format!(
+            "asc://local/repo/blob/{id}/src/a%20b.rs?start_line=2&end_line=9"
+        ))
+        .unwrap();
         assert_eq!(r.ttl_ms(), TTL_IMMUTABLE_MS);
         let (tool, args) = r.tool_call();
         assert_eq!(tool, "read_file");
@@ -648,10 +799,19 @@ mod tests {
         assert_eq!(r.ttl_ms(), TTL_MOVABLE_MS);
         assert_eq!(r.tool_call().1["path"], "");
         assert_eq!(r.tool_call().1["recursive"], false);
-        assert!(matches!(Resource::parse("asc://o/n/commit/HEAD~1").unwrap(), Resource::Commit { .. }));
-        assert!(matches!(Resource::parse("asc://o/n/change/abc").unwrap(), Resource::Change { .. }));
+        assert!(matches!(
+            Resource::parse("asc://o/n/commit/HEAD~1").unwrap(),
+            Resource::Commit { .. }
+        ));
+        assert!(matches!(
+            Resource::parse("asc://o/n/change/abc").unwrap(),
+            Resource::Change { .. }
+        ));
         assert_eq!(Resource::parse("asc://ws/w/status").unwrap().ttl_ms(), 0);
-        assert!(matches!(Resource::parse("asc://ws/w/file/a/b").unwrap(), Resource::WsFile { .. }));
+        assert!(matches!(
+            Resource::parse("asc://ws/w/file/a/b").unwrap(),
+            Resource::WsFile { .. }
+        ));
         assert!(matches!(
             Resource::parse("asc://o/n/tree/main/d?after=x").unwrap(),
             Resource::Tree { after: Some(_), .. }
@@ -692,7 +852,13 @@ mod tests {
     #[test]
     fn blob_read_returns_text_with_ttl_and_scope() {
         let b = Fake::new(json!({ "content": "hello\n" }));
-        let v = rt(read(&b, "asc://o/n/blob/main/a.txt", 1000, &CancellationToken::new())).unwrap();
+        let v = rt(read(
+            &b,
+            "asc://o/n/blob/main/a.txt",
+            1000,
+            &CancellationToken::new(),
+        ))
+        .unwrap();
         let c = &v["contents"][0];
         assert_eq!(c["text"], "hello\n");
         assert_eq!(c["_meta"]["ttlMs"], 5000);
@@ -704,21 +870,39 @@ mod tests {
     #[test]
     fn binary_blob_is_refused() {
         let b = Fake::new(json!({ "binary": true, "content": "AAEC" }));
-        let e = rt(read(&b, "asc://o/n/blob/main/a.bin", 1000, &CancellationToken::new())).unwrap_err();
+        let e = rt(read(
+            &b,
+            "asc://o/n/blob/main/a.bin",
+            1000,
+            &CancellationToken::new(),
+        ))
+        .unwrap_err();
         assert!(matches!(e, ReadError::Tool(t) if t.code == "BINARY_FILE"));
     }
 
     #[test]
     fn oversize_read_hits_the_budget() {
         let b = Fake::new(json!({ "content": "x".repeat(500) }));
-        let e = rt(read(&b, "asc://o/n/blob/main/a", 100, &CancellationToken::new())).unwrap_err();
+        let e = rt(read(
+            &b,
+            "asc://o/n/blob/main/a",
+            100,
+            &CancellationToken::new(),
+        ))
+        .unwrap_err();
         assert!(matches!(e, ReadError::Tool(_)));
     }
 
     #[test]
     fn unknown_worktree_is_refused_before_the_backend() {
         let b = Fake::new(json!({}));
-        let e = rt(read(&b, "asc://ws/%2Fnope%2Fnot-a-dir/status", 1000, &CancellationToken::new())).unwrap_err();
+        let e = rt(read(
+            &b,
+            "asc://ws/%2Fnope%2Fnot-a-dir/status",
+            1000,
+            &CancellationToken::new(),
+        ))
+        .unwrap_err();
         assert!(matches!(e, ReadError::Tool(_)));
         assert!(b.calls.lock().unwrap().is_empty());
         // A real directory that is not a listed worktree is refused too.
@@ -734,7 +918,9 @@ mod tests {
 
     #[test]
     fn completion_is_limited_to_50() {
-        let entries: Vec<Value> = (0..120).map(|i| json!({ "name": format!("f{i:03}"), "type": "blob" })).collect();
+        let entries: Vec<Value> = (0..120)
+            .map(|i| json!({ "name": format!("f{i:03}"), "type": "blob" }))
+            .collect();
         let b = Fake::new(json!({ "entries": entries }));
         let p = json!({
             "ref": { "type": "ref/resource", "uri": "asc://{owner}/{name}/blob/{rev}/{+path}" },
@@ -742,7 +928,10 @@ mod tests {
             "context": { "arguments": { "owner": "o", "name": "n", "rev": "main" } },
         });
         let v = rt(complete(&b, &p, 1_000_000, &CancellationToken::new())).unwrap();
-        assert_eq!(v["completion"]["values"].as_array().unwrap().len(), MAX_COMPLETIONS);
+        assert_eq!(
+            v["completion"]["values"].as_array().unwrap().len(),
+            MAX_COMPLETIONS
+        );
         assert_eq!(v["completion"]["total"], 120);
         assert_eq!(v["completion"]["hasMore"], true);
         assert_eq!(v["completion"]["values"][0], "src/f000");
@@ -759,8 +948,17 @@ mod tests {
                 "context": { "arguments": { "rev": rev } },
             })
         };
-        for (v, r) in [("../x", "main"), ("a/../x", "main"), ("a/", "-x"), ("a\nb", "main"), ("a/", "")] {
-            assert!(rt(complete(&b, &mk(v, r), 1000, &CancellationToken::new())).is_err(), "{v:?} {r:?}");
+        for (v, r) in [
+            ("../x", "main"),
+            ("a/../x", "main"),
+            ("a/", "-x"),
+            ("a\nb", "main"),
+            ("a/", ""),
+        ] {
+            assert!(
+                rt(complete(&b, &mk(v, r), 1000, &CancellationToken::new())).is_err(),
+                "{v:?} {r:?}"
+            );
         }
         assert!(b.calls.lock().unwrap().is_empty());
         let rev = json!({ "ref": { "type": "ref/resource", "uri": "x" }, "argument": { "name": "rev", "value": "HE" } });

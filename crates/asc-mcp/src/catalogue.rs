@@ -225,9 +225,15 @@ impl Context {
     /// Enables every read toolset and `search`'s feature-gated set.
     #[must_use]
     pub fn with_all_reads(mut self) -> Self {
-        self.toolsets = [Toolset::Core, Toolset::History, Toolset::Stack, Toolset::Projects, Toolset::Search]
-            .into_iter()
-            .collect();
+        self.toolsets = [
+            Toolset::Core,
+            Toolset::History,
+            Toolset::Stack,
+            Toolset::Projects,
+            Toolset::Search,
+        ]
+        .into_iter()
+        .collect();
         self
     }
 
@@ -261,7 +267,8 @@ impl Context {
         } else if !self.toolsets.contains(&def.toolset) {
             return false;
         }
-        def.requires_feature.is_none_or(|f| self.features.contains(f))
+        def.requires_feature
+            .is_none_or(|f| self.features.contains(f))
     }
 }
 
@@ -325,7 +332,10 @@ pub fn tool_json(listed: &Listed, surface: Surface) -> Value {
 /// The `tools/list` result body, `{"tools": [...]}`.
 #[must_use]
 pub fn tools_list_json(ctx: &Context) -> Value {
-    let list: Vec<Value> = tools(ctx).iter().map(|l| tool_json(l, ctx.surface)).collect();
+    let list: Vec<Value> = tools(ctx)
+        .iter()
+        .map(|l| tool_json(l, ctx.surface))
+        .collect();
     json!({ "tools": list })
 }
 
@@ -382,11 +392,24 @@ mod tests {
         assert_eq!(
             names(&ctx),
             [
-                "status", "diff", "log", "show", "read_file", "ls_tree", "grep", "blame",
-                "smartlog", "change_info", "affected"
+                "status",
+                "diff",
+                "log",
+                "show",
+                "read_file",
+                "ls_tree",
+                "grep",
+                "blame",
+                "smartlog",
+                "change_info",
+                "affected"
             ]
         );
-        assert!(tools(&ctx).iter().all(|l| l.ann.read_only && l.def.toolset == Toolset::Core));
+        assert!(
+            tools(&ctx)
+                .iter()
+                .all(|l| l.ann.read_only && l.def.toolset == Toolset::Core)
+        );
         // The server has the same eleven (SPEC 22.3.2 lists `smartlog` for L only).
         let http = names(&Context::new(Surface::Http));
         assert!(http.contains(&"diff") && http.contains(&"blame") && http.contains(&"affected"));
@@ -409,11 +432,23 @@ mod tests {
     fn names_are_valid_and_unique_per_surface() {
         let mut seen = BTreeSet::new();
         for d in TOOLS {
-            assert!(!d.name.is_empty() && d.name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'), "{}", d.name);
+            assert!(
+                !d.name.is_empty() && d.name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{}",
+                d.name
+            );
             for s in [Surface::Stdio, Surface::Http] {
                 if d.on(s) {
-                    assert!(seen.insert((d.name, s as u8)), "duplicate {} on {s:?}", d.name);
-                    assert!(d.input_schema(s).is_some_and(|t| t.starts_with('{')), "{} input", d.name);
+                    assert!(
+                        seen.insert((d.name, s as u8)),
+                        "duplicate {} on {s:?}",
+                        d.name
+                    );
+                    assert!(
+                        d.input_schema(s).is_some_and(|t| t.starts_with('{')),
+                        "{} input",
+                        d.name
+                    );
                 }
             }
             assert!(d.output.starts_with('{'), "{} output", d.name);
@@ -424,14 +459,20 @@ mod tests {
     fn schemas_are_valid_json_and_self_contained() {
         for d in TOOLS {
             for s in [Surface::Stdio, Surface::Http] {
-                let Some(text) = d.input_schema(s) else { continue };
+                let Some(text) = d.input_schema(s) else {
+                    continue;
+                };
                 for schema in [text, d.output] {
                     let v: Value = serde_json::from_str(schema).expect("schema is JSON");
                     assert_eq!(v["type"], "object", "{}", d.name);
                     let defs = v.get("$defs").and_then(Value::as_object);
                     for part in schema.split("\"$ref\":\"#/$defs/").skip(1) {
                         let key = part.split('"').next().unwrap();
-                        assert!(defs.is_some_and(|m| m.contains_key(key)), "{}: dangling $ref {key}", d.name);
+                        assert!(
+                            defs.is_some_and(|m| m.contains_key(key)),
+                            "{}: dangling $ref {key}",
+                            d.name
+                        );
                     }
                 }
             }
@@ -444,7 +485,11 @@ mod tests {
         let v: Value = serde_json::from_str(status.input_stdio).unwrap();
         let p = &v["properties"];
         assert!(p.get("ws_id").is_none() && p.get("ignored").is_none());
-        assert!(p.get("worktree").is_some() && p.get("max_tokens").is_some() && p.get("cursor").is_some());
+        assert!(
+            p.get("worktree").is_some()
+                && p.get("max_tokens").is_some()
+                && p.get("cursor").is_some()
+        );
         assert_eq!(p["max_files"]["default"], 500);
         assert_eq!(p["max_files"]["maximum"], 5000);
 
@@ -489,7 +534,15 @@ mod tests {
         assert_eq!(
             local,
             [
-                "stage", "create", "modify", "absorb", "restack", "undo", "redo", "hide", "unhide",
+                "stage",
+                "create",
+                "modify",
+                "absorb",
+                "restack",
+                "undo",
+                "redo",
+                "hide",
+                "unhide",
                 "worktree_create"
             ]
         );
@@ -510,7 +563,10 @@ mod tests {
         let stage = listed.iter().find(|l| l.def.name == "stage").unwrap();
         assert!(!stage.ann.open_world);
         ctx.workspace_uploads = false;
-        let local_create = tools(&ctx).into_iter().find(|l| l.def.name == "create").unwrap();
+        let local_create = tools(&ctx)
+            .into_iter()
+            .find(|l| l.def.name == "create")
+            .unwrap();
         assert!(!local_create.ann.open_world);
     }
 
@@ -532,7 +588,10 @@ mod tests {
         ctx.server_write = true;
         assert_eq!(names(&ctx), ["submit", "rebase", "restack"]);
         ctx.server_mcp_write = true;
-        assert_eq!(names(&ctx), ["commit", "submit", "rebase", "restack", "land"]);
+        assert_eq!(
+            names(&ctx),
+            ["commit", "submit", "rebase", "restack", "land"]
+        );
     }
 
     #[test]
@@ -540,10 +599,16 @@ mod tests {
         let ann = |name: &str, s| find(name, s).unwrap().ann;
         assert!(ann("undo", Surface::Stdio).destructive);
         assert!(!ann("redo", Surface::Stdio).destructive);
-        assert!(ann("submit", Surface::Stdio).destructive && ann("submit", Surface::Stdio).open_world);
+        assert!(
+            ann("submit", Surface::Stdio).destructive && ann("submit", Surface::Stdio).open_world
+        );
         assert!(ann("sync", Surface::Stdio).open_world && !ann("sync", Surface::Stdio).destructive);
-        assert!(ann("stage", Surface::Stdio).idempotent && !ann("stage", Surface::Stdio).destructive);
-        assert!(!ann("create", Surface::Stdio).destructive && !ann("create", Surface::Stdio).idempotent);
+        assert!(
+            ann("stage", Surface::Stdio).idempotent && !ann("stage", Surface::Stdio).destructive
+        );
+        assert!(
+            !ann("create", Surface::Stdio).destructive && !ann("create", Surface::Stdio).idempotent
+        );
         let list = tools_list_json(&Context::new(Surface::Stdio));
         for t in list["tools"].as_array().unwrap() {
             assert_eq!(t["annotations"]["readOnlyHint"], true);
@@ -553,13 +618,34 @@ mod tests {
 
     #[test]
     fn confirm_rules_match_the_spec_table() {
-        assert_eq!(find("submit", Surface::Stdio).unwrap().confirm, Confirm::Always);
-        assert_eq!(find("submit", Surface::Http).unwrap().confirm, Confirm::Always);
-        assert_eq!(find("undo", Surface::Stdio).unwrap().confirm, Confirm::Config);
-        assert_eq!(find("sync", Surface::Stdio).unwrap().confirm, Confirm::Field("delete_merged"));
-        assert_eq!(find("commit", Surface::Http).unwrap().confirm, Confirm::RefsFor);
-        assert_eq!(find("rebase", Surface::Http).unwrap().confirm, Confirm::RefsApply);
-        assert_eq!(find("create", Surface::Stdio).unwrap().confirm, Confirm::Never);
+        assert_eq!(
+            find("submit", Surface::Stdio).unwrap().confirm,
+            Confirm::Always
+        );
+        assert_eq!(
+            find("submit", Surface::Http).unwrap().confirm,
+            Confirm::Always
+        );
+        assert_eq!(
+            find("undo", Surface::Stdio).unwrap().confirm,
+            Confirm::Config
+        );
+        assert_eq!(
+            find("sync", Surface::Stdio).unwrap().confirm,
+            Confirm::Field("delete_merged")
+        );
+        assert_eq!(
+            find("commit", Surface::Http).unwrap().confirm,
+            Confirm::RefsFor
+        );
+        assert_eq!(
+            find("rebase", Surface::Http).unwrap().confirm,
+            Confirm::RefsApply
+        );
+        assert_eq!(
+            find("create", Surface::Stdio).unwrap().confirm,
+            Confirm::Never
+        );
     }
 
     #[test]
@@ -574,17 +660,28 @@ mod tests {
     #[test]
     fn listing_is_deterministic_and_converts_to_rmcp() {
         let ctx = Context::new(Surface::Stdio);
-        assert_eq!(tools_list_json(&ctx).to_string(), tools_list_json(&ctx).to_string());
+        assert_eq!(
+            tools_list_json(&ctx).to_string(),
+            tools_list_json(&ctx).to_string()
+        );
         let rmcp_tools = tools_list(&ctx);
         assert_eq!(rmcp_tools.len(), 11);
-        assert!(rmcp_tools.iter().all(|t| t.output_schema.is_some() && t.annotations.is_some()));
+        assert!(
+            rmcp_tools
+                .iter()
+                .all(|t| t.output_schema.is_some() && t.annotations.is_some())
+        );
     }
 
     #[test]
     fn hostile_text_cannot_reach_a_description() {
         // Descriptions are static strings from tools.toml; none is built from repository data.
         for d in TOOLS {
-            assert!(!d.description.is_empty() && d.description.len() < 400, "{}", d.name);
+            assert!(
+                !d.description.is_empty() && d.description.len() < 400,
+                "{}",
+                d.name
+            );
             assert!(!d.description.contains('\n'), "{}", d.name);
         }
     }
@@ -622,11 +719,17 @@ mod tests {
 
     #[test]
     fn snapshot_write_stdio() {
-        snapshot("tools_list_write_stdio", &write_ctx(Surface::Stdio, WriteLevel::Remote));
+        snapshot(
+            "tools_list_write_stdio",
+            &write_ctx(Surface::Stdio, WriteLevel::Remote),
+        );
     }
 
     #[test]
     fn snapshot_write_http() {
-        snapshot("tools_list_write_http", &write_ctx(Surface::Http, WriteLevel::None));
+        snapshot(
+            "tools_list_write_http",
+            &write_ctx(Surface::Http, WriteLevel::None),
+        );
     }
 }

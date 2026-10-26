@@ -53,7 +53,10 @@ impl RpcError {
     /// An error with `code` and a redacted `message`.
     #[must_use]
     pub fn new(code: i32, message: impl AsRef<str>) -> Self {
-        Self { code, message: redact(message.as_ref()) }
+        Self {
+            code,
+            message: redact(message.as_ref()),
+        }
     }
 
     /// -32602.
@@ -95,7 +98,13 @@ impl ToolError {
     /// An error with a code and message.
     #[must_use]
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into(), paths: vec![], conflicts: vec![], retry_after_ms: None }
+        Self {
+            code: code.into(),
+            message: message.into(),
+            paths: vec![],
+            conflicts: vec![],
+            retry_after_ms: None,
+        }
     }
 
     /// `NEEDS_CONFIRMATION`.
@@ -119,7 +128,10 @@ impl ToolError {
     /// `RATE_LIMITED` with a retry hint.
     #[must_use]
     pub fn rate_limited(message: impl Into<String>, retry_after_ms: u64) -> Self {
-        Self { retry_after_ms: Some(retry_after_ms), ..Self::new(code::RATE_LIMITED, message) }
+        Self {
+            retry_after_ms: Some(retry_after_ms),
+            ..Self::new(code::RATE_LIMITED, message)
+        }
     }
 
     /// The server is full: 8 calls run and 32 wait (SPEC 22.5, bounded memory).
@@ -157,7 +169,11 @@ impl ToolError {
     #[must_use]
     pub fn to_result(&self) -> Value {
         let err = self.to_json();
-        let text = format!("{}: {}", self.code, err["message"].as_str().unwrap_or_default());
+        let text = format!(
+            "{}: {}",
+            self.code,
+            err["message"].as_str().unwrap_or_default()
+        );
         json!({
             "content": [{ "type": "text", "text": text }],
             "structuredContent": { "error": err },
@@ -188,7 +204,10 @@ pub fn map_exit(exit_code: i32, mut result: Value) -> Outcome {
             let message = result
                 .pointer("/error/message")
                 .and_then(Value::as_str)
-                .map_or_else(|| format!("the command failed with exit code {exit_code}"), str::to_owned);
+                .map_or_else(
+                    || format!("the command failed with exit code {exit_code}"),
+                    str::to_owned,
+                );
             let code = result
                 .pointer("/error/code")
                 .and_then(Value::as_str)
@@ -241,7 +260,10 @@ pub fn redact(text: &str) -> String {
         if secret_flag(&lower) || lower == "--header" {
             mask_next = true;
             out.push(w.to_owned());
-        } else if let Some((flag, _)) = w.split_once('=').filter(|(f, _)| secret_flag(&f.to_ascii_lowercase())) {
+        } else if let Some((flag, _)) = w
+            .split_once('=')
+            .filter(|(f, _)| secret_flag(&f.to_ascii_lowercase()))
+        {
             out.push(format!("{flag}={MASK}"));
         } else if w == "-c" {
             after_c = true;
@@ -259,7 +281,9 @@ pub fn redact(text: &str) -> String {
 
 /// Replaces `user:pass@` in a `scheme://` URL of one word.
 fn redact_url(word: &str) -> String {
-    let Some(i) = word.find("://") else { return word.to_owned() };
+    let Some(i) = word.find("://") else {
+        return word.to_owned();
+    };
     let (head, rest) = word.split_at(i + 3);
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     match rest[..end].rfind('@') {
@@ -274,13 +298,19 @@ mod tests {
 
     #[test]
     fn exit_one_and_two_are_results() {
-        let Outcome::Ok(v) = map_exit(1, json!({"conflicts": ["a"]})) else { panic!("exit 1 is a result") };
+        let Outcome::Ok(v) = map_exit(1, json!({"conflicts": ["a"]})) else {
+            panic!("exit 1 is a result")
+        };
         assert_eq!(v["status"], "paused");
         assert_eq!(v["conflicts"][0], "a");
-        let Outcome::Ok(v) = map_exit(2, json!({"candidates": ["x", "y"]})) else { panic!("exit 2 is a result") };
+        let Outcome::Ok(v) = map_exit(2, json!({"candidates": ["x", "y"]})) else {
+            panic!("exit 2 is a result")
+        };
         assert_eq!(v["status"], "ambiguous");
         assert_eq!(v["candidates"].as_array().map(Vec::len), Some(2));
-        assert!(matches!(map_exit(0, json!({"status": "ok"})), Outcome::Ok(v) if v["status"] == "ok"));
+        assert!(
+            matches!(map_exit(0, json!({"status": "ok"})), Outcome::Ok(v) if v["status"] == "ok")
+        );
     }
 
     #[test]
@@ -288,10 +318,16 @@ mod tests {
         for c in [128, 129, 3, 255] {
             assert!(matches!(map_exit(c, json!({})), Outcome::Err(_)), "{c}");
         }
-        let Outcome::Err(e) = map_exit(128, json!({"error": {"code": "NOT_FOUND", "message": "no such change"}})) else {
+        let Outcome::Err(e) = map_exit(
+            128,
+            json!({"error": {"code": "NOT_FOUND", "message": "no such change"}}),
+        ) else {
             panic!("error expected")
         };
-        assert_eq!((e.code.as_str(), e.message.as_str()), ("NOT_FOUND", "no such change"));
+        assert_eq!(
+            (e.code.as_str(), e.message.as_str()),
+            ("NOT_FOUND", "no such change")
+        );
     }
 
     #[test]
@@ -306,8 +342,13 @@ mod tests {
 
     #[test]
     fn redaction_strips_credentials() {
-        let r = redact("fetch https://bob:s3cret@host.example/repo.git failed --token abc123 -c http.extraHeader=Bearer-xyz");
-        assert!(!r.contains("s3cret") && !r.contains("abc123") && !r.contains("Bearer-xyz"), "{r}");
+        let r = redact(
+            "fetch https://bob:s3cret@host.example/repo.git failed --token abc123 -c http.extraHeader=Bearer-xyz",
+        );
+        assert!(
+            !r.contains("s3cret") && !r.contains("abc123") && !r.contains("Bearer-xyz"),
+            "{r}"
+        );
         assert!(r.contains("host.example/repo.git"), "{r}");
         let r = redact("Authorization: Bearer topsecret rejected");
         assert!(!r.contains("topsecret"), "{r}");

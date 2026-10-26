@@ -27,7 +27,9 @@ pub const fn estimate_tokens(bytes: u64) -> u64 {
 /// `min(max_tokens argument, configured, 25,000)`, at least 1. `configured` is `asc.mcp.maxTokens`.
 #[must_use]
 pub fn effective_max_tokens(arg: Option<u64>, configured: u64) -> u64 {
-    arg.unwrap_or(configured).min(configured).clamp(1, HARD_MAX_TOKENS)
+    arg.unwrap_or(configured)
+        .min(configured)
+        .clamp(1, HARD_MAX_TOKENS)
 }
 
 /// A byte pool shared by every part of one result.
@@ -41,7 +43,10 @@ impl Budget {
     /// A pool of `max_tokens` tokens (use [`effective_max_tokens`] first).
     #[must_use]
     pub const fn new(max_tokens: u64) -> Self {
-        Self { limit: max_tokens.saturating_mul(BYTES_PER_TOKEN), used: 0 }
+        Self {
+            limit: max_tokens.saturating_mul(BYTES_PER_TOKEN),
+            used: 0,
+        }
     }
 
     /// Bytes still free.
@@ -95,11 +100,19 @@ where
     for item in stream {
         if !budget.try_charge(size(&item)) {
             let stalled = kept.is_empty();
-            return Fold { kept, more: true, stalled };
+            return Fold {
+                kept,
+                more: true,
+                stalled,
+            };
         }
         kept.push(item);
     }
-    Fold { kept, more: false, stalled: false }
+    Fold {
+        kept,
+        more: false,
+        stalled: false,
+    }
 }
 
 /// A page of a list-like tool (log, grep, tree, blame hunks, lists).
@@ -113,13 +126,24 @@ pub struct ListPage<T> {
 }
 
 /// Fold a list that starts at entry `start` (the stream must already start there).
-pub fn shape_list<I, T>(stream: I, start: u64, budget: &mut Budget, size: impl Fn(&T) -> u64) -> ListPage<T>
+pub fn shape_list<I, T>(
+    stream: I,
+    start: u64,
+    budget: &mut Budget,
+    size: impl Fn(&T) -> u64,
+) -> ListPage<T>
 where
     I: IntoIterator<Item = T>,
 {
     let f = fold(stream, budget, size);
-    let next = f.more.then(|| Position::Index { index: start + f.kept.len() as u64 });
-    ListPage { items: f.kept, next, stalled: f.stalled }
+    let next = f.more.then(|| Position::Index {
+        index: start + f.kept.len() as u64,
+    });
+    ListPage {
+        items: f.kept,
+        next,
+        stalled: f.stalled,
+    }
 }
 
 // ---------------------------------------------------------------- diff
@@ -199,28 +223,47 @@ pub struct ShapedDiff {
 /// charged); patch text is added whole hunk by whole hunk, file by file, until the budget runs
 /// out. If the very first hunk of the page alone exceeds the budget it is cut by lines and flagged
 /// `truncated`, so every call makes progress.
-pub fn shape_diff(mut files: Vec<FileDiff>, start: (u64, u64), max_files: usize, budget: &mut Budget) -> ShapedDiff {
+pub fn shape_diff(
+    mut files: Vec<FileDiff>,
+    start: (u64, u64),
+    max_files: usize,
+    budget: &mut Budget,
+) -> ShapedDiff {
     files.sort_by(|a, b| a.path.cmp(&b.path));
-    let first = usize::try_from(start.0).unwrap_or(usize::MAX).min(files.len());
+    let first = usize::try_from(start.0)
+        .unwrap_or(usize::MAX)
+        .min(files.len());
     let end = first.saturating_add(max_files).min(files.len());
     let beyond = (files.len() - end) as u64;
     let page = &files[first..end];
 
     let changes: Vec<FileSummary> = page
         .iter()
-        .map(|f| FileSummary { path: f.path.clone(), status: f.status.clone(), additions: f.additions, deletions: f.deletions })
+        .map(|f| FileSummary {
+            path: f.path.clone(),
+            status: f.status.clone(),
+            additions: f.additions,
+            deletions: f.deletions,
+        })
         .collect();
     for f in page {
         budget.charge_forced(f.summary_bytes());
     }
 
     let mut patches = Vec::new();
-    let mut omitted = Omitted { files: beyond, ..Omitted::default() };
+    let mut omitted = Omitted {
+        files: beyond,
+        ..Omitted::default()
+    };
     let mut resume: Option<(u64, u64)> = None;
     let mut closed = false;
     let mut any_kept = false;
     for (i, f) in page.iter().enumerate() {
-        let skip = if i == 0 { usize::try_from(start.1).unwrap_or(usize::MAX) } else { 0 };
+        let skip = if i == 0 {
+            usize::try_from(start.1).unwrap_or(usize::MAX)
+        } else {
+            0
+        };
         let mut kept = Vec::new();
         for (h, hunk) in f.hunks.iter().enumerate().skip(skip) {
             if closed {
@@ -248,24 +291,39 @@ pub fn shape_diff(mut files: Vec<FileDiff>, start: (u64, u64), max_files: usize,
             }
         }
         if !kept.is_empty() {
-            patches.push(FilePatch { path: f.path.clone(), hunks: kept });
+            patches.push(FilePatch {
+                path: f.path.clone(),
+                hunks: kept,
+            });
         }
     }
     // A cut that landed on the last hunk of the page leaves nothing to resume within the page.
     if let Some((fi, hi)) = resume {
         let fidx = usize::try_from(fi).unwrap_or(usize::MAX);
-        if files.get(fidx).is_none_or(|f| usize::try_from(hi).unwrap_or(usize::MAX) >= f.hunks.len()) {
+        if files
+            .get(fidx)
+            .is_none_or(|f| usize::try_from(hi).unwrap_or(usize::MAX) >= f.hunks.len())
+        {
             resume = (end < files.len()).then_some((end as u64, 0));
         }
     } else if beyond > 0 {
         resume = Some((end as u64, 0));
     }
     let next = resume.map(|(file, hunk)| Position::Diff { file, hunk });
-    ShapedDiff { changes, patches, omitted, next }
+    ShapedDiff {
+        changes,
+        patches,
+        omitted,
+        next,
+    }
 }
 
 fn cut_hunk(h: &Hunk, budget: &mut Budget) -> Hunk {
-    let mut out = Hunk { header: h.header.clone(), lines: Vec::new(), truncated: true };
+    let mut out = Hunk {
+        header: h.header.clone(),
+        lines: Vec::new(),
+        truncated: true,
+    };
     let head = h.header.len() as u64 + 1;
     if !budget.try_charge(head) {
         budget.charge_forced(head);
@@ -302,7 +360,13 @@ pub struct FilePage {
 /// Shape a `read_file` page. `lines` starts at byte `offset` / line number `line` (the backend
 /// seeks there, so the cost is O(page)); it is read lazily, at most one line past the page, and
 /// not at all past `end_line`.
-pub fn shape_file<I>(lines: I, offset: u64, line: u64, end_line: Option<u64>, budget: &mut Budget) -> FilePage
+pub fn shape_file<I>(
+    lines: I,
+    offset: u64,
+    line: u64,
+    end_line: Option<u64>,
+    budget: &mut Budget,
+) -> FilePage
 where
     I: IntoIterator<Item = RawLine>,
 {
@@ -319,7 +383,9 @@ where
         if !budget.try_charge(len) {
             if text.is_empty() {
                 // One line alone over budget: keep a prefix and move on to the next line.
-                let room = usize::try_from(budget.remaining()).unwrap_or(usize::MAX).min(l.len());
+                let room = usize::try_from(budget.remaining())
+                    .unwrap_or(usize::MAX)
+                    .min(l.len());
                 let mut cut = room;
                 while !l.is_char_boundary(cut) {
                     cut -= 1;
@@ -330,7 +396,10 @@ where
                 off += len;
                 n += 1;
             }
-            next = Some(Position::File { offset: off, line: n });
+            next = Some(Position::File {
+                offset: off,
+                line: n,
+            });
             break;
         }
         text.push_str(&l);
@@ -338,7 +407,13 @@ where
         n += 1;
     }
     // The page ended by budget only when `next` is set; otherwise the range or file ended.
-    FilePage { text, first_line: line, last_line: n - 1, next, line_truncated }
+    FilePage {
+        text,
+        first_line: line,
+        last_line: n - 1,
+        next,
+        line_truncated,
+    }
 }
 
 // ---------------------------------------------------------------- status
@@ -406,11 +481,21 @@ mod tests {
     use super::*;
 
     fn hunk(n: usize, width: usize) -> Hunk {
-        Hunk { header: "@@ -1 +1 @@".into(), lines: (0..n).map(|_| "x".repeat(width)).collect(), truncated: false }
+        Hunk {
+            header: "@@ -1 +1 @@".into(),
+            lines: (0..n).map(|_| "x".repeat(width)).collect(),
+            truncated: false,
+        }
     }
 
     fn file(i: usize, hunks: usize) -> FileDiff {
-        FileDiff { path: format!("f{i:04}"), status: "M".into(), additions: 1, deletions: 1, hunks: (0..hunks).map(|_| hunk(2, 20)).collect() }
+        FileDiff {
+            path: format!("f{i:04}"),
+            status: "M".into(),
+            additions: 1,
+            deletions: 1,
+            hunks: (0..hunks).map(|_| hunk(2, 20)).collect(),
+        }
     }
 
     #[test]
@@ -467,7 +552,10 @@ mod tests {
         let p = shape_list(vec![1u64, 1, 1, 1], 7, &mut Budget::new(1), |&n| n);
         assert_eq!(p.items.len(), 3);
         assert_eq!(p.next, Some(Position::Index { index: 10 }));
-        assert_eq!(shape_list(vec![1u64], 0, &mut Budget::new(1), |&n| n).next, None);
+        assert_eq!(
+            shape_list(vec![1u64], 0, &mut Budget::new(1), |&n| n).next,
+            None
+        );
     }
 
     #[test]
@@ -478,7 +566,14 @@ mod tests {
         assert_eq!(d.changes.len(), 300);
         assert_eq!(d.changes[0].path, "f0000");
         assert_eq!(d.changes[299].path, "f0299");
-        assert_eq!(d.omitted, Omitted { files: 50, hunks: 0, lines: 0 });
+        assert_eq!(
+            d.omitted,
+            Omitted {
+                files: 50,
+                hunks: 0,
+                lines: 0
+            }
+        );
         assert_eq!(d.next, Some(Position::Diff { file: 300, hunk: 0 }));
         // the cursor continues with the last 50
         let mut b = Budget::new(HARD_MAX_TOKENS);
@@ -501,8 +596,20 @@ mod tests {
         assert_eq!(kept, 4);
         assert_eq!(d.patches[0].hunks.len(), 3);
         assert_eq!(d.patches[1].hunks.len(), 1);
-        assert!(d.patches.iter().flat_map(|p| &p.hunks).all(|h| !h.truncated && h.lines.len() == 2));
-        assert_eq!(d.omitted, Omitted { files: 0, hunks: 5, lines: 10 });
+        assert!(
+            d.patches
+                .iter()
+                .flat_map(|p| &p.hunks)
+                .all(|h| !h.truncated && h.lines.len() == 2)
+        );
+        assert_eq!(
+            d.omitted,
+            Omitted {
+                files: 0,
+                hunks: 5,
+                lines: 10
+            }
+        );
         assert_eq!(d.omitted.lines + 4 * 2, total_lines);
         assert_eq!(d.next, Some(Position::Diff { file: 1, hunk: 1 }));
     }
@@ -515,13 +622,23 @@ mod tests {
         assert_eq!(d.patches[0].hunks.len(), 1);
         assert_eq!(d.next, None);
         // a hunk larger than the whole budget is cut by lines and flagged
-        let big = vec![FileDiff { path: "a".into(), status: "M".into(), additions: 0, deletions: 0, hunks: vec![hunk(100, 30), hunk(1, 1)] }];
+        let big = vec![FileDiff {
+            path: "a".into(),
+            status: "M".into(),
+            additions: 0,
+            deletions: 0,
+            hunks: vec![hunk(100, 30), hunk(1, 1)],
+        }];
         let mut b = Budget::new(40);
         let d = shape_diff(big, (0, 0), MAX_DIFF_FILES, &mut b);
         let h = &d.patches[0].hunks[0];
         assert!(h.truncated && !h.lines.is_empty() && h.lines.len() < 100);
         assert_eq!(d.next, Some(Position::Diff { file: 0, hunk: 1 }));
-        assert_eq!(d.omitted.lines, 100 - h.lines.len() as u64 + 1, "cut lines plus the later hunk");
+        assert_eq!(
+            d.omitted.lines,
+            100 - h.lines.len() as u64 + 1,
+            "cut lines plus the later hunk"
+        );
     }
 
     fn lines(n: usize) -> impl Iterator<Item = String> {
@@ -534,18 +651,32 @@ mod tests {
         let p = shape_file(lines(100), 0, 1, None, &mut b);
         assert_eq!(p.text, "line 00001\nline 00002\n");
         assert_eq!((p.first_line, p.last_line), (1, 2));
-        assert_eq!(p.next, Some(Position::File { offset: 22, line: 3 }));
+        assert_eq!(
+            p.next,
+            Some(Position::File {
+                offset: 22,
+                line: 3
+            })
+        );
     }
 
     #[test]
     fn file_continuation_costs_o_page_not_a_restream() {
         // the backend seeks to offset 22; the iterator it gives starts at line 3
         let mut pulled = 0;
-        let src = (3..=1_000_000usize).map(|i| format!("line {i:05}\n")).inspect(|_| pulled += 1);
+        let src = (3..=1_000_000usize)
+            .map(|i| format!("line {i:05}\n"))
+            .inspect(|_| pulled += 1);
         let mut b = Budget::new(10);
         let p = shape_file(src, 22, 3, None, &mut b);
         assert_eq!(p.first_line, 3);
-        assert_eq!(p.next, Some(Position::File { offset: 22 + 2 * 11, line: 5 }));
+        assert_eq!(
+            p.next,
+            Some(Position::File {
+                offset: 22 + 2 * 11,
+                line: 5
+            })
+        );
         assert!(pulled <= 4, "pulled {pulled} lines for a 2-line page");
     }
 
@@ -565,7 +696,13 @@ mod tests {
         let mut b = Budget::new(10);
         let p = shape_file(vec![long.clone(), "next\n".into()], 0, 1, None, &mut b);
         assert!(p.line_truncated && p.text.len() <= 30);
-        assert_eq!(p.next, Some(Position::File { offset: long.len() as u64, line: 2 }));
+        assert_eq!(
+            p.next,
+            Some(Position::File {
+                offset: long.len() as u64,
+                line: 2
+            })
+        );
         let mut b = Budget::new(10);
         let p = shape_file(vec![format!("{}é\n", "a".repeat(29))], 0, 1, None, &mut b);
         assert!(p.line_truncated);
@@ -574,16 +711,34 @@ mod tests {
 
     #[test]
     fn status_orders_conflicts_staged_unstaged_then_counts_untracked() {
-        let e = |c: &str, p: &str| StatusEntry { code: c.into(), path: p.into() };
+        let e = |c: &str, p: &str| StatusEntry {
+            code: c.into(),
+            path: p.into(),
+        };
         let untracked: Vec<String> = (0..100).map(|i| format!("u{i}")).collect();
         let mut b = Budget::new(10); // 30 bytes
-        let s = shape_status(vec![e("UU", "c")], vec![e("M", "s")], vec![e("M", "w")], untracked, &mut b);
-        assert_eq!((s.conflicts.len(), s.staged.len(), s.unstaged.len()), (1, 1, 1));
+        let s = shape_status(
+            vec![e("UU", "c")],
+            vec![e("M", "s")],
+            vec![e("M", "w")],
+            untracked,
+            &mut b,
+        );
+        assert_eq!(
+            (s.conflicts.len(), s.staged.len(), s.unstaged.len()),
+            (1, 1, 1)
+        );
         assert_eq!(s.untracked.len() as u64 + s.omitted_untracked, 100);
         assert!(s.omitted_untracked > 0);
         // a full budget before untracked paths hides all of them but still counts them
         let mut b = Budget::new(4);
-        let s = shape_status(vec![e("UU", "a"), e("UU", "b"), e("UU", "c")], vec![e("M", "s")], vec![], vec!["u".into()], &mut b);
+        let s = shape_status(
+            vec![e("UU", "a"), e("UU", "b"), e("UU", "c")],
+            vec![e("M", "s")],
+            vec![],
+            vec!["u".into()],
+            &mut b,
+        );
         assert_eq!(s.conflicts.len(), 1);
         assert_eq!(s.omitted_conflicts, 2);
         assert_eq!(s.omitted_staged, 1);
