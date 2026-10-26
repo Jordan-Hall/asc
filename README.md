@@ -1,3 +1,12 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.svg">
+    <img src="docs/brand/wordmark-light.svg" alt="ASC" height="48">
+  </picture>
+</p>
+
+<p align="center"><strong>Source control for people and their agents.</strong></p>
+
 # asc
 
 `asc` is ASC, Agent Source Control: source control for people and their agents. It is modelled on Anthropic's Scion (["Redesigning source control"](https://www.anthropic.com/research/redesigning-source-control)), and its commands mirror git's.
