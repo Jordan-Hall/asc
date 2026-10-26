@@ -45,6 +45,21 @@ export async function axeViolations(page: Page): Promise<string[]> {
 
 /** The demo repository of the mock transport (src/api/fixtures.ts). */
 export const R = "/ui/asc/demo";
+/** Routes captured by the visual suite; `signedIn` sets a session token before load. */
+export const VISUAL_ROUTES: { name: string; path: string; signedIn: boolean }[] = [
+  { name: "landing", path: "/ui/", signedIn: false },
+  { name: "dashboard", path: "/ui/", signedIn: true },
+  { name: "signin", path: "/ui/signin", signedIn: false },
+  { name: "settings", path: "/ui/settings", signedIn: true },
+  { name: "inbox", path: "/ui/inbox", signedIn: true },
+  { name: "search", path: "/ui/search", signedIn: true },
+  { name: "repo", path: "/ui/asc/demo", signedIn: true },
+  { name: "tree", path: "/ui/asc/demo/tree/main/src", signedIn: true },
+  { name: "blob", path: "/ui/asc/demo/blob/main/src/index.ts", signedIn: true },
+  { name: "changes", path: "/ui/asc/demo/changes", signedIn: true },
+  { name: "review", path: "/ui/asc/demo/changes/c1", signedIn: true },
+];
+
 export const ROUTES: Record<string, string> = {
   landing: "/ui/",
   signin: "/ui/signin",
