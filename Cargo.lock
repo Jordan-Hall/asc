@@ -161,6 +161,474 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "asc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "asc-ci",
+ "asc-codeintel",
+ "asc-core",
+ "asc-engine",
+ "asc-git",
+ "asc-graph",
+ "asc-mcp",
+ "asc-rpc",
+ "asc-serve",
+ "asc-state",
+ "asc-store",
+ "asc-vfs",
+ "asc-wc",
+ "async-trait",
+ "automod",
+ "axum",
+ "blake3",
+ "bstr",
+ "bytes",
+ "clap",
+ "futures",
+ "gix",
+ "gix-attributes",
+ "gix-config",
+ "gix-date",
+ "gix-sec",
+ "http",
+ "linkme",
+ "minisign-verify",
+ "object_store",
+ "prost-reflect",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "roaring",
+ "rustix",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "similar 3.2.0",
+ "sqlx",
+ "tantivy",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tonic",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
+name = "asc-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "asc-ci"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-git",
+ "asc-rpc",
+ "asc-store",
+ "asc-wc",
+ "async-trait",
+ "bytes",
+ "futures",
+ "globset",
+ "postcard",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "uuid",
+]
+
+[[package]]
+name = "asc-codeintel"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-store",
+ "async-trait",
+ "blake3",
+ "bstr",
+ "bytes",
+ "futures",
+ "gix-attributes",
+ "globset",
+ "proptest",
+ "regex",
+ "regex-syntax",
+ "roaring",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-c-sharp",
+ "tree-sitter-go",
+ "tree-sitter-javascript",
+ "tree-sitter-language",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+ "usearch",
+]
+
+[[package]]
+name = "asc-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "fastcdc",
+ "postcard",
+ "proptest",
+ "serde",
+ "sha1",
+ "thiserror",
+ "toml",
+ "url",
+]
+
+[[package]]
+name = "asc-embed"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "data-encoding",
+ "fastembed",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+]
+
+[[package]]
+name = "asc-engine"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-graph",
+ "asc-store",
+ "async-trait",
+ "blake3",
+ "bstr",
+ "bytes",
+ "futures",
+ "gix-hash",
+ "gix-imara-diff",
+ "gix-merge",
+ "globset",
+ "imara-diff",
+ "memchr",
+ "postcard",
+ "proptest",
+ "quick_cache",
+ "regex",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "asc-git"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-state",
+ "asc-store",
+ "async-trait",
+ "bytes",
+ "data-encoding",
+ "filetime",
+ "flate2",
+ "futures",
+ "gix",
+ "gix-config",
+ "gix-hash",
+ "gix-index",
+ "gix-sec",
+ "quick_cache",
+ "rustix",
+ "same-file",
+ "sha1",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "asc-graph"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "blake3",
+ "globset",
+ "postcard",
+ "proptest",
+ "quick-xml 0.42.0",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "asc-mcp"
+version = "0.1.0"
+dependencies = [
+ "asc-rpc",
+ "async-trait",
+ "base64 0.23.1",
+ "futures",
+ "getrandom 0.4.3",
+ "hmac",
+ "insta",
+ "prost-reflect",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tonic",
+ "tower",
+]
+
+[[package]]
+name = "asc-rpc"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-graph",
+ "asc-store",
+ "async-trait",
+ "base64 0.23.1",
+ "blake3",
+ "bytes",
+ "futures",
+ "h3",
+ "h3-quinn",
+ "http",
+ "hyper-util",
+ "interprocess",
+ "object_store",
+ "postcard",
+ "prost",
+ "prost-reflect",
+ "protox",
+ "quinn",
+ "rcgen",
+ "rustix",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+ "tower",
+ "tracing",
+ "uuid",
+ "windows",
+]
+
+[[package]]
+name = "asc-serve"
+version = "0.1.0"
+dependencies = [
+ "asc-codeintel",
+ "asc-core",
+ "asc-engine",
+ "asc-git",
+ "asc-graph",
+ "asc-mcp",
+ "asc-rpc",
+ "asc-store",
+ "async-trait",
+ "axum",
+ "base64 0.23.1",
+ "blake3",
+ "bstr",
+ "bytes",
+ "flate2",
+ "fs4",
+ "futures",
+ "getrandom 0.4.3",
+ "gix-attributes",
+ "h3",
+ "h3-quinn",
+ "hmac",
+ "http-body",
+ "object_store",
+ "postcard",
+ "prometheus-client",
+ "prost",
+ "prost-reflect",
+ "quick_cache",
+ "quinn",
+ "rcgen",
+ "regex",
+ "reqwest",
+ "ring",
+ "roaring",
+ "russh",
+ "rustix",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tonic",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
+name = "asc-sim"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-serve",
+ "asc-store",
+ "async-trait",
+ "bytes",
+ "futures",
+ "object_store",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "asc-state"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-store",
+ "async-trait",
+ "gix-config",
+ "gix-hash",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "asc-store"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "async-trait",
+ "backon",
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "filetime",
+ "futures",
+ "object_store",
+ "postcard",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+ "zstd 0.14.3",
+]
+
+[[package]]
+name = "asc-turbo-contract"
+version = "0.1.0"
+dependencies = [
+ "asc-git",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "asc-vfs"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-state",
+ "asc-store",
+ "asc-wc",
+ "bytes",
+ "fuser",
+ "libloading",
+ "quick_cache",
+ "rustix",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "asc-wc"
+version = "0.1.0"
+dependencies = [
+ "asc-core",
+ "asc-engine",
+ "asc-git",
+ "asc-state",
+ "asc-store",
+ "async-trait",
+ "futures",
+ "ignore",
+ "reflink-copy",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "asn1-rs"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -633,474 +1101,6 @@ name = "cfg_aliases"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
-
-[[package]]
-name = "asc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "automod",
- "axum",
- "blake3",
- "bstr",
- "bytes",
- "asc-ci",
- "asc-codeintel",
- "asc-core",
- "asc-engine",
- "asc-git",
- "asc-graph",
- "asc-mcp",
- "asc-rpc",
- "asc-serve",
- "asc-state",
- "asc-store",
- "asc-vfs",
- "asc-wc",
- "clap",
- "futures",
- "gix",
- "gix-attributes",
- "gix-config",
- "gix-date",
- "gix-sec",
- "http",
- "linkme",
- "minisign-verify",
- "object_store",
- "prost-reflect",
- "rcgen",
- "regex",
- "reqwest",
- "roaring",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "similar 3.2.0",
- "sqlx",
- "tantivy",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tonic",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "zip",
-]
-
-[[package]]
-name = "asc-bench"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "asc-ci"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "asc-core",
- "asc-git",
- "asc-rpc",
- "asc-store",
- "asc-wc",
- "futures",
- "globset",
- "postcard",
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "uuid",
-]
-
-[[package]]
-name = "asc-codeintel"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "bstr",
- "bytes",
- "asc-core",
- "asc-engine",
- "asc-store",
- "futures",
- "gix-attributes",
- "globset",
- "proptest",
- "regex",
- "regex-syntax",
- "roaring",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
- "tree-sitter",
- "tree-sitter-c-sharp",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-language",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "usearch",
-]
-
-[[package]]
-name = "asc-core"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "bytes",
- "data-encoding",
- "fastcdc",
- "postcard",
- "proptest",
- "serde",
- "sha1",
- "thiserror",
- "toml",
- "url",
-]
-
-[[package]]
-name = "asc-embed"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "data-encoding",
- "fastembed",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror",
-]
-
-[[package]]
-name = "asc-engine"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "bstr",
- "bytes",
- "asc-core",
- "asc-graph",
- "asc-store",
- "futures",
- "gix-hash",
- "gix-imara-diff",
- "gix-merge",
- "globset",
- "imara-diff",
- "memchr",
- "postcard",
- "proptest",
- "quick_cache",
- "regex",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "asc-git"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "asc-core",
- "asc-engine",
- "asc-state",
- "asc-store",
- "data-encoding",
- "filetime",
- "flate2",
- "futures",
- "gix",
- "gix-config",
- "gix-hash",
- "gix-index",
- "gix-sec",
- "quick_cache",
- "rustix",
- "same-file",
- "sha1",
- "tempfile",
- "thiserror",
- "tokio",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "asc-graph"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "asc-core",
- "globset",
- "postcard",
- "proptest",
- "quick-xml 0.42.0",
- "serde",
- "serde_json",
- "thiserror",
- "toml",
-]
-
-[[package]]
-name = "asc-mcp"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "asc-rpc",
- "futures",
- "getrandom 0.4.3",
- "hmac",
- "insta",
- "prost-reflect",
- "rmcp",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror",
- "tokio",
- "tokio-util",
- "toml",
- "tonic",
- "tower",
-]
-
-[[package]]
-name = "asc-rpc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.23.1",
- "blake3",
- "bytes",
- "asc-core",
- "asc-engine",
- "asc-graph",
- "asc-store",
- "futures",
- "h3",
- "h3-quinn",
- "http",
- "hyper-util",
- "interprocess",
- "object_store",
- "postcard",
- "prost",
- "prost-reflect",
- "protox",
- "quinn",
- "rcgen",
- "rustix",
- "rustls",
- "rustls-platform-verifier",
- "serde_json",
- "sha2 0.11.1",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tower",
- "tracing",
- "uuid",
- "windows",
-]
-
-[[package]]
-name = "asc-serve"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "base64 0.23.1",
- "blake3",
- "bstr",
- "bytes",
- "asc-codeintel",
- "asc-core",
- "asc-engine",
- "asc-git",
- "asc-graph",
- "asc-mcp",
- "asc-rpc",
- "asc-store",
- "flate2",
- "fs4",
- "futures",
- "getrandom 0.4.3",
- "gix-attributes",
- "h3",
- "h3-quinn",
- "hmac",
- "http-body",
- "object_store",
- "postcard",
- "prometheus-client",
- "prost",
- "prost-reflect",
- "quick_cache",
- "quinn",
- "rcgen",
- "regex",
- "reqwest",
- "ring",
- "roaring",
- "russh",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "sqlx",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "toml",
- "tonic",
- "tower",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "windows-sys 0.61.2",
- "zip",
-]
-
-[[package]]
-name = "asc-sim"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "asc-core",
- "asc-engine",
- "asc-serve",
- "asc-store",
- "futures",
- "object_store",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "asc-state"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "asc-core",
- "asc-engine",
- "asc-store",
- "gix-config",
- "gix-hash",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "asc-store"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "backon",
- "blake3",
- "bytes",
- "asc-core",
- "data-encoding",
- "filetime",
- "futures",
- "object_store",
- "postcard",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "url",
- "uuid",
- "zstd 0.14.3",
-]
-
-[[package]]
-name = "asc-turbo-contract"
-version = "0.1.0"
-dependencies = [
- "asc-git",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "asc-vfs"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "asc-core",
- "asc-state",
- "asc-store",
- "asc-wc",
- "fuser",
- "libloading",
- "quick_cache",
- "rustix",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "asc-wc"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "asc-core",
- "asc-engine",
- "asc-git",
- "asc-state",
- "asc-store",
- "futures",
- "ignore",
- "reflink-copy",
- "sqlx",
- "tempfile",
- "thiserror",
- "tokio",
-]
 
 [[package]]
 name = "chacha20"
