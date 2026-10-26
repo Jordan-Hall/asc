@@ -602,7 +602,11 @@ async fn pump(
                             .blocking_send(Bytes::copy_from_slice(&buf[..n]))
                             .is_err()
                         {
-                            // The command ended: dropping stdout makes the child's writes fail.
+                            // The command ended. Keep reading and discarding, without touching
+                            // the activity clock: a child whose pipe closes is killed by SIGPIPE
+                            // before it can remove its quarantine, and the idle limit still ends
+                            // one that goes on writing.
+                            while matches!(stdout.read(&mut buf), Ok(n) if n > 0) {}
                             return;
                         }
                     }
