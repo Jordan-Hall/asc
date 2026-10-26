@@ -14,6 +14,7 @@
     "./bridge": "./src/gen/asc/v1/bridge_pb.ts",
     "./changes": "./src/gen/asc/v1/changes_pb.ts",
     "./ci": "./src/gen/asc/v1/ci_pb.ts",
+    "./cli": "./src/gen/asc/v1/cli_pb.ts",
     "./ciinsights": "./src/gen/asc/v1/ciinsights_pb.ts",
     "./cloud": "./src/gen/asc/v1/cloud_pb.ts",
     "./codeintel": "./src/gen/asc/v1/codeintel_pb.ts",

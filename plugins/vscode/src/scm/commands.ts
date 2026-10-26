@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import type * as vscodeTypes from "vscode";
 import type { BridgeManager } from "../bridge";
 import type { AscAt, ReadApi } from "../fs/ascfs";
+import { decodeOpResult, summariseOp, type OpSummary } from "../opresult";
 import { buildHunkPatch, buildPatch, type LineRange, type Side } from "./stage-ranges";
 
 /** `Workspace.Stage` carries at most this many patch bytes (allowlist `limits.patchBytes`). */
@@ -52,48 +53,13 @@ export interface CommandsUi {
   review(title: string, items: PickItem[], accept: string): Promise<boolean>;
 }
 
-export interface OpSummary {
-  status: string;
-  lines: PickItem[];
-}
-
 /**
- * TODO(M02): `cli.proto` (`OpResult`) is not in the descriptor set, so the bridge sends no
- * `op_result` yet. Until then this reads the bytes as the JSON the verb printed, and a miss gives null.
- * Field names follow `crates/asc/src/stack/json.rs`.
+ * Reads the encoded `OpResult` the bridge sends as `op_result`. A missing or undecodable result gives
+ * null, and the caller treats that as "no typed result", never as success of a preview.
  */
 export function summariseOpResult(bytes: Uint8Array | null): OpSummary | null {
-  if (bytes === null || bytes.byteLength === 0) return null;
-  let v: unknown;
-  try {
-    v = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return null;
-  }
-  if (typeof v !== "object" || v === null) return null;
-  const o = v as Record<string, unknown>;
-  const arr = (k: string): Record<string, unknown>[] =>
-    Array.isArray(o[k])
-      ? (o[k] as Record<string, unknown>[]).filter((x) => typeof x === "object" && x !== null)
-      : [];
-  const str = (x: unknown): string => (typeof x === "string" ? x : "");
-  const lines: PickItem[] = [];
-  for (const r of arr("rewritten")) {
-    lines.push({
-      label: str(r.change) || str(r.new) || "change",
-      ...(str(r.subject) ? { detail: str(r.subject) } : {}),
-    });
-  }
-  for (const s of arr("skipped")) {
-    lines.push({ label: `${str(s.change) || "change"} (skipped)`, detail: str(s.reason) });
-  }
-  for (const c of arr("conflicts")) {
-    lines.push({ label: `${str(c.change) || "change"} (conflict)`, detail: str(c.path) });
-  }
-  for (const h of Array.isArray(o.hints) ? o.hints : []) {
-    if (typeof h === "string") lines.push({ label: h });
-  }
-  return { status: str(o.status), lines };
+  const r = decodeOpResult(bytes);
+  return r === null ? null : summariseOp(r);
 }
 
 export type CommandResult =
@@ -210,8 +176,7 @@ export class CommitCommands {
         this.ui.info("ASC: nothing to absorb.");
         return { ok: true, nothing: true };
       }
-      // TODO(M02): without an OpResult the preview is the verb's stderr; the human preview text is on
-      // stdout, which the bridge does not relay, so the list can be empty.
+      // The typed preview lists the changes absorb would rewrite; with none, the verb's stderr is shown.
       const items: PickItem[] =
         sum && sum.lines.length > 0
           ? sum.lines
