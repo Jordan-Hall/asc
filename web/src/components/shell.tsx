@@ -80,12 +80,12 @@ function HelpDialog(props: { dialog: React.RefObject<HTMLDialogElement | null> }
     <dialog
       ref={props.dialog}
       aria-labelledby="help-title"
-      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-5 text-fg shadow-2xl backdrop:bg-black/50"
+      className="m-auto max-h-[85dvh] w-[min(28rem,calc(100vw-1rem))] overflow-y-auto rounded-2xl border border-line bg-surface p-5 text-fg shadow-2xl backdrop:bg-black/50"
     >
       <h2 id="help-title" className="mb-3 text-lg font-semibold text-fg-strong">
         Keyboard shortcuts
       </h2>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
         <div className="contents">
           <dt className="whitespace-nowrap">
             <kbd className={kbd}>Ctrl</kbd> <kbd className={kbd}>K</kbd>
@@ -109,7 +109,7 @@ function HelpDialog(props: { dialog: React.RefObject<HTMLDialogElement | null> }
       <form method="dialog" className="mt-4 text-right">
         <button
           type="submit"
-          className="h-9 rounded-lg bg-brand px-4 text-sm font-medium text-on-brand"
+          className="h-11 rounded-lg bg-brand px-5 text-sm font-medium text-on-brand sm:h-9 sm:px-4"
         >
           Close
         </button>

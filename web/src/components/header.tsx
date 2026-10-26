@@ -1,31 +1,47 @@
 // The global header. Two forms of one component: the product header on the signed-out front page
-// (sticky, translucent, section links) and the app header everywhere else (search, create, inbox,
-// account). It is in the entry chunk, fixed height, so it paints before any RPC returns.
+// (sticky, section links) and the app header everywhere else (search, create, inbox, account). It is
+// ink in every theme, as in the design boards, with the dark tone of the mark. It is in the entry
+// chunk, fixed height, so it paints before any RPC returns. Mobile first: 44 px targets, the
+// product links collapse into a menu below lg, the search box becomes a button below sm.
 import { type ReactNode, type RefObject, useMemo } from "react";
 import { useApp } from "../api/queries";
+import { useAgents } from "../lib/agents";
 import { useToken } from "../lib/auth";
 import { openPalette } from "../lib/palette";
 import { useRecent } from "../lib/recent";
 import { useQueries } from "../lib/query";
 import { Link, useNavigate } from "../lib/router";
-import { type ThemePref, useTheme } from "../lib/theme";
+import { THEME_CHOICES, type ThemePref, useTheme } from "../lib/theme";
 import { Icon, LogoMark } from "./icons";
 import { Menu, type MenuEntry } from "./menu";
+import { sections } from "./sections";
 
-const NEXT: Record<ThemePref, ThemePref> = { system: "light", light: "dark", dark: "system" };
+const NEXT: Record<ThemePref, ThemePref> = {
+  "asc-auto": "asc-light",
+  "asc-light": "asc-dark",
+  "asc-dark": "asc-auto",
+};
+const NAME: Record<ThemePref, string> = {
+  "asc-auto": "match system",
+  "asc-light": "light",
+  "asc-dark": "dark",
+};
 const ICON_BTN =
-  "inline-flex h-9 min-w-9 items-center justify-center gap-2 rounded-lg px-2 text-sm text-fg " +
-  "no-underline hover:bg-subtle-hover";
+  "inline-flex h-11 min-w-11 items-center justify-center gap-2 rounded-lg px-2 text-sm text-hdr-fg " +
+  "no-underline hover:bg-hdr-hover sm:h-9 sm:min-w-9";
+const CTA =
+  "inline-flex h-11 items-center justify-center rounded-lg bg-cyan px-4 text-sm font-semibold " +
+  "text-[#0b1220] no-underline hover:brightness-110 sm:h-9";
 
 export function Brand(): ReactNode {
   return (
     <Link
       to="/"
-      aria-label="ASC home"
-      className="inline-flex items-center gap-2 rounded-lg text-lg font-bold tracking-tight text-fg-strong no-underline"
+      aria-label="ASC Hub home"
+      className="inline-flex h-11 shrink-0 items-center gap-2.5 rounded-lg pr-1 text-lg font-extrabold tracking-tight text-hdr-fg no-underline sm:h-9"
     >
-      <LogoMark size={28} />
-      <span>ASC</span>
+      <LogoMark size={28} tone="dark" />
+      <span className="hidden min-[26rem]:inline">ASC Hub</span>
     </Link>
   );
 }
@@ -36,10 +52,10 @@ function ThemeCycle(): ReactNode {
     <button
       type="button"
       className={ICON_BTN}
-      aria-label={`Theme: ${pref}. Switch to ${NEXT[pref]}`}
+      aria-label={`Theme: ${NAME[pref]}. Switch to ${NAME[NEXT[pref]]}`}
       onClick={() => setPref(NEXT[pref])}
     >
-      <Icon name={pref === "system" ? "system" : pref === "dark" ? "moon" : "sun"} />
+      <Icon name={pref === "asc-auto" ? "system" : pref === "asc-dark" ? "moon" : "sun"} />
     </button>
   );
 }
@@ -72,7 +88,7 @@ function InboxLink(): ReactNode {
       {count > 0 ? (
         <span
           aria-hidden="true"
-          className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[0.65rem] font-semibold leading-none text-on-brand"
+          className="absolute right-0 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#f59e0b] px-1 text-[0.65rem] font-extrabold leading-none text-[#1c1100] sm:-right-0.5 sm:-top-0.5"
         >
           {count > 99 ? "99+" : count}
         </span>
@@ -97,11 +113,11 @@ function CreateMenu(): ReactNode {
   return (
     <Menu
       label="Create"
-      buttonClassName={`${ICON_BTN} border border-line`}
+      buttonClassName={`${ICON_BTN} border border-hdr-line`}
       button={
         <>
           <Icon name="plus" />
-          <Icon name="chevronDown" size={12} />
+          <Icon name="chevronDown" size={12} className="hidden sm:block" />
         </>
       }
       entries={entries}
@@ -112,23 +128,33 @@ function CreateMenu(): ReactNode {
 function AccountMenu(props: { onHelp: () => void }): ReactNode {
   const { auth } = useApp();
   const { pref, setPref } = useTheme();
+  const agents = useAgents();
   const entries: MenuEntry[] = [
     { kind: "item", id: "home", label: "Dashboard", icon: "repo", to: "/", hint: "g h" },
     { kind: "item", id: "inbox", label: "Inbox", icon: "inbox", to: "/inbox", hint: "g i" },
     { kind: "item", id: "settings", label: "Settings", icon: "gear", to: "/settings", hint: "g s" },
     { kind: "separator", id: "s1" },
     { kind: "heading", id: "theme", label: "Theme" },
-    ...(["system", "light", "dark"] as const).map(
-      (p): MenuEntry => ({
+    ...THEME_CHOICES.map(
+      (c): MenuEntry => ({
         kind: "radio",
-        id: `theme-${p}`,
-        label: p === "system" ? "Match system" : p === "light" ? "Light" : "Dark",
-        icon: p === "system" ? "system" : p === "light" ? "sun" : "moon",
-        checked: pref === p,
-        onSelect: () => setPref(p),
+        id: `theme-${c.value}`,
+        label: c.label,
+        icon: c.value === "asc-auto" ? "system" : c.value === "asc-light" ? "sun" : "moon",
+        checked: pref === c.value,
+        onSelect: () => setPref(c.value),
       }),
     ),
     { kind: "separator", id: "s2" },
+    {
+      kind: "radio",
+      id: "agents",
+      label: "Show agent features",
+      icon: "bot",
+      checked: agents.on,
+      onSelect: () => agents.setOn(!agents.on),
+    },
+    { kind: "separator", id: "s2b" },
     {
       kind: "item",
       id: "palette",
@@ -157,36 +183,26 @@ function AccountMenu(props: { onHelp: () => void }): ReactNode {
   return (
     <Menu
       label="Account menu"
-      buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-full bg-brand text-on-brand ring-2 ring-transparent hover:ring-[rgb(var(--color-text-link-focus-ring))]"
+      buttonClassName="inline-flex h-11 w-11 items-center justify-center rounded-full bg-[#2394b2] text-[#0b1220] ring-2 ring-transparent hover:ring-[#22d3ee] sm:h-9 sm:w-9"
       button={<Icon name="user" size={18} />}
       entries={entries}
     />
   );
 }
 
-const SECTIONS: readonly { href: string; label: string }[] = [
-  { href: "#stacks", label: "Stacked changes" },
-  { href: "#review", label: "Review" },
-  { href: "#inbox", label: "Inbox" },
-  { href: "#search", label: "Search" },
-  { href: "#agents", label: "Agents" },
-  { href: "#clone", label: "Clone" },
-];
-
 function MarketingHeader(): ReactNode {
+  const agents = useAgents();
+  const list = sections(agents.on);
   return (
-    <header className="sticky top-0 z-40 border-b border-line/70 bg-[rgb(var(--color-background-rgb)/0.82)] backdrop-blur-md">
-      <div
-        className="mx-auto flex w-full max-w-7xl items-center gap-2 px-4 sm:px-6"
-        style={{ height: 64 }}
-      >
+    <header className="hdr sticky top-0 z-40 border-b border-hdr-line bg-hdr pt-[env(safe-area-inset-top)] text-hdr-fg">
+      <div className="mx-auto flex h-14 w-full max-w-7xl items-center gap-1 px-4 sm:h-16 sm:gap-2 sm:px-6">
         <Brand />
         <nav aria-label="Primary" className="ml-6 hidden items-center gap-1 lg:flex">
-          {SECTIONS.map((s) => (
+          {list.map((s) => (
             <a
               key={s.href}
               href={s.href}
-              className="rounded-lg px-3 py-2 text-sm text-fg-muted no-underline hover:bg-subtle-hover hover:text-fg-strong"
+              className="rounded-lg px-3 py-2 text-sm font-medium text-hdr-muted no-underline hover:bg-hdr-hover hover:text-hdr-fg"
             >
               {s.label}
             </a>
@@ -198,16 +214,15 @@ function MarketingHeader(): ReactNode {
             label="Sections"
             buttonClassName={ICON_BTN}
             button={<Icon name="menu" size={18} />}
-            entries={SECTIONS.map(
+            entries={list.map(
               (s): MenuEntry => ({ kind: "item", id: s.href, label: s.label, href: s.href }),
             )}
           />
         </div>
-        <ThemeCycle />
-        <Link
-          to="/signin"
-          className="inline-flex h-9 items-center rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand no-underline hover:opacity-90"
-        >
+        <span className="hidden sm:block">
+          <ThemeCycle />
+        </span>
+        <Link to="/signin" className={CTA}>
           Sign in
         </Link>
       </div>
@@ -226,11 +241,8 @@ export function Header(props: {
   const navigate = useNavigate();
   if (props.marketing) return <MarketingHeader />;
   return (
-    <header className="border-b border-line bg-surface">
-      <div
-        className="mx-auto flex w-full max-w-7xl items-center gap-2 px-4 sm:gap-3 sm:px-6"
-        style={{ height: 60 }}
-      >
+    <header className="hdr sticky top-0 z-40 border-b border-hdr-line bg-hdr pt-[env(safe-area-inset-top)] text-hdr-fg">
+      <div className="mx-auto flex h-14 w-full max-w-7xl items-center gap-1 px-4 sm:h-[60px] sm:gap-3 sm:px-6">
         <Brand />
         <form
           role="search"
@@ -245,7 +257,7 @@ export function Header(props: {
             <label className="sr-only" htmlFor="global-search">
               Search
             </label>
-            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-fg-muted">
+            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-hdr-muted">
               <Icon name="search" />
             </span>
             <input
@@ -254,9 +266,9 @@ export function Header(props: {
               type="search"
               autoComplete="off"
               placeholder={props.repoPath ? "Search this repository" : "Search or jump to…"}
-              className="h-9 w-full rounded-lg border border-control bg-page pl-9 pr-10 text-sm text-fg-strong placeholder:text-fg-muted"
+              className="h-9 w-full rounded-lg border border-hdr-line bg-hdr-field pl-9 pr-10 text-sm text-hdr-fg placeholder:text-hdr-muted"
             />
-            <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-control px-1.5 font-mono text-xs text-fg-muted md:block">
+            <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-hdr-line px-1.5 font-mono text-xs text-hdr-muted md:block">
               /
             </kbd>
           </div>
@@ -279,10 +291,7 @@ export function Header(props: {
         ) : (
           <>
             <ThemeCycle />
-            <Link
-              to="/signin"
-              className="inline-flex h-9 items-center rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand no-underline hover:opacity-90"
-            >
+            <Link to="/signin" className={CTA}>
               Sign in
             </Link>
           </>
