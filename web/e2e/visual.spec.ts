@@ -6,11 +6,11 @@
 // Update after an intended visual change:  bun run e2e e2e/visual.spec.ts --update-snapshots
 // Dump the captures for a side-by-side with the boards:  ASC_E2E_SHOTS=<dir> bun run e2e e2e/visual.spec.ts
 import { expect, test, type Page } from "@playwright/test";
-import { VISUAL_ROUTES } from "./helpers";
+import { DEMO_NOW, DEMO_RECENT, VISUAL_ROUTES } from "./helpers";
 
 const dump = process.env.ASC_E2E_SHOTS;
 
-/** Freeze everything that moves, so two captures of one route are the same pixels. */
+/** Wait until every loading region is done and the fonts are in. */
 async function settle(page: Page): Promise<void> {
   await expect(page.locator("[aria-busy='true']")).toHaveCount(0);
   await page.evaluate(() => document.fonts.ready);
@@ -21,8 +21,17 @@ for (const scheme of ["light", "dark"] as const) {
     test.use({ colorScheme: scheme });
     for (const route of VISUAL_ROUTES) {
       test(`${route.name}`, async ({ page }, info) => {
+        // The same afternoon every run, so greetings and ages are the same pixels.
+        await page.clock.setFixedTime(DEMO_NOW);
         if (route.signedIn) {
-          await page.addInitScript(() => sessionStorage.setItem("asc-token", "demo-token"));
+          await page.addInitScript(
+            ([recent]) => {
+              sessionStorage.setItem("asc-token", "demo-token");
+              sessionStorage.setItem("asc-viewer", "Jordan Upton");
+              localStorage.setItem("asc-recent", recent as string);
+            },
+            [JSON.stringify(DEMO_RECENT)],
+          );
         }
         await page.goto(route.path, { waitUntil: "networkidle" });
         await settle(page);

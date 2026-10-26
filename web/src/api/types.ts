@@ -61,6 +61,26 @@ export interface ReviewBadge {
   url: string;
 }
 
+/** What a change description says about itself (see parseDescription). */
+export interface ChangeDescription {
+  /** First line. */
+  title: string;
+  /** The prose between the title and the trailers: why the change exists. */
+  intent: string;
+  /** `Risk:` trailer: what the reviewer should look at. */
+  risk: string;
+  /** `Risk-area:` trailer, one word such as `billing`. */
+  riskArea: string;
+  /** `Agent:` trailer: the agent run that wrote the change, empty for a person. */
+  agent: string;
+}
+
+export interface DiffTotals {
+  added: number;
+  removed: number;
+  files: number;
+}
+
 export interface ChangeRow {
   /** Change id in k-z form. */
   id: string;
@@ -76,6 +96,12 @@ export interface ChangeRow {
   divergent: boolean;
   needsRestack: boolean;
   review: ReviewBadge | undefined;
+  /** Who wrote the newest version. */
+  author: string;
+  /** Seconds since the epoch of the newest version. */
+  time: number;
+  description: ChangeDescription;
+  stat: DiffTotals | undefined;
 }
 
 export interface StackView {
