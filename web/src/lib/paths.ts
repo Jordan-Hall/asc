@@ -7,6 +7,7 @@ export const PATTERNS = {
   inbox: "/inbox",
   settings: "/settings",
   search: "/search",
+  newRepo: "/new",
   repo: "/:owner/:repo",
   tree: "/:owner/:repo/tree/:ref/*path",
   blob: "/:owner/:repo/blob/:ref/*path",

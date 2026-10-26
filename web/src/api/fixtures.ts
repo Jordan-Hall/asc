@@ -1,6 +1,7 @@
 // A demo repository for the mock transport: a tree, a README, a very long file (to exercise the
 // virtualiser), a binary file, and two stacks of changes. Used by tests and by `?mock`.
 import { Changes } from "@asc/asc-client/changes";
+import { Inbox, InboxSection } from "@asc/asc-client/inbox";
 import { Repo } from "@asc/asc-client/repo";
 import { MockTransport, notFound } from "./mock";
 
@@ -94,28 +95,138 @@ export function changeIdBytes(ref: string, i: number): Uint8Array {
   return fakeId(`${ref}#${i}`, 16);
 }
 
-const REFS = [
-  "refs/heads/main",
-  "refs/heads/feature-auth",
-  "refs/heads/feature-cache",
-  "refs/tags/v0.1.0",
-];
 const MODE_DIR = 0o040000;
 const MODE_FILE = 0o100644;
+const NOW = () => Math.floor(Date.now() / 1000);
 
-const signature = (name: string) => ({
+interface InboxSeed {
+  section: InboxSection;
+  author: string;
+  ageSec: number;
+  threads: number;
+}
+
+/** What one demo repository looks like: its files, last commit, stacks and inbox. */
+interface Profile {
+  files: () => Map<string, Uint8Array>;
+  subject: string;
+  ageSec: number;
+  stacks: Record<string, readonly DemoChange[]>;
+  inbox: readonly InboxSeed[];
+}
+
+/** A small repository: a README plus the named files, each with a line of content. */
+function small(...paths: string[]): () => Map<string, Uint8Array> {
+  return () => {
+    const files = new Map<string, Uint8Array>();
+    files.set("README.md", enc.encode("# Readme\n\nA demo repository.\n"));
+    for (const p of paths) files.set(p, enc.encode(`${p}\n`));
+    return files;
+  };
+}
+
+const PROFILES: Record<string, Profile> = {
+  [DEMO_REPO]: {
+    files: demoFiles,
+    subject: "Initial import",
+    ageSec: 2 * 3600,
+    stacks: STACKS,
+    inbox: [
+      { section: InboxSection.NEEDS_REVIEW, author: "ada", ageSec: 1800, threads: 0 },
+      { section: InboxSection.NEEDS_REVIEW, author: "grace", ageSec: 5 * 3600, threads: 0 },
+      { section: InboxSection.RETURNED, author: "grace", ageSec: 26 * 3600, threads: 2 },
+      { section: InboxSection.WAITING, author: "linus", ageSec: 3 * 86400, threads: 1 },
+    ],
+  },
+  "acme/payments": {
+    files: small(
+      "go.mod",
+      "cmd/server/main.go",
+      "internal/billing/retry.go",
+      "internal/billing/charge.go",
+    ),
+    subject: "billing: retry failed charges with backoff",
+    ageSec: 35 * 60,
+    stacks: {
+      "refs/heads/billing-retry": [
+        {
+          title: "billing: extract charge client",
+          state: "open",
+          number: 212,
+          approvals: 2,
+          checks: "success",
+        },
+        {
+          title: "billing: retry failed charges",
+          state: "open",
+          number: 213,
+          approvals: 1,
+          checks: "pending",
+        },
+      ],
+    },
+    inbox: [{ section: InboxSection.CHECKS_FAILED, author: "you", ageSec: 3 * 3600, threads: 0 }],
+  },
+  "acme/web": {
+    files: small("package.json", "tsconfig.json", "src/main.tsx", "src/app.tsx"),
+    subject: "ui: tighten the sidebar spacing",
+    ageSec: 26 * 3600,
+    stacks: {},
+    inbox: [],
+  },
+  "acme/ledger": {
+    files: small("pyproject.toml", "ledger/__init__.py", "ledger/batch.py"),
+    subject: "batch inserts for the nightly import",
+    ageSec: 9 * 86400,
+    stacks: {
+      "refs/heads/batch-inserts": [
+        {
+          title: "ledger: batch inserts",
+          state: "open",
+          number: 88,
+          approvals: 0,
+          checks: "failure",
+        },
+      ],
+    },
+    inbox: [],
+  },
+  "asc/engine": {
+    files: small("Cargo.toml", "src/lib.rs", "src/graph.rs", "src/merge.rs"),
+    subject: "graph: cache merge bases per generation",
+    ageSec: 4 * 86400,
+    stacks: {},
+    inbox: [],
+  },
+};
+
+/** The names of the demo repositories, for tests and the dashboard screenshots. */
+export const DEMO_REPOS: readonly string[] = Object.keys(PROFILES);
+
+const profile = (name: string | undefined): Profile =>
+  PROFILES[name ?? ""] ?? (PROFILES[DEMO_REPO] as Profile);
+
+const refsOf = (p: Profile) => ["refs/heads/main", ...Object.keys(p.stacks), "refs/tags/v0.1.0"];
+
+const signature = (name: string, ageSec: number) => ({
   name: enc.encode(name),
   email: enc.encode("a@b.c"),
-  time: 1_760_000_000n,
+  time: BigInt(NOW() - ageSec),
 });
 
-/** A transport wired with the demo repository. */
+/** A transport wired with the demo repositories. */
 export function demoTransport(latencyMs = 0): MockTransport {
-  const files = demoFiles();
   const t = new MockTransport(latencyMs);
+  const filesCache = new Map<string, Map<string, Uint8Array>>();
+  const filesOf = (name: string | undefined) => {
+    const key = PROFILES[name ?? ""] ? (name as string) : DEMO_REPO;
+    let f = filesCache.get(key);
+    if (!f) filesCache.set(key, (f = profile(key).files()));
+    return f;
+  };
 
-  t.onUnary(Repo.method.listRefs, () => ({
-    refs: REFS.map((name) => ({
+  t.onUnary(Repo.method.listRefs, (req) => ({
+    refs: refsOf(profile(req.repo?.name)).map((name) => ({
       name,
       target: { t: { case: "changeset" as const, value: fakeId(name) } },
       version: 1n,
@@ -123,14 +234,18 @@ export function demoTransport(latencyMs = 0): MockTransport {
     head: "refs/heads/main",
   }));
 
-  t.onUnary(Repo.method.resolve, (req) => ({
-    ids: req.revspecs.map((r) => {
-      const name = REFS.find((n) => n === r || n.endsWith(`/${r}`));
-      return name ? fakeId(name) : r === "HEAD" ? fakeId("refs/heads/main") : new Uint8Array();
-    }),
-  }));
+  t.onUnary(Repo.method.resolve, (req) => {
+    const refs = refsOf(profile(req.repo?.name));
+    return {
+      ids: req.revspecs.map((r) => {
+        const name = refs.find((n) => n === r || n.endsWith(`/${r}`));
+        return name ? fakeId(name) : r === "HEAD" ? fakeId("refs/heads/main") : new Uint8Array();
+      }),
+    };
+  });
 
   t.onStream(Repo.method.readTree, function* (req) {
+    const files = filesOf(req.repo?.name);
     const dir = new TextDecoder().decode(req.path).replace(/\/$/, "");
     const prefix = dir ? `${dir}/` : "";
     const seen = new Map<string, boolean>();
@@ -153,6 +268,7 @@ export function demoTransport(latencyMs = 0): MockTransport {
   });
 
   t.onStream(Repo.method.readFile, function* (req) {
+    const files = filesOf(req.repo?.name);
     const spec = req.at.case === "revPath" ? req.at.value : "";
     const path = spec.slice(spec.indexOf(":") + 1);
     const body = files.get(path);
@@ -164,14 +280,15 @@ export function demoTransport(latencyMs = 0): MockTransport {
   });
 
   t.onStream(Repo.method.log, function* (req) {
+    const prof = profile(req.repo?.name);
     const include = req.include[0] ?? "refs/heads/main";
-    const stack = STACKS[include];
+    const stack = prof.stacks[include];
     if (stack && req.exclude.length > 0) {
       yield {
         entries: stack.map((c, i) => ({
           id: fakeId(`${include}@${i}`),
           message: enc.encode(`${c.title}\n\nBody text.`),
-          author: signature("Ada"),
+          author: signature("Ada", prof.ageSec + i * 600),
           change: changeIdBytes(include, i),
         })),
       };
@@ -181,8 +298,8 @@ export function demoTransport(latencyMs = 0): MockTransport {
       entries: [
         {
           id: fakeId(include),
-          message: enc.encode("Initial import\n\nBody."),
-          author: signature("Ada"),
+          message: enc.encode(`${prof.subject}\n\nBody.`),
+          author: signature("Ada", prof.ageSec),
         },
       ],
     };
@@ -190,7 +307,7 @@ export function demoTransport(latencyMs = 0): MockTransport {
 
   t.onUnary(Changes.method.stack, (req) => {
     const ref = req.at.case === "rev" ? req.at.value : "";
-    const stack = STACKS[ref];
+    const stack = profile(req.repo?.name).stacks[ref];
     if (!stack) return { trunk: req.target, changes: [] };
     return {
       trunk: req.target,
@@ -208,6 +325,34 @@ export function demoTransport(latencyMs = 0): MockTransport {
           checks: c.checks,
           url: "",
         },
+      })),
+    };
+  });
+
+  t.onUnary(Inbox.method.count, (req) => {
+    const seeds = profile(req.repo?.name).inbox;
+    const counts = new Map<InboxSection, number>();
+    for (const s of seeds) counts.set(s.section, (counts.get(s.section) ?? 0) + 1);
+    return {
+      total: seeds.length,
+      etag: `demo-${seeds.length}`,
+      counts: [...counts].map(([section, count]) => ({ section, count })),
+    };
+  });
+
+  t.onUnary(Inbox.method.list, (req) => {
+    const name = req.repo?.name ?? DEMO_REPO;
+    const seeds = profile(name).inbox;
+    return {
+      total: seeds.length,
+      items: seeds.map((s, i) => ({
+        change: changeIdBytes(`inbox:${name}`, i),
+        section: s.section,
+        latestVersion: 1 + (i % 3),
+        author: s.author,
+        updated: BigInt(NOW() - s.ageSec),
+        openThreads: s.threads,
+        requestedBy: s.section === InboxSection.NEEDS_REVIEW ? s.author : "",
       })),
     };
   });

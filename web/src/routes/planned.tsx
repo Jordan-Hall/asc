@@ -6,6 +6,7 @@ import { useTitle } from "../lib/title";
 
 export const PLANNED: Readonly<Record<string, { title: string; since: string }>> = {
   inbox: { title: "Inbox", since: "v1.2" },
+  newRepo: { title: "New repository", since: "v1.3" },
   search: { title: "Search", since: "v1.3" },
   repoSearch: { title: "Search", since: "v1.3" },
   blame: { title: "Blame", since: "v1.1" },

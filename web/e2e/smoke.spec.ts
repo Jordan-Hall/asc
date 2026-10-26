@@ -2,24 +2,20 @@
 // mobile (390) projects of playwright.config.ts. Each page must load with no console error or
 // warning, no failed or 4xx/5xx request (a CSP violation is a console error), no horizontal page
 // scroll, one h1, and no axe-core violation at WCAG 2.2 AA plus best practice.
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { axeViolations, watch } from "./helpers";
 
-const axeSource = readFileSync(
-  createRequire(import.meta.url).resolve("axe-core/axe.min.js"),
-  "utf8",
-);
 const shots = process.env.ASC_E2E_SHOTS;
 
 /** The demo repository of the mock transport (src/api/fixtures.ts). */
 const R = "/ui/asc/demo";
 const ROUTES: Record<string, string> = {
-  dashboard: "/ui/",
+  landing: "/ui/",
   signin: "/ui/signin",
   settings: "/ui/settings",
   inbox: "/ui/inbox",
   search: "/ui/search",
+  "new-repo": "/ui/new",
   repo: R,
   tree: `${R}/tree/main/src`,
   blob: `${R}/blob/main/src/index.ts`,
@@ -35,41 +31,6 @@ const ROUTES: Record<string, string> = {
   "repo-settings": `${R}/settings`,
   "not-found": "/ui/no/such/page/at/all",
 };
-
-/** Collects everything that should never happen on a healthy page. */
-function watch(page: Page): string[] {
-  const problems: string[] = [];
-  page.on("console", (m) => {
-    if (m.type() === "error" || m.type() === "warning") {
-      problems.push(`console ${m.type()}: ${m.text()}`);
-    }
-  });
-  page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
-  page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()}`));
-  page.on("response", (r) => {
-    if (r.status() >= 400) problems.push(`HTTP ${r.status()}: ${r.url()}`);
-  });
-  return problems;
-}
-
-interface AxeViolation {
-  id: string;
-  nodes: { target: unknown[] }[];
-}
-interface AxeGlobal {
-  axe: { run(ctx: Document, o: object): Promise<{ violations: AxeViolation[] }> };
-}
-
-async function axeViolations(page: Page): Promise<string[]> {
-  // evaluate() runs through the debugger protocol, so the strict CSP does not block it.
-  await page.evaluate(axeSource);
-  return page.evaluate(async () => {
-    const r = await (globalThis as unknown as AxeGlobal).axe.run(document, {
-      runOnly: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"],
-    });
-    return r.violations.map((v) => `${v.id} x${v.nodes.length} at ${v.nodes[0]?.target.join(" ")}`);
-  });
-}
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(scheme, () => {
