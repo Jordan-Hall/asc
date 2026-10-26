@@ -1,29 +1,37 @@
 @import "tailwindcss";
 
 /*
- * ASC tokens (monorepo packages/ui/src/theme.css), trimmed to what this app draws. Colours are
- * RGB channels so alpha can be applied: rgb(var(--color-border-rgb) / 0.5). Light primary is
- * #155e75 (--color-primary-button); dark primary is #22d3ee (--color-primary). Values keep the
- * asc names so the two files can be diffed.
+ * ASC brand tokens (docs/brand/BRAND.md). Three themes, chosen by <html data-theme>:
+ *   asc-light  light palette
+ *   asc-dark   dark palette
+ *   asc-auto   follows prefers-color-scheme (the default)
+ * `public/theme-init.js` and `src/lib/theme.ts` also put the class `dark` on <html> when the
+ * resolved scheme is dark; that class and the media query below select the same dark block, which
+ * test/lib.test.ts keeps identical. Colours are RGB channels so alpha can be applied:
+ * rgb(var(--color-border-rgb) / 0.5). Brand mapping: --color-primary is --asc-primary (links,
+ * tile), --color-text-base is --asc-ink, --color-text-muted is --asc-muted, --color-accent-fill is
+ * --asc-accent (a fill; never text on light). Every text pair is 4.5:1 or better.
  */
-:root {
+:root,
+[data-theme="asc-light"] {
   --color-primary: 18 84 105;
-  --color-primary-strong: 16 78 98;
-  --color-primary-button: 21 94 117;
+  --color-primary-strong: 14 70 88;
+  --color-primary-button: 18 84 105;
   --color-text-on-primary: 255 255 255;
-  --color-background-rgb: 248 250 252;
+  --color-accent-fill: 34 211 238;
+  --color-background-rgb: 246 248 250;
   --color-surface-rgb: 255 255 255;
   --color-component-rgb: 241 245 249;
-  --color-component-hover-rgb: 226 232 240;
-  --color-border-rgb: 203 213 225;
+  --color-component-hover-rgb: 232 237 243;
+  --color-border-rgb: 213 221 232;
   --color-control-border-rgb: 100 116 139;
   --color-skeleton-rgb: 203 213 225;
   --color-skeleton-soft-rgb: 226 232 240;
-  --color-text-base: 15 23 42;
-  --color-text-muted: 70 84 103;
-  --color-text-emphasis: 2 6 23;
-  --color-text-link: 8 78 98;
-  --color-text-link-focus-ring: 8 145 178;
+  --color-text-base: 11 18 32;
+  --color-text-muted: 71 85 105;
+  --color-text-emphasis: 11 18 32;
+  --color-text-link: 18 84 105;
+  --color-text-link-focus-ring: 18 84 105;
   --color-danger: 150 20 20;
   --color-warning: 135 62 6;
   --color-success: 3 94 68;
@@ -33,41 +41,85 @@
   --color-bg-warning: 254 243 199;
   --color-bg-danger: 254 226 226;
   --color-bg-default: 241 245 249;
-  /* asc accent (emerald): "your turn", merged, healthy. */
+  /* "Your turn", merged, healthy. */
   --color-accent-emerald: 3 94 66;
+  /* The header, hero and closing band are ink in every theme (the boards do the same). */
+  --hdr-bg-rgb: 11 18 32;
+  --hdr-text-rgb: 241 245 249;
+  --hdr-muted-rgb: 148 163 184;
+  --hdr-line-rgb: 36 48 73;
+  --hdr-field-rgb: 17 28 48;
+  --hdr-hover-rgb: 30 41 59;
 }
 
+[data-theme="asc-dark"],
 .dark {
-  --color-primary: 34 211 238;
-  --color-primary-strong: 34 211 238;
-  --color-primary-button: 8 145 178;
-  --color-text-on-primary: 15 23 42;
-  --color-background-rgb: 2 6 23;
-  --color-surface-rgb: 15 23 42;
-  --color-component-rgb: 30 41 59;
-  --color-component-hover-rgb: 51 65 85;
-  --color-border-rgb: 51 65 85;
+  --color-primary: 35 148 178;
+  --color-primary-strong: 76 179 208;
+  --color-primary-button: 35 148 178;
+  --color-text-on-primary: 11 18 32;
+  --color-accent-fill: 34 211 238;
+  --color-background-rgb: 11 18 32;
+  --color-surface-rgb: 21 31 51;
+  --color-component-rgb: 26 36 56;
+  --color-component-hover-rgb: 38 50 74;
+  --color-border-rgb: 42 55 80;
   --color-control-border-rgb: 148 163 184;
   --color-skeleton-rgb: 71 85 105;
   --color-skeleton-soft-rgb: 51 65 85;
-  --color-text-base: 226 232 240;
-  --color-text-muted: 169 181 198;
-  --color-text-emphasis: 248 250 252;
-  --color-text-link: 34 211 238;
+  --color-text-base: 241 245 249;
+  --color-text-muted: 148 163 184;
+  --color-text-emphasis: 255 255 255;
+  --color-text-link: 76 179 208;
   --color-text-link-focus-ring: 34 211 238;
   --color-danger: 250 154 154;
   --color-warning: 251 191 36;
   --color-success: 52 211 153;
   --color-info: 65 192 248;
   --color-bg-success: 6 78 59;
-  --color-bg-info: 22 78 99;
+  --color-bg-info: 14 62 84;
   --color-bg-warning: 120 53 15;
   --color-bg-danger: 127 29 29;
-  --color-bg-default: 30 41 59;
+  --color-bg-default: 26 36 56;
   --color-accent-emerald: 52 211 153;
 }
 
-@custom-variant dark (&:where(.dark, .dark *));
+/* ASC-DARK-AUTO-BEGIN */
+@media (prefers-color-scheme: dark) {
+  [data-theme="asc-auto"] {
+    --color-primary: 35 148 178;
+    --color-primary-strong: 76 179 208;
+    --color-primary-button: 35 148 178;
+    --color-text-on-primary: 11 18 32;
+    --color-accent-fill: 34 211 238;
+    --color-background-rgb: 11 18 32;
+    --color-surface-rgb: 21 31 51;
+    --color-component-rgb: 26 36 56;
+    --color-component-hover-rgb: 38 50 74;
+    --color-border-rgb: 42 55 80;
+    --color-control-border-rgb: 148 163 184;
+    --color-skeleton-rgb: 71 85 105;
+    --color-skeleton-soft-rgb: 51 65 85;
+    --color-text-base: 241 245 249;
+    --color-text-muted: 148 163 184;
+    --color-text-emphasis: 255 255 255;
+    --color-text-link: 76 179 208;
+    --color-text-link-focus-ring: 34 211 238;
+    --color-danger: 250 154 154;
+    --color-warning: 251 191 36;
+    --color-success: 52 211 153;
+    --color-info: 65 192 248;
+    --color-bg-success: 6 78 59;
+    --color-bg-info: 14 62 84;
+    --color-bg-warning: 120 53 15;
+    --color-bg-danger: 127 29 29;
+    --color-bg-default: 26 36 56;
+    --color-accent-emerald: 52 211 153;
+  }
+}
+/* ASC-DARK-AUTO-END */
+
+@custom-variant dark (&:where(.dark, .dark *, [data-theme="asc-dark"], [data-theme="asc-dark"] *));
 
 @theme inline {
   --color-page: rgb(var(--color-background-rgb));
@@ -84,6 +136,13 @@
   --color-brand: rgb(var(--color-primary-button));
   --color-on-brand: rgb(var(--color-text-on-primary));
   --color-accent: rgb(var(--color-primary));
+  --color-cyan: rgb(var(--color-accent-fill));
+  --color-hdr: rgb(var(--hdr-bg-rgb));
+  --color-hdr-fg: rgb(var(--hdr-text-rgb));
+  --color-hdr-muted: rgb(var(--hdr-muted-rgb));
+  --color-hdr-line: rgb(var(--hdr-line-rgb));
+  --color-hdr-field: rgb(var(--hdr-field-rgb));
+  --color-hdr-hover: rgb(var(--hdr-hover-rgb));
   --color-signal: rgb(var(--color-accent-emerald));
   --color-bad: rgb(var(--color-danger));
   --color-warn: rgb(var(--color-warning));
@@ -93,8 +152,8 @@
   --color-note-bg: rgb(var(--color-bg-info));
   --color-warn-bg: rgb(var(--color-bg-warning));
   --color-danger-bg: rgb(var(--color-bg-danger));
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 }
 
 @layer base {
@@ -156,4 +215,91 @@ html {
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
+}
+
+/*
+ * Mobile first. Base rules target 320 to 390 px; larger screens opt in with min-width breakpoints.
+ * Touch devices get 44 px targets for every control; the pointer-fine sizes in the components
+ * (h-9 and similar) only apply where a mouse is the likely input.
+ */
+@layer base {
+  html {
+    /* Notches and rounded corners: pages pad their edges with these. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+  }
+  body {
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    overflow-wrap: break-word;
+  }
+  /* Long words and paths wrap; code scrolls inside its own box (see .scroll-box). */
+  :where(img, svg, video, canvas) {
+    max-width: 100%;
+  }
+  :where(pre) {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  :where(input, select, textarea) {
+    /* 16 px stops iOS from zooming the page when a field is focused. */
+    font-size: max(16px, 1em);
+  }
+  @media (min-width: 40rem) {
+    :where(input, select, textarea) {
+      font-size: inherit;
+    }
+  }
+  @media (pointer: coarse) {
+    :where(button, [role="button"], [role="menuitem"], [role="menuitemradio"], summary, select) {
+      min-height: 44px;
+    }
+    :where(input:not([type="checkbox"]):not([type="radio"])) {
+      min-height: 44px;
+    }
+    :where(button, a[class*="inline-flex"]) {
+      min-width: 44px;
+    }
+    :where(input[type="checkbox"], input[type="radio"]) {
+      width: 1.25rem;
+      height: 1.25rem;
+    }
+  }
+}
+
+/* A horizontally scrolling box for code, diffs and wide tables. The page itself never scrolls sideways. */
+.scroll-box {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The command palette rises from the bottom edge on small screens. */
+@media (prefers-reduced-motion: no-preference) {
+  @media (max-width: 39.999rem) {
+    .asc-sheet[open] {
+      animation: asc-sheet-up 160ms ease-out;
+    }
+  }
+}
+@keyframes asc-sheet-up {
+  from {
+    transform: translateY(1.5rem);
+    opacity: 0;
+  }
+}
+
+/* The page does not move when motion is reduced. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

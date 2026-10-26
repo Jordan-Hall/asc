@@ -112,26 +112,26 @@ function useCommands(query: string, helpOpen: () => void): Command[] {
       {
         id: "theme-light",
         group: "Actions",
-        label: "Theme: light",
+        label: "Theme: ASC light",
         keywords: "appearance",
         icon: "sun",
-        run: () => setPref("light"),
+        run: () => setPref("asc-light"),
       },
       {
         id: "theme-dark",
         group: "Actions",
-        label: "Theme: dark",
+        label: "Theme: ASC dark",
         keywords: "appearance",
         icon: "moon",
-        run: () => setPref("dark"),
+        run: () => setPref("asc-dark"),
       },
       {
         id: "theme-system",
         group: "Actions",
-        label: "Theme: match system",
+        label: "Theme: ASC auto (match system)",
         keywords: "appearance",
         icon: "system",
-        run: () => setPref("system"),
+        run: () => setPref("asc-auto"),
       },
       token
         ? {
@@ -207,9 +207,11 @@ export default function Palette(props: { onHelp: () => void }): ReactNode {
       onClick={(e) => {
         if (e.target === dialog.current) dialog.current?.close();
       }}
-      className="fixed left-1/2 top-[10vh] m-0 w-[min(40rem,calc(100vw-1rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-line bg-surface p-0 text-fg shadow-2xl backdrop:bg-black/50"
+      // Mobile first: a bottom sheet. From sm up it is a centred panel near the top.
+      className="asc-sheet fixed inset-x-0 bottom-0 top-auto m-0 open:flex max-h-[85dvh] w-full max-w-none flex-col overflow-hidden rounded-b-none rounded-t-2xl border border-line bg-surface p-0 pb-[env(safe-area-inset-bottom)] text-fg shadow-2xl backdrop:bg-black/50 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-[10vh] sm:w-[min(40rem,calc(100vw-1rem))] sm:-translate-x-1/2 sm:rounded-2xl sm:pb-0"
     >
-      <div className="flex items-center gap-3 border-b border-line px-4">
+      <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-line sm:hidden" aria-hidden="true" />
+      <div className="flex shrink-0 items-center gap-3 border-b border-line pl-4 pr-1 sm:pr-4">
         <Icon name="search" className="shrink-0 text-fg-muted" />
         <input
           ref={input}
@@ -239,15 +241,23 @@ export default function Palette(props: { onHelp: () => void }): ReactNode {
           }}
           className="h-14 min-w-0 flex-1 bg-transparent text-base text-fg-strong outline-none placeholder:text-fg-muted"
         />
-        <kbd className="rounded border border-control px-1.5 font-mono text-xs text-fg-muted">
+        <kbd className="hidden rounded border border-control px-1.5 font-mono text-xs text-fg-muted sm:block">
           Esc
         </kbd>
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={() => dialog.current?.close()}
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-fg-muted hover:bg-subtle-hover sm:hidden"
+        >
+          <Icon name="x" size={18} />
+        </button>
       </div>
       <div
         id={listId}
         role="listbox"
         aria-label="Results"
-        className="max-h-[min(24rem,60vh)] overflow-y-auto p-2"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-2 sm:max-h-[min(24rem,60dvh)] sm:flex-none"
       >
         {results.length === 0 ? (
           <p className="px-3 py-8 text-center text-sm text-fg-muted">
@@ -274,14 +284,14 @@ export default function Palette(props: { onHelp: () => void }): ReactNode {
                 aria-selected={i === at}
                 onClick={() => run(c)}
                 onPointerMove={() => setActive(i)}
-                className={`flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-3 text-sm ${
+                className={`flex min-h-11 cursor-pointer sm:min-h-10 items-center gap-3 rounded-lg px-3 text-sm ${
                   i === at ? "bg-subtle-hover text-fg-strong" : "text-fg"
                 }`}
               >
                 <Icon name={c.icon} className="shrink-0 text-fg-muted" />
                 <span className="min-w-0 flex-1 truncate">{c.label}</span>
                 {c.hint ? (
-                  <kbd className="rounded border border-control px-1.5 font-mono text-xs text-fg-muted">
+                  <kbd className="hidden rounded border border-control px-1.5 font-mono text-xs text-fg-muted sm:block">
                     {c.hint}
                   </kbd>
                 ) : null}
@@ -291,13 +301,13 @@ export default function Palette(props: { onHelp: () => void }): ReactNode {
         })}
       </div>
       <div
-        className="flex items-center gap-4 border-t border-line bg-subtle px-4 text-xs text-fg-muted"
+        className="flex shrink-0 items-center gap-4 border-t border-line bg-subtle px-4 text-xs text-fg-muted"
         style={{ height: 36 }}
       >
-        <span>
+        <span className="hidden sm:inline">
           <kbd className="font-mono">↑↓</kbd> move
         </span>
-        <span>
+        <span className="hidden sm:inline">
           <kbd className="font-mono">Enter</kbd> open
         </span>
         <span className="ml-auto" role="status" aria-live="polite">
