@@ -1,0 +1,50 @@
+# ASC Hub, all in one image, as ONE Coolify "Docker Compose" service.
+#
+# One container runs the hub (the Forgejo v16 fork) and `asc serve` (its repository storage).
+# The entrypoint generates the shared secrets on first start, writes the asc serve configuration,
+# and keeps both programs together. All state is the one volume at /var/lib/gitea (SQLite for the
+# hub and for asc serve, objects on the volume). See docs/asc/OPERATIONS.md in the ASC Hub repo.
+#
+# Coolify: domain on service `hub`, port 3000 (SERVICE_FQDN_HUB_3000 below). Set
+# ASC_HUB_ROOT_URL to the same https address. Git over SSH is published on a host port that
+# Coolify's HTTP proxy does not carry: open it in the firewall.
+#
+# First administrator: with ASC_HUB_ADMIN_EMAIL set, the container creates `asc-admin` once and
+# writes the generated password to /var/lib/gitea/bootstrap/admin-password (mode 0600). Read it
+# once, change it at first sign-in, delete the file:
+#   docker exec <hub container> cat /var/lib/gitea/bootstrap/admin-password
+#
+# Variables (all names here; values go in the Coolify environment, never in this file):
+#   ASC_HUB_IMAGE_TAG      required   12-character commit tag of the image; never a moving tag
+#   ASC_HUB_IMAGE_REPO     optional   default ghcr.io/jordan-hall/asc-hub
+#   ASC_HUB_ROOT_URL       required   public https URL, e.g. https://hub.example.org/
+#   ASC_HUB_SSH_DOMAIN     required   host name in ssh clone URLs, e.g. hub.example.org
+#   ASC_HUB_SSH_PORT       optional   host port for SSH (default 22225); also shown in clone URLs
+#   ASC_HUB_ADMIN_EMAIL    required   e-mail of the first administrator, e.g. admin@example.org
+#   ASC_HUB_ADMIN_USER     optional   default asc-admin
+#   ASC_HUB_APP_NAME       optional   default ASC Hub
+
+services:
+  hub:
+    image: ${ASC_HUB_IMAGE_REPO:-ghcr.io/jordan-hall/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the 12-character commit tag of the hub image}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      # Coolify magic variable: routes the domain to port 3000 and writes the proxy labels.
+      SERVICE_FQDN_HUB_3000: ''
+      # The plain APP_NAME stops the first-start template from writing the Forgejo default.
+      APP_NAME: ${ASC_HUB_APP_NAME:-ASC Hub}
+      ROOT_URL: ${ASC_HUB_ROOT_URL:?public https URL of the hub, for example https://hub.example.org/}
+      SSH_DOMAIN: ${ASC_HUB_SSH_DOMAIN:?host name shown in ssh clone URLs, for example hub.example.org}
+      SSH_PORT: ${ASC_HUB_SSH_PORT:-22225}
+      ASC_HUB_ADMIN_EMAIL: ${ASC_HUB_ADMIN_EMAIL:?e-mail of the first administrator, for example admin@example.org}
+      ASC_HUB_ADMIN_USER: ${ASC_HUB_ADMIN_USER:-asc-admin}
+    volumes:
+      - hub-data:/var/lib/gitea
+    expose:
+      - '3000'
+    ports:
+      - '${ASC_HUB_SSH_PORT:-22225}:2222'
+
+volumes:
+  hub-data:
