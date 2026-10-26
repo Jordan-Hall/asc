@@ -21,6 +21,9 @@ sha1.workspace = true
 url.workspace = true
 toml.workspace = true
 regex.workspace = true
+# SSHSIG signatures over changesets (sshsig.rs). The features are the key kinds asc accepts.
+ssh-key = { version = "=0.7.0-rc.11", default-features = false, features = ["std", "ed25519", "p256", "rsa"] }
 
 [dev-dependencies]
 proptest.workspace = true
+ssh-key = { version = "=0.7.0-rc.11", default-features = false, features = ["std", "ed25519", "p256", "rsa", "rand_core", "getrandom"] }

@@ -61,6 +61,7 @@ pub mod seeds;
 pub mod ssh;
 pub mod turbo;
 pub mod update;
+pub mod vault;
 pub mod watch_refs;
 pub mod web;
 

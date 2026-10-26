@@ -70,6 +70,10 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 getrandom = "0.4"
+# The vault (vault/): XChaCha20-Poly1305 under an HKDF-SHA256 derived data key; keys are zeroised.
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+hkdf = "0.13.0"
+zeroize = "1.9.1"
 # JWT signature checks for the optional MCP OAuth path (mcp/oauth.rs); already built for rustls.
 ring = "0.17.14"
 # Free space of the volume that holds the git views (`min_free_disk`, SPEC 25.5).
