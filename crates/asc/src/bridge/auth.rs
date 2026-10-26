@@ -80,6 +80,19 @@ fn env_token(value: Option<std::ffi::OsString>) -> Result<Option<String>, Status
     Ok(Some(token.to_owned()))
 }
 
+/// The environment token for `url`: `ASC_TOKEN_HOST` (`pin`) pins it to the one host it was
+/// injected for, so any other host gets none and falls through to the credential helpers.
+fn env_token_for(
+    url: &Url,
+    pin: Option<&str>,
+    value: Option<std::ffi::OsString>,
+) -> Result<Option<String>, Status> {
+    if !crate::credential::token_host_allows(pin, url) {
+        return Ok(None);
+    }
+    env_token(value)
+}
+
 /// The token for `host`, or `NOT_FOUND`.
 pub async fn token(
     host: &str,
@@ -87,7 +100,8 @@ pub async fn token(
     helpers: HelperConfig,
 ) -> Result<String, Status> {
     let url = origin_of(host)?;
-    if let Some(t) = env_token(std::env::var_os("ASC_TOKEN"))? {
+    let pin = std::env::var(crate::credential::ASC_TOKEN_HOST).ok();
+    if let Some(t) = env_token_for(&url, pin.as_deref(), std::env::var_os("ASC_TOKEN"))? {
         return Ok(t);
     }
     let not_found = || Status::not_found("NOT_FOUND: no credential is stored for the remote host");
@@ -181,6 +195,34 @@ pub async fn store_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_environment_token_answers_only_for_its_pinned_host() {
+        let tok = || Some(std::ffi::OsString::from("tok"));
+        let a = origin_of("a.example.test").unwrap();
+        let b = origin_of("b.example.test").unwrap();
+        // Unpinned: any host, as before.
+        assert_eq!(
+            env_token_for(&a, None, tok()).unwrap().as_deref(),
+            Some("tok")
+        );
+        // Pinned: that host only; another host falls through to the helpers.
+        assert_eq!(
+            env_token_for(&a, Some("a.example.test"), tok())
+                .unwrap()
+                .as_deref(),
+            Some("tok")
+        );
+        assert_eq!(
+            env_token_for(&b, Some("a.example.test"), tok()).unwrap(),
+            None
+        );
+        // An unparsable pin sends the token nowhere.
+        assert_eq!(
+            env_token_for(&a, Some("https://a.example.test/x"), tok()).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn hosts_are_forge_origins_only() {
