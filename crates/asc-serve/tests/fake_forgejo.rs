@@ -725,7 +725,7 @@ mod forgejo {
         assert_eq!(own.principal.id, "-2:gitea-actions");
         // Repository names compare exactly: the registry is case-sensitive, so another case
         // is another repo even when Forgejo answers "allowed" for it.
-        for other in ["asc/ORBIT", "asc/orbit", "asc/ORBIT"] {
+        for other in ["asc/ORBIT", "ASC/orbit", "ASC/ORBIT"] {
             fake.with(|i| {
                 i.authz
                     .insert(("task".into(), other.into()), task("asc/orbit"));
@@ -741,7 +741,7 @@ mod forgejo {
         fake.with(|i| {
             i.authz
                 .insert(("task".into(), "asc/asc".into()), task("asc/asc"));
-            for other in ["asc/ASC", "asc/ASC"] {
+            for other in ["asc/ASC", "ASC/asc", "ASC/ASC"] {
                 i.authz
                     .insert(("task".into(), other.into()), task("asc/asc"));
             }
@@ -749,7 +749,7 @@ mod forgejo {
         with.decide(Some(&t), "asc/asc", Access::Write)
             .await
             .unwrap();
-        for other in ["asc/ASC", "asc/ASC"] {
+        for other in ["asc/ASC", "ASC/asc", "ASC/ASC"] {
             assert_eq!(
                 with.decide(Some(&t), other, Access::Read)
                     .await
@@ -758,17 +758,21 @@ mod forgejo {
                 "{other}"
             );
         }
-        // A composition grant matches both names exactly.
+        // A composition grant matches both names exactly: case-folded grants do not match.
         let folded = internal_authz(
             &url,
             vec![
                 CompositionGrant {
-                    parent: "asc/orbit".into(),
+                    parent: "asc/ORBIT".into(),
                     child: "asc/nova".into(),
                 },
                 CompositionGrant {
-                    parent: "asc/ORBIT".into(),
-                    child: "asc/nova".into(),
+                    parent: "asc/orbit".into(),
+                    child: "asc/NOVA".into(),
+                },
+                CompositionGrant {
+                    parent: "ASC/ORBIT".into(),
+                    child: "ASC/NOVA".into(),
                 },
             ],
         );
