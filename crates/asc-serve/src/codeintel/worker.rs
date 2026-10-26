@@ -637,6 +637,14 @@ impl Worker {
         m.entry(ns.to_vec()).or_default().clone()
     }
 
+    /// True when nothing of `ns` waits in memory for a commit: no writer, no staged job and
+    /// no buffered vectors. A worker may be dropped once its namespace is idle.
+    pub async fn is_idle(&self, ns: &[u8]) -> bool {
+        let buf = self.buf(ns);
+        let b = buf.lock().await;
+        b.files.is_none() && b.pending.is_empty() && b.vec.is_none()
+    }
+
     fn publisher<'a>(&'a self, nsn: &'a str, kind: IndexKind) -> Publisher<'a> {
         Publisher {
             objects: &*self.objects,
