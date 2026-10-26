@@ -7,7 +7,7 @@ import com.google.gson.JsonParser
  * Restack" (N from `WsStack.behind`), a toggle runs `live pause|resume`, and a live-conflict notice shows until
  * `live resume`. The plugin never moves the working copy: its only verbs are `restack` and `live pause|resume`,
  * run through the bridge allowlist. Pure logic, no platform types; the verb runner is injected.
- * TODO(P10): the bridge allowlist has no `live` entry yet; [LiveVerbs] is the seam.
+ * The bridge allowlist has no `live` entry, so [LiveVerbs] is the seam a runner fills in once it has one.
  */
 data class LiveState(val paused: Boolean, val conflict: Boolean)
 

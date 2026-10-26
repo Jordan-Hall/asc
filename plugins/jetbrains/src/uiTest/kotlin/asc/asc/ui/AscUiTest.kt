@@ -54,8 +54,8 @@ class AscUiTest {
 
     @Test fun mergeDialogOpensOnAConflictedFile() {
         val bin = UiHarness.ascBin()
-        // TODO(P12): needs the `conflict` scenario of @asc/asc-fixtures (a restack paused on two conflicted
-        // files); the CLI-built dirty fixture has no conflict, so the test is skipped until that package lands.
+        // Needs the `conflict` scenario of @asc/asc-fixtures (a restack paused on two conflicted files); the
+        // CLI-built dirty fixture has no conflict, so the test is skipped while the harness builds none.
         val project = UiHarness.conflictFixture(bin)
         Assumptions.assumeTrue(project != null, "the conflict fixture is not available (P12)")
         UiHarness.start("mergeDialog", project!!).useDriverAndCloseIde {

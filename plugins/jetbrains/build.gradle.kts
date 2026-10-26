@@ -3,9 +3,10 @@ import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
-    kotlin("jvm") version "2.1.20"
-    id("org.jetbrains.intellij.platform") version "2.5.0"
+    kotlin("jvm") version "2.3.0"
+    id("org.jetbrains.intellij.platform") version "2.10.5"
     id("com.google.protobuf") version "0.9.4"
+    id("asc-allowlist")
 }
 
 group = "asc.asc"
@@ -32,9 +33,22 @@ dependencies {
 // protobuf-java is generated from the shared proto/ tree (the same files drive the TypeScript client).
 sourceSets { main { proto { srcDir("../../proto") } } }
 
+// The built asc-ui bundle (`bun run build` in packages/asc-ui) is served from the jar under /asc-ui/.
+val copyAscUi = tasks.register<Copy>("copyAscUi") {
+    description = "Copies packages/asc-ui/dist into the plugin resources under /asc-ui/."
+    from(layout.projectDirectory.dir("../../packages/asc-ui/dist"))
+    into(layout.buildDirectory.dir("generated/asc-ui/asc-ui"))
+    doFirst {
+        if (!layout.projectDirectory.dir("../../packages/asc-ui/dist").asFile.isDirectory) {
+            logger.warn("packages/asc-ui/dist is missing; build it first or the plugin pages are empty")
+        }
+    }
+}
+sourceSets { main { resources.srcDir(layout.buildDirectory.dir("generated/asc-ui")) } }
+tasks.named("processResources") { dependsOn(copyAscUi) }
+
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:4.31.1" }
-    generateProtoTasks { all().configureEach { builtins { id("java") } } }
 }
 
 intellijPlatform {
@@ -61,11 +75,11 @@ intellijPlatform {
     pluginVerification {
         ides {
             for (v in listOf("2026.1", "2026.2")) {
-                create(IntelliJPlatformType.IntellijIdeaUltimate, v)
-                create(IntelliJPlatformType.Rider, v)
-                create(IntelliJPlatformType.RustRover, v)
-                create(IntelliJPlatformType.PyCharmProfessional, v)
-                create(IntelliJPlatformType.WebStorm, v)
+                create(IntelliJPlatformType.IntellijIdea, v) { }
+                create(IntelliJPlatformType.Rider, v) { }
+                create(IntelliJPlatformType.RustRover, v) { }
+                create(IntelliJPlatformType.PyCharmProfessional, v) { }
+                create(IntelliJPlatformType.WebStorm, v) { }
             }
         }
     }

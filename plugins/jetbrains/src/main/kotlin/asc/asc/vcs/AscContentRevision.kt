@@ -1,13 +1,13 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.LogRequest
-import asc.v1.Repo.LogResponse
-import asc.v1.Repo.ReadFileResponse
-import asc.v1.Workspace.WsLogRequest
-import asc.v1.Workspace.WsReadFileRequest
-import asc.v1.Workspace.WsRevPath
-import asc.v1.Workspace.WsStatusRequest
-import asc.v1.Workspace.WsStatusResponse
+import asc.v1.RepoOuterClass.LogRequest
+import asc.v1.RepoOuterClass.LogResponse
+import asc.v1.RepoOuterClass.ReadFileResponse
+import asc.v1.WorkspaceOuterClass.WsLogRequest
+import asc.v1.WorkspaceOuterClass.WsReadFileRequest
+import asc.v1.WorkspaceOuterClass.WsRevPath
+import asc.v1.WorkspaceOuterClass.WsStatusRequest
+import asc.v1.WorkspaceOuterClass.WsStatusResponse
 import com.google.protobuf.ByteString
 import com.intellij.openapi.vcs.FilePath
 import com.intellij.openapi.vcs.changes.ByteBackedContentRevision

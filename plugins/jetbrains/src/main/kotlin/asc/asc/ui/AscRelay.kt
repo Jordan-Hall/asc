@@ -1,8 +1,8 @@
 package asc.asc.ui
 
-import asc.v1.Bridge.RunRequest
-import asc.v1.Changes.RequestMergeRequest
-import asc.v1.Workspace.WsStageRequest
+import asc.v1.BridgeOuterClass.RunRequest
+import asc.v1.ChangesOuterClass.RequestMergeRequest
+import asc.v1.WorkspaceOuterClass.WsStageRequest
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -27,9 +27,9 @@ import kotlinx.coroutines.launch
 // The confirmation text is composed here from the parsed request, never taken from the page. The page never
 // sees a token: the host API executor adds it.
 //
-// TODO(P48): `Allowlist.kt` is meant to be generated from allowlist.json by the Gradle task `generateAllowlist`.
-// Until that task exists this file parses the same json at runtime ([Allowlist.parse]) from the classpath
-// resource [Allowlist.RESOURCE]; when the resource is missing the relay denies everything.
+// The Gradle task `generateAllowlist` embeds allowlist.json (with its SHA-256) as `GeneratedAllowlist` and puts
+// it on the classpath as the resource [Allowlist.RESOURCE]; this file parses that json at runtime
+// ([Allowlist.parse]), and when the resource is missing the relay denies everything.
 //
 // Wire (JSON strings, bytes as standard base64). Page to host: {id, method, bytes, root?}, {id, cancel:true},
 // {id, hostApi:{provider, method, path, body?}}, {id, avatar:url}, {id, host:{op, ...}}. Host to page: {id, reply},

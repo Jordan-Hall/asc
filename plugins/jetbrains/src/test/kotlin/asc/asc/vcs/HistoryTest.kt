@@ -1,14 +1,14 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.BlameHunk
-import asc.v1.Repo.BlameResponse
-import asc.v1.Repo.LineHistoryRequest
-import asc.v1.Repo.LogEntry
-import asc.v1.Repo.LogResponse
-import asc.v1.Repo.ReviewState
-import asc.v1.Repo.Signature
-import asc.v1.Workspace.WsBlameRequest
-import asc.v1.Workspace.WsLogRequest
+import asc.v1.RepoOuterClass.BlameHunk
+import asc.v1.RepoOuterClass.BlameResponse
+import asc.v1.RepoOuterClass.LineHistoryRequest
+import asc.v1.RepoOuterClass.LogEntry
+import asc.v1.RepoOuterClass.LogResponse
+import asc.v1.RepoOuterClass.ReviewState
+import asc.v1.RepoOuterClass.Signature
+import asc.v1.WorkspaceOuterClass.WsBlameRequest
+import asc.v1.WorkspaceOuterClass.WsLogRequest
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf

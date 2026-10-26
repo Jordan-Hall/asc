@@ -1,21 +1,30 @@
 package asc.asc.auth
 
+import asc.asc.bridge.AscExecutable
 import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
- * "Configure agents": `asc mcp install --scope project`, run in the project root. No secret is in argv.
- * TODO(plugin.xml): an action entry for this and for sign-in is added by the unit that owns plugin.xml.
+ * "Configure agents": `asc -C <root> mcp install --scope project`. No secret is in argv. It runs only an
+ * absolute asc path, from that executable's own directory (never the project root, where a planted
+ * executable would be found first on Windows); the root goes through `-C`.
  */
 object ConfigureAgents {
-    fun args(): List<String> = listOf("mcp", "install", "--scope", "project")
+    fun args(root: String): List<String> = listOf("-C", root, "mcp", "install", "--scope", "project")
 
     /** Returns a user-facing message; never throws. */
-    fun run(ascPath: String?, root: String?, exec: (List<String>, File) -> Int = ::runProcess): String {
-        if (ascPath == null) return "asc was not found; set the path to asc."
+    fun run(
+        ascPath: String?,
+        root: String?,
+        exec: (List<String>, File) -> Int = ::runProcess,
+        windows: Boolean = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true),
+    ): String {
+        if (ascPath == null || !AscExecutable.isAbsolute(ascPath, windows)) {
+            return "asc was not found; set the path to asc."
+        }
         if (root == null) return "Open an ASC workspace to configure agents."
         val ok = try {
-            exec(listOf(ascPath) + args(), File(root)) == 0
+            exec(listOf(ascPath) + args(root), File(ascPath).absoluteFile.parentFile) == 0
         } catch (_: Exception) {
             false
         }

@@ -1,7 +1,7 @@
 package asc.asc.vcs
 
-import asc.v1.Bridge.RunEvent
-import asc.v1.Bridge.RunRequest
+import asc.v1.BridgeOuterClass.RunEvent
+import asc.v1.BridgeOuterClass.RunRequest
 import asc.v1.WorkspaceOuterClass.WsStageRequest
 import com.google.protobuf.ByteString
 import com.intellij.openapi.components.service
@@ -168,7 +168,7 @@ class AscCheckinEnvironment(private val project: Project, private val vcs: AscVc
     companion object {
         /**
          * Set on the [CommitContext] by the amend toggle.
-         * TODO(P41a): wire `AmendCommitAware` once it is verified against the 2026.1 SDK; no SDK is available here.
+         * `AmendCommitAware` is not wired: it has not been verified against the 2026.1 SDK, so only this key carries the toggle.
          */
         @JvmField
         val AMEND: Key<Boolean> = Key.create("asc.asc.amend")

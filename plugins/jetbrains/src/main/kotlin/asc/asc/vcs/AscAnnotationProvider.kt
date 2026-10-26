@@ -1,7 +1,7 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.BlameResponse
-import asc.v1.Workspace.WsBlameRequest
+import asc.v1.RepoOuterClass.BlameResponse
+import asc.v1.WorkspaceOuterClass.WsBlameRequest
 import com.google.protobuf.ByteString
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileDocumentManager

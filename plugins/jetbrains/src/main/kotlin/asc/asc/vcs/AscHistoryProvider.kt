@@ -1,10 +1,10 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.LineHistoryRequest
-import asc.v1.Repo.LogEntry
-import asc.v1.Repo.LogRequest
-import asc.v1.Repo.LogResponse
-import asc.v1.Workspace.WsLogRequest
+import asc.v1.RepoOuterClass.LineHistoryRequest
+import asc.v1.RepoOuterClass.LogEntry
+import asc.v1.RepoOuterClass.LogRequest
+import asc.v1.RepoOuterClass.LogResponse
+import asc.v1.WorkspaceOuterClass.WsLogRequest
 import com.google.protobuf.ByteString
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.components.service
@@ -56,7 +56,7 @@ object AscHistory {
      * Commits that touched lines [startLine]..[endLine] (1-based, inclusive) of [relPath] at [rev] (blank = HEAD).
      * Follows `resume_token` while the scan budget truncates, up to [maxCalls] calls, then reports what it has
      * with `truncated` set.
-     * TODO(C30a): `Repo.LineHistory` has no `Workspace` wrapper; the repo ref is left empty for the local repo.
+     * `Repo.LineHistory` has no `Workspace` wrapper, so the repo ref is left empty for the local repo.
      */
     suspend fun lineHistory(
         calls: AscCalls,
