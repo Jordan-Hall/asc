@@ -44,8 +44,14 @@ struct Seen {
     resolves: Mutex<Vec<Vec<String>>>,
     merges: Mutex<Vec<(String, String, bool)>>,
     /// `(principal, op id present, mode, ref, new tip)`.
-    updates: Mutex<Vec<(String, bool, i32, String, Vec<u8>)>>,
+    updates: Mutex<Vec<UpdateRecord>>,
 }
+
+/// One recorded update: principal, op id present, mode, ref, new tip.
+type UpdateRecord = (String, bool, i32, String, Vec<u8>);
+
+/// Builds an `RpcError` from the error info.
+type ErrorCtor = fn(ErrorInfo) -> RpcError;
 
 /// How the fake pipeline answers `UpdateRefs`.
 #[derive(Default)]
@@ -381,7 +387,7 @@ async fn a_branch_outside_land_branches_is_refused_before_anything_is_read() {
 #[tokio::test]
 async fn the_pipeline_decides_protections_approvals_and_hooks() {
     let r = rig();
-    let cases: [(&str, fn(ErrorInfo) -> RpcError); 5] = [
+    let cases: [(&str, ErrorCtor); 5] = [
         ("HOOK_REJECTED", RpcError::HookRejected),
         ("PATH_POLICY", RpcError::PathPolicy),
         ("CHANGE_NOT_ALLOWED", RpcError::ChangeNotAllowed),

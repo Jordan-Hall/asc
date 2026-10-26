@@ -442,8 +442,10 @@ async fn cache_role_answers_404() {
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
 
     // `register` mounts nothing on the cache role, even if the flag were set.
-    let mut cfg = ServeConfig::default();
-    cfg.role = asc_serve::config::Role::Cache;
+    let mut cfg = ServeConfig {
+        role: asc_serve::config::Role::Cache,
+        ..ServeConfig::default()
+    };
     cfg.mcp.enabled = true;
     let ext = asc_serve::registry::Extensions::new();
     mcp::register(&ext, &cfg);

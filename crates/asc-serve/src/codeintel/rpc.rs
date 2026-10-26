@@ -90,6 +90,9 @@ use super::worker::{EmbedModel, SqlManifest, current_versions, ns_name, read_chu
 use crate::idmode::{Eng, IdCodec};
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 
+/// Per file: its ord, paths in the revision and secret flag; `None` when outside the kept scope.
+type Places = HashMap<FileId, Option<(u32, Vec<RepoPath>, Option<bool>)>>;
+
 /// Namespaces one query may search: the repository and its composed children.
 pub const MAX_TARGETS: usize = 16;
 /// Levels of composition followed below the repository (the sdk's own gitlinks, say).
@@ -1487,8 +1490,7 @@ impl CodeIntelRpc {
         if defs.is_empty() {
             return Ok(Vec::new());
         }
-        let mut places: HashMap<FileId, Option<(u32, Vec<RepoPath>, Option<bool>)>> =
-            HashMap::new();
+        let mut places: Places = HashMap::new();
         // Resolve the files of `hits` once: ord, paths in this revision, secret flag.
         for h in &defs {
             self.place(t, searcher, kept, &mut places, h.file).await?;
@@ -1554,7 +1556,7 @@ impl CodeIntelRpc {
         t: &Target,
         searcher: &NsSearcher,
         kept: &RoaringBitmap,
-        places: &mut HashMap<FileId, Option<(u32, Vec<RepoPath>, Option<bool>)>>,
+        places: &mut Places,
         file: FileId,
     ) -> Result<(), Status> {
         if places.contains_key(&file) {

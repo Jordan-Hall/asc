@@ -1396,9 +1396,9 @@ impl GitHttp {
         service: Service,
         protocol: Option<GitProtocol>,
     ) -> Option<GitProtocol> {
-        if !protocol
+        if protocol
             .as_ref()
-            .is_some_and(|p| p.version() == ProtocolVersion::V2)
+            .is_none_or(|p| p.version() != ProtocolVersion::V2)
         {
             return protocol;
         }
