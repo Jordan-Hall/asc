@@ -167,6 +167,9 @@ async fn client_routes_fall_back_to_index_and_missing_files_are_404() {
         "/ui",
         "/ui/acme/app",
         "/ui/acme/app/blob/main/src/a",
+        // A source file opens on reload and from a shared link.
+        "/ui/acme/app/blob/main/src/a.rs",
+        "/ui/acme/app/blob/main/README.md",
         "/ui/inbox",
     ] {
         let r = call(empty(get(p).header(header::ACCEPT, "text/html,*/*;q=0.8"))).await;
@@ -175,7 +178,7 @@ async fn client_routes_fall_back_to_index_and_missing_files_are_404() {
     }
     for p in [
         "/ui/static/js/missing.js",
-        "/ui/acme/app/blob/main/src/a.rs",
+        "/ui/static/js/nested/missing.js",
         "/ui/favicon.svg",
     ] {
         let r = call(empty(get(p).header(header::ACCEPT, "text/html"))).await;
@@ -185,6 +188,12 @@ async fn client_routes_fall_back_to_index_and_missing_files_are_404() {
             "{p} must not return the app shell"
         );
     }
+    // A file path asked for as data (curl, fetch with `*/*`) is not the shell.
+    let r = call(empty(
+        get("/ui/acme/app/blob/main/src/a.rs").header(header::ACCEPT, "*/*"),
+    ))
+    .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
     // A route asked for as data (fetch with Accept: application/json) is not the shell.
     let r = call(empty(
         get("/ui/acme/app").header(header::ACCEPT, "application/json"),

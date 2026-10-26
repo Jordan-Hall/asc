@@ -119,7 +119,7 @@ asc ids are content hashes. The loader resolves a ref to an id once (`Resolve`, 
 ### 4.5 Rendering rules that prevent layout shift
 
 - Skeletons are drawn with the real dimensions of the thing they replace (row height, header height); the asc `--color-skeleton-rgb` tokens are used so they are visible in both themes.
-- Fixed row heights for tree rows (36 px), code lines (20 px), history rows (56 px), change rows (64 px); the virtualiser needs no measuring.
+- Fixed row heights for tree rows (36 px), code lines (24 px, the WCAG 2.2 target size of the line-number links), history rows (56 px), change rows (64 px); the virtualiser needs no measuring.
 - Images and avatars have explicit width and height; fonts are system fonts in v1 (no font swap shift).
 - Scrollbar gutter is reserved (`scrollbar-gutter: stable`).
 
@@ -172,7 +172,8 @@ Serving rules:
 | `GET /ui/static/**` (content-hashed) | 200, `Cache-Control: public, max-age=31536000, immutable`, `ETag`, `Vary: Accept-Encoding`; best of br, gzip, identity |
 | `GET /ui/`, any extension-less `GET /ui/**` that accepts `text/html` | `index.html`: `Cache-Control: no-cache`, strong `ETag`, `If-None-Match` gives 304 |
 | other unhashed files (`/ui/theme-init.js`, `/ui/favicon.svg`) | `Cache-Control: no-cache` plus ETag |
-| unknown path with an extension | 404 (never the SPA shell) |
+| `GET /ui/<owner>/<repo>/**` whose last segment has an extension (a source file such as `src/lib.rs`) and that names `text/html` in `Accept` (a browser navigation) | `index.html`, so a reload or a shared link to a file opens it |
+| any other unknown path with an extension (under `static/`, top level, or fetched with `*/*`) | 404 (never the SPA shell) |
 | non-GET/HEAD | 405 with `Allow: GET, HEAD` |
 
 Security headers on every `/ui` response:
