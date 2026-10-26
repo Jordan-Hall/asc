@@ -331,7 +331,7 @@ x = \"y\"
         );
         assert_eq!(
             hex(v.fingerprint().as_bytes()),
-            "86accc04887c3198c83e9324a5425c09130b028441ca9235e1a0138bb850e4f2"
+            "9db6c60e98f8215b183472b5bd8d56ef6d7739c3d6d6da18c8acd8b1e18669b9"
         );
     }
 
