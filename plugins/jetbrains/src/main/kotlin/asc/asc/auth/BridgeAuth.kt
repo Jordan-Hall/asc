@@ -1,8 +1,8 @@
 package asc.asc.auth
 
-import asc.v1.Bridge.StoreTokenRequest
-import asc.v1.Bridge.TokenRequest
-import asc.v1.Bridge.TokenResponse
+import asc.v1.BridgeOuterClass.StoreTokenRequest
+import asc.v1.BridgeOuterClass.TokenRequest
+import asc.v1.BridgeOuterClass.TokenResponse
 import asc.asc.bridge.BridgeException
 import asc.asc.bridge.AscBridgeService
 

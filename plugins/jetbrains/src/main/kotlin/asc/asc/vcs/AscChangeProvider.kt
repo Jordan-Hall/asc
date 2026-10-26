@@ -89,7 +89,7 @@ object StatusMapping {
     }
 }
 
-/** HEAD content of a file through `Workspace.ReadFile`. TODO(AscContentRevision): replaced by the shared revision class. */
+/** HEAD content of a file through `Workspace.ReadFile`, which names no commit; [AscContentRevision] reads a named revision. */
 class AscHeadRevision(private val root: Path, private val file: FilePath, private val relPath: String) : ContentRevision {
     override fun getFile(): FilePath = file
 

@@ -34,8 +34,8 @@ class AscAuth(
     private val openBrowser: (String) -> Unit,
     private val registry: StateRegistry = StateRegistry(),
     private val listener: () -> CallbackListener = { LoopbackListener() },
-    /** Called when the fallback token changes so the bridge is respawned with `ASC_TOKEN`. */
-    private val onFallbackChanged: (String?) -> Unit = {},
+    /** Called with the fallback token and the one host it is for (both null on sign-out), so the bridge is respawned with `ASC_TOKEN` and `ASC_TOKEN_HOST`. */
+    private val onFallbackChanged: (String?, String?) -> Unit = { _, _ -> },
     private val timeoutMs: Long = AuthConstants.STATE_TTL_MS,
 ) {
     /** `Bridge.Token`, then the vault. */
@@ -80,7 +80,7 @@ class AscAuth(
     fun signOut(host: String) {
         assertForgeHost(host)
         vault.delete(host)
-        onFallbackChanged(null)
+        onFallbackChanged(null, null)
     }
 
     private fun exchange(host: String, code: String, verifier: String, redirect: String): String {
@@ -97,7 +97,7 @@ class AscAuth(
             vault.delete(host) // a helper holds it now; the helper is the single source
         } catch (_: NoCredentialHelper) {
             vault.set(host, token)
-            onFallbackChanged(token)
+            onFallbackChanged(token, host)
         }
         return SignIn(host, token)
     }

@@ -1,6 +1,6 @@
 package asc.asc.ui
 
-import asc.v1.Bridge.RootInfo
+import asc.v1.BridgeOuterClass.RootInfo
 import com.google.gson.JsonElement
 import com.google.gson.JsonNull
 import com.google.gson.JsonObject
@@ -68,10 +68,10 @@ import org.cef.network.CefResponse
 // CSP has `connect-src 'none'`, and every request to another host is cancelled. The page talks to Kotlin only
 // through one `JBCefJSQuery` (the relay of AscRelay.kt, which is deny by default).
 //
-// TODO(P28a): the asc-ui bundle does not yet read `data-asc-view` / `data-asc-root` and does not use
-// `window.ascHost`; its JetBrains `Platform` adapter (kind "jetbrains") is part of the asc-ui bootstrap.
-// TODO(P48): the Gradle copy of `packages/asc-ui/dist` into `/asc-ui/` and of allowlist.json into
-// `/asc/asc/allowlist.json` (generateAllowlist) is a build step this unit does not own.
+// The page shell gives the view and root as `data-asc-view` / `data-asc-root` and the transport as
+// `window.ascHost`; the asc-ui bundle needs a `Platform` of kind "jetbrains" that reads them (`packages/asc-ui`
+// has none yet). The Gradle build copies `packages/asc-ui/dist` to `/asc-ui/` (`copyAscUi`) and
+// allowlist.json to `/asc/asc/allowlist.json` (`generateAllowlist`).
 
 /** The page shell. The root is passed as data, never executed. */
 object AscPage {

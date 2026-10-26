@@ -22,8 +22,8 @@ fail on first command.
 3. Disabling `Git4Idea` for the project: not possible per project; rejected as too invasive.
 
 ## Decision (pending verification)
-Use 2 with 1 as belt and braces, which is what `AscMappingActivity` already does (the `TODO(P52)` in that
-file can be removed once the manual checks below pass). If a notice still appears with both in place,
+Use 2 with 1 as belt and braces, which is what `AscMappingActivity` already does (the note in that
+file about this spike is replaced by the result once the manual checks below pass). If a notice still appears with both in place,
 document it in the plugin README as a known cosmetic issue (SPEC decision rule "otherwise document it").
 
 ## Manual checks to record here

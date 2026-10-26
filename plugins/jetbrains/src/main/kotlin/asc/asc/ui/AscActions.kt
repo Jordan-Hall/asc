@@ -12,6 +12,8 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import asc.asc.auth.ConfigureAgents
+import asc.asc.bridge.AscBridgeService
 import asc.asc.bridge.BridgeException
 import asc.asc.vcs.AscRun
 import java.nio.file.Path
@@ -108,7 +110,7 @@ object AscActions {
     private fun report(project: Project, v: StackVerb, r: Pair<Boolean, String>) =
         notify(project, v.title, if (r.first) "Done." else r.second, r.first)
 
-    private fun notify(project: Project, title: String, text: String, ok: Boolean) {
+    fun notify(project: Project, title: String, text: String, ok: Boolean) {
         NotificationGroupManager.getInstance().getNotificationGroup("asc")
             .createNotification(title, text, if (ok) NotificationType.INFORMATION else NotificationType.ERROR)
             .notify(project)
@@ -128,6 +130,28 @@ open class AscStackAction(private val verb: StackVerb) : AnAction(verb.title), D
         val p = e.project ?: return
         val root = AscActions.firstRoot(p) ?: return
         AscActions.runStackVerb(p, root, verb)
+    }
+}
+
+/** "Configure Agents": `asc -C <root> mcp install --scope project`, run from the asc executable's directory. */
+class AscConfigureAgentsAction : AnAction("Configure Agents"), DumbAware {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        val p = e.project
+        e.presentation.isEnabledAndVisible = p != null && AscActions.firstRoot(p) != null
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val p = e.project ?: return
+        val root = AscActions.firstRoot(p) ?: return
+        val bridge = ApplicationManager.getApplication().getService(AscBridgeService::class.java)
+        ProgressManager.getInstance().run(object : Task.Backgroundable(p, "asc mcp install", true) {
+            override fun run(indicator: ProgressIndicator) {
+                val message = ConfigureAgents.run(bridge.executablePath(), root.toString())
+                AscActions.notify(p, "Configure Agents", message, message.startsWith("Agents configured"))
+            }
+        })
     }
 }
 

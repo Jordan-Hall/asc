@@ -1,5 +1,6 @@
 package asc.asc.auth
 
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.runBlocking
@@ -106,7 +107,7 @@ class AuthTest {
             l.handler!!("code=replay&state=$state")
         },
         listener = { l },
-        onFallbackChanged = { changed += it },
+        onFallbackChanged = { t, _ -> changed += t },
         timeoutMs = timeout,
     )
 
@@ -207,14 +208,28 @@ class AuthTest {
         }
     }
 
-    @Test fun configureAgentsRunsFixedArgvInRoot() {
-        var seen: Pair<List<String>, String>? = null
-        val msg = ConfigureAgents.run("asc", "/work/repo", { cmd, dir -> seen = cmd to dir.path; 0 })
-        assertEquals(listOf("asc", "mcp", "install", "--scope", "project"), seen!!.first)
+    @Test fun configureAgentsRunsFixedArgvFromTheExecutableDirectory() {
+        var seen: Pair<List<String>, File>? = null
+        val msg = ConfigureAgents.run("/opt/asc/bin/asc", "/work/repo", { cmd, dir -> seen = cmd to dir; 0 }, windows = false)
+        assertEquals(
+            listOf("/opt/asc/bin/asc", "-C", "/work/repo", "mcp", "install", "--scope", "project"),
+            seen!!.first,
+        )
+        // Never the project root: a planted executable there must not be found first.
+        assertEquals(File("/opt/asc/bin").absoluteFile, seen!!.second.absoluteFile)
         assertTrue(msg.startsWith("Agents configured"))
-        assertTrue(ConfigureAgents.run("asc", "/w", { _, _ -> 1 }).contains("failed"))
-        assertTrue(ConfigureAgents.run("asc", "/w", { _, _ -> error("x") }).contains("failed"))
+        assertTrue(ConfigureAgents.run("/a/asc", "/w", { _, _ -> 1 }, windows = false).contains("failed"))
+        assertTrue(ConfigureAgents.run("/a/asc", "/w", { _, _ -> error("x") }, windows = false).contains("failed"))
         assertTrue(ConfigureAgents.run(null, "/w").contains("not found"))
-        assertTrue(ConfigureAgents.run("asc", null).contains("Open an ASC workspace"))
+        assertTrue(ConfigureAgents.run("/a/asc", null, windows = false).contains("Open an ASC workspace"))
+    }
+
+    @Test fun configureAgentsNeverRunsABareName() {
+        var ran = false
+        for (bare in listOf("asc", "asc.exe", "./asc", "..\\asc.exe", "\\asc.exe", "C:asc.exe")) {
+            val msg = ConfigureAgents.run(bare, "/w", { _, _ -> ran = true; 0 }, windows = true)
+            assertTrue(msg.contains("not found"))
+        }
+        assertFalse(ran)
     }
 }

@@ -1,7 +1,7 @@
 package asc.asc.bridge
 
-import asc.v1.Bridge.BridgeFrame
-import asc.v1.Bridge.Call
+import asc.v1.BridgeOuterClass.BridgeFrame
+import asc.v1.BridgeOuterClass.Call
 import com.google.protobuf.ByteString
 import java.io.InputStream
 import java.io.OutputStream
