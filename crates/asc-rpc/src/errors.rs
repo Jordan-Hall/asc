@@ -75,6 +75,38 @@ rpc_errors! {
     UserRefsLimit => "USER_REFS_LIMIT",
     QuotaExceeded => "QUOTA_EXCEEDED",
     RefNotShared => "REF_NOT_SHARED",
+    PolicyDenied => "POLICY_DENIED",
+    PolicyInvalid => "POLICY_INVALID",
+    PolicyLockout => "POLICY_LOCKOUT",
+    SecretDetected => "SECRET_DETECTED",
+    UnsignedChange => "UNSIGNED_CHANGE",
+    SignatureInvalid => "SIGNATURE_INVALID",
+    SigningKeyLimit => "SIGNING_KEY_LIMIT",
+    StackNotLanded => "STACK_NOT_LANDED",
+    RevertConflict => "REVERT_CONFLICT",
+    RefUndoProtected => "REF_UNDO_PROTECTED",
+    RefLogExpired => "REF_LOG_EXPIRED",
+    QueuePaused => "QUEUE_PAUSED",
+    QueueEntryExists => "QUEUE_ENTRY_EXISTS",
+    RevalidationFailed => "REVALIDATION_FAILED",
+    StorageEndpointBlocked => "STORAGE_ENDPOINT_BLOCKED",
+    StorageVerifyFailed => "STORAGE_VERIFY_FAILED",
+    StorageInUse => "STORAGE_IN_USE",
+    MigrationActive => "MIGRATION_ACTIVE",
+    VaultLocked => "VAULT_LOCKED",
+    RotationActive => "ROTATION_ACTIVE",
+    AiEndpointBlocked => "AI_ENDPOINT_BLOCKED",
+    AiKeyUntested => "AI_KEY_UNTESTED",
+    AiCapReached => "AI_CAP_REACHED",
+    AgentsDisabled => "AGENTS_DISABLED",
+    AgentTokenExpired => "AGENT_TOKEN_EXPIRED",
+    AgentTokenRevoked => "AGENT_TOKEN_REVOKED",
+    AgentScopeDenied => "AGENT_SCOPE_DENIED",
+    BudgetExceeded => "BUDGET_EXCEEDED",
+    RunNotActive => "RUN_NOT_ACTIVE",
+    WorkflowInvalid => "WORKFLOW_INVALID",
+    WorkflowDisabled => "WORKFLOW_DISABLED",
+    SearchTooBroad => "SEARCH_TOO_BROAD",
 }
 
 impl std::fmt::Display for RpcError {
@@ -164,6 +196,38 @@ mod tests {
             "USER_REFS_LIMIT",
             "QUOTA_EXCEEDED",
             "REF_NOT_SHARED",
+            "POLICY_DENIED",
+            "POLICY_INVALID",
+            "POLICY_LOCKOUT",
+            "SECRET_DETECTED",
+            "UNSIGNED_CHANGE",
+            "SIGNATURE_INVALID",
+            "SIGNING_KEY_LIMIT",
+            "STACK_NOT_LANDED",
+            "REVERT_CONFLICT",
+            "REF_UNDO_PROTECTED",
+            "REF_LOG_EXPIRED",
+            "QUEUE_PAUSED",
+            "QUEUE_ENTRY_EXISTS",
+            "REVALIDATION_FAILED",
+            "STORAGE_ENDPOINT_BLOCKED",
+            "STORAGE_VERIFY_FAILED",
+            "STORAGE_IN_USE",
+            "MIGRATION_ACTIVE",
+            "VAULT_LOCKED",
+            "ROTATION_ACTIVE",
+            "AI_ENDPOINT_BLOCKED",
+            "AI_KEY_UNTESTED",
+            "AI_CAP_REACHED",
+            "AGENTS_DISABLED",
+            "AGENT_TOKEN_EXPIRED",
+            "AGENT_TOKEN_REVOKED",
+            "AGENT_SCOPE_DENIED",
+            "BUDGET_EXCEEDED",
+            "RUN_NOT_ACTIVE",
+            "WORKFLOW_INVALID",
+            "WORKFLOW_DISABLED",
+            "SEARCH_TOO_BROAD",
         ];
         for code in codes {
             let d = pb::ErrorDetail {
@@ -211,5 +275,57 @@ mod tests {
             ..Default::default()
         };
         assert!(RpcError::try_from(&d).is_err());
+    }
+
+    #[test]
+    fn buildout_codes_map_to_their_grpc_status() {
+        use tonic::Code;
+        let table = [
+            ("POLICY_DENIED", Code::PermissionDenied),
+            ("POLICY_INVALID", Code::InvalidArgument),
+            ("POLICY_LOCKOUT", Code::FailedPrecondition),
+            ("SECRET_DETECTED", Code::FailedPrecondition),
+            ("UNSIGNED_CHANGE", Code::FailedPrecondition),
+            ("SIGNATURE_INVALID", Code::InvalidArgument),
+            ("SIGNING_KEY_LIMIT", Code::ResourceExhausted),
+            ("STACK_NOT_LANDED", Code::FailedPrecondition),
+            ("REVERT_CONFLICT", Code::Aborted),
+            ("REF_UNDO_PROTECTED", Code::PermissionDenied),
+            ("REF_LOG_EXPIRED", Code::OutOfRange),
+            ("QUEUE_PAUSED", Code::FailedPrecondition),
+            ("QUEUE_ENTRY_EXISTS", Code::AlreadyExists),
+            ("REVALIDATION_FAILED", Code::FailedPrecondition),
+            ("STORAGE_ENDPOINT_BLOCKED", Code::InvalidArgument),
+            ("STORAGE_VERIFY_FAILED", Code::FailedPrecondition),
+            ("STORAGE_IN_USE", Code::FailedPrecondition),
+            ("MIGRATION_ACTIVE", Code::Aborted),
+            ("VAULT_LOCKED", Code::Unavailable),
+            ("ROTATION_ACTIVE", Code::Aborted),
+            ("AI_ENDPOINT_BLOCKED", Code::InvalidArgument),
+            ("AI_KEY_UNTESTED", Code::FailedPrecondition),
+            ("AI_CAP_REACHED", Code::ResourceExhausted),
+            ("AGENTS_DISABLED", Code::FailedPrecondition),
+            ("AGENT_TOKEN_EXPIRED", Code::Unauthenticated),
+            ("AGENT_TOKEN_REVOKED", Code::Unauthenticated),
+            ("AGENT_SCOPE_DENIED", Code::PermissionDenied),
+            ("BUDGET_EXCEEDED", Code::ResourceExhausted),
+            ("RUN_NOT_ACTIVE", Code::FailedPrecondition),
+            ("WORKFLOW_INVALID", Code::InvalidArgument),
+            ("WORKFLOW_DISABLED", Code::FailedPrecondition),
+            ("SEARCH_TOO_BROAD", Code::InvalidArgument),
+        ];
+        for (code, want) in table {
+            let d = pb::ErrorDetail {
+                code: code.into(),
+                paths: vec!["a".into()],
+                ..Default::default()
+            };
+            let e = RpcError::try_from(&d).unwrap();
+            let status = crate::server::rpc_status(&e);
+            assert_eq!(status.code(), want, "{code}");
+            let back = crate::server::status_rpc_error(&status).unwrap();
+            assert_eq!(back.code(), code);
+            assert_eq!(back.info().paths, vec!["a".to_string()]);
+        }
     }
 }
