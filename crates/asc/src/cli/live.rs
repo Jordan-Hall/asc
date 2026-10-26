@@ -5,14 +5,20 @@
 //! reads it through [`paused`] before every run. All three verbs need the daemon: with none
 //! running (or `ASC_NO_DAEMON` set) they fail with [`ABSENT`] and change nothing.
 //!
-//! A live conflict pauses the worktree with reason `conflict`; the daemon records that with
+//! A live conflict pauses the worktree with reason `conflict`; a live run records that with
 //! [`record_conflict`]. [`notice`] is what `asc status` and `asc sl` print until `asc live resume`.
 //! A pause the user asked for (`user`) is shown by `asc live status` only.
 //!
+//! The daemon's production `Runner` (`daemon::live::prod`) starts the hidden verb `asc live run`
+//! in each worktree it considers. That verb is one live pass (`daemon::live::pass`): fetch and,
+//! per `asc.live.*`, restack and move. It is a separate process so that no hook of the user's
+//! runs (the daemon points `core.hooksPath` at an empty directory, [`hookless_dir`], and the verb
+//! refuses to run without that) and so that it can take the worktree's locks like any command. It
+//! records its result with [`record_run`]; the pass ends up in the op log with kind `live`.
+//!
 //! The state file is private to the user (directory `0700` on Unix), written by rename, read with
-//! a size bound and never through a link. Nothing here reads the network or runs a hook.
-// TODO(B30-ipc): the daemon does not yet write `last_run` or call `record_conflict`, and does not
-// read `paused` in its `Runner`; those hunks belong to the B29/B30 integration.
+//! a size bound and never through a link. The verbs `pause`, `resume` and `status` read and
+//! write that file only; `run` is the only one that reads the network.
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -54,6 +60,9 @@ pub enum Action {
         #[arg(long)]
         json: bool,
     },
+    /// One live pass for this worktree (started by the daemon; needs its empty hooks path).
+    #[command(hide = true)]
+    Run,
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -205,7 +214,31 @@ pub fn paused(home: &AscHome, id: &str) -> bool {
     load(home, id).is_some_and(|s| s.paused)
 }
 
-/// Pauses worktree `id` because a live run hit a conflict (called by the daemon).
+/// The directory the daemon sets `core.hooksPath` to for a live pass, so that no hook runs on a
+/// live update (SPEC §21.3.8). It is created empty and kept empty.
+pub fn hookless_dir(home: &AscHome) -> PathBuf {
+    dir(home).join("no-hooks")
+}
+
+/// Creates [`hookless_dir`] and returns it.
+pub fn ensure_hookless_dir(home: &AscHome) -> std::io::Result<PathBuf> {
+    let path = hookless_dir(home);
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// Records the result of a live run of worktree `id`: a short word such as `fetched`,
+/// `restacked`, `updated` or `notice`. The pause (if any) is left as it is.
+pub fn record_run(home: &AscHome, id: &str, worktree: &str, repo: i64, outcome: &str) -> Result<()> {
+    let mut s = load(home, id).unwrap_or_else(|| State::fresh(worktree, repo));
+    s.last_run = Some(LastRun {
+        at: now(),
+        outcome: clip(outcome),
+    });
+    store(home, id, &s)
+}
+
+/// Pauses worktree `id` because a live run hit a conflict (called by a live pass).
 pub fn record_conflict(
     home: &AscHome,
     id: &str,
@@ -301,7 +334,43 @@ fn json_of(s: &State, mode: &str, id: &str, current: bool) -> serde_json::Value 
     })
 }
 
+/// `asc live run`: one pass, refused unless the daemon's empty hooks path is in force.
+async fn pass(ctx: &Ctx) -> Result<ExitCode> {
+    let ws = ctx.ws()?;
+    let wanted = hookless_dir(&ws.home);
+    let same = ctx.config.path("core.hooksPath").is_some_and(|p| {
+        std::fs::canonicalize(&p)
+            .ok()
+            .zip(std::fs::canonicalize(&wanted).ok())
+            .is_some_and(|(a, b)| a == b)
+    });
+    if !same {
+        return Err(CliError::Raw(
+            "asc: live run is started by the daemon; it must run without hooks".into(),
+            1,
+        ));
+    }
+    let id = ws.workspace.ws.id.to_string();
+    let path = ws.workspace.ws.path.clone();
+    let repo = ws.workspace.ws.repo.0;
+    match crate::daemon::live::pass::run(ctx).await {
+        Ok(done) => {
+            record_run(&ws.home, &id, &path, repo, done.word())?;
+            println!("{path}: {}", done.describe());
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(e) => {
+            // The next window tries again; the failure shows in `asc live status`.
+            let _ = record_run(&ws.home, &id, &path, repo, "failed");
+            Err(e)
+        }
+    }
+}
+
 pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
+    if matches!(args.action, Action::Run) {
+        return pass(ctx).await;
+    }
     require_daemon().await?;
     let ws = ctx.ws()?;
     let id = ws.workspace.ws.id.to_string();
@@ -329,6 +398,8 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
             }
             println!("live updates resumed for {path}");
         }
+        // Answered before the daemon check; the arm keeps the match exhaustive.
+        Action::Run => return pass(ctx).await,
         Action::Status { json } => {
             let mode = mode_of(ctx);
             let mut rows = vec![(

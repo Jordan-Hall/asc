@@ -150,6 +150,40 @@ fn delay_secs(policy: &RetryPolicy, failed: u32, hint: Option<Duration>) -> i64 
     i64::try_from(d.as_secs()).unwrap_or(i64::MAX).max(1) + i64::from(d.subsec_nanos() > 0)
 }
 
+// ------------------------------------------------------------------------------ cloud wake
+
+/// The daemon's own `Watch KIND_CLOUD` (SPEC §21.3.4, §21.3.8): told when a cloud sync changed
+/// the user's drafts on another device, so the live driver of that repository runs a window
+/// without waiting for its ref stream. Only the repository's key travels; the receiver decides
+/// what to do. A lagging receiver loses old keys, which is harmless: it runs a window anyway.
+pub struct CloudWake {
+    tx: tokio::sync::broadcast::Sender<RepoKey>,
+}
+
+impl CloudWake {
+    fn new() -> Self {
+        Self {
+            tx: tokio::sync::broadcast::channel(64).0,
+        }
+    }
+
+    /// Tells every subscriber that the cloud drafts of `repo` changed.
+    pub fn notify(&self, repo: RepoKey) {
+        // No subscriber is not an error.
+        let _ = self.tx.send(repo);
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<RepoKey> {
+        self.tx.subscribe()
+    }
+}
+
+/// The daemon-wide wake channel of the cloud sync task.
+pub fn cloud_wake() -> &'static CloudWake {
+    static WAKE: std::sync::LazyLock<CloudWake> = std::sync::LazyLock::new(CloudWake::new);
+    &WAKE
+}
+
 // ------------------------------------------------------------------------------ the gate
 
 /// What the client knows about one repository's cloud.
@@ -222,6 +256,7 @@ pub fn workspace_name(setting: &mode::Workspace) -> String {
 #[derive(Clone)]
 pub struct StateRows {
     db: StateDb,
+    repo: RepoKey,
     drafts: Drafts,
 }
 
@@ -229,6 +264,7 @@ impl StateRows {
     pub fn new(db: StateDb, repo: RepoKey) -> Self {
         Self {
             db,
+            repo,
             drafts: Drafts::new(repo),
         }
     }
@@ -548,6 +584,10 @@ impl<S: CloudStore> CloudSync<S> {
         )
         .await
         .map_err(|e| note(&e.to_string()))?;
+        // Drafts that changed on another device wake the live driver (SPEC §21.3.8).
+        if !out.local.add.is_empty() || !out.local.hide.is_empty() || !out.local.unhide.is_empty() {
+            cloud_wake().notify(self.rows.repo);
+        }
         Ok(out.version)
     }
 }
@@ -1041,7 +1081,7 @@ async fn repos_of(db: &StateDb) -> Result<Vec<RepoKey>, String> {
     Ok(out)
 }
 
-mod prod;
+pub(crate) mod prod;
 
 #[cfg(test)]
 mod tests;

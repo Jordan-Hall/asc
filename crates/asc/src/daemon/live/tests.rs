@@ -161,6 +161,7 @@ struct Rig {
     runner: Arc<FakeRunner>,
     stop: watch::Sender<bool>,
     mode: watch::Receiver<Mode>,
+    cloud: mpsc::UnboundedSender<()>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -172,6 +173,7 @@ impl Rig {
         let runner = Arc::new(FakeRunner::default());
         let (stop, stop_rx) = watch::channel(false);
         let (mode_tx, mode) = watch::channel(Mode::Starting);
+        let (cloud, cloud_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(drive(
             feed.clone(),
             runner.clone(),
@@ -182,6 +184,7 @@ impl Rig {
             },
             stop_rx,
             mode_tx,
+            Some(cloud_rx),
         ));
         let rig = Self {
             clock,
@@ -189,6 +192,7 @@ impl Rig {
             runner,
             stop,
             mode,
+            cloud,
             task,
         };
         // The start-up baseline poll opens one window; let it run and forget it.
@@ -274,6 +278,40 @@ async fn events_for_other_refs_or_other_users_do_nothing() {
     tx.send(Ok(Some(Event::Cloud { own: true }))).unwrap();
     rig.clock.advance(Duration::from_secs(3)).await;
     assert_eq!(rig.runner.runs().len(), 4, "own drafts count");
+}
+
+#[tokio::test]
+async fn a_cloud_wake_opens_a_window_even_while_the_driver_polls() {
+    let feed = Arc::new(FakeFeed::default());
+    feed.queue_open_error();
+    feed.set_poll(base_poll());
+    let rig = Rig::start(feed).await;
+    assert_eq!(*rig.mode.borrow(), Mode::Poll, "no ref stream is open");
+
+    // A burst of wake-ups inside one window runs the update once.
+    for _ in 0..4 {
+        rig.cloud.send(()).unwrap();
+    }
+    rig.clock.advance(Duration::from_secs(1)).await;
+    assert!(rig.runner.runs().is_empty(), "still inside the window");
+    rig.clock.advance(Duration::from_secs(2)).await;
+    assert_eq!(rig.runner.runs(), ["a", "b"]);
+
+    // Once its sender is gone the channel is dropped without ending or spinning the driver.
+    let Rig {
+        cloud,
+        clock,
+        runner,
+        task,
+        stop,
+        ..
+    } = rig;
+    drop(cloud);
+    clock.advance(Duration::from_secs(60)).await;
+    assert_eq!(runner.runs().len(), 2);
+    stop.send(true).unwrap();
+    settle().await;
+    assert!(task.is_finished());
 }
 
 #[tokio::test]

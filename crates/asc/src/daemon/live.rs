@@ -1,9 +1,13 @@
 //! The daemon's live-update driver (SPEC §21.3.8; B30).
 //!
 //! One driver runs per repository. It consumes the server's ref-update stream (`WatchRefs` for
-//! `master` and `release/*`, plus `Watch KIND_CLOUD` for the user's own drafts), debounces and
-//! coalesces what it sees (`asc.live.debounce`), and then asks the [`Runner`] to run the B29 plan
-//! once for every unpaused worktree: at most one run per worktree per window.
+//! `master` and `release/*`, plus the daemon's `Watch KIND_CLOUD` for the user's own drafts, which
+//! reaches the driver as a unit message on its `cloud` channel), debounces and coalesces what it
+//! sees (`asc.live.debounce`), and then asks the [`Runner`] to run the B29 plan once for every
+//! unpaused worktree: at most one run per worktree per window.
+//!
+//! [`prod`] is the production side: the supervisor the daemon starts, the [`Feed`] over the RPC
+//! client and the [`Runner`] that starts `asc live run` ([`pass`]) in each worktree.
 //!
 //! When the stream is unavailable the driver polls `ListRefs` every `asc.live.pollInterval`, with
 //! exponential backoff (x2, cap 1 h, reset on success), and tries to resubscribe with the cursor of
@@ -25,7 +29,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
+
+pub mod pass;
+pub mod prod;
 
 /// Default `asc.live.debounce` (SPEC §21.6.1).
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -179,9 +186,13 @@ enum Woke {
     Run,
     Poll,
     Event(Result<Option<Event>, String>),
+    /// A message on the cloud channel; `false` when its sender is gone.
+    Cloud(bool),
 }
 
-/// Runs one repository until `stop` turns true; `mode` carries what it is doing.
+/// Runs one repository until `stop` turns true; `mode` carries what it is doing. A message on
+/// `cloud` says the user's own drafts changed on another device (`Event::Cloud { own: true }`);
+/// it is independent of the ref stream, so it counts while the driver polls too.
 pub async fn drive(
     feed: Arc<dyn Feed>,
     runner: Arc<dyn Runner>,
@@ -189,6 +200,7 @@ pub async fn drive(
     timing: Timing,
     mut stop: watch::Receiver<bool>,
     mode: watch::Sender<Mode>,
+    mut cloud: Option<mpsc::UnboundedReceiver<()>>,
 ) {
     let mut stream: Option<Box<dyn EventStream>> = None;
     let mut opened_at = clock.now();
@@ -236,16 +248,29 @@ pub async fn drive(
                     None => std::future::pending().await,
                 }
             };
+            let wake = async {
+                match cloud.as_mut() {
+                    Some(c) => c.recv().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 _ = stop.changed() => Woke::Stop,
                 _ = run_sleep => Woke::Run,
                 _ = poll_sleep => Woke::Poll,
                 ev = next => Woke::Event(ev),
+                w = wake => Woke::Cloud(w.is_some()),
             }
         };
 
         match woke {
             Woke::Stop | Woke::Run => {}
+            Woke::Cloud(true) => {
+                if (Event::Cloud { own: true }).is_relevant() && pending.is_none() {
+                    pending = Some(clock.now() + timing.debounce);
+                }
+            }
+            Woke::Cloud(false) => cloud = None,
             Woke::Event(Ok(Some(ev))) => {
                 if let Event::Ref { resume: r, .. } = &ev {
                     resume = Some(*r);
@@ -288,6 +313,8 @@ pub async fn drive(
                     fails = 0;
                 } else {
                     fails = fails.saturating_add(1);
+                }
+                if stream.is_none() {
                     let _ = mode.send(Mode::Poll);
                 }
             }
@@ -365,11 +392,6 @@ impl Feed for RpcFeed {
             .collect())
     }
 }
-
-// TODO(B14): `Watch KIND_CLOUD` events reach the driver as `Event::Cloud` once the cloud task
-// exposes its wake-up; until then own-draft changes arrive with the 5-minute cloud sync.
-// TODO(B29): the production `Runner` (worktree enumeration, state gathering and `plan_live`
-// application under the asc index lock) is wired with the daemon workspace factory.
 
 #[cfg(test)]
 mod tests;
