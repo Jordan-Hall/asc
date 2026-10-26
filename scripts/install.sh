@@ -13,7 +13,7 @@
 #   --base-url URL   ASC_DOWNLOAD_BASE_URL   where releases are served (https; see below)
 #   --version X.Y.Z  ASC_VERSION             install this version instead of latest/version
 #   --prefix DIR     ASC_INSTALL_PREFIX      versions live in DIR/<version>, DIR/current points at one
-#                                            (default: ${XDG_DATA_HOME:-$HOME/.local/share}/asc)
+#                                            (default: ${XDG_DATA_HOME:-$HOME/.local/share}/asc-install)
 #   --bin-dir DIR    ASC_BIN_DIR             where the `asc` link goes (default: $HOME/.local/bin)
 #   --dry-run                                resolve and print the plan; download no archive, write nothing
 #   -h, --help
@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "${HOME:-}" ] || die "HOME is not set"
-[ -n "$prefix" ] || prefix="${XDG_DATA_HOME:-$HOME/.local/share}/asc"
+[ -n "$prefix" ] || prefix="${XDG_DATA_HOME:-$HOME/.local/share}/asc-install"
 [ -n "$bindir" ] || bindir="$HOME/.local/bin"
 
 # ---- the base URL ----------------------------------------------------------------------------

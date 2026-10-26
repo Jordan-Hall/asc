@@ -55,7 +55,7 @@ serve "$work/host" "$work/srv"
 new_home() { rm -rf "$work/h"; mkdir -p "$work/h/tmp"; }
 # inst_args <args...>: install.sh with a clean environment and the fixture host.
 inst_args() { env -i PATH="$PATH" HOME="$work/h" TMPDIR="$work/h/tmp" ASC_ALLOW_LOOPBACK_HTTP=1 ASC_DOWNLOAD_BASE_URL="$BASE" "$SH" "$INSTALL" "$@"; }
-prefix="$work/h/.local/share/asc"
+prefix="$work/h/.local/share/asc-install"
 bindir="$work/h/.local/bin"
 
 # ---- syntax and help ---------------------------------------------------------------------------
