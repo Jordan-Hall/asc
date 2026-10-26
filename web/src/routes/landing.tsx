@@ -3,6 +3,7 @@
 // URLs use the origin that served this page. Lazy chunk; nothing here calls an RPC.
 import { type ReactNode, useState } from "react";
 import { Icon, type IconName } from "../components/icons";
+import { useAgents } from "../lib/agents";
 import { parseRepoName, remember } from "../lib/recent";
 import { Link, useNavigate } from "../lib/router";
 import { repoHref } from "../lib/paths";
@@ -16,7 +17,13 @@ function origin(): string {
   return typeof location === "undefined" ? "https://git.example.com" : location.origin;
 }
 
-function CopyButton(props: { text: string; label: string }): ReactNode {
+/** Calls to action: cyan on the ink bands (a fill, with ink text), the brand colour elsewhere. */
+const BTN_CYAN =
+  "inline-flex items-center justify-center gap-2 rounded-xl bg-cyan font-semibold text-[#0b1220] no-underline hover:brightness-110";
+const BTN_GHOST =
+  "inline-flex items-center justify-center rounded-xl border border-hdr-line font-semibold text-hdr-fg no-underline hover:bg-hdr-hover";
+
+function CopyButton(props: { text: string; label: string; dark?: boolean }): ReactNode {
   const [done, setDone] = useState(false);
   return (
     <>
@@ -32,7 +39,11 @@ function CopyButton(props: { text: string; label: string }): ReactNode {
             })
             .catch(() => undefined);
         }}
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-muted hover:bg-subtle-hover hover:text-fg-strong"
+        className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md sm:h-8 sm:w-8 ${
+          props.dark
+            ? "text-hdr-muted hover:bg-hdr-hover hover:text-hdr-fg"
+            : "text-fg-muted hover:bg-subtle-hover hover:text-fg-strong"
+        }`}
       >
         <Icon name={done ? "check" : "copy"} />
       </button>
@@ -45,7 +56,7 @@ function CopyButton(props: { text: string; label: string }): ReactNode {
 
 function Eyebrow(props: { icon: IconName; children: ReactNode }): ReactNode {
   return (
-    <p className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-link">
+    <p className="mb-3 inline-flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-link">
       <Icon name={props.icon} size={16} />
       {props.children}
     </p>
@@ -81,10 +92,10 @@ function Feature(props: {
 }): ReactNode {
   return (
     <section id={props.id} className={props.tinted ? "border-y border-line bg-subtle/50" : ""}>
-      <div className={`${WRAP} grid items-center gap-10 py-16 md:py-24 lg:grid-cols-2 lg:gap-16`}>
+      <div className={`${WRAP} grid items-center gap-8 py-12 sm:gap-10 md:py-24 lg:grid-cols-2 lg:gap-16`}>
         <div className={props.flip ? "lg:order-2" : ""}>
           <Eyebrow icon={props.icon}>{props.eyebrow}</Eyebrow>
-          <h2 className="text-3xl font-bold tracking-tight text-fg-strong sm:text-4xl">
+          <h2 className="text-[1.65rem] font-extrabold leading-tight tracking-tight text-fg-strong sm:text-4xl">
             {props.title}
           </h2>
           <p className="mt-4 text-lg leading-relaxed text-fg-muted">{props.lead}</p>
@@ -117,8 +128,8 @@ function OpenForm(): ReactNode {
       <label htmlFor="open-repo" className="sr-only">
         Open a repository
       </label>
-      <div className="flex items-center gap-2 rounded-xl border border-control bg-surface p-1.5 shadow-sm focus-within:border-accent">
-        <span className="pl-2.5 text-fg-muted">
+      <div className="flex items-center gap-1 rounded-xl border border-hdr-line bg-hdr-field p-1.5 focus-within:border-cyan">
+        <span className="pl-2.5 text-hdr-muted">
           <Icon name="repo" />
         </span>
         <input
@@ -130,19 +141,16 @@ function OpenForm(): ReactNode {
           spellCheck={false}
           aria-invalid={invalid}
           aria-describedby="open-repo-note"
-          className="h-10 min-w-0 flex-1 bg-transparent px-1 text-base text-fg-strong outline-none placeholder:text-fg-muted"
+          className="h-11 min-w-0 flex-1 bg-transparent px-1 text-base text-hdr-fg outline-none placeholder:text-hdr-muted"
         />
-        <button
-          type="submit"
-          className="inline-flex h-10 items-center gap-2 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand hover:opacity-90"
-        >
+        <button type="submit" className={`${BTN_CYAN} h-11 px-4 text-sm`}>
           Open
           <Icon name="arrowRight" size={14} />
         </button>
       </div>
       <p
         id="open-repo-note"
-        className={`mt-2 min-h-5 text-sm ${invalid ? "text-bad" : "text-fg-muted"}`}
+        className={`mt-2 min-h-5 text-sm ${invalid ? "text-[#fca5a5]" : "text-hdr-muted"}`}
       >
         {invalid
           ? "Use the form owner/repo."
@@ -152,47 +160,72 @@ function OpenForm(): ReactNode {
   );
 }
 
+/** The ink band at the top: the tagline, the three ways in, and a picture of the product. */
 function Hero(): ReactNode {
   const clone = `git clone ${origin()}/acme/payments.git`;
   return (
-    <section className="relative overflow-hidden">
+    <section className="hdr relative overflow-hidden bg-hdr text-hdr-fg">
       <div className="lp-glow" aria-hidden="true" />
       <div className="lp-grid" aria-hidden="true" />
-      <div className={`${WRAP} relative pb-20 pt-14 text-center md:pb-28 md:pt-20`}>
-        <p className="mx-auto mb-6 inline-flex items-center gap-2 rounded-full border border-line bg-surface/80 px-3.5 py-1.5 text-sm text-fg-muted backdrop-blur">
-          <span className="h-2 w-2 rounded-full bg-signal" aria-hidden="true" />
+      <div className={`${WRAP} relative pb-14 pt-10 text-center sm:pb-20 sm:pt-16 md:pb-28 md:pt-20`}>
+        <p className="mx-auto mb-5 inline-flex max-w-full items-center gap-2 rounded-full border border-hdr-line bg-hdr-field px-3.5 py-1.5 text-left text-[13px] font-semibold text-[#7dd3e8] sm:mb-6">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-cyan" aria-hidden="true" />
           Changesets, stacked review, plain git on the wire
         </p>
-        <h1 className="mx-auto max-w-4xl text-[2.6rem] font-bold leading-[1.04] tracking-[-0.035em] text-fg-strong sm:text-6xl lg:text-7xl">
-          Ship small changes.
-          <br />
-          <span className="lp-accent">Review them in order.</span>
+        <h1 className="mx-auto max-w-4xl text-[2.25rem] font-extrabold leading-[1.06] tracking-[-0.035em] text-white sm:text-6xl lg:text-7xl">
+          Source control for people and <span className="text-cyan">their agents.</span>
         </h1>
-        <p className="mx-auto mt-6 max-w-2xl text-balance text-lg leading-relaxed text-fg-muted sm:text-xl">
-          A source host built on changesets. Split work into a stack of small changes, keep every
-          comment through every revision, and always know whose turn it is.
+        <p className="mx-auto mt-5 max-w-2xl text-balance text-base leading-relaxed text-hdr-muted sm:mt-6 sm:text-xl">
+          ASC Hub hosts your repositories as stacks of small, reviewable changes. See who or what
+          made each one, why, and whose turn it is.
         </p>
-        <div className="mt-9 flex flex-col items-center gap-4">
+        <div className="mt-8 flex flex-col items-center gap-4 sm:mt-9">
           <OpenForm />
-          <div className="flex w-full max-w-full flex-wrap items-center justify-center gap-3">
-            <Link
-              to="/signin"
-              className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand px-6 text-base font-semibold text-on-brand no-underline hover:opacity-90"
-            >
+          <div className="flex w-full max-w-full flex-col items-stretch justify-center gap-3 sm:w-auto sm:flex-row sm:items-center">
+            <Link to="/signin" className={`${BTN_CYAN} h-12 px-6 text-base`}>
               Sign in
             </Link>
-            <div className="flex min-w-0 max-w-full items-center gap-1 rounded-xl border border-line bg-surface/80 py-1 pl-4 pr-1 backdrop-blur">
-              <span aria-hidden="true" className="font-mono text-sm text-fg-muted">
+            <div className="flex min-w-0 max-w-full items-center gap-1 rounded-xl border border-hdr-line bg-hdr-field py-0.5 pl-4 pr-1">
+              <span aria-hidden="true" className="font-mono text-sm text-cyan">
                 $
               </span>
-              <span className="min-w-0 truncate font-mono text-sm text-fg-strong">{clone}</span>
-              <CopyButton text={clone} label="clone command" />
+              <span
+                // Scrolls inside its own box on a narrow screen, so it is reachable by keyboard.
+                tabIndex={0}
+                role="region"
+                aria-label="Clone command text"
+                className="scroll-box min-w-0 whitespace-nowrap py-2 text-left font-mono text-sm text-hdr-fg"
+              >
+                {clone}
+              </span>
+              <CopyButton text={clone} label="clone command" dark />
             </div>
           </div>
         </div>
-        <div className="relative mx-auto mt-16 max-w-6xl">
+        <div className="relative mx-auto mt-12 max-w-6xl sm:mt-16">
           <HeroWindow />
         </div>
+      </div>
+    </section>
+  );
+}
+
+const TOOLS = ["git", "VS Code", "JetBrains"];
+const AGENT_TOOLS = ["Claude Code", "Cursor", "MCP"];
+
+/** Which tools it works with. Agent tools are listed only when agent features are on. */
+function Tools(): ReactNode {
+  const { on } = useAgents();
+  const list = on ? [...TOOLS, ...AGENT_TOOLS] : TOOLS;
+  return (
+    <section aria-label="Works with" className="border-b border-line bg-surface">
+      <div className={`${WRAP} flex flex-col gap-3 py-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10 sm:py-7`}>
+        <p className="max-w-xs text-sm text-fg-muted">Works with the tools your team already uses</p>
+        <ul className="flex flex-wrap gap-x-7 gap-y-2 text-base font-bold text-fg-muted sm:text-[17px]">
+          {list.map((t) => (
+            <li key={t}>{t}</li>
+          ))}
+        </ul>
       </div>
     </section>
   );
@@ -212,7 +245,7 @@ const FACTS: readonly { icon: IconName; title: string; text: string }[] = [
   {
     icon: "bolt",
     title: "One API for everything",
-    text: "The web app, the CLI and agents call the same RPC.",
+    text: "The web app, the CLI and your own tools call the same RPC.",
   },
   {
     icon: "shield",
@@ -224,9 +257,9 @@ const FACTS: readonly { icon: IconName; title: string; text: string }[] = [
 function Facts(): ReactNode {
   return (
     <section aria-label="Why it works" className="border-y border-line bg-surface">
-      <ul className={`${WRAP} grid gap-px py-10 sm:grid-cols-2 lg:grid-cols-4`}>
+      <ul className={`${WRAP} grid gap-px py-6 sm:grid-cols-2 sm:py-10 lg:grid-cols-4`}>
         {FACTS.map((f) => (
-          <li key={f.title} className="flex gap-3 py-3 lg:px-4 lg:first:pl-0">
+          <li key={f.title} className="flex min-w-0 gap-3 py-3 lg:px-4 lg:first:pl-0">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[rgb(var(--color-primary)/0.12)] text-link">
               <Icon name={f.icon} size={18} />
             </span>
@@ -288,10 +321,10 @@ function CloneSection(): ReactNode {
   const base = origin();
   return (
     <section id="clone" className="border-y border-line bg-subtle/50">
-      <div className={`${WRAP} py-16 md:py-24`}>
+      <div className={`${WRAP} py-12 md:py-24`}>
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow icon="terminal">Git-compatible</Eyebrow>
-          <h2 className="text-3xl font-bold tracking-tight text-fg-strong sm:text-4xl">
+          <h2 className="text-[1.65rem] font-extrabold leading-tight tracking-tight text-fg-strong sm:text-4xl">
             Clone it with git. Stack it with ASC.
           </h2>
           <p className="mt-4 text-lg leading-relaxed text-fg-muted">
@@ -300,7 +333,7 @@ function CloneSection(): ReactNode {
             and lazy working copies.
           </p>
         </div>
-        <div className="mt-12 grid gap-6 lg:grid-cols-3">
+        <div className="mt-8 grid gap-6 sm:mt-12 lg:grid-cols-3">
           <Terminal
             title="Clone"
             label="Clone commands"
@@ -375,14 +408,14 @@ const GRID: readonly { icon: IconName; title: string; text: string }[] = [
 function Grid(): ReactNode {
   return (
     <section id="keyboard">
-      <div className={`${WRAP} py-16 md:py-24`}>
+      <div className={`${WRAP} py-12 md:py-24`}>
         <div className="mx-auto max-w-3xl text-center">
           <Eyebrow icon="bolt">Details</Eyebrow>
-          <h2 className="text-3xl font-bold tracking-tight text-fg-strong sm:text-4xl">
+          <h2 className="text-[1.65rem] font-extrabold leading-tight tracking-tight text-fg-strong sm:text-4xl">
             Quick, careful and out of your way
           </h2>
         </div>
-        <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="mt-8 grid gap-4 sm:mt-12 sm:grid-cols-2 sm:gap-5 lg:grid-cols-3">
           {GRID.map((g) => (
             <li key={g.title} className="lp-card rounded-2xl border border-line bg-surface p-6">
               <span className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-[rgb(var(--color-primary)/0.12)] text-link">
@@ -399,26 +432,22 @@ function Grid(): ReactNode {
 }
 
 function Closing(): ReactNode {
+  const { on } = useAgents();
   return (
-    <section className={`${WRAP} pb-20`}>
-      <div className="lp-cta rounded-3xl border border-line px-6 py-14 text-center sm:px-12">
-        <h2 className="mx-auto max-w-2xl text-3xl font-bold tracking-tight text-fg-strong sm:text-5xl">
-          Start with a stack.
+    <section className={`${WRAP} py-12 md:py-24`}>
+      <div className="hdr rounded-2xl bg-hdr px-5 py-12 text-center text-hdr-fg sm:rounded-3xl sm:px-12 sm:py-16">
+        <h2 className="mx-auto max-w-2xl text-balance text-[1.75rem] font-extrabold leading-tight tracking-tight text-white sm:text-5xl">
+          Ship more, and still understand every line.
         </h2>
-        <p className="mx-auto mt-4 max-w-xl text-lg text-fg-muted">
-          Sign in with a token, or open any repository you can read.
+        <p className="mx-auto mt-4 max-w-xl text-base text-hdr-muted sm:text-lg">
+          Import a repository in a minute. Keep your git history.
+          {on ? " Bring your agents." : " Sign in with a token, or open any repository you can read."}
         </p>
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <Link
-            to="/signin"
-            className="inline-flex h-12 items-center rounded-xl bg-brand px-7 text-base font-semibold text-on-brand no-underline hover:opacity-90"
-          >
+        <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
+          <Link to="/signin" className={`${BTN_CYAN} h-12 px-7 text-base`}>
             Sign in
           </Link>
-          <a
-            href="#clone"
-            className="inline-flex h-12 items-center rounded-xl border border-control bg-surface px-6 text-base font-medium text-fg no-underline hover:bg-subtle-hover"
-          >
+          <a href="#clone" className={`${BTN_GHOST} h-12 px-6 text-base`}>
             Clone and install
           </a>
         </div>
@@ -428,10 +457,12 @@ function Closing(): ReactNode {
 }
 
 export default function Landing(): ReactNode {
-  useTitle("Stacked changes, reviewed in order");
+  useTitle("Source control for people and their agents");
+  const { on: agents } = useAgents();
   return (
     <>
       <Hero />
+      <Tools />
       <Facts />
       <Feature
         id="stacks"
@@ -497,6 +528,7 @@ export default function Landing(): ReactNode {
         flip
         tinted
       />
+      {agents ? (
       <Feature
         id="agents"
         icon="bot"
@@ -513,6 +545,7 @@ export default function Landing(): ReactNode {
         ]}
         art={<AgentsArt />}
       />
+      ) : null}
       <CloneSection />
       <Grid />
       <Closing />
