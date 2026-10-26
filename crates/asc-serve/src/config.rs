@@ -996,6 +996,12 @@ pub struct ServeConfig {
     pub cloud: CloudConfig,
     /// `[web]`: the web UI under `/ui` (docs/WEB-UI.md).
     pub web: WebConfig,
+    /// `[vault]`: the master key file for stored secrets.
+    pub vault: crate::vault::VaultConfig,
+    /// `[netguard]`: the rules for connecting to user-supplied addresses.
+    pub netguard: crate::netguard::NetGuardConfig,
+    /// `[storage]`: bring-your-own storage limits and timers.
+    pub storage: crate::storage::StorageConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1026,6 +1032,9 @@ impl Default for ServeConfig {
             gc: crate::gc::GcSettings::default(),
             cloud: CloudConfig::default(),
             web: WebConfig::default(),
+            vault: crate::vault::VaultConfig::default(),
+            netguard: crate::netguard::NetGuardConfig::default(),
+            storage: crate::storage::StorageConfig::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -1156,6 +1165,8 @@ impl ServeConfig {
         self.limits.validate()?;
         self.cloud.validate()?;
         self.web.validate()?;
+        self.netguard.validate().or_else(|m| invalid(m))?;
+        self.storage.validate().or_else(|m| invalid(m))?;
         self.validate_grants()
     }
 
