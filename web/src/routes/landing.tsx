@@ -92,7 +92,9 @@ function Feature(props: {
 }): ReactNode {
   return (
     <section id={props.id} className={props.tinted ? "border-y border-line bg-subtle/50" : ""}>
-      <div className={`${WRAP} grid items-center gap-8 py-12 sm:gap-10 md:py-24 lg:grid-cols-2 lg:gap-16`}>
+      <div
+        className={`${WRAP} grid items-center gap-8 py-12 sm:gap-10 md:py-24 lg:grid-cols-2 lg:gap-16`}
+      >
         <div className={props.flip ? "lg:order-2" : ""}>
           <Eyebrow icon={props.icon}>{props.eyebrow}</Eyebrow>
           <h2 className="text-[1.65rem] font-extrabold leading-tight tracking-tight text-fg-strong sm:text-4xl">
@@ -167,7 +169,9 @@ function Hero(): ReactNode {
     <section className="hdr relative overflow-hidden bg-hdr text-hdr-fg">
       <div className="lp-glow" aria-hidden="true" />
       <div className="lp-grid" aria-hidden="true" />
-      <div className={`${WRAP} relative pb-14 pt-10 text-center sm:pb-20 sm:pt-16 md:pb-28 md:pt-20`}>
+      <div
+        className={`${WRAP} relative pb-14 pt-10 text-center sm:pb-20 sm:pt-16 md:pb-28 md:pt-20`}
+      >
         <p className="mx-auto mb-5 inline-flex max-w-full items-center gap-2 rounded-full border border-hdr-line bg-hdr-field px-3.5 py-1.5 text-left text-[13px] font-semibold text-[#7dd3e8] sm:mb-6">
           <span className="h-2 w-2 shrink-0 rounded-full bg-cyan" aria-hidden="true" />
           Changesets, stacked review, plain git on the wire
@@ -219,8 +223,12 @@ function Tools(): ReactNode {
   const list = on ? [...TOOLS, ...AGENT_TOOLS] : TOOLS;
   return (
     <section aria-label="Works with" className="border-b border-line bg-surface">
-      <div className={`${WRAP} flex flex-col gap-3 py-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10 sm:py-7`}>
-        <p className="max-w-xs text-sm text-fg-muted">Works with the tools your team already uses</p>
+      <div
+        className={`${WRAP} flex flex-col gap-3 py-6 sm:flex-row sm:items-center sm:justify-between sm:gap-10 sm:py-7`}
+      >
+        <p className="max-w-xs text-sm text-fg-muted">
+          Works with the tools your team already uses
+        </p>
         <ul className="flex flex-wrap gap-x-7 gap-y-2 text-base font-bold text-fg-muted sm:text-[17px]">
           {list.map((t) => (
             <li key={t}>{t}</li>
@@ -441,7 +449,9 @@ function Closing(): ReactNode {
         </h2>
         <p className="mx-auto mt-4 max-w-xl text-base text-hdr-muted sm:text-lg">
           Import a repository in a minute. Keep your git history.
-          {on ? " Bring your agents." : " Sign in with a token, or open any repository you can read."}
+          {on
+            ? " Bring your agents."
+            : " Sign in with a token, or open any repository you can read."}
         </p>
         <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
           <Link to="/signin" className={`${BTN_CYAN} h-12 px-7 text-base`}>
@@ -529,22 +539,22 @@ export default function Landing(): ReactNode {
         tinted
       />
       {agents ? (
-      <Feature
-        id="agents"
-        icon="bot"
-        eyebrow="Agents and MCP"
-        title="Built for agents as well as people"
-        lead="ASC ships an MCP server on the same API the web app uses. Give an agent a scoped token and it can read a stack, review a change or prepare a submit, with write tools off until you turn them on."
-        bullets={[
-          "Remote MCP over HTTP with OAuth, or local over stdio.",
-          <>
-            Ready-made prompts such as <code className={code}>review_change</code> and{" "}
-            <code className={code}>prepare_submit</code>.
-          </>,
-          "Write tools need an explicit scope, and every call is audited.",
-        ]}
-        art={<AgentsArt />}
-      />
+        <Feature
+          id="agents"
+          icon="bot"
+          eyebrow="Agents and MCP"
+          title="Built for agents as well as people"
+          lead="ASC ships an MCP server on the same API the web app uses. Give an agent a scoped token and it can read a stack, review a change or prepare a submit, with write tools off until you turn them on."
+          bullets={[
+            "Remote MCP over HTTP with OAuth, or local over stdio.",
+            <>
+              Ready-made prompts such as <code className={code}>review_change</code> and{" "}
+              <code className={code}>prepare_submit</code>.
+            </>,
+            "Write tools need an explicit scope, and every call is audited.",
+          ]}
+          art={<AgentsArt />}
+        />
       ) : null}
       <CloneSection />
       <Grid />

@@ -27,7 +27,8 @@ export function writeAgents(
 const listeners = new Set<() => void>();
 let current: boolean | undefined;
 
-const store = (): Storage | undefined => (typeof localStorage === "undefined" ? undefined : localStorage);
+const store = (): Storage | undefined =>
+  typeof localStorage === "undefined" ? undefined : localStorage;
 
 function snapshot(): boolean {
   current ??= readAgents(store());

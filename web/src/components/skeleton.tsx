@@ -34,7 +34,7 @@ export function RowsSkeleton(props: { rows: number; rowHeight: number; label: st
 export function PageSkeleton(): ReactNode {
   return (
     <div
-      className="mx-auto w-full max-w-6xl p-4"
+      className="mx-auto min-h-dvh w-full max-w-6xl p-4"
       role="status"
       aria-busy="true"
       aria-label="Loading page"

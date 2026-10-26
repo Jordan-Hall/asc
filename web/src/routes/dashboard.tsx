@@ -8,6 +8,7 @@ import type { InboxItemView } from "../api/inbox";
 import type { ChangeRow } from "../api/types";
 import { Icon, type IconName } from "../components/icons";
 import { Bar } from "../components/skeleton";
+import { useAgents } from "../lib/agents";
 import { detectLanguage } from "../lib/language";
 import { openPalette } from "../lib/palette";
 import { changeHref, repoHref } from "../lib/paths";
@@ -213,7 +214,10 @@ function YourTurn(props: { data: Data }): ReactNode {
         <h2 id="turn-h" className="flex-1 text-sm font-semibold text-fg-strong">
           Your turn
         </h2>
-        <Link to="/inbox" className="text-sm no-underline hover:underline">
+        <Link
+          to="/inbox"
+          className="inline-flex min-h-11 items-center text-sm no-underline hover:underline sm:min-h-0"
+        >
           Inbox
         </Link>
       </div>
@@ -222,10 +226,12 @@ function YourTurn(props: { data: Data }): ReactNode {
           role="status"
           aria-busy="true"
           aria-label="Loading your turn"
-          className="space-y-3 p-4"
+          className="divide-y divide-line"
         >
-          {[0, 1, 2].map((i) => (
-            <Bar key={i} width={`${90 - i * 14}%`} height={18} />
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div key={i} className="flex items-center px-4" style={{ height: 60 }}>
+              <Bar width={`${90 - i * 9}%`} height={18} />
+            </div>
           ))}
         </div>
       ) : items.length === 0 ? (
@@ -335,7 +341,7 @@ function RecentChanges(props: { data: Data; empty: boolean }): ReactNode {
       </div>
       {loadingChanges && ranked.length === 0 && !props.empty ? (
         <div role="status" aria-busy="true" aria-label="Loading changes">
-          {[0, 1, 2].map((i) => (
+          {[0, 1, 2, 3, 4, 5].map((i) => (
             <div
               key={i}
               className="flex items-center gap-3 border-b border-line px-4"
@@ -460,11 +466,11 @@ function OpenForm(): ReactNode {
           spellCheck={false}
           aria-invalid={invalid}
           aria-describedby="open-repo-err"
-          className="h-9 min-w-0 flex-1 rounded-lg border border-control bg-page px-3 text-sm"
+          className="h-11 min-w-0 flex-1 rounded-lg border border-control bg-page px-3 text-sm sm:h-9"
         />
         <button
           type="submit"
-          className="h-9 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand"
+          className="h-11 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand sm:h-9"
         >
           Open
         </button>
@@ -499,7 +505,7 @@ function Repositories(props: { names: readonly string[] }): ReactNode {
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Find a repository…"
           autoComplete="off"
-          className="h-8 w-44 rounded-lg border border-control bg-page px-3 text-sm sm:w-56"
+          className="h-11 w-40 min-w-0 rounded-lg border border-control bg-page px-3 text-sm sm:h-8 sm:w-56"
         />
       </div>
       {shown.length === 0 ? (
@@ -590,7 +596,7 @@ function Onboarding(): ReactNode {
       <button
         type="button"
         onClick={() => openPalette()}
-        className="mt-5 inline-flex h-9 items-center gap-2 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand"
+        className="mt-5 inline-flex h-11 items-center gap-2 rounded-lg bg-brand px-4 text-sm font-semibold text-on-brand sm:h-9"
       >
         <Icon name="search" size={14} />
         Find a repository
@@ -599,24 +605,66 @@ function Onboarding(): ReactNode {
   );
 }
 
+/** Shown only with "Show agent features" on. Nothing here is fetched. */
+function AgentsNote(): ReactNode {
+  return (
+    <section aria-labelledby="agents-h" className={`${CARD} p-4`}>
+      <h2
+        id="agents-h"
+        className="mb-1 flex items-center gap-2 text-sm font-semibold text-fg-strong"
+      >
+        <Icon name="bot" size={16} />
+        Agent work
+      </h2>
+      <p className="text-sm text-fg-muted">
+        Agent features are on. Changes made by agents are listed with the others, with the agent as
+        the author. Turn this off in{" "}
+        <Link to="/settings" className="underline">
+          Settings
+        </Link>
+        .
+      </p>
+    </section>
+  );
+}
+
+function Greeting(props: { data: Data }): ReactNode {
+  const own = props.data.turn.filter((t) => t.item.section !== 4).length;
+  const text = props.data.loadingInbox
+    ? " "
+    : own === 0
+      ? "Nothing is waiting on you."
+      : `${own} ${own === 1 ? "thing needs" : "things need"} you.`;
+  return (
+    <div className="min-w-0">
+      <h1 className="text-2xl font-extrabold tracking-tight text-fg-strong">Dashboard</h1>
+      <p className="mt-0.5 min-h-5 text-sm text-fg-muted">{text}</p>
+    </div>
+  );
+}
+
 export default function Dashboard(): ReactNode {
   useTitle("Dashboard");
   const recent = useRecent();
   const data = useDashboardData(recent);
   const empty = recent.length === 0;
+  const agents = useAgents();
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+    // min-h keeps the footer below the fold while data arrives, so it does not jump out of view.
+    <div className="mx-auto min-h-dvh w-full max-w-7xl px-4 py-6 sm:px-6">
       <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight text-fg-strong">Dashboard</h1>
+        <Greeting data={data} />
         <span className="flex-1" />
         <button
           type="button"
           onClick={() => openPalette()}
-          className="inline-flex h-9 items-center gap-2 rounded-lg border border-control bg-surface px-3 text-sm text-fg hover:bg-subtle-hover"
+          className="inline-flex h-11 items-center gap-2 rounded-lg border border-control bg-surface px-3 text-sm text-fg hover:bg-subtle-hover sm:h-9"
         >
           <Icon name="search" size={14} />
           Jump to…
-          <Kbd>Ctrl K</Kbd>
+          <span className="hidden sm:inline">
+            <Kbd>Ctrl K</Kbd>
+          </span>
         </button>
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)] gap-5 lg:grid-cols-[minmax(0,1fr)_20rem] lg:items-start">
@@ -635,7 +683,12 @@ export default function Dashboard(): ReactNode {
           <div className="order-2 lg:order-none">
             <YourTurn data={data} />
           </div>
-          <div className="order-5 lg:order-none">
+          {agents.on ? (
+            <div className="order-5 lg:order-none">
+              <AgentsNote />
+            </div>
+          ) : null}
+          <div className="order-6 lg:order-none">
             <Side />
           </div>
         </div>

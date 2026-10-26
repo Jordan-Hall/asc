@@ -210,7 +210,10 @@ export default function Palette(props: { onHelp: () => void }): ReactNode {
       // Mobile first: a bottom sheet. From sm up it is a centred panel near the top.
       className="asc-sheet fixed inset-x-0 bottom-0 top-auto m-0 open:flex max-h-[85dvh] w-full max-w-none flex-col overflow-hidden rounded-b-none rounded-t-2xl border border-line bg-surface p-0 pb-[env(safe-area-inset-bottom)] text-fg shadow-2xl backdrop:bg-black/50 sm:inset-x-auto sm:bottom-auto sm:left-1/2 sm:top-[10vh] sm:w-[min(40rem,calc(100vw-1rem))] sm:-translate-x-1/2 sm:rounded-2xl sm:pb-0"
     >
-      <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-line sm:hidden" aria-hidden="true" />
+      <div
+        className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-line sm:hidden"
+        aria-hidden="true"
+      />
       <div className="flex shrink-0 items-center gap-3 border-b border-line pl-4 pr-1 sm:pr-4">
         <Icon name="search" className="shrink-0 text-fg-muted" />
         <input

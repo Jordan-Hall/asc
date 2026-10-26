@@ -113,13 +113,18 @@ describe("theme", () => {
   });
   test("asc-auto repeats the dark tokens exactly", async () => {
     const css = await Bun.file(new URL("../src/styles/app.css", import.meta.url)).text();
-    const block = (re: RegExp) => [...(css.match(re)?.[1] ?? "").matchAll(/--[\w-]+:[^;]+;/g)].map((x) => x[0].replace(/\s+/g, " "));
+    const block = (re: RegExp) =>
+      [...(css.match(re)?.[1] ?? "").matchAll(/--[\w-]+:[^;]+;/g)].map((x) =>
+        x[0].replace(/\s+/g, " "),
+      );
     const dark = block(/\[data-theme="asc-dark"\],\s*\.dark \{([^}]*)\}/);
     const auto = block(/ASC-DARK-AUTO-BEGIN \*\/[\s\S]*?\[data-theme="asc-auto"\] \{([^}]*)\}/);
     expect(dark.length).toBeGreaterThan(20);
     expect(auto).toEqual(dark);
     // The light block defines every token the dark block overrides.
-    const light = block(/:root,\s*\[data-theme="asc-light"\] \{([^}]*)\}/).map((d) => d.split(":")[0]);
+    const light = block(/:root,\s*\[data-theme="asc-light"\] \{([^}]*)\}/).map(
+      (d) => d.split(":")[0],
+    );
     for (const d of dark) expect(light).toContain(d.split(":")[0]);
   });
 });
