@@ -3,8 +3,8 @@
 //! `GET /ui/...` answers from an asset table (embedded by `build.rs` or loaded from `[web] dir`):
 //! content-hashed files under `static/` are immutable for a year, `index.html` and the other
 //! unhashed files revalidate with a strong ETag, bodies are served pre-compressed (brotli, gzip)
-//! when the client accepts it, and an extension-less path falls back to `index.html` so client
-//! routes survive a reload. Every response carries a strict CSP (no inline script or style).
+//! when the client accepts it, and a client route falls back to `index.html` so it survives a reload
+//! (an extension-less path, or a nested path with an extension, a source file, that a browser opens). Every response carries a strict CSP (no inline script or style).
 //! The files are public; every data call the UI makes goes through the authenticated RPC.
 
 pub mod assets;
@@ -120,16 +120,28 @@ fn plain(status: StatusCode) -> Response {
     secure(res)
 }
 
-/// Whether the extension-less `path` is a client route (`/ui/acme/app/changes`), not a missing file.
-fn is_route(path: &str) -> bool {
-    path.is_empty() || !path.rsplit('/').next().unwrap_or("").contains('.')
+/// Whether `path` is a client route (`/ui/acme/app/changes`), not a missing file. An extension-less
+/// path is. A path whose last segment has an extension is too when it is nested (a source file,
+/// `/ui/acme/app/blob/main/src/lib.rs`, which a reload or a shared link must open) and the client
+/// navigates to a document; `static/` and top-level files with an extension are always files.
+fn is_route(path: &str, headers: &HeaderMap) -> bool {
+    if path.is_empty() || !path.rsplit('/').next().unwrap_or("").contains('.') {
+        return wants_html(headers);
+    }
+    !path.starts_with("static/") && path.contains('/') && navigates_to_document(headers)
+}
+
+fn accept(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())
 }
 
 fn wants_html(headers: &HeaderMap) -> bool {
-    match headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) {
-        None => true,
-        Some(a) => a.contains("text/html") || a.contains("*/*"),
-    }
+    accept(headers).is_none_or(|a| a.contains("text/html") || a.contains("*/*"))
+}
+
+/// A browser navigation asks for `text/html` by name; `fetch` and `curl` send `*/*` or nothing.
+fn navigates_to_document(headers: &HeaderMap) -> bool {
+    accept(headers).is_some_and(|a| a.contains("text/html"))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -200,7 +212,7 @@ fn respond(s: &WebState, path: &str, method: &Method, headers: &HeaderMap) -> Re
     }
     let found = match s.assets.get(path) {
         Some(a) if !path.is_empty() => Some((a, path)),
-        _ if is_route(path) && wants_html(headers) => {
+        _ if is_route(path, headers) => {
             s.assets.get("index.html").map(|a| (a, "index.html"))
         }
         _ => None,
