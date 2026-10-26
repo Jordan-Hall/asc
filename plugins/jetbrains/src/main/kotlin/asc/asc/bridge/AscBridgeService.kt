@@ -5,6 +5,8 @@ import asc.v1.BridgeOuterClass.HelloResponse
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import kotlinx.coroutines.delay
+import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
@@ -18,8 +20,16 @@ class AscBridgeService : Disposable {
     /** An explicit executable path, or null to look for `asc` (see [AscExecutable.resolve]). */
     @Volatile var ascPath: String? = null
 
-    /** The project roots Hello has been asked about; an `asc` inside one is never started. */
+    /** The roots registered by Hello and by the calls that name one; an `asc` inside one is never started. */
     @Volatile var projectRoots: List<String> = emptyList()
+
+    /** The base paths and VCS roots of every open project, read when the executable is chosen, not earlier. */
+    @Volatile var openRoots: () -> List<String> = { platformOpenRoots() }
+
+    /** Test seams: the environment, the host OS and the file check the executable is chosen with. */
+    @Volatile var environment: Map<String, String> = System.getenv()
+    @Volatile var windows: Boolean = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+    @Volatile var isFile: (String) -> Boolean = { File(it).isFile }
     @Volatile private var token: String? = null
     @Volatile private var tokenHost: String? = null
     private var process: Process? = null
@@ -42,16 +52,30 @@ class AscBridgeService : Disposable {
 
     /** The absolute `asc` to start, or null when none is found outside the open projects. */
     fun executablePath(): String? {
-        val env = System.getenv()
-        val windows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+        val env = environment
         return AscExecutable.resolve(
             ascPath,
             env["PATH"] ?: env["Path"],
             env["ASC_HOME"],
             System.getProperty("user.home"),
             windows,
-            projectRoots,
+            AscExecutable.forbiddenRoots(projectRoots, openRoots()),
+            isFile,
         )
+    }
+
+    /** Registers a project root before anything is started, so an `asc` planted under it is never chosen. */
+    fun registerRoot(root: String) {
+        if (root.isBlank()) return
+        synchronized(lock) { if (root !in projectRoots) projectRoots = projectRoots + root }
+    }
+
+    private fun platformOpenRoots(): List<String> = try {
+        ProjectManager.getInstance().openProjects.flatMap { p ->
+            listOfNotNull(p.basePath) + ProjectLevelVcsManager.getInstance(p).allVersionedRoots.map { it.path }
+        }
+    } catch (_: Exception) {
+        emptyList()
     }
 
     private fun clientLocked(): BridgeClient {
@@ -96,6 +120,7 @@ class AscBridgeService : Disposable {
     }
 
     suspend fun unary(method: String, request: ByteArray, root: String = ""): ByteArray {
+        registerRoot(root)
         val c = live()
         return try {
             c.unary(method, request, root).also { synchronized(lock) { failures = 0 } }
@@ -110,11 +135,13 @@ class AscBridgeService : Disposable {
         }
     }
 
-    suspend fun stream(method: String, request: ByteArray, root: String = ""): Flow<ByteArray> =
-        live().stream(method, request, root)
+    suspend fun stream(method: String, request: ByteArray, root: String = ""): Flow<ByteArray> {
+        registerRoot(root)
+        return live().stream(method, request, root)
+    }
 
     suspend fun hello(roots: List<String>): HelloResponse {
-        projectRoots = (projectRoots + roots).distinct()
+        roots.forEach { registerRoot(it) }
         return HelloResponse.parseFrom(
             unary("asc.v1.Bridge/Hello", HelloRequest.newBuilder().addAllRoots(roots).build().toByteArray()),
         )

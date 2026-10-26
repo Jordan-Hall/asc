@@ -52,6 +52,10 @@ object AscExecutable {
         return dirs.map { join(it, name) }.firstOrNull { usable(it) }
     }
 
+    /** The roots an executable must stay out of: those registered so far and those of the open projects, without blanks. */
+    fun forbiddenRoots(registered: List<String>, open: List<String>): List<String> =
+        (registered + open).filter { it.isNotBlank() }.distinct()
+
     /** True when `child` is `parent` or below it, comparing segments (`.` and `..` resolved, case folded on Windows). */
     fun inside(child: String, parent: String, windows: Boolean): Boolean {
         val c = segments(child, windows)
