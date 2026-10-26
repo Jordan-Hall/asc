@@ -35,6 +35,7 @@ use asc_mcp::cursor::Position;
 use asc_mcp::errors::{ToolError, code};
 use asc_mcp::rpc_backend::RpcBackend;
 use asc_mcp::schema::Surface;
+use asc_mcp::search::SearchTool;
 use asc_rpc::ipc::{WorkspaceClient, connect};
 use asc_rpc::json;
 use asc_rpc::server::wire;
@@ -49,6 +50,7 @@ use tonic::Status;
 use tonic::transport::Channel;
 
 use super::pathgate::{Disk, Gate, Refusal};
+use super::search::{self, ServerSearch};
 use crate::cli::common::{CliError, Ctx, WsCtx};
 use crate::daemon::lifecycle::{self, SystemProcess};
 use crate::daemon::metrics::{EventLog, Metrics};
@@ -106,6 +108,8 @@ struct Inner {
     /// The write level the user granted, and whether this workspace uploads drafts at once.
     write: WriteLevel,
     uploads: bool,
+    /// `search`, when `origin` is a server to ask (unit I21).
+    search: Option<SearchTool<ServerSearch>>,
 }
 
 /// The `McpBackend` for a workspace on this machine.
@@ -146,6 +150,7 @@ impl LocalBackend {
                 pool,
                 write: WriteLevel::None,
                 uploads: false,
+                search: None,
             }),
         })
     }
@@ -163,6 +168,16 @@ impl LocalBackend {
 }
 
 impl LocalBackend {
+    /// Serves `search` through `client`, the server `origin` names. Call it before the backend is
+    /// cloned.
+    #[must_use]
+    pub fn with_search(mut self, client: Option<ServerSearch>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.search = client.map(SearchTool::new);
+        }
+        self
+    }
+
     /// The launch workspace's id, the only `{ws}` an `asc://ws/…` subscription may name (M11).
     #[must_use]
     pub fn ws_id(&self) -> &str {
@@ -454,6 +469,8 @@ fn disk_for(tool: &str, args: &Value) -> Disk {
     match tool {
         "ls_tree" => Disk::Revision,
         "read_file" | "blame" | "grep" if has_rev => Disk::Revision,
+        // The search runs on the server, over a revision.
+        "search" => Disk::Revision,
         _ => Disk::Worktree,
     }
 }
@@ -696,6 +713,32 @@ impl Inner {
             items.push(json!({ "truncated": true }));
         }
         Ok(messages(items, ctx))
+    }
+
+    /// `search`: asks the server, then hides what the work tree's rules hide.
+    async fn search(&self, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
+        let Some(tool) = &self.search else {
+            return Err(ToolError::not_available(
+                "search needs an asc server: this repository has no origin",
+            ));
+        };
+        let gate = Arc::new(Gate::new(self.root.clone(), self.sources.clone()));
+        check_paths(&gate, "search", args)?;
+        // The outline of a file takes its path as the query.
+        if args.get("mode").and_then(Value::as_str) == Some("symbol")
+            && args.get("op").and_then(Value::as_str) == Some("outline")
+            && let Some(q) = args.get("query").and_then(Value::as_str)
+        {
+            gate.check(q, Disk::Revision, false)
+                .map_err(|r| refusal(&r))?;
+        }
+        match tool.call("search", args, ctx).await? {
+            Reply::Messages(s) => Ok(Reply::Messages(
+                s.map(move |m| m.map(|v| search::hide_ignored(&gate, v)))
+                    .boxed(),
+            )),
+            other => Ok(other),
+        }
     }
 
     async fn grep(&self, t: &Target, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
@@ -1313,6 +1356,9 @@ impl McpBackend for LocalBackend {
             return Err(ToolError::not_available(format!(
                 "{tool} is not served by this build"
             )));
+        }
+        if tool == "search" {
+            return inner.search(args, ctx).await;
         }
         let target = inner.target(args).await?;
         check_paths(&target.gate, tool, args)?;
