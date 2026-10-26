@@ -1,6 +1,11 @@
 // CI and Actions runs over asc.v1.Ci (the `ci.v1` feature). Reads only: reporting a run is for
 // runners and forge adapters with a service credential.
-import { type BridgeTransport, callUnary, type CallParams, changeIdToString } from "@asc/asc-client";
+import {
+  type BridgeTransport,
+  callUnary,
+  type CallParams,
+  changeIdToString,
+} from "@asc/asc-client";
 import { Ci, CiStatus } from "@asc/asc-client/ci";
 
 export type { CiStatus };
