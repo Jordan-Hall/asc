@@ -33,3 +33,23 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # [web]
 # enabled = true
 # dir = "/opt/asc/web"                # optional: serve this build instead of the embedded one
+
+# Bring your own storage (docs/BYOS.md). Owners add S3-compatible buckets through the Storage
+# service; their credentials are sealed with the master key in [vault].
+# [vault]
+# key_file = "/var/lib/asc/vault.keys"   # created on first start, mode 0600; share it between replicas; back it up
+#
+# [netguard]                             # the rules for connecting to addresses users supply
+# allow_loopback_http = false            # development only: lets a local S3 over plain http be a target
+# allow_ports = []                       # besides the usual ones (denied: 22 25 3306 5432 6379 11211 2375 2379 9200)
+# connect_timeout_secs = 10
+# request_timeout_secs = 30
+#
+# [storage]
+# max_targets_per_owner = 64
+# max_repos_per_target = 1000
+# allow_user_targets = true
+# health_interval_secs = 300             # 0 turns the checks off
+# repin_secs = 300
+# migration_settle_secs = 5
+# migration_workers = 2

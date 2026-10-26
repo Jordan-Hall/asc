@@ -1001,14 +1001,14 @@ impl AdminService {
                 RefTarget::Tag(t) => ObjKey::Tag(t),
             })
             .collect();
-        let (store, src_prefix) = self.registry.namespace(src.ns);
-        let (_, dst_prefix) = self.registry.namespace(dst.ns);
+        let (src_store, src_prefix) = self.registry.namespace(src.ns);
+        let (dst_store, dst_prefix) = self.registry.namespace(dst.ns);
         let mut walk = Walk::new(&*src.objects, None, Damage::Fail);
         walk.start(roots).await?;
         let mut copied = 0u64;
         while let Some(batch) = walk.next_batch().await? {
             lease = self.renew(id, lease).await?;
-            server_copy(&*store, &src_prefix, &dst_prefix, &batch).await?;
+            copy_keys(&src_store, &src_prefix, &dst_store, &dst_prefix, &batch).await?;
             copy_rows(&self.registry, src.ns, &dst, &batch).await?;
             copied += batch.len() as u64;
         }
@@ -1646,6 +1646,44 @@ pub fn register(
 }
 
 // ------------------------------------------------------------------------------ fork rows
+
+/// Copies `keys` from one namespace to another. Inside one bucket it is a server-side copy
+/// (below); between two buckets (a repository with its own storage, bring-your-own storage) the
+/// bytes go through the server.
+async fn copy_keys(
+    src: &Arc<dyn ObjectStore>,
+    from: &Path,
+    dst: &Arc<dyn ObjectStore>,
+    to: &Path,
+    keys: &[ObjKey],
+) -> Result<(), Status> {
+    if Arc::ptr_eq(src, dst) {
+        return server_copy(&**src, from, to, keys).await;
+    }
+    stream::iter(keys.iter().copied())
+        .map(|k| async move {
+            let rel = k.path();
+            let (s, d) = (
+                Path::from(format!("{from}/{rel}")),
+                Path::from(format!("{to}/{rel}")),
+            );
+            let body = src
+                .get(&s)
+                .await
+                .map_err(bucket_status)?
+                .bytes()
+                .await
+                .map_err(bucket_status)?;
+            dst.put(&d, object_store::PutPayload::from_bytes(body))
+                .await
+                .map_err(bucket_status)?;
+            Ok::<(), Status>(())
+        })
+        .buffer_unordered(COPY_CONCURRENCY)
+        .try_collect::<Vec<()>>()
+        .await
+        .map(drop)
+}
 
 /// Copies `keys` inside the bucket (S3 `CopyObject`, a local copy, an in-memory copy) without
 /// moving their bytes through the server. A fork is built from the source's own verified
