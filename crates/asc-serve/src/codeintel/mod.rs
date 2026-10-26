@@ -13,6 +13,7 @@ pub mod rpc;
 pub mod runner;
 pub mod scip;
 pub mod snaps;
+pub mod source;
 pub mod sweep;
 pub mod warm;
 pub mod worker;

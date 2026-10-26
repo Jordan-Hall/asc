@@ -360,6 +360,18 @@ pub trait ChangeSource: Send + Sync {
     /// `targets` are the new ref targets of the update, in the wire form the outbox document
     /// stores (kind byte, then the id).
     async fn written(&self, repo_id: i64, targets: &[Vec<u8>]) -> Result<Written, EffectError>;
+
+    /// As [`written`](Self::written), knowing the targets the update moved the refs away from
+    /// (same wire form): changesets those already reach are not new. A source that cannot use
+    /// them keeps this default.
+    async fn written_since(
+        &self,
+        repo_id: i64,
+        targets: &[Vec<u8>],
+        _old: &[Vec<u8>],
+    ) -> Result<Written, EffectError> {
+        self.written(repo_id, targets).await
+    }
 }
 
 /// The `codeintel.enqueue` outbox effect. Delivery is at least once and enqueue is idempotent.
@@ -431,8 +443,12 @@ impl Effect for EnqueueEffect {
             return Err(EffectError("too many refs".into()));
         }
         let mut targets = Vec::new();
+        let mut olds = Vec::new();
         let mut priority = Priority::Backfill;
         for r in refs {
+            if let Some(old) = r.get("old").and_then(|v| v.as_str()) {
+                olds.push(unhex(old).ok_or_else(|| EffectError("malformed ref target".into()))?);
+            }
             let Some(new) = r.get("new").and_then(|v| v.as_str()) else {
                 continue; // a deletion makes nothing reachable
             };
@@ -444,7 +460,10 @@ impl Effect for EnqueueEffect {
         if targets.is_empty() {
             return Ok(());
         }
-        let written = self.source.written(job.repo_id, &targets).await?;
+        let written = self
+            .source
+            .written_since(job.repo_id, &targets, &olds)
+            .await?;
         self.enqueue_unknown(&written.ns, &written.files, priority)
             .await
             .map_err(|e| EffectError(e.to_string()))?;
