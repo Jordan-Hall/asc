@@ -34,7 +34,7 @@ export type MenuEntry =
 
 const ITEM = "[role='menuitem'],[role='menuitemradio']";
 const ROW =
-  "flex w-full min-h-9 items-center gap-2.5 rounded-lg px-2.5 text-left text-sm no-underline " +
+  "flex w-full min-h-11 items-center gap-2.5 sm:min-h-9 rounded-lg px-2.5 text-left text-sm no-underline " +
   "outline-none hover:bg-subtle-hover focus-visible:bg-subtle-hover focus-visible:ring-2 " +
   "focus-visible:ring-inset focus-visible:ring-[rgb(var(--color-text-link-focus-ring))]";
 

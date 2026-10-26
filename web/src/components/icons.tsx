@@ -62,23 +62,33 @@ export function Icon(props: { name: IconName; size?: number; className?: string 
   );
 }
 
-/** The product mark: three stacked layers on a rounded tile. Colours come from the theme. */
-export function LogoMark(props: { size?: number }): ReactNode {
+/**
+ * The ASC mark (docs/brand/logo-mark.svg): an "A" made of two paths that converge on one node.
+ * `tone="light"` is the tile for a light background, `"dark"` the tile for an ink background (the
+ * header, hero and closing band). Colours are the brand tokens, fixed, as BRAND.md requires.
+ */
+export function LogoMark(props: { size?: number; tone?: "light" | "dark" }): ReactNode {
   const size = props.size ?? 28;
+  const dark = props.tone === "dark";
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-      <rect width="32" height="32" rx="8" fill="rgb(var(--color-primary-button))" />
-      <g
+    <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+      <rect width="28" height="28" rx="7" fill={dark ? "#2394b2" : "#125469"} />
+      <path
+        d="M7.5 22.2 14 6.6l6.5 15.6"
         fill="none"
-        stroke="rgb(var(--color-text-on-primary))"
-        strokeWidth="2.2"
+        stroke={dark ? "#0b1220" : "#ffffff"}
+        strokeWidth="3"
         strokeLinecap="round"
         strokeLinejoin="round"
-      >
-        <path d="M16 7.5l8 4-8 4-8-4z" fill="rgb(var(--color-text-on-primary))" />
-        <path d="M8 16l8 4 8-4" opacity=".8" />
-        <path d="M8 20.5l8 4 8-4" opacity=".55" />
-      </g>
+      />
+      <path
+        d="M10.4 17.3h7.2"
+        fill="none"
+        stroke={dark ? "#ffffff" : "#22d3ee"}
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+      <circle cx="14" cy="6.6" r="2.7" fill={dark ? "#ffffff" : "#22d3ee"} />
     </svg>
   );
 }
