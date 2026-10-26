@@ -27,7 +27,7 @@ export default defineConfig({
   server: { base: BASE },
   html: {
     template: "./src/index.html",
-    title: "asc",
+    title: "ASC Hub",
     inject: "head",
     scriptLoading: "defer",
     tags: [
