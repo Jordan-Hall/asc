@@ -1060,7 +1060,7 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
                 return Err(ctx("an approval step needs `approvers`".into()));
             }
             for a in &s.approvers {
-                approvers.push(approver(a).map_err(|m| ctx(m))?);
+                approvers.push(approver(a).map_err(&ctx)?);
             }
             only(!s.agent.is_empty(), "agent", "agent")?;
             only(!s.prompt.is_empty(), "prompt", "agent")?;
