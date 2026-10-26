@@ -96,7 +96,8 @@ fn main() -> Result<(), Failure> {
     println!("cargo:rerun-if-changed=tools.toml");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/schema.rs");
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("no CARGO_MANIFEST_DIR")?);
+    let manifest =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or("no CARGO_MANIFEST_DIR")?);
     let out = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("no OUT_DIR")?);
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET)?;
     let text = std::fs::read_to_string(manifest.join("tools.toml"))?;
@@ -105,7 +106,8 @@ fn main() -> Result<(), Failure> {
     let mut seen: BTreeSet<(String, &'static str)> = BTreeSet::new();
     let mut table = String::from("pub static TOOLS: &[ToolDef] = &[\n");
     for row in &file.tool {
-        let one = emit_row(&pool, row, &mut seen).map_err(|e| format!("tool {:?}: {e}", row.name))?;
+        let one =
+            emit_row(&pool, row, &mut seen).map_err(|e| format!("tool {:?}: {e}", row.name))?;
         table.push_str(&one);
     }
     table.push_str("];\n");
@@ -118,7 +120,10 @@ fn main() -> Result<(), Failure> {
     pretty.push('\n');
     let _ = writeln!(table, "pub const ASC_HANDLES_SCHEMA: &str = {pretty:?};");
     std::fs::write(out.join("tools_gen.rs"), table)?;
-    vendor(&manifest.join("schema").join("asc_handles.schema.json"), &pretty);
+    vendor(
+        &manifest.join("schema").join("asc_handles.schema.json"),
+        &pretty,
+    );
     Ok(())
 }
 
@@ -128,7 +133,9 @@ fn vendor(path: &std::path::Path, content: &str) {
     if std::fs::read_to_string(path).is_ok_and(|old| old.replace("\r\n", "\n") == content) {
         return;
     }
-    if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(path)).and_then(|()| std::fs::write(path, content)) {
+    if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(path))
+        .and_then(|()| std::fs::write(path, content))
+    {
         println!("cargo:warning=cannot write {}: {e}", path.display());
     }
 }
@@ -158,7 +165,12 @@ fn emit_row(
     row: &Row,
     seen: &mut BTreeSet<(String, &'static str)>,
 ) -> Result<String, Failure> {
-    if row.name.is_empty() || !row.name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+    if row.name.is_empty()
+        || !row
+            .name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'_')
+    {
         return Err("name must match [a-z_]+".into());
     }
     if !TOOLSETS.contains(&row.toolset.as_str()) {
@@ -257,7 +269,12 @@ fn emit_row(
         "refs_for" => "Confirm::RefsFor".to_owned(),
         "refs_apply" => "Confirm::RefsApply".to_owned(),
         other => match other.strip_prefix("field:") {
-            Some(f) if add_in.iter().any(|a| a.name == f) || request.as_ref().is_some_and(|m| m.get_field_by_name(f).is_some()) => {
+            Some(f)
+                if add_in.iter().any(|a| a.name == f)
+                    || request
+                        .as_ref()
+                        .is_some_and(|m| m.get_field_by_name(f).is_some()) =>
+            {
                 format!("Confirm::Field({f:?})")
             }
             _ => return Err(format!("bad confirm rule {other:?}").into()),
@@ -296,7 +313,9 @@ fn emit_row(
     };
     let toolset: String = {
         let mut c = row.toolset.chars();
-        c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+        c.next()
+            .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+            .unwrap_or_default()
     };
     Ok(format!(
         "    ToolDef {{ name: {:?}, toolset: Toolset::{toolset}, surfaces: {mask}, rpc: {:?}, \

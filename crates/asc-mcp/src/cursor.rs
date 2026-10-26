@@ -85,7 +85,8 @@ impl Key {
     }
 
     fn mac(&self, msg: &[u8]) -> Hmac<Sha256> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.bytes).expect("HMAC takes any key length");
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(&self.bytes).expect("HMAC takes any key length");
         mac.update(msg);
         mac
     }
@@ -99,7 +100,9 @@ pub struct KeyRing {
 impl std::fmt::Debug for KeyRing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never print key material.
-        f.debug_struct("KeyRing").field("keys", &self.keys.len()).finish()
+        f.debug_struct("KeyRing")
+            .field("keys", &self.keys.len())
+            .finish()
     }
 }
 
@@ -111,7 +114,9 @@ impl KeyRing {
     pub fn random() -> Result<Self, KeyRingError> {
         let mut k = [0u8; KEY_LEN];
         getrandom::fill(&mut k).map_err(|e| KeyRingError::Random(e.to_string()))?;
-        Ok(Self { keys: vec![Key::new(k)] })
+        Ok(Self {
+            keys: vec![Key::new(k)],
+        })
     }
 
     /// A ring from raw key bytes, signing key first (HTTP: the contents of `[mcp] hmac_keys`).
@@ -124,7 +129,8 @@ impl KeyRing {
         }
         let mut out = Vec::with_capacity(keys.len());
         for k in keys {
-            let bytes: [u8; KEY_LEN] = k.as_ref().try_into().map_err(|_| KeyRingError::BadLength)?;
+            let bytes: [u8; KEY_LEN] =
+                k.as_ref().try_into().map_err(|_| KeyRingError::BadLength)?;
             out.push(Key::new(bytes));
         }
         Ok(Self { keys: out })
@@ -161,7 +167,13 @@ impl KeyRing {
     /// # Errors
     /// [`CursorError`] for a cursor that is malformed, unsigned by any key of the ring, expired,
     /// or issued for another tool or other arguments.
-    pub fn open_at(&self, tool: &str, args: &Value, cursor: &str, now: u64) -> Result<Position, CursorError> {
+    pub fn open_at(
+        &self,
+        tool: &str,
+        args: &Value,
+        cursor: &str,
+        now: u64,
+    ) -> Result<Position, CursorError> {
         if cursor.len() > MAX_CURSOR_CHARS {
             return Err(CursorError);
         }
@@ -219,17 +231,22 @@ pub fn arg_digest(tool: &str, args: &Value) -> String {
     h.update((tool.len() as u64).to_be_bytes());
     h.update(tool.as_bytes());
     h.update(canon.as_bytes());
-    h.finalize().iter().fold(String::with_capacity(64), |mut s, b| {
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    h.finalize()
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 fn canon_json(v: &Value, top: bool, out: &mut String) {
     match v {
         Value::Object(m) => {
-            let mut keys: Vec<&String> = m.keys().filter(|k| !(top && PAGING_ARGS.contains(&k.as_str()))).collect();
+            let mut keys: Vec<&String> = m
+                .keys()
+                .filter(|k| !(top && PAGING_ARGS.contains(&k.as_str())))
+                .collect();
             keys.sort();
             out.push('{');
             for (i, k) in keys.into_iter().enumerate() {
@@ -267,7 +284,10 @@ mod tests {
     }
 
     fn pos() -> Position {
-        Position::File { offset: 4096, line: 120 }
+        Position::File {
+            offset: 4096,
+            line: 120,
+        }
     }
 
     #[test]
@@ -283,7 +303,9 @@ mod tests {
     fn cursor_from_another_call_is_invalid_params() {
         let r = ring(1);
         let c = r.seal_at("read_file", &json!({"path": "a"}), pos(), 0);
-        let e = r.open_at("read_file", &json!({"path": "b"}), &c, 1).unwrap_err();
+        let e = r
+            .open_at("read_file", &json!({"path": "b"}), &c, 1)
+            .unwrap_err();
         assert_eq!(e.code(), -32602);
         assert!(r.open_at("grep", &json!({"path": "a"}), &c, 1).is_err());
     }
@@ -292,7 +314,10 @@ mod tests {
     fn cursor_after_restart_or_with_foreign_key_is_invalid_params() {
         let a = json!({});
         let c = ring(1).seal_at("log", &a, Position::Index { index: 3 }, 0);
-        assert_eq!(ring(2).open_at("log", &a, &c, 1).unwrap_err().code(), -32602);
+        assert_eq!(
+            ring(2).open_at("log", &a, &c, 1).unwrap_err().code(),
+            -32602
+        );
         let fresh = KeyRing::random().unwrap();
         assert!(fresh.open_at("log", &a, &c, 1).is_err());
     }
@@ -303,7 +328,10 @@ mod tests {
         let old = ring(1);
         let c_old = old.seal_at("log", &a, Position::Index { index: 1 }, 0);
         let rotated = KeyRing::from_keys(&[[2u8; 32], [1u8; 32]]).unwrap();
-        assert_eq!(rotated.open_at("log", &a, &c_old, 1).unwrap(), Position::Index { index: 1 });
+        assert_eq!(
+            rotated.open_at("log", &a, &c_old, 1).unwrap(),
+            Position::Index { index: 1 }
+        );
         let c_new = rotated.seal_at("log", &a, Position::Index { index: 2 }, 0);
         assert!(old.open_at("log", &a, &c_new, 1).is_err());
         assert!(ring(2).open_at("log", &a, &c_new, 1).is_ok());
@@ -317,7 +345,10 @@ mod tests {
         let mut raw = URL_SAFE_NO_PAD.decode(&c).unwrap();
         let mid = raw.len() / 2;
         raw[mid] ^= 1;
-        assert!(r.open_at("log", &a, &URL_SAFE_NO_PAD.encode(&raw), 101).is_err());
+        assert!(
+            r.open_at("log", &a, &URL_SAFE_NO_PAD.encode(&raw), 101)
+                .is_err()
+        );
         assert!(r.open_at("log", &a, &c[..c.len() - 4], 101).is_err());
         assert!(r.open_at("log", &a, "", 101).is_err());
         assert!(r.open_at("log", &a, "!!!", 101).is_err());
@@ -328,8 +359,14 @@ mod tests {
 
     #[test]
     fn key_ring_rejects_bad_keys_and_hides_material() {
-        assert!(matches!(KeyRing::from_keys::<[u8; 32]>(&[]), Err(KeyRingError::Empty)));
-        assert!(matches!(KeyRing::from_keys(&[vec![0u8; 31]]), Err(KeyRingError::BadLength)));
+        assert!(matches!(
+            KeyRing::from_keys::<[u8; 32]>(&[]),
+            Err(KeyRingError::Empty)
+        ));
+        assert!(matches!(
+            KeyRing::from_keys(&[vec![0u8; 31]]),
+            Err(KeyRingError::BadLength)
+        ));
         assert!(!format!("{:?}", ring(7)).contains('7'));
     }
 

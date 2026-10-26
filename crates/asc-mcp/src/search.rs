@@ -93,7 +93,11 @@ fn bad(message: impl Into<String>) -> ToolError {
     ToolError::new("INVALID_ARGUMENT", message)
 }
 
-fn text<'a>(args: &'a Map<String, Value>, key: &str, max: usize) -> Result<Option<&'a str>, ToolError> {
+fn text<'a>(
+    args: &'a Map<String, Value>,
+    key: &str,
+    max: usize,
+) -> Result<Option<&'a str>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) if s.len() <= max && !s.contains('\0') => Ok(Some(s)),
@@ -111,11 +115,19 @@ fn flag(args: &Map<String, Value>, key: &str) -> Result<bool, ToolError> {
 }
 
 /// An integer argument, defaulted and clamped to `1..=max` (or `0..=max` when `zero_ok`).
-fn number(args: &Map<String, Value>, key: &str, default: u64, max: u64, zero_ok: bool) -> Result<u64, ToolError> {
+fn number(
+    args: &Map<String, Value>,
+    key: &str,
+    default: u64,
+    max: u64,
+    zero_ok: bool,
+) -> Result<u64, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(default),
         Some(v) => {
-            let n = v.as_u64().ok_or_else(|| bad(format!("{key} must be a non-negative integer")))?;
+            let n = v
+                .as_u64()
+                .ok_or_else(|| bad(format!("{key} must be a non-negative integer")))?;
             if n == 0 && !zero_ok {
                 return Err(bad(format!("{key} must be at least 1")));
             }
@@ -127,14 +139,20 @@ fn number(args: &Map<String, Value>, key: &str, default: u64, max: u64, zero_ok:
 /// A scope path filter: relative, no `..`, no NUL, bounded. The server enforces ACLs; this keeps
 /// obviously hostile filters off the wire.
 fn clean_paths(args: &Map<String, Value>) -> Result<Vec<String>, ToolError> {
-    let Some(v) = args.get("paths").filter(|v| !v.is_null()) else { return Ok(Vec::new()) };
-    let list = v.as_array().ok_or_else(|| bad("paths must be an array of strings"))?;
+    let Some(v) = args.get("paths").filter(|v| !v.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let list = v
+        .as_array()
+        .ok_or_else(|| bad("paths must be an array of strings"))?;
     if list.len() > MAX_PATHS {
         return Err(bad(format!("at most {MAX_PATHS} paths")));
     }
     let mut out = Vec::with_capacity(list.len());
     for p in list {
-        let p = p.as_str().ok_or_else(|| bad("paths must be an array of strings"))?;
+        let p = p
+            .as_str()
+            .ok_or_else(|| bad("paths must be an array of strings"))?;
         out.push(safe_path(p)?);
     }
     Ok(out)
@@ -149,7 +167,10 @@ fn safe_path(p: &str) -> Result<String, ToolError> {
         || norm.split('/').any(|c| c == "..")
         || norm.as_bytes().get(1) == Some(&b':')
     {
-        return Err(ToolError::new(crate::errors::code::PATH_POLICY, "paths must be relative, without .. components"));
+        return Err(ToolError::new(
+            crate::errors::code::PATH_POLICY,
+            "paths must be relative, without .. components",
+        ));
     }
     Ok(norm)
 }
@@ -164,17 +185,27 @@ fn safe_path(p: &str) -> Result<String, ToolError> {
 /// `INVALID_ARGUMENT` for an unknown field, mode or op, `op` outside `symbol` mode, more than one
 /// of `rev`, `change` and `stack`, or an out-of-range value; `PATH_POLICY` for an unsafe path.
 pub fn plan(args: &Value, budget_bytes: u64, page_token: Option<&str>) -> Result<Plan, ToolError> {
-    let args = args.as_object().ok_or_else(|| bad("arguments must be an object"))?;
+    let args = args
+        .as_object()
+        .ok_or_else(|| bad("arguments must be an object"))?;
     if let Some(k) = args.keys().find(|k| !ARGS.contains(&k.as_str())) {
-        return Err(bad(format!("unknown argument {:?}", k.chars().take(40).collect::<String>())));
+        return Err(bad(format!(
+            "unknown argument {:?}",
+            k.chars().take(40).collect::<String>()
+        )));
     }
-    let query = text(args, "query", MAX_QUERY_BYTES)?.filter(|q| !q.is_empty()).ok_or_else(|| bad("query is required"))?;
+    let query = text(args, "query", MAX_QUERY_BYTES)?
+        .filter(|q| !q.is_empty())
+        .ok_or_else(|| bad("query is required"))?;
     let mode = text(args, "mode", 16)?.ok_or_else(|| bad("mode is required"))?;
     let op = text(args, "op", 16)?;
     if op.is_some() && mode != "symbol" {
         return Err(bad("op is only valid in symbol mode"));
     }
-    if mode != "semantic" && (args.get("rerank").is_some_and(|v| !v.is_null()) || args.get("k").is_some_and(|v| !v.is_null())) {
+    if mode != "semantic"
+        && (args.get("rerank").is_some_and(|v| !v.is_null())
+            || args.get("k").is_some_and(|v| !v.is_null()))
+    {
         return Err(bad("k and rerank are only valid in semantic mode"));
     }
 
@@ -266,7 +297,11 @@ pub fn finish(mut message: Value) -> Value {
     let size = message.to_string().len() as u64;
     if let Value::Object(m) = &mut message {
         if !m.contains_key("coverage") {
-            let cov = m.get("scope").and_then(|s| s.get("coverage")).cloned().unwrap_or_else(|| json!(0.0));
+            let cov = m
+                .get("scope")
+                .and_then(|s| s.get("coverage"))
+                .cloned()
+                .unwrap_or_else(|| json!(0.0));
             m.insert("coverage".into(), cov);
         }
         if !m.contains_key("est_tokens") {
@@ -284,7 +319,11 @@ pub trait CodeIntelClient: Send + Sync + 'static {
     ///
     /// # Errors
     /// A [`ToolError`] for a failed call.
-    async fn call(&self, plan: Plan, ctx: &CallContext) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError>;
+    async fn call(
+        &self,
+        plan: Plan,
+        ctx: &CallContext,
+    ) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError>;
 }
 
 /// An [`McpBackend`] for the `search` tool over a [`CodeIntelClient`].
@@ -305,7 +344,9 @@ impl<C: CodeIntelClient> SearchTool<C> {
 impl<C: CodeIntelClient> McpBackend for SearchTool<C> {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         if tool != "search" {
-            return Err(ToolError::not_available(format!("{tool} is not served here")));
+            return Err(ToolError::not_available(format!(
+                "{tool} is not served here"
+            )));
         }
         let page = match &ctx.position {
             Some(crate::cursor::Position::Page { token }) => Some(token.as_str()),
@@ -325,7 +366,10 @@ pub fn list_changed(ctx: &Context, before: &BTreeSet<String>, after: &BTreeSet<S
     let names = |features: &BTreeSet<String>| {
         let mut c = ctx.clone();
         c.features.clone_from(features);
-        catalogue::tools(&c).iter().map(|l| l.def.name).collect::<Vec<_>>()
+        catalogue::tools(&c)
+            .iter()
+            .map(|l| l.def.name)
+            .collect::<Vec<_>>()
     };
     names(before) != names(after)
 }

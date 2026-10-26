@@ -112,7 +112,10 @@ impl Gen {
 
     fn finish(self, mut root: Map<String, Value>) -> Value {
         if !self.defs.is_empty() {
-            root.insert("$defs".into(), Value::Object(self.defs.into_iter().collect()));
+            root.insert(
+                "$defs".into(),
+                Value::Object(self.defs.into_iter().collect()),
+            );
         }
         Value::Object(root)
     }
@@ -131,7 +134,11 @@ impl Gen {
     fn single(&mut self, fd: &FieldDescriptor) -> Value {
         match fd.kind() {
             Kind::Bool => json!({"type": "boolean"}),
-            Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 | Kind::Int64 | Kind::Sint64
+            Kind::Int32
+            | Kind::Sint32
+            | Kind::Sfixed32
+            | Kind::Int64
+            | Kind::Sint64
             | Kind::Sfixed64 => json!({"type": "integer"}),
             Kind::Uint32 | Kind::Fixed32 | Kind::Uint64 | Kind::Fixed64 => {
                 json!({"type": "integer", "minimum": 0})
@@ -402,7 +409,8 @@ pub fn input_schema(
     request: Option<&MessageDescriptor>,
     spec: &InputSpec<'_>,
 ) -> Result<Value, SchemaError> {
-    let mut generator = Gen::new(&request.map_or_else(DescriptorPool::new, |m| m.parent_pool().clone()));
+    let mut generator =
+        Gen::new(&request.map_or_else(DescriptorPool::new, |m| m.parent_pool().clone()));
     let mut props = Map::new();
     let mut body = Map::new();
     let mut required: Vec<String> = Vec::new();
@@ -410,7 +418,10 @@ pub fn input_schema(
     if let Some(md) = request {
         for h in spec.hidden {
             if md.get_field_by_name(h).is_none() {
-                return err(format!("{}: hidden field {h:?} does not exist", md.full_name()));
+                return err(format!(
+                    "{}: hidden field {h:?} does not exist",
+                    md.full_name()
+                ));
             }
         }
         let has_repo = md.get_field_by_name("repo").is_some();
@@ -438,7 +449,10 @@ pub fn input_schema(
     }
     for a in spec.add {
         if props.contains_key(&a.name) {
-            return err(format!("added field {:?} collides with an input field", a.name));
+            return err(format!(
+                "added field {:?} collides with an input field",
+                a.name
+            ));
         }
         props.insert(a.name.clone(), added_schema(a)?);
     }
@@ -540,13 +554,19 @@ mod tests {
     fn hidden_fields_are_removed_and_typos_fail() {
         let md = msg("asc.v1.DiffRequest");
         let hidden = vec!["null_terminated".to_owned(), "binary".to_owned()];
-        let s = InputSpec { hidden: &hidden, ..spec(Surface::Http) };
+        let s = InputSpec {
+            hidden: &hidden,
+            ..spec(Surface::Http)
+        };
         let out = input_schema(Some(&md), &s).unwrap();
         assert!(out["properties"].get("binary").is_none());
         assert!(out["properties"].get("null_terminated").is_none());
         assert!(out["properties"].get("max_files").is_some());
         let typo = vec!["no_such_field".to_owned()];
-        let s = InputSpec { hidden: &typo, ..spec(Surface::Http) };
+        let s = InputSpec {
+            hidden: &typo,
+            ..spec(Surface::Http)
+        };
         assert!(input_schema(Some(&md), &s).is_err());
     }
 
@@ -600,7 +620,11 @@ mod tests {
         let key = r.strip_prefix("#/$defs/").unwrap();
         let names = out["$defs"][key]["enum"].as_array().unwrap();
         assert!(names.contains(&json!("patch")), "{names:?}");
-        assert!(names.iter().all(|n| n.as_str().unwrap().chars().all(|c| !c.is_uppercase())));
+        assert!(
+            names
+                .iter()
+                .all(|n| n.as_str().unwrap().chars().all(|c| !c.is_uppercase()))
+        );
     }
 
     #[test]
@@ -609,7 +633,9 @@ mod tests {
         let pool = pool();
         let md = pool.get_message_by_name("asc.v1.DiffRequest").unwrap();
         let fd = md.get_field_by_name("format").unwrap();
-        let Kind::Enum(ed) = fd.kind() else { panic!("format is an enum") };
+        let Kind::Enum(ed) = fd.kind() else {
+            panic!("format is an enum")
+        };
         for v in ed.values() {
             let mut m = prost_reflect::DynamicMessage::new(md.clone());
             m.set_field(&fd, prost_reflect::Value::EnumNumber(v.number()));
@@ -670,27 +696,56 @@ mod tests {
             max_items: None,
         }];
         let hidden = vec!["ws_id".to_owned()];
-        let s = InputSpec { hidden: &hidden, add: &add, limits: &limits, ..spec(Surface::Stdio) };
+        let s = InputSpec {
+            hidden: &hidden,
+            add: &add,
+            limits: &limits,
+            ..spec(Surface::Stdio)
+        };
         let out = input_schema(Some(&md), &s).unwrap();
         assert_eq!(out["properties"]["max_files"]["default"], 500);
         assert_eq!(out["properties"]["max_files"]["maximum"], 5000);
         // A collision with a request field, a bad limit target and a bad required name all fail.
-        let clash = vec![Added { name: "untracked".into(), ty: "boolean".into(), description: String::new() }];
-        let s = InputSpec { add: &clash, ..spec(Surface::Stdio) };
+        let clash = vec![Added {
+            name: "untracked".into(),
+            ty: "boolean".into(),
+            description: String::new(),
+        }];
+        let s = InputSpec {
+            add: &clash,
+            ..spec(Surface::Stdio)
+        };
         assert!(input_schema(Some(&md), &s).is_err());
-        let bad = vec![Limit { field: "nope".into(), ..Limit::default() }];
-        let s = InputSpec { limits: &bad, ..spec(Surface::Stdio) };
+        let bad = vec![Limit {
+            field: "nope".into(),
+            ..Limit::default()
+        }];
+        let s = InputSpec {
+            limits: &bad,
+            ..spec(Surface::Stdio)
+        };
         assert!(input_schema(Some(&md), &s).is_err());
         let req = vec!["nope".to_owned()];
-        let s = InputSpec { required: &req, ..spec(Surface::Stdio) };
+        let s = InputSpec {
+            required: &req,
+            ..spec(Surface::Stdio)
+        };
         assert!(input_schema(Some(&md), &s).is_err());
     }
 
     #[test]
     fn input_only_message_with_no_request() {
-        let add = vec![Added { name: "changes".into(), ty: "string[]".into(), description: String::new() }];
+        let add = vec![Added {
+            name: "changes".into(),
+            ty: "string[]".into(),
+            description: String::new(),
+        }];
         let req = vec!["changes".to_owned()];
-        let s = InputSpec { add: &add, required: &req, ..spec(Surface::Http) };
+        let s = InputSpec {
+            add: &add,
+            required: &req,
+            ..spec(Surface::Http)
+        };
         let out = input_schema(None, &s).unwrap();
         assert_eq!(out["required"], json!(["changes"]));
         assert_eq!(out["properties"]["changes"]["type"], "array");
@@ -700,15 +755,21 @@ mod tests {
     fn field_comments_become_descriptions() {
         let md = msg("asc.v1.CreateArgs");
         let out = input_schema(Some(&md), &spec(Surface::Stdio)).unwrap();
-        let desc = out["properties"]["message"]["description"].as_str().unwrap_or("");
+        let desc = out["properties"]["message"]["description"]
+            .as_str()
+            .unwrap_or("");
         assert!(desc.contains("no editor"), "description: {desc:?}");
     }
 
     #[test]
     fn generation_is_deterministic() {
         let md = msg("asc.v1.LogRequest");
-        let a = input_schema(Some(&md), &spec(Surface::Stdio)).unwrap().to_string();
-        let b = input_schema(Some(&md), &spec(Surface::Stdio)).unwrap().to_string();
+        let a = input_schema(Some(&md), &spec(Surface::Stdio))
+            .unwrap()
+            .to_string();
+        let b = input_schema(Some(&md), &spec(Surface::Stdio))
+            .unwrap()
+            .to_string();
         assert_eq!(a, b);
     }
 }

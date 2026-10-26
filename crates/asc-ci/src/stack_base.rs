@@ -47,8 +47,9 @@ fn branch_ok(s: &str) -> bool {
         && !s.ends_with(['/', '.'])
         && !s.contains("..")
         && !s.contains("//")
-        && s.bytes()
-            .all(|b| b.is_ascii_graphic() && !matches!(b, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\'))
+        && s.bytes().all(|b| {
+            b.is_ascii_graphic() && !matches!(b, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
+        })
 }
 
 impl StackBase {

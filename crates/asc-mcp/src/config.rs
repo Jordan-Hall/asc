@@ -71,7 +71,11 @@ impl Entry {
     /// An entry.
     #[must_use]
     pub fn new(layer: Layer, key: &str, value: &str) -> Self {
-        Self { layer, key: key.to_owned(), value: value.to_owned() }
+        Self {
+            layer,
+            key: key.to_owned(),
+            value: value.to_owned(),
+        }
     }
 }
 
@@ -148,7 +152,13 @@ pub fn parse_toolsets(v: &str) -> BTreeSet<Toolset> {
     let mut out = BTreeSet::new();
     for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         if part == "all" {
-            out.extend([Toolset::Core, Toolset::History, Toolset::Stack, Toolset::Projects, Toolset::Search]);
+            out.extend([
+                Toolset::Core,
+                Toolset::History,
+                Toolset::Stack,
+                Toolset::Projects,
+                Toolset::Search,
+            ]);
         } else if let Some(t) = Toolset::parse(part)
             && t != Toolset::Write
         {
@@ -183,7 +193,12 @@ impl McpConfig {
                 "toolsets" => cfg.toolsets = parse_toolsets(&e.value),
                 "tools" => {
                     cfg.tools = Some(
-                        e.value.split(',').map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).collect(),
+                        e.value
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
                     );
                 }
                 "maxtokens" => {
@@ -229,7 +244,12 @@ impl McpConfig {
     /// The catalogue context for a surface. `features` is `Version.features` of the server in
     /// use; `workspace_uploads` says whether drafts upload at once.
     #[must_use]
-    pub fn context(&self, surface: Surface, features: &BTreeSet<String>, workspace_uploads: bool) -> Context {
+    pub fn context(
+        &self,
+        surface: Surface,
+        features: &BTreeSet<String>,
+        workspace_uploads: bool,
+    ) -> Context {
         let mut ctx = Context::new(surface);
         ctx.toolsets = self.toolsets.clone();
         ctx.write = self.write;
@@ -257,34 +277,56 @@ mod tests {
     #[test]
     fn repo_and_worktree_config_cannot_set_write_or_confirm() {
         for layer in [Layer::Repo, Layer::Worktree] {
-            let cfg = McpConfig::resolve(&[e(layer, "write", "remote"), e(layer, "confirm", "never")], &Flags::default());
+            let cfg = McpConfig::resolve(
+                &[e(layer, "write", "remote"), e(layer, "confirm", "never")],
+                &Flags::default(),
+            );
             assert_eq!(cfg.write, WriteLevel::None, "{layer:?}");
             assert_eq!(cfg.confirm, ConfirmMode::Destructive, "{layer:?}");
         }
         let cfg = McpConfig::resolve(
-            &[e(Layer::User, "write", "local"), e(Layer::Repo, "write", "remote"), e(Layer::Worktree, "confirm", "never")],
+            &[
+                e(Layer::User, "write", "local"),
+                e(Layer::Repo, "write", "remote"),
+                e(Layer::Worktree, "confirm", "never"),
+            ],
             &Flags::default(),
         );
         assert_eq!(cfg.write, WriteLevel::Local);
         assert_eq!(cfg.confirm, ConfirmMode::Destructive);
         // The trusted layers do set them, and user wins over system.
         let cfg = McpConfig::resolve(
-            &[e(Layer::User, "write", "local"), e(Layer::System, "write", "remote"), e(Layer::System, "confirm", "always")],
+            &[
+                e(Layer::User, "write", "local"),
+                e(Layer::System, "write", "remote"),
+                e(Layer::System, "confirm", "always"),
+            ],
             &Flags::default(),
         );
-        assert_eq!((cfg.write, cfg.confirm), (WriteLevel::Local, ConfirmMode::Always));
+        assert_eq!(
+            (cfg.write, cfg.confirm),
+            (WriteLevel::Local, ConfirmMode::Always)
+        );
     }
 
     #[test]
     fn untrusted_layers_do_not_reach_the_catalogue() {
         let cfg = McpConfig::resolve(&[e(Layer::Repo, "write", "remote")], &Flags::default());
         let ctx = cfg.context(Surface::Stdio, &BTreeSet::new(), false);
-        assert!(crate::catalogue::tools(&ctx).iter().all(|l| l.def.toolset != Toolset::Write));
+        assert!(
+            crate::catalogue::tools(&ctx)
+                .iter()
+                .all(|l| l.def.toolset != Toolset::Write)
+        );
     }
 
     #[test]
     fn flags_only_narrow() {
-        let user = [e(Layer::User, "write", "local"), e(Layer::User, "toolsets", "core,history"), e(Layer::User, "maxTokens", "4000")];
+        let user = [
+            e(Layer::User, "write", "local"),
+            e(Layer::User, "toolsets", "core,history"),
+            e(Layer::User, "maxTokens", "4000"),
+        ];
         let widen = Flags {
             write: Some(WriteLevel::Remote),
             toolsets: Some(BTreeSet::from([Toolset::Core, Toolset::Stack])),
@@ -295,28 +337,57 @@ mod tests {
         assert_eq!(cfg.write, WriteLevel::Local);
         assert_eq!(cfg.toolsets, BTreeSet::from([Toolset::Core]));
         assert_eq!(cfg.max_tokens, 4000);
-        let narrow = Flags { write: Some(WriteLevel::None), ..Flags::default() };
+        let narrow = Flags {
+            write: Some(WriteLevel::None),
+            ..Flags::default()
+        };
         assert_eq!(McpConfig::resolve(&user, &narrow).write, WriteLevel::None);
         // A flag cannot grant write when config grants none.
-        let cfg = McpConfig::resolve(&[], &Flags { write: Some(WriteLevel::Remote), ..Flags::default() });
+        let cfg = McpConfig::resolve(
+            &[],
+            &Flags {
+                write: Some(WriteLevel::Remote),
+                ..Flags::default()
+            },
+        );
         assert_eq!(cfg.write, WriteLevel::None);
     }
 
     #[test]
     fn read_only_wins_over_everything() {
-        let user = [e(Layer::System, "write", "remote"), e(Layer::User, "write", "remote")];
-        let cfg = McpConfig::resolve(&user, &Flags { read_only: true, write: Some(WriteLevel::Remote), ..Flags::default() });
+        let user = [
+            e(Layer::System, "write", "remote"),
+            e(Layer::User, "write", "remote"),
+        ];
+        let cfg = McpConfig::resolve(
+            &user,
+            &Flags {
+                read_only: true,
+                write: Some(WriteLevel::Remote),
+                ..Flags::default()
+            },
+        );
         assert!(cfg.read_only);
         assert_eq!(cfg.write, WriteLevel::None);
         let ctx = cfg.context(Surface::Stdio, &BTreeSet::new(), false);
-        assert!(crate::catalogue::tools(&ctx).iter().all(|l| l.def.toolset != Toolset::Write));
+        assert!(
+            crate::catalogue::tools(&ctx)
+                .iter()
+                .all(|l| l.def.toolset != Toolset::Write)
+        );
     }
 
     #[test]
     fn tools_list_is_intersected_and_max_tokens_is_capped() {
         let cfg = McpConfig::resolve(
-            &[e(Layer::User, "tools", "log,diff"), e(Layer::User, "maxTokens", "999999")],
-            &Flags { tools: Some(BTreeSet::from(["log".to_owned(), "grep".to_owned()])), ..Flags::default() },
+            &[
+                e(Layer::User, "tools", "log,diff"),
+                e(Layer::User, "maxTokens", "999999"),
+            ],
+            &Flags {
+                tools: Some(BTreeSet::from(["log".to_owned(), "grep".to_owned()])),
+                ..Flags::default()
+            },
         );
         assert!(cfg.tool_allowed("log") && !cfg.tool_allowed("diff") && !cfg.tool_allowed("grep"));
         assert_eq!(cfg.max_tokens, HARD_MAX_TOKENS);
@@ -325,6 +396,9 @@ mod tests {
     #[test]
     fn toolsets_parse_all_and_ignore_unknown() {
         assert_eq!(parse_toolsets("all").len(), 5);
-        assert_eq!(parse_toolsets("core, nope ,write"), BTreeSet::from([Toolset::Core]));
+        assert_eq!(
+            parse_toolsets("core, nope ,write"),
+            BTreeSet::from([Toolset::Core])
+        );
     }
 }

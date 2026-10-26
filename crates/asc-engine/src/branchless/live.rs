@@ -158,9 +158,17 @@ pub enum Notice {
     /// Live mode is paused for this worktree.
     Paused,
     /// A restack conflicts at `at`; nothing was restacked.
-    Conflict { at: ChangesetId },
-    OverStack { steps: usize, max: usize },
-    OverFiles { paths: usize, max: usize },
+    Conflict {
+        at: ChangesetId,
+    },
+    OverStack {
+        steps: usize,
+        max: usize,
+    },
+    OverFiles {
+        paths: usize,
+        max: usize,
+    },
     /// The signer failed; nothing was restacked.
     SignFailed(String),
 }

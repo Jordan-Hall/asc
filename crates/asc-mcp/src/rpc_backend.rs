@@ -95,14 +95,28 @@ impl RpcBackend {
     #[must_use]
     pub fn new(surface: Surface) -> Self {
         let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("built-in descriptor set");
-        Self { surface, pool: Arc::new(pool), server: None, local: None }
+        Self {
+            surface,
+            pool: Arc::new(pool),
+            server: None,
+            local: None,
+        }
     }
 
     /// Routes `Repo`, `Changes` and `Projects` calls to `channel`, for `repo` (`owner/name`).
     /// `credential` is sent as the `Authorization` header and never logged.
     #[must_use]
-    pub fn with_server(mut self, channel: Channel, repo: &str, credential: Option<Credential>) -> Self {
-        self.server = Some(Remote { channel, repo: repo.to_owned(), credential });
+    pub fn with_server(
+        mut self,
+        channel: Channel,
+        repo: &str,
+        credential: Option<Credential>,
+    ) -> Self {
+        self.server = Some(Remote {
+            channel,
+            repo: repo.to_owned(),
+            credential,
+        });
         self
     }
 
@@ -111,14 +125,22 @@ impl RpcBackend {
     ///
     /// # Errors
     /// The URL is not one asc may connect to.
-    pub fn connect_server(self, url: &str, repo: &str, credential: Option<Credential>) -> Result<Self, ClientError> {
+    pub fn connect_server(
+        self,
+        url: &str,
+        repo: &str,
+        credential: Option<Credential>,
+    ) -> Result<Self, ClientError> {
         Ok(self.with_server(connect_channel(url)?, repo, credential))
     }
 
     /// Routes `Workspace` calls to the daemon on `channel` (`asc_rpc::ipc::connect`), for `ws_id`.
     #[must_use]
     pub fn with_workspace(mut self, channel: Channel, ws_id: &str) -> Self {
-        self.local = Some(Local { channel, ws_id: ws_id.to_owned() });
+        self.local = Some(Local {
+            channel,
+            ws_id: ws_id.to_owned(),
+        });
         self
     }
 
@@ -136,14 +158,24 @@ impl RpcBackend {
             .map(str::trim)
             .filter(|alt| {
                 let local = alt.starts_with("Workspace.");
-                if local { self.surface == Surface::Stdio && self.local.is_some() } else { self.server.is_some() }
+                if local {
+                    self.surface == Surface::Stdio && self.local.is_some()
+                } else {
+                    self.server.is_some()
+                }
             })
             .find_map(|alt| self.method(alt))
             .or_else(|| self.method(rpc.split(" / ").next().unwrap_or(rpc)))
     }
 
     /// Builds the wire request for `def` from the validated `args`.
-    fn build(&self, def: &ToolDef, method: &MethodDescriptor, args: &Value, ctx: &CallContext) -> Result<DynamicMessage, ToolError> {
+    fn build(
+        &self,
+        def: &ToolDef,
+        method: &MethodDescriptor,
+        args: &Value,
+        ctx: &CallContext,
+    ) -> Result<DynamicMessage, ToolError> {
         let input = method.input();
         let mut obj = args.as_object().cloned().unwrap_or_default();
         for k in PLUMBING {
@@ -155,11 +187,24 @@ impl RpcBackend {
         if let (Some(want), Some(remote)) = (obj.remove("repo"), self.server.as_ref())
             && want.as_str().is_some_and(|w| w != remote.repo)
         {
-            return Err(ToolError::new(code::PATH_POLICY, "the repository is fixed by the connection"));
+            return Err(ToolError::new(
+                code::PATH_POLICY,
+                "the repository is fixed by the connection",
+            ));
         }
-        if method.name() == "ReadFile" && input.get_field_by_name("rev_path").is_some_and(|f| f.kind().as_message().is_none()) {
-            let rev = obj.remove("rev").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
-            let path = obj.remove("path").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        if method.name() == "ReadFile"
+            && input
+                .get_field_by_name("rev_path")
+                .is_some_and(|f| f.kind().as_message().is_none())
+        {
+            let rev = obj
+                .remove("rev")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let path = obj
+                .remove("path")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
             if rev.is_empty() {
                 return Err(ToolError::not_available(
                     "a working-copy read is served by the local backend; give rev to read a revision",
@@ -168,12 +213,15 @@ impl RpcBackend {
             obj.insert("rev_path".into(), Value::String(format!("{rev}:{path}")));
         }
         // A `query` wrapper takes the flat arguments its inner message knows.
-        if let Some(q) = input.get_field_by_name("query").and_then(|f| f.kind().as_message().cloned())
+        if let Some(q) = input
+            .get_field_by_name("query")
+            .and_then(|f| f.kind().as_message().cloned())
             && !obj.contains_key("query")
         {
             let mut inner = Map::new();
             for k in obj.keys().cloned().collect::<Vec<_>>() {
-                if input.get_field_by_name(&k).is_none() && q.get_field_by_name(&k).is_some()
+                if input.get_field_by_name(&k).is_none()
+                    && q.get_field_by_name(&k).is_some()
                     && let Some(v) = obj.remove(&k)
                 {
                     inner.insert(k, v);
@@ -206,7 +254,10 @@ impl RpcBackend {
     fn inject(&self, msg: &mut DynamicMessage) {
         if let Some(r) = &self.server {
             set_repo(msg, &r.repo);
-            if let Some(PbValue::Message(q)) = msg.get_field_by_name("query").map(std::borrow::Cow::into_owned) {
+            if let Some(PbValue::Message(q)) = msg
+                .get_field_by_name("query")
+                .map(std::borrow::Cow::into_owned)
+            {
                 let mut q = q;
                 set_repo(&mut q, &r.repo);
                 msg.set_field_by_name("query", PbValue::Message(q));
@@ -222,16 +273,23 @@ impl RpcBackend {
     /// The channel and credential for a service, or why there is none.
     fn route(&self, service: &str) -> Result<(Channel, Option<&Credential>), ToolError> {
         if service == "Workspace" {
-            let l = self.local.as_ref().ok_or_else(|| ToolError::not_available("the workspace daemon is not connected"))?;
+            let l = self
+                .local
+                .as_ref()
+                .ok_or_else(|| ToolError::not_available("the workspace daemon is not connected"))?;
             return Ok((l.channel.clone(), None));
         }
-        let r = self.server.as_ref().ok_or_else(|| ToolError::not_available("no asc server is configured for this workspace"))?;
+        let r = self.server.as_ref().ok_or_else(|| {
+            ToolError::not_available("no asc server is configured for this workspace")
+        })?;
         Ok((r.channel.clone(), r.credential.as_ref()))
     }
 }
 
 fn set_repo(msg: &mut DynamicMessage, name: &str) {
-    let Some(f) = msg.descriptor().get_field_by_name("repo") else { return };
+    let Some(f) = msg.descriptor().get_field_by_name("repo") else {
+        return;
+    };
     let Kind::Message(d) = f.kind() else { return };
     let mut repo = DynamicMessage::new(d);
     repo.set_field_by_name("name", PbValue::String(name.to_owned()));
@@ -262,7 +320,8 @@ impl Encoder for DynEncoder {
     type Item = DynamicMessage;
     type Error = Status;
     fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
-        item.encode(dst).map_err(|e| Status::internal(e.to_string()))
+        item.encode(dst)
+            .map_err(|e| Status::internal(e.to_string()))
     }
 }
 
@@ -300,9 +359,16 @@ fn map_status(s: &Status) -> ToolError {
     let message = clean(s.message());
     match s.code() {
         Code::NotFound | Code::PermissionDenied => ToolError::new(code::NOT_FOUND, message),
-        Code::Unauthenticated => ToolError::new("UNAUTHENTICATED", "authentication is required or has expired"),
+        Code::Unauthenticated => ToolError::new(
+            "UNAUTHENTICATED",
+            "authentication is required or has expired",
+        ),
         Code::ResourceExhausted => ToolError::rate_limited(message, 1000),
-        Code::Unavailable => ToolError::not_available(if message.is_empty() { "the server is unreachable".into() } else { message }),
+        Code::Unavailable => ToolError::not_available(if message.is_empty() {
+            "the server is unreachable".into()
+        } else {
+            message
+        }),
         Code::InvalidArgument | Code::OutOfRange => ToolError::new("INVALID_ARGUMENT", message),
         Code::Cancelled => ToolError::internal("the call was cancelled"),
         Code::DeadlineExceeded => ToolError::internal("the call timed out"),
@@ -311,7 +377,10 @@ fn map_status(s: &Status) -> ToolError {
 }
 
 fn clean(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(MAX_ERROR_TEXT).collect()
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_ERROR_TEXT)
+        .collect()
 }
 
 fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
@@ -321,11 +390,14 @@ fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
 #[async_trait::async_trait]
 impl McpBackend for RpcBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
-        let def = catalogue::find(tool, self.surface).ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
+        let def = catalogue::find(tool, self.surface)
+            .ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
         // Only read tools reach the wire: writes are M32/B22; `search` (feature-gated) is served by
         // `search::SearchTool` over a `CodeIntelClient`, wired by I21.
         if !def.ann.read_only || def.needs != Needs::None || def.requires_feature.is_some() {
-            return Err(ToolError::not_available(format!("{tool} is not served over RPC")));
+            return Err(ToolError::not_available(format!(
+                "{tool} is not served over RPC"
+            )));
         }
         let method = self
             .resolve(def.rpc)
@@ -342,22 +414,35 @@ impl McpBackend for RpcBackend {
             v.set_sensitive(true);
             meta.insert("authorization", v);
         }
-        if let Ok(v) = format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>() {
+        if let Ok(v) =
+            format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>()
+        {
             meta.insert("x-asc-client", v);
         }
 
-        let path: PathAndQuery = format!("/{}/{}", method.parent_service().full_name(), method.name())
-            .parse()
-            .map_err(|_| ToolError::internal("bad method path"))?;
-        let mut grpc = Grpc::new(channel).max_decoding_message_size(MAX_MESSAGE).max_encoding_message_size(MAX_MESSAGE);
+        let path: PathAndQuery =
+            format!("/{}/{}", method.parent_service().full_name(), method.name())
+                .parse()
+                .map_err(|_| ToolError::internal("bad method path"))?;
+        let mut grpc = Grpc::new(channel)
+            .max_decoding_message_size(MAX_MESSAGE)
+            .max_encoding_message_size(MAX_MESSAGE);
         let codec = DynCodec::new(method.output());
         let started = async {
-            grpc.ready().await.map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
+            grpc.ready()
+                .await
+                .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
             if method.is_server_streaming() {
-                let r = grpc.server_streaming(req, path, codec).await.map_err(|s| map_status(&s))?;
+                let r = grpc
+                    .server_streaming(req, path, codec)
+                    .await
+                    .map_err(|s| map_status(&s))?;
                 Ok::<_, ToolError>(r.into_inner().boxed())
             } else {
-                let r = grpc.unary(req, path, codec).await.map_err(|s| map_status(&s))?;
+                let r = grpc
+                    .unary(req, path, codec)
+                    .await
+                    .map_err(|s| map_status(&s))?;
                 Ok(stream::once(async move { Ok(r.into_inner()) }).boxed())
             }
         };
@@ -391,13 +476,19 @@ impl McpBackend for RpcBackend {
     }
 
     async fn worktrees(&self) -> Result<Vec<PathBuf>, ToolError> {
-        let Some(local) = &self.local else { return Ok(Vec::new()) };
+        let Some(local) = &self.local else {
+            return Ok(Vec::new());
+        };
         let method = self
             .method("Workspace.Worktrees")
             .ok_or_else(|| ToolError::internal("Workspace.Worktrees is missing"))?;
         let mut grpc = Grpc::new(local.channel.clone());
-        grpc.ready().await.map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
-        let path: PathAndQuery = "/asc.v1.Workspace/Worktrees".parse().map_err(|_| ToolError::internal("bad method path"))?;
+        grpc.ready()
+            .await
+            .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
+        let path: PathAndQuery = "/asc.v1.Workspace/Worktrees"
+            .parse()
+            .map_err(|_| ToolError::internal("bad method path"))?;
         let mut req = Request::new(DynamicMessage::new(method.input()));
         req.set_timeout(Duration::from_secs(10));
         let resp = grpc
@@ -408,7 +499,12 @@ impl McpBackend for RpcBackend {
         let v = encode_msg(&resp)?;
         Ok(v.get("worktrees")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|w| w.get("path").and_then(Value::as_str)).map(PathBuf::from).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|w| w.get("path").and_then(Value::as_str))
+                    .map(PathBuf::from)
+                    .collect()
+            })
             .unwrap_or_default())
     }
 }

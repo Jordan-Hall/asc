@@ -111,7 +111,11 @@ pub fn needs_confirmation(call: &Call<'_>) -> bool {
     if call.mode == ConfirmMode::Never {
         return false;
     }
-    let update_ref = call.args.get("update_ref").and_then(Value::as_str).unwrap_or("");
+    let update_ref = call
+        .args
+        .get("update_ref")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     match call.rule {
         Confirm::Never => false,
         Confirm::Always => true,
@@ -119,7 +123,8 @@ pub fn needs_confirmation(call: &Call<'_>) -> bool {
         Confirm::Field(name) => call.args.get(name).and_then(Value::as_bool) == Some(true),
         Confirm::RefsFor => update_ref.starts_with("refs/for/"),
         Confirm::RefsApply => {
-            !update_ref.is_empty() && call.args.get("dry_run").and_then(Value::as_bool) != Some(true)
+            !update_ref.is_empty()
+                && call.args.get("dry_run").and_then(Value::as_bool) != Some(true)
         }
     }
 }
@@ -131,7 +136,14 @@ fn binding(call: &Call<'_>) -> Value {
 /// Seal a `requestState` for `call`, valid [`STATE_TTL_SECS`] from `now` (Unix seconds).
 #[must_use]
 pub fn seal_state(ring: &KeyRing, call: &Call<'_>, now: u64) -> String {
-    ring.seal_at(SEAL_TOOL, &binding(call), Position::Page { token: now.to_string() }, now)
+    ring.seal_at(
+        SEAL_TOOL,
+        &binding(call),
+        Position::Page {
+            token: now.to_string(),
+        },
+        now,
+    )
 }
 
 /// Check an echoed `requestState` against `call` at `now`.
@@ -142,7 +154,9 @@ pub fn seal_state(ring: &KeyRing, call: &Call<'_>, now: u64) -> String {
 pub fn open_state(ring: &KeyRing, call: &Call<'_>, state: &str, now: u64) -> Result<(), Refusal> {
     // The ring's own expiry (1 h) is checked at `now`; the 5 min lifetime is checked here.
     let pos = ring.open_at(SEAL_TOOL, &binding(call), state, now)?;
-    let Position::Page { token } = pos else { return Err(Refusal::InvalidState) };
+    let Position::Page { token } = pos else {
+        return Err(Refusal::InvalidState);
+    };
     let issued: u64 = token.parse().map_err(|_| Refusal::InvalidState)?;
     if issued > now || now - issued > STATE_TTL_SECS {
         return Err(Refusal::InvalidState);
@@ -154,7 +168,10 @@ pub fn open_state(ring: &KeyRing, call: &Call<'_>, state: &str, now: u64) -> Res
 #[must_use]
 pub fn user_accepted(response: &Value) -> bool {
     response.get("action").and_then(Value::as_str) == Some("accept")
-        && response.pointer("/content/confirm").and_then(Value::as_bool) == Some(true)
+        && response
+            .pointer("/content/confirm")
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 /// Run the gate for `call` at `now`.
@@ -181,7 +198,9 @@ pub fn gate(
         open_state(ring, call, state, now)?;
         return match response {
             Some(r) if user_accepted(r) => Ok(Decision::Proceed),
-            Some(_) => Err(Refusal::Tool(ToolError::needs_confirmation("the user did not confirm"))),
+            Some(_) => Err(Refusal::Tool(ToolError::needs_confirmation(
+                "the user did not confirm",
+            ))),
             None => Ok(Decision::Elicit(elicitation(ring, call, summary, now))),
         };
     }
@@ -196,7 +215,10 @@ pub fn gate(
 }
 
 fn elicitation(ring: &KeyRing, call: &Call<'_>, summary: &Summary, now: u64) -> Elicitation {
-    Elicitation { message: render_summary(summary), request_state: seal_state(ring, call, now) }
+    Elicitation {
+        message: render_summary(summary),
+        request_state: seal_state(ring, call, now),
+    }
 }
 
 /// The `input_required` result body: one form-mode `elicitation/create` (a boolean `confirm`, no
@@ -254,7 +276,10 @@ pub fn escape(s: &str, max: usize) -> String {
 }
 
 const fn is_markup(c: char) -> bool {
-    matches!(c, '<' | '>' | '&' | '`' | '[' | ']' | '*' | '_' | '#' | '|' | '\\' | '!')
+    matches!(
+        c,
+        '<' | '>' | '&' | '`' | '[' | ']' | '*' | '_' | '#' | '|' | '\\' | '!'
+    )
 }
 
 /// Bidi controls, zero-width characters, the BOM and tag characters: invisible text that could hide
@@ -308,7 +333,11 @@ mod tests {
     }
 
     fn summary() -> Summary {
-        Summary { action: "submit".into(), target: "master".into(), subjects: vec!["fix thing".into()] }
+        Summary {
+            action: "submit".into(),
+            target: "master".into(),
+            subjects: vec!["fix thing".into()],
+        }
     }
 
     fn state_of(r: &KeyRing, args: &Value) -> String {
@@ -327,7 +356,15 @@ mod tests {
         let r = ring(1);
         let args = json!({"title": "x"});
         let st = state_of(&r, &args);
-        let d = gate(&r, &call(&args, true), &summary(), Some(&st), Some(&yes()), NOW + 10).unwrap();
+        let d = gate(
+            &r,
+            &call(&args, true),
+            &summary(),
+            Some(&st),
+            Some(&yes()),
+            NOW + 10,
+        )
+        .unwrap();
         assert_eq!(d, Decision::Proceed);
     }
 
@@ -336,7 +373,15 @@ mod tests {
         let r = ring(1);
         let st = state_of(&r, &json!({"title": "x"}));
         let other = json!({"title": "evil"});
-        let e = gate(&r, &call(&other, true), &summary(), Some(&st), Some(&yes()), NOW + 1).unwrap_err();
+        let e = gate(
+            &r,
+            &call(&other, true),
+            &summary(),
+            Some(&st),
+            Some(&yes()),
+            NOW + 1,
+        )
+        .unwrap_err();
         assert_eq!(e, Refusal::InvalidState);
         assert_eq!(e.rpc_code(), Some(-32602));
     }
@@ -352,7 +397,17 @@ mod tests {
         let mut c = call(&args, true);
         c.tool = "rebase";
         assert!(gate(&r, &c, &summary(), Some(&st), Some(&yes()), NOW + 1).is_err());
-        assert!(gate(&ring(2), &call(&args, true), &summary(), Some(&st), Some(&yes()), NOW + 1).is_err());
+        assert!(
+            gate(
+                &ring(2),
+                &call(&args, true),
+                &summary(),
+                Some(&st),
+                Some(&yes()),
+                NOW + 1
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -361,8 +416,26 @@ mod tests {
         let args = json!({"title": "x"});
         let st = state_of(&r, &args);
         let c = call(&args, true);
-        assert!(gate(&r, &c, &summary(), Some(&st), Some(&yes()), NOW + STATE_TTL_SECS).is_ok());
-        let e = gate(&r, &c, &summary(), Some(&st), Some(&yes()), NOW + STATE_TTL_SECS + 1).unwrap_err();
+        assert!(
+            gate(
+                &r,
+                &c,
+                &summary(),
+                Some(&st),
+                Some(&yes()),
+                NOW + STATE_TTL_SECS
+            )
+            .is_ok()
+        );
+        let e = gate(
+            &r,
+            &c,
+            &summary(),
+            Some(&st),
+            Some(&yes()),
+            NOW + STATE_TTL_SECS + 1,
+        )
+        .unwrap_err();
         assert_eq!(e, Refusal::InvalidState);
     }
 
@@ -370,8 +443,25 @@ mod tests {
     fn confirm_a_cursor_is_not_a_state() {
         let r = ring(1);
         let args = json!({"title": "x"});
-        let cur = r.seal_at("submit", &args, Position::Page { token: NOW.to_string() }, NOW);
-        assert!(gate(&r, &call(&args, true), &summary(), Some(&cur), Some(&yes()), NOW).is_err());
+        let cur = r.seal_at(
+            "submit",
+            &args,
+            Position::Page {
+                token: NOW.to_string(),
+            },
+            NOW,
+        );
+        assert!(
+            gate(
+                &r,
+                &call(&args, true),
+                &summary(),
+                Some(&cur),
+                Some(&yes()),
+                NOW
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -386,7 +476,8 @@ mod tests {
     fn confirm_client_without_elicitation_gets_needs_confirmation() {
         let r = ring(1);
         let args = json!({});
-        let Err(Refusal::Tool(e)) = gate(&r, &call(&args, false), &summary(), None, None, NOW) else {
+        let Err(Refusal::Tool(e)) = gate(&r, &call(&args, false), &summary(), None, None, NOW)
+        else {
             panic!("expected a tool error")
         };
         assert_eq!(e.code, "NEEDS_CONFIRMATION");
@@ -403,7 +494,14 @@ mod tests {
             json!({"action": "accept", "content": {"confirm": false}}),
             json!({"action": "accept"}),
         ] {
-            let e = gate(&r, &call(&args, true), &summary(), Some(&st), Some(&resp), NOW + 1);
+            let e = gate(
+                &r,
+                &call(&args, true),
+                &summary(),
+                Some(&st),
+                Some(&resp),
+                NOW + 1,
+            );
             assert!(matches!(e, Err(Refusal::Tool(_))), "{resp}");
         }
     }
@@ -459,7 +557,11 @@ mod tests {
         for bad in ['<', '>', '[', ']', '*', '`', '\u{202e}', '\n', '\u{1b}'] {
             assert!(!e.contains(bad), "{bad:?} in {e}");
         }
-        let s = Summary { action: "submit\n`x`".into(), target: "mas<b>ter".into(), subjects: vec![hostile] };
+        let s = Summary {
+            action: "submit\n`x`".into(),
+            target: "mas<b>ter".into(),
+            subjects: vec![hostile],
+        };
         let out = render_summary(&s);
         assert!(!out.contains('<') && !out.contains('`'), "{out}");
         assert_eq!(out.lines().count(), 2, "{out}");
@@ -483,12 +585,17 @@ mod tests {
     fn confirm_input_required_shape() {
         let r = ring(1);
         let args = json!({});
-        let Decision::Elicit(e) = gate(&r, &call(&args, true), &summary(), None, None, NOW).unwrap() else {
+        let Decision::Elicit(e) =
+            gate(&r, &call(&args, true), &summary(), None, None, NOW).unwrap()
+        else {
             panic!()
         };
         let v = input_required(&e);
         assert_eq!(v["resultType"], "input_required");
-        assert_eq!(v["inputRequests"]["confirm"]["method"], "elicitation/create");
+        assert_eq!(
+            v["inputRequests"]["confirm"]["method"],
+            "elicitation/create"
+        );
         assert_eq!(
             v["inputRequests"]["confirm"]["params"]["requestedSchema"]["properties"]["confirm"]["type"],
             "boolean"
