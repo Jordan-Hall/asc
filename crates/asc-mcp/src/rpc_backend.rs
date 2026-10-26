@@ -9,8 +9,9 @@
 //! - `read_file` joins `rev` and `path` into `rev_path` (`rev:path`);
 //! - a `query` wrapper (`Workspace.Log`, `Workspace.Affected`) is filled from the flat arguments.
 //!
-//! Only read tools are routed (`ann.read_only`, no `needs`). A write tool, a child-verb tool and
-//! `search` (M15 wires `CodeIntel`) answer `NOT_AVAILABLE`. Responses are encoded in the asc JSON
+//! Only read tools are routed (`ann.read_only`, no `needs`). A write tool and a child-verb tool
+//! answer `NOT_AVAILABLE`. `search` (listed only when the server advertises `search.v1`) is the
+//! [`SearchTool`] with this backend as its `CodeIntel` client (unit I21). Responses are encoded in the asc JSON
 //! profile. The stream stops (and is dropped, which cancels the RPC) when the byte budget is spent
 //! or the call is cancelled.
 
@@ -43,6 +44,7 @@ use crate::catalogue::{self, Needs, ToolDef};
 use crate::cursor::Position;
 use crate::errors::{ToolError, code};
 use crate::schema::Surface;
+use crate::search::{self, CodeIntelClient, Plan, SearchTool};
 
 /// Largest message accepted from a server (matches the asc client).
 const MAX_MESSAGE: usize = 17 * 1024 * 1024;
@@ -270,6 +272,28 @@ impl RpcBackend {
         }
     }
 
+    /// `request` with the call timeout, the credential (never logged) and the client tag.
+    fn request(
+        request: DynamicMessage,
+        credential: Option<&Credential>,
+    ) -> Request<DynamicMessage> {
+        let mut req = Request::new(request);
+        req.set_timeout(CALL_TIMEOUT);
+        let meta = req.metadata_mut();
+        if let Some(c) = credential
+            && let Ok(mut v) = c.header_value().parse::<MetadataValue<Ascii>>()
+        {
+            v.set_sensitive(true);
+            meta.insert("authorization", v);
+        }
+        if let Ok(v) =
+            format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>()
+        {
+            meta.insert("x-asc-client", v);
+        }
+        req
+    }
+
     /// The channel and credential for a service, or why there is none.
     fn route(&self, service: &str) -> Result<(Channel, Option<&Credential>), ToolError> {
         if service == "Workspace" {
@@ -387,13 +411,85 @@ fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
     json::encode(m).map_err(|e| ToolError::internal(format!("response cannot be shown: {e}")))
 }
 
+/// Runs one RPC to completion of its stream and returns the messages as JSON in the asc profile.
+///
+/// `req` already carries the credential and call metadata. The stream stops (and is dropped, which
+/// cancels the RPC) when `ctx.budget_bytes` is spent or the call is cancelled; the message that
+/// spends the budget is still delivered. `ctx.position` of kind `Index` skips that many messages.
+///
+/// # Errors
+/// A [`ToolError`] when the server cannot be reached, answers with a failure, or the call is
+/// cancelled before the first message.
+pub async fn stream_call(
+    method: &MethodDescriptor,
+    channel: Channel,
+    req: Request<DynamicMessage>,
+    ctx: &CallContext,
+) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError> {
+    let path: PathAndQuery = format!("/{}/{}", method.parent_service().full_name(), method.name())
+        .parse()
+        .map_err(|_| ToolError::internal("bad method path"))?;
+    let mut grpc = Grpc::new(channel)
+        .max_decoding_message_size(MAX_MESSAGE)
+        .max_encoding_message_size(MAX_MESSAGE);
+    let codec = DynCodec::new(method.output());
+    let started = async {
+        grpc.ready()
+            .await
+            .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
+        if method.is_server_streaming() {
+            let r = grpc
+                .server_streaming(req, path, codec)
+                .await
+                .map_err(|s| map_status(&s))?;
+            Ok::<_, ToolError>(r.into_inner().boxed())
+        } else {
+            let r = grpc
+                .unary(req, path, codec)
+                .await
+                .map_err(|s| map_status(&s))?;
+            Ok(stream::once(async move { Ok(r.into_inner()) }).boxed())
+        }
+    };
+    let raw: BoxStream<'static, Result<DynamicMessage, Status>> = tokio::select! {
+        r = started => r?,
+        () = ctx.cancel.cancelled() => return Err(ToolError::internal("the call was cancelled")),
+    };
+
+    let skip = match &ctx.position {
+        Some(Position::Index { index }) => usize::try_from(*index).unwrap_or(usize::MAX),
+        _ => 0,
+    };
+    let budget = ctx.budget_bytes;
+    let messages = raw
+        .skip(skip)
+        .map(|r| r.map_err(|s| map_status(&s)).and_then(|m| encode_msg(&m)))
+        // Hand over the message that spends the budget, then end (and drop) the RPC.
+        .scan((0u64, false), move |(used, done), item| {
+            if *done {
+                return futures::future::ready(None);
+            }
+            if let Ok(v) = &item {
+                *used = used.saturating_add(v.to_string().len() as u64);
+                *done = *used > budget;
+            }
+            futures::future::ready(Some(item))
+        })
+        .take_until(ctx.cancel.clone().cancelled_owned())
+        .boxed();
+    Ok(messages)
+}
+
 #[async_trait::async_trait]
 impl McpBackend for RpcBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let def = catalogue::find(tool, self.surface)
             .ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
-        // Only read tools reach the wire: writes are M32/B22; `search` (feature-gated) is served by
-        // `search::SearchTool` over a `CodeIntelClient`, wired by I21.
+        // `search` (feature-gated) is `search::SearchTool` over this backend as its `CodeIntelClient`.
+        if tool == "search" {
+            return SearchTool::new(self.clone()).call(tool, args, ctx).await;
+        }
+        // Only read tools reach the wire: writes are M32/B22.
         if !def.ann.read_only || def.needs != Needs::None || def.requires_feature.is_some() {
             return Err(ToolError::not_available(format!(
                 "{tool} is not served over RPC"
@@ -405,73 +501,8 @@ impl McpBackend for RpcBackend {
         let (channel, credential) = self.route(method.parent_service().name())?;
         let request = self.build(def, &method, args, ctx)?;
 
-        let mut req = Request::new(request);
-        req.set_timeout(CALL_TIMEOUT);
-        let meta = req.metadata_mut();
-        if let Some(c) = credential
-            && let Ok(mut v) = c.header_value().parse::<MetadataValue<Ascii>>()
-        {
-            v.set_sensitive(true);
-            meta.insert("authorization", v);
-        }
-        if let Ok(v) =
-            format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>()
-        {
-            meta.insert("x-asc-client", v);
-        }
-
-        let path: PathAndQuery =
-            format!("/{}/{}", method.parent_service().full_name(), method.name())
-                .parse()
-                .map_err(|_| ToolError::internal("bad method path"))?;
-        let mut grpc = Grpc::new(channel)
-            .max_decoding_message_size(MAX_MESSAGE)
-            .max_encoding_message_size(MAX_MESSAGE);
-        let codec = DynCodec::new(method.output());
-        let started = async {
-            grpc.ready()
-                .await
-                .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
-            if method.is_server_streaming() {
-                let r = grpc
-                    .server_streaming(req, path, codec)
-                    .await
-                    .map_err(|s| map_status(&s))?;
-                Ok::<_, ToolError>(r.into_inner().boxed())
-            } else {
-                let r = grpc
-                    .unary(req, path, codec)
-                    .await
-                    .map_err(|s| map_status(&s))?;
-                Ok(stream::once(async move { Ok(r.into_inner()) }).boxed())
-            }
-        };
-        let raw: BoxStream<'static, Result<DynamicMessage, Status>> = tokio::select! {
-            r = started => r?,
-            () = ctx.cancel.cancelled() => return Err(ToolError::internal("the call was cancelled")),
-        };
-
-        let skip = match &ctx.position {
-            Some(Position::Index { index }) => usize::try_from(*index).unwrap_or(usize::MAX),
-            _ => 0,
-        };
-        let budget = ctx.budget_bytes;
-        let messages = raw
-            .skip(skip)
-            .map(|r| r.map_err(|s| map_status(&s)).and_then(|m| encode_msg(&m)))
-            // Hand over the message that spends the budget, then end (and drop) the RPC.
-            .scan((0u64, false), move |(used, done), item| {
-                if *done {
-                    return futures::future::ready(None);
-                }
-                if let Ok(v) = &item {
-                    *used = used.saturating_add(v.to_string().len() as u64);
-                    *done = *used > budget;
-                }
-                futures::future::ready(Some(item))
-            })
-            .take_until(ctx.cancel.clone().cancelled_owned())
-            .boxed();
+        let req = Self::request(request, credential);
+        let messages = stream_call(&method, channel, req, ctx).await?;
         Ok(Reply::Messages(messages))
     }
 
@@ -506,5 +537,31 @@ impl McpBackend for RpcBackend {
                     .collect()
             })
             .unwrap_or_default())
+    }
+}
+
+/// The `CodeIntel` service over the connected server (`search`, unit I21).
+#[async_trait::async_trait]
+impl CodeIntelClient for RpcBackend {
+    async fn call(
+        &self,
+        plan: Plan,
+        ctx: &CallContext,
+    ) -> Result<BoxStream<'static, Result<Value, ToolError>>, ToolError> {
+        let remote = self.server.as_ref().ok_or_else(|| {
+            ToolError::not_available("no asc server is configured for this workspace")
+        })?;
+        if plan.repo.as_deref().is_some_and(|w| w != remote.repo) {
+            return Err(ToolError::new(
+                code::PATH_POLICY,
+                "the repository is fixed by the connection",
+            ));
+        }
+        let method = self
+            .method(&format!("CodeIntel.{}", plan.rpc.method()))
+            .ok_or_else(|| ToolError::not_available("the server has no CodeIntel service"))?;
+        let request = search::wire_request(&plan, &method, &remote.repo, IdMode::Asc)?;
+        let req = Self::request(request, remote.credential.as_ref());
+        stream_call(&method, remote.channel.clone(), req, ctx).await
     }
 }

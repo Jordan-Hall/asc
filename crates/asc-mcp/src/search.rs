@@ -4,14 +4,21 @@
 //! The tool is one catalogue row (`tools.toml`, one per surface). This module maps its arguments onto
 //! the three `CodeIntel` RPCs by `mode` ([`plan`]), refuses combinations the row does not allow, and
 //! shapes the reply so it always carries `scope`, `coverage` and `est_tokens` ([`finish`]). The
-//! service itself sits behind [`CodeIntelClient`]; unit I21 wires the real one.
+//! service itself sits behind [`CodeIntelClient`]; unit I21 wires the real ones (`RpcBackend` for
+//! `asc mcp` and the server's in-process `ServeBackend`), and [`wire_request`] turns a plan into the
+//! message they send.
 //!
 //! Result text is untrusted file content: nothing here interprets it.
 
 use std::collections::BTreeSet;
 
+use asc_rpc::IdMode;
+use asc_rpc::json as asc_json;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
+use prost_reflect::{
+    DynamicMessage, Kind, MethodDescriptor, ReflectMessage as _, Value as PbValue,
+};
 use serde_json::{Map, Value, json};
 
 use crate::backend::{CallContext, McpBackend, Reply};
@@ -289,6 +296,54 @@ pub fn plan(args: &Value, budget_bytes: u64, page_token: Option<&str>) -> Result
     Ok(Plan { rpc, request, repo })
 }
 
+/// The arms of `Scope.at` in the JSON profile.
+const SCOPE_AT: [&str; 4] = ["rev", "change", "stack_top", "workspace"];
+/// The scope of a call that names none: the repository's default branch.
+const DEFAULT_REV: &str = "HEAD";
+
+/// The wire request of `plan` for `method` (a `CodeIntel` method): `scope.repo` is set to `repo`
+/// with `id_mode`, and a scope that names no revision, change or stack is the repository's default
+/// branch. The arguments never decide the repository.
+///
+/// # Errors
+/// `INVALID_ARGUMENT` when the request does not decode as the message of `method`.
+pub fn wire_request(
+    plan: &Plan,
+    method: &MethodDescriptor,
+    repo: &str,
+    id_mode: IdMode,
+) -> Result<DynamicMessage, ToolError> {
+    let mut request = plan.request.clone();
+    if let Some(scope) = request.get_mut("scope").and_then(Value::as_object_mut)
+        && !SCOPE_AT.iter().any(|k| scope.contains_key(*k))
+    {
+        scope.insert("rev".into(), DEFAULT_REV.into());
+    }
+    let mut msg =
+        asc_json::decode(&method.input(), &request).map_err(|e| bad(format!("search: {e}")))?;
+    let internal = || ToolError::internal("CodeIntel request has no scope");
+    let mut scope = match msg
+        .get_field_by_name("scope")
+        .map(std::borrow::Cow::into_owned)
+    {
+        Some(PbValue::Message(m)) => m,
+        _ => return Err(internal()),
+    };
+    let Some(Kind::Message(repo_desc)) = scope
+        .descriptor()
+        .get_field_by_name("repo")
+        .map(|f| f.kind())
+    else {
+        return Err(internal());
+    };
+    let mut r = DynamicMessage::new(repo_desc);
+    r.set_field_by_name("name", PbValue::String(repo.to_owned()));
+    r.set_field_by_name("id_mode", PbValue::EnumNumber(id_mode.to_wire()));
+    scope.set_field_by_name("repo", PbValue::Message(r));
+    msg.set_field_by_name("scope", PbValue::Message(scope));
+    Ok(msg)
+}
+
 /// Makes one reply message carry `scope`, `coverage` and `est_tokens` (SPEC 22.3.2). The service
 /// fills `scope` and `est_tokens`; a message that lacks them gets `coverage` from `scope.coverage`
 /// and `est_tokens` from its own size, so the contract holds with any backend.
@@ -311,8 +366,8 @@ pub fn finish(mut message: Value) -> Value {
     message
 }
 
-/// The `CodeIntel` service as the tool sees it. The real client is wired by I21 (it adds the
-/// repository from the connection, checks [`Plan::repo`] and sends the credential); tests use a fake.
+/// The `CodeIntel` service as the tool sees it. A real client (unit I21) adds the repository from
+/// the connection ([`wire_request`]), checks [`Plan::repo`] against it and sends the credential.
 #[async_trait::async_trait]
 pub trait CodeIntelClient: Send + Sync + 'static {
     /// Runs `plan` and streams the response messages in the asc JSON profile.
