@@ -51,6 +51,7 @@ service Repo {
   rpc LineHistory(LineHistoryRequest) returns (stream LogResponse);          // §20.6; takes scan_budget
   rpc Compare(CompareRequest) returns (CompareResponse);                     // §20.6
   rpc RepoConfig(RepoConfigRequest) returns (RepoConfigResponse);            // autolinks, review.toml at a rev
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);             // repository policy (.asc/policy.toml on trunk), read-only; repo read
   rpc WatchRefs(WatchRefsRequest) returns (stream RefEvent);               // §21.3.8; long-lived, ACL-filtered, resumable; x-asc-op-id not used
 }
 // service Projects (ProjectGraph, Affected, ProjectHashes) is in proto/asc/v1/projects.proto (§12A.8), on the same port.
@@ -232,3 +233,31 @@ message RepoConfigResponse { repeated Autolink autolinks = 1; bool branchless = 
 // starts at the newest update. The server sends only refs the caller may read; another user's draft refs never appear.
 message WatchRefsRequest { RepoRef repo = 1; repeated string patterns = 2; bytes resume = 3 [(asc.v1.json) = JSON_KIND_HEX]; }
 message RefEvent { string name = 1; RefTarget old = 2; RefTarget new = 3; bytes resume = 4 [(asc.v1.json) = JSON_KIND_HEX]; }   // old/new absent: ref created/deleted
+
+// Repository policy as code (`.asc/policy.toml` on the trunk tip). `GetPolicy` is read-only: it shows the
+// policy the server enforces, so a UI can say who can write where. Only a maintainer named by the policy can change the file, and
+// only through an ordinary land. Advertised as Version.features "policy.v1". Subjects are `*`, `<kind>:<glob>` (kinds user, agent,
+// deploy, ci, host) or `role:<name>`. `paths` (at most 64) are repository paths to evaluate for the caller: the answer says whether
+// the caller's write to each would pass the path rules, agent scope and denied paths (not approvals or checks). ErrorDetail.code
+// also carries POLICY_DENIED (PERMISSION_DENIED): the update broke the policy; `paths[0]` is the reason.
+message GetPolicyRequest { RepoRef repo = 1; repeated bytes paths = 2 [(asc.v1.json) = JSON_KIND_PATH]; }
+message PolicyRole { string name = 1; repeated string members = 2; }
+message PolicyPathRule { string glob = 1; repeated string write = 2; }
+message PolicyTrunk { string branch = 1; uint32 require_approvals = 2; repeated string require_checks = 3; bool allow_force = 4; }
+message PolicyAgents { repeated string default_scope = 1; repeated string denied_paths = 2;
+  uint32 max_changes_per_run = 3; uint32 max_paths_per_run = 4; }   // 0 = no limit
+message PolicyDecision { bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH]; bool allowed = 2; string reason = 3; }
+message GetPolicyResponse {
+  bool present = 1;          // trunk carries a policy file
+  string error = 2;          // present but unusable: the server then refuses every update of trunk except one that repairs the file
+  uint32 version = 3;
+  bytes source = 4 [(asc.v1.json) = JSON_KIND_HEX];   // the trunk changeset the policy was read from
+  string principal_kind = 5; // how the policy classifies the caller: user, agent, deploy, ci, host or ""
+  bool maintainer = 6;       // the caller is a maintainer
+  repeated PolicyRole roles = 7;
+  PolicyTrunk trunk = 8;
+  repeated PolicyPathRule paths = 9;
+  PolicyAgents agents = 10;
+  string merge_strategy = 11;                 // rebase, rebase-disjoint or fast-forward
+  repeated PolicyDecision decisions = 12;     // one per requested path, in order
+}
