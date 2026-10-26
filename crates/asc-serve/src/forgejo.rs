@@ -1382,6 +1382,7 @@ pub struct ForgejoHooks {
     client: HookClient,
     registry: Arc<Registry>,
     ids: GitIds,
+    bridge_promote: bool,
 }
 
 impl ForgejoHooks {
@@ -1393,7 +1394,15 @@ impl ForgejoHooks {
             client,
             registry,
             ids,
+            bridge_promote: false,
         }
+    }
+
+    /// Queues `bridge_promote` before `post_receive` on every push, so the forge's git directory
+    /// is current when it hears about the push (`[forgejo] bridge_promote`).
+    pub fn with_bridge_promote(mut self, on: bool) -> Self {
+        self.bridge_promote = on;
+        self
     }
 
     async fn options(&self, req: &HookRequest<'_>) -> Result<HookOptions, HookRejected> {
@@ -1434,6 +1443,18 @@ impl PushHooks for ForgejoHooks {
     async fn pre_receive(&self, req: &HookRequest<'_>) -> Result<(), HookRejected> {
         let opts = self.options(req).await?;
         self.client.pre_receive(req.repo, &opts).await
+    }
+
+    fn outbox_effects(&self) -> &'static [&'static str] {
+        if self.bridge_promote {
+            &[
+                "bridge_promote",
+                "post_receive",
+                crate::codeintel::queue::EFFECT,
+            ]
+        } else {
+            &["post_receive", crate::codeintel::queue::EFFECT]
+        }
     }
 }
 
@@ -1575,7 +1596,10 @@ pub fn register(
     request_merge::attach_queue(ext, Arc::new(hooks.clone()))
         .map_err(|e| ForgejoError::Config(e.into()))?;
     ext.pipeline
-        .set_push_hooks(Arc::new(ForgejoHooks::new(hooks.clone(), registry.clone())))
+        .set_push_hooks(Arc::new(
+            ForgejoHooks::new(hooks.clone(), registry.clone())
+                .with_bridge_promote(cfg.bridge_promote),
+        ))
         .map_err(|_| ForgejoError::Config("push hooks are already set".into()))?;
     outbox.effects().register(Arc::new(PostReceiveEffect::new(
         hooks,

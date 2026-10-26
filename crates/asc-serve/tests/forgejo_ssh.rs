@@ -1012,6 +1012,7 @@ async fn stage_one_cannot_resolve_ssh_keys() {
         internal_token_file: None,
         webhook_secret_file: None,
         repo_root: None,
+        bridge_promote: false,
     };
     cfg.forgejo = Some(forgejo.clone());
     assert_eq!(ssh_support(&cfg), SshSupport::Unsupported, "Stage 1");

@@ -156,7 +156,8 @@ impl Outbox {
             wake: Notify::new(),
         };
         // Kinds a row may list. Each is a no-op until its owner registers the real effect:
-        // `serve()` does so for `codeintel.enqueue` when `[codeintel]` is enabled.
+        // `serve()` does so for `codeintel.enqueue` when `[codeintel]` is enabled, and for
+        // `bridge_promote` when `[forgejo] bridge_promote` is set (a row lists it only then).
         for kind in [
             "post_receive",
             "bridge_promote",
