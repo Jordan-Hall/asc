@@ -60,6 +60,7 @@ pub mod review;
 pub mod seeds;
 #[cfg(feature = "git-ssh")]
 pub mod ssh;
+pub mod storage;
 pub mod turbo;
 pub mod update;
 pub mod vault;
@@ -288,6 +289,12 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                 .into_service(),
         );
     }
+    // `Storage` and `Vault` (bring-your-own storage): present once the feature is registered.
+    if let Some(b) = ext.byos.get() {
+        grpc = grpc
+            .add_service(b.storage_service(authorizer.clone()))
+            .add_service(b.vault_service(authorizer.clone()));
+    }
     grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())
 }
 
@@ -383,6 +390,25 @@ pub async fn serve(
         ci_settings,
         ci_embed.clone(),
     );
+    // Bring-your-own storage: the vault, the network guard, the router and the background work.
+    let byos = storage::register(
+        &ext,
+        &registry,
+        storage::Parts {
+            vault: vault::from_config(
+                &cfg.vault,
+                cfg.db.as_deref(),
+                cfg.cache.disk_dir.as_deref(),
+                pool.clone(),
+            ),
+            guard: netguard::Guard::new(cfg.netguard.clone()),
+            cfg: cfg.storage.clone(),
+            authorizer: authorizer.clone(),
+            audit: storage::default_audit(),
+            authority: None,
+        },
+    );
+    byos.start().await;
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
     forgejo::register(&ext, &registry, &outbox, cfg.forgejo.as_ref())
@@ -463,6 +489,7 @@ pub async fn serve(
     let mut features = vec![projects::feature()];
     features.extend(review::features());
     features.extend(codeintel::features::features(&ext.codeintel));
+    features.extend(storage::features(&ext.byos));
     #[cfg(feature = "git-compat")]
     if git_live {
         features.push(git_http::FEATURE.to_owned());
