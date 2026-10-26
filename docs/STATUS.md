@@ -17,6 +17,10 @@ what exists.
   (feature `git-ssh`, default on, off in config), HTTP/3 (feature `http3`, needs `[tls]`).
 - Release pipeline: split Linux and Windows chains, signed write-once artefacts, MSI, winget
   manifests, `install.sh`, `asc upgrade` (`docs/RELEASING.md`).
+- Bring-your-own storage (`docs/BYOS.md`): per-owner S3 targets with an SSRF-guarded, address-pinned client, a verification
+  handshake, credentials sealed in the vault (XChaCha20-Poly1305, master key file, rotation), routing of a repository's objects
+  to its target, resumable migration (copy, verify, switch, optional delete), health checks and quotas. Tested against an
+  in-process S3 (`crates/asc-serve/src/storage/`); not yet run against a real provider or Postgres (unverified).
 - `asc api` for the IDE plugins; the `crates/asc/src/bridge/` frame bridge is committed (its
   `Bridge.Run` decodes `OpResult` from `cli.proto`; not yet run against a live host, unverified).
 

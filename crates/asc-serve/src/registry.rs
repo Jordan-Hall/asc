@@ -116,6 +116,41 @@ impl Default for NewRepo {
     }
 }
 
+/// The prefix of a [`RegistryError::Store`] that says a repository's storage is unavailable
+/// (bring-your-own storage: the target is disabled, failed, blocked, or the vault is locked). The
+/// rest of the message is safe to show.
+pub const STORAGE_UNAVAILABLE: &str = "storage unavailable: ";
+
+impl RegistryError {
+    /// The user-facing reason when the repository's storage cannot be used right now.
+    pub fn unavailable(&self) -> Option<&str> {
+        match self {
+            Self::Store(m) => m.strip_prefix(STORAGE_UNAVAILABLE),
+            _ => None,
+        }
+    }
+}
+
+/// Where a repository's objects are when they are not in the instance bucket.
+pub struct RoutedNs {
+    pub store: Arc<dyn ObjectStore>,
+    /// The root `BucketObjects` uses over `store`.
+    pub root: Path,
+    /// Changes whenever the route does; the registry rebuilds the entry then.
+    pub stamp: u64,
+}
+
+/// Bring-your-own storage: maps a repository to its own bucket (`storage/`).
+#[async_trait]
+pub trait NsRouter: Send + Sync {
+    /// The route of repository `repo_id`, `None` for the instance bucket. The error is shown to
+    /// the caller as "storage unavailable".
+    async fn route(&self, repo_id: i64, ns: Ns) -> Result<Option<RoutedNs>, String>;
+    /// The store and root of a namespace this process has routed, for code that holds a
+    /// namespace and not an entry (garbage collection, drops, index work).
+    fn namespace(&self, ns: Ns) -> Option<(Arc<dyn ObjectStore>, Path)>;
+}
+
 /// One open repository.
 pub struct RepoEntry {
     pub name: RepoName,
@@ -129,6 +164,8 @@ pub struct RepoEntry {
     pub objects: Arc<BucketObjects>,
     /// Receives git-map rows into `git_map` for this namespace.
     pub git_map: Arc<SqlGitMap>,
+    /// The stamp of the storage route the entry was built over; 0 for the instance bucket.
+    pub route_stamp: u64,
 }
 
 /// A repository kept open, and when its row was last read.
@@ -148,6 +185,7 @@ pub struct Registry {
     root: Path,
     open: quick_cache::sync::Cache<String, Cached>,
     ttl: Duration,
+    router: std::sync::OnceLock<Arc<dyn NsRouter>>,
 }
 
 impl Registry {
@@ -168,7 +206,18 @@ impl Registry {
             root,
             open: quick_cache::sync::Cache::new(MAX_OPEN_REPOS),
             ttl: ENTRY_TTL,
+            router: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Installs the storage router, once. False when one is already installed.
+    pub fn set_router(&self, router: Arc<dyn NsRouter>) -> bool {
+        self.router.set(router).is_ok()
+    }
+
+    /// The instance bucket and its root (`<root>` of `<root>/ns/<hex>`).
+    pub fn default_place(&self) -> (Arc<dyn ObjectStore>, Path) {
+        (self.store.clone(), self.root.clone())
     }
 
     /// Reads the `repos` row again after `ttl` instead of [`ENTRY_TTL`].
@@ -179,6 +228,9 @@ impl Registry {
 
     /// The bucket and the path prefix (`<root>/ns/<ns>`) of the namespace `ns`.
     pub(crate) fn namespace(&self, ns: Ns) -> (Arc<dyn ObjectStore>, Path) {
+        if let Some(routed) = self.router.get().and_then(|r| r.namespace(ns)) {
+            return routed;
+        }
         (
             self.store.clone(),
             self.root.clone().join("ns").join(ns.hex()),
@@ -254,18 +306,28 @@ impl Registry {
         let ns = Ns::from_bytes(&ns_bytes)
             .ok_or_else(|| RegistryError::Invalid("repos.ns is not 16 bytes".into()))?;
         let mode = RepoMode::parse(&mode)?;
+        let routed = match self.router.get() {
+            Some(r) => r
+                .route(id, ns)
+                .await
+                .map_err(|m| RegistryError::Store(format!("{STORAGE_UNAVAILABLE}{m}")))?,
+            None => None,
+        };
+        let stamp = routed.as_ref().map_or(0, |r| r.stamp);
         // The same repository keeps its engine (and its caches); a row that changed under the
-        // name (deleted and created again, another namespace) gets a fresh entry.
+        // name (deleted and created again, another namespace, another storage route) gets a
+        // fresh entry.
         let entry = match cached {
             Some(c)
                 if c.entry.key.0 == id
                     && c.entry.ns == ns
                     && c.entry.mode == mode
-                    && c.entry.default_branch == default_branch =>
+                    && c.entry.default_branch == default_branch
+                    && c.entry.route_stamp == stamp =>
             {
                 c.entry
             }
-            _ => Arc::new(self.build(name, RepoKey(id), ns, mode, default_branch)),
+            _ => Arc::new(self.build(name, RepoKey(id), ns, mode, default_branch, routed)),
         };
         self.open.insert(
             name.to_string(),
@@ -319,9 +381,17 @@ impl Registry {
         ns: Ns,
         mode: RepoMode,
         default_branch: String,
+        routed: Option<RoutedNs>,
     ) -> RepoEntry {
-        let root = self.root.clone().join("ns").join(ns.hex());
-        let objects = Arc::new(BucketObjects::new(self.store.clone(), root));
+        let route_stamp = routed.as_ref().map_or(0, |r| r.stamp);
+        let (store, root) = match routed {
+            Some(r) => (r.store, r.root),
+            None => (
+                self.store.clone(),
+                self.root.clone().join("ns").join(ns.hex()),
+            ),
+        };
+        let objects = Arc::new(BucketObjects::new(store, root));
         RepoEntry {
             name: name.clone(),
             key,
@@ -336,6 +406,7 @@ impl Registry {
             )),
             objects,
             git_map: Arc::new(SqlGitMap::new(self.pool.clone(), ns)),
+            route_stamp,
         }
     }
 }
@@ -537,6 +608,8 @@ pub struct Extensions {
     pub codeintel: crate::codeintel::rpc::CodeIntelSlot,
     /// The `Review`, `Inbox` and `Ci` handlers; `build_routes` serves them behind the authorizer.
     pub review: crate::review::ReviewSlot,
+    /// Bring-your-own storage and the vault; `build_routes` serves `Storage` and `Vault`.
+    pub byos: crate::storage::ByosSlot,
 }
 
 impl Extensions {
@@ -553,6 +626,7 @@ impl Extensions {
             cloud: Default::default(),
             codeintel: Default::default(),
             review: Default::default(),
+            byos: Default::default(),
         }
     }
 }

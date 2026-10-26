@@ -156,33 +156,6 @@ scaffold! {
         stream {
         }
     }
-    storage_server::Storage = "asc.v1.Storage" {
-        unary {
-            "CreateTarget" create_target(CreateStorageTargetRequest) -> CreateStorageTargetResponse;
-            "ListTargets" list_targets(ListStorageTargetsRequest) -> ListStorageTargetsResponse;
-            "GetTarget" get_target(GetStorageTargetRequest) -> GetStorageTargetResponse;
-            "UpdateTarget" update_target(UpdateStorageTargetRequest) -> UpdateStorageTargetResponse;
-            "DeleteTarget" delete_target(DeleteStorageTargetRequest) -> DeleteStorageTargetResponse;
-            "VerifyTarget" verify_target(VerifyStorageTargetRequest) -> VerifyStorageTargetResponse;
-            "SetEnabled" set_enabled(SetStorageTargetEnabledRequest) -> SetStorageTargetEnabledResponse;
-            "AssignRepo" assign_repo(AssignRepoStorageRequest) -> AssignRepoStorageResponse;
-            "StartMigration" start_migration(StartStorageMigrationRequest) -> StartStorageMigrationResponse;
-            "GetMigration" get_migration(GetStorageMigrationRequest) -> GetStorageMigrationResponse;
-            "ListMigrations" list_migrations(ListStorageMigrationsRequest) -> ListStorageMigrationsResponse;
-            "CancelMigration" cancel_migration(CancelStorageMigrationRequest) -> CancelStorageMigrationResponse;
-        }
-        stream {
-        }
-    }
-    vault_server::Vault = "asc.v1.Vault" {
-        unary {
-            "Status" status(VaultStatusRequest) -> VaultStatusResponse;
-            "Rotate" rotate(RotateVaultRequest) -> RotateVaultResponse;
-            "GetRotation" get_rotation(GetVaultRotationRequest) -> GetVaultRotationResponse;
-        }
-        stream {
-        }
-    }
     ai_providers_server::AiProviders = "asc.v1.AiProviders" {
         unary {
             "CreateKey" create_key(CreateAiKeyRequest) -> CreateAiKeyResponse;
