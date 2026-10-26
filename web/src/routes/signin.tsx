@@ -14,8 +14,9 @@ export default function SignInPage(): ReactNode {
     <div className="mx-auto w-full max-w-md p-4">
       <h1 className="mb-2 text-2xl font-semibold text-fg-strong">Sign in</h1>
       <p className="mb-6 text-fg-muted">
-        Paste an asc token. Create one with <code className="font-mono">asc serve token create</code>.
-        It is kept in memory and sent only to this server.
+        Paste an ASC token. Create one with{" "}
+        <code className="font-mono">asc serve token create</code>. It is kept in memory and sent
+        only to this server.
       </p>
       <form
         onSubmit={(e) => {

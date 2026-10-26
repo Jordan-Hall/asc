@@ -103,7 +103,7 @@ export function registerRevNav(
       const t = await navigate(api, inp, dir);
       if (t === null) {
         void vscode.window.showInformationMessage(
-          dir === "previous" ? "asc: no earlier version." : "asc: this is the newest version.",
+          dir === "previous" ? "ASC: no earlier version." : "ASC: this is the newest version.",
         );
         return;
       }

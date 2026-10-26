@@ -161,7 +161,12 @@ export function mountReview(
       li.tabIndex = 0;
       li.append(el(doc, "span", "asc-subject", row.subject));
       for (const b of row.badges) {
-        const be = el(doc, "span", `asc-badge asc-${b.kind}${b.tone ? ` asc-${b.tone}` : ""}`, b.text);
+        const be = el(
+          doc,
+          "span",
+          `asc-badge asc-${b.kind}${b.tone ? ` asc-${b.tone}` : ""}`,
+          b.text,
+        );
         be.dataset.badge = b.kind;
         if (b.title) be.title = b.title;
         li.append(be);
@@ -258,7 +263,12 @@ export function mountReview(
       const change = at.change;
       actions.append(
         button("approve", "Approve", approveState(change, cd), () => {
-          void submit(change.id, approveConfirmText(change), () => host.approve(change.id), "Review submitted");
+          void submit(
+            change.id,
+            approveConfirmText(change),
+            () => host.approve(change.id),
+            "Review submitted",
+          );
         }),
         button("merge", "Merge", mergeState(data.stacks, change.id, data.changes), () => {
           void submit(change.id, mergeConfirmText(change), () => host.merge(change.id), "Merged");

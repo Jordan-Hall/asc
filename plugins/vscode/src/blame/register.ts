@@ -163,7 +163,12 @@ export function registerBlame(
         inlineType,
         text === null
           ? []
-          : [{ range: new vscode.Range(end, end), renderOptions: { after: { contentText: text } } }],
+          : [
+              {
+                range: new vscode.Range(end, end),
+                renderOptions: { after: { contentText: text } },
+              },
+            ],
       );
     } catch (e) {
       editor.setDecorations(inlineType, []);
@@ -379,8 +384,10 @@ export function registerBlame(
     const u = toAscUri({ root, path, at: { kind: "rev", rev } });
     return vscode.Uri.from({ scheme: "asc", path: u.path, query: u.query });
   };
-  const isRoot = (root: unknown): root is string => typeof root === "string" && roots.includes(root);
-  const isId = (id: unknown): id is string => typeof id === "string" && /^[0-9a-f]{40,64}$/.test(id);
+  const isRoot = (root: unknown): root is string =>
+    typeof root === "string" && roots.includes(root);
+  const isId = (id: unknown): id is string =>
+    typeof id === "string" && /^[0-9a-f]{40,64}$/.test(id);
   subs.push(
     vscode.commands.registerCommand("asc.blame.openChanges", (root, path, id) => {
       if (!isRoot(root) || typeof path !== "string" || !isId(id)) return;

@@ -365,7 +365,7 @@ export function registerWorktrees(
     }),
     // TODO(C31): the bridge schema has no `worktree lock` verb yet.
     vscode.commands.registerCommand("asc.worktrees.lock", () => {
-      void vscode.window.showInformationMessage("asc: locking worktrees needs a newer asc.");
+      void vscode.window.showInformationMessage("ASC: locking worktrees needs a newer asc.");
     }),
   );
   return {

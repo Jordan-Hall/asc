@@ -170,7 +170,9 @@ export function Menu(props: {
               );
             const body = (
               <>
-                <span className={`flex w-4 justify-center ${e.danger ? "text-bad" : "text-fg-muted"}`}>
+                <span
+                  className={`flex w-4 justify-center ${e.danger ? "text-bad" : "text-fg-muted"}`}
+                >
                   {e.icon ? <Icon name={e.icon} /> : null}
                 </span>
                 <span className={`flex-1 ${e.danger ? "text-bad" : "text-fg"}`}>{e.label}</span>

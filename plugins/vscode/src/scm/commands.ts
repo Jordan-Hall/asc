@@ -8,12 +8,7 @@ import { readFile } from "node:fs/promises";
 import type * as vscodeTypes from "vscode";
 import type { BridgeManager } from "../bridge";
 import type { AscAt, ReadApi } from "../fs/ascfs";
-import {
-  buildHunkPatch,
-  buildPatch,
-  type LineRange,
-  type Side,
-} from "./stage-ranges";
+import { buildHunkPatch, buildPatch, type LineRange, type Side } from "./stage-ranges";
 
 /** `Workspace.Stage` carries at most this many patch bytes (allowlist `limits.patchBytes`). */
 export const MAX_PATCH_BYTES = 1_048_576;
@@ -78,7 +73,9 @@ export function summariseOpResult(bytes: Uint8Array | null): OpSummary | null {
   if (typeof v !== "object" || v === null) return null;
   const o = v as Record<string, unknown>;
   const arr = (k: string): Record<string, unknown>[] =>
-    Array.isArray(o[k]) ? (o[k] as Record<string, unknown>[]).filter((x) => typeof x === "object" && x !== null) : [];
+    Array.isArray(o[k])
+      ? (o[k] as Record<string, unknown>[]).filter((x) => typeof x === "object" && x !== null)
+      : [];
   const str = (x: unknown): string => (typeof x === "string" ? x : "");
   const lines: PickItem[] = [];
   for (const r of arr("rewritten")) {
@@ -101,7 +98,10 @@ export function summariseOpResult(bytes: Uint8Array | null): OpSummary | null {
 
 export type CommandResult =
   | { ok: true; nothing?: boolean }
-  | { ok: false; reason: "disabled" | "invalid" | "cancelled" | "conflict" | "ambiguous" | "failed" };
+  | {
+      ok: false;
+      reason: "disabled" | "invalid" | "cancelled" | "conflict" | "ambiguous" | "failed";
+    };
 
 const UPDATE_ASC = "asc is too old for this command. Update asc.";
 
@@ -145,7 +145,10 @@ export class CommitCommands {
 
   private outcome(verb: string, r: RunOutcome): CommandResult {
     if (r.exit === 0) {
-      return { ok: true, ...(summariseOpResult(r.opResult)?.status === "nothing" ? { nothing: true } : {}) };
+      return {
+        ok: true,
+        ...(summariseOpResult(r.opResult)?.status === "nothing" ? { nothing: true } : {}),
+      };
     }
     if (r.exit === 1) {
       this.ui.warn(`asc ${verb} stopped on conflicts. Resolve them, then run asc continue.`);
@@ -204,7 +207,7 @@ export class CommitCommands {
       if (preview.exit !== 0) return this.outcome("absorb", preview);
       const sum = summariseOpResult(preview.opResult);
       if (sum?.status === "nothing") {
-        this.ui.info("asc: nothing to absorb.");
+        this.ui.info("ASC: nothing to absorb.");
         return { ok: true, nothing: true };
       }
       // TODO(M02): without an OpResult the preview is the verb's stderr; the human preview text is on
@@ -242,7 +245,7 @@ export class CommitCommands {
       const tracked = files.filter((f) => f.xy !== "??" && f.xy !== "!!");
       const skipped = files.length - tracked.length;
       if (tracked.length === 0) {
-        this.ui.info("asc: untracked files cannot be discarded here.");
+        this.ui.info("ASC: untracked files cannot be discarded here.");
         return { ok: false, reason: "invalid" };
       }
       if (!(await this.gate())) return { ok: false, reason: "disabled" };
@@ -273,7 +276,7 @@ export class CommitCommands {
         await this.api.stage(root, mode === "stage" ? { add: paths } : { remove: paths });
         return { ok: true };
       } catch (e) {
-        this.ui.error(`asc: ${mode} failed: ${e instanceof Error ? e.message : String(e)}`, []);
+        this.ui.error(`ASC: ${mode} failed: ${e instanceof Error ? e.message : String(e)}`, []);
         return { ok: false, reason: "failed" };
       }
     });
@@ -314,7 +317,7 @@ export class CommitCommands {
   ): Promise<CommandResult> {
     try {
       if ("none" in r) {
-        this.ui.info("asc: no changes in the selection.");
+        this.ui.info("ASC: no changes in the selection.");
         return { ok: true, nothing: true };
       }
       if ("whole" in r) {
@@ -322,13 +325,13 @@ export class CommitCommands {
         return { ok: true };
       }
       if (new TextEncoder().encode(r.patch).byteLength > MAX_PATCH_BYTES) {
-        this.ui.warn("asc: the selection is too large to stage by lines; stage the whole file.");
+        this.ui.warn("ASC: the selection is too large to stage by lines; stage the whole file.");
         return { ok: false, reason: "invalid" };
       }
       await this.api.stage(root, { patch: r.patch });
       return { ok: true };
     } catch (e) {
-      this.ui.error(`asc: ${mode} failed: ${e instanceof Error ? e.message : String(e)}`, []);
+      this.ui.error(`ASC: ${mode} failed: ${e instanceof Error ? e.message : String(e)}`, []);
       return { ok: false, reason: "failed" };
     }
   }
@@ -486,7 +489,10 @@ export function vscodeCommandsUi(
     review: async (title, items, accept) => {
       const list = items.length > 0 ? items : [{ label: "No hunks to show" }];
       const picked = await vscode.window.showQuickPick(
-        [{ label: `$(check) ${accept}`, accept: true }, ...list.map((i) => ({ ...i, accept: false }))],
+        [
+          { label: `$(check) ${accept}`, accept: true },
+          ...list.map((i) => ({ ...i, accept: false })),
+        ],
         { title, placeHolder: `${accept}? Pick the first row to continue, Esc to cancel.` },
       );
       return picked?.accept === true;
@@ -528,7 +534,7 @@ export function registerCommands(
     const byUri = uri ? rootOfUri(uri) : undefined;
     if (byUri) return byUri;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
 
   const subs: { dispose(): unknown }[] = [];
@@ -574,10 +580,7 @@ export function registerCommands(
     if (root) await cmds.redo(root);
   });
 
-  const resources = (
-    a: unknown,
-    rest: unknown[],
-  ): { root: string; path: string; xy: string }[] => {
+  const resources = (a: unknown, rest: unknown[]): { root: string; path: string; xy: string }[] => {
     const all = [a, ...rest.flat()].filter(
       (x): x is { resourceUri: vscodeTypes.Uri; contextValue?: string } =>
         typeof x === "object" && x !== null && "resourceUri" in x,
@@ -604,12 +607,20 @@ export function registerCommands(
   });
   reg("asc.stageFile", async (a?: unknown, ...rest: unknown[]) => {
     await perRoot(resources(a, rest), (root, l) =>
-      cmds.stageFiles(root, l.map((x) => x.path), "stage"),
+      cmds.stageFiles(
+        root,
+        l.map((x) => x.path),
+        "stage",
+      ),
     );
   });
   reg("asc.unstageFile", async (a?: unknown, ...rest: unknown[]) => {
     await perRoot(resources(a, rest), (root, l) =>
-      cmds.stageFiles(root, l.map((x) => x.path), "unstage"),
+      cmds.stageFiles(
+        root,
+        l.map((x) => x.path),
+        "unstage",
+      ),
     );
   });
 
@@ -631,7 +642,8 @@ export function registerCommands(
   reg("asc.unstageSelectedRanges", stageSelection("unstage"));
 
   // `scm/change/title` passes (uri, changes, index): the gutter peek's change.
-  const stageChange = (mode: "stage" | "unstage") =>
+  const stageChange =
+    (mode: "stage" | "unstage") =>
     async (uri?: vscodeTypes.Uri, changes?: QuickDiffChange[], index?: number) => {
       const c = changes?.[index ?? 0];
       if (!uri || !c) return;

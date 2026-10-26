@@ -199,7 +199,9 @@ describe("asc binary resolution", () => {
   const base = { ascHome: undefined, home: "/h", platform: "linux" as const };
 
   test("setting wins, then PATH, then ASC_HOME/bin", () => {
-    expect(resolveAsc({ ...base, setting: "/x/asc", path: "/a", isFile: () => true })).toBe("/x/asc");
+    expect(resolveAsc({ ...base, setting: "/x/asc", path: "/a", isFile: () => true })).toBe(
+      "/x/asc",
+    );
     expect(resolveAsc({ ...base, setting: "", path: "/a:/b", isFile: has(["/b/asc"]) })).toBe(
       "/b/asc",
     );

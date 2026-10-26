@@ -20,7 +20,7 @@ export function classify(error: unknown): ErrorKind {
 
 const COPY: Record<ErrorKind, { title: string; body: string }> = {
   "not-found": { title: "Not found", body: "This page does not exist, or you cannot see it." },
-  "sign-in": { title: "Sign in required", body: "Sign in with an asc token to see this." },
+  "sign-in": { title: "Sign in required", body: "Sign in with an ASC token to see this." },
   unavailable: {
     title: "Server unreachable",
     body: "The server did not answer. Check your connection and try again.",

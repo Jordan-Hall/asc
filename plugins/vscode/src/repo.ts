@@ -43,7 +43,10 @@ export async function resolveGitDir(folder: string, fs: DetectFs): Promise<strin
 }
 
 /** True when the folder is an asc workspace: the git dir holds an `asc-workspace` marker. */
-export async function isAscWorkspace(folder: string, fs: DetectFs = nodeDetectFs): Promise<boolean> {
+export async function isAscWorkspace(
+  folder: string,
+  fs: DetectFs = nodeDetectFs,
+): Promise<boolean> {
   const gitDir = await resolveGitDir(folder, fs);
   return gitDir !== null && (await fs.isFile(join(gitDir, "asc-workspace")));
 }

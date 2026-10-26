@@ -112,8 +112,10 @@ describe("parseDiff", () => {
   });
 
   test("unsafe and quoted paths are unsupported and block the split", () => {
-    const quoted = 'diff --git "a/we ird" "b/we ird"\n--- "a/we ird"\n+++ "b/we ird"\n@@ -1 +1 @@\n-a\n+b\n';
-    const dots = "diff --git a/../x b/../x\nindex 1..2 100644\n--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n";
+    const quoted =
+      'diff --git "a/we ird" "b/we ird"\n--- "a/we ird"\n+++ "b/we ird"\n@@ -1 +1 @@\n-a\n+b\n';
+    const dots =
+      "diff --git a/../x b/../x\nindex 1..2 100644\n--- a/../x\n+++ b/../x\n@@ -1 +1 @@\n-a\n+b\n";
     for (const t of [quoted, dots]) {
       const s = initSplit(t, false, "m");
       expect(s.files[0]?.unsupported).toBe("Unsupported path");
@@ -128,7 +130,8 @@ describe("parseDiff", () => {
   });
 
   test("safePath refuses traversal, absolute, quote and control characters", () => {
-    for (const p of ["../a", "a/../b", "/a", "a/", "a//b", 'a"b', "a\\b", "a\nb", ""]) expect(safePath(p)).toBe(false);
+    for (const p of ["../a", "a/../b", "/a", "a/", "a//b", 'a"b', "a\\b", "a\nb", ""])
+      expect(safePath(p)).toBe(false);
     expect(safePath("src/a b.ts")).toBe(true);
   });
 });
@@ -223,7 +226,10 @@ describe("split model", () => {
   });
 
   test("splitRun never runs the interactive form and refuses option-like ids", () => {
-    expect(splitRun("abcd1234", "/tmp/s.json")).toEqual({ verb: "split", args: ["--hunks=/tmp/s.json", "abcd1234"] });
+    expect(splitRun("abcd1234", "/tmp/s.json")).toEqual({
+      verb: "split",
+      args: ["--hunks=/tmp/s.json", "abcd1234"],
+    });
     expect(() => splitRun("--by-hunk", "/tmp/s.json")).toThrow();
   });
 });

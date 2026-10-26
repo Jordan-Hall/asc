@@ -9,7 +9,8 @@ function setup(status: unknown) {
   const api: LiveApi = {
     run: async (_r, verb, args) => {
       runs.push({ verb, args });
-      if (verb === "live") current = { paused: args[0] === "pause", pauseReason: args[0] === "pause" ? "user" : null };
+      if (verb === "live")
+        current = { paused: args[0] === "pause", pauseReason: args[0] === "pause" ? "user" : null };
       return { exit: 0 };
     },
     status: async () => enc(current),
@@ -62,10 +63,19 @@ describe("live: conflict notice", () => {
     expect(liveView(0, { paused: true, reason: "user" }).notice.visible).toBe(false);
   });
   test("untrusted output: junk rejected, no text shown", () => {
-    for (const bad of [null, new Uint8Array(), new TextEncoder().encode("{"), enc([]), enc({ paused: "yes" })]) {
+    for (const bad of [
+      null,
+      new Uint8Array(),
+      new TextEncoder().encode("{"),
+      enc([]),
+      enc({ paused: "yes" }),
+    ]) {
       expect(parseLiveStatus(bad)).toBeNull();
     }
-    const v = liveView(0, parseLiveStatus(enc({ paused: true, pauseReason: "conflict", detail: "<script>" })));
+    const v = liveView(
+      0,
+      parseLiveStatus(enc({ paused: true, pauseReason: "conflict", detail: "<script>" })),
+    );
     expect(v.notice.text).not.toContain("script");
   });
 });

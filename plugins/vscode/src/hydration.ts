@@ -95,7 +95,7 @@ export async function maybePromptExclusions(
     return "skipped";
   }
   const picked = await prompt.notify(
-    "asc: exclude generated folders (node_modules, dist, target, .asc) from watching and search so they are not hydrated?",
+    "ASC: exclude generated folders (node_modules, dist, target, .asc) from watching and search so they are not hydrated?",
     ["Add exclusions", "Not now"],
   );
   if (picked === "Add exclusions") {
@@ -158,8 +158,10 @@ export function findOffender(s: HydrationStats, budget: number): Offender | null
 
 export function hydrationMessage(o: Offender): string {
   const where =
-    o.folders.length > 0 ? ` Top folders: ${o.folders.map((f) => sanitizeLabel(f)).join(", ")}.` : "";
-  return `Search is hydrating files. Use asc: Search code, or exclude folders. Process: ${o.process}.${where}`;
+    o.folders.length > 0
+      ? ` Top folders: ${o.folders.map((f) => sanitizeLabel(f)).join(", ")}.`
+      : "";
+  return `Search is hydrating files. Use ASC: Search code, or exclude folders. Process: ${o.process}.${where}`;
 }
 
 /** One poll. Notifies at most once per 24 hours, whatever the number of roots. */

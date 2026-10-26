@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { CommandsApi, RunOutcome } from "../src/scm/commands";
 import { StackActions } from "../src/stack/actions";
-import { type Candidate, parseCandidates, StackNav, validChange, type NavUi } from "../src/stack/nav";
+import {
+  type Candidate,
+  parseCandidates,
+  StackNav,
+  validChange,
+  type NavUi,
+} from "../src/stack/nav";
 import { shareCurrent, shareLink } from "../src/stack/share";
 
 function fake(canMutate = true) {
@@ -51,7 +57,8 @@ describe("stack: navigation", () => {
   test("up, down, top and bottom run their verbs", async () => {
     const f = fake();
     const n = new StackNav(f.api, ui().u);
-    for (const v of ["up", "down", "top", "bottom"] as const) expect(await n.go("/w", v)).toEqual({ ok: true });
+    for (const v of ["up", "down", "top", "bottom"] as const)
+      expect(await n.go("/w", v)).toEqual({ ok: true });
     expect(f.runs.map((r) => r.verb)).toEqual(["up", "down", "top", "bottom"]);
     expect(f.runs.every((r) => r.args.length === 0)).toBe(true);
   });
@@ -68,7 +75,12 @@ describe("stack: navigation", () => {
   });
   test("a fork shows the quick pick and runs again with the chosen change", async () => {
     const f = fake();
-    f.outcomes.push(fork([{ change: "aaaa", subject: "one" }, { change: "bbbb", subject: "two" }]));
+    f.outcomes.push(
+      fork([
+        { change: "aaaa", subject: "one" },
+        { change: "bbbb", subject: "two" },
+      ]),
+    );
     const x = ui({ pick: "bbbb" });
     expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({ ok: true });
     expect(x.log.picks).toBe(1);
@@ -81,7 +93,10 @@ describe("stack: navigation", () => {
     for (const pick of [undefined, "--evil", "cccc"]) {
       const f = fake();
       f.outcomes.push(fork([{ change: "aaaa", subject: "one" }]));
-      const r = await new StackNav(f.api, ui(pick === undefined ? {} : { pick }).u).go("/w", "down");
+      const r = await new StackNav(f.api, ui(pick === undefined ? {} : { pick }).u).go(
+        "/w",
+        "down",
+      );
       expect(r).toEqual({ ok: false, reason: "cancelled" });
       expect(f.runs).toHaveLength(1);
     }
@@ -90,12 +105,23 @@ describe("stack: navigation", () => {
     const f = fake();
     f.outcomes.push({ exit: 2, stderr: [], opResult: null });
     const x = ui();
-    expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({ ok: false, reason: "ambiguous" });
+    expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({
+      ok: false,
+      reason: "ambiguous",
+    });
     expect(x.log.picks).toBe(0);
   });
   test("candidates with flag-like or blank changes are dropped", () => {
     const bytes = new TextEncoder().encode(
-      JSON.stringify({ candidates: [{ change: "--to=x" }, { change: "" }, { change: "a b" }, { change: "ok1", subject: 5 }, 7] }),
+      JSON.stringify({
+        candidates: [
+          { change: "--to=x" },
+          { change: "" },
+          { change: "a b" },
+          { change: "ok1", subject: 5 },
+          7,
+        ],
+      }),
     );
     expect(parseCandidates(bytes)).toEqual([{ change: "ok1", subject: "" }]);
     expect(parseCandidates(new TextEncoder().encode("{"))).toEqual([]);
@@ -105,7 +131,10 @@ describe("stack: navigation", () => {
   test("an asc that is too old runs nothing", async () => {
     const f = fake(false);
     const x = ui();
-    expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({ ok: false, reason: "disabled" });
+    expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
     expect(f.runs).toHaveLength(0);
   });
 });
@@ -121,7 +150,10 @@ describe("stack: actions", () => {
   test("submit asks first; a refusal runs nothing", async () => {
     const f = fake();
     const x = ui({ confirm: false });
-    expect(await new StackActions(f.api, x.u).submit("/w")).toEqual({ ok: false, reason: "cancelled" });
+    expect(await new StackActions(f.api, x.u).submit("/w")).toEqual({
+      ok: false,
+      reason: "cancelled",
+    });
     expect(x.log.confirms).toBe(1);
     expect(f.runs).toHaveLength(0);
   });
@@ -133,20 +165,35 @@ describe("stack: actions", () => {
   test("a conflict is reported", async () => {
     const f = fake();
     f.outcomes.push({ exit: 1, stderr: [], opResult: null });
-    expect(await new StackActions(f.api, ui().u).restack("/w")).toEqual({ ok: false, reason: "conflict" });
+    expect(await new StackActions(f.api, ui().u).restack("/w")).toEqual({
+      ok: false,
+      reason: "conflict",
+    });
   });
 });
 
 describe("stack: share", () => {
   test("only a hex change id makes an asc: link", () => {
     expect(shareLink("abcd1234")).toBe("asc:abcd1234");
-    for (const bad of ["", "abc", "ABCD", "ab cd", "../x", "asc:abcd", "xyz12"]) expect(shareLink(bad)).toBeNull();
+    for (const bad of ["", "abc", "ABCD", "ab cd", "../x", "asc:abcd", "xyz12"])
+      expect(shareLink(bad)).toBeNull();
   });
   test("share copies the link, or warns when there is no change", async () => {
     const copied: string[] = [];
     const warns: string[] = [];
-    const s = { copy: async (t: string) => void copied.push(t), info() {}, warn: (m: string) => void warns.push(m) };
-    const snap = { short: "abcd12", position: 1, total: 1, behind: 0, trunk: "master", needsRestack: false };
+    const s = {
+      copy: async (t: string) => void copied.push(t),
+      info() {},
+      warn: (m: string) => void warns.push(m),
+    };
+    const snap = {
+      short: "abcd12",
+      position: 1,
+      total: 1,
+      behind: 0,
+      trunk: "master",
+      needsRestack: false,
+    };
     expect(await shareCurrent(snap, s)).toBe("asc:abcd12");
     expect(copied).toEqual(["asc:abcd12"]);
     expect(await shareCurrent(null, s)).toBeNull();

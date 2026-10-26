@@ -49,7 +49,15 @@ window.ascStartGraph = (opts) => {
   host.style.height = "600px";
   host.style.width = "900px";
   document.body.append(host);
-  const calls: Calls = { queries: [], runs: [], copied: [], selected: [], opened: [], notes: [], maxFetched: 0 };
+  const calls: Calls = {
+    queries: [],
+    runs: [],
+    copied: [],
+    selected: [],
+    opened: [],
+    notes: [],
+    maxFetched: 0,
+  };
   let total = opts.total;
   let dataAt = -1;
   const markers = (): RefMarker[] => {
@@ -64,7 +72,8 @@ window.ascStartGraph = (opts) => {
       if (signal.aborted) throw new DOMException("aborted", "AbortError");
       const p = query.pageToken === "" ? 0 : Number(query.pageToken);
       const rows: GraphRow[] = [];
-      for (let i = p * PAGE_SIZE; i < Math.min(total, (p + 1) * PAGE_SIZE); i++) rows.push(genRow(i, total));
+      for (let i = p * PAGE_SIZE; i < Math.min(total, (p + 1) * PAGE_SIZE); i++)
+        rows.push(genRow(i, total));
       calls.maxFetched = Math.max(calls.maxFetched, p);
       const page: GraphPage = {
         rows,

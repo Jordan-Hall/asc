@@ -57,7 +57,9 @@ describe("conflicts: paused context", () => {
 
 describe("conflicts: markers", () => {
   test("detects diff3 markers", () => {
-    expect(hasConflictMarkers("a\n<<<<<<< ours\nx\n||||||| base\ny\n=======\nz\n>>>>>>> theirs\n")).toBe(true);
+    expect(
+      hasConflictMarkers("a\n<<<<<<< ours\nx\n||||||| base\ny\n=======\nz\n>>>>>>> theirs\n"),
+    ).toBe(true);
     expect(hasConflictMarkers("a\n=======\nb\n")).toBe(false);
     expect(hasConflictMarkers("x <<<<<<< y")).toBe(false);
     expect(hasConflictMarkers("clean\n")).toBe(false);
@@ -109,7 +111,11 @@ describe("conflicts: model", () => {
     const stop = fake([{ inProgress: "rebase", conflicts: [entry("b")] }], 1);
     await new ConflictsModel("/w", stop.api).finish("continue");
     const bad = fake([{ inProgress: "", conflicts: [] }], 2);
-    await expect(new ConflictsModel("/w", bad.api).finish("continue")).rejects.toThrow("exited with 2");
-    await expect(new ConflictsModel("/w", bad.api).finish("abort")).rejects.toThrow("exited with 2");
+    await expect(new ConflictsModel("/w", bad.api).finish("continue")).rejects.toThrow(
+      "exited with 2",
+    );
+    await expect(new ConflictsModel("/w", bad.api).finish("abort")).rejects.toThrow(
+      "exited with 2",
+    );
   });
 });

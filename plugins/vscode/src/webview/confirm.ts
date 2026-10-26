@@ -18,10 +18,16 @@ export function clean(s: string): string {
   for (const ch of s) {
     const c = ch.codePointAt(0) ?? 0;
     // Control characters, bidi overrides and line separators become a visible placeholder.
-    out += c < 0x20 || c === 0x7f || (c >= 0x80 && c < 0xa0) || (c >= 0x202a && c <= 0x202e) ||
-      (c >= 0x2066 && c <= 0x2069) || c === 0x2028 || c === 0x2029
-      ? "?"
-      : ch;
+    out +=
+      c < 0x20 ||
+      c === 0x7f ||
+      (c >= 0x80 && c < 0xa0) ||
+      (c >= 0x202a && c <= 0x202e) ||
+      (c >= 0x2066 && c <= 0x2069) ||
+      c === 0x2028 ||
+      c === 0x2029
+        ? "?"
+        : ch;
   }
   return out.length > MAX_LINE ? `${out.slice(0, MAX_LINE - 3)}...` : out;
 }

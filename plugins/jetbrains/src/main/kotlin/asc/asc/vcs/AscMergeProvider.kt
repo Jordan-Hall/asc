@@ -56,7 +56,7 @@ object AscMerge {
     /** Stages 1 (base), 2 (ours) and 3 (theirs) of a conflicted path, read from the local store only. */
     suspend fun load(calls: AscCalls, root: String, wsId: String, relPath: String): AscMergeSides {
         val rel = slashed(relPath)
-        val c = conflict(calls, root, wsId, rel) ?: throw VcsException("asc: $rel is not in conflict")
+        val c = conflict(calls, root, wsId, rel) ?: throw VcsException("ASC: $rel is not in conflict")
         return AscMergeSides(
             base = stage(calls, root, wsId, rel, 1),
             ours = stage(calls, root, wsId, rel, 2),
@@ -89,16 +89,16 @@ class AscMergeProvider(private val project: Project) : MergeProvider {
         try {
             runBlockingCancellable { block() }
         } catch (e: BridgeException) {
-            throw VcsException("asc: ${e.message}")
+            throw VcsException("ASC: ${e.message}")
         }
 
     private fun ctx(file: VirtualFile): Ctx {
         val path = VcsUtil.getFilePath(file)
         val root = ProjectLevelVcsManager.getInstance(project).getVcsRootFor(path)?.path
-            ?: throw VcsException("asc: ${file.path} is not under an asc root")
-        val rel = AscPaths.relative(root, path.path) ?: throw VcsException("asc: ${file.path} is outside $root")
+            ?: throw VcsException("ASC: ${file.path} is not under an ASC root")
+        val rel = AscPaths.relative(root, path.path) ?: throw VcsException("ASC: ${file.path} is outside $root")
         val info = guard { bridge.hello(listOf(root)) }.rootsList.firstOrNull { it.wsId.isNotEmpty() }
-            ?: throw VcsException("asc: no workspace for $root")
+            ?: throw VcsException("ASC: no workspace for $root")
         return Ctx(root, rel, info.wsId)
     }
 

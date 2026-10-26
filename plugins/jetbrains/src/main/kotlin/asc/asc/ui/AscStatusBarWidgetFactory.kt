@@ -53,7 +53,7 @@ object StatusModel {
             append("Change ${s.short}, ${s.position} of ${s.total}.")
             if (behind > 0) append(" $behind commit(s) on ${s.trunk} are not in this stack.")
             if (s.needsRestack) append(" A change is behind its parent.")
-            append(if (clickRestacks(s)) " Click to restack." else " Click to open the asc tool window.")
+            append(if (clickRestacks(s)) " Click to restack." else " Click to open the ASC tool window.")
         }
     }
 

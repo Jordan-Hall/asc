@@ -47,7 +47,11 @@ export interface GraphHost {
 export interface GraphView {
   /** `Watch` event: refetch the first page only and splice by commit id. */
   refreshHead(): Promise<void>;
-  setFilters(f: { preset?: GraphPreset; include?: readonly string[]; exclude?: readonly string[] }): void;
+  setFilters(f: {
+    preset?: GraphPreset;
+    include?: readonly string[];
+    exclude?: readonly string[];
+  }): void;
   select(index: number): void;
   readonly selectedIndex: number;
   /** Rows currently in memory (≤ 5,000). */
@@ -58,10 +62,23 @@ export interface GraphView {
   dispose(): void;
 }
 
-const PALETTE = ["#4e9af1", "#e5a13a", "#4cb782", "#d6609b", "#9b7fe8", "#3cc0c8", "#d9715b", "#98b540"];
+const PALETTE = [
+  "#4e9af1",
+  "#e5a13a",
+  "#4cb782",
+  "#d6609b",
+  "#9b7fe8",
+  "#3cc0c8",
+  "#d9715b",
+  "#98b540",
+];
 const OVERSCAN = 20;
 
-const el = <K extends keyof HTMLElementTagNameMap>(doc: Document, tag: K, cls?: string): HTMLElementTagNameMap[K] => {
+const el = <K extends keyof HTMLElementTagNameMap>(
+  doc: Document,
+  tag: K,
+  cls?: string,
+): HTMLElementTagNameMap[K] => {
   const n = doc.createElement(tag);
   if (cls) n.className = cls;
   return n;
@@ -157,7 +174,13 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
   function missingPage(): number | undefined {
     const { top, rows } = viewportRows();
     const count = store.rowCount;
-    const r = visibleRange(scroller.scrollTop, scroller.clientHeight || 400, ROW_HEIGHT, count, OVERSCAN);
+    const r = visibleRange(
+      scroller.scrollTop,
+      scroller.clientHeight || 400,
+      ROW_HEIGHT,
+      count,
+      OVERSCAN,
+    );
     const first = Math.floor(r.first / PAGE_SIZE);
     const last = Math.floor(Math.max(r.first, r.end - 1) / PAGE_SIZE);
     store.setFocus(top + Math.floor(rows / 2));
@@ -435,7 +458,10 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
   }
 
   function persist(): void {
-    host.setState?.({ scrollTop: scroller.scrollTop, ...(selectedId === undefined ? {} : { selected: selectedId }) });
+    host.setState?.({
+      scrollTop: scroller.scrollTop,
+      ...(selectedId === undefined ? {} : { selected: selectedId }),
+    });
   }
 
   function nav(key: NavKey): void {
@@ -552,7 +578,11 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
       ev.preventDefault();
       if (selected >= 0) {
         const rect = scroller.getBoundingClientRect();
-        openMenu(selected, rect.left + lanesWidth() + 16, rect.top + selected * ROW_HEIGHT - scroller.scrollTop + ROW_HEIGHT);
+        openMenu(
+          selected,
+          rect.left + lanesWidth() + 16,
+          rect.top + selected * ROW_HEIGHT - scroller.scrollTop + ROW_HEIGHT,
+        );
       }
       return;
     }
@@ -579,7 +609,12 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
     }
     if (ev.key !== "Enter") return;
     ev.preventDefault();
-    const hit = searchRow(store, selected < 0 ? -1 : selected, searchIn.value, ev.shiftKey ? -1 : 1);
+    const hit = searchRow(
+      store,
+      selected < 0 ? -1 : selected,
+      searchIn.value,
+      ev.shiftKey ? -1 : 1,
+    );
     if (hit === undefined) {
       setStatus("No match in loaded rows");
       matchIdx = -1;
@@ -641,7 +676,13 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
     mini.title = near?.name ?? "";
   });
 
-  const resize = new (doc.defaultView?.ResizeObserver ?? class { observe() {} disconnect() {} })(() => schedule());
+  const resize = new (
+    doc.defaultView?.ResizeObserver ??
+    class {
+      observe() {}
+      disconnect() {}
+    }
+  )(() => schedule());
   resize.observe(scroller);
 
   // restore saved state once the first page is in
@@ -671,7 +712,8 @@ export function mountGraph(container: HTMLElement, host: GraphHost): GraphView {
       store.spliceHead(page);
       if (anchorId !== undefined) {
         const now = store.indexOf(anchorId);
-        if (now !== undefined && now !== anchorIdx) scroller.scrollTop += (now - anchorIdx) * ROW_HEIGHT;
+        if (now !== undefined && now !== anchorIdx)
+          scroller.scrollTop += (now - anchorIdx) * ROW_HEIGHT;
       }
       afterStore();
       setStatus(statusText());

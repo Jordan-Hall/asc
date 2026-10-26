@@ -30,7 +30,7 @@ export class RemoteCommands {
 
   private async guard(root: string): Promise<CommandResult | null> {
     if (!isGitRemote(await this.api.remoteKind(root))) {
-      this.ui.info("asc: fetch, pull and push apply to git remotes. Use sync and submit here.");
+      this.ui.info("ASC: fetch, pull and push apply to git remotes. Use sync and submit here.");
       return { ok: false, reason: "disabled" };
     }
     if (!(await this.r.gate())) return { ok: false, reason: "disabled" };
@@ -102,7 +102,7 @@ export function registerRemoteCommands(
     const hit = rootUri ? roots.find((r) => r === rootUri.fsPath) : undefined;
     if (hit) return hit;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
   const reg = (id: string, fn: (root: string) => Promise<unknown>) =>
     subs.push(

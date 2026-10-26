@@ -40,7 +40,7 @@ class AscDiffProvider(private val project: Project) : DiffProvider {
         try {
             runBlockingCancellable { block() }
         } catch (e: BridgeException) {
-            throw VcsException("asc: ${e.message}")
+            throw VcsException("ASC: ${e.message}")
         }
 
     private fun ctx(path: FilePath): Ctx? {

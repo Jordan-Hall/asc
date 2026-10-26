@@ -10,10 +10,14 @@ const entry = join(import.meta.dirname, "e2e-entry.ts");
 export function buildGraphBundle(): string {
   const out = join(mkdtempSync(join(tmpdir(), "asc-graph-")), "graph.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   return readFileSync(out, "utf8");
 }
 

@@ -17,7 +17,11 @@ function entry(e: LogEntry): CompareEntry {
   };
 }
 
-export function compareFromProto(res: CompareResponse, a: CompareSide, b: CompareSide): CompareData {
+export function compareFromProto(
+  res: CompareResponse,
+  a: CompareSide,
+  b: CompareSide,
+): CompareData {
   return {
     a,
     b,

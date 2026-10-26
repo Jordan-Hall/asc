@@ -110,7 +110,7 @@ class AscHeadRevision(private val root: Path, private val file: FilePath, privat
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (_: BridgeException) {
-            throw VcsException("asc: cannot read the HEAD version of $relPath")
+            throw VcsException("ASC: cannot read the HEAD version of $relPath")
         }
         return String(bytes, file.charset)
     }

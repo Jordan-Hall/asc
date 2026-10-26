@@ -27,7 +27,12 @@ export interface SubmitChange {
   readonly id: string;
   /** The change message; the PR text defaults to it (first line title, rest description). */
   readonly message: string;
-  readonly pull?: { readonly number: number; readonly title: string; readonly body: string; readonly draft: boolean };
+  readonly pull?: {
+    readonly number: number;
+    readonly title: string;
+    readonly body: string;
+    readonly draft: boolean;
+  };
 }
 
 export function defaultPullText(message: string): PullText {
@@ -50,14 +55,31 @@ export interface SubmitState {
   readonly text: Readonly<Record<string, PullText>>;
 }
 
-export function initSubmit(changes: readonly SubmitChange[], candidates?: readonly string[]): SubmitState {
-  return { changes, candidates, stack: true, mode: "default", reviewers: [], autoMerge: false, text: {} };
+export function initSubmit(
+  changes: readonly SubmitChange[],
+  candidates?: readonly string[],
+): SubmitState {
+  return {
+    changes,
+    candidates,
+    stack: true,
+    mode: "default",
+    reviewers: [],
+    autoMerge: false,
+    text: {},
+  };
 }
 
 export const setMode = (s: SubmitState, mode: SubmitMode): SubmitState => ({ ...s, mode });
 export const setStack = (s: SubmitState, stack: boolean): SubmitState => ({ ...s, stack });
-export const setAutoMerge = (s: SubmitState, autoMerge: boolean): SubmitState => ({ ...s, autoMerge });
-export const setCandidates = (s: SubmitState, candidates: readonly string[] | undefined): SubmitState => ({
+export const setAutoMerge = (s: SubmitState, autoMerge: boolean): SubmitState => ({
+  ...s,
+  autoMerge,
+});
+export const setCandidates = (
+  s: SubmitState,
+  candidates: readonly string[] | undefined,
+): SubmitState => ({
   ...s,
   candidates,
 });
@@ -66,7 +88,8 @@ export const setCandidates = (s: SubmitState, candidates: readonly string[] | un
 export function reviewerBlockedReason(s: SubmitState, name: string): string | undefined {
   if (!validReviewer(name)) return "Not a valid user name";
   if (s.candidates === undefined) return "Reviewers are not loaded";
-  if (!s.candidates.some((c) => c.toLowerCase() === name.toLowerCase())) return "Not assignable in this repository";
+  if (!s.candidates.some((c) => c.toLowerCase() === name.toLowerCase()))
+    return "Not assignable in this repository";
   if (s.reviewers.some((r) => r.toLowerCase() === name.toLowerCase())) return "Already added";
   if (s.reviewers.length >= MAX_REVIEWERS) return "Too many reviewers";
   return undefined;
@@ -116,7 +139,8 @@ export function pullEdits(s: SubmitState): PullEdit[] {
     const patch: { title?: string; body?: string } = {};
     if (edited.title !== c.pull.title) patch.title = edited.title;
     if (edited.body !== c.pull.body) patch.body = edited.body;
-    if (patch.title !== undefined || patch.body !== undefined) out.push({ change: c.id, number: c.pull.number, patch });
+    if (patch.title !== undefined || patch.body !== undefined)
+      out.push({ change: c.id, number: c.pull.number, patch });
   }
   return out;
 }

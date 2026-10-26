@@ -38,7 +38,13 @@ describe("spike-mcp-oauth decision", () => {
   });
 
   test("the record states the decision and the open item", () => {
-    for (const s of ["## Decision", "## Open item", "DCR is not built", "resource_metadata", "asc:read"]) {
+    for (const s of [
+      "## Decision",
+      "## Open item",
+      "DCR is not built",
+      "resource_metadata",
+      "asc:read",
+    ]) {
       expect(doc).toContain(s);
     }
   });

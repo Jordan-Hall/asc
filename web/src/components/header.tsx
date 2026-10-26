@@ -21,11 +21,11 @@ export function Brand(): ReactNode {
   return (
     <Link
       to="/"
-      aria-label="asc home"
+      aria-label="ASC home"
       className="inline-flex items-center gap-2 rounded-lg text-lg font-bold tracking-tight text-fg-strong no-underline"
     >
       <LogoMark size={28} />
-      <span>asc</span>
+      <span>ASC</span>
     </Link>
   );
 }
@@ -54,13 +54,20 @@ function useInboxTotal(enabled: boolean): number {
   );
   const entries = useQueries(qs);
   // Section 4 is "waiting on others": not the viewer's turn, so it does not count.
-  return entries.reduce((n, e) => n + (e.data ? e.data.total - (e.data.bySection.get(4) ?? 0) : 0), 0);
+  return entries.reduce(
+    (n, e) => n + (e.data ? e.data.total - (e.data.bySection.get(4) ?? 0) : 0),
+    0,
+  );
 }
 
 function InboxLink(): ReactNode {
   const count = useInboxTotal(true);
   return (
-    <Link to="/inbox" className={`${ICON_BTN} relative`} aria-label={count > 0 ? `Inbox, ${count} waiting` : "Inbox"}>
+    <Link
+      to="/inbox"
+      className={`${ICON_BTN} relative`}
+      aria-label={count > 0 ? `Inbox, ${count} waiting` : "Inbox"}
+    >
       <Icon name="inbox" size={18} />
       {count > 0 ? (
         <span

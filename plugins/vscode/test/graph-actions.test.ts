@@ -49,7 +49,14 @@ describe("graph-actions", () => {
   });
 
   test("flags, short ids, several revs and free text are not taken as graph calls", async () => {
-    for (const args of [["-n", REV], ["HEAD"], ["abc123"], [REV, REV], [`${REV}\nx`], [REV.toUpperCase()]]) {
+    for (const args of [
+      ["-n", REV],
+      ["HEAD"],
+      ["abc123"],
+      [REV, REV],
+      [`${REV}\nx`],
+      [REV.toUpperCase()],
+    ]) {
       expect(parseGraphRun(run("cherry-pick", args))).toBeUndefined();
       const f = fixture(true);
       await f.handler(f.w, run("cherry-pick", args));

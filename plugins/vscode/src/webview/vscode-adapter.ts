@@ -1,7 +1,13 @@
 // The real VS Code adapter for the webview hosts (the only `vscode` user in this folder).
 import { existsSync } from "node:fs";
 import type * as vscodeTypes from "vscode";
-import { type Disposable, type PanelLike, registerWebviews, type WebviewHost, type WebviewLike } from "./host";
+import {
+  type Disposable,
+  type PanelLike,
+  registerWebviews,
+  type WebviewHost,
+  type WebviewLike,
+} from "./host";
 import type { PanelKind } from "./panels";
 import type { BridgeManager } from "../bridge";
 import { nativeConfirm } from "./confirm";
@@ -35,7 +41,10 @@ export function vscodeWebviews(
       return w.options;
     },
     set options(v) {
-      w.options = { enableScripts: v.enableScripts ?? false, localResourceRoots: v.localResourceRoots as vscodeTypes.Uri[] };
+      w.options = {
+        enableScripts: v.enableScripts ?? false,
+        localResourceRoots: v.localResourceRoots as vscodeTypes.Uri[],
+      };
     },
     distUri: (file) => w.asWebviewUri(vscode.Uri.joinPath(dist, file)).toString(),
     postMessage: (m) => w.postMessage(m),
@@ -60,7 +69,9 @@ export function vscodeWebviews(
         upstream: () => bridge.node(),
         roots: () => roots,
         remoteRepos: () => [],
-        confirm: nativeConfirm((message, options, action) => vscode.window.showWarningMessage(message, options, action)),
+        confirm: nativeConfirm((message, options, action) =>
+          vscode.window.showWarningMessage(message, options, action),
+        ),
         log,
       })
     : undefined;
@@ -72,7 +83,12 @@ export function vscodeWebviews(
       distHasStyle: existsSync(vscode.Uri.joinPath(dist, "index.css").fsPath),
       log,
       createPanel: (viewType, title) =>
-        wrapPanel(vscode.window.createWebviewPanel(viewType, title, vscode.ViewColumn.Active, { enableScripts: true, retainContextWhenHidden: false })),
+        wrapPanel(
+          vscode.window.createWebviewPanel(viewType, title, vscode.ViewColumn.Active, {
+            enableScripts: true,
+            retainContextWhenHidden: false,
+          }),
+        ),
       registerViewProvider: (id, resolve): Disposable =>
         vscode.window.registerWebviewViewProvider(id, {
           resolveWebviewView: (view) => resolve(wrap(view.webview)),
@@ -83,7 +99,9 @@ export function vscodeWebviews(
         }),
     },
   });
-  const cmds = COMMANDS.map(([id, kind]) => vscode.commands.registerCommand(id, () => void host.open(kind)));
+  const cmds = COMMANDS.map(([id, kind]) =>
+    vscode.commands.registerCommand(id, () => void host.open(kind)),
+  );
   return {
     open: (k) => host.open(k),
     dispose() {

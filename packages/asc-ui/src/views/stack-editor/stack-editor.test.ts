@@ -100,6 +100,11 @@ describe("stack editor model", () => {
   });
 
   test("the todo goes by file, never argv", () => {
-    expect(reorderArgv("/tmp/t.json")).toEqual(["reorder", "--end-of-options", "--todo", "/tmp/t.json"]);
+    expect(reorderArgv("/tmp/t.json")).toEqual([
+      "reorder",
+      "--end-of-options",
+      "--todo",
+      "/tmp/t.json",
+    ]);
   });
 });

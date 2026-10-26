@@ -40,7 +40,9 @@ function fixture(confirm: (t: string) => boolean = () => true) {
 describe("relay", () => {
   test("forwards an allowlisted read RPC", async () => {
     const f = fixture();
-    expect(f.handler(f.w, { id: 1, method: "asc.v1.Workspace/Status", bytes: new Uint8Array() })).toBe(true);
+    expect(
+      f.handler(f.w, { id: 1, method: "asc.v1.Workspace/Status", bytes: new Uint8Array() }),
+    ).toBe(true);
     await f.wait();
     expect(calls.length).toBe(1);
     expect(f.sent.length).toBeGreaterThan(0);
@@ -59,7 +61,10 @@ describe("relay", () => {
 
   test("a rejected Run flag never reaches the bridge", async () => {
     const f = fixture();
-    const bytes = toBinary(RunRequestSchema, create(RunRequestSchema, { verb: "sync", args: ["--exec", "x"] }));
+    const bytes = toBinary(
+      RunRequestSchema,
+      create(RunRequestSchema, { verb: "sync", args: ["--exec", "x"] }),
+    );
     f.handler(f.w, { id: 4, method: "asc.v1.Bridge/Run", bytes });
     await f.wait();
     expect(calls.length).toBe(0);
@@ -76,15 +81,27 @@ describe("relay", () => {
 describe("confirm", () => {
   test("sanitises control and bidi characters and caps the target list", () => {
     expect(clean("a\nb\u202ec")).toBe("a?b?c");
-    const d = confirmDetail({ title: "t", targets: Array.from({ length: 12 }, (_, i) => `x${i}`), parsed: { kind: "rpc", method: "m" } });
+    const d = confirmDetail({
+      title: "t",
+      targets: Array.from({ length: 12 }, (_, i) => `x${i}`),
+      parsed: { kind: "rpc", method: "m" },
+    });
     expect(d.split("\n").length).toBe(11);
     expect(d.endsWith("- and 2 more")).toBe(true);
   });
   test("only the action button confirms", async () => {
-    const req: ConfirmRequest = { title: "Merge", targets: ["a"], parsed: { kind: "rpc", method: "m" } };
+    const req: ConfirmRequest = {
+      title: "Merge",
+      targets: ["a"],
+      parsed: { kind: "rpc", method: "m" },
+    };
     expect(await nativeConfirm(async () => "Continue")(req)).toBe(true);
     expect(await nativeConfirm(async () => undefined)(req)).toBe(false);
-    expect(await nativeConfirm(async () => { throw new Error("x"); })(req)).toBe(false);
+    expect(
+      await nativeConfirm(async () => {
+        throw new Error("x");
+      })(req),
+    ).toBe(false);
   });
 });
 

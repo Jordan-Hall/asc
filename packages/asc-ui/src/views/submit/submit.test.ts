@@ -19,7 +19,11 @@ import {
 } from "./model";
 
 const changes = [
-  { id: "aaaa", message: "Add thing\n\nLong words.", pull: { number: 7, title: "Add thing", body: "Long words.", draft: true } },
+  {
+    id: "aaaa",
+    message: "Add thing\n\nLong words.",
+    pull: { number: 7, title: "Add thing", body: "Long words.", draft: true },
+  },
   { id: "bbbb", message: "Second" },
 ];
 const base = () => initSubmit(changes, ["ann", "Bob", "carol"]);
@@ -40,7 +44,10 @@ describe("submit model", () => {
       verb: "submit",
       args: ["-s", "--publish", "--reviewer=ann", "--reviewer=Bob", "--auto-merge"],
     });
-    expect(submitRun(setStack(setMode(base(), "draft"), false), "aaaa").args).toEqual(["--draft", "aaaa"]);
+    expect(submitRun(setStack(setMode(base(), "draft"), false), "aaaa").args).toEqual([
+      "--draft",
+      "aaaa",
+    ]);
   });
 
   test("a draft cannot auto-merge", () => {
@@ -61,7 +68,8 @@ describe("submit model", () => {
   });
 
   test("option-like or odd reviewer names never reach argv", () => {
-    for (const n of ["--force", "-x", ".a", "a b", "a,b", "a=b", "", "x".repeat(41)]) expect(validReviewer(n)).toBe(false);
+    for (const n of ["--force", "-x", ".a", "a b", "a,b", "a=b", "", "x".repeat(41)])
+      expect(validReviewer(n)).toBe(false);
     const evil = { ...base(), candidates: ["--force"], reviewers: ["--force"] };
     expect(submitBlockedReason(evil)).toBe("Not a valid user name");
     expect(() => submitRun(evil)).toThrow();
@@ -79,7 +87,8 @@ describe("submit model", () => {
   });
 
   test("PR text is validated", () => {
-    const t = (title: string, body = "x") => submitBlockedReason(setText(base(), "aaaa", { title, body }));
+    const t = (title: string, body = "x") =>
+      submitBlockedReason(setText(base(), "aaaa", { title, body }));
     expect(t("  ")).toBe("A PR title cannot be empty");
     expect(t("a\nb")).toBe("A PR title is one line");
     expect(t("a".repeat(256))).toBe("A PR title is too long");
@@ -102,7 +111,9 @@ describe("forgejo adapter", () => {
   }
 
   test("assignees are read, de-duplicated and bounded to logins", async () => {
-    const { client, seen } = harness(() => Response.json([{ login: "ann" }, { login: "ann" }, {}, { login: "bob" }]));
+    const { client, seen } = harness(() =>
+      Response.json([{ login: "ann" }, { login: "ann" }, {}, { login: "bob" }]),
+    );
     expect(await loadAssignees(client, "o", "r")).toEqual(["ann", "bob"]);
     expect(seen[0]?.url).toBe("https://forge.example/api/v1/repos/o/r/assignees");
   });
@@ -132,7 +143,9 @@ describe("forgejo adapter", () => {
   test("server failures and bad numbers surface as errors", async () => {
     const { client } = harness(() => new Response("no", { status: 403 }));
     await expect(editPull(client, "o", "r", 7, { title: "T" })).rejects.toThrow("403");
-    await expect(editPull(client, "o", "r", 0, { title: "T" })).rejects.toThrow("Invalid PR number");
+    await expect(editPull(client, "o", "r", 0, { title: "T" })).rejects.toThrow(
+      "Invalid PR number",
+    );
     await expect(loadAssignees(client, "o", "r")).rejects.toThrow("403");
   });
 });

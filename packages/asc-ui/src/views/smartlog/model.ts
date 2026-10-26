@@ -109,9 +109,7 @@ export const REASON_FROZEN = "Frozen";
 export const REASON_LANDED = "Landed";
 
 const gate = (id: ActionId, label: string, reason: string | undefined): ActionState =>
-  reason === undefined
-    ? { id, label, enabled: true }
-    : { id, label, enabled: false, reason };
+  reason === undefined ? { id, label, enabled: true } : { id, label, enabled: false, reason };
 
 const isLanded = (c: StackChange): boolean => c.state === "landed" || c.state === "merged";
 
@@ -130,7 +128,9 @@ export function changeActions(
   else if (dirty) checkout = REASON_DIRTY;
   else if (extras?.worktree !== undefined) checkout = `Checked out in worktree ${extras.worktree}`;
   const unamend =
-    locked ?? notCurrent ?? ((extras?.version ?? 1) > 1 ? undefined : "No earlier version to restore");
+    locked ??
+    notCurrent ??
+    ((extras?.version ?? 1) > 1 ? undefined : "No earlier version to restore");
   const uncommit =
     locked ?? notCurrent ?? (c.empty ? "Nothing to uncommit: the change is empty" : undefined);
   return [
@@ -139,7 +139,9 @@ export function changeActions(
     gate("uncommit", "Uncommit", uncommit),
     gate("unamend", "Unamend", unamend),
     gate("abandon", "Abandon", locked),
-    hidden ? gate("unhide", "Unhide", undefined) : gate("hide", "Hide", landed ? REASON_LANDED : undefined),
+    hidden
+      ? gate("unhide", "Unhide", undefined)
+      : gate("hide", "Hide", landed ? REASON_LANDED : undefined),
   ];
 }
 

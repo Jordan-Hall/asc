@@ -52,7 +52,11 @@ function activate(node: HTMLElement, fn: () => void): void {
   });
 }
 
-export function mountDetails(container: HTMLElement, host: DetailsHost, initial: DetailsData): DetailsView {
+export function mountDetails(
+  container: HTMLElement,
+  host: DetailsHost,
+  initial: DetailsData,
+): DetailsView {
   const doc = container.ownerDocument;
   const root = el(doc, "div", "asc-details");
   root.dataset["testid"] = "details";
@@ -65,7 +69,9 @@ export function mountDetails(container: HTMLElement, host: DetailsHost, initial:
     if (body !== "") root.append(el(doc, "div", "asc-body", body, "body"));
 
     const meta = el(doc, "div", "asc-meta");
-    meta.append(el(doc, "span", "asc-author", `${data.author.name} <${data.author.email}>`, "author"));
+    meta.append(
+      el(doc, "span", "asc-author", `${data.author.name} <${data.author.email}>`, "author"),
+    );
     meta.append(el(doc, "span", "asc-date", date(data.author.time)));
     meta.append(el(doc, "span", "asc-id", shortId(data.id), "id"));
     if (isSigned(data.signature)) meta.append(el(doc, "span", "asc-badge", "signed", "signed"));
@@ -103,7 +109,13 @@ export function mountDetails(container: HTMLElement, host: DetailsHost, initial:
     }
 
     const t = totals(data.files);
-    const head = el(doc, "h3", "", `${t.files} ${t.files === 1 ? "file" : "files"} changed`, "files-head");
+    const head = el(
+      doc,
+      "h3",
+      "",
+      `${t.files} ${t.files === 1 ? "file" : "files"} changed`,
+      "files-head",
+    );
     if (t.known) head.textContent += `, +${t.added} -${t.removed}`;
     root.append(head);
     if (data.files.length > 0) {
@@ -118,20 +130,30 @@ export function mountDetails(container: HTMLElement, host: DetailsHost, initial:
       li.dataset["testid"] = `file-${f.path}`;
       const st = el(doc, "span", "asc-status", STATUS_LETTER[f.status]);
       st.dataset["status"] = f.status;
-      li.append(st, el(doc, "span", "asc-path", f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path));
+      li.append(
+        st,
+        el(doc, "span", "asc-path", f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path),
+      );
       if (f.binary === true) li.append(el(doc, "span", "asc-badge", "binary"));
-      else if (f.added !== undefined) li.append(el(doc, "span", "asc-count", `+${f.added} -${f.removed ?? 0}`));
+      else if (f.added !== undefined)
+        li.append(el(doc, "span", "asc-count", `+${f.added} -${f.removed ?? 0}`));
       activate(li, () => host.openDiff(f, data));
       list.append(li);
     }
     root.append(list);
-    if (data.truncated === true) root.append(el(doc, "div", "asc-note", "The file list is truncated", "truncated"));
+    if (data.truncated === true)
+      root.append(el(doc, "div", "asc-note", "The file list is truncated", "truncated"));
 
     if (data.versions.length > 0) {
       root.append(el(doc, "h3", "", "Versions"));
       const vl = el(doc, "ul", "asc-versions");
       for (const v of data.versions) {
-        const li = el(doc, "li", "asc-version", `v${v.v} ${shortId(v.rev)} ${v.actor} ${date(v.at)}`);
+        const li = el(
+          doc,
+          "li",
+          "asc-version",
+          `v${v.v} ${shortId(v.rev)} ${v.actor} ${date(v.at)}`,
+        );
         li.dataset["testid"] = `version-${v.v}`;
         activate(li, () => host.openRevision(v.rev));
         vl.append(li);

@@ -29,7 +29,15 @@ window.ascStartReview = (data, files, confirm) => {
   document.head.append(style);
   const host = document.createElement("div");
   document.body.append(host);
-  const calls: Calls = { selects: [], interdiffs: [], opened: [], confirms: [], approves: [], merges: [], notes: [] };
+  const calls: Calls = {
+    selects: [],
+    interdiffs: [],
+    opened: [],
+    confirms: [],
+    approves: [],
+    merges: [],
+    notes: [],
+  };
   const view = mountReview(
     host,
     {

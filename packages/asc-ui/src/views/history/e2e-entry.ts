@@ -18,7 +18,11 @@ interface Calls {
 declare global {
   interface Window {
     ascCalls: Calls;
-    ascHistoryStart(data: { file: string; entries: HistoryEntry[]; worktrees: WorktreeRow[] }): void;
+    ascHistoryStart(data: {
+      file: string;
+      entries: HistoryEntry[];
+      worktrees: WorktreeRow[];
+    }): void;
   }
 }
 

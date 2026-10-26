@@ -25,7 +25,8 @@ export interface ActionState {
 }
 
 export function actionState(row: WorktreeRow, action: WorktreeAction): ActionState {
-  if (action === "open") return row.current ? { enabled: false, reason: "Already open" } : { enabled: true };
+  if (action === "open")
+    return row.current ? { enabled: false, reason: "Already open" } : { enabled: true };
   if (row.main) return { enabled: false, reason: "The main worktree cannot be removed" };
   if (row.current) return { enabled: false, reason: "Current worktree" };
   if (row.locked !== "") return { enabled: false, reason: `Locked: ${row.locked}` };

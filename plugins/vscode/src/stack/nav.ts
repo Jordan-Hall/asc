@@ -70,8 +70,11 @@ export class StackNav {
   go(root: string, verb: NavVerb, steps?: number): Promise<CommandResult> {
     return this.r.serial(root, async () => {
       const stepped = verb === "up" || verb === "down";
-      if (steps !== undefined && (!stepped || !Number.isInteger(steps) || steps < 1 || steps > NAV_MAX_STEPS)) {
-        this.ui.warn("asc: the step count must be a whole number from 1 to 100.");
+      if (
+        steps !== undefined &&
+        (!stepped || !Number.isInteger(steps) || steps < 1 || steps > NAV_MAX_STEPS)
+      ) {
+        this.ui.warn("ASC: the step count must be a whole number from 1 to 100.");
         return { ok: false, reason: "invalid" };
       }
       if (!(await this.r.gate())) return { ok: false, reason: "disabled" };
@@ -82,7 +85,8 @@ export class StackNav {
       if (cands.length === 0) return this.r.outcome(verb, first);
       const to = await this.ui.pickCandidate(cands);
       // Only a change the verb itself offered can be passed back.
-      if (to === undefined || !cands.some((c) => c.change === to)) return { ok: false, reason: "cancelled" };
+      if (to === undefined || !cands.some((c) => c.change === to))
+        return { ok: false, reason: "cancelled" };
       return this.r.outcome(verb, await this.r.run(root, verb, [...base, `--to=${to}`]));
     });
   }
@@ -100,7 +104,9 @@ export function registerStackNav(
     ...ui,
     async pickCandidate(cands) {
       const items = cands.map((c) => ({ label: c.subject || c.change, description: c.change }));
-      const hit = await vscode.window.showQuickPick(items, { placeHolder: "This stack forks. Choose a branch." });
+      const hit = await vscode.window.showQuickPick(items, {
+        placeHolder: "This stack forks. Choose a branch.",
+      });
       return hit?.description;
     },
   });
@@ -108,7 +114,7 @@ export function registerStackNav(
   const pick = async (a: unknown): Promise<string | undefined> => {
     if (typeof a === "string" && roots.includes(a)) return a;
     if (roots.length === 1) return roots[0];
-    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+    return vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   };
   const verbs: [string, NavVerb][] = [
     ["asc.stackUp", "up"],

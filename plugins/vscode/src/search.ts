@@ -1,4 +1,4 @@
-// "asc: Search code" (SPEC 24.4.7): a quick pick that streams `CodeIntel.Search`, cancels the
+// "ASC: Search code" (SPEC 24.4.7): a quick pick that streams `CodeIntel.Search`, cancels the
 // previous request on each keystroke and stops at 200 hits, plus "Open in panel" for the asc-ui
 // search view. Without `search.v1` (every local-only workspace) exact search falls back to
 // `Repo.Grep`. Search never rebinds Ctrl+Shift+F. The logic is editor-free; `registerSearch` is
@@ -179,7 +179,10 @@ export function bridgeSearchApi(mgr: BridgeManager): SearchApi {
         mode: SearchMode.LITERAL,
         budget: { maxResults: MAX_HITS },
       };
-      for await (const r of callStream(mgr.node(), CodeIntel.method.search, req, { root, signal })) {
+      for await (const r of callStream(mgr.node(), CodeIntel.method.search, req, {
+        root,
+        signal,
+      })) {
         const out: SearchHit[] = [];
         for (const f of r.files) {
           for (const m of f.matches) out.push(toHit(root, f.path, m.line, m.cols[0] ?? 0, m.text));
@@ -219,7 +222,11 @@ export function registerSearch(
     const session = new SearchSession(api, roots);
     const qp = vscode.window.createQuickPick<HitItem>();
     qp.placeholder = "Search code (index-backed, no file hydration)";
-    const panelItem: HitItem = { label: "$(link-external) Open in panel", panel: true, alwaysShow: true };
+    const panelItem: HitItem = {
+      label: "$(link-external) Open in panel",
+      panel: true,
+      alwaysShow: true,
+    };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = (text: string) => {
       qp.busy = true;
@@ -227,7 +234,12 @@ export function registerSearch(
         onHits: (hits) => {
           qp.items = [
             panelItem,
-            ...hits.map((h) => ({ label: hitLabel(h), description: hitDescription(h), alwaysShow: true, hit: h })),
+            ...hits.map((h) => ({
+              label: hitLabel(h),
+              description: hitDescription(h),
+              alwaysShow: true,
+              hit: h,
+            })),
           ];
         },
         onDone: (r) => {

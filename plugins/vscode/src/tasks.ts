@@ -94,7 +94,10 @@ function toTask(vscode: typeof vscodeTypes, s: TaskSpec): vscodeTypes.Task {
     ),
   );
   task.detail = s.detail;
-  task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Dedicated };
+  task.presentationOptions = {
+    reveal: vscode.TaskRevealKind.Always,
+    panel: vscode.TaskPanelKind.Dedicated,
+  };
   return task;
 }
 
@@ -121,7 +124,11 @@ export function registerTasks(
     },
     async resolveTask(task) {
       const d = task.definition as Partial<AscTaskDefinition>;
-      if (typeof d.root !== "string" || typeof d.project !== "string" || typeof d.target !== "string") {
+      if (
+        typeof d.root !== "string" ||
+        typeof d.project !== "string" ||
+        typeof d.target !== "string"
+      ) {
         return undefined;
       }
       const spec = (await specsFor()).find(

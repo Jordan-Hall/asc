@@ -215,6 +215,6 @@ class AuthTest {
         assertTrue(ConfigureAgents.run("asc", "/w", { _, _ -> 1 }).contains("failed"))
         assertTrue(ConfigureAgents.run("asc", "/w", { _, _ -> error("x") }).contains("failed"))
         assertTrue(ConfigureAgents.run(null, "/w").contains("not found"))
-        assertTrue(ConfigureAgents.run("asc", null).contains("Open an asc workspace"))
+        assertTrue(ConfigureAgents.run("asc", null).contains("Open an ASC workspace"))
     }
 }

@@ -227,7 +227,11 @@ describe("asc serve features", () => {
       expect(rec.contexts["asc.feature.ci"]).toBe(true);
       expect(rec.treeViews).toEqual(expect.arrayContaining(["asc.inbox", "asc.actions"]));
       expect(rec.commands).toEqual(
-        expect.arrayContaining(["asc.inbox.refresh", "asc.review.showThreads", "asc.actions.refresh"]),
+        expect.arrayContaining([
+          "asc.inbox.refresh",
+          "asc.review.showThreads",
+          "asc.actions.refresh",
+        ]),
       );
     } finally {
       a.dispose();
@@ -251,7 +255,11 @@ describe("asc serve features", () => {
   test("a root without an asc server gets none of them even when the flags are advertised", async () => {
     const { a, rec } = await activateFake(SERVER_FEATURES, "git");
     try {
-      expect(Object.values(FEATURE_KEYS).map((k) => rec.contexts[k])).toEqual([false, false, false]);
+      expect(Object.values(FEATURE_KEYS).map((k) => rec.contexts[k])).toEqual([
+        false,
+        false,
+        false,
+      ]);
       expect(rec.commands.filter((c) => SERVER_COMMANDS.test(c))).toEqual([]);
       expect(rec.treeViews.filter((v) => SERVER_VIEWS.has(v))).toEqual([]);
     } finally {

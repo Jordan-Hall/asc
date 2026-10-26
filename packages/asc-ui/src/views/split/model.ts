@@ -116,8 +116,14 @@ function describe(header: string[], hunks: Hunk[], noEol: boolean, bad: boolean)
   const plus = rest.find((l) => l.startsWith("+++ "));
   const renamed = rest.find((l) => l.startsWith("rename to "));
   const path = renamed ? renamed.slice("rename to ".length) : (dm?.[2] ?? "");
-  const unsupported = (why: string): SplitFile => ({ path, granular: false, unsupported: why, hunks: [] });
-  if (!dm || path === "" || first.includes('"') || !safePath(path)) return unsupported("Unsupported path");
+  const unsupported = (why: string): SplitFile => ({
+    path,
+    granular: false,
+    unsupported: why,
+    hunks: [],
+  });
+  if (!dm || path === "" || first.includes('"') || !safePath(path))
+    return unsupported("Unsupported path");
   if (bad) return unsupported("Unparsable diff");
   const granular =
     plain &&
@@ -167,7 +173,13 @@ function withAssign(s: SplitState, set: ReadonlyArray<readonly [string, number]>
 }
 
 /** Move one changed line to `piece` (the last piece means "leave in the remainder"). */
-export function assignLine(s: SplitState, f: number, h: number, l: number, piece: number): SplitState {
+export function assignLine(
+  s: SplitState,
+  f: number,
+  h: number,
+  l: number,
+  piece: number,
+): SplitState {
   const line = s.files[f]?.hunks[h]?.lines[l];
   if (!line || !isChange(line) || !s.files[f]?.granular || piece < 0 || piece >= s.pieces) return s;
   return withAssign(s, [[lineKey(f, h, l), piece]]);
@@ -321,7 +333,8 @@ export function buildPatch(s: SplitState, k: number): string {
       }
       delta += lowNet;
     });
-    if (body !== "") out += `diff --git a/${file.path} b/${file.path}\n--- a/${file.path}\n+++ b/${file.path}\n${body}`;
+    if (body !== "")
+      out += `diff --git a/${file.path} b/${file.path}\n--- a/${file.path}\n+++ b/${file.path}\n${body}`;
   });
   return out;
 }
@@ -329,7 +342,8 @@ export function buildPatch(s: SplitState, k: number): string {
 function b64(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  for (let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(bin);
 }
 
@@ -341,7 +355,9 @@ export function toSpec(s: SplitState): SplitSpec {
   for (let k = 0; k < s.pieces - 1; k++) {
     const patch = buildPatch(s, k);
     if (patch.length > MAX_PATCH) throw new Error(`Piece ${k + 1} is too large`);
-    const whole = s.files.flatMap((f, i) => (!f.granular && pieceOfFile(s, i) === k ? [f.path] : []));
+    const whole = s.files.flatMap((f, i) =>
+      !f.granular && pieceOfFile(s, i) === k ? [f.path] : [],
+    );
     pieces.push({
       message: s.messages[k] ?? "",
       ...(patch !== "" ? { patch: b64(patch) } : {}),

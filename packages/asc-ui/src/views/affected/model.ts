@@ -12,7 +12,9 @@ export interface AffectedRow {
 }
 
 export function sortAffected(rows: readonly AffectedRow[]): AffectedRow[] {
-  return rows.toSorted((a, b) => Number(b.direct) - Number(a.direct) || a.name.localeCompare(b.name));
+  return rows.toSorted(
+    (a, b) => Number(b.direct) - Number(a.direct) || a.name.localeCompare(b.name),
+  );
 }
 
 export function filterAffected(rows: readonly AffectedRow[], query: string): AffectedRow[] {

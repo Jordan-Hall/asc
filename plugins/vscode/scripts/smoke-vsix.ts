@@ -145,7 +145,7 @@ async function download(editor: EditorKind, work: string): Promise<Install> {
   writeFileSync(archive, new Uint8Array(await res.arrayBuffer()));
   run(
     process.platform === "win32"
-      ? join(process.env.SystemRoot ?? "C:\Windows", "System32", "tar.exe")
+      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
       : "tar",
     ["-xf", archive, "-C", dest],
   );

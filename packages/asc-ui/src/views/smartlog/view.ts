@@ -57,10 +57,7 @@ const el = <K extends keyof HTMLElementTagNameMap>(
   return e;
 };
 
-const ACTION_VERB: Record<
-  Exclude<ActionId, "create" | "modify">,
-  (id: string) => VerbCall
-> = {
+const ACTION_VERB: Record<Exclude<ActionId, "create" | "modify">, (id: string) => VerbCall> = {
   checkout: (change) => ({ verb: "switch", change }),
   restack: (change) => ({ verb: "restack", change }),
   uncommit: () => ({ verb: "uncommit" }),
@@ -167,7 +164,8 @@ export function mountSmartlog(
       showPrediction(node, predictionText("pending"), false);
       void host.predictMove(drag, onto, abort.signal).then(
         (p) => {
-          if (!abort.signal.aborted) showPrediction(node, predictionText(p), p.ok && p.conflicts > 0);
+          if (!abort.signal.aborted)
+            showPrediction(node, predictionText(p), p.ok && p.conflicts > 0);
         },
         (e: unknown) => {
           if (!abort.signal.aborted) {

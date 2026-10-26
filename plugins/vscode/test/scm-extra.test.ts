@@ -44,7 +44,13 @@ function fake(over: Partial<StatusApi & RemoteApi> = {}) {
 }
 
 function fakeUi(confirm = true) {
-  const log = { out: [] as string[], info: [] as string[], warn: [] as string[], err: [] as string[], confirms: 0 };
+  const log = {
+    out: [] as string[],
+    info: [] as string[],
+    warn: [] as string[],
+    err: [] as string[],
+    confirms: 0,
+  };
   const ui: CommandsUi = {
     output: (l) => void log.out.push(l),
     info: (m) => void log.info.push(m),
@@ -86,7 +92,11 @@ describe("scm-extra: status bar", () => {
   });
   test("snapFromStacks picks the stack with the current change", () => {
     const s = snapFromStacks([
-      { trunk: "master", behind: 9, changes: [{ short: "a", current: false, needsRestack: false }] },
+      {
+        trunk: "master",
+        behind: 9,
+        changes: [{ short: "a", current: false, needsRestack: false }],
+      },
       {
         trunk: "master",
         behind: 4,
@@ -96,7 +106,14 @@ describe("scm-extra: status bar", () => {
         ],
       },
     ]);
-    expect(s).toEqual({ short: "c", position: 2, total: 2, behind: 4, trunk: "master", needsRestack: true });
+    expect(s).toEqual({
+      short: "c",
+      position: 2,
+      total: 2,
+      behind: 4,
+      trunk: "master",
+      needsRestack: true,
+    });
     expect(snapFromStacks([])).toBeNull();
   });
 });
@@ -128,7 +145,12 @@ describe("scm-extra: uncommit, unamend, abandon", () => {
     expect(await c.abandon("/w", ["abc", "def"])).toEqual({ ok: true });
     expect(f.runs[0]).toEqual({ verb: "abandon", args: ["abc", "def"] });
     expect(await c.abandon("/w", ["--force"])).toEqual({ ok: false, reason: "invalid" });
-    expect(await c.abandon("/w", Array.from({ length: 65 }, (_, i) => `r${i}`))).toEqual({
+    expect(
+      await c.abandon(
+        "/w",
+        Array.from({ length: 65 }, (_, i) => `r${i}`),
+      ),
+    ).toEqual({
       ok: false,
       reason: "invalid",
     });
@@ -137,7 +159,10 @@ describe("scm-extra: uncommit, unamend, abandon", () => {
   test("an old asc is told to update and nothing runs", async () => {
     const f = fake({ canMutate: async () => false });
     const u = fakeUi();
-    expect(await new StackEditCommands(f.api, u.ui).uncommit("/w")).toEqual({ ok: false, reason: "disabled" });
+    expect(await new StackEditCommands(f.api, u.ui).uncommit("/w")).toEqual({
+      ok: false,
+      reason: "disabled",
+    });
     expect(u.log.warn[0]).toContain("Update asc");
     expect(f.runs).toHaveLength(0);
   });
@@ -164,7 +189,9 @@ describe("scm-extra: stash", () => {
   });
   test("push refuses an oversized message", async () => {
     const f = fake();
-    expect(await new StashCommands(f.api, fakeUi().ui).push("/w", { message: "x".repeat(1025) })).toEqual({
+    expect(
+      await new StashCommands(f.api, fakeUi().ui).push("/w", { message: "x".repeat(1025) }),
+    ).toEqual({
       ok: false,
       reason: "invalid",
     });
@@ -181,7 +208,9 @@ describe("scm-extra: stash", () => {
   });
   test("list parses the JSON forms and tolerates junk", async () => {
     const enc = new TextEncoder();
-    expect(parseStashList(enc.encode('{"stashes":[{"index":0,"message":"a"},{"message":"b"}]}'))).toEqual([
+    expect(
+      parseStashList(enc.encode('{"stashes":[{"index":0,"message":"a"},{"message":"b"}]}')),
+    ).toEqual([
       { index: 0, message: "a" },
       { index: 1, message: "b" },
     ]);
@@ -189,7 +218,9 @@ describe("scm-extra: stash", () => {
     expect(parseStashList(null)).toEqual([]);
     const f = fake();
     f.outcomes.push({ exit: 0, stderr: [], opResult: enc.encode('[{"index":2,"message":"x"}]') });
-    expect(await new StashCommands(f.api, fakeUi().ui).list("/w")).toEqual([{ index: 2, message: "x" }]);
+    expect(await new StashCommands(f.api, fakeUi().ui).list("/w")).toEqual([
+      { index: 2, message: "x" },
+    ]);
   });
 });
 
@@ -234,7 +265,9 @@ describe("scm-extra: fetch, pull, push", () => {
     await c.fetch("/w");
     await c.pull("/w", "default");
     await c.push("/w");
-    expect(f.runs.flatMap((r) => r.args).filter((a) => a.includes("://") || a.includes("@"))).toEqual([]);
+    expect(
+      f.runs.flatMap((r) => r.args).filter((a) => a.includes("://") || a.includes("@")),
+    ).toEqual([]);
   });
 });
 

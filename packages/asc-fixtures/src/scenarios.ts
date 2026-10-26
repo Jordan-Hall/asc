@@ -115,7 +115,7 @@ export function rev(asc: Asc, name: string, cwd?: string): string {
 
 // ---------------------------------------------------------------------------------------------
 
-function lcg(seed: number): () => number {
+function seededRandom(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
     s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
@@ -131,7 +131,7 @@ function fileBody(path: string, version: number): string {
 
 /** A linear history that adds, edits and (with `renames`) renames files; fully set by `n`. */
 export function linearHistory(n: number, opts: { files: number; renames: boolean }): PatchCommit[] {
-  const rand = lcg(24_072);
+  const rand = seededRandom(24_072);
   const names: string[] = [];
   const versions = new Map<string, number>();
   const out: PatchCommit[] = [];
@@ -439,6 +439,11 @@ export function buildStacksInto(opts: BuildOptions, name: ScenarioName): Fixture
     cwd: root,
   });
   const draft: Draft = { workspaces: { main: root }, marks: {} };
-  stacks(asc, root, { batch: opts.batch ?? 250, sizes: { ...DEFAULT_SIZES, ...opts.sizes } }, draft);
+  stacks(
+    asc,
+    root,
+    { batch: opts.batch ?? 250, sizes: { ...DEFAULT_SIZES, ...opts.sizes } },
+    draft,
+  );
   return makeFixture(name, root, asc, draft);
 }

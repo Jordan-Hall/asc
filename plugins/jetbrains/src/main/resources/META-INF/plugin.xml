@@ -2,7 +2,7 @@
   <id>asc.asc</id>
   <name>ASC</name>
   <vendor>ASC</vendor>
-  <description>Version control for asc workspaces: stacks, review and history, through the asc bridge.</description>
+  <description>Version control for ASC workspaces: stacks, review and history, through the asc bridge.</description>
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.modules.vcs</depends>
   <extensions defaultExtensionNs="com.intellij">

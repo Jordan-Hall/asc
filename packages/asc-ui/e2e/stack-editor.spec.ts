@@ -10,10 +10,14 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-stack-editor-")), "stack-editor.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
@@ -40,7 +44,10 @@ async function start(page: Page, fail?: string): Promise<void> {
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundle, type: "module" });
   await page.waitForFunction(() => typeof window.ascStartEditor === "function");
-  await page.evaluate(([s, f]) => window.ascStartEditor(s as never, f as string | undefined), [stack, fail] as const);
+  await page.evaluate(([s, f]) => window.ascStartEditor(s as never, f as string | undefined), [
+    stack,
+    fail,
+  ] as const);
 }
 
 const row = (page: Page, id: string) => page.getByTestId(`se-row-${id}`);
@@ -76,7 +83,12 @@ test("dragging a row onto another reorders; frozen rows do not drag", async ({ p
   await row(page, "dddd").dragTo(row(page, "aaaa"));
   await apply(page).click();
   const todos = await page.evaluate(() => window.ascEditor.todos);
-  expect(todos[0]?.items.map((i: { change: string }) => i.change)).toEqual(["dddd", "aaaa", "bbbb", "cccc"]);
+  expect(todos[0]?.items.map((i: { change: string }) => i.change)).toEqual([
+    "dddd",
+    "aaaa",
+    "bbbb",
+    "cccc",
+  ]);
 });
 
 test("a failed apply shows the error and keeps the edits", async ({ page }) => {

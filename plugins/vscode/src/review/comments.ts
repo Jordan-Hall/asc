@@ -72,7 +72,12 @@ export interface NewComment {
 
 /** What the bridge offers; tests supply a fake. */
 export interface ReviewApi {
-  listThreads(c: ChangeRef, pageToken: string, limit: number, signal?: AbortSignal): Promise<ThreadPage>;
+  listThreads(
+    c: ChangeRef,
+    pageToken: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<ThreadPage>;
   addComment(c: ChangeRef, n: NewComment): Promise<void>;
   resolveThread(c: ChangeRef, threadId: number, resolved: boolean): Promise<void>;
   requestReview(c: ChangeRef, add: string[], remove: string[]): Promise<void>;
@@ -490,18 +495,20 @@ export function registerReviewComments(
   };
   const fail = (what: string) => (e: unknown) => {
     log(`asc review ${what}: ${String(e)}`);
-    void vscode.window.showErrorMessage(`asc: could not ${what}.`);
+    void vscode.window.showErrorMessage(`ASC: could not ${what}.`);
   };
   const pickRoot = async (): Promise<string | undefined> =>
     roots.length === 1
       ? roots[0]
-      : vscode.window.showQuickPick([...roots], { placeHolder: "Choose an asc root" });
+      : vscode.window.showQuickPick([...roots], { placeHolder: "Choose an ASC root" });
   const openCurrent = async (): Promise<ChangeReview | undefined> => {
     const root = await pickRoot();
     if (!root) return undefined;
     const ref = await host.current(root);
     if (!ref) {
-      void vscode.window.showInformationMessage("asc: the working copy is not on a change with an asc server.");
+      void vscode.window.showInformationMessage(
+        "ASC: the working copy is not on a change with an ASC server.",
+      );
       return undefined;
     }
     const r = reviews.open(ref);
@@ -520,7 +527,7 @@ export function registerReviewComments(
         const r = await openCurrent();
         if (r) {
           void vscode.window.showInformationMessage(
-            "asc: review threads show in the diff editors of this change's base and head.",
+            "ASC: review threads show in the diff editors of this change's base and head.",
           );
         }
       } catch (e) {
@@ -540,30 +547,33 @@ export function registerReviewComments(
         });
         if (!text) return;
         await r.requestReview(text.split(",").map((h) => h.trim()));
-        void vscode.window.showInformationMessage("asc: review requested.");
+        void vscode.window.showInformationMessage("ASC: review requested.");
       } catch (e) {
         fail("request a review")(e);
       }
     }),
-    vscode.commands.registerCommand("asc.review.createComment", async (reply: vscodeTypes.CommentReply) => {
-      const uri = reply.thread.uri;
-      const r = reviews.forUri(uri.path, uri.query);
-      if (!r) return;
-      const existing = ids.get(reply.thread) ?? 0;
-      try {
-        const err = await r.add(
-          uri.path,
-          uri.query,
-          reply.thread.range?.start.line ?? 0,
-          reply.text,
-          existing,
-        );
-        if (err !== null) void vscode.window.showWarningMessage(err);
-        else if (existing === 0) reply.thread.dispose(); // the draft; the re-read drew the real thread
-      } catch (e) {
-        fail("post the comment")(e);
-      }
-    }),
+    vscode.commands.registerCommand(
+      "asc.review.createComment",
+      async (reply: vscodeTypes.CommentReply) => {
+        const uri = reply.thread.uri;
+        const r = reviews.forUri(uri.path, uri.query);
+        if (!r) return;
+        const existing = ids.get(reply.thread) ?? 0;
+        try {
+          const err = await r.add(
+            uri.path,
+            uri.query,
+            reply.thread.range?.start.line ?? 0,
+            reply.text,
+            existing,
+          );
+          if (err !== null) void vscode.window.showWarningMessage(err);
+          else if (existing === 0) reply.thread.dispose(); // the draft; the re-read drew the real thread
+        } catch (e) {
+          fail("post the comment")(e);
+        }
+      },
+    ),
     ...(["resolve", "reopen"] as const).map((verb) =>
       vscode.commands.registerCommand(
         `asc.review.${verb}Thread`,
@@ -571,7 +581,9 @@ export function registerReviewComments(
           const id = thread ? ids.get(thread) : undefined;
           if (!thread || id === undefined) return;
           try {
-            await reviews.forUri(thread.uri.path, thread.uri.query)?.resolve(id, verb === "resolve");
+            await reviews
+              .forUri(thread.uri.path, thread.uri.query)
+              ?.resolve(id, verb === "resolve");
           } catch (e) {
             fail(`${verb} the thread`)(e);
           }

@@ -14,7 +14,14 @@ test.beforeAll(() => {
     // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
     execFileSync(
       "bun",
-      ["build", `"${join(views, name, "e2e-entry.ts")}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+      [
+        "build",
+        `"${join(views, name, "e2e-entry.ts")}"`,
+        "--target=browser",
+        "--format=esm",
+        "--outfile",
+        `"${out}"`,
+      ],
       { stdio: "pipe", shell: true },
     );
     bundles[name] = readFileSync(out, "utf8");
@@ -50,7 +57,10 @@ async function startSplit(page: Page, d = diff, truncated = false, fail?: string
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundles.split ?? "", type: "module" });
   await page.waitForFunction(() => typeof window.ascStartSplit === "function");
-  await page.evaluate(([a, b, c]) => window.ascStartSplit(a as string, b as boolean, c as string | undefined), [d, truncated, fail] as const);
+  await page.evaluate(
+    ([a, b, c]) => window.ascStartSplit(a as string, b as boolean, c as string | undefined),
+    [d, truncated, fail] as const,
+  );
 }
 
 const apply = (page: Page) => page.locator('[data-action="apply"]');
@@ -101,7 +111,11 @@ test("split: a failing run shows the error and keeps the dialog", async ({ page 
 });
 
 const changes = [
-  { id: "aaaa", message: "Add thing\n\nLong words.", pull: { number: 7, title: "Add thing", body: "Long words.", draft: true } },
+  {
+    id: "aaaa",
+    message: "Add thing\n\nLong words.",
+    pull: { number: 7, title: "Add thing", body: "Long words.", draft: true },
+  },
   { id: "bbbb", message: "Second change" },
 ];
 
@@ -110,7 +124,10 @@ async function startSubmit(page: Page, fail?: string): Promise<void> {
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundles.submit ?? "", type: "module" });
   await page.waitForFunction(() => typeof window.ascStartSubmit === "function");
-  await page.evaluate(([c, a, f]) => window.ascStartSubmit(c as never, a as string[], f as string | undefined), [changes, ["ann", "bob"], fail]);
+  await page.evaluate(
+    ([c, a, f]) => window.ascStartSubmit(c as never, a as string[], f as string | undefined),
+    [changes, ["ann", "bob"], fail],
+  );
 }
 
 test("submit: options become one run and edited PR text is patched", async ({ page }) => {
@@ -138,7 +155,10 @@ test("submit: a draft cannot auto-merge and says why", async ({ page }) => {
   await page.getByTestId("su-mode").selectOption("draft");
   await page.getByTestId("su-auto").check();
   await expect(page.locator('[data-action="submit"]')).toBeDisabled();
-  await expect(page.locator('[data-action="submit"]')).toHaveAttribute("title", "A draft cannot auto-merge");
+  await expect(page.locator('[data-action="submit"]')).toHaveAttribute(
+    "title",
+    "A draft cannot auto-merge",
+  );
 });
 
 test("submit: a failed run reports the error and edits no PR", async ({ page }) => {

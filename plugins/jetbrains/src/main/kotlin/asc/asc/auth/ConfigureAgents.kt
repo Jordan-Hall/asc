@@ -12,8 +12,8 @@ object ConfigureAgents {
 
     /** Returns a user-facing message; never throws. */
     fun run(ascPath: String?, root: String?, exec: (List<String>, File) -> Int = ::runProcess): String {
-        if (ascPath == null) return "asc was not found; set the asc path."
-        if (root == null) return "Open an asc workspace to configure agents."
+        if (ascPath == null) return "asc was not found; set the path to asc."
+        if (root == null) return "Open an ASC workspace to configure agents."
         val ok = try {
             exec(listOf(ascPath) + args(), File(root)) == 0
         } catch (_: Exception) {

@@ -66,7 +66,9 @@ export function mountWorktrees(
         b.dataset["action"] = action;
         b.textContent = action === "open" ? "Open" : "Remove";
         if (st.enabled) {
-          b.addEventListener("click", () => (action === "open" ? host.open(row.path) : host.remove(row.path)));
+          b.addEventListener("click", () =>
+            action === "open" ? host.open(row.path) : host.remove(row.path),
+          );
         } else {
           b.setAttribute("aria-disabled", "true");
           b.title = st.reason ?? "";

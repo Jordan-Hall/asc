@@ -10,7 +10,9 @@ test.beforeAll(() => {
 const row = (id: number) => `grow-${hexId(id).slice(0, 8)}`;
 const selectedIndex = (page: Page) => page.evaluate(() => window.ascGraph.view.selectedIndex);
 
-test("the first page renders virtual rows and a lane canvas, not 200 DOM rows", async ({ page }) => {
+test("the first page renders virtual rows and a lane canvas, not 200 DOM rows", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 1000 });
   await expect(page.getByTestId(row(0))).toContainText("commit 0");
   await expect(page.getByTestId(row(0))).toContainText("main");
@@ -31,7 +33,9 @@ test("scrolling loads further pages and keeps at most 5,000 rows in memory", asy
   expect(await page.evaluate(() => window.ascGraph.view.heldRows)).toBeLessThanOrEqual(5000);
 });
 
-test("keyboard: arrows move, left goes to the parent, right to the child, r and F jump", async ({ page }) => {
+test("keyboard: arrows move, left goes to the parent, right to the child, r and F jump", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 1000 });
   await expect(page.getByTestId(row(0))).toBeVisible();
   await page.getByTestId("graph-scroll").focus();
@@ -52,7 +56,9 @@ test("keyboard: arrows move, left goes to the parent, right to the child, r and 
   expect(await page.evaluate(() => window.ascGraph.calls.opened.length)).toBe(1);
 });
 
-test("slash focuses the search and Enter jumps to the next match among loaded rows", async ({ page }) => {
+test("slash focuses the search and Enter jumps to the next match among loaded rows", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 1000 });
   await expect(page.getByTestId(row(0))).toBeVisible();
   await page.getByTestId("graph-scroll").focus();
@@ -63,7 +69,9 @@ test("slash focuses the search and Enter jumps to the next match among loaded ro
   await expect.poll(() => selectedIndex(page)).toBe(42);
 });
 
-test("changing the preset and ref filters refetches from the first page with the query", async ({ page }) => {
+test("changing the preset and ref filters refetches from the first page with the query", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 500 });
   await expect(page.getByTestId(row(0))).toBeVisible();
   await page.getByLabel("Include refs").fill("main, feat");
@@ -71,7 +79,13 @@ test("changing the preset and ref filters refetches from the first page with the
   await page.getByLabel("Preset").selectOption("stack");
   await page.evaluate(() => window.ascGraph.view.idle());
   const q = await page.evaluate(() => window.ascGraph.calls.queries.at(-1));
-  expect(q).toMatchObject({ preset: "stack", include: ["main", "feat"], exclude: [], pageToken: "", limit: 200 });
+  expect(q).toMatchObject({
+    preset: "stack",
+    include: ["main", "feat"],
+    exclude: [],
+    pageToken: "",
+    limit: 200,
+  });
 });
 
 test("the context menu runs cherry-pick and revert with the full id; a merge disables them with a reason", async ({
@@ -102,7 +116,11 @@ test("a click on the minimap jumps to that part of the history", async ({ page }
   if (!box) throw new Error("minimap not laid out");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await expect
-    .poll(() => page.evaluate(() => document.querySelector<HTMLElement>('[data-testid="graph-scroll"]')?.scrollTop ?? 0))
+    .poll(() =>
+      page.evaluate(
+        () => document.querySelector<HTMLElement>('[data-testid="graph-scroll"]')?.scrollTop ?? 0,
+      ),
+    )
     .toBeGreaterThan(4000 * 22);
 });
 

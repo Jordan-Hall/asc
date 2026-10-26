@@ -16,7 +16,9 @@ test("first 200 rows paint within 150 ms of the data", async ({ page }) => {
   expect(await page.evaluate(() => window.ascGraph.paintMs)).toBeLessThanOrEqual(150);
 });
 
-test("scrolling 100,000 rows holds at least 55 fps with at most 5,000 rows in memory", async ({ page }) => {
+test("scrolling 100,000 rows holds at least 55 fps with at most 5,000 rows in memory", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 100_000 });
   await page.waitForFunction(() => window.ascGraph.paintMs >= 0);
   const result = await page.evaluate(
@@ -37,7 +39,12 @@ test("scrolling 100,000 rows holds at least 55 fps with at most 5,000 rows in me
           frames++;
           maxHeld = Math.max(maxHeld, window.ascGraph.view.heldRows);
           if (now - t0 < durationMs) requestAnimationFrame(tick);
-          else resolve({ fps: (frames * 1000) / (now - t0), held: window.ascGraph.view.heldRows, max: maxHeld });
+          else
+            resolve({
+              fps: (frames * 1000) / (now - t0),
+              held: window.ascGraph.view.heldRows,
+              max: maxHeld,
+            });
         };
         requestAnimationFrame(tick);
       }),
@@ -47,14 +54,18 @@ test("scrolling 100,000 rows holds at least 55 fps with at most 5,000 rows in me
   expect(result.fps).toBeGreaterThanOrEqual(55);
 });
 
-test("a jump near the last row walks the page chain and respects the memory bound", async ({ page }) => {
+test("a jump near the last row walks the page chain and respects the memory bound", async ({
+  page,
+}) => {
   await startGraph(page, bundle, { total: 100_000 });
   await page.waitForFunction(() => window.ascGraph.paintMs >= 0);
   await page.evaluate(() => {
     const s = document.querySelector<HTMLElement>('[data-testid="graph-scroll"]');
     if (s) s.scrollTop = 99_990 * 22;
   });
-  await expect(page.locator('[data-index="99990"]')).toContainText("commit 99990", { timeout: 20_000 });
+  await expect(page.locator('[data-index="99990"]')).toContainText("commit 99990", {
+    timeout: 20_000,
+  });
   await page.evaluate(() => window.ascGraph.view.idle());
   expect(await page.evaluate(() => window.ascGraph.view.heldRows)).toBeLessThanOrEqual(5000);
 });

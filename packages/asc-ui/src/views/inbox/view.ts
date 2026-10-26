@@ -44,7 +44,10 @@ export function mountInbox(container: HTMLElement, host: InboxHost): InboxView {
     return b;
   };
 
-  async function act(id: number, body: { pinned?: boolean; snoozed_until?: string }): Promise<void> {
+  async function act(
+    id: number,
+    body: { pinned?: boolean; snoozed_until?: string },
+  ): Promise<void> {
     try {
       await host.update(id, body);
     } catch (err) {
@@ -94,10 +97,16 @@ export function mountInbox(container: HTMLElement, host: InboxHost): InboxView {
           b.dataset.badge = "snoozed";
           li.append(b);
         }
-        li.append(button(it.pinned ? "Unpin" : "Pin", "pin", () => void act(it.id, { pinned: !it.pinned })));
+        li.append(
+          button(it.pinned ? "Unpin" : "Pin", "pin", () => void act(it.id, { pinned: !it.pinned })),
+        );
         if (it.snoozed) {
           li.append(
-            button("Unsnooze", "unsnooze", () => void act(it.id, { snoozed_until: new Date(0).toISOString() })),
+            button(
+              "Unsnooze",
+              "unsnooze",
+              () => void act(it.id, { snoozed_until: new Date(0).toISOString() }),
+            ),
           );
         } else {
           const sel = el("select", "asc-action");

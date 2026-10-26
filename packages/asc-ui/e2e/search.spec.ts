@@ -10,20 +10,35 @@ let bundle = "";
 test.beforeAll(() => {
   const out = join(mkdtempSync(join(tmpdir(), "asc-search-")), "search.js");
   // shell: bun is a .cmd shim on Windows; the arguments are fixed paths, never user input.
-  execFileSync("bun", ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`], {
-    stdio: "pipe",
-    shell: true,
-  });
+  execFileSync(
+    "bun",
+    ["build", `"${entry}"`, "--target=browser", "--format=esm", "--outfile", `"${out}"`],
+    {
+      stdio: "pipe",
+      shell: true,
+    },
+  );
   bundle = readFileSync(out, "utf8");
 });
 
 const items = [
   { path: "src/a.ts", line: 3, text: "const needle = 1;", cols: [6], length: 6, redacted: false },
-  { path: "src/<b>.ts", line: 9, text: "<img src=x onerror=alert(1)> needle", cols: [29], length: 6, redacted: false },
+  {
+    path: "src/<b>.ts",
+    line: 9,
+    text: "<img src=x onerror=alert(1)> needle",
+    cols: [29],
+    length: 6,
+    redacted: false,
+  },
   { path: "secret.env", line: 1, text: "TOKEN=abc", cols: [], length: 0, redacted: true },
 ];
 
-async function start(page: Page, searchV1: boolean, coverage = [{ index: "trigram", coverage: 0.5, lagSeconds: 12 }]) {
+async function start(
+  page: Page,
+  searchV1: boolean,
+  coverage = [{ index: "trigram", coverage: 0.5, lagSeconds: 12 }],
+) {
   await page.goto("/");
   await expect(page.locator("#root")).toHaveText(/asc-ui ready/);
   await page.addScriptTag({ content: bundle, type: "module" });
@@ -65,19 +80,29 @@ test("without search.v1 only exact is enabled and the others state why", async (
   await expect(page.locator('[data-testid="scope"] option[value="stack"]')).toBeDisabled();
 });
 
-test("the scope picker passes its value and submit is blocked with a reason when empty", async ({ page }) => {
+test("the scope picker passes its value and submit is blocked with a reason when empty", async ({
+  page,
+}) => {
   await start(page, true);
   await expect(page.getByTestId("search-go")).toHaveAttribute("title", "Enter a search term");
   await page.getByTestId("search-input").fill("needle");
   await page.getByTestId("scope").selectOption("change");
-  await expect(page.getByTestId("search-go")).toHaveAttribute("title", "Enter a revision, change or stack id");
+  await expect(page.getByTestId("search-go")).toHaveAttribute(
+    "title",
+    "Enter a revision, change or stack id",
+  );
   await page.getByTestId("scope-value").fill("abc123");
   await page.locator('[data-mode="regex"]').click();
   await page.getByTestId("search-go").click();
   await expect(page.getByTestId("results").locator("li")).toHaveCount(3);
   const searches = await page.evaluate(() => window.ascSearch.calls.searches);
   expect(searches).toEqual([
-    { mode: "regex", text: "needle", scope: { kind: "change", value: "abc123" }, caseSensitive: false },
+    {
+      mode: "regex",
+      text: "needle",
+      scope: { kind: "change", value: "abc123" },
+      caseSensitive: false,
+    },
   ]);
 });
 

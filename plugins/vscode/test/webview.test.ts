@@ -25,7 +25,7 @@ describe("webview csp", () => {
     expect(() => buildCsp("")).toThrow();
   });
   test("page escapes attributes and has no inline script", () => {
-    const h = pageHtml({ cspSource: "s", scriptUri: "u\"><x", view: "graph", root: "/a\"b" });
+    const h = pageHtml({ cspSource: "s", scriptUri: 'u"><x', view: "graph", root: '/a"b' });
     expect(h).not.toContain('"><x');
     expect(h).not.toMatch(/<script>/);
     expect(h).toContain("&quot;");
@@ -38,13 +38,30 @@ describe("webview csp", () => {
 
 describe("avatar", () => {
   test("public address classification", () => {
-    for (const ip of ["127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1", "169.254.1.1", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "0.0.0.0", "not-an-ip"])
+    for (const ip of [
+      "127.0.0.1",
+      "10.0.0.1",
+      "192.168.1.1",
+      "172.16.0.1",
+      "169.254.1.1",
+      "::1",
+      "fe80::1",
+      "fd00::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
+      "0.0.0.0",
+      "not-an-ip",
+    ])
       expect(isPublicIp(ip)).toBe(false);
-    for (const ip of ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]) expect(isPublicIp(ip)).toBe(true);
+    for (const ip of ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"])
+      expect(isPublicIp(ip)).toBe(true);
   });
   test("returns a data URI and caches", async () => {
     let n = 0;
-    const f = new AvatarFetcher({ resolve: pub, fetch: (async () => (n++, png())) as unknown as typeof fetch });
+    const f = new AvatarFetcher({
+      resolve: pub,
+      fetch: (async () => (n++, png())) as unknown as typeof fetch,
+    });
     const a = await f.get("https://a.example/x.png");
     expect(a).toBe("data:image/png;base64,iVBORw==");
     await f.get("https://a.example/x.png");
@@ -55,18 +72,37 @@ describe("avatar", () => {
       new AvatarFetcher({ resolve, fetch: (async () => res()) as unknown as typeof fetch });
     expect(await mk(png).get("http://a.example/x.png")).toBeNull();
     expect(await mk(png, async () => ["10.0.0.5"]).get("https://a.example/x.png")).toBeNull();
-    expect(await mk(png, async () => ["93.184.216.34", "127.0.0.1"]).get("https://a.example/x.png")).toBeNull();
+    expect(
+      await mk(png, async () => ["93.184.216.34", "127.0.0.1"]).get("https://a.example/x.png"),
+    ).toBeNull();
     expect(await mk(png).get("https://127.0.0.1/x.png")).toBeNull();
     expect(await mk(png).get("https://u:p@a.example/x.png")).toBeNull();
-    expect(await mk(() => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } })).get("https://a.example/x.svg")).toBeNull();
-    expect(await mk(() => new Response(new Uint8Array(256 * 1024 + 1), { headers: { "content-type": "image/png" } })).get("https://a.example/big.png")).toBeNull();
+    expect(
+      await mk(() => new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } })).get(
+        "https://a.example/x.svg",
+      ),
+    ).toBeNull();
+    expect(
+      await mk(
+        () =>
+          new Response(new Uint8Array(256 * 1024 + 1), {
+            headers: { "content-type": "image/png" },
+          }),
+      ).get("https://a.example/big.png"),
+    ).toBeNull();
   });
   test("redirects are re-checked and capped at 3", async () => {
     const hosts: string[] = [];
-    const redirectTo = (loc: string) => new Response(null, { status: 302, headers: { location: loc } });
+    const redirectTo = (loc: string) =>
+      new Response(null, { status: 302, headers: { location: loc } });
     const f = new AvatarFetcher({
-      resolve: async (h) => (hosts.push(h), h === "evil.example" ? ["192.168.0.1"] : ["93.184.216.34"]),
-      fetch: (async (u: URL) => (u.hostname === "a.example" ? redirectTo("https://evil.example/p") : png())) as unknown as typeof fetch,
+      resolve: async (h) => (
+        hosts.push(h), h === "evil.example" ? ["192.168.0.1"] : ["93.184.216.34"]
+      ),
+      fetch: (async (u: URL) =>
+        u.hostname === "a.example"
+          ? redirectTo("https://evil.example/p")
+          : png()) as unknown as typeof fetch,
     });
     expect(await f.get("https://a.example/x")).toBeNull();
     expect(hosts).toEqual(["a.example", "evil.example"]);
@@ -80,7 +116,10 @@ describe("avatar", () => {
     expect(hops).toBe(4);
   });
   test("LRU evicts past 200 entries", async () => {
-    const f = new AvatarFetcher({ resolve: pub, fetch: (async () => png()) as unknown as typeof fetch });
+    const f = new AvatarFetcher({
+      resolve: pub,
+      fetch: (async () => png()) as unknown as typeof fetch,
+    });
     for (let i = 0; i < 205; i++) await f.get(`https://a.example/${i}.png`);
     expect(f.size).toBe(200);
   });
@@ -152,9 +191,17 @@ describe("webview host", () => {
   });
   test("avatar requests are served; anything else is dropped unless the relay takes it", async () => {
     const { api, st, webview } = fakeApi();
-    const avatars = new AvatarFetcher({ resolve: pub, fetch: (async () => png()) as unknown as typeof fetch });
+    const avatars = new AvatarFetcher({
+      resolve: pub,
+      fetch: (async () => png()) as unknown as typeof fetch,
+    });
     const seen: unknown[] = [];
-    registerWebviews({ api, roots: ["/r"], avatars, onRequest: (_w, m) => (seen.push(m), (m as { ok?: boolean }).ok === true) });
+    registerWebviews({
+      api,
+      roots: ["/r"],
+      avatars,
+      onRequest: (_w, m) => (seen.push(m), (m as { ok?: boolean }).ok === true),
+    });
     st.view?.(webview());
     const deliver = st.listeners[0] as (m: unknown) => void;
     deliver({ id: 1, avatar: "https://a.example/x.png" });
@@ -169,7 +216,10 @@ describe("webview host", () => {
     const { api, st, webview } = fakeApi();
     registerWebviews({ api, roots: ["/r"] });
     st.view?.(webview());
-    (st.listeners[0] as (m: unknown) => void)({ id: 1, hostApi: { provider: "p", method: "DELETE", path: "/x" } });
+    (st.listeners[0] as (m: unknown) => void)({
+      id: 1,
+      hostApi: { provider: "p", method: "DELETE", path: "/x" },
+    });
     await new Promise((r) => setTimeout(r, 10));
     expect(st.logs).toHaveLength(1);
     expect(st.posted).toEqual([]);

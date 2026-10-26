@@ -28,6 +28,7 @@
       "asc.v1.Repo/LineHistory",
       "asc.v1.Repo/Compare",
       "asc.v1.Repo/RepoConfig",
+      "asc.v1.Repo/GetPolicy",
       "asc.v1.Repo/ListRefs",
       "asc.v1.Repo/Resolve",
       "asc.v1.Repo/MergeBase",

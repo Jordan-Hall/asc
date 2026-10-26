@@ -4,7 +4,14 @@
 // `onRequest` (the P28b relay) and is dropped and logged when nothing takes it (deny by default).
 import { AvatarFetcher } from "./avatar";
 import { pageHtml } from "./csp";
-import { PANEL_KINDS, type PanelKind, type PanelState, panelTitle, SMARTLOG_VIEW, viewType } from "./panels";
+import {
+  PANEL_KINDS,
+  type PanelKind,
+  type PanelState,
+  panelTitle,
+  SMARTLOG_VIEW,
+  viewType,
+} from "./panels";
 
 export interface Disposable {
   dispose(): void;
@@ -104,7 +111,9 @@ export function registerWebviews(o: WebviewHostOptions): WebviewHost {
     });
   };
 
-  subs.push(o.api.registerViewProvider(SMARTLOG_VIEW, (w) => void mount(w, "smartlog", defaultRoot)));
+  subs.push(
+    o.api.registerViewProvider(SMARTLOG_VIEW, (w) => void mount(w, "smartlog", defaultRoot)),
+  );
 
   for (const kind of PANEL_KINDS) {
     subs.push(

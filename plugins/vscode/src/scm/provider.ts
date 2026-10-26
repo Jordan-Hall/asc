@@ -478,7 +478,7 @@ export function registerScm(
         if (p === null) continue;
         const parent = await api.stackParent(root).catch(() => null);
         if (parent === null) {
-          void vscode.window.showInformationMessage("asc: this change has no stack parent.");
+          void vscode.window.showInformationMessage("ASC: this change has no stack parent.");
           return;
         }
         await vscode.commands.executeCommand(
@@ -505,7 +505,7 @@ function ascFileSystem(
 ): vscodeTypes.FileSystemProvider {
   const emitter = new vscode.EventEmitter<vscodeTypes.FileChangeEvent[]>();
   const denied = (): never => {
-    throw vscode.FileSystemError.NoPermissions("asc: files are read-only");
+    throw vscode.FileSystemError.NoPermissions("ASC: files are read-only");
   };
   // stat is followed by readFile for the same uri; one entry avoids reading twice.
   let last: { key: string; data: Uint8Array } | null = null;

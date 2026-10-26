@@ -22,11 +22,20 @@ import {
 const TOTAL = 100_000;
 const page = (p: number, withHead = false): GraphPage => {
   const rows: GraphRow[] = [];
-  for (let i = p * PAGE_SIZE; i < Math.min(TOTAL, (p + 1) * PAGE_SIZE); i++) rows.push(genRow(i, TOTAL));
+  for (let i = p * PAGE_SIZE; i < Math.min(TOTAL, (p + 1) * PAGE_SIZE); i++)
+    rows.push(genRow(i, TOTAL));
   return {
     rows,
     ...((p + 1) * PAGE_SIZE < TOTAL ? { next: `t${p + 1}` } : {}),
-    ...(withHead ? { total: TOTAL, refMarkers: [{ name: "main", row: 0 }, { name: "tag-50", row: 50 }] } : {}),
+    ...(withHead
+      ? {
+          total: TOTAL,
+          refMarkers: [
+            { name: "main", row: 0 },
+            { name: "tag-50", row: 50 },
+          ],
+        }
+      : {}),
   };
 };
 
@@ -82,7 +91,10 @@ describe("PageStore", () => {
     s.add(1, page(1));
     expect(s.spliceHead(page(0, true))).toBe("spliced");
     expect(s.hasPage(1)).toBe(true);
-    const moved: GraphPage = { ...page(0, true), rows: [genRow(900_000, TOTAL), ...page(0).rows.slice(0, PAGE_SIZE - 1)] };
+    const moved: GraphPage = {
+      ...page(0, true),
+      rows: [genRow(900_000, TOTAL), ...page(0).rows.slice(0, PAGE_SIZE - 1)],
+    };
     expect(s.spliceHead(moved)).toBe("reset");
     expect(s.hasPage(1)).toBe(false);
     expect(s.hasPage(0)).toBe(true);

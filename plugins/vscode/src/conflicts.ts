@@ -328,7 +328,7 @@ export function registerConflicts(
   };
   const fail = (what: string, e: unknown) => {
     log(`asc ${what}: ${String(e)}`);
-    void vscode.window.showErrorMessage(`asc ${what} failed. See the asc output.`);
+    void vscode.window.showErrorMessage(`ASC ${what} failed. See the ASC output.`);
   };
   const refreshAll = () => {
     for (const m of models.values()) m.refresh().catch((e) => log(`asc conflicts: ${String(e)}`));
@@ -385,11 +385,10 @@ export function registerConflicts(
       const t = pick(arg);
       if (!t || t.path === null) return;
       try {
-        const doc = await vscode.workspace.openTextDocument(
-          vscode.Uri.file(`${t.root}/${t.path}`),
-        );
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(`${t.root}/${t.path}`));
         const ok = await t.model.markResolved(t.path, doc.getText());
-        if (!ok) void vscode.window.showWarningMessage("asc: conflict markers remain in this file.");
+        if (!ok)
+          void vscode.window.showWarningMessage("ASC: conflict markers remain in this file.");
       } catch (e) {
         fail("mark resolved", e);
       }

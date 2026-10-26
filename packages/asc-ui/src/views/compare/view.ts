@@ -1,7 +1,14 @@
 // Compare DOM view: pick two sides (revision, change or stack), show ahead and behind commits
 // and the changed files. Text is set only through `textContent`.
 import { type DetailFile, shortId, sortFiles, STATUS_LETTER } from "../details/model";
-import { type CompareData, type CompareKind, type CompareSide, isEmptySide, sideLabel, summary } from "./model";
+import {
+  type CompareData,
+  type CompareKind,
+  type CompareSide,
+  isEmptySide,
+  sideLabel,
+  summary,
+} from "./model";
 
 export interface CompareHost {
   /** Run the compare for two sides; the caller fetches and calls `update`. */
@@ -97,13 +104,23 @@ export function mountCompare(
   const out = el(doc, "div", "asc-compare-out");
   root.append(picker, status, out);
 
-  const commits = (title: string, entries: CompareData["aheadEntries"], more: boolean, which: "ahead" | "behind") => {
-    out.append(el(doc, "h3", "", `${title} (${entries.length}${more ? "+" : ""})`, `${which}-head`));
+  const commits = (
+    title: string,
+    entries: CompareData["aheadEntries"],
+    more: boolean,
+    which: "ahead" | "behind",
+  ) => {
+    out.append(
+      el(doc, "h3", "", `${title} (${entries.length}${more ? "+" : ""})`, `${which}-head`),
+    );
     const ul = el(doc, "ul", "asc-commits");
     for (const e of entries) {
       const li = el(doc, "li", "asc-commit");
       li.dataset["testid"] = `${which}-${e.id}`;
-      li.append(el(doc, "span", "asc-id", shortId(e.id)), el(doc, "span", "asc-subject", e.subject));
+      li.append(
+        el(doc, "span", "asc-id", shortId(e.id)),
+        el(doc, "span", "asc-subject", e.subject),
+      );
       li.append(el(doc, "span", "asc-count", e.author));
       activate(li, () => host.openRevision(e.id));
       ul.append(li);
@@ -123,7 +140,15 @@ export function mountCompare(
     status.dataset["state"] = "done";
     commits("Ahead", data.aheadEntries, data.aheadMore, "ahead");
     commits("Behind", data.behindEntries, data.behindMore, "behind");
-    out.append(el(doc, "h3", "", `${data.files.length} ${data.files.length === 1 ? "file" : "files"} changed`, "files-head"));
+    out.append(
+      el(
+        doc,
+        "h3",
+        "",
+        `${data.files.length} ${data.files.length === 1 ? "file" : "files"} changed`,
+        "files-head",
+      ),
+    );
     if (data.files.length > 0) {
       const all = el(doc, "button", "asc-action", "Open all changes");
       all.dataset["action"] = "open-all";
@@ -136,7 +161,10 @@ export function mountCompare(
       li.dataset["testid"] = `file-${f.path}`;
       const st = el(doc, "span", "asc-status", STATUS_LETTER[f.status]);
       st.dataset["status"] = f.status;
-      li.append(st, el(doc, "span", "asc-path", f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path));
+      li.append(
+        st,
+        el(doc, "span", "asc-path", f.oldPath !== undefined ? `${f.oldPath} → ${f.path}` : f.path),
+      );
       activate(li, () => host.openDiff(f, data));
       ul.append(li);
     }
