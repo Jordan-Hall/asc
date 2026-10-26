@@ -143,6 +143,110 @@ fn open_under(
     Ok((Arc::new(store), root))
 }
 
+/// Static credentials of a user-supplied S3 target. `Debug` prints nothing of them.
+#[derive(Clone)]
+pub struct TargetCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    /// For temporary credentials (STS).
+    pub session_token: Option<String>,
+}
+
+impl fmt::Debug for TargetCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TargetCredentials(<redacted>)")
+    }
+}
+
+/// How the bucket is addressed on the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Addressing {
+    /// Virtual-host style for AWS endpoints, path style for any other.
+    Auto,
+    /// `https://endpoint/bucket/key`.
+    Path,
+    /// `https://bucket.endpoint/key`.
+    VirtualHost,
+}
+
+/// An S3-compatible bucket a user owns (BYOS). Everything is explicit: the environment
+/// (`AWS_*`), the instance metadata service and any default credential chain are never consulted,
+/// so the operator's own credentials cannot reach a user's endpoint.
+#[derive(Clone, Debug)]
+pub struct TargetConfig {
+    /// `https://host[:port]`, already checked by the caller's network guard.
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    /// Key prefix inside the bucket, `""` or `a/b` (no leading or trailing slash).
+    pub prefix: String,
+    pub addressing: Addressing,
+    pub credentials: TargetCredentials,
+    /// Plain http to the endpoint. Only for the operator's loopback opt-in.
+    pub allow_http: bool,
+}
+
+/// Whether requests for `cfg` address the bucket as a subdomain of the endpoint.
+pub fn uses_virtual_host(cfg: &TargetConfig) -> bool {
+    match cfg.addressing {
+        Addressing::Path => false,
+        Addressing::VirtualHost => true,
+        Addressing::Auto => url::Url::parse(&cfg.endpoint)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.ends_with(".amazonaws.com")))
+            .unwrap_or(false),
+    }
+}
+
+/// The URL the requests of `cfg` are sent to: the endpoint itself for path-style addressing, the
+/// endpoint with the bucket as a subdomain for virtual-host style. This is the host a network
+/// guard must resolve and pin.
+pub fn effective_endpoint(cfg: &TargetConfig) -> Result<String> {
+    if !uses_virtual_host(cfg) {
+        return Ok(cfg.endpoint.clone());
+    }
+    let mut u = url::Url::parse(&cfg.endpoint).map_err(|e| Error::Url(e.to_string()))?;
+    let host = u
+        .host_str()
+        .ok_or_else(|| Error::Url("endpoint has no host".into()))?
+        .to_owned();
+    u.set_host(Some(&format!("{}.{host}", cfg.bucket)))
+        .map_err(|e| Error::Url(e.to_string()))?;
+    Ok(u.as_str().trim_end_matches('/').to_owned())
+}
+
+/// Builds the store and key root of a [`TargetConfig`] over the caller's HTTP transport.
+///
+/// `connector` is the transport that connects only to addresses the caller vetted (the network
+/// guard's pinned connector, for [`effective_endpoint`]); this function never lets the store
+/// build a client of its own for a user-supplied endpoint.
+pub fn open_target(
+    cfg: &TargetConfig,
+    connector: impl object_store::client::HttpConnector,
+) -> Result<(Arc<dyn ObjectStore>, Path)> {
+    let mut builder = AmazonS3Builder::new()
+        .with_bucket_name(&cfg.bucket)
+        .with_region(&cfg.region)
+        .with_endpoint(effective_endpoint(cfg)?)
+        .with_allow_http(cfg.allow_http)
+        .with_access_key_id(&cfg.credentials.access_key_id)
+        .with_secret_access_key(&cfg.credentials.secret_access_key)
+        .with_http_connector(connector)
+        .with_retry(object_store::RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        })
+        .with_virtual_hosted_style_request(uses_virtual_host(cfg));
+    if let Some(t) = &cfg.credentials.session_token {
+        builder = builder.with_token(t);
+    }
+    let store = builder.build()?;
+    Ok((
+        Arc::new(Resilient::new(store)),
+        Path::from(cfg.prefix.trim_matches('/')),
+    ))
+}
+
 /// Whether the HTTP client may speak plain http to an `endpoint`: false for https, true for
 /// loopback http under the opt-in, an error for anything else. The error names
 /// `scheme://host:port` only.
@@ -770,5 +874,57 @@ mod tests {
     fn bucket_from_url_dispatches_s3() {
         asc_core::transport_policy::set_config_allow_loopback_http(true);
         assert!(BucketObjects::from_url("s3://bkt/p?endpoint=http://127.0.0.1:1").is_ok());
+    }
+
+    fn target(endpoint: &str, addressing: Addressing) -> TargetConfig {
+        TargetConfig {
+            endpoint: endpoint.into(),
+            region: "garage".into(),
+            bucket: "my-bucket".into(),
+            prefix: "/team/a/".into(),
+            addressing,
+            credentials: TargetCredentials {
+                access_key_id: "AKIA-PLANTED".into(),
+                secret_access_key: "SECRET-PLANTED".into(),
+                session_token: Some("TOKEN-PLANTED".into()),
+            },
+            allow_http: false,
+        }
+    }
+
+    #[test]
+    fn target_addressing_picks_the_host_the_requests_go_to() {
+        let path = target("https://s3.example.com:9000", Addressing::Path);
+        assert!(!uses_virtual_host(&path));
+        assert_eq!(effective_endpoint(&path).unwrap(), "https://s3.example.com:9000");
+        let vh = target("https://s3.example.com:9000", Addressing::VirtualHost);
+        assert!(uses_virtual_host(&vh));
+        assert_eq!(effective_endpoint(&vh).unwrap(), "https://my-bucket.s3.example.com:9000");
+        // Auto: virtual host for AWS, path style for anything else.
+        assert!(uses_virtual_host(&target("https://s3.eu-west-1.amazonaws.com", Addressing::Auto)));
+        assert!(!uses_virtual_host(&target("https://garage.example.com", Addressing::Auto)));
+        assert_eq!(
+            effective_endpoint(&target("https://s3.eu-west-1.amazonaws.com", Addressing::Auto)).unwrap(),
+            "https://my-bucket.s3.eu-west-1.amazonaws.com"
+        );
+        assert!(effective_endpoint(&target("not a url", Addressing::VirtualHost)).is_err());
+    }
+
+    #[test]
+    fn open_target_uses_only_what_it_is_given() {
+        let cfg = target("https://s3.example.com", Addressing::Path);
+        let (store, root) = open_target(&cfg, object_store::client::ReqwestConnector::default()).unwrap();
+        // The prefix loses its slashes; the store never prints the key pair.
+        assert_eq!(root.as_ref(), "team/a");
+        let shown = format!("{store} {store:?} {cfg:?} {:?}", cfg.credentials);
+        for secret in ["AKIA-PLANTED", "SECRET-PLANTED", "TOKEN-PLANTED"] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
+        let (_, root) = open_target(
+            &TargetConfig { prefix: String::new(), ..cfg },
+            object_store::client::ReqwestConnector::default(),
+        )
+        .unwrap();
+        assert!(root.as_ref().is_empty());
     }
 }
