@@ -70,11 +70,12 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--into",
         "-n",
         "--no-verify",
+        "--json",
     ],
     placeholders: &[],
 }];
 
-super::verb!(MODIFY, "modify");
+super::verb!(MODIFY, "modify", json: super::json_op::Done::IfLogged);
 
 fn code_of(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))

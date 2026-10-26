@@ -62,11 +62,11 @@ pub struct Args {
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
     cmd: "reword",
-    flags: &["-m", "--message", "-e", "--edit", "-n", "--no-verify"],
+    flags: &["-m", "--message", "-e", "--edit", "-n", "--no-verify", "--json"],
     placeholders: &[],
 }];
 
-super::verb!(REWORD, "reword");
+super::verb!(REWORD, "reword", json: super::json_op::Done::IfLogged);
 
 // ---------------------------------------------------------------- shared
 

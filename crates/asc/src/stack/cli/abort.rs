@@ -17,9 +17,9 @@ use crate::stack::opstate;
 #[command(name = "abort", disable_help_flag = true, disable_version_flag = true)]
 pub struct Args {}
 
-pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "abort", flags: &[], placeholders: &[] }];
+pub const NATIVE: &[NativeSpec] = &[NativeSpec { cmd: "abort", flags: &["--json"], placeholders: &[] }];
 
-super::verb!(ABORT, "abort");
+super::verb!(ABORT, "abort", json: super::json_op::Done::Always);
 
 pub async fn run(ctx: &Ctx, _a: Args) -> Result<ExitCode> {
     let ws = ctx.ws()?;
