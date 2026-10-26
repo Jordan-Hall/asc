@@ -26,7 +26,13 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
 uuid = { workspace = true }
+tokio = { workspace = true, features = ["process", "time", "io-util", "rt", "macros", "sync"] }
+tokio-util = { workspace = true }
+getrandom = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+# Kills the process group of a command that ends, times out or is cancelled (sandbox.rs).
+rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true }

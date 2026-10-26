@@ -8,5 +8,6 @@ pub mod checkout;
 pub mod env;
 pub mod insights;
 pub mod rules;
+pub mod sandbox;
 pub mod stack_base;
 pub mod warm;
