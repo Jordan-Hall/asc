@@ -6,6 +6,7 @@ pub mod cache;
 pub mod changed;
 pub mod checkout;
 pub mod env;
+pub mod insights;
 pub mod rules;
 pub mod stack_base;
 pub mod warm;
