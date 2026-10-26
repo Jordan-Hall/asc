@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { cidText, opBytes } from "./helpers/op";
 import type { CommandsApi, RunOutcome } from "../src/scm/commands";
 import { StackActions } from "../src/stack/actions";
 import {
   type Candidate,
+  MAX_FORKS,
   parseCandidates,
   StackNav,
   validChange,
@@ -47,11 +49,12 @@ function ui(opts: { confirm?: boolean; pick?: string } = {}) {
   return { u, log };
 }
 
-const fork = (cands: unknown[]): RunOutcome => ({
+const fork = (cands: { n: number; subject: string }[]): RunOutcome => ({
   exit: 2,
   stderr: [],
-  opResult: new TextEncoder().encode(JSON.stringify({ status: "ambiguous", candidates: cands })),
+  opResult: opBytes({ status: "ambiguous", candidates: cands }),
 });
+const done: RunOutcome = { exit: 0, stderr: [], opResult: null };
 
 describe("stack: navigation", () => {
   test("up, down, top and bottom run their verbs", async () => {
@@ -65,38 +68,71 @@ describe("stack: navigation", () => {
   test("a step count is validated and passed", async () => {
     const f = fake();
     const n = new StackNav(f.api, ui().u);
-    expect(await n.go("/w", "up", 3)).toEqual({ ok: true });
-    expect(f.runs[0]).toEqual({ verb: "up", args: ["3"] });
+    expect(await n.go("/w", "down", 3)).toEqual({ ok: true });
+    expect(f.runs[0]).toEqual({ verb: "down", args: ["3"] });
     for (const bad of [0, 101, 1.5, -1, Number.NaN]) {
       expect(await n.go("/w", "down", bad)).toEqual({ ok: false, reason: "invalid" });
     }
     expect(await n.go("/w", "top", 2)).toEqual({ ok: false, reason: "invalid" });
     expect(f.runs).toHaveLength(1);
   });
-  test("a fork shows the quick pick and runs again with the chosen change", async () => {
+  test("a fork shows the quick pick and moves to the chosen change", async () => {
     const f = fake();
     f.outcomes.push(
       fork([
-        { change: "aaaa", subject: "one" },
-        { change: "bbbb", subject: "two" },
+        { n: 1, subject: "one" },
+        { n: 2, subject: "two" },
       ]),
     );
-    const x = ui({ pick: "bbbb" });
+    const x = ui({ pick: cidText(2) });
     expect(await new StackNav(f.api, x.u).go("/w", "up")).toEqual({ ok: true });
     expect(x.log.picks).toBe(1);
     expect(f.runs).toEqual([
       { verb: "up", args: [] },
-      { verb: "up", args: ["--to=bbbb"] },
+      { verb: "switch", args: ["--detach", cidText(2)] },
     ]);
   });
+  test("top goes on from the chosen child until it reaches the top", async () => {
+    const f = fake();
+    f.outcomes.push(fork([{ n: 1, subject: "one" }]), done, done);
+    const x = ui({ pick: cidText(1) });
+    expect(await new StackNav(f.api, x.u).go("/w", "top")).toEqual({ ok: true });
+    expect(f.runs.map((r) => r.verb)).toEqual(["top", "switch", "top"]);
+  });
+  test("up N walks one step at a time and stops when nothing is left", async () => {
+    const f = fake();
+    f.outcomes.push(done, { exit: 0, stderr: [], opResult: opBytes({ status: "nothing" }) });
+    expect(await new StackNav(f.api, ui().u).go("/w", "up", 5)).toEqual({ ok: true, nothing: true });
+    expect(f.runs).toEqual([
+      { verb: "up", args: [] },
+      { verb: "up", args: [] },
+    ]);
+  });
+  test("down passes the step count in one run", async () => {
+    const f = fake();
+    expect(await new StackNav(f.api, ui().u).go("/w", "down", 4)).toEqual({ ok: true });
+    expect(f.runs).toEqual([{ verb: "down", args: ["4"] }]);
+  });
+  test("a stack that forks forever is cut off", async () => {
+    const f = fake();
+    for (let i = 0; i < 40; i++) f.outcomes.push(fork([{ n: 1, subject: "one" }]), done);
+    const x = ui({ pick: cidText(1) });
+    const r = await new StackNav(f.api, x.u).go("/w", "top");
+    expect(r).toEqual({ ok: false, reason: "ambiguous" });
+    expect(x.log.picks).toBeLessThanOrEqual(MAX_FORKS + 1);
+  });
+  test("a failed switch is reported and stops the walk", async () => {
+    const f = fake();
+    f.outcomes.push(fork([{ n: 1, subject: "one" }]), { exit: 1, stderr: ["local changes"], opResult: null });
+    const r = await new StackNav(f.api, ui({ pick: cidText(1) }).u).go("/w", "up");
+    expect(r.ok).toBe(false);
+    expect(f.runs.map((x) => x.verb)).toEqual(["up", "switch"]);
+  });
   test("a dismissed pick, or a change the verb did not offer, runs nothing more", async () => {
-    for (const pick of [undefined, "--evil", "cccc"]) {
+    for (const pick of [undefined, "--evil", cidText(9)]) {
       const f = fake();
-      f.outcomes.push(fork([{ change: "aaaa", subject: "one" }]));
-      const r = await new StackNav(f.api, ui(pick === undefined ? {} : { pick }).u).go(
-        "/w",
-        "down",
-      );
+      f.outcomes.push(fork([{ n: 1, subject: "one" }]));
+      const r = await new StackNav(f.api, ui(pick === undefined ? {} : { pick }).u).go("/w", "up");
       expect(r).toEqual({ ok: false, reason: "cancelled" });
       expect(f.runs).toHaveLength(1);
     }
@@ -111,19 +147,9 @@ describe("stack: navigation", () => {
     });
     expect(x.log.picks).toBe(0);
   });
-  test("candidates with flag-like or blank changes are dropped", () => {
-    const bytes = new TextEncoder().encode(
-      JSON.stringify({
-        candidates: [
-          { change: "--to=x" },
-          { change: "" },
-          { change: "a b" },
-          { change: "ok1", subject: 5 },
-          7,
-        ],
-      }),
-    );
-    expect(parseCandidates(bytes)).toEqual([{ change: "ok1", subject: "" }]);
+  test("candidates keep only well-formed change ids", () => {
+    const got = parseCandidates(opBytes({ status: "ambiguous", candidates: [{ n: 1, subject: "fix" }] }));
+    expect(got).toEqual([{ change: cidText(1), subject: "fix" }]);
     expect(parseCandidates(new TextEncoder().encode("{"))).toEqual([]);
     expect(parseCandidates(null)).toEqual([]);
     expect(validChange("-x")).toBe(false);
