@@ -342,7 +342,11 @@ fn sl_cloud_reports_a_server_without_a_cloud_before_printing_anything() {
         assert!(!out.status.success(), "{args:?} must fail loudly");
         let err = text(&out.stderr);
         assert!(err.contains("no commit cloud"), "{args:?}: {err}");
-        assert!(text(&out.stdout).is_empty(), "{args:?}: {}", text(&out.stdout));
+        assert!(
+            text(&out.stdout).is_empty(),
+            "{args:?}: {}",
+            text(&out.stdout)
+        );
     }
 }
 
@@ -359,5 +363,8 @@ fn sl_user_needs_cloud_and_plain_sl_json_has_no_cloud_key() {
     let v: serde_json::Value = serde_json::from_str(text(&out.stdout).trim()).unwrap();
     assert!(v.get("cloud").is_none(), "{v}");
     assert!(v["stacks"].is_array(), "{v}");
-    assert!(server.calls().is_empty(), "plain sl never contacts the server");
+    assert!(
+        server.calls().is_empty(),
+        "plain sl never contacts the server"
+    );
 }

@@ -387,8 +387,12 @@ fn sl_and_op_log_are_refused_before_a_child_starts() {
 fn create_modify_reword_and_stack_rename_end_with_an_op_result() {
     let sb = Sandbox::new();
     let a = stacked(&sb);
-    std::fs::write(a.join("b.txt"), "bb
-").unwrap();
+    std::fs::write(
+        a.join("b.txt"),
+        "bb
+",
+    )
+    .unwrap();
     ok(&sb, &a, &["add", "b.txt"]);
     let mut b = Bridge::start(&sb, &a);
     // `-m=` keeps the value one word; `stack rename` takes the new name after the flags.
@@ -405,7 +409,10 @@ fn create_modify_reword_and_stack_rename_end_with_an_op_result() {
         assert_eq!(exit_of(&events), Some(0), "{verb}: {events:?}");
         let r = op_result_of(&events);
         assert_eq!(r["status"], "ok", "{verb}: {r}");
-        assert!(r["op"].as_str().is_some_and(|o| !o.is_empty()), "{verb}: {r}");
+        assert!(
+            r["op"].as_str().is_some_and(|o| !o.is_empty()),
+            "{verb}: {r}"
+        );
     }
     b.close();
 }
@@ -419,6 +426,9 @@ fn abort_with_nothing_to_abort_ends_with_its_exit_code_and_no_result() {
     let (events, code, msg) = b.finish(1);
     assert_eq!(code, OK, "{msg}");
     assert_ne!(exit_of(&events), Some(0), "{events:?}");
-    assert!(!events.iter().any(|e| matches!(e, Event::OpResult(_))), "{events:?}");
+    assert!(
+        !events.iter().any(|e| matches!(e, Event::OpResult(_))),
+        "{events:?}"
+    );
     b.close();
 }
