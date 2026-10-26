@@ -39,11 +39,12 @@ fn re(pattern: &str) -> Regex {
 }
 
 static ANSI: LazyLock<Regex> = LazyLock::new(|| re(r"\x1b\[[0-9;?]*[ -/]*[@-~]"));
-static UUID: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-});
+static UUID: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"));
 static TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
-    re(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b")
+    re(
+        r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b",
+    )
 });
 static ENDPOINT: LazyLock<Regex> = LazyLock::new(|| {
     re(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b|\b(?:localhost|\[[0-9a-fA-F:]+\]):\d{1,5}\b")
@@ -52,8 +53,7 @@ static WIN_PATH: LazyLock<Regex> =
     LazyLock::new(|| re(r#"\b[A-Za-z]:\\(?:[^\\/:*?"<>|\s]+\\)*[^\\/:*?"<>|\s]*"#));
 static UNIX_PATH: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?:^|[\s'\x22(\[=])(/(?:[\w.@+~-]+/)+[\w.@+~-]*)"));
-static HEX: LazyLock<Regex> =
-    LazyLock::new(|| re(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{8,}\b"));
+static HEX: LazyLock<Regex> = LazyLock::new(|| re(r"\b0x[0-9a-fA-F]+\b|\b[0-9a-fA-F]{8,}\b"));
 static DURATION: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b\d+(?:\.\d+)?\s?(?:ns|us|µs|ms|s|sec|secs|seconds|m|min|h)\b"));
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| re(r"\d+(?:\.\d+)?"));
@@ -99,9 +99,7 @@ fn cut(s: &str, max: usize) -> &str {
 fn is_absolute(path: &str) -> bool {
     path.starts_with('/')
         || path.starts_with('\\')
-        || (path.len() > 2
-            && path.as_bytes()[0].is_ascii_alphabetic()
-            && &path[1..3] == ":\\")
+        || (path.len() > 2 && path.as_bytes()[0].is_ascii_alphabetic() && &path[1..3] == ":\\")
         || (path.len() > 2 && path.as_bytes()[0].is_ascii_alphabetic() && &path[1..3] == ":/")
 }
 
@@ -113,11 +111,7 @@ pub fn normalise_path(path: &str) -> String {
         .filter(|s| !s.is_empty() && *s != ".")
         .collect();
     if !is_absolute(path) {
-        let rel: Vec<&str> = segments
-            .iter()
-            .copied()
-            .filter(|s| *s != "..")
-            .collect();
+        let rel: Vec<&str> = segments.iter().copied().filter(|s| *s != "..").collect();
         return rel.join("/");
     }
     // A workspace-level directory (`crates`, `packages`, ...) wins, outermost first. Else the
@@ -235,10 +229,10 @@ fn strip_header(line: &str) -> Option<String> {
 /// Normalises a failure message.
 pub fn normalise(message: &str) -> Normalised {
     let message = cut(message, MAX_MESSAGE);
-    let plain = ANSI.replace_all(&message.replace("\r\n", "\n"), "").into_owned();
-    let location = find_location(&plain)
-        .map(|(l, _)| l)
-        .unwrap_or_default();
+    let plain = ANSI
+        .replace_all(&message.replace("\r\n", "\n"), "")
+        .into_owned();
+    let location = find_location(&plain).map(|(l, _)| l).unwrap_or_default();
     let mut lines: Vec<String> = Vec::new();
     for raw in plain.lines() {
         if is_noise(raw) {
@@ -341,8 +335,12 @@ mod tests {
 
     #[test]
     fn a_rust_panic_keeps_its_file_but_not_its_line() {
-        let a = n("thread 'tests::adds' panicked at crates/asc-core/src/sum.rs:42:9:\nassertion `left == right` failed\n  left: 3\n right: 4\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace");
-        let b = n("thread 'tests::adds' panicked at crates/asc-core/src/sum.rs:57:9:\nassertion `left == right` failed\n  left: 5\n right: 6\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace");
+        let a = n(
+            "thread 'tests::adds' panicked at crates/asc-core/src/sum.rs:42:9:\nassertion `left == right` failed\n  left: 3\n right: 4\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+        );
+        let b = n(
+            "thread 'tests::adds' panicked at crates/asc-core/src/sum.rs:57:9:\nassertion `left == right` failed\n  left: 5\n right: 6\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+        );
         assert_eq!(a, b);
         assert_eq!(a.location, "crates/asc-core/src/sum.rs");
         assert_eq!(a.title, "assertion `left == right` failed");
@@ -354,15 +352,20 @@ mod tests {
 
     #[test]
     fn an_absolute_checkout_root_does_not_split_a_group() {
-        let a = n("thread 'x' panicked at /home/runner/work/asc/asc/crates/asc-core/src/sum.rs:42:9:\nboom");
-        let b = n("thread 'x' panicked at D:\\a\\asc\\asc\\crates\\asc-core\\src\\sum.rs:7:1:\nboom");
+        let a = n(
+            "thread 'x' panicked at /home/runner/work/asc/asc/crates/asc-core/src/sum.rs:42:9:\nboom",
+        );
+        let b =
+            n("thread 'x' panicked at D:\\a\\asc\\asc\\crates\\asc-core\\src\\sum.rs:7:1:\nboom");
         assert_eq!(a.location, "crates/asc-core/src/sum.rs");
         assert_eq!(a, b);
     }
 
     #[test]
     fn the_old_rust_panic_format_is_read() {
-        let a = n("thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 5', src/lib.rs:10:5");
+        let a = n(
+            "thread 'main' panicked at 'index out of bounds: the len is 3 but the index is 5', src/lib.rs:10:5",
+        );
         assert_eq!(a.location, "src/lib.rs");
         assert_eq!(
             a.title,
@@ -375,14 +378,23 @@ mod tests {
         let go = n("--- FAIL: TestSum (0.00s)\n    sum_test.go:31: got 3, want 4");
         assert_eq!(go.location, "sum_test.go");
         assert_eq!(go.title, "--- FAIL: TestSum (<dur>)");
-        let py = n("Traceback (most recent call last):\n  File \"/work/repo/tests/test_sum.py\", line 8, in test_sum\n    assert add(1, 2) == 4\nAssertionError: 3 != 4");
+        let py = n(
+            "Traceback (most recent call last):\n  File \"/work/repo/tests/test_sum.py\", line 8, in test_sum\n    assert add(1, 2) == 4\nAssertionError: 3 != 4",
+        );
         assert_eq!(py.location, "tests/test_sum.py");
         assert_eq!(py.title, "assert add(<n>, <n>) == <n>");
-        let js = n("Error: expected 3 to equal 4\n    at Object.<anonymous> (/home/ci/app/src/sum.test.ts:14:23)\n    at node:internal/main:1:1");
+        let js = n(
+            "Error: expected 3 to equal 4\n    at Object.<anonymous> (/home/ci/app/src/sum.test.ts:14:23)\n    at node:internal/main:1:1",
+        );
         assert_eq!(js.location, "src/sum.test.ts");
-        let java = n("java.lang.AssertionError: expected:<4> but was:<3>\n\tat org.junit.Assert.fail(Assert.java:89)\n\tat com.acme.SumTest.adds(SumTest.java:21)");
+        let java = n(
+            "java.lang.AssertionError: expected:<4> but was:<3>\n\tat org.junit.Assert.fail(Assert.java:89)\n\tat com.acme.SumTest.adds(SumTest.java:21)",
+        );
         assert_eq!(java.location, "Assert.java");
-        assert_eq!(java.title, "java.lang.AssertionError: expected:<<n>> but was:<<n>>");
+        assert_eq!(
+            java.title,
+            "java.lang.AssertionError: expected:<<n>> but was:<<n>>"
+        );
     }
 
     #[test]
@@ -413,7 +425,10 @@ mod tests {
     #[test]
     fn an_empty_or_noise_only_message_normalises_to_nothing() {
         let e = n("");
-        assert_eq!((e.location.as_str(), e.title.as_str(), e.body.as_str()), ("", "", ""));
+        assert_eq!(
+            (e.location.as_str(), e.title.as_str(), e.body.as_str()),
+            ("", "", "")
+        );
         let noise = n("   \n----\n==== \nnote: run with `RUST_BACKTRACE=1`");
         assert!(noise.body.is_empty());
     }
@@ -436,7 +451,10 @@ mod tests {
 
     #[test]
     fn masking_removes_secret_values() {
-        let masked = mask("token ghp_abcdef123 leaked ghp_abcdef123", &["ghp_abcdef123", "x"]);
+        let masked = mask(
+            "token ghp_abcdef123 leaked ghp_abcdef123",
+            &["ghp_abcdef123", "x"],
+        );
         assert_eq!(masked, "token *** leaked ***");
         assert_eq!(mask("keep x", &["x"]), "keep x");
     }

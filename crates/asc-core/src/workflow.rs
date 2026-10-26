@@ -220,11 +220,9 @@ fn field(
     for part in text.split(',') {
         let (range, step) = match part.split_once('/') {
             Some((r, s)) => {
-                let step: u32 = s
-                    .parse()
-                    .ok()
-                    .filter(|n| *n >= 1)
-                    .ok_or_else(|| err(format!("cron {name} step {s:?} is not a positive number")))?;
+                let step: u32 = s.parse().ok().filter(|n| *n >= 1).ok_or_else(|| {
+                    err(format!("cron {name} step {s:?} is not a positive number"))
+                })?;
                 (r, step)
             }
             None => (part, 1),
@@ -270,7 +268,9 @@ impl Cron {
     pub fn parse(text: &str) -> Result<Self, WorkflowError> {
         let parts: Vec<&str> = text.split_whitespace().collect();
         if parts.len() != 5 {
-            return bad("a cron expression has five fields: minute hour day-of-month month day-of-week");
+            return bad(
+                "a cron expression has five fields: minute hour day-of-month month day-of-week",
+            );
         }
         let (minutes, _) = field(parts[0], 0, 59, "minute", false)?;
         let (hours, _) = field(parts[1], 0, 23, "hour", false)?;
@@ -680,10 +680,14 @@ struct RawStep {
 
 fn limits(raw: &RawLimits, what: &str) -> Result<Limits, WorkflowError> {
     if raw.max_changes > MAX_BUDGET_CHANGES || raw.max_paths > MAX_BUDGET_CHANGES {
-        return bad(format!("{what}: max_changes and max_paths are at most {MAX_BUDGET_CHANGES}"));
+        return bad(format!(
+            "{what}: max_changes and max_paths are at most {MAX_BUDGET_CHANGES}"
+        ));
     }
     if raw.max_runtime_seconds > MAX_TIMEOUT_SECS {
-        return bad(format!("{what}: max_runtime_seconds is above {MAX_TIMEOUT_SECS}"));
+        return bad(format!(
+            "{what}: max_runtime_seconds is above {MAX_TIMEOUT_SECS}"
+        ));
     }
     Ok(Limits {
         max_changes: raw.max_changes,
@@ -700,7 +704,9 @@ fn glob_list(list: &[String], what: &str) -> Result<(), WorkflowError> {
     }
     for g in list {
         if g.is_empty() || g.len() > 256 || g.chars().any(char::is_control) {
-            return bad(format!("{what}: a pattern is empty, too long or holds a control character"));
+            return bad(format!(
+                "{what}: a pattern is empty, too long or holds a control character"
+            ));
         }
     }
     Ok(())
@@ -734,14 +740,18 @@ fn check_template(name: &str, inputs: &BTreeSet<&str>) -> Result<(), WorkflowErr
         return if inputs.contains(i) {
             Ok(())
         } else {
-            bad(format!("the template {{{{{name}}}}} names an input that is not declared"))
+            bad(format!(
+                "the template {{{{{name}}}}} names an input that is not declared"
+            ))
         };
     }
     if let Some(f) = name.strip_prefix("event.") {
         return if EVENT_FIELDS.contains(&f) {
             Ok(())
         } else {
-            bad(format!("the template {{{{{name}}}}} names an unknown event field"))
+            bad(format!(
+                "the template {{{{{name}}}}} names an unknown event field"
+            ))
         };
     }
     bad(format!(
@@ -758,7 +768,9 @@ impl Workflow {
             return bad("a workflow file is named <name>.toml with a name of [a-z0-9_-]");
         }
         if bytes.len() > MAX_WORKFLOW_BYTES {
-            return bad(format!("the workflow file is larger than {MAX_WORKFLOW_BYTES} bytes"));
+            return bad(format!(
+                "the workflow file is larger than {MAX_WORKFLOW_BYTES} bytes"
+            ));
         }
         let text = std::str::from_utf8(bytes).or_else(|_| bad("the workflow file is not UTF-8"))?;
         let raw: RawWorkflow = toml::from_str(text).map_err(|e| {
@@ -806,7 +818,10 @@ impl Workflow {
                 || !text_ok(&i.description)
                 || !text_ok(&i.default)
             {
-                return bad(format!("input {:?}: description or default is too long", i.name));
+                return bad(format!(
+                    "input {:?}: description or default is too long",
+                    i.name
+                ));
             }
             if i.required && !i.default.is_empty() {
                 return bad(format!("input {:?} is required and has a default", i.name));
@@ -829,7 +844,9 @@ impl Workflow {
             let paths = t
                 .paths
                 .iter()
-                .map(|p| PathGlob::parse(p).map_err(|e| err(format!("trigger path {p:?}: {}", e.0))))
+                .map(|p| {
+                    PathGlob::parse(p).map_err(|e| err(format!("trigger path {p:?}: {}", e.0)))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let cron = match (&t.cron, kind) {
                 (Some(c), TriggerKind::Schedule) => Some(Cron::parse(c)?),
@@ -924,7 +941,9 @@ impl Workflow {
         while done.len() < self.steps.len() {
             let before = done.len();
             for s in &self.steps {
-                if !done.contains(&s.id.as_str()) && s.needs.iter().all(|n| done.contains(&n.as_str())) {
+                if !done.contains(&s.id.as_str())
+                    && s.needs.iter().all(|n| done.contains(&n.as_str()))
+                {
                     done.push(&s.id);
                 }
             }
@@ -973,13 +992,17 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
     match kind {
         StepKind::Agent => {
             if !valid_agent_name(&s.agent) {
-                return Err(ctx("an agent step needs `agent` (a-z, 0-9, -, at most 40 bytes)".into()));
+                return Err(ctx(
+                    "an agent step needs `agent` (a-z, 0-9, -, at most 40 bytes)".into(),
+                ));
             }
             if s.prompt.trim().is_empty() {
                 return Err(ctx("an agent step needs a `prompt`".into()));
             }
             if s.prompt.len() > MAX_PROMPT_BYTES || !text_ok(&s.prompt) {
-                return Err(ctx(format!("the prompt is longer than {MAX_PROMPT_BYTES} bytes")));
+                return Err(ctx(format!(
+                    "the prompt is longer than {MAX_PROMPT_BYTES} bytes"
+                )));
             }
             for t in template_names(&s.prompt)? {
                 check_template(t, inputs).map_err(|e| ctx(e.message))?;
@@ -997,11 +1020,15 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
         }
         StepKind::Command => {
             if s.command.is_empty() || s.command.len() > MAX_COMMAND_ARGS {
-                return Err(ctx(format!("a command step needs `command`, 1 to {MAX_COMMAND_ARGS} arguments")));
+                return Err(ctx(format!(
+                    "a command step needs `command`, 1 to {MAX_COMMAND_ARGS} arguments"
+                )));
             }
             for a in &s.command {
                 if a.len() > MAX_COMMAND_ARG_BYTES || !text_ok(a) {
-                    return Err(ctx("an argument of `command` is too long or holds a NUL".into()));
+                    return Err(ctx(
+                        "an argument of `command` is too long or holds a NUL".into()
+                    ));
                 }
             }
             if s.command[0].is_empty() || s.command[0].contains(['/', '\\']) {
@@ -1014,7 +1041,9 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
             }
             for (env, secret) in &s.secrets {
                 if !valid_env_name(env) {
-                    return Err(ctx(format!("{env:?} is not an allowed environment variable name")));
+                    return Err(ctx(format!(
+                        "{env:?} is not an allowed environment variable name"
+                    )));
                 }
                 if !valid_name(secret) {
                     return Err(ctx(format!("secret name {secret:?} is not [a-z0-9_-]")));
@@ -1046,7 +1075,9 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
             }
             for c in &s.checks {
                 if c.is_empty() || c.len() > 128 || c.chars().any(char::is_control) {
-                    return Err(ctx("a check name is empty, too long or holds a control character".into()));
+                    return Err(ctx(
+                        "a check name is empty, too long or holds a control character".into(),
+                    ));
                 }
             }
             only(!s.agent.is_empty(), "agent", "agent")?;
@@ -1080,15 +1111,18 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
 
 fn approver(text: &str) -> Result<Approver, String> {
     let Some((head, rest)) = text.split_once(':') else {
-        return Err(format!("approver {text:?} is not user:<name> or role:<name>"));
+        return Err(format!(
+            "approver {text:?} is not user:<name> or role:<name>"
+        ));
     };
     match head {
         "user" => {
             let ok = !rest.is_empty()
                 && rest.len() <= 128
-                && rest
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+' | b'*'));
+                && rest.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || matches!(b, b'.' | b'_' | b'-' | b'@' | b'+' | b'*')
+                });
             if ok {
                 Ok(Approver::User(rest.to_owned()))
             } else {
@@ -1103,7 +1137,9 @@ fn approver(text: &str) -> Result<Approver, String> {
             }
         }
         "agent" => Err("an agent never decides an approval".to_owned()),
-        _ => Err(format!("approver {text:?} is not user:<name> or role:<name>")),
+        _ => Err(format!(
+            "approver {text:?} is not user:<name> or role:<name>"
+        )),
     }
 }
 
@@ -1314,32 +1350,66 @@ continue_on_failure = true
             ("[[input]]\nname = \"a\"\nbogus = 1\n", "input"),
             ("[budget]\nbogus = 1\n", "budget"),
         ] {
-            let text = format!("{extra}{}", step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n"));
+            let text = format!(
+                "{extra}{}",
+                step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n")
+            );
             // `bogus` at the top has to precede the tables.
-            let text = if what == "top" { format!("bogus = 1\n{}", text.trim_start_matches("bogus = 1\n")) } else { text };
+            let text = if what == "top" {
+                format!("bogus = 1\n{}", text.trim_start_matches("bogus = 1\n"))
+            } else {
+                text
+            };
             assert!(parse(&text).is_err(), "{what}");
         }
-        assert!(parse(&step_with("kind = \"approval\"\napprovers = [\"role:m\"]\nbogus = 1\n")).is_err());
+        assert!(
+            parse(&step_with(
+                "kind = \"approval\"\napprovers = [\"role:m\"]\nbogus = 1\n"
+            ))
+            .is_err()
+        );
     }
 
     #[test]
     fn the_bounds_hold() {
         let steps: String = (0..=MAX_STEPS)
-            .map(|i| format!("[[step]]\nid = \"s{i}\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n"))
+            .map(|i| {
+                format!("[[step]]\nid = \"s{i}\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n")
+            })
             .collect();
         assert!(parse(&steps).is_err());
         let ok: String = (0..MAX_STEPS)
-            .map(|i| format!("[[step]]\nid = \"s{i}\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n"))
+            .map(|i| {
+                format!("[[step]]\nid = \"s{i}\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n")
+            })
             .collect();
         assert_eq!(parse(&ok).unwrap().steps.len(), MAX_STEPS);
 
-        let triggers: String = (0..=MAX_TRIGGERS).map(|_| "[[trigger]]\nkind = \"manual\"\n").collect();
-        assert!(parse(&format!("{triggers}{}", step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n"))).is_err());
+        let triggers: String = (0..=MAX_TRIGGERS)
+            .map(|_| "[[trigger]]\nkind = \"manual\"\n")
+            .collect();
+        assert!(
+            parse(&format!(
+                "{triggers}{}",
+                step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n")
+            ))
+            .is_err()
+        );
 
         let big_prompt = "x".repeat(MAX_PROMPT_BYTES + 1);
-        assert!(parse(&step_with(&format!("kind = \"agent\"\nagent = \"a\"\nprompt = {big_prompt:?}\n"))).is_err());
+        assert!(
+            parse(&step_with(&format!(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = {big_prompt:?}\n"
+            )))
+            .is_err()
+        );
         let fits = "x".repeat(MAX_PROMPT_BYTES);
-        assert!(parse(&step_with(&format!("kind = \"agent\"\nagent = \"a\"\nprompt = {fits:?}\n"))).is_ok());
+        assert!(
+            parse(&step_with(&format!(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = {fits:?}\n"
+            )))
+            .is_ok()
+        );
 
         let huge = format!("description = \"{}\"\n", "d".repeat(MAX_WORKFLOW_BYTES));
         assert!(parse(&huge).is_err());
@@ -1357,7 +1427,8 @@ continue_on_failure = true
         assert!(parse(me).unwrap_err().message.contains("itself"));
         let missing = "[[step]]\nid = \"a\"\nkind = \"approval\"\napprovers = [\"role:m\"]\nneeds = [\"zzz\"]\n";
         assert!(parse(missing).unwrap_err().message.contains("not a step"));
-        let dup = format!("{a}[[step]]\nid = \"a\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n");
+        let dup =
+            format!("{a}[[step]]\nid = \"a\"\nkind = \"approval\"\napprovers = [\"role:m\"]\n");
         assert!(parse(&dup).unwrap_err().message.contains("twice"));
     }
 
@@ -1386,7 +1457,10 @@ continue_on_failure = true
             // a budget on a command
             step_with("kind = \"command\"\ncommand = [\"ls\"]\n[step.budget]\nmax_tokens = 1\n"),
             // a timeout past the cap
-            step_with(&format!("kind = \"approval\"\napprovers = [\"role:m\"]\ntimeout_seconds = {}\n", MAX_TIMEOUT_SECS + 1)),
+            step_with(&format!(
+                "kind = \"approval\"\napprovers = [\"role:m\"]\ntimeout_seconds = {}\n",
+                MAX_TIMEOUT_SECS + 1
+            )),
         ] {
             assert!(parse(&text).is_err(), "{text}");
         }
@@ -1394,17 +1468,40 @@ continue_on_failure = true
 
     #[test]
     fn templates_are_checked_and_rendered_as_text() {
-        assert!(parse(&step_with("kind = \"agent\"\nagent = \"a\"\nprompt = \"{{input.nope}}\"\n")).is_err());
-        assert!(parse(&step_with("kind = \"agent\"\nagent = \"a\"\nprompt = \"{{event.nope}}\"\n")).is_err());
-        assert!(parse(&step_with("kind = \"agent\"\nagent = \"a\"\nprompt = \"{{whatever}}\"\n")).is_err());
-        assert!(parse(&step_with("kind = \"agent\"\nagent = \"a\"\nprompt = \"{{change\"\n")).is_err());
+        assert!(
+            parse(&step_with(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = \"{{input.nope}}\"\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&step_with(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = \"{{event.nope}}\"\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&step_with(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = \"{{whatever}}\"\n"
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&step_with(
+                "kind = \"agent\"\nagent = \"a\"\nprompt = \"{{change\"\n"
+            ))
+            .is_err()
+        );
         let mut ctx = TemplateContext::default();
         ctx.inputs.insert("ticket".into(), "T-1 {{change}}".into());
         ctx.change = "abc".into();
         ctx.event.insert("check".into(), "build".into());
         // A value is inserted once, as text; a template inside a value is not expanded again.
         assert_eq!(
-            render("a {{input.ticket}} b {{ change }} c {{event.check}} d {{event.branch}}.", &ctx),
+            render(
+                "a {{input.ticket}} b {{ change }} c {{event.check}} d {{event.branch}}.",
+                &ctx
+            ),
             "a T-1 {{change}} b abc c build d ."
         );
         assert_eq!(render("{{ nothing", &ctx), "{{ nothing");
@@ -1413,7 +1510,10 @@ continue_on_failure = true
 
     #[test]
     fn command_steps_see_event_values_only_through_the_environment() {
-        let w = parse(&step_with("kind = \"command\"\ncommand = [\"echo\", \"{{input.x}}\"]\n")).unwrap();
+        let w = parse(&step_with(
+            "kind = \"command\"\ncommand = [\"echo\", \"{{input.x}}\"]\n",
+        ))
+        .unwrap();
         // Not expanded: the argument stays as written.
         assert_eq!(w.steps[0].command[1], "{{input.x}}");
         let mut ctx = TemplateContext::default();
@@ -1444,11 +1544,13 @@ continue_on_failure = true
         given.insert("need".to_owned(), "x".repeat(MAX_INPUT_VALUE_BYTES + 1));
         assert!(w.resolve_inputs(&given).is_err(), "too long");
         // A required input cannot carry a default.
-        assert!(parse(&format!(
-            "[[input]]\nname = \"n\"\nrequired = true\ndefault = \"x\"\n{}",
-            step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n")
-        ))
-        .is_err());
+        assert!(
+            parse(&format!(
+                "[[input]]\nname = \"n\"\nrequired = true\ndefault = \"x\"\n{}",
+                step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n")
+            ))
+            .is_err()
+        );
     }
 
     #[test]
@@ -1465,8 +1567,16 @@ continue_on_failure = true
         assert!(t.matches(&failed("release/1.2", &["docs/x", "SRC/deep/a.rs"])));
         assert!(!t.matches(&failed("dev", &["src/a.rs"])));
         assert!(!t.matches(&failed("main", &["docs/a.md"])));
-        assert!(!t.matches(&Event { kind: Some(TriggerKind::Land), branch: "main".into(), paths: vec!["src/a".into()], mentions: vec![] }));
-        assert!(!w.triggers[1].matches(&failed("main", &[])), "a schedule never matches an event");
+        assert!(!t.matches(&Event {
+            kind: Some(TriggerKind::Land),
+            branch: "main".into(),
+            paths: vec!["src/a".into()],
+            mentions: vec![]
+        }));
+        assert!(
+            !w.triggers[1].matches(&failed("main", &[])),
+            "a schedule never matches an event"
+        );
         let mention = |who: &str| Event {
             kind: Some(TriggerKind::CommentMention),
             mentions: vec![who.to_owned()],
@@ -1480,11 +1590,11 @@ continue_on_failure = true
     fn trigger_keys_are_checked() {
         let step = step_with("kind = \"approval\"\napprovers = [\"role:m\"]\n");
         for t in [
-            "kind = \"schedule\"",                              // no cron
-            "kind = \"manual\"\ncron = \"* * * * *\"",           // cron on manual
-            "kind = \"land\"\nagent = \"x\"",                    // agent on land
-            "kind = \"comment_mention\"\nagent = \"X Y\"",       // bad agent
-            "kind = \"manual\"\npaths = [\"a\"]",                // paths on manual
+            "kind = \"schedule\"",                         // no cron
+            "kind = \"manual\"\ncron = \"* * * * *\"",     // cron on manual
+            "kind = \"land\"\nagent = \"x\"",              // agent on land
+            "kind = \"comment_mention\"\nagent = \"X Y\"", // bad agent
+            "kind = \"manual\"\npaths = [\"a\"]",          // paths on manual
             "kind = \"nope\"",
             "kind = \"land\"\nbranches = [\"\"]",
         ] {
@@ -1508,7 +1618,10 @@ continue_on_failure = true
         assert_eq!(every15.min_interval_secs(), Some(900));
         assert!(every15.matches(monday_3 + 15 * 60));
         assert!(!every15.matches(monday_3 + 16 * 60));
-        assert_eq!(Cron::parse("* * * * *").unwrap().min_interval_secs(), Some(60));
+        assert_eq!(
+            Cron::parse("* * * * *").unwrap().min_interval_secs(),
+            Some(60)
+        );
         // Sunday as 0 and as 7.
         let sunday = monday_3 - 86_400;
         assert!(Cron::parse("0 3 * * 0").unwrap().matches(sunday));
@@ -1519,14 +1632,34 @@ continue_on_failure = true
         assert!(either.matches(sunday), "a Sunday");
         assert!(!either.matches(monday_3 + 86_400), "the 27th is a Tuesday");
         // Monthly: the shortest gap in the window is February 1972, which has 29 days.
-        assert_eq!(Cron::parse("0 0 1 * *").unwrap().min_interval_secs(), Some(29 * 86_400));
+        assert_eq!(
+            Cron::parse("0 0 1 * *").unwrap().min_interval_secs(),
+            Some(29 * 86_400)
+        );
         // 29 February exists in the window, once a year.
         assert_eq!(Cron::parse("0 0 29 2 *").unwrap().min_interval_secs(), None);
-        for bad in ["", "* * * *", "* * * * * *", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * * 13 *",
-            "* * * * 8", "*/0 * * * *", "5-1 * * * *", "@daily", "a * * * *", "1-2-3 * * * *", "-1 * * * *"] {
+        for bad in [
+            "",
+            "* * * *",
+            "* * * * * *",
+            "60 * * * *",
+            "* 24 * * *",
+            "* * 0 * *",
+            "* * * 13 *",
+            "* * * * 8",
+            "*/0 * * * *",
+            "5-1 * * * *",
+            "@daily",
+            "a * * * *",
+            "1-2-3 * * * *",
+            "-1 * * * *",
+        ] {
             assert!(Cron::parse(bad).is_err(), "{bad:?}");
         }
-        assert_eq!(Cron::parse("  0   3 *  * 1,3,5 ").unwrap().as_str(), "0 3 * * 1,3,5");
+        assert_eq!(
+            Cron::parse("  0   3 *  * 1,3,5 ").unwrap().as_str(),
+            "0 3 * * 1,3,5"
+        );
     }
 
     #[test]

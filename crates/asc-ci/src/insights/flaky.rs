@@ -177,10 +177,14 @@ mod tests {
 
     #[test]
     fn a_test_that_always_passes_or_always_fails_is_not_flaky() {
-        let pass: Vec<_> = (1..=20).map(|i| o(i, i as i64 * 100, 1, true, "h")).collect();
+        let pass: Vec<_> = (1..=20)
+            .map(|i| o(i, i as i64 * 100, 1, true, "h"))
+            .collect();
         let s = analyse(&pass, 0, 0.0);
         assert_eq!((s.runs, s.failures, s.flips, s.flaky), (20, 0, 0, false));
-        let fail: Vec<_> = (1..=20).map(|i| o(i, i as i64 * 100, 1, false, "h")).collect();
+        let fail: Vec<_> = (1..=20)
+            .map(|i| o(i, i as i64 * 100, 1, false, "h"))
+            .collect();
         let s = analyse(&fail, 0, 0.0);
         assert_eq!((s.runs, s.failures, s.flips, s.flaky), (20, 20, 0, false));
         assert_eq!(s.first_flip, None);
@@ -189,7 +193,11 @@ mod tests {
     #[test]
     fn pass_then_fail_on_one_head_is_a_flip() {
         let s = analyse(
-            &[o(1, 100, 1, true, "a"), o(2, 200, 1, false, "a"), o(3, 300, 1, true, "a")],
+            &[
+                o(1, 100, 1, true, "a"),
+                o(2, 200, 1, false, "a"),
+                o(3, 300, 1, true, "a"),
+            ],
             0,
             0.0,
         );
@@ -221,13 +229,17 @@ mod tests {
     #[test]
     fn the_threshold_decides() {
         // One flip in 100 runs: rate 0.01, below the default 0.02.
-        let mut v: Vec<_> = (1..=100).map(|i| o(i, i as i64 * 10, 1, true, "h")).collect();
+        let mut v: Vec<_> = (1..=100)
+            .map(|i| o(i, i as i64 * 10, 1, true, "h"))
+            .collect();
         v[50].passed = false;
         let s = analyse(&v, 100, 0.0);
         assert_eq!(s.flips, 2, "a lone failure flips out and back");
         assert!(s.flaky);
         // Two flips (one failing result) in 200 runs is 0.01.
-        let mut v: Vec<_> = (1..=200).map(|i| o(i, i as i64 * 10, 1, true, "h")).collect();
+        let mut v: Vec<_> = (1..=200)
+            .map(|i| o(i, i as i64 * 10, 1, true, "h"))
+            .collect();
         v[100].passed = false;
         let s = analyse(&v, 200, 0.0);
         assert_eq!(s.flips, 2);
@@ -241,7 +253,11 @@ mod tests {
     #[test]
     fn only_the_last_runs_count() {
         // Old flips outside the window are forgotten.
-        let mut v = vec![o(1, 10, 1, true, "a"), o(2, 20, 1, false, "a"), o(3, 30, 1, true, "a")];
+        let mut v = vec![
+            o(1, 10, 1, true, "a"),
+            o(2, 20, 1, false, "a"),
+            o(3, 30, 1, true, "a"),
+        ];
         v.extend((4..=13).map(|i| o(i, i as i64 * 10, 1, true, "b")));
         assert!(analyse(&v, 13, 0.0).flaky);
         let s = analyse(&v, 10, 0.0);
@@ -250,7 +266,11 @@ mod tests {
 
     #[test]
     fn input_order_does_not_matter() {
-        let v = vec![o(3, 300, 1, true, "a"), o(1, 100, 1, true, "a"), o(2, 200, 1, false, "a")];
+        let v = vec![
+            o(3, 300, 1, true, "a"),
+            o(1, 100, 1, true, "a"),
+            o(2, 200, 1, false, "a"),
+        ];
         let mut r = v.clone();
         r.reverse();
         assert_eq!(analyse(&v, 0, 0.0), analyse(&r, 0, 0.0));
@@ -268,11 +288,21 @@ mod tests {
         assert_eq!(s.buckets.len(), 2);
         assert_eq!(
             s.buckets[0],
-            Bucket { start: d0, runs: 2, failures: 1, flips: 1 }
+            Bucket {
+                start: d0,
+                runs: 2,
+                failures: 1,
+                flips: 1
+            }
         );
         assert_eq!(
             s.buckets[1],
-            Bucket { start: d0 + DAY, runs: 1, failures: 0, flips: 1 }
+            Bucket {
+                start: d0 + DAY,
+                runs: 1,
+                failures: 0,
+                flips: 1
+            }
         );
         assert_eq!(day_start(-1), -DAY);
     }
