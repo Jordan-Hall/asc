@@ -30,8 +30,12 @@
 #                mounts it READ-ONLY at the same path: ImportGitPush reads a push quarantine there
 #                (`[forgejo] repo_root`). asc never sees hub-data (app.ini, database).
 #   asc-state     /var/lib/asc                  asc.db (SQLite), objects/ (store = file://), cache.
-#   hub-runtime  /run/asc-hub                  the two secret files and asc-serve.toml, 0400, written
-#                by hub-init on every start from the Coolify-generated values; read-only elsewhere.
+#   hub-secrets  /run/asc-hub                  the internal token and the webhook secret, 0400. The hub and
+#                asc mount it read-only.
+#   asc-runtime   /run/asc-runtime              asc-serve.toml, 0400 (it holds the asc database URL, which has
+#                the Postgres password in production). Only asc and asc-migrate mount it: the hub
+#                must never be able to read it.
+#                Both volumes are written by hub-init on every start from the Coolify-generated values.
 #
 # Both containers run as uid 1000 (the hub image's `git`): git creates push quarantines 0700, so asc
 # must be the owner to read them.
@@ -91,7 +95,7 @@ x-hub: &hub
   volumes:
     - hub-data:/var/lib/gitea
     - hub-repos:/var/lib/gitea/git/repositories
-    - hub-runtime:/run/asc-hub:ro
+    - hub-secrets:/run/asc-hub:ro
 
 x-asc: &asc
   image: ${ASC_IMAGE_REPO:-ghcr.io/jordan-hall/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the asc-serve image}
@@ -104,7 +108,7 @@ x-asc: &asc
   security_opt:
     - no-new-privileges:true
   environment: &asc-env
-    ASC_SERVE_CONFIG: /run/asc-hub/asc-serve.toml
+    ASC_SERVE_CONFIG: /run/asc-runtime/asc-serve.toml
     # Only these containers: asc's [forgejo] url is the hub on loopback, plain http.
     ASC_ALLOW_LOOPBACK_HTTP: '1'
     HOME: /var/lib/asc/home
@@ -116,7 +120,8 @@ x-asc: &asc
     AWS_REGION: ${ASC_S3_REGION:-garage}
   volumes:
     - asc-state:/var/lib/asc
-    - hub-runtime:/run/asc-hub:ro
+    - hub-secrets:/run/asc-hub:ro
+    - asc-runtime:/run/asc-runtime:ro
 
 services:
   # Runs as root with three capabilities and nothing else. Idempotent: it only chowns a volume
@@ -154,6 +159,7 @@ services:
         umask 077
         U=1000
         RUN=/run/asc-hub
+        CFG=/run/asc-runtime
         own() {
           [ "$$(stat -c %u "$$1")" = "$$U" ] || chown -R "$$U:$$U" "$$1"
         }
@@ -175,7 +181,7 @@ services:
         fi
         printf '%s' "$$INTERNAL_TOKEN" > "$$RUN/internal-token.tmp"
         printf '%s' "$$WEBHOOK_SECRET" > "$$RUN/webhook-secret.tmp"
-        cat > "$$RUN/asc-serve.toml.tmp" <<EOF
+        cat > "$$CFG/asc-serve.toml.tmp" <<EOF
         listen = "127.0.0.1:7890"
         store = '$$STORE'
         db = '$$DB'
@@ -198,17 +204,19 @@ services:
         enabled = $$ASC_GIT_ENABLED
         view_dir = "/var/lib/asc/gitview"
         EOF
-        for f in internal-token webhook-secret asc-serve.toml; do
-          chown "$$U:$$U" "$$RUN/$$f.tmp"
-          chmod 0400 "$$RUN/$$f.tmp"
-          mv -f "$$RUN/$$f.tmp" "$$RUN/$$f"
+        for f in "$$RUN/internal-token" "$$RUN/webhook-secret" "$$CFG/asc-serve.toml"; do
+          chown "$$U:$$U" "$$f.tmp"
+          chmod 0400 "$$f.tmp"
+          mv -f "$$f.tmp" "$$f"
         done
         own "$$RUN"
+        own "$$CFG"
         echo "hub-init: ready"
     volumes:
       - asc-state:/var/lib/asc
       - hub-repos:/var/lib/gitea/git/repositories
-      - hub-runtime:/run/asc-hub
+      - hub-secrets:/run/asc-hub
+      - asc-runtime:/run/asc-runtime
     deploy:
       resources:
         limits:
@@ -280,7 +288,8 @@ services:
         condition: service_completed_successfully
     volumes:
       - asc-state:/var/lib/asc
-      - hub-runtime:/run/asc-hub:ro
+      - hub-secrets:/run/asc-hub:ro
+      - asc-runtime:/run/asc-runtime:ro
       # Read-only, at the hub's own path: the push quarantine named by the hub is read here.
       - hub-repos:/var/lib/gitea/git/repositories:ro
     # /readyz fails when the database does not answer or the outbox lags (SPEC 16.1).
@@ -342,5 +351,6 @@ services:
 volumes:
   hub-data:
   hub-repos:
-  hub-runtime:
+  hub-secrets:
+  asc-runtime:
   asc-state:

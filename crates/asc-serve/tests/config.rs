@@ -19,7 +19,7 @@ fn heredoc() -> String {
     let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut lines = text
         .lines()
-        .skip_while(|l| !l.contains("> \"$$RUN/asc-serve.toml.tmp\" <<EOF"));
+        .skip_while(|l| !l.contains("> \"$$CFG/asc-serve.toml.tmp\" <<EOF"));
     assert!(
         lines.next().is_some(),
         "the asc-serve.toml heredoc is gone from the compose file"
@@ -129,7 +129,25 @@ fn the_compose_file_wires_the_hub_to_the_same_places() {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../deploy/coolify/asc-hub.compose.yml");
     let text = std::fs::read_to_string(path).unwrap();
+    // The hub never mounts the volume that holds asc-serve.toml (the asc database URL).
+    let hub = text
+        .split("x-hub: &hub")
+        .nth(1)
+        .and_then(|t| t.split("x-asc: &asc").next())
+        .expect("the hub anchor");
+    assert!(hub.contains("hub-secrets:/run/asc-hub:ro"), "{hub}");
+    assert!(!hub.contains("asc-runtime"), "{hub}");
+    for service in ["  hub:\n", "  hub-admin:\n"] {
+        let section = text.split(service).nth(1).unwrap_or_default();
+        let section = section.split("\n  asc").next().unwrap_or_default();
+        assert!(
+            !section.contains("asc-runtime") && !section.contains("asc-serve.toml"),
+            "{service}"
+        );
+    }
     for needle in [
+        "ASC_SERVE_CONFIG: /run/asc-runtime/asc-serve.toml",
+        "asc-runtime:/run/asc-runtime:ro",
         // the hub dials asc on loopback, asc and the hub share one network namespace
         "FORGEJO__asc__SERVER_URL: http://127.0.0.1:7890",
         "network_mode: service:hub",
