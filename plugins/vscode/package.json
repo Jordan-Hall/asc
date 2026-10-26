@@ -48,7 +48,7 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "markdownDescription": "Path to the `asc` executable. Empty searches `PATH`, then `$ASC_HOME/bin`."
+          "markdownDescription": "Absolute path to the `asc` executable. Empty searches the absolute entries of `PATH`, then `$ASC_HOME/bin`. A file inside a workspace folder is never used."
         },
         "asc.blame.inline": {
           "type": "boolean",
