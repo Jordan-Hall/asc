@@ -96,10 +96,14 @@ async fn serve(State(prm): State<Arc<Prm>>, req: Request) -> Response {
     if req.method() == Method::GET {
         *r.body_mut() = Body::from(prm.document(&resource).to_string());
     }
-    r.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    r.headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300"));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    r.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=300"),
+    );
     r
 }
 
@@ -117,7 +121,12 @@ pub fn register(ext: &Extensions, cfg: &ServeConfig, issuers: Vec<String>) {
     if cfg.role != Role::Primary {
         return;
     }
-    let policy = HttpPolicy::new(cfg.listen, cfg.public_url.as_deref(), &[], &cfg.mcp.allowed_origins);
+    let policy = HttpPolicy::new(
+        cfg.listen,
+        cfg.public_url.as_deref(),
+        &[],
+        &cfg.mcp.allowed_origins,
+    );
     ext.http
         .register(router(Prm::new(cfg.public_url.as_deref(), issuers, policy)));
 }
@@ -131,7 +140,10 @@ struct Scope {
 /// `tools/list` whose `params.repo` the credential may write, it sets [`ListWrite`]; for anything
 /// else it changes nothing. A malformed or refused credential is left to the auth layer to answer.
 pub fn scope_layer(router: Router, authorizer: Arc<dyn Authorizer>) -> Router {
-    router.layer(axum::middleware::from_fn_with_state(Scope { authorizer }, scope))
+    router.layer(axum::middleware::from_fn_with_state(
+        Scope { authorizer },
+        scope,
+    ))
 }
 
 async fn scope(State(s): State<Scope>, req: Request, next: Next) -> Response {

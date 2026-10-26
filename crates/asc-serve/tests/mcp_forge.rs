@@ -14,7 +14,8 @@ use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::errors::ToolError;
 use asc_serve::mcp::backend::RepoGate;
 use asc_serve::mcp::forge::{
-    ForgeActor, ForgeAdapter, ForgeBackend, ForgeConfig, ForgeError, ForgeItem, ForgejoAdapter, Handles,
+    ForgeActor, ForgeAdapter, ForgeBackend, ForgeConfig, ForgeError, ForgeItem, ForgejoAdapter,
+    Handles,
 };
 use futures::StreamExt as _;
 use serde_json::{Value, json};
@@ -48,7 +49,13 @@ impl ForgeAdapter for Fake {
     fn name(&self) -> &'static str {
         "fake"
     }
-    async fn issues(&self, a: &ForgeActor, _r: &str, _s: &str, _l: usize) -> Result<Vec<ForgeItem>, ForgeError> {
+    async fn issues(
+        &self,
+        a: &ForgeActor,
+        _r: &str,
+        _s: &str,
+        _l: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError> {
         self.seen.lock().unwrap().push(a.principal.clone());
         Ok(vec![
             ForgeItem {
@@ -66,11 +73,21 @@ impl ForgeAdapter for Fake {
                 author_can_write: Some(false),
                 ..ForgeItem::default()
             },
-            ForgeItem { id: 3, title: "unknown".into(), author: "who".into(), author_can_write: None, ..ForgeItem::default() },
+            ForgeItem {
+                id: 3,
+                title: "unknown".into(),
+                author: "who".into(),
+                author_can_write: None,
+                ..ForgeItem::default()
+            },
         ])
     }
     async fn issue(&self, _a: &ForgeActor, _r: &str, n: u64) -> Result<ForgeItem, ForgeError> {
-        if n == 9 { Err(ForgeError::NotFound) } else { Err(ForgeError::Unavailable("boom".into())) }
+        if n == 9 {
+            Err(ForgeError::NotFound)
+        } else {
+            Err(ForgeError::Unavailable("boom".into()))
+        }
     }
     async fn pr_comments(
         &self,
@@ -90,7 +107,12 @@ impl ForgeAdapter for Fake {
             },
         ))
     }
-    async fn actions_runs(&self, _a: &ForgeActor, _r: &str, _l: usize) -> Result<Vec<ForgeItem>, ForgeError> {
+    async fn actions_runs(
+        &self,
+        _a: &ForgeActor,
+        _r: &str,
+        _l: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError> {
         Ok(vec![])
     }
 }
@@ -109,7 +131,12 @@ fn backend(adapter: Option<Arc<dyn ForgeAdapter>>, cfg: &ForgeConfig) -> ForgeBa
     ForgeBackend::new(Inner, Arc::new(Gate), adapter, cfg)
 }
 
-async fn run(b: &impl McpBackend, tool: &str, args: Value, who: Option<&str>) -> Result<Value, ToolError> {
+async fn run(
+    b: &impl McpBackend,
+    tool: &str,
+    args: Value,
+    who: Option<&str>,
+) -> Result<Value, ToolError> {
     match b.call(tool, &args, &ctx(who)).await? {
         Reply::Messages(mut s) => s.next().await.expect("one message"),
         _ => panic!("messages expected"),
@@ -117,23 +144,48 @@ async fn run(b: &impl McpBackend, tool: &str, args: Value, who: Option<&str>) ->
 }
 
 fn cfg(lockdown: bool) -> ForgeConfig {
-    ForgeConfig { adapter: Some("fake".into()), lockdown }
+    ForgeConfig {
+        adapter: Some("fake".into()),
+        lockdown,
+    }
 }
 
 #[tokio::test]
 async fn off_without_adapter() {
     let b = backend(None, &ForgeConfig::default());
     assert!(b.tools().is_empty());
-    let e = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice")).await.unwrap_err();
+    let e = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "NOT_AVAILABLE");
     // Other tools pass through untouched.
-    assert_eq!(run(&b, "read_file", json!({}), Some("alice")).await.unwrap_err().code, "INNER");
+    assert_eq!(
+        run(&b, "read_file", json!({}), Some("alice"))
+            .await
+            .unwrap_err()
+            .code,
+        "INNER"
+    );
 }
 
 #[test]
 fn config_rejects_unknown_adapter() {
-    assert!(ForgeConfig { adapter: Some("github".into()), lockdown: true }.validate().is_err());
-    assert!(ForgeConfig { adapter: Some("forgejo".into()), lockdown: true }.validate().is_ok());
+    assert!(
+        ForgeConfig {
+            adapter: Some("github".into()),
+            lockdown: true
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        ForgeConfig {
+            adapter: Some("forgejo".into()),
+            lockdown: true
+        }
+        .validate()
+        .is_ok()
+    );
     assert!(!ForgeConfig::default().enabled());
 }
 
@@ -153,23 +205,49 @@ async fn authorised_before_the_forge_is_asked() {
     let fake = Arc::new(Fake::default());
     let b = backend(Some(fake.clone()), &cfg(true));
     // An unreadable repo answers like a missing one and the adapter is never reached.
-    let e = run(&b, "forge_issues", json!({"repo": "o/secret"}), Some("alice")).await.unwrap_err();
+    let e = run(
+        &b,
+        "forge_issues",
+        json!({"repo": "o/secret"}),
+        Some("alice"),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code, "NOT_FOUND");
-    let e = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("mallory")).await.unwrap_err();
+    let e = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("mallory"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "NOT_FOUND");
-    assert_eq!(run(&b, "forge_issues", json!({"repo": "o/r"}), None).await.unwrap_err().code, "UNAUTHENTICATED");
+    assert_eq!(
+        run(&b, "forge_issues", json!({"repo": "o/r"}), None)
+            .await
+            .unwrap_err()
+            .code,
+        "UNAUTHENTICATED"
+    );
     assert!(fake.seen.lock().unwrap().is_empty());
-    run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice")).await.unwrap();
+    run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice"))
+        .await
+        .unwrap();
     assert_eq!(*fake.seen.lock().unwrap(), vec!["alice".to_owned()]);
 }
 
 #[tokio::test]
 async fn principal_is_never_an_argument() {
     let b = backend(Some(Arc::new(Fake::default())), &cfg(true));
-    let e = run(&b, "forge_issues", json!({"repo": "o/r", "principal": "root"}), Some("alice")).await.unwrap_err();
+    let e = run(
+        &b,
+        "forge_issues",
+        json!({"repo": "o/r", "principal": "root"}),
+        Some("alice"),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code, "INVALID_ARGUMENT");
     for bad in ["o", "../x/y", "o/r/z", "o/.r", "o/r r"] {
-        let e = run(&b, "forge_issues", json!({"repo": bad}), Some("alice")).await.unwrap_err();
+        let e = run(&b, "forge_issues", json!({"repo": bad}), Some("alice"))
+            .await
+            .unwrap_err();
         assert_eq!(e.code, "INVALID_ARGUMENT", "{bad}");
     }
 }
@@ -177,7 +255,9 @@ async fn principal_is_never_an_argument() {
 #[tokio::test]
 async fn lockdown_hides_authors_without_write_and_cleans_text() {
     let b = backend(Some(Arc::new(Fake::default())), &cfg(true));
-    let v = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice")).await.unwrap();
+    let v = run(&b, "forge_issues", json!({"repo": "o/r"}), Some("alice"))
+        .await
+        .unwrap();
     let list = v["items"]["list"].as_array().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(v["items"]["hidden_by_lockdown"], 2);
@@ -186,20 +266,46 @@ async fn lockdown_hides_authors_without_write_and_cleans_text() {
     assert!(list[0]["body"].as_str().unwrap().chars().count() <= 8 * 1024);
 
     let open = backend(Some(Arc::new(Fake::default())), &cfg(false));
-    let v = run(&open, "forge_issues", json!({"repo": "o/r"}), Some("alice")).await.unwrap();
+    let v = run(&open, "forge_issues", json!({"repo": "o/r"}), Some("alice"))
+        .await
+        .unwrap();
     assert_eq!(v["items"]["list"].as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]
 async fn errors_and_handles() {
     let b = backend(Some(Arc::new(Fake::default())), &cfg(true));
-    let e = run(&b, "forge_issue", json!({"repo": "o/r", "number": 9}), Some("alice")).await.unwrap_err();
+    let e = run(
+        &b,
+        "forge_issue",
+        json!({"repo": "o/r", "number": 9}),
+        Some("alice"),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code, "NOT_FOUND");
-    let e = run(&b, "forge_issue", json!({"repo": "o/r", "number": 1}), Some("alice")).await.unwrap_err();
+    let e = run(
+        &b,
+        "forge_issue",
+        json!({"repo": "o/r", "number": 1}),
+        Some("alice"),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(e.code, "NOT_AVAILABLE");
-    let v = run(&b, "forge_pr_comments", json!({"repo": "o/r", "number": 3}), Some("alice")).await.unwrap();
+    let v = run(
+        &b,
+        "forge_pr_comments",
+        json!({"repo": "o/r", "number": 3}),
+        Some("alice"),
+    )
+    .await
+    .unwrap();
     // Forge-supplied handles that break the AscHandles patterns are dropped.
-    assert_eq!(v["asc_handles"], json!({"asc_change": "klmn", "head": "ab12", "version": 2}));
+    assert_eq!(
+        v["asc_handles"],
+        json!({"asc_change": "klmn", "head": "ab12", "version": 2})
+    );
 }
 
 // ------------------------------------------------------------------ Forgejo implementation
@@ -208,7 +314,9 @@ type Log = Arc<Mutex<Vec<(String, Option<String>, Option<String>)>>>;
 
 async fn handler(State(s): State<Log>, uri: axum::http::Uri, h: HeaderMap) -> axum::Json<Value> {
     let hv = |n: &str| h.get(n).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    s.lock().unwrap().push((uri.path().to_owned(), hv("authorization"), hv("sudo")));
+    s.lock()
+        .unwrap()
+        .push((uri.path().to_owned(), hv("authorization"), hv("sudo")));
     let p = uri.path();
     if p.ends_with("/permission") {
         let w = p.contains("/maint/");
@@ -226,13 +334,25 @@ async fn handler(State(s): State<Log>, uri: axum::http::Uri, h: HeaderMap) -> ax
 #[tokio::test]
 async fn forgejo_acts_as_principal_with_service_token_only() {
     let seen = Log::default();
-    let app = Router::new().fallback(get(handler)).with_state(seen.clone());
+    let app = Router::new()
+        .fallback(get(handler))
+        .with_state(seen.clone());
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/", l.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
 
     let ad = ForgejoAdapter::new(&url, "SERVICE-TOKEN", Policy::LOOPBACK_HTTP).unwrap();
-    let items = ad.issues(&ForgeActor { principal: "alice".into() }, "o/r", "open", 10).await.unwrap();
+    let items = ad
+        .issues(
+            &ForgeActor {
+                principal: "alice".into(),
+            },
+            "o/r",
+            "open",
+            10,
+        )
+        .await
+        .unwrap();
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].author_can_write, Some(true));
     assert_eq!(items[1].author_can_write, Some(false));
@@ -242,7 +362,17 @@ async fn forgejo_acts_as_principal_with_service_token_only() {
     }
     // A principal that is not a plain login never reaches the wire.
     let n = seen.lock().unwrap().len();
-    let e = ad.issues(&ForgeActor { principal: "a\r\nX: y".into() }, "o/r", "open", 1).await.unwrap_err();
+    let e = ad
+        .issues(
+            &ForgeActor {
+                principal: "a\r\nX: y".into(),
+            },
+            "o/r",
+            "open",
+            1,
+        )
+        .await
+        .unwrap_err();
     assert_eq!(e, ForgeError::NotFound);
     assert_eq!(seen.lock().unwrap().len(), n);
     assert!(!format!("{ad:?}").contains("SERVICE-TOKEN"));

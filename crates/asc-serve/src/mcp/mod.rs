@@ -68,13 +68,18 @@ fn split_host_port(authority: &str) -> (String, Option<String>) {
     let a = authority.trim().to_ascii_lowercase();
     if let Some(rest) = a.strip_prefix('[') {
         if let Some((h, tail)) = rest.split_once(']') {
-            let port = tail.strip_prefix(':').filter(|p| !p.is_empty()).map(str::to_owned);
+            let port = tail
+                .strip_prefix(':')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned);
             return (format!("[{h}]"), port);
         }
         return (a, None);
     }
     match a.rsplit_once(':') {
-        Some((h, p)) if !h.contains(':') => (h.trim_end_matches('.').to_owned(), Some(p.to_owned())),
+        Some((h, p)) if !h.contains(':') => {
+            (h.trim_end_matches('.').to_owned(), Some(p.to_owned()))
+        }
         _ => (a.trim_end_matches('.').to_owned(), None),
     }
 }
@@ -198,7 +203,11 @@ pub fn check_headers(h: &HeaderMap, body: &Value) -> Result<(), String> {
                 return bad("MCP-Protocol-Version");
             }
             for ptr in ["/params/protocolVersion", "/params/_meta/protocolVersion"] {
-                if body.pointer(ptr).and_then(Value::as_str).is_some_and(|b| b != v) {
+                if body
+                    .pointer(ptr)
+                    .and_then(Value::as_str)
+                    .is_some_and(|b| b != v)
+                {
                     return bad("MCP-Protocol-Version");
                 }
             }
@@ -227,7 +236,12 @@ pub fn check_headers(h: &HeaderMap, body: &Value) -> Result<(), String> {
     }
     match header_str(h, "mcp-param-repo") {
         Err(()) => return bad("Mcp-Param-Repo"),
-        Ok(Some(v)) if body.pointer("/params/arguments/repo").and_then(Value::as_str) != Some(v) => {
+        Ok(Some(v))
+            if body
+                .pointer("/params/arguments/repo")
+                .and_then(Value::as_str)
+                != Some(v) =>
+        {
             return bad("Mcp-Param-Repo");
         }
         Ok(_) => {}
@@ -256,8 +270,14 @@ struct McpState {
 
 /// The `/mcp` router over `handler`. It carries no authentication: the auth layer wraps it.
 pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router {
-    let state = Arc::new(McpState { svc: Arc::new(handler), policy, next_id: AtomicU64::new(1) });
-    Router::new().route(PATH, axum::routing::any(endpoint)).with_state(state)
+    let state = Arc::new(McpState {
+        svc: Arc::new(handler),
+        policy,
+        next_id: AtomicU64::new(1),
+    });
+    Router::new()
+        .route(PATH, axum::routing::any(endpoint))
+        .with_state(state)
 }
 
 /// The one-line registration in `lib.rs`. Mounts nothing unless `[mcp] enabled` on the primary
@@ -266,12 +286,19 @@ pub fn router<B: McpBackend>(handler: Handler<B>, policy: HttpPolicy) -> Router 
 // TODO(M12b): build `ServeBackend` and the `Handler`, then `ext.http.register(router(..))`.
 pub fn register(ext: &Extensions, cfg: &ServeConfig) {
     // The metadata document is always served (SPEC 22.7.3), enabled or not.
-    let issuers = cfg.mcp.oauth.as_ref().map(|o| o.issuer.clone()).unwrap_or_default();
+    let issuers = cfg
+        .mcp
+        .oauth
+        .as_ref()
+        .map(|o| o.issuer.clone())
+        .unwrap_or_default();
     prm::register(ext, cfg, issuers);
     if cfg.role != Role::Primary || !cfg.mcp.enabled {
         return;
     }
-    tracing::error!("mcp.enabled is set but the MCP backend is not wired (M12b); /mcp is not mounted");
+    tracing::error!(
+        "mcp.enabled is set but the MCP backend is not wired (M12b); /mcp is not mounted"
+    );
 }
 
 fn plain(status: StatusCode) -> Response<Body> {
@@ -284,19 +311,30 @@ fn rpc_error(status: StatusCode, id: &Value, code: i32, message: &str) -> Respon
     let body = json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } });
     let mut r = Response::new(Body::from(body.to_string()));
     *r.status_mut() = status;
-    r.headers_mut().insert(header::CONTENT_TYPE, "application/json".parse().expect("static"));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/json".parse().expect("static"),
+    );
     r
 }
 
 fn json_ok(v: &Value) -> Response<Body> {
     let mut r = Response::new(Body::from(v.to_string()));
-    r.headers_mut().insert(header::CONTENT_TYPE, "application/json".parse().expect("static"));
-    r.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().expect("static"));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/json".parse().expect("static"),
+    );
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, "no-store".parse().expect("static"));
     r
 }
 
 fn wants_sse(h: &HeaderMap, body: &Value) -> bool {
-    let accept = h.get(header::ACCEPT).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    let accept = h
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if !accept.contains("text/event-stream") {
         return false;
     }
@@ -330,15 +368,21 @@ impl Drop for CancelOnDrop {
 async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Response<Body> {
     if req.method() != Method::POST {
         let mut r = plain(StatusCode::METHOD_NOT_ALLOWED);
-        r.headers_mut().insert(header::ALLOW, "POST".parse().expect("static"));
+        r.headers_mut()
+            .insert(header::ALLOW, "POST".parse().expect("static"));
         return r;
     }
     let (parts, body) = req.into_parts();
     // DNS rebinding guard: every name the request carries must be ours.
-    let host = parts.headers.get(header::HOST).map(|v| v.to_str().map(str::to_owned));
+    let host = parts
+        .headers
+        .get(header::HOST)
+        .map(|v| v.to_str().map(str::to_owned));
     let authority = parts.uri.authority().map(|a| a.as_str().to_owned());
     let host_ok = (host.is_some() || authority.is_some())
-        && host.as_ref().is_none_or(|h| h.as_ref().is_ok_and(|h| st.policy.host_allowed(h)))
+        && host
+            .as_ref()
+            .is_none_or(|h| h.as_ref().is_ok_and(|h| st.policy.host_allowed(h)))
         && authority.as_ref().is_none_or(|a| st.policy.host_allowed(a));
     if !host_ok {
         return plain(StatusCode::MISDIRECTED_REQUEST);
@@ -350,11 +394,20 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
     }
     let Some(who) = parts.extensions.get::<McpPrincipal>().cloned() else {
         let mut r = plain(StatusCode::UNAUTHORIZED);
-        r.headers_mut().insert(header::WWW_AUTHENTICATE, "Bearer".parse().expect("static"));
+        r.headers_mut()
+            .insert(header::WWW_AUTHENTICATE, "Bearer".parse().expect("static"));
         return r;
     };
-    let ct = parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !ct.trim().to_ascii_lowercase().starts_with("application/json") {
+    let ct = parts
+        .headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !ct
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("application/json")
+    {
         return plain(StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
     let declared = parts
@@ -371,11 +424,18 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
         Some(v) => v,
         None => match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => v,
-            Err(_) => return rpc_error(StatusCode::BAD_REQUEST, &Value::Null, -32700, "parse error"),
+            Err(_) => {
+                return rpc_error(StatusCode::BAD_REQUEST, &Value::Null, -32700, "parse error");
+            }
         },
     };
     if !msg.is_object() {
-        return rpc_error(StatusCode::BAD_REQUEST, &Value::Null, -32600, "one JSON-RPC message per request");
+        return rpc_error(
+            StatusCode::BAD_REQUEST,
+            &Value::Null,
+            -32600,
+            "one JSON-RPC message per request",
+        );
     }
     let orig_id = msg.get("id").cloned().unwrap_or(Value::Null);
     if let Err(m) = check_headers(&parts.headers, &msg) {
@@ -389,7 +449,10 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
     // its in-flight calls by id: give every call a server-unique id and restore the client's on
     // the reply, so two clients using `1` never cancel or replace each other's call.
     let is_request = orig_id.is_string() || orig_id.is_number();
-    let server_id = json!(format!("http-{}", st.next_id.fetch_add(1, Ordering::Relaxed)));
+    let server_id = json!(format!(
+        "http-{}",
+        st.next_id.fetch_add(1, Ordering::Relaxed)
+    ));
     if is_request {
         msg["id"] = server_id.clone();
     }
@@ -397,11 +460,18 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
     // every call is authorised again, so this never grants more than the listing.
     let listing_write = parts.extensions.get::<prm::ListWrite>().is_some()
         && msg.get("method").and_then(Value::as_str) == Some("tools/list");
-    let caller = Caller { principal: Some(who.id), server_write: who.write || listing_write };
+    let caller = Caller {
+        principal: Some(who.id),
+        server_write: who.write || listing_write,
+    };
     let sse = is_request && wants_sse(&parts.headers, &msg);
     let (tx, rx) = mpsc::channel::<Value>(32);
     let done = Arc::new(AtomicBool::new(false));
-    let guard = CancelOnDrop { svc: Arc::clone(&st.svc), id: server_id.clone(), done: Arc::clone(&done) };
+    let guard = CancelOnDrop {
+        svc: Arc::clone(&st.svc),
+        id: server_id.clone(),
+        done: Arc::clone(&done),
+    };
     let restore = move |mut v: Value| {
         if v.get("id") == Some(&server_id) {
             v["id"] = orig_id.clone();
@@ -429,14 +499,23 @@ async fn endpoint(State(st): State<Arc<McpState>>, req: Request<Body>) -> Respon
             let _ = tx.send(v).await;
         }
     });
-    let stream = futures::stream::unfold((rx, guard, restore), |(mut rx, guard, restore)| async move {
-        let v = rx.recv().await?;
-        let ev = format!("event: message\ndata: {}\n\n", restore(v));
-        Some((Ok::<_, std::convert::Infallible>(bytes::Bytes::from(ev)), (rx, guard, restore)))
-    });
+    let stream = futures::stream::unfold(
+        (rx, guard, restore),
+        |(mut rx, guard, restore)| async move {
+            let v = rx.recv().await?;
+            let ev = format!("event: message\ndata: {}\n\n", restore(v));
+            Some((
+                Ok::<_, std::convert::Infallible>(bytes::Bytes::from(ev)),
+                (rx, guard, restore),
+            ))
+        },
+    );
     let mut r = Response::new(Body::from_stream(stream));
     let h = r.headers_mut();
-    h.insert(header::CONTENT_TYPE, "text/event-stream".parse().expect("static"));
+    h.insert(
+        header::CONTENT_TYPE,
+        "text/event-stream".parse().expect("static"),
+    );
     h.insert(header::CACHE_CONTROL, "no-cache".parse().expect("static"));
     h.insert("x-accel-buffering", "no".parse().expect("static"));
     r

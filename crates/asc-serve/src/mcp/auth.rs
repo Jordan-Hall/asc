@@ -52,15 +52,28 @@ pub struct McpAuth {
 
 impl McpAuth {
     /// `resource_metadata` is the absolute URL of the PRM document for the 401 challenge.
-    pub fn new(authorizer: Arc<dyn Authorizer>, audit: Arc<dyn AuditSink>, resource_metadata: &str) -> Self {
-        Self { authorizer, audit, surface: Surface::Mcp { resource_metadata: resource_metadata.into() } }
+    pub fn new(
+        authorizer: Arc<dyn Authorizer>,
+        audit: Arc<dyn AuditSink>,
+        resource_metadata: &str,
+    ) -> Self {
+        Self {
+            authorizer,
+            audit,
+            surface: Surface::Mcp {
+                resource_metadata: resource_metadata.into(),
+            },
+        }
     }
 }
 
 /// Wraps `router` (the `/mcp` endpoint) in the credential edge and the per-call authorisation.
 pub fn layer(router: Router, auth: McpAuth) -> Router {
     let surface = auth.surface.clone();
-    authn::guard(router.layer(axum::middleware::from_fn_with_state(auth, authorise)), surface)
+    authn::guard(
+        router.layer(axum::middleware::from_fn_with_state(auth, authorise)),
+        surface,
+    )
 }
 
 struct Call {
@@ -77,28 +90,59 @@ fn call_of(msg: &Value) -> Option<Result<Call, (&'static str, Call)>> {
         return None;
     }
     let id = msg.get("id").cloned().unwrap_or(Value::Null);
-    let tool = msg.pointer("/params/name").and_then(Value::as_str).unwrap_or("-").to_owned();
-    let bad = |m, tool: String, id| Some(Err((m, Call { tool, repo: None, mode: Mode::Read, id })));
+    let tool = msg
+        .pointer("/params/name")
+        .and_then(Value::as_str)
+        .unwrap_or("-")
+        .to_owned();
+    let bad = |m, tool: String, id| {
+        Some(Err((
+            m,
+            Call {
+                tool,
+                repo: None,
+                mode: Mode::Read,
+                id,
+            },
+        )))
+    };
     let Some(def) = catalogue::find(&tool, McpSurface::Http) else {
         // An unknown tool is refused by the handler and touches nothing.
-        return Some(Ok(Call { tool, repo: None, mode: Mode::Read, id }));
+        return Some(Ok(Call {
+            tool,
+            repo: None,
+            mode: Mode::Read,
+            id,
+        }));
     };
-    let mode = if def.ann.read_only { Mode::Read } else { Mode::Write };
-    let takes_repo =
-        serde_json::from_str::<Value>(def.input_http).is_ok_and(|s| s.pointer("/properties/repo").is_some());
+    let mode = if def.ann.read_only {
+        Mode::Read
+    } else {
+        Mode::Write
+    };
+    let takes_repo = serde_json::from_str::<Value>(def.input_http)
+        .is_ok_and(|s| s.pointer("/properties/repo").is_some());
     let repo = match msg.pointer("/params/arguments/repo") {
         Some(Value::String(r)) => Some(r.clone()),
         Some(_) => return bad("repo must be a string", tool, id),
         None if takes_repo => return bad("repo (owner/name) is required", tool, id),
         None => None,
     };
-    Some(Ok(Call { tool, repo, mode, id }))
+    Some(Ok(Call {
+        tool,
+        repo,
+        mode,
+        id,
+    }))
 }
 
 fn json_response(status: StatusCode, v: &Value) -> Response {
     let mut r = Response::new(Body::from(v.to_string()));
     *r.status_mut() = status;
-    r.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    r.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
     r
 }
 
@@ -117,13 +161,19 @@ fn invalid_params(id: &Value, message: &str) -> Response {
 
 fn not_found(id: &Value) -> Response {
     let result = ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND).to_result();
-    json_response(StatusCode::OK, &json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+    json_response(
+        StatusCode::OK,
+        &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+    )
 }
 
 fn insufficient_scope(surface: &Surface) -> Response {
     let meta = match surface {
         Surface::Mcp { resource_metadata } => {
-            format!(", resource_metadata=\"{}\"", resource_metadata.replace(['"', '\\', '\r', '\n'], ""))
+            format!(
+                ", resource_metadata=\"{}\"",
+                resource_metadata.replace(['"', '\\', '\r', '\n'], "")
+            )
         }
         Surface::Api => String::new(),
     };
@@ -131,7 +181,9 @@ fn insufficient_scope(surface: &Surface) -> Response {
         StatusCode::FORBIDDEN,
         &json!({ "error": { "code": "insufficient_scope", "message": "write access is required" } }),
     );
-    if let Ok(v) = HeaderValue::from_str(&format!("Bearer error=\"insufficient_scope\", scope=\"asc:write\"{meta}")) {
+    if let Ok(v) = HeaderValue::from_str(&format!(
+        "Bearer error=\"insufficient_scope\", scope=\"asc:write\"{meta}"
+    )) {
         r.headers_mut().insert(header::WWW_AUTHENTICATE, v);
     }
     r
@@ -165,10 +217,13 @@ async fn identify(
 ) -> Result<Principal, (Outcome, Response)> {
     match auth.authorizer.authenticate(Some(credential)).await {
         Ok(p) => Ok(p),
-        Err(AuthError::Malformed) => Err((Outcome::BadRequest, status_only(StatusCode::BAD_REQUEST))),
-        Err(AuthError::Unauthenticated | AuthError::Forbidden) => {
-            Err((Outcome::Unauthenticated, authn::unauthorized(&auth.surface, headers)))
+        Err(AuthError::Malformed) => {
+            Err((Outcome::BadRequest, status_only(StatusCode::BAD_REQUEST)))
         }
+        Err(AuthError::Unauthenticated | AuthError::Forbidden) => Err((
+            Outcome::Unauthenticated,
+            authn::unauthorized(&auth.surface, headers),
+        )),
     }
 }
 
@@ -212,16 +267,25 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
     let mut closing: Option<Call> = None;
     match call {
         None => match identify(&auth, &credential, &parts.headers).await {
-            Ok(p) => principal = McpPrincipal { id: p.id, write: false },
+            Ok(p) => {
+                principal = McpPrincipal {
+                    id: p.id,
+                    write: false,
+                }
+            }
             Err((_, res)) => return res,
         },
         Some(Err((m, c))) => {
             record(&auth, None, &c, Outcome::BadRequest, started);
             return invalid_params(&c.id, m);
         }
-        Some(Ok(c)) if c.repo.is_none() => match identify(&auth, &credential, &parts.headers).await {
+        Some(Ok(c)) if c.repo.is_none() => match identify(&auth, &credential, &parts.headers).await
+        {
             Ok(p) => {
-                principal = McpPrincipal { id: p.id, write: false };
+                principal = McpPrincipal {
+                    id: p.id,
+                    write: false,
+                };
                 closing = Some(c);
             }
             Err((outcome, res)) => {
@@ -231,9 +295,16 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
         },
         Some(Ok(c)) => {
             let repo = c.repo.as_deref().unwrap_or_default();
-            match auth.authorizer.authorize_credential(Some(&credential), repo, access_of(c.mode)).await {
+            match auth
+                .authorizer
+                .authorize_credential(Some(&credential), repo, access_of(c.mode))
+                .await
+            {
                 Ok(p) => {
-                    principal = McpPrincipal { id: p.id, write: c.mode == Mode::Write };
+                    principal = McpPrincipal {
+                        id: p.id,
+                        write: c.mode == Mode::Write,
+                    };
                     closing = Some(c);
                 }
                 Err(AuthError::Unauthenticated) => {
@@ -247,7 +318,11 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
                 Err(AuthError::Forbidden) => {
                     // Only "may read, may not write" is a 403; "may not read" looks like a miss.
                     let can_read = c.mode == Mode::Write
-                        && auth.authorizer.authorize_credential(Some(&credential), repo, Access::Read).await.is_ok();
+                        && auth
+                            .authorizer
+                            .authorize_credential(Some(&credential), repo, Access::Read)
+                            .await
+                            .is_ok();
                     if can_read {
                         record(&auth, None, &c, Outcome::InsufficientScope, started);
                         return insufficient_scope(&auth.surface);
@@ -266,7 +341,13 @@ async fn authorise(State(auth): State<McpAuth>, req: Request, next: Next) -> Res
     req.extensions_mut().insert(principal);
     let res = next.run(req).await;
     if let Some(c) = closing {
-        record(&auth, who, &c, Outcome::Allowed(res.status().as_u16()), started);
+        record(
+            &auth,
+            who,
+            &c,
+            Outcome::Allowed(res.status().as_u16()),
+            started,
+        );
     }
     res
 }

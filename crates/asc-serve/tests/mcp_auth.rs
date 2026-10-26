@@ -35,8 +35,15 @@ struct Stub;
 
 #[async_trait::async_trait]
 impl McpBackend for Stub {
-    async fn call(&self, tool: &str, _args: &Value, _ctx: &CallContext) -> Result<Reply, ToolError> {
-        Ok(Reply::Messages(Box::pin(futures::stream::iter(vec![Ok(json!({ "tool": tool }))]))))
+    async fn call(
+        &self,
+        tool: &str,
+        _args: &Value,
+        _ctx: &CallContext,
+    ) -> Result<Reply, ToolError> {
+        Ok(Reply::Messages(Box::pin(futures::stream::iter(vec![Ok(
+            json!({ "tool": tool }),
+        )]))))
     }
 }
 
@@ -54,12 +61,20 @@ fn authz() -> Arc<dyn Authorizer> {
 
 /// The endpoint behind M29's layer and M13's scope layer, plus the public metadata routes.
 fn app() -> Router {
-    let handler = Handler::new(Stub, HandlerConfig::new(Surface::Http), KeyRing::random().unwrap());
+    let handler = Handler::new(
+        Stub,
+        HandlerConfig::new(Surface::Http),
+        KeyRing::random().unwrap(),
+    );
     let a = authz();
     let mcp = scope_layer(
         layer(
             mcp::router(handler, policy()),
-            McpAuth::new(a.clone(), Arc::new(MemoryAudit::default()), &metadata_url(PUBLIC)),
+            McpAuth::new(
+                a.clone(),
+                Arc::new(MemoryAudit::default()),
+                &metadata_url(PUBLIC),
+            ),
         ),
         a,
     );
@@ -80,42 +95,78 @@ async fn post(app: &Router, token: Option<&str>, body: &Value) -> Response<Body>
     if let Some(t) = token {
         b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
     }
-    app.clone().oneshot(b.body(Body::from(body.to_string())).unwrap()).await.unwrap()
+    app.clone()
+        .oneshot(b.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap()
 }
 
 async fn get(app: &Router, uri: &str, host: &str) -> Response<Body> {
-    let req = Request::builder().uri(uri).header(header::HOST, host).body(Body::empty()).unwrap();
+    let req = Request::builder()
+        .uri(uri)
+        .header(header::HOST, host)
+        .body(Body::empty())
+        .unwrap();
     app.clone().oneshot(req).await.unwrap()
 }
 
 async fn json_of(r: Response<Body>) -> Value {
-    serde_json::from_slice(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+    serde_json::from_slice(
+        &axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn challenges(r: &Response<Body>) -> Vec<String> {
-    r.headers().get_all(header::WWW_AUTHENTICATE).iter().map(|v| v.to_str().unwrap().to_owned()).collect()
+    r.headers()
+        .get_all(header::WWW_AUTHENTICATE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_owned())
+        .collect()
 }
 
 async fn tool_names(r: Response<Body>) -> Vec<String> {
     assert_eq!(r.status(), StatusCode::OK);
     let v = json_of(r).await;
-    v["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect()
+    v["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 fn call(tool: &str) -> Value {
-    rpc("tools/call", json!({ "name": tool, "arguments": { "repo": "acme/widgets", "changes": ["c1"] } }))
+    rpc(
+        "tools/call",
+        json!({ "name": tool, "arguments": { "repo": "acme/widgets", "changes": ["c1"] } }),
+    )
 }
 
 #[tokio::test]
 async fn no_token_is_401_with_basic_first_and_a_bearer_challenge_with_resource_metadata() {
     let app = app();
-    for body in [call("log"), rpc("tools/list", json!({})), rpc("server/discover", json!({}))] {
+    for body in [
+        call("log"),
+        rpc("tools/list", json!({})),
+        rpc("server/discover", json!({})),
+    ] {
         let r = post(&app, None, &body).await;
         assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{body}");
         let www = challenges(&r);
-        assert!(www[0].starts_with("Basic realm=\"asc asc.example.org\""), "{www:?}");
+        assert!(
+            www[0].starts_with("Basic realm=\"asc asc.example.org\""),
+            "{www:?}"
+        );
         let want = format!("resource_metadata=\"{}\"", metadata_url(PUBLIC));
-        assert!(www.iter().any(|c| c.starts_with("Bearer") && c.contains(&want) && c.contains("scope=\"asc:read\"")), "{www:?}");
+        assert!(
+            www.iter().any(|c| c.starts_with("Bearer")
+                && c.contains(&want)
+                && c.contains("scope=\"asc:read\"")),
+            "{www:?}"
+        );
     }
     // A wrong token is the same 401 for a repo-free message.
     let r = post(&app, Some("nope"), &call("log")).await;
@@ -128,7 +179,10 @@ async fn too_little_access_is_403_insufficient_scope() {
     let r = post(&app, Some(READ_TOKEN), &call("submit")).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let www = challenges(&r).join(" | ");
-    assert!(www.contains("insufficient_scope") && www.contains("asc:write"), "{www}");
+    assert!(
+        www.contains("insufficient_scope") && www.contains("asc:write"),
+        "{www}"
+    );
     let r = post(&app, Some(WRITE_TOKEN), &call("submit")).await;
     assert_eq!(r.status(), StatusCode::OK);
 }
@@ -146,16 +200,26 @@ async fn the_metadata_document_is_public_at_both_paths_with_no_issuers() {
         assert_eq!(v["authorization_servers"], json!([]));
         assert_eq!(v["scopes_supported"], json!(["asc:read", "asc:write"]));
         let text = v.to_string();
-        assert!(!text.contains("orgejo") && !text.contains("token"), "{text}");
+        assert!(
+            !text.contains("orgejo") && !text.contains("token"),
+            "{text}"
+        );
     }
 }
 
 #[tokio::test]
 async fn configured_issuers_are_listed_and_an_unknown_host_is_refused() {
-    let prm_app = prm::router(Prm::new(None, vec!["https://idp.example.com".into()], policy()));
+    let prm_app = prm::router(Prm::new(
+        None,
+        vec!["https://idp.example.com".into()],
+        policy(),
+    ));
     let r = get(&prm_app, prm::PRM_PATHS[0], HOST).await;
     let v = json_of(r).await;
-    assert_eq!(v["authorization_servers"], json!(["https://idp.example.com"]));
+    assert_eq!(
+        v["authorization_servers"],
+        json!(["https://idp.example.com"])
+    );
     assert_eq!(v["resource"], "https://asc.example.org/mcp");
     // Without `public_url` the document never echoes a Host the server does not own.
     let r = get(&prm_app, prm::PRM_PATHS[1], "evil.example.net").await;
@@ -185,16 +249,30 @@ async fn a_read_only_principals_tools_list_has_no_write_tool() {
     let write_tools = ["submit", "commit", "rebase", "restack"];
     // Read token, with and without a repo hint: the read view.
     for params in [json!({}), json!({ "repo": "acme/widgets" })] {
-        let names = tool_names(post(&app, Some(READ_TOKEN), &rpc("tools/list", params)).await).await;
+        let names =
+            tool_names(post(&app, Some(READ_TOKEN), &rpc("tools/list", params)).await).await;
         assert!(names.contains(&"log".to_owned()), "{names:?}");
-        assert!(write_tools.iter().all(|w| !names.contains(&(*w).to_owned())), "{names:?}");
+        assert!(
+            write_tools
+                .iter()
+                .all(|w| !names.contains(&(*w).to_owned())),
+            "{names:?}"
+        );
     }
     // A write token that names no repo gets the read view too: the list never guesses a grant.
-    let names = tool_names(post(&app, Some(WRITE_TOKEN), &rpc("tools/list", json!({}))).await).await;
+    let names =
+        tool_names(post(&app, Some(WRITE_TOKEN), &rpc("tools/list", json!({}))).await).await;
     assert!(!names.contains(&"submit".to_owned()), "{names:?}");
     // A write token naming a repo it may write sees the write tools.
-    let names =
-        tool_names(post(&app, Some(WRITE_TOKEN), &rpc("tools/list", json!({ "repo": "acme/widgets" }))).await).await;
+    let names = tool_names(
+        post(
+            &app,
+            Some(WRITE_TOKEN),
+            &rpc("tools/list", json!({ "repo": "acme/widgets" })),
+        )
+        .await,
+    )
+    .await;
     assert!(names.contains(&"submit".to_owned()), "{names:?}");
 }
 
@@ -202,18 +280,33 @@ async fn a_read_only_principals_tools_list_has_no_write_tool() {
 async fn a_stale_list_never_grants_a_call() {
     let app = app();
     // The writer's list shows `submit` ...
-    let names =
-        tool_names(post(&app, Some(WRITE_TOKEN), &rpc("tools/list", json!({ "repo": "acme/widgets" }))).await).await;
+    let names = tool_names(
+        post(
+            &app,
+            Some(WRITE_TOKEN),
+            &rpc("tools/list", json!({ "repo": "acme/widgets" })),
+        )
+        .await,
+    )
+    .await;
     assert!(names.contains(&"submit".to_owned()));
     // ... a read-only token that replays the call still gets 403: the call is authorised again,
     // and the list's write view does not carry over to a call.
     let r = post(&app, Some(READ_TOKEN), &call("submit")).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     // A forged repo hint on a list does not widen a read token's list or its calls.
-    let r = post(&app, Some(READ_TOKEN), &rpc("tools/list", json!({ "repo": "acme/widgets" }))).await;
+    let r = post(
+        &app,
+        Some(READ_TOKEN),
+        &rpc("tools/list", json!({ "repo": "acme/widgets" })),
+    )
+    .await;
     assert!(!tool_names(r).await.contains(&"submit".to_owned()));
     // A `tools/call` carrying `params.repo` gets no write view either.
-    let sneaky = rpc("tools/call", json!({ "name": "submit", "repo": "acme/widgets", "arguments": { "repo": "acme/widgets", "changes": ["c"] } }));
+    let sneaky = rpc(
+        "tools/call",
+        json!({ "name": "submit", "repo": "acme/widgets", "arguments": { "repo": "acme/widgets", "changes": ["c"] } }),
+    );
     let r = post(&app, Some(READ_TOKEN), &sneaky).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
 }

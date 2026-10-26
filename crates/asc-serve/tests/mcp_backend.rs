@@ -38,16 +38,33 @@ struct Fake(Arc<Seen>);
 
 #[async_trait]
 impl InsightsHandler for Fake {
-    async fn compare(&self, ctx: &CallCtx, _req: CompareRequest) -> Result<CompareResponse, Status> {
-        self.0.compares.lock().unwrap().push((ctx.principal.id.clone(), ctx.id_mode, ctx.repo.as_str().to_owned()));
-        Ok(CompareResponse { ahead: 3, ..CompareResponse::default() })
+    async fn compare(
+        &self,
+        ctx: &CallCtx,
+        _req: CompareRequest,
+    ) -> Result<CompareResponse, Status> {
+        self.0.compares.lock().unwrap().push((
+            ctx.principal.id.clone(),
+            ctx.id_mode,
+            ctx.repo.as_str().to_owned(),
+        ));
+        Ok(CompareResponse {
+            ahead: 3,
+            ..CompareResponse::default()
+        })
     }
 }
 
 #[async_trait]
 impl ReadsHandler for Fake {
-    async fn grep(&self, _ctx: &CallCtx, _req: GrepRequest) -> Result<RpcStream<GrepResponse>, Status> {
-        Ok(futures::stream::iter(vec![Ok(GrepResponse::default())]).chain(futures::stream::pending()).boxed())
+    async fn grep(
+        &self,
+        _ctx: &CallCtx,
+        _req: GrepRequest,
+    ) -> Result<RpcStream<GrepResponse>, Status> {
+        Ok(futures::stream::iter(vec![Ok(GrepResponse::default())])
+            .chain(futures::stream::pending())
+            .boxed())
     }
 }
 
@@ -75,15 +92,31 @@ fn rig_with(limits: &Limits, max_inflight: u32) -> Rig {
     handlers.set_reads(fake).unwrap();
     // The public authorizer refuses every real token: only per-call credentials get in.
     let scope = ServeAuthorizer::new(Arc::new(StaticTokens::new()));
-    let routes = Routes::new(RepoService::new(handlers, scope.clone(), ServerInfo::default()).into_service());
-    let gate = Gate(
-        [("alice", "acme/app"), ("alice", "acme/other"), ("bob", "acme/app")]
-            .into_iter()
-            .map(|(p, r)| (p.to_owned(), r.to_owned()))
-            .collect(),
+    let routes = Routes::new(
+        RepoService::new(handlers, scope.clone(), ServerInfo::default()).into_service(),
     );
-    let backend = ServeBackend::new(routes.clone(), scope, Arc::new(gate), Arc::new(Admission::new(limits)), max_inflight);
-    Rig { backend, seen, routes }
+    let gate = Gate(
+        [
+            ("alice", "acme/app"),
+            ("alice", "acme/other"),
+            ("bob", "acme/app"),
+        ]
+        .into_iter()
+        .map(|(p, r)| (p.to_owned(), r.to_owned()))
+        .collect(),
+    );
+    let backend = ServeBackend::new(
+        routes.clone(),
+        scope,
+        Arc::new(gate),
+        Arc::new(Admission::new(limits)),
+        max_inflight,
+    );
+    Rig {
+        backend,
+        seen,
+        routes,
+    }
 }
 
 fn rig() -> Rig {
@@ -118,20 +151,31 @@ fn err_json(e: &ToolError) -> (String, String) {
 #[tokio::test]
 async fn a_read_tool_runs_through_the_handlers_with_git_ids() {
     let r = rig();
-    let reply = r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap();
+    let reply = r
+        .backend
+        .call("compare", &compare("acme/app"), &ctx("alice"))
+        .await
+        .unwrap();
     let out = drain(reply).await;
     assert_eq!(out.len(), 1);
     assert_eq!(out[0]["ahead"], json!(3));
     let seen = r.seen.compares.lock().unwrap().clone();
     // The handler authorised the call as the principal, on the gated repository, in git id mode.
-    assert_eq!(seen, vec![("alice".to_owned(), IdMode::Git, "acme/app".to_owned())]);
+    assert_eq!(
+        seen,
+        vec![("alice".to_owned(), IdMode::Git, "acme/app".to_owned())]
+    );
 }
 
 #[tokio::test]
 async fn the_repo_argument_cannot_widen_the_gate() {
     let r = rig();
     // bob may read acme/app only: acme/other is refused before any handler runs.
-    let e = r.backend.call("compare", &compare("acme/other"), &ctx("bob")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &compare("acme/other"), &ctx("bob"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "NOT_FOUND");
     assert!(r.seen.compares.lock().unwrap().is_empty());
 }
@@ -140,8 +184,16 @@ async fn the_repo_argument_cannot_widen_the_gate() {
 async fn an_unreadable_repo_answers_the_same_not_found_as_a_missing_one() {
     let r = rig();
     // `acme/secret` is not readable by bob; `acme/nope` does not exist. Same code, same text.
-    let unreadable = r.backend.call("compare", &compare("acme/other"), &ctx("bob")).await.unwrap_err();
-    let missing = r.backend.call("compare", &compare("acme/nope"), &ctx("bob")).await.unwrap_err();
+    let unreadable = r
+        .backend
+        .call("compare", &compare("acme/other"), &ctx("bob"))
+        .await
+        .unwrap_err();
+    let missing = r
+        .backend
+        .call("compare", &compare("acme/nope"), &ctx("bob"))
+        .await
+        .unwrap_err();
     assert_eq!(unreadable.code, "NOT_FOUND");
     assert_eq!(err_json(&unreadable), err_json(&missing));
     assert!(r.seen.compares.lock().unwrap().is_empty());
@@ -152,11 +204,23 @@ async fn a_call_needs_a_principal_and_a_valid_repo() {
     let r = rig();
     let mut anon = ctx("alice");
     anon.principal = None;
-    let e = r.backend.call("compare", &compare("acme/app"), &anon).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &compare("acme/app"), &anon)
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "UNAUTHENTICATED");
-    let e = r.backend.call("compare", &compare("../etc"), &ctx("alice")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &compare("../etc"), &ctx("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "INVALID_ARGUMENT");
-    let e = r.backend.call("compare", &json!({"a": "x", "b": "y"}), &ctx("alice")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &json!({"a": "x", "b": "y"}), &ctx("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "INVALID_ARGUMENT");
 }
 
@@ -164,7 +228,11 @@ async fn a_call_needs_a_principal_and_a_valid_repo() {
 async fn write_tools_and_workspace_tools_are_not_served() {
     let r = rig();
     for tool in ["commit", "rebase", "status", "no_such_tool"] {
-        let e = r.backend.call(tool, &json!({"repo": "acme/app"}), &ctx("alice")).await.unwrap_err();
+        let e = r
+            .backend
+            .call(tool, &json!({"repo": "acme/app"}), &ctx("alice"))
+            .await
+            .unwrap_err();
         assert_eq!(e.code, "NOT_AVAILABLE", "{tool}");
     }
 }
@@ -174,16 +242,31 @@ async fn eight_in_flight_calls_per_principal_then_rate_limited() {
     let r = rig();
     let mut held = Vec::new();
     for _ in 0..8 {
-        held.push(r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap());
+        held.push(
+            r.backend
+                .call("compare", &compare("acme/app"), &ctx("alice"))
+                .await
+                .unwrap(),
+        );
     }
-    let e = r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &compare("acme/app"), &ctx("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "RATE_LIMITED");
     assert!(e.retry_after_ms.is_some());
     // Another principal has slots of its own.
-    r.backend.call("compare", &compare("acme/app"), &ctx("bob")).await.unwrap();
+    r.backend
+        .call("compare", &compare("acme/app"), &ctx("bob"))
+        .await
+        .unwrap();
     // A finished call frees its slot.
     drop(held.pop());
-    r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap();
+    r.backend
+        .call("compare", &compare("acme/app"), &ctx("alice"))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -198,13 +281,23 @@ async fn each_call_is_charged_to_its_rate_class() {
 
     // Observable charge: with one expensive slot per principal, a second open `grep` is refused
     // while a cheap `compare` of the same principal still runs.
-    let limits = Limits { expensive_per_principal: 1, ..Limits::default() };
+    let limits = Limits {
+        expensive_per_principal: 1,
+        ..Limits::default()
+    };
     let r = rig_with(&limits, 8);
     let grep = json!({ "repo": "acme/app", "rev": "main", "pattern": "x" });
     let first = r.backend.call("grep", &grep, &ctx("alice")).await.unwrap();
-    let e = r.backend.call("grep", &grep, &ctx("alice")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("grep", &grep, &ctx("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "RATE_LIMITED");
-    r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap();
+    r.backend
+        .call("compare", &compare("acme/app"), &ctx("alice"))
+        .await
+        .unwrap();
     // Another principal is not affected.
     r.backend.call("grep", &grep, &ctx("bob")).await.unwrap();
     drop(first);
@@ -213,12 +306,26 @@ async fn each_call_is_charged_to_its_rate_class() {
 
 #[tokio::test]
 async fn a_spent_cheap_bucket_refuses_with_a_retry_hint() {
-    let limits = Limits { cheap_rps: 1, cheap_burst: 2, ..Limits::default() };
+    let limits = Limits {
+        cheap_rps: 1,
+        cheap_burst: 2,
+        ..Limits::default()
+    };
     let r = rig_with(&limits, 8);
     for _ in 0..2 {
-        drain(r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap()).await;
+        drain(
+            r.backend
+                .call("compare", &compare("acme/app"), &ctx("alice"))
+                .await
+                .unwrap(),
+        )
+        .await;
     }
-    let e = r.backend.call("compare", &compare("acme/app"), &ctx("alice")).await.unwrap_err();
+    let e = r
+        .backend
+        .call("compare", &compare("acme/app"), &ctx("alice"))
+        .await
+        .unwrap_err();
     assert_eq!(e.code, "RATE_LIMITED");
     assert!(e.retry_after_ms.unwrap_or(0) > 0);
 }
@@ -227,7 +334,12 @@ async fn a_spent_cheap_bucket_refuses_with_a_retry_hint() {
 async fn version_features_list_the_json_profile() {
     let r = rig();
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap();
-    let m = pool.get_service_by_name("asc.v1.Repo").unwrap().methods().find(|m| m.name() == "Version").unwrap();
+    let m = pool
+        .get_service_by_name("asc.v1.Repo")
+        .unwrap()
+        .methods()
+        .find(|m| m.name() == "Version")
+        .unwrap();
     let mut grpc = Grpc::new(r.routes.clone());
     grpc.ready().await.unwrap();
     let resp = grpc
@@ -240,7 +352,12 @@ async fn version_features_list_the_json_profile() {
         .unwrap()
         .into_inner();
     let v = asc_rpc::json::encode(&resp).unwrap();
-    let features: Vec<&str> = v["features"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    let features: Vec<&str> = v["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
     assert!(features.contains(&"json.profile.v1"), "{features:?}");
 }
 
@@ -248,18 +365,37 @@ async fn version_features_list_the_json_profile() {
 async fn the_public_routes_do_not_accept_a_forged_call_credential() {
     let r = rig();
     let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).unwrap();
-    let m = pool.get_service_by_name("asc.v1.Repo").unwrap().methods().find(|m| m.name() == "Compare").unwrap();
+    let m = pool
+        .get_service_by_name("asc.v1.Repo")
+        .unwrap()
+        .methods()
+        .find(|m| m.name() == "Compare")
+        .unwrap();
     for token in ["ascmcp.0000.1", "ascmcp.", "ascmcp", "anything"] {
         let mut req_msg = DynamicMessage::new(m.input());
-        let repo_desc = m.input().get_field_by_name("repo").unwrap().kind().as_message().unwrap().clone();
+        let repo_desc = m
+            .input()
+            .get_field_by_name("repo")
+            .unwrap()
+            .kind()
+            .as_message()
+            .unwrap()
+            .clone();
         let mut repo = DynamicMessage::new(repo_desc);
         repo.set_field_by_name("name", prost_reflect::Value::String("acme/app".into()));
         req_msg.set_field_by_name("repo", prost_reflect::Value::Message(repo));
         let mut req = Request::new(req_msg);
-        req.metadata_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        req.metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
         let mut grpc = Grpc::new(r.routes.clone());
         grpc.ready().await.unwrap();
-        let res = grpc.unary(req, "/asc.v1.Repo/Compare".parse().unwrap(), DynCodec::new(m.output())).await;
+        let res = grpc
+            .unary(
+                req,
+                "/asc.v1.Repo/Compare".parse().unwrap(),
+                DynCodec::new(m.output()),
+            )
+            .await;
         assert!(res.is_err(), "{token} was accepted");
     }
     assert!(r.seen.compares.lock().unwrap().is_empty());

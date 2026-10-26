@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use asc_core::id::FileId;
+use asc_core::transport_policy::Policy;
 use asc_rpc::auth::{Access, BearerToken, StaticTokens};
 use asc_rpc::client::{CallError, RpcClient, channel_with};
 use asc_rpc::server::RepoName;
-use asc_core::transport_policy::Policy;
 use asc_serve::config::ServeConfig;
 use asc_serve::migrate;
 use asc_serve::registry::{NewRepo, Registry};
@@ -56,7 +56,10 @@ fn fwd(p: &std::path::Path) -> String {
 async fn rig() -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let db = format!("sqlite:{}?mode=rwc", fwd(&dir.path().join("asc.db")));
-    let store = format!("file:///{}", fwd(&dir.path().join("bucket")).trim_start_matches('/'));
+    let store = format!(
+        "file:///{}",
+        fwd(&dir.path().join("bucket")).trim_start_matches('/')
+    );
     std::fs::create_dir_all(dir.path().join("bucket")).unwrap();
     {
         let pool = migrate::connect(&db, 1).await.unwrap();
@@ -149,12 +152,18 @@ async fn objects_follow_the_authorizer_and_the_namespace() {
     let rig = rig().await;
     let writer = client(&rig, REPO, WRITE);
     let (key, value) = file(b"secret\n");
-    writer.put_objects(vec![(key, value.clone())]).await.unwrap();
+    writer
+        .put_objects(vec![(key, value.clone())])
+        .await
+        .unwrap();
 
     // A read-only token reads but cannot upload.
     let reader = client(&rig, REPO, READ);
     assert_eq!(reader.has_objects(&[key]).await.unwrap(), [true]);
-    assert_eq!(reader.objects().get_stored(&key).await.unwrap(), Some(value));
+    assert_eq!(
+        reader.objects().get_stored(&key).await.unwrap(),
+        Some(value)
+    );
     let denied = reader
         .put_objects(vec![file(b"read-only upload\n")])
         .await

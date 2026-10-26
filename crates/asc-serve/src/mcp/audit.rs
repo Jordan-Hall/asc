@@ -82,7 +82,10 @@ pub struct MemoryAudit {
 impl MemoryAudit {
     #[must_use]
     pub fn records(&self) -> Vec<AuditRecord> {
-        self.records.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        self.records
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 

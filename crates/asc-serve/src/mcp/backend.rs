@@ -32,13 +32,18 @@ use asc_mcp::errors::{ToolError, code};
 use asc_mcp::rpc_backend::DynCodec;
 use asc_mcp::schema::Surface;
 use asc_rpc::IdMode;
-use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshIdentity, SshKey};
+use asc_rpc::auth::{
+    Access, AuthError, Authorizer, BearerToken, Credential, Decision, Principal, SshIdentity,
+    SshKey,
+};
 use asc_rpc::json;
 use asc_rpc::retry::retry_after;
 use asc_rpc::server::{RepoName, status_rpc_error};
 use futures::StreamExt as _;
 use futures::stream::{self, BoxStream};
-use prost_reflect::{DescriptorPool, DynamicMessage, Kind, MethodDescriptor, ReflectMessage as _, Value as PbValue};
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, Kind, MethodDescriptor, ReflectMessage as _, Value as PbValue,
+};
 use serde_json::{Map, Value};
 use tonic::client::Grpc;
 use tonic::codegen::http::uri::PathAndQuery;
@@ -117,7 +122,12 @@ impl ServeAuthorizer {
             let _ = write!(s, "{b:02x}");
             s
         });
-        Arc::new(Self { inner, secret, next: AtomicU64::new(1), grants: Mutex::new(HashMap::new()) })
+        Arc::new(Self {
+            inner,
+            secret,
+            next: AtomicU64::new(1),
+            grants: Mutex::new(HashMap::new()),
+        })
     }
 
     pub(super) fn mint(self: &Arc<Self>, principal: &str, repo: &str, access: Access) -> CallGrant {
@@ -125,8 +135,19 @@ impl ServeAuthorizer {
         self.grants
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, Grant { access, principal: principal.to_owned(), repo: repo.to_owned() });
-        CallGrant { owner: Arc::clone(self), id, token: format!("{CALL_PREFIX}.{}.{id}", self.secret) }
+            .insert(
+                id,
+                Grant {
+                    access,
+                    principal: principal.to_owned(),
+                    repo: repo.to_owned(),
+                },
+            );
+        CallGrant {
+            owner: Arc::clone(self),
+            id,
+            token: format!("{CALL_PREFIX}.{}.{id}", self.secret),
+        }
     }
 
     /// The grant a per-call credential names. `None` when `token` is not one of ours; `Some(None)`
@@ -138,10 +159,13 @@ impl ServeAuthorizer {
             // Not ours: the real authorizer decides (and will refuse it).
             return None;
         }
-        let grant = id
-            .parse::<u64>()
-            .ok()
-            .and_then(|id| self.grants.lock().unwrap_or_else(PoisonError::into_inner).get(&id).cloned());
+        let grant = id.parse::<u64>().ok().and_then(|id| {
+            self.grants
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&id)
+                .cloned()
+        });
         Some(grant)
     }
 
@@ -151,7 +175,9 @@ impl ServeAuthorizer {
         if access > grant.access || grant.repo != repo {
             return Err(AuthError::Forbidden);
         }
-        Ok(Principal { id: grant.principal })
+        Ok(Principal {
+            id: grant.principal,
+        })
     }
 }
 
@@ -168,13 +194,22 @@ pub(super) struct CallGrant {
 
 impl Drop for CallGrant {
     fn drop(&mut self) {
-        self.owner.grants.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+        self.owner
+            .grants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
     }
 }
 
 #[async_trait]
 impl Authorizer for ServeAuthorizer {
-    async fn authorize(&self, token: Option<&BearerToken>, repo: &str, access: Access) -> Result<Principal, AuthError> {
+    async fn authorize(
+        &self,
+        token: Option<&BearerToken>,
+        repo: &str,
+        access: Access,
+    ) -> Result<Principal, AuthError> {
         if let Some(grant) = token.and_then(|t| self.lookup(t.expose())) {
             return Self::decide(grant, repo, access);
         }
@@ -190,7 +225,9 @@ impl Authorizer for ServeAuthorizer {
         if let Some(grant) = credential.and_then(|c| self.lookup(c.secret().expose())) {
             return Self::decide(grant, repo, access);
         }
-        self.inner.authorize_credential(credential, repo, access).await
+        self.inner
+            .authorize_credential(credential, repo, access)
+            .await
     }
 
     async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
@@ -201,7 +238,12 @@ impl Authorizer for ServeAuthorizer {
         self.inner.identify_ssh_key(key).await
     }
 
-    async fn authorize_ssh_key(&self, key: &SshKey, repo: &str, access: Access) -> Result<Decision, AuthError> {
+    async fn authorize_ssh_key(
+        &self,
+        key: &SshKey,
+        repo: &str,
+        access: Access,
+    ) -> Result<Decision, AuthError> {
         self.inner.authorize_ssh_key(key, repo, access).await
     }
 }
@@ -227,13 +269,20 @@ impl Inflight {
             return None;
         }
         *n += 1;
-        Some(InflightGuard { owner: Arc::clone(self), key: principal.to_owned() })
+        Some(InflightGuard {
+            owner: Arc::clone(self),
+            key: principal.to_owned(),
+        })
     }
 }
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        let mut map = self.owner.count.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut map = self
+            .owner
+            .count
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(n) = map.get_mut(&self.key) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -285,7 +334,10 @@ impl ServeBackend {
             gate,
             writes: None,
             admission,
-            inflight: Arc::new(Inflight { max: max_inflight.max(1) as usize, count: Mutex::new(HashMap::new()) }),
+            inflight: Arc::new(Inflight {
+                max: max_inflight.max(1) as usize,
+                count: Mutex::new(HashMap::new()),
+            }),
         }
     }
 
@@ -300,7 +352,10 @@ impl ServeBackend {
     /// The method a catalogue row's `rpc` names: the first alternative that is not a `Workspace`
     /// (daemon) call.
     pub(super) fn method(&self, rpc: &str) -> Option<MethodDescriptor> {
-        let alt = rpc.split(" / ").map(str::trim).find(|a| !a.starts_with("Workspace."))?;
+        let alt = rpc
+            .split(" / ")
+            .map(str::trim)
+            .find(|a| !a.starts_with("Workspace."))?;
         let (svc, method) = alt.split_once('.').unwrap_or(("Repo", alt));
         let service = self.pool.get_service_by_name(&format!("asc.v1.{svc}"))?;
         service.methods().find(|m| m.name() == method)
@@ -311,7 +366,10 @@ impl ServeBackend {
     pub fn class_of_tool(&self, tool: &str) -> Option<Class> {
         let def = catalogue::find(tool, Surface::Http)?;
         let m = self.method(def.rpc)?;
-        Some(class_of(&format!("/{}/{}", m.parent_service().full_name(), m.name())).unwrap_or(Class::Expensive))
+        Some(
+            class_of(&format!("/{}/{}", m.parent_service().full_name(), m.name()))
+                .unwrap_or(Class::Expensive),
+        )
     }
 
     pub(super) fn build(
@@ -326,16 +384,31 @@ impl ServeBackend {
         for k in PLUMBING {
             obj.remove(k);
         }
-        if method.name() == "ReadFile" && input.get_field_by_name("rev_path").is_some_and(|f| f.kind().as_message().is_none()) {
-            let rev = obj.remove("rev").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
-            let path = obj.remove("path").and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+        if method.name() == "ReadFile"
+            && input
+                .get_field_by_name("rev_path")
+                .is_some_and(|f| f.kind().as_message().is_none())
+        {
+            let rev = obj
+                .remove("rev")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            let path = obj
+                .remove("path")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
             if rev.is_empty() {
-                return Err(ToolError::new("INVALID_ARGUMENT", "read_file needs rev on a server"));
+                return Err(ToolError::new(
+                    "INVALID_ARGUMENT",
+                    "read_file needs rev on a server",
+                ));
             }
             obj.insert("rev_path".into(), Value::String(format!("{rev}:{path}")));
         }
         // A `query` wrapper takes the flat arguments its inner message knows.
-        if let Some(q) = input.get_field_by_name("query").and_then(|f| f.kind().as_message().cloned())
+        if let Some(q) = input
+            .get_field_by_name("query")
+            .and_then(|f| f.kind().as_message().cloned())
             && !obj.contains_key("query")
         {
             let mut inner = Map::new();
@@ -367,7 +440,10 @@ impl ServeBackend {
         let mut msg = json::decode(&input, &Value::Object(obj))
             .map_err(|e| ToolError::new("INVALID_ARGUMENT", format!("{}: {e}", def.name)))?;
         set_repo(&mut msg, repo);
-        if let Some(PbValue::Message(q)) = msg.get_field_by_name("query").map(std::borrow::Cow::into_owned) {
+        if let Some(PbValue::Message(q)) = msg
+            .get_field_by_name("query")
+            .map(std::borrow::Cow::into_owned)
+        {
             let mut q = q;
             set_repo(&mut q, repo);
             msg.set_field_by_name("query", PbValue::Message(q));
@@ -378,7 +454,9 @@ impl ServeBackend {
 
 /// Sets `repo` from the gated name, always with `id_mode = GIT`. The arguments never decide it.
 pub(super) fn set_repo(msg: &mut DynamicMessage, name: &str) {
-    let Some(f) = msg.descriptor().get_field_by_name("repo") else { return };
+    let Some(f) = msg.descriptor().get_field_by_name("repo") else {
+        return;
+    };
     let Kind::Message(d) = f.kind() else { return };
     let mut repo = DynamicMessage::new(d);
     repo.set_field_by_name("name", PbValue::String(name.to_owned()));
@@ -387,11 +465,16 @@ pub(super) fn set_repo(msg: &mut DynamicMessage, name: &str) {
 }
 
 pub(super) fn clean(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(MAX_ERROR_TEXT).collect()
+    s.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_ERROR_TEXT)
+        .collect()
 }
 
 fn retry_ms(s: &Status) -> u64 {
-    retry_after(s).map_or(1000, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)).max(1)
+    retry_after(s)
+        .map_or(1000, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .max(1)
 }
 
 /// Maps a handler failure to the tool error the model sees.
@@ -406,11 +489,15 @@ pub(super) fn map_status(s: &Status) -> ToolError {
     }
     let message = clean(s.message());
     match s.code() {
-        Code::NotFound | Code::PermissionDenied | Code::Unauthenticated => ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND),
-        Code::ResourceExhausted => {
-            ToolError::rate_limited(message, retry_ms(s))
+        Code::NotFound | Code::PermissionDenied | Code::Unauthenticated => {
+            ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND)
         }
-        Code::Unavailable => ToolError::not_available(if message.is_empty() { "the server is busy".into() } else { message }),
+        Code::ResourceExhausted => ToolError::rate_limited(message, retry_ms(s)),
+        Code::Unavailable => ToolError::not_available(if message.is_empty() {
+            "the server is busy".into()
+        } else {
+            message
+        }),
         Code::InvalidArgument | Code::OutOfRange => ToolError::new("INVALID_ARGUMENT", message),
         Code::Unimplemented | Code::FailedPrecondition => ToolError::not_available(message),
         Code::Cancelled => ToolError::internal("the call was cancelled"),
@@ -426,28 +513,38 @@ pub(super) fn encode_msg(m: &DynamicMessage) -> Result<Value, ToolError> {
 #[async_trait]
 impl McpBackend for ServeBackend {
     async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
-        let def = catalogue::find(tool, Surface::Http).ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
+        let def = catalogue::find(tool, Surface::Http)
+            .ok_or_else(|| ToolError::not_available(format!("{tool} is not served here")))?;
         // The server write tools (M14) have their own path. `land` is M32, `search` is M15.
         if write::is_write_tool(def) {
             return write::call(self, def, args, ctx).await;
         }
         if !def.ann.read_only || def.needs != Needs::None {
-            return Err(ToolError::not_available(format!("{tool} is not served by this endpoint")));
+            return Err(ToolError::not_available(format!(
+                "{tool} is not served by this endpoint"
+            )));
         }
-        let method = self
-            .method(def.rpc)
-            .ok_or_else(|| ToolError::not_available(format!("{tool} is not served by this endpoint")))?;
+        let method = self.method(def.rpc).ok_or_else(|| {
+            ToolError::not_available(format!("{tool} is not served by this endpoint"))
+        })?;
         let Some(principal) = ctx.principal.as_deref() else {
-            return Err(ToolError::new("UNAUTHENTICATED", "authentication is required"));
+            return Err(ToolError::new(
+                "UNAUTHENTICATED",
+                "authentication is required",
+            ));
         };
         let repo_arg = args
             .get("repo")
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::new("INVALID_ARGUMENT", "repo (owner/name) is required"))?;
-        let repo = RepoName::parse(repo_arg).map_err(|s| ToolError::new("INVALID_ARGUMENT", clean(s.message())))?;
+        let repo = RepoName::parse(repo_arg)
+            .map_err(|s| ToolError::new("INVALID_ARGUMENT", clean(s.message())))?;
 
         let slot = self.inflight.acquire(principal).ok_or_else(|| {
-            ToolError::rate_limited("too many calls in flight for this principal", INFLIGHT_RETRY_MS)
+            ToolError::rate_limited(
+                "too many calls in flight for this principal",
+                INFLIGHT_RETRY_MS,
+            )
         })?;
         if !self.gate.can_read(principal, repo.as_str()).await {
             return Err(ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND));
@@ -455,7 +552,10 @@ impl McpBackend for ServeBackend {
 
         let path = format!("/{}/{}", method.parent_service().full_name(), method.name());
         let class = class_of(&path).unwrap_or(Class::Expensive);
-        let permit = self.admission.admit(Caller::principal(principal), class, 1).map_err(|s| map_status(&s))?;
+        let permit = self
+            .admission
+            .admit(Caller::principal(principal), class, 1)
+            .map_err(|s| map_status(&s))?;
 
         let request = Self::build(def, &method, repo.as_str(), args, ctx)?;
         let grant = self.scope.mint(principal, repo.as_str(), Access::Read);
@@ -466,20 +566,34 @@ impl McpBackend for ServeBackend {
             v.set_sensitive(true);
             meta.insert("authorization", v);
         }
-        if let Ok(v) = format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>() {
+        if let Ok(v) =
+            format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>()
+        {
             meta.insert("x-asc-client", v);
         }
 
-        let uri: PathAndQuery = path.parse().map_err(|_| ToolError::internal("bad method path"))?;
-        let mut grpc = Grpc::new(self.routes.clone()).max_decoding_message_size(MAX_MESSAGE).max_encoding_message_size(MAX_MESSAGE);
+        let uri: PathAndQuery = path
+            .parse()
+            .map_err(|_| ToolError::internal("bad method path"))?;
+        let mut grpc = Grpc::new(self.routes.clone())
+            .max_decoding_message_size(MAX_MESSAGE)
+            .max_encoding_message_size(MAX_MESSAGE);
         let codec = DynCodec::new(method.output());
         let started = async {
-            grpc.ready().await.map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
+            grpc.ready()
+                .await
+                .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
             if method.is_server_streaming() {
-                let r = grpc.server_streaming(req, uri, codec).await.map_err(|s| map_status(&s))?;
+                let r = grpc
+                    .server_streaming(req, uri, codec)
+                    .await
+                    .map_err(|s| map_status(&s))?;
                 Ok::<_, ToolError>(r.into_inner().boxed())
             } else {
-                let r = grpc.unary(req, uri, codec).await.map_err(|s| map_status(&s))?;
+                let r = grpc
+                    .unary(req, uri, codec)
+                    .await
+                    .map_err(|s| map_status(&s))?;
                 Ok(stream::once(async move { Ok(r.into_inner()) }).boxed())
             }
         };
@@ -521,7 +635,11 @@ mod tests {
     use super::*;
 
     fn scope() -> Arc<ServeAuthorizer> {
-        ServeAuthorizer::new(Arc::new(StaticTokens::new().with_token("real", "carol", Access::Write)))
+        ServeAuthorizer::new(Arc::new(StaticTokens::new().with_token(
+            "real",
+            "carol",
+            Access::Write,
+        )))
     }
 
     fn tok(s: &str) -> BearerToken {
@@ -533,10 +651,22 @@ mod tests {
         let s = scope();
         let g = s.mint("alice", "acme/app", Access::Read);
         let t = tok(&g.token);
-        assert_eq!(s.authorize(Some(&t), "acme/app", Access::Read).await.unwrap().id, "alice");
+        assert_eq!(
+            s.authorize(Some(&t), "acme/app", Access::Read)
+                .await
+                .unwrap()
+                .id,
+            "alice"
+        );
         // Another repository, or more than read, is refused.
-        assert!(matches!(s.authorize(Some(&t), "acme/other", Access::Read).await, Err(AuthError::Forbidden)));
-        assert!(matches!(s.authorize(Some(&t), "acme/app", Access::Write).await, Err(AuthError::Forbidden)));
+        assert!(matches!(
+            s.authorize(Some(&t), "acme/other", Access::Read).await,
+            Err(AuthError::Forbidden)
+        ));
+        assert!(matches!(
+            s.authorize(Some(&t), "acme/app", Access::Write).await,
+            Err(AuthError::Forbidden)
+        ));
     }
 
     #[tokio::test]
@@ -546,26 +676,45 @@ mod tests {
         let id = g.id;
         // Right shape, wrong secret: handed to the real authorizer, which refuses it.
         let forged = tok(&format!("{CALL_PREFIX}.{}.{id}", "0".repeat(64)));
-        assert!(s.authorize(Some(&forged), "acme/app", Access::Read).await.is_err());
+        assert!(
+            s.authorize(Some(&forged), "acme/app", Access::Read)
+                .await
+                .is_err()
+        );
         // Right secret, an id nobody holds.
         let unknown = tok(&format!("{CALL_PREFIX}.{}.{}", s.secret, id + 1000));
-        assert!(matches!(s.authorize(Some(&unknown), "acme/app", Access::Read).await, Err(AuthError::Unauthenticated)));
+        assert!(matches!(
+            s.authorize(Some(&unknown), "acme/app", Access::Read).await,
+            Err(AuthError::Unauthenticated)
+        ));
         // Revoked when the call ends.
         let t = tok(&g.token);
         drop(g);
-        assert!(matches!(s.authorize(Some(&t), "acme/app", Access::Read).await, Err(AuthError::Unauthenticated)));
+        assert!(matches!(
+            s.authorize(Some(&t), "acme/app", Access::Read).await,
+            Err(AuthError::Unauthenticated)
+        ));
     }
 
     #[tokio::test]
     async fn real_tokens_still_go_to_the_inner_authorizer() {
         let s = scope();
-        assert_eq!(s.authorize(Some(&tok("real")), "acme/app", Access::Write).await.unwrap().id, "carol");
+        assert_eq!(
+            s.authorize(Some(&tok("real")), "acme/app", Access::Write)
+                .await
+                .unwrap()
+                .id,
+            "carol"
+        );
         assert!(s.authorize(None, "acme/app", Access::Read).await.is_err());
     }
 
     #[test]
     fn the_inflight_cap_counts_per_principal() {
-        let f = Arc::new(Inflight { max: 2, count: Mutex::new(HashMap::new()) });
+        let f = Arc::new(Inflight {
+            max: 2,
+            count: Mutex::new(HashMap::new()),
+        });
         let a = f.acquire("p").unwrap();
         let _b = f.acquire("p").unwrap();
         assert!(f.acquire("p").is_none());

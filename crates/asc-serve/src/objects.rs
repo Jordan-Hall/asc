@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use asc_rpc::server::{CallCtx, ObjectsHandler, RpcStream, wire};
 use tonic::Status;
 
-use crate::registry::{Extensions, RepoEntry, Registry, RegistryError};
+use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};
 
 /// The objects handler over a registry.
 pub struct ServerObjects {
