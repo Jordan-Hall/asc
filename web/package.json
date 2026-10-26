@@ -8,7 +8,8 @@
     "build": "rsbuild build && bun scripts/post-build.ts && bun scripts/size.ts",
     "size": "bun scripts/size.ts",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "bun test test"
+    "test": "bun test test",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2",
@@ -17,12 +18,14 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@rsbuild/core": "^1.7.3",
     "@rsbuild/plugin-react": "^1.4.3",
     "@tailwindcss/postcss": "^4.1.10",
     "@types/bun": "^1.4.4",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "axe-core": "^4.14.0",
     "postcss": "^8.5.3",
     "tailwindcss": "^4.1.10"
   }

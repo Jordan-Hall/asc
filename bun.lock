@@ -26,6 +26,18 @@
         "typescript": "5.9.2",
       },
     },
+    "packages/asc-fixtures": {
+      "name": "@asc/asc-fixtures",
+      "version": "0.0.0",
+      "dependencies": {
+        "@asc/asc-client": "workspace:*",
+        "hono": "^4.9.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "5.9.2",
+      },
+    },
     "packages/asc-ui": {
       "name": "@asc/asc-ui",
       "version": "0.0.0",
@@ -78,12 +90,14 @@
         "react-dom": "^19.2.0",
       },
       "devDependencies": {
+        "@playwright/test": "1.60.0",
         "@rsbuild/core": "^1.7.3",
         "@rsbuild/plugin-react": "^1.4.3",
         "@tailwindcss/postcss": "^4.1.10",
         "@types/bun": "^1.4.4",
         "@types/react": "^19.2.0",
         "@types/react-dom": "^19.2.0",
+        "axe-core": "^4.14.0",
         "postcss": "^8.5.3",
         "tailwindcss": "^4.1.10",
       },
@@ -169,6 +183,8 @@
     "@bufbuild/protoplugin": ["@bufbuild/protoplugin@2.16.0", "https://registry.yarnpkg.com/@bufbuild/protoplugin/-/protoplugin-2.16.0.tgz", { "dependencies": { "@bufbuild/protobuf": "2.16.0", "@typescript/vfs": "^1.6.2", "typescript": "5.4.5" } }, "sha512-3FdYJys34VhFnBQsjiV9wurBkX/DBACQAkAk+nCKdO1p8ROVNi7gmaRAcba+4qq8hQq8rYVukuutwvGCvd4kJA=="],
 
     "@asc/asc-client": ["@asc/asc-client@workspace:packages/asc-client-ts"],
+
+    "@asc/asc-fixtures": ["@asc/asc-fixtures@workspace:packages/asc-fixtures"],
 
     "@asc/asc-jetbrains": ["@asc/asc-jetbrains@workspace:plugins/jetbrains"],
 
@@ -473,6 +489,8 @@
     "astral-regex": ["astral-regex@2.0.0", "https://registry.yarnpkg.com/astral-regex/-/astral-regex-2.0.0.tgz", {}, "sha512-Z7tMw1ytTXt5jqMcOP+OQteU1VuNK9Y02uuJtKQ1Sv69jXQKKg5cibLwGJow8yzZP+eAc18EmLGPal0bp36rvQ=="],
 
     "asynckit": ["asynckit@0.4.0", "https://registry.yarnpkg.com/asynckit/-/asynckit-0.4.0.tgz", {}, "sha512-Oei9OH4tRh0YqU3GxhX79dM/mwVgvbZJaSNaRk+bshkj0S5cfHcgYakreBjrHwatXKbz+IoIdYLxrKim2MjW0Q=="],
+
+    "axe-core": ["axe-core@4.14.0", "", {}, "sha512-9WTZxEjsZ7b13TH8JPmbV2z8CHbl80/2hm3XPEG4JgNdQLK81IBRXmSxHfMAOkSqQeRxT/0dwNDz2GOm3zzpcQ=="],
 
     "azure-devops-node-api": ["azure-devops-node-api@12.5.0", "https://registry.yarnpkg.com/azure-devops-node-api/-/azure-devops-node-api-12.5.0.tgz", { "dependencies": { "tunnel": "0.0.6", "typed-rest-client": "^1.8.4" } }, "sha512-R5eFskGvOm3U/GzeAuxRkUsAl0hrAwGgWn6zAd2KrZmrEhWZVqLew4OOupbQlXUuojUzpGtq62SmdhJ06N88og=="],
 
@@ -1037,6 +1055,8 @@
     "@asc/asc-client/openapi-typescript": ["openapi-typescript@7.8.0", "https://registry.yarnpkg.com/openapi-typescript/-/openapi-typescript-7.8.0.tgz", { "dependencies": { "@redocly/openapi-core": "^1.34.3", "ansi-colors": "^4.1.3", "change-case": "^5.4.4", "parse-json": "^8.3.0", "supports-color": "^10.0.0", "yargs-parser": "^21.1.1" }, "peerDependencies": { "typescript": "^5.x" }, "bin": { "openapi-typescript": "bin/cli.js" } }, "sha512-1EeVWmDzi16A+siQlo/SwSGIT7HwaFAVjvMA7/jG5HMLSnrUOzPL7uSTRZZa4v/LCRxHTApHKtNY6glApEoiUQ=="],
 
     "@asc/asc-client/typescript": ["typescript@5.9.2", "https://registry.yarnpkg.com/typescript/-/typescript-5.9.2.tgz", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-CWBzXQrc/qOkhidw1OzBTQuYRbfyxDXJMVJ1XNwUHGROVmuaeiEm3OslpZ1RV96d7SKKjZKrSJu3+t/xlw3R9A=="],
+
+    "@asc/asc-fixtures/typescript": ["typescript@5.9.2", "https://registry.yarnpkg.com/typescript/-/typescript-5.9.2.tgz", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-CWBzXQrc/qOkhidw1OzBTQuYRbfyxDXJMVJ1XNwUHGROVmuaeiEm3OslpZ1RV96d7SKKjZKrSJu3+t/xlw3R9A=="],
 
     "@redocly/openapi-core/minimatch": ["minimatch@5.1.9", "https://registry.yarnpkg.com/minimatch/-/minimatch-5.1.9.tgz", { "dependencies": { "brace-expansion": "^2.0.1" } }, "sha512-7o1wEA2RyMP7Iu7GNba9vc0RWWGACJOCZBJX2GJWip0ikV+wcOsgVuY9uE8CPiyQhkGFSlhuSkZPavN7u1c2Fw=="],
 
