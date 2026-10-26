@@ -35,6 +35,7 @@ x-asc-serve: &asc-serve
     # Real git (mirror fetch, smart-HTTP views) needs a writable home on the state volume.
     HOME: /var/lib/asc/home
     RUST_LOG: ${ASC_LOG:-info}
+    ASC_LOG_FORMAT: ${ASC_LOG_FORMAT:-text}
   configs: &asc-serve-configs
     - source: asc_serve_toml
       target: /etc/asc/asc-serve.toml

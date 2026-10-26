@@ -30,6 +30,7 @@ x-asc-serve: &asc-serve
     AWS_REGION: garage
     HOME: /var/lib/asc/home
     RUST_LOG: ${ASC_LOG:-info}
+    ASC_LOG_FORMAT: ${ASC_LOG_FORMAT:-text}
   volumes:
     - asc-state:/var/lib/asc
     - type: bind
