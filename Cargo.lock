@@ -298,6 +298,7 @@ dependencies = [
  "fastcdc",
  "postcard",
  "proptest",
+ "regex",
  "serde",
  "sha1",
  "thiserror",

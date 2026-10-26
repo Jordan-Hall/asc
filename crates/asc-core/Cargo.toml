@@ -20,6 +20,7 @@ fastcdc.workspace = true
 sha1.workspace = true
 url.workspace = true
 toml.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
