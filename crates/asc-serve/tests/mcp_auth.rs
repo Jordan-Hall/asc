@@ -229,8 +229,10 @@ async fn configured_issuers_are_listed_and_an_unknown_host_is_refused() {
 #[tokio::test]
 async fn the_metadata_is_mounted_when_mcp_is_disabled_on_the_primary_only() {
     let ext = asc_serve::registry::Extensions::new();
-    let mut cfg = ServeConfig::default();
-    cfg.public_url = Some(PUBLIC.into());
+    let mut cfg = ServeConfig {
+        public_url: Some(PUBLIC.into()),
+        ..ServeConfig::default()
+    };
     assert!(!cfg.mcp.enabled);
     mcp::register(&ext, &cfg);
     let r = get(&ext.http.router(), prm::PRM_PATHS[1], HOST).await;

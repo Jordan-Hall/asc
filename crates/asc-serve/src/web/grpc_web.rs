@@ -129,7 +129,7 @@ impl Settings {
         {
             return Origin::Plain;
         }
-        if self.origins.iter().any(|o| *o == origin) {
+        if self.origins.contains(&origin) {
             return HeaderValue::from_str(&origin).map_or(Origin::Denied, Origin::Allowed);
         }
         Origin::Denied
