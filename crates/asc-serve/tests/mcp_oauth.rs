@@ -17,7 +17,8 @@ use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Prin
 use asc_serve::authz::token_store::{NewToken, TokenKey, TokenKind, TokenStore};
 use asc_serve::mcp::HttpPolicy;
 use asc_serve::mcp::oauth::{
-    HttpKeySource, KeyError, KeySet, KeySource, McpOauthConfig, OauthAuthorizer, OidcVerifier, audience, wrap,
+    HttpKeySource, KeyError, KeySet, KeySource, McpOauthConfig, OauthAuthorizer, OidcVerifier,
+    audience, wrap,
 };
 use asc_serve::mcp::prm::{Prm, router};
 use asc_serve::migrate;
@@ -40,8 +41,12 @@ impl Signer {
     fn new(kid: &str) -> Self {
         let rng = SystemRandom::new();
         let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
-        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng).unwrap();
-        Self { pair, kid: kid.into() }
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        Self {
+            pair,
+            kid: kid.into(),
+        }
     }
 
     fn jwk(&self) -> Value {
@@ -51,13 +56,23 @@ impl Signer {
     }
 
     fn sign(&self, header: &Value, claims: &Value) -> String {
-        let input = format!("{}.{}", B64.encode(header.to_string()), B64.encode(claims.to_string()));
-        let sig = self.pair.sign(&SystemRandom::new(), input.as_bytes()).unwrap();
+        let input = format!(
+            "{}.{}",
+            B64.encode(header.to_string()),
+            B64.encode(claims.to_string())
+        );
+        let sig = self
+            .pair
+            .sign(&SystemRandom::new(), input.as_bytes())
+            .unwrap();
         format!("{input}.{}", B64.encode(sig.as_ref()))
     }
 
     fn token(&self, claims: &Value) -> String {
-        self.sign(&json!({"alg": "ES256", "kid": self.kid, "typ": "JWT"}), claims)
+        self.sign(
+            &json!({"alg": "ES256", "kid": self.kid, "typ": "JWT"}),
+            claims,
+        )
     }
 }
 
@@ -85,7 +100,10 @@ struct FakeKeys {
 impl FakeKeys {
     fn new(issuer: &str, jwks: &Value) -> Arc<Self> {
         Arc::new(Self {
-            sets: vec![(issuer.into(), Arc::new(KeySet::from_jwks(jwks.to_string().as_bytes()).unwrap()))],
+            sets: vec![(
+                issuer.into(),
+                Arc::new(KeySet::from_jwks(jwks.to_string().as_bytes()).unwrap()),
+            )],
             calls: AtomicUsize::new(0),
             refreshes: AtomicUsize::new(0),
         })
@@ -114,11 +132,18 @@ struct Forge {
 
 #[async_trait]
 impl Authorizer for Forge {
-    async fn authorize(&self, token: Option<&BearerToken>, _repo: &str, _a: Access) -> Result<Principal, AuthError> {
+    async fn authorize(
+        &self,
+        token: Option<&BearerToken>,
+        _repo: &str,
+        _a: Access,
+    ) -> Result<Principal, AuthError> {
         let t = token.ok_or(AuthError::Unauthenticated)?;
         self.seen.lock().unwrap().push(t.expose().to_owned());
         if t.expose() == "forge-opaque-token" {
-            Ok(Principal { id: "forge:alice".into() })
+            Ok(Principal {
+                id: "forge:alice".into(),
+            })
         } else {
             Err(AuthError::Unauthenticated)
         }
@@ -151,16 +176,30 @@ async fn fixture() -> Fixture {
             .await
             .unwrap();
     }
-    store.link_identity(IDP, "sub-alice", "alice").await.unwrap();
+    store
+        .link_identity(IDP, "sub-alice", "alice")
+        .await
+        .unwrap();
     store.link_identity(IDP, "sub-bob", "bob").await.unwrap();
-    store.link_identity(IDP, "sub-deploy", "deploy:acme/web").await.unwrap();
+    store
+        .link_identity(IDP, "sub-deploy", "deploy:acme/web")
+        .await
+        .unwrap();
     let idp = Signer::new("k1");
     let keys = FakeKeys::new(IDP, &json!({"keys": [idp.jwk()]}));
-    let forge = Arc::new(Forge { seen: Mutex::new(Vec::new()) });
+    let forge = Arc::new(Forge {
+        seen: Mutex::new(Vec::new()),
+    });
     let verifier = OidcVerifier::new(vec![FORGE.into(), IDP.into()], AUD.into(), keys.clone())
         .with_clock(Arc::new(|| NOW));
     let authz = OauthAuthorizer::new(forge.clone(), verifier, store.clone());
-    Fixture { authz, forge, store, keys, idp }
+    Fixture {
+        authz,
+        forge,
+        store,
+        keys,
+        idp,
+    }
 }
 
 fn bearer(t: &str) -> Credential {
@@ -169,7 +208,9 @@ fn bearer(t: &str) -> Credential {
 
 impl Fixture {
     async fn check(&self, token: &str, repo: &str, a: Access) -> Result<Principal, AuthError> {
-        self.authz.authorize_credential(Some(&bearer(token)), repo, a).await
+        self.authz
+            .authorize_credential(Some(&bearer(token)), repo, a)
+            .await
     }
 }
 
@@ -190,22 +231,34 @@ fn prm_for(issuers: Vec<String>) -> axum::Router {
 }
 
 async fn get_json(app: axum::Router, path: &str) -> Value {
-    let req = Request::get(path).header("host", "asc.example.org").body(Body::empty()).unwrap();
+    let req = Request::get(path)
+        .header("host", "asc.example.org")
+        .body(Body::empty())
+        .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 #[tokio::test]
 async fn the_prm_document_lists_the_configured_issuers_and_nothing_assumes_forgejo() {
-    for path in ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"] {
+    for path in [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/mcp",
+    ] {
         let doc = get_json(prm_for(vec![FORGE.into(), IDP.into()]), path).await;
         assert_eq!(doc["authorization_servers"], json!([FORGE, IDP]));
         assert_eq!(doc["resource"], AUD);
     }
     // A generic IdP alone, and no OAuth at all (an empty list: clients use a pre-issued token).
-    let doc = get_json(prm_for(vec![IDP.into()]), "/.well-known/oauth-protected-resource").await;
+    let doc = get_json(
+        prm_for(vec![IDP.into()]),
+        "/.well-known/oauth-protected-resource",
+    )
+    .await;
     assert_eq!(doc["authorization_servers"], json!([IDP]));
     let doc = get_json(prm_for(vec![]), "/.well-known/oauth-protected-resource").await;
     assert_eq!(doc["authorization_servers"], json!([]));
@@ -236,8 +289,14 @@ fn the_audience_defaults_to_the_canonical_mcp_url() {
     let c = McpOauthConfig::default();
     assert_eq!(audience(&c, Some("https://asc.example.org/")).unwrap(), AUD);
     assert!(audience(&c, None).is_err());
-    let c = McpOauthConfig { audience: Some("https://other.example/mcp".into()), ..Default::default() };
-    assert_eq!(audience(&c, Some("https://asc.example.org")).unwrap(), "https://other.example/mcp");
+    let c = McpOauthConfig {
+        audience: Some("https://other.example/mcp".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        audience(&c, Some("https://asc.example.org")).unwrap(),
+        "https://other.example/mcp"
+    );
 }
 
 #[tokio::test]
@@ -248,10 +307,27 @@ async fn off_means_the_wrapped_authorizer_itself() {
     let out = wrap(None, url, forge.clone(), f.store.clone(), f.keys.clone()).unwrap();
     assert!(Arc::ptr_eq(&out, &forge));
     let empty = McpOauthConfig::default();
-    let out = wrap(Some(&empty), url, forge.clone(), f.store.clone(), f.keys.clone()).unwrap();
+    let out = wrap(
+        Some(&empty),
+        url,
+        forge.clone(),
+        f.store.clone(),
+        f.keys.clone(),
+    )
+    .unwrap();
     assert!(Arc::ptr_eq(&out, &forge));
-    let on = McpOauthConfig { issuer: vec![IDP.into()], ..Default::default() };
-    let out = wrap(Some(&on), url, forge.clone(), f.store.clone(), f.keys.clone()).unwrap();
+    let on = McpOauthConfig {
+        issuer: vec![IDP.into()],
+        ..Default::default()
+    };
+    let out = wrap(
+        Some(&on),
+        url,
+        forge.clone(),
+        f.store.clone(),
+        f.keys.clone(),
+    )
+    .unwrap();
     assert!(!Arc::ptr_eq(&out, &forge));
 }
 
@@ -260,16 +336,28 @@ async fn off_means_the_wrapped_authorizer_itself() {
 #[tokio::test]
 async fn a_forge_issued_token_goes_to_the_forge_authorizer_as_a_pat_does() {
     let f = fixture().await;
-    let p = f.check("forge-opaque-token", "acme/web", Access::Read).await.unwrap();
+    let p = f
+        .check("forge-opaque-token", "acme/web", Access::Read)
+        .await
+        .unwrap();
     assert_eq!(p.id, "forge:alice");
-    assert_eq!(f.forge.seen.lock().unwrap().as_slice(), ["forge-opaque-token"]);
-    assert_eq!(f.keys.calls.load(Ordering::SeqCst), 0, "no JWKS for an opaque token");
+    assert_eq!(
+        f.forge.seen.lock().unwrap().as_slice(),
+        ["forge-opaque-token"]
+    );
+    assert_eq!(
+        f.keys.calls.load(Ordering::SeqCst),
+        0,
+        "no JWKS for an opaque token"
+    );
 }
 
 #[tokio::test]
 async fn a_jwt_of_an_unconfigured_issuer_is_just_another_credential_for_the_forge() {
     let f = fixture().await;
-    let t = f.idp.token(&with(claims(), "iss", json!("https://evil.example.org")));
+    let t = f
+        .idp
+        .token(&with(claims(), "iss", json!("https://evil.example.org")));
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
     assert_eq!(f.forge.seen.lock().unwrap().len(), 1);
     assert_eq!(f.keys.calls.load(Ordering::SeqCst), 0);
@@ -280,7 +368,10 @@ async fn a_jwt_is_never_accepted_as_a_basic_password() {
     let f = fixture().await;
     let t = f.idp.token(&claims());
     let c = Credential::basic("alice", &t).unwrap();
-    let r = f.authz.authorize_credential(Some(&c), "acme/web", Access::Read).await;
+    let r = f
+        .authz
+        .authorize_credential(Some(&c), "acme/web", Access::Read)
+        .await;
     assert!(is_unauth(r));
     assert_eq!(f.keys.calls.load(Ordering::SeqCst), 0);
 }
@@ -299,20 +390,31 @@ async fn a_valid_jwt_maps_to_the_principal_and_its_grants_decide() {
     assert!(is_forbidden(f.check(&t, "other/repo", Access::Read).await));
     f.check(&t, "acme/api", Access::Write).await.unwrap();
     // Even a token that names `asc:write` cannot write what the user cannot.
-    let w = f.idp.token(&with(claims(), "scope", json!("asc:read asc:write")));
+    let w = f
+        .idp
+        .token(&with(claims(), "scope", json!("asc:read asc:write")));
     assert!(is_forbidden(f.check(&w, "acme/web", Access::Write).await));
     f.check(&w, "acme/api", Access::Write).await.unwrap();
     // A scope claim without `asc:write` narrows a writer to read.
-    let r = f.idp.token(&with(claims(), "scope", json!("openid asc:read")));
+    let r = f
+        .idp
+        .token(&with(claims(), "scope", json!("openid asc:read")));
     f.check(&r, "acme/api", Access::Read).await.unwrap();
     assert!(is_forbidden(f.check(&r, "acme/api", Access::Write).await));
-    assert!(f.forge.seen.lock().unwrap().is_empty(), "nothing reached the forge");
+    assert!(
+        f.forge.seen.lock().unwrap().is_empty(),
+        "nothing reached the forge"
+    );
 }
 
 #[tokio::test]
 async fn the_audience_may_be_an_array_but_must_name_this_server() {
     let f = fixture().await;
-    let ok = f.idp.token(&with(claims(), "aud", json!(["https://other.example/mcp", AUD])));
+    let ok = f.idp.token(&with(
+        claims(),
+        "aud",
+        json!(["https://other.example/mcp", AUD]),
+    ));
     f.check(&ok, "acme/web", Access::Read).await.unwrap();
     for aud in [
         json!("https://other.example/mcp"),
@@ -323,7 +425,10 @@ async fn the_audience_may_be_an_array_but_must_name_this_server() {
         json!(7),
     ] {
         let t = f.idp.token(&with(claims(), "aud", aud.clone()));
-        assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await), "{aud}");
+        assert!(
+            is_unauth(f.check(&t, "acme/web", Access::Read).await),
+            "{aud}"
+        );
     }
     let t = f.idp.token(&without(claims(), "aud"));
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
@@ -334,14 +439,23 @@ async fn expiry_and_not_before_are_enforced() {
     let f = fixture().await;
     for exp in [NOW - 61, NOW - 3600, 0] {
         let t = f.idp.token(&with(claims(), "exp", json!(exp)));
-        assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await), "exp {exp}");
+        assert!(
+            is_unauth(f.check(&t, "acme/web", Access::Read).await),
+            "exp {exp}"
+        );
     }
     let t = f.idp.token(&without(claims(), "exp"));
-    assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await), "no exp");
+    assert!(
+        is_unauth(f.check(&t, "acme/web", Access::Read).await),
+        "no exp"
+    );
     let t = f.idp.token(&with(claims(), "exp", json!("tomorrow")));
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
     let t = f.idp.token(&with(claims(), "nbf", json!(NOW + 3600)));
-    assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await), "nbf");
+    assert!(
+        is_unauth(f.check(&t, "acme/web", Access::Read).await),
+        "nbf"
+    );
     let t = f.idp.token(&with(claims(), "nbf", json!(NOW - 10)));
     f.check(&t, "acme/web", Access::Read).await.unwrap();
 }
@@ -357,21 +471,45 @@ async fn the_signature_must_verify_against_the_issuers_keys() {
     let good = f.idp.token(&claims());
     let evil = f.idp.token(&with(claims(), "sub", json!("sub-bob")));
     let parts: Vec<&str> = good.split('.').collect();
-    let mixed = format!("{}.{}.{}", parts[0], evil.split('.').nth(1).unwrap(), parts[2]);
+    let mixed = format!(
+        "{}.{}.{}",
+        parts[0],
+        evil.split('.').nth(1).unwrap(),
+        parts[2]
+    );
     assert!(is_unauth(f.check(&mixed, "acme/web", Access::Read).await));
     // A truncated or empty signature.
-    assert!(is_unauth(f.check(&format!("{}.{}.", parts[0], parts[1]), "acme/web", Access::Read).await));
-    assert!(is_unauth(f.check(&format!("{}.{}.AAAA", parts[0], parts[1]), "acme/web", Access::Read).await));
+    assert!(is_unauth(
+        f.check(
+            &format!("{}.{}.", parts[0], parts[1]),
+            "acme/web",
+            Access::Read
+        )
+        .await
+    ));
+    assert!(is_unauth(
+        f.check(
+            &format!("{}.{}.AAAA", parts[0], parts[1]),
+            "acme/web",
+            Access::Read
+        )
+        .await
+    ));
 }
 
 #[tokio::test]
 async fn only_rs256_and_es256_are_accepted() {
     let f = fixture().await;
     let c = B64.encode(claims().to_string());
-    for alg in ["none", "None", "HS256", "HS384", "PS256", "ES384", "EdDSA", "RS512"] {
+    for alg in [
+        "none", "None", "HS256", "HS384", "PS256", "ES384", "EdDSA", "RS512",
+    ] {
         let h = B64.encode(json!({"alg": alg, "kid": "k1"}).to_string());
         let t = format!("{h}.{c}.AAAA");
-        assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await), "{alg}");
+        assert!(
+            is_unauth(f.check(&t, "acme/web", Access::Read).await),
+            "{alg}"
+        );
     }
     // HS256 keyed with the public key bytes (the classic confusion) is no better.
     use hmac::{Hmac, KeyInit, Mac};
@@ -382,7 +520,10 @@ async fn only_rs256_and_es256_are_accepted() {
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
     // `crit` headers are refused; so are non-string kids.
     let h = B64.encode(json!({"alg": "ES256", "kid": "k1", "crit": ["x"]}).to_string());
-    assert!(is_unauth(f.check(&format!("{h}.{c}.AAAA"), "acme/web", Access::Read).await));
+    assert!(is_unauth(
+        f.check(&format!("{h}.{c}.AAAA"), "acme/web", Access::Read)
+            .await
+    ));
     let t = f.idp.sign(&json!({"alg": "ES256", "kid": 5}), &claims());
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
 }
@@ -396,7 +537,9 @@ async fn the_issuer_claim_must_be_a_configured_issuer_that_publishes_the_key() {
     // A JWT of a configured issuer never falls through to the forge as an opaque token.
     assert!(f.forge.seen.lock().unwrap().is_empty());
     // A differently spelled issuer is another issuer.
-    let t = f.idp.token(&with(claims(), "iss", json!("https://idp.example.org/")));
+    let t = f
+        .idp
+        .token(&with(claims(), "iss", json!("https://idp.example.org/")));
     assert!(is_unauth(f.check(&t, "acme/web", Access::Read).await));
 }
 
@@ -447,21 +590,38 @@ const RSA_TOKEN: &str = "eyJhbGciOiJSUzI1NiIsImtpZCI6InJzYTEiLCJ0eXAiOiJKV1QifQ.
 #[tokio::test]
 async fn an_rs256_token_verifies_against_the_issuers_rsa_key() {
     let f = fixture().await;
-    f.store.link_identity(IDP, "rsa-user", "alice").await.unwrap();
+    f.store
+        .link_identity(IDP, "rsa-user", "alice")
+        .await
+        .unwrap();
     let jwks = json!({"keys": [{"kty": "RSA", "kid": "rsa1", "use": "sig", "alg": "RS256", "n": RSA_N, "e": "AQAB"}]});
     let keys = FakeKeys::new(IDP, &jwks);
-    let verifier = OidcVerifier::new(vec![IDP.into()], AUD.into(), keys).with_clock(Arc::new(|| NOW));
+    let verifier =
+        OidcVerifier::new(vec![IDP.into()], AUD.into(), keys).with_clock(Arc::new(|| NOW));
     let authz = OauthAuthorizer::new(f.forge.clone(), verifier, f.store.clone());
-    let p = authz.authorize_credential(Some(&bearer(RSA_TOKEN)), "acme/web", Access::Read).await.unwrap();
+    let p = authz
+        .authorize_credential(Some(&bearer(RSA_TOKEN)), "acme/web", Access::Read)
+        .await
+        .unwrap();
     assert_eq!(p.id, "pat:alice");
     // A different payload under the same signature is a different message.
     let parts: Vec<&str> = RSA_TOKEN.split('.').collect();
-    let other = B64.encode(json!({"iss": IDP, "sub": "sub-bob", "aud": AUD, "exp": 4_102_444_800_i64}).to_string());
+    let other = B64.encode(
+        json!({"iss": IDP, "sub": "sub-bob", "aud": AUD, "exp": 4_102_444_800_i64}).to_string(),
+    );
     let bad = format!("{}.{other}.{}", parts[0], parts[2]);
-    assert!(is_unauth(authz.authorize_credential(Some(&bearer(&bad)), "acme/web", Access::Read).await));
+    assert!(is_unauth(
+        authz
+            .authorize_credential(Some(&bearer(&bad)), "acme/web", Access::Read)
+            .await
+    ));
     // A modulus under 2048 bits is not a key.
     let weak = json!({"keys": [{"kty": "RSA", "kid": "rsa1", "n": B64.encode([0xc3u8; 128]), "e": "AQAB"}]});
-    assert!(KeySet::from_jwks(weak.to_string().as_bytes()).unwrap().is_empty());
+    assert!(
+        KeySet::from_jwks(weak.to_string().as_bytes())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---------------------------------------------------------------------------- fetching

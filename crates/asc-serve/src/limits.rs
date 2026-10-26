@@ -615,10 +615,7 @@ impl Authorizer for RecordingAuthorizer {
 
     /// Forwards to the inner authorizer and records the verdict like a repository decision, so a
     /// token that authenticates is charged by principal.
-    async fn authenticate(
-        &self,
-        credential: Option<&Credential>,
-    ) -> Result<Principal, AuthError> {
+    async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
         let answer = self.inner.authenticate(credential).await;
         if let Some(c) = credential {
             let secret = c.secret().expose();

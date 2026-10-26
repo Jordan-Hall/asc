@@ -48,7 +48,12 @@ fn app() -> (Router, Arc<Stub>) {
     struct Shared(Arc<Stub>);
     #[async_trait::async_trait]
     impl McpBackend for Shared {
-        async fn call(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
+        async fn call(
+            &self,
+            tool: &str,
+            args: &Value,
+            ctx: &CallContext,
+        ) -> Result<Reply, ToolError> {
             self.0.call(tool, args, ctx).await
         }
     }
@@ -77,7 +82,10 @@ fn post(body: &Value) -> axum::http::request::Builder {
 }
 
 fn with_principal(mut req: Request<Body>) -> Request<Body> {
-    req.extensions_mut().insert(McpPrincipal { id: "alice".into(), write: false });
+    req.extensions_mut().insert(McpPrincipal {
+        id: "alice".into(),
+        write: false,
+    });
     req
 }
 
@@ -86,7 +94,9 @@ async fn send(app: &Router, req: Request<Body>) -> Response<Body> {
 }
 
 async fn body_json(r: Response<Body>) -> Value {
-    let b = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+    let b = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
     serde_json::from_slice(&b).unwrap()
 }
 
@@ -119,7 +129,10 @@ async fn post_json_reply_and_tool_call() {
     let v = body_json(r).await;
     assert_eq!(v["id"], 8, "the client's id is restored");
     assert_eq!(stub.calls.load(Ordering::SeqCst), 1);
-    assert!(v["result"].to_string().contains("alice"), "the principal reaches the backend: {v}");
+    assert!(
+        v["result"].to_string().contains("alice"),
+        "the principal reaches the backend: {v}"
+    );
 }
 
 #[tokio::test]
@@ -137,7 +150,9 @@ async fn sse_reply_streams_progress_then_result() {
         text.push_str(std::str::from_utf8(&c.unwrap()).unwrap());
     }
     for e in text.split("\n\n").filter(|e| !e.is_empty()) {
-        let data = e.strip_prefix("event: message\ndata: ").unwrap_or_else(|| panic!("bad event {e:?}"));
+        let data = e
+            .strip_prefix("event: message\ndata: ")
+            .unwrap_or_else(|| panic!("bad event {e:?}"));
         events.push(serde_json::from_str::<Value>(data).unwrap());
     }
     assert!(events.len() >= 2, "{events:?}");
@@ -159,7 +174,12 @@ async fn notification_is_accepted_without_a_body() {
 async fn get_and_delete_are_405() {
     let (app, _) = app();
     for m in ["GET", "DELETE", "PUT"] {
-        let req = Request::builder().method(m).uri("/mcp").header(header::HOST, HOST).body(Body::empty()).unwrap();
+        let req = Request::builder()
+            .method(m)
+            .uri("/mcp")
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .unwrap();
         let r = send(&app, req).await;
         assert_eq!(r.status(), StatusCode::METHOD_NOT_ALLOWED, "{m}");
         assert_eq!(r.headers()[header::ALLOW], "POST");
@@ -177,12 +197,38 @@ async fn origin_is_checked_when_present() {
         }
         r.body(Body::from(b.to_string())).unwrap()
     };
-    assert_eq!(send(&app, go(Some("https://evil.example.net"))).await.status(), StatusCode::FORBIDDEN);
-    assert_eq!(send(&app, go(Some("null"))).await.status(), StatusCode::FORBIDDEN);
-    assert_eq!(stub.calls.load(Ordering::SeqCst), 0, "a refused origin never reaches the backend");
-    assert_eq!(send(&app, go(Some("https://app.example.org"))).await.status(), StatusCode::OK);
-    assert_eq!(send(&app, go(Some("https://asc.example.org"))).await.status(), StatusCode::OK);
-    assert_eq!(send(&app, go(None)).await.status(), StatusCode::OK, "an absent Origin is accepted");
+    assert_eq!(
+        send(&app, go(Some("https://evil.example.net")))
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&app, go(Some("null"))).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        stub.calls.load(Ordering::SeqCst),
+        0,
+        "a refused origin never reaches the backend"
+    );
+    assert_eq!(
+        send(&app, go(Some("https://app.example.org")))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, go(Some("https://asc.example.org")))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, go(None)).await.status(),
+        StatusCode::OK,
+        "an absent Origin is accepted"
+    );
 }
 
 #[tokio::test]
@@ -197,7 +243,11 @@ async fn host_outside_the_allowlist_is_421() {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(b.to_string()))
             .unwrap();
-        assert_eq!(send(&app, req).await.status(), StatusCode::MISDIRECTED_REQUEST, "{host}");
+        assert_eq!(
+            send(&app, req).await.status(),
+            StatusCode::MISDIRECTED_REQUEST,
+            "{host}"
+        );
     }
     let req = Request::builder()
         .method("POST")
@@ -205,7 +255,11 @@ async fn host_outside_the_allowlist_is_421() {
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(b.to_string()))
         .unwrap();
-    assert_eq!(send(&app, req).await.status(), StatusCode::MISDIRECTED_REQUEST, "no Host at all");
+    assert_eq!(
+        send(&app, req).await.status(),
+        StatusCode::MISDIRECTED_REQUEST,
+        "no Host at all"
+    );
     assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
     for host in ["alias.example.org", "127.0.0.1:8443", "localhost:8443"] {
         let req = Request::builder()
@@ -230,7 +284,14 @@ async fn header_mismatch_is_32020() {
         ("mcp-protocol-version", "1999-01-01"),
     ];
     for (name, value) in cases {
-        let r = send(&app, post(&b).header(name, value).body(Body::from(b.to_string())).unwrap()).await;
+        let r = send(
+            &app,
+            post(&b)
+                .header(name, value)
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+        )
+        .await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{name}");
         let v = body_json(r).await;
         assert_eq!(v["error"]["code"], -32020, "{name}");
@@ -269,13 +330,21 @@ async fn body_caps() {
     // `commit` may use 4 MiB.
     let commit = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "commit", "arguments": { "repo": "a/b", "pad": pad } } });
-    let r = send(&app, post(&commit).body(Body::from(commit.to_string())).unwrap()).await;
+    let r = send(
+        &app,
+        post(&commit).body(Body::from(commit.to_string())).unwrap(),
+    )
+    .await;
     assert_eq!(r.status(), StatusCode::OK);
 
     // Past 4 MiB nothing passes, and a declared length is refused before the body is read.
     let huge = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "commit", "arguments": { "pad": "x".repeat(MAX_COMMIT_BODY) } } });
-    let r = send(&app, post(&huge).body(Body::from(huge.to_string())).unwrap()).await;
+    let r = send(
+        &app,
+        post(&huge).body(Body::from(huge.to_string())).unwrap(),
+    )
+    .await;
     assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
     let r = send(
         &app,
@@ -296,7 +365,11 @@ async fn malformed_requests() {
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     assert_eq!(body_json(r).await["error"]["code"], -32700);
     let r = send(&app, post(&b).body(Body::from("[]")).unwrap()).await;
-    assert_eq!(r.status(), StatusCode::BAD_REQUEST, "batches are not accepted");
+    assert_eq!(
+        r.status(),
+        StatusCode::BAD_REQUEST,
+        "batches are not accepted"
+    );
     let r = send(
         &app,
         Request::builder()
@@ -315,7 +388,11 @@ async fn malformed_requests() {
 async fn no_principal_is_401() {
     let (app, stub) = app();
     let b = log_call(1, None);
-    let r = app.clone().oneshot(post(&b).body(Body::from(b.to_string())).unwrap()).await.unwrap();
+    let r = app
+        .clone()
+        .oneshot(post(&b).body(Body::from(b.to_string())).unwrap())
+        .await
+        .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(stub.calls.load(Ordering::SeqCst), 0);
 }
@@ -342,8 +419,12 @@ async fn enabled_is_refused_while_no_auth_layer_exists() {
 db = \"sqlite::memory:\"
 ";
     assert!(ServeConfig::parse(base).is_ok());
-    let err = ServeConfig::parse(&format!("{base}[mcp]
-enabled = true")).unwrap_err().to_string();
+    let err = ServeConfig::parse(&format!(
+        "{base}[mcp]
+enabled = true"
+    ))
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("auth layer"), "{err}");
 }
 
@@ -366,6 +447,10 @@ async fn cache_role_answers_404() {
     cfg.mcp.enabled = true;
     let ext = asc_serve::registry::Extensions::new();
     mcp::register(&ext, &cfg);
-    let r = send(&ext.http.router(), post(&b).body(Body::from(b.to_string())).unwrap()).await;
+    let r = send(
+        &ext.http.router(),
+        post(&b).body(Body::from(b.to_string())).unwrap(),
+    )
+    .await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
 }

@@ -786,7 +786,11 @@ impl TokenStore {
     /// The strongest access the user in `principal` (`pat:<user>`, or a bare user name) holds on
     /// `repo` through live personal tokens: the rights an OIDC subject linked to that user gets
     /// (M33). `None` when no live token grant covers `repo`. A database failure is `Forbidden`.
-    pub async fn user_access(&self, principal: &str, repo: &str) -> Result<Option<Access>, AuthError> {
+    pub async fn user_access(
+        &self,
+        principal: &str,
+        repo: &str,
+    ) -> Result<Option<Access>, AuthError> {
         let now = self.now();
         let user = principal.strip_prefix("pat:").unwrap_or(principal);
         let rows = sqlx::query(
@@ -806,7 +810,11 @@ impl TokenStore {
             let pattern: String = r.try_get("repo").map_err(|_| AuthError::Forbidden)?;
             let access: String = r.try_get("access").map_err(|_| AuthError::Forbidden)?;
             if let Some(access) = access_parse(&access)
-                && (Grant { repo: pattern, access }).covers(repo)
+                && (Grant {
+                    repo: pattern,
+                    access,
+                })
+                .covers(repo)
             {
                 best = best.max(Some(access));
             }

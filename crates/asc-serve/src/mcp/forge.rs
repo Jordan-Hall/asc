@@ -35,7 +35,12 @@ use url::Url;
 use super::backend::{REPO_NOT_FOUND, RepoGate, clean};
 
 /// The forge tools, in listing order.
-pub const FORGE_TOOLS: [&str; 4] = ["forge_issues", "forge_issue", "forge_pr_comments", "forge_actions_runs"];
+pub const FORGE_TOOLS: [&str; 4] = [
+    "forge_issues",
+    "forge_issue",
+    "forge_pr_comments",
+    "forge_actions_runs",
+];
 /// Most items one call returns.
 pub const MAX_ITEMS: usize = 50;
 /// Longest text field, in characters.
@@ -75,11 +80,17 @@ pub struct Handles {
 }
 
 fn is_hex(s: &str) -> bool {
-    !s.is_empty() && s.len().is_multiple_of(2) && s.len() <= 128 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    !s.is_empty()
+        && s.len().is_multiple_of(2)
+        && s.len() <= 128
+        && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn is_change(s: &str) -> bool {
-    !s.is_empty() && s.len().is_multiple_of(2) && s.len() <= 64 && s.bytes().all(|b| (b'k'..=b'z').contains(&b))
+    !s.is_empty()
+        && s.len().is_multiple_of(2)
+        && s.len() <= 64
+        && s.bytes().all(|b| (b'k'..=b'z').contains(&b))
 }
 
 impl Handles {
@@ -127,9 +138,20 @@ pub trait ForgeAdapter: Send + Sync + 'static {
     /// The adapter's name, as `[mcp.forge] adapter` spells it.
     fn name(&self) -> &'static str;
     /// Issues of `repo` (`owner/name`), `state` is `open`, `closed` or `all`.
-    async fn issues(&self, actor: &ForgeActor, repo: &str, state: &str, limit: usize) -> Result<Vec<ForgeItem>, ForgeError>;
+    async fn issues(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError>;
     /// One issue.
-    async fn issue(&self, actor: &ForgeActor, repo: &str, number: u64) -> Result<ForgeItem, ForgeError>;
+    async fn issue(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        number: u64,
+    ) -> Result<ForgeItem, ForgeError>;
     /// Comments of a pull request, with the handles of its head.
     async fn pr_comments(
         &self,
@@ -139,7 +161,12 @@ pub trait ForgeAdapter: Send + Sync + 'static {
         limit: usize,
     ) -> Result<(Vec<ForgeItem>, Handles), ForgeError>;
     /// Recent Actions runs.
-    async fn actions_runs(&self, actor: &ForgeActor, repo: &str, limit: usize) -> Result<Vec<ForgeItem>, ForgeError>;
+    async fn actions_runs(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError>;
 }
 
 /// `[mcp.forge]`.
@@ -155,7 +182,10 @@ pub struct ForgeConfig {
 
 impl Default for ForgeConfig {
     fn default() -> Self {
-        Self { adapter: None, lockdown: true }
+        Self {
+            adapter: None,
+            lockdown: true,
+        }
     }
 }
 
@@ -173,7 +203,10 @@ impl ForgeConfig {
     pub fn validate(&self) -> Result<(), String> {
         match self.adapter.as_deref() {
             None | Some("forgejo") => Ok(()),
-            Some(other) => Err(format!("unknown adapter {:?}; the only adapter is \"forgejo\"", clean(other))),
+            Some(other) => Err(format!(
+                "unknown adapter {:?}; the only adapter is \"forgejo\"",
+                clean(other)
+            )),
         }
     }
 }
@@ -198,8 +231,18 @@ impl<B: McpBackend> ForgeBackend<B> {
     /// `adapter` is `None` unless `[mcp.forge] adapter` is set. `gate` is the authorizer-backed
     /// read check of the other tools.
     #[must_use]
-    pub fn new(inner: B, gate: Arc<dyn RepoGate>, adapter: Option<Arc<dyn ForgeAdapter>>, cfg: &ForgeConfig) -> Self {
-        Self { inner, gate, adapter, lockdown: cfg.lockdown }
+    pub fn new(
+        inner: B,
+        gate: Arc<dyn RepoGate>,
+        adapter: Option<Arc<dyn ForgeAdapter>>,
+        cfg: &ForgeConfig,
+    ) -> Self {
+        Self {
+            inner,
+            gate,
+            adapter,
+            lockdown: cfg.lockdown,
+        }
     }
 
     /// The `forge_*` tools this backend serves: none without an adapter, so `tools/list` omits them.
@@ -226,7 +269,12 @@ impl<B: McpBackend> ForgeBackend<B> {
                 json!({"repo": repo, "state": {"enum": ["open", "closed", "all"]}, "limit": limit}),
                 json!(["repo"]),
             ),
-            def("forge_issue", "Read one issue.", json!({"repo": repo, "number": number}), json!(["repo", "number"])),
+            def(
+                "forge_issue",
+                "Read one issue.",
+                json!({"repo": repo, "number": number}),
+                json!(["repo", "number"]),
+            ),
             def(
                 "forge_pr_comments",
                 "Read the comments of a pull request; the result carries asc handles.",
@@ -244,11 +292,16 @@ impl<B: McpBackend> ForgeBackend<B> {
 
     async fn forge(&self, tool: &str, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let Some(adapter) = self.adapter.as_ref() else {
-            return Err(ToolError::not_available("the forge toolset is not enabled on this server"));
+            return Err(ToolError::not_available(
+                "the forge toolset is not enabled on this server",
+            ));
         };
         // The principal comes from the authenticated request, never from an argument.
         let Some(principal) = ctx.principal.as_deref() else {
-            return Err(ToolError::new("UNAUTHENTICATED", "authentication is required"));
+            return Err(ToolError::new(
+                "UNAUTHENTICATED",
+                "authentication is required",
+            ));
         };
         let obj = args.as_object().cloned().unwrap_or_default();
         check_keys(tool, &obj)?;
@@ -257,29 +310,44 @@ impl<B: McpBackend> ForgeBackend<B> {
         if !self.gate.can_read(principal, &repo).await {
             return Err(ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND));
         }
-        let actor = ForgeActor { principal: principal.to_owned() };
+        let actor = ForgeActor {
+            principal: principal.to_owned(),
+        };
         let limit = limit_arg(&obj)?;
         let out = match tool {
             "forge_issues" => {
                 let state = match obj.get("state") {
                     None | Some(Value::Null) => "open",
-                    Some(Value::String(s)) if matches!(s.as_str(), "open" | "closed" | "all") => s.as_str(),
+                    Some(Value::String(s)) if matches!(s.as_str(), "open" | "closed" | "all") => {
+                        s.as_str()
+                    }
                     Some(_) => return Err(bad("state is open, closed or all")),
                 };
-                let items = adapter.issues(&actor, &repo, state, limit).await.map_err(map_err)?;
+                let items = adapter
+                    .issues(&actor, &repo, state, limit)
+                    .await
+                    .map_err(map_err)?;
                 json!({"items": self.render(items)})
             }
             "forge_issue" => {
-                let item = adapter.issue(&actor, &repo, number_arg(&obj)?).await.map_err(map_err)?;
+                let item = adapter
+                    .issue(&actor, &repo, number_arg(&obj)?)
+                    .await
+                    .map_err(map_err)?;
                 json!({"items": self.render(vec![item])})
             }
             "forge_pr_comments" => {
-                let (items, handles) =
-                    adapter.pr_comments(&actor, &repo, number_arg(&obj)?, limit).await.map_err(map_err)?;
+                let (items, handles) = adapter
+                    .pr_comments(&actor, &repo, number_arg(&obj)?, limit)
+                    .await
+                    .map_err(map_err)?;
                 json!({"items": self.render(items), "asc_handles": handles.to_json()})
             }
             "forge_actions_runs" => {
-                let items = adapter.actions_runs(&actor, &repo, limit).await.map_err(map_err)?;
+                let items = adapter
+                    .actions_runs(&actor, &repo, limit)
+                    .await
+                    .map_err(map_err)?;
                 json!({"items": self.render(items)})
             }
             _ => return Err(ToolError::not_available("unknown forge tool")),
@@ -338,12 +406,16 @@ fn check_keys(tool: &str, obj: &Map<String, Value>) -> Result<(), ToolError> {
 }
 
 fn repo_arg(obj: &Map<String, Value>) -> Result<String, ToolError> {
-    let r = obj.get("repo").and_then(Value::as_str).ok_or_else(|| bad("repo (owner/name) is required"))?;
+    let r = obj
+        .get("repo")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("repo (owner/name) is required"))?;
     let seg_ok = |s: &str| {
         !s.is_empty()
             && s.len() <= MAX_ARG
             && !s.starts_with('.')
-            && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     };
     match r.split_once('/') {
         Some((o, n)) if seg_ok(o) && seg_ok(n) => Ok(r.to_owned()),
@@ -352,7 +424,10 @@ fn repo_arg(obj: &Map<String, Value>) -> Result<String, ToolError> {
 }
 
 fn number_arg(obj: &Map<String, Value>) -> Result<u64, ToolError> {
-    obj.get("number").and_then(Value::as_u64).filter(|n| *n >= 1).ok_or_else(|| bad("number must be a positive integer"))
+    obj.get("number")
+        .and_then(Value::as_u64)
+        .filter(|n| *n >= 1)
+        .ok_or_else(|| bad("number must be a positive integer"))
 }
 
 fn limit_arg(obj: &Map<String, Value>) -> Result<usize, ToolError> {
@@ -369,7 +444,9 @@ fn limit_arg(obj: &Map<String, Value>) -> Result<usize, ToolError> {
 fn map_err(e: ForgeError) -> ToolError {
     match e {
         ForgeError::NotFound => ToolError::new(code::NOT_FOUND, "not found"),
-        ForgeError::Unavailable(m) => ToolError::not_available(format!("the forge is unavailable: {}", bounded(&m, 200))),
+        ForgeError::Unavailable(m) => {
+            ToolError::not_available(format!("the forge is unavailable: {}", bounded(&m, 200)))
+        }
     }
 }
 
@@ -410,7 +487,11 @@ impl ForgejoAdapter {
     /// A URL that is not allowed, or a token that is empty or not visible ASCII.
     pub fn new(base: &str, token: &str, policy: Policy) -> Result<Self, String> {
         let base = Url::parse(base).map_err(|e| format!("url: {e}"))?;
-        if base.username() != "" || base.password().is_some() || base.cannot_be_a_base() || base.host_str().is_none() {
+        if base.username() != ""
+            || base.password().is_some()
+            || base.cannot_be_a_base()
+            || base.host_str().is_none()
+        {
             return Err("forge url must not carry credentials".into());
         }
         classify_url(&base, policy).map_err(|why| format!("forge url: {why}"))?;
@@ -423,18 +504,34 @@ impl ForgejoAdapter {
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { http, base, token: token.to_owned() })
+        Ok(Self {
+            http,
+            base,
+            token: token.to_owned(),
+        })
     }
 
-    async fn get(&self, actor: &ForgeActor, segments: &[&str], query: &[(&str, String)]) -> Result<Value, ForgeError> {
+    async fn get(
+        &self,
+        actor: &ForgeActor,
+        segments: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<Value, ForgeError> {
         // The principal name goes into a header: refuse anything that is not a plain login.
         let p = &actor.principal;
-        if p.is_empty() || p.len() > 128 || !p.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')) {
+        if p.is_empty()
+            || p.len() > 128
+            || !p
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
             return Err(ForgeError::NotFound);
         }
         let mut url = self.base.clone();
         {
-            let mut s = url.path_segments_mut().map_err(|()| ForgeError::Unavailable("bad base url".into()))?;
+            let mut s = url
+                .path_segments_mut()
+                .map_err(|()| ForgeError::Unavailable("bad base url".into()))?;
             s.pop_if_empty().push("api").push("v1").extend(segments);
         }
         for (k, v) in query {
@@ -451,8 +548,10 @@ impl ForgejoAdapter {
             .map_err(|e| ForgeError::Unavailable(e.without_url().to_string()))?;
         let status = resp.status();
         let mut body = Vec::new();
-        while let Some(chunk) =
-            resp.chunk().await.map_err(|e| ForgeError::Unavailable(e.without_url().to_string()))?
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| ForgeError::Unavailable(e.without_url().to_string()))?
         {
             if body.len() + chunk.len() > MAX_BODY {
                 return Err(ForgeError::Unavailable("the answer is too large".into()));
@@ -460,7 +559,8 @@ impl ForgejoAdapter {
             body.extend_from_slice(&chunk);
         }
         match status.as_u16() {
-            200 => serde_json::from_slice(&body).map_err(|_| ForgeError::Unavailable("undecodable answer".into())),
+            200 => serde_json::from_slice(&body)
+                .map_err(|_| ForgeError::Unavailable("undecodable answer".into())),
             403 | 404 => Err(ForgeError::NotFound),
             s => Err(ForgeError::Unavailable(format!("status {s}"))),
         }
@@ -471,13 +571,26 @@ impl ForgejoAdapter {
         if login.is_empty() {
             return None;
         }
-        let v = self.get(actor, &["repos", o, n, "collaborators", login, "permission"], &[]).await.ok()?;
-        Some(matches!(v.get("permission").and_then(Value::as_str), Some("write" | "admin" | "owner")))
+        let v = self
+            .get(
+                actor,
+                &["repos", o, n, "collaborators", login, "permission"],
+                &[],
+            )
+            .await
+            .ok()?;
+        Some(matches!(
+            v.get("permission").and_then(Value::as_str),
+            Some("write" | "admin" | "owner")
+        ))
     }
 }
 
 fn s(v: &Value, k: &str) -> String {
-    v.get(k).and_then(Value::as_str).unwrap_or_default().to_owned()
+    v.get(k)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn login(v: &Value) -> String {
@@ -490,10 +603,24 @@ impl ForgeAdapter for ForgejoAdapter {
         "forgejo"
     }
 
-    async fn issues(&self, actor: &ForgeActor, repo: &str, state: &str, limit: usize) -> Result<Vec<ForgeItem>, ForgeError> {
+    async fn issues(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        state: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError> {
         let (o, n) = repo.split_once('/').ok_or(ForgeError::NotFound)?;
         let v = self
-            .get(actor, &["repos", o, n, "issues"], &[("type", "issues".into()), ("state", state.into()), ("limit", limit.to_string())])
+            .get(
+                actor,
+                &["repos", o, n, "issues"],
+                &[
+                    ("type", "issues".into()),
+                    ("state", state.into()),
+                    ("limit", limit.to_string()),
+                ],
+            )
             .await?;
         let mut out = Vec::new();
         for it in v.as_array().into_iter().flatten().take(limit) {
@@ -510,9 +637,16 @@ impl ForgeAdapter for ForgejoAdapter {
         Ok(out)
     }
 
-    async fn issue(&self, actor: &ForgeActor, repo: &str, number: u64) -> Result<ForgeItem, ForgeError> {
+    async fn issue(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        number: u64,
+    ) -> Result<ForgeItem, ForgeError> {
         let (o, n) = repo.split_once('/').ok_or(ForgeError::NotFound)?;
-        let it = self.get(actor, &["repos", o, n, "issues", &number.to_string()], &[]).await?;
+        let it = self
+            .get(actor, &["repos", o, n, "issues", &number.to_string()], &[])
+            .await?;
         let who = login(&it);
         Ok(ForgeItem {
             id: number,
@@ -533,14 +667,24 @@ impl ForgeAdapter for ForgejoAdapter {
     ) -> Result<(Vec<ForgeItem>, Handles), ForgeError> {
         let (o, n) = repo.split_once('/').ok_or(ForgeError::NotFound)?;
         let num = number.to_string();
-        let pr = self.get(actor, &["repos", o, n, "pulls", &num], &[]).await?;
+        let pr = self
+            .get(actor, &["repos", o, n, "pulls", &num], &[])
+            .await?;
         let handles = Handles {
-            head: pr.pointer("/head/sha").and_then(Value::as_str).map(str::to_owned),
-            merge_base: pr.get("merge_base").and_then(Value::as_str).map(str::to_owned),
+            head: pr
+                .pointer("/head/sha")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            merge_base: pr
+                .get("merge_base")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             ..Handles::default()
         };
         // A PR's conversation comments are its issue comments.
-        let v = self.get(actor, &["repos", o, n, "issues", &num, "comments"], &[]).await?;
+        let v = self
+            .get(actor, &["repos", o, n, "issues", &num, "comments"], &[])
+            .await?;
         let mut out = Vec::new();
         for c in v.as_array().into_iter().flatten().take(limit) {
             let who = login(c);
@@ -555,11 +699,28 @@ impl ForgeAdapter for ForgejoAdapter {
         Ok((out, handles))
     }
 
-    async fn actions_runs(&self, actor: &ForgeActor, repo: &str, limit: usize) -> Result<Vec<ForgeItem>, ForgeError> {
+    async fn actions_runs(
+        &self,
+        actor: &ForgeActor,
+        repo: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeItem>, ForgeError> {
         let (o, n) = repo.split_once('/').ok_or(ForgeError::NotFound)?;
-        let v = self.get(actor, &["repos", o, n, "actions", "runs"], &[("limit", limit.to_string())]).await?;
+        let v = self
+            .get(
+                actor,
+                &["repos", o, n, "actions", "runs"],
+                &[("limit", limit.to_string())],
+            )
+            .await?;
         let mut out = Vec::new();
-        for r in v.get("workflow_runs").and_then(Value::as_array).into_iter().flatten().take(limit) {
+        for r in v
+            .get("workflow_runs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .take(limit)
+        {
             // A run title comes from a commit or a workflow a user wrote, so lockdown judges the
             // actor like any other author.
             let who = r.get("actor").map(|a| s(a, "login")).unwrap_or_default();

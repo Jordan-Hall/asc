@@ -21,7 +21,10 @@ pub enum BodyError {
 /// Reads at most [`MAX_COMMIT_BODY`] bytes, then applies [`MAX_BODY`] unless the call is a
 /// `tools/call` of `commit`. A declared `Content-Length` over the larger cap is refused before
 /// any byte is read.
-pub async fn read_body(body: Body, declared: Option<u64>) -> Result<(Vec<u8>, Option<Value>), BodyError> {
+pub async fn read_body(
+    body: Body,
+    declared: Option<u64>,
+) -> Result<(Vec<u8>, Option<Value>), BodyError> {
     if declared.is_some_and(|n| n > MAX_COMMIT_BODY as u64) {
         return Err(BodyError::TooLarge);
     }

@@ -40,7 +40,8 @@ use tonic::codegen::http::uri::PathAndQuery;
 use tonic::metadata::{Ascii, MetadataValue};
 
 use super::backend::{
-    CALL_TIMEOUT, INFLIGHT_RETRY_MS, MAX_MESSAGE, REPO_NOT_FOUND, ServeBackend, clean, encode_msg, map_status, set_repo,
+    CALL_TIMEOUT, INFLIGHT_RETRY_MS, MAX_MESSAGE, REPO_NOT_FOUND, ServeBackend, clean, encode_msg,
+    map_status, set_repo,
 };
 use crate::limits::{Caller, Class, class_of};
 
@@ -67,9 +68,15 @@ pub struct RegistryLandPolicy(pub Arc<crate::registry::Registry>);
 #[async_trait]
 impl LandPolicy for RegistryLandPolicy {
     async fn accepts_land(&self, repo: &str, refname: &str) -> bool {
-        let Ok(name) = RepoName::parse(repo) else { return false };
-        let Ok(entry) = self.0.open(&name).await else { return false };
-        crate::land::check_branch(self.0.pool(), &entry, refname).await.is_ok()
+        let Ok(name) = RepoName::parse(repo) else {
+            return false;
+        };
+        let Ok(entry) = self.0.open(&name).await else {
+            return false;
+        };
+        crate::land::check_branch(self.0.pool(), &entry, refname)
+            .await
+            .is_ok()
     }
 }
 
@@ -101,7 +108,9 @@ impl McpBackend for LandBackend {
             "classify" => match self.inner.call(tool, args, ctx).await? {
                 Reply::Messages(s) => {
                     let budget = ctx.budget_bytes;
-                    Ok(Reply::Messages(s.map(move |r| r.map(|v| cap_classify(v, budget))).boxed()))
+                    Ok(Reply::Messages(
+                        s.map(move |r| r.map(|v| cap_classify(v, budget))).boxed(),
+                    ))
                 }
                 other => Ok(other),
             },
@@ -118,7 +127,9 @@ impl McpBackend for LandBackend {
 /// records the files left out in `omitted_files`.
 #[must_use]
 pub fn cap_classify(mut v: Value, budget_bytes: u64) -> Value {
-    let Some(files) = v.get_mut("files").and_then(Value::as_array_mut) else { return v };
+    let Some(files) = v.get_mut("files").and_then(Value::as_array_mut) else {
+        return v;
+    };
     let total = files.len();
     let mut used = 0u64;
     let mut keep = 0usize;
@@ -152,8 +163,14 @@ fn bad(msg: impl Into<String>) -> ToolError {
 }
 
 fn plain(s: &str, what: &str) -> Result<(), ToolError> {
-    if s.is_empty() || s.len() > MAX_ARG || s.starts_with('-') || s.contains(|c: char| c.is_control()) {
-        return Err(bad(format!("{what} is empty, too long or has control characters")));
+    if s.is_empty()
+        || s.len() > MAX_ARG
+        || s.starts_with('-')
+        || s.contains(|c: char| c.is_control())
+    {
+        return Err(bad(format!(
+            "{what} is empty, too long or has control characters"
+        )));
     }
     Ok(())
 }
@@ -185,7 +202,10 @@ fn branch_ref(branch: &str) -> Result<String, ToolError> {
 /// `INVALID_ARGUMENT`.
 pub fn parse_args(obj: &Map<String, Value>) -> Result<LandArgs, ToolError> {
     for k in obj.keys() {
-        if !matches!(k.as_str(), "repo" | "tip" | "changes" | "branch" | "dry_run" | "max_tokens") {
+        if !matches!(
+            k.as_str(),
+            "repo" | "tip" | "changes" | "branch" | "dry_run" | "max_tokens"
+        ) {
             return Err(bad(format!("{k} is not an argument of land")));
         }
     }
@@ -196,7 +216,11 @@ pub fn parse_args(obj: &Map<String, Value>) -> Result<LandArgs, ToolError> {
                 return Err(bad(format!("changes takes 1 to {MAX_CHANGES} change ids")));
             }
             a.iter()
-                .map(|c| c.as_str().map(str::to_owned).ok_or_else(|| bad("changes must be strings")))
+                .map(|c| {
+                    c.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| bad("changes must be strings"))
+                })
                 .collect::<Result<Vec<_>, _>>()?
         }
         _ => return Err(bad("land needs exactly one of changes and tip")),
@@ -213,7 +237,11 @@ pub fn parse_args(obj: &Map<String, Value>) -> Result<LandArgs, ToolError> {
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(bad("dry_run must be a boolean")),
     };
-    Ok(LandArgs { revs, branch, dry_run })
+    Ok(LandArgs {
+        revs,
+        branch,
+        dry_run,
+    })
 }
 
 fn path_text(p: &[u8]) -> String {
@@ -224,7 +252,12 @@ fn path_text(p: &[u8]) -> String {
 fn map_land_status(s: &tonic::Status) -> ToolError {
     let mut t = map_status(s);
     if let Some(e) = status_rpc_error(s) {
-        t.conflicts = e.info().conflicts.iter().map(|c| clean(&c.path.to_string())).collect();
+        t.conflicts = e
+            .info()
+            .conflicts
+            .iter()
+            .map(|c| clean(&c.path.to_string()))
+            .collect();
     }
     t
 }
@@ -238,23 +271,39 @@ struct Wire<'a> {
 
 impl Wire<'_> {
     /// One in-process unary call of `Repo.<method>` on the write credential, charged to its class.
-    async fn repo(&self, method: &str, build: impl FnOnce(&mut DynamicMessage), repo: &str) -> Result<DynamicMessage, ToolError> {
+    async fn repo(
+        &self,
+        method: &str,
+        build: impl FnOnce(&mut DynamicMessage),
+        repo: &str,
+    ) -> Result<DynamicMessage, ToolError> {
         let m = self
             .b
             .pool
             .get_service_by_name("asc.v1.Repo")
             .and_then(|s| s.methods().find(|m| m.name() == method))
-            .ok_or_else(|| ToolError::not_available(format!("Repo.{method} is not served by this endpoint")))?;
+            .ok_or_else(|| {
+                ToolError::not_available(format!("Repo.{method} is not served by this endpoint"))
+            })?;
         let path = format!("/{}/{}", m.parent_service().full_name(), m.name());
         let class = class_of(&path).unwrap_or(Class::Expensive);
-        let _permit = self.b.admission.admit(Caller::principal(self.principal), class, 1).map_err(|s| map_status(&s))?;
+        let _permit = self
+            .b
+            .admission
+            .admit(Caller::principal(self.principal), class, 1)
+            .map_err(|s| map_status(&s))?;
         let mut msg = DynamicMessage::new(m.input());
         build(&mut msg);
         set_repo(&mut msg, repo);
         self.unary(&path, msg, m.output()).await
     }
 
-    async fn unary(&self, path: &str, msg: DynamicMessage, out: MessageDescriptor) -> Result<DynamicMessage, ToolError> {
+    async fn unary(
+        &self,
+        path: &str,
+        msg: DynamicMessage,
+        out: MessageDescriptor,
+    ) -> Result<DynamicMessage, ToolError> {
         let mut req = Request::new(msg);
         req.set_timeout(CALL_TIMEOUT);
         let meta = req.metadata_mut();
@@ -262,20 +311,32 @@ impl Wire<'_> {
             v.set_sensitive(true);
             meta.insert("authorization", v);
         }
-        if let Ok(v) = format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>() {
+        if let Ok(v) =
+            format!("asc/{} mcp", env!("CARGO_PKG_VERSION")).parse::<MetadataValue<Ascii>>()
+        {
             meta.insert("x-asc-client", v);
         }
         // Every call has an op id of its own: a model's retry is a new call, never a replay.
-        if let Ok(v) = uuid::Uuid::new_v4().to_string().parse::<MetadataValue<Ascii>>() {
+        if let Ok(v) = uuid::Uuid::new_v4()
+            .to_string()
+            .parse::<MetadataValue<Ascii>>()
+        {
             meta.insert("x-asc-op-id", v);
         }
-        let uri: PathAndQuery = path.parse().map_err(|_| ToolError::internal("bad method path"))?;
+        let uri: PathAndQuery = path
+            .parse()
+            .map_err(|_| ToolError::internal("bad method path"))?;
         let mut grpc = Grpc::new(self.b.routes.clone())
             .max_decoding_message_size(MAX_MESSAGE)
             .max_encoding_message_size(MAX_MESSAGE);
         let run = async {
-            grpc.ready().await.map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
-            let r = grpc.unary(req, uri, DynCodec::new(out)).await.map_err(|s| map_land_status(&s))?;
+            grpc.ready()
+                .await
+                .map_err(|e| ToolError::not_available(clean(&e.to_string())))?;
+            let r = grpc
+                .unary(req, uri, DynCodec::new(out))
+                .await
+                .map_err(|s| map_land_status(&s))?;
             Ok::<_, ToolError>(r.into_inner())
         };
         tokio::select! {
@@ -302,9 +363,14 @@ impl LandBackend {
     async fn land(&self, args: &Value, ctx: &CallContext) -> Result<Reply, ToolError> {
         let b = &self.inner;
         let not_served = || ToolError::not_available("land is not served by this endpoint");
-        let Some(writes) = b.writes.as_ref() else { return Err(not_served()) };
+        let Some(writes) = b.writes.as_ref() else {
+            return Err(not_served());
+        };
         let Some(principal) = ctx.principal.as_deref() else {
-            return Err(ToolError::new("UNAUTHENTICATED", "authentication is required"));
+            return Err(ToolError::new(
+                "UNAUTHENTICATED",
+                "authentication is required",
+            ));
         };
         let obj = args.as_object().cloned().unwrap_or_default();
         let repo_arg = obj
@@ -315,41 +381,69 @@ impl LandBackend {
         let repo = RepoName::parse(&repo_arg).map_err(|s| bad(clean(s.message())))?;
         let land = parse_args(&obj)?;
 
-        let slot = b
-            .inflight
-            .acquire(principal)
-            .ok_or_else(|| ToolError::rate_limited("too many calls in flight for this principal", INFLIGHT_RETRY_MS))?;
+        let slot = b.inflight.acquire(principal).ok_or_else(|| {
+            ToolError::rate_limited(
+                "too many calls in flight for this principal",
+                INFLIGHT_RETRY_MS,
+            )
+        })?;
         if !b.gate.can_read(principal, repo.as_str()).await {
             return Err(ToolError::new(code::NOT_FOUND, REPO_NOT_FOUND));
         }
         if !writes.can_write(principal, repo.as_str()).await {
-            return Err(ToolError::new("PERMISSION_DENIED", "write access is required"));
+            return Err(ToolError::new(
+                "PERMISSION_DENIED",
+                "write access is required",
+            ));
         }
         // Before any ref or object is read: a branch that takes no land requests is refused alone.
         if !self.policy.accepts_land(repo.as_str(), &land.branch).await {
-            return Err(ToolError::new("LAND_BRANCH_REFUSED", "this branch does not accept land requests"));
+            return Err(ToolError::new(
+                "LAND_BRANCH_REFUSED",
+                "this branch does not accept land requests",
+            ));
         }
 
         let grant = b.scope.mint(principal, repo.as_str(), Access::Write);
-        let wire = Wire { b, token: grant.token.as_str(), cancel: &ctx.cancel, principal };
+        let wire = Wire {
+            b,
+            token: grant.token.as_str(),
+            cancel: &ctx.cancel,
+            principal,
+        };
         let out = run(&wire, repo.as_str(), &land).await?;
         drop(grant);
         drop(slot);
-        Ok(Reply::Messages(stream::once(async move { Ok(out) }).boxed()))
+        Ok(Reply::Messages(
+            stream::once(async move { Ok(out) }).boxed(),
+        ))
     }
 }
 
 async fn run(wire: &Wire<'_>, repo: &str, land: &LandArgs) -> Result<Value, ToolError> {
     let mut specs = land.revs.clone();
     specs.push(land.branch.clone());
-    let resolved = wire.repo("Resolve", |m| { m.set_field_by_name("revspecs", strings(specs.clone())); }, repo).await?;
+    let resolved = wire
+        .repo(
+            "Resolve",
+            |m| {
+                m.set_field_by_name("revspecs", strings(specs.clone()));
+            },
+            repo,
+        )
+        .await?;
     let ids = byte_list(&resolved, "ids");
     if ids.len() != land.revs.len() + 1 {
-        return Err(ToolError::internal("the server resolved a different number of revisions"));
+        return Err(ToolError::internal(
+            "the server resolved a different number of revisions",
+        ));
     }
     let (tips, branch_tip) = ids.split_at(land.revs.len());
     if let Some(i) = tips.iter().position(Vec::is_empty) {
-        return Err(ToolError::new(code::NOT_FOUND, format!("revision not found: {}", clean(&land.revs[i]))));
+        return Err(ToolError::new(
+            code::NOT_FOUND,
+            format!("revision not found: {}", clean(&land.revs[i])),
+        ));
     }
     if branch_tip[0].is_empty() {
         return Err(ToolError::new(code::NOT_FOUND, "branch not found"));
@@ -368,7 +462,10 @@ async fn run(wire: &Wire<'_>, repo: &str, land: &LandArgs) -> Result<Value, Tool
             )
             .await?;
         if r.get_field_by_name("result").and_then(|v| v.as_bool()) != Some(true) {
-            return Err(bad(format!("{} is not under the last change; land one stack at a time", clean(&land.revs[i]))));
+            return Err(bad(format!(
+                "{} is not under the last change; land one stack at a time",
+                clean(&land.revs[i])
+            )));
         }
     }
 
@@ -384,8 +481,14 @@ async fn run(wire: &Wire<'_>, repo: &str, land: &LandArgs) -> Result<Value, Tool
                 repo,
             )
             .await?;
-        let conflicts: Vec<String> = byte_list(&r, "conflicts").iter().map(|p| path_text(p)).collect();
-        let protected: Vec<String> = byte_list(&r, "changed_protected").iter().map(|p| path_text(p)).collect();
+        let conflicts: Vec<String> = byte_list(&r, "conflicts")
+            .iter()
+            .map(|p| path_text(p))
+            .collect();
+        let protected: Vec<String> = byte_list(&r, "changed_protected")
+            .iter()
+            .map(|p| path_text(p))
+            .collect();
         return Ok(json!({
             "results": [],
             "dry_run": true,
@@ -399,10 +502,18 @@ async fn run(wire: &Wire<'_>, repo: &str, land: &LandArgs) -> Result<Value, Tool
         .repo(
             "UpdateRefs",
             |m| {
-                let Some(f) = m.descriptor().get_field_by_name("updates") else { return };
-                let prost_reflect::Kind::Message(ud) = f.kind() else { return };
-                let Some(tf) = ud.get_field_by_name("new") else { return };
-                let prost_reflect::Kind::Message(td) = tf.kind() else { return };
+                let Some(f) = m.descriptor().get_field_by_name("updates") else {
+                    return;
+                };
+                let prost_reflect::Kind::Message(ud) = f.kind() else {
+                    return;
+                };
+                let Some(tf) = ud.get_field_by_name("new") else {
+                    return;
+                };
+                let prost_reflect::Kind::Message(td) = tf.kind() else {
+                    return;
+                };
                 let mut target = DynamicMessage::new(td);
                 target.set_field_by_name("changeset", PbValue::Bytes(tip.clone().into()));
                 let mut update = DynamicMessage::new(ud);
@@ -426,10 +537,11 @@ async fn run(wire: &Wire<'_>, repo: &str, land: &LandArgs) -> Result<Value, Tool
 
 fn hex(b: &[u8]) -> String {
     use std::fmt::Write as _;
-    b.iter().fold(String::with_capacity(b.len() * 2), |mut s, x| {
-        let _ = write!(s, "{x:02x}");
-        s
-    })
+    b.iter()
+        .fold(String::with_capacity(b.len() * 2), |mut s, x| {
+            let _ = write!(s, "{x:02x}");
+            s
+        })
 }
 
 #[cfg(test)]
@@ -442,15 +554,32 @@ mod tests {
 
     #[test]
     fn dry_run_defaults_to_true_and_only_false_turns_it_off() {
-        let a = parse_args(&obj(json!({"repo": "a/b", "tip": "abc", "branch": "master"}))).unwrap();
+        let a = parse_args(&obj(
+            json!({"repo": "a/b", "tip": "abc", "branch": "master"}),
+        ))
+        .unwrap();
         assert!(a.dry_run);
         assert_eq!(a.branch, "refs/heads/master");
-        let a = parse_args(&obj(json!({"tip": "abc", "branch": "master", "dry_run": false}))).unwrap();
+        let a = parse_args(&obj(
+            json!({"tip": "abc", "branch": "master", "dry_run": false}),
+        ))
+        .unwrap();
         assert!(!a.dry_run);
         for bad in [json!("false"), json!(0), json!([])] {
-            assert!(parse_args(&obj(json!({"tip": "abc", "branch": "master", "dry_run": bad}))).is_err());
+            assert!(
+                parse_args(&obj(
+                    json!({"tip": "abc", "branch": "master", "dry_run": bad})
+                ))
+                .is_err()
+            );
         }
-        assert!(parse_args(&obj(json!({"tip": "abc", "branch": "master", "dry_run": null}))).unwrap().dry_run);
+        assert!(
+            parse_args(&obj(
+                json!({"tip": "abc", "branch": "master", "dry_run": null})
+            ))
+            .unwrap()
+            .dry_run
+        );
     }
 
     #[test]
@@ -458,31 +587,55 @@ mod tests {
         let ok = |v: Value| parse_args(&obj(v)).is_ok();
         assert!(ok(json!({"changes": ["kkkk"], "branch": "master"})));
         assert!(!ok(json!({"branch": "master"})));
-        assert!(!ok(json!({"tip": "a", "changes": ["b"], "branch": "master"})));
+        assert!(!ok(
+            json!({"tip": "a", "changes": ["b"], "branch": "master"})
+        ));
         assert!(!ok(json!({"changes": [], "branch": "master"})));
         assert!(!ok(json!({"tip": "a"})));
         assert!(!ok(json!({"tip": "a", "branch": "master", "mode": 2})));
-        assert!(!ok(json!({"tip": "a", "branch": "master", "committer": "x"})));
+        assert!(!ok(
+            json!({"tip": "a", "branch": "master", "committer": "x"})
+        ));
         assert!(!ok(json!({"tip": "--upload-pack=x", "branch": "master"})));
     }
 
     #[test]
     fn only_branches_are_land_targets() {
-        assert_eq!(branch_ref("refs/heads/release/1").unwrap(), "refs/heads/release/1");
-        for bad in ["refs/tags/v1", "refs/for/master", "refs/users/1/heads/x", "a..b", "a/.hidden", "x.lock", "", "a b", "a//b", "/a", "a/"] {
+        assert_eq!(
+            branch_ref("refs/heads/release/1").unwrap(),
+            "refs/heads/release/1"
+        );
+        for bad in [
+            "refs/tags/v1",
+            "refs/for/master",
+            "refs/users/1/heads/x",
+            "a..b",
+            "a/.hidden",
+            "x.lock",
+            "",
+            "a b",
+            "a//b",
+            "/a",
+            "a/",
+        ] {
             assert!(branch_ref(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
     fn classify_is_cut_at_300_files_and_at_the_budget() {
-        let files: Vec<Value> = (0..350).map(|i| json!({"path": format!("f{i}"), "class": "LOGIC"})).collect();
+        let files: Vec<Value> = (0..350)
+            .map(|i| json!({"path": format!("f{i}"), "class": "LOGIC"}))
+            .collect();
         let v = cap_classify(json!({"files": files, "overall": "LOGIC"}), u64::MAX);
         assert_eq!(v["files"].as_array().unwrap().len(), 300);
         assert_eq!(v["omitted_files"], json!(50));
         assert_eq!(v["overall"], json!("LOGIC"));
         let one = json!({"path": "f0", "class": "LOGIC"}).to_string().len() as u64 + 1;
-        let v = cap_classify(json!({"files": (0..10).map(|i| json!({"path": format!("f{i}"), "class": "LOGIC"})).collect::<Vec<_>>()}), one * 3);
+        let v = cap_classify(
+            json!({"files": (0..10).map(|i| json!({"path": format!("f{i}"), "class": "LOGIC"})).collect::<Vec<_>>()}),
+            one * 3,
+        );
         assert_eq!(v["files"].as_array().unwrap().len(), 3);
         assert_eq!(v["omitted_files"], json!(7));
     }

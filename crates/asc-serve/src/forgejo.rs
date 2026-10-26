@@ -514,7 +514,9 @@ impl AuthzCore {
         let decision = self
             .resolve(login, "", Access::Read, || async {
                 let req = l.apply(client.http.get(client.url(&["api", "v1", "user"])));
-                let (status, body) = ForgejoClient::send(req).await.map_err(|e| unavailable(&e))?;
+                let (status, body) = ForgejoClient::send(req)
+                    .await
+                    .map_err(|e| unavailable(&e))?;
                 match status {
                     StatusCode::OK => {
                         let user: ApiUser = decode(&body).map_err(|e| unavailable(&e))?;

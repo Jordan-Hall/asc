@@ -104,7 +104,11 @@ fn check_https_url(s: &str, what: &str) -> Result<(), String> {
         && u.password().is_none()
         && s.len() <= 512
         && !s.chars().any(char::is_control);
-    if ok { Ok(()) } else { Err(format!("{what} must be an https URL without credentials")) }
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("{what} must be an https URL without credentials"))
+    }
 }
 
 fn same_issuer(a: &str, b: &str) -> bool {
@@ -146,8 +150,12 @@ impl KeySet {
     /// Reads a JWKS document. Keys that are not RSA (2048 bits or more) or P-256 signature keys
     /// are skipped.
     pub fn from_jwks(doc: &[u8]) -> Result<Self, String> {
-        let v: Value = serde_json::from_slice(doc).map_err(|_| "the JWKS is not JSON".to_owned())?;
-        let keys = v.get("keys").and_then(Value::as_array).ok_or("the JWKS has no keys")?;
+        let v: Value =
+            serde_json::from_slice(doc).map_err(|_| "the JWKS is not JSON".to_owned())?;
+        let keys = v
+            .get("keys")
+            .and_then(Value::as_array)
+            .ok_or("the JWKS has no keys")?;
         Ok(Self(keys.iter().take(MAX_KEYS).filter_map(jwk).collect()))
     }
 
@@ -194,7 +202,11 @@ fn jwk(v: &Value) -> Option<Jwk> {
             if n.len() < MIN_RSA_BYTES || n.len() > 1024 || e.is_empty() || e.len() > 8 {
                 return None;
             }
-            Some(Jwk { kid, alg: Alg::Rs256, key: rsa_der(n, e) })
+            Some(Jwk {
+                kid,
+                alg: Alg::Rs256,
+                key: rsa_der(n, e),
+            })
         }
         "EC" if v.get("crv")?.as_str()? == "P-256" && declared.is_none_or(|a| a == Alg::Es256) => {
             let (x, y) = (b64(v, "x")?, b64(v, "y")?);
@@ -204,7 +216,11 @@ fn jwk(v: &Value) -> Option<Jwk> {
             let mut key = vec![4u8];
             key.extend_from_slice(&x);
             key.extend_from_slice(&y);
-            Some(Jwk { kid, alg: Alg::Es256, key })
+            Some(Jwk {
+                kid,
+                alg: Alg::Es256,
+                key,
+            })
         }
         _ => None,
     }
@@ -279,14 +295,21 @@ impl Default for HttpKeySource {
 
 impl HttpKeySource {
     pub fn new() -> Self {
-        Self { cache: tokio::sync::Mutex::new(HashMap::new()) }
+        Self {
+            cache: tokio::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     async fn fetch(issuer: &str) -> Result<KeySet, KeyError> {
         let base = issuer.trim_end_matches('/');
         let disc = fetch_json(&format!("{base}/.well-known/openid-configuration")).await?;
-        let doc: Value = serde_json::from_slice(&disc).map_err(|_| KeyError("discovery is not JSON".into()))?;
-        if !doc.get("issuer").and_then(Value::as_str).is_some_and(|i| same_issuer(i, issuer)) {
+        let doc: Value =
+            serde_json::from_slice(&disc).map_err(|_| KeyError("discovery is not JSON".into()))?;
+        if !doc
+            .get("issuer")
+            .and_then(Value::as_str)
+            .is_some_and(|i| same_issuer(i, issuer))
+        {
             return Err(KeyError("discovery names another issuer".into()));
         }
         let uri = doc
@@ -304,16 +327,29 @@ impl KeySource for HttpKeySource {
         let mut cache = self.cache.lock().await;
         if let Some(e) = cache.get(issuer) {
             let age = e.at.elapsed();
-            let fresh = if refresh { age < MIN_REFETCH } else { age < KEYS_TTL };
+            let fresh = if refresh {
+                age < MIN_REFETCH
+            } else {
+                age < KEYS_TTL
+            };
             // A failed fetch is not retried for MIN_REFETCH either.
             if fresh || (e.keys.is_none() && age < MIN_REFETCH) {
-                return e.keys.clone().ok_or_else(|| KeyError("the issuer's keys are unavailable".into()));
+                return e
+                    .keys
+                    .clone()
+                    .ok_or_else(|| KeyError("the issuer's keys are unavailable".into()));
             }
         }
         match Self::fetch(issuer).await {
             Ok(set) => {
                 let set = Arc::new(set);
-                cache.insert(issuer.to_owned(), Entry { keys: Some(set.clone()), at: Instant::now() });
+                cache.insert(
+                    issuer.to_owned(),
+                    Entry {
+                        keys: Some(set.clone()),
+                        at: Instant::now(),
+                    },
+                );
                 Ok(set)
             }
             Err(e) => {
@@ -325,7 +361,13 @@ impl KeySource for HttpKeySource {
                         Ok(old.keys.clone().unwrap_or_default())
                     }
                     _ => {
-                        cache.insert(issuer.to_owned(), Entry { keys: None, at: Instant::now() });
+                        cache.insert(
+                            issuer.to_owned(),
+                            Entry {
+                                keys: None,
+                                at: Instant::now(),
+                            },
+                        );
                         Err(e)
                     }
                 }
@@ -385,7 +427,10 @@ pub fn check_fetch_url(raw: &str) -> Result<url::Url, KeyError> {
 
 async fn fetch_json(raw: &str) -> Result<Vec<u8>, KeyError> {
     let u = check_fetch_url(raw)?;
-    let host = u.host_str().ok_or_else(|| KeyError("no host".into()))?.to_owned();
+    let host = u
+        .host_str()
+        .ok_or_else(|| KeyError("no host".into()))?
+        .to_owned();
     let port = u.port_or_known_default().unwrap_or(443);
     let bare = host.trim_start_matches('[').trim_end_matches(']');
     let addrs: Vec<std::net::SocketAddr> = if let Ok(ip) = bare.parse::<IpAddr>() {
@@ -413,13 +458,20 @@ async fn fetch_json(raw: &str) -> Result<Vec<u8>, KeyError> {
         .await
         .map_err(|_| KeyError("the fetch failed".into()))?;
     if resp.status() != reqwest::StatusCode::OK {
-        return Err(KeyError(format!("the fetch answered {}", resp.status().as_u16())));
+        return Err(KeyError(format!(
+            "the fetch answered {}",
+            resp.status().as_u16()
+        )));
     }
     if resp.content_length().is_some_and(|n| n > MAX_DOC as u64) {
         return Err(KeyError("the document is too large".into()));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|_| KeyError("the fetch failed".into()))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|_| KeyError("the fetch failed".into()))?
+    {
         if body.len() + chunk.len() > MAX_DOC {
             return Err(KeyError("the document is too large".into()));
         }
@@ -482,18 +534,32 @@ fn parse_jwt(token: &str) -> Option<Parts<'_>> {
     }
     // `none`, HMAC and everything else but RS256 and ES256 end here.
     let alg = Alg::parse(header.get("alg")?.as_str()?)?;
-    let kid = header.get("kid").map(|k| k.as_str().map(str::to_owned)).unwrap_or(None);
+    let kid = header
+        .get("kid")
+        .map(|k| k.as_str().map(str::to_owned))
+        .unwrap_or(None);
     if header.get("kid").is_some() && kid.is_none() {
         return None;
     }
     let signing = &token[..h.len() + 1 + p.len()];
-    Some(Parts { signing, sig: s, alg, kid, claims })
+    Some(Parts {
+        signing,
+        sig: s,
+        alg,
+        kid,
+        claims,
+    })
 }
 
 impl OidcVerifier {
     /// `audience` is the canonical `/mcp` URL.
     pub fn new(issuers: Vec<String>, audience: String, keys: Arc<dyn KeySource>) -> Self {
-        Self { issuers, audience, keys, now: system_clock() }
+        Self {
+            issuers,
+            audience,
+            keys,
+            now: system_clock(),
+        }
     }
 
     #[must_use]
@@ -519,7 +585,9 @@ impl OidcVerifier {
             .and_then(Value::as_str)
             .and_then(|c| self.issuers.iter().find(|i| i.as_str() == c))
             .ok_or(AuthError::Unauthenticated)?;
-        let sig = URL_SAFE_NO_PAD.decode(p.sig).map_err(|_| AuthError::Unauthenticated)?;
+        let sig = URL_SAFE_NO_PAD
+            .decode(p.sig)
+            .map_err(|_| AuthError::Unauthenticated)?;
         let mut refreshed = false;
         loop {
             let set = self.keys.keys(iss, refreshed).await.map_err(|e| {
@@ -564,7 +632,10 @@ impl OidcVerifier {
         if !aud_ok {
             return Err(AuthError::Unauthenticated);
         }
-        let sub = c.get("sub").and_then(Value::as_str).ok_or(AuthError::Unauthenticated)?;
+        let sub = c
+            .get("sub")
+            .and_then(Value::as_str)
+            .ok_or(AuthError::Unauthenticated)?;
         if sub.is_empty() || sub.len() > 512 || sub.chars().any(char::is_control) {
             return Err(AuthError::Unauthenticated);
         }
@@ -632,8 +703,16 @@ pub struct OauthAuthorizer {
 }
 
 impl OauthAuthorizer {
-    pub fn new(inner: Arc<dyn Authorizer>, verifier: OidcVerifier, directory: Arc<dyn IdentityDirectory>) -> Self {
-        Self { inner, verifier, directory }
+    pub fn new(
+        inner: Arc<dyn Authorizer>,
+        verifier: OidcVerifier,
+        directory: Arc<dyn IdentityDirectory>,
+    ) -> Self {
+        Self {
+            inner,
+            verifier,
+            directory,
+        }
     }
 
     /// Verifies a JWT and maps its subject to a linked user: no repository involved.
@@ -652,7 +731,9 @@ impl OauthAuthorizer {
         let (id, v) = self.jwt_user(token).await?;
         // A scope claim can only narrow: write needs `asc:write` when the token names scopes.
         if access > Access::Read
-            && v.scope.as_deref().is_some_and(|s| !s.split(' ').any(|x| x == "asc:write"))
+            && v.scope
+                .as_deref()
+                .is_some_and(|s| !s.split(' ').any(|x| x == "asc:write"))
         {
             return Err(AuthError::Forbidden);
         }
@@ -694,7 +775,9 @@ impl Authorizer for OauthAuthorizer {
         {
             return self.jwt(c.secret().expose(), repo, access).await;
         }
-        self.inner.authorize_credential(credential, repo, access).await
+        self.inner
+            .authorize_credential(credential, repo, access)
+            .await
     }
 
     async fn authenticate(&self, credential: Option<&Credential>) -> Result<Principal, AuthError> {
@@ -757,9 +840,25 @@ mod tests {
     #[test]
     fn public_addresses_only() {
         for bad in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "0.0.0.0",
-            "100.64.0.1", "224.0.0.1", "255.255.255.255", "198.18.0.1", "::1", "::", "fe80::1",
-            "fc00::1", "fd12::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "64:ff9b::7f00:1", "2002::1",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "100.64.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "198.18.0.1",
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd12::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "64:ff9b::7f00:1",
+            "2002::1",
         ] {
             assert!(!is_public_ip(bad.parse().unwrap()), "{bad}");
         }
@@ -771,7 +870,13 @@ mod tests {
     #[test]
     fn fetch_urls_are_https() {
         assert!(check_fetch_url("https://idp.example.org/x").is_ok());
-        for bad in ["http://idp.example.org", "ftp://a/b", "https://u:p@idp.example.org", "file:///etc/passwd", "idp"] {
+        for bad in [
+            "http://idp.example.org",
+            "ftp://a/b",
+            "https://u:p@idp.example.org",
+            "file:///etc/passwd",
+            "idp",
+        ] {
             assert!(check_fetch_url(bad).is_err(), "{bad}");
         }
     }
@@ -789,14 +894,32 @@ mod tests {
 
     #[test]
     fn config_rules() {
-        let ok = McpOauthConfig { issuer: vec!["https://idp.example.org".into()], ..Default::default() };
+        let ok = McpOauthConfig {
+            issuer: vec!["https://idp.example.org".into()],
+            ..Default::default()
+        };
         assert!(ok.validate().is_ok());
         for bad in [
-            McpOauthConfig { issuer: vec!["http://idp.example.org".into()], ..Default::default() },
-            McpOauthConfig { issuer: vec!["https://a/?x=1".into()], ..Default::default() },
-            McpOauthConfig { issuer: vec!["https://a".into(), "https://a/".into()], ..Default::default() },
-            McpOauthConfig { own_issuer: true, ..Default::default() },
-            McpOauthConfig { audience: Some("http://x/mcp".into()), ..Default::default() },
+            McpOauthConfig {
+                issuer: vec!["http://idp.example.org".into()],
+                ..Default::default()
+            },
+            McpOauthConfig {
+                issuer: vec!["https://a/?x=1".into()],
+                ..Default::default()
+            },
+            McpOauthConfig {
+                issuer: vec!["https://a".into(), "https://a/".into()],
+                ..Default::default()
+            },
+            McpOauthConfig {
+                own_issuer: true,
+                ..Default::default()
+            },
+            McpOauthConfig {
+                audience: Some("http://x/mcp".into()),
+                ..Default::default()
+            },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
         }
