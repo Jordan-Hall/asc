@@ -10,8 +10,9 @@ import { Link, useHash, useParams } from "../lib/router";
 import { treeHref } from "../lib/paths";
 import { useTitle } from "../lib/title";
 
-const LINE_HEIGHT = 20;
-const MAX_ROWS = 32;
+// 24 px: the line-number links are touch and pointer targets (WCAG 2.2 2.5.8 needs 24 px).
+const LINE_HEIGHT = 24;
+const MAX_ROWS = 28;
 
 export function parseLineHash(hash: string): number | undefined {
   const m = /^#L(\d{1,9})$/.exec(hash);
@@ -26,8 +27,10 @@ export function CodeLines(props: { file: FileView; selected: number | undefined 
       count={file.count}
       rowHeight={LINE_HEIGHT}
       maxRows={MAX_ROWS}
-      minRows={MAX_ROWS}
+      // Space for a full window while the file streams in, so nothing moves; a short file then fits.
+      minRows={file.done ? Math.min(file.count, MAX_ROWS) : MAX_ROWS}
       label="File contents"
+      borderless
       className="bg-surface font-mono text-[13px]"
       revealIndex={selected === undefined ? undefined : selected - 1}
       renderRow={(i) => (
@@ -67,6 +70,7 @@ export default function BlobPage(): ReactNode {
   const parts = crumbs(path);
   return (
     <div className="mx-auto w-full max-w-6xl p-4">
+      <h1 className="sr-only">{`${owner}/${repo}: ${path}`}</h1>
       <nav aria-label="Path" className="mb-3 flex flex-wrap items-center gap-1 text-sm">
         <Link to={treeHref(owner, repo, ref, "")}>{repo}</Link>
         {parts.map((c, i) => (
@@ -90,7 +94,9 @@ export default function BlobPage(): ReactNode {
           {data ? (
             <>
               <span>
-                {data.binary ? "Binary file" : `${data.count.toLocaleString("en")} lines`}
+                {data.binary
+                  ? "Binary file"
+                  : `${data.count.toLocaleString("en")} ${data.count === 1 ? "line" : "lines"}`}
               </span>
               <span>{data.size.toLocaleString("en")} bytes</span>
               {data.truncated ? (
