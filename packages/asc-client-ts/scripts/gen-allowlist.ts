@@ -11,15 +11,28 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DescFile } from "@bufbuild/protobuf";
+import { file_asc_v1_agents } from "../src/gen/asc/v1/agents_pb";
+import { file_asc_v1_aiproviders } from "../src/gen/asc/v1/aiproviders_pb";
+import { file_asc_v1_audit } from "../src/gen/asc/v1/audit_pb";
 import { file_asc_v1_bridge } from "../src/gen/asc/v1/bridge_pb";
 import { file_asc_v1_changes } from "../src/gen/asc/v1/changes_pb";
 import { file_asc_v1_ci } from "../src/gen/asc/v1/ci_pb";
+import { file_asc_v1_ciinsights } from "../src/gen/asc/v1/ciinsights_pb";
 import { file_asc_v1_cloud } from "../src/gen/asc/v1/cloud_pb";
 import { file_asc_v1_codeintel } from "../src/gen/asc/v1/codeintel_pb";
+import { file_asc_v1_crosssearch } from "../src/gen/asc/v1/crosssearch_pb";
 import { file_asc_v1_inbox } from "../src/gen/asc/v1/inbox_pb";
+import { file_asc_v1_mergequeue } from "../src/gen/asc/v1/mergequeue_pb";
+import { file_asc_v1_policy } from "../src/gen/asc/v1/policy_pb";
 import { file_asc_v1_projects } from "../src/gen/asc/v1/projects_pb";
 import { file_asc_v1_repo } from "../src/gen/asc/v1/repo_pb";
 import { file_asc_v1_review } from "../src/gen/asc/v1/review_pb";
+import { file_asc_v1_secretscan } from "../src/gen/asc/v1/secretscan_pb";
+import { file_asc_v1_signing } from "../src/gen/asc/v1/signing_pb";
+import { file_asc_v1_stacks } from "../src/gen/asc/v1/stacks_pb";
+import { file_asc_v1_storage } from "../src/gen/asc/v1/storage_pb";
+import { file_asc_v1_vault } from "../src/gen/asc/v1/vault_pb";
+import { file_asc_v1_workflows } from "../src/gen/asc/v1/workflows_pb";
 import { file_asc_v1_workspace } from "../src/gen/asc/v1/workspace_pb";
 
 export interface RustVerb {
@@ -37,15 +50,28 @@ export const ARGV_SCHEMA_PATH = join(root, "crates/asc/src/bridge/argv_schema.rs
 /** Every method of every generated service, as `asc.v1.Service/Method`. */
 export function protoRpcs(): string[] {
   const files: DescFile[] = [
+    file_asc_v1_agents,
+    file_asc_v1_aiproviders,
+    file_asc_v1_audit,
     file_asc_v1_bridge,
     file_asc_v1_changes,
     file_asc_v1_ci,
+    file_asc_v1_ciinsights,
     file_asc_v1_cloud,
     file_asc_v1_codeintel,
+    file_asc_v1_crosssearch,
     file_asc_v1_inbox,
+    file_asc_v1_mergequeue,
+    file_asc_v1_policy,
     file_asc_v1_projects,
     file_asc_v1_repo,
     file_asc_v1_review,
+    file_asc_v1_secretscan,
+    file_asc_v1_signing,
+    file_asc_v1_stacks,
+    file_asc_v1_storage,
+    file_asc_v1_vault,
+    file_asc_v1_workflows,
     file_asc_v1_workspace,
   ];
   return files.flatMap((f) =>
