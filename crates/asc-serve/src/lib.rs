@@ -210,6 +210,7 @@ fn register_all(
     import_root: Option<std::path::PathBuf>,
     cloud_cfg: &config::CloudConfig,
     codeintel_cfg: Option<codeintel::rpc::Settings>,
+    embed: Option<Arc<dyn codeintel::worker::EmbedModel>>,
 ) {
     limits::register(ext, limits);
     // `HasObjects`, `GetObjects` and `PutObjects`: what clone, fetch and push move objects with.
@@ -236,12 +237,7 @@ fn register_all(
     // index segments on. `Semantic` needs `[codeintel.embed] dir`; without it, it answers
     // `FAILED_PRECONDITION` and says how to set it.
     if let Some(settings) = codeintel_cfg
-        && let Err(e) = codeintel::rpc::register(
-            ext,
-            registry,
-            settings.clone(),
-            codeintel::embedder::open(settings.embed.as_ref()),
-        )
+        && let Err(e) = codeintel::rpc::register(ext, registry, settings.clone(), embed)
     {
         tracing::error!(error = %e, "CodeIntel is not served");
     }
@@ -366,13 +362,19 @@ pub async fn serve(
         outbox::OutboxConfig::default(),
     ));
     let ext = Extensions::new();
+    // One embedder serves `Semantic` queries and the indexing workers.
+    let ci_settings = codeintel_settings(&cfg);
+    let ci_embed = ci_settings
+        .as_ref()
+        .and_then(|s| codeintel::embedder::open(s.embed.as_ref()));
     register_all(
         &ext,
         &registry,
         &cfg.limits,
         cfg.import_repo_root(),
         &cfg.cloud,
-        codeintel_settings(&cfg),
+        ci_settings,
+        ci_embed.clone(),
     );
     let warmer = projects::register(&ext, &registry);
     #[cfg(feature = "forgejo")]
@@ -514,6 +516,17 @@ pub async fn serve(
         outbox.effects().register(cloud.cache_evict_effect());
     }
     let worker = tokio::spawn(outbox.run());
+    // The indexing workers (SPEC §23.5) run beside `CodeIntel` whenever `[codeintel] enabled`.
+    let indexers = match codeintel::runner::config(&cfg) {
+        Some(c) => match codeintel::runner::start(registry.clone(), c, ci_embed) {
+            Ok(i) => Some(i),
+            Err(e) => {
+                tracing::error!(error = %e, "codeintel workers did not start");
+                None
+            }
+        },
+        None => None,
+    };
     let sweeper = turbo.spawn_sweeper();
     let actions_sweeper = actions.spawn_sweeper();
     let warming = warmer.spawn();
@@ -548,6 +561,10 @@ pub async fn serve(
             let _ = admin_stop.send(());
         })
         .await;
+    // The indexing workers commit what they buffered before the rest stops.
+    if let Some(i) = indexers {
+        i.stop().await;
+    }
     // Delivery is at least once, so stopping the worker mid-row is safe.
     worker.abort();
     sweeper.abort();

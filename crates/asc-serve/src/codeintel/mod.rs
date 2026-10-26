@@ -10,6 +10,7 @@ pub mod modelgen;
 pub mod ords;
 pub mod queue;
 pub mod rpc;
+pub mod runner;
 pub mod scip;
 pub mod snaps;
 pub mod sweep;
