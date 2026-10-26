@@ -26,45 +26,26 @@
   --lp-hit: 250 204 21 / 0.3;
 }
 
-/* Hero backdrop: two soft glows and a fading grid. Decorative, behind everything. */
+/* Hero backdrop on the ink band: soft cyan and emerald glows and a fading grid. Decorative. */
 .lp-glow {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(62rem 30rem at 50% -10rem, rgb(var(--color-primary) / 0.2), transparent 70%),
-    radial-gradient(34rem 22rem at 88% 8%, rgb(var(--color-accent-emerald) / 0.13), transparent 70%),
-    radial-gradient(28rem 20rem at 8% 30%, rgb(var(--color-primary) / 0.1), transparent 70%);
+    radial-gradient(62rem 30rem at 50% -10rem, rgb(var(--color-accent-fill) / 0.16), transparent 70%),
+    radial-gradient(34rem 22rem at 88% 8%, rgb(52 211 153 / 0.1), transparent 70%),
+    radial-gradient(28rem 20rem at 8% 30%, rgb(35 148 178 / 0.12), transparent 70%);
 }
 .lp-grid {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(rgb(var(--color-border-rgb) / 0.55) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(var(--color-border-rgb) / 0.55) 1px, transparent 1px);
+    linear-gradient(rgb(var(--hdr-line-rgb) / 0.7) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--hdr-line-rgb) / 0.7) 1px, transparent 1px);
   background-size: 56px 56px;
   -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 25%, transparent 75%);
   mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 25%, transparent 75%);
-}
-
-/* The accent word in the headline. The solid colour is the fallback and what contrast tools read. */
-.lp-accent {
-  color: rgb(var(--color-text-link));
-  background-image: linear-gradient(
-    92deg,
-    rgb(var(--color-text-link)),
-    rgb(var(--color-accent-emerald))
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-@media (forced-colors: active) {
-  .lp-accent {
-    background: none;
-    -webkit-text-fill-color: currentColor;
-  }
 }
 
 /* A product window: the frame every illustration sits in. */
@@ -127,10 +108,10 @@
 .lp-line > :first-child {
   padding-right: 0.5rem;
   text-align: right;
-  color: rgb(var(--color-text-muted));
+  color: rgb(var(--color-text-base) / 0.78);
 }
 .lp-line > :nth-child(2) {
-  color: rgb(var(--color-text-muted));
+  color: rgb(var(--color-text-base) / 0.78);
 }
 .lp-add {
   background: rgb(var(--lp-add-bg));
@@ -207,12 +188,4 @@
   .lp-card:hover {
     transform: translateY(-2px);
   }
-}
-
-/* Closing band. */
-.lp-cta {
-  background:
-    radial-gradient(40rem 18rem at 85% 0%, rgb(var(--color-accent-emerald) / 0.2), transparent 70%),
-    radial-gradient(40rem 22rem at 10% 100%, rgb(var(--color-primary) / 0.28), transparent 70%),
-    rgb(var(--color-surface-rgb));
 }

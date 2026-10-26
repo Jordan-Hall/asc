@@ -34,6 +34,7 @@ const types: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
   ".json": "application/json",
 };
 const headers = (type: string, cache: string): Record<string, string> => ({
