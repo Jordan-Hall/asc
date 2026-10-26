@@ -266,7 +266,7 @@ pub async fn fill(
                 Kind::Describe(options) => match (&describer, item.commit) {
                     (Some(d), Some(cs)) => {
                         let git = ws.engine.git_commit_of(cs).await.map_err(fatal)?;
-                        d.describe(api, cs, &git.to_string(), options).await
+                        d.describe(ws, api, cs, &git.to_string(), options).await
                     }
                     _ => String::new(),
                 },

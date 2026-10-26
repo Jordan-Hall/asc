@@ -1,6 +1,7 @@
 //! `%(describe[:options])`: the nearest tag of a commit, like `git describe`.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use asc_core::id::ChangesetId;
 use asc_engine::graph::LogQuery;
@@ -116,34 +117,85 @@ impl Describer {
         })
     }
 
+    /// The tagged commits reachable from `commit` in git's walk order, at most [`CANDIDATES`];
+    /// `None` when a commit cannot be read (the caller then falls back to the log order).
+    async fn walk(
+        &self,
+        ws: &WsCtx,
+        commit: ChangesetId,
+        opts: &Options,
+    ) -> Option<Vec<(ChangesetId, &Tag)>> {
+        let mut found = Vec::new();
+        let mut seen: HashSet<ChangesetId> = HashSet::new();
+        let mut queue: BinaryHeap<(i64, Reverse<u64>, ChangesetId)> = BinaryHeap::new();
+        let mut seq = 0u64;
+        let first = ws.engine.get_changeset(commit).await.ok()?;
+        queue.push((first.committer.time(), Reverse(seq), commit));
+        seen.insert(commit);
+        let mut visited = 0usize;
+        while let Some((_, _, id)) = queue.pop() {
+            visited += 1;
+            if visited > SCAN {
+                break;
+            }
+            if let Some(tag) = self
+                .by_commit
+                .get(&id)
+                .and_then(|ts| ts.iter().find(|t| opts.wants(t)))
+            {
+                found.push((id, tag));
+                if found.len() == CANDIDATES {
+                    break;
+                }
+            }
+            let cs = ws.engine.get_changeset(id).await.ok()?;
+            for p in cs.parents.iter() {
+                if seen.insert(*p) {
+                    let parent = ws.engine.get_changeset(*p).await.ok()?;
+                    seq += 1;
+                    queue.push((parent.committer.time(), Reverse(seq), *p));
+                }
+            }
+        }
+        Some(found)
+    }
+
     /// The description of `commit` (whose git id is `git_hex`) for `options`; empty when no tag
     /// is reachable.
     pub async fn describe(
         &self,
+        ws: &WsCtx,
         hist: &dyn HistoryApi,
         commit: ChangesetId,
         git_hex: &str,
         options: &str,
     ) -> String {
         let opts = Options::parse(options, self.abbrev);
-        let query = LogQuery {
-            include: vec![commit],
-            limit: Some(SCAN),
-            ..LogQuery::default()
-        };
-        let Ok(page) = hist.log(&query, None).await else {
-            return String::new();
-        };
         let mut found: Vec<(ChangesetId, &Tag)> = Vec::new();
-        for e in &page.entries {
-            if let Some(tag) = self
-                .by_commit
-                .get(&e.id)
-                .and_then(|ts| ts.iter().find(|t| opts.wants(t)))
-            {
-                found.push((e.id, tag));
-                if found.len() == CANDIDATES {
-                    break;
+        // git walks by committer date (equal dates in the order they were queued) and numbers the
+        // tags in the order it meets them; equal distances go to the first one met.
+        let walked = self.walk(ws, commit, &opts).await;
+        if let Some(w) = walked {
+            found = w;
+        } else {
+            let query = LogQuery {
+                include: vec![commit],
+                limit: Some(SCAN),
+                ..LogQuery::default()
+            };
+            let Ok(page) = hist.log(&query, None).await else {
+                return String::new();
+            };
+            for e in &page.entries {
+                if let Some(tag) = self
+                    .by_commit
+                    .get(&e.id)
+                    .and_then(|ts| ts.iter().find(|t| opts.wants(t)))
+                {
+                    found.push((e.id, tag));
+                    if found.len() == CANDIDATES {
+                        break;
+                    }
                 }
             }
         }

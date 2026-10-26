@@ -410,7 +410,7 @@ impl<'a> Printer<'a> {
                     for opt in t.describe_options() {
                         describe.insert(
                             opt.clone(),
-                            d.describe(self.hist, e.id, &e.git.to_string(), &opt).await,
+                            d.describe(self.ws, self.hist, e.id, &e.git.to_string(), &opt).await,
                         );
                     }
                 }
