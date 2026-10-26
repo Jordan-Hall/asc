@@ -39,7 +39,7 @@ The compose file assumes these facts about the image. Check them before step 4.
   `internal_token_file`, so Forgejo's `INTERNAL_TOKEN` is required.
 - **Git.** `[git] enabled = true` serves smart-HTTP (SPEC 25). Set `ASC_GIT_ENABLED=false` for the
   403 stub. The Forgejo-mode file has no SSH listener; the standalone staging file enables one
-  (host port 22222 to container 2222, see "Standalone staging").
+  (host port 22223 to container 2222, see "Standalone staging").
 - **Admin.** The admin listener keeps its loopback default: no metrics route, no token. Use
   `docker exec` for `/readyz` detail.
 - **Network.** `ascserve` is on the application's own Coolify network (holding only this app and
@@ -57,7 +57,7 @@ The compose file assumes these facts about the image. Check them before step 4.
 - `[auth] provider = "token_store"`; the database is SQLite (`sqlite:///var/lib/asc/asc.db`) on the
   `asc-state` volume, so one replica only; objects go to Garage bucket `asc-staging`
   (`https://garage.example.org`, https only). `[git] enabled = true`. SSH git is
-  configured (`[ssh]`, `listen = "0.0.0.0:2222"`, published as host port 22222; host key in the
+  configured (`[ssh]`, `listen = "0.0.0.0:2222"`, published as host port 22223; host key in the
   state volume). It is not yet deployed or verified end to end.
 - The config file is a Coolify **file mount** (a `volumes:` entry with `content:`) holding the
   staging values. Coolify rejects compose `configs:` content in read-only services, which is why
