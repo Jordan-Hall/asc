@@ -1,0 +1,44 @@
+# Homebrew formula template. scripts/release/assemble.py replaces the tokens between at signs and writes asc.rb
+# into the release directory; put that file in a tap (Formula/asc.rb).
+#
+#   brew tap-new <you>/asc && cp asc.rb "$(brew --repository <you>/asc)/Formula/"
+#   brew install <you>/asc/asc
+#
+# Update with `brew upgrade asc`. Use brew, not `asc self-update`, for a Homebrew install.
+class Asc < Formula
+  desc "@DESCRIPTION@"
+  homepage "@HOMEPAGE@"
+  version "@VERSION@"
+  license any_of: ["MIT", "Apache-2.0"]
+
+  on_macos do
+    on_arm do
+      url "@RELEASE_URL@/asc-@VERSION@-aarch64-apple-darwin.tar.gz"
+      sha256 "@SHA256:aarch64-apple-darwin.tar.gz@"
+    end
+    on_intel do
+      url "@RELEASE_URL@/asc-@VERSION@-x86_64-apple-darwin.tar.gz"
+      sha256 "@SHA256:x86_64-apple-darwin.tar.gz@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@RELEASE_URL@/asc-@VERSION@-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA256:aarch64-unknown-linux-gnu.tar.gz@"
+    end
+    on_intel do
+      url "@RELEASE_URL@/asc-@VERSION@-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA256:x86_64-unknown-linux-gnu.tar.gz@"
+    end
+  end
+
+  def install
+    bin.install "asc"
+    prefix.install "LICENSE-APACHE.txt", "LICENSE-MIT.txt"
+  end
+
+  test do
+    assert_match "asc #{version}", shell_output("#{bin}/asc --version")
+  end
+end
