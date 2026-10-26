@@ -18,7 +18,11 @@ export const OP_LOG_MAX = 500;
 export type CliCall =
   | { kind: "op-log"; limit: number }
   | { kind: "cloud-status" }
-  | { kind: "live"; action: "status" | "pause" | "resume" };
+  | { kind: "live"; action: "status" | "pause" | "resume" }
+  /** Forgets the credential the git credential helpers hold for a bare `host[:port]` (https). */
+  | { kind: "auth-logout"; host: string };
+
+const HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/;
 
 /** The argv of `call`, or null when an input is out of range. */
 export function cliArgv(call: CliCall): string[] | null {
@@ -32,6 +36,10 @@ export function cliArgv(call: CliCall): string[] | null {
     case "live":
       if (call.action === "status") return ["live", "status", "--json"];
       return call.action === "pause" || call.action === "resume" ? ["live", call.action] : null;
+    case "auth-logout":
+      return typeof call.host === "string" && call.host.length <= 259 && HOST.test(call.host)
+        ? ["auth", "logout", "--host", `https://${call.host}`]
+        : null;
     default:
       return null;
   }

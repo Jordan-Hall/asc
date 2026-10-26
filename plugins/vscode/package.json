@@ -34,7 +34,8 @@
       "description": "ASC runs only in trusted workspaces because it starts the `asc` executable.",
       "restrictedConfigurations": [
         "asc.path",
-        "asc.mcp.serverUrl"
+        "asc.mcp.serverUrl",
+        "asc.hosts"
       ]
     },
     "virtualWorkspaces": false
@@ -69,6 +70,16 @@
           "type": "boolean",
           "default": true,
           "description": "Show the count of changes that need your review in the status bar."
+        },
+        "asc.hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "uniqueItems": true,
+          "markdownDescription": "Hosts you sign in to, such as `forge.example.org` (https only). `ASC: Sign in` offers these and the hosts of the open folders. Tokens are never kept in settings."
         }
       }
     },
@@ -568,6 +579,24 @@
       {
         "command": "asc.live.toggle",
         "title": "Pause or resume live updates",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.signIn",
+        "title": "Sign in to a host",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.signOut",
+        "title": "Sign out of a host",
+        "category": "ASC",
+        "enablement": "asc.workspace"
+      },
+      {
+        "command": "asc.authStatus",
+        "title": "Show sign-in status",
         "category": "ASC",
         "enablement": "asc.workspace"
       }

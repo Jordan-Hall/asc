@@ -17,6 +17,15 @@ import {
   serverFeatures,
   serverTargets,
 } from "./bridge";
+import {
+  AuthService,
+  bridgeAuth,
+  cliForget,
+  hostOfRemote,
+  hostsFromSetting,
+  registerAuth,
+  secretTokenStore,
+} from "./auth";
 import { createCliDirect } from "./cli-direct";
 import { bridgeConnectivity, followConnectivity } from "./connectivity";
 import { detectAscFolders } from "./repo";
@@ -81,6 +90,13 @@ export interface Host {
   };
   env: Record<string, string | undefined>;
   platform: NodeJS.Platform;
+  /** Variables for the bridge process, such as a fallback token the host holds (read on every spawn). */
+  bridgeEnv?(): Record<string, string | undefined>;
+  /**
+   * After `Hello`: loads the fallback tokens of the hosts the roots use. Resolves true when `bridgeEnv()`
+   * changed, so the bridge must start again with it.
+   */
+  reconcileAuth?(hello: HelloInfo): Promise<boolean>;
   /** Registers the SCM provider, `asc:` file system and decorations (P25). Absent under tests. */
   registerScm?(bridge: BridgeManager, folders: readonly string[]): Disposable;
   /** Registers inline blame, hover, CodeLens and the heatmap (P27). Absent under tests. */
@@ -141,6 +157,9 @@ export async function activateWith(
         isFile: nodeIsFile,
       }),
     onStderr: (line) => host.log(line),
+    ...(host.bridgeEnv === undefined
+      ? {}
+      : { env: () => ({ ...host.env, ...host.bridgeEnv?.() }) }),
     ...(create === undefined ? {} : { create }),
   });
 
@@ -159,9 +178,16 @@ export async function activateWith(
   let scmReg: Disposable | null = null;
   let blameReg: Disposable | null = null;
   let registering = false;
+  let restartedForAuth = false;
   const start = async (): Promise<Compat | null> => {
     try {
       const hello = await bridge.hello();
+      // A fallback token changes the bridge's environment; start it again once with the right one.
+      if (!restartedForAuth && (await host.reconcileAuth?.(hello)) === true) {
+        restartedForAuth = true;
+        bridge.restart();
+        return await start();
+      }
       await host.setContext("asc.mutating", hello.compat.level === "full");
       updateNotice(hello.compat, host, hello.ascVersion);
       // The server services contribute on the same condition the code registers on (Hello.features).
@@ -230,6 +256,7 @@ interface FeatureEnv {
   hello: HelloInfo;
   log(line: string): void;
   ascPath(): string;
+  auth: AuthService;
   /** Variables for the asc children the extension starts itself, such as a token the host holds. */
   extraEnv?(): Record<string, string | undefined>;
 }
@@ -378,6 +405,19 @@ export function registerAll(e: FeatureEnv): Disposable {
       { dispose: () => ac.abort() },
       registerCloud(vscode, cloud),
       registerLive(vscode, live),
+    );
+  }
+
+  // Sign-in to any host named in `asc.hosts` or used by a root's remote (SPEC 24.6).
+  const rootHosts = () =>
+    hello.roots.flatMap((r) => {
+      const h = r.wsId === "" ? null : hostOfRemote(r.remoteUrl);
+      return h === null ? [] : [h];
+    });
+  subs.push(registerAuth(vscode, e.auth, rootHosts, log));
+  if (e.auth.withheld) {
+    log(
+      "asc: a stored token is not passed to asc because the open folders use different hosts; open one host per window or set credential.helper.",
     );
   }
 
@@ -535,7 +575,38 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
       platform: process.platform,
       isFile: nodeIsFile,
     });
+  let mgrRef: BridgeManager | null = null;
+  const firstFolder = () =>
+    (vscode.workspace.workspaceFolders ?? []).find((f) => f.uri.scheme === "file")?.uri.fsPath;
+  const auth = new AuthService({
+    bridge: {
+      token: async (h) => (mgrRef === null ? null : bridgeAuth(mgrRef).token(h)),
+      storeToken: async (h, t) => {
+        if (mgrRef === null) throw new Error("asc is not running");
+        await bridgeAuth(mgrRef).storeToken(h, t);
+      },
+    },
+    store: secretTokenStore(ctx.secrets),
+    forget: async (host) => {
+      const root = firstFolder();
+      if (root === undefined) return;
+      await cliForget(createCliDirect({ command: ascPath }), root)(host);
+    },
+    // The bridge reads its token at spawn; start it again so the new one takes effect.
+    onFallbackChanged: () => void vscode.commands.executeCommand("asc.restartBridge"),
+  });
   return {
+    bridgeEnv: () => auth.env(),
+    async reconcileAuth(hello) {
+      const rootHosts = hello.roots.flatMap((r) => {
+        const h = r.wsId === "" ? null : hostOfRemote(r.remoteUrl);
+        return h === null ? [] : [h];
+      });
+      return auth.reconcile(
+        hostsFromSetting(vscode.workspace.getConfiguration("asc").get("hosts", [])),
+        rootHosts,
+      );
+    },
     workspaceFolders: () =>
       (vscode.workspace.workspaceFolders ?? [])
         .filter((f) => f.uri.scheme === "file")
@@ -579,8 +650,20 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
     },
     registerBlame: (bridge, folders) =>
       registerBlame(vscode, bridge, folders, (l) => out().appendLine(l)),
-    registerFeatures: (mgr, roots, hello) =>
-      registerAll({ vscode, ctx, mgr, roots, hello, log: (l) => out().appendLine(l), ascPath }),
+    registerFeatures: (mgr, roots, hello) => {
+      mgrRef = mgr;
+      return registerAll({
+        vscode,
+        ctx,
+        mgr,
+        roots,
+        hello,
+        log: (l) => out().appendLine(l),
+        ascPath,
+        auth,
+        extraEnv: () => auth.env(),
+      });
+    },
   };
 }
 

@@ -82,6 +82,8 @@ export interface HelloRoot {
   repo: string;
   /** `none`, `asc` or `git`. */
   remoteKind: string;
+  /** The remote URL with credentials removed; empty when the root has no remote. */
+  remoteUrl: string;
 }
 
 export interface HelloInfo {
@@ -135,7 +137,8 @@ export function serverFeatures(h: Pick<HelloInfo, "features" | "roots">): Server
 export interface BridgeManagerOptions {
   /** Resolved on every start so a changed `asc.path` takes effect on restart. */
   command: () => string;
-  env?: Record<string, string | undefined>;
+  /** The child's whole environment, read on every spawn so a changed token takes effect on restart. */
+  env?: () => Record<string, string | undefined>;
   onState?: (s: BridgeState) => void;
   onStderr?: (line: string) => void;
   /** For tests: replaces the process-spawning transport. */
@@ -161,7 +164,7 @@ export function createBridgeManager(opts: BridgeManagerOptions): BridgeManager {
     if (!current) {
       current = create({
         command: opts.command(),
-        ...(opts.env === undefined ? {} : { env: opts.env }),
+        ...(opts.env === undefined ? {} : { env: opts.env() }),
         ...(opts.onState === undefined ? {} : { onState: opts.onState }),
         ...(opts.onStderr === undefined ? {} : { onStderr: opts.onStderr }),
       });
@@ -190,6 +193,7 @@ export function createBridgeManager(opts: BridgeManagerOptions): BridgeManager {
           wsId: x.wsId,
           repo: x.repo,
           remoteKind: x.remoteKind,
+          remoteUrl: x.remoteUrl,
         })),
         compat: checkFeatures(r.features),
       }));
