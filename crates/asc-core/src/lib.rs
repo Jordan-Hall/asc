@@ -8,5 +8,6 @@ pub mod git;
 pub mod id;
 pub mod object;
 pub mod path;
+pub mod policy;
 pub mod sig;
 pub mod transport_policy;

@@ -775,6 +775,7 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror",
+ "toml",
  "url",
 ]
 
