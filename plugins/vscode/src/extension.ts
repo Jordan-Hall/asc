@@ -568,7 +568,14 @@ export function vscodeHost(vscode: typeof vscodeTypes, ctx: vscodeTypes.Extensio
       vscodeWebviews(vscode, ctx, folders, (l) => out().appendLine(l), bridge),
     registerScm: (bridge, folders) => {
       const reg = registerScm(vscode, bridge, folders, (l) => out().appendLine(l));
-      return reg;
+      // The smoke test reads the SCM view's state through this command; it is not contributed.
+      const probe = vscode.commands.registerCommand("asc.probe", () => reg.probe());
+      return {
+        dispose() {
+          probe.dispose();
+          reg.dispose();
+        },
+      };
     },
     registerBlame: (bridge, folders) =>
       registerBlame(vscode, bridge, folders, (l) => out().appendLine(l)),

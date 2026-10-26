@@ -44,7 +44,7 @@ export interface WebviewHostApi {
   log(line: string): void;
 }
 
-/** TODO(P28b): the allowlist relay. Return true when it took the message. */
+/** The allowlist relay (`createRelayHandler`). Return true when it took the message. */
 export type RequestHandler = (webview: WebviewLike, message: unknown) => boolean | Promise<boolean>;
 
 export interface AvatarRequest {

@@ -171,8 +171,8 @@ export function bridgeSearchApi(mgr: BridgeManager): SearchApi {
       return (await mgr.hello()).features.includes(FEATURE_SEARCH);
     },
     async *stream(root, pattern, signal) {
-      // TODO(P23): revision, change and stack scopes belong to the asc-ui panel, which the quick
-      // pick hands over to; the quick pick searches the workspace scope only.
+      // The quick pick searches the workspace scope. Revision, change and stack scopes are in the
+      // asc-ui search panel, which the "Open in panel" row hands over to.
       const req = {
         scope: { at: { case: "workspace" as const, value: true } },
         pattern,

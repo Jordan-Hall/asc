@@ -102,8 +102,21 @@ export class ScmModel implements DecorationSource {
   private behindN = 0;
   private abort: AbortController | null = null;
   private seq = 0;
+  private loaded = false;
 
   constructor(private readonly o: ScmModelOptions) {}
+
+  /** True once the first status reply has been applied. */
+  get ready(): boolean {
+    return this.loaded;
+  }
+
+  /** Files per group, uncapped (a file that is staged and changed counts in both). */
+  counts(): Record<GroupId, number> {
+    const n = Object.fromEntries(GROUP_ORDER.map((g) => [g, 0])) as Record<GroupId, number>;
+    for (const f of this.entries.values()) for (const g of groupsOf(f.xy)) n[g]++;
+    return n;
+  }
 
   get root(): string {
     return this.o.root;
@@ -184,6 +197,7 @@ export class ScmModel implements DecorationSource {
       if (before !== now?.xy) changed.add(p);
     }
     if (changed.size > 0) this.decorations.invalidate([...changed]);
+    this.loaded = true;
     for (const l of this.listeners) l();
   }
 
@@ -351,8 +365,18 @@ export function bridgeApi(mgr: BridgeManager): ScmApi {
 
 export const ASC_SCHEME = "asc";
 
+export interface ScmProbe {
+  /** Every root has applied its first status reply. */
+  ready: boolean;
+  ascFolders: string[];
+  /** Files per SCM group, summed over the roots. */
+  groups: Record<GroupId, number>;
+}
+
 export interface ScmRegistration {
   dispose(): void;
+  /** What the SCM view shows now; the smoke test reads it through the `asc.probe` command. */
+  probe(): ScmProbe;
 }
 
 /** Registers the `asc:` file system, one SourceControl per asc root, quick diff, decorations and the
@@ -495,6 +519,16 @@ export function registerScm(
   return {
     dispose() {
       for (const s of subs.splice(0)) s.dispose();
+    },
+    probe() {
+      const groups = Object.fromEntries(GROUP_ORDER.map((g) => [g, 0])) as Record<GroupId, number>;
+      let ready = models.size > 0;
+      for (const m of models.values()) {
+        if (!m.ready) ready = false;
+        const c = m.counts();
+        for (const g of GROUP_ORDER) groups[g] += c[g];
+      }
+      return { ready, ascFolders: [...models.keys()], groups };
     },
   };
 }

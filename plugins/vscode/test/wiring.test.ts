@@ -37,6 +37,8 @@ const INTERNAL = new Set([
   "asc.blame.previous",
   "asc.diffAgainstStackParent",
   "asc.actions.openLog",
+  // The smoke test reads the SCM view through it (test/smoke/probe).
+  "asc.probe",
 ]);
 
 const SERVER_FEATURES = ["inbox.v1", "review.v1", "ci.v1"];

@@ -79,7 +79,7 @@ exports.run = async function run() {
           }
         }
       } else {
-        // TODO(P25): the extension registers no `asc.probe` command yet; activation is asserted, counts are not.
+        // An older build registers no `asc.probe` command: activation is asserted, counts are not.
         report.notes.push("asc.probe not registered: SCM group counts not asserted");
         report.probeMissing = true;
       }
