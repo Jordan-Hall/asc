@@ -435,8 +435,27 @@ mod real {
                 // The server's one subscriber: RUST_LOG, `ASC_LOG_FORMAT` / `[log] format`, stderr.
                 asc_serve::logging::init(&cfg.log);
                 let authorizer = asc_serve::authz::authorizer(&cfg).await.map_err(fatal)?;
+                // Ctrl-C everywhere; SIGTERM too on Unix, which is what `docker stop` sends.
                 let stop = async {
-                    let _ = tokio::signal::ctrl_c().await;
+                    #[cfg(unix)]
+                    {
+                        use tokio::signal::unix::{SignalKind, signal};
+                        match signal(SignalKind::terminate()) {
+                            Ok(mut term) => {
+                                tokio::select! {
+                                    _ = tokio::signal::ctrl_c() => {}
+                                    _ = term.recv() => {}
+                                }
+                            }
+                            Err(_) => {
+                                let _ = tokio::signal::ctrl_c().await;
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
                 };
                 asc_serve::serve(cfg, authorizer, stop)
                     .await
