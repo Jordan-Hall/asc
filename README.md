@@ -1,6 +1,6 @@
 # asc
 
-`asc` is ASC's source control system. It is modelled on Anthropic's Scion (["Redesigning source control"](https://www.anthropic.com/research/redesigning-source-control)), and its commands mirror git's.
+`asc` is ASC, Agent Source Control: source control for people and their agents. It is modelled on Anthropic's Scion (["Redesigning source control"](https://www.anthropic.com/research/redesigning-source-control)), and its commands mirror git's.
 
 - **Changesets, not git objects.** Bonsai-style changesets and trees are content-addressed with BLAKE3 and stored as immutable objects. Git SHA-1s are deterministic derived data, so the git commits you have today keep their SHAs.
 - **Storage anywhere.** The same engine runs over an S3-compatible bucket (S3, MinIO, R2, Garage, Ceph), local disk, or an `asc serve` server. It also works fully local-only, with no server.
