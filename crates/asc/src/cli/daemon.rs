@@ -141,7 +141,7 @@ pub async fn run(ctx: &Ctx, args: Args) -> Result<ExitCode> {
                 daemon::Hosting {
                     home,
                     metrics_listen: listen,
-                    backend: None,
+                    backend: daemon::workspace_factory::platform_backend(),
                     settings,
                     hooks: scheduler::Hooks::default(),
                     extra_jobs,

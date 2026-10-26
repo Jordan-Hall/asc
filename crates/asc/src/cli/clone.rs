@@ -13,7 +13,7 @@ use asc_core::id::RefTarget;
 use asc_core::path::RepoPath;
 use asc_git::projection::{Head, Projection};
 use asc_state::state::repos::{self, NewRepo, RemoteKind};
-use asc_state::state::workspaces::{self, NewWorkspace};
+use asc_state::state::workspaces::{self, Mode, NewWorkspace};
 use asc_state::{AscHome, RepoId, StateDb, WorkspaceId};
 use asc_store::refs::{Expect, RefTxn, RefUpdate};
 use asc_wc::worktree as wt;
@@ -22,6 +22,7 @@ use super::common::{CliError, Ctx, Result, StagingAfterMove, WsCtx};
 use super::fetch::{Opts as FetchOpts, fatal, fetch_one, sync_error};
 use super::restore::{actor, root_of, sync_worktree};
 use super::switch::{ensure_mapped, ref_name, set_config};
+use crate::daemon::workspace_factory;
 use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner, null_oid};
 use crate::native::NativeSpec;
@@ -76,6 +77,8 @@ struct Opts {
     branch: Option<String>,
     origin: Option<String>,
     no_checkout: bool,
+    /// `--mode virtual`: the daemon projects the files; nothing is checked out here.
+    virtual_mode: bool,
     refs: Option<RefsMode>,
     /// `--reference <git-dir>`: git-remote mode fetches from it first (SPEC §6.3).
     reference: Vec<String>,
@@ -100,15 +103,7 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             "-b" | "--branch" => o.branch = Some(need(it.next())?),
             "-o" | "--origin" => o.origin = Some(need(it.next())?),
             "-n" | "--no-checkout" => o.no_checkout = true,
-            "--mode" => match need(it.next())?.as_str() {
-                "plain" => {}
-                "virtual" => {
-                    return Err(fatal(
-                        "virtual clones need the daemon, which is not available yet; use --mode plain",
-                    ));
-                }
-                other => return Err(CliError::Fatal(format!("unknown clone mode '{other}'"))),
-            },
+            "--mode" => o.virtual_mode = clone_mode(&need(it.next())?)?,
             "--reference" => o.reference.push(need(it.next())?),
             "--depth" | "--filter" | "--seed" => {
                 need(it.next())?;
@@ -122,10 +117,7 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
             }
             w if w.starts_with("--branch=") => o.branch = Some(w["--branch=".len()..].to_owned()),
             w if w.starts_with("--origin=") => o.origin = Some(w["--origin=".len()..].to_owned()),
-            w if w.starts_with("--mode=") => match &w["--mode=".len()..] {
-                "plain" => {}
-                _ => return Err(fatal("only --mode plain is available")),
-            },
+            w if w.starts_with("--mode=") => o.virtual_mode = clone_mode(&w["--mode=".len()..])?,
             w if w.starts_with("--reference=") => {
                 o.reference.push(w["--reference=".len()..].to_owned());
             }
@@ -136,6 +128,15 @@ fn parse(argv: &[OsString]) -> Result<Opts> {
         }
     }
     Ok(o)
+}
+
+/// Whether `--mode <name>` asks for a virtual workspace.
+fn clone_mode(name: &str) -> Result<bool> {
+    match name {
+        "plain" => Ok(false),
+        "virtual" => Ok(true),
+        other => Err(CliError::Fatal(format!("unknown clone mode '{other}'"))),
+    }
 }
 
 /// A context for the workspace at `dir`, ignoring `GIT_DIR` and its kin in the environment.
@@ -251,6 +252,9 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
     };
     if rest.len() > 1 {
         return Err(CliError::Usage(USAGE.to_owned()));
+    }
+    if o.virtual_mode && ext::workspace_factory().virtual_mode().is_none() {
+        return Err(fatal(workspace_factory::virtual_unavailable()));
     }
     let spec = url::parse(typed_url, o.refs.unwrap_or(RefsMode::Local)).map_err(fatal)?;
     remote::server::check_transport(typed_url)?;
@@ -424,6 +428,10 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Ok(code) => Ok(code),
         Err(e) => {
             // Only what this command made: the workspace's state and a directory it created.
+            if o.virtual_mode {
+                // The provider must let go of the directory before it can be deleted.
+                let _ = workspace_factory::unmount_virtual(ws_id).await;
+            }
             let _ = wt::remove_tree(&home.workspace_dir(ws_id));
             let _ = workspaces::remove(&db, ws_id).await;
             if created_dir {
@@ -495,7 +503,11 @@ async fn build(
             repo: key,
             path: path.clone(),
             mount: path,
-            mode: ctx.workspace_mode(),
+            mode: if o.virtual_mode {
+                Mode::Virtual
+            } else {
+                ctx.workspace_mode()
+            },
             head: format!("refs/heads/{branch}"),
             base_cs: None,
             sparse: None,
@@ -533,6 +545,9 @@ async fn build(
 
     if empty {
         eprintln!("warning: You appear to have cloned an empty repository.");
+        if o.virtual_mode {
+            mount_virtual(ws_id).await?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -595,7 +610,11 @@ async fn build(
         .await?;
     let git = ensure_mapped(ws, head).await?;
     let mut paths: Vec<RepoPath> = Vec::new();
-    if !o.no_checkout {
+    if o.virtual_mode {
+        // No files are written: the daemon projects the branch tip's tree and fetches content on
+        // first read.
+        mount_virtual(ws_id).await?;
+    } else if !o.no_checkout {
         let tree = root_of(ws, Some(head)).await?;
         // A work tree is written from the local tiers: bring in what this machine lacks.
         if !git_mode {
@@ -637,6 +656,13 @@ async fn build(
         }
     }
     Ok(ExitCode::from(code))
+}
+
+/// Has the daemon host the new virtual workspace.
+async fn mount_virtual(ws_id: WorkspaceId) -> Result<()> {
+    workspace_factory::mount_virtual(ws_id)
+        .await
+        .map_err(|e| fatal(format!("cannot host the virtual workspace: {e}")))
 }
 
 /// SPEC §2.4.1: one `warning: asc: …` per attribute that asc does not apply at checkout or does
@@ -736,7 +762,22 @@ mod tests {
         assert_eq!(o.branch.as_deref(), Some("dev"));
         assert_eq!(o.origin.as_deref(), Some("up"));
         assert_eq!(o.words, ["file:///x", "dst"]);
-        assert!(parse(&[OsString::from("--mode=virtual")]).is_err());
+        assert!(
+            parse(&[OsString::from("--mode=virtual")])
+                .unwrap()
+                .virtual_mode
+        );
+        assert!(
+            parse(&["--mode".into(), "virtual".into()])
+                .unwrap()
+                .virtual_mode
+        );
+        assert!(
+            !parse(&[OsString::from("--mode=plain")])
+                .unwrap()
+                .virtual_mode
+        );
+        assert!(parse(&[OsString::from("--mode=sparse")]).is_err());
         assert!(parse(&[OsString::from("--bogus")]).is_err());
     }
 
