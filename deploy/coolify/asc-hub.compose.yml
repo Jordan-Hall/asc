@@ -1,0 +1,346 @@
+# ASC Hub, all in one, as ONE Coolify "Docker Compose" service: the hub (the Forgejo v16 fork) and
+# `asc serve` as its repository storage backend, preconfigured. Nothing else to provision: no Garage,
+# no Postgres (SQLite for both; objects on a volume). Postgres and S3 are optional upgrades, see
+# asc-hub.env.example and README.md ("ASC Hub (all in one)").
+#
+#   hub-init      one-shot, root: volume ownership, the two secret files, the asc-serve.toml.
+#   asc-migrate    one-shot: `asc serve migrate` (SPEC 8.2: never at replica start).
+#   hub           the public face: web UI, PRs, Actions, git over HTTPS (Coolify proxy, port 3000)
+#                 and git over SSH (built-in server, published port). The only public route.
+#   asc            `asc serve`. No route, no published port. It runs INSIDE the hub's network
+#                 namespace (network_mode: service:hub), so hub and asc meet on 127.0.0.1.
+#   hub-admin     one-shot: creates the first admin once; the password goes to a 0600 file.
+#
+# Why one network namespace and not two containers on a bridge network: both ends refuse plain
+# http to a non-loopback host. The hub's gRPC client ([asc] SERVER_URL) accepts only https or a
+# loopback target, and asc serve's `[forgejo] url` accepts only https or loopback http under
+# ASC_ALLOW_LOOPBACK_HTTP=1. Sharing the namespace keeps the hub<->asc traffic on loopback, so it
+# never needs TLS and never touches a network another container could join, and keeps asc unrouted.
+# The opt-in is set only on the asc containers.
+#
+# Consequences of the shared namespace:
+#  - asc starts after the hub is healthy, so the hub cannot also wait for asc (a cycle). The hub
+#    needs no asc call to boot; a repository request fails closed until asc answers. asc has its own
+#    healthcheck.
+#  - when the hub container is recreated, asc is recreated with it (depends_on ... restart: true).
+#
+# Storage layout (all named volumes; Coolify keeps them across deploys):
+#   hub-data     /var/lib/gitea               hub database (SQLite), app.ini, sessions, attachments.
+#   hub-repos    /var/lib/gitea/git/repositories   the hub's bare repositories (the git bridge). asc
+#                mounts it READ-ONLY at the same path: ImportGitPush reads a push quarantine there
+#                (`[forgejo] repo_root`). asc never sees hub-data (app.ini, database).
+#   asc-state     /var/lib/asc                  asc.db (SQLite), objects/ (store = file://), cache.
+#   hub-runtime  /run/asc-hub                  the two secret files and asc-serve.toml, 0400, written
+#                by hub-init on every start from the Coolify-generated values; read-only elsewhere.
+#
+# Both containers run as uid 1000 (the hub image's `git`): git creates push quarantines 0700, so asc
+# must be the owner to read them.
+#
+# Every variable reference below has a default or a `:?` message, except the SERVICE_* magic variables, which
+# Coolify generates (SERVICE_PASSWORD_*) or fills from the domain (SERVICE_FQDN_*).
+
+x-hub-env: &hub-env
+  # Root-level keys need four underscores (an empty section). The first start writes the image
+  # default into the data volume's app.ini, so these must be set explicitly.
+  FORGEJO____APP_NAME: ${ASC_HUB_APP_NAME:-ASC Hub}
+  FORGEJO____APP_SLOGAN: ${ASC_HUB_APP_SLOGAN:-Source hosting for asc}
+  FORGEJO__server__ROOT_URL: ${ASC_HUB_ROOT_URL:?public https URL of the hub, for example https://hub.example.org}
+  FORGEJO__server__SSH_DOMAIN: ${ASC_HUB_SSH_DOMAIN:?host name shown in ssh clone URLs, for example hub.example.org}
+  FORGEJO__server__HTTP_PORT: '3000'
+  FORGEJO__server__DISABLE_SSH: 'false'
+  FORGEJO__server__START_SSH_SERVER: 'true'
+  # Listen port in the container, and the host port clients use (published below).
+  FORGEJO__server__SSH_LISTEN_PORT: '2222'
+  FORGEJO__server__SSH_PORT: ${ASC_HUB_SSH_PORT:-22224}
+  FORGEJO__ui__DEFAULT_THEME: asc-auto
+  FORGEJO__ui__THEMES: asc-auto,asc-light,asc-dark,forgejo-auto,forgejo-light,forgejo-dark,gitea-auto,gitea-light,gitea-dark,forgejo-auto-deuteranopia-protanopia,forgejo-light-deuteranopia-protanopia,forgejo-dark-deuteranopia-protanopia,forgejo-auto-tritanopia,forgejo-light-tritanopia,forgejo-dark-tritanopia
+  FORGEJO__security__INSTALL_LOCK: 'true'
+  # The shared secret with asc: a file, so it never lands in app.ini (the hub refuses a file URI
+  # together with a literal INTERNAL_TOKEN in app.ini: use a fresh hub-data volume).
+  FORGEJO__security__INTERNAL_TOKEN_URI: file:///run/asc-hub/internal-token
+  FORGEJO__service__DISABLE_REGISTRATION: ${ASC_HUB_DISABLE_REGISTRATION:-true}
+  FORGEJO__actions__ENABLED: 'true'
+  FORGEJO__repository__ROOT: /var/lib/gitea/git/repositories
+  # Database: SQLite by default. For Postgres set these four in the Coolify environment
+  # (FORGEJO__database__DB_TYPE=postgres, HOST=host:5432, NAME, USER, PASSWD).
+  FORGEJO__database__DB_TYPE: ${FORGEJO__database__DB_TYPE:-sqlite3}
+  FORGEJO__database__PATH: /var/lib/gitea/data/forgejo.db
+  FORGEJO__database__HOST: ${FORGEJO__database__HOST:-localhost:5432}
+  FORGEJO__database__NAME: ${FORGEJO__database__NAME:-forgejo}
+  FORGEJO__database__USER: ${FORGEJO__database__USER:-forgejo}
+  FORGEJO__database__PASSWD: ${FORGEJO__database__PASSWD:-}
+  # asc is the writer and the home of every new repository. SERVER_URL is loopback (shared
+  # network namespace). BRIDGE: see README ("Known limits").
+  FORGEJO__asc__ENABLED: 'true'
+  FORGEJO__asc__SERVER_URL: http://127.0.0.1:7890
+  FORGEJO__asc__WRITER: asc
+  FORGEJO__asc__NEW_REPOSITORIES: asc
+  FORGEJO__asc__BRIDGE: ${ASC_HUB_BRIDGE:-eager}
+  FORGEJO__asc__SHADOW_SAMPLE_PERCENT: '0'
+
+x-hub: &hub
+  image: ${ASC_HUB_IMAGE_REPO:-ghcr.io/jordan-hall/asc-hub}:${ASC_HUB_IMAGE_TAG:?pin the sha12 tag of the hub image}
+  read_only: true
+  tmpfs:
+    - /tmp:uid=1000,gid=1000,mode=1777,size=256m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment: *hub-env
+  volumes:
+    - hub-data:/var/lib/gitea
+    - hub-repos:/var/lib/gitea/git/repositories
+    - hub-runtime:/run/asc-hub:ro
+
+x-asc: &asc
+  image: ${ASC_IMAGE_REPO:-ghcr.io/jordan-hall/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the asc-serve image}
+  user: '1000:1000'
+  read_only: true
+  tmpfs:
+    - /tmp:uid=1000,gid=1000,mode=1777,size=256m
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  environment: &asc-env
+    ASC_SERVE_CONFIG: /run/asc-hub/asc-serve.toml
+    # Only these containers: asc's [forgejo] url is the hub on loopback, plain http.
+    ASC_ALLOW_LOOPBACK_HTTP: '1'
+    HOME: /var/lib/asc/home
+    RUST_LOG: ${ASC_LOG:-info}
+    ASC_LOG_FORMAT: ${ASC_LOG_FORMAT:-text}
+    # Read by the S3 client only when ASC_S3_ENDPOINT selects an s3:// store.
+    AWS_ACCESS_KEY_ID: ${ASC_S3_ACCESS_KEY_ID:-}
+    AWS_SECRET_ACCESS_KEY: ${ASC_S3_SECRET_ACCESS_KEY:-}
+    AWS_REGION: ${ASC_S3_REGION:-garage}
+  volumes:
+    - asc-state:/var/lib/asc
+    - hub-runtime:/run/asc-hub:ro
+
+services:
+  # Runs as root with three capabilities and nothing else. Idempotent: it only chowns a volume
+  # root that is not yet owned by uid 1000, and it rewrites the secret files from the current
+  # values on every start (so a secret rotated in Coolify takes effect on the next deploy).
+  hub-init:
+    image: ${ASC_IMAGE_REPO:-ghcr.io/jordan-hall/asc-serve}:${ASC_IMAGE_TAG:?pin the sha12 tag of the asc-serve image}
+    user: '0:0'
+    read_only: true
+    restart: 'no'
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ['/bin/sh', '-c']
+    environment:
+      # Coolify magic variables: it generates and keeps one random value per name.
+      INTERNAL_TOKEN: ${SERVICE_PASSWORD_INTERNALTOKEN}
+      WEBHOOK_SECRET: ${SERVICE_PASSWORD_WEBHOOKSECRET}
+      ASC_DATABASE_URL: ${ASC_DATABASE_URL:-}
+      ASC_S3_ENDPOINT: ${ASC_S3_ENDPOINT:-}
+      ASC_S3_BUCKET: ${ASC_S3_BUCKET:-asc-hub}
+      ASC_S3_REGION: ${ASC_S3_REGION:-garage}
+      ASC_CACHE_MEMORY: ${ASC_CACHE_MEMORY:-256MiB}
+      ASC_CACHE_DISK: ${ASC_CACHE_DISK:-2GiB}
+      ASC_TEXT_MEMORY: ${ASC_TEXT_MEMORY:-256MiB}
+      ASC_GIT_ENABLED: ${ASC_GIT_ENABLED:-false}
+    command:
+      - |
+        set -eu
+        umask 077
+        U=1000
+        RUN=/run/asc-hub
+        own() {
+          [ "$$(stat -c %u "$$1")" = "$$U" ] || chown -R "$$U:$$U" "$$1"
+        }
+        [ "$${#INTERNAL_TOKEN}" -ge 24 ] || { echo "hub-init: the internal token is missing or short (SERVICE_PASSWORD_INTERNALTOKEN)"; exit 1; }
+        [ "$${#WEBHOOK_SECRET}" -ge 24 ] || { echo "hub-init: the webhook secret is missing or short (SERVICE_PASSWORD_WEBHOOKSECRET)"; exit 1; }
+        mkdir -p /var/lib/asc/objects /var/lib/asc/cache /var/lib/asc/gitview /var/lib/asc/home
+        own /var/lib/asc
+        mkdir -p /var/lib/gitea/git/repositories
+        own /var/lib/gitea/git/repositories
+        if [ -n "$$ASC_S3_ENDPOINT" ]; then
+          STORE="s3://$$ASC_S3_BUCKET?endpoint=$$ASC_S3_ENDPOINT&region=$$ASC_S3_REGION&path_style=true"
+        else
+          STORE="file:///var/lib/asc/objects"
+        fi
+        if [ -n "$$ASC_DATABASE_URL" ]; then
+          DB="$$ASC_DATABASE_URL"
+        else
+          DB="sqlite:///var/lib/asc/asc.db?mode=rwc"
+        fi
+        printf '%s' "$$INTERNAL_TOKEN" > "$$RUN/internal-token.tmp"
+        printf '%s' "$$WEBHOOK_SECRET" > "$$RUN/webhook-secret.tmp"
+        cat > "$$RUN/asc-serve.toml.tmp" <<EOF
+        listen = "127.0.0.1:7890"
+        store = '$$STORE'
+        db = '$$DB'
+        cache = { memory = "$$ASC_CACHE_MEMORY", disk_dir = "/var/lib/asc/cache", disk = "$$ASC_CACHE_DISK" }
+
+        [auth]
+        provider = "forgejo"
+
+        [forgejo]
+        url = "http://127.0.0.1:3000"
+        internal_token_file = "/run/asc-hub/internal-token"
+        webhook_secret_file = "/run/asc-hub/webhook-secret"
+        repo_root = "/var/lib/gitea/git/repositories"
+
+        [limits]
+        text_memory = "$$ASC_TEXT_MEMORY"
+        trusted_proxies = []
+
+        [git]
+        enabled = $$ASC_GIT_ENABLED
+        view_dir = "/var/lib/asc/gitview"
+        EOF
+        for f in internal-token webhook-secret asc-serve.toml; do
+          chown "$$U:$$U" "$$RUN/$$f.tmp"
+          chmod 0400 "$$RUN/$$f.tmp"
+          mv -f "$$RUN/$$f.tmp" "$$RUN/$$f"
+        done
+        own "$$RUN"
+        echo "hub-init: ready"
+    volumes:
+      - asc-state:/var/lib/asc
+      - hub-repos:/var/lib/gitea/git/repositories
+      - hub-runtime:/run/asc-hub
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128m
+          pids: 64
+
+  asc-migrate:
+    <<: *asc
+    command: ['serve', 'migrate']
+    restart: 'no'
+    network_mode: none
+    depends_on:
+      hub-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512m
+          pids: 128
+
+  hub:
+    <<: *hub
+    restart: unless-stopped
+    depends_on:
+      hub-init:
+        condition: service_completed_successfully
+      asc-migrate:
+        condition: service_completed_successfully
+    environment:
+      <<: *hub-env
+      # Coolify magic variable: routes the domain to port 3000 and writes the proxy labels. This is
+      # the only public HTTP route of the service.
+      SERVICE_FQDN_HUB_3000: ''
+    expose:
+      - '3000'
+    # Git over SSH, handled by the hub's built-in server. Coolify publishes `ports` as written;
+    # no TLS terminates it. Open this TCP port in the host firewall. 22222 is the production
+    # Forgejo and 22223 the standalone asc staging, hence 22224.
+    ports:
+      - '${ASC_HUB_SSH_PORT:-22224}:2222'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:3000/api/healthz >/dev/null || exit 1']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          cpus: '${ASC_HUB_CPU_LIMIT:-2.0}'
+          memory: ${ASC_HUB_MEM_LIMIT:-1g}
+          pids: 512
+    stop_grace_period: 30s
+
+  # `asc serve` inside the hub's network namespace. It declares no network, port or route of its
+  # own (they would conflict with network_mode). The admin listener keeps its loopback default.
+  asc:
+    <<: *asc
+    command: ['serve']
+    restart: unless-stopped
+    network_mode: service:hub
+    depends_on:
+      hub:
+        condition: service_healthy
+        restart: true
+      asc-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - asc-state:/var/lib/asc
+      - hub-runtime:/run/asc-hub:ro
+      # Read-only, at the hub's own path: the push quarantine named by the hub is read here.
+      - hub-repos:/var/lib/gitea/git/repositories:ro
+    # /readyz fails when the database does not answer or the outbox lags (SPEC 16.1).
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '${ASC_CPU_LIMIT:-2.0}'
+          memory: ${ASC_MEM_LIMIT:-1g}
+          pids: 512
+    stop_grace_period: 30s
+
+  # Creates the first admin once. The hub CLI prints "generated random password is '...'" on
+  # stdout: stdout goes straight into a 0600 file and is never shown. Read it once from the
+  # Coolify terminal of `hub`: cat /var/lib/gitea/bootstrap/admin-password, sign in, change it
+  # (the account must change it at first sign-in), then delete the file.
+  # Idempotent: it does nothing once the marker exists or the user name is taken.
+  hub-admin:
+    <<: *hub
+    restart: 'no'
+    # The image entrypoint runs docker-setup.sh (app.ini from the same env as the hub), then this.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        d=/var/lib/gitea/bootstrap
+        mkdir -p "$$d"
+        if [ -e "$$d/.done" ]; then echo "admin bootstrap already done"; exit 0; fi
+        if forgejo admin user list | awk 'NR>1 {print $$2}' | grep -qx -- "$$ADMIN_USER"; then
+          : > "$$d/.done"
+          echo "user $$ADMIN_USER exists: nothing to create"
+          exit 0
+        fi
+        forgejo admin user create --admin --username "$$ADMIN_USER" --email "$$ADMIN_EMAIL" --random-password --must-change-password=true > "$$d/admin-password.tmp" || { rm -f "$$d/admin-password.tmp"; echo "creating the admin user failed"; exit 1; }
+        mv "$$d/admin-password.tmp" "$$d/admin-password"
+        : > "$$d/.done"
+        echo "admin $$ADMIN_USER created: the password is in $$d/admin-password (mode 0600)"
+    environment:
+      <<: *hub-env
+      ADMIN_USER: ${ADMIN_USER:-asc-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?email of the first admin user}
+    depends_on:
+      hub:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256m
+          pids: 128
+
+volumes:
+  hub-data:
+  hub-repos:
+  hub-runtime:
+  asc-state:
