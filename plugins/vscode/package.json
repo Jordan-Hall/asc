@@ -415,13 +415,6 @@
         "icon": "$(trash)"
       },
       {
-        "command": "asc.worktrees.lock",
-        "title": "Lock worktree",
-        "category": "ASC",
-        "enablement": "asc.workspace",
-        "icon": "$(lock)"
-      },
-      {
         "command": "asc.oplog.loadMore",
         "title": "Load more operations",
         "category": "ASC",
@@ -571,6 +564,12 @@
         "title": "Load earlier log output",
         "category": "ASC",
         "enablement": "asc.workspace && asc.feature.ci"
+      },
+      {
+        "command": "asc.live.toggle",
+        "title": "Pause or resume live updates",
+        "category": "ASC",
+        "enablement": "asc.workspace"
       }
     ],
     "views": {
@@ -701,11 +700,6 @@
           "group": "inline@2"
         },
         {
-          "command": "asc.worktrees.lock",
-          "when": "view == asc.worktrees && viewItem == asc.worktree",
-          "group": "1_manage"
-        },
-        {
           "command": "asc.affected.run",
           "when": "view == asc.affected && viewItem == asc.affected.target",
           "group": "inline"
@@ -810,10 +804,6 @@
         },
         {
           "command": "asc.worktrees.remove",
-          "when": "false"
-        },
-        {
-          "command": "asc.worktrees.lock",
           "when": "false"
         },
         {

@@ -6,7 +6,7 @@ import {
   type HistoryPage,
   type HistoryQuery,
 } from "../src/views/file-history";
-import { MAX_ENTRIES, OpLogModel, PAGE, parseOpLog } from "../src/views/oplog";
+import { describeOp, MAX_ENTRIES, OpLogModel, PAGE, parseOpLog } from "../src/views/oplog";
 import {
   describeWorktree,
   pump,
@@ -129,26 +129,52 @@ describe("views: worktrees", () => {
 });
 
 describe("views: op log", () => {
-  test("parses entries and ignores junk", () => {
+  const rows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `op${i}`,
+      description: "create",
+      time: 0,
+      user: "",
+      undone: false,
+    }));
+  test("parses the op log wrapper and ignores junk", () => {
     expect(parseOpLog(null)).toEqual([]);
-    expect(parseOpLog(new TextEncoder().encode("not json"))).toEqual([]);
+    expect(parseOpLog("not json")).toEqual([]);
+    expect(parseOpLog('[{"op":"a"}]')).toEqual([]);
     const e = parseOpLog(
-      new TextEncoder().encode(JSON.stringify({ entries: [{ id: "a" }, {}, 3] })),
+      JSON.stringify({
+        version: 1,
+        ops: [
+          { op: "a", seq: 3, at: 1700000000, ws: "w1", argv: ["modify", "-m", "x"], undone: true },
+          { seq: 2 },
+          3,
+        ],
+      }),
     );
-    expect(e).toEqual([{ id: "a", description: "", time: 0, user: "" }]);
+    expect(e).toEqual([
+      { id: "a", description: "modify -m x", time: 1700000000, user: "w1", undone: true },
+    ]);
+  });
+  test("clips long text and caps the number of rows", () => {
+    const long = "x".repeat(5000);
+    const e = parseOpLog(
+      JSON.stringify({
+        ops: Array.from({ length: MAX_ENTRIES + 20 }, (_, i) => ({ op: `o${i}`, argv: [long] })),
+      }),
+    );
+    expect(e).toHaveLength(MAX_ENTRIES);
+    expect(e[0]?.description.length).toBeLessThan(2100);
   });
   test("debounces a burst of op-finished into one run, and only when visible", async () => {
-    const runs: string[][] = [];
-    const api = {
-      run: async (_r: string, _v: string, a: string[]) => (runs.push(a), ok(ops(3))),
-    };
+    const runs: number[] = [];
+    const api = { read: async (_r: string, n: number) => (runs.push(n), rows(3)) };
     const m = new OpLogModel({ root: "r", api, debounceMs: 20, minIntervalMs: 0 });
     m.onWatch("op-finished");
     await sleep(40);
     expect(runs).toHaveLength(0);
     m.setVisible(true);
     await sleep(10);
-    expect(runs).toEqual([["-n", "50"]]);
+    expect(runs).toEqual([50]);
     for (let i = 0; i < 5; i++) {
       m.onWatch("op-finished");
       await sleep(5);
@@ -163,12 +189,12 @@ describe("views: op log", () => {
     let max = 0;
     const starts: number[] = [];
     const api = {
-      run: async () => {
+      read: async () => {
         starts.push(Date.now());
         max = Math.max(max, ++live);
         await sleep(15);
         live--;
-        return ok(ops(1));
+        return rows(1);
       },
     };
     const m = new OpLogModel({ root: "r", api, debounceMs: 1, minIntervalMs: 60 });
@@ -185,10 +211,9 @@ describe("views: op log", () => {
   test("load more grows by 50 up to 500 then points at the terminal", async () => {
     const asked: number[] = [];
     const api = {
-      run: async (_r: string, _v: string, a: string[]) => {
-        const n = Number(a[1]);
+      read: async (_r: string, n: number) => {
         asked.push(n);
-        return ok(ops(n));
+        return rows(n);
       },
     };
     const m = new OpLogModel({ root: "r", api, debounceMs: 0, minIntervalMs: 0 });
@@ -204,11 +229,14 @@ describe("views: op log", () => {
     expect(m.canLoadMore).toBe(false);
     expect(m.atCap).toBe(true);
   });
-  test("a failed run keeps the old entries and reports", async () => {
+  test("a failed read keeps the old entries and reports", async () => {
     let n = 0;
     const errs: unknown[] = [];
     const api = {
-      run: async () => (n++ === 0 ? ok(ops(2)) : { exit: 1, opResult: null, stderr: ["x"] }),
+      read: async () => {
+        if (n++ === 0) return rows(2);
+        throw new Error("op log exited 1");
+      },
     };
     const m = new OpLogModel({
       root: "r",
@@ -223,6 +251,9 @@ describe("views: op log", () => {
     await sleep(20);
     expect(m.entries).toHaveLength(2);
     expect(errs.length).toBeGreaterThan(0);
+  });
+  test("an undone operation says so", () => {
+    expect(describeOp({ ...rows(1)[0]!, undone: true }).label).toBe("create (undone)");
   });
 });
 

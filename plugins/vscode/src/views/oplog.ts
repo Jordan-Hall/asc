@@ -1,56 +1,78 @@
-// Op log tree (SPEC 24.4.4, 24.4.12): `Run op log -n 50`, refreshed on `KIND_OP_FINISHED` with a 500 ms
+// Op log tree (SPEC 24.4.4, 24.4.12): `asc op log --json -n 50`, refreshed on `KIND_OP_FINISHED` with a 500 ms
 // trailing debounce, only while visible (otherwise the view is marked stale and refreshes when shown),
 // at most one `op log` child at a time and one per 2 s, and "Load more" up to 500 entries. Older
 // entries: "open `asc op log` in a terminal". `OpLogModel` is editor-free; `registerOpLog` is the only
 // `vscode` user.
 import type * as vscodeTypes from "vscode";
-import { type RunResult, pump, type ViewApi, type WatchApi } from "./worktrees";
+import { type CliDirect, OP_LOG_MAX } from "../cli-direct";
+import { pump, type ViewApi, type WatchApi } from "./worktrees";
 
 export const PAGE = 50;
-export const MAX_ENTRIES = 500;
+export const MAX_ENTRIES = OP_LOG_MAX;
 export const DEBOUNCE_MS = 500;
 export const MIN_INTERVAL_MS = 2000;
 
 export interface OpEntry {
   id: string;
+  /** The redacted argv of the operation, joined with spaces. */
   description: string;
   /** Unix seconds, or 0 when unknown. */
   time: number;
+  /** The workspace the operation ran in. */
   user: string;
+  undone: boolean;
 }
 
+const MAX_TEXT = 2000;
+const clip = (s: string): string => (s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}...` : s);
+
 /**
- * Decodes the `op log` result line. TODO(M02): `OpResult` is not in the generated descriptors yet; until
- * it is, the bridge sends no `op_result` and this reads a JSON object `{entries: [...]}` or an array.
+ * Decodes the stdout of `asc op log --json`: `{"version":1,"ops":[...]}` (`OpLogResponse`). Rows without an
+ * id are dropped, text is clipped, and anything that is not that object gives [].
  */
-export function parseOpLog(bytes: Uint8Array | null): OpEntry[] {
-  if (bytes === null || bytes.byteLength === 0) return [];
+export function parseOpLog(text: string | null): OpEntry[] {
+  if (text === null || text === "") return [];
   let v: unknown;
   try {
-    v = JSON.parse(new TextDecoder().decode(bytes));
+    v = JSON.parse(text);
   } catch {
     return [];
   }
-  const list = Array.isArray(v) ? v : (v as { entries?: unknown } | null)?.entries;
+  const list = (v as { ops?: unknown } | null)?.ops;
   if (!Array.isArray(list)) return [];
   const out: OpEntry[] = [];
   for (const raw of list) {
     if (typeof raw !== "object" || raw === null) continue;
     const e = raw as Record<string, unknown>;
-    const id = typeof e.id === "string" ? e.id : "";
+    const id = typeof e.op === "string" ? e.op : "";
     if (id === "") continue;
+    const argv = Array.isArray(e.argv) ? e.argv.filter((a): a is string => typeof a === "string") : [];
     out.push({
       id,
-      description: typeof e.description === "string" ? e.description : "",
-      time: typeof e.time === "number" ? e.time : 0,
-      user: typeof e.user === "string" ? e.user : "",
+      description: clip(argv.join(" ")),
+      time: typeof e.at === "number" && Number.isFinite(e.at) && e.at > 0 ? Math.trunc(e.at) : 0,
+      user: typeof e.ws === "string" ? clip(e.ws) : "",
+      undone: e.undone === true,
     });
+    if (out.length >= MAX_ENTRIES) break;
   }
   return out;
 }
 
 export interface OpLogApi {
-  run: ViewApi["run"];
+  /** The newest `limit` operations of the root. */
+  read(root: string, limit: number, signal?: AbortSignal): Promise<OpEntry[]>;
+}
+
+/** `OpLogApi` over the direct `asc op log --json` read (the bridge cannot carry `op log`). */
+export function cliOpLogApi(cli: CliDirect): OpLogApi {
+  return {
+    async read(root, limit, signal) {
+      const r = await cli.run(root, { kind: "op-log", limit }, signal);
+      if (r.exit !== 0) throw new Error(`op log exited ${r.exit}`);
+      return parseOpLog(r.stdout);
+    },
+  };
 }
 
 export interface OpLogModelOptions {
@@ -163,25 +185,23 @@ export class OpLogModel {
     this.running = true;
     this.lastStart = startedAt;
     const asked = this.limit;
-    let res: RunResult | null = null;
+    let rows: OpEntry[] | null = null;
     try {
-      res = await this.o.api.run(this.o.root, "op log", ["-n", String(asked)]);
+      rows = await this.o.api.read(this.o.root, asked);
     } catch (e) {
       this.o.onError?.(e);
     }
     this.running = false;
     if (this.disposed) return;
-    if (res !== null && res.exit === 0) {
-      this.entries = parseOpLog(res.opResult).slice(0, asked);
+    if (rows !== null) {
+      this.entries = rows.slice(0, asked);
       if (asked === this.limit && !this.rerun) this.stale = false;
       for (const l of this.listeners) l();
-    } else if (res !== null) {
-      this.o.onError?.(new Error(`op log exited ${res.exit}`));
     }
     if (this.rerun) {
       this.rerun = false;
       this.tryRun();
-    } else if (this.stale && this.visible && res !== null && res.exit === 0) {
+    } else if (this.stale && this.visible && rows !== null) {
       this.schedule(0);
     }
   }
@@ -198,7 +218,7 @@ export function describeOp(e: OpEntry): { label: string; description: string; to
   const when =
     e.time > 0 ? new Date(e.time * 1000).toISOString().replace("T", " ").slice(0, 16) : "";
   return {
-    label: first === "" ? e.id.slice(0, 12) : first,
+    label: (first === "" ? e.id.slice(0, 12) : first) + (e.undone ? " (undone)" : ""),
     description: [e.id.slice(0, 12), e.user, when].filter(Boolean).join("  "),
     tooltip: e.description,
   };
@@ -209,13 +229,14 @@ export function describeOp(e: OpEntry): { label: string; description: string; to
 export function registerOpLog(
   vscode: typeof vscodeTypes,
   api: ViewApi & WatchApi,
+  opLog: OpLogApi,
   roots: readonly string[],
   log: (line: string) => void,
 ): { dispose(): void } {
   const subs: { dispose(): unknown }[] = [];
   const ac = new AbortController();
   const models = roots.map(
-    (root) => new OpLogModel({ root, api, onError: (e) => log(`asc op log: ${String(e)}`) }),
+    (root) => new OpLogModel({ root, api: opLog, onError: (e) => log(`asc op log: ${String(e)}`) }),
   );
   const changed = new vscode.EventEmitter<void>();
   subs.push(changed);

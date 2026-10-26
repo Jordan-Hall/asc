@@ -226,7 +226,7 @@ export interface StatusBarRegistration {
 
 /** Shows the status bar items for the first root with a current change. `subscribe` lets the caller
  * wire `KIND_HEAD`/`KIND_REF`/`KIND_SWITCH_DONE`/`KIND_RESYNC` watch events; without it the items
- * refresh on window focus and after each command only. TODO(P25): wire `subscribe` to the watch loop. */
+ * refresh on window focus and after each command only. The extension passes the `Watch` pump. */
 export function registerStatusBar(
   vscode: typeof vscodeTypes,
   api: StatusApi,

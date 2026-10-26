@@ -17,6 +17,8 @@ import {
   serverFeatures,
   serverTargets,
 } from "./bridge";
+import { createCliDirect } from "./cli-direct";
+import { bridgeConnectivity, followConnectivity } from "./connectivity";
 import { detectAscFolders } from "./repo";
 import { registerBlame } from "./blame/register";
 import { registerConflicts } from "./conflicts";
@@ -34,6 +36,8 @@ import { registerStashCommands } from "./scm/stash";
 import { bridgeStatusApi, registerStackEditCommands, registerStatusBar } from "./scm/statusbar";
 import { registerSearch } from "./search";
 import { registerStackActions } from "./stack/actions";
+import { cliCloudApi, CloudStatusModel, registerCloud } from "./stack/cloud";
+import { cliLiveApi, LiveModel, registerLive } from "./stack/live";
 import { registerStackNav } from "./stack/nav";
 import { registerShare } from "./stack/share";
 import { registerTasks } from "./tasks";
@@ -41,8 +45,14 @@ import { bridgeActionsApi, currentChange, registerActions, splitRepo } from "./v
 import { AffectedModel, bridgeAffectedApi, registerAffected } from "./views/affected";
 import { bridgeHistoryApi, registerFileHistory } from "./views/file-history";
 import { bridgeInboxApi, InboxModel, registerInbox } from "./views/inbox";
-import { registerOpLog } from "./views/oplog";
-import { bridgeViewApi, pump, registerWorktrees, wsIdFor } from "./views/worktrees";
+import { cliOpLogApi, registerOpLog } from "./views/oplog";
+import {
+  bridgeViewApi,
+  pump,
+  registerWorktrees,
+  runVerb,
+  wsIdFor,
+} from "./views/worktrees";
 import type { WebviewHost } from "./webview/host";
 import { vscodeWebviews } from "./webview/vscode-adapter";
 
@@ -220,6 +230,8 @@ interface FeatureEnv {
   hello: HelloInfo;
   log(line: string): void;
   ascPath(): string;
+  /** Variables for the asc children the extension starts itself, such as a token the host holds. */
+  extraEnv?(): Record<string, string | undefined>;
 }
 
 function disposeAll(subs: Sub[]): void {
@@ -239,6 +251,11 @@ export function registerAll(e: FeatureEnv): Disposable {
   const viewApi = bridgeViewApi(mgr);
   const historyApi = bridgeHistoryApi(mgr);
   const onWatchError = (err: unknown) => log(`asc watch: ${String(err)}`);
+  // Read-mostly verbs the bridge allowlist does not carry (op log, cloud status, live).
+  const cli = createCliDirect({
+    command: e.ascPath,
+    ...(e.extraEnv === undefined ? {} : { extraEnv: e.extraEnv }),
+  });
 
   // P31a: stack checkout through `asc stack get`; the asc server decides what a remote supports.
   const checkout = new StackCheckout(statusApi, { info: ui.info, error: ui.error });
@@ -258,7 +275,16 @@ export function registerAll(e: FeatureEnv): Disposable {
         root,
         ac.signal,
         (k) => {
-          if (k === "head" || k === "ref" || k === "op-finished") cb(root);
+          if (
+            k === "head" ||
+            k === "ref" ||
+            k === "op-finished" ||
+            k === "switch-done" ||
+            k === "resync" ||
+            k === "stack"
+          ) {
+            cb(root);
+          }
         },
         onWatchError,
       );
@@ -279,7 +305,7 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerConflicts(vscode, mgr, roots, log),
     // P29: trees and revision navigation.
     registerWorktrees(vscode, viewApi, roots, log),
-    registerOpLog(vscode, viewApi, roots, log),
+    registerOpLog(vscode, viewApi, cliOpLogApi(cli), roots, log),
     registerFileHistory(vscode, historyApi, roots, log),
     registerRevNav(vscode, historyApi, roots, log),
     // P34: "ASC: Search code".
@@ -299,6 +325,61 @@ export function registerAll(e: FeatureEnv): Disposable {
     registerAffected(vscode, affected, viewApi, pump, log),
     registerTasks(vscode, affected, log),
   );
+
+  // P47b and P59: cloud upload state and live updates, for the first root. Both refresh on events only:
+  // the `Watch` stream, `Bridge.Events` connectivity and a finished op; there is no timer.
+  const first = roots[0];
+  if (first !== undefined) {
+    const ac = new AbortController();
+    const cloud = new CloudStatusModel({
+      api: cliCloudApi(cli),
+      root: first,
+      onError: (err) => log(`asc cloud: ${String(err)}`),
+    });
+    const live = new LiveModel({
+      api: cliLiveApi(cli, async (root) => ({
+        exit: (await runVerb(mgr.node(), root, "restack", [])).exit,
+      })),
+      root: first,
+      onError: (err) => log(`asc live: ${String(err)}`),
+    });
+    const behind = async (): Promise<void> => {
+      try {
+        live.setBehind((await statusApi.stack(first))?.behind ?? 0);
+      } catch (err) {
+        log(`asc live: ${String(err)}`);
+      }
+    };
+    void pump(
+      viewApi,
+      first,
+      ac.signal,
+      (k) => {
+        if (k === "cloud" || k === "op-finished" || k === "resync") void cloud.onEvent("cloud");
+        if (k === "head" || k === "ref" || k === "op-finished" || k === "resync") {
+          void live.refresh();
+          void behind();
+        }
+      },
+      onWatchError,
+    );
+    void followConnectivity(
+      bridgeConnectivity(mgr),
+      ac.signal,
+      (ev) => {
+        if (ev.root === first) void cloud.onEvent("connectivity", ev.server === "up");
+      },
+      onWatchError,
+    );
+    void cloud.refresh();
+    void live.refresh();
+    void behind();
+    subs.push(
+      { dispose: () => ac.abort() },
+      registerCloud(vscode, cloud),
+      registerLive(vscode, live),
+    );
+  }
 
   // P33b: MCP registration and "Configure agents".
   const mcp = registerMcp({
