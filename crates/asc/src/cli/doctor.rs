@@ -1903,7 +1903,10 @@ mod tests {
         // SAFETY-free: reads only. PATH exists on every platform the tests run on.
         let path = std::env::var("PATH").unwrap();
         assert_eq!(expand_env("%PATH%;x"), format!("{path};x"));
-        assert_eq!(expand_env("%ASC_SURELY_UNSET_VAR%"), "%ASC_SURELY_UNSET_VAR%");
+        assert_eq!(
+            expand_env("%ASC_SURELY_UNSET_VAR%"),
+            "%ASC_SURELY_UNSET_VAR%"
+        );
         assert_eq!(expand_env("100%"), "100%");
     }
 

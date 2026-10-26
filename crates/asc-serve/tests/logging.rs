@@ -4,9 +4,6 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use axum::Router;
-use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
 use asc_rpc::auth::{Access, StaticTokens};
 use asc_rpc::server::ServerInfo;
 use asc_serve::config::LogFormat;
@@ -15,6 +12,9 @@ use asc_serve::logging::{AccessLogLayer, LoggingAuthorizer, build};
 use asc_serve::outbox::{Outbox, OutboxConfig};
 use asc_serve::registry::Extensions;
 use asc_serve::{build_routes, migrate};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use tower::ServiceExt;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;

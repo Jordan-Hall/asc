@@ -87,7 +87,10 @@ mod tests {
     #[test]
     fn every_stack_verb_is_asc_only_and_never_a_git_command() {
         for v in STACK_VERBS {
-            assert!(ASC_ONLY_VERBS.contains(v), "{v} missing from ASC_ONLY_VERBS");
+            assert!(
+                ASC_ONLY_VERBS.contains(v),
+                "{v} missing from ASC_ONLY_VERBS"
+            );
             assert!(!GIT_BUILTINS.contains(v), "{v} is a git builtin");
             assert!(routable(v), "{v}");
         }

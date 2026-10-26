@@ -4,7 +4,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RefName;
 use asc_rpc::server::RepoName;
@@ -13,6 +12,7 @@ use asc_serve::admin::legacy_shared::{Outcome, convert_closed};
 use asc_serve::migrate;
 use asc_serve::registry::{NewRepo, Registry, RepoEntry};
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+use async_trait::async_trait;
 use sqlx::Row;
 use tonic::Status;
 use uuid::Uuid;

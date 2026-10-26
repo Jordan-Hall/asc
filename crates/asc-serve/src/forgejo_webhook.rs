@@ -5,12 +5,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use asc_rpc::server::RepoName;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use asc_rpc::server::RepoName;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 
@@ -129,9 +129,9 @@ pub fn router(mirror: Arc<Mirror>, secret: Vec<u8>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use asc_git::realgit::RealGit;
     use axum::body::Body;
     use axum::http::Request;
-    use asc_git::realgit::RealGit;
     use tower::ServiceExt;
 
     use super::*;

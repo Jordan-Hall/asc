@@ -9,12 +9,12 @@
 //! trusted side (the base of the comparison), never from the head being judged, and every change to
 //! those files themselves is `LOGIC`.
 
-use async_trait::async_trait;
 use asc_core::id::{FileId, TreeId};
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 
 use crate::Engine;

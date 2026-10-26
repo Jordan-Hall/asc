@@ -109,7 +109,9 @@ async fn entries(
     let mut extra = 0u64;
     let mut walk = engine.walk(root, None);
     while let Some((path, entry)) = walk.try_next().await.map_err(|e| {
-        CliError::Fatal(format!("asc: codeintel: a tree is not on this machine: {e}"))
+        CliError::Fatal(format!(
+            "asc: codeintel: a tree is not on this machine: {e}"
+        ))
     })? {
         if !matches!(entry.kind, Kind::File | Kind::Exec) {
             continue;

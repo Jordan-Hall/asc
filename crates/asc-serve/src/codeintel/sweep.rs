@@ -15,7 +15,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_codeintel::index::manifest::{Cas, DropKind, Dropped, ManifestStore, Publisher};
 use asc_codeintel::index::schema::IndexKind;
 use asc_codeintel::index::segments::{Hash, get_indexed, put_indexed};
@@ -23,6 +22,7 @@ use asc_codeintel::scope::{OrdSource, ScopeEngine};
 use asc_core::id::{ChangesetId, FileId};
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Row};

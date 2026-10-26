@@ -96,7 +96,8 @@ impl RpcBackend {
     /// Never in practice: the descriptor set is built into the binary.
     #[must_use]
     pub fn new(surface: Surface) -> Self {
-        let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("built-in descriptor set");
+        let pool =
+            DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("built-in descriptor set");
         Self {
             surface,
             pool: Arc::new(pool),

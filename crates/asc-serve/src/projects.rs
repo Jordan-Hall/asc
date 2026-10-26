@@ -12,8 +12,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
 use asc_engine::projects::{self, AffectedQuery};
@@ -26,6 +24,8 @@ use asc_rpc::projects::{
 };
 use asc_rpc::server::{CallCtx, MAX_STRING, wire};
 use asc_store::objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use prost::Message;
 use tokio::sync::Semaphore;
 use tonic::Status;
@@ -287,7 +287,8 @@ impl ProjectsHandler for ServerProjects {
                 };
                 let mut wire = affected_project(p, info);
                 if let Some(&i) = index.get(&p.project.key) {
-                    wire.targets = target_cmds(&asc_graph::targets::commands_for(g, &g.projects[i]));
+                    wire.targets =
+                        target_cmds(&asc_graph::targets::commands_for(g, &g.projects[i]));
                 }
                 wire
             })

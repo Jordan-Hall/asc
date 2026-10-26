@@ -9,7 +9,6 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use bytes::Bytes;
 use asc_core::codec::Enveloped as _;
 use asc_core::content::{Body, ingest};
 use asc_core::id::FileId;
@@ -22,6 +21,7 @@ use asc_rpc::server::wire;
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects as _;
+use bytes::Bytes;
 use support::{Fixture, text};
 use tonic::Code;
 use tonic::transport::Channel;

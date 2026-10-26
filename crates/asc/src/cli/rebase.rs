@@ -669,7 +669,9 @@ async fn start(ctx: &Ctx, ws: &WsCtx, gitdir: &Path, a: Args) -> Result<ExitCode
         Head::Detached(_) => None,
     };
     let Some(head) = ws.head_commit().await? else {
-        return Err(fatal("asc: rebase on an unborn branch is not supported yet"));
+        return Err(fatal(
+            "asc: rebase on an unborn branch is not supported yet",
+        ));
     };
     let upstream_text = match a.words.first() {
         Some(w) => word(w),

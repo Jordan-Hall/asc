@@ -18,10 +18,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::path::{RepoPath, casefold};
 use asc_rpc::server::wire;
+use bytes::Bytes;
 use sqlx::AnyConnection;
 use tonic::Status;
 

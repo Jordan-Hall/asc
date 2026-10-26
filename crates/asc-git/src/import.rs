@@ -10,7 +10,6 @@ use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use async_trait::async_trait;
 use asc_core::codec::{CodecError, Enveloped};
 use asc_core::content::{Body, ContentError, Ingested, ingest};
 use asc_core::git::{
@@ -28,6 +27,7 @@ use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use data_encoding::BASE64;
 
 use crate::import_change;

@@ -576,7 +576,7 @@ mod tests {
     #[test]
     fn empty_tree_id_is_frozen() {
         let t = Tree::new(vec![], true).unwrap();
-        assert_eq!(t.to_envelope(), [b'c', b'g', 1, 1, 0]);
+        assert_eq!(t.to_envelope(), [b'a', b's', 1, 1, 0]);
         let want = include_str!("../tests/golden/envelopes/empty_tree_id.txt");
         assert_eq!(t.id().to_string(), want.trim());
     }
@@ -627,7 +627,7 @@ mod tests {
     #[test]
     fn rejects_non_canonical_varint() {
         // Tree with zero entries encoded as a two-byte varint length.
-        assert!(decode_envelope::<Tree>(&[b'c', b'g', 1, 1, 0x80, 0x00]).is_err());
+        assert!(decode_envelope::<Tree>(&[b'a', b's', 1, 1, 0x80, 0x00]).is_err());
     }
 
     #[test]
@@ -950,7 +950,7 @@ mod tests {
         /// encode(decode(b)) == b for every accepted b; arbitrary bytes are never mis-accepted.
         #[test]
         fn accepted_bytes_reencode(mut b in prop::collection::vec(any::<u8>(), 0..64)) {
-            b.splice(0..0, [b'c', b'g', 1, 1]);
+            b.splice(0..0, [b'a', b's', 1, 1]);
             if let Ok(t) = decode_envelope::<Tree>(&b) {
                 prop_assert_eq!(t.to_envelope(), b);
             }

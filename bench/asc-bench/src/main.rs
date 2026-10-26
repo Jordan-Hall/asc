@@ -74,10 +74,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let asc =
-        o.asc.clone()
-            .or_else(sibling_asc)
-            .and_then(|p| Tool::new("asc", p, scratch.path()).ok());
+    let asc = o
+        .asc
+        .clone()
+        .or_else(sibling_asc)
+        .and_then(|p| Tool::new("asc", p, scratch.path()).ok());
     if asc.is_none() {
         eprintln!(
             "warning: no asc binary (build `cargo build -p asc --release`, then set ASC_BIN or pass --asc)"

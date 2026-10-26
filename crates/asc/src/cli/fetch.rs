@@ -70,9 +70,9 @@ pub(crate) fn fatal(e: impl std::fmt::Display) -> CliError {
 /// An engine sync failure as the CLI reports it.
 pub(crate) fn sync_error(e: SyncError) -> CliError {
     match e {
-        SyncError::RawGit(_) => {
-            CliError::Fatal("asc: import this history on the server (asc serve admin import)".into())
-        }
+        SyncError::RawGit(_) => CliError::Fatal(
+            "asc: import this history on the server (asc serve admin import)".into(),
+        ),
         other => fatal(other),
     }
 }

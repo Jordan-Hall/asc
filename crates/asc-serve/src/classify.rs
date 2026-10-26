@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, FileId, TreeId};
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
@@ -19,6 +18,7 @@ use asc_engine::history::HistoryApi;
 use asc_engine::tree;
 use asc_rpc::server::{CallCtx, ClassifyHandler, MAX_STRING, wire};
 use asc_store::objects;
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tonic::Status;
 

@@ -977,12 +977,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
-    use async_trait::async_trait;
-    use bytes::Bytes;
     use asc_core::git::blob_oid;
     use asc_store::bucket::BucketObjects;
     use asc_store::key::KeyPrefix;
     use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, RepoKey};
+    use async_trait::async_trait;
+    use bytes::Bytes;
     use proptest::prelude::*;
 
     use super::*;

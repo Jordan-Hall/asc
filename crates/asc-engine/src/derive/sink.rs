@@ -1,11 +1,11 @@
 //! The git map: `(git oid, kind) -> asc id` rows (SPEC §5).
 
-use async_trait::async_trait;
 use asc_core::git::{ObjectKind, tree_oid};
 use asc_core::id::{GitOid, TreeId};
 use asc_core::object::Kind;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use super::Result;
 use crate::Engine;

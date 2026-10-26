@@ -31,7 +31,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use bytes::Bytes;
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::path::RepoPath;
@@ -43,6 +42,7 @@ use asc_state::state::stage::{self, StageSet};
 use asc_state::state::workspaces::{self, Mode};
 use asc_store::refs::RepoKey;
 use asc_wc::journal::{Op, Token};
+use bytes::Bytes;
 use futures::StreamExt as _;
 use futures::stream::BoxStream;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -171,8 +171,8 @@ pub(super) fn pool() -> &'static DescriptorPool {
 pub(super) fn command(m: &Mounted, args: &[OsString]) -> Result<tokio::process::Command, Status> {
     let root = PathBuf::from(&m.row.ws.mount);
     super::service::check_mount_root(&root).map_err(Status::permission_denied)?;
-    let exe =
-        std::env::current_exe().map_err(|e| internal(format!("cannot find the asc binary: {e}")))?;
+    let exe = std::env::current_exe()
+        .map_err(|e| internal(format!("cannot find the asc binary: {e}")))?;
     let mut c = tokio::process::Command::new(exe);
     c.args(args)
         .current_dir(&root)

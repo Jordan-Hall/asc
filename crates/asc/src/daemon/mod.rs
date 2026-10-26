@@ -123,7 +123,10 @@ impl Watchdog {
     /// The daemon's watchdog: aborts the process after [`CALLBACK_LIMIT`].
     pub fn abort_on_hang() -> io::Result<Self> {
         Self::spawn(CALLBACK_LIMIT, WATCHDOG_TICK, |what, age| {
-            eprintln!("asc daemon: {what} has run for {}s; aborting", age.as_secs());
+            eprintln!(
+                "asc daemon: {what} has run for {}s; aborting",
+                age.as_secs()
+            );
             std::process::abort();
         })
     }

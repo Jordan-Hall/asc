@@ -406,10 +406,16 @@ fn config_flags_outside_the_table_exit_129() {
     let root = init_repo(&sb, "repo");
     let out = asc(&sb, &root, &["config", "--bogus"]);
     assert_eq!(out.code, 129);
-    assert_eq!(out.stderr, "fatal: asc: option '--bogus' is not supported\n");
+    assert_eq!(
+        out.stderr,
+        "fatal: asc: option '--bogus' is not supported\n"
+    );
     assert_eq!(out.stdout, "");
     let out = asc(&sb, &root, &["config", "--list", "--bogus=1"]);
-    assert_eq!(out.stderr, "fatal: asc: option '--bogus' is not supported\n");
+    assert_eq!(
+        out.stderr,
+        "fatal: asc: option '--bogus' is not supported\n"
+    );
 }
 
 // ---- the frame: globals, aliases, children ----------------------------------------------

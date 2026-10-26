@@ -269,7 +269,8 @@ async fn check_ignore_in_a_subdirectory_prints_names_as_typed() {
         false,
     );
     assert_eq!(
-        r.asc_in("sub", &["check-ignore", "../../outside"], b"").code,
+        r.asc_in("sub", &["check-ignore", "../../outside"], b"")
+            .code,
         128
     );
     assert_eq!(

@@ -199,6 +199,9 @@ struct Opts {
     optional_locks: bool,
     /// The text goes into the commit message template (git's `commit_template`).
     template: bool,
+    /// The report is `git commit`'s (its template or its "nothing to commit" refusal), which names
+    /// a root commit "Initial commit" where `git status` says "No commits yet".
+    from_commit: bool,
     /// The program name hints print (`git` or `asc`).
     prog: &'static str,
     /// The current directory below the work tree root, `""` or `a/b/`.
@@ -359,6 +362,7 @@ fn options(ctx: &Ctx, ws: &WsCtx, a: &Cli) -> Result<Opts> {
         quote_high: cfg.bool("core.quotePath").unwrap_or(true),
         optional_locks: ctx.env.optional_locks,
         template: false,
+        from_commit: false,
         prog: ctx.prog.name(),
         prefix,
         spec,
@@ -1423,7 +1427,7 @@ fn print_long(p: &mut Printer<'_>, r: &Report) {
     }
     if r.initial {
         p.line("");
-        p.line(if o.template {
+        p.line(if o.from_commit {
             "Initial commit"
         } else {
             "No commits yet"
@@ -1784,14 +1788,16 @@ fn json_line(r: &Report) -> Result<Vec<u8>> {
 // ----------------------------------------------------------------------- run
 
 /// The long report as `git commit` shows it. With `template`, it is the text of the commit
-/// message template: no hints, no summary line, "Initial commit", and every line behind the
-/// comment character `comment`. Otherwise it is what `git status` prints for "nothing to commit".
+/// message template: no hints, no summary line, and every line behind the comment character
+/// `comment`. Otherwise it is what `git commit` prints when there is nothing to commit. Both name
+/// a root commit "Initial commit".
 pub(crate) async fn long_text(ctx: &Ctx, ws: &WsCtx, template: Option<u8>) -> Result<Vec<u8>> {
     let cli =
         <Cli as clap::Parser>::try_parse_from(["status"]).map_err(|e| fatal(e.to_string()))?;
     let mut o = options(ctx, ws, &cli)?;
     o.format = Format::Long;
     o.z = false;
+    o.from_commit = true;
     if template.is_some() {
         o.hints = false;
         o.template = true;

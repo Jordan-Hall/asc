@@ -7,7 +7,6 @@
 use std::fmt;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::path::RepoPath;
 use asc_graph::affected::{AffectedError, AffectedProject, ProjectRef};
@@ -18,6 +17,7 @@ use asc_graph::pattern::PatternError;
 use asc_graph::select::SelectError;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use crate::{Engine, commit, graph, tree};
 
@@ -206,7 +206,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::SystemTime;
 
-    use bytes::Bytes;
     use asc_core::content::{Body, ingest};
     use asc_core::id::GitOid;
     use asc_core::object::{Change, Kind};
@@ -218,6 +217,7 @@ mod tests {
     use asc_store::codec::encode_stored;
     use asc_store::key::{KeyPrefix, ObjKey};
     use asc_store::refs::RepoKey;
+    use bytes::Bytes;
     use futures::TryStreamExt;
     use futures::stream::BoxStream;
 

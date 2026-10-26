@@ -13,7 +13,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use bytes::Bytes;
 use asc_codeintel::doc::{DocRow, Versions};
 use asc_codeintel::lang::{self, Lang};
 use asc_codeintel::search::{DocDirectory, Searcher};
@@ -26,6 +25,7 @@ use asc_store::bucket::BucketObjects;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::sqlrefs::SqlRefs;
+use bytes::Bytes;
 use roaring::RoaringBitmap;
 use tokio::runtime::Handle;
 

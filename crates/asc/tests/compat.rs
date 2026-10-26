@@ -170,7 +170,8 @@ fn a_fall_through_on_the_asc_side_fails_the_case() {
 /// lets the case pass. `ASC_HOME` exists only on the asc side.
 #[test]
 fn a_difference_between_the_sides_fails_the_case() {
-    let script = "g init\nif [ -n \"${ASC_HOME:-}\" ]; then echo asc-side; else echo git-side; fi\n";
+    let script =
+        "g init\nif [ -n \"${ASC_HOME:-}\" ]; then echo asc-side; else echo git-side; fi\n";
     let err = tools()
         .check_script("selfcheck-diff", script)
         .expect_err("the sides differ");
@@ -380,7 +381,8 @@ fn preflight_a_locale_failure_explains_only_the_message_streams() {
 #[test]
 fn preflight_a_real_difference_with_a_clean_preflight_is_a_product_failure() {
     assert!(failed(tools().preflight()).is_empty());
-    let script = "g init\nif [ -n \"${ASC_HOME:-}\" ]; then echo asc-side; else echo git-side; fi\n";
+    let script =
+        "g init\nif [ -n \"${ASC_HOME:-}\" ]; then echo asc-side; else echo git-side; fi\n";
     let err = tools()
         .check_script("selfcheck-product", script)
         .expect_err("the sides differ");

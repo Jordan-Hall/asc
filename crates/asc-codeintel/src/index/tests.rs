@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use async_trait::async_trait;
 use asc_store::bucket::BucketObjects;
 use asc_store::codec::encode_stored;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
 use tantivy::query::{BooleanQuery, Query, QueryParser, TermQuery};
 use tantivy::schema::{IndexRecordOption, Term};
 

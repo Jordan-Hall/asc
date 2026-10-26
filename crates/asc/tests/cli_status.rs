@@ -336,7 +336,12 @@ async fn pathspec_limits_and_relative_paths_match_git() {
     p.same(&["-s", "a.txt", "b.txt"]);
     // From a subdirectory, long and short paths are relative; porcelain stays root-relative.
     for args in [&[][..], &["-s"], &["--porcelain"], &["--porcelain=v2"]] {
-        let got = run(p.f.sandbox.asc(&p.f.root.join("d")).arg("status").args(args));
+        let got = run(p
+            .f
+            .sandbox
+            .asc(&p.f.root.join("d"))
+            .arg("status")
+            .args(args));
         let want = git(
             &p.git_dir.join("d"),
             &p.f.sandbox.user,

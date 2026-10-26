@@ -21,12 +21,12 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use asc_rpc::auth::{
     Access, AuthError, Decision as SshDecision, Principal, SshFingerprint, SshIdentity, SshKey,
     SshKeyKind,
 };
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;

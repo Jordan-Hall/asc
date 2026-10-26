@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_codeintel::chunk::{self, CHUNKER_VERSION, Chunk, ChunkTextId};
 use asc_codeintel::doc::{DocLangs, DocRow, Versions};
 use asc_codeintel::grams::{self, GRAMS_VER, Gram};
@@ -39,6 +38,7 @@ use asc_core::id::FileId;
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use sqlx::{AnyPool, Row};

@@ -10,13 +10,13 @@
 //! reads at most [`MAX_READ_BYTES`] of content in total (the rest is listed as binary and the
 //! stat is marked `truncated`).
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::Kind;
 use asc_core::path::RepoPath;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use super::{DerivedKeyed, Error, Result, read_memo};
 use crate::Engine;

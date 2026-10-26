@@ -11,10 +11,6 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bytes::Bytes;
 use asc_core::codec::decode_envelope;
 use asc_core::id::{ChangesetId, GitOid, RefTarget};
 use asc_core::object::{Change, Changeset, Kind, TagRecord};
@@ -26,6 +22,10 @@ use asc_engine::history::{HistoryApi, LOG_PAGE, PageToken};
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects, decode_verified};
 use asc_store::refs::{Actor, Expect, RefError, RefTxn, RefUpdate, Refs, RepoKey};
+use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use bytes::Bytes;
 use futures::stream::{self, BoxStream};
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -714,6 +714,14 @@ repo_impl! {
                 .map_or_else(String::new, |v| v.to_string()),
             features: advertised_features(&self.info.features),
         }))
+    }
+
+    // Policy as code is work in progress (HEAD adds the proto only): answer instead of failing the build.
+    async fn get_policy(
+        &self,
+        _request: Request<pb::GetPolicyRequest>,
+    ) -> Result<Response<pb::GetPolicyResponse>, Status> {
+        Err(Status::unimplemented("GetPolicy is not served yet"))
     }
 
     type WatchRefsStream = RpcStream<pb::RefEvent>;
@@ -1533,7 +1541,11 @@ impl<O: Objects + 'static, R: Refs + 'static> HistoryHandler for EngineBackend<O
             .iter()
             .map(|b| convert::WireId::from_slice(b).map_err(convert_status))
             .collect::<Result<_, _>>()?;
-        let m = self.engine.git_map(&asc, &git).await.map_err(graph_status)?;
+        let m = self
+            .engine
+            .git_map(&asc, &git)
+            .await
+            .map_err(graph_status)?;
         Ok(pb::GitMapResponse {
             asc_to_git: m
                 .asc_to_git

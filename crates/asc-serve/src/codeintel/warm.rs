@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, RefTarget};
+use async_trait::async_trait;
 use sqlx::{AnyPool, Row};
 use tokio::task::JoinHandle;
 

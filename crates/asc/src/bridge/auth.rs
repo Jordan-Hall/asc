@@ -73,7 +73,9 @@ fn env_token(value: Option<std::ffi::OsString>) -> Result<Option<String>, Status
         return Ok(None);
     }
     if token.len() > MAX_TOKEN || token.contains(['\0', '\r', '\n']) {
-        return Err(Status::failed_precondition("ASC_TOKEN is not a valid token"));
+        return Err(Status::failed_precondition(
+            "ASC_TOKEN is not a valid token",
+        ));
     }
     Ok(Some(token.to_owned()))
 }

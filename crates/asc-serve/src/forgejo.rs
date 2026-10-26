@@ -15,7 +15,6 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use asc_core::id::RefTarget;
 use asc_core::transport_policy::{Policy, classify_url};
 use asc_rpc::auth::{
@@ -24,6 +23,7 @@ use asc_rpc::auth::{
 };
 use asc_rpc::changes::MergeOutcome;
 use asc_rpc::server::{CallCtx, MAX_REF_UPDATES, RepoName};
+use async_trait::async_trait;
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -628,10 +628,10 @@ mod codeintel {
     use std::sync::{Arc, Mutex};
     use std::thread::JoinHandle;
 
-    use bytes::Bytes;
     use asc_rpc::auth::StaticTokens;
     use asc_rpc::server::{RepoHandlers, RepoService, ServerInfo, wire};
     use asc_rpc::services::code_intel_server::{CodeIntel, CodeIntelServer};
+    use bytes::Bytes;
     use tonic::{Request, Response, Status};
 
     #[derive(Default)]

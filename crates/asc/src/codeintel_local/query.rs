@@ -17,8 +17,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_codeintel::index::schema::{FilesSchema, IndexKind};
 use asc_codeintel::index::segments::{Snapshot, unpack_and_open};
 use asc_codeintel::lang::Lang;
@@ -37,6 +35,8 @@ use asc_rpc::codeintel as ci;
 use asc_rpc::server::wire;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use regex::bytes::RegexBuilder;
 use roaring::RoaringBitmap;
 use tantivy::Term;

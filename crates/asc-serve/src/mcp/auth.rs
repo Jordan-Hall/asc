@@ -26,16 +26,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use asc_mcp::catalogue;
+use asc_mcp::errors::{ToolError, code};
+use asc_mcp::schema::Surface as McpSurface;
+use asc_rpc::auth::{Access, AuthError, Authorizer, Credential, Principal};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
-use asc_mcp::catalogue;
-use asc_mcp::errors::{ToolError, code};
-use asc_mcp::schema::Surface as McpSurface;
-use asc_rpc::auth::{Access, AuthError, Authorizer, Credential, Principal};
 use serde_json::{Value, json};
 
 use super::McpPrincipal;

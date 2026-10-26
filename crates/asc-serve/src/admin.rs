@@ -22,7 +22,6 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use asc_core::codec::decode_envelope;
 use asc_core::git::EXTRA_GIT_COMMIT;
 use asc_core::id::{ChangesetId, FileId, GitOid, RefTarget, TreeId};
@@ -34,6 +33,7 @@ use asc_rpc::{IdMode, WireId};
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
 use asc_store::refs::{Actor, Expect, RefEntry, RefTxn, RefUpdate, Refs};
+use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt, stream};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -1913,7 +1913,6 @@ async fn copy_index(pool: &AnyPool, src: Ns, dst: Ns, refname: &str) -> Result<(
 mod tests {
     use std::time::Instant;
 
-    use bytes::Bytes;
     use asc_core::content::{Body, ingest as ingest_content};
     use asc_core::git::blob_oid;
     use asc_core::object::Change;
@@ -1921,6 +1920,7 @@ mod tests {
     use asc_rpc::auth::Principal;
     use asc_store::codec::encode_stored;
     use asc_store::sqlrefs::SqlRefs;
+    use bytes::Bytes;
     use object_store::PutPayload;
     use wire::repo_admin_request::Op;
 

@@ -14,12 +14,12 @@
 //! are compiled with size limits (the `regex` crate matches in linear time), and a file version
 //! over [`MAX_FILE_BYTES`] is skipped as if it held no match.
 
-use bytes::Bytes;
 use asc_core::id::{ChangesetId, FileId};
 use asc_core::object::{Entry, Kind};
 use asc_core::path::RepoPath;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use bytes::Bytes;
 
 use crate::{Engine, commit, diff, tree};
 

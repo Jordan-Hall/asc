@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use bstr::ByteSlice;
 use asc_core::path::RepoPath;
 use asc_wc::SafeRoot;
+use bstr::ByteSlice;
 use gix_attributes::glob::pattern::Case;
 use gix_attributes::search::{MetadataCollection, Outcome};
 use gix_attributes::{Search, StateRef};

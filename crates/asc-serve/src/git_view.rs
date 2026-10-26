@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_core::codec::decode_envelope;
 use asc_core::git::{ObjectKind, export_tag, object_oid};
 use asc_core::id::{GitOid, RefTarget, TagId};
@@ -32,6 +31,7 @@ use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
 use asc_store::sqlrefs::SqlRefs;
+use async_trait::async_trait;
 use sqlx::{AnyPool, Row};
 
 use crate::config::{GitFsck, ServeConfig};
@@ -872,7 +872,9 @@ mod tests {
         let change = Change::write(Kind::File, got.file, got.size, got.git, None).unwrap();
         let base = match parent {
             Some(p) => engine.get_changeset(p).await.unwrap().root,
-            None => asc_engine::Engine::<asc_store::bucket::BucketObjects, SqlRefs>::empty_tree_id(),
+            None => {
+                asc_engine::Engine::<asc_store::bucket::BucketObjects, SqlRefs>::empty_tree_id()
+            }
         };
         let root = engine
             .apply(base, &[(RepoPath::new(file).unwrap(), change)])

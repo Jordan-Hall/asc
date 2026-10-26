@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use async_trait::async_trait;
 use asc_core::id::RefTarget;
 use asc_rpc::server::RepoName;
 use asc_store::gc::{
@@ -30,6 +29,7 @@ use asc_store::gc::{
 use asc_store::key::ObjKey;
 use asc_store::refs::{Refs, RepoKey};
 use asc_store::sqlrefs::SqlRefs;
+use async_trait::async_trait;
 use serde::Deserialize;
 use sqlx::any::Any;
 use sqlx::pool::PoolConnection;

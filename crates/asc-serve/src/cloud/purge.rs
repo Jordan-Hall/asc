@@ -35,7 +35,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, PoisonError, RwLock};
 
-use async_trait::async_trait;
 use asc_core::codec::decode_envelope;
 use asc_core::content::CHUNK_THRESHOLD;
 use asc_core::id::{ChangesetId, RefTarget, TreeId};
@@ -43,6 +42,7 @@ use asc_core::object::{Change, Changeset, ChunkList, Kind, TagRecord, Tree};
 use asc_core::path::Name;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
 use sqlx::{AnyConnection, AnyPool, Row};
 use tonic::Status;
 use uuid::Uuid;

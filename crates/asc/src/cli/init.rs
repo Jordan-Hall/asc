@@ -81,7 +81,8 @@ fn write_ascignore(root: &Path, prog: Program) -> std::io::Result<()> {
     // The root is the directory being initialised: no tracked path exists yet to lie behind a
     // link. A link named like either file counts as present, and `create_new` never follows one.
     let (ascignore, gitignore) = (root.join(".ascignore"), root.join(".gitignore")); // lint:allow-worktree-fs
-    if std::fs::symlink_metadata(&ascignore).is_ok() || std::fs::symlink_metadata(&gitignore).is_ok()
+    if std::fs::symlink_metadata(&ascignore).is_ok()
+        || std::fs::symlink_metadata(&gitignore).is_ok()
     {
         return Ok(());
     }

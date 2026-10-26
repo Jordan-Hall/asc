@@ -1,10 +1,10 @@
 //! `gen.v1`: generation number, `1 + max(parent gens)` (roots are 1).
 
-use async_trait::async_trait;
 use asc_core::id::ChangesetId;
 use asc_core::object::Changeset;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 
 use super::{Derived, Error, Result};
 use crate::Engine;

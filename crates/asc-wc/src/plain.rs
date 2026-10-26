@@ -564,7 +564,6 @@ fn make_symlink(_: &[u8], _: &Path) -> io::Result<()> {
 pub(crate) mod testutil {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use asc_core::codec::Enveloped;
     use asc_core::content::{Body, ingest};
     use asc_core::git::blob_oid;
@@ -572,6 +571,7 @@ pub(crate) mod testutil {
     use asc_store::cachedir::CacheDir;
     use asc_store::codec::encode_stored;
     use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, RepoKey};
+    use async_trait::async_trait;
 
     use super::*;
     use crate::status::NoEol;

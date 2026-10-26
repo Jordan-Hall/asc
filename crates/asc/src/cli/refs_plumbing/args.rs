@@ -129,7 +129,8 @@ pub async fn resolve_target(ctx: &Ctx, ws: &WsCtx, word: &str) -> Result<Option<
         if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Tag).await? {
             return Ok(Some(RefTarget::Tag(TagId::from_bytes(asc))));
         }
-        if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit).await? {
+        if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit).await?
+        {
             return Ok(Some(RefTarget::Changeset(ChangesetId::from_bytes(asc))));
         }
         return Ok(None);

@@ -367,7 +367,9 @@ async fn webhook_storm(w: &mut World) -> R<()> {
     let got = w.refs.get(REPO, &rn(MIRROR)).await.map_err(rerr);
     // The drain turned faults off, so this read is reliable.
     match got? {
-        Some(e) if e.target == RefTarget::Changeset(asc_core::id::ChangesetId::from_bytes(want)) => {
+        Some(e)
+            if e.target == RefTarget::Changeset(asc_core::id::ChangesetId::from_bytes(want)) =>
+        {
             Ok(())
         }
         other => viol(format!(

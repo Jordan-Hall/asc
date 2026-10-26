@@ -7,7 +7,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use base64::Engine as _;
 use asc_rpc::auth::{
     Access, AuthError, Authorizer, Decision, Principal, SshFingerprint, SshIdentity, SshKey,
     SshKeyKind,
@@ -22,6 +21,7 @@ use asc_serve::authz::token_store::{
 };
 use asc_serve::config::ServeConfig;
 use asc_serve::migrate;
+use base64::Engine as _;
 use sqlx::{AnyPool, Row};
 
 const T0: i64 = 1_800_000_000;

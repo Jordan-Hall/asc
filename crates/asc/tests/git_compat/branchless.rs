@@ -7,7 +7,6 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Principal};
 use asc_rpc::server::{RepoName, ServerInfo};
 use asc_serve::config::ServeConfig;
@@ -17,6 +16,7 @@ use asc_serve::http::Metrics;
 use asc_serve::limits::{Admission, guarded_routes};
 use asc_serve::registry::{Extensions, NewRepo, Registry};
 use asc_serve::{git_http, migrate};
+use async_trait::async_trait;
 use sqlx::Row;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;

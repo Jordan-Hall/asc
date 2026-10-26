@@ -10,11 +10,11 @@ fn cs(n: u8) -> ChangesetId {
 fn golden_import_id() {
     assert_eq!(
         import_id(&cs(1)).to_string(),
-        "znxotwlsqoknzwwzozsstznnlzrvoqxo"
+        "yvuuzoqtnpwvoxnopuomnrnowwozytvz"
     );
     assert_eq!(
         import_id(&cs(2)).to_string(),
-        "unqwyourxlnwvpxtxvrzwuuqtyxlykyx"
+        "yoltpuvyoxwrktrqlqtukzupwxrwrsvl"
     );
 }
 

@@ -24,7 +24,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::catalogue::{self, Needs, ToolDef};
 use asc_mcp::cursor::Position;
@@ -40,6 +39,7 @@ use asc_rpc::auth::{
 use asc_rpc::json;
 use asc_rpc::retry::retry_after;
 use asc_rpc::server::{RepoName, status_rpc_error};
+use async_trait::async_trait;
 use futures::StreamExt as _;
 use futures::stream::{self, BoxStream};
 use prost_reflect::{
@@ -329,7 +329,8 @@ impl ServeBackend {
         admission: Arc<Admission>,
         max_inflight: u32,
     ) -> Self {
-        let pool = DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("built-in descriptor set");
+        let pool =
+            DescriptorPool::decode(asc_rpc::DESCRIPTOR_SET).expect("built-in descriptor set");
         Self {
             routes,
             pool: Arc::new(pool),

@@ -23,7 +23,6 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use asc_core::id::RefTarget;
 use asc_core::path::RefName;
 use asc_git::realgit::RealGit;
@@ -43,6 +42,7 @@ use asc_serve::ssh::{Audit, GitAuditSink, GitRecord, GitSshExec, SshDeps, SshMet
 use asc_serve::update::{HookRejected, HookRequest as PipelineRequest, PushHooks};
 use asc_serve::{git_http, migrate};
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use harness::{Conn, Records, connect, drain, within};
 use keys::*;
 use sqlx::Row;

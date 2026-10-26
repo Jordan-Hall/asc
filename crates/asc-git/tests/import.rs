@@ -6,8 +6,6 @@ mod fixtures;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::git::ObjectKind;
 use asc_core::id::{ChangesetId, FileId, GitOid, TreeId};
 use asc_core::object::{AscGitExtra, Kind, SortedMap};
@@ -22,6 +20,8 @@ use asc_store::key::KeyPrefix;
 use asc_store::key::ObjKey;
 use asc_store::objects;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use data_encoding::BASE64;
 use fixtures::{Killer, MemMap, NoRefs, Repo, main_fixture, repo_key};
 use futures::stream::BoxStream;
@@ -535,5 +535,8 @@ async fn wide_import_loads_child_trees_concurrently_within_the_window() {
         .expect("second");
     let max = counting.max_in_flight.load(SeqCst);
     assert!(max > 1, "child loads ran one at a time");
-    assert!(max <= asc_engine::tree::LOAD_WINDOW, "{max} reads in flight");
+    assert!(
+        max <= asc_engine::tree::LOAD_WINDOW,
+        "{max} reads in flight"
+    );
 }

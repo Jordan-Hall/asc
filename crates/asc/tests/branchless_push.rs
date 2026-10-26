@@ -20,7 +20,6 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::thread::JoinHandle;
 
-use async_trait::async_trait;
 use asc_rpc::auth::{Access, StaticTokens};
 use asc_rpc::errors::{ErrorInfo, RpcError};
 use asc_rpc::server::{
@@ -30,6 +29,7 @@ use asc_rpc::server::{
 use asc_serve::registry::{Extensions, NewRepo, Registry};
 use asc_serve::update::ServerRefs;
 use asc_serve::{migrate, read};
+use async_trait::async_trait;
 use serde_json::Value;
 use support::{Sandbox, text};
 use tonic::Status;

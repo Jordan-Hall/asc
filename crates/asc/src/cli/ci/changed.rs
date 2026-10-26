@@ -9,8 +9,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
-use async_trait::async_trait;
 use asc_ci::changed::{self, Backend, BackendError, Input, Plan, PlanError};
+use async_trait::async_trait;
 use clap::Parser;
 use serde_json::{Value, json};
 

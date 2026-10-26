@@ -15,14 +15,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
-use axum::body::{Body, Bytes, HttpBody};
-use axum::http::{Request, Response};
 use asc_rpc::auth::{Access, AuthError, Authorizer, BearerToken, Credential, Principal};
 use asc_rpc::errors::RpcError;
 use asc_rpc::limits::{CounterGuard, KeyedCounter, KeyedLimiter, MAX_KEYS, OnFull, Shed};
 use asc_rpc::retry::RETRY_AFTER_MS;
 use asc_rpc::server::rpc_status;
+use async_trait::async_trait;
+use axum::body::{Body, Bytes, HttpBody};
+use axum::http::{Request, Response};
 use futures::future::BoxFuture;
 use http_body::Frame;
 use tokio::sync::Semaphore;
@@ -1387,15 +1387,24 @@ mod tests {
         assert_eq!(c("Blame"), Some(Class::Expensive));
         assert_eq!(c("Ingest"), Some(Class::Background));
         assert_eq!(c("SomethingNew"), Some(Class::Expensive));
-        assert_eq!(class_of("/asc.v1.CodeIntel/Semantic"), Some(Class::Semantic));
+        assert_eq!(
+            class_of("/asc.v1.CodeIntel/Semantic"),
+            Some(Class::Semantic)
+        );
         assert_eq!(class_of("/asc.v1.CodeIntel/Search"), Some(Class::Codeintel));
-        assert_eq!(class_of("/asc.v1.CodeIntel/IndexStatus"), Some(Class::Cheap));
+        assert_eq!(
+            class_of("/asc.v1.CodeIntel/IndexStatus"),
+            Some(Class::Cheap)
+        );
         assert_eq!(
             class_of("/asc.v1.Cloud/UpdateWorkspace"),
             Some(Class::Background)
         );
         assert_eq!(class_of("/asc.v1.Cloud/GetWorkspace"), Some(Class::Cheap));
-        assert_eq!(class_of("/asc.v1.Changes/InterDiff"), Some(Class::Expensive));
+        assert_eq!(
+            class_of("/asc.v1.Changes/InterDiff"),
+            Some(Class::Expensive)
+        );
         assert_eq!(class_of("/asc.v1.Changes/Stack"), Some(Class::Cheap));
         assert_eq!(class_of("/grpc.health.v1.Health/Check"), None);
         assert_eq!(class_of("/metrics"), None);

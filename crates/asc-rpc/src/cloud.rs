@@ -4,9 +4,9 @@
 //! drops whatever the client sent. Labels are untrusted display text, so [`Label::new`] enforces the
 //! charset and the count and length bounds on every path in.
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_core::id::ChangesetId;
+use bytes::Bytes;
 
 use crate::changes::{MAX_LIST, MAX_TEXT};
 use crate::convert::{ConvertError, IdMode, ModeId, Result, opt_id, opt_id_to_wire};

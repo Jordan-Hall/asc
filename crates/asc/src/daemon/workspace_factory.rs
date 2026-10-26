@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_core::git::BlobOidHasher;
 use asc_core::object::{Change, Kind};
 use asc_core::path::RepoPath;
@@ -29,6 +28,7 @@ use asc_rpc::server::wire;
 use asc_state::state::workspaces::{self, Mode, Workspace};
 use asc_state::{AscHome, WorkspaceId};
 use asc_wc::SafeRoot;
+use async_trait::async_trait;
 
 use super::lifecycle::{self, Probe};
 use super::service::VirtualBackend;
@@ -142,7 +142,9 @@ impl Mounts for DaemonMounts {
         match lifecycle::probe(&cfg).await {
             // No daemon, nothing mounted.
             Probe::Down => Ok(()),
-            Probe::Hung => Err("the daemon does not answer; run 'asc daemon stop' and retry".into()),
+            Probe::Hung => {
+                Err("the daemon does not answer; run 'asc daemon stop' and retry".into())
+            }
             Probe::Up(_) => {
                 let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
                 let ask = wire::UnmountRequest {

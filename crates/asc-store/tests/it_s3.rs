@@ -7,7 +7,6 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use asc_core::id::FileId;
 use asc_store::bucket::BucketObjects;
 use asc_store::codec::encode_stored;
@@ -15,6 +14,7 @@ use asc_store::conformance::run_objects_suite;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
 use asc_store::s3::{MULTIPART_THRESHOLD, Resilient};
+use bytes::Bytes;
 use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};

@@ -268,7 +268,10 @@ async fn debug_stats_and_hydrations_without_a_daemon() {
 
     let h = ok(&asc(&f, &["debug", "hydrations", "--by-process"]));
     assert!(h.contains("daemon is not running"), "{h}");
-    assert_eq!(ok(&asc(&f, &["debug", "hydrations", "--json"])).trim(), "[]");
+    assert_eq!(
+        ok(&asc(&f, &["debug", "hydrations", "--json"])).trim(),
+        "[]"
+    );
 
     let t = asc(&f, &["debug", "trace"]);
     assert!(!t.status.success());

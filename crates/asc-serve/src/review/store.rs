@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use asc_core::change::ChangeId;
 use asc_rpc::server::wire;
+use bytes::Bytes;
 use sqlx::any::AnyRow;
 use sqlx::{AnyConnection, Row};
 use tonic::Status;

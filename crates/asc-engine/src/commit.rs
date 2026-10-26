@@ -427,12 +427,12 @@ fn compare_changes(expected: &[(RepoPath, Change)], got: &[(RepoPath, Change)]) 
 mod tests {
     use std::io::Cursor;
 
-    use async_trait::async_trait;
     use asc_core::content::{Body, ingest};
     use asc_core::git::blob_oid as blob;
     use asc_core::path::RefName;
     use asc_store::bucket::BucketObjects;
     use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, RepoKey};
+    use async_trait::async_trait;
 
     use super::*;
 

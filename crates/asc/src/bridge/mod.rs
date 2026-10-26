@@ -26,7 +26,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use asc_git::credential::{HelperConfig, RawEntry, section_entries};
 use asc_rpc::ipc::connect;
 use asc_rpc::server::MAX_MESSAGE;
@@ -35,6 +34,7 @@ use asc_rpc::server::wire::{
     HelloResponse, RootInfo, StoreTokenRequest, StoreTokenResponse, TokenRequest, TokenResponse,
     bridge_event, bridge_frame,
 };
+use bytes::Bytes;
 use prost_reflect::prost::Message as _;
 use tokio::sync::{OnceCell, mpsc};
 use tokio::task::{AbortHandle, LocalSet};

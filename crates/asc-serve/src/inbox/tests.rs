@@ -1,10 +1,10 @@
 //! Tests of the `Inbox` service.
 
-use bytes::Bytes;
 use asc_rpc::server::wire;
 use asc_rpc::services::ci_server::Ci;
 use asc_rpc::services::inbox_server::Inbox;
 use asc_rpc::services::review_server::Review;
+use bytes::Bytes;
 use tonic::Status;
 
 use crate::review::now;

@@ -139,7 +139,8 @@ async fn root_refs(ws: &WsCtx) -> Result<Vec<(Item, Option<RefTarget>)>> {
         let Some(oid) = text.get(..40).and_then(|h| h.parse::<GitOid>().ok()) else {
             continue;
         };
-        if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit).await? {
+        if let Some(asc) = git_map::git_to_asc(&ws.db, ws.repo.key, oid, ObjectKind::Commit).await?
+        {
             out.push((
                 Item::new(name),
                 Some(RefTarget::Changeset(ChangesetId::from_bytes(asc))),

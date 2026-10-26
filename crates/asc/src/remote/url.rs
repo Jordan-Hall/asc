@@ -182,7 +182,7 @@ pub fn parse(input: &str, refs: RefsMode) -> Result<RemoteSpec, UrlError> {
     for prefix in ["asc+https://", "asc+http://"] {
         if lower.starts_with(prefix) {
             return Ok(RemoteSpec::Server {
-                url: input[3..].to_owned(),
+                url: input["asc+".len()..].to_owned(),
             });
         }
     }

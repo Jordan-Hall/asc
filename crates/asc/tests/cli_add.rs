@@ -445,7 +445,11 @@ async fn git_index_file_names_a_temporary_stage_set() {
     r.write("d/b", b"b\n");
     let tmp = r.f.sandbox.dir("tmpindex");
     let (asc_index, git_index) = (tmp.join("asc-x"), tmp.join("git-x"));
-    let c = run(r.f.asc().args(["add", "a"]).env("GIT_INDEX_FILE", &asc_index));
+    let c = run(r
+        .f
+        .asc()
+        .args(["add", "a"])
+        .env("GIT_INDEX_FILE", &asc_index));
     assert_eq!(c.code, 0, "{}", c.stderr);
     let g = run(r
         .f

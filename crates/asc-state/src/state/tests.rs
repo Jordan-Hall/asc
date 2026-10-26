@@ -152,7 +152,10 @@ async fn older_binary_refuses_a_newer_schema() {
     drop(db);
     let home = AscHome::open(dir.path().join("home")).unwrap();
     let err = StateDb::open(&home).await.unwrap_err();
-    assert_eq!(err.to_string(), "state.db is from asc 9.9.9; run asc upgrade");
+    assert_eq!(
+        err.to_string(),
+        "state.db is from asc 9.9.9; run asc upgrade"
+    );
 }
 
 #[tokio::test]

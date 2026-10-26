@@ -364,7 +364,10 @@ mod tests {
         let page = render();
         assert!(check(&page, Some(&page), Some(ASC_HANDLES_SCHEMA)).is_empty());
         let stale = page.replacen("# asc MCP", "# old MCP", 1);
-        assert_eq!(check(&page, Some(&stale), Some(ASC_HANDLES_SCHEMA)).len(), 1);
+        assert_eq!(
+            check(&page, Some(&stale), Some(ASC_HANDLES_SCHEMA)).len(),
+            1
+        );
         assert_eq!(check(&page, None, Some(ASC_HANDLES_SCHEMA)).len(), 1);
     }
 

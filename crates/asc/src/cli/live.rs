@@ -229,7 +229,13 @@ pub fn ensure_hookless_dir(home: &AscHome) -> std::io::Result<PathBuf> {
 
 /// Records the result of a live run of worktree `id`: a short word such as `fetched`,
 /// `restacked`, `updated` or `notice`. The pause (if any) is left as it is.
-pub fn record_run(home: &AscHome, id: &str, worktree: &str, repo: i64, outcome: &str) -> Result<()> {
+pub fn record_run(
+    home: &AscHome,
+    id: &str,
+    worktree: &str,
+    repo: i64,
+    outcome: &str,
+) -> Result<()> {
     let mut s = load(home, id).unwrap_or_else(|| State::fresh(worktree, repo));
     s.last_run = Some(LastRun {
         at: now(),

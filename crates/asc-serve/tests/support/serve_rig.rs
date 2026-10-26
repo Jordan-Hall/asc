@@ -172,14 +172,13 @@ impl Rig {
     pub async fn commit(&self, parent: Option<ChangesetId>, files: &[(&str, &str)]) -> ChangesetId {
         let e = &self.local;
         let engine = e.backend.engine();
-        let base =
-            match parent {
-                Some(p) => engine.get_changeset(p).await.unwrap().root,
-                None => asc_engine::Engine::<
-                    asc_store::bucket::BucketObjects,
-                    asc_store::sqlrefs::SqlRefs,
-                >::empty_tree_id(),
-            };
+        let base = match parent {
+            Some(p) => engine.get_changeset(p).await.unwrap().root,
+            None => asc_engine::Engine::<
+                asc_store::bucket::BucketObjects,
+                asc_store::sqlrefs::SqlRefs,
+            >::empty_tree_id(),
+        };
         let mut changes: Vec<(RepoPath, Change)> = Vec::new();
         for (p, text) in files {
             let b = text.as_bytes();

@@ -21,7 +21,6 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bytes::Bytes;
 use asc_core::codec::decode_envelope;
 use asc_core::content::{CHUNK_THRESHOLD, ChunkAssembler};
 use asc_core::git::tree_oid;
@@ -31,6 +30,7 @@ use asc_core::path::RepoPath;
 use asc_core::sig::Signature;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use bytes::Bytes;
 use futures::TryStreamExt;
 
 use super::common::{CliEngine, CliError, Ctx, Result, WsCtx};
@@ -191,7 +191,9 @@ fn archive_prefix(p: &str) -> Result<Vec<u8>> {
     }
     let trimmed = p.strip_suffix('/').unwrap_or(p);
     if RepoPath::new(trimmed.as_bytes().to_vec()).is_err() {
-        return Err(CliError::Fatal(format!("asc: '{p}' is not a usable prefix")));
+        return Err(CliError::Fatal(format!(
+            "asc: '{p}' is not a usable prefix"
+        )));
     }
     Ok(format!("{trimmed}/").into_bytes())
 }

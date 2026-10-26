@@ -15,11 +15,11 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use asc_core::id::GitOid;
 use asc_engine::Engine;
 use asc_store::objects::Objects;
 use asc_store::refs::Refs;
+use async_trait::async_trait;
 use futures::lock::Mutex;
 
 use super::limits::INLINE_BUILD_OBJECTS;

@@ -4,8 +4,6 @@
 
 use std::io::Write;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::id::GitOid;
 use asc_core::path::RepoPath;
 use asc_engine::diff::format::{write_name_only, write_name_status, write_raw, write_summary};
@@ -13,6 +11,8 @@ use asc_engine::diff::{
     self, Attributes, ContentSource, DiffAttr, DiffCtx, DiffOptions, Status, TreeChange,
     write_numstat, write_patch, write_shortstat, write_stat, write_word_diff,
 };
+use async_trait::async_trait;
+use bytes::Bytes;
 use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor, Value};
 
 use super::binary;

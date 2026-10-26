@@ -1,12 +1,12 @@
 //! `changes` and `change_preds`: the local change index (SPEC §20.3).
 
-use async_trait::async_trait;
 use asc_core::change::{ChangeId, MetaId};
 use asc_core::id::ChangesetId;
 use asc_engine::change::{
     self, ChangeRow, ChangeRows, MAX_PREDS, MAX_ROWS, rewrite_op_from_i64, rewrite_op_to_i64,
 };
 use asc_store::refs::RepoKey;
+use async_trait::async_trait;
 use sqlx::Row;
 
 use crate::state::{Error, Result, StateDb};

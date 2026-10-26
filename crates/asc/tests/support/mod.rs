@@ -47,7 +47,11 @@ impl Sandbox {
         let user = tmp.path().join("user");
         std::fs::create_dir_all(&user).unwrap();
         std::fs::write(user.join(".gitconfig"), b"").unwrap();
-        Self { tmp, asc_home, user }
+        Self {
+            tmp,
+            asc_home,
+            user,
+        }
     }
 
     /// `binary` run in `cwd` with no inherited `GIT_*`/`ASC_*` variables and an empty `HOME`.

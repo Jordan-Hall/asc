@@ -261,7 +261,11 @@ impl Metrics {
         );
         let tasks = lock(&self.tasks).clone();
         for (name, t) in &tasks {
-            let _ = writeln!(o, "asc_daemon_task_runs_total{{task=\"{name}\"}} {}", t.runs);
+            let _ = writeln!(
+                o,
+                "asc_daemon_task_runs_total{{task=\"{name}\"}} {}",
+                t.runs
+            );
         }
         family(
             &mut o,

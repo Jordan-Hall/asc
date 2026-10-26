@@ -400,10 +400,7 @@ mod tests {
 
     fn asc() -> Tree {
         Tree::new(&[
-            (
-                "packages/dsl/compiler/node.fake",
-                "name=@asc/dsl-compiler",
-            ),
+            ("packages/dsl/compiler/node.fake", "name=@asc/dsl-compiler"),
             (
                 "packages/dsl/compiler/rust/core/rust.fake",
                 "name=dsl-core\ndep=dsl-ir",

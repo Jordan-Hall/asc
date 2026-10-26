@@ -13,14 +13,14 @@
 
 use std::sync::Arc;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use asc_core::id::ChangesetId;
 use asc_core::path::RepoPath;
 use asc_engine::commit;
 use asc_engine::history::linehist::MAX_FILE_BYTES;
 use asc_engine::history::pickaxe::{self, MAX_NEEDLE_BYTES, Query, Stop};
 use asc_rpc::server::{CallCtx, MAX_STRING, RpcStream, wire};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::stream::{self, StreamExt};
 use tonic::Status;
 
@@ -204,11 +204,11 @@ impl ServerPickaxe {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use asc_rpc::IdMode;
     use asc_rpc::auth::Principal;
     use asc_rpc::server::RepoName;
     use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+    use bytes::Bytes;
     use futures::stream::TryStreamExt;
 
     use super::*;

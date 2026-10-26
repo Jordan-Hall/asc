@@ -1539,7 +1539,8 @@ enabled = true
     #[test]
     fn admin_listener_off_loopback_needs_a_token_file() {
         let base = "store = \"memory:///\"\ndb = \"sqlite::memory:\"\n";
-        let open = format!("{base}[admin]\nlisten = \"10.0.0.5:9464\"\ntoken_file = \"/etc/asc/a\"");
+        let open =
+            format!("{base}[admin]\nlisten = \"10.0.0.5:9464\"\ntoken_file = \"/etc/asc/a\"");
         assert!(ServeConfig::parse(&open).is_ok());
         assert!(ServeConfig::parse(&format!("{base}[admin]\nlisten = \"[::1]:1\"")).is_ok());
     }

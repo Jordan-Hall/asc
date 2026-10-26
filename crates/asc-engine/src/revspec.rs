@@ -6,10 +6,10 @@
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_core::id::{ChangesetId, HexPrefix, RefTarget, TagId, TreeId};
 use asc_core::object::Changeset;
 use asc_core::path::RepoPath;
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 
 use crate::graph::{self, Graph, GraphSource, Node};

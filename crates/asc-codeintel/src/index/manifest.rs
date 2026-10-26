@@ -8,9 +8,9 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use async_trait::async_trait;
 use asc_store::key::ObjKey;
 use asc_store::objects::Objects;
+use async_trait::async_trait;
 use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 

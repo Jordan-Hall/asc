@@ -12,12 +12,12 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_ci::cache::{
     self, Error as CiError, ListedKey, MAX_MANIFEST_BYTES, ManifestApi, Saved, StoreKind, pct,
 };
 use asc_store::objects::Objects;
+use async_trait::async_trait;
+use bytes::Bytes;
 use clap::{Parser, Subcommand};
 
 use crate::cli::common::{CliError, Ctx, Result};
@@ -475,11 +475,11 @@ mod h3_tests {
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
 
+    use asc_rpc::h3::Upgrader;
+    use asc_serve::h3_listener::{self, H3LimitsConfig};
     use axum::Router;
     use axum::extract::{Path, State};
     use axum::http::{HeaderMap, StatusCode};
-    use asc_rpc::h3::Upgrader;
-    use asc_serve::h3_listener::{self, H3LimitsConfig};
     use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, DnType, IsCa, KeyPair};
 
     use super::*;

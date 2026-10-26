@@ -29,11 +29,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use asc_core::id::RefTarget;
 use asc_rpc::IdMode;
 use asc_rpc::server::{CallCtx, RpcStream, WatchHandler, wire};
 use asc_rpc::watch_refs::{Cursor, Patterns, parse_request};
+use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream;
 use sqlx::{AnyPool, Row};

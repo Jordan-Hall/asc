@@ -4,10 +4,10 @@
 //! crate. The wire ids are untrusted, so the forward direction is fallible and checks every
 //! length. Empty `change` or `meta` bytes mean absent.
 
-use bytes::Bytes;
 use asc_core::change::{ChangeId, MetaId};
 use asc_core::id::ChangesetId;
 use asc_engine::sync::changes::LogMeta;
+use bytes::Bytes;
 
 use crate::convert::{ConvertError, opt_id};
 use crate::pb;

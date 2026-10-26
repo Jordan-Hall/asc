@@ -132,7 +132,11 @@ fn cloud_is_on_only_for_a_private_branchless_cloud_repo() {
     let mut f = facts();
     f.settings.branchless = false;
     f.settings.cloud = CloudSetting::On;
-    assert_eq!(gate(&f), Gate::Off, "asc.branchless=false beats asc.cloud=on");
+    assert_eq!(
+        gate(&f),
+        Gate::Off,
+        "asc.branchless=false beats asc.cloud=on"
+    );
 }
 
 #[test]

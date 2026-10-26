@@ -511,7 +511,11 @@ fn txn(updates: Vec<asc_store::refs::RefUpdate>) -> RefTxn {
     }
 }
 
-fn update(name: &str, expect: Expect, new: Option<RefTarget>) -> Result<asc_store::refs::RefUpdate> {
+fn update(
+    name: &str,
+    expect: Expect,
+    new: Option<RefTarget>,
+) -> Result<asc_store::refs::RefUpdate> {
     Ok(asc_store::refs::RefUpdate {
         name: super::switch::ref_name(name)?,
         expect,

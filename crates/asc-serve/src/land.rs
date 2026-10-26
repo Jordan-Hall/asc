@@ -10,8 +10,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use bytes::Bytes;
 use asc_core::change::RewriteOp;
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_engine::Engine;
@@ -22,6 +20,8 @@ use asc_rpc::errors::RpcError;
 use asc_rpc::server::{status_rpc_error, wire};
 use asc_store::bucket::BucketObjects;
 use asc_store::refs::{Actor, Expect, RefTxn, RefUpdate, Refs};
+use async_trait::async_trait;
+use bytes::Bytes;
 use sqlx::{Any, AnyPool, Row, Transaction};
 use tonic::Status;
 use uuid::Uuid;
@@ -502,7 +502,7 @@ async fn mainline_write(
 
 /// One land request, after steps 1 to 4.
 pub(crate) struct LandJob<'a> {
-    pub ctx: &'an asc_rpc::server::CallCtx,
+    pub ctx: &'a asc_rpc::server::CallCtx,
     pub req: &'a wire::UpdateRefsRequest,
     pub op_id: Uuid,
     pub entry: &'a RepoEntry,

@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use asc_rpc::server::{CallCtx, ObjectsHandler, RpcStream, wire};
+use async_trait::async_trait;
 use tonic::Status;
 
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry};

@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bytes::Bytes;
 use asc_store::codec::encode_stored;
 use asc_store::key::ObjKey;
 use asc_store::objects::{self, Objects};
+use bytes::Bytes;
 use roaring::RoaringBitmap;
 use tantivy::collector::DocSetCollector;
 use tantivy::indexer::NoMergePolicy;

@@ -121,7 +121,9 @@ pub(crate) async fn resolve_commit(ctx: &Ctx, spec: &str) -> Result<Option<Chang
             Ok(None)
         }
         // `master~1` on a root commit names nothing; git reports it as an unknown revision.
-        Err(asc_engine::graph::Error::Remote(m)) if m.contains(" has no parent number ") => Ok(None),
+        Err(asc_engine::graph::Error::Remote(m)) if m.contains(" has no parent number ") => {
+            Ok(None)
+        }
         Err(e) => Err(fatal(e)),
     }
 }

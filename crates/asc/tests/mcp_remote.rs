@@ -16,11 +16,6 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::Router;
-use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware::Next;
-use axum::response::Response;
 use asc_mcp::backend::{CallContext, McpBackend, Reply};
 use asc_mcp::cursor::KeyRing;
 use asc_mcp::errors::ToolError;
@@ -31,6 +26,11 @@ use asc_serve::mcp::audit::MemoryAudit;
 use asc_serve::mcp::auth::{McpAuth, layer};
 use asc_serve::mcp::prm::{metadata_url, scope_layer};
 use asc_serve::mcp::{self, HttpPolicy};
+use axum::Router;
+use axum::extract::{Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::Response;
 use serde_json::{Value, json};
 use support::Sandbox;
 

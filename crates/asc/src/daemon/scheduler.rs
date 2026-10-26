@@ -19,8 +19,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use async_trait::async_trait;
 use asc_state::state::workspaces::{self, Workspace};
+use async_trait::async_trait;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -803,11 +803,11 @@ impl Job for SeedUnpack {
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use bytes::Bytes;
     use asc_core::id::FileId;
     use asc_state::state::workspaces::Mode;
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
+    use bytes::Bytes;
 
     use super::super::service::fixtures::fixture;
     use super::super::service::{HostError, Hosted, VirtualBackend};

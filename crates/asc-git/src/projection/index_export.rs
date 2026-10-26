@@ -448,8 +448,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use async_trait::async_trait;
-    use bytes::Bytes;
     use asc_core::content::{Body, ingest};
     use asc_core::id::FileId;
     use asc_core::object::Change;
@@ -458,6 +456,8 @@ mod tests {
     use asc_store::key::{KeyPrefix, ObjKey};
     use asc_store::objects::Result as ObjResult;
     use asc_store::refs::{RefEntry, RefError, RefLogEntry, RefTxn, RepoKey};
+    use async_trait::async_trait;
+    use bytes::Bytes;
     use futures::stream::BoxStream;
 
     use super::*;

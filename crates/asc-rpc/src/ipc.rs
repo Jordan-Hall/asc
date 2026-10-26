@@ -265,10 +265,12 @@ fn os_verify_server(stream: &Stream) -> io::Result<Option<u32>> {
 pub fn connect(endpoint: &IpcEndpoint) -> Channel {
     let endpoint = endpoint.clone();
     // The URI is a placeholder: the connector ignores it.
-    Endpoint::from_static("http://asc.ipc").connect_with_connector_lazy(service_fn(move |_: Uri| {
-        let endpoint = endpoint.clone();
-        async move { connect_stream(&endpoint).await.map(TokioIo::new) }
-    }))
+    Endpoint::from_static("http://asc.ipc").connect_with_connector_lazy(service_fn(
+        move |_: Uri| {
+            let endpoint = endpoint.clone();
+            async move { connect_stream(&endpoint).await.map(TokioIo::new) }
+        },
+    ))
 }
 
 #[cfg(unix)]
