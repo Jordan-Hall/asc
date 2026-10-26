@@ -176,7 +176,7 @@ async fn describe_one(
         .to_string();
     let hist = Hist::select(ws);
     let found = describer
-        .describe(hist.api(ws), id, &hex, &o.describer_options(abbrev))
+        .describe(ws, hist.api(ws), id, &hex, &o.describer_options(abbrev))
         .await;
     let line = if found.is_empty() {
         if o.always {
