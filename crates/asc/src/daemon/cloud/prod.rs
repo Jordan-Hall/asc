@@ -52,11 +52,14 @@ const MAX_CANDIDATES: usize = 16;
 /// Ancestors of a queue head whose `ChangeMeta` ids are loaded for the closure.
 const WARM_MAX: usize = 4096;
 
+/// When an uplink was last tried, and the uplink if it opened.
+type OpenUplink = (Instant, Option<Arc<dyn Uplink>>);
+
 /// [`Uplinks`] over the user's `state.db`.
 pub struct ProdUplinks {
     home: AscHome,
     db: tokio::sync::OnceCell<StateDb>,
-    open: Mutex<HashMap<RepoKey, (Instant, Option<Arc<dyn Uplink>>)>>,
+    open: Mutex<HashMap<RepoKey, OpenUplink>>,
 }
 
 impl ProdUplinks {

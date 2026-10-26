@@ -129,12 +129,14 @@ fn flag(v: &Value, key: &str) -> bool {
 
 /// A change id in the profile: an even number of letters `k` to `z`.
 fn is_change(s: &str) -> bool {
-    !s.is_empty() && s.len() % 2 == 0 && s.bytes().all(|c| (b'k'..=b'z').contains(&c))
+    !s.is_empty() && s.len().is_multiple_of(2) && s.bytes().all(|c| (b'k'..=b'z').contains(&c))
 }
 
 /// An id in the profile: an even number of lowercase hex digits.
 fn is_hex(s: &str) -> bool {
-    !s.is_empty() && s.len() % 2 == 0 && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+    !s.is_empty()
+        && s.len().is_multiple_of(2)
+        && s.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn change<'a>(v: &'a Value, key: &str) -> Option<&'a str> {

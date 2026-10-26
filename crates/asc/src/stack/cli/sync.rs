@@ -986,7 +986,7 @@ mod tests {
 
     #[test]
     fn child_output_is_bounded_and_the_rest_drained() {
-        let data = vec![b'x'; 100];
+        let data = [b'x'; 100];
         assert_eq!(read_bounded(&data[..], 10).len(), 10);
         assert_eq!(read_bounded(&data[..], 1000).len(), 100);
         let mut r = &data[..];
