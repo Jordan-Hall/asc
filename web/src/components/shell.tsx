@@ -1,37 +1,24 @@
-// The app shell: skip link, top bar, repo tabs, theme switch, shortcut help and the live region that
-// announces each navigation. It is in the entry chunk, so it paints before any RPC returns.
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { useApp } from "../api/queries";
+// The app shell: skip link, global header, repo tabs, footer, shortcut help, the command palette and
+// the live region that announces each navigation. It is in the entry chunk, so it paints before any
+// RPC returns.
+import { lazy, type ReactNode, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useApp, useQ } from "../api/queries";
 import { useToken } from "../lib/auth";
 import { BINDINGS, useShortcuts } from "../lib/keys";
-import { Link, useLocation, useNavigate, useParams } from "../lib/router";
-import { type ThemePref, useTheme } from "../lib/theme";
-import { Icon } from "./icons";
+import { openPalette, usePalette } from "../lib/palette";
+import { remember } from "../lib/recent";
+import { Link, useLocation, useNavigate, useParams, useRouteId } from "../lib/router";
+import { Footer } from "./footer";
+import { Header } from "./header";
 
-const NEXT: Record<ThemePref, ThemePref> = { system: "light", light: "dark", dark: "system" };
-
-function ThemeButton(): ReactNode {
-  const { pref, setPref } = useTheme();
-  const next = NEXT[pref];
-  return (
-    <button
-      type="button"
-      className="inline-flex h-9 items-center gap-2 rounded-md border border-control px-3 text-sm hover:bg-subtle-hover"
-      aria-label={`Theme: ${pref}. Switch to ${next}`}
-      onClick={() => setPref(next)}
-    >
-      <Icon name={pref === "dark" ? "moon" : "sun"} />
-      <span className="hidden sm:inline">{pref}</span>
-    </button>
-  );
-}
+const Palette = lazy(() => import("./palette"));
 
 function Tab(props: { to: string; current: boolean; children: ReactNode }): ReactNode {
   return (
     <Link
       to={props.to}
       aria-current={props.current ? "page" : undefined}
-      className={`inline-flex h-10 items-center border-b-2 px-3 text-sm no-underline ${
+      className={`inline-flex h-11 items-center border-b-2 px-3 text-sm no-underline ${
         props.current
           ? "border-accent font-semibold text-fg-strong"
           : "border-transparent text-fg-muted hover:text-fg-strong"
@@ -50,8 +37,8 @@ function RepoTabs(props: { owner: string; repo: string }): ReactNode {
   return (
     <nav aria-label="Repository" className="border-b border-line bg-surface">
       <div
-        className="mx-auto flex w-full max-w-6xl items-center gap-1 overflow-x-auto px-4"
-        style={{ minHeight: 40 }}
+        className="mx-auto flex w-full max-w-7xl items-center gap-1 overflow-x-auto px-4 sm:px-6"
+        style={{ minHeight: 44 }}
       >
         <span className="mr-3 whitespace-nowrap text-sm font-semibold text-fg-strong">
           {props.owner} / {props.repo}
@@ -76,26 +63,42 @@ function RepoTabs(props: { owner: string; repo: string }): ReactNode {
   );
 }
 
+/** Adds a repository to the recent list once it has loaded (so a 404 is never remembered). */
+function RememberRepo(props: { name: string }): ReactNode {
+  const { queries } = useApp();
+  const refs = useQ(queries.refs(props.name));
+  const ok = refs.status === "ready";
+  useEffect(() => {
+    if (ok) remember(props.name);
+  }, [ok, props.name]);
+  return null;
+}
+
 function HelpDialog(props: { dialog: React.RefObject<HTMLDialogElement | null> }): ReactNode {
+  const kbd = "rounded border border-control bg-subtle px-1.5 font-mono text-xs";
   return (
     <dialog
       ref={props.dialog}
       aria-labelledby="help-title"
-      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-lg border border-line bg-surface p-5 text-fg backdrop:bg-black/50"
+      className="m-auto w-[min(28rem,calc(100vw-2rem))] rounded-2xl border border-line bg-surface p-5 text-fg shadow-2xl backdrop:bg-black/50"
     >
       <h2 id="help-title" className="mb-3 text-lg font-semibold text-fg-strong">
         Keyboard shortcuts
       </h2>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+        <div className="contents">
+          <dt className="whitespace-nowrap">
+            <kbd className={kbd}>Ctrl</kbd> <kbd className={kbd}>K</kbd>
+          </dt>
+          <dd>Command palette</dd>
+        </div>
         {BINDINGS.map((b) => (
           <div key={b.id} className="contents">
             <dt className="whitespace-nowrap">
               {b.keys.map((k, i) => (
                 <span key={k}>
                   {i > 0 ? " then " : ""}
-                  <kbd className="rounded border border-control bg-subtle px-1.5 font-mono text-xs">
-                    {k}
-                  </kbd>
+                  <kbd className={kbd}>{k}</kbd>
                 </span>
               ))}
             </dt>
@@ -106,7 +109,7 @@ function HelpDialog(props: { dialog: React.RefObject<HTMLDialogElement | null> }
       <form method="dialog" className="mt-4 text-right">
         <button
           type="submit"
-          className="h-9 rounded-md bg-brand px-4 text-sm font-medium text-on-brand"
+          className="h-9 rounded-lg bg-brand px-4 text-sm font-medium text-on-brand"
         >
           Close
         </button>
@@ -121,20 +124,27 @@ export function Shell(props: { children: ReactNode }): ReactNode {
   const navigate = useNavigate();
   const { owner, repo } = useParams();
   const { pathname } = useLocation();
+  const routeId = useRouteId();
+  const palette = usePalette();
   const dialog = useRef<HTMLDialogElement | null>(null);
   const search = useRef<HTMLInputElement | null>(null);
   const main = useRef<HTMLElement | null>(null);
   const [announce, setAnnounce] = useState("");
   const first = useRef(true);
   const repoPath = owner && repo ? `/${owner}/${repo}` : undefined;
+  // The signed-out front page is the product page; its header and footer are the marketing forms.
+  const marketing = routeId === "home" && !token;
+  const showHelp = useCallback(() => dialog.current?.showModal(), []);
 
   useShortcuts(BINDINGS, (id) => {
     switch (id) {
       case "help":
-        dialog.current?.showModal();
+        showHelp();
         break;
       case "search":
-        search.current?.focus();
+        // The header search box is absent on the product page and hidden on small screens.
+        if (search.current && search.current.offsetParent !== null) search.current.focus();
+        else openPalette();
         break;
       case "find-file":
         if (repoPath) navigate(`${repoPath}/search?mode=files`);
@@ -162,6 +172,30 @@ export function Shell(props: { children: ReactNode }): ReactNode {
     }
   });
 
+  // Fetch the palette chunk once the page is idle, so Ctrl+K never waits on the network and the
+  // first keystrokes after it are not lost.
+  useEffect(() => {
+    const load = () => void import("./palette");
+    if ("requestIdleCallback" in window) {
+      const h = window.requestIdleCallback(load, { timeout: 2000 });
+      return () => window.cancelIdleCallback(h);
+    }
+    const h = setTimeout(load, 300);
+    return () => clearTimeout(h);
+  }, []);
+
+  // Ctrl+K / Cmd+K opens the palette from anywhere, including from inside a text field.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openPalette();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // On navigation: move focus to the page and announce its title.
   useEffect(() => {
     if (first.current) {
@@ -180,80 +214,26 @@ export function Shell(props: { children: ReactNode }): ReactNode {
       >
         Skip to content
       </a>
-      <header className="border-b border-line bg-surface">
-        <div
-          className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4"
-          style={{ height: 56 }}
-        >
-          <Link
-            to="/"
-            aria-label="asc dashboard"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-brand text-sm font-bold text-on-brand no-underline"
-          >
-            asc
-          </Link>
-          <form
-            role="search"
-            className="ml-2 hidden min-w-0 flex-1 sm:block"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const q = search.current?.value.trim();
-              if (q) navigate(`${repoPath ?? ""}/search?q=${encodeURIComponent(q)}`);
-            }}
-          >
-            <label className="sr-only" htmlFor="global-search">
-              Search
-            </label>
-            <input
-              id="global-search"
-              ref={search}
-              type="search"
-              placeholder="Search  ( / )"
-              className="h-9 w-full max-w-md rounded-md border border-control bg-page px-3 text-sm"
-            />
-          </form>
-          <span className="flex-1 sm:hidden" />
-          <Link
-            to={`${repoPath ?? ""}/search`}
-            aria-label="Search"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-md text-fg no-underline hover:bg-subtle-hover sm:hidden"
-          >
-            <Icon name="search" />
-          </Link>
-          <Link
-            to="/inbox"
-            className="inline-flex h-9 items-center gap-2 rounded-md px-2 text-sm text-fg no-underline hover:bg-subtle-hover"
-          >
-            <Icon name="inbox" />
-            <span className="sr-only sm:not-sr-only">Inbox</span>
-          </Link>
-          <ThemeButton />
-          {token ? (
-            <button
-              type="button"
-              className="h-9 rounded-md border border-control px-3 text-sm hover:bg-subtle-hover"
-              onClick={() => auth.signOut()}
-            >
-              Sign out
-            </button>
-          ) : (
-            <Link
-              to="/signin"
-              className="inline-flex h-9 items-center rounded-md bg-brand px-3 text-sm font-medium text-on-brand no-underline"
-            >
-              Sign in
-            </Link>
-          )}
-        </div>
-      </header>
-      {owner && repo ? <RepoTabs owner={owner} repo={repo} /> : null}
+      <Header marketing={marketing} searchRef={search} repoPath={repoPath} onHelp={showHelp} />
+      {owner && repo ? (
+        <>
+          <RepoTabs owner={owner} repo={repo} />
+          <RememberRepo name={`${owner}/${repo}`} />
+        </>
+      ) : null}
       <main id="main" ref={main} tabIndex={-1} className="flex-1 outline-none">
         {props.children}
       </main>
+      <Footer rich={marketing} onHelp={showHelp} />
       <div role="status" aria-live="polite" className="sr-only">
         {announce}
       </div>
       <HelpDialog dialog={dialog} />
+      {palette.open ? (
+        <Suspense fallback={null}>
+          <Palette onHelp={showHelp} />
+        </Suspense>
+      ) : null}
     </div>
   );
 }

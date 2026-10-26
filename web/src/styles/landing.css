@@ -1,0 +1,218 @@
+/*
+ * Product page (signed-out front door). Loaded with the landing chunk only. Everything uses the
+ * asc tokens from app.css; the few extra values below are diff and syntax colours chosen to keep
+ * 4.5:1 on their row backgrounds in both modes.
+ */
+:root {
+  --lp-add-bg: 16 185 129 / 0.14;
+  --lp-del-bg: 239 68 68 / 0.11;
+  --lp-add-gutter: 16 185 129 / 0.22;
+  --lp-del-gutter: 239 68 68 / 0.18;
+  --lp-kw: 109 40 217;
+  --lp-str: 17 94 89;
+  --lp-fn: 29 78 216;
+  --lp-cm: 71 85 105;
+  --lp-hit: 250 204 21 / 0.4;
+}
+.dark {
+  --lp-add-bg: 16 185 129 / 0.16;
+  --lp-del-bg: 239 68 68 / 0.16;
+  --lp-add-gutter: 16 185 129 / 0.12;
+  --lp-del-gutter: 239 68 68 / 0.12;
+  --lp-kw: 196 181 253;
+  --lp-str: 94 234 212;
+  --lp-fn: 147 197 253;
+  --lp-cm: 148 163 184;
+  --lp-hit: 250 204 21 / 0.3;
+}
+
+/* Hero backdrop: two soft glows and a fading grid. Decorative, behind everything. */
+.lp-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(62rem 30rem at 50% -10rem, rgb(var(--color-primary) / 0.2), transparent 70%),
+    radial-gradient(34rem 22rem at 88% 8%, rgb(var(--color-accent-emerald) / 0.13), transparent 70%),
+    radial-gradient(28rem 20rem at 8% 30%, rgb(var(--color-primary) / 0.1), transparent 70%);
+}
+.lp-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(var(--color-border-rgb) / 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(var(--color-border-rgb) / 0.55) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 25%, transparent 75%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, #000 25%, transparent 75%);
+}
+
+/* The accent word in the headline. The solid colour is the fallback and what contrast tools read. */
+.lp-accent {
+  color: rgb(var(--color-text-link));
+  background-image: linear-gradient(
+    92deg,
+    rgb(var(--color-text-link)),
+    rgb(var(--color-accent-emerald))
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+@media (forced-colors: active) {
+  .lp-accent {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* A product window: the frame every illustration sits in. */
+.lp-win {
+  overflow: hidden;
+  text-align: left;
+  border: 1px solid rgb(var(--color-border-rgb));
+  border-radius: 1rem;
+  background: rgb(var(--color-surface-rgb));
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.05) inset,
+    0 44px 90px -36px rgb(2 6 23 / 0.45),
+    0 10px 28px -14px rgb(2 6 23 / 0.25);
+}
+.lp-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 2.5rem;
+  padding: 0 0.9rem;
+  border-bottom: 1px solid rgb(var(--color-border-rgb));
+  background: rgb(var(--color-component-rgb));
+}
+.lp-dots {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+.lp-dots i {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: rgb(var(--color-skeleton-rgb));
+}
+.lp-url {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.2rem 0.75rem;
+  border-radius: 999px;
+  background: rgb(var(--color-surface-rgb));
+  color: rgb(var(--color-text-muted));
+  font-size: 0.75rem;
+}
+
+/* Code in the illustrations. */
+.lp-code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 22px;
+  color: rgb(var(--color-text-base));
+}
+.lp-line {
+  display: grid;
+  grid-template-columns: 2.4rem 1.1rem minmax(0, 1fr);
+  white-space: pre;
+  overflow: hidden;
+}
+.lp-line > :first-child {
+  padding-right: 0.5rem;
+  text-align: right;
+  color: rgb(var(--color-text-muted));
+}
+.lp-line > :nth-child(2) {
+  color: rgb(var(--color-text-muted));
+}
+.lp-add {
+  background: rgb(var(--lp-add-bg));
+}
+.lp-add > :first-child {
+  background: rgb(var(--lp-add-gutter));
+}
+.lp-del {
+  background: rgb(var(--lp-del-bg));
+}
+.lp-del > :first-child {
+  background: rgb(var(--lp-del-gutter));
+}
+.tk-k {
+  color: rgb(var(--lp-kw));
+}
+.tk-s {
+  color: rgb(var(--lp-str));
+}
+.tk-f {
+  color: rgb(var(--lp-fn));
+}
+.tk-c {
+  color: rgb(var(--lp-cm));
+}
+.lp-hit {
+  border-radius: 0.2rem;
+  background: rgb(var(--lp-hit));
+  color: inherit;
+}
+
+/* The stack connector: a rail through the change nodes. */
+.lp-rail {
+  position: relative;
+}
+.lp-rail::before {
+  content: "";
+  position: absolute;
+  left: 0.9rem;
+  top: 1.1rem;
+  bottom: 1.1rem;
+  width: 2px;
+  background: rgb(var(--color-border-rgb));
+}
+
+/* The one moving part: a running check. */
+@keyframes lp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.lp-running {
+  animation: lp-spin 1.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lp-running {
+    animation: none;
+  }
+}
+
+/* Cards in the feature grid lift a little on hover and keyboard focus within. */
+.lp-card {
+  transition:
+    border-color 0.15s,
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+.lp-card:hover,
+.lp-card:focus-within {
+  border-color: rgb(var(--color-primary) / 0.55);
+  box-shadow: 0 12px 30px -18px rgb(var(--color-primary) / 0.5);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lp-card:hover {
+    transform: translateY(-2px);
+  }
+}
+
+/* Closing band. */
+.lp-cta {
+  background:
+    radial-gradient(40rem 18rem at 85% 0%, rgb(var(--color-accent-emerald) / 0.2), transparent 70%),
+    radial-gradient(40rem 22rem at 10% 100%, rgb(var(--color-primary) / 0.28), transparent 70%),
+    rgb(var(--color-surface-rgb));
+}

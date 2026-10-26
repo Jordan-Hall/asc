@@ -13,6 +13,7 @@ import {
   useQuery,
 } from "../lib/query";
 import { loadChangeList } from "./changes";
+import type { InboxCounts, InboxView } from "./inbox";
 import { lastCommit, listRefs, readFile, readTree, resolve } from "./repo";
 import type { ChangeListView, CommitView, FileView, RefsView, TreeView } from "./types";
 
@@ -36,6 +37,9 @@ export interface Queries {
   lastCommit(repo: string, rev: string, path: string): Query<CommitView | undefined>;
   file(repo: string, rev: string, path: string): Query<FileView>;
   changes(repo: string): Query<ChangeListView>;
+  /** Needs a user identity: a credential without one answers PERMISSION_DENIED. */
+  inboxCount(repo: string): Query<InboxCounts>;
+  inbox(repo: string): Query<InboxView>;
 }
 
 /**
@@ -124,6 +128,19 @@ export function createQueries(ctx: Ctx): Queries {
       key: keyOf("changes", repo),
       opts: { staleMs: 30_000 },
       run: ({ signal }) => loadChangeList(t, repo, { signal }),
+    }),
+
+    inboxCount: (repo) => ({
+      key: keyOf("inbox-count", repo),
+      opts: { staleMs: 30_000 },
+      // The inbox service descriptors load with the first call, not with the entry chunk.
+      run: async ({ signal }) => (await import("./inbox")).countInbox(t, repo, "", { signal }),
+    }),
+
+    inbox: (repo) => ({
+      key: keyOf("inbox", repo),
+      opts: { staleMs: 30_000 },
+      run: async ({ signal }) => (await import("./inbox")).listInbox(t, repo, {}, { signal }),
     }),
   };
 }

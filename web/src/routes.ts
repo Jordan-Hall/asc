@@ -5,7 +5,6 @@ import type { Params } from "./lib/match";
 import type { RouteDef } from "./lib/router";
 import { PATTERNS } from "./lib/paths";
 
-const home = () => import("./routes/home");
 const signin = () => import("./routes/signin");
 const settings = () => import("./routes/settings");
 const repoPage = () => import("./routes/repo");
@@ -17,6 +16,15 @@ const nameOf = (p: Params) => `${p.owner ?? ""}/${p.repo ?? ""}`;
 
 export function createRoutes(app: AppCtx): RouteDef[] {
   const q = app.queries;
+
+  /** Home and the screen it will show (landing or dashboard) arrive together. */
+  const home = async () => {
+    const [mod] = await Promise.all([
+      import("./routes/home"),
+      app.auth.token() ? import("./routes/dashboard") : import("./routes/landing"),
+    ]);
+    return mod;
+  };
 
   /** Repo home: refs first, then the default branch's tree and last commit. */
   const loadTree = (p: Params) => {
@@ -44,6 +52,7 @@ export function createRoutes(app: AppCtx): RouteDef[] {
     { id: "settings", path: PATTERNS.settings, component: settings },
     { id: "inbox", path: PATTERNS.inbox, component: planned },
     { id: "search", path: PATTERNS.search, component: planned },
+    { id: "newRepo", path: PATTERNS.newRepo, component: planned },
     { id: "repo", path: PATTERNS.repo, component: repoPage, load: loadTree },
     { id: "tree", path: PATTERNS.tree, component: repoPage, load: loadTree },
     {

@@ -1,7 +1,14 @@
 // A small query cache: one in-flight run per key, stale-while-revalidate, streams that publish
 // partial data, and an LRU bound. Keys are strings built by `keyOf`; content-addressed reads pass
 // `staleMs: Infinity` and are never refetched (docs/WEB-UI.md section 4).
-import { createContext, useCallback, useContext, useEffect, useSyncExternalStore } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 
 export type Status = "pending" | "ready" | "error";
 
@@ -259,4 +266,37 @@ export function useQuery<T>(key: string, runner: Runner<T>, opts?: QueryOptions)
     return () => window.removeEventListener("focus", onFocus);
   });
   return entry;
+}
+
+/**
+ * Subscribes to a list of queries of one type (for example one per remembered repository). The
+ * returned array is the same object until some entry changes.
+ */
+export function useQueries<T>(
+  queries: readonly { key: string; run: Runner<T>; opts: QueryOptions }[],
+): readonly Entry<T>[] {
+  const cache = useCache();
+  const keys = queries.map((q) => q.key);
+  const joined = keys.join(" ");
+  const subscribe = useCallback(
+    (cb: () => void) => {
+      const offs = joined === "" ? [] : joined.split(" ").map((k) => cache.subscribe(k, cb));
+      return () => {
+        for (const off of offs) off();
+      };
+    },
+    [cache, joined],
+  );
+  const last = useRef<readonly Entry<T>[]>([]);
+  const stable = (next: readonly Entry<T>[]): readonly Entry<T>[] => {
+    const prev = last.current;
+    if (prev.length === next.length && prev.every((e, i) => e === next[i])) return prev;
+    last.current = next;
+    return next;
+  };
+  return useSyncExternalStore(
+    subscribe,
+    () => stable(queries.map((q) => cache.ensure(q.key, q.run, q.opts))),
+    () => stable(queries.map((q) => cache.peek<T>(q.key))),
+  );
 }
