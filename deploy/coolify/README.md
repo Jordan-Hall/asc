@@ -100,15 +100,24 @@ password) and over `ssh://git@hub.example.org:22224/<owner>/<repo>.git`. The pus
 
 ### Known limits
 
-- **The git bridge is not kept current by asc.** `bridge_promote` is a registered no-op in `asc-serve`
-  (`crates/asc-serve/src/outbox.rs`), so with `BRIDGE=eager` the hub's bare repository (what
-  `git clone` over the hub reads) moves only on git pushes. A commit made in the web UI or a
-  merge in the hub goes to asc and is not in a later `git clone` until a git push brings it back
-  into the bridge. `BRIDGE=lazy` rebuilds it with `asc export --git` but needs an `asc` binary in the hub
-  image, which `Dockerfile.rootless` does not have. `BRIDGE=off` refuses git access. Decide before
-  relying on this for clones.
-- **`/.well-known/asc` announces `SERVER_URL`**, here `http://127.0.0.1:7890`, which no client can reach.
-  `asc clone https://hub/...` discovery does not work; the fork has no separate public URL setting.
+- **The git bridge** (the hub's bare repository, which `git clone` over the hub reads). With
+  `BRIDGE=eager` (the default) asc keeps it current: every ref update the hub writer makes (web-UI
+  edits, merges, `refs/pull/*`) queues the `bridge_promote` outbox effect, which exports the new
+  objects into `<repo_root>/<owner>/<name>.git` and sets those refs to asc's values (it also deletes
+  refs asc deleted). It is idempotent and retried with backoff; `/readyz` fails when the outbox
+  lags. `hub-init` then sets `[forgejo] bridge_promote = true` and forces `[git] enabled = true`
+  (promotion runs on the git layer), and `asc` mounts `hub-repos` read-write. A push through the hub's
+  own git (`ImportGitPush`) is left to the hub's git, which moves the ref itself. asc refuses a bridge
+  directory that is a symlink, outside `repo_root` or not a bare repository, and a repository
+  `config` with keys outside git's `init --bare` set; the row then fails and is retried until the
+  directory is right. `BRIDGE=lazy` rebuilds it with `asc export --git` but needs an `asc` binary in the hub
+  image, which `Dockerfile.rootless` does not have. `BRIDGE=off` refuses git access.
+- **`/.well-known/asc` announces `[asc] PUBLIC_URL`** (the compose sets it from `ASC_HUB_ROOT_URL`), not
+  `SERVER_URL` (`http://127.0.0.1:7890`, which only the hub dials). `PUBLIC_URL` must be https. For
+  `asc clone https://hub/...` the hub's proxy must forward the asc API on its root URL; the proxy
+  (`routers/web/repo/asc_rpc_proxy.go`) is not exercised by this runbook. Needs a hub image built
+  from the commit that adds `PUBLIC_URL`; an older hub rejects the unknown key silently and keeps
+  announcing `SERVER_URL`.
 - The compose file uses `network_mode: service:hub` and `depends_on ... restart: true`. Coolify's
   rewrite of both was not checked: use **Preview compose** after creating the service.
 - `webhook_secret_file` is set, but the hub does not create the mirror webhook; it matters only

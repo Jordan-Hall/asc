@@ -49,6 +49,7 @@ const SQLITE: &[(&str, &str)] = &[
     ("ASC_CACHE_DISK", "2GiB"),
     ("ASC_TEXT_MEMORY", "256MiB"),
     ("ASC_GIT_ENABLED", "false"),
+    ("ASC_BRIDGE_PROMOTE", "false"),
 ];
 
 const S3_POSTGRES: &[(&str, &str)] = &[
@@ -64,6 +65,7 @@ const S3_POSTGRES: &[(&str, &str)] = &[
     ("ASC_CACHE_DISK", "2GiB"),
     ("ASC_TEXT_MEMORY", "256MiB"),
     ("ASC_GIT_ENABLED", "true"),
+    ("ASC_BRIDGE_PROMOTE", "true"),
 ];
 
 #[test]
@@ -108,6 +110,7 @@ fn the_asc_hub_config_parses_and_validates() {
     );
     assert!(cfg.limits.trusted_proxies.is_empty());
     assert!(!cfg.git.enabled);
+    assert_eq!(cfg.bridge_promote_root(), None, "BRIDGE=lazy or off");
     assert!(
         !cfg.ssh.enabled,
         "no SSH listener: the hub serves git over SSH"
@@ -122,6 +125,16 @@ fn the_asc_hub_config_parses_and_validates() {
     );
     assert!(cfg.db.as_deref().unwrap().starts_with("postgres://"));
     assert!(cfg.git.enabled);
+    assert_eq!(
+        cfg.bridge_promote_root(),
+        Some(PathBuf::from("/var/lib/gitea/git/repositories")),
+        "BRIDGE=eager"
+    );
+
+    // Promotion runs on the git layer: the two cannot disagree.
+    let err = ServeConfig::parse(&s3.replace("enabled = true", "enabled = false"))
+        .expect_err("bridge_promote with the git layer off");
+    assert!(err.to_string().contains("bridge_promote"), "{err}");
 }
 
 #[test]
@@ -159,7 +172,10 @@ fn the_compose_file_wires_the_hub_to_the_same_places() {
         "FORGEJO__asc__NEW_REPOSITORIES: asc",
         // asc reads the hub's repositories at the hub's own path
         "FORGEJO__repository__ROOT: /var/lib/gitea/git/repositories",
-        "hub-repos:/var/lib/gitea/git/repositories:ro",
+        "hub-repos:/var/lib/gitea/git/repositories\n",
+        // /.well-known/asc announces the hub's public URL, not the loopback address
+        "FORGEJO__asc__PUBLIC_URL: ${ASC_HUB_ROOT_URL:?",
+        "bridge_promote = $$ASC_BRIDGE_PROMOTE",
     ] {
         assert!(text.contains(needle), "compose file lacks {needle:?}");
     }
