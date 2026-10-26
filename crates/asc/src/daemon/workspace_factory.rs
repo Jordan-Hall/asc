@@ -16,8 +16,9 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use asc_core::git::BlobOidHasher;
@@ -30,6 +31,7 @@ use asc_state::{AscHome, WorkspaceId};
 use asc_wc::SafeRoot;
 
 use super::lifecycle::{self, Probe};
+use super::service::VirtualBackend;
 use crate::cli::common::{CliEngine, CliError, Ctx, Gate};
 use crate::cli::config;
 use crate::cli::restore::{root_of, sync_worktree};
@@ -48,6 +50,72 @@ pub fn register_virtual_backend() {
     VIRTUAL_BACKEND.store(true, Ordering::SeqCst);
 }
 
+/// Whether a backend can host virtual workspaces on this machine: one registered itself, or the
+/// platform's own backend loads (ProjFS on Windows; probed once, then registered).
+fn backend_available() -> bool {
+    static PROBE: OnceLock<bool> = OnceLock::new();
+    if VIRTUAL_BACKEND.load(Ordering::SeqCst) {
+        return true;
+    }
+    *PROBE.get_or_init(|| {
+        #[cfg(all(windows, feature = "vfs-projfs"))]
+        if super::projfs_host::available() {
+            register_virtual_backend();
+            return true;
+        }
+        false
+    })
+}
+
+/// The OS backend the daemon hosts virtual workspaces with; `None` where this build or machine
+/// has none.
+pub fn platform_backend() -> Option<Arc<dyn VirtualBackend>> {
+    #[cfg(all(windows, feature = "vfs-projfs"))]
+    if super::projfs_host::available() {
+        return Some(Arc::new(super::projfs_host::ProjfsBackend));
+    }
+    None
+}
+
+/// Why `--mode virtual` is refused, for the message of the command that was asked for it.
+pub fn virtual_unavailable() -> String {
+    let why = if lifecycle::disabled(&|k| std::env::var_os(k)) {
+        "virtual workspaces need the daemon, which ASC_NO_DAEMON turns off"
+    } else if !cfg!(windows) {
+        "virtual workspaces are supported on Windows (ProjFS) only"
+    } else if cfg!(feature = "vfs-projfs") {
+        "virtual workspaces need the Windows Projected File System; enable the Client-ProjFS feature"
+    } else {
+        "this build of asc has no ProjFS support"
+    };
+    format!("{why}; use --mode plain")
+}
+
+/// Hosts the registered virtual workspace `ws` in the user's daemon, starting the daemon first.
+pub async fn mount_virtual(ws: WorkspaceId) -> Result<(), String> {
+    let (cfg, proc) = crate::cli::daemon::system().map_err(|e| e.to_string())?;
+    lifecycle::ensure_running(&cfg, &proc)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut client = WorkspaceClient::new(connect(&cfg.endpoint));
+    let ask = wire::MountRequest {
+        ws_id: ws.to_string(),
+    };
+    match tokio::time::timeout(MOUNT_WAIT, client.mount(ask)).await {
+        Err(_) => Err("the daemon did not mount the workspace in time".into()),
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(s)) => Err(s.message().to_owned()),
+    }
+}
+
+/// Stops the daemon hosting `ws`, before its directory is deleted. No daemon, nothing mounted.
+pub async fn unmount_virtual(ws: WorkspaceId) -> Result<(), String> {
+    DaemonMounts.unmount(ws).await.map_err(|e| e.to_string())
+}
+
+/// Longest wait for the daemon to start serving a new virtual workspace.
+const MOUNT_WAIT: Duration = Duration::from_secs(120);
+
 /// What conversion needs from the daemon.
 #[async_trait]
 pub trait Mounts: Send + Sync {
@@ -63,7 +131,7 @@ pub struct DaemonMounts;
 #[async_trait]
 impl Mounts for DaemonMounts {
     fn virtual_available(&self) -> bool {
-        VIRTUAL_BACKEND.load(Ordering::SeqCst) && !lifecycle::disabled(&|k| std::env::var_os(k))
+        backend_available() && !lifecycle::disabled(&|k| std::env::var_os(k))
     }
 
     async fn unmount(&self, ws: WorkspaceId) -> SinkResult {

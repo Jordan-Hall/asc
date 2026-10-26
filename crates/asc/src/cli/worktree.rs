@@ -26,6 +26,7 @@ use super::switch::{
     Rev, RevKind, TrackOpt, abbrev_len, bad_branch_name, branch_tip, commit_line, ensure_mapped,
     held_anywhere, ref_name, resolve_rev, valid_branch_name,
 };
+use crate::daemon::workspace_factory;
 use crate::ext;
 use crate::hooks_runner::{Hook, HookEnv, Outcome, Runner, null_oid};
 use crate::native::NativeSpec;
@@ -449,11 +450,17 @@ struct Made {
     /// The mount holds files and a gitfile of this call.
     populated: bool,
     link: bool,
+    /// The daemon hosts the new virtual workspace.
+    mounted: bool,
 }
 
 /// Undoes what a failed `add` made: the link, the mount (only what this call made), the gitdir
 /// and the row. Errors here are not reported; the original error is.
 async fn undo(ws: &WsCtx, made: &Made, path: &Path, mount: &Path, nested: bool) {
+    // The provider must let go of the directory before it can be deleted.
+    if let (true, Some(id)) = (made.mounted, made.id) {
+        let _ = workspace_factory::unmount_virtual(id).await;
+    }
     if made.link && nested {
         let _ = wt::remove_tree(path);
     }
@@ -477,10 +484,11 @@ pub(crate) async fn add(ctx: &Ctx, o: AddOpts) -> Result<Added> {
     let ws = ctx.ws()?;
     // Bind the hook runner to this workspace before anything else can bind another.
     let _ = Runner::for_ctx(ctx)?;
-    if o.virtual_mode {
-        return Err(fatal(
-            "asc: virtual worktrees need the daemon, which is not available yet; use --mode plain",
-        ));
+    if o.virtual_mode && ext::workspace_factory().virtual_mode().is_none() {
+        return Err(fatal(format!(
+            "asc: {}",
+            workspace_factory::virtual_unavailable()
+        )));
     }
     let dest = destination(ctx, ws, &o).await?;
     let (commit, branch_name): (ChangesetId, Option<String>) = match &dest {
@@ -674,7 +682,11 @@ async fn materialise(
             repo: ws.repo.key,
             path: text_of(abs)?.to_owned(),
             mount: text_of(mount)?.to_owned(),
-            mode: Mode::Plain,
+            mode: if o.virtual_mode {
+                Mode::Virtual
+            } else {
+                Mode::Plain
+            },
             head: branch.map_or_else(String::new, |b| format!("refs/heads/{b}")),
             base_cs: Some(commit),
             sparse: None,
@@ -685,22 +697,24 @@ async fn materialise(
     )
     .await?;
 
-    // Files.
+    // Files. A virtual worktree has none: the daemon projects them once it hosts the workspace.
     let fresh = open_at(ctx, mount.to_owned()).await?;
     let fws = fresh.ws()?;
     if fws.workspace.ws.id != id {
         return Err(fatal("asc: the new worktree did not open as itself"));
     }
-    let root = root_of(fws, Some(commit)).await?;
-    let empty = super::common::CliEngine::empty_tree_id();
-    let paths: Vec<_> = fws
-        .engine
-        .leafdiff(empty, root, None)
-        .await?
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-    sync_worktree(&fresh, root, &paths, true).await?;
+    if !o.virtual_mode {
+        let root = root_of(fws, Some(commit)).await?;
+        let empty = super::common::CliEngine::empty_tree_id();
+        let paths: Vec<_> = fws
+            .engine
+            .leafdiff(empty, root, None)
+            .await?
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        sync_worktree(&fresh, root, &paths, true).await?;
+    }
 
     // The branch.
     if let Dest::New { name, force, start } = dest {
@@ -745,6 +759,13 @@ async fn materialise(
         .on_head_moved(id, None, Some(commit))
         .await
         .map_err(fatal)?;
+    // The branch and HEAD are in place, so the daemon projects the new commit's tree.
+    if o.virtual_mode {
+        made.mounted = true;
+        workspace_factory::mount_virtual(id)
+            .await
+            .map_err(|e| fatal(format!("asc: cannot host the virtual worktree: {e}")))?;
+    }
     Ok(fresh)
 }
 
@@ -985,6 +1006,13 @@ async fn delete(ws: &WsCtx, row: &Workspace) -> Result<()> {
     let path = PathBuf::from(&row.ws.path);
     let mount = PathBuf::from(&row.ws.mount);
     let nested = wt::path_key(&path) != wt::path_key(&mount);
+    if row.ws.mode == Mode::Virtual {
+        workspace_factory::unmount_virtual(id).await.map_err(|e| {
+            fatal(format!(
+                "asc: cannot stop the daemon hosting the worktree: {e}"
+            ))
+        })?;
+    }
     // Never delete from a directory that is not this worktree's: stale state must not turn
     // into the loss of an unrelated directory.
     let ours = |dir: &Path| {
