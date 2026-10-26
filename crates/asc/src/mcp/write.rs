@@ -635,7 +635,7 @@ async fn supervise(
             clean(&String::from_utf8_lossy(&stderr), MAX_ERROR_TEXT)
         );
     }
-    drop(group);
+    // `group` goes out of scope here: on Windows that closes the kill-on-close job.
     Ok(Finished {
         code,
         stdout,
