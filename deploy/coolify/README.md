@@ -13,6 +13,7 @@ address: **https://asc-staging.example.org**.
 
 | `asc-serve.standalone.compose.yml` | The variant that runs on staging today: no Forgejo, token-store auth, SQLite. See "Standalone staging" below. |
 | `forgejo-staging.compose.yml` | ASC Hub (the Forgejo v16 fork) staging, SQLite, own volume. |
+| `asc-hub-allinone.compose.yml` | ASC Hub as ONE service from the all-in-one image (`ghcr.io/<owner>/asc-hub`, hub plus `asc serve` in one container, one volume, SQLite). Needs only `ASC_HUB_IMAGE_TAG`, `ASC_HUB_ROOT_URL`, `ASC_HUB_SSH_DOMAIN`, `ASC_HUB_ADMIN_EMAIL`. Supersedes `asc-hub.compose.yml` (the older multi-container hub), which stays because `crates/asc-serve/tests/config.rs` reads it. |
 | `asc-hub.compose.yml` | **ASC Hub, all in one**: the hub and `asc serve` as one Coolify service. See "ASC Hub (all in one)". |
 | `asc-hub.env.example` | Its environment, with a comment each. |
 
