@@ -188,7 +188,7 @@ stored as the repository's own content; encrypt the bucket on the provider's sid
 ## Testing
 
 `crates/asc-serve/src/storage/tests.rs` runs the whole feature against `fake_s3.rs`, an in-process S3 that checks SigV4 signatures with
-the one key pair it knows, supports list v2, conditional put, copy and bulk delete, and injects faults and delays. It covers: every guard
+the one key pair it knows, refuses a request signed for another region, pages list v2 results, supports conditional put, copy and bulk delete, and injects faults and delays. It covers: every guard
 rule through the service (and a DNS answer that turns private), each failing verification step, rate limits, scoping between users,
 sealed credentials and rotation, secrets planted and searched for in logs/errors/audit/debug output, routing into the registry,
 migration (happy path, delete source, failure and second try, resume after a stopped server, cancel, writes during the copy, repair of
