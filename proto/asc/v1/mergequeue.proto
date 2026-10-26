@@ -1,0 +1,149 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// The merge queue (build-out feature "merge-queue"; docs/BUILDOUT.md). Entries land in order, each as the largest ready prefix
+// of its stack. Before an entry lands, and again after a content merge changed what lands, the server revalidates it
+// against the policy of the target: conflicts, required checks on the exact head, approvals of the exact version, signatures
+// and secret findings. The queue never lands on a stale answer: when a check cannot be decided the entry stays where it is.
+// `Changes.RequestMerge` is the compatibility entry and calls `Enqueue`. Advertised as Version.features "mergequeue.v1".
+// ErrorDetail.code also carries QUEUE_PAUSED (FAILED_PRECONDITION), QUEUE_ENTRY_EXISTS (ALREADY_EXISTS) and REVALIDATION_FAILED
+// (FAILED_PRECONDITION; `paths` holds the reason slugs).
+service MergeQueue {
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);                  // repo write; mutating, x-asc-op-id
+  rpc Dequeue(DequeueRequest) returns (DequeueResponse);                  // entry owner or maintainer; idempotent
+  rpc List(ListQueueRequest) returns (ListQueueResponse);                 // repo read; cheap, paged
+  rpc Get(GetQueueEntryRequest) returns (GetQueueEntryResponse);          // repo read
+  rpc Revalidate(RevalidateRequest) returns (RevalidateResponse);         // repo write; may be slow
+  rpc SetPaused(SetQueuePausedRequest) returns (SetQueuePausedResponse);  // maintainer; idempotent
+  rpc Watch(WatchQueueRequest) returns (stream QueueEvent);               // repo read; long-lived, resumable
+}
+
+enum QueueEntryState {
+  QUEUE_ENTRY_STATE_UNSPECIFIED = 0;   // in a request: any state
+  QUEUE_ENTRY_STATE_WAITING = 1;       // waiting for a parent, checks or approvals
+  QUEUE_ENTRY_STATE_REVALIDATING = 2;
+  QUEUE_ENTRY_STATE_READY = 3;
+  QUEUE_ENTRY_STATE_LANDING = 4;
+  QUEUE_ENTRY_STATE_LANDED = 5;
+  QUEUE_ENTRY_STATE_BLOCKED = 6;       // revalidation failed; needs a new version or a human
+  QUEUE_ENTRY_STATE_REMOVED = 7;
+}
+
+enum RevalidationReason {
+  REVALIDATION_REASON_UNSPECIFIED = 0;
+  REVALIDATION_REASON_CONFLICT = 1;
+  REVALIDATION_REASON_CHECKS_MISSING = 2;
+  REVALIDATION_REASON_CHECKS_FAILED = 3;
+  REVALIDATION_REASON_CHECKS_STALE = 4;      // checks ran on a head other than the one that would land
+  REVALIDATION_REASON_APPROVALS_MISSING = 5;
+  REVALIDATION_REASON_APPROVALS_STALE = 6;   // approved a version other than the one that would land
+  REVALIDATION_REASON_POLICY_DENIED = 7;
+  REVALIDATION_REASON_SIGNATURE_REQUIRED = 8;
+  REVALIDATION_REASON_SECRET_FINDING = 9;
+  REVALIDATION_REASON_TARGET_MOVED = 10;
+  REVALIDATION_REASON_CHANGE_DIVERGED = 11;
+}
+
+message QueueRevalidation {
+  bool passed = 1;
+  repeated RevalidationReason reasons = 2;
+  bool content_merge = 3;                // the land needs the server to merge file contents (LAND_NEEDS_CONTENT_MERGE)
+  bytes target_tip = 4 [(asc.v1.json) = JSON_KIND_HEX];    // the tip the answer was computed against
+  bytes head = 5 [(asc.v1.json) = JSON_KIND_HEX];          // what would land
+  int64 checked_at = 6;
+  string detail = 7;
+}
+
+message QueueEntry {
+  uint64 id = 1;
+  string target = 2;                     // branch
+  bytes change = 3 [(asc.v1.json) = JSON_KIND_CHANGE];     // the top change the caller asked for
+  repeated bytes stack = 4 [(asc.v1.json) = JSON_KIND_CHANGE];   // bottom to top, the changes this entry lands
+  QueueEntryState state = 5;
+  MergeStyle style = 6;
+  uint32 position = 7;                   // 1 = next; 0 when not queued
+  string enqueued_by = 8;
+  int64 enqueued_at = 9;
+  QueueRevalidation revalidation = 10;
+  bytes landed_as = 11 [(asc.v1.json) = JSON_KIND_HEX];
+  int64 landed_at = 12;
+  string removed_reason = 13;
+}
+
+// `target` empty means the repository default branch. `now` asks to land at once when the entry is first and ready.
+message EnqueueRequest {
+  RepoRef repo = 1;
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  string target = 3;
+  MergeStyle style = 4;
+  bool now = 5;
+}
+message EnqueueResponse {
+  QueueEntry entry = 1;
+}
+
+message DequeueRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  string reason = 3;                     // at most 256 bytes
+}
+message DequeueResponse {
+  QueueEntry entry = 1;
+}
+
+// Oldest first for the live states, newest first with `include_finished`. `limit` 0 means 50, at most 200.
+message ListQueueRequest {
+  RepoRef repo = 1;
+  string target = 2;
+  repeated QueueEntryState states = 3;
+  bool include_finished = 4;
+  uint32 limit = 5;
+  string page_token = 6;
+}
+message ListQueueResponse {
+  repeated QueueEntry entries = 1;
+  string next_page_token = 2;
+  bool paused = 3;
+  string paused_reason = 4;
+}
+
+message GetQueueEntryRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message GetQueueEntryResponse {
+  QueueEntry entry = 1;
+}
+
+message RevalidateRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+}
+message RevalidateResponse {
+  QueueEntry entry = 1;
+}
+
+message SetQueuePausedRequest {
+  RepoRef repo = 1;
+  string target = 2;
+  bool paused = 3;
+  string reason = 4;                     // at most 256 bytes
+}
+message SetQueuePausedResponse {
+  bool paused = 1;
+}
+
+// `resume`: an opaque cursor from an earlier event; empty starts at the newest.
+message WatchQueueRequest {
+  RepoRef repo = 1;
+  string target = 2;
+  bytes resume = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+message QueueEvent {
+  QueueEntry entry = 1;
+  bool paused = 2;
+  bytes resume = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}

@@ -1,0 +1,101 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/common.proto";
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Repository policy as code, read and edited through the API (build-out feature "policy"; docs/BUILDOUT.md). The file is
+// `.asc/policy.toml` on the trunk tip and `Repo.GetPolicy` keeps showing the parsed rules. This service adds the raw source,
+// a validator, a proposal that becomes an ordinary change under review, and an evaluator for any principal. The server never
+// edits trunk: `Propose` makes a change, and only a maintainer named by the policy can land it. Advertised as
+// Version.features "policy-api.v1". ErrorDetail.code also carries POLICY_INVALID (INVALID_ARGUMENT) and POLICY_LOCKOUT
+// (FAILED_PRECONDITION).
+service Policy {
+  rpc GetSource(GetPolicySourceRequest) returns (GetPolicySourceResponse);   // repo read
+  rpc Validate(ValidatePolicyRequest) returns (ValidatePolicyResponse);      // repo read; no state is kept
+  rpc Propose(ProposePolicyRequest) returns (ProposePolicyResponse);         // repo write; mutating, x-asc-op-id
+  rpc Evaluate(EvaluatePolicyRequest) returns (EvaluatePolicyResponse);      // repo read for the caller; maintainer for another principal
+}
+
+// `rev` empty means the trunk tip.
+message GetPolicySourceRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+}
+message GetPolicySourceResponse {
+  bool present = 1;
+  bytes source = 2 [(asc.v1.json) = JSON_KIND_HEX];    // the changeset the text was read from
+  bytes text = 3 [(asc.v1.json) = JSON_KIND_TEXT];     // the file as stored; empty when absent
+  GetPolicyResponse parsed = 4;                        // as Repo.GetPolicy would answer for the caller; `error` set when unusable
+}
+
+enum PolicySeverity {
+  POLICY_SEVERITY_UNSPECIFIED = 0;
+  POLICY_SEVERITY_ERROR = 1;     // the file is refused
+  POLICY_SEVERITY_WARNING = 2;   // the file is accepted
+}
+message PolicyDiagnostic {
+  PolicySeverity severity = 1;
+  string code = 2;               // stable slug: unknown_key, bad_glob, no_maintainer, too_large, ...
+  string message = 3;
+  uint32 line = 4;               // 1-based; 0 when not tied to a line
+  uint32 column = 5;
+}
+
+// `text` is at most 64 KiB (the parser limit). Validation reads nothing from the repository except the current policy,
+// which it needs to say whether the caller would still be a maintainer.
+message ValidatePolicyRequest {
+  RepoRef repo = 1;
+  bytes text = 2 [(asc.v1.json) = JSON_KIND_TEXT];
+}
+message ValidatePolicyResponse {
+  bool valid = 1;
+  repeated PolicyDiagnostic diagnostics = 2;
+  GetPolicyResponse parsed = 3;          // set when valid
+  bool caller_stays_maintainer = 4;      // the caller is named by `maintainer` in the new file
+}
+
+// `base` is the trunk changeset the edit starts from; a moved trunk is VERSION_CONFLICT. The change is created under the
+// caller's identity (an agent proposes as an agent) on top of `base`, and shows up in Changes.Stack as any other.
+message ProposePolicyRequest {
+  RepoRef repo = 1;
+  bytes base = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes text = 3 [(asc.v1.json) = JSON_KIND_TEXT];
+  bytes message = 4 [(asc.v1.json) = JSON_KIND_TEXT];   // empty: "policy: update .asc/policy.toml"
+}
+message ProposePolicyResponse {
+  bytes change = 1 [(asc.v1.json) = JSON_KIND_CHANGE];
+  bytes changeset = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  ValidatePolicyResponse validation = 3;
+}
+
+enum PolicyAction {
+  POLICY_ACTION_UNSPECIFIED = 0;
+  POLICY_ACTION_WRITE = 1;    // would a write of each path pass the path rules, agent scope and denied paths
+  POLICY_ACTION_RUN = 2;      // would a run of `run_changes` changes touching `run_paths` paths fit the agent budgets
+  POLICY_ACTION_LAND = 3;     // what landing on trunk needs: approvals, checks, signature, merge strategy
+}
+// `principal` empty means the caller. Evaluating another principal needs a maintainer.
+message EvaluatePolicyRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  PrincipalRef principal = 3;
+  PolicyAction action = 4;
+  repeated bytes paths = 5 [(asc.v1.json) = JSON_KIND_PATH];   // at most 64
+  uint32 run_changes = 6;
+  uint32 run_paths = 7;
+}
+message PolicyLandRequirements {
+  uint32 approvals = 1;
+  repeated string checks = 2;
+  bool signed = 3;
+  string merge_strategy = 4;
+}
+message EvaluatePolicyResponse {
+  PrincipalRef principal = 1;
+  repeated PolicyDecision decisions = 2;     // WRITE: one per path, in order
+  bool run_allowed = 3;
+  string run_reason = 4;
+  PolicyLandRequirements land = 5;
+}

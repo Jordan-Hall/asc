@@ -1,0 +1,107 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/common.proto";
+import "asc/v1/options.proto";
+
+// The audit log (build-out feature "audit"; docs/BUILDOUT.md). Every security-relevant action appends one event, in the same
+// transaction as the action. Events of a scope form a hash chain: `hash` = BLAKE3 over the previous hash and the canonical
+// encoding of the event, so a removed or edited row is detectable with `VerifyChain`. `details` is built by the server
+// from an allow-list per action; it never holds a credential, a key, a token, a file body or an S3 endpoint query string.
+// Reading needs repo admin for a repository, ownership of an organisation or user, and a site administrator for the instance.
+// A caller without the right gets NOT_FOUND for a scope they cannot see. Advertised as Version.features "audit.v1".
+service Audit {
+  rpc List(ListAuditRequest) returns (ListAuditResponse);              // cheap, paged
+  rpc Export(ExportAuditRequest) returns (stream ExportAuditResponse);   // expensive; rate class `export`
+  rpc VerifyChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);   // expensive
+  rpc ListActions(ListAuditActionsRequest) returns (ListAuditActionsResponse);   // cheap; the catalogue for filters
+}
+
+enum AuditOutcome {
+  AUDIT_OUTCOME_UNSPECIFIED = 0;   // in a request: any outcome
+  AUDIT_OUTCOME_SUCCESS = 1;
+  AUDIT_OUTCOME_DENIED = 2;        // refused by authorisation or policy
+  AUDIT_OUTCOME_FAILED = 3;        // allowed, then failed
+}
+
+message AuditEvent {
+  uint64 seq = 1;                  // per scope, gap free, starts at 1
+  string id = 2;                   // UUID
+  int64 time_ms = 3;               // unix milliseconds
+  PrincipalRef actor = 4;
+  PrincipalRef on_behalf_of = 5;   // the person behind an agent token
+  string action = 6;               // dotted, from the catalogue: "repo.ref.update", "policy.proposed", "storage.target.verified"
+  string repo = 7;                 // "owner/repo" or empty
+  string target = 8;               // what the action was done to: a ref name, a change id, a target id
+  AuditOutcome outcome = 9;
+  string request_id = 10;
+  string remote_addr = 11;         // coarse: /24 for IPv4, /48 for IPv6
+  map<string, string> details = 12;
+  bytes prev_hash = 13 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes hash = 14 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+// Filters. `actions` are exact names or a prefix ending in ".*". `search` matches `target` as a prefix. `limit` 0 means 50, at
+// most 200. `since_ms` and `until_ms` of 0 are open.
+message AuditFilter {
+  repeated string actors = 1;
+  repeated string actions = 2;
+  AuditOutcome outcome = 3;
+  string target = 4;
+  int64 since_ms = 5;
+  int64 until_ms = 6;
+}
+
+message ListAuditRequest {
+  OwnerRef scope = 1;
+  AuditFilter filter = 2;
+  bool oldest_first = 3;
+  uint32 limit = 4;
+  string page_token = 5;
+}
+message ListAuditResponse {
+  repeated AuditEvent events = 1;
+  string next_page_token = 2;
+}
+
+enum AuditExportFormat {
+  AUDIT_EXPORT_FORMAT_JSONL = 0;
+  AUDIT_EXPORT_FORMAT_CSV = 1;
+}
+// At most 1,000,000 events per export.
+message ExportAuditRequest {
+  OwnerRef scope = 1;
+  AuditFilter filter = 2;
+  AuditExportFormat format = 3;
+}
+// Chunks of at most 1 MiB, cut at a row end. The last message has `last` set and the BLAKE3 of the whole export.
+message ExportAuditResponse {
+  bytes data = 1 [(asc.v1.json) = JSON_KIND_DATA];
+  bool last = 2;
+  bytes digest = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  uint64 events = 4;               // on the last message: how many events the export holds
+}
+
+// `to_seq` 0 means the newest.
+message VerifyAuditChainRequest {
+  OwnerRef scope = 1;
+  uint64 from_seq = 2;
+  uint64 to_seq = 3;
+}
+message VerifyAuditChainResponse {
+  bool ok = 1;
+  uint64 checked = 2;
+  uint64 first_bad_seq = 3;        // 0 when ok
+  string reason = 4;
+  bytes head_hash = 5 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message AuditActionInfo {
+  string action = 1;
+  string description = 2;
+  repeated string detail_keys = 3; // the keys `details` can hold for this action
+}
+message ListAuditActionsRequest {}
+message ListAuditActionsResponse {
+  repeated AuditActionInfo actions = 1;
+}

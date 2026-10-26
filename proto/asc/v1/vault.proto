@@ -1,0 +1,55 @@
+syntax = "proto3";
+package asc.v1;
+
+// The server's secret vault (build-out feature "vault"; docs/BUILDOUT.md). Storage credentials, AI provider keys and other
+// stored secrets are sealed with XChaCha20-Poly1305 under a data key derived (HKDF-SHA256, context = secret kind + owner + id)
+// from the master key, so a sealed value cannot be moved to another owner or row. The master key is a 32-byte random value
+// in a file (`[vault] key_file`, mode 0600, created on first start), identified by a generation number; a ring keeps the
+// retired generations until every secret is re-sealed. The key itself is never returned by any call. Site administrators only.
+// Advertised as Version.features "vault.v1". ErrorDetail.code also carries VAULT_LOCKED (UNAVAILABLE: the key file cannot
+// be read) and ROTATION_ACTIVE (ABORTED).
+service Vault {
+  rpc Status(VaultStatusRequest) returns (VaultStatusResponse);   // site administrator; cheap
+  rpc Rotate(RotateVaultRequest) returns (RotateVaultResponse);   // site administrator; mutating, x-asc-op-id
+  rpc GetRotation(GetVaultRotationRequest) returns (GetVaultRotationResponse);
+}
+
+message VaultGeneration {
+  uint32 generation = 1;
+  int64 created = 2;
+  bool active = 3;                 // new secrets are sealed under it
+  uint64 secrets = 4;              // sealed values still under this generation
+}
+
+message VaultStatusRequest {}
+message VaultStatusResponse {
+  bool ready = 1;
+  repeated VaultGeneration generations = 2;
+  string key_file_mode = 3;        // "0600" when as required; anything else makes `ready` false
+  bool rotation_active = 4;
+}
+
+// Generates a new generation, makes it active and re-seals every secret in the background. A ring file write failure aborts
+// before anything changes. `retire_old` drops a retired generation once nothing is sealed under it.
+message RotateVaultRequest {
+  bool retire_old = 1;
+}
+message RotateVaultResponse {
+  uint32 generation = 1;
+  string rotation_id = 2;
+}
+
+message GetVaultRotationRequest {
+  string rotation_id = 1;
+}
+message VaultRotation {
+  string id = 1;
+  uint32 to_generation = 2;
+  uint64 total = 3;
+  uint64 done = 4;
+  bool finished = 5;
+  string error = 6;
+}
+message GetVaultRotationResponse {
+  VaultRotation rotation = 1;
+}

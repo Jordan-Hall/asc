@@ -1,0 +1,219 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/common.proto";
+import "asc/v1/repo.proto";
+
+// Bring your own storage (build-out feature "byos"; docs/BUILDOUT.md): a user, organisation or repository keeps its objects in an
+// S3-compatible bucket it owns. A target is created `PENDING`, becomes `VERIFIED` only when `Verify` passes, and is used only
+// after `Enable`. The access key id and secret access key are accepted on `CreateTarget` and `UpdateTarget`, encrypted at rest
+// with the master key (see Vault), and never returned: a target shows `access_key_hint` ("AKIA...WXYZ", first 4 and last 4
+// characters, or fewer for a short id) and `has_secret`. Users cannot name an address the server can reach but the
+// internet cannot: after DNS resolution the endpoint must not be loopback, link-local, private (RFC 1918, ULA, carrier-grade NAT), multicast,
+// unspecified or a cloud metadata address, every connection is pinned to the checked address, and the scheme is https unless the
+// operator sets `[storage] allow_loopback_http`. Advertised as Version.features "storage.v1". ErrorDetail.code also carries
+// STORAGE_ENDPOINT_BLOCKED (INVALID_ARGUMENT; `paths[0]` is the reason slug: loopback, private, link_local, metadata,
+// not_https, unresolvable, port), STORAGE_VERIFY_FAILED (FAILED_PRECONDITION), STORAGE_IN_USE (FAILED_PRECONDITION) and
+// MIGRATION_ACTIVE (ABORTED). Owner scope: the caller must administer the owner.
+service Storage {
+  rpc CreateTarget(CreateStorageTargetRequest) returns (CreateStorageTargetResponse);   // mutating, x-asc-op-id
+  rpc ListTargets(ListStorageTargetsRequest) returns (ListStorageTargetsResponse);      // owner admin; cheap
+  rpc GetTarget(GetStorageTargetRequest) returns (GetStorageTargetResponse);            // owner admin
+  rpc UpdateTarget(UpdateStorageTargetRequest) returns (UpdateStorageTargetResponse);   // owner admin; mutating, x-asc-op-id
+  rpc DeleteTarget(DeleteStorageTargetRequest) returns (DeleteStorageTargetResponse);   // owner admin; refused while in use
+  rpc VerifyTarget(VerifyStorageTargetRequest) returns (VerifyStorageTargetResponse);   // owner admin; probe object round trip; rate limited
+  rpc SetEnabled(SetStorageTargetEnabledRequest) returns (SetStorageTargetEnabledResponse);   // owner admin; VERIFIED only
+  rpc AssignRepo(AssignRepoStorageRequest) returns (AssignRepoStorageResponse);         // repo admin and target owner admin
+  rpc StartMigration(StartStorageMigrationRequest) returns (StartStorageMigrationResponse);   // repo admin; mutating, x-asc-op-id
+  rpc GetMigration(GetStorageMigrationRequest) returns (GetStorageMigrationResponse);
+  rpc ListMigrations(ListStorageMigrationsRequest) returns (ListStorageMigrationsResponse);
+  rpc CancelMigration(CancelStorageMigrationRequest) returns (CancelStorageMigrationResponse);   // idempotent
+}
+
+enum StorageTargetState {
+  STORAGE_TARGET_STATE_UNSPECIFIED = 0;
+  STORAGE_TARGET_STATE_PENDING = 1;     // created, not verified
+  STORAGE_TARGET_STATE_VERIFIED = 2;
+  STORAGE_TARGET_STATE_ENABLED = 3;
+  STORAGE_TARGET_STATE_DISABLED = 4;
+  STORAGE_TARGET_STATE_FAILED = 5;      // the last verification or a later health check failed
+}
+
+enum StorageAddressing {
+  STORAGE_ADDRESSING_AUTO = 0;
+  STORAGE_ADDRESSING_PATH = 1;
+  STORAGE_ADDRESSING_VIRTUAL_HOST = 2;
+}
+
+message StorageTarget {
+  string id = 1;                       // "st_" + 20 characters
+  OwnerRef owner = 2;
+  string name = 3;                     // [a-z0-9-], 1 to 40 characters, unique per owner
+  string endpoint = 4;                 // https URL without credentials, query or fragment
+  string region = 5;
+  string bucket = 6;
+  string prefix = 7;                   // "" or "a/b/", no leading slash, no ".."
+  StorageAddressing addressing = 8;
+  string access_key_hint = 9;
+  bool has_secret = 10;
+  StorageTargetState state = 11;
+  int64 created = 12;
+  int64 updated = 13;
+  int64 verified_at = 14;
+  string last_error = 15;              // sanitised: no endpoint query, no key, no response body
+  uint32 key_version = 16;             // master key generation that encrypts the credentials
+  uint32 repos = 17;                   // repositories assigned
+}
+
+// `secret_access_key` is write-only. At most 64 targets per owner. `session_token` is for temporary credentials and is kept
+// like the secret.
+message StorageCredentials {
+  string access_key_id = 1;
+  string secret_access_key = 2;
+  string session_token = 3;
+}
+
+message CreateStorageTargetRequest {
+  OwnerRef owner = 1;
+  string name = 2;
+  string endpoint = 3;
+  string region = 4;
+  string bucket = 5;
+  string prefix = 6;
+  StorageAddressing addressing = 7;
+  StorageCredentials credentials = 8;
+}
+message CreateStorageTargetResponse {
+  StorageTarget target = 1;
+}
+
+message ListStorageTargetsRequest {
+  OwnerRef owner = 1;
+}
+message ListStorageTargetsResponse {
+  repeated StorageTarget targets = 1;
+}
+
+message GetStorageTargetRequest {
+  string id = 1;
+}
+message GetStorageTargetResponse {
+  StorageTarget target = 1;
+}
+
+// Absent fields stay. A change of endpoint, region, bucket, prefix or credentials moves the target back to PENDING and stops
+// its use until it is verified again. Send `credentials` to replace the key pair; it is replaced as a whole.
+message UpdateStorageTargetRequest {
+  string id = 1;
+  optional string name = 2;
+  optional string endpoint = 3;
+  optional string region = 4;
+  optional string bucket = 5;
+  optional string prefix = 6;
+  optional StorageAddressing addressing = 7;
+  StorageCredentials credentials = 8;
+}
+message UpdateStorageTargetResponse {
+  StorageTarget target = 1;
+}
+
+message DeleteStorageTargetRequest {
+  string id = 1;
+}
+message DeleteStorageTargetResponse {}
+
+enum StorageVerifyStep {
+  STORAGE_VERIFY_STEP_UNSPECIFIED = 0;
+  STORAGE_VERIFY_STEP_RESOLVE = 1;     // DNS, then the address check
+  STORAGE_VERIFY_STEP_CONNECT = 2;     // TLS to the pinned address
+  STORAGE_VERIFY_STEP_PUT = 3;         // write a probe object under `<prefix>.asc-probe/<random>`
+  STORAGE_VERIFY_STEP_GET = 4;         // read it back and compare
+  STORAGE_VERIFY_STEP_DELETE = 5;
+}
+message StorageVerifyCheck {
+  StorageVerifyStep step = 1;
+  bool ok = 2;
+  uint32 latency_ms = 3;
+  string message = 4;                  // sanitised
+}
+message VerifyStorageTargetRequest {
+  string id = 1;
+}
+message VerifyStorageTargetResponse {
+  bool ok = 1;
+  repeated StorageVerifyCheck checks = 2;
+  StorageTarget target = 3;
+}
+
+message SetStorageTargetEnabledRequest {
+  string id = 1;
+  bool enabled = 2;
+}
+message SetStorageTargetEnabledResponse {
+  StorageTarget target = 1;
+}
+
+// New objects of the repository go to the target from now on. Objects already stored stay where they are until a migration
+// moves them. An empty `target_id` assigns the instance default.
+message AssignRepoStorageRequest {
+  RepoRef repo = 1;
+  string target_id = 2;
+}
+message AssignRepoStorageResponse {
+  string target_id = 1;
+}
+
+enum StorageMigrationState {
+  STORAGE_MIGRATION_STATE_UNSPECIFIED = 0;
+  STORAGE_MIGRATION_STATE_QUEUED = 1;
+  STORAGE_MIGRATION_STATE_COPYING = 2;
+  STORAGE_MIGRATION_STATE_VERIFYING = 3;   // every object read back and its hash compared
+  STORAGE_MIGRATION_STATE_SWITCHING = 4;
+  STORAGE_MIGRATION_STATE_DONE = 5;
+  STORAGE_MIGRATION_STATE_FAILED = 6;
+  STORAGE_MIGRATION_STATE_CANCELLED = 7;
+}
+message StorageMigration {
+  string id = 1;
+  RepoRef repo = 2;
+  string from_target_id = 3;           // empty: the instance default
+  string to_target_id = 4;
+  StorageMigrationState state = 5;
+  uint64 objects_total = 6;
+  uint64 objects_copied = 7;
+  uint64 bytes_copied = 8;
+  bool delete_source = 9;
+  int64 created = 10;
+  int64 updated = 11;
+  string error = 12;                   // sanitised
+}
+// Copy, verify, switch, and only then (with `delete_source`) delete from the source. Reads and writes keep working.
+message StartStorageMigrationRequest {
+  RepoRef repo = 1;
+  string to_target_id = 2;
+  bool delete_source = 3;
+}
+message StartStorageMigrationResponse {
+  StorageMigration migration = 1;
+}
+message GetStorageMigrationRequest {
+  string id = 1;
+}
+message GetStorageMigrationResponse {
+  StorageMigration migration = 1;
+}
+message ListStorageMigrationsRequest {
+  RepoRef repo = 1;
+  uint32 limit = 2;                    // 0 means 20, at most 100
+  string page_token = 3;
+}
+message ListStorageMigrationsResponse {
+  repeated StorageMigration migrations = 1;
+  string next_page_token = 2;
+}
+message CancelStorageMigrationRequest {
+  string id = 1;
+}
+message CancelStorageMigrationResponse {
+  StorageMigration migration = 1;
+}

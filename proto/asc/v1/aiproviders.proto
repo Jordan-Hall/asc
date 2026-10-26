@@ -1,0 +1,154 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/common.proto";
+
+// Bring your own AI keys (build-out feature "ai-keys"; docs/BUILDOUT.md). A user, organisation or repository stores API keys of
+// AI providers; agents, workflows and the semantic features of that owner use them and no one else's. A key is accepted on
+// create and update, sealed in the Vault, and never returned: a key shows `key_hint` (last 4 characters) and `has_key`. A custom
+// `base_url` goes through the same address guard as storage endpoints (https, no loopback, private, link-local or metadata
+// address after DNS resolution, connection pinned to the checked address). A key is used only after `Test` passed; the
+// monthly cap stops use server-side. Advertised as Version.features "ai-keys.v1". ErrorDetail.code also carries
+// AI_ENDPOINT_BLOCKED (INVALID_ARGUMENT), AI_KEY_UNTESTED (FAILED_PRECONDITION) and AI_CAP_REACHED (RESOURCE_EXHAUSTED).
+service AiProviders {
+  rpc CreateKey(CreateAiKeyRequest) returns (CreateAiKeyResponse);   // owner admin; mutating, x-asc-op-id
+  rpc ListKeys(ListAiKeysRequest) returns (ListAiKeysResponse);      // owner admin
+  rpc GetKey(GetAiKeyRequest) returns (GetAiKeyResponse);            // owner admin
+  rpc UpdateKey(UpdateAiKeyRequest) returns (UpdateAiKeyResponse);   // owner admin; mutating, x-asc-op-id
+  rpc DeleteKey(DeleteAiKeyRequest) returns (DeleteAiKeyResponse);   // owner admin; refused while a live run or token uses it
+  rpc TestKey(TestAiKeyRequest) returns (TestAiKeyResponse);         // owner admin; one tiny request to the provider; rate limited
+  rpc Usage(AiUsageRequest) returns (AiUsageResponse);               // owner admin
+  rpc ListModels(ListAiModelsRequest) returns (ListAiModelsResponse);   // owner admin; the models a tested key can use
+}
+
+enum AiProvider {
+  AI_PROVIDER_UNSPECIFIED = 0;
+  AI_PROVIDER_ANTHROPIC = 1;
+  AI_PROVIDER_OPENAI = 2;
+  AI_PROVIDER_GOOGLE = 3;
+  AI_PROVIDER_OPENAI_COMPATIBLE = 4;   // needs `base_url`
+}
+
+enum AiKeyState {
+  AI_KEY_STATE_UNSPECIFIED = 0;
+  AI_KEY_STATE_UNTESTED = 1;
+  AI_KEY_STATE_ACTIVE = 2;
+  AI_KEY_STATE_FAILED = 3;             // the last test or a later call was rejected by the provider (401, 403)
+  AI_KEY_STATE_CAPPED = 4;             // the monthly cap is reached
+  AI_KEY_STATE_DISABLED = 5;
+}
+
+message AiKey {
+  string id = 1;                       // "ak_" + 20 characters
+  OwnerRef owner = 2;
+  string label = 3;                    // 1 to 64 bytes
+  AiProvider provider = 4;
+  string base_url = 5;
+  string default_model = 6;
+  string key_hint = 7;
+  bool has_key = 8;
+  AiKeyState state = 9;
+  uint64 monthly_cap_micro_usd = 10;   // 0 = no cap set by the owner (the instance cap still holds)
+  uint64 month_spent_micro_usd = 11;
+  int64 created = 12;
+  int64 updated = 13;
+  int64 tested_at = 14;
+  string last_error = 15;              // sanitised: provider error code and a short message, no body
+  uint32 key_version = 16;
+}
+
+// `api_key` is write-only, 8 to 512 bytes of printable ASCII. At most 32 keys per owner.
+message CreateAiKeyRequest {
+  OwnerRef owner = 1;
+  string label = 2;
+  AiProvider provider = 3;
+  string api_key = 4;
+  string base_url = 5;
+  string default_model = 6;
+  uint64 monthly_cap_micro_usd = 7;
+}
+message CreateAiKeyResponse {
+  AiKey key = 1;
+}
+
+message ListAiKeysRequest {
+  OwnerRef owner = 1;
+}
+message ListAiKeysResponse {
+  repeated AiKey keys = 1;
+}
+
+message GetAiKeyRequest {
+  string id = 1;
+}
+message GetAiKeyResponse {
+  AiKey key = 1;
+}
+
+// Absent fields stay. A new `api_key` or `base_url` moves the key back to UNTESTED.
+message UpdateAiKeyRequest {
+  string id = 1;
+  optional string label = 2;
+  optional string api_key = 3;
+  optional string base_url = 4;
+  optional string default_model = 5;
+  optional uint64 monthly_cap_micro_usd = 6;
+  optional bool disabled = 7;
+}
+message UpdateAiKeyResponse {
+  AiKey key = 1;
+}
+
+message DeleteAiKeyRequest {
+  string id = 1;
+}
+message DeleteAiKeyResponse {}
+
+message TestAiKeyRequest {
+  string id = 1;
+}
+message TestAiKeyResponse {
+  bool ok = 1;
+  uint32 latency_ms = 2;
+  string provider_status = 3;          // "ok", "unauthorized", "rate_limited", "unreachable", "blocked_address", "bad_response"
+  string message = 4;                  // sanitised
+  AiKey key = 5;
+}
+
+message ListAiModelsRequest {
+  string id = 1;
+}
+message AiModel {
+  string id = 1;
+  string display_name = 2;
+  uint32 context_tokens = 3;
+}
+message ListAiModelsResponse {
+  repeated AiModel models = 1;
+}
+
+enum AiUsageGroup {
+  AI_USAGE_GROUP_DAY = 0;
+  AI_USAGE_GROUP_MODEL = 1;
+  AI_USAGE_GROUP_REPO = 2;
+  AI_USAGE_GROUP_AGENT = 3;
+}
+// `key_id` empty sums every key of the owner. `since` and `until` are unix seconds; 0 means this month so far.
+message AiUsageRequest {
+  OwnerRef owner = 1;
+  string key_id = 2;
+  int64 since = 3;
+  int64 until = 4;
+  AiUsageGroup group_by = 5;
+}
+message AiUsageRow {
+  string group = 1;                    // a day (YYYY-MM-DD, UTC), a model id, "owner/repo" or an agent name
+  uint64 requests = 2;
+  uint64 input_tokens = 3;
+  uint64 output_tokens = 4;
+  uint64 cost_micro_usd = 5;
+}
+message AiUsageResponse {
+  repeated AiUsageRow rows = 1;
+  AiUsageRow total = 2;
+}

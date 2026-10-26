@@ -1,0 +1,119 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Signed changes (build-out feature "signing"; docs/BUILDOUT.md). A signature is an SSHSIG (the `ssh-keygen -Y sign` format)
+// over the message `asc-changeset-v1\n<64 hex characters of the changeset id>\n` in the namespace `asc-changeset`. It is kept
+// next to the changeset, not inside it, so signing never changes an id and a change can be signed after the push. A key
+// belongs to one user. Policy `[signing] require_signed = true` makes landing on trunk need a VALID signature on every
+// change. Advertised as Version.features "signing.v1". ErrorDetail.code also carries UNSIGNED_CHANGE (FAILED_PRECONDITION),
+// SIGNATURE_INVALID (INVALID_ARGUMENT) and SIGNING_KEY_LIMIT (RESOURCE_EXHAUSTED, at most 32 live keys per user).
+service Signing {
+  rpc ListKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse);       // own keys; another user's needs a site administrator
+  rpc AddKey(AddSigningKeyRequest) returns (AddSigningKeyResponse);             // user identity; mutating, x-asc-op-id
+  rpc RevokeKey(RevokeSigningKeyRequest) returns (RevokeSigningKeyResponse);    // owner or site administrator; idempotent
+  rpc SubmitSignature(SubmitSignatureRequest) returns (SubmitSignatureResponse);   // repo write; mutating, x-asc-op-id
+  rpc Verify(VerifySignaturesRequest) returns (VerifySignaturesResponse);       // repo read; cheap
+  rpc GetServerKey(GetServerKeyRequest) returns (GetServerKeyResponse);        // any caller; the key that signs server-made commits
+}
+
+enum SigningKeyKind {
+  SIGNING_KEY_KIND_UNSPECIFIED = 0;
+  SIGNING_KEY_KIND_SSH_ED25519 = 1;
+  SIGNING_KEY_KIND_SSH_ECDSA_P256 = 2;
+  SIGNING_KEY_KIND_SSH_RSA = 3;          // 3072 bits or more
+}
+
+message SigningKey {
+  string id = 1;
+  string owner = 2;              // user handle
+  string title = 3;
+  SigningKeyKind kind = 4;
+  string fingerprint = 5;        // "SHA256:..." as ssh-keygen prints it
+  string public_key = 6;         // one authorized_keys line, no options
+  int64 created = 7;
+  int64 expires_at = 8;          // 0 = never
+  int64 revoked_at = 9;          // 0 = live
+  string revoked_reason = 10;
+  int64 last_used = 11;
+}
+
+// `owner` empty means the caller. Revoked keys are listed too, so old signatures stay explainable.
+message ListSigningKeysRequest {
+  string owner = 1;
+}
+message ListSigningKeysResponse {
+  repeated SigningKey keys = 1;
+}
+
+// `public_key` is one line of at most 4 KiB. Options (`command=`, `from=`) are refused. A key already registered
+// by anyone is ALREADY_EXISTS, so a fingerprint maps to one owner.
+message AddSigningKeyRequest {
+  string title = 1;
+  string public_key = 2;
+  int64 expires_at = 3;          // 0 = never; at most ten years ahead
+}
+message AddSigningKeyResponse {
+  SigningKey key = 1;
+}
+
+message RevokeSigningKeyRequest {
+  string id = 1;
+  string reason = 2;             // at most 256 bytes
+}
+message RevokeSigningKeyResponse {
+  SigningKey key = 1;
+}
+
+// `signature` is the armored SSHSIG block, at most 8 KiB. A second signature for the same changeset replaces the first.
+message SubmitSignatureRequest {
+  RepoRef repo = 1;
+  bytes changeset = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  string signature = 3;
+}
+message SubmitSignatureResponse {
+  SignatureVerification verification = 1;
+}
+
+enum VerificationStatus {
+  VERIFICATION_STATUS_UNSPECIFIED = 0;
+  VERIFICATION_STATUS_UNSIGNED = 1;
+  VERIFICATION_STATUS_VALID = 2;              // good signature by a live key of the changeset's author
+  VERIFICATION_STATUS_UNKNOWN_KEY = 3;        // good signature, key registered by nobody
+  VERIFICATION_STATUS_KEY_NOT_AUTHOR = 4;     // key belongs to a user other than the author
+  VERIFICATION_STATUS_KEY_EXPIRED = 5;
+  VERIFICATION_STATUS_KEY_REVOKED = 6;        // revoked before the signature was submitted
+  VERIFICATION_STATUS_BAD_SIGNATURE = 7;
+  VERIFICATION_STATUS_UNSUPPORTED = 8;        // not an SSHSIG, or a namespace or algorithm asc does not accept
+}
+
+message SignatureVerification {
+  bytes changeset = 1 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes change = 2 [(asc.v1.json) = JSON_KIND_CHANGE];
+  VerificationStatus status = 3;
+  string key_id = 4;
+  string fingerprint = 5;
+  string signer = 6;             // handle of the key's owner; empty for UNKNOWN_KEY and UNSIGNED
+  int64 signed_at = 7;           // when the signature was submitted
+  string reason = 8;
+}
+
+// Give changesets or changes (at most 100 in all). A change is resolved to its newest version.
+message VerifySignaturesRequest {
+  RepoRef repo = 1;
+  repeated bytes changesets = 2 [(asc.v1.json) = JSON_KIND_HEX];
+  repeated bytes changes = 3 [(asc.v1.json) = JSON_KIND_CHANGE];
+}
+message VerifySignaturesResponse {
+  repeated SignatureVerification results = 1;   // in request order, changesets first
+}
+
+message GetServerKeyRequest {}
+message GetServerKeyResponse {
+  bool configured = 1;
+  SigningKeyKind kind = 2;
+  string fingerprint = 3;
+  string public_key = 4;
+}
