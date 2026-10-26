@@ -4,8 +4,9 @@
 //! A repository may carry [`POLICY_PATH`] on its trunk. The file the server enforces is the one
 //! on the trunk tip *before* an update, never the one in the update, so a change cannot lift the
 //! rules that bind it. This module knows nothing about servers, stores or principals' wire forms:
-//! it parses and validates the file, and answers "may this [`Who`] write this path" and "does
-//! this run fit the agent budget". The enforcement point is `asc-serve`'s ref policy.
+//! it parses and validates the file, and answers "may this [`Who`] write this path", "does this
+//! run fit the agent budget" and "what does landing on trunk need". The enforcement point is
+//! `asc-serve`'s `policy` module.
 //!
 //! ```toml
 //! version = 1
@@ -18,19 +19,44 @@
 //! require_checks = ["build"]   # and a successful run of each named check on its version
 //! allow_force = false          # no non-fast-forward update and no deletion of trunk
 //!
+//! [signing]
+//! require_signed = true        # every change landing on trunk needs a VALID signature
+//!
 //! [paths."src/**"]             # every matching rule must admit the writer
 //! write = ["role:maintainer", "agent:*"]
 //!
+//! [secrets]
+//! enabled = true               # scan what an update adds (default true)
+//! block_on_push = true         # refuse an update that adds a secret (default true)
+//! allow_paths = ["tests/fixtures/**"]   # not scanned: a reviewed change, like any other
+//! [secrets.rules.acme-key]     # a custom rule, reported as `custom.acme-key`
+//! pattern = "ACME-[0-9A-F]{16}"
+//! severity = "high"            # low | medium | high | critical (default high)
+//! description = "ACME service key"
+//!
+//! [ci]
+//! flaky_threshold = 0.02       # flips per run at which a test counts as flaky
+//! allow_quarantine = false     # a maintainer may quarantine a flaky test
+//!
 //! [agents]
+//! enabled = true               # agents may act in this repository
 //! default_scope = ["src/**", "tests/**"]   # an agent writes only here, or where a rule names it
 //! denied_paths = [".github/**"]            # an agent never writes here
+//! max_runtime_seconds = 3600
 //! [agents.budgets]
 //! max_changes_per_run = 20     # a run is one ref-update request
 //! max_paths_per_run = 200
+//! max_tokens = 1000000         # model tokens one run may spend
+//! max_cost_micro_usd = 5000000
 //!
 //! [merge]
 //! strategy = "rebase"          # rebase | rebase-disjoint | fast-forward
+//! queue = false                # land through the merge queue
+//! revalidate = true            # the queue re-checks the exact head that would land
 //! ```
+//!
+//! `[trunk] require_signed` is accepted as a synonym of `[signing] require_signed`; either one
+//! turns the rule on.
 //!
 //! # Subjects
 //!
@@ -77,6 +103,14 @@ pub const MAX_APPROVALS: u32 = 16;
 pub const MAX_BUDGET: u32 = 100_000;
 /// The role that may change the policy.
 pub const MAINTAINER: &str = "maintainer";
+/// Largest `max_runtime_seconds`: a week.
+pub const MAX_RUNTIME_SECONDS: u32 = 7 * 24 * 3600;
+/// Largest token budget of an agent run.
+pub const MAX_TOKEN_BUDGET: u64 = 1_000_000_000;
+/// Largest cost budget of an agent run, in millionths of a US dollar (one million dollars).
+pub const MAX_COST_BUDGET: u64 = 1_000_000_000_000;
+/// The flaky threshold when the policy names none.
+pub const DEFAULT_FLAKY_THRESHOLD: f64 = 0.02;
 
 /// Why a policy file was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -85,6 +119,86 @@ pub struct PolicyError(pub String);
 
 fn bad<T>(m: impl Into<String>) -> Result<T, PolicyError> {
     Err(PolicyError(m.into()))
+}
+
+/// A problem found in a policy file, located for an editor: `code` is a stable slug (`unknown_key`,
+/// `bad_glob`, `no_maintainer`, `too_large`, ...), `line` and `column` are 1-based and 0 when the
+/// problem is not tied to a place in the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub code: &'static str,
+    pub message: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// A parse failure with its classification and, for a syntax error, the byte span in the file.
+struct Failure {
+    code: &'static str,
+    message: String,
+    span: Option<std::ops::Range<usize>>,
+}
+
+fn fail<T>(code: &'static str, m: impl Into<String>) -> Result<T, Failure> {
+    Err(Failure {
+        code,
+        message: m.into(),
+        span: None,
+    })
+}
+
+/// A validation refusal, classified by its message.
+fn invalid<T>(m: impl Into<String>) -> Result<T, Failure> {
+    Err(PolicyError(m.into()).into())
+}
+
+impl From<PolicyError> for Failure {
+    fn from(e: PolicyError) -> Self {
+        let code = classify(&e.0);
+        Failure {
+            code,
+            message: e.0,
+            span: None,
+        }
+    }
+}
+
+impl From<crate::secrets::RuleError> for Failure {
+    fn from(e: crate::secrets::RuleError) -> Self {
+        Failure {
+            code: "bad_secret_rule",
+            message: e.0,
+            span: None,
+        }
+    }
+}
+
+/// The slug of a validation message. The messages are this module's own, so matching on a
+/// fragment is stable; anything else is `invalid`.
+fn classify(message: &str) -> &'static str {
+    const TABLE: &[(&str, &str)] = &[
+        ("too many", "too_many"),
+        ("larger than", "too_large"),
+        ("not UTF-8", "not_utf8"),
+        ("not supported", "unsupported_version"),
+        ("at least one maintainer", "no_maintainer"),
+        ("undefined role", "undefined_role"),
+        ("path pattern", "bad_glob"),
+        ("`**`", "bad_glob"),
+        ("subject", "bad_subject"),
+        ("role name", "bad_role"),
+        ("a role cannot", "bad_subject"),
+        ("budget", "bad_budget"),
+        ("max_", "bad_budget"),
+        ("require_approvals", "bad_approvals"),
+        ("required check", "bad_check"),
+        ("secret rule", "bad_secret_rule"),
+        ("flaky_threshold", "bad_threshold"),
+    ];
+    TABLE
+        .iter()
+        .find(|(frag, _)| message.contains(frag))
+        .map_or("invalid", |(_, code)| code)
 }
 
 // ------------------------------------------------------------------------------ who
@@ -398,6 +512,13 @@ pub struct Trunk {
     pub allow_force: bool,
 }
 
+/// `[signing]`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Signing {
+    /// Every change landing on trunk needs a `VALID` signature.
+    pub require_signed: bool,
+}
+
 /// `[paths."<glob>"]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathRule {
@@ -405,29 +526,119 @@ pub struct PathRule {
     pub write: Vec<Subject>,
 }
 
+/// `[secrets]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretsPolicy {
+    /// Scan what an update adds. On unless the policy says otherwise.
+    pub enabled: bool,
+    /// Refuse an update that adds a secret; off, findings are recorded and the update goes on.
+    pub block_on_push: bool,
+    /// Paths that are not scanned. Read from the policy on the trunk tip, so changing the list is
+    /// a reviewed change like any other.
+    pub allow_paths: Vec<PathGlob>,
+    /// `[secrets.rules.<id>]`, in id order.
+    pub rules: Vec<crate::secrets::CustomRule>,
+}
+
+impl Default for SecretsPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_push: true,
+            allow_paths: Vec::new(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl SecretsPolicy {
+    /// Whether `path` is on the allow list.
+    pub fn allows(&self, path: &[u8]) -> bool {
+        self.allow_paths.iter().any(|g| g.matches(path))
+    }
+}
+
+/// `[ci]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CiPolicy {
+    /// Flips per run, above which a test counts as flaky.
+    pub flaky_threshold: f64,
+    /// A maintainer may quarantine a flaky test.
+    pub allow_quarantine: bool,
+}
+
+impl Default for CiPolicy {
+    fn default() -> Self {
+        Self {
+            flaky_threshold: DEFAULT_FLAKY_THRESHOLD,
+            allow_quarantine: false,
+        }
+    }
+}
+
 /// `[agents.budgets]`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Budgets {
     pub max_changes_per_run: Option<u32>,
     pub max_paths_per_run: Option<u32>,
+    pub max_tokens: Option<u64>,
+    pub max_cost_micro_usd: Option<u64>,
 }
 
 /// `[agents]`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Agents {
+    /// Agents may act in this repository. On unless the policy says otherwise (the server
+    /// switch is separate and also has to be on).
+    pub enabled: bool,
     pub default_scope: Vec<PathGlob>,
     pub denied_paths: Vec<PathGlob>,
+    pub max_runtime_seconds: Option<u32>,
     pub budgets: Budgets,
 }
 
+impl Default for Agents {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_scope: Vec::new(),
+            denied_paths: Vec::new(),
+            max_runtime_seconds: None,
+            budgets: Budgets::default(),
+        }
+    }
+}
+
+/// `[merge]` besides the strategy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MergeOptions {
+    /// Land through the merge queue.
+    pub queue: bool,
+    /// The queue re-checks the exact head that would land.
+    pub revalidate: bool,
+}
+
+impl Default for MergeOptions {
+    fn default() -> Self {
+        Self {
+            queue: false,
+            revalidate: true,
+        }
+    }
+}
+
 /// A parsed, validated policy.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Policy {
     pub roles: BTreeMap<String, Vec<Subject>>,
     pub trunk: Trunk,
+    pub signing: Signing,
     pub paths: Vec<PathRule>,
+    pub secrets: SecretsPolicy,
+    pub ci: CiPolicy,
     pub agents: Agents,
     pub strategy: Strategy,
+    pub merge: MergeOptions,
 }
 
 #[derive(Deserialize)]
@@ -438,7 +649,13 @@ struct RawPolicy {
     #[serde(default)]
     trunk: RawTrunk,
     #[serde(default)]
+    signing: RawSigning,
+    #[serde(default)]
     paths: BTreeMap<String, RawPathRule>,
+    #[serde(default)]
+    secrets: RawSecrets,
+    #[serde(default)]
+    ci: RawCi,
     #[serde(default)]
     agents: RawAgents,
     #[serde(default)]
@@ -454,6 +671,16 @@ struct RawTrunk {
     require_checks: Vec<String>,
     #[serde(default)]
     allow_force: bool,
+    /// A synonym of `[signing] require_signed`.
+    #[serde(default)]
+    require_signed: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RawSigning {
+    #[serde(default)]
+    require_signed: bool,
 }
 
 #[derive(Deserialize)]
@@ -462,15 +689,76 @@ struct RawPathRule {
     write: Vec<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSecrets {
+    #[serde(default = "yes")]
+    enabled: bool,
+    #[serde(default = "yes")]
+    block_on_push: bool,
+    #[serde(default)]
+    allow_paths: Vec<String>,
+    #[serde(default)]
+    rules: BTreeMap<String, RawSecretRule>,
+}
+
+impl Default for RawSecrets {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            block_on_push: true,
+            allow_paths: Vec::new(),
+            rules: BTreeMap::new(),
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSecretRule {
+    pattern: String,
+    #[serde(default)]
+    severity: Option<String>,
+    #[serde(default)]
+    description: String,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+struct RawCi {
+    flaky_threshold: Option<f64>,
+    #[serde(default)]
+    allow_quarantine: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawAgents {
+    #[serde(default = "yes")]
+    enabled: bool,
     #[serde(default)]
     default_scope: Vec<String>,
     #[serde(default)]
     denied_paths: Vec<String>,
+    max_runtime_seconds: Option<u32>,
     #[serde(default)]
     budgets: RawBudgets,
+}
+
+impl Default for RawAgents {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_scope: Vec::new(),
+            denied_paths: Vec::new(),
+            max_runtime_seconds: None,
+            budgets: RawBudgets::default(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -478,13 +766,29 @@ struct RawAgents {
 struct RawBudgets {
     max_changes_per_run: Option<u32>,
     max_paths_per_run: Option<u32>,
+    max_tokens: Option<u64>,
+    max_cost_micro_usd: Option<u64>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMerge {
     #[serde(default)]
     strategy: Strategy,
+    #[serde(default)]
+    queue: bool,
+    #[serde(default = "yes")]
+    revalidate: bool,
+}
+
+impl Default for RawMerge {
+    fn default() -> Self {
+        Self {
+            strategy: Strategy::default(),
+            queue: false,
+            revalidate: true,
+        }
+    }
 }
 
 fn subjects(list: &[String], allow_role: bool) -> Result<Vec<Subject>, PolicyError> {
@@ -509,26 +813,77 @@ fn budget(n: Option<u32>, what: &str) -> Result<Option<u32>, PolicyError> {
     }
 }
 
+fn big_budget(n: Option<u64>, what: &str, max: u64) -> Result<Option<u64>, PolicyError> {
+    match n {
+        Some(0) => bad(format!("{what} must be at least 1; omit it for no limit")),
+        Some(n) if n > max => bad(format!("{what} is above {max}")),
+        n => Ok(n),
+    }
+}
+
+/// What landing on trunk needs, as the policy states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandRequirements {
+    pub approvals: u32,
+    pub checks: Vec<String>,
+    pub signed: bool,
+    pub strategy: Strategy,
+}
+
 impl Policy {
     /// Parses and validates a policy file. Strict: an unknown key, a wrong type, a bad subject or
     /// pattern, an undefined role, or no maintainer is an error, and nothing partial is returned.
     pub fn parse(bytes: &[u8]) -> Result<Self, PolicyError> {
+        Self::parse_located(bytes).map_err(|f| PolicyError(f.message))
+    }
+
+    /// [`parse`](Self::parse), but a refusal is a [`Diagnostic`] with a code and, where the file is
+    /// not valid TOML or holds an unknown key, the line and column.
+    pub fn diagnose(bytes: &[u8]) -> Result<Self, Diagnostic> {
+        Self::parse_located(bytes).map_err(|f| {
+            let (line, column) = match (&f.span, std::str::from_utf8(bytes)) {
+                (Some(span), Ok(text)) => locate(text, span.start),
+                _ => (0, 0),
+            };
+            Diagnostic {
+                code: f.code,
+                message: f.message,
+                line,
+                column,
+            }
+        })
+    }
+
+    fn parse_located(bytes: &[u8]) -> Result<Self, Failure> {
         if bytes.len() > MAX_POLICY_BYTES {
-            return bad(format!(
-                "the policy file is larger than {MAX_POLICY_BYTES} bytes"
-            ));
+            return fail(
+                "too_large",
+                format!("the policy file is larger than {MAX_POLICY_BYTES} bytes"),
+            );
         }
-        let text = std::str::from_utf8(bytes).or_else(|_| bad("the policy file is not UTF-8"))?;
-        let raw: RawPolicy = toml::from_str(text)
-            .map_err(|e| PolicyError(format!("policy.toml: {}", e.message())))?;
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return fail("not_utf8", "the policy file is not UTF-8");
+        };
+        let raw: RawPolicy = toml::from_str(text).map_err(|e| Failure {
+            code: toml_code(e.message()),
+            message: format!("policy.toml: {}", e.message()),
+            span: e.span(),
+        })?;
         if raw.version != POLICY_VERSION {
-            return bad(format!(
-                "policy version {} is not supported (this server reads {POLICY_VERSION})",
-                raw.version
-            ));
+            return fail(
+                "unsupported_version",
+                format!(
+                    "policy version {} is not supported (this server reads {POLICY_VERSION})",
+                    raw.version
+                ),
+            );
         }
+        Self::build(raw)
+    }
+
+    fn build(raw: RawPolicy) -> Result<Self, Failure> {
         if raw.roles.len() > MAX_ROLES {
-            return bad("too many roles");
+            return fail("too_many", "too many roles");
         }
         let mut roles = BTreeMap::new();
         for (name, members) in &raw.roles {
@@ -536,23 +891,23 @@ impl Policy {
             roles.insert(name.clone(), subjects(members, false)?);
         }
         if roles.get(MAINTAINER).is_none_or(Vec::is_empty) {
-            return bad("the policy must name at least one maintainer in [roles]");
+            return invalid("the policy must name at least one maintainer in [roles]");
         }
         if raw.trunk.require_approvals > MAX_APPROVALS {
-            return bad(format!("require_approvals is above {MAX_APPROVALS}"));
+            return invalid(format!("require_approvals is above {MAX_APPROVALS}"));
         }
         if raw.trunk.require_checks.len() > MAX_CHECKS {
-            return bad("too many require_checks");
+            return invalid("too many require_checks");
         }
         for c in &raw.trunk.require_checks {
             if c.is_empty() || c.len() > MAX_NAME_LEN || c.chars().any(char::is_control) {
-                return bad(
+                return invalid(
                     "a required check name is empty, too long or holds a control character",
                 );
             }
         }
         if raw.paths.len() > MAX_PATH_RULES {
-            return bad("too many [paths] rules");
+            return invalid("too many [paths] rules");
         }
         let mut paths = Vec::with_capacity(raw.paths.len());
         for (glob, rule) in &raw.paths {
@@ -561,7 +916,7 @@ impl Policy {
                 if let Subject::Role(r) = s
                     && !roles.contains_key(r)
                 {
-                    return bad(format!("path rule {glob:?} names the undefined role {r:?}"));
+                    return invalid(format!("path rule {glob:?} names the undefined role {r:?}"));
                 }
             }
             paths.push(PathRule {
@@ -569,6 +924,29 @@ impl Policy {
                 write,
             });
         }
+        let secrets = build_secrets(raw.secrets)?;
+        let ci = build_ci(raw.ci)?;
+        if raw.agents.max_runtime_seconds == Some(0)
+            || raw
+                .agents
+                .max_runtime_seconds
+                .is_some_and(|s| s > MAX_RUNTIME_SECONDS)
+        {
+            return invalid(format!(
+                "max_runtime_seconds must be between 1 and {MAX_RUNTIME_SECONDS}"
+            ));
+        }
+        let b = &raw.agents.budgets;
+        let budgets = Budgets {
+            max_changes_per_run: budget(b.max_changes_per_run, "max_changes_per_run")?,
+            max_paths_per_run: budget(b.max_paths_per_run, "max_paths_per_run")?,
+            max_tokens: big_budget(b.max_tokens, "max_tokens", MAX_TOKEN_BUDGET)?,
+            max_cost_micro_usd: big_budget(
+                b.max_cost_micro_usd,
+                "max_cost_micro_usd",
+                MAX_COST_BUDGET,
+            )?,
+        };
         Ok(Self {
             roles,
             trunk: Trunk {
@@ -576,22 +954,24 @@ impl Policy {
                 require_checks: raw.trunk.require_checks,
                 allow_force: raw.trunk.allow_force,
             },
+            signing: Signing {
+                require_signed: raw.signing.require_signed || raw.trunk.require_signed,
+            },
             paths,
+            secrets,
+            ci,
             agents: Agents {
+                enabled: raw.agents.enabled,
                 default_scope: globs(&raw.agents.default_scope)?,
                 denied_paths: globs(&raw.agents.denied_paths)?,
-                budgets: Budgets {
-                    max_changes_per_run: budget(
-                        raw.agents.budgets.max_changes_per_run,
-                        "max_changes_per_run",
-                    )?,
-                    max_paths_per_run: budget(
-                        raw.agents.budgets.max_paths_per_run,
-                        "max_paths_per_run",
-                    )?,
-                },
+                max_runtime_seconds: raw.agents.max_runtime_seconds,
+                budgets,
             },
             strategy: raw.merge.strategy,
+            merge: MergeOptions {
+                queue: raw.merge.queue,
+                revalidate: raw.merge.revalidate,
+            },
         })
     }
 
@@ -635,6 +1015,9 @@ impl Policy {
         }
         let rules = || self.paths.iter().filter(|r| r.glob.matches(path));
         if who.is_agent() {
+            if !self.agents.enabled {
+                return Err(deny("agents are switched off for this repository".into()));
+            }
             if self.agents.denied_paths.iter().any(|g| g.matches(path)) {
                 return Err(deny("agents may not write this path".into()));
             }
@@ -683,6 +1066,12 @@ impl Policy {
         if !who.is_agent() {
             return Ok(());
         }
+        if !self.agents.enabled {
+            return Err(Denial {
+                path: String::new(),
+                reason: "agents are switched off for this repository".into(),
+            });
+        }
         let over = |n: usize, max: Option<u32>| max.is_some_and(|m| n > m as usize);
         let b = &self.agents.budgets;
         if over(changes, b.max_changes_per_run) {
@@ -704,6 +1093,117 @@ impl Policy {
             });
         }
         Ok(())
+    }
+
+    /// What landing on trunk needs: approvals, checks, a signature and the merge strategy.
+    pub fn land_requirements(&self) -> LandRequirements {
+        LandRequirements {
+            approvals: self.trunk.require_approvals,
+            checks: self.trunk.require_checks.clone(),
+            signed: self.signing.require_signed,
+            strategy: self.strategy,
+        }
+    }
+
+    /// Whether `who` may rewrite or delete trunk. A maintainer never may unless `allow_force`:
+    /// the switch is the policy's, and changing it is a reviewed change.
+    pub fn check_force(&self) -> Result<(), Denial> {
+        if self.trunk.allow_force {
+            Ok(())
+        } else {
+            Err(Denial {
+                path: String::new(),
+                reason: "trunk cannot be rewritten or deleted (allow_force is off)".into(),
+            })
+        }
+    }
+
+    /// The members of role `maintainer` that are agents or the open `*`: a warning for an editor,
+    /// since an agent that can change the policy can lift every rule that binds it.
+    pub fn maintainers_include_agents(&self) -> bool {
+        self.roles.get(MAINTAINER).is_some_and(|m| {
+            m.iter().any(|s| {
+                matches!(
+                    s,
+                    Subject::Of {
+                        kind: Kind::Agent,
+                        ..
+                    } | Subject::Anyone
+                )
+            })
+        })
+    }
+}
+
+/// `[secrets]` of a raw policy: the allow list and the custom rules, validated.
+fn build_secrets(raw: RawSecrets) -> Result<SecretsPolicy, Failure> {
+    if raw.rules.len() > crate::secrets::MAX_CUSTOM_RULES {
+        return invalid("too many secret rules");
+    }
+    let mut rules = Vec::with_capacity(raw.rules.len());
+    for (id, r) in raw.rules {
+        let severity = match r.severity.as_deref() {
+            None => crate::secrets::Severity::High,
+            Some(s) => crate::secrets::Severity::parse(s).ok_or_else(|| {
+                PolicyError(format!(
+                    "secret rule {id:?}: severity {s:?} is not low, medium, high or critical"
+                ))
+            })?,
+        };
+        let rule = crate::secrets::CustomRule {
+            id,
+            pattern: r.pattern,
+            severity,
+            description: r.description,
+        };
+        rule.validate()?;
+        rules.push(rule);
+    }
+    Ok(SecretsPolicy {
+        enabled: raw.enabled,
+        block_on_push: raw.block_on_push,
+        allow_paths: globs(&raw.allow_paths)?,
+        rules,
+    })
+}
+
+fn build_ci(raw: RawCi) -> Result<CiPolicy, Failure> {
+    let flaky_threshold = match raw.flaky_threshold {
+        None => DEFAULT_FLAKY_THRESHOLD,
+        Some(t) if t.is_finite() && t > 0.0 && t <= 1.0 => t,
+        Some(_) => return invalid("flaky_threshold must be above 0 and at most 1"),
+    };
+    Ok(CiPolicy {
+        flaky_threshold,
+        allow_quarantine: raw.allow_quarantine,
+    })
+}
+
+/// The 1-based line and byte column of `offset` in `text`.
+fn locate(text: &str, offset: usize) -> (u32, u32) {
+    let offset = offset.min(text.len());
+    let before = &text.as_bytes()[..offset];
+    let line = before.iter().filter(|b| **b == b'\n').count() + 1;
+    let start = before
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map_or(0, |i| i + 1);
+    (
+        u32::try_from(line).unwrap_or(u32::MAX),
+        u32::try_from(offset - start + 1).unwrap_or(u32::MAX),
+    )
+}
+
+/// The slug of a TOML or schema error from the deserializer.
+fn toml_code(message: &str) -> &'static str {
+    if message.contains("unknown field") {
+        "unknown_key"
+    } else if message.contains("missing field") {
+        "missing_key"
+    } else if message.contains("invalid type") || message.contains("invalid value") {
+        "bad_type"
+    } else {
+        "syntax"
     }
 }
 
@@ -1014,5 +1514,296 @@ strategy = "rebase-disjoint"
         assert!(p.check_run(&user("carol"), 1000, 1000).is_ok());
         let none = Policy::parse(b"version = 1\n[roles]\nmaintainer = [\"user:a\"]\n").unwrap();
         assert!(none.check_run(&agent("bot"), 1_000_000, 1_000_000).is_ok());
+    }
+
+    const HEAD: &str = "version = 1\n[roles]\nmaintainer = [\"user:a\"]\n";
+
+    const EVERYTHING: &str = r#"
+version = 1
+[roles]
+maintainer = ["user:alice"]
+[trunk]
+require_approvals = 1
+[signing]
+require_signed = true
+[secrets]
+enabled = true
+block_on_push = false
+allow_paths = ["tests/fixtures/**", "docs/*.md"]
+[secrets.rules.acme-key]
+pattern = "ACME-[0-9A-F]{16}"
+severity = "critical"
+description = "ACME service key"
+[secrets.rules.plain]
+pattern = "internal-[a-z]{8}"
+[ci]
+flaky_threshold = 0.1
+allow_quarantine = true
+[agents]
+enabled = false
+max_runtime_seconds = 600
+[agents.budgets]
+max_changes_per_run = 5
+max_tokens = 100000
+max_cost_micro_usd = 2500000
+[merge]
+queue = true
+revalidate = false
+"#;
+
+    #[test]
+    fn every_key_of_the_contract_parses_and_defaults_are_safe() {
+        let p = Policy::parse(EVERYTHING.as_bytes()).unwrap();
+        assert!(p.signing.require_signed);
+        assert!(p.secrets.enabled && !p.secrets.block_on_push);
+        assert_eq!(p.secrets.allow_paths.len(), 2);
+        assert!(p.secrets.allows(b"tests/fixtures/a/b.pem"));
+        assert!(p.secrets.allows(b"DOCS/readme.md"));
+        assert!(!p.secrets.allows(b"src/a.rs"));
+        assert_eq!(p.secrets.rules.len(), 2);
+        assert_eq!(p.secrets.rules[0].id, "acme-key");
+        assert_eq!(
+            p.secrets.rules[0].severity,
+            crate::secrets::Severity::Critical
+        );
+        assert_eq!(
+            p.secrets.rules[1].severity,
+            crate::secrets::Severity::High,
+            "default"
+        );
+        assert_eq!(p.ci.flaky_threshold, 0.1);
+        assert!(p.ci.allow_quarantine);
+        assert!(!p.agents.enabled);
+        assert_eq!(p.agents.max_runtime_seconds, Some(600));
+        assert_eq!(p.agents.budgets.max_tokens, Some(100_000));
+        assert_eq!(p.agents.budgets.max_cost_micro_usd, Some(2_500_000));
+        assert!(p.merge.queue && !p.merge.revalidate);
+
+        // A bare file is the safe default: scanning on and blocking, nothing signed, agents allowed
+        // by the file, the queue off and revalidating.
+        let d = Policy::parse(HEAD.as_bytes()).unwrap();
+        assert_eq!(d.secrets, SecretsPolicy::default());
+        assert!(d.secrets.enabled && d.secrets.block_on_push);
+        assert!(!d.signing.require_signed);
+        assert_eq!(d.ci, CiPolicy::default());
+        assert_eq!(d.ci.flaky_threshold, 0.02);
+        assert!(d.agents.enabled);
+        assert_eq!(
+            d.merge,
+            MergeOptions {
+                queue: false,
+                revalidate: true
+            }
+        );
+    }
+
+    #[test]
+    fn require_signed_has_two_spellings_and_either_turns_it_on() {
+        let signed = |extra: &str| {
+            Policy::parse(format!("{HEAD}{extra}").as_bytes())
+                .unwrap()
+                .signing
+                .require_signed
+        };
+        assert!(signed("[trunk]\nrequire_signed = true\n"));
+        assert!(signed("[signing]\nrequire_signed = true\n"));
+        assert!(
+            signed("[signing]\nrequire_signed = false\n[trunk]\nrequire_signed = true\n"),
+            "either wins"
+        );
+        assert!(!signed("[signing]\nrequire_signed = false\n"));
+        assert!(!signed(""));
+        assert!(Policy::parse(format!("{HEAD}[signing]\nbogus = 1\n").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_new_sections_are_strict_and_bounded() {
+        let bad = |extra: &str| Policy::parse(format!("{HEAD}{extra}").as_bytes()).is_err();
+        assert!(bad("[secrets]\nbogus = true\n"), "unknown secrets key");
+        assert!(bad("[secrets]\nenabled = \"yes\"\n"), "wrong type");
+        assert!(
+            bad("[secrets]\nallow_paths = [\"/abs\"]\n"),
+            "bad allow path"
+        );
+        assert!(
+            bad("[secrets]\nallow_paths = [\"../up\"]\n"),
+            "dotdot allow path"
+        );
+        assert!(bad("[secrets.rules.x]\n"), "pattern is required");
+        assert!(
+            bad("[secrets.rules.x]\npattern = \"(\"\n"),
+            "pattern must compile"
+        );
+        assert!(bad("[secrets.rules.x]\npattern = \"a*\"\n"), "empty match");
+        assert!(
+            bad("[secrets.rules.x]\npattern = \"a\"\nseverity = \"urgent\"\n"),
+            "severity"
+        );
+        assert!(
+            bad("[secrets.rules.x]\npattern = \"a\"\nbogus = 1\n"),
+            "unknown rule key"
+        );
+        assert!(bad("[secrets.rules.Bad]\npattern = \"a\"\n"), "rule id");
+        assert!(bad("[ci]\nflaky_threshold = 0\n"));
+        assert!(bad("[ci]\nflaky_threshold = 1.5\n"));
+        assert!(bad("[ci]\nflaky_threshold = -0.1\n"));
+        assert!(bad("[ci]\nbogus = 1\n"));
+        assert!(bad("[agents]\nmax_runtime_seconds = 0\n"));
+        assert!(bad(&format!(
+            "[agents]\nmax_runtime_seconds = {}\n",
+            MAX_RUNTIME_SECONDS + 1
+        )));
+        assert!(bad("[agents.budgets]\nmax_tokens = 0\n"));
+        assert!(bad(&format!(
+            "[agents.budgets]\nmax_tokens = {}\n",
+            MAX_TOKEN_BUDGET + 1
+        )));
+        assert!(bad("[agents.budgets]\nmax_cost_micro_usd = 0\n"));
+        assert!(bad(&format!(
+            "[agents.budgets]\nmax_cost_micro_usd = {}\n",
+            MAX_COST_BUDGET + 1
+        )));
+        assert!(bad("[agents.budgets]\nmax_tokens = -5\n"));
+        assert!(bad("[merge]\nqueue = 3\n"));
+        assert!(bad("[merge]\nbogus = true\n"));
+        let rules: String = (0..=crate::secrets::MAX_CUSTOM_RULES)
+            .map(|i| format!("[secrets.rules.r{i}]\npattern = \"x{i}\"\n"))
+            .collect();
+        assert!(bad(&rules), "too many rules");
+        let allow: Vec<String> = (0..=MAX_GLOBS).map(|i| format!("\"p{i}\"")).collect();
+        assert!(bad(&format!(
+            "[secrets]\nallow_paths = [{}]\n",
+            allow.join(",")
+        )));
+        // The edges are fine.
+        let ok = format!(
+            "{HEAD}[ci]\nflaky_threshold = 1\n[agents]\nmax_runtime_seconds = {MAX_RUNTIME_SECONDS}\n[agents.budgets]\nmax_tokens = {MAX_TOKEN_BUDGET}\nmax_cost_micro_usd = {MAX_COST_BUDGET}\n"
+        );
+        Policy::parse(ok.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_say_what_and_where() {
+        let d = |text: &str| Policy::diagnose(text.as_bytes()).unwrap_err();
+        let unknown = d(&format!("{HEAD}[trunk]\nbogus = 1\n"));
+        assert_eq!(unknown.code, "unknown_key");
+        assert_eq!(unknown.line, 5, "{unknown:?}");
+        assert!(unknown.column >= 1);
+        let syntax = d("version = 1\n[roles\n");
+        assert_eq!(syntax.code, "syntax");
+        assert_eq!(syntax.line, 2);
+        assert_eq!(d("").code, "missing_key");
+        assert_eq!(
+            d("version = 2\n[roles]\nmaintainer=[\"user:a\"]\n").code,
+            "unsupported_version"
+        );
+        assert_eq!(
+            d("version = 1\n[roles]\nreviewer=[\"user:a\"]\n").code,
+            "no_maintainer"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[paths.\"/a\"]\nwrite=[]\n")).code,
+            "bad_glob"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[paths.\"a\"]\nwrite=[\"role:ghost\"]\n")).code,
+            "undefined_role"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[paths.\"a\"]\nwrite=[\"nobody\"]\n")).code,
+            "bad_subject"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[trunk]\nrequire_approvals = 99\n")).code,
+            "bad_approvals"
+        );
+        assert_eq!(
+            d(&format!(
+                "{HEAD}[agents.budgets]\nmax_changes_per_run = 0\n"
+            ))
+            .code,
+            "bad_budget"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[secrets.rules.x]\npattern = \"(\"\n")).code,
+            "bad_secret_rule"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[ci]\nflaky_threshold = 2.0\n")).code,
+            "bad_threshold"
+        );
+        assert_eq!(
+            d(&format!("{HEAD}[trunk]\nrequire_approvals = \"x\"\n")).code,
+            "bad_type"
+        );
+        let big = format!("{HEAD}# {}\n", "x".repeat(MAX_POLICY_BYTES));
+        let too_large = Policy::diagnose(big.as_bytes()).unwrap_err();
+        assert_eq!((too_large.code, too_large.line), ("too_large", 0));
+        assert_eq!(Policy::diagnose(&[0xff]).unwrap_err().code, "not_utf8");
+        assert!(Policy::diagnose(HEAD.as_bytes()).is_ok());
+        // `parse` and `diagnose` agree on what is valid.
+        for t in [EVERYTHING, HEAD, "x", ""] {
+            assert_eq!(
+                Policy::parse(t.as_bytes()).is_ok(),
+                Policy::diagnose(t.as_bytes()).is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn landing_requirements_and_force_follow_the_file() {
+        let p = Policy::parse(EVERYTHING.as_bytes()).unwrap();
+        let r = p.land_requirements();
+        assert_eq!(r.approvals, 1);
+        assert!(r.signed);
+        assert_eq!(r.strategy, Strategy::Rebase);
+        assert!(p.check_force().is_err());
+        let open = format!("{HEAD}[trunk]\nallow_force = true\nrequire_checks = [\"a\", \"b\"]\n");
+        let p = Policy::parse(open.as_bytes()).unwrap();
+        assert!(p.check_force().is_ok());
+        assert_eq!(p.land_requirements().checks, ["a", "b"]);
+        assert!(!p.land_requirements().signed);
+    }
+
+    #[test]
+    fn switching_agents_off_refuses_them_everywhere() {
+        let p = Policy::parse(EVERYTHING.as_bytes()).unwrap();
+        let e = p.check_write(&agent("bot"), b"src/a").unwrap_err();
+        assert!(e.reason.contains("switched off"), "{e}");
+        assert!(p.check_run(&agent("bot"), 1, 1).is_err());
+        assert!(p.check_write(&user("carol"), b"src/a").is_ok());
+        assert!(p.check_run(&user("carol"), 1, 1).is_ok());
+    }
+
+    #[test]
+    fn a_maintainer_role_naming_agents_is_flagged() {
+        let t = "version = 1\n[roles]\nmaintainer = [\"user:a\", \"agent:ci-*\"]\n";
+        assert!(
+            Policy::parse(t.as_bytes())
+                .unwrap()
+                .maintainers_include_agents()
+        );
+        assert!(!policy().maintainers_include_agents());
+    }
+
+    #[test]
+    fn a_policy_answers_only_for_the_bytes_it_was_built_from() {
+        // The policy that decides is the one parsed from the tip before the update; the file a
+        // change adds matters only once it is the tip. A non-maintainer cannot write the file.
+        let before = Policy::parse(FULL.as_bytes()).unwrap();
+        let after_text = FULL.replace("require_approvals = 2", "require_approvals = 0");
+        let after = Policy::parse(after_text.as_bytes()).unwrap();
+        assert_eq!(before.trunk.require_approvals, 2);
+        assert_eq!(after.trunk.require_approvals, 0);
+        assert!(
+            before
+                .check_write(&user("carol"), POLICY_PATH.as_bytes())
+                .is_err()
+        );
+        assert!(
+            before
+                .check_write(&agent("bot"), POLICY_PATH.as_bytes())
+                .is_err()
+        );
     }
 }
