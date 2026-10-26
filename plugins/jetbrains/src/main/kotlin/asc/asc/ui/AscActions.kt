@@ -146,6 +146,8 @@ class AscConfigureAgentsAction : AnAction("Configure Agents"), DumbAware {
         val p = e.project ?: return
         val root = AscActions.firstRoot(p) ?: return
         val bridge = ApplicationManager.getApplication().getService(AscBridgeService::class.java)
+        // Before any lookup: an asc planted under this root is never chosen.
+        bridge.registerRoot(root.toString())
         ProgressManager.getInstance().run(object : Task.Backgroundable(p, "asc mcp install", true) {
             override fun run(indicator: ProgressIndicator) {
                 val message = ConfigureAgents.run(bridge.executablePath(), root.toString())

@@ -78,3 +78,38 @@ class AscExecutableTest {
         assertEquals("/w/repo2/asc", nix(path = "/w/repo2", roots = listOf("/w/repo"), files = setOf("/w/repo2/asc")))
     }
 }
+
+class AscBridgeServiceExecutableTest {
+    private val ws = "C:/work/repo"
+    private val planted = "c:/work/repo/asc.exe"
+    private val real = "c:/ok/asc.exe"
+
+    private fun service(path: String, open: List<String>): AscBridgeService {
+        val s = AscBridgeService()
+        s.windows = true
+        s.environment = mapOf("PATH" to path)
+        s.openRoots = { open }
+        s.isFile = { it.replace('\\', '/').lowercase() in setOf(planted, real) }
+        return s
+    }
+
+    @Test fun aPlantedBinaryUnderAnOpenProjectIsNeverChosenBeforeAnyHello() {
+        // No Hello, no registered root: the open projects alone forbid the workspace.
+        assertEquals("C:/ok\\asc.exe", service("$ws;C:/ok", listOf(ws)).executablePath())
+        assertNull(service(ws, listOf(ws)).executablePath())
+    }
+
+    @Test fun aRootNamedByACallOrTheActionIsForbiddenAtOnce() {
+        val s = service(ws, emptyList())
+        // Not yet known to be a project: the planted file would be chosen.
+        assertEquals("C:/work/repo\\asc.exe", s.executablePath())
+        s.registerRoot(ws)
+        assertNull(s.executablePath())
+        s.registerRoot("")
+        assertEquals(listOf(ws), s.projectRoots)
+    }
+
+    @Test fun aSubfolderOfTheProjectIsForbiddenToo() {
+        assertNull(service("$ws/bin", listOf(ws)).also { it.isFile = { true } }.executablePath())
+    }
+}
