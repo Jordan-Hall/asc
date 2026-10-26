@@ -24,7 +24,7 @@ what exists.
 
 | Thing | Where | How |
 |---|---|---|
-| asc staging server | `https://asc-staging.example.org`, Coolify (`apps.example.org`) | `deploy/coolify/asc-serve.standalone.compose.yml`: token-store auth, SQLite on a state volume (one replica), Garage S3 bucket `asc-staging`, no Forgejo integration, SSH git on host port 22222 (configured, not yet deployed or verified) |
+| asc staging server | `https://asc-staging.example.org`, Coolify (`apps.example.org`) | `deploy/coolify/asc-serve.standalone.compose.yml`: token-store auth, SQLite on a state volume (one replica), Garage S3 bucket `asc-staging`, no Forgejo integration, SSH git on host port 22223 (configured, not yet deployed or verified) |
 | asc-serve image | `forge.example.org/asc/asc-serve:<sha12>` (also `:master`, `:<version>`) | built by `.forgejo/workflows/image.yml` on the `asc-build-trusted` runner for `master` pushes and `v*` tags |
 | ASC Hub staging | `https://forge-staging.example.org` | image `forge.example.org/asc/asc-hub:<sha12>`, SQLite, own volume (ASC Hub repo, `docs/asc/STAGING.md`); `deploy/coolify/forgejo-staging.compose.yml` here |
 | Full CI | nightly, on demand and on pull requests (`.forgejo/workflows/asc-ci.yml`) | pushes only build the image; a central gate verifies HEAD |
@@ -61,7 +61,7 @@ staging `asc serve` is not yet wired to ASC Hub.
 - Forgejo cutover stages (mirror, asc as source of truth, reads and writes through asc): staged
   design; the staging server runs standalone. Repository registration for `asc/soma` and
   `asc/dds` and the `/.well-known/asc` proxy route are not done (`deploy/coolify/README.md`).
-- SSH on staging: enabled in the compose file (`[ssh]`, host key in the state volume, port `22222:2222`); not deployed yet, so unverified end to end.
+- SSH on staging: enabled in the compose file (`[ssh]`, host key in the state volume, port `22223:2222`); not deployed yet, so unverified end to end.
 - `asc doctor --store` is implemented (`crates/asc/src/cli/doctor.rs`: store transport checks and an
   integrity sample of stored objects, plus the create-exclusive probe). Its result against the
   staging bucket is not recorded here (unverified).

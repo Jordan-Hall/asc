@@ -56,7 +56,7 @@ x-asc-serve: &asc-serve
         enabled = true
         view_dir = "/var/lib/asc/gitview"
 
-        # SSH git transport (ssh://git@host:22222/owner/repo). The first host key is generated
+        # SSH git transport (ssh://git@host:22223/owner/repo). The first host key is generated
         # once, on first start, into the state volume, so the fingerprint survives redeploys.
         # Read it from the startup log ("ssh host key") or `asc serve ssh host-key show`.
         [ssh]
@@ -161,9 +161,12 @@ services:
       - backend
     expose:
       - '7890'
-    # SSH git transport: the listener runs on 2222 inside the container, but the host port is NOT
-    # published here. Adding `ports: ['22222:2222']` stopped ascserve from starting on staging
-    # (2026-10-26, no container log); find out why before publishing it.
+    # SSH git transport. Coolify publishes compose `ports` on the host as written; HTTPS stays
+    # behind Coolify's proxy through SERVICE_FQDN_ASCSERVE_7890. Host port 22223: 22222 is taken by
+    # the production Forgejo service (22222:22) and 22 by the host's own sshd. Open TCP 22223 in the
+    # host firewall; no TLS terminates it (SSH is its own channel).
+    ports:
+      - '22223:2222'
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:7890/readyz']
       interval: 15s
