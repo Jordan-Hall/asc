@@ -1,7 +1,7 @@
 // Commit-time smoke test: activation registers every command and view that package.json contributes,
 // and every command in package.json has a handler. The editor API is a permissive recording fake, so
 // this exercises the real registration code (`vscodeHost`) without VS Code.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,9 +80,15 @@ function fakeUri(p: string) {
   return { scheme: "file", fsPath: p, path: p, toString: () => `file://${p}` };
 }
 
+// The bridge starts only from an absolute executable, so `asc.path` names a real (empty) file.
+const exeDir = mkdtempSync(join(tmpdir(), "asc-wiring-exe-"));
+const FAKE_EXE = join(exeDir, process.platform === "win32" ? "asc.exe" : "asc");
+writeFileSync(FAKE_EXE, "");
+afterAll(() => rmSync(exeDir, { recursive: true, force: true }));
+
 function fakeVscode(folder: string, rec: Recorder) {
   const config = {
-    get: (_k: string, d: unknown) => d,
+    get: (k: string, d: unknown) => (k === "path" ? FAKE_EXE : d),
     inspect: () => undefined,
     update: async () => {},
     has: () => false,

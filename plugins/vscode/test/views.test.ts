@@ -24,8 +24,6 @@ const ok = (entries: unknown): RunResult => ({
   opResult: new TextEncoder().encode(JSON.stringify({ entries })),
   stderr: [],
 });
-const ops = (n: number) =>
-  Array.from({ length: n }, (_, i) => ({ id: `op${i}`, description: "d" }));
 
 const wt = (o: Partial<WorktreeInfo> = {}): WorktreeInfo => ({
   wsId: "w",
@@ -253,7 +251,7 @@ describe("views: op log", () => {
     expect(errs.length).toBeGreaterThan(0);
   });
   test("an undone operation says so", () => {
-    expect(describeOp({ ...rows(1)[0]!, undone: true }).label).toBe("create (undone)");
+    expect(describeOp({ ...(rows(1)[0] as ReturnType<typeof rows>[number]), undone: true }).label).toBe("create (undone)");
   });
 });
 
