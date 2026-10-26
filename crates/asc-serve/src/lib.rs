@@ -40,6 +40,7 @@ pub mod ingest;
 pub mod land;
 pub mod landing;
 pub mod limits;
+pub mod logging;
 pub mod mainline;
 pub mod mcp;
 pub mod migrate;
@@ -342,6 +343,7 @@ pub async fn serve(
     cfg.validate()?;
     // Plain http is only right behind a TLS-terminating proxy (U89).
     cfg.validate_listener()?;
+    logging::starting(&cfg);
     if cfg.role == Role::Cache {
         // No SQL and no store: the cache role authorises through its upstream (U70).
         return cache_role::serve(cfg, shutdown).await;
@@ -352,6 +354,8 @@ pub async fn serve(
     let (Some(db), Some(store)) = (&cfg.db, &cfg.store) else {
         return Err(ConfigError::Invalid("`store` and `db` are required".into()).into());
     };
+    // Every decision passes through here, so the access log can name the caller.
+    let authorizer: Arc<dyn Authorizer> = Arc::new(logging::LoggingAuthorizer::new(authorizer));
     let pool = migrate::connect(db, DB_CONNECTIONS).await?;
     migrate::ensure_current(&pool).await?;
     let registry = Arc::new(Registry::new(pool.clone(), store)?);
@@ -431,6 +435,21 @@ pub async fn serve(
     if cfg.ssh.enabled {
         tracing::warn!("git-ssh is not compiled in; ssh listener not started");
     }
+    #[cfg(feature = "git-compat")]
+    let git_live_now = git_live;
+    #[cfg(not(feature = "git-compat"))]
+    let git_live_now = false;
+    #[cfg(feature = "git-ssh")]
+    let ssh_up = ssh.as_ref().map(|server| {
+        let addr = server.local_addr().unwrap_or(cfg.ssh.listen);
+        let keys = server.host_keys().keys();
+        (
+            addr,
+            keys.iter().map(|k| k.fingerprint().to_string()).collect(),
+        )
+    });
+    #[cfg(not(feature = "git-ssh"))]
+    let ssh_up = None;
     #[cfg_attr(not(feature = "git-compat"), allow(unused_mut))]
     let mut features = vec![projects::feature()];
     features.extend(review::features());
@@ -449,6 +468,8 @@ pub async fn serve(
     let routes = limits::guarded_routes(&ext, authorizer, admission, info);
     // gRPC-Web and Connect unary for browsers, in front of admission and the services.
     let routes = web::grpc_web::wrap(routes, &cfg.web, cfg.public_url.as_deref());
+    // The outermost layer: the access log sees every request, whichever listener carries it.
+    let routes = Routes::from(routes.into_axum_router().layer(logging::AccessLogLayer));
 
     // The admin listener is bound before the public one so a bad address fails startup.
     let admin_token = match &cfg.admin.token_file {
@@ -460,7 +481,8 @@ pub async fn serve(
         .map_err(|e| ServeError::Admin(format!("{}: {e}", cfg.admin.listen)))?;
     let (admin_stop, admin_stopped) = tokio::sync::oneshot::channel::<()>();
     let admin = tokio::spawn(async move {
-        axum::serve(admin_listener, http::admin_router(http_state, admin_token))
+        let app = http::admin_router(http_state, admin_token).layer(logging::AccessLogLayer);
+        axum::serve(admin_listener, app)
             .with_graceful_shutdown(async {
                 let _ = admin_stopped.await;
             })
@@ -478,6 +500,14 @@ pub async fn serve(
     // The same router over QUIC when `[tls]` and `http3_port` are set (U89b); held until return.
     let _h3 = h3_listener::start(&cfg, &routes)?;
     tracing::info!(listen = %cfg.listen, "asc serve listening");
+    logging::ready(
+        &cfg,
+        &logging::Listeners {
+            git: git_live_now,
+            ssh: ssh_up,
+            h3: _h3.as_ref().and(cfg.http3_port),
+        },
+    );
     // Purged drafts are evicted from every cache tier by the outbox (B10).
     if let Some(cloud) = ext.cloud.get() {
         outbox.effects().register(cloud.cache_evict_effect());
@@ -536,6 +566,10 @@ pub async fn serve(
         c.abort();
     }
     admin.abort();
+    match &served {
+        Ok(()) => tracing::info!("asc serve stopped"),
+        Err(e) => tracing::error!(error = %e, "asc serve stopped on an error"),
+    }
     served?;
     Ok(())
 }

@@ -182,6 +182,24 @@ impl Default for AdminConfig {
     }
 }
 
+/// How `asc serve` writes its log lines (`[log] format`, or `ASC_LOG_FORMAT`, which wins).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    /// Human-readable lines (the default).
+    #[default]
+    Text,
+    /// One JSON object per line, for log shippers.
+    Json,
+}
+
+/// `[log]`: the log format. The level filter is the `RUST_LOG` environment variable (default `info`).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LogConfig {
+    pub format: LogFormat,
+}
+
 /// `[forgejo]`: the optional Forgejo adapter (`provider = "forgejo"`, hooks, mirror webhook).
 /// Built only with the `forgejo` feature.
 #[cfg(feature = "forgejo")]
@@ -946,6 +964,8 @@ pub struct ServeConfig {
     /// must. Unset sends no header.
     pub http3_port: Option<u16>,
     pub admin: AdminConfig,
+    /// `[log]`: text or JSON lines.
+    pub log: LogConfig,
     pub role: Role,
     /// Bucket URL: `s3://…`, `file:///…` or `memory:///`.
     pub store: Option<String>,
@@ -982,6 +1002,7 @@ impl Default for ServeConfig {
             tls: None,
             http3_port: None,
             admin: AdminConfig::default(),
+            log: LogConfig::default(),
             role: Role::Primary,
             store: None,
             db: None,
@@ -1094,7 +1115,9 @@ impl ServeConfig {
             return invalid("mcp.enabled = true is refused until the auth layer exists");
         }
         if let Some(oauth) = &self.mcp.oauth {
-            oauth.validate().map_err(|e| ConfigError::Invalid(format!("mcp.oauth: {e}")))?;
+            oauth
+                .validate()
+                .map_err(|e| ConfigError::Invalid(format!("mcp.oauth: {e}")))?;
         }
         if self.mcp.write && !self.mcp.enabled {
             return invalid("mcp.write needs mcp.enabled");
@@ -1269,6 +1292,37 @@ mod tests {
         assert!(cache("https://primary.example:7890").is_ok());
         assert!(primary("memory:///", "public_url = \"https://asc.example.org\"").is_ok());
         assert!(primary("s3://b?endpoint=https://garage:3900", "").is_ok());
+    }
+
+    #[test]
+    fn log_format_defaults_to_text_and_rejects_unknown_keys() {
+        assert_eq!(
+            primary("memory:///", "").unwrap().log.format,
+            LogFormat::Text
+        );
+        let json = primary(
+            "memory:///",
+            "[log]
+format = \"json\"",
+        )
+        .unwrap();
+        assert_eq!(json.log.format, LogFormat::Json);
+        assert!(
+            primary(
+                "memory:///",
+                "[log]
+format = \"xml\""
+            )
+            .is_err()
+        );
+        assert!(
+            primary(
+                "memory:///",
+                "[log]
+level = \"debug\""
+            )
+            .is_err()
+        );
     }
 
     #[cfg(feature = "forgejo")]
