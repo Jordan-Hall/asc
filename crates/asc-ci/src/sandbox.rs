@@ -39,7 +39,9 @@ use tokio_util::sync::CancellationToken as Cancel;
 pub enum SandboxError {
     #[error("command execution is not enabled on this server")]
     Disabled,
-    #[error("this server has no isolation wrapper configured and does not allow unisolated commands")]
+    #[error(
+        "this server has no isolation wrapper configured and does not allow unisolated commands"
+    )]
     NotIsolated,
     #[error("the command is empty or holds a NUL")]
     Empty,
@@ -131,7 +133,16 @@ impl Outcome {
 /// The text that replaces a secret in the output.
 pub const MASK: &str = "***";
 
-const OWN_ENV: [&str; 8] = ["PATH", "HOME", "TMPDIR", "TEMP", "TMP", "USERPROFILE", "CI", "LANG"];
+const OWN_ENV: [&str; 8] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "CI",
+    "LANG",
+];
 
 /// A command runner.
 #[derive(Clone, Debug)]
@@ -169,15 +180,16 @@ impl Sandbox {
         if program.is_empty() || argv.iter().any(|a| a.contains('\0')) {
             return Err(SandboxError::Empty);
         }
-        if program.contains(['/', '\\']) || program.contains(':') || program == "." || program == ".." {
+        if program.contains(['/', '\\'])
+            || program.contains(':')
+            || program == "."
+            || program == ".."
+        {
             return Err(SandboxError::NotBare);
         }
-        if self
-            .cfg
-            .allow
-            .iter()
-            .any(|prefix| !prefix.is_empty() && argv.len() >= prefix.len() && argv[..prefix.len()] == prefix[..])
-        {
+        if self.cfg.allow.iter().any(|prefix| {
+            !prefix.is_empty() && argv.len() >= prefix.len() && argv[..prefix.len()] == prefix[..]
+        }) {
             Ok(())
         } else {
             Err(SandboxError::NotAllowed)
@@ -210,7 +222,8 @@ impl Sandbox {
         for k in spec.env.keys() {
             let ok = !k.is_empty()
                 && k.len() <= 64
-                && k.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                && k.bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
                 && !OWN_ENV.contains(&k.as_str());
             if !ok {
                 return Err(SandboxError::BadEnv(k.clone()));
@@ -263,12 +276,20 @@ impl Sandbox {
         cmd.process_group(0);
 
         let started = Instant::now();
-        let mut child = cmd.spawn().map_err(|e| SandboxError::Spawn(e.kind().to_string()))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| SandboxError::Spawn(e.kind().to_string()))?;
         #[cfg(unix)]
         let pgid = child.id();
         let buf = Arc::new(Mutex::new(Capture::new(self.cfg.max_output)));
-        let out = child.stdout.take().map(|s| tokio::spawn(pump(s, buf.clone())));
-        let err = child.stderr.take().map(|s| tokio::spawn(pump(s, buf.clone())));
+        let out = child
+            .stdout
+            .take()
+            .map(|s| tokio::spawn(pump(s, buf.clone())));
+        let err = child
+            .stderr
+            .take()
+            .map(|s| tokio::spawn(pump(s, buf.clone())));
 
         let wall = spec.timeout.min(self.cfg.max_wall);
         let (mut timed_out, mut cancelled) = (false, false);
@@ -333,7 +354,8 @@ impl Capture {
         if chunk.len() > room {
             self.truncated = true;
         }
-        self.bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        self.bytes
+            .extend_from_slice(&chunk[..chunk.len().min(room)]);
     }
 }
 
@@ -413,7 +435,12 @@ mod tests {
     fn sandbox(extra: &str) -> (Sandbox, String) {
         let (dir, name) = exe();
         let sb = Sandbox::new(Config {
-            allow: vec![vec![name.clone(), "--ignored".into(), "--exact".into(), extra.into()]],
+            allow: vec![vec![
+                name.clone(),
+                "--ignored".into(),
+                "--exact".into(),
+                extra.into(),
+            ]],
             path_dirs: vec![dir],
             allow_unisolated: true,
             max_output: 1000,
@@ -424,7 +451,13 @@ mod tests {
 
     fn spec(name: &str, test: &str, root: &Path) -> Spec {
         Spec {
-            argv: vec![name.into(), "--ignored".into(), "--exact".into(), test.into(), "--nocapture".into()],
+            argv: vec![
+                name.into(),
+                "--ignored".into(),
+                "--exact".into(),
+                test.into(),
+                "--nocapture".into(),
+            ],
             cwd: root.to_path_buf(),
             root: root.to_path_buf(),
             env: BTreeMap::new(),
@@ -442,7 +475,10 @@ mod tests {
         keys.sort();
         println!("ENV:{}", keys.join(","));
         println!("TOKEN={}", std::env::var("TOKEN").unwrap_or_default());
-        println!("HOME_EXISTS={}", std::env::var("HOME").is_ok_and(|h| Path::new(&h).is_dir()));
+        println!(
+            "HOME_EXISTS={}",
+            std::env::var("HOME").is_ok_and(|h| Path::new(&h).is_dir())
+        );
         std::process::exit(7);
     }
 
@@ -468,7 +504,13 @@ mod tests {
         std::fs::create_dir(&work).unwrap();
         let (sb, name) = sandbox("sandbox::tests::child_echo");
         let mut s = spec(&name, "sandbox::tests::child_echo", &work);
-        s.argv = vec![name.clone(), "--ignored".into(), "--exact".into(), "sandbox::tests::child_echo".into(), "--nocapture".into()];
+        s.argv = vec![
+            name.clone(),
+            "--ignored".into(),
+            "--exact".into(),
+            "sandbox::tests::child_echo".into(),
+            "--nocapture".into(),
+        ];
         // The allow prefix is the first four entries.
         s.env.insert("TOKEN".into(), "s3cret-value".into());
         s.secrets.push("s3cret-value".into());
@@ -476,7 +518,10 @@ mod tests {
         assert_eq!(o.code, Some(7), "{}", o.output);
         assert!(!o.success());
         assert!(o.output.contains("hello-from-child"), "{}", o.output);
-        assert!(o.output.contains("err-from-child"), "stderr is captured too");
+        assert!(
+            o.output.contains("err-from-child"),
+            "stderr is captured too"
+        );
         assert!(o.output.contains(&format!("TOKEN={MASK}")), "{}", o.output);
         assert!(!o.output.contains("s3cret-value"));
         assert!(o.output.contains("HOME_EXISTS=true"));
@@ -484,12 +529,30 @@ mod tests {
         for k in env_line.trim_start_matches("ENV:").split(',') {
             let k = k.to_ascii_uppercase();
             assert!(
-                ["PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "TMP", "CI", "LANG", "TOKEN", "SYSTEMROOT", "RUST_BACKTRACE", "WINDIR"].contains(&k.as_str()),
+                [
+                    "PATH",
+                    "HOME",
+                    "USERPROFILE",
+                    "TMPDIR",
+                    "TEMP",
+                    "TMP",
+                    "CI",
+                    "LANG",
+                    "TOKEN",
+                    "SYSTEMROOT",
+                    "RUST_BACKTRACE",
+                    "WINDIR"
+                ]
+                .contains(&k.as_str()),
                 "unexpected variable {k} in {env_line}"
             );
         }
         // The scratch directory is gone.
-        let left: Vec<_> = std::fs::read_dir(root.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        let left: Vec<_> = std::fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
         assert_eq!(left.len(), 1, "{left:?}");
     }
 
@@ -578,7 +641,10 @@ mod tests {
         for k in ["PATH", "HOME", "lower", "A=B", ""] {
             let mut s = base.clone();
             s.env.insert(k.into(), "x".into());
-            assert!(matches!(run(s).await.unwrap_err(), SandboxError::BadEnv(_)), "{k}");
+            assert!(
+                matches!(run(s).await.unwrap_err(), SandboxError::BadEnv(_)),
+                "{k}"
+            );
         }
         // A program that is not in the sandbox path.
         let sb2 = Sandbox::new(Config {
@@ -589,14 +655,26 @@ mod tests {
         });
         let mut s = base.clone();
         s.argv = vec!["definitely-not-installed".into()];
-        assert!(matches!(sb2.run(&s, &Cancel::new()).await.unwrap_err(), SandboxError::NotFound(_)));
+        assert!(matches!(
+            sb2.run(&s, &Cancel::new()).await.unwrap_err(),
+            SandboxError::NotFound(_)
+        ));
         // Without a wrapper and without the opt-in nothing runs.
-        let strict = Sandbox::new(Config { allow_unisolated: false, ..cfg });
-        assert_eq!(strict.run(&base, &Cancel::new()).await.unwrap_err(), SandboxError::NotIsolated);
+        let strict = Sandbox::new(Config {
+            allow_unisolated: false,
+            ..cfg
+        });
+        assert_eq!(
+            strict.run(&base, &Cancel::new()).await.unwrap_err(),
+            SandboxError::NotIsolated
+        );
         // Nothing allowed at all.
         let off = Sandbox::new(Config::default());
         assert!(!off.enabled());
-        assert_eq!(off.run(&base, &Cancel::new()).await.unwrap_err(), SandboxError::Disabled);
+        assert_eq!(
+            off.run(&base, &Cancel::new()).await.unwrap_err(),
+            SandboxError::Disabled
+        );
     }
 
     #[tokio::test]
@@ -612,13 +690,19 @@ mod tests {
         });
         let mut s = spec("evil", "x", root.path());
         s.argv = vec!["evil".into()];
-        assert!(matches!(sb.run(&s, &Cancel::new()).await.unwrap_err(), SandboxError::NotFound(_)));
+        assert!(matches!(
+            sb.run(&s, &Cancel::new()).await.unwrap_err(),
+            SandboxError::NotFound(_)
+        ));
     }
 
     #[test]
     fn allow_prefixes_match_whole_arguments() {
         let sb = Sandbox::new(Config {
-            allow: vec![vec!["cargo".into(), "test".into()], vec!["npm".into(), "run".into(), "lint".into()]],
+            allow: vec![
+                vec!["cargo".into(), "test".into()],
+                vec!["npm".into(), "run".into(), "lint".into()],
+            ],
             ..Config::default()
         });
         let a = |s: &[&str]| s.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();

@@ -42,7 +42,10 @@ pub enum QuarantineDenied {
 /// The decision behind `SetFailureGroupState(QUARANTINED)`: the policy has to allow quarantine
 /// and the caller has to be a maintainer. The policy is checked first so that the answer does not
 /// depend on who asks.
-pub fn may_quarantine(allow_quarantine: bool, caller_is_maintainer: bool) -> Result<(), QuarantineDenied> {
+pub fn may_quarantine(
+    allow_quarantine: bool,
+    caller_is_maintainer: bool,
+) -> Result<(), QuarantineDenied> {
     if !allow_quarantine {
         return Err(QuarantineDenied::PolicyOff);
     }
@@ -114,9 +117,18 @@ mod tests {
 
     #[test]
     fn quarantine_needs_policy_and_a_maintainer() {
-        assert_eq!(may_quarantine(false, true), Err(QuarantineDenied::PolicyOff));
-        assert_eq!(may_quarantine(false, false), Err(QuarantineDenied::PolicyOff));
-        assert_eq!(may_quarantine(true, false), Err(QuarantineDenied::NotMaintainer));
+        assert_eq!(
+            may_quarantine(false, true),
+            Err(QuarantineDenied::PolicyOff)
+        );
+        assert_eq!(
+            may_quarantine(false, false),
+            Err(QuarantineDenied::PolicyOff)
+        );
+        assert_eq!(
+            may_quarantine(true, false),
+            Err(QuarantineDenied::NotMaintainer)
+        );
         assert_eq!(may_quarantine(true, true), Ok(()));
     }
 
