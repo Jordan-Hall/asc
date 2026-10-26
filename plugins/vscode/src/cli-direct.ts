@@ -1,10 +1,12 @@
 // Read-mostly verbs the bridge does not carry. `Bridge.Run` refuses `op log` (its result is an
 // `OpLogResponse`, which `RunEvent` cannot hold) and its argv schema has no `cloud status` or `live`
 // entries, so the extension runs these few fixed argv itself, with the same rules as the bridge: no shell,
-// the null device as stdin, an environment rebuilt from a short list, the workspace root as the working
-// directory, a time limit and a cap on the output. The argv is built here from typed inputs and nowhere
+// the null device as stdin, an environment rebuilt from a short list, a neutral working directory
+// (the executable's own; the root travels as `-C <root>`), a time limit and a cap on the output. The argv is built here from typed inputs and nowhere
 // else; nothing a webview or a repository supplies reaches it.
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
+import { isAbsoluteExe } from "./bridge";
 
 /** Longest a verb may run before it is killed. */
 export const CLI_TIMEOUT_MS = 15_000;
@@ -74,6 +76,7 @@ const KEEP = [
   "ASC_SERVER",
   "ASC_SERVER_URL",
   "ASC_TOKEN",
+  "ASC_TOKEN_HOST",
   "ASC_NO_DAEMON",
   "ASC_DAEMON_ENDPOINT",
   "ASC_HOST_CACHE",
@@ -105,8 +108,8 @@ export interface CliResult {
 }
 
 export interface CliOptions {
-  /** The asc executable, resolved on every call so a changed `asc.path` takes effect. */
-  command: () => string;
+  /** The asc executable, resolved on every call so a changed `asc.path` takes effect. Null: none found. */
+  command: () => string | null;
   env?: () => Record<string, string | undefined>;
   /** Extra variables for the child, such as a token the host holds (`ASC_TOKEN`). */
   extraEnv?: () => Record<string, string | undefined>;
@@ -124,16 +127,22 @@ export function createCliDirect(o: CliOptions): CliDirect {
     run(root, call, signal) {
       const argv = cliArgv(call);
       if (argv === null) return Promise.reject(new RangeError("asc: the call is out of range"));
-      if (root === "" || root.includes("\0")) {
+      if (!isAbsoluteExe(root, process.platform)) {
         return Promise.reject(new RangeError("asc: the root is not a path"));
+      }
+      // Only an absolute executable is started: a bare name is searched for in the current directory
+      // first on Windows, and a repository can plant one there.
+      const command = o.command();
+      if (command === null || !isAbsoluteExe(command, process.platform)) {
+        return Promise.reject(new Error("asc: the asc executable was not found"));
       }
       return new Promise<CliResult>((resolve, reject) => {
         if (signal?.aborted) {
           reject(new Error("asc: cancelled"));
           return;
         }
-        const child = spawn(o.command(), [...(o.prefixArgs ?? []), ...argv], {
-          cwd: root,
+        const child = spawn(command, [...(o.prefixArgs ?? []), "-C", root, ...argv], {
+          cwd: dirname(command),
           env: childEnv(o.env?.() ?? process.env, o.extraEnv?.()),
           stdio: ["ignore", "pipe", "pipe"],
           shell: false,

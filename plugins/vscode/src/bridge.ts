@@ -50,21 +50,62 @@ export interface AscPathInputs {
   home: string | undefined;
   platform: NodeJS.Platform;
   isFile: (p: string) => boolean;
+  /**
+   * The open workspace folders. A candidate inside one is never used: a repository can plant an
+   * `asc.exe` (or `asc.cmd`) there, and Windows would run it.
+   */
+  workspaceRoots?: readonly string[];
 }
 
-/** `asc.path`, else `PATH`, else `$ASC_HOME/bin` (default `~/.asc`). Returns the bare name if none exists. */
-export function resolveAsc(i: AscPathInputs): string {
+/** An absolute path that does not depend on the current directory or the current drive. */
+export function isAbsoluteExe(p: string, platform: NodeJS.Platform): boolean {
+  if (p === "" || p.includes("\0")) return false;
+  // A drive letter with a separator, or a UNC share; "\dir", "C:dir" and "dir" depend on the current directory.
+  if (platform === "win32") return /^[A-Za-z]:[\\/]/.test(p) || /^\\\\[^\\/?]+[\\/][^\\/]+/.test(p);
+  return p.startsWith("/");
+}
+
+function inside(child: string, parent: string, platform: NodeJS.Platform): boolean {
+  const norm = platform === "win32" ? win32 : posix;
+  const fold = (x: string) => (platform === "win32" ? x.toLowerCase() : x);
+  const rel = fold(norm.relative(norm.resolve(parent), norm.resolve(child)));
+  if (rel === "") return true;
+  return !rel.startsWith("..") && !norm.isAbsolute(rel);
+}
+
+/**
+ * The absolute path of the `asc` executable, or null when there is none to run. Only an absolute path
+ * outside the workspace folders is ever returned, so a spawn never searches the current directory or a
+ * folder a repository controls:
+ *   - `asc.path` (machine scope) when it is absolute and a file; a bare name in it is looked up the way
+ *     `PATH` is, below; any other form (relative, with a separator) is refused;
+ *   - else the absolute `PATH` entries, then `$ASC_HOME/bin` (default `~/.asc/bin`).
+ * Relative `PATH` entries (`.`, empty) are skipped.
+ */
+export function resolveAsc(i: AscPathInputs): string | null {
   const join = i.platform === "win32" ? win32.join : posix.join;
-  if (i.setting.trim() !== "") return i.setting.trim();
-  const exe = i.platform === "win32" ? "asc.exe" : "asc";
-  const dirs = (i.path ?? "").split(i.platform === "win32" ? ";" : ":").filter(Boolean);
-  const ascHome = i.ascHome || (i.home ? join(i.home, ".asc") : "");
-  if (ascHome) dirs.push(join(ascHome, "bin"));
-  for (const d of dirs) {
-    const candidate = join(d, exe);
-    if (i.isFile(candidate)) return candidate;
+  const roots = i.workspaceRoots ?? [];
+  const usable = (p: string) =>
+    isAbsoluteExe(p, i.platform) && !roots.some((r) => inside(p, r, i.platform)) && i.isFile(p);
+  const win = i.platform === "win32";
+  const setting = i.setting.trim();
+  let name = win ? "asc.exe" : "asc";
+  if (setting !== "") {
+    if (isAbsoluteExe(setting, i.platform)) return usable(setting) ? setting : null;
+    if (/[\\/:]/.test(setting) || setting.includes("\0")) return null;
+    name = win && !/\.exe$/i.test(setting) ? `${setting}.exe` : setting;
   }
-  return exe;
+  const dirs = (i.path ?? "")
+    .split(win ? ";" : ":")
+    .map((d) => (win ? d.replace(/^"(.*)"$/, "$1") : d))
+    .filter((d) => isAbsoluteExe(d, i.platform));
+  const ascHome = i.ascHome || (i.home ? join(i.home, ".asc") : "");
+  if (isAbsoluteExe(ascHome, i.platform)) dirs.push(join(ascHome, "bin"));
+  for (const d of dirs) {
+    const candidate = join(d, name);
+    if (usable(candidate)) return candidate;
+  }
+  return null;
 }
 
 export function nodeIsFile(p: string): boolean {
@@ -135,8 +176,8 @@ export function serverFeatures(h: Pick<HelloInfo, "features" | "roots">): Server
 }
 
 export interface BridgeManagerOptions {
-  /** Resolved on every start so a changed `asc.path` takes effect on restart. */
-  command: () => string;
+  /** Resolved on every start so a changed `asc.path` takes effect on restart. Null: no executable to run. */
+  command: () => string | null;
   /** The child's whole environment, read on every spawn so a changed token takes effect on restart. */
   env?: () => Record<string, string | undefined>;
   onState?: (s: BridgeState) => void;
@@ -162,8 +203,13 @@ export function createBridgeManager(opts: BridgeManagerOptions): BridgeManager {
 
   const node = (): BridgeNode => {
     if (!current) {
+      const command = opts.command();
+      // Spawn an absolute path or nothing: a bare name is looked up in the current directory first on Windows.
+      if (command === null || !isAbsoluteExe(command, process.platform)) {
+        throw new Error("asc was not found; set asc.path to the absolute path of the executable");
+      }
       current = create({
-        command: opts.command(),
+        command,
         ...(opts.env === undefined ? {} : { env: opts.env() }),
         ...(opts.onState === undefined ? {} : { onState: opts.onState }),
         ...(opts.onStderr === undefined ? {} : { onStderr: opts.onStderr }),

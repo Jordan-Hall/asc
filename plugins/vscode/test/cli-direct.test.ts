@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
-  CLI_MAX_STDOUT,
-  childEnv,
-  cliArgv,
-  createCliDirect,
-  OP_LOG_MAX,
-} from "../src/cli-direct";
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { resolveAsc } from "../src/bridge";
+import { CLI_MAX_STDOUT, childEnv, cliArgv, createCliDirect, OP_LOG_MAX } from "../src/cli-direct";
 import {
   type ConnectivityApi,
   type ConnectivityEvent,
@@ -81,7 +84,7 @@ function fakeAsc(body: string): { dir: string; command: string; prefixArgs: stri
 }
 
 describe("cli-direct: run", () => {
-  test("runs in the root with the fixed argv and reads stdout", async () => {
+  test("runs from a neutral directory with the root as -C and the fixed argv, and reads stdout", async () => {
     const f = fakeAsc(
       `process.stdout.write(JSON.stringify({argv: process.argv.slice(2), cwd: process.cwd(), tok: process.env.ASC_TOKEN ?? null, git: process.env.GIT_DIR ?? null}));`,
     );
@@ -95,10 +98,12 @@ describe("cli-direct: run", () => {
       const r = await cli.run(f.dir, { kind: "op-log", limit: 7 });
       expect(r.exit).toBe(0);
       const got = JSON.parse(r.stdout);
-      expect(got.argv).toEqual(["op", "log", "--json", "-n", "7"]);
+      expect(got.argv).toEqual(["-C", f.dir, "op", "log", "--json", "-n", "7"]);
       expect(got.tok).toBe("from-host");
       expect(got.git).toBeNull();
-      expect(got.cwd.toLowerCase()).toBe(f.dir.toLowerCase());
+      // Never the workspace root: the executable's own directory.
+      expect(got.cwd.toLowerCase()).toBe(dirname(f.command).toLowerCase());
+      expect(got.cwd.toLowerCase()).not.toBe(f.dir.toLowerCase());
     } finally {
       cleanup(f.dir);
     }
@@ -108,9 +113,12 @@ describe("cli-direct: run", () => {
       `let n = 0; process.stdin.on("data", (b) => (n += b.length)); process.stdin.on("end", () => process.stdout.write(String(n)));`,
     );
     try {
-      const r = await createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(f.dir, {
-        kind: "cloud-status",
-      });
+      const r = await createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(
+        f.dir,
+        {
+          kind: "cloud-status",
+        },
+      );
       expect(r.stdout).toBe("0");
     } finally {
       cleanup(f.dir);
@@ -119,10 +127,13 @@ describe("cli-direct: run", () => {
   test("a failing verb returns its exit code and stderr lines", async () => {
     const f = fakeAsc(`console.error("asc: the daemon is not running"); process.exit(3);`);
     try {
-      const r = await createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(f.dir, {
-        kind: "live",
-        action: "status",
-      });
+      const r = await createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(
+        f.dir,
+        {
+          kind: "live",
+          action: "status",
+        },
+      );
       expect(r.exit).toBe(3);
       expect(r.stderr).toEqual(["asc: the daemon is not running"]);
     } finally {
@@ -135,7 +146,9 @@ describe("cli-direct: run", () => {
     );
     try {
       await expect(
-        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(f.dir, { kind: "cloud-status" }),
+        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(f.dir, {
+          kind: "cloud-status",
+        }),
       ).rejects.toThrow("too large");
     } finally {
       cleanup(f.dir);
@@ -146,9 +159,12 @@ describe("cli-direct: run", () => {
     try {
       const t0 = Date.now();
       await expect(
-        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs, timeoutMs: 300 }).run(f.dir, {
-          kind: "cloud-status",
-        }),
+        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs, timeoutMs: 300 }).run(
+          f.dir,
+          {
+            kind: "cloud-status",
+          },
+        ),
       ).rejects.toThrow("timed out");
       expect(Date.now() - t0).toBeLessThan(10_000);
     } finally {
@@ -167,7 +183,11 @@ describe("cli-direct: run", () => {
       setTimeout(() => ac.abort(), 100);
       await expect(p).rejects.toThrow("cancelled");
       await expect(
-        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(f.dir, { kind: "cloud-status" }, ac.signal),
+        createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs }).run(
+          f.dir,
+          { kind: "cloud-status" },
+          ac.signal,
+        ),
       ).rejects.toThrow("cancelled");
     } finally {
       cleanup(f.dir);
@@ -177,8 +197,101 @@ describe("cli-direct: run", () => {
     const cli = createCliDirect({ command: () => join(tmpdir(), "no-such-asc-binary") });
     await expect(cli.run(tmpdir(), { kind: "cloud-status" })).rejects.toThrow("cannot start");
     await expect(cli.run("", { kind: "cloud-status" })).rejects.toThrow("root");
+    await expect(cli.run("relative/root", { kind: "cloud-status" })).rejects.toThrow("root");
     await expect(cli.run("a\0b", { kind: "cloud-status" })).rejects.toThrow("root");
     await expect(cli.run(tmpdir(), { kind: "op-log", limit: 0 })).rejects.toThrow("range");
+  });
+});
+
+describe("a planted asc in the workspace is never executed", () => {
+  const exe = process.platform === "win32" ? "asc.exe" : "asc";
+
+  /** A workspace holding `asc.exe`, `asc.cmd` and `asc` that would write a marker if they ran. */
+  function plant(): { ws: string; marker: string } {
+    const ws = mkdtempSync(join(tmpdir(), "asc-plant-"));
+    const marker = join(ws, "RAN");
+    if (process.platform === "win32") {
+      writeFileSync(
+        join(ws, "asc.cmd"),
+        `@echo ran> "${marker}"
+`,
+      );
+      // A real executable the platform would run if the name were searched.
+      copyFileSync(process.execPath, join(ws, exe));
+    } else {
+      writeFileSync(
+        join(ws, exe),
+        `#!/bin/sh
+echo ran > '${marker}'
+`,
+      );
+      chmodSync(join(ws, exe), 0o755);
+    }
+    return { ws, marker };
+  }
+
+  test("the runner refuses a bare name from inside the workspace and runs nothing", async () => {
+    const { ws, marker } = plant();
+    const here = process.cwd();
+    try {
+      process.chdir(ws);
+      for (const command of [
+        "asc",
+        exe,
+        "asc.cmd",
+        `.${process.platform === "win32" ? "\\" : "/"}${exe}`,
+      ]) {
+        const cli = createCliDirect({ command: () => command });
+        await expect(cli.run(ws, { kind: "cloud-status" })).rejects.toThrow("not found");
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      process.chdir(here);
+      cleanup(ws);
+    }
+  });
+
+  test("a planted file is not resolved, from PATH, from the workspace or from a relative entry", async () => {
+    const { ws } = plant();
+    try {
+      const planted = join(ws, exe);
+      const isFile = (p: string) => p.toLowerCase().startsWith(ws.toLowerCase());
+      const base = {
+        setting: "",
+        ascHome: undefined,
+        home: undefined,
+        platform: process.platform,
+        isFile,
+        workspaceRoots: [ws],
+      };
+      expect(resolveAsc({ ...base, path: ws })).toBeNull();
+      expect(
+        resolveAsc({ ...base, path: [".", "", ws].join(process.platform === "win32" ? ";" : ":") }),
+      ).toBeNull();
+      expect(resolveAsc({ ...base, setting: planted, path: "" })).toBeNull();
+      // Even without the workspace roots, a relative PATH entry never resolves.
+      expect(resolveAsc({ ...base, workspaceRoots: [], path: "." })).toBeNull();
+      const cli = createCliDirect({ command: () => resolveAsc({ ...base, path: ws }) });
+      await expect(cli.run(ws, { kind: "cloud-status" })).rejects.toThrow("not found");
+    } finally {
+      cleanup(ws);
+    }
+  });
+
+  test("a real asc elsewhere is run even when the workspace holds a planted one", async () => {
+    const { ws, marker } = plant();
+    const f = fakeAsc(`process.stdout.write("real");`);
+    mkdirSync(join(f.dir, "bin"));
+    try {
+      const cli = createCliDirect({ command: () => f.command, prefixArgs: f.prefixArgs });
+      const r = await cli.run(ws, { kind: "cloud-status" });
+      expect(r.stdout).toBe("real");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      cleanup(ws);
+      cleanup(f.dir);
+    }
   });
 });
 
@@ -210,7 +323,13 @@ describe("connectivity", () => {
     const ac = new AbortController();
     const got: string[] = [];
     const errs: unknown[] = [];
-    const p = followConnectivity(api, ac.signal, (e) => got.push(e.server), (e) => errs.push(e), [1]);
+    const p = followConnectivity(
+      api,
+      ac.signal,
+      (e) => got.push(e.server),
+      (e) => errs.push(e),
+      [1],
+    );
     await new Promise((r) => setTimeout(r, 20));
     ac.abort();
     await p;

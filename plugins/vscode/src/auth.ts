@@ -5,7 +5,10 @@
 // not given for:
 //   - the token is typed for one host and keyed by that host; changing the host asks again;
 //   - `ASC_TOKEN` is global in asc (it answers for every host), so the fallback token is injected only when
-//     every open root that uses a token host names the same host as the token;
+//     EVERY root `Hello` returned has a workspace id and an https remote with a plain host name (no address
+//     literal, no credentials) that equals the token's host; one root that fails any of that, or no root at
+//     all, injects nothing. The host is passed in `ASC_TOKEN_HOST` too, and asc itself refuses to send
+//     `ASC_TOKEN` to any other host;
 //   - nothing here logs, shows or puts a token in an argument; errors are fixed text.
 // Editor-free; `registerAuth` is the only `vscode` user.
 import { BridgeError, bridge, callUnary } from "@asc/asc-client";
@@ -33,7 +36,8 @@ export function normalizeHost(input: string): string | null {
   if (text === "" || text.length > MAX_HOST) return null;
   for (const ch of text) {
     const c = ch.charCodeAt(0);
-    if (c <= 0x20 || c === 0x7f || ch === "\\" || ch === "@" || ch === "?" || ch === "#") return null;
+    if (c <= 0x20 || c === 0x7f || ch === "\\" || ch === "@" || ch === "?" || ch === "#")
+      return null;
   }
   if (text.includes("://")) {
     if (!text.startsWith("https://")) return null;
@@ -49,7 +53,10 @@ export function normalizeHost(input: string): string | null {
     if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535) return null;
   }
   const labels = text.split(".");
-  if (labels.length === 0 || labels.some((l) => l.length === 0 || l.length > 63 || !LABEL.test(l))) {
+  if (
+    labels.length === 0 ||
+    labels.some((l) => l.length === 0 || l.length > 63 || !LABEL.test(l))
+  ) {
     return null;
   }
   // An all-numeric last label is an address, not a name; sign-in is by host name.
@@ -57,15 +64,51 @@ export function normalizeHost(input: string): string | null {
   return port === "" ? text : `${text}:${port}`;
 }
 
-/** The token host of a root's remote URL (`RootInfo.remote_url`); null for ssh, scp-like or local remotes. */
+/**
+ * The token host of a root's remote URL (`RootInfo.remote_url`); null for ssh, scp-like, local or http
+ * remotes, a URL that does not parse, one with user information, and an address literal. Fail closed.
+ */
 export function hostOfRemote(remoteUrl: string): string | null {
+  for (const ch of remoteUrl) {
+    const c = ch.charCodeAt(0);
+    // `URL` drops tabs and newlines silently; a remote carrying them is not one to trust.
+    if (c <= 0x20 || c === 0x7f || ch === "\\") return null;
+  }
   if (!remoteUrl.toLowerCase().startsWith("https://")) return null;
-  const rest = remoteUrl.slice("https://".length);
-  const end = rest.search(/[/?#]/);
-  const authority = end < 0 ? rest : rest.slice(0, end);
-  // Credentials are removed in `remote_url`; a URL that still has any is not a host to trust.
-  if (authority.includes("@")) return null;
-  return normalizeHost(authority);
+  // `URL` skips extra slashes (`https:///o/r` has the host `o`); the authority must start right here.
+  if ("/?#".includes(remoteUrl.charAt("https://".length))) return null;
+  let u: URL;
+  try {
+    u = new URL(remoteUrl);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" || u.username !== "" || u.password !== "" || u.hostname === "")
+    return null;
+  // `host` omits the scheme's default port, as `normalizeHost` input should.
+  return normalizeHost(u.host);
+}
+
+/** What the token check needs of a `Hello` root. */
+export interface RootRemote {
+  wsId: string;
+  remoteUrl: string;
+}
+
+/**
+ * The one token host every root agrees on, or null: no roots, a root without a workspace id or a usable
+ * https remote, or roots on different hosts all give null. Distinct from the candidates list, which skips
+ * the roots that do not qualify.
+ */
+export function commonTokenHost(roots: readonly RootRemote[]): string | null {
+  let host: string | null = null;
+  for (const r of roots) {
+    const h = r.wsId === "" ? null : hostOfRemote(r.remoteUrl);
+    if (h === null) return null;
+    if (host !== null && host !== h) return null;
+    host = h;
+  }
+  return host;
 }
 
 /** A pasted token: trimmed, non-empty, bounded, one line. Null when it is not usable. */
@@ -142,8 +185,15 @@ export interface AuthServiceOptions {
 export class AuthService {
   /** Hosts whose fallback token is loaded; the bridge environment reads this synchronously. */
   private readonly cache = new Map<string, string>();
-  /** The token hosts of the open roots; empty until `reconcile` runs. */
-  private rootHosts: string[] = [];
+  /**
+   * The token hosts of the open roots as `reconcile` last verified them; null when they were not verified
+   * (before the first `Hello`, or after `clear`), so nothing is injected.
+   */
+  private rootHosts: string[] | null = null;
+  /** Set when some root failed the check; the token is withheld for that reason, not a host clash. */
+  private unqualified = false;
+  /** The hosts of the roots that qualify on their own, for `withheld`. */
+  private seenHosts: string[] = [];
 
   constructor(private readonly o: AuthServiceOptions) {}
 
@@ -192,38 +242,66 @@ export class AuthService {
   }
 
   /**
-   * Loads the fallback tokens of `candidates` and records the token hosts of the open roots. Returns true
-   * when the environment the bridge must run with changed.
+   * Loads the fallback tokens of `candidates` and the hosts of the roots `Hello` returned. A token is
+   * injected only when `commonTokenHost(roots)` names its host. Returns true when the environment the
+   * bridge must run with changed.
    */
-  async reconcile(candidates: readonly string[], rootHosts: readonly string[]): Promise<boolean> {
-    const before = this.injected();
-    this.rootHosts = [...new Set(rootHosts)];
-    for (const h of new Set([...candidates, ...rootHosts])) {
+  async reconcile(candidates: readonly string[], roots: readonly RootRemote[]): Promise<boolean> {
+    const before = this.signature();
+    const common = commonTokenHost(roots);
+    this.unqualified = common === null;
+    this.rootHosts = common === null ? [] : [common];
+    const hosts = roots.flatMap((r) => {
+      const h = r.wsId === "" ? null : hostOfRemote(r.remoteUrl);
+      return h === null ? [] : [h];
+    });
+    this.seenHosts = hosts;
+    for (const h of new Set([...candidates, ...hosts])) {
       if (this.cache.has(h)) continue;
       const t = await this.o.store.get(h);
       if (t !== undefined) this.cache.set(h, t);
     }
-    return this.injected() !== before;
+    return this.signature() !== before;
+  }
+
+  /** Forgets the root check, so no token is injected until the next `reconcile`. True when that changed the environment. */
+  clear(): boolean {
+    const before = this.signature();
+    this.rootHosts = null;
+    this.unqualified = false;
+    this.seenHosts = [];
+    return this.signature() !== before;
   }
 
   /**
-   * `ASC_TOKEN` for the bridge: the fallback token of the one host the open roots use. `ASC_TOKEN` answers
-   * for every host, so with roots on two hosts, or a root on a host with no fallback token, nothing is set.
+   * The bridge's token variables: the fallback token of the one host every root uses, and that host in
+   * `ASC_TOKEN_HOST`. Otherwise nothing.
    */
   env(): Record<string, string | undefined> {
-    const t = this.injected();
-    return t === undefined ? {} : { ASC_TOKEN: t };
+    const h = this.injectedHost();
+    const t = h === undefined ? undefined : this.cache.get(h);
+    return h === undefined || t === undefined ? {} : { ASC_TOKEN: t, ASC_TOKEN_HOST: h };
   }
 
-  private injected(): string | undefined {
-    if (this.rootHosts.length !== 1) return undefined;
+  private signature(): string | undefined {
+    const e = this.env();
+    return e.ASC_TOKEN === undefined
+      ? undefined
+      : `${e.ASC_TOKEN_HOST}
+${e.ASC_TOKEN}`;
+  }
+
+  private injectedHost(): string | undefined {
+    if (this.rootHosts === null || this.unqualified || this.rootHosts.length !== 1)
+      return undefined;
     const host = this.rootHosts[0];
-    return host === undefined ? undefined : this.cache.get(host);
+    return host === undefined || !this.cache.has(host) ? undefined : host;
   }
 
-  /** True when a fallback token exists for a host an open root uses, but is not injected (two hosts). */
+  /** True when a fallback token exists for a host an open root uses, but is not injected. */
   get withheld(): boolean {
-    return this.rootHosts.length > 1 && this.rootHosts.some((h) => this.cache.has(h));
+    if (this.rootHosts === null) return false;
+    return this.seenHosts.some((h) => this.cache.has(h)) && this.injectedHost() === undefined;
   }
 }
 
@@ -288,7 +366,9 @@ export class AuthCommands {
     if (typed === undefined) return false;
     const host = normalizeHost(typed);
     if (host === null) {
-      this.o.ui.error("ASC: that is not a host name. Use a name such as forge.example.org (https only).");
+      this.o.ui.error(
+        "ASC: that is not a host name. Use a name such as forge.example.org (https only).",
+      );
       return false;
     }
     const token = await this.o.ui.askToken(host);
@@ -302,7 +382,9 @@ export class AuthCommands {
       }
       return true;
     } catch (e) {
-      this.o.ui.error(`ASC: sign-in failed. ${e instanceof RangeError ? e.message : fixedMessage(e)}`);
+      this.o.ui.error(
+        `ASC: sign-in failed. ${e instanceof RangeError ? e.message : fixedMessage(e)}`,
+      );
       return false;
     }
   }
@@ -380,7 +462,10 @@ export function vscodeAuthUi(vscode: typeof vscodeTypes): AuthUi {
       return vscode.window.showInputBox({
         prompt: `${placeholder} (a host name such as forge.example.org; https only)`,
         ignoreFocusOut: true,
-        validateInput: (v) => (normalizeHost(v) === null ? "Enter a host name, for example forge.example.org" : undefined),
+        validateInput: (v) =>
+          normalizeHost(v) === null
+            ? "Enter a host name, for example forge.example.org"
+            : undefined,
       });
     },
     askToken: (host) =>
@@ -390,11 +475,15 @@ export function vscodeAuthUi(vscode: typeof vscodeTypes): AuthUi {
           placeHolder: "Paste a personal access token",
           password: true,
           ignoreFocusOut: true,
-          validateInput: (v) => (v === "" || cleanToken(v) !== null ? undefined : "The token must be on one line"),
+          validateInput: (v) =>
+            v === "" || cleanToken(v) !== null ? undefined : "The token must be on one line",
         }),
       ),
     async confirm(message, detail, button) {
-      return (await vscode.window.showWarningMessage(message, { modal: true, detail }, button)) === button;
+      return (
+        (await vscode.window.showWarningMessage(message, { modal: true, detail }, button)) ===
+        button
+      );
     },
     info: (m) => void vscode.window.showInformationMessage(m),
     warn: (m) => void vscode.window.showWarningMessage(m),
@@ -418,11 +507,15 @@ export function registerAuth(
   const out = (what: string, ok: boolean) => log(`asc ${what}: ${ok ? "done" : "not done"}`);
   return vscode.Disposable.from(
     vscode.commands.registerCommand("asc.signIn", async () => out("sign in", await cmds.signIn())),
-    vscode.commands.registerCommand("asc.signOut", async () => out("sign out", await cmds.signOut())),
+    vscode.commands.registerCommand("asc.signOut", async () =>
+      out("sign out", await cmds.signOut()),
+    ),
     vscode.commands.registerCommand("asc.authStatus", async () => {
       const lines = await cmds.status();
       void vscode.window.showInformationMessage(
-        lines.length === 0 ? "ASC: no host is set. Add one to asc.hosts, or sign in." : lines.join("\n"),
+        lines.length === 0
+          ? "ASC: no host is set. Add one to asc.hosts, or sign in."
+          : lines.join("\n"),
       );
     }),
   );

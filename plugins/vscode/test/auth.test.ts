@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +11,12 @@ import {
   type AuthUi,
   bridgeAuth,
   cleanToken,
+  commonTokenHost,
   hostOfRemote,
   hostsFromSetting,
   NoCredentialHelper,
   normalizeHost,
+  type RootRemote,
   SECRET_STORAGE_NOTE,
   type TokenStore,
 } from "../src/auth";
@@ -74,9 +76,9 @@ describe("auth: host names", () => {
     expect(hostOfRemote("")).toBeNull();
   });
   test("the setting keeps valid, unique hosts", () => {
-    expect(hostsFromSetting(["A.example.org", "a.example.org", "bad host", 3, "http://x.org"])).toEqual([
-      "a.example.org",
-    ]);
+    expect(
+      hostsFromSetting(["A.example.org", "a.example.org", "bad host", 3, "http://x.org"]),
+    ).toEqual(["a.example.org"]);
     expect(hostsFromSetting("a.example.org")).toEqual([]);
     expect(hostsFromSetting(undefined)).toEqual([]);
   });
@@ -189,26 +191,86 @@ describe("auth: service", () => {
   });
 });
 
+const root = (host: string, over: Partial<RootRemote> = {}): RootRemote => ({
+  wsId: "ws1",
+  remoteUrl: `https://${host}/o/r.git`,
+  ...over,
+});
+
+describe("auth: remote hosts are checked strictly", () => {
+  test("an address, a URL with credentials, an unparsable or odd URL gives no host", () => {
+    for (const bad of [
+      "https://127.0.0.1/o/r",
+      "https://10.0.0.1:8443/o/r",
+      "https://[::1]/o/r",
+      "https://0x7f.1/o/r",
+      "https://2130706433/o/r",
+      "https://user@forge.example.org/o/r",
+      "https://:pw@forge.example.org/o/r",
+      "https://forge.example.org@evil.example.net/o/r",
+      "https://forge.example.org\\@evil.example.net/o/r",
+      "https://forge.example.org\n.evil.example.net/o/r",
+      "https://forge.example.org\t/o/r",
+      "https://",
+      "https:///o/r",
+      "https://forge.example.org:99999/o/r",
+      "https://forge.example.org./o/r",
+      "https:forge.example.org/o/r",
+      " https://forge.example.org/o/r",
+    ]) {
+      expect(hostOfRemote(bad)).toBeNull();
+    }
+  });
+  test("the default port is dropped so it equals the host a person signed in with", () => {
+    expect(hostOfRemote("https://Forge.Example.org:443/o/r")).toBe("forge.example.org");
+  });
+  test("one root that does not qualify, or no root, gives no common host", () => {
+    const ok = root("a.example.org");
+    expect(commonTokenHost([ok, root("a.example.org")])).toBe("a.example.org");
+    expect(commonTokenHost([])).toBeNull();
+    expect(commonTokenHost([ok, root("b.example.org")])).toBeNull();
+    expect(commonTokenHost([ok, root("a.example.org", { wsId: "" })])).toBeNull();
+    expect(commonTokenHost([ok, { wsId: "ws2", remoteUrl: "" }])).toBeNull();
+    expect(
+      commonTokenHost([ok, { wsId: "ws2", remoteUrl: "ssh://git@a.example.org/o/r" }]),
+    ).toBeNull();
+    expect(
+      commonTokenHost([ok, { wsId: "ws2", remoteUrl: "http://a.example.org/o/r" }]),
+    ).toBeNull();
+    expect(commonTokenHost([ok, { wsId: "ws2", remoteUrl: "https://10.0.0.1/o/r" }])).toBeNull();
+    expect(
+      commonTokenHost([ok, { wsId: "ws2", remoteUrl: "https://u:p@a.example.org/o/r" }]),
+    ).toBeNull();
+  });
+});
+
 describe("auth: the fallback token reaches the bridge only for the host it was given for", () => {
-  async function loaded(root: string[], stored: Record<string, string>) {
+  async function loaded(roots: RootRemote[], stored: Record<string, string>) {
     const { m, store } = memoryStore();
     for (const [h, t] of Object.entries(stored)) m.set(h, t);
     const s = new AuthService({ bridge: fakeBridge({ helper: false }).b, store });
-    const changed = await s.reconcile([], root);
+    const changed = await s.reconcile([], roots);
     return { s, changed };
   }
-  test("one host with a token: injected", async () => {
-    const { s, changed } = await loaded(["a.example.org"], { "a.example.org": "ta" });
-    expect(s.env()).toEqual({ ASC_TOKEN: "ta" });
+  test("one host with a token: injected with the host it is for", async () => {
+    const { s, changed } = await loaded([root("a.example.org")], { "a.example.org": "ta" });
+    expect(s.env()).toEqual({ ASC_TOKEN: "ta", ASC_TOKEN_HOST: "a.example.org" });
     expect(changed).toBe(true);
   });
+  test("a non-default port is part of the host", async () => {
+    const { s } = await loaded([root("a.example.org:8443")], {
+      "a.example.org:8443": "ta",
+      "a.example.org": "tb",
+    });
+    expect(s.env()).toEqual({ ASC_TOKEN: "ta", ASC_TOKEN_HOST: "a.example.org:8443" });
+  });
   test("a token for another host is not injected", async () => {
-    const { s, changed } = await loaded(["a.example.org"], { "b.example.org": "tb" });
+    const { s, changed } = await loaded([root("a.example.org")], { "b.example.org": "tb" });
     expect(s.env()).toEqual({});
     expect(changed).toBe(false);
   });
   test("two hosts: nothing is injected, even when both have tokens", async () => {
-    const { s } = await loaded(["a.example.org", "b.example.org"], {
+    const { s } = await loaded([root("a.example.org"), root("b.example.org")], {
       "a.example.org": "ta",
       "b.example.org": "tb",
     });
@@ -216,22 +278,59 @@ describe("auth: the fallback token reaches the bridge only for the host it was g
     expect(s.withheld).toBe(true);
   });
   test("two roots on one host: injected", async () => {
-    const { s } = await loaded(["a.example.org", "a.example.org"], { "a.example.org": "ta" });
-    expect(s.env()).toEqual({ ASC_TOKEN: "ta" });
+    const { s } = await loaded([root("a.example.org"), root("a.example.org")], {
+      "a.example.org": "ta",
+    });
+    expect(s.env()).toEqual({ ASC_TOKEN: "ta", ASC_TOKEN_HOST: "a.example.org" });
     expect(s.withheld).toBe(false);
   });
-  test("no https root: nothing", async () => {
+  test("no root: nothing", async () => {
     const { s } = await loaded([], { "a.example.org": "ta" });
     expect(s.env()).toEqual({});
   });
+  test("one unqualified root among matching ones: nothing is injected", async () => {
+    const stored = { "a.example.org": "ta" };
+    for (const odd of [
+      root("a.example.org", { wsId: "" }),
+      { wsId: "ws2", remoteUrl: "" },
+      { wsId: "ws2", remoteUrl: "ssh://git@a.example.org/o/r" },
+      { wsId: "ws2", remoteUrl: "https://192.168.0.1/o/r" },
+      { wsId: "ws2", remoteUrl: "https://u:p@a.example.org/o/r" },
+      { wsId: "ws2", remoteUrl: "not a url" },
+    ]) {
+      const { s } = await loaded([root("a.example.org"), odd], stored);
+      expect(s.env()).toEqual({});
+    }
+  });
   test("a second reconcile with the same inputs reports no change", async () => {
-    const { s } = await loaded(["a.example.org"], { "a.example.org": "ta" });
-    expect(await s.reconcile([], ["a.example.org"])).toBe(false);
+    const { s } = await loaded([root("a.example.org")], { "a.example.org": "ta" });
+    expect(await s.reconcile([], [root("a.example.org")])).toBe(false);
+  });
+  test("a root that stops qualifying withdraws the token, and clear withdraws it too", async () => {
+    const { s } = await loaded([root("a.example.org")], { "a.example.org": "ta" });
+    expect(
+      await s.reconcile([], [root("a.example.org"), root("a.example.org", { wsId: "" })]),
+    ).toBe(true);
+    expect(s.env()).toEqual({});
+    expect(await s.reconcile([], [root("a.example.org")])).toBe(true);
+    expect(s.clear()).toBe(true);
+    expect(s.env()).toEqual({});
+    expect(s.clear()).toBe(false);
   });
 });
 
-function fakeUi(script: { host?: string | undefined; token?: string | undefined; confirm?: boolean }) {
-  const log = { info: [] as string[], warn: [] as string[], error: [] as string[], tokenAsks: [] as string[], picks: [] as string[][] };
+function fakeUi(script: {
+  host?: string | undefined;
+  token?: string | undefined;
+  confirm?: boolean;
+}) {
+  const log = {
+    info: [] as string[],
+    warn: [] as string[],
+    error: [] as string[],
+    tokenAsks: [] as string[],
+    picks: [] as string[][],
+  };
   const ui: AuthUi = {
     async pickHost(hosts) {
       log.picks.push([...hosts]);
@@ -251,18 +350,33 @@ function fakeUi(script: { host?: string | undefined; token?: string | undefined;
   return { ui, log };
 }
 
-function commands(script: Parameters<typeof fakeUi>[0], helper: boolean, setting: string[] = [], root: string[] = []) {
+function commands(
+  script: Parameters<typeof fakeUi>[0],
+  helper: boolean,
+  setting: string[] = [],
+  root: string[] = [],
+) {
   const { m, store } = memoryStore();
   const f = fakeBridge({ helper });
   const u = fakeUi(script);
   const service = new AuthService({ bridge: f.b, store });
-  const cmds = new AuthCommands({ service, ui: u.ui, settingHosts: () => setting, rootHosts: () => root });
+  const cmds = new AuthCommands({
+    service,
+    ui: u.ui,
+    settingHosts: () => setting,
+    rootHosts: () => root,
+  });
   return { cmds, ...u, f, m, service };
 }
 
 describe("auth: commands", () => {
   test("sign-in asks for a token every time, for the chosen host", async () => {
-    const c = commands({ host: "a.example.org", token: "t1" }, true, ["b.example.org"], ["a.example.org"]);
+    const c = commands(
+      { host: "a.example.org", token: "t1" },
+      true,
+      ["b.example.org"],
+      ["a.example.org"],
+    );
     expect(await c.cmds.signIn()).toBe(true);
     expect(await c.cmds.signIn()).toBe(true);
     expect(c.log.tokenAsks).toEqual(["a.example.org", "a.example.org"]);
@@ -273,7 +387,12 @@ describe("auth: commands", () => {
     const c = commands({ host: "a.example.org", token: "ta" }, true);
     await c.cmds.signIn();
     const next = fakeUi({ host: "b.example.org", token: undefined });
-    const cmds2 = new AuthCommands({ service: c.service, ui: next.ui, settingHosts: () => [], rootHosts: () => [] });
+    const cmds2 = new AuthCommands({
+      service: c.service,
+      ui: next.ui,
+      settingHosts: () => [],
+      rootHosts: () => [],
+    });
     expect(await cmds2.signIn()).toBe(false);
     expect(next.log.tokenAsks).toEqual(["b.example.org"]);
     expect(c.f.calls).toEqual([{ host: "a.example.org", token: "ta" }]);
@@ -313,7 +432,12 @@ describe("auth: commands", () => {
       store,
     });
     const u = fakeUi({ host: "a.example.org", token: "s3cret-token-value" });
-    const cmds = new AuthCommands({ service, ui: u.ui, settingHosts: () => [], rootHosts: () => [] });
+    const cmds = new AuthCommands({
+      service,
+      ui: u.ui,
+      settingHosts: () => [],
+      rootHosts: () => [],
+    });
     expect(await cmds.signIn()).toBe(false);
     expect(u.log.error.join(" ")).not.toContain("s3cret-token-value");
     expect(u.log.error.join(" ")).not.toContain("boom");
@@ -329,7 +453,10 @@ describe("auth: commands", () => {
     expect(yes.m.size).toBe(0);
   });
   test("status names the source for each host and never the token", async () => {
-    const c = commands({ host: "a.example.org", token: "tok" }, false, ["a.example.org", "b.example.org"]);
+    const c = commands({ host: "a.example.org", token: "tok" }, false, [
+      "a.example.org",
+      "b.example.org",
+    ]);
     await c.cmds.signIn();
     expect(await c.cmds.status()).toEqual([
       "a.example.org: signed in (VS Code secret storage)",
@@ -354,22 +481,33 @@ describe("auth: bridge errors", () => {
   });
   const mgr = (err: BridgeError) => node(err) as never;
   test("NOT_FOUND on Token is no credential", async () => {
-    expect(await bridgeAuth(mgr(new BridgeError(5, "NOT_FOUND: none"))).token("a.example.org")).toBeNull();
+    expect(
+      await bridgeAuth(mgr(new BridgeError(5, "NOT_FOUND: none"))).token("a.example.org"),
+    ).toBeNull();
   });
   test("NO_CREDENTIAL_HELPER on StoreToken is the fallback signal", async () => {
     await expect(
-      bridgeAuth(mgr(new BridgeError(9, "NO_CREDENTIAL_HELPER: set credential.helper"))).storeToken("a.example.org", "t"),
+      bridgeAuth(mgr(new BridgeError(9, "NO_CREDENTIAL_HELPER: set credential.helper"))).storeToken(
+        "a.example.org",
+        "t",
+      ),
     ).rejects.toBeInstanceOf(NoCredentialHelper);
   });
   test("other errors become fixed text without the request fields", async () => {
     const err = new BridgeError(13, "internal: token=hunter2 failed");
     const e = await bridgeAuth(mgr(err))
       .storeToken("a.example.org", "hunter2")
-      .then(() => new Error("no error"), (x: unknown) => x as Error);
+      .then(
+        () => new Error("no error"),
+        (x: unknown) => x as Error,
+      );
     expect(e.message).toBe("asc could not store the credential");
     const t = await bridgeAuth(mgr(err))
       .token("a.example.org")
-      .then(() => new Error("no error"), (x: unknown) => x as Error);
+      .then(
+        () => new Error("no error"),
+        (x: unknown) => x as Error,
+      );
     expect(t.message).toBe("asc could not look up the credential");
   });
   test("the logout argv is built only from a bare host", () => {
@@ -385,7 +523,8 @@ describe("auth: bridge errors", () => {
   });
 });
 
-// The activation path: a fallback token makes the bridge start again once, with ASC_TOKEN set.
+// The activation path: the bridge starts again only when the injected environment differs from the one
+// the running child was started with.
 describe("auth: activation", () => {
   const dirs: string[] = [];
   const ascFolder = () => {
@@ -395,54 +534,181 @@ describe("auth: activation", () => {
     writeFileSync(join(d, ".git", "asc-workspace"), "");
     return d;
   };
-  test("the bridge starts again once when the stored token changes its environment", async () => {
+  const exeDir = mkdtempSync(join(tmpdir(), "asc-auth-exe-"));
+  const exe = join(exeDir, process.platform === "win32" ? "asc.exe" : "asc");
+  writeFileSync(exe, "");
+  afterAll(() => rmSync(exeDir, { recursive: true, force: true }));
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  type Env = Record<string, string | undefined>;
+  function setup(opts: {
+    reconcile: (n: number) => Env | Promise<Env>;
+    helloFails?: (n: number) => boolean;
+  }) {
     const folder = ascFolder();
-    const spawns: (Record<string, string | undefined> | undefined)[] = [];
-    let token: string | undefined;
+    const spawns: (Env | undefined)[] = [];
+    const closes: number[] = [];
+    let helloCalls = 0;
+    let wanted: Env = {};
     let reconciles = 0;
+    let cleared = 0;
+    const cmds = new Map<string, () => void>();
     const host = {
       workspaceFolders: () => [folder],
-      ascPathSetting: () => "",
+      ascPathSetting: () => exe,
       gitEnabled: () => false,
       disableBuiltinGit: async () => {},
       notify: async () => undefined,
-      registerCommand: () => ({ dispose() {} }),
+      registerCommand: (id: string, run: () => void) => {
+        cmds.set(id, run);
+        return { dispose() {} };
+      },
       setContext: async () => {},
       log() {},
       showOutput() {},
       memento: { get: () => true, set: async () => {} },
       env: { PATH: "/bin", ASC_TOKEN: "inherited" },
       platform: process.platform,
-      bridgeEnv: () => (token === undefined ? {} : { ASC_TOKEN: token }),
+      bridgeEnv: () => wanted,
       reconcileAuth: async () => {
         reconciles++;
-        const changed = token === undefined;
-        token = "from-secret-storage";
-        return changed;
+        wanted = await opts.reconcile(reconciles);
+      },
+      clearAuth: () => {
+        cleared++;
+        wanted = {};
       },
     } as unknown as Host;
-    const create_ = (o: { env?: Record<string, string | undefined> }): BridgeNode => {
+    const create_ = (o: { env?: Env }): BridgeNode => {
       spawns.push(o.env);
+      const n = spawns.length;
       const reply = toBinary(
         bridge.HelloResponseSchema,
-        create(bridge.HelloResponseSchema, { ascVersion: "1", features: ["plugin.v1", "json-verbs.v1"] }),
+        create(bridge.HelloResponseSchema, {
+          ascVersion: "1",
+          features: ["plugin.v1", "json-verbs.v1"],
+        }),
       );
       return {
         state: "up",
         pid: undefined,
         stderrTail: () => [],
-        unary: async () => reply,
+        unary: async () => {
+          helloCalls++;
+          if (opts.helloFails?.(helloCalls)) throw new Error("bridge gone");
+          return reply;
+        },
         stream: async function* () {},
-        close() {},
+        close() {
+          closes.push(n);
+        },
       };
     };
-    const a = await activateWith(host, create_ as never);
+    return { host, create_, spawns, closes, cmds, state: () => ({ reconciles, cleared, wanted }) };
+  }
+
+  const TOKEN = { ASC_TOKEN: "from-secret-storage", ASC_TOKEN_HOST: "a.example.org" };
+
+  test("the bridge starts again once when the stored token changes its environment", async () => {
+    const t = setup({ reconcile: () => TOKEN });
+    const a = await activateWith(t.host, t.create_ as never);
     expect(await a.started).toEqual({ level: "full" });
-    expect(reconciles).toBe(1);
-    expect(spawns).toHaveLength(2);
-    expect(spawns[0]?.ASC_TOKEN).toBe("inherited");
-    expect(spawns[1]?.ASC_TOKEN).toBe("from-secret-storage");
+    expect(t.state().reconciles).toBe(2);
+    expect(t.spawns).toHaveLength(2);
+    expect(t.spawns[0]?.ASC_TOKEN).toBe("inherited");
+    expect(t.spawns[0]?.ASC_TOKEN_HOST).toBeUndefined();
+    expect(t.spawns[1]?.ASC_TOKEN).toBe("from-secret-storage");
+    expect(t.spawns[1]?.ASC_TOKEN_HOST).toBe("a.example.org");
+    expect(t.closes).toEqual([1]);
     a.dispose();
-    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  test("an unchanged environment does not restart the bridge, on any later start", async () => {
+    const t = setup({ reconcile: () => ({}) });
+    const a = await activateWith(t.host, t.create_ as never);
+    await a.started;
+    expect(t.spawns).toHaveLength(1);
+    expect(t.state().reconciles).toBe(1);
+    // asc.restartBridge closes the child and starts again: one new child, and reconcile runs again.
+    t.cmds.get("asc.restartBridge")?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.spawns).toHaveLength(2);
+    expect(t.state().reconciles).toBe(2);
+    expect(t.closes).toEqual([1]);
+    a.dispose();
+  });
+
+  test("a token the roots no longer vouch for is dropped and the child restarted without it", async () => {
+    let n = 0;
+    const t = setup({ reconcile: () => (++n <= 2 ? TOKEN : {}) });
+    const a = await activateWith(t.host, t.create_ as never);
+    await a.started;
+    // Start 0 spawns without a token, reconcile wants one, so spawn 2 carries it and keeps it.
+    expect(t.spawns.at(-1)?.ASC_TOKEN).toBe("from-secret-storage");
+    const before = t.spawns.length;
+    t.cmds.get("asc.restartBridge")?.();
+    await new Promise((r) => setTimeout(r, 20));
+    // The restart's Hello is read with the token the child gets (still wanted at spawn time), the
+    // check then finds the roots no longer qualify, and the child is started again without it.
+    expect(t.spawns.length).toBe(before + 2);
+    expect(t.spawns.at(-2)?.ASC_TOKEN).toBe("from-secret-storage");
+    expect(t.spawns.at(-1)?.ASC_TOKEN).toBe("inherited");
+    expect(t.spawns.at(-1)?.ASC_TOKEN_HOST).toBeUndefined();
+    a.dispose();
+  });
+
+  test("when the hosts cannot be re-checked the injected token is cleared", async () => {
+    let n = 0;
+    const t = setup({
+      reconcile: async () => {
+        n++;
+        if (n >= 3) throw new Error("hello did not parse");
+        return TOKEN;
+      },
+    });
+    const a = await activateWith(t.host, t.create_ as never);
+    await a.started;
+    expect(t.spawns.at(-1)?.ASC_TOKEN).toBe("from-secret-storage");
+    const before = t.spawns.length;
+    t.cmds.get("asc.restartBridge")?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.state().cleared).toBeGreaterThan(0);
+    expect(t.spawns.length).toBe(before + 2);
+    expect(t.spawns.at(-1)?.ASC_TOKEN).toBe("inherited");
+    a.dispose();
+  });
+
+  test("a Hello that fails clears the token and the child is not left holding it", async () => {
+    let n = 0;
+    const t = setup({ reconcile: () => TOKEN, helloFails: () => ++n === 3 });
+    const a = await activateWith(t.host, t.create_ as never);
+    await a.started;
+    const before = t.spawns.length;
+    const closed = t.closes.length;
+    t.cmds.get("asc.restartBridge")?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(t.state().cleared).toBeGreaterThan(0);
+    expect(t.state().wanted).toEqual({});
+    // restart() on the command, then the failed Hello's own restart: the token is not re-injected.
+    expect(t.closes.length).toBeGreaterThan(closed);
+    expect(t.spawns.length).toBe(before + 1);
+    a.dispose();
+  });
+
+  test("a start that cannot settle gives up on the token instead of restarting forever", async () => {
+    let n = 0;
+    // The wanted token alternates every call, so it never matches the child's.
+    const t = setup({
+      reconcile: () =>
+        ++n % 2 === 1 ? TOKEN : { ASC_TOKEN: "other", ASC_TOKEN_HOST: "b.example.org" },
+    });
+    const a = await activateWith(t.host, t.create_ as never);
+    expect(await a.started).toEqual({ level: "full" });
+    expect(t.spawns.length).toBeLessThanOrEqual(5);
+    expect(t.state().cleared).toBeGreaterThan(0);
+    expect(t.spawns.at(-1)?.ASC_TOKEN).toBe("inherited");
+    a.dispose();
   });
 });
