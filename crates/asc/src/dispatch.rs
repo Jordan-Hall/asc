@@ -225,6 +225,7 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "ci",
     "agent",
     "workflow",
+    "deps",
     "affected",
     "projects",
     "graph",

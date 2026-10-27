@@ -1,0 +1,26 @@
+{
+    "_readme": ["This file locks the dependencies"],
+    "content-hash": "abc",
+    "packages": [
+        {
+            "name": "monolog/monolog",
+            "version": "2.8.0",
+            "source": {"type": "git", "url": "https://github.com/Seldaek/monolog.git", "reference": "abc"}
+        },
+        {
+            "name": "symfony/console",
+            "version": "v5.4.2"
+        },
+        {
+            "name": "acme/branch",
+            "version": "dev-main"
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "9.5.0"
+        }
+    ],
+    "platform": {"php": ">=7.4"}
+}

@@ -20,6 +20,7 @@
     "./codeintel": "./src/gen/asc/v1/codeintel_pb.ts",
     "./common": "./src/gen/asc/v1/common_pb.ts",
     "./crosssearch": "./src/gen/asc/v1/crosssearch_pb.ts",
+    "./deps": "./src/gen/asc/v1/deps_pb.ts",
     "./inbox": "./src/gen/asc/v1/inbox_pb.ts",
     "./mergequeue": "./src/gen/asc/v1/mergequeue_pb.ts",
     "./policy": "./src/gen/asc/v1/policy_pb.ts",

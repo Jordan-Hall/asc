@@ -58,6 +58,8 @@ pub mod services {
     pub use crate::pb::code_intel_server;
     pub use crate::pb::cross_search_client;
     pub use crate::pb::cross_search_server;
+    pub use crate::pb::deps_service_client;
+    pub use crate::pb::deps_service_server;
     pub use crate::pb::inbox_client;
     pub use crate::pb::inbox_server;
     pub use crate::pb::merge_queue_client;
