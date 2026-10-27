@@ -1,8 +1,10 @@
 // A demo repository for the mock transport: a tree, a README, a very long file (to exercise the
 // virtualiser), a binary file, and two stacks of changes. Used by tests and by `?mock`.
+import { changeIdToString } from "@asc/asc-client";
 import { Changes } from "@asc/asc-client/changes";
 import { Inbox, InboxSection } from "@asc/asc-client/inbox";
 import { Repo } from "@asc/asc-client/repo";
+import { Review, ThreadStatus } from "@asc/asc-client/review";
 import { MockTransport, notFound } from "./mock";
 
 export const DEMO_REPO = "asc/demo";
@@ -65,6 +67,21 @@ interface DemoChange {
   approvals: number;
   checks: string;
   draft?: boolean;
+  /** Why the change exists (the description between the title and the trailers). */
+  intent?: string;
+  risk?: string;
+  riskArea?: string;
+  /** Agent run that wrote it, a `Agent:` trailer. */
+  agent?: string;
+  author?: string;
+  /** Age of the newest version. */
+  ageSec?: number;
+  version?: number;
+  added?: number;
+  removed?: number;
+  files?: number;
+  /** The parent moved: the change needs a restack. */
+  restack?: boolean;
 }
 
 const STACKS: Record<string, readonly DemoChange[]> = {
@@ -98,12 +115,20 @@ export function changeIdBytes(ref: string, i: number): Uint8Array {
 const MODE_DIR = 0o040000;
 const MODE_FILE = 0o100644;
 const NOW = () => Math.floor(Date.now() / 1000);
+const MIN = 60;
+const HOUR = 3600;
+const DAY = 86400;
 
 interface InboxSeed {
   section: InboxSection;
   author: string;
   ageSec: number;
   threads: number;
+  /** The stack the change belongs to, and its index (bottom is 0). Without one the item stands alone. */
+  stack?: string;
+  index?: number;
+  /** The newest comment of the change, for returned items. */
+  quote?: { author: string; body: string };
 }
 
 /** What one demo repository looks like: its files, last commit, stacks and inbox. */
@@ -125,6 +150,12 @@ function small(...paths: string[]): () => Map<string, Uint8Array> {
   };
 }
 
+const RETRY = "refs/heads/retry-with-backoff";
+const CURSOR = "refs/heads/cursor-pagination";
+const RATE = "refs/heads/rate-limit-headers";
+const CONTRAST = "refs/heads/contrast-tokens";
+const FOCUS = "refs/heads/focus-ring";
+
 const PROFILES: Record<string, Profile> = {
   [DEMO_REPO]: {
     files: demoFiles,
@@ -140,32 +171,266 @@ const PROFILES: Record<string, Profile> = {
   },
   "acme/payments": {
     files: small(
-      "go.mod",
-      "cmd/server/main.go",
-      "internal/billing/retry.go",
-      "internal/billing/charge.go",
+      "Cargo.toml",
+      ".asc/policy.toml",
+      "src/client.rs",
+      "src/refund.rs",
+      "src/retry.rs",
+      "tests/retry.rs",
+      "docs/retries.md",
     ),
-    subject: "billing: retry failed charges with backoff",
-    ageSec: 35 * 60,
+    subject: "Add idempotency keys to refunds",
+    ageSec: 3 * HOUR,
     stacks: {
-      "refs/heads/billing-retry": [
+      [RETRY]: [
         {
-          title: "billing: extract charge client",
+          title: "Add retry policy type",
           state: "open",
-          number: 212,
-          approvals: 2,
+          number: 301,
+          approvals: 1,
           checks: "success",
+          author: "Jordan",
+          ageSec: 2 * DAY,
+          version: 2,
+          added: 38,
+          removed: 2,
+          files: 2,
+          intent:
+            "A RetryPolicy value says how many attempts, how long between them and how much jitter.",
         },
         {
-          title: "billing: retry failed charges",
+          title: "Backoff with jitter",
           state: "open",
-          number: 213,
+          number: 302,
           approvals: 1,
+          checks: "success",
+          author: "coder-1",
+          agent: "coder-1",
+          ageSec: DAY,
+          version: 3,
+          added: 52,
+          removed: 4,
+          files: 2,
+          intent:
+            "Delays double each attempt with random jitter so retries do not arrive together.",
+        },
+        {
+          title: "Wire retry policy into the client",
+          state: "open",
+          number: 303,
+          approvals: 0,
+          checks: "success",
+          author: "coder-2",
+          agent: "coder-2",
+          ageSec: 12 * MIN,
+          version: 4,
+          added: 84,
+          removed: 12,
+          files: 3,
+          intent:
+            "Every outbound payment call goes through the retry policy so a flaky provider cannot fail a charge. Refunds use the same policy.",
+          risk: "touches 3 call sites in billing.",
+          riskArea: "billing",
+        },
+        {
+          title: "Docs and metrics",
+          state: "open",
+          number: 304,
+          approvals: 0,
           checks: "pending",
+          draft: true,
+          author: "coder-2",
+          agent: "coder-2",
+          ageSec: 3 * HOUR,
+          version: 1,
+          added: 31,
+          removed: 0,
+          files: 2,
+          restack: true,
+          intent: "Document the retry policy and count retries.",
         },
       ],
     },
-    inbox: [{ section: InboxSection.CHECKS_FAILED, author: "you", ageSec: 3 * 3600, threads: 0 }],
+    inbox: [
+      {
+        section: InboxSection.NEEDS_REVIEW,
+        author: "coder-2",
+        ageSec: 12 * MIN,
+        threads: 0,
+        stack: RETRY,
+        index: 2,
+      },
+    ],
+  },
+  "acme/web-app": {
+    files: small("package.json", "tsconfig.json", "src/main.tsx", "src/pagination.ts"),
+    subject: "Paginate the order list",
+    ageSec: 26 * HOUR,
+    stacks: {
+      [CURSOR]: [
+        {
+          title: "Cursor type for the list API",
+          state: "open",
+          number: 88,
+          approvals: 1,
+          checks: "success",
+          author: "Jordan",
+          ageSec: 2 * DAY,
+          added: 44,
+          removed: 3,
+          files: 2,
+        },
+        {
+          title: "Pagination cursor",
+          state: "open",
+          number: 89,
+          approvals: 0,
+          checks: "success",
+          author: "Jordan",
+          ageSec: 41 * MIN,
+          added: 120,
+          removed: 40,
+          files: 5,
+          intent: "Lists page by an opaque cursor instead of an offset.",
+        },
+        {
+          title: "Cursor in the order list",
+          state: "open",
+          number: 90,
+          approvals: 0,
+          checks: "",
+          draft: true,
+          author: "Jordan",
+          ageSec: 3 * HOUR,
+          added: 18,
+          removed: 2,
+          files: 1,
+        },
+      ],
+    },
+    inbox: [
+      {
+        section: InboxSection.RETURNED,
+        author: "Jordan",
+        ageSec: 41 * MIN,
+        threads: 1,
+        stack: CURSOR,
+        index: 1,
+        quote: { author: "Priya", body: "Can we keep the old cursor format for one release?" },
+      },
+    ],
+  },
+  "acme/infra": {
+    files: small("main.tf", "modules/edge/main.tf", "modules/edge/limits.tf"),
+    subject: "Rate limit headers on the edge",
+    ageSec: 2 * HOUR,
+    stacks: {
+      [RATE]: [
+        {
+          title: "Rate limit headers",
+          state: "open",
+          number: 51,
+          approvals: 2,
+          checks: "success",
+          author: "Jordan",
+          ageSec: HOUR,
+          added: 30,
+          removed: 4,
+          files: 2,
+        },
+        {
+          title: "Infra rollout window",
+          state: "open",
+          number: 52,
+          approvals: 2,
+          checks: "success",
+          author: "Jordan",
+          ageSec: HOUR,
+          added: 12,
+          removed: 0,
+          files: 1,
+        },
+      ],
+    },
+    inbox: [
+      {
+        section: InboxSection.RETURNED,
+        author: "Jordan",
+        ageSec: 3 * HOUR,
+        threads: 1,
+        stack: RATE,
+        index: 1,
+        quote: {
+          author: "Grace",
+          body: "@jordan can you move the infra rollout window to Thursday?",
+        },
+      },
+    ],
+  },
+  "acme/design-system": {
+    files: small("package.json", "tokens/color.json", "src/button.tsx"),
+    subject: "Fix focus ring contrast",
+    ageSec: 6 * HOUR,
+    stacks: {
+      [CONTRAST]: [
+        {
+          title: "Contrast tokens",
+          state: "open",
+          number: 12,
+          approvals: 0,
+          checks: "success",
+          author: "linus",
+          ageSec: DAY + HOUR,
+          added: 22,
+          removed: 22,
+          files: 2,
+        },
+      ],
+      [FOCUS]: [
+        {
+          title: "Button focus ring",
+          state: "open",
+          number: 13,
+          approvals: 0,
+          checks: "success",
+          author: "linus",
+          ageSec: 6 * HOUR,
+          added: 14,
+          removed: 3,
+          files: 1,
+        },
+        {
+          title: "Input focus ring",
+          state: "open",
+          number: 14,
+          approvals: 0,
+          checks: "success",
+          author: "linus",
+          ageSec: 90 * MIN,
+          added: 9,
+          removed: 2,
+          files: 1,
+        },
+      ],
+    },
+    inbox: [
+      {
+        section: InboxSection.NEEDS_REVIEW,
+        author: "linus",
+        ageSec: DAY + HOUR,
+        threads: 0,
+        stack: CONTRAST,
+        index: 0,
+      },
+      {
+        section: InboxSection.NEEDS_REVIEW,
+        author: "linus",
+        ageSec: 6 * HOUR,
+        threads: 0,
+        stack: FOCUS,
+        index: 0,
+      },
+    ],
   },
   "acme/web": {
     files: small("package.json", "tsconfig.json", "src/main.tsx", "src/app.tsx"),
@@ -213,6 +478,39 @@ const signature = (name: string, ageSec: number) => ({
   email: enc.encode("a@b.c"),
   time: BigInt(NOW() - ageSec),
 });
+
+/** The commit message of a demo change: title, intent, then the trailers. */
+function messageOf(c: DemoChange): string {
+  const parts = [c.title];
+  if (c.intent) parts.push("", c.intent);
+  const trailers = [
+    c.risk ? `Risk: ${c.risk}` : "",
+    c.riskArea ? `Risk-area: ${c.riskArea}` : "",
+    c.agent ? `Agent: ${c.agent}` : "",
+  ].filter(Boolean);
+  if (trailers.length > 0) parts.push("", ...trailers);
+  return parts.join("\n");
+}
+
+/** The per-file stat of a demo change, split over its files. */
+function statOf(c: DemoChange) {
+  const n = c.files ?? 0;
+  if (n === 0) return undefined;
+  const files = Array.from({ length: n }, (_, i) => ({
+    path: enc.encode(`src/file${i + 1}.rs`),
+    added: Math.floor((c.added ?? 0) / n) + (i === 0 ? (c.added ?? 0) % n : 0),
+    removed: Math.floor((c.removed ?? 0) / n) + (i === 0 ? (c.removed ?? 0) % n : 0),
+    binary: false,
+  }));
+  return { files };
+}
+
+/** The change id an inbox item points at: a stack change when it names one, else its own. */
+function inboxChange(name: string, s: InboxSeed, i: number): Uint8Array {
+  return s.stack !== undefined
+    ? changeIdBytes(s.stack, s.index ?? 0)
+    : changeIdBytes(`inbox:${name}`, i);
+}
 
 /** A transport wired with the demo repositories. */
 export function demoTransport(latencyMs = 0): MockTransport {
@@ -287,9 +585,10 @@ export function demoTransport(latencyMs = 0): MockTransport {
       yield {
         entries: stack.map((c, i) => ({
           id: fakeId(`${include}@${i}`),
-          message: enc.encode(`${c.title}\n\nBody text.`),
-          author: signature("Ada", prof.ageSec + i * 600),
+          message: enc.encode(messageOf(c)),
+          author: signature(c.author ?? "Ada", c.ageSec ?? prof.ageSec + i * 600),
           change: changeIdBytes(include, i),
+          stats: statOf(c),
         })),
       };
       return;
@@ -314,9 +613,9 @@ export function demoTransport(latencyMs = 0): MockTransport {
       changes: stack.map((c, i) => ({
         change: changeIdBytes(ref, i),
         head: fakeId(`${ref}@${i}`),
-        version: 1 + i,
+        version: c.version ?? 1 + i,
         parentChange: i > 0 ? changeIdBytes(ref, i - 1) : new Uint8Array(),
-        parentCurrent: true,
+        parentCurrent: !c.restack,
         review: {
           state: c.state,
           number: BigInt(c.number),
@@ -346,7 +645,7 @@ export function demoTransport(latencyMs = 0): MockTransport {
     return {
       total: seeds.length,
       items: seeds.map((s, i) => ({
-        change: changeIdBytes(`inbox:${name}`, i),
+        change: inboxChange(name, s, i),
         section: s.section,
         latestVersion: 1 + (i % 3),
         author: s.author,
@@ -354,6 +653,36 @@ export function demoTransport(latencyMs = 0): MockTransport {
         openThreads: s.threads,
         requestedBy: s.section === InboxSection.NEEDS_REVIEW ? s.author : "",
       })),
+    };
+  });
+
+  t.onUnary(Review.method.listThreads, (req) => {
+    const name = req.repo?.name ?? DEMO_REPO;
+    const seeds = profile(name).inbox;
+    const id = changeIdToString(req.change);
+    const seed = seeds.find((s, i) => changeIdToString(inboxChange(name, s, i)) === id);
+    if (!seed?.quote) return { threads: [], openThreads: 0, nextPageToken: "" };
+    return {
+      openThreads: 1,
+      nextPageToken: "",
+      threads: [
+        {
+          id: 1n,
+          change: req.change,
+          status: ThreadStatus.OPEN,
+          openedBy: seed.quote.author,
+          created: BigInt(NOW() - seed.ageSec - 60),
+          updated: BigInt(NOW() - seed.ageSec),
+          comments: [
+            {
+              id: 1n,
+              author: seed.quote.author,
+              body: seed.quote.body,
+              created: BigInt(NOW() - seed.ageSec),
+            },
+          ],
+        },
+      ],
     };
   });
 

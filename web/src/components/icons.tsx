@@ -72,11 +72,11 @@ export function LogoMark(props: { size?: number; tone?: "light" | "dark" }): Rea
   const dark = props.tone === "dark";
   return (
     <svg width={size} height={size} viewBox="0 0 28 28" aria-hidden="true" focusable="false">
-      <rect width="28" height="28" rx="7" fill={dark ? "#2394b2" : "#125469"} />
+      <rect width="28" height="28" rx="7" fill={dark ? "#22d3ee" : "#125469"} />
       <path
         d="M7.5 22.2 14 6.6l6.5 15.6"
         fill="none"
-        stroke={dark ? "#0b1220" : "#ffffff"}
+        stroke={dark ? "#04222b" : "#ffffff"}
         strokeWidth="3"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -84,11 +84,11 @@ export function LogoMark(props: { size?: number; tone?: "light" | "dark" }): Rea
       <path
         d="M10.4 17.3h7.2"
         fill="none"
-        stroke={dark ? "#ffffff" : "#22d3ee"}
+        stroke={dark ? "#125469" : "#22d3ee"}
         strokeWidth="2.4"
         strokeLinecap="round"
       />
-      <circle cx="14" cy="6.6" r="2.7" fill={dark ? "#ffffff" : "#22d3ee"} />
+      <circle cx="14" cy="6.6" r="2.7" fill={dark ? "#125469" : "#22d3ee"} />
     </svg>
   );
 }

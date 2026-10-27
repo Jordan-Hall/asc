@@ -6,6 +6,8 @@ import { App } from "./app";
 import { createAuthStore } from "./lib/auth";
 import { QueryCache } from "./lib/query";
 import "./styles/app.css";
+import "./styles/boards.css";
+import "./styles/chrome.css";
 
 async function boot(): Promise<void> {
   let session: Storage | undefined;
