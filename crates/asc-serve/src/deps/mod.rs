@@ -29,8 +29,10 @@ pub mod hub;
 pub mod latest;
 pub mod latest_facts;
 pub mod listing;
+pub mod lock;
 pub mod model;
 pub mod names;
+pub mod ordered;
 pub mod osv;
 pub mod parse;
 pub mod plan;
@@ -49,6 +51,8 @@ pub mod yaml;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_facts;
 #[cfg(test)]
 mod tests_hub;
 

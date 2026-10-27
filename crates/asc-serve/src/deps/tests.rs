@@ -43,6 +43,8 @@ pub(super) struct MockState {
     pub hits: Vec<String>,
     /// The number of queries of every `querybatch`.
     pub batches: Vec<usize>,
+    /// Path to a binary body.
+    pub blobs: HashMap<String, Vec<u8>>,
     /// First-page answers that carry a `next_page_token`, by `(name, version)`.
     pub paged: HashMap<(String, String), (Vec<String>, Vec<String>)>,
 }
@@ -124,6 +126,13 @@ async fn handle(State(st): State<Arc<Mutex<MockState>>>, req: Request<Body>) -> 
         *n -= 1;
         return reply(500, "{}".into());
     }
+    if let Some(b) = g.blobs.get(&path) {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(b.clone()))
+            .unwrap();
+    }
     match g.routes.get(&path) {
         Some((status, body)) => reply(*status, body.clone()),
         None => reply(404, "{}".into()),
@@ -183,6 +192,12 @@ impl Mock {
         });
     }
 
+    pub fn blob(&self, path: &str, body: &[u8]) {
+        self.with(|s| {
+            s.blobs.insert(path.to_owned(), body.to_vec());
+        });
+    }
+
     pub fn route(&self, path: &str, status: u16, body: &str) {
         self.with(|s| {
             s.routes.insert(path.to_owned(), (status, body.to_owned()));
@@ -217,9 +232,11 @@ pub(super) fn config(mock: &Mock) -> Config {
     c.osv.url = url.clone();
     for e in [
         &mut c.registries.crates_io,
+        &mut c.registries.crates_index,
         &mut c.registries.npm,
         &mut c.registries.pypi,
         &mut c.registries.go,
+        &mut c.registries.go_sumdb,
         &mut c.registries.maven,
         &mut c.registries.nuget,
         &mut c.registries.packagist,
@@ -778,7 +795,7 @@ async fn an_advisory_file_works_alone_with_the_api_and_when_it_cannot_be_read() 
 
 // ------------------------------------------------------------------------------ registries
 
-async fn latest_with(m: &Mock, now: i64) -> (Latest, Arc<AtomicI64>) {
+pub(super) async fn latest_with(m: &Mock, now: i64) -> (Latest, Arc<AtomicI64>) {
     let c = config(m);
     let (clock, t) = clock(now);
     (
@@ -858,10 +875,8 @@ async fn every_registry_is_asked_at_its_own_path_and_read_into_one_shape() {
     };
     let crates = get(Ecosystem::CratesIo, "serde").await;
     assert_eq!(crates.latest.as_deref(), Some("1.0.1"));
-    assert_eq!(crates.meta["1.0.1"].checksum.as_deref(), Some("c"));
     let npm = get(Ecosystem::Npm, "@scope/pkg").await;
     assert_eq!(npm.latest.as_deref(), Some("2.0.0"));
-    assert_eq!(npm.meta["2.0.0"].integrity.as_deref(), Some("sha512-a"));
     assert_eq!(
         get(Ecosystem::PyPi, "requests").await.versions,
         ["2.30.0", "2.31.0"]

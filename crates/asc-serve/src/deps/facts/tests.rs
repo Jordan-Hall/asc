@@ -1,4 +1,5 @@
 use super::*;
+use crate::deps::ordered::Ordered;
 
 const NPM: &[u8] = include_bytes!("../fixtures/registry/npm-lodash-4.17.21.json");
 const NPM_KEYS: &[u8] = include_bytes!("../fixtures/registry/npm-keys.json");
@@ -154,8 +155,9 @@ fn npm_dependencies_and_install_properties_make_the_profile() {
     g.deps.insert("dependencies:a".into(), "^2.0.0".into());
     g.deps.insert("dependencies:b".into(), "1".into());
     g.deps.remove("optionalDependencies:fsevents");
-    g.traits.insert("engines".into(), r#"{"node":">=14"}"#.into());
-    let d = f.differences(&g);
+    g.traits
+        .insert("engines".into(), r#"{"node":">=14"}"#.into());
+    let d = f.differences(&g, true);
     assert_eq!(d.len(), 4, "{d:?}");
     assert!(
         d.iter()
@@ -169,7 +171,9 @@ fn npm_dependencies_and_install_properties_make_the_profile() {
         d.iter()
             .any(|l| l.contains("fsevents") && l.contains("is gone"))
     );
-    assert!(f.differences(&f).is_empty());
+    assert!(f.differences(&f, true).is_empty());
+    // Without the install properties only the dependencies count.
+    assert_eq!(f.differences(&g, false).len(), 3);
 }
 
 #[test]
@@ -190,7 +194,16 @@ fn a_crate_checksum_must_agree_between_the_api_and_the_index() {
     assert_eq!(crates_index_path("ab").unwrap(), ["2", "ab"]);
     assert_eq!(crates_index_path("Abc").unwrap(), ["3", "a", "abc"]);
     // A name outside crates.io's grammar never reaches a byte slice.
-    for bad in ["", "é", "aé", "日本語", "ab\u{e9}", &"a".repeat(65), "a/b", ".."] {
+    for bad in [
+        "",
+        "é",
+        "aé",
+        "日本語",
+        "ab\u{e9}",
+        &"a".repeat(65),
+        "a/b",
+        "..",
+    ] {
         assert!(crates_index_path(bad).is_err(), "{bad:?}");
     }
 }
@@ -217,7 +230,11 @@ fn a_pypi_release_lists_its_files_and_the_simple_index_must_agree() {
     assert_eq!(f.files[0].filename, "six-1.16.0-py2.py3-none-any.whl");
     assert!(!f.files[0].sdist && f.files[1].sdist);
     assert!(is_hex(&f.files[0].sha256, 64));
-    assert!(f.files[0].url.starts_with("https://files.pythonhosted.org/"));
+    assert!(
+        f.files[0]
+            .url
+            .starts_with("https://files.pythonhosted.org/")
+    );
     assert_eq!(
         f.traits["requires_python"],
         ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*"
@@ -263,28 +280,30 @@ fn a_gem_checksum_must_agree_between_the_compact_index_and_the_api() {
     );
 }
 
+fn field<'a>(e: &'a Ordered, k: &str) -> &'a str {
+    e.get(k).and_then(Ordered::as_str).unwrap_or("")
+}
+
 #[test]
 fn a_minified_packagist_list_is_expanded_to_the_entry_of_a_version() {
     let f = parse_packagist_version(PACKAGIST, "psr/log", "3.0.2").unwrap();
     let e = f.entry.unwrap();
-    assert_eq!(e["name"], "psr/log");
-    assert_eq!(e["version"], "3.0.2");
-    assert!(
-        e["dist"]["url"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://api.github.com/")
-    );
+    assert_eq!(field(&e, "name"), "psr/log");
+    assert_eq!(field(&e, "version"), "3.0.2");
+    assert!(field(e.get("dist").unwrap(), "url").starts_with("https://api.github.com/"));
     assert!(e.get("version_normalized").is_none() && e.get("uid").is_none());
     // An older entry inherits what its file does not repeat.
     let old = parse_packagist_version(PACKAGIST, "psr/log", "3.0.0")
         .unwrap()
         .entry
         .unwrap();
-    assert_eq!(old["version"], "3.0.0");
-    assert_eq!(old["name"], "psr/log");
-    assert!(old.get("license").is_some(), "{old}");
-    assert_ne!(old["dist"]["reference"], e["dist"]["reference"]);
+    assert_eq!(field(&old, "version"), "3.0.0");
+    assert_eq!(field(&old, "name"), "psr/log");
+    assert!(old.get("license").is_some(), "{old:?}");
+    assert_ne!(
+        field(old.get("dist").unwrap(), "reference"),
+        field(e.get("dist").unwrap(), "reference")
+    );
     // The `v` of a lock's version is not part of the match.
     assert!(parse_packagist_version(PACKAGIST, "psr/log", "v3.0.2").is_ok());
     assert!(parse_packagist_version(PACKAGIST, "psr/log", "9.9.9").is_err());
@@ -292,20 +311,33 @@ fn a_minified_packagist_list_is_expanded_to_the_entry_of_a_version() {
 }
 
 #[test]
-fn packagist_unset_removes_a_key_from_the_inherited_entry() {
+fn packagist_unset_removes_a_key_and_the_registrys_key_order_is_kept() {
     let doc = br#"{"minified":"composer/2.0","packages":{"a/b":[
         {"name":"a/b","version":"2.0.0","require":{"php":">=8"},"abandoned":true,"dist":{"url":"https://x/2","type":"zip","shasum":"","reference":"r2"}},
         {"version":"1.0.0","require":{"php":">=7"},"abandoned":"__unset","dist":{"url":"https://x/1","type":"zip","shasum":"","reference":"r1"}}]}}"#;
     let f = parse_packagist_version(doc, "a/b", "1.0.0").unwrap();
     let e = f.entry.unwrap();
     assert!(e.get("abandoned").is_none());
-    assert_eq!(e["require"]["php"], ">=7");
+    assert_eq!(field(e.get("require").unwrap(), "php"), ">=7");
     assert_eq!(f.deps["require:php"], ">=7");
+    // Inherited keys keep their place; the dist's own members keep the registry's order.
+    let Ordered::Obj(m) = &e else { panic!() };
+    assert_eq!(
+        m.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["name", "version", "require", "dist"]
+    );
+    let Some(Ordered::Obj(d)) = e.get("dist") else {
+        panic!()
+    };
+    assert_eq!(
+        d.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["url", "type", "shasum", "reference"]
+    );
     let latest = parse_packagist_version(doc, "a/b", "2.0.0")
         .unwrap()
         .entry
         .unwrap();
-    assert_eq!(latest["abandoned"], true);
+    assert_eq!(latest.get("abandoned"), Some(&Ordered::Bool(true)));
 }
 
 #[test]
@@ -318,14 +350,7 @@ fn go_digests_of_the_module_and_zip_match_the_checksum_database() {
         s.module,
         "the go.mod the proxy serves hashes to the database's record"
     );
-    let z = go_zip_h1(
-        GO_ZIP,
-        "github.com/pkg/errors",
-        "v0.9.1",
-        10_000,
-        64 << 20,
-    )
-    .unwrap();
+    let z = go_zip_h1(GO_ZIP, "github.com/pkg/errors", "v0.9.1", 10_000, 64 << 20).unwrap();
     assert_eq!(
         z, s.zip,
         "the zip the proxy serves hashes to the database's record"

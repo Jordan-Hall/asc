@@ -9,12 +9,16 @@
 //! Everything in this file is pure: the bytes of an answer in, [`Facts`] or a reason out. The calls
 //! themselves are in [`super::latest`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+use super::model::Ecosystem;
+use super::ordered::{Ordered, parse_ordered};
 
 /// One file of a PyPI release.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +52,7 @@ pub struct Facts {
     pub files: Vec<PyFile>,
     pub go: Option<GoSums>,
     /// The whole Composer package entry of the version.
-    pub entry: Option<Value>,
+    pub entry: Option<Ordered>,
     /// What the version depends on, as `kind:name` (with a marker or target where there is one) to the
     /// requirement. Two versions with the same map and the same [`Facts::traits`] lock the same way.
     pub deps: BTreeMap<String, String>,
@@ -60,16 +64,24 @@ pub struct Facts {
 
 impl Facts {
     /// The differences between what `self` (the old version) and `other` (the new) declare, one line each.
-    /// Empty: the lock entries differ only by version and digest.
-    pub fn differences(&self, other: &Self) -> Vec<String> {
+    /// Empty: the lock entries differ only by version and digest. `traits` says whether the install
+    /// properties (engines, platforms, binaries) count, which depends on what the lockfile records.
+    pub fn differences(&self, other: &Self, traits: bool) -> Vec<String> {
         let mut out = Vec::new();
         diff_maps("dependency", &self.deps, &other.deps, &mut out);
-        diff_maps("property", &self.traits, &other.traits, &mut out);
+        if traits {
+            diff_maps("property", &self.traits, &other.traits, &mut out);
+        }
         out
     }
 }
 
-fn diff_maps(what: &str, old: &BTreeMap<String, String>, new: &BTreeMap<String, String>, out: &mut Vec<String>) {
+fn diff_maps(
+    what: &str,
+    old: &BTreeMap<String, String>,
+    new: &BTreeMap<String, String>,
+    out: &mut Vec<String>,
+) {
     for (k, v) in old {
         match new.get(k) {
             None => out.push(format!("{what} {k} ({v}) is gone")),
@@ -84,10 +96,22 @@ fn diff_maps(what: &str, old: &BTreeMap<String, String>, new: &BTreeMap<String, 
     }
 }
 
+/// A fact to look up: `(ecosystem, canonical name, version)`.
+pub type FactKey = (Ecosystem, String, String);
+
+pub fn key(eco: Ecosystem, name: &str, version: &str) -> FactKey {
+    (eco, eco.canonical(name), version.to_owned())
+}
+
+/// A batch of facts: the answers, or the reasons they could not be had.
+pub type FactStore = HashMap<FactKey, Result<Arc<Facts>, String>>;
+
 // ------------------------------------------------------------------------------ helpers
 
 pub fn is_hex(s: &str, len: usize) -> bool {
-    s.len() == len && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    s.len() == len
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -134,7 +158,13 @@ pub fn canon(v: &Value) -> String {
             keys.sort();
             let parts: Vec<String> = keys
                 .into_iter()
-                .map(|k| format!("{}:{}", serde_json::to_string(k).unwrap_or_default(), canon(&m[k])))
+                .map(|k| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(k).unwrap_or_default(),
+                        canon(&m[k])
+                    )
+                })
                 .collect();
             format!("{{{}}}", parts.join(","))
         }
@@ -152,6 +182,48 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 // ------------------------------------------------------------------------------ npm
+
+/// Whether the integrity a lockfile holds for the version being replaced is what the registry publishes
+/// for it. Values of another algorithm than the registry's strongest are compared by SHA-1 where the
+/// registry gives one, and are otherwise not comparable and pass.
+pub fn integrity_consistent(old: &str, registry: Option<&str>, shasum: Option<&str>) -> bool {
+    let Some((alg, bytes)) = sri(old.split_whitespace().next().unwrap_or("")) else {
+        return false;
+    };
+    if let Some((ralg, rbytes)) = registry.and_then(sri)
+        && ralg == alg
+    {
+        return rbytes == bytes;
+    }
+    if alg == "sha1"
+        && let Some(sum) = shasum.and_then(hex_decode)
+    {
+        return sum == bytes;
+    }
+    true
+}
+
+/// The tarball URL a lockfile should hold for the new version: the old `resolved` (its `#fragment`
+/// aside) is the registry's own URL for the old version, possibly on another host name of the same
+/// registry, and the new one keeps that host.
+pub fn rebase_tarball(old: &str, registry_old: &str, registry_new: &str) -> Option<String> {
+    let base = old.split('#').next().unwrap_or(old);
+    if base == registry_old {
+        return Some(registry_new.to_owned());
+    }
+    let (o, ro, rn) = (
+        url::Url::parse(base).ok()?,
+        url::Url::parse(registry_old).ok()?,
+        url::Url::parse(registry_new).ok()?,
+    );
+    if o.path() != ro.path() || o.scheme() != "https" {
+        return None;
+    }
+    let mut out = o;
+    out.set_path(rn.path());
+    out.set_query(None);
+    Some(out.to_string())
+}
 
 /// The answer of `GET /<name>/<version>`: the manifest of that version with its `dist`.
 pub fn parse_npm_version(body: &[u8], name: &str, version: &str) -> Result<Facts, String> {
@@ -190,8 +262,13 @@ pub fn parse_npm_version(body: &[u8], name: &str, version: &str) -> Result<Facts
         }
         // Old packages carry the SHA-1 only; a lockfile records it as an integrity too.
         None => {
-            let s = shasum.as_ref().ok_or("the version has no integrity or shasum")?;
-            format!("sha1-{}", B64.encode(hex_decode(s).ok_or("shasum is not hex")?))
+            let s = shasum
+                .as_ref()
+                .ok_or("the version has no integrity or shasum")?;
+            format!(
+                "sha1-{}",
+                B64.encode(hex_decode(s).ok_or("shasum is not hex")?)
+            )
         }
     };
     let mut deps = BTreeMap::new();
@@ -200,7 +277,9 @@ pub fn parse_npm_version(body: &[u8], name: &str, version: &str) -> Result<Facts
             for (k, v) in m {
                 deps.insert(
                     format!("{section}:{k}"),
-                    v.as_str().ok_or("a requirement is not a string")?.to_owned(),
+                    v.as_str()
+                        .ok_or("a requirement is not a string")?
+                        .to_owned(),
                 );
             }
         }
@@ -240,7 +319,9 @@ pub fn npm_signatures(body: &[u8]) -> Vec<(String, String)> {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .filter_map(|s| Some((str_of(s, "keyid")?.to_owned(), str_of(s, "sig")?.to_owned())))
+                .filter_map(|s| {
+                    Some((str_of(s, "keyid")?.to_owned(), str_of(s, "sig")?.to_owned()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -256,7 +337,9 @@ pub fn npm_keys(body: &[u8]) -> Vec<(String, String)> {
         .map(|a| {
             a.iter()
                 .filter(|k| str_of(k, "keytype") == Some("ecdsa-sha2-nistp256"))
-                .filter_map(|k| Some((str_of(k, "keyid")?.to_owned(), str_of(k, "key")?.to_owned())))
+                .filter_map(|k| {
+                    Some((str_of(k, "keyid")?.to_owned(), str_of(k, "key")?.to_owned()))
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -264,8 +347,8 @@ pub fn npm_keys(body: &[u8]) -> Vec<(String, String)> {
 
 /// The fixed prefix of the DER encoding of an uncompressed P-256 public key (SubjectPublicKeyInfo).
 const P256_SPKI_PREFIX: [u8; 26] = [
-    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48,
-    0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+    0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
 ];
 
 /// Checks the registry signature over `name@version:integrity`. `Ok(true)` verified, `Ok(false)` the
@@ -284,12 +367,19 @@ pub fn verify_npm_signature(
             continue;
         };
         seen = true;
-        let spki = B64.decode(key).map_err(|_| "a registry key is not base64".to_owned())?;
+        let spki = B64
+            .decode(key)
+            .map_err(|_| "a registry key is not base64".to_owned())?;
         let point = spki
             .strip_prefix(&P256_SPKI_PREFIX[..])
             .ok_or("a registry key is not an uncompressed P-256 key")?;
-        let sig = B64.decode(sig).map_err(|_| "a signature is not base64".to_owned())?;
-        let pk = ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_ASN1, point);
+        let sig = B64
+            .decode(sig)
+            .map_err(|_| "a signature is not base64".to_owned())?;
+        let pk = ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ECDSA_P256_SHA256_ASN1,
+            point,
+        );
         if pk.verify(message.as_bytes(), &sig).is_ok() {
             return Ok(true);
         }
@@ -323,7 +413,7 @@ pub fn parse_crates_version(body: &[u8], version: &str) -> Result<String, String
 /// The sparse index path of a crate. The name is checked against crates.io's grammar first, and the
 /// slices are taken with `get`, so no name can split a character.
 pub fn crates_index_path(name: &str) -> Result<Vec<String>, String> {
-    super::names::check(super::model::Ecosystem::CratesIo, name)?;
+    super::names::check(Ecosystem::CratesIo, name)?;
     let n = name.to_ascii_lowercase();
     let cut = |a: usize, b: usize| {
         n.get(a..b)
@@ -343,7 +433,8 @@ pub fn crates_index_path(name: &str) -> Result<Vec<String>, String> {
 pub fn parse_crates_index(body: &[u8], name: &str, version: &str) -> Result<Facts, String> {
     let text = std::str::from_utf8(body).map_err(|_| "the index is not UTF-8".to_owned())?;
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        let v: Value = serde_json::from_str(line).map_err(|_| "an index line is not JSON".to_owned())?;
+        let v: Value =
+            serde_json::from_str(line).map_err(|_| "an index line is not JSON".to_owned())?;
         if str_of(&v, "vers") != Some(version) {
             continue;
         }
@@ -358,10 +449,17 @@ pub fn parse_crates_index(body: &[u8], name: &str, version: &str) -> Result<Fact
             return Err("the index's checksum is not 64 hex digits".into());
         }
         let mut deps = BTreeMap::new();
-        for d in v.get("deps").and_then(Value::as_array).into_iter().flatten() {
+        for d in v
+            .get("deps")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let kind = str_of(d, "kind").unwrap_or("normal");
             // A renamed dependency is named by its `package`.
-            let dep = str_of(d, "package").or_else(|| str_of(d, "name")).ok_or("a dependency has no name")?;
+            let dep = str_of(d, "package")
+                .or_else(|| str_of(d, "name"))
+                .ok_or("a dependency has no name")?;
             let target = str_of(d, "target").unwrap_or("");
             let mut feats: Vec<&str> = d
                 .get("features")
@@ -378,7 +476,9 @@ pub fn parse_crates_index(body: &[u8], name: &str, version: &str) -> Result<Fact
                     str_of(d, "req").unwrap_or("*"),
                     feats.join(","),
                     d.get("optional").and_then(Value::as_bool).unwrap_or(false),
-                    d.get("default_features").and_then(Value::as_bool).unwrap_or(true)
+                    d.get("default_features")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true)
                 ),
             );
         }
@@ -423,7 +523,12 @@ pub fn parse_pypi_release(body: &[u8], version: &str) -> Result<Facts, String> {
         return Err("the registry answered for another version".into());
     }
     let mut files = Vec::new();
-    for u in doc.get("urls").and_then(Value::as_array).into_iter().flatten() {
+    for u in doc
+        .get("urls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if u.get("yanked").and_then(Value::as_bool) == Some(true) {
             continue;
         }
@@ -435,10 +540,15 @@ pub fn parse_pypi_release(body: &[u8], version: &str) -> Result<Facts, String> {
             return Err("a file's sha256 is not 64 hex digits".into());
         }
         files.push(PyFile {
-            filename: str_of(u, "filename").ok_or("a file has no name")?.to_owned(),
+            filename: str_of(u, "filename")
+                .ok_or("a file has no name")?
+                .to_owned(),
             url: str_of(u, "url").ok_or("a file has no URL")?.to_owned(),
             sha256: sha.to_owned(),
-            size: u.get("size").and_then(Value::as_u64).ok_or("a file has no size")?,
+            size: u
+                .get("size")
+                .and_then(Value::as_u64)
+                .ok_or("a file has no size")?,
             upload_time: str_of(u, "upload_time_iso_8601").unwrap_or("").to_owned(),
             sdist: str_of(u, "packagetype") == Some("sdist"),
         });
@@ -448,9 +558,17 @@ pub fn parse_pypi_release(body: &[u8], version: &str) -> Result<Facts, String> {
     }
     files.sort_by(|a, b| a.filename.cmp(&b.filename));
     let mut deps = BTreeMap::new();
-    for r in info.get("requires_dist").and_then(Value::as_array).into_iter().flatten() {
+    for r in info
+        .get("requires_dist")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let r = r.as_str().ok_or("a requirement is not a string")?;
-        deps.insert(r.split_whitespace().collect::<Vec<_>>().join(" "), String::new());
+        deps.insert(
+            r.split_whitespace().collect::<Vec<_>>().join(" "),
+            String::new(),
+        );
     }
     let mut traits = BTreeMap::new();
     if let Some(p) = str_of(info, "requires_python") {
@@ -468,8 +586,16 @@ pub fn parse_pypi_release(body: &[u8], version: &str) -> Result<Facts, String> {
 pub fn parse_pypi_simple(body: &[u8]) -> Result<BTreeMap<String, String>, String> {
     let doc = json(body)?;
     let mut out = BTreeMap::new();
-    for f in doc.get("files").and_then(Value::as_array).into_iter().flatten() {
-        let (Some(name), Some(sha)) = (str_of(f, "filename"), f.get("hashes").and_then(|h| str_of(h, "sha256"))) else {
+    for f in doc
+        .get("files")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(name), Some(sha)) = (
+            str_of(f, "filename"),
+            f.get("hashes").and_then(|h| str_of(h, "sha256")),
+        ) else {
             continue;
         };
         out.insert(name.to_owned(), sha.to_owned());
@@ -485,7 +611,12 @@ pub fn cross_check_pypi(files: &[PyFile], simple: &BTreeMap<String, String>) -> 
     for f in files {
         match simple.get(&f.filename) {
             Some(s) if *s == f.sha256 => {}
-            Some(_) => return Err(format!("the two PyPI endpoints disagree on the digest of {}", f.filename)),
+            Some(_) => {
+                return Err(format!(
+                    "the two PyPI endpoints disagree on the digest of {}",
+                    f.filename
+                ));
+            }
             None => return Err(format!("{} is not in the simple index", f.filename)),
         }
     }
@@ -504,7 +635,9 @@ pub fn parse_compact_index(body: &[u8], version: &str) -> Result<Facts, String> 
         if ver != version {
             continue;
         }
-        let (deps_part, meta) = rest.split_once('|').ok_or("the index line has no metadata")?;
+        let (deps_part, meta) = rest
+            .split_once('|')
+            .ok_or("the index line has no metadata")?;
         let mut deps = BTreeMap::new();
         for d in deps_part.split(',').filter(|d| !d.is_empty()) {
             let (name, reqs) = d.split_once(':').ok_or("a dependency has no requirement")?;
@@ -559,73 +692,101 @@ pub fn parse_rubygems_version(body: &[u8], version: &str) -> Result<String, Stri
 // ------------------------------------------------------------------------------ Packagist
 
 /// Expands a Composer v2 metadata list (each entry holds only what changed from the one before; the
-/// string `__unset` removes a key) and returns the entry of `version`.
+/// string `__unset` removes a key) and returns the entry of `version`, with its keys in the order the
+/// registry wrote them.
 pub fn parse_packagist_version(body: &[u8], package: &str, version: &str) -> Result<Facts, String> {
-    let doc = json(body)?;
-    let list = doc
-        .get("packages")
-        .and_then(|p| p.get(package))
-        .and_then(Value::as_array)
-        .ok_or("no versions")?;
+    let text = std::str::from_utf8(body).map_err(|_| "the answer is not UTF-8".to_owned())?;
+    let doc = parse_ordered(text).map_err(|e| format!("the answer is not usable ({e})"))?;
+    let Some(Ordered::Arr(list)) = doc.get("packages").and_then(|p| p.get(package)) else {
+        return Err("no versions".into());
+    };
     let minified = doc.get("minified").is_some();
-    let mut cur = serde_json::Map::new();
+    let mut cur: Vec<(String, Ordered)> = Vec::new();
     let want = version.strip_prefix('v').unwrap_or(version);
-    let mut found: Option<serde_json::Map<String, Value>> = None;
+    let mut found: Option<Vec<(String, Ordered)>> = None;
     for e in list {
-        let m = e.as_object().ok_or("an entry is not an object")?;
+        let Ordered::Obj(m) = e else {
+            return Err("an entry is not an object".into());
+        };
         if minified {
             for (k, v) in m {
                 if v.as_str() == Some("__unset") {
-                    cur.remove(k);
+                    cur.retain(|(x, _)| x != k);
+                } else if let Some(slot) = cur.iter_mut().find(|(x, _)| x == k) {
+                    slot.1 = v.clone();
                 } else {
-                    cur.insert(k.clone(), v.clone());
+                    cur.push((k.clone(), v.clone()));
                 }
             }
         } else {
-            cur = m.clone();
+            cur.clone_from(m);
         }
-        let v = cur.get("version").and_then(Value::as_str).unwrap_or("");
+        let v = cur
+            .iter()
+            .find(|(k, _)| k == "version")
+            .and_then(|(_, v)| v.as_str())
+            .unwrap_or("");
         if v.strip_prefix('v').unwrap_or(v) == want {
             found = Some(cur.clone());
             break;
         }
     }
-    let entry = found.ok_or("the registry does not list the version")?;
-    let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+    let entry = Ordered::Obj(found.ok_or("the registry does not list the version")?);
+    let name = entry.get("name").and_then(Ordered::as_str).unwrap_or("");
     if !name.eq_ignore_ascii_case(package) {
         return Err("the registry answered for another package".into());
     }
     let dist = entry.get("dist").ok_or("the version has no dist")?;
-    let dist_url = str_of(dist, "url").ok_or("the dist has no URL")?;
-    if str_of(dist, "type") != Some("zip") {
+    let dist_url = dist
+        .get("url")
+        .and_then(Ordered::as_str)
+        .ok_or("the dist has no URL")?
+        .to_owned();
+    if dist.get("type").and_then(Ordered::as_str) != Some("zip") {
         return Err("the dist is not a zip".into());
     }
-    let shasum = str_of(dist, "shasum").unwrap_or("");
-    if !(shasum.is_empty() || is_hex(shasum, 40)) {
+    let shasum = dist
+        .get("shasum")
+        .and_then(Ordered::as_str)
+        .unwrap_or("")
+        .to_owned();
+    if !(shasum.is_empty() || is_hex(&shasum, 40)) {
         return Err("the dist's shasum is not 40 hex digits".into());
     }
     let mut deps = BTreeMap::new();
     for section in ["require", "require-dev", "conflict", "replace", "provide"] {
-        if let Some(m) = entry.get(section).and_then(Value::as_object) {
+        if let Some(Ordered::Obj(m)) = entry.get(section) {
             for (k, v) in m {
-                deps.insert(format!("{section}:{k}"), v.as_str().unwrap_or("").to_owned());
+                deps.insert(
+                    format!("{section}:{k}"),
+                    v.as_str().unwrap_or("").to_owned(),
+                );
             }
         }
     }
     let mut traits = BTreeMap::new();
-    for key in ["autoload", "autoload-dev", "bin", "type", "extra", "include-path", "php-ext"] {
+    for key in [
+        "autoload",
+        "autoload-dev",
+        "bin",
+        "type",
+        "extra",
+        "include-path",
+        "php-ext",
+    ] {
         if let Some(v) = entry.get(key) {
-            traits.insert(key.to_owned(), canon(v));
+            traits.insert(key.to_owned(), v.canon());
         }
     }
-    let mut full = entry.clone();
     // Lock entries are of the package, not of how a registry shipped it.
-    full.remove("uid");
-    full.remove("version_normalized");
+    let Ordered::Obj(mut full) = entry else {
+        return Err("an entry is not an object".into());
+    };
+    full.retain(|(k, _)| k != "uid" && k != "version_normalized");
     Ok(Facts {
-        shasum: (!shasum.is_empty()).then(|| shasum.to_owned()),
-        tarball: Some(dist_url.to_owned()),
-        entry: Some(Value::Object(full)),
+        shasum: (!shasum.is_empty()).then_some(shasum),
+        tarball: Some(dist_url),
+        entry: Some(Ordered::Obj(full)),
         deps,
         traits,
         ..Facts::default()
@@ -687,9 +848,16 @@ pub fn go_mod_h1(content: &[u8]) -> String {
 
 /// The `h1:` digest of a module zip (`dirhash.Hash1` over its files). Every file has to live under
 /// `<module>@<version>/`; the zip is read within `max_files` and `max_unpacked` bounds.
-pub fn go_zip_h1(zip_bytes: &[u8], module: &str, version: &str, max_files: usize, max_unpacked: u64) -> Result<String, String> {
+pub fn go_zip_h1(
+    zip_bytes: &[u8],
+    module: &str,
+    version: &str,
+    max_files: usize,
+    max_unpacked: u64,
+) -> Result<String, String> {
     use std::io::Read as _;
-    let mut z = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(|_| "the module zip cannot be read".to_owned())?;
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+        .map_err(|_| "the module zip cannot be read".to_owned())?;
     if z.len() > max_files {
         return Err("the module zip has too many files".into());
     }
@@ -697,7 +865,9 @@ pub fn go_zip_h1(zip_bytes: &[u8], module: &str, version: &str, max_files: usize
     let mut lines: Vec<(String, [u8; 32])> = Vec::new();
     let mut total = 0u64;
     for i in 0..z.len() {
-        let mut f = z.by_index(i).map_err(|_| "the module zip cannot be read".to_owned())?;
+        let mut f = z
+            .by_index(i)
+            .map_err(|_| "the module zip cannot be read".to_owned())?;
         let name = f
             .name()
             .map_err(|_| "a file name in the module zip is not valid".to_owned())?
@@ -716,7 +886,9 @@ pub fn go_zip_h1(zip_bytes: &[u8], module: &str, version: &str, max_files: usize
         let mut buf = [0u8; 16 * 1024];
         let mut read = 0u64;
         loop {
-            let n = f.read(&mut buf).map_err(|_| "the module zip cannot be read".to_owned())?;
+            let n = f
+                .read(&mut buf)
+                .map_err(|_| "the module zip cannot be read".to_owned())?;
             if n == 0 {
                 break;
             }
