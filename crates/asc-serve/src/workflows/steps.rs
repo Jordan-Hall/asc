@@ -29,7 +29,7 @@ use super::engine::StopWhy;
 use super::store::{RunRow, StepRow, StepState};
 use super::{CHECK_SOURCE, LiveRun, SYSTEM_ACTOR, WorkflowsHub, clean, template_of, usage_of};
 use crate::agents::mask::Masker;
-use crate::agents::repo::changeset_id;
+use crate::agents::repo::{PolicyState, changeset_id};
 use crate::agents::runs::RunState as AgentState;
 use crate::agents::runtime::{Requester, RunRequest};
 use crate::agents::tokens::Budget;
@@ -758,7 +758,15 @@ impl WorkflowsHub {
                 .flatten();
         let review = state
             .and_then(|raw| <wire::ReviewState as prost::Message>::decode(raw.as_slice()).ok());
-        review.is_some_and(|r| r.approvals >= 1 && r.reviewed_version == version)
+        // The approvals the policy asks of a landing (at least one) must be for exactly this version.
+        let need = match self.agents.core.view.policy(entry).await {
+            Ok(state) => match &*state {
+                PolicyState::Valid(p) => p.land_requirements().approvals,
+                _ => 0,
+            },
+            Err(_) => 0,
+        };
+        review.is_some_and(|r| approval_holds(&r, version, need))
     }
 
     /// The version of `change` that is changeset `cs`, 0 when the version log does not know it
@@ -944,5 +952,42 @@ mod tests {
         assert!(t.starts_with("[... output cut]\n"));
         assert!(t.len() < 100);
         assert!(t.ends_with('é'));
+    }
+}
+
+/// Whether `review` holds the approvals a landing needs (the policy's count, never fewer than
+/// one) for exactly `version`: an approval of an older or a newer version is not one.
+fn approval_holds(review: &wire::ReviewState, version: u32, policy_need: u32) -> bool {
+    version != 0 && review.reviewed_version == version && review.approvals >= policy_need.max(1)
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+
+    fn review(approvals: u32, reviewed_version: u32) -> wire::ReviewState {
+        wire::ReviewState {
+            approvals,
+            reviewed_version,
+            ..wire::ReviewState::default()
+        }
+    }
+
+    #[test]
+    fn secrets_need_the_policys_count_of_approvals_for_exactly_the_running_version() {
+        assert!(
+            approval_holds(&review(1, 3), 3, 0),
+            "no policy: one approval"
+        );
+        assert!(approval_holds(&review(1, 3), 3, 1));
+        assert!(
+            !approval_holds(&review(1, 3), 3, 2),
+            "the policy asks for two"
+        );
+        assert!(approval_holds(&review(2, 3), 3, 2));
+        assert!(!approval_holds(&review(2, 2), 3, 2), "an older version");
+        assert!(!approval_holds(&review(2, 4), 3, 2), "a newer version");
+        assert!(!approval_holds(&review(0, 3), 3, 0), "no approval");
+        assert!(!approval_holds(&review(5, 0), 0, 0), "an unknown version");
     }
 }
