@@ -18,6 +18,7 @@
 
 use regex::Regex;
 
+use super::facts::{integrity_consistent, rebase_tarball};
 use super::model::Ecosystem;
 use super::parse::Format;
 use super::requirement::{Bump, Style, bump};
@@ -42,6 +43,12 @@ pub struct Extra {
     pub tarball: Option<String>,
     /// The requirement the manifest now carries, for the lockfile that repeats it.
     pub requirement: Option<String>,
+    /// What the registry says of the version being replaced, to check the lockfile against: the
+    /// checksum, the integrity, the SHA-1 and the tarball URL.
+    pub from_checksum: Option<String>,
+    pub from_integrity: Option<String>,
+    pub from_shasum: Option<String>,
+    pub from_tarball: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,40 +63,34 @@ pub type Outcome = Result<Option<Done>, String>;
 /// Why a format is never rewritten, or `None` when it can be.
 pub fn unsupported(format: Format) -> Option<&'static str> {
     Some(match format {
-        Format::YarnLock => "yarn.lock holds one entry per requested range and needs `yarn`",
-        Format::PnpmLock => "pnpm-lock.yaml needs `pnpm` to rewrite its snapshots",
-        Format::PoetryLock | Format::UvLock => "this lockfile holds hashes of the whole graph",
-        Format::PipfileLock => "Pipfile.lock holds hashes; run `pipenv lock`",
         Format::Pipfile => "Pipfile requirements are not edited",
         Format::NugetLock => "packages.lock.json holds content hashes; run `dotnet restore`",
-        Format::ComposerLock => "composer.lock holds hashes; run `composer update`",
         Format::MixLock => "mix.lock holds hashes; run `mix deps.update`",
         Format::PubspecLock => "pubspec.lock holds hashes; run `dart pub upgrade`",
         Format::PackageResolved | Format::PackageSwift => "SwiftPM pins hold revisions",
         Format::PodfileLock => "Podfile.lock holds checksums; run `pod update`",
-        Format::GoSum => "go.sum holds module hashes; run `go mod tidy`",
         _ => return None,
     })
 }
 
 // ------------------------------------------------------------------------------ edits
 
-struct Edits(Vec<(usize, usize, String)>);
+pub(super) struct Edits(pub(super) Vec<(usize, usize, String)>);
 
 impl Edits {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self(Vec::new())
     }
 
-    fn push(&mut self, start: usize, end: usize, new: impl Into<String>) {
+    pub(super) fn push(&mut self, start: usize, end: usize, new: impl Into<String>) {
         self.0.push((start, end, new.into()));
     }
 
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    fn apply(mut self, text: &str) -> String {
+    pub(super) fn apply(mut self, text: &str) -> String {
         self.0.sort_by_key(|e| std::cmp::Reverse(e.0));
         let mut out = text.to_owned();
         let mut floor = usize::MAX;
@@ -105,7 +106,7 @@ impl Edits {
 }
 
 /// A regex that matches the package name in the spelling the ecosystem allows.
-fn name_re(eco: Ecosystem, name: &str) -> String {
+pub(super) fn name_re(eco: Ecosystem, name: &str) -> String {
     match eco {
         Ecosystem::PyPi => {
             let parts: Vec<String> = eco.canonical(name).split('-').map(regex::escape).collect();
@@ -119,24 +120,24 @@ fn name_re(eco: Ecosystem, name: &str) -> String {
     }
 }
 
-fn re(pattern: &str) -> Result<Regex, String> {
+pub(super) fn re(pattern: &str) -> Result<Regex, String> {
     Regex::new(pattern).map_err(|e| format!("internal pattern error: {e}"))
 }
 
-fn plain_error(name: &str, req: &str) -> String {
+pub(super) fn plain_error(name: &str, req: &str) -> String {
     format!("the requirement {req:?} of {name} is not a plain version and is not rewritten")
 }
 
 // ------------------------------------------------------------------------------ JSON
 
-struct Member {
-    key: String,
-    val_start: usize,
-    val_end: usize,
-    kind: u8,
+pub(super) struct Member {
+    pub(super) key: String,
+    pub(super) val_start: usize,
+    pub(super) val_end: usize,
+    pub(super) kind: u8,
 }
 
-fn skip_ws(b: &[u8], mut i: usize) -> usize {
+pub(super) fn skip_ws(b: &[u8], mut i: usize) -> usize {
     while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
         i += 1;
     }
@@ -157,7 +158,7 @@ fn skip_string(b: &[u8], mut i: usize) -> Option<usize> {
 }
 
 /// The index after the value that starts at `i`.
-fn skip_value(b: &[u8], mut i: usize) -> Option<usize> {
+pub(super) fn skip_value(b: &[u8], mut i: usize) -> Option<usize> {
     match *b.get(i)? {
         b'"' => skip_string(b, i),
         b'{' | b'[' => {
@@ -192,7 +193,7 @@ fn skip_value(b: &[u8], mut i: usize) -> Option<usize> {
 }
 
 /// The members of the object whose `{` is at `open`.
-fn members(text: &str, open: usize) -> Option<Vec<Member>> {
+pub(super) fn members(text: &str, open: usize) -> Option<Vec<Member>> {
     let b = text.as_bytes();
     if b.get(open) != Some(&b'{') {
         return None;
@@ -230,15 +231,19 @@ fn members(text: &str, open: usize) -> Option<Vec<Member>> {
 }
 
 impl Member {
-    fn is_str(&self) -> bool {
+    pub(super) fn is_str(&self) -> bool {
         self.kind == b'"'
     }
 
-    fn is_obj(&self) -> bool {
+    pub(super) fn is_obj(&self) -> bool {
         self.kind == b'{'
     }
 
-    fn string<'a>(&self, text: &'a str) -> &'a str {
+    pub(super) fn is_arr(&self) -> bool {
+        self.kind == b'['
+    }
+
+    pub(super) fn string<'a>(&self, text: &'a str) -> &'a str {
         if self.is_str() {
             &text[self.val_start + 1..self.val_end - 1]
         } else {
@@ -247,13 +252,13 @@ impl Member {
     }
 
     /// Edits the content of a string value.
-    fn set(&self, edits: &mut Edits, new: &str) {
+    pub(super) fn set(&self, edits: &mut Edits, new: &str) {
         edits.push(self.val_start + 1, self.val_end - 1, json_escape(new));
     }
 }
 
 /// `s` as the inside of a JSON string.
-fn json_escape(s: &str) -> String {
+pub(super) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -271,11 +276,11 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-fn find<'a>(ms: &'a [Member], key: &str) -> Option<&'a Member> {
+pub(super) fn find<'a>(ms: &'a [Member], key: &str) -> Option<&'a Member> {
     ms.iter().find(|m| m.key == key)
 }
 
-fn root_members(text: &str) -> Result<Vec<Member>, String> {
+pub(super) fn root_members(text: &str) -> Result<Vec<Member>, String> {
     let open = skip_ws(text.as_bytes(), 0);
     members(text, open).ok_or_else(|| "the file is not a JSON object".to_owned())
 }
@@ -338,19 +343,46 @@ fn lock_fields(
         return Ok(false);
     }
     v.set(edits, pin.to);
-    for (key, want) in [
-        ("resolved", &extra.tarball),
-        ("integrity", &extra.integrity),
-    ] {
-        if let Some(m) = find(entry, key).filter(|m| m.is_str()) {
-            let Some(new) = want else {
-                return Err(format!(
-                    "the registry's {key} of {} {} is not known",
-                    pin.name, pin.to
-                ));
-            };
-            m.set(edits, new);
+    if let Some(m) = find(entry, "resolved").filter(|m| m.is_str()) {
+        let Some(tarball) = &extra.tarball else {
+            return Err(format!(
+                "the registry's resolved of {} {} is not known",
+                pin.name, pin.to
+            ));
+        };
+        let old = m.string(text);
+        let new = match &extra.from_tarball {
+            // The lock was resolved through the same registry the new tarball comes from.
+            Some(from) => rebase_tarball(old, from, tarball).ok_or_else(|| {
+                format!(
+                    "the locked tarball of {} {} is not the registry's own, so the new one cannot be derived",
+                    pin.name, pin.from
+                )
+            })?,
+            None => tarball.clone(),
+        };
+        m.set(edits, &new);
+    }
+    if let Some(m) = find(entry, "integrity").filter(|m| m.is_str()) {
+        let Some(new) = &extra.integrity else {
+            return Err(format!(
+                "the registry's integrity of {} {} is not known",
+                pin.name, pin.to
+            ));
+        };
+        if (extra.from_integrity.is_some() || extra.from_shasum.is_some())
+            && !integrity_consistent(
+                m.string(text),
+                extra.from_integrity.as_deref(),
+                extra.from_shasum.as_deref(),
+            )
+        {
+            return Err(format!(
+                "the locked integrity of {} {} is not the one the registry publishes",
+                pin.name, pin.from
+            ));
         }
+        m.set(edits, new);
     }
     Ok(true)
 }
@@ -585,6 +617,14 @@ fn cargo_lock(text: &str, pin: &Pin<'_>, extra: &Extra) -> Outcome {
                 ));
             };
             let old = cc.get(1).ok_or("no checksum")?;
+            if let Some(from) = &extra.from_checksum
+                && old.as_str() != from
+            {
+                return Err(format!(
+                    "the locked checksum of {} {} is not the one the registry publishes",
+                    pin.name, pin.from
+                ));
+            }
             edits.push(cat + old.start(), cat + old.end(), new.clone());
         }
     }
@@ -885,6 +925,13 @@ fn gemfile_lock(text: &str, pin: &Pin<'_>, extra: &Extra) -> Outcome {
     let mut edits = Edits::new();
     for c in spec.captures_iter(text) {
         let v = c.get(2).ok_or("no version")?;
+        if c.get(3).is_some_and(|t| t.as_str() != ")") {
+            return Err(format!(
+                "{} is locked for a platform ({}), whose checksum a registry lookup of the plain gem does not give",
+                pin.name,
+                c[3].trim_end_matches(')').trim_start_matches('-')
+            ));
+        }
         edits.push(v.start(), v.end(), pin.to);
     }
     if edits.is_empty() {
@@ -892,10 +939,50 @@ fn gemfile_lock(text: &str, pin: &Pin<'_>, extra: &Extra) -> Outcome {
     }
     // Bundler compares the Gemfile with the DEPENDENCIES section.
     if let Some(req) = &extra.requirement {
-        let dep = re(&format!(r"(?m)^(  {name} \()([^)\n]*)(\)!?)$"))?;
+        let dep = re(&format!(
+            r"(?m)^(  {name} \()([^)
+]*)(\)!?)$"
+        ))?;
         for c in dep.captures_iter(text) {
             let r = c.get(2).ok_or("no requirement")?;
             edits.push(r.start(), r.end(), req.clone());
+        }
+    }
+    // The CHECKSUMS section of Bundler 2.5 and later holds the SHA-256 of every gem.
+    if text.contains("\nCHECKSUMS\n") {
+        let sum = re(&format!(
+            r"(?m)^(  {name} \()({})(\) sha256=)([0-9a-f]{{64}})$",
+            regex::escape(pin.from)
+        ))?;
+        let mut found = false;
+        for c in sum.captures_iter(text) {
+            let (v, d) = (
+                c.get(2).ok_or("no version")?,
+                c.get(4).ok_or("no checksum")?,
+            );
+            let Some(new) = &extra.checksum else {
+                return Err(format!(
+                    "the registry's checksum of {} {} is not known",
+                    pin.name, pin.to
+                ));
+            };
+            if let Some(from) = &extra.from_checksum
+                && d.as_str() != from
+            {
+                return Err(format!(
+                    "the locked checksum of {} {} is not the one the registry publishes",
+                    pin.name, pin.from
+                ));
+            }
+            edits.push(v.start(), v.end(), pin.to);
+            edits.push(d.start(), d.end(), new.clone());
+            found = true;
+        }
+        if !found {
+            return Err(format!(
+                "the CHECKSUMS section of the lockfile has no line for {} {}",
+                pin.name, pin.from
+            ));
         }
     }
     Ok(Some(Done {

@@ -717,12 +717,15 @@ fn gradle_lockfile_csproj_composer_and_the_ruby_and_elixir_files() {
     assert!(out.contains("    rails (8.0.1)\n"));
     assert!(out.contains("  rails (~> 8.0)\n"));
     assert!(out.contains("      rack (~> 2.0)\n"));
-    let out = one(
+    // A platform build has its own checksum, which the plain gem's lookup does not give.
+    let e = rewrite(
         Format::GemfileLock,
         gl,
         &pin(r, "nokogiri", "1.13.10", "1.16.0"),
-    );
-    assert!(out.contains("nokogiri (1.16.0-x86_64-linux)"));
+        &Extra::default(),
+    )
+    .unwrap_err();
+    assert!(e.contains("platform (x86_64-linux)"), "{e}");
 
     let mx = "defp deps do\n  [\n    {:plug, \"~> 1.14\"},\n    {:cowboy, \"2.9.0\", only: :prod},\n    {:fork, git: \"x\"}\n  ]\nend\n";
     let h = Ecosystem::Hex;
@@ -733,20 +736,13 @@ fn gradle_lockfile_csproj_composer_and_the_ruby_and_elixir_files() {
 }
 
 #[test]
-fn lockfiles_that_hold_hashes_of_a_graph_are_never_rewritten() {
+fn lockfiles_this_code_has_no_registry_facts_for_are_never_rewritten() {
     for f in [
-        Format::YarnLock,
-        Format::PnpmLock,
-        Format::PoetryLock,
-        Format::UvLock,
-        Format::PipfileLock,
         Format::NugetLock,
-        Format::ComposerLock,
         Format::MixLock,
         Format::PubspecLock,
         Format::PackageResolved,
         Format::PodfileLock,
-        Format::GoSum,
     ] {
         let e = rewrite(
             f,
@@ -757,6 +753,27 @@ fn lockfiles_that_hold_hashes_of_a_graph_are_never_rewritten() {
         .unwrap_err();
         assert!(!e.is_empty());
         assert!(unsupported(f).is_some(), "{f:?}");
+    }
+    // The lockfiles with hashes are moved by `lock`, with facts a registry gave, not by this module.
+    for f in [
+        Format::YarnLock,
+        Format::PnpmLock,
+        Format::PoetryLock,
+        Format::UvLock,
+        Format::PipfileLock,
+        Format::ComposerLock,
+        Format::GoSum,
+    ] {
+        assert!(
+            rewrite(
+                f,
+                "",
+                &pin(Ecosystem::Npm, "x", "1", "2"),
+                &Extra::default()
+            )
+            .is_err()
+        );
+        assert!(unsupported(f).is_none(), "{f:?}");
     }
     for f in [
         Format::CargoToml,
