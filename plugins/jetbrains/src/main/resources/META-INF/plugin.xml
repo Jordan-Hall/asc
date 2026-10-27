@@ -30,6 +30,7 @@
       <action id="asc.asc.Absorb" class="asc.asc.ui.AscAbsorbAction" text="Absorb"/>
       <action id="asc.asc.Undo" class="asc.asc.ui.AscUndoAction" text="Undo"/>
       <action id="asc.asc.Redo" class="asc.asc.ui.AscRedoAction" text="Redo"/>
+      <action id="asc.asc.ConfigureAgents" class="asc.asc.ui.AscConfigureAgentsAction" text="Configure Agents"/>
     </group>
   </actions>
 </idea-plugin>

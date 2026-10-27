@@ -1,14 +1,15 @@
-// Cloud upload state and the "Show cloud drafts" toggle (SPEC 24.3.2, P47b). The status item reads
-// "synced", "N pending" or "offline" (plus "N need attention" when the upload queue holds rows the guard
-// held or that failed). It refreshes only on events (IP-D9): `Watch KIND_CLOUD`, a `Bridge.Events`
-// connectivity change, a finished op, or a resync; there is no timer. The toggle adds `--cloud` to the
-// smartlog's `sl` run. Everything the server or the verb printed is untrusted: counts are clamped
-// integers and no text from the output is shown. Editor-free; `registerCloud` is the only `vscode` user.
-// TODO(P10): the bridge allowlist has no `cloud status` entry yet; `CloudApi.status` is the seam and
-// the extension supplies `Run cloud status --json` once the allowlist adds it.
+// Cloud upload state (SPEC 24.3.2, P47b). The status item reads "synced", "N pending" or "offline" (plus
+// "N need attention" when the upload queue holds rows the guard held or that failed). It refreshes only on
+// events (IP-D9): `Watch KIND_CLOUD`, a `Bridge.Events` connectivity change, a finished op, or a resync;
+// there is no timer. Everything the server or the verb printed is untrusted: counts are clamped integers
+// and no text from the output is shown. The status comes from `asc cloud status --json` through
+// `cliCloudApi` (the bridge allowlist has no entry for it); the "Show cloud drafts" toggle is the
+// smartlog's own. Editor-free; `registerCloud` is the only `vscode` user.
 import type * as vscodeTypes from "vscode";
+import type { CliDirect } from "../cli-direct";
 
-export const TOGGLE_COMMAND = "asc.cloud.toggleDrafts";
+/** Opens the smartlog, where the cloud drafts and their toggle are. */
+export const OPEN_COMMAND = "asc.openSmartlog";
 /** Largest count shown; a hostile or corrupt number never grows the label. */
 export const MAX_COUNT = 999_999;
 
@@ -23,6 +24,16 @@ export interface CloudStatus {
 export interface CloudApi {
   /** The encoded `asc cloud status --json` of the root, or null when it could not be read. */
   status(root: string, signal: AbortSignal): Promise<Uint8Array | null>;
+}
+
+/** `CloudApi` over `asc cloud status --json`; a non-zero exit reads as "no status". */
+export function cliCloudApi(cli: CliDirect): CloudApi {
+  return {
+    async status(root, signal) {
+      const r = await cli.run(root, { kind: "cloud-status" }, signal);
+      return r.exit === 0 ? new TextEncoder().encode(r.stdout) : null;
+    },
+  };
 }
 
 export type CloudEventKind = "cloud" | "connectivity" | "opFinished" | "resync";
@@ -88,41 +99,6 @@ export function cloudView(s: CloudStatus | null, serverOffline: boolean): CloudV
       visible: true,
     };
   return { text: "synced", tooltip: "asc cloud: all drafts uploaded", visible: true };
-}
-
-/** Where the toggle persists; the extension passes a `Memento`-backed store. */
-export interface DraftsStore {
-  get(): boolean;
-  set(v: boolean): void | Promise<void>;
-}
-
-/** The "Show cloud drafts" toggle. Default off. */
-export class CloudDraftsToggle {
-  private readonly listeners = new Set<() => void>();
-  constructor(private readonly store: DraftsStore) {}
-  get on(): boolean {
-    try {
-      return this.store.get() === true;
-    } catch {
-      return false;
-    }
-  }
-  async set(v: boolean): Promise<void> {
-    if (v === this.on) return;
-    await this.store.set(v);
-    for (const l of this.listeners) l();
-  }
-  toggle(): Promise<void> {
-    return this.set(!this.on);
-  }
-  /** The extra flags for the smartlog's `sl` run: `--cloud` only while the toggle is on. */
-  slArgs(): string[] {
-    return this.on ? ["--cloud"] : [];
-  }
-  onChange(l: () => void): { dispose(): void } {
-    this.listeners.add(l);
-    return { dispose: () => void this.listeners.delete(l) };
-  }
 }
 
 export interface CloudModelOptions {
@@ -197,23 +173,18 @@ export class CloudStatusModel {
 export function registerCloud(
   vscode: typeof vscodeTypes,
   model: CloudStatusModel,
-  toggle: CloudDraftsToggle,
 ): { dispose(): void } {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 49);
-  item.command = TOGGLE_COMMAND;
+  item.name = "asc cloud";
+  item.command = OPEN_COMMAND;
   const paint = () => {
     const v = model.view();
     item.text = v.text === "" ? "" : `$(cloud) ${v.text}`;
-    item.tooltip = `${v.tooltip}${v.tooltip ? "\n" : ""}Show cloud drafts: ${toggle.on ? "on" : "off"} (click to toggle)`;
+    item.tooltip = v.tooltip;
     if (v.visible) item.show();
     else item.hide();
   };
-  const subs = [
-    item,
-    model.onChange(paint),
-    toggle.onChange(paint),
-    vscode.commands.registerCommand(TOGGLE_COMMAND, () => toggle.toggle()),
-  ];
+  const subs = [item, model.onChange(paint)];
   paint();
   return {
     dispose() {

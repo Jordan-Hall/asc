@@ -15,9 +15,8 @@ interface CallbackListener : AutoCloseable {
 /**
  * The plugin's own listener, bound to the IPv4 loopback address only (never a wildcard) on an ephemeral port.
  * It answers every request with a fixed page and does nothing else with the request.
- * TODO(P55): when the spike confirms the IDE built-in server path, prefer
- * `BuiltInServerManager.getInstance().port` through an `HttpRequestHandler` registered in plugin.xml, and keep
- * this listener as the fallback when the built-in server is unavailable.
+ * It is the only callback path. The IDE built-in server (`BuiltInServerManager.getInstance().port` through an
+ * `HttpRequestHandler`) needs a live IDE to verify, as spikes/loopback/RESULTS.md records, so it is not used.
  */
 class LoopbackListener : CallbackListener {
     private val server: HttpServer =

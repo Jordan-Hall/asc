@@ -1,10 +1,11 @@
 // The editor adapter for inline blame, hover, CodeLens and the whole-file blame/heatmap (SPEC
 // 24.4.3), plus the bridge-backed `BlameApi`. `vscode` is a parameter, so this file is the only
 // place the editor API is touched; the logic is in `model.ts`.
-import { callStream, changeIdToString, toHex } from "@asc/asc-client";
+import { callStream, callUnary, changeIdToString, toHex } from "@asc/asc-client";
+import { Repo } from "@asc/asc-client/repo";
 import { Workspace } from "@asc/asc-client/workspace";
 import type * as vscodeTypes from "vscode";
-import type { BridgeManager } from "../bridge";
+import { type BridgeManager, serverRepoFor } from "../bridge";
 import { toAscUri } from "../fs/ascfs";
 import {
   ageBuckets,
@@ -83,9 +84,17 @@ export function bridgeBlameApi(mgr: BridgeManager): BlameApi {
       hunks.sort((a, b) => a.start - b.start);
       return { hunks, commits, reviews };
     },
-    // TODO(C30d): `RepoConfig` is not exposed on the plugin bridge yet; no autolinks until it is.
-    async autolinks(): Promise<Autolink[]> {
-      return [];
+    // `Repo.RepoConfig` of the server repo. A root without an asc server has no autolink rules.
+    async autolinks(root): Promise<Autolink[]> {
+      const name = await serverRepoFor(mgr, root);
+      if (name === null) return [];
+      const r = await callUnary(
+        mgr.node(),
+        Repo.method.repoConfig,
+        { repo: { name }, rev: "" },
+        { root },
+      );
+      return r.autolinks.map((a) => ({ prefix: a.prefix, url: a.url }));
     },
   };
 }

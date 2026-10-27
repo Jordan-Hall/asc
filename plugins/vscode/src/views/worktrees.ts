@@ -1,6 +1,6 @@
 // Worktrees tree (SPEC 24.4.4): `Workspace.Worktrees`, refreshed by `Workspace.Watch` on any root and
 // fetched only while visible. Actions: open in a new window, add (`worktree add --ephemeral`), remove
-// (modal text composed by the host), lock. `WorktreesModel` is editor-free so it runs under Bun;
+// (modal text composed by the host). `WorktreesModel` is editor-free so it runs under Bun;
 // `registerWorktrees` is the only `vscode` user. Also holds the pieces the other views share: the
 // `ViewApi`, the `Watch` pump and `Bridge.Run`.
 import {
@@ -35,6 +35,10 @@ export type WatchKindName =
   | "stage"
   | "op-started"
   | "op-finished"
+  | "switch-done"
+  | "resync"
+  | "stack"
+  | "cloud"
   | "other";
 
 const KINDS: Record<number, WatchKindName> = {
@@ -44,11 +48,15 @@ const KINDS: Record<number, WatchKindName> = {
   [WatchEvent_Kind.STAGE]: "stage",
   [WatchEvent_Kind.OP_STARTED]: "op-started",
   [WatchEvent_Kind.OP_FINISHED]: "op-finished",
+  [WatchEvent_Kind.SWITCH_DONE]: "switch-done",
+  [WatchEvent_Kind.RESYNC]: "resync",
+  [WatchEvent_Kind.STACK]: "stack",
+  [WatchEvent_Kind.CLOUD]: "cloud",
 };
 
 export interface RunResult {
   exit: number;
-  /** An encoded `OpResult` when the child printed one. TODO(M02): `cli.proto` is not generated yet. */
+  /** The encoded `asc.v1.OpResult` when the child printed one (decode with `decodeOpResult`). */
   opResult: Uint8Array | null;
   stderr: string[];
 }
@@ -362,10 +370,6 @@ export function registerWorktrees(
         "Remove",
       );
       if (ok === "Remove") report("worktree remove", await n.model.remove(n.wt));
-    }),
-    // TODO(C31): the bridge schema has no `worktree lock` verb yet.
-    vscode.commands.registerCommand("asc.worktrees.lock", () => {
-      void vscode.window.showInformationMessage("ASC: locking worktrees needs a newer asc.");
     }),
   );
   return {

@@ -1,11 +1,11 @@
 package asc.asc.vcs
 
-import asc.v1.Workspace.WsConflictsRequest
-import asc.v1.Workspace.WsConflictsResponse
-import asc.v1.Workspace.WsReadFileRequest
-import asc.v1.Workspace.WsStageRequest
-import asc.v1.Workspace.WsStagePath
-import asc.v1.Repo.ConflictKind
+import asc.v1.WorkspaceOuterClass.WsConflictsRequest
+import asc.v1.WorkspaceOuterClass.WsConflictsResponse
+import asc.v1.WorkspaceOuterClass.WsReadFileRequest
+import asc.v1.WorkspaceOuterClass.WsStageRequest
+import asc.v1.WorkspaceOuterClass.WsStagePath
+import asc.v1.RepoOuterClass.ConflictKind
 import com.google.protobuf.ByteString
 import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.runBlockingCancellable
@@ -28,7 +28,7 @@ class AscMergeSides(val base: ByteArray, val ours: ByteArray, val theirs: ByteAr
 object AscMerge {
     private const val CODE_NOT_FOUND = 5
 
-    private fun slashed(relPath: String): String = relPath.replace('\', '/').trim('/')
+    private fun slashed(relPath: String): String = relPath.replace('\\', '/').trim('/')
 
     private suspend fun stage(calls: AscCalls, root: String, wsId: String, rel: String, n: Int): ByteArray {
         val req = WsReadFileRequest.newBuilder().setWsId(wsId)
@@ -37,7 +37,7 @@ object AscMerge {
         return try {
             val out = ByteArrayOutputStream()
             for (chunk in calls.stream("asc.v1.Workspace/ReadFile", req.toByteArray(), root).toList()) {
-                out.write(asc.v1.Repo.ReadFileResponse.parseFrom(chunk).data.toByteArray())
+                out.write(asc.v1.RepoOuterClass.ReadFileResponse.parseFrom(chunk).data.toByteArray())
             }
             out.toByteArray()
         } catch (e: BridgeException) {
@@ -46,7 +46,7 @@ object AscMerge {
     }
 
     /** The conflict entry for [relPath] from `Workspace.Conflicts`, or null when the path is not conflicted. */
-    suspend fun conflict(calls: AscCalls, root: String, wsId: String, relPath: String): asc.v1.Workspace.WsConflict? {
+    suspend fun conflict(calls: AscCalls, root: String, wsId: String, relPath: String): asc.v1.WorkspaceOuterClass.WsConflict? {
         val rel = slashed(relPath)
         val req = WsConflictsRequest.newBuilder().setWsId(wsId).build()
         val resp = WsConflictsResponse.parseFrom(calls.unary("asc.v1.Workspace/Conflicts", req.toByteArray(), root))

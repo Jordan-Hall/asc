@@ -2,15 +2,21 @@ import { describe, expect, test } from "bun:test";
 import { LiveModel, liveView, parseLiveStatus, type LiveApi } from "../src/stack/live";
 
 const enc = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+/** The `live status --json` document for the current worktree. */
+const doc = (o: Record<string, unknown>) =>
+  ({ worktrees: [{ id: "x", current: false, paused: true }, { current: true, ...o }] });
 
 function setup(status: unknown) {
   const runs: { verb: string; args: string[] }[] = [];
   let current = status;
   const api: LiveApi = {
-    run: async (_r, verb, args) => {
-      runs.push({ verb, args });
-      if (verb === "live")
-        current = { paused: args[0] === "pause", pauseReason: args[0] === "pause" ? "user" : null };
+    setPaused: async (_r, paused) => {
+      runs.push({ verb: "live", args: [paused ? "pause" : "resume"] });
+      current = doc({ paused, pauseReason: paused ? "user" : null });
+      return { exit: 0 };
+    },
+    restack: async () => {
+      runs.push({ verb: "restack", args: [] });
       return { exit: 0 };
     },
     status: async () => enc(current),
@@ -30,7 +36,7 @@ describe("live: restack item", () => {
     expect(liveView(1e9, null).restack.text).toBe("trunk moved 999 commits - Restack");
   });
   test("restack runs the restack verb and nothing else", async () => {
-    const s = setup({ paused: false });
+    const s = setup(doc({ paused: false }));
     expect(await s.m.restack()).toBe(true);
     expect(s.runs).toEqual([{ verb: "restack", args: [] }]);
   });
@@ -38,7 +44,7 @@ describe("live: restack item", () => {
 
 describe("live: toggle", () => {
   test("calls the matching verb", async () => {
-    const s = setup({ paused: false });
+    const s = setup(doc({ paused: false }));
     await s.m.refresh();
     expect(s.m.view().toggle.verb).toBe("pause");
     await s.m.toggle();
@@ -52,7 +58,7 @@ describe("live: toggle", () => {
 
 describe("live: conflict notice", () => {
   test("appears on paused-by-conflict and clears on resume", async () => {
-    const s = setup({ paused: true, pauseReason: "conflict" });
+    const s = setup(doc({ paused: true, pauseReason: "conflict" }));
     await s.m.refresh();
     expect(s.m.view().notice.visible).toBe(true);
     expect(s.m.view().toggle.verb).toBe("resume");
@@ -69,12 +75,15 @@ describe("live: conflict notice", () => {
       new TextEncoder().encode("{"),
       enc([]),
       enc({ paused: "yes" }),
+      enc({ paused: false }),
+      enc({ worktrees: [{ current: false, paused: false }] }),
+      enc(doc({ paused: "yes" })),
     ]) {
       expect(parseLiveStatus(bad)).toBeNull();
     }
     const v = liveView(
       0,
-      parseLiveStatus(enc({ paused: true, pauseReason: "conflict", detail: "<script>" })),
+      parseLiveStatus(enc(doc({ paused: true, pauseReason: "conflict", detail: "<script>" }))),
     );
     expect(v.notice.text).not.toContain("script");
   });

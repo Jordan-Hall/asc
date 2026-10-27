@@ -5,6 +5,8 @@
 //! 1. `http.extraHeader` and `http.<url>.extraHeader`;
 //! 2. URL userinfo;
 //! 3. `ASC_TOKEN`, for the remote's own origin and the `objects` hosts it names, no other;
+//!    when `ASC_TOKEN_HOST` is set, only for that one `host[:port]` as well (an editor that
+//!    injects a token names the host it was given for);
 //! 4. `~/.netrc` (`_netrc` on Windows);
 //! 5. git credential helpers, by `git credential fill` through real git;
 //! 6. the prompt, which `git credential fill` itself runs under [`Prompt::Allowed`].
@@ -30,6 +32,32 @@ use gix_config::File as Config;
 use url::Url;
 
 pub use asc_git::credential::Prompt;
+
+/// The host `ASC_TOKEN` was given for. Unset (or empty), `ASC_TOKEN` answers for the remote's own
+/// origin only, as before. Set, it answers for that host alone; an unparsable value answers for none.
+pub const ASC_TOKEN_HOST: &str = "ASC_TOKEN_HOST";
+
+/// Whether a token pinned to `pin` (the value of `ASC_TOKEN_HOST`, if any) may go to `url`.
+/// The pin is a bare `host` or `host:port` (https default port 443); anything else fails closed.
+pub fn token_host_allows(pin: Option<&str>, url: &Url) -> bool {
+    let Some(pin) = pin.map(str::trim).filter(|p| !p.is_empty()) else {
+        return true;
+    };
+    if pin.contains(|c: char| {
+        c.is_control() || c.is_whitespace() || matches!(c, '/' | '\\' | '@' | '?' | '#')
+    }) {
+        return false;
+    }
+    let Ok(pinned) = Url::parse(&format!("https://{pin}")) else {
+        return false;
+    };
+    let (Some(want), Some(have)) = (pinned.host_str(), url.host_str()) else {
+        return false;
+    };
+    want.eq_ignore_ascii_case(have)
+        && pinned.port_or_known_default().is_some()
+        && pinned.port_or_known_default() == url.port_or_known_default()
+}
 
 /// Redirects followed before giving up (SPEC §15.6.1, host binding).
 pub const MAX_REDIRECTS: usize = 5;
@@ -631,6 +659,7 @@ impl<'a> Resolver<'a> {
         // 3. ASC_TOKEN, for the remote's own origin and its objects hosts only.
         if !past(Source::AscToken)
             && self.token_origins.contains(&origin)
+            && token_host_allows((self.env)(ASC_TOKEN_HOST).as_deref(), url)
             && let Some(token) = self.var("ASC_TOKEN")
         {
             if token.contains(['\0', '\r', '\n']) {

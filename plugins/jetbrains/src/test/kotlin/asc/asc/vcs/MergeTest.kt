@@ -1,11 +1,11 @@
 package asc.asc.vcs
 
-import asc.v1.Repo.ConflictKind
-import asc.v1.Repo.ReadFileResponse
-import asc.v1.Workspace.WsConflict
-import asc.v1.Workspace.WsConflictsResponse
-import asc.v1.Workspace.WsReadFileRequest
-import asc.v1.Workspace.WsStageRequest
+import asc.v1.RepoOuterClass.ConflictKind
+import asc.v1.RepoOuterClass.ReadFileResponse
+import asc.v1.WorkspaceOuterClass.WsConflict
+import asc.v1.WorkspaceOuterClass.WsConflictsResponse
+import asc.v1.WorkspaceOuterClass.WsReadFileRequest
+import asc.v1.WorkspaceOuterClass.WsStageRequest
 import com.google.protobuf.ByteString
 import com.intellij.openapi.vcs.VcsException
 import asc.asc.bridge.BridgeException

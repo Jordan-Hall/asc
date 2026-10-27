@@ -7,8 +7,9 @@ process.
 ## Requirements
 
 - VS Code 1.101 or later (also VSCodium and Cursor builds based on that engine).
-- The `asc` executable. The extension looks at the `asc.path` setting, then `PATH`, then
-  `$ASC_HOME/bin`. The `asc` release must report the `plugin.v1` and `json-verbs.v1` features;
+- The `asc` executable. The extension looks at the `asc.path` setting (an absolute path), then the
+  absolute entries of `PATH`, then `$ASC_HOME/bin`. It never runs a file from a workspace folder or a
+  name searched in the current directory. The `asc` release must report the `plugin.v1` and `json-verbs.v1` features;
   otherwise the extension shows "Update asc" and disables commands that change the repository.
 
 ## Features
@@ -23,14 +24,15 @@ process.
 - `asc` starts only in trusted workspaces. The `asc.path` setting is restricted in untrusted
   workspaces and is machine-scoped.
 - Connections to the forge use https or ssh. Tokens are held in VS Code SecretStorage and never
-  appear in arguments or logs.
+  appear in arguments or logs. A stored token is passed to `asc` only when every open root has an https
+  remote on the host it was given for, and `asc` sends it to that host only (`ASC_TOKEN_HOST`).
 - Virtual workspaces are not supported.
 
 ## Settings
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `asc.path` | empty | Path to the `asc` executable. |
+| `asc.path` | empty | Absolute path to the `asc` executable. |
 
 ## Install
 

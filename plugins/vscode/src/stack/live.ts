@@ -4,10 +4,11 @@
 // conflict, until `live resume`. The plugin never moves the working copy itself: its only verbs are
 // `restack`, `live pause` and `live resume`, each run through the bridge allowlist. Everything the verb
 // printed is untrusted: the status JSON is read defensively and no text from it is shown.
-// Editor-free; `registerLive` is the only `vscode` user.
-// TODO(P10): the bridge allowlist has no `live` entry yet; `LiveApi.run`/`status` are the seam, and the
-// extension supplies `Run live ...` once the allowlist adds it.
+// Editor-free; `registerLive` is the only `vscode` user. `live status|pause|resume` have no entry in the
+// bridge allowlist, so `cliLiveApi` runs them directly with the fixed argv of `cli-direct`; `restack` goes
+// through the bridge.
 import type * as vscodeTypes from "vscode";
+import type { CliDirect } from "../cli-direct";
 
 export const TOGGLE_COMMAND = "asc.live.toggle";
 export const RESTACK_COMMAND = "asc.restackOntoTrunk";
@@ -21,13 +22,18 @@ export interface LiveStatus {
 }
 
 export interface LiveApi {
-  /** Runs one asc verb in the root (through the allowlist); resolves the exit code. */
-  run(root: string, verb: string, args: string[]): Promise<{ exit: number }>;
+  /** `live pause` or `live resume` in the root; resolves the exit code. */
+  setPaused(root: string, paused: boolean): Promise<{ exit: number }>;
+  /** `restack` through the bridge allowlist; resolves the exit code. */
+  restack(root: string): Promise<{ exit: number }>;
   /** The encoded `asc live status --json` of the root, or null when it could not be read. */
   status(root: string, signal: AbortSignal): Promise<Uint8Array | null>;
 }
 
-/** Reads `live status --json` defensively. Malformed input gives null. */
+/**
+ * Reads `live status --json` defensively: `{"worktrees":[{"current":true,"paused":...,"pauseReason":...}]}`.
+ * The entry of the current worktree decides; malformed input, or no current entry, gives null.
+ */
 export function parseLiveStatus(bytes: Uint8Array | null): LiveStatus | null {
   if (bytes === null || bytes.byteLength === 0 || bytes.byteLength > 65_536) return null;
   let v: unknown;
@@ -37,10 +43,33 @@ export function parseLiveStatus(bytes: Uint8Array | null): LiveStatus | null {
     return null;
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
-  const o = v as Record<string, unknown>;
-  if (typeof o.paused !== "boolean") return null;
-  if (!o.paused) return { paused: false, reason: null };
-  return { paused: true, reason: o.pauseReason === "conflict" ? "conflict" : "user" };
+  const rows = (v as { worktrees?: unknown }).worktrees;
+  if (!Array.isArray(rows)) return null;
+  const cur = rows.find(
+    (r): r is Record<string, unknown> =>
+      typeof r === "object" && r !== null && (r as { current?: unknown }).current === true,
+  );
+  if (cur === undefined || typeof cur.paused !== "boolean") return null;
+  if (!cur.paused) return { paused: false, reason: null };
+  return { paused: true, reason: cur.pauseReason === "conflict" ? "conflict" : "user" };
+}
+
+/** `LiveApi` over the direct `asc live` verbs and the bridge's `restack`. */
+export function cliLiveApi(
+  cli: CliDirect,
+  restack: (root: string) => Promise<{ exit: number }>,
+): LiveApi {
+  return {
+    async setPaused(root, paused) {
+      const r = await cli.run(root, { kind: "live", action: paused ? "pause" : "resume" });
+      return { exit: r.exit };
+    },
+    restack,
+    async status(root, signal) {
+      const r = await cli.run(root, { kind: "live", action: "status" }, signal);
+      return r.exit === 0 ? new TextEncoder().encode(r.stdout) : null;
+    },
+  };
 }
 
 export interface LiveView {
@@ -124,15 +153,14 @@ export class LiveModel {
 
   /** Runs `live pause` or `live resume` (whichever the view offers), then re-reads the status. */
   async toggle(): Promise<boolean> {
-    const verb = this.view().toggle.verb;
-    const r = await this.o.api.run(this.o.root, "live", [verb]);
+    const r = await this.o.api.setPaused(this.o.root, this.view().toggle.verb === "pause");
     await this.refresh();
     return r.exit === 0;
   }
 
   /** Runs `restack`; the verb moves the stack, the plugin does nothing else. */
   async restack(): Promise<boolean> {
-    const r = await this.o.api.run(this.o.root, "restack", []);
+    const r = await this.o.api.restack(this.o.root);
     return r.exit === 0;
   }
 

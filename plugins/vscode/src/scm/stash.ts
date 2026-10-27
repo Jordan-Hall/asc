@@ -2,6 +2,7 @@
 // allowlisted `Bridge.Run` verbs `stash push|pop|apply|list|drop`. Editor-free; `registerStashCommands`
 // is the only `vscode` user. The list feeds the "Stashes" group of the Worktrees tree.
 import type * as vscodeTypes from "vscode";
+import { decodeOpResult, stashEntries } from "../opresult";
 import type { CommandResult, CommandsApi, CommandsUi } from "./commands";
 import { VerbRunner } from "./statusbar";
 
@@ -13,32 +14,9 @@ export interface StashEntry {
   message: string;
 }
 
-/**
- * Reads `stash list` output. TODO(P45): `--json` is not shipped, so the bridge sends no typed
- * result yet. This accepts the JSON the verb will print (`{stashes:[{index,message}]}` or a bare
- * array) and gives `[]` for anything else.
- */
+/** Reads the `stash list` result (`OpResult.stash`); anything else gives []. */
 export function parseStashList(bytes: Uint8Array | null): StashEntry[] {
-  if (bytes === null || bytes.byteLength === 0) return [];
-  let v: unknown;
-  try {
-    v = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    return [];
-  }
-  const list = Array.isArray(v)
-    ? v
-    : typeof v === "object" && v !== null && Array.isArray((v as { stashes?: unknown }).stashes)
-      ? (v as { stashes: unknown[] }).stashes
-      : [];
-  const out: StashEntry[] = [];
-  list.forEach((e, i) => {
-    if (typeof e !== "object" || e === null) return;
-    const o = e as Record<string, unknown>;
-    const index = typeof o.index === "number" && Number.isInteger(o.index) ? o.index : i;
-    out.push({ index, message: typeof o.message === "string" ? o.message : "" });
-  });
-  return out;
+  return stashEntries(decodeOpResult(bytes));
 }
 
 export class StashCommands {

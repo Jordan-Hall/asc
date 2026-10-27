@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { dirname } from "node:path";
 import {
   configureAgents,
   definitions,
@@ -9,7 +10,8 @@ import {
   registerMcp,
 } from "../src/mcp";
 
-const ASC = "/bin/asc";
+const ASC = process.platform === "win32" ? "C:\\bin\\asc.exe" : "/bin/asc";
+const ASC_DIR = dirname(ASC);
 
 function providerApi() {
   const st = { provide: (() => []) as () => McpStdio[], fired: 0, disposed: 0, id: "" };
@@ -31,14 +33,19 @@ describe("mcp definitions", () => {
   test("one stdio `asc mcp` per root, no env or token", () => {
     const d = definitions(ASC, ["/a", "/b"], "https://forge.example");
     expect(d).toEqual([
-      { label: "asc (1)", command: ASC, args: ["mcp"], cwd: "/a" },
-      { label: "asc (2)", command: ASC, args: ["mcp"], cwd: "/b" },
+      { label: "asc (1)", command: ASC, args: ["-C", "/a", "mcp"], cwd: ASC_DIR },
+      { label: "asc (2)", command: ASC, args: ["-C", "/b", "mcp"], cwd: ASC_DIR },
     ]);
     expect(JSON.stringify(d)).not.toMatch(/token|env|Authorization/i);
   });
   test("remote only without roots, never alongside stdio", () => {
     expect(definitions(ASC, [], "https://forge.example")).toEqual([
-      { label: "asc-remote", command: ASC, args: ["mcp", "--remote", "https://forge.example"] },
+      {
+        label: "asc-remote",
+        command: ASC,
+        args: ["mcp", "--remote", "https://forge.example"],
+        cwd: ASC_DIR,
+      },
     ]);
     expect(
       definitions(ASC, ["/a"], "https://forge.example").some((x) => x.args.includes("--remote")),
@@ -50,6 +57,10 @@ describe("mcp definitions", () => {
     expect(isSafeServerUrl("nope")).toBe(false);
     expect(definitions(ASC, [], "http://x")).toEqual([]);
     expect(definitions(null, ["/a"], "")).toEqual([]);
+    // A bare name would be looked up in the working directory first on Windows.
+    expect(definitions("asc", ["/a"], "")).toEqual([]);
+    expect(definitions("asc.exe", [], "https://forge.example")).toEqual([]);
+    expect(definitions("./asc", ["/a"], "")).toEqual([]);
   });
 });
 
@@ -101,11 +112,11 @@ describe("registerMcp", () => {
 });
 
 describe("configure agents", () => {
-  test("runs `asc mcp install --scope project` in the root", async () => {
+  test("runs `asc -C <root> mcp install --scope project` from the executable's directory", async () => {
     const calls: [string, string[], string][] = [];
     const msg = await configureAgents(ASC, ["/a"], async (c, a, w) => void calls.push([c, a, w]));
-    expect(calls).toEqual([[ASC, installArgs(), "/a"]]);
-    expect(installArgs()).toEqual(["mcp", "install", "--scope", "project"]);
+    expect(calls).toEqual([[ASC, installArgs("/a"), ASC_DIR]]);
+    expect(installArgs("/a")).toEqual(["-C", "/a", "mcp", "install", "--scope", "project"]);
     expect(msg).toContain("configured");
   });
   test("reports failure without throwing or leaking the error", async () => {
@@ -114,6 +125,11 @@ describe("configure agents", () => {
     });
     expect(msg).not.toContain("secret-path");
     expect(await configureAgents(null, ["/a"])).toContain("asc.path");
+    expect(
+      await configureAgents("asc", ["/a"], async () => {
+        throw new Error("must not run");
+      }),
+    ).toContain("asc.path");
     expect(await configureAgents(ASC, [])).toContain("workspace");
   });
 });
