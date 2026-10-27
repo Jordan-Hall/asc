@@ -1210,7 +1210,8 @@ impl AdminService {
         .map_err(|e| sql("repo_drops", e))?;
         audit_in_tx(
             &mut tx,
-            repo_event("repo.deleted", &ctx.principal.id, &ctx.repo).detail("name", ctx.repo.as_str()),
+            repo_event("repo.deleted", &ctx.principal.id, &ctx.repo)
+                .detail("name", ctx.repo.as_str()),
         )
         .await?;
         tx.commit().await.map_err(|e| sql("repos", e))?;

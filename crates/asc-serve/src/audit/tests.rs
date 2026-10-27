@@ -15,9 +15,7 @@ use super::export::{self, Format};
 use super::retention;
 use super::rpc::AuditService;
 use super::store::{self, Filter};
-use super::{
-    Actor, Audit, AuditConfig, NewEvent, Outcome, Scope, catalogue, chain::GENESIS, meta,
-};
+use super::{Actor, Audit, AuditConfig, NewEvent, Outcome, Scope, catalogue, chain::GENESIS, meta};
 use crate::migrate;
 use crate::registry::Registry;
 
@@ -58,7 +56,13 @@ async fn an_event_goes_to_the_repository_the_owner_and_the_instance() {
     store::record(&p, &push("zed/app", 3)).await.unwrap();
     let seqs = |s: Scope| {
         let p = p.clone();
-        async move { list_all(&p, &s).await.iter().map(|e| e.seq).collect::<Vec<_>>() }
+        async move {
+            list_all(&p, &s)
+                .await
+                .iter()
+                .map(|e| e.seq)
+                .collect::<Vec<_>>()
+        }
     };
     assert_eq!(seqs(Scope::repo("acme/app")).await, vec![1]);
     assert_eq!(seqs(Scope::repo("acme/other")).await, vec![1]);
@@ -71,7 +75,11 @@ async fn an_event_goes_to_the_repository_the_owner_and_the_instance() {
     let c = list_all(&p, &Scope::instance()).await;
     assert_eq!(a[0].id, b[0].id);
     assert_eq!(a[0].id, c[0].id);
-    for s in [Scope::repo("acme/app"), Scope::owner("acme"), Scope::instance()] {
+    for s in [
+        Scope::repo("acme/app"),
+        Scope::owner("acme"),
+        Scope::instance(),
+    ] {
         let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
         assert!(v.ok, "{s}: {}", v.reason);
     }
@@ -103,9 +111,18 @@ async fn a_rolled_back_action_leaves_no_event_and_no_gap() {
         // Dropped without a commit.
     }
     store::record(&p, &push("a/b", 3)).await.unwrap();
-    let seqs: Vec<u64> = list_all(&p, &Scope::repo("a/b")).await.iter().map(|e| e.seq).collect();
+    let seqs: Vec<u64> = list_all(&p, &Scope::repo("a/b"))
+        .await
+        .iter()
+        .map(|e| e.seq)
+        .collect();
     assert_eq!(seqs, vec![1, 2]);
-    assert!(store::verify_chain(&p, &Scope::repo("a/b"), 0, 0).await.unwrap().ok);
+    assert!(
+        store::verify_chain(&p, &Scope::repo("a/b"), 0, 0)
+            .await
+            .unwrap()
+            .ok
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -113,7 +130,11 @@ async fn concurrent_appends_are_gap_free_and_chained() {
     let dir = tempfile::tempdir().unwrap();
     let url = format!(
         "sqlite:{}?mode=rwc",
-        dir.path().join("audit.db").display().to_string().replace('\\', "/")
+        dir.path()
+            .join("audit.db")
+            .display()
+            .to_string()
+            .replace('\\', "/")
     );
     let p = migrate::connect(&url, 6).await.unwrap();
     migrate::migrate(&p).await.unwrap();
@@ -127,7 +148,11 @@ async fn concurrent_appends_are_gap_free_and_chained() {
     for t in tasks {
         t.await.unwrap();
     }
-    for s in [Scope::repo("acme/app"), Scope::owner("acme"), Scope::instance()] {
+    for s in [
+        Scope::repo("acme/app"),
+        Scope::owner("acme"),
+        Scope::instance(),
+    ] {
         let seqs: Vec<u64> = list_all(&p, &s).await.iter().map(|e| e.seq).collect();
         assert_eq!(seqs, (1..=24).collect::<Vec<_>>(), "{s}");
         let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
@@ -163,7 +188,10 @@ async fn details_keep_only_allowed_keys_and_never_a_credential() {
     let e = NewEvent::new("storage.target.created", alice())
         .owner("alice")
         .detail("target", "t1")
-        .detail("endpoint", "https://AKIDEXAMPLE:hunter2secret@s3.example.com/b?X-Amz-Signature=abcdef")
+        .detail(
+            "endpoint",
+            "https://AKIDEXAMPLE:hunter2secret@s3.example.com/b?X-Amz-Signature=abcdef",
+        )
         .detail("bucket", secret)
         .detail("secret_key", "hunter2secret")
         .detail("kind", "s3\nx");
@@ -172,12 +200,28 @@ async fn details_keep_only_allowed_keys_and_never_a_credential() {
     assert_eq!(got.details["endpoint"], "https://s3.example.com/b");
     assert_eq!(got.details["target"], "t1");
     assert_eq!(got.details["kind"], "s3 x");
-    assert!(!got.details.contains_key("bucket"), "a credential-like value is dropped");
-    assert!(!got.details.contains_key("secret_key"), "an unlisted key is dropped");
+    assert!(
+        !got.details.contains_key("bucket"),
+        "a credential-like value is dropped"
+    );
+    assert!(
+        !got.details.contains_key("secret_key"),
+        "an unlisted key is dropped"
+    );
     // Neither the planted secrets nor the signature appear anywhere in the table.
-    let rows = sqlx::query("SELECT * FROM audit_events").fetch_all(&p).await.unwrap();
+    let rows = sqlx::query("SELECT * FROM audit_events")
+        .fetch_all(&p)
+        .await
+        .unwrap();
     for row in rows {
-        for col in ["actor_name", "target", "details_json", "user_agent", "request_id", "repo"] {
+        for col in [
+            "actor_name",
+            "target",
+            "details_json",
+            "user_agent",
+            "request_id",
+            "repo",
+        ] {
             let text: String = row.try_get(col).unwrap();
             for needle in [secret, "hunter2secret", "AKIDEXAMPLE", "X-Amz-Signature"] {
                 assert!(!text.contains(needle), "{col} holds {needle}");
@@ -207,7 +251,10 @@ async fn request_facts_are_recorded() {
     });
     seen.await;
     let got = &list_all(&p, &Scope::repo("a/b")).await[1];
-    assert_eq!((got.user_agent.as_str(), got.request_id.as_str()), ("curl/8", "r-1"));
+    assert_eq!(
+        (got.user_agent.as_str(), got.request_id.as_str()),
+        ("curl/8", "r-1")
+    );
 }
 
 async fn seeded() -> AnyPool {
@@ -216,11 +263,18 @@ async fn seeded() -> AnyPool {
     for n in 0..12u32 {
         let (k, name) = actors[(n % 3) as usize];
         let mut e = NewEvent::new(
-            if n % 4 == 0 { "push.refused" } else { "repo.ref.update" },
+            if n % 4 == 0 {
+                "push.refused"
+            } else {
+                "repo.ref.update"
+            },
             Actor::new(k, name),
         )
         .repo("acme/app")
-        .target(&format!("refs/heads/{}/{n}", if n % 2 == 0 { "main" } else { "feat" }))
+        .target(&format!(
+            "refs/heads/{}/{n}",
+            if n % 2 == 0 { "main" } else { "feat" }
+        ))
         .at(1_000 + i64::from(n) * 10);
         if n % 4 == 0 {
             e = e.outcome(Outcome::Denied);
@@ -236,31 +290,133 @@ async fn filters_narrow_the_list() {
     let s = Scope::repo("acme/app");
     let count = |f: Filter| {
         let (p, s) = (p.clone(), s.clone());
-        async move { store::list(&p, &s, &f, true, 200, None).await.unwrap().events }
+        async move {
+            store::list(&p, &s, &f, true, 200, None)
+                .await
+                .unwrap()
+                .events
+        }
     };
     assert_eq!(count(all()).await.len(), 12);
-    let by_name = count(Filter { actors: vec!["alice".into()], ..all() }).await;
+    let by_name = count(Filter {
+        actors: vec!["alice".into()],
+        ..all()
+    })
+    .await;
     assert_eq!(by_name.len(), 4);
-    let by_label = count(Filter { actors: vec!["agent:bot-1".into()], ..all() }).await;
+    let by_label = count(Filter {
+        actors: vec!["agent:bot-1".into()],
+        ..all()
+    })
+    .await;
     assert_eq!(by_label.len(), 4);
     assert!(by_label.iter().all(|e| e.actor.kind == "agent"));
-    assert_eq!(count(Filter { actors: vec!["user:bot-1".into()], ..all() }).await.len(), 0);
-    let two = count(Filter { actors: vec!["alice".into(), "bob".into()], ..all() }).await;
-    assert_eq!(two.len(), 8);
-    assert_eq!(count(Filter { actions: vec!["push.refused".into()], ..all() }).await.len(), 3);
-    assert_eq!(count(Filter { actions: vec!["push.*".into()], ..all() }).await.len(), 3);
-    assert_eq!(count(Filter { actions: vec!["repo.*".into()], ..all() }).await.len(), 9);
-    assert_eq!(count(Filter { actions: vec!["repo".into()], ..all() }).await.len(), 0);
     assert_eq!(
-        count(Filter { actions: vec!["push.*".into(), "repo.ref.update".into()], ..all() }).await.len(),
+        count(Filter {
+            actors: vec!["user:bot-1".into()],
+            ..all()
+        })
+        .await
+        .len(),
+        0
+    );
+    let two = count(Filter {
+        actors: vec!["alice".into(), "bob".into()],
+        ..all()
+    })
+    .await;
+    assert_eq!(two.len(), 8);
+    assert_eq!(
+        count(Filter {
+            actions: vec!["push.refused".into()],
+            ..all()
+        })
+        .await
+        .len(),
+        3
+    );
+    assert_eq!(
+        count(Filter {
+            actions: vec!["push.*".into()],
+            ..all()
+        })
+        .await
+        .len(),
+        3
+    );
+    assert_eq!(
+        count(Filter {
+            actions: vec!["repo.*".into()],
+            ..all()
+        })
+        .await
+        .len(),
+        9
+    );
+    assert_eq!(
+        count(Filter {
+            actions: vec!["repo".into()],
+            ..all()
+        })
+        .await
+        .len(),
+        0
+    );
+    assert_eq!(
+        count(Filter {
+            actions: vec!["push.*".into(), "repo.ref.update".into()],
+            ..all()
+        })
+        .await
+        .len(),
         12
     );
-    assert_eq!(count(Filter { outcome: Some(Outcome::Denied), ..all() }).await.len(), 3);
-    assert_eq!(count(Filter { outcome: Some(Outcome::Failed), ..all() }).await.len(), 0);
-    assert_eq!(count(Filter { target: "refs/heads/main/".into(), ..all() }).await.len(), 6);
-    assert_eq!(count(Filter { target: "REFS/heads/main/".into(), ..all() }).await.len(), 0);
-    let window = count(Filter { since_ms: 1_030, until_ms: 1_060, ..all() }).await;
-    assert_eq!(window.iter().map(|e| e.time_ms).collect::<Vec<_>>(), vec![1_030, 1_040, 1_050]);
+    assert_eq!(
+        count(Filter {
+            outcome: Some(Outcome::Denied),
+            ..all()
+        })
+        .await
+        .len(),
+        3
+    );
+    assert_eq!(
+        count(Filter {
+            outcome: Some(Outcome::Failed),
+            ..all()
+        })
+        .await
+        .len(),
+        0
+    );
+    assert_eq!(
+        count(Filter {
+            target: "refs/heads/main/".into(),
+            ..all()
+        })
+        .await
+        .len(),
+        6
+    );
+    assert_eq!(
+        count(Filter {
+            target: "REFS/heads/main/".into(),
+            ..all()
+        })
+        .await
+        .len(),
+        0
+    );
+    let window = count(Filter {
+        since_ms: 1_030,
+        until_ms: 1_060,
+        ..all()
+    })
+    .await;
+    assert_eq!(
+        window.iter().map(|e| e.time_ms).collect::<Vec<_>>(),
+        vec![1_030, 1_040, 1_050]
+    );
     let combined = count(Filter {
         actors: vec!["alice".into()],
         actions: vec!["push.*".into()],
@@ -294,27 +450,54 @@ async fn pages_walk_both_directions_without_overlap() {
         assert_eq!(seen, want, "oldest_first = {oldest}");
     }
     // A limit of 0 is the default, and the limit is capped.
-    assert_eq!(store::list(&p, &s, &all(), true, 0, None).await.unwrap().events.len(), 12);
-    assert_eq!(store::list(&p, &s, &all(), true, 100_000, None).await.unwrap().events.len(), 12);
+    assert_eq!(
+        store::list(&p, &s, &all(), true, 0, None)
+            .await
+            .unwrap()
+            .events
+            .len(),
+        12
+    );
+    assert_eq!(
+        store::list(&p, &s, &all(), true, 100_000, None)
+            .await
+            .unwrap()
+            .events
+            .len(),
+        12
+    );
 }
 
 #[tokio::test]
 async fn editing_an_event_is_found_at_that_event() {
     let p = seeded().await;
     let s = Scope::repo("acme/app");
-    sqlx::query("UPDATE audit_events SET actor_name = 'mallory' WHERE scope_kind = 'repo' AND seq = 7")
-        .execute(&p)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE audit_events SET actor_name = 'mallory' WHERE scope_kind = 'repo' AND seq = 7",
+    )
+    .execute(&p)
+    .await
+    .unwrap();
     let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
     assert!(!v.ok);
     assert_eq!(v.first_bad_seq, 7);
     assert_eq!(v.checked, 6);
     // The other scopes hold their own copy and are intact.
-    assert!(store::verify_chain(&p, &Scope::instance(), 0, 0).await.unwrap().ok);
+    assert!(
+        store::verify_chain(&p, &Scope::instance(), 0, 0)
+            .await
+            .unwrap()
+            .ok
+    );
     // A range before the edit verifies; one that covers it does not.
     assert!(store::verify_chain(&p, &s, 1, 6).await.unwrap().ok);
-    assert_eq!(store::verify_chain(&p, &s, 5, 9).await.unwrap().first_bad_seq, 7);
+    assert_eq!(
+        store::verify_chain(&p, &s, 5, 9)
+            .await
+            .unwrap()
+            .first_bad_seq,
+        7
+    );
 }
 
 #[tokio::test]
@@ -325,7 +508,13 @@ async fn editing_details_or_hash_is_found() {
         .execute(&p)
         .await
         .unwrap();
-    assert_eq!(store::verify_chain(&p, &s, 0, 0).await.unwrap().first_bad_seq, 3);
+    assert_eq!(
+        store::verify_chain(&p, &s, 0, 0)
+            .await
+            .unwrap()
+            .first_bad_seq,
+        3
+    );
     let p = seeded().await;
     sqlx::query("UPDATE audit_events SET hash = prev_hash WHERE scope_kind = 'repo' AND seq = 2")
         .execute(&p)
@@ -365,7 +554,13 @@ async fn deleting_the_newest_events_is_found_through_the_head() {
         .execute(&p)
         .await
         .unwrap();
-    assert_eq!(store::verify_chain(&p, &s, 0, 0).await.unwrap().first_bad_seq, 1);
+    assert_eq!(
+        store::verify_chain(&p, &s, 0, 0)
+            .await
+            .unwrap()
+            .first_bad_seq,
+        1
+    );
 }
 
 #[tokio::test]
@@ -389,7 +584,9 @@ async fn an_untouched_chain_reports_its_head() {
     assert_eq!(v.checked, 12);
     assert_eq!(v.head_hash, store::head(&p, &s).await.unwrap().unwrap().1);
     // A scope that was never written verifies as empty.
-    let none = store::verify_chain(&p, &Scope::repo("no/such"), 0, 0).await.unwrap();
+    let none = store::verify_chain(&p, &Scope::repo("no/such"), 0, 0)
+        .await
+        .unwrap();
     assert!(none.ok && none.checked == 0);
     assert_eq!(none.head_hash, GENESIS);
 }
@@ -398,11 +595,18 @@ async fn an_untouched_chain_reports_its_head() {
 async fn retention_drops_old_events_and_the_chain_still_verifies() {
     let p = seeded().await; // events at 1_000, 1_010 .. 1_110
     let s = Scope::repo("acme/app");
-    let cfg = AuditConfig { retention_days: 1, ..AuditConfig::default() };
+    let cfg = AuditConfig {
+        retention_days: 1,
+        ..AuditConfig::default()
+    };
     // `now` is one day and 1_055 ms after the epoch: events 0..=5 are older than a day.
     let now = 86_400_000 + 1_055;
     let dropped = retention::run_once(&p, &cfg, now).await.unwrap();
-    assert!(dropped.iter().any(|d| d.scope == s && d.events == 6 && d.until_seq == 6));
+    assert!(
+        dropped
+            .iter()
+            .any(|d| d.scope == s && d.events == 6 && d.until_seq == 6)
+    );
     let left: Vec<u64> = list_all(&p, &s).await.iter().map(|e| e.seq).collect();
     assert_eq!(left, (7..=12).collect::<Vec<_>>());
     let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
@@ -415,7 +619,10 @@ async fn retention_drops_old_events_and_the_chain_still_verifies() {
     let pruned = store::list(
         &p,
         &Scope::instance(),
-        &Filter { actions: vec!["audit.retention.pruned".into()], ..all() },
+        &Filter {
+            actions: vec!["audit.retention.pruned".into()],
+            ..all()
+        },
         true,
         50,
         None,
@@ -436,8 +643,13 @@ async fn retention_drops_old_events_and_the_chain_still_verifies() {
 async fn retention_can_drop_a_whole_scope_and_keeps_the_head() {
     let p = seeded().await;
     let s = Scope::repo("acme/app");
-    let cfg = AuditConfig { retention_days: 1, ..AuditConfig::default() };
-    retention::run_once(&p, &cfg, 10 * 86_400_000).await.unwrap();
+    let cfg = AuditConfig {
+        retention_days: 1,
+        ..AuditConfig::default()
+    };
+    retention::run_once(&p, &cfg, 10 * 86_400_000)
+        .await
+        .unwrap();
     assert!(list_all(&p, &s).await.is_empty());
     let v = store::verify_chain(&p, &s, 0, 0).await.unwrap();
     assert!(v.ok, "{}", v.reason);
@@ -450,8 +662,16 @@ async fn retention_can_drop_a_whole_scope_and_keeps_the_head() {
 #[tokio::test]
 async fn zero_retention_keeps_everything() {
     let p = seeded().await;
-    let cfg = AuditConfig { retention_days: 0, ..AuditConfig::default() };
-    assert!(retention::run_once(&p, &cfg, i64::MAX / 2).await.unwrap().is_empty());
+    let cfg = AuditConfig {
+        retention_days: 0,
+        ..AuditConfig::default()
+    };
+    assert!(
+        retention::run_once(&p, &cfg, i64::MAX / 2)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(list_all(&p, &Scope::repo("acme/app")).await.len(), 12);
 }
 
@@ -463,8 +683,13 @@ async fn retention_leaves_a_broken_chain_alone() {
         .execute(&p)
         .await
         .unwrap();
-    let cfg = AuditConfig { retention_days: 1, ..AuditConfig::default() };
-    retention::run_once(&p, &cfg, 10 * 86_400_000).await.unwrap();
+    let cfg = AuditConfig {
+        retention_days: 1,
+        ..AuditConfig::default()
+    };
+    retention::run_once(&p, &cfg, 10 * 86_400_000)
+        .await
+        .unwrap();
     // Event 1 was removed by hand; retention refuses to hide that.
     assert_eq!(list_all(&p, &s).await.len(), 11);
     assert!(!store::verify_chain(&p, &s, 0, 0).await.unwrap().ok);
@@ -523,25 +748,56 @@ async fn export_honours_filters_the_bound_and_csv() {
             (summary, String::from_utf8(bytes).unwrap())
         }
     };
-    let (sum, text) = run(Filter { actions: vec!["push.*".into()], ..all() }, Format::Jsonl, 100).await;
+    let (sum, text) = run(
+        Filter {
+            actions: vec!["push.*".into()],
+            ..all()
+        },
+        Format::Jsonl,
+        100,
+    )
+    .await;
     assert_eq!((sum.events, text.lines().count()), (3, 3));
     let (sum, text) = run(all(), Format::Jsonl, 5).await;
-    assert_eq!((sum.events, sum.truncated, text.lines().count()), (5, true, 5));
+    assert_eq!(
+        (sum.events, sum.truncated, text.lines().count()),
+        (5, true, 5)
+    );
     let (sum, text) = run(all(), Format::Jsonl, 12).await;
-    assert_eq!((sum.events, sum.truncated, text.lines().count()), (12, false, 12));
+    assert_eq!(
+        (sum.events, sum.truncated, text.lines().count()),
+        (12, false, 12)
+    );
     let (sum, text) = run(all(), Format::Csv, 100).await;
     assert_eq!(sum.events, 12);
     assert_eq!(text.lines().count(), 13, "a header and a row per event");
     assert!(text.starts_with("scope,seq,id,"));
     // Nothing matches: JSON lines are empty, CSV has the header.
-    let (sum, text) = run(Filter { actors: vec!["nobody".into()], ..all() }, Format::Jsonl, 10).await;
+    let (sum, text) = run(
+        Filter {
+            actors: vec!["nobody".into()],
+            ..all()
+        },
+        Format::Jsonl,
+        10,
+    )
+    .await;
     assert_eq!((sum.events, text.len()), (0, 0));
 }
 
 #[tokio::test]
 async fn a_reader_that_goes_away_stops_the_export() {
     let p = seeded().await;
-    let out = export::run(&p, &Scope::repo("acme/app"), &all(), Format::Jsonl, 100, |_| async { false }).await.unwrap();
+    let out = export::run(
+        &p,
+        &Scope::repo("acme/app"),
+        &all(),
+        Format::Jsonl,
+        100,
+        |_| async { false },
+    )
+    .await
+    .unwrap();
     // Everything fits one chunk, which is only sent at the end; the sink refuses it.
     assert!(out.is_none());
 }
@@ -565,15 +821,20 @@ async fn service() -> (AuditService, AnyPool) {
             .await
             .unwrap();
     }
-    let cfg = AuditConfig { admins: vec!["carol".into()], ..AuditConfig::default() };
+    let cfg = AuditConfig {
+        admins: vec!["carol".into()],
+        ..AuditConfig::default()
+    };
     let audit = Arc::new(Audit::new(registry, cfg, Arc::default()));
     // Alice administers acme/app and acme/lib only; bob writes; carol is a site admin; the host
     // service credential is trusted to have checked its own permissions.
-    let auth = Arc::new(StaticTokens::new()
-        .with_token(ALICE_ADMIN, "alice", Access::Admin)
-        .with_token(BOB_WRITE, "bob", Access::Write)
-        .with_token(CAROL_SITE, "carol", Access::Read)
-        .with_token(HOST, "host-service", Access::Admin));
+    let auth = Arc::new(
+        StaticTokens::new()
+            .with_token(ALICE_ADMIN, "alice", Access::Admin)
+            .with_token(BOB_WRITE, "bob", Access::Write)
+            .with_token(CAROL_SITE, "carol", Access::Read)
+            .with_token(HOST, "host-service", Access::Admin),
+    );
     (AuditService::new(audit, auth, ServerInfo::default()), p)
 }
 
@@ -588,14 +849,27 @@ fn req<T>(msg: T, token: Option<&str>) -> Request<T> {
 }
 
 fn scope(kind: wire::OwnerKind, name: &str) -> Option<wire::OwnerRef> {
-    Some(wire::OwnerRef { kind: kind as i32, name: name.into() })
+    Some(wire::OwnerRef {
+        kind: kind as i32,
+        name: name.into(),
+    })
 }
 
-async fn try_list(svc: &AuditService, token: Option<&str>, s: Option<wire::OwnerRef>) -> Result<usize, tonic::Code> {
-    svc.list(req(wire::ListAuditRequest { scope: s, ..Default::default() }, token))
-        .await
-        .map(|r| r.into_inner().events.len())
-        .map_err(|e| e.code())
+async fn try_list(
+    svc: &AuditService,
+    token: Option<&str>,
+    s: Option<wire::OwnerRef>,
+) -> Result<usize, tonic::Code> {
+    svc.list(req(
+        wire::ListAuditRequest {
+            scope: s,
+            ..Default::default()
+        },
+        token,
+    ))
+    .await
+    .map(|r| r.into_inner().events.len())
+    .map_err(|e| e.code())
 }
 
 #[tokio::test]
@@ -612,37 +886,104 @@ async fn who_may_read_which_scope() {
         (Some(CAROL_SITE), "zed/app", Ok(1)),
         (Some(HOST), "zed/app", Ok(1)),
     ] {
-        assert_eq!(try_list(&svc, token, scope(Repo, repo)).await, want, "{repo}");
+        assert_eq!(
+            try_list(&svc, token, scope(Repo, repo)).await,
+            want,
+            "{repo}"
+        );
     }
     // StaticTokens grants alice Admin on every repository; the NOT_FOUND cases are the ones whose
     // credential lacks the access: bob has Write only.
-    assert_eq!(try_list(&svc, Some(BOB_WRITE), scope(Repo, "acme/app")).await, Err(NotFound));
-    assert_eq!(try_list(&svc, None, scope(Repo, "acme/app")).await, Err(Unauthenticated));
-    assert_eq!(try_list(&svc, Some("wrong-token"), scope(Repo, "acme/app")).await, Err(Unauthenticated));
+    assert_eq!(
+        try_list(&svc, Some(BOB_WRITE), scope(Repo, "acme/app")).await,
+        Err(NotFound)
+    );
+    assert_eq!(
+        try_list(&svc, None, scope(Repo, "acme/app")).await,
+        Err(Unauthenticated)
+    );
+    assert_eq!(
+        try_list(&svc, Some("wrong-token"), scope(Repo, "acme/app")).await,
+        Err(Unauthenticated)
+    );
 
     // A user scope: the person, a site admin; not another user.
-    store::record(&p, &NewEvent::new("auth.token.created", Actor::new("user", "alice")).owner("alice").detail("token", "t")).await.unwrap();
-    assert_eq!(try_list(&svc, Some(ALICE_ADMIN), scope(User, "alice")).await, Ok(1));
-    assert_eq!(try_list(&svc, Some(BOB_WRITE), scope(User, "alice")).await, Err(NotFound));
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(User, "alice")).await, Ok(1));
+    store::record(
+        &p,
+        &NewEvent::new("auth.token.created", Actor::new("user", "alice"))
+            .owner("alice")
+            .detail("token", "t"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        try_list(&svc, Some(ALICE_ADMIN), scope(User, "alice")).await,
+        Ok(1)
+    );
+    assert_eq!(
+        try_list(&svc, Some(BOB_WRITE), scope(User, "alice")).await,
+        Err(NotFound)
+    );
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), scope(User, "alice")).await,
+        Ok(1)
+    );
 
     // An organisation: admin of every repository of it.
-    assert_eq!(try_list(&svc, Some(ALICE_ADMIN), scope(Org, "acme")).await, Ok(1));
-    assert_eq!(try_list(&svc, Some(BOB_WRITE), scope(Org, "acme")).await, Err(NotFound));
-    assert_eq!(try_list(&svc, Some(ALICE_ADMIN), scope(Org, "ghost-org")).await, Err(NotFound));
+    assert_eq!(
+        try_list(&svc, Some(ALICE_ADMIN), scope(Org, "acme")).await,
+        Ok(1)
+    );
+    assert_eq!(
+        try_list(&svc, Some(BOB_WRITE), scope(Org, "acme")).await,
+        Err(NotFound)
+    );
+    assert_eq!(
+        try_list(&svc, Some(ALICE_ADMIN), scope(Org, "ghost-org")).await,
+        Err(NotFound)
+    );
 
     // The instance: site administrators only.
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(Instance, "")).await, Ok(3));
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), scope(Instance, "")).await,
+        Ok(3)
+    );
     assert_eq!(try_list(&svc, Some(HOST), scope(Instance, "")).await, Ok(3));
-    assert_eq!(try_list(&svc, Some(ALICE_ADMIN), scope(Instance, "")).await, Err(NotFound));
-    assert_eq!(try_list(&svc, Some(BOB_WRITE), scope(Instance, "")).await, Err(NotFound));
+    assert_eq!(
+        try_list(&svc, Some(ALICE_ADMIN), scope(Instance, "")).await,
+        Err(NotFound)
+    );
+    assert_eq!(
+        try_list(&svc, Some(BOB_WRITE), scope(Instance, "")).await,
+        Err(NotFound)
+    );
 
     // Malformed scopes.
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), None).await, Err(InvalidArgument));
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(wire::OwnerKind::Unspecified, "x")).await, Err(InvalidArgument));
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(Instance, "name")).await, Err(InvalidArgument));
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(Repo, "not a repo")).await, Err(InvalidArgument));
-    assert_eq!(try_list(&svc, Some(CAROL_SITE), scope(User, "bad name!")).await, Err(InvalidArgument));
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), None).await,
+        Err(InvalidArgument)
+    );
+    assert_eq!(
+        try_list(
+            &svc,
+            Some(CAROL_SITE),
+            scope(wire::OwnerKind::Unspecified, "x")
+        )
+        .await,
+        Err(InvalidArgument)
+    );
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), scope(Instance, "name")).await,
+        Err(InvalidArgument)
+    );
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), scope(Repo, "not a repo")).await,
+        Err(InvalidArgument)
+    );
+    assert_eq!(
+        try_list(&svc, Some(CAROL_SITE), scope(User, "bad name!")).await,
+        Err(InvalidArgument)
+    );
 }
 
 #[tokio::test]
@@ -653,40 +994,77 @@ async fn export_verify_and_actions_check_the_same_access() {
     let repo = scope(wire::OwnerKind::Repo, "acme/app");
 
     let verify = svc
-        .verify_chain(req(wire::VerifyAuditChainRequest { scope: repo.clone(), ..Default::default() }, Some(ALICE_ADMIN)))
+        .verify_chain(req(
+            wire::VerifyAuditChainRequest {
+                scope: repo.clone(),
+                ..Default::default()
+            },
+            Some(ALICE_ADMIN),
+        ))
         .await
         .unwrap()
         .into_inner();
     assert!(verify.ok);
     assert_eq!(verify.checked, 1);
     assert_eq!(
-        svc.verify_chain(req(wire::VerifyAuditChainRequest { scope: repo.clone(), ..Default::default() }, Some(BOB_WRITE)))
-            .await
-            .unwrap_err()
-            .code(),
+        svc.verify_chain(req(
+            wire::VerifyAuditChainRequest {
+                scope: repo.clone(),
+                ..Default::default()
+            },
+            Some(BOB_WRITE)
+        ))
+        .await
+        .unwrap_err()
+        .code(),
         NotFound
     );
     assert_eq!(
-        svc.verify_chain(req(wire::VerifyAuditChainRequest { scope: repo.clone(), from_seq: 5, to_seq: 2 }, Some(ALICE_ADMIN)))
-            .await
-            .unwrap_err()
-            .code(),
+        svc.verify_chain(req(
+            wire::VerifyAuditChainRequest {
+                scope: repo.clone(),
+                from_seq: 5,
+                to_seq: 2
+            },
+            Some(ALICE_ADMIN)
+        ))
+        .await
+        .unwrap_err()
+        .code(),
         tonic::Code::InvalidArgument
     );
 
     let denied = svc
-        .export(req(wire::ExportAuditRequest { scope: repo.clone(), ..Default::default() }, Some(BOB_WRITE)))
+        .export(req(
+            wire::ExportAuditRequest {
+                scope: repo.clone(),
+                ..Default::default()
+            },
+            Some(BOB_WRITE),
+        ))
         .await;
     assert_eq!(denied.err().map(|e| e.code()), Some(NotFound));
     let anon = svc
-        .export(req(wire::ExportAuditRequest { scope: repo.clone(), ..Default::default() }, None))
+        .export(req(
+            wire::ExportAuditRequest {
+                scope: repo.clone(),
+                ..Default::default()
+            },
+            None,
+        ))
         .await;
     assert_eq!(anon.err().map(|e| e.code()), Some(Unauthenticated));
 
     // An allowed export streams the events, ends with the digest, and is itself in the log.
     use futures::StreamExt;
     let mut stream = svc
-        .export(req(wire::ExportAuditRequest { scope: repo.clone(), ..Default::default() }, Some(ALICE_ADMIN)))
+        .export(req(
+            wire::ExportAuditRequest {
+                scope: repo.clone(),
+                ..Default::default()
+            },
+            Some(ALICE_ADMIN),
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -713,9 +1091,17 @@ async fn export_verify_and_actions_check_the_same_access() {
         .unwrap()
         .into_inner();
     assert_eq!(actions.actions.len(), catalogue::CATALOGUE.len());
-    assert!(actions.actions.iter().any(|a| a.action == "policy.proposed"));
+    assert!(
+        actions
+            .actions
+            .iter()
+            .any(|a| a.action == "policy.proposed")
+    );
     assert_eq!(
-        svc.list_actions(req(wire::ListAuditActionsRequest {}, None)).await.unwrap_err().code(),
+        svc.list_actions(req(wire::ListAuditActionsRequest {}, None))
+            .await
+            .unwrap_err()
+            .code(),
         Unauthenticated
     );
 }
@@ -732,7 +1118,10 @@ async fn list_filters_and_tokens_arrive_through_the_service() {
             wire::ListAuditRequest {
                 scope: repo.clone(),
                 limit: 2,
-                filter: Some(wire::AuditFilter { actions: vec!["repo.*".into()], ..Default::default() }),
+                filter: Some(wire::AuditFilter {
+                    actions: vec!["repo.*".into()],
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             Some(ALICE_ADMIN),
@@ -749,17 +1138,29 @@ async fn list_filters_and_tokens_arrive_through_the_service() {
     assert_eq!(e.hash.len(), 32);
     let rest = svc
         .list(req(
-            wire::ListAuditRequest { scope: repo.clone(), page_token: first.next_page_token, limit: 10, ..Default::default() },
+            wire::ListAuditRequest {
+                scope: repo.clone(),
+                page_token: first.next_page_token,
+                limit: 10,
+                ..Default::default()
+            },
             Some(ALICE_ADMIN),
         ))
         .await
         .unwrap()
         .into_inner();
-    assert_eq!(rest.events.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![3, 2, 1]);
+    assert_eq!(
+        rest.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![3, 2, 1]
+    );
     assert!(rest.next_page_token.is_empty());
     let bad = svc
         .list(req(
-            wire::ListAuditRequest { scope: repo, page_token: "../etc".into(), ..Default::default() },
+            wire::ListAuditRequest {
+                scope: repo,
+                page_token: "../etc".into(),
+                ..Default::default()
+            },
             Some(ALICE_ADMIN),
         ))
         .await

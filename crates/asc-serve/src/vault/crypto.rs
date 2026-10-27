@@ -42,7 +42,9 @@ impl SecretContext<'_> {
     /// `"asc-vault-v1" || len(kind) || kind || len(owner) || owner || len(id) || id`, each length
     /// a u16, so no two contexts encode alike.
     fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(DOMAIN.len() + 6 + self.kind.len() + self.owner.len() + self.id.len());
+        let mut out = Vec::with_capacity(
+            DOMAIN.len() + 6 + self.kind.len() + self.owner.len() + self.id.len(),
+        );
         out.extend_from_slice(DOMAIN);
         for part in [self.kind, self.owner, self.id] {
             let len = u16::try_from(part.len()).unwrap_or(u16::MAX);
@@ -175,7 +177,10 @@ mod tests {
             // Boundaries move without changing the concatenation.
             ctx("storag", "euser:alice", "st_1"),
         ] {
-            assert!(matches!(open(&MASTER, &other, &sealed), Err(VaultError::Corrupt)));
+            assert!(matches!(
+                open(&MASTER, &other, &sealed),
+                Err(VaultError::Corrupt)
+            ));
         }
     }
 
@@ -188,7 +193,10 @@ mod tests {
             bad[i] ^= 1;
             assert!(open(&MASTER, &c, &bad).is_err(), "byte {i}");
         }
-        assert!(matches!(open(&MASTER, &c, &sealed[..10]), Err(VaultError::Corrupt)));
+        assert!(matches!(
+            open(&MASTER, &c, &sealed[..10]),
+            Err(VaultError::Corrupt)
+        ));
         assert!(matches!(open(&MASTER, &c, &[]), Err(VaultError::Corrupt)));
     }
 

@@ -112,10 +112,16 @@ pub(crate) mod fake {
 
     impl Table {
         pub fn grant_owner(&self, actor: &str, owner: &Owner) {
-            self.owners.lock().unwrap().insert((actor.into(), owner.scope()));
+            self.owners
+                .lock()
+                .unwrap()
+                .insert((actor.into(), owner.scope()));
         }
         pub fn grant_repo(&self, actor: &str, repo: &str) {
-            self.repos.lock().unwrap().insert((actor.into(), repo.into()));
+            self.repos
+                .lock()
+                .unwrap()
+                .insert((actor.into(), repo.into()));
         }
         pub fn grant_admin(&self, actor: &str) {
             self.admins.lock().unwrap().insert(actor.into());
@@ -125,11 +131,17 @@ pub(crate) mod fake {
     #[async_trait]
     impl Authority for Table {
         async fn can_admin_owner(&self, c: &Caller, o: &Owner) -> bool {
-            self.owners.lock().unwrap().contains(&(c.actor().into(), o.scope()))
+            self.owners
+                .lock()
+                .unwrap()
+                .contains(&(c.actor().into(), o.scope()))
                 || (o.kind == OwnerKind::Repo && self.can_admin_repo(c, &o.name).await)
         }
         async fn can_admin_repo(&self, c: &Caller, r: &str) -> bool {
-            self.repos.lock().unwrap().contains(&(c.actor().into(), r.into()))
+            self.repos
+                .lock()
+                .unwrap()
+                .contains(&(c.actor().into(), r.into()))
         }
         async fn is_site_admin(&self, c: &Caller) -> bool {
             self.admins.lock().unwrap().contains(c.actor())
@@ -139,8 +151,8 @@ pub(crate) mod fake {
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use asc_rpc::auth::{AuthError, BearerToken};
+    use async_trait::async_trait;
 
     use super::*;
 

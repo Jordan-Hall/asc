@@ -151,7 +151,10 @@ pub fn token_created(
         .detail("token", id)
         .detail("name", label)
         .detail("kind", kind)
-        .detail("expires_at", expires.map(|e| e.to_string()).unwrap_or_default())
+        .detail(
+            "expires_at",
+            expires.map(|e| e.to_string()).unwrap_or_default(),
+        )
 }
 
 /// `auth.token.revoked`.
@@ -163,7 +166,12 @@ pub fn token_revoked(id: &str, label: &str, user: Option<&str>, repo: Option<&st
 }
 
 /// `auth.ssh_key.added`. The fingerprint is public; the key is not stored here at all.
-pub fn ssh_key_added(fingerprint: &str, title: &str, user: Option<&str>, repo: Option<&str>) -> NewEvent {
+pub fn ssh_key_added(
+    fingerprint: &str,
+    title: &str,
+    user: Option<&str>,
+    repo: Option<&str>,
+) -> NewEvent {
     credential_event("auth.ssh_key.added", user, repo)
         .target(fingerprint)
         .detail("fingerprint", fingerprint)
@@ -171,7 +179,12 @@ pub fn ssh_key_added(fingerprint: &str, title: &str, user: Option<&str>, repo: O
 }
 
 /// `auth.ssh_key.removed`.
-pub fn ssh_key_removed(fingerprint: &str, title: &str, user: Option<&str>, repo: Option<&str>) -> NewEvent {
+pub fn ssh_key_removed(
+    fingerprint: &str,
+    title: &str,
+    user: Option<&str>,
+    repo: Option<&str>,
+) -> NewEvent {
     credential_event("auth.ssh_key.removed", user, repo)
         .target(fingerprint)
         .detail("fingerprint", fingerprint)

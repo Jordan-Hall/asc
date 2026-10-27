@@ -896,15 +896,31 @@ mod tests {
     fn target_addressing_picks_the_host_the_requests_go_to() {
         let path = target("https://s3.example.com:9000", Addressing::Path);
         assert!(!uses_virtual_host(&path));
-        assert_eq!(effective_endpoint(&path).unwrap(), "https://s3.example.com:9000");
+        assert_eq!(
+            effective_endpoint(&path).unwrap(),
+            "https://s3.example.com:9000"
+        );
         let vh = target("https://s3.example.com:9000", Addressing::VirtualHost);
         assert!(uses_virtual_host(&vh));
-        assert_eq!(effective_endpoint(&vh).unwrap(), "https://my-bucket.s3.example.com:9000");
-        // Auto: virtual host for AWS, path style for anything else.
-        assert!(uses_virtual_host(&target("https://s3.eu-west-1.amazonaws.com", Addressing::Auto)));
-        assert!(!uses_virtual_host(&target("https://garage.example.com", Addressing::Auto)));
         assert_eq!(
-            effective_endpoint(&target("https://s3.eu-west-1.amazonaws.com", Addressing::Auto)).unwrap(),
+            effective_endpoint(&vh).unwrap(),
+            "https://my-bucket.s3.example.com:9000"
+        );
+        // Auto: virtual host for AWS, path style for anything else.
+        assert!(uses_virtual_host(&target(
+            "https://s3.eu-west-1.amazonaws.com",
+            Addressing::Auto
+        )));
+        assert!(!uses_virtual_host(&target(
+            "https://garage.example.com",
+            Addressing::Auto
+        )));
+        assert_eq!(
+            effective_endpoint(&target(
+                "https://s3.eu-west-1.amazonaws.com",
+                Addressing::Auto
+            ))
+            .unwrap(),
             "https://my-bucket.s3.eu-west-1.amazonaws.com"
         );
         assert!(effective_endpoint(&target("not a url", Addressing::VirtualHost)).is_err());
@@ -913,7 +929,8 @@ mod tests {
     #[test]
     fn open_target_uses_only_what_it_is_given() {
         let cfg = target("https://s3.example.com", Addressing::Path);
-        let (store, root) = open_target(&cfg, object_store::client::ReqwestConnector::default()).unwrap();
+        let (store, root) =
+            open_target(&cfg, object_store::client::ReqwestConnector::default()).unwrap();
         // The prefix loses its slashes; the store never prints the key pair.
         assert_eq!(root.as_ref(), "team/a");
         let shown = format!("{store} {store:?} {cfg:?} {:?}", cfg.credentials);
@@ -921,7 +938,10 @@ mod tests {
             assert!(!shown.contains(secret), "{secret} in {shown}");
         }
         let (_, root) = open_target(
-            &TargetConfig { prefix: String::new(), ..cfg },
+            &TargetConfig {
+                prefix: String::new(),
+                ..cfg
+            },
             object_store::client::ReqwestConnector::default(),
         )
         .unwrap();

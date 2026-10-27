@@ -134,5 +134,8 @@ impl InsightsSlot {
 /// The unit's one line in `serve`.
 pub fn register(ext: &Extensions, registry: &Arc<Registry>, cfg: &InsightsConfig) {
     let hub = Arc::new(Insights::new(registry.clone(), cfg.clone()));
-    assert!(ext.insights.set(hub), "the CI insights hub is registered once");
+    assert!(
+        ext.insights.set(hub),
+        "the CI insights hub is registered once"
+    );
 }

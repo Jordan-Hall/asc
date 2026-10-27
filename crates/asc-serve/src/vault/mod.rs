@@ -428,7 +428,11 @@ impl Vault {
         .execute(&self.pool)
         .await
         .map_err(|e| VaultError::sql(&e))?;
-        tracing::info!(generation = target, values = total, "vault rotation started");
+        tracing::info!(
+            generation = target,
+            values = total,
+            "vault rotation started"
+        );
         let vault = self.clone();
         let job = id.clone();
         tokio::spawn(async move { vault.run_rotation(job, retire_old, 0).await });
@@ -639,7 +643,11 @@ pub fn default_key_file(db: Option<&str>, dir: Option<&std::path::Path>) -> Opti
     if let Some(db) = db
         && let Some(rest) = db.strip_prefix("sqlite:")
     {
-        let file = rest.trim_start_matches("//").split('?').next().unwrap_or("");
+        let file = rest
+            .trim_start_matches("//")
+            .split('?')
+            .next()
+            .unwrap_or("");
         if !file.is_empty()
             && !file.starts_with(':')
             && let Some(parent) = std::path::Path::new(file).parent()

@@ -97,7 +97,10 @@ impl RoutedStore {
     fn all(&self) -> Vec<Member> {
         let mut out: Vec<Member> = Vec::new();
         for m in self.writes.iter().chain(self.reads.iter()) {
-            if !out.iter().any(|o| Arc::ptr_eq(&o.store, &m.store) && o.root == m.root) {
+            if !out
+                .iter()
+                .any(|o| Arc::ptr_eq(&o.store, &m.store) && o.root == m.root)
+            {
                 out.push(m.clone());
             }
         }
@@ -156,7 +159,9 @@ impl ObjectStore for RoutedStore {
                     .put_multipart_opts(&self.to_member(only, location)?, opts)
                     .await
             }
-            _ => Err(generic("multipart upload is not available while a migration runs")),
+            _ => Err(generic(
+                "multipart upload is not available while a migration runs",
+            )),
         }
     }
 
@@ -277,7 +282,9 @@ impl ObjectStore for RoutedStore {
                     .copy_opts(&self.to_member(w, from)?, &self.to_member(w, to)?, options)
                     .await
             }
-            _ => Err(generic("copy is not available for a repository in several places")),
+            _ => Err(generic(
+                "copy is not available for a repository in several places",
+            )),
         }
     }
 }
@@ -286,7 +293,10 @@ impl RoutedStore {
     fn reads_distinct(&self) -> Vec<Member> {
         let mut out: Vec<Member> = Vec::new();
         for m in &self.reads {
-            if !out.iter().any(|o| Arc::ptr_eq(&o.store, &m.store) && o.root == m.root) {
+            if !out
+                .iter()
+                .any(|o| Arc::ptr_eq(&o.store, &m.store) && o.root == m.root)
+            {
                 out.push(m.clone());
             }
         }
@@ -359,7 +369,9 @@ mod tests {
     }
 
     async fn put(m: &Arc<dyn ObjectStore>, p: &str, body: &'static [u8]) {
-        m.put(&Path::from(p), PutPayload::from_static(body)).await.unwrap();
+        m.put(&Path::from(p), PutPayload::from_static(body))
+            .await
+            .unwrap();
     }
 
     async fn names(s: &RoutedStore, prefix: &str) -> Vec<String> {
@@ -382,15 +394,40 @@ mod tests {
             vec![member(&a, "tenant/pre/ns/abc")],
         )
         .unwrap();
-        s.put(&Path::from("ns/abc/f/1"), PutPayload::from_static(b"one")).await.unwrap();
-        assert_eq!(&a.get(&Path::from("tenant/pre/ns/abc/f/1")).await.unwrap().bytes().await.unwrap()[..], b"one");
-        assert_eq!(&s.get(&Path::from("ns/abc/f/1")).await.unwrap().bytes().await.unwrap()[..], b"one");
+        s.put(&Path::from("ns/abc/f/1"), PutPayload::from_static(b"one"))
+            .await
+            .unwrap();
+        assert_eq!(
+            &a.get(&Path::from("tenant/pre/ns/abc/f/1"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()[..],
+            b"one"
+        );
+        assert_eq!(
+            &s.get(&Path::from("ns/abc/f/1"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()[..],
+            b"one"
+        );
         assert_eq!(names(&s, "ns/abc").await, vec!["ns/abc/f/1"]);
         let head = s.head(&Path::from("ns/abc/f/1")).await.unwrap();
-        assert_eq!((head.size, head.location.to_string().as_str()), (3, "ns/abc/f/1"));
+        assert_eq!(
+            (head.size, head.location.to_string().as_str()),
+            (3, "ns/abc/f/1")
+        );
         // Outside the namespace is refused, not translated.
         assert!(s.get(&Path::from("ns/other/f/1")).await.is_err());
-        assert!(s.put(&Path::from("elsewhere/x"), PutPayload::from_static(b"x")).await.is_err());
+        assert!(
+            s.put(&Path::from("elsewhere/x"), PutPayload::from_static(b"x"))
+                .await
+                .is_err()
+        );
         s.delete(&Path::from("ns/abc/f/1")).await.unwrap();
         assert!(matches!(
             a.get(&Path::from("tenant/pre/ns/abc/f/1")).await,
@@ -408,15 +445,28 @@ mod tests {
             vec![member(&primary, "ns/abc"), member(&old, "ns/abc")],
         )
         .unwrap();
-        assert_eq!(&s.get(&Path::from("ns/abc/f/old")).await.unwrap().bytes().await.unwrap()[..], b"old");
-        s.put(&Path::from("ns/abc/f/new"), PutPayload::from_static(b"new")).await.unwrap();
+        assert_eq!(
+            &s.get(&Path::from("ns/abc/f/old"))
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap()[..],
+            b"old"
+        );
+        s.put(&Path::from("ns/abc/f/new"), PutPayload::from_static(b"new"))
+            .await
+            .unwrap();
         assert!(primary.head(&Path::from("ns/abc/f/new")).await.is_ok());
         assert!(old.head(&Path::from("ns/abc/f/new")).await.is_err());
         assert!(matches!(
             s.get(&Path::from("ns/abc/f/none")).await,
             Err(object_store::Error::NotFound { .. })
         ));
-        assert_eq!(names(&s, "ns/abc").await, vec!["ns/abc/f/new", "ns/abc/f/old"]);
+        assert_eq!(
+            names(&s, "ns/abc").await,
+            vec!["ns/abc/f/new", "ns/abc/f/old"]
+        );
         // A delete reaches both places.
         s.delete(&Path::from("ns/abc/f/old")).await.unwrap();
         assert!(old.head(&Path::from("ns/abc/f/old")).await.is_err());
@@ -431,7 +481,9 @@ mod tests {
             vec![member(&src, "ns/abc")],
         )
         .unwrap();
-        s.put(&Path::from("ns/abc/f/1"), PutPayload::from_static(b"1")).await.unwrap();
+        s.put(&Path::from("ns/abc/f/1"), PutPayload::from_static(b"1"))
+            .await
+            .unwrap();
         assert!(src.head(&Path::from("ns/abc/f/1")).await.is_ok());
         assert!(dst.head(&Path::from("x/ns/abc/f/1")).await.is_ok());
         // Create mode against an object that is already in the mirror is not an error there.
@@ -440,12 +492,21 @@ mod tests {
             mode: object_store::PutMode::Create,
             ..Default::default()
         };
-        s.put_opts(&Path::from("ns/abc/f/2"), PutPayload::from_static(b"2"), create.clone())
-            .await
-            .unwrap();
+        s.put_opts(
+            &Path::from("ns/abc/f/2"),
+            PutPayload::from_static(b"2"),
+            create.clone(),
+        )
+        .await
+        .unwrap();
         // Creating what the primary already has is the primary's error.
         assert!(matches!(
-            s.put_opts(&Path::from("ns/abc/f/2"), PutPayload::from_static(b"2"), create).await,
+            s.put_opts(
+                &Path::from("ns/abc/f/2"),
+                PutPayload::from_static(b"2"),
+                create
+            )
+            .await,
             Err(object_store::Error::AlreadyExists { .. })
         ));
         s.delete(&Path::from("ns/abc/f/1")).await.unwrap();
@@ -474,7 +535,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after, vec!["ns/abc/f/2", "ns/abc/t/1"]);
-        let d = s.list_with_delimiter(Some(&Path::from("ns/abc"))).await.unwrap();
+        let d = s
+            .list_with_delimiter(Some(&Path::from("ns/abc")))
+            .await
+            .unwrap();
         let mut dirs: Vec<String> = d.common_prefixes.iter().map(ToString::to_string).collect();
         dirs.sort();
         assert_eq!(dirs, vec!["ns/abc/f", "ns/abc/t"]);

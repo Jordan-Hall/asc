@@ -22,7 +22,11 @@ pub struct Deleted {
 }
 
 /// Deletes what is older than the retention at `now` (unix seconds).
-pub async fn run_once(pool: &AnyPool, cfg: &InsightsConfig, now: i64) -> Result<Deleted, sqlx::Error> {
+pub async fn run_once(
+    pool: &AnyPool,
+    cfg: &InsightsConfig,
+    now: i64,
+) -> Result<Deleted, sqlx::Error> {
     let mut out = Deleted::default();
     if cfg.retention_days > 0 {
         let cutoff = now - i64::from(cfg.retention_days) * DAY;
@@ -57,7 +61,12 @@ pub fn spawn(pool: AnyPool, cfg: InsightsConfig) -> tokio::task::JoinHandle<()> 
             tick.tick().await;
             match run_once(&pool, &cfg, crate::review::now()).await {
                 Ok(d) if d != Deleted::default() => {
-                    tracing::info!(cases = d.cases, groups = d.groups, days = d.days, "ci insights retention");
+                    tracing::info!(
+                        cases = d.cases,
+                        groups = d.groups,
+                        days = d.days,
+                        "ci insights retention"
+                    );
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "ci insights retention failed"),

@@ -87,7 +87,9 @@ fn check_pins(
     let mut pinned: HashMap<&[u8], &[u8]> = HashMap::with_capacity(pins.len());
     for p in pins {
         if p.change.is_empty() {
-            return Err(Status::invalid_argument("expected_heads: a change id is required"));
+            return Err(Status::invalid_argument(
+                "expected_heads: a change id is required",
+            ));
         }
         if pinned
             .insert(p.change.as_ref(), p.old_head.as_ref())

@@ -52,7 +52,7 @@ use self::live::{Builder, Router};
 use self::migrate::{Engine, Settings};
 use self::model::SECRET_KIND;
 use crate::netguard::Guard;
-use crate::registry::{Extensions, NsRouter, Ns, Registry, RoutedNs};
+use crate::registry::{Extensions, Ns, NsRouter, Registry, RoutedNs};
 use crate::vault::{Resealer, SecretContext, Vault, VaultError};
 
 /// How often routes are re-read so namespaces this process has not opened find their objects.
@@ -176,7 +176,10 @@ impl ByosSlot {
 /// `Version.features` for the storage and vault services: present exactly while registered.
 pub fn features(slot: &ByosSlot) -> Vec<String> {
     if slot.get().is_some() {
-        vec![rpc::STORAGE_FEATURE.to_owned(), rpc::VAULT_FEATURE.to_owned()]
+        vec![
+            rpc::STORAGE_FEATURE.to_owned(),
+            rpc::VAULT_FEATURE.to_owned(),
+        ]
     } else {
         Vec::new()
     }
@@ -202,7 +205,9 @@ pub fn register(ext: &Extensions, registry: &Arc<Registry>, parts: Parts) -> Arc
     if !registry.set_router(Arc::new(RegistryRouter(router.clone()))) {
         tracing::warn!("a storage router was already installed");
     }
-    parts.vault.register(Arc::new(TargetResealer { db: db.clone() }));
+    parts
+        .vault
+        .register(Arc::new(TargetResealer { db: db.clone() }));
     let engine = Engine::new(
         db.clone(),
         router.clone(),

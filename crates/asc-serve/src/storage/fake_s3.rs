@@ -74,7 +74,9 @@ impl FakeS3 {
             faults: Mutex::default(),
             page_size: Mutex::new(1000),
         });
-        let app = axum::Router::new().fallback(handle).with_state(inner.clone());
+        let app = axum::Router::new()
+            .fallback(handle)
+            .with_state(inner.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
@@ -114,7 +116,12 @@ impl FakeS3 {
 
     /// Makes every request with `method` wait `ms` milliseconds first.
     pub fn set_delay(&self, method: &str, ms: u64) {
-        self.inner.faults.lock().unwrap().delay.push((method.to_owned(), ms));
+        self.inner
+            .faults
+            .lock()
+            .unwrap()
+            .delay
+            .push((method.to_owned(), ms));
     }
 
     /// Refuses every request with 403 until [`allow`](Self::allow).
@@ -145,7 +152,11 @@ impl FakeS3 {
     }
 
     pub fn put(&self, key: &str, data: &[u8]) {
-        self.inner.objects.lock().unwrap().insert(key.to_owned(), data.to_vec());
+        self.inner
+            .objects
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), data.to_vec());
     }
 
     pub fn remove(&self, key: &str) {
@@ -222,7 +233,11 @@ fn parse_auth(headers: &HeaderMap) -> Option<Parsed> {
     })
 }
 
-fn verify(inner: &Inner, req_parts: &axum::http::request::Parts, auth: &Parsed) -> Result<(), AuthFail> {
+fn verify(
+    inner: &Inner,
+    req_parts: &axum::http::request::Parts,
+    auth: &Parsed,
+) -> Result<(), AuthFail> {
     if auth.key_id != *inner.access_key.lock().unwrap() {
         return Err(AuthFail::InvalidAccessKeyId);
     }
@@ -274,7 +289,11 @@ fn verify(inner: &Inner, req_parts: &axum::http::request::Parts, auth: &Parsed) 
         hex(&Sha256::digest(canonical.as_bytes()))
     );
     let mut scope = auth.scope.split('/');
-    let (day, region, service) = (scope.next().unwrap_or(""), scope.next().unwrap_or(""), scope.next().unwrap_or(""));
+    let (day, region, service) = (
+        scope.next().unwrap_or(""),
+        scope.next().unwrap_or(""),
+        scope.next().unwrap_or(""),
+    );
     // A request signed for another region is refused, as a real provider refuses it.
     if region != inner.region {
         return Err(AuthFail::SignatureDoesNotMatch);
@@ -304,7 +323,9 @@ fn xml_error(status: u16, code: &str, msg: &str) -> Response<Body> {
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn etag(data: &[u8]) -> String {
@@ -342,7 +363,9 @@ async fn respond(
         None => return xml_error(403, "AccessDenied", "no signature"),
         Some(a) => match verify(inner, parts, a) {
             Ok(()) => {}
-            Err(AuthFail::InvalidAccessKeyId) => return xml_error(403, "InvalidAccessKeyId", "unknown key"),
+            Err(AuthFail::InvalidAccessKeyId) => {
+                return xml_error(403, "InvalidAccessKeyId", "unknown key");
+            }
             Err(AuthFail::SignatureDoesNotMatch) => {
                 return xml_error(403, "SignatureDoesNotMatch", "bad signature");
             }
@@ -361,7 +384,15 @@ async fn respond(
             } else if entry.2 > 0 {
                 entry.2 -= 1;
                 let status = entry.3;
-                return xml_error(status, if status == 403 { "AccessDenied" } else { "InternalError" }, "injected");
+                return xml_error(
+                    status,
+                    if status == 403 {
+                        "AccessDenied"
+                    } else {
+                        "InternalError"
+                    },
+                    "injected",
+                );
             }
         }
         delay = f.delay.iter().find(|(dm, _)| *dm == m).map(|(_, ms)| *ms);
@@ -370,19 +401,26 @@ async fn respond(
         tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     }
     let decoded = percent_decode(path.trim_start_matches('/'));
-    let (bucket, key) = decoded.split_once('/').map_or((decoded.as_str(), ""), |(b, k)| (b, k));
+    let (bucket, key) = decoded
+        .split_once('/')
+        .map_or((decoded.as_str(), ""), |(b, k)| (b, k));
     if bucket != inner.bucket {
         return xml_error(404, "NoSuchBucket", "no such bucket");
     }
-    let query: BTreeMap<String, String> = url::form_urlencoded::parse(parts.uri.query().unwrap_or("").as_bytes())
-        .into_owned()
-        .collect();
+    let query: BTreeMap<String, String> =
+        url::form_urlencoded::parse(parts.uri.query().unwrap_or("").as_bytes())
+            .into_owned()
+            .collect();
     let bytes = to_bytes(body, 256 * 1024 * 1024).await.unwrap_or_default();
     match (&parts.method, key.is_empty()) {
-        (&Method::GET, true) if query.get("list-type").is_some_and(|v| v == "2") => list(inner, &query),
+        (&Method::GET, true) if query.get("list-type").is_some_and(|v| v == "2") => {
+            list(inner, &query)
+        }
         (&Method::POST, true) if query.contains_key("delete") => multi_delete(inner, &bytes),
         (&Method::PUT, false) => put(inner, key, &parts.headers, bytes.to_vec()),
-        (&Method::GET | &Method::HEAD, false) => get(inner, key, &parts.headers, parts.method == Method::HEAD),
+        (&Method::GET | &Method::HEAD, false) => {
+            get(inner, key, &parts.headers, parts.method == Method::HEAD)
+        }
         (&Method::DELETE, false) => {
             inner.objects.lock().unwrap().remove(key);
             Response::builder().status(204).body(Body::empty()).unwrap()
@@ -412,7 +450,10 @@ fn percent_decode(s: &str) -> String {
 
 fn put(inner: &Inner, key: &str, headers: &HeaderMap, data: Vec<u8>) -> Response<Body> {
     let mut objects = inner.objects.lock().unwrap();
-    if let Some(src) = headers.get("x-amz-copy-source").and_then(|v| v.to_str().ok()) {
+    if let Some(src) = headers
+        .get("x-amz-copy-source")
+        .and_then(|v| v.to_str().ok())
+    {
         let src = percent_decode(src.trim_start_matches('/'));
         let src_key = src.split_once('/').map_or("", |(_, k)| k);
         return match objects.get(src_key).cloned() {
@@ -455,7 +496,11 @@ fn get(inner: &Inner, key: &str, headers: &HeaderMap, head: bool) -> Response<Bo
         .and_then(|r| {
             let (a, b) = r.split_once('-')?;
             let start: usize = a.parse().ok()?;
-            let end: usize = if b.is_empty() { total.saturating_sub(1) } else { b.parse().ok()? };
+            let end: usize = if b.is_empty() {
+                total.saturating_sub(1)
+            } else {
+                b.parse().ok()?
+            };
             Some((start, end.min(total.saturating_sub(1))))
         });
     let (status, slice) = match range {
@@ -465,7 +510,9 @@ fn get(inner: &Inner, key: &str, headers: &HeaderMap, head: bool) -> Response<Bo
         }
         _ => (200, data.clone()),
     };
-    builder = builder.status(status).header(header::CONTENT_LENGTH, slice.len());
+    builder = builder
+        .status(status)
+        .header(header::CONTENT_LENGTH, slice.len());
     if head {
         builder.body(Body::empty()).unwrap()
     } else {
@@ -493,7 +540,10 @@ fn list(inner: &Inner, q: &BTreeMap<String, String>) -> Response<Body> {
     let mut count = 0;
     let mut truncated = false;
     let mut last = String::new();
-    for (k, v) in objects.iter().filter(|(k, _)| k.starts_with(&prefix) && k.as_str() > after.as_str()) {
+    for (k, v) in objects
+        .iter()
+        .filter(|(k, _)| k.starts_with(&prefix) && k.as_str() > after.as_str())
+    {
         let rest = &k[prefix.len()..];
         if !delimiter.is_empty()
             && let Some(i) = rest.find(&delimiter)
@@ -519,7 +569,9 @@ fn list(inner: &Inner, q: &BTreeMap<String, String>) -> Response<Body> {
         count += 1;
         last = k.clone();
     }
-    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+    );
     xml.push_str(&format!(
         "<Name>{}</Name><Prefix>{}</Prefix><KeyCount>{count}</KeyCount><MaxKeys>{max}</MaxKeys><IsTruncated>{truncated}</IsTruncated>",
         esc(&inner.bucket),
@@ -533,10 +585,16 @@ fn list(inner: &Inner, q: &BTreeMap<String, String>) -> Response<Body> {
         ));
     }
     for p in prefixes {
-        xml.push_str(&format!("<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>", esc(&p)));
+        xml.push_str(&format!(
+            "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
+            esc(&p)
+        ));
     }
     if truncated {
-        xml.push_str(&format!("<NextContinuationToken>{}</NextContinuationToken>", esc(&last)));
+        xml.push_str(&format!(
+            "<NextContinuationToken>{}</NextContinuationToken>",
+            esc(&last)
+        ));
     }
     xml.push_str("</ListBucketResult>");
     Response::builder()
@@ -552,13 +610,18 @@ fn multi_delete(inner: &Inner, body: &[u8]) -> Response<Body> {
     while let Some(i) = rest.find("<Key>") {
         let after = &rest[i + 5..];
         let Some(j) = after.find("</Key>") else { break };
-        let key = after[..j].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">");
+        let key = after[..j]
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">");
         inner.objects.lock().unwrap().remove(&key);
         deleted.push_str(&format!("<Deleted><Key>{}</Key></Deleted>", esc(&key)));
         rest = &after[j + 6..];
     }
     Response::builder()
         .header(header::CONTENT_TYPE, "application/xml")
-        .body(Body::from(format!("<DeleteResult>{deleted}</DeleteResult>")))
+        .body(Body::from(format!(
+            "<DeleteResult>{deleted}</DeleteResult>"
+        )))
         .unwrap()
 }

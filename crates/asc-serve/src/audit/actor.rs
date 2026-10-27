@@ -42,7 +42,10 @@ pub fn actor_of(principal_id: &str) -> Actor {
             return Actor::new("user", "anonymous");
         }
         if id.deploy_key_id != 0 {
-            return Actor::new("deploy", &format!("{}:{}", clean(&id.handle), id.deploy_key_id));
+            return Actor::new(
+                "deploy",
+                &format!("{}:{}", clean(&id.handle), id.deploy_key_id),
+            );
         }
         if id.user_id < 0 {
             return Actor::new("ci", &clean(&id.handle));
