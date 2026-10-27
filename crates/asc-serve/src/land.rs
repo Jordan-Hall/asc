@@ -710,8 +710,9 @@ mod tests {
             principal: Principal { id: "alice".into() },
             op_id: Some(op),
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn req(
         name: &str,

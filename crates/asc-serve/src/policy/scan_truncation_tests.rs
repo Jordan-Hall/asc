@@ -135,6 +135,7 @@ async fn push_trunk(env: &Env, gate: &ServerGate, new: ChangesetId) -> Result<()
         },
         op_id: None,
         client: None,
+        admin: Default::default(),
     };
     let updates = [GateUpdate {
         name: format!("refs/heads/{}", env.entry.default_branch),

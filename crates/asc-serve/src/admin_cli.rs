@@ -356,6 +356,7 @@ impl AdminCli {
                 },
                 op_id: None,
                 client: None,
+                admin: Default::default(),
             };
             let req = wire::RepoAdminRequest {
                 repo: Some(wire::RepoRef {

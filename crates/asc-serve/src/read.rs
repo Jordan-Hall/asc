@@ -2598,8 +2598,9 @@ mod tests {
             principal: Principal { id: "alice".into() },
             op_id: None,
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn repo_ref(mode: IdMode) -> Option<wire::RepoRef> {
         Some(wire::RepoRef {

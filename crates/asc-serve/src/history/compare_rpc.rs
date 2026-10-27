@@ -235,8 +235,9 @@ mod tests {
             principal: Principal { id: "alice".into() },
             op_id: None,
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn req(a: &str, b: &str) -> wire::CompareRequest {
         wire::CompareRequest {

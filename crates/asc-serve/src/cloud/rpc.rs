@@ -816,12 +816,18 @@ impl CloudService {
         if mutating && op_id.is_none() {
             return Err(Status::invalid_argument("mutating calls need x-asc-op-id"));
         }
+        let admin = asc_rpc::auth::AdminProof::new(
+            self.authorizer.clone(),
+            ext.get::<Credential>().cloned(),
+            name.as_str(),
+        );
         Ok(CallCtx {
             repo: name,
             id_mode,
             principal,
             op_id,
             client,
+            admin,
         })
     }
 

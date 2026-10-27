@@ -1642,6 +1642,7 @@ async fn the_hook_socket_rejects_replayed_expired_unknown_and_foreign_tokens() {
         },
         op_id: Some(Uuid::new_v4()),
         client: None,
+        admin: Default::default(),
     };
     let quarantine = |view: &asc_git::compat::GitView| {
         let q = view.path().join("objects").join("tmp_objdir-incoming-t");

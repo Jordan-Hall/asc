@@ -61,6 +61,7 @@ pub(crate) fn ctx(principal: &str) -> CallCtx {
         },
         op_id: Some(Uuid::new_v4()),
         client: None,
+        admin: Default::default(),
     }
 }
 
@@ -182,6 +183,20 @@ impl Fx {
             wire::UpdateMode::Land,
         );
         self.gated.update_refs(&ctx(who), req).await
+    }
+
+    pub async fn land_with(
+        &self,
+        ctx: &CallCtx,
+        to: ChangesetId,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        let req = update_req(
+            "refs/heads/master",
+            wire::ref_update::Expect::Any(true),
+            to,
+            wire::UpdateMode::Land,
+        );
+        self.gated.update_refs(ctx, req).await
     }
 
     pub async fn push(
@@ -2025,15 +2040,41 @@ async fn an_update_never_escapes_an_unusable_policy_through_the_policy_it_brings
         )
         .await;
     assert!(del.is_err());
-    // The host service is the administrator of last resort and may repair with any update.
-    f.land(crate::authz::HOST_SERVICE_PRINCIPAL, off)
-        .await
-        .unwrap();
-    assert_eq!(f.tip().await, off);
+    // The host service relays calls of users the gate cannot see; it does not repair either.
+    let host = admin_ctx(crate::authz::HOST_SERVICE_PRINCIPAL, "host");
+    assert_eq!(
+        code(&f.land_with(&host, off).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    assert_eq!(f.tip().await, a);
+}
+
+/// A call of `principal` whose credential `token` is judged by [`admin_tokens`].
+fn admin_ctx(principal: &str, token: &str) -> CallCtx {
+    let mut c = ctx(principal);
+    c.admin = asc_rpc::auth::AdminProof::new(
+        admin_tokens(),
+        Some(asc_rpc::auth::Credential::bearer(
+            asc_rpc::auth::BearerToken::new(token).unwrap(),
+        )),
+        "o/r",
+    );
+    c
+}
+
+/// Two tokens of one user (a read-only one and an admin one), and the host service.
+fn admin_tokens() -> Arc<dyn asc_rpc::auth::Authorizer> {
+    use asc_rpc::auth::{Access, StaticTokens};
+    Arc::new(
+        StaticTokens::new()
+            .with_token("dana-read", "pat:dana", Access::Read)
+            .with_token("dana-admin", "pat:dana", Access::Admin)
+            .with_token("host", crate::authz::HOST_SERVICE_PRINCIPAL, Access::Admin),
+    )
 }
 
 #[tokio::test]
-async fn a_repository_administrator_may_repair_an_unusable_policy_with_any_update() {
+async fn only_the_admin_credential_of_the_call_may_repair_an_unusable_policy_with_any_update() {
     let f = fx().await;
     let a = commit(&f.e, &[], &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")]).await;
     f.set_master(a).await;
@@ -2043,19 +2084,17 @@ async fn a_repository_administrator_may_repair_an_unusable_policy_with_any_updat
         &[(POLICY_PATH, policy_text("").as_bytes()), ("y", b"2")],
     )
     .await;
-    assert_eq!(
-        code(&f.land("pat:dana", fix).await.unwrap_err()),
-        "POLICY_DENIED"
-    );
-    sqlx::query(
-        "INSERT INTO auth_tokens (id, kind, principal, digest, created) VALUES ('t1', 'pat', 'pat:dana', x'00', 1)",
-    )
-    .execute(f.reg.pool())
-    .await
-    .unwrap();
-    sqlx::query("INSERT INTO auth_token_grants (token_id, repo, access) VALUES ('t1', 'o/r', 'admin')")
-        .execute(f.reg.pool())
+    // No proof at all, and a read-only token of the same user, repair nothing.
+    for c in [ctx("pat:dana"), admin_ctx("pat:dana", "dana-read")] {
+        assert_eq!(
+            code(&f.land_with(&c, fix).await.unwrap_err()),
+            "POLICY_DENIED"
+        );
+    }
+    assert_eq!(f.tip().await, a);
+    // The admin credential of that call does.
+    f.land_with(&admin_ctx("pat:dana", "dana-admin"), fix)
         .await
         .unwrap();
-    f.land("pat:dana", fix).await.unwrap();
+    assert_eq!(f.tip().await, fix);
 }

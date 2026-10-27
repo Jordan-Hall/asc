@@ -20,7 +20,7 @@
 //! attestation of a rewritten signed changeset, and findings when `block_on_push` is off.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::Changeset;
@@ -90,49 +90,12 @@ pub trait RefGate: Send + Sync {
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status>;
 }
 
-/// Whether a principal administers a repository. The gate asks only while the policy in force is
-/// unusable, to let an administrator repair the repository.
-#[async_trait]
-pub trait AdminCheck: Send + Sync {
-    async fn is_admin(&self, principal: &str, repo: &str) -> bool;
-}
-
-/// Administrators by the personal-token grants of this server (`auth_token_grants`).
-pub struct GrantAdmins {
-    registry: Arc<Registry>,
-}
-
-#[async_trait]
-impl AdminCheck for GrantAdmins {
-    async fn is_admin(&self, principal: &str, repo: &str) -> bool {
-        let user = principal.strip_prefix("pat:").unwrap_or(principal);
-        let rows: Result<Vec<(String,)>, _> = sqlx::query_as(
-            "SELECT g.repo FROM auth_tokens t JOIN auth_token_grants g ON g.token_id = t.id              WHERE t.kind = 'pat' AND (t.principal = $1 OR t.principal = $2)              AND t.revoked IS NULL AND (t.expires IS NULL OR t.expires > $3)              AND g.access = 'admin' LIMIT 1024",
-        )
-        .bind(format!("pat:{user}"))
-        .bind(user.to_owned())
-        .bind(now())
-        .fetch_all(self.registry.pool())
-        .await;
-        rows.is_ok_and(|rows| {
-            rows.into_iter().any(|(pattern,)| {
-                crate::authz::token_store::Grant {
-                    repo: pattern,
-                    access: asc_rpc::auth::Access::Admin,
-                }
-                .covers(repo)
-            })
-        })
-    }
-}
-
 /// The gate of a server: policy, secret scanning and signatures.
 pub struct ServerGate {
     registry: Arc<Registry>,
     policies: Arc<PolicyStore>,
     scanner: Arc<Scanner>,
     signing: Arc<Signing>,
-    admin: OnceLock<Arc<dyn AdminCheck>>,
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -234,29 +197,20 @@ impl ServerGate {
         scanner: Arc<Scanner>,
         signing: Arc<Signing>,
     ) -> Self {
-        let admin = OnceLock::new();
-        let _ = admin.set(Arc::new(GrantAdmins {
-            registry: registry.clone(),
-        }) as Arc<dyn AdminCheck>);
         Self {
             registry,
             policies,
             scanner,
             signing,
-            admin,
         }
     }
 
-    /// Whether the caller may repair a repository whose policy is unusable: the host service, or
-    /// a principal the admin check names. Fails closed.
+    /// Whether the caller may repair a repository whose policy is unusable: the credential of
+    /// this very call holds admin on the repository. The host service never does through this
+    /// path: it relays calls of users the gate cannot see, so a relayed call is judged as any
+    /// other non-administrator's.
     async fn may_repair(&self, ctx: &CallCtx) -> bool {
-        if crate::authz::is_host_service(&ctx.principal.id) {
-            return true;
-        }
-        match self.admin.get() {
-            Some(check) => check.is_admin(&ctx.principal.id, ctx.repo.as_str()).await,
-            None => false,
-        }
+        !crate::authz::is_host_service(&ctx.principal.id) && ctx.admin.holds().await
     }
 
     /// Whether `name` is a protected ref of the repository: trunk, `release/*` or a land branch.

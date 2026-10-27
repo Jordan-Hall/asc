@@ -1425,8 +1425,9 @@ mod tests {
             },
             op_id: Some(Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn code(s: &Status) -> String {
         status_rpc_error(s).map_or_else(|| s.code().to_string(), |e| e.code().to_owned())

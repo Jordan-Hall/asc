@@ -1501,6 +1501,7 @@ impl GitHttp {
             principal: principal.clone(),
             op_id: Some(audit.op_id),
             client: None,
+            admin: Default::default(),
         };
         let session = push.begin(ctx, entry.clone(), view.clone()).map_err(|e| {
             tracing::warn!(error = %e, "starting a push session");

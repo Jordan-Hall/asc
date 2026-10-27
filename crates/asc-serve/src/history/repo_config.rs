@@ -170,8 +170,9 @@ mod tests {
             principal: Principal { id: "alice".into() },
             op_id: None,
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn req(rev: &str) -> wire::RepoConfigRequest {
         wire::RepoConfigRequest {
