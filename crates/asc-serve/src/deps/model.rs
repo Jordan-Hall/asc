@@ -250,9 +250,21 @@ pub struct Advisory {
     /// Every fixed version the advisory names for the package, in its own order.
     pub fixed: Vec<String>,
     pub url: String,
+    /// The entries of the record that are about this package: the ranges and versions that say which
+    /// versions are affected. Empty when the advisory was read back from the findings table.
+    pub affected: Vec<super::advisory::Affected>,
 }
 
 impl Advisory {
+    /// Whether `version` of the package is affected, or `None` when the advisory carries no ranges to
+    /// judge by.
+    pub fn affects(&self, eco: Ecosystem, version: &str) -> Option<bool> {
+        if self.affected.is_empty() {
+            return None;
+        }
+        Some(self.affected.iter().any(|a| a.affects(eco, version)))
+    }
+
     /// The smallest fixed version greater than `current`, by the ordering of `scheme`.
     pub fn fixed_after(&self, scheme: Scheme, current: &str) -> Option<String> {
         use super::version::Version;
@@ -271,8 +283,10 @@ impl Advisory {
 pub enum Lookup {
     /// The advisories (possibly none) that apply: a clean answer.
     Known(Vec<Advisory>),
-    /// The source could not be asked, or has no data for the ecosystem: not clean.
+    /// The source could not be asked: not clean.
     Unknown(String),
+    /// The ecosystem has no advisory data (CocoaPods): neither clean nor failed.
+    Uncovered,
 }
 
 #[cfg(test)]
