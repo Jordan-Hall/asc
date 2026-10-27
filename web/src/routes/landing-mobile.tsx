@@ -11,7 +11,6 @@ const SECTIONS = [
   ["#review", "Review"],
   ["#agents", "Agents"],
   ["#search", "Search"],
-  ["#git", "Git compatible"],
 ] as const;
 
 /** The menu behind the hamburger: the page sections and the way in. */
@@ -117,7 +116,6 @@ export default function LandingMobile() {
             <div className="mono mland16">
               <span className="mland17">$</span> asc clone https://hub.example.com/acme/payments
             </div>
-            <div className="mono mland18">or git clone https://hub.example.com/acme/payments</div>
           </section>
           <section className="mland19" id="demo">
             <div className="mland20">
@@ -167,7 +165,6 @@ export default function LandingMobile() {
           <section className="mland33">
             <div className="mland34">Works with the tools your team already uses</div>
             <div className="mland35">
-              <span className="mono mland36">git</span>
               <span className="mono mland36">VS Code</span>
               <span className="mono mland36">JetBrains</span>
               <span className="mono mland36">MCP</span>
@@ -249,21 +246,15 @@ export default function LandingMobile() {
             </>
           ) : null}
           <section className="mland40">
-            <h3 className="mland41">Git compatible</h3>
+            <h3 className="mland41">Compatibility</h3>
             <div className="mland42">
-              Your clients keep working. Clone, fetch and push with git over HTTPS or SSH today.
-              Move to the <span className="mono">asc</span> command line when you want stacks, undo,
-              and live restack.
-            </div>
-            <div className="mland52">
-              <div className="mono mland53">
-                <span className="mland17">$</span> git push origin HEAD:refs/for/master
-              </div>
+              ASC is the source control system. For existing tools and CI that still speak git, the
+              server offers a git compatibility layer over HTTPS and SSH.
             </div>
           </section>
           <section className="mland54">
             <h2 className="mland55">Ship more, and still understand every line.</h2>
-            <p className="mland56">Import a repository in a minute. Keep your git history.</p>
+            <p className="mland56">Import a repository in a minute. Keep your history.</p>
             <Link to="/signin" className="tap mland57">
               Create account
             </Link>
