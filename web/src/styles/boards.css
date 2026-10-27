@@ -1,0 +1,162 @@
+/*
+ * Design-board tokens and fonts. The colour names are the ones the boards use (--c-<light hex>), so a
+ * board value maps one to one: the light value on :root, the dark value on .dark. Self-hosted Inter
+ * and JetBrains Mono (SIL Open Font License 1.1), variable weight, Latin subset: the CSP allows
+ * only same-origin fonts.
+ */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/inter-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url("../fonts/jetbrains-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  --c-047857: #047857;
+  --c-064e3b: #064e3b;
+  --c-0b5d3a: #0b5d3a;
+  --c-0e5668: #0e5668;
+  --c-0f172a: #0f172a;
+  --c-0f3b4a: #0f3b4a;
+  --c-0f6b3f: #0f6b3f;
+  --c-125469: #125469;
+  --c-1e293b: #1e293b;
+  --c-334155: #334155;
+  --c-3f9cb8: #3f9cb8;
+  --c-475569: #475569;
+  --c-5b21b6: #5b21b6;
+  --c-64748b: #64748b;
+  --c-78350f: #78350f;
+  --c-7cc4d8: #7cc4d8;
+  --c-7f1d1d: #7f1d1d;
+  --c-7fb3c2: #7fb3c2;
+  --c-8b3a9f: #8b3a9f;
+  --c-92400e: #92400e;
+  --c-991b1b: #991b1b;
+  --c-b45309: #b45309;
+  --c-b91c1c: #b91c1c;
+  --c-bcd9e1: #bcd9e1;
+  --c-bfe3ee: #bfe3ee;
+  --c-cbd5e1: #cbd5e1;
+  --c-d1fae5: #d1fae5;
+  --c-d3f0e0: #d3f0e0;
+  --c-d5dde8: #d5dde8;
+  --c-d8dee6: #d8dee6;
+  --c-ddd6fe: #ddd6fe;
+  --c-e0f6fb: #e0f6fb;
+  --c-e1ecf0: #e1ecf0;
+  --c-e2e8f0: #e2e8f0;
+  --c-e7edf3: #e7edf3;
+  --c-e8edf3: #e8edf3;
+  --c-e8f7ef: #e8f7ef;
+  --c-e9f4f7: #e9f4f7;
+  --c-ecfdf5: #ecfdf5;
+  --c-ede9fe: #ede9fe;
+  --c-eef2f6: #eef2f6;
+  --c-f1f5f9: #f1f5f9;
+  --c-f6f8fa: #f6f8fa;
+  --c-f8fafc: #f8fafc;
+  --c-f9d5d5: #f9d5d5;
+  --c-faf8ff: #faf8ff;
+  --c-fafbfc: #fafbfc;
+  --c-fca5a5: #fca5a5;
+  --c-fde68a: #fde68a;
+  --c-fdecec: #fdecec;
+  --c-fee2e2: #fee2e2;
+  --c-fef2f2: #fef2f2;
+  --c-fef3c7: #fef3c7;
+  --c-fffbeb: #fffbeb;
+  --c-ffffff: #ffffff;
+}
+
+.dark,
+[data-theme="asc-dark"] {
+  --c-047857: #34d399;
+  --c-064e3b: #a7f3d0;
+  --c-0b5d3a: #6ee7b7;
+  --c-0e5668: #7dd3e8;
+  --c-0f172a: #e6edf6;
+  --c-0f3b4a: #9ad9ea;
+  --c-0f6b3f: #7ee0b0;
+  --c-125469: #2394b2;
+  --c-1e293b: #c9d4e3;
+  --c-334155: #c3cedd;
+  --c-3f9cb8: #2a8ba6;
+  --c-475569: #9fb0c6;
+  --c-5b21b6: #c4b5fd;
+  --c-64748b: #8aa0bb;
+  --c-78350f: #fcd34d;
+  --c-7cc4d8: #1f6a80;
+  --c-7f1d1d: #fca5a5;
+  --c-7fb3c2: #2f6b7d;
+  --c-8b3a9f: #d8a2e8;
+  --c-92400e: #fbbf24;
+  --c-991b1b: #fca5a5;
+  --c-b45309: #f59e0b;
+  --c-b91c1c: #f87171;
+  --c-bcd9e1: #24505f;
+  --c-bfe3ee: #17414f;
+  --c-cbd5e1: #34425d;
+  --c-d1fae5: #0f3a2b;
+  --c-d3f0e0: #14513b;
+  --c-d5dde8: #2a3750;
+  --c-d8dee6: #2a3750;
+  --c-ddd6fe: #3d3170;
+  --c-e0f6fb: #10303a;
+  --c-e1ecf0: #14303b;
+  --c-e2e8f0: #26324a;
+  --c-e7edf3: #1a2438;
+  --c-e8edf3: #1a2438;
+  --c-e8f7ef: #0d3325;
+  --c-e9f4f7: #12303b;
+  --c-ecfdf5: #0f3a2b;
+  --c-ede9fe: #2b2150;
+  --c-eef2f6: #1d283d;
+  --c-f1f5f9: #1a2438;
+  --c-f6f8fa: #0e1626;
+  --c-f8fafc: #121b2d;
+  --c-f9d5d5: #5a2226;
+  --c-faf8ff: #1d1838;
+  --c-fafbfc: #121b2d;
+  --c-fca5a5: #f87171;
+  --c-fde68a: #5a4515;
+  --c-fdecec: #3a171b;
+  --c-fee2e2: #3b1518;
+  --c-fef2f2: #3a171b;
+  --c-fef3c7: #3b2d0f;
+  --c-fffbeb: #2b2210;
+  --c-ffffff: #151f33;
+  color-scheme: dark;
+}
+
+/*
+ * The boards were drawn on a plain browser page: UA margins, content-box sizing, inline svg and
+ * `line-height: normal`. Tailwind's preflight (layer base) changes all of those, so inside a board
+ * screen (an element with data-board) the base layer is rolled back to the UA defaults. Utilities
+ * and unlayered board CSS still apply.
+ */
+@layer base {
+  [data-board],
+  [data-board] * {
+    all: revert-layer;
+  }
+}
+[data-board] {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: normal;
+  color: var(--c-0f172a);
+  -webkit-font-smoothing: antialiased;
+  overflow-wrap: normal;
+}

@@ -7,7 +7,7 @@ is in `docs/CHEATSHEET.md` (also `asc help git`). SPEC wins where this page disa
 
 - Windows: the MSI installs `asc.exe`, a private shim directory, the `PATH` entries, the
   `Client-ProjFS` feature and Defender exclusions for `$ASC_HOME`, and registers the daemon task.
-- Linux: `packaging/linux/install.sh` (shipped with each release as `install.sh`); the daemon runs as a user service. There is no macOS release build yet.
+- Linux: `packaging/linux/install.sh` (shipped with each release as `install.sh`); the daemon runs as a user service. Linux and macOS also install with `scripts/install.sh`; see `docs/RELEASE.md`.
 - Step-by-step setup and sign-in: `docs/GETTING-STARTED.md`.
 - Real git 2.40 or later is a required dependency. asc finds it from `ASC_REAL_GIT`, then
   `asc.realGit`, then the first other `git` on `PATH`, then (Windows) Git for Windows.

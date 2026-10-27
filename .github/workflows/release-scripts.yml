@@ -1,0 +1,78 @@
+name: release-scripts
+# The release and installer scripts: shellcheck, the Python unit tests, and the end-to-end tests against a
+# local fixture release host (Linux with dash and minisign, macOS with its BSD tools, Windows with pwsh).
+on:
+  push:
+    branches: [master]
+    paths:
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+      - "scripts/release/**"
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-scripts.yml"
+  pull_request:
+    paths:
+      - "scripts/install.sh"
+      - "scripts/install.ps1"
+      - "scripts/release/**"
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-scripts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # minisign 0.12 for linux, checked against this hash before it is unpacked.
+  MINISIGN_URL: https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --severity=warning --shell=sh scripts/install.sh scripts/release/sign.sh scripts/release/publish-to-hub.sh scripts/release/smoke.sh
+          shellcheck --severity=warning --shell=bash scripts/release/test/lib.sh scripts/release/test/test-release.sh scripts/release/test/test-install-sh.sh
+      - name: minisign
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/minisign.tar.gz" "$MINISIGN_URL"
+          echo "$MINISIGN_SHA256  $RUNNER_TEMP/minisign.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/minisign"
+          tar -xzf "$RUNNER_TEMP/minisign.tar.gz" -C "$RUNNER_TEMP/minisign"
+          echo "$RUNNER_TEMP/minisign/minisign-linux/x86_64" >> "$GITHUB_PATH"
+      - run: python3 -I scripts/release/test/test_release.py
+      - run: bash scripts/release/test/test-release.sh
+      - run: bash scripts/release/test/test-install-sh.sh
+        env:
+          TEST_SH: dash
+      - name: The workflow files parse
+        run: python3 -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" .github/workflows/release.yml .github/workflows/release-scripts.yml
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: python3 scripts/release/test/test_release.py
+      - run: bash scripts/release/test/test-release.sh
+      - run: bash scripts/release/test/test-install-sh.sh
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: python scripts/release/test/test_release.py
+      - run: pwsh -NoProfile -File scripts/release/test/test-install-ps1.ps1
