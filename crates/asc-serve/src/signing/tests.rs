@@ -829,6 +829,35 @@ async fn the_hub_signing_keys_page_acts_as_the_person_of_an_account_claim_and_no
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::PermissionDenied);
+    // A claim that does not cover the call is denied outright: it never continues as the host
+    // service, which could list anyone's keys by name.
+    let by_name = |user: &str, subject: &str, role, at| {
+        claim_call(
+            wire::ListSigningKeysRequest {
+                owner: "alice".into(),
+            },
+            subject,
+            user,
+            role,
+            at,
+        )
+    };
+    for bad in [
+        by_name("7:alice", "user:alice", Role::Write, now - 600),
+        by_name("7:alice", "user:bob", Role::Write, now),
+    ] {
+        let e = svc.list_keys(bad).await.unwrap_err();
+        assert_eq!(e.code(), Code::PermissionDenied);
+    }
+    assert_eq!(
+        svc.list_keys(by_name("7:alice", "user:alice", Role::Read, now))
+            .await
+            .unwrap()
+            .into_inner()
+            .keys
+            .len(),
+        1
+    );
     // Bob's write claim cannot revoke Alice's key and cannot tell it exists.
     let revoke = |user: &str, subject: &str| {
         claim_call(
