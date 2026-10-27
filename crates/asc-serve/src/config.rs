@@ -903,6 +903,10 @@ pub struct AuthConfig {
     /// The file holding the token store's HMAC key (hex, 32 bytes, mode 0600). Required for
     /// `token_store`; `asc serve token create` makes it when it is missing.
     pub token_key_file: Option<PathBuf>,
+    /// The file holding the key (32 bytes, raw or 64 hex digits, mode 0600) with which the host
+    /// service signs the administrator it forwards with a repair (`x-asc-forwarded-*`, see
+    /// `asc_rpc::forwarded`). Absent, no forwarded claim is ever accepted.
+    pub forwarded_key_file: Option<PathBuf>,
 }
 
 /// `[web]` (docs/WEB-UI.md): the web UI, served read-only as static files under `/ui`, and the

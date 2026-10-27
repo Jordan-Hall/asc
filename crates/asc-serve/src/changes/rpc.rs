@@ -775,7 +775,12 @@ impl ChangesService {
             self.authorizer.clone(),
             ext.get::<Credential>().cloned(),
             name.as_str(),
-        );
+        )
+        .with_forwarded(asc_rpc::auth::AdminProof::forwarded_in(
+            &*self.authorizer,
+            meta,
+            name.as_str(),
+        ));
         Ok(CallCtx {
             repo: name,
             id_mode,
