@@ -502,6 +502,7 @@ dependencies = [
  "prometheus-client",
  "prost",
  "prost-reflect",
+ "quick-xml 0.42.0",
  "quick_cache",
  "quinn",
  "rcgen",

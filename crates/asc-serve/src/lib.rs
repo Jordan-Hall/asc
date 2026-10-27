@@ -52,6 +52,7 @@ pub mod mutations;
 pub mod netguard;
 pub mod objects;
 pub mod outbox;
+pub mod deps;
 pub mod policy;
 pub mod projects;
 pub mod projects_warm;
@@ -224,6 +225,7 @@ fn register_all(
     codeintel_cfg: Option<codeintel::rpc::Settings>,
     embed: Option<Arc<dyn codeintel::worker::EmbedModel>>,
     security_cfg: (&secretscan::Config, &signing::Config),
+    deps_cfg: (&deps::Config, &netguard::NetGuardConfig, Option<&str>),
 ) -> Result<(), ServeError> {
     limits::register(ext, limits);
     // `HasObjects`, `GetObjects` and `PutObjects`: what clone, fetch and push move objects with.
@@ -246,6 +248,16 @@ fn register_all(
         &mutations,
         security_cfg.0.clone(),
         security_cfg.1.clone(),
+    )
+    .map_err(ConfigError::Invalid)?;
+    // Dependency scanning and update proposals; the gate above asks it when the policy says to.
+    deps::register(
+        ext,
+        registry,
+        &mutations,
+        deps_cfg.1,
+        deps_cfg.0,
+        deps_cfg.2,
     )
     .map_err(ConfigError::Invalid)?;
     mutations::rebase::register(ext, &mutations);
@@ -374,6 +386,11 @@ pub fn build_grpc(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Serve
                 .into_service(),
         );
     }
+    if let Some(h) = ext.deps.get() {
+        grpc = grpc.add_service(
+            deps::rpc::DepsRpc::new(h.clone(), authorizer.clone(), info.clone()).into_service(),
+        );
+    }
     grpc.add_service(RepoService::new(ext.handlers.clone(), authorizer, info).into_service())
 }
 
@@ -471,6 +488,7 @@ pub async fn serve(
         ci_settings,
         ci_embed.clone(),
         (&cfg.secrets, &cfg.signing),
+        (&cfg.deps, &cfg.netguard, cfg.public_url.as_deref()),
     )?;
     // Bring-your-own storage: the vault, the network guard, the router and the background work.
     let byos = storage::register(
@@ -627,6 +645,7 @@ pub async fn serve(
     features.extend(storage::features(&ext.byos));
     features.extend(ai_agents.features());
     features.extend(workflows::features(&workflows));
+    features.extend(deps::features(&ext));
     if ext.security.get().is_some() {
         features.extend(policy::features());
     }
