@@ -21,6 +21,7 @@ use regex::Regex;
 use super::model::Ecosystem;
 use super::parse::Format;
 use super::requirement::{Bump, Style, bump};
+use super::version::is_safe_literal;
 
 /// One package and the version it moves between.
 #[derive(Clone, Copy, Debug)]
@@ -247,9 +248,27 @@ impl Member {
 
     /// Edits the content of a string value.
     fn set(&self, edits: &mut Edits, new: &str) {
-        let esc = new.replace('\\', "\\\\").replace('"', "\\\"");
-        edits.push(self.val_start + 1, self.val_end - 1, esc);
+        edits.push(self.val_start + 1, self.val_end - 1, json_escape(new));
     }
+}
+
+/// `s` as the inside of a JSON string.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn find<'a>(ms: &'a [Member], key: &str) -> Option<&'a Member> {
@@ -909,11 +928,62 @@ fn mix_exs(text: &str, pin: &Pin<'_>) -> Outcome {
     }))
 }
 
+/// Everything that is written into a file comes from a registry or a lockfile, so none of it is trusted:
+/// versions are plain literals, a checksum is hex, an integrity is `shaNNN-base64`, a tarball is an https
+/// URL without quotes, markup or spaces, a requirement is operators and a version.
+pub fn check_inputs(pin: &Pin<'_>, extra: &Extra) -> Result<(), String> {
+    if !is_safe_literal(pin.to) || !is_safe_literal(pin.from) {
+        return Err(
+            "a version is not a plain literal (letters, digits and . + _ -) and is not written"
+                .into(),
+        );
+    }
+    if let Some(c) = &extra.checksum
+        && !(c.len() == 64
+            && c.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    {
+        return Err("the registry's checksum is not 64 hex digits".into());
+    }
+    if let Some(i) = &extra.integrity {
+        let ok = ["sha256-", "sha384-", "sha512-"].iter().any(|p| {
+            i.strip_prefix(p).is_some_and(|b| {
+                !b.is_empty()
+                    && b.len() <= 128
+                    && b.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'/' | b'='))
+            })
+        });
+        if !ok {
+            return Err("the registry's integrity is not shaNNN-base64".into());
+        }
+    }
+    if let Some(t) = &extra.tarball {
+        let ok = t.len() <= 1024
+            && t.starts_with("https://")
+            && t.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-._~:/?#@%+=,;!$&*()[]".contains(&c));
+        if !ok {
+            return Err("the registry's tarball is not a plain https URL".into());
+        }
+    }
+    if let Some(r) = &extra.requirement
+        && (r.len() > 64
+            || !r
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b" .+_-~^<>=!".contains(&c)))
+    {
+        return Err("a requirement is not operators and a version".into());
+    }
+    Ok(())
+}
+
 /// Edits `text`, the file of `format`, to move `pin`.
 pub fn rewrite(format: Format, text: &str, pin: &Pin<'_>, extra: &Extra) -> Outcome {
     if let Some(why) = unsupported(format) {
         return Err(why.to_owned());
     }
+    check_inputs(pin, extra)?;
     match format {
         Format::CargoToml => cargo_toml(text, pin),
         Format::CargoLock => cargo_lock(text, pin, extra),

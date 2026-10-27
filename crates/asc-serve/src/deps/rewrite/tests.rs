@@ -178,7 +178,7 @@ checksum = "cccc"
 fn cargo_lock_moves_version_checksum_and_the_references_that_name_the_version() {
     let c = Ecosystem::CratesIo;
     let extra = Extra {
-        checksum: Some("dddd".into()),
+        checksum: Some("d".repeat(64)),
         ..Extra::default()
     };
     let out = run(
@@ -201,7 +201,7 @@ fn cargo_lock_moves_version_checksum_and_the_references_that_name_the_version() 
             ),
             (
                 "checksum = \"bbbb\"".to_owned(),
-                "checksum = \"dddd\"".to_owned()
+                format!("checksum = \"{}\"", "d".repeat(64))
             ),
         ]
     );
@@ -400,8 +400,8 @@ fn package_lock_v2_also_moves_the_legacy_tree() {
 }
 "#;
     let extra = Extra {
-        integrity: Some("i2".into()),
-        tarball: Some("u2".into()),
+        integrity: Some("sha512-i2".into()),
+        tarball: Some("https://r.example/u2".into()),
         requirement: Some("2.0.0".into()),
         ..Extra::default()
     };
@@ -416,8 +416,8 @@ fn package_lock_v2_also_moves_the_legacy_tree() {
         !out.contains("1.0.0\"") || out.matches("\"1.0.0\"").count() == 0,
         "{out}"
     );
-    assert_eq!(out.matches("i2").count(), 3);
-    assert_eq!(out.matches("\"u2\"").count(), 3);
+    assert_eq!(out.matches("sha512-i2").count(), 3);
+    assert_eq!(out.matches("https://r.example/u2").count(), 3);
     assert!(serde_json::from_str::<serde_json::Value>(&out).is_ok());
 }
 
@@ -783,4 +783,191 @@ fn json_scanning_survives_strings_that_look_like_structure() {
     .text;
     assert!(out.contains("\"x\": \"2.0.0\""));
     assert!(serde_json::from_str::<serde_json::Value>(&out).is_ok());
+}
+
+/// A sample file of every format that is rewritten, each naming `x` at `1.0.0`.
+fn samples() -> Vec<(Format, Ecosystem, &'static str)> {
+    vec![
+        (
+            Format::CargoToml,
+            Ecosystem::CratesIo,
+            "[dependencies]\nx = \"1.0.0\"\n",
+        ),
+        (
+            Format::CargoLock,
+            Ecosystem::CratesIo,
+            "[[package]]\nname = \"x\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"aaaa\"\n",
+        ),
+        (
+            Format::PackageJson,
+            Ecosystem::Npm,
+            "{\"dependencies\": {\"x\": \"1.0.0\"}}",
+        ),
+        (
+            Format::PackageLock,
+            Ecosystem::Npm,
+            "{\"lockfileVersion\": 3, \"packages\": {\"node_modules/x\": {\"version\": \"1.0.0\", \"resolved\": \"u\", \"integrity\": \"i\"}}}",
+        ),
+        (Format::Requirements, Ecosystem::PyPi, "x==1.0.0\n"),
+        (
+            Format::PyProject,
+            Ecosystem::PyPi,
+            "dependencies = [\"x==1.0.0\"]\n",
+        ),
+        (
+            Format::GoMod,
+            Ecosystem::Go,
+            "module m\n\nrequire x v1.0.0\n",
+        ),
+        (
+            Format::GradleLock,
+            Ecosystem::Maven,
+            "g:x:1.0.0=compileClasspath\n",
+        ),
+        (
+            Format::PomXml,
+            Ecosystem::Maven,
+            "<project><dependencies><dependency><groupId>g</groupId><artifactId>x</artifactId><version>1.0.0</version></dependency></dependencies></project>",
+        ),
+        (
+            Format::Csproj,
+            Ecosystem::NuGet,
+            "<Project><ItemGroup><PackageReference Include=\"x\" Version=\"1.0.0\" /></ItemGroup></Project>",
+        ),
+        (
+            Format::ComposerJson,
+            Ecosystem::Packagist,
+            "{\"require\": {\"x\": \"1.0.0\"}}",
+        ),
+        (
+            Format::Gemfile,
+            Ecosystem::RubyGems,
+            "gem \"x\", \"~> 1.0\"\n",
+        ),
+        (
+            Format::GemfileLock,
+            Ecosystem::RubyGems,
+            "GEM\n  specs:\n    x (1.0.0)\n",
+        ),
+        (Format::MixExs, Ecosystem::Hex, "{:x, \"~> 1.0\"}\n"),
+    ]
+}
+
+#[test]
+fn a_version_with_quotes_newlines_or_markup_is_written_into_no_format() {
+    let evil = [
+        "2.0.0\"\nmalicious = true",
+        "2.0.0'; rm -rf /",
+        "2.0.0</version><version>9",
+        "2.0.0\n[patch]\nx = 1",
+        "2.0.0\\",
+        "2.0.0 || 9",
+        "2.0.0\"}, \"y\": {\"version\": \"9",
+        "2.0.0&amp;",
+        "${evil}",
+    ];
+    for (format, eco, text) in samples() {
+        // The clean version is written, so the sample is a fair target.
+        let extra = Extra {
+            checksum: Some("a".repeat(64)),
+            integrity: Some("sha512-abc==".into()),
+            tarball: Some("https://r.example/x.tgz".into()),
+            ..Extra::default()
+        };
+        let name = if eco == Ecosystem::Maven { "g:x" } else { "x" };
+        let (from, to) = if format == Format::GoMod {
+            ("v1.0.0", "v9.0.0")
+        } else {
+            ("1.0.0", "9.0.0")
+        };
+        let good = rewrite(format, text, &pin(eco, name, from, to), &extra);
+        assert!(matches!(&good, Ok(Some(_))), "{format:?}: {good:?}");
+        for bad in evil {
+            let got = rewrite(format, text, &pin(eco, name, from, bad), &extra);
+            assert!(
+                got.as_ref().is_err_and(|e| e.contains("plain literal")),
+                "{format:?} {bad:?}: {got:?}"
+            );
+            let got = rewrite(format, text, &pin(eco, name, bad, to), &extra);
+            assert!(got.is_err(), "{format:?} from {bad:?}");
+        }
+    }
+}
+
+#[test]
+fn what_a_registry_adds_to_a_lockfile_is_checked_too() {
+    let p = pin(Ecosystem::Npm, "x", "1.0.0", "2.0.0");
+    let lock = samples()
+        .into_iter()
+        .find(|s| s.0 == Format::PackageLock)
+        .unwrap()
+        .2;
+    for extra in [
+        Extra {
+            integrity: Some("sha512-abc\",\"x\":\"".into()),
+            tarball: Some("https://r/x.tgz".into()),
+            ..Extra::default()
+        },
+        Extra {
+            integrity: Some("md5-abc".into()),
+            tarball: Some("https://r/x.tgz".into()),
+            ..Extra::default()
+        },
+        Extra {
+            integrity: Some("sha512-abc".into()),
+            tarball: Some("http://r/x.tgz".into()),
+            ..Extra::default()
+        },
+        Extra {
+            integrity: Some("sha512-abc".into()),
+            tarball: Some("https://r/x.tgz\"y".into()),
+            ..Extra::default()
+        },
+        Extra {
+            integrity: Some("sha512-abc".into()),
+            tarball: Some("https://r/x y.tgz".into()),
+            ..Extra::default()
+        },
+        Extra {
+            requirement: Some("^2.0.0\", \"x".into()),
+            integrity: Some("sha512-abc".into()),
+            tarball: Some("https://r/x.tgz".into()),
+            ..Extra::default()
+        },
+    ] {
+        assert!(
+            rewrite(Format::PackageLock, lock, &p, &extra).is_err(),
+            "{extra:?}"
+        );
+    }
+    let c = pin(Ecosystem::CratesIo, "x", "1.0.0", "2.0.0");
+    let cargo = samples()
+        .into_iter()
+        .find(|s| s.0 == Format::CargoLock)
+        .unwrap()
+        .2;
+    for sum in [
+        "abc",
+        &"G".repeat(64),
+        &format!("{}\"", "a".repeat(63)),
+        &"A".repeat(64),
+    ] {
+        let extra = Extra {
+            checksum: Some(sum.to_owned()),
+            ..Extra::default()
+        };
+        assert!(
+            rewrite(Format::CargoLock, cargo, &c, &extra).is_err(),
+            "{sum}"
+        );
+    }
+}
+
+#[test]
+fn json_strings_are_escaped_whatever_they_hold() {
+    assert_eq!(
+        json_escape("a\"b\\c\nd\re\tf\u{1}g\u{7f}"),
+        "a\\\"b\\\\c\\nd\\re\\tf\\u0001g\\u007f"
+    );
+    assert_eq!(json_escape("plain-1.0.0+build"), "plain-1.0.0+build");
 }
