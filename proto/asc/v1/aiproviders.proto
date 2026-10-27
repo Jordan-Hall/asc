@@ -147,6 +147,7 @@ message AiUsageRow {
   uint64 input_tokens = 3;
   uint64 output_tokens = 4;
   uint64 cost_micro_usd = 5;
+  uint64 unpriced_requests = 6;        // requests whose model had no price (their cost is recorded as 0)
 }
 message AiUsageResponse {
   repeated AiUsageRow rows = 1;

@@ -7,9 +7,11 @@ import "asc/v1/repo.proto";
 
 // Workflows (build-out feature "workflows"; docs/BUILDOUT.md): agent work that starts on an event and runs steps in order. A
 // definition is a file `.asc/workflows/<name>.toml` on trunk, so a change to a workflow is reviewed like code and the server
-// runs the version on the trunk tip, never the one in an update. The server keeps only whether a workflow is enabled and the
-// runs. A step is an agent task, a wait for approval by a person, or a wait for checks; a step cannot run commands. Every
-// agent step runs as an agent run (agents.proto) with its own token and budget, and the workflow budget caps their sum.
+// runs the version on the trunk tip, never the one in an update. The server keeps only whether a workflow is enabled, the
+// runs and the secrets a command step may read. A step is an agent task, a command, a wait for approval by a person, or a
+// wait for checks. Every agent step runs as an agent run (agents.proto) with its own token and budget, and the workflow
+// budget caps their sum. A command step runs a fixed argument list (never a shell line) in the operator's sandbox over a
+// working copy of the change, and its result is attached to that exact change version as a check (ci.proto).
 // Advertised as Version.features "workflows.v1". ErrorDetail.code also carries WORKFLOW_INVALID (INVALID_ARGUMENT; `paths`
 // holds "<line>: <message>") and WORKFLOW_DISABLED (FAILED_PRECONDITION).
 service Workflows {
@@ -23,6 +25,9 @@ service Workflows {
   rpc CancelRun(CancelWorkflowRunRequest) returns (CancelWorkflowRunResponse);    // run starter or maintainer; idempotent
   rpc DecideApproval(DecideWorkflowApprovalRequest) returns (DecideWorkflowApprovalResponse);   // named approver; mutating, x-asc-op-id
   rpc WatchRun(WatchWorkflowRunRequest) returns (stream WorkflowRunEvent);        // repo read; long-lived, resumable
+  rpc ListSecrets(ListWorkflowSecretsRequest) returns (ListWorkflowSecretsResponse);   // repo admin; names and hints only
+  rpc SetSecret(SetWorkflowSecretRequest) returns (SetWorkflowSecretResponse);         // repo admin; mutating, x-asc-op-id
+  rpc DeleteSecret(DeleteWorkflowSecretRequest) returns (DeleteWorkflowSecretResponse);   // repo admin; idempotent
 }
 
 enum WorkflowTriggerKind {
@@ -33,6 +38,7 @@ enum WorkflowTriggerKind {
   WORKFLOW_TRIGGER_KIND_CHECK_FAILED = 4;
   WORKFLOW_TRIGGER_KIND_COMMENT_MENTION = 5;   // a review comment that mentions `@agent-<name>`
   WORKFLOW_TRIGGER_KIND_SCHEDULE = 6;          // `cron`, UTC, five fields, at most every 15 minutes
+  WORKFLOW_TRIGGER_KIND_LAND = 7;              // a stack landed on a branch
 }
 
 message WorkflowTrigger {
@@ -48,6 +54,7 @@ enum WorkflowStepKind {
   WORKFLOW_STEP_KIND_AGENT = 1;       // an agent run with `prompt`
   WORKFLOW_STEP_KIND_APPROVAL = 2;    // waits for one of `approvers`
   WORKFLOW_STEP_KIND_CHECKS = 3;      // waits for the named checks on the newest change of the run
+  WORKFLOW_STEP_KIND_COMMAND = 4;     // runs `command` in the sandbox over a working copy of the change
 }
 
 message WorkflowStep {
@@ -60,8 +67,10 @@ message WorkflowStep {
   AgentBudgetLimits limits = 7;      // AGENT
   repeated string approvers = 8;     // APPROVAL: policy subjects
   repeated string checks = 9;        // CHECKS
-  uint32 timeout_seconds = 10;       // 0 means 1 hour for AGENT and 7 days for APPROVAL
+  uint32 timeout_seconds = 10;       // 0 means 1 hour for AGENT and CHECKS, 15 minutes for COMMAND, 7 days for APPROVAL
   bool continue_on_failure = 11;
+  repeated string command = 12;      // COMMAND: an argument list, never a shell line
+  map<string, string> secrets = 13;  // COMMAND: environment variable to the name of a repository secret
 }
 
 message WorkflowInput {
@@ -156,6 +165,11 @@ message WorkflowStepRun {
   string decided_by = 6;             // APPROVAL
   string comment = 7;
   string error = 8;                  // sanitised
+  int32 exit_code = 9;               // COMMAND
+  bool timed_out = 10;               // COMMAND
+  string output = 11;                // COMMAND: the end of the output, secrets masked; only in GetRun
+  uint64 ci_run_id = 12;             // COMMAND: the check (ci.proto run) that carries the result
+  AgentBudgetUsage usage = 13;       // AGENT: what the step's run used
 }
 message WorkflowRun {
   uint64 id = 1;
@@ -239,3 +253,34 @@ message WorkflowRunEvent {
   WorkflowRun run = 3;               // the run as of this event
   string step = 4;                   // the step that changed, if any
 }
+
+// Secrets a command step reads (`secrets = { TOKEN = "name" }`). A name is [A-Za-z0-9_.-], 1 to 64 bytes; a value is 1 to
+// 16,384 bytes. The value is sealed by the vault when it arrives, shown nowhere afterwards (a list shows the last four
+// characters when the value is long enough that they reveal nothing), never put in a log, an audit event or a step's
+// output, and handed only to a command of a workflow that names it. Repository scoped.
+message WorkflowSecret {
+  string name = 1;
+  string hint = 2;
+  int64 created = 3;
+  int64 updated = 4;
+  string updated_by = 5;
+}
+message ListWorkflowSecretsRequest {
+  RepoRef repo = 1;
+}
+message ListWorkflowSecretsResponse {
+  repeated WorkflowSecret secrets = 1;
+}
+message SetWorkflowSecretRequest {
+  RepoRef repo = 1;
+  string name = 2;
+  string value = 3;
+}
+message SetWorkflowSecretResponse {
+  WorkflowSecret secret = 1;
+}
+message DeleteWorkflowSecretRequest {
+  RepoRef repo = 1;
+  string name = 2;
+}
+message DeleteWorkflowSecretResponse {}
