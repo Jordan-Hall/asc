@@ -826,6 +826,7 @@ async fn a_land_is_refused_for_an_agent_and_other_principals_pass_the_gate() {
         principal: asc_rpc::auth::Principal { id: id.to_owned() },
         op_id: None,
         client: None,
+        admin: Default::default(),
     };
     let (_, secret) = make(&w, &[], wire::AgentBudgetLimits::default(), 0).await;
     let bearer = BearerToken::new(&secret).unwrap();

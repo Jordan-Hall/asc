@@ -123,6 +123,7 @@ pub fn sandbox_of(cfg: &AgentsConfig) -> Sandbox {
         path_dirs: s.path_dirs.clone(),
         pass_env: s.pass_env.clone(),
         wrapper: s.wrapper.clone(),
+        restricted_wrapper: s.restricted_wrapper.clone(),
         allow_unisolated: s.allow_unisolated,
         max_output: s.max_output_bytes,
         max_wall: std::time::Duration::from_secs(s.max_command_seconds),

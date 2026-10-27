@@ -747,6 +747,7 @@ impl ToolCtx<'_> {
             root: self.ws.dir().to_path_buf(),
             env: Default::default(),
             secrets: Vec::new(),
+            egress: None,
             timeout,
         };
         match self.sandbox.run(&spec, self.cancel).await {

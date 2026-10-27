@@ -862,6 +862,7 @@ async fn a_failed_check_of_the_newest_version_starts_a_workflow() {
         },
         op_id: Some(uuid::Uuid::new_v4()),
         client: None,
+        admin: Default::default(),
     };
     let now = crate::ai::clock::now();
     let report = |ext: &str, name: &str, status: wire::CiStatus| wire::ReportRunRequest {
@@ -1328,4 +1329,147 @@ async fn the_workflow_calls_refuse_other_repositories_and_anonymous_callers() {
         Code::InvalidArgument
     );
     let _ = (code(&e), MAINTAINERS);
+}
+
+const SECRET_ON_OPEN: &str = r#"
+[[trigger]]
+kind = "change_opened"
+
+[[step]]
+id = "show"
+kind = "command"
+command = ["git", "config", "asc.test"]
+secrets = { GIT_CONFIG_COUNT = "count", GIT_CONFIG_KEY_0 = "key", GIT_CONFIG_VALUE_0 = "value" }
+egress = ["registry.example.com"]
+"#;
+
+async fn put_secrets(w: &World) {
+    for (name, value) in [
+        ("count", "1"),
+        ("key", "asc.test"),
+        ("value", "planted-secret-value-0123456789"),
+    ] {
+        let op = uuid::Uuid::new_v4().to_string();
+        svc(w)
+            .set_secret(w.request(
+                wire::SetWorkflowSecretRequest {
+                    repo: repo_ref(),
+                    name: name.into(),
+                    value: value.into(),
+                },
+                "alice-token",
+                Some(&op),
+            ))
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_is_approved() {
+    if super::tests::git_dir().is_none() || super::tests::wcfg().sandbox.restricted_wrapper.is_empty()
+    {
+        return;
+    }
+    let w = world(&[(".asc/workflows/show.toml", SECRET_ON_OPEN)]).await;
+    put_secrets(&w).await;
+    enable(&w, "alice-token", "show", true).await.unwrap();
+    let hub = w.wf.as_ref().unwrap();
+    // An unapproved change runs with no secrets: the step fails before any is opened.
+    push_change(&w, "bob-token", "refs/heads/feature-a", &w.base, "src/a.rs").await;
+    hub.poll_repo("acme/app").await.unwrap();
+    let runs = runs_of(&w, "show").await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    let row = finished(&w, runs[0].id).await;
+    assert_eq!(row.state, RunState::Failed, "{row:?}");
+    let step = step_of(&w, runs[0].id, "show").await;
+    assert!(
+        step.error.contains("neither landed nor an approved version"),
+        "{}",
+        step.error
+    );
+    assert!(!step.output.contains("planted-secret"));
+
+    // An approval of an older version does not count for the version that runs.
+    let (cs, change) =
+        push_change(&w, "bob-token", "refs/heads/feature-b", &w.base, "src/b.rs").await;
+    let state = wire::ReviewState {
+        approvals: 1,
+        reviewed_version: 7,
+        ..wire::ReviewState::default()
+    };
+    sqlx::query(
+        "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(w.entry.ns.as_bytes().to_vec())
+    .bind(change.clone())
+    .bind(prost::Message::encode_to_vec(&state))
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    hub.poll_repo("acme/app").await.unwrap();
+    let runs = runs_of(&w, "show").await;
+    let stale = runs.iter().find(|r| r.change == change).expect("a run for b");
+    assert_eq!(finished(&w, stale.id).await.state, RunState::Failed);
+
+    // The exact version, approved, runs with its secrets.
+    let (cs2, change2) =
+        push_change(&w, "bob-token", "refs/heads/feature-c", &w.base, "src/c.rs").await;
+    let version: i64 = sqlx::query_scalar(
+        "SELECT CAST(v AS BIGINT) FROM change_versions WHERE ns = $1 AND change = $2 AND cs = $3",
+    )
+    .bind(w.entry.ns.as_bytes().to_vec())
+    .bind(change2.clone())
+    .bind(cs2.clone())
+    .fetch_one(&w.pool)
+    .await
+    .unwrap();
+    let state = wire::ReviewState {
+        approvals: 1,
+        reviewed_version: u32::try_from(version).unwrap(),
+        ..wire::ReviewState::default()
+    };
+    sqlx::query(
+        "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)",
+    )
+    .bind(w.entry.ns.as_bytes().to_vec())
+    .bind(change2.clone())
+    .bind(prost::Message::encode_to_vec(&state))
+    .execute(&w.pool)
+    .await
+    .unwrap();
+    hub.poll_repo("acme/app").await.unwrap();
+    let runs = runs_of(&w, "show").await;
+    let good = runs.iter().find(|r| r.change == change2).expect("a run for c");
+    let row = finished(&w, good.id).await;
+    assert_eq!(row.state, RunState::Succeeded, "{row:?}");
+    let _ = cs;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_with_secrets_does_not_run_without_a_restricted_wrapper() {
+    if super::tests::git_dir().is_none() {
+        return;
+    }
+    let mut cfg = super::tests::wcfg();
+    cfg.sandbox.restricted_wrapper.clear();
+    let def: &'static str = r#"
+[[trigger]]
+kind = "manual"
+
+[[step]]
+id = "show"
+kind = "command"
+command = ["git", "config", "asc.test"]
+secrets = { GIT_CONFIG_COUNT = "count", GIT_CONFIG_KEY_0 = "key", GIT_CONFIG_VALUE_0 = "value" }
+"#;
+    let w = super::tests::world_with(&[(".asc/workflows/show.toml", def)], POLICY, cfg).await;
+    put_secrets(&w).await;
+    enable(&w, "alice-token", "show", true).await.unwrap();
+    let run = trigger(&w, "bob-token", "show").await.unwrap();
+    let row = finished(&w, run.id).await;
+    assert_eq!(row.state, RunState::Failed, "{row:?}");
+    let step = step_of(&w, run.id, "show").await;
+    assert!(step.error.contains("restricted_wrapper"), "{}", step.error);
+    assert!(!step.output.contains("planted-secret"));
 }

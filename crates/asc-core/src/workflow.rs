@@ -559,6 +559,8 @@ pub struct Step {
     pub command: Vec<String>,
     /// Environment variable to the name of a repository secret.
     pub secrets: BTreeMap<String, String>,
+    /// Host names a command that holds secrets may reach; none means no network at all.
+    pub egress: Vec<String>,
     pub timeout_seconds: u32,
     pub continue_on_failure: bool,
     pub limits: Limits,
@@ -670,6 +672,8 @@ struct RawStep {
     command: Vec<String>,
     #[serde(default)]
     secrets: BTreeMap<String, String>,
+    #[serde(default)]
+    egress: Vec<String>,
     #[serde(default)]
     timeout_seconds: u32,
     #[serde(default)]
@@ -1017,6 +1021,7 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
             only(!s.checks.is_empty(), "checks", "checks")?;
             only(!s.command.is_empty(), "command", "command")?;
             only(!s.secrets.is_empty(), "secrets", "command")?;
+            only(!s.egress.is_empty(), "egress", "command")?;
         }
         StepKind::Command => {
             if s.command.is_empty() || s.command.len() > MAX_COMMAND_ARGS {
@@ -1049,6 +1054,14 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
                     return Err(ctx(format!("secret name {secret:?} is not [a-z0-9_-]")));
                 }
             }
+            if s.egress.len() > MAX_LIST {
+                return Err(ctx("too many egress hosts".into()));
+            }
+            for h in &s.egress {
+                if !valid_host(h) {
+                    return Err(ctx(format!("egress host {h:?} is not a plain host name")));
+                }
+            }
             only(!s.agent.is_empty(), "agent", "agent")?;
             only(!s.prompt.is_empty(), "prompt", "agent")?;
             only(!s.paths.is_empty(), "paths", "agent")?;
@@ -1068,6 +1081,7 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
             only(!s.checks.is_empty(), "checks", "checks")?;
             only(!s.command.is_empty(), "command", "command")?;
             only(!s.secrets.is_empty(), "secrets", "command")?;
+            only(!s.egress.is_empty(), "egress", "command")?;
         }
         StepKind::Checks => {
             if s.checks.is_empty() || s.checks.len() > MAX_LIST {
@@ -1086,6 +1100,7 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
             only(!s.approvers.is_empty(), "approvers", "approval")?;
             only(!s.command.is_empty(), "command", "command")?;
             only(!s.secrets.is_empty(), "secrets", "command")?;
+            only(!s.egress.is_empty(), "egress", "command")?;
         }
     }
     let step_limits = limits(&s.budget, &format!("step {id:?} budget"))?;
@@ -1103,10 +1118,25 @@ fn step(s: &RawStep, ids: &BTreeSet<&str>, inputs: &BTreeSet<&str>) -> Result<St
         checks: s.checks.clone(),
         command: s.command.clone(),
         secrets: s.secrets.clone(),
+        egress: s.egress.clone(),
         timeout_seconds: s.timeout_seconds,
         continue_on_failure: s.continue_on_failure,
         limits: step_limits,
     })
+}
+
+/// A lower-case host name: labels of `a-z0-9-` joined by dots, at most 253 bytes. No scheme, port,
+/// path or wildcard.
+fn valid_host(h: &str) -> bool {
+    !h.is_empty()
+        && h.len() <= 253
+        && h.split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 fn approver(text: &str) -> Result<Approver, String> {
@@ -1415,6 +1445,38 @@ continue_on_failure = true
         assert!(parse(&huge).is_err());
         assert!(Workflow::parse("Bad Name", GOOD.as_bytes()).is_err());
         assert!(parse("").is_err(), "no steps");
+    }
+
+    #[test]
+    fn egress_names_plain_hosts_on_command_steps_only() {
+        let ok = step_with(
+            "kind = \"command\"
+command = [\"ls\"]
+egress = [\"registry.example.com\", \"a-b.io\"]
+",
+        );
+        assert_eq!(
+            parse(&ok).unwrap().steps[0].egress,
+            ["registry.example.com", "a-b.io"]
+        );
+        for bad in [
+            "egress = [\"https://x.io\"]",
+            "egress = [\"x.io:443\"]",
+            "egress = [\"*.x.io\"]",
+            "egress = [\"X.io\"]",
+            "egress = [\"\"]",
+        ] {
+            let t = step_with(&format!("kind = \"command\"
+command = [\"ls\"]
+{bad}
+"));
+            assert!(parse(&t).is_err(), "{bad}");
+        }
+        let elsewhere = step_with("kind = \"approval\"
+approvers = [\"role:m\"]
+egress = [\"x.io\"]
+");
+        assert!(parse(&elsewhere).is_err());
     }
 
     #[test]
