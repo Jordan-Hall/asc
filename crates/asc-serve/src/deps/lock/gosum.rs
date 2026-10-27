@@ -53,6 +53,9 @@ pub fn rewrite(text: &str, c: &LockIn<'_>) -> Outcome {
         c.to.go
             .as_ref()
             .ok_or("the checksum database's hashes of the new version are not known")?;
+    if !crate::deps::safe::h1(&to.zip) || !crate::deps::safe::h1(&to.module) {
+        return Err("a hash of the new version is not h1: and 32 bytes of base64".into());
+    }
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 2);
     let mut touched = false;
@@ -168,7 +171,13 @@ mod tests {
 
     #[test]
     fn the_new_lines_go_after_the_old_version_and_the_old_zip_line_goes() {
-        let (from, to) = (facts("", "h1:oldm="), facts("h1:new=", "h1:newm="));
+        let (from, to) = (
+            facts("", "h1:oldm="),
+            facts(
+                "h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+                "h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+            ),
+        );
         let store = FactStore::new();
         let p = pin();
         let c = LockIn {
@@ -180,7 +189,7 @@ mod tests {
             store: &store,
         };
         let got = rewrite(SUM, &c).unwrap().unwrap().text;
-        let want = "github.com/a/b v1.0.0 h1:aaaa=\ngithub.com/a/b v1.0.0/go.mod h1:bbbb=\ngithub.com/gin-gonic/gin v1.7.0 h1:g7=\ngithub.com/gin-gonic/gin v1.7.0/go.mod h1:g7m=\ngithub.com/gin-gonic/gin v1.8.0/go.mod h1:oldm=\ngithub.com/gin-gonic/gin v1.9.0 h1:new=\ngithub.com/gin-gonic/gin v1.9.0/go.mod h1:newm=\ngolang.org/x/net v0.7.0 h1:eeee=\ngolang.org/x/net v0.7.0/go.mod h1:ffff=\n";
+        let want = "github.com/a/b v1.0.0 h1:aaaa=\ngithub.com/a/b v1.0.0/go.mod h1:bbbb=\ngithub.com/gin-gonic/gin v1.7.0 h1:g7=\ngithub.com/gin-gonic/gin v1.7.0/go.mod h1:g7m=\ngithub.com/gin-gonic/gin v1.8.0/go.mod h1:oldm=\ngithub.com/gin-gonic/gin v1.9.0 h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\ngithub.com/gin-gonic/gin v1.9.0/go.mod h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=\ngolang.org/x/net v0.7.0 h1:eeee=\ngolang.org/x/net v0.7.0/go.mod h1:ffff=\n";
         assert_eq!(got, want);
         // Running it again changes nothing: the old version is gone from the zip lines.
         let p2 = Pin {
@@ -194,7 +203,10 @@ mod tests {
 
     #[test]
     fn hashes_that_disagree_with_the_proxys_or_an_existing_line_stop_the_move() {
-        let to = facts("h1:new=", "h1:newm=");
+        let to = facts(
+            "h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+            "h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+        );
         let store = FactStore::new();
         let p = pin();
         let from = facts("", "h1:other=");
@@ -219,7 +231,13 @@ mod tests {
 
     #[test]
     fn a_module_with_no_lines_before_the_new_version_gets_it_in_front() {
-        let (from, to) = (facts("", "h1:oldm="), facts("h1:new=", "h1:newm="));
+        let (from, to) = (
+            facts("", "h1:oldm="),
+            facts(
+                "h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+                "h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+            ),
+        );
         let store = FactStore::new();
         let p = Pin {
             to: "v1.7.5",
@@ -238,7 +256,7 @@ mod tests {
         let got = rewrite(only, &c).unwrap().unwrap().text;
         assert_eq!(
             got,
-            "github.com/gin-gonic/gin v1.7.5 h1:new=\ngithub.com/gin-gonic/gin v1.7.5/go.mod h1:newm=\ngithub.com/gin-gonic/gin v1.8.0/go.mod h1:oldm=\n"
+            "github.com/gin-gonic/gin v1.7.5 h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\ngithub.com/gin-gonic/gin v1.7.5/go.mod h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=\ngithub.com/gin-gonic/gin v1.8.0/go.mod h1:oldm=\n"
         );
     }
 }

@@ -314,6 +314,9 @@ pub fn apply(texts: &Texts, deps: &[Dep], moves: &[Move], facts: &FactStore) -> 
                             for v in &to.verified {
                                 move_notes.push(format!("{} {}: {v}", m.name, m.to));
                             }
+                            for v in &to.unverified {
+                                move_notes.push(format!("{} {}: UNVERIFIED, {v}", m.name, m.to));
+                            }
                         }
                     }
                     Ok(None) => {}
@@ -771,7 +774,10 @@ mod tests {
                 Ecosystem::Go,
                 "github.com/x/y",
                 "v1.2.0",
-                f("h1:new=", "h1:newm="),
+                f(
+                    "h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+                    "h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=",
+                ),
             ),
         ]);
         let m = [mv(Ecosystem::Go, "github.com/x/y", "v1.0.0", "v1.2.0")];
@@ -780,7 +786,7 @@ mod tests {
         assert!(got.files["go.mod"].contains("github.com/x/y v1.2.0"));
         assert_eq!(
             got.files["go.sum"],
-            "github.com/x/y v1.0.0/go.mod h1:oldm=\ngithub.com/x/y v1.2.0 h1:new=\ngithub.com/x/y v1.2.0/go.mod h1:newm=\n"
+            "github.com/x/y v1.0.0/go.mod h1:oldm=\ngithub.com/x/y v1.2.0 h1:AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=\ngithub.com/x/y v1.2.0/go.mod h1:BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=\n"
         );
         assert!(
             got.notes.iter().all(|n| !n.contains("go mod tidy")),

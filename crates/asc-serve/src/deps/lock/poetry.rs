@@ -6,7 +6,7 @@
 //! The dependency tables of the block stay as they are: the registry has shown the new version declares
 //! the same ones.
 
-use super::{LockIn, Requester, changed, hashes};
+use super::{LockIn, Requester, changed, hashes, toml_str};
 use crate::deps::facts::PyFile;
 use crate::deps::model::Ecosystem;
 use crate::deps::rewrite::{Outcome, Pin};
@@ -125,12 +125,14 @@ fn file_line(f: &PyFile, spaced: bool) -> String {
     if spaced {
         format!(
             "    {{ file = \"{}\", hash = \"sha256:{}\" }},\n",
-            f.filename, f.sha256
+            toml_str(&f.filename),
+            toml_str(&f.sha256)
         )
     } else {
         format!(
             "    {{file = \"{}\", hash = \"sha256:{}\"}},\n",
-            f.filename, f.sha256
+            toml_str(&f.filename),
+            toml_str(&f.sha256)
         )
     }
 }
