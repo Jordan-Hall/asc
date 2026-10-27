@@ -47,7 +47,8 @@ allowed answers `NOT_FOUND`, the same as for an id that does not exist.
 key_file = "/var/lib/asc/vault.keys"     # default: next to the SQLite database, else in cache.disk_dir
 
 [netguard]
-allow_loopback_http = false              # operator opt-in for a local S3 in development
+allow_loopback_http = false              # operator opt-in for a local S3 in development (plain http to loopback only)
+# loopback_ports = [9000]               # with the opt-in, the only loopback ports reachable (default: any)
 allow_ports = []                         # ports allowed besides the usual ones (the deny list: 22 25 3306 5432 6379 11211 2375 2379 9200)
 connect_timeout_secs = 10
 request_timeout_secs = 30

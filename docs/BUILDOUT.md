@@ -154,7 +154,7 @@ and evaluated through the API and the hub shows it; every key below is parsed st
   host), so a second lookup cannot return something else (rebinding). Redirects are not followed. Responses are bounded in size and time.
 - **Error reasons** (slugs in `ErrorDetail.paths[0]`): `not_https`, `credentials_in_url`, `port`, `unresolvable`, `loopback`, `private`,
   `link_local`, `metadata`, `reserved`.
-- **Config:** `[netguard] allow_loopback_http` (default `false`), `allow_ports` (default `[]`), `connect_timeout_secs` (10),
+- **Config:** `[netguard] allow_loopback_http` (default `false`; admits plain `http` only, never `https`, to a loopback address), `loopback_ports` (default `[]`: any port; set, only those ports; needs `allow_loopback_http`), `allow_ports` (default `[]`), `connect_timeout_secs` (10),
   `request_timeout_secs` (30).
 - **Tests:** table test over every range above in v4, v6 and mapped forms; a resolver that returns a public then a private address on
   the second call is pinned to the first; a redirect to a private address is not followed; loopback http works only with the opt-in.
