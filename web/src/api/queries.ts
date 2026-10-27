@@ -13,6 +13,7 @@ import {
   useQuery,
 } from "../lib/query";
 import { loadChangeList } from "./changes";
+import { listThreads, type ThreadsView } from "./review";
 import type { InboxCounts, InboxView } from "./inbox";
 import { lastCommit, listRefs, readFile, readTree, resolve } from "./repo";
 import type { ChangeListView, CommitView, FileView, RefsView, TreeView } from "./types";
@@ -40,6 +41,8 @@ export interface Queries {
   /** Needs a user identity: a credential without one answers PERMISSION_DENIED. */
   inboxCount(repo: string): Query<InboxCounts>;
   inbox(repo: string): Query<InboxView>;
+  /** The review threads of one change. */
+  threads(repo: string, change: string): Query<ThreadsView>;
 }
 
 /**
@@ -141,6 +144,12 @@ export function createQueries(ctx: Ctx): Queries {
       key: keyOf("inbox", repo),
       opts: { staleMs: 30_000 },
       run: async ({ signal }) => (await import("./inbox")).listInbox(t, repo, {}, { signal }),
+    }),
+
+    threads: (repo, change) => ({
+      key: keyOf("threads", repo, change),
+      opts: { staleMs: 30_000 },
+      run: ({ signal }) => listThreads(t, repo, change, {}, { signal }),
     }),
   };
 }
