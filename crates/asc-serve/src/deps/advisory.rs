@@ -57,7 +57,7 @@ pub struct Sev {
     pub score: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Pkg {
     #[serde(default)]
     pub ecosystem: String,
@@ -65,7 +65,7 @@ pub struct Pkg {
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Affected {
     pub package: Option<Pkg>,
     #[serde(default)]
@@ -76,7 +76,7 @@ pub struct Affected {
     pub database_specific: Option<Value>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Range {
     #[serde(rename = "type", default)]
     pub kind: String,
@@ -84,7 +84,7 @@ pub struct Range {
     pub events: Vec<Event>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Event {
     pub introduced: Option<String>,
     pub fixed: Option<String>,
@@ -114,7 +114,8 @@ impl Affected {
     }
 
     /// Whether `version` is inside this entry.
-    fn affects(&self, eco: Ecosystem, version: &str) -> bool {
+    /// Whether `version` is inside this entry.
+    pub fn affects(&self, eco: Ecosystem, version: &str) -> bool {
         if self.versions.iter().any(|v| v == version) {
             return true;
         }
@@ -294,6 +295,17 @@ impl Record {
             cvss: score,
             fixed,
             url,
+            // What decides whether another version is affected: the ranges and listed versions.
+            affected: entries
+                .iter()
+                .map(|a| Affected {
+                    package: a.package.clone(),
+                    ranges: a.ranges.clone(),
+                    versions: a.versions.clone(),
+                    ecosystem_specific: None,
+                    database_specific: None,
+                })
+                .collect(),
         }
     }
 

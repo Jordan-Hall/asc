@@ -153,7 +153,8 @@ message DepUpdate {
   repeated string fixes = 9;            // advisory ids that `target` fixes
   string group = 10;
   bool ignored = 11;
-  string error = 12;                    // why latest/target is unknown
+  string error = 12;                    // why latest/target is unknown, or why the update is blocked
+  repeated string unfixed = 13;         // advisories that still affect `target` (never listed in `fixes`)
 }
 
 message ListDepUpdatesRequest {
@@ -197,6 +198,7 @@ message DepProposal {
   repeated DepUpdate updates = 5;
   repeated bytes files = 6 [(asc.v1.json) = JSON_KIND_PATH];   // the files the changeset rewrites
   string message = 7;
+  repeated string notes = 8;            // what a person still has to run (a resolver, a lock refresh)
 }
 message DepSkipped {
   string ecosystem = 1;
