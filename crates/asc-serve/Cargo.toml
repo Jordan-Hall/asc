@@ -63,6 +63,8 @@ tokio = { workspace = true }
 tower = { workspace = true }
 http-body = { workspace = true }
 toml = { workspace = true }
+# Reads pom.xml and the MSBuild project files (deps/parse/xml.rs); custom entities are never expanded.
+quick-xml = { workspace = true }
 tonic = { workspace = true, features = ["tls-ring"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -1076,6 +1076,8 @@ pub struct ServeConfig {
     pub agents: crate::agents::AgentsConfig,
     /// `[workflows]`: repository workflows (docs/WORKFLOWS.md).
     pub workflows: crate::workflows::WorkflowsConfig,
+    /// `[deps]`: dependency scanning and update proposals (docs/DEPENDENCIES.md).
+    pub deps: crate::deps::Config,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1116,6 +1118,7 @@ impl Default for ServeConfig {
             aikeys: crate::ai::AiKeysConfig::default(),
             agents: crate::agents::AgentsConfig::default(),
             workflows: crate::workflows::WorkflowsConfig::default(),
+            deps: crate::deps::Config::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -1260,6 +1263,13 @@ impl ServeConfig {
         self.aikeys.validate().or_else(invalid)?;
         self.agents.validate().or_else(invalid)?;
         self.workflows.validate().or_else(invalid)?;
+        if self.deps.enabled {
+            self.deps
+                .clone()
+                .resolved()
+                .validate(&self.netguard)
+                .map_err(ConfigError::Invalid)?;
+        }
         self.validate_grants()
     }
 

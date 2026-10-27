@@ -304,6 +304,7 @@ mod confine_tests {
                 "Policy",
                 "Signing",
                 "SecretScan",
+                "DepsService",
                 "Projects",
                 "Cloud",
                 "Changes",
