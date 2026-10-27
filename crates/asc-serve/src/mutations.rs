@@ -312,7 +312,7 @@ impl ServerMutations {
         o: &Opened,
         ids: &[ChangesetId],
     ) -> Result<(), Status> {
-        let owner = crate::refpolicy::owner_of(&ctx.principal);
+        let owner = crate::refpolicy::accounting_owner_of(&ctx.principal);
         let quota = self.pipeline.user_quota();
         let targets: Vec<RefTarget> = ids.iter().map(|&c| RefTarget::Changeset(c)).collect();
         let mut ingestor = Ingestor::new(
@@ -1088,7 +1088,10 @@ impl ServerMutations {
         use asc_store::refs::Refs;
         let policy =
             crate::refpolicy::RepoPolicy::load(self.registry.pool(), o.entry.key.0).await?;
-        let class = policy.classify(crate::refpolicy::owner_of(&ctx.principal), update_ref)?;
+        let class = policy.classify(
+            crate::refpolicy::draft_owner_of(&ctx.principal, update_ref),
+            update_ref,
+        )?;
         let name = asc_core::path::RefName::new(class.stored(update_ref).as_bytes())
             .map_err(|e| invalid(e.to_string()))?;
         let current = self

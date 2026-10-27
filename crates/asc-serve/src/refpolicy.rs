@@ -48,13 +48,80 @@ pub const MAX_USER_REFS: i64 = 1000;
 /// not an identity. A deploy key acts for its repository, not for the user who owns it, so it has
 /// no user refs; neither has the anonymous caller, an Actions task, the internal principal or any
 /// other principal.
+///
+/// An agent principal has no owner here: a token must never act as the person it acts for in an
+/// ownership check (workspaces, stacks, undo, quota). The one exception is the agent's own draft
+/// refs, [`draft_owner_of`], and the person who pays for what it adds, [`accounting_owner_of`].
 pub fn owner_of(principal: &Principal) -> Option<i64> {
-    // An agent acts in the draft namespace of the person it acts for (agents/tokens.rs).
-    if let Some(agent) = crate::agents::tokens::parse_principal(&principal.id) {
-        return Some(agent.owner_id);
+    if crate::agents::tokens::parse_principal(&principal.id).is_some() {
+        return None;
     }
     let who = UserIdentity::of(principal)?;
     who.is_user().then_some(who.user_id)
+}
+
+/// The person an agent's additions are charged to (its owner); `owner_of` for everyone else.
+/// Accounting only: never a reason to let the caller act as that person.
+pub fn accounting_owner_of(principal: &Principal) -> Option<i64> {
+    match crate::agents::tokens::parse_principal(&principal.id) {
+        Some(agent) => Some(agent.owner_id),
+        None => owner_of(principal),
+    }
+}
+
+/// The owner whose user-ref namespace `principal` may write `refname` in (a branch name or a
+/// stored `refs/users/<owner>/heads/...` name). A person: themselves. An agent: its owner, and
+/// only for a ref inside its own token's namespace `agent/<name>/<token id>/...` or its run's
+/// `agent/<name>/run-<n>` (the run's ownership is checked by the agent gate); any other ref
+/// has no owner for it, so it is refused as a shared ref.
+pub fn draft_owner_of(principal: &Principal, refname: &str) -> Option<i64> {
+    match crate::agents::tokens::parse_principal(&principal.id) {
+        Some(agent) => agent_ref_shape(&agent, refname).then_some(agent.owner_id),
+        None => owner_of(principal),
+    }
+}
+
+/// Whether `refname` lies in the namespace of `agent`'s token or names a run ref of its agent.
+pub(crate) fn agent_ref_shape(agent: &crate::agents::tokens::AgentPrincipal, refname: &str) -> bool {
+    let branch = match refname.strip_prefix(USER_NS) {
+        Some(rest) => {
+            let Some((id, rest)) = rest.split_once('/') else {
+                return false;
+            };
+            if id.parse::<i64>().ok() != Some(agent.owner_id) {
+                return false;
+            }
+            match rest.strip_prefix("heads/") {
+                Some(b) => b,
+                None => return false,
+            }
+        }
+        None => match refname.strip_prefix(HEADS) {
+            Some(b) => b,
+            None => return false,
+        },
+    };
+    let Some(rest) = branch
+        .strip_prefix("agent/")
+        .and_then(|r| r.strip_prefix(agent.name.as_str()))
+        .and_then(|r| r.strip_prefix('/'))
+    else {
+        return false;
+    };
+    let clean = |s: &str| {
+        !s.is_empty()
+            && !s.contains(|c: char| c.is_control() || c == '\\')
+            && s.split('/')
+                .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+    };
+    if let Some(r) = rest
+        .strip_prefix(agent.token_id.as_str())
+        .and_then(|r| r.strip_prefix('/'))
+    {
+        return clean(r);
+    }
+    rest.strip_prefix("run-")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// The prefix of `owner`'s user refs, `refs/users/<owner>/`.
@@ -289,9 +356,9 @@ pub(crate) async fn check_user_ref_writes(
     max: usize,
 ) -> Result<(), Status> {
     let max = i64::try_from(max).unwrap_or(i64::MAX);
-    let actor = owner_of(&Principal {
+    let actor_principal = Principal {
         id: txn.actor.id.clone(),
-    });
+    };
     let mut owners: Vec<i64> = Vec::new();
     for u in &txn.updates {
         let name = std::str::from_utf8(u.name.as_bytes())
@@ -310,7 +377,7 @@ pub(crate) async fn check_user_ref_writes(
         };
         match writer {
             UserRefWriter::Client => {
-                if !actor.is_some_and(|a| owns_user_ref(a, name)) {
+                if !draft_owner_of(&actor_principal, name).is_some_and(|a| owns_user_ref(a, name)) {
                     return Err(Status::permission_denied(
                         "a user ref can be changed only by its owner",
                     ));

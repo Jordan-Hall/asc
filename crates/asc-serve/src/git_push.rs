@@ -799,10 +799,10 @@ impl Inner {
                 return true;
             }
         };
-        let owner = crate::refpolicy::owner_of(&session.ctx.principal);
+        let principal = &session.ctx.principal;
         commands.iter().filter(|c| c.new.is_some()).any(|c| {
             policy
-                .classify(owner, &c.name)
+                .classify(crate::refpolicy::draft_owner_of(principal, &c.name), &c.name)
                 .map_or(true, |class| class.is_user())
         })
     }

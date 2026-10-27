@@ -107,7 +107,8 @@ fn may_write(actor: &str, refname: &str) -> bool {
         return true;
     }
     let principal = Principal { id: actor.into() };
-    refpolicy::owner_of(&principal).is_some_and(|owner| refpolicy::owns_user_ref(owner, refname))
+    refpolicy::draft_owner_of(&principal, refname)
+        .is_some_and(|owner| refpolicy::owns_user_ref(owner, refname))
 }
 
 /// One `ref_log` entry of a ref.
@@ -360,7 +361,12 @@ impl LandingHandler for ServerLanding {
         let ids = IdCodec::new(ctx.id_mode, &self.registry, &entry);
         let cs = ids.changeset_in(&req.changeset).await?;
         let policy = RepoPolicy::load(self.registry.pool(), entry.key.0).await?;
-        let owner = refpolicy::owner_of(&ctx.principal);
+        let asked = if req.r#ref.starts_with("refs/") {
+            req.r#ref.clone()
+        } else {
+            format!("refs/heads/{}", req.r#ref)
+        };
+        let owner = refpolicy::draft_owner_of(&ctx.principal, &asked);
         let Some(refname) = ref_of(&entry, &policy, owner, &req.r#ref)? else {
             return Ok(wire::FindLandingResponse::default());
         };

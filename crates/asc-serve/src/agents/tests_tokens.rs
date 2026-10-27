@@ -835,10 +835,43 @@ async fn a_land_is_refused_for_an_agent_and_other_principals_pass_the_gate() {
         .authorize(Some(&bearer), "acme/app", Access::Write)
         .await
         .unwrap();
-    let refs = vec![("refs/heads/agent/fixer/x".to_owned(), false)];
-    let e = gate.check_refs(&agent_ctx(&p.id), true, &refs).unwrap_err();
+    let token_id = p.id.rsplit(':').next().unwrap().to_owned();
+    let own = format!("refs/heads/agent/fixer/{token_id}/x");
+    let refs = vec![(own.clone(), false)];
+    let e = gate
+        .check_refs(&agent_ctx(&p.id), true, &refs)
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), "AGENT_SCOPE_DENIED");
-    assert!(gate.check_refs(&agent_ctx(&p.id), false, &refs).is_ok());
+    assert!(
+        gate.check_refs(&agent_ctx(&p.id), false, &refs)
+            .await
+            .is_ok()
+    );
+    // Another token of the same agent name has its own namespace; this one cannot write it, nor a
+    // person's branch, nor the old shared `agent/<name>/x`.
+    for other in [
+        "refs/heads/agent/fixer/at_other/x",
+        "refs/heads/agent/fixer/x",
+        "refs/heads/feature",
+        "refs/users/7/heads/feature",
+    ] {
+        let e = gate
+            .check_refs(&agent_ctx(&p.id), false, &[(other.to_owned(), false)])
+            .await
+            .unwrap_err();
+        assert_eq!(code(&e), "AGENT_SCOPE_DENIED", "{other}");
+    }
+    // A run ref belongs to the token that started the run and to no other.
+    let e = gate
+        .check_refs(
+            &agent_ctx(&p.id),
+            false,
+            &[("refs/heads/agent/fixer/run-999".to_owned(), false)],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "AGENT_SCOPE_DENIED", "an unknown run");
     // A person is not an agent: the gate lets them through to the rest of the pipeline.
     assert!(
         gate.check_refs(
@@ -846,6 +879,7 @@ async fn a_land_is_refused_for_an_agent_and_other_principals_pass_the_gate() {
             true,
             &[("refs/heads/master".to_owned(), false)]
         )
+        .await
         .is_ok()
     );
     assert!(
@@ -854,12 +888,26 @@ async fn a_land_is_refused_for_an_agent_and_other_principals_pass_the_gate() {
             false,
             &[("refs/heads/master".to_owned(), true)]
         )
+        .await
         .is_ok()
     );
     // A lookalike principal is not an agent either, and carries no agent rights.
     assert!(
         gate.check_refs(&agent_ctx("agent:fixer"), true, &refs)
+            .await
             .is_ok()
+    );
+    // An agent has no owner for ownership checks; only its own namespace maps to its owner's.
+    let principal = asc_rpc::auth::Principal { id: p.id.clone() };
+    assert_eq!(crate::refpolicy::owner_of(&principal), None);
+    assert!(crate::refpolicy::draft_owner_of(&principal, &own).is_some());
+    assert_eq!(
+        crate::refpolicy::draft_owner_of(&principal, "refs/heads/agent/fixer/at_other/x"),
+        None
+    );
+    assert_eq!(
+        crate::refpolicy::draft_owner_of(&principal, "refs/heads/feature"),
+        None
     );
 }
 
