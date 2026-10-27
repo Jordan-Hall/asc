@@ -113,6 +113,7 @@ fn vault_status(e: &VaultError) -> Status {
 async fn caller_of(
     authorizer: &Arc<dyn Authorizer>,
     ext: &tonic::Extensions,
+    meta: &MetadataMap,
 ) -> Result<Caller, Status> {
     let credential = ext.get::<Credential>().cloned();
     let principal = authorizer
@@ -125,6 +126,7 @@ async fn caller_of(
     Ok(Caller {
         principal,
         credential,
+        forwarded: Caller::forwarded_of(meta),
     })
 }
 
@@ -378,8 +380,8 @@ impl StorageService {
         InterceptedService::new(server, AuthInterceptor)
     }
 
-    async fn caller(&self, ext: &tonic::Extensions) -> Result<Caller, Status> {
-        caller_of(&self.authorizer, ext).await
+    async fn caller(&self, ext: &tonic::Extensions, meta: &MetadataMap) -> Result<Caller, Status> {
+        caller_of(&self.authorizer, ext, meta).await
     }
 
     fn pool(&self) -> &AnyPool {
@@ -394,7 +396,7 @@ impl Storage for StorageService {
         request: Request<wire::CreateStorageTargetRequest>,
     ) -> Result<Response<wire::CreateStorageTargetResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let caller = self.caller(&ext, &meta).await?;
         let op = op_id(&meta)?;
         let owner = owner_of(msg.owner.as_ref())?;
         self.svc
@@ -438,8 +440,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::ListStorageTargetsRequest>,
     ) -> Result<Response<wire::ListStorageTargetsResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let owner = owner_of(msg.owner.as_ref())?;
         let views = self
             .svc
@@ -455,8 +457,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::GetStorageTargetRequest>,
     ) -> Result<Response<wire::GetStorageTargetResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let v = self
             .svc
             .get_target(&caller, &msg.id)
@@ -472,7 +474,7 @@ impl Storage for StorageService {
         request: Request<wire::UpdateStorageTargetRequest>,
     ) -> Result<Response<wire::UpdateStorageTargetResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let caller = self.caller(&ext, &meta).await?;
         let op = op_id(&meta)?;
         self.svc
             .authorize_target(&caller, &msg.id)
@@ -506,8 +508,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::DeleteStorageTargetRequest>,
     ) -> Result<Response<wire::DeleteStorageTargetResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         self.svc
             .delete_target(&caller, &msg.id)
             .await
@@ -519,8 +521,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::VerifyStorageTargetRequest>,
     ) -> Result<Response<wire::VerifyStorageTargetResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let (report, view) = self
             .svc
             .verify_target(&caller, &msg.id)
@@ -537,8 +539,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::SetStorageTargetEnabledRequest>,
     ) -> Result<Response<wire::SetStorageTargetEnabledResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let v = self
             .svc
             .set_enabled(&caller, &msg.id, msg.enabled)
@@ -553,8 +555,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::AssignRepoStorageRequest>,
     ) -> Result<Response<wire::AssignRepoStorageResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let repo = repo_name(msg.repo.as_ref())?;
         let id = self
             .svc
@@ -571,7 +573,7 @@ impl Storage for StorageService {
         request: Request<wire::StartStorageMigrationRequest>,
     ) -> Result<Response<wire::StartStorageMigrationResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let caller = self.caller(&ext, &meta).await?;
         let op = op_id(&meta)?;
         let repo = repo_name(msg.repo.as_ref())?;
         self.svc
@@ -597,8 +599,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::GetStorageMigrationRequest>,
     ) -> Result<Response<wire::GetStorageMigrationResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let m = self
             .svc
             .get_migration(&caller, &msg.id)
@@ -613,8 +615,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::ListStorageMigrationsRequest>,
     ) -> Result<Response<wire::ListStorageMigrationsResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let repo = repo_name(msg.repo.as_ref())?;
         let after = decode_token(&msg.page_token)?;
         let (rows, next) = self
@@ -632,8 +634,8 @@ impl Storage for StorageService {
         &self,
         request: Request<wire::CancelStorageMigrationRequest>,
     ) -> Result<Response<wire::CancelStorageMigrationResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let caller = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let caller = self.caller(&ext, &meta).await?;
         let m = self
             .svc
             .cancel_migration(&caller, &msg.id)
@@ -680,8 +682,8 @@ impl VaultService {
         InterceptedService::new(server, AuthInterceptor)
     }
 
-    async fn admin(&self, ext: &tonic::Extensions) -> Result<Caller, Status> {
-        let caller = caller_of(&self.authorizer, ext).await?;
+    async fn admin(&self, ext: &tonic::Extensions, meta: &MetadataMap) -> Result<Caller, Status> {
+        let caller = caller_of(&self.authorizer, ext, meta).await?;
         if self.authority.is_site_admin(&caller).await {
             Ok(caller)
         } else {
@@ -709,8 +711,8 @@ impl VaultSvc for VaultService {
         &self,
         request: Request<wire::VaultStatusRequest>,
     ) -> Result<Response<wire::VaultStatusResponse>, Status> {
-        let (_, ext, _) = request.into_parts();
-        self.admin(&ext).await?;
+        let (meta, ext, _) = request.into_parts();
+        self.admin(&ext, &meta).await?;
         let s = self.vault.status().await;
         Ok(Response::new(wire::VaultStatusResponse {
             ready: s.ready,
@@ -734,7 +736,7 @@ impl VaultSvc for VaultService {
         request: Request<wire::RotateVaultRequest>,
     ) -> Result<Response<wire::RotateVaultResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let caller = self.admin(&ext).await?;
+        let caller = self.admin(&ext, &meta).await?;
         let op = op_id(&meta)?;
         if let Some(prev) = replay(&self.pool, op, &caller).await? {
             return Ok(Response::new(prev));
@@ -763,8 +765,8 @@ impl VaultSvc for VaultService {
         &self,
         request: Request<wire::GetVaultRotationRequest>,
     ) -> Result<Response<wire::GetVaultRotationResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        self.admin(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        self.admin(&ext, &meta).await?;
         if msg.rotation_id.len() > 64 {
             return Err(Status::invalid_argument("bad rotation id"));
         }

@@ -690,8 +690,8 @@ impl ServerGate {
         if run.is_some_and(|(_, status)| status == CI_SUCCESS) {
             return Ok(true);
         }
-        let job: Option<(i64, i64)> = sqlx::query_as(
-            "SELECT CAST(r.id AS BIGINT), j.status FROM check_jobs j \
+        let job: Option<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT CAST(r.id AS BIGINT), j.status, CAST(j.id AS BIGINT) FROM check_jobs j \
              JOIN check_runs r ON r.ns = j.ns AND r.id = j.run \
              WHERE r.ns = $1 AND r.change = $2 AND r.version = $3 AND j.name = $4 \
              ORDER BY r.id DESC, j.id DESC LIMIT 1",
@@ -703,20 +703,24 @@ impl ServerGate {
         .fetch_optional(pool)
         .await
         .map_err(sql)?;
-        if job.is_some_and(|(_, status)| status == CI_SUCCESS) {
+        if job.is_some_and(|(_, status, _)| status == CI_SUCCESS) {
             return Ok(true);
         }
         // A check that failed only on failures a maintainer quarantined does not block, when the
         // policy still allows quarantine. A run still going, cancelled or skipped is not a failure.
-        let failed = run
-            .or(job)
-            .filter(|(_, status)| *status == CI_FAILURE)
-            .map(|(id, _)| id);
-        if let (true, Some(id)) = (quarantine, failed) {
+        // Named by a job, the check is that job alone; named by a run, every failed job of it.
+        let failed = match (run, job) {
+            (Some((id, CI_FAILURE)), _) => Some((id, None)),
+            (_, Some((id, CI_FAILURE, job_id))) => Some((id, Some(job_id))),
+            _ => None,
+        };
+        if let (true, Some((id, job_id))) = (quarantine, failed) {
             let mut conn = pool.acquire().await.map_err(sql)?;
-            return crate::ci::insights::store::failed_only_on_quarantined(&mut conn, entry.ns, id)
-                .await
-                .map_err(sql);
+            return crate::ci::insights::store::failed_only_on_quarantined(
+                &mut conn, entry.ns, id, job_id,
+            )
+            .await
+            .map_err(sql);
         }
         Ok(false)
     }

@@ -285,7 +285,7 @@ pub struct Principal {
 #[derive(Clone, Default)]
 pub struct AdminProof {
     own: Option<(Arc<dyn Authorizer>, Option<Credential>, String)>,
-    forwarded: Option<String>,
+    forwarded: Option<crate::forwarded::Claim>,
 }
 
 impl AdminProof {
@@ -305,27 +305,38 @@ impl AdminProof {
     /// This is not the credential's own right; the caller decides whether the credential may
     /// act on such a claim (only the host service's may).
     #[must_use]
-    pub fn with_forwarded(mut self, claim: Option<String>) -> Self {
+    pub fn with_forwarded(mut self, claim: Option<crate::forwarded::Claim>) -> Self {
         self.forwarded = claim;
         self
     }
 
     /// The administrator a host service verifiably forwarded with this call, if any.
     pub fn forwarded_admin(&self) -> Option<&str> {
-        self.forwarded.as_deref()
+        self.forwarded
+            .as_ref()
+            .filter(|c| c.allows(crate::forwarded::Role::Admin))
+            .map(|c| c.user.as_str())
     }
 
-    /// Reads and checks the claim in `meta` against the authorizer's key.
+    /// The claim a host service verifiably forwarded for the repository of this call, whatever
+    /// its role.
+    pub fn forwarded_claim(&self) -> Option<&crate::forwarded::Claim> {
+        self.forwarded.as_ref()
+    }
+
+    /// Reads and checks the claim in `meta` for `subject` against the authorizer's key. The
+    /// caller decides whether the credential of the call may act on a claim (only the host
+    /// service's may).
     pub fn forwarded_in(
         authorizer: &dyn Authorizer,
         meta: &tonic::metadata::MetadataMap,
-        repo: &str,
-    ) -> Option<String> {
+        subject: &str,
+    ) -> Option<crate::forwarded::Claim> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .ok()
             .and_then(|d| i64::try_from(d.as_secs()).ok())?;
-        authorizer.forwarded_verifier()?.verify(meta, repo, now)
+        authorizer.forwarded_verifier()?.verify(meta, subject, now)
     }
 
     /// Whether the credential that made the call is allowed admin on the repository.

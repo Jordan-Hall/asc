@@ -1199,36 +1199,82 @@ pub struct BlockingFailure {
     pub group: i64,
 }
 
-/// Whether a failed `run` failed only on quarantined failures, so a landing check may let it
-/// pass: it has failing test cases, none of them still blocks, and every failed job is explained
-/// by failing test cases (a job that failed without reporting one, such as a build error, is a
-/// failure nobody quarantined).
+/// Whether a failed check may pass a landing because every failure behind it is a known,
+/// quarantined one. It fails closed: anything not positively explained is `false`.
+///
+/// `job` is the one job a check names, or `None` for a whole run. The run must have failed jobs
+/// (a failure with no failed job is unexplained), and each failed job (or the named one) must have
+/// failing test cases, which are the only evidence. Every failing case must be recovered by a
+/// later passing attempt of the same test in the same job, or sit in a group a maintainer
+/// quarantined (a case with no group is not quarantined); and a failed job needs at least one
+/// quarantined case, since failures that all recovered do not explain why the job failed. A job
+/// that failed with no cases (a setup error, a crash, a timeout), a case outside the list and a
+/// missing report all refuse the landing.
 pub async fn failed_only_on_quarantined(
     conn: &mut AnyConnection,
     ns: Ns,
     run: i64,
+    job: Option<i64>,
 ) -> Result<bool, sqlx::Error> {
-    let failing: i64 = sqlx::query_scalar(
-        "SELECT CAST(COUNT(*) AS BIGINT) FROM test_cases WHERE ns = $1 AND run_id = $2 AND outcome IN (2, 4)",
+    let failed_jobs: Vec<i64> = sqlx::query_scalar(
+        "SELECT CAST(id AS BIGINT) FROM check_jobs WHERE ns = $1 AND run = $2 AND status = 4 ORDER BY id",
     )
     .bind(ns_bytes(ns))
     .bind(run)
-    .fetch_one(&mut *conn)
-    .await?;
-    if failing == 0 {
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .filter(|id: &i64| job.is_none_or(|j| j == *id))
+    .collect();
+    if failed_jobs.is_empty() {
         return Ok(false);
     }
-    let unexplained: i64 = sqlx::query_scalar(
-        "SELECT CAST(COUNT(*) AS BIGINT) FROM check_jobs j WHERE j.ns = $1 AND j.run = $2 AND j.status = 4          AND NOT EXISTS (SELECT 1 FROM test_cases c WHERE c.ns = j.ns AND c.run_id = j.run                          AND c.job_id = j.id AND c.outcome IN (2, 4))",
-    )
-    .bind(ns_bytes(ns))
-    .bind(run)
-    .fetch_one(&mut *conn)
-    .await?;
-    if unexplained > 0 {
-        return Ok(false);
+    let quarantined = quarantine(conn, ns).await?;
+    for failed in failed_jobs {
+        let cases = sqlx::query(
+            "SELECT c.name AS name, c.attempt AS attempt, c.outcome AS outcome, g.signature AS signature \
+             FROM test_cases c LEFT JOIN failure_groups g ON g.ns = c.ns AND g.id = c.group_id \
+             WHERE c.ns = $1 AND c.run_id = $2 AND c.job_id = $3",
+        )
+        .bind(ns_bytes(ns))
+        .bind(run)
+        .bind(failed)
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut passes: HashSet<(String, i64)> = HashSet::new();
+        let mut failures: Vec<(String, i64, Option<String>)> = Vec::new();
+        for r in &cases {
+            let (name, attempt, outcome): (String, i64, i64) = (
+                r.try_get("name")?,
+                r.try_get("attempt")?,
+                r.try_get("outcome")?,
+            );
+            match outcome {
+                1 => {
+                    passes.insert((name, attempt));
+                }
+                2 | 4 => failures.push((name, attempt, r.try_get("signature")?)),
+                _ => {}
+            }
+        }
+        if failures.is_empty() {
+            return Ok(false);
+        }
+        let mut explained = false;
+        for (name, attempt, signature) in &failures {
+            if passes.iter().any(|(n, a)| n == name && a > attempt) {
+                continue;
+            }
+            match signature {
+                Some(sig) if quarantined.contains(sig) => explained = true,
+                _ => return Ok(false),
+            }
+        }
+        if !explained {
+            return Ok(false);
+        }
     }
-    Ok(blocking_failures(conn, ns, run).await?.is_empty())
+    Ok(true)
 }
 
 /// The failed or errored cases of `run` that still block: those whose group is not quarantined.

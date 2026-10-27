@@ -1560,6 +1560,7 @@ async fn a_run_whose_server_died_is_failed_by_the_reaper_and_its_token_revoked()
                 max_changes_per_run: 0,
                 created_by: "7:alice".into(),
                 owner_id: 7,
+                created: 0,
                 expires_at: crate::ai::clock::now() + 600,
                 limits: super::tokens::Budget::default(),
                 run_id: id,

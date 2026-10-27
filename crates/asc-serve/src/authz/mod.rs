@@ -3,6 +3,7 @@
 //! [`authorizer`] builds the one [`Authorizer`] the `[auth] provider` key names; every surface of
 //! the server (RPC, `/v8`, `/seeds`, admin and `/mcp`) is handed that one value.
 
+pub mod claim;
 pub mod forwarded;
 pub mod identity;
 pub(crate) mod key_file;

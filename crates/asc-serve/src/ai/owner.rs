@@ -143,10 +143,8 @@ pub trait OwnerAdmin: Send + Sync {
 ///
 /// * a user administers their own keys (the handle of their principal names the owner);
 /// * a repository is administered by whoever has admin on it;
-/// * an organisation is administered by whoever has admin on the probe repository
-///   `<org>/.asc-owner`, which a token with an `<org>/*` admin grant has and a forge authorizer
-///   (which knows no such repository) does not, so in forge deployments the host application,
-///   which has verified the organisation role itself, manages organisation keys;
+/// * an organisation is administered by the host application only, which has verified the
+///   organisation role itself and says so with a claim (`org:<name>`, admin);
 /// * the instance is administered by the host application only;
 /// * the host application's service credential administers everything.
 pub struct AuthorizerOwners {
@@ -179,11 +177,10 @@ impl OwnerAdmin for AuthorizerOwners {
                 .authorize_credential(credential, repo, Access::Admin)
                 .await
                 .is_ok(),
-            Owner::Org(org) => self
-                .authorizer
-                .authorize_credential(credential, &format!("{org}/.asc-owner"), Access::Admin)
-                .await
-                .is_ok(),
+            // An organisation's members are the host application's to know: it decides, with a
+            // claim, or administers with its service credential (above). There is no probe
+            // repository to ask.
+            Owner::Org(_) => false,
             Owner::Instance => false,
         }
     }

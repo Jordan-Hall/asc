@@ -43,15 +43,48 @@ impl AiService {
         InterceptedService::new(server, AuthInterceptor)
     }
 
+    /// Whether the caller administers `owner`. A call from the hub with a claim is decided by
+    /// the claim alone (the hub's own verdict on the organisation, account, repository or
+    /// instance); a claim that does not verify is refused; without one the rule of
+    /// [`OwnerAdmin`] applies.
+    async fn administers(
+        &self,
+        caller: &Caller,
+        meta: &tonic::metadata::MetadataMap,
+        owner: &Owner,
+    ) -> bool {
+        use crate::authz::claim::{HostCall, classify};
+        use asc_rpc::forwarded::Role;
+        let (subject, needed) = match owner {
+            Owner::User(n) => (format!("user:{n}"), Role::Write),
+            Owner::Org(n) => (format!("org:{n}"), Role::Admin),
+            Owner::Repo(r) => (r.clone(), Role::Admin),
+            Owner::Instance => ("instance".to_owned(), Role::Admin),
+        };
+        match classify(&*self.authorizer, &caller.principal.id, meta, &subject) {
+            HostCall::Person(c) => {
+                c.allows(needed)
+                    && !matches!(owner, Owner::User(n) if !c.login().eq_ignore_ascii_case(n))
+            }
+            HostCall::Refused => false,
+            HostCall::System | HostCall::NotHost => {
+                self.hub
+                    .owners
+                    .can_admin(caller.credential.as_ref(), &caller.principal, owner)
+                    .await
+            }
+        }
+    }
+
     /// The caller, provided they administer `owner`; else `NOT_FOUND`.
-    async fn admin_of(&self, ext: &tonic::Extensions, owner: &Owner) -> Result<Caller, Status> {
+    async fn admin_of(
+        &self,
+        ext: &tonic::Extensions,
+        meta: &tonic::metadata::MetadataMap,
+        owner: &Owner,
+    ) -> Result<Caller, Status> {
         let caller = authenticate(&self.authorizer, ext).await?;
-        if self
-            .hub
-            .owners
-            .can_admin(caller.credential.as_ref(), &caller.principal, owner)
-            .await
-        {
+        if self.administers(&caller, meta, owner).await {
             Ok(caller)
         } else {
             Err(AiError::NotFound.status())
@@ -62,16 +95,12 @@ impl AiService {
     async fn key_admin(
         &self,
         ext: &tonic::Extensions,
+        meta: &tonic::metadata::MetadataMap,
         id: &str,
     ) -> Result<(Caller, super::store::KeyRow), Status> {
         let caller = authenticate(&self.authorizer, ext).await?;
         let key = self.hub.get_key(id).await.map_err(|e| e.status())?;
-        if self
-            .hub
-            .owners
-            .can_admin(caller.credential.as_ref(), &caller.principal, &key.owner)
-            .await
-        {
+        if self.administers(&caller, meta, &key.owner).await {
             Ok((caller, key))
         } else {
             Err(AiError::NotFound.status())
@@ -129,7 +158,7 @@ impl AiProviders for AiService {
         let (meta, ext, msg) = request.into_parts();
         let api_key = secret(msg.api_key);
         let owner = Owner::from_wire(msg.owner.as_ref())?;
-        let caller = self.admin_of(&ext, &owner).await?;
+        let caller = self.admin_of(&ext, &meta, &owner).await?;
         let op = op_id(&meta)?;
         let provider = Provider::from_wire(msg.provider)?;
         let new = NewKey {
@@ -164,9 +193,9 @@ impl AiProviders for AiService {
         &self,
         request: Request<wire::ListAiKeysRequest>,
     ) -> Result<Response<wire::ListAiKeysResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
+        let (meta, ext, msg) = request.into_parts();
         let owner = Owner::from_wire(msg.owner.as_ref())?;
-        self.admin_of(&ext, &owner).await?;
+        self.admin_of(&ext, &meta, &owner).await?;
         let rows = self.hub.list_keys(&owner).await.map_err(|e| e.status())?;
         let mut keys = Vec::with_capacity(rows.len());
         for k in &rows {
@@ -179,8 +208,8 @@ impl AiProviders for AiService {
         &self,
         request: Request<wire::GetAiKeyRequest>,
     ) -> Result<Response<wire::GetAiKeyResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let (_, key) = self.key_admin(&ext, &msg.id).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let (_, key) = self.key_admin(&ext, &meta, &msg.id).await?;
         Ok(Response::new(wire::GetAiKeyResponse {
             key: Some(wire_key(&self.hub, &key).await),
         }))
@@ -192,7 +221,7 @@ impl AiProviders for AiService {
     ) -> Result<Response<wire::UpdateAiKeyResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
         let api_key = msg.api_key.map(secret);
-        let (caller, _) = self.key_admin(&ext, &msg.id).await?;
+        let (caller, _) = self.key_admin(&ext, &meta, &msg.id).await?;
         let op = op_id(&meta)?;
         let patch = KeyPatch {
             label: msg.label,
@@ -228,7 +257,7 @@ impl AiProviders for AiService {
         request: Request<wire::DeleteAiKeyRequest>,
     ) -> Result<Response<wire::DeleteAiKeyResponse>, Status> {
         let (meta, ext, msg) = request.into_parts();
-        let (caller, key) = self.key_admin(&ext, &msg.id).await?;
+        let (caller, key) = self.key_admin(&ext, &meta, &msg.id).await?;
         let op = op_id(&meta)?;
         let hub = self.hub.clone();
         let actor = caller.principal.id.clone();
@@ -252,8 +281,8 @@ impl AiProviders for AiService {
         &self,
         request: Request<wire::TestAiKeyRequest>,
     ) -> Result<Response<wire::TestAiKeyResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let (caller, _) = self.key_admin(&ext, &msg.id).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let (caller, _) = self.key_admin(&ext, &meta, &msg.id).await?;
         let t = self.hub.test_key(&msg.id).await.map_err(|e| e.status())?;
         let result = if t.ok {
             "ok".to_owned()
@@ -286,9 +315,9 @@ impl AiProviders for AiService {
         &self,
         request: Request<wire::AiUsageRequest>,
     ) -> Result<Response<wire::AiUsageResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
+        let (meta, ext, msg) = request.into_parts();
         let owner = Owner::from_wire(msg.owner.as_ref())?;
-        self.admin_of(&ext, &owner).await?;
+        self.admin_of(&ext, &meta, &owner).await?;
         if !msg.key_id.is_empty() {
             // The key must belong to the owner named; anything else is not found.
             let k = self
@@ -358,8 +387,8 @@ impl AiProviders for AiService {
         &self,
         request: Request<wire::ListAiModelsRequest>,
     ) -> Result<Response<wire::ListAiModelsResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        self.key_admin(&ext, &msg.id).await?;
+        let (meta, ext, msg) = request.into_parts();
+        self.key_admin(&ext, &meta, &msg.id).await?;
         let models = self
             .hub
             .list_models(&msg.id)
