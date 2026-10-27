@@ -98,26 +98,92 @@ secret scan and the audit log all apply). **It never writes trunk**; the ref is 
 slug. Landing is a person's decision, through review and the gate. The same moves name the same ref, so a
 repeated run reports "already proposed".
 
-The edit is minimal and needs no package manager. It changes the version text of the one package and nothing
-else, and the result is read back with the file parsers before it is kept:
+The edit is minimal and needs no package manager. It changes the version text of the one package and what
+the file records about that version, and nothing else; the result is read back with the file parsers before
+it is kept:
 
 * Requirements are bumped only if they do not already admit the new version, keeping the operator, the spacing
   and the number of components (`^1.2.3` to `^2.0.1`, `~> 1.2` to `~> 2.0`, `==3.2.0` to `==4.2.1`). Complex
-  ones (`>=1, <2`, `1.x`, `||`) are refused with the reason.
-* Rewritten: `Cargo.toml`, `Cargo.lock` (version and registry checksum), `package.json`, `package-lock.json`
-  (versions 2 and 3: version, tarball and integrity of every copy, and the requirement the root repeats),
+  ones (`>=1, <2`, `1.x`, `||`) are refused with the reason, and the update is not made.
+* Manifests and pin files that hold a version only are edited in place: `Cargo.toml`, `package.json`,
   `requirements*.txt` (exact pins without `--hash`), `pyproject.toml` (PEP 508 strings), `go.mod`, `pom.xml`
   (the version, the property that holds it, or the managed entry), `gradle.lockfile`, `*.csproj`,
-  `composer.json`, `Gemfile`, `Gemfile.lock`, `mix.exs`.
-* Never rewritten, because they hold hashes of a whole graph or one entry per range: `yarn.lock`,
-  `pnpm-lock.yaml`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `packages.lock.json`, `composer.lock`,
-  `mix.lock`, `pubspec.lock`, `Package.resolved`, `Podfile.lock`, `go.sum`. When the manifest moves and one of
-  these is left, the proposal says so in its `notes` (and its message): a resolver still has to run. When only
-  such a file would change, the update is skipped with that reason.
-* Dependencies of the new version that the old one did not have are not added to a lockfile; the notes name the
-  command (`cargo update -p NAME`, `npm install`, `bundle install`, `go mod tidy`).
+  `composer.json`, `Gemfile`, `mix.exs`.
+* **Lockfiles that record hashes are rewritten from the registry's metadata**, not by running the package
+  manager: `Cargo.lock`, `package-lock.json` (versions 1 to 3), `yarn.lock` (version 1), `pnpm-lock.yaml`
+  (versions 6 and 9), `poetry.lock` (1.x and 2.x), `uv.lock`, `Pipfile.lock`, `composer.lock`, `Gemfile.lock`
+  and `go.sum`. See below.
+* Lockfiles this code has no registry facts for stay with their manifest edit and a note: `packages.lock.json`,
+  `mix.lock`, `pubspec.lock`, `Package.resolved`, `Podfile.lock`. A move whose only change would be one of
+  them is skipped with that reason.
 * Every value written comes from a registry or a file and is checked first: versions are plain literals,
-  checksums are hex, integrity is `shaNNN-base64`, tarballs are https URLs without quotes or spaces.
+  checksums are hex, integrity is `shaNNN-base64` of the length its algorithm gives, tarballs are https URLs
+  without quotes or spaces.
+
+### Lockfiles
+
+A lockfile is rewritten when three things hold, and the update is not made (for the whole move, manifest
+included, so a repository never ends with a manifest and a lock that disagree) when one does not:
+
+1. **Every digest comes from the registry and was verified.** The new version's digests are asked of the
+   registry for exactly that version and checked against a second path:
+
+   | Ecosystem | Digests written | Checked against |
+   |---|---|---|
+   | crates.io | `checksum` | the sparse index (`index.crates.io`) must give the same `cksum` as the API |
+   | npm | `resolved`, `integrity` (and the SHA-1 of yarn v1) | the registry's ECDSA signature of `name@version:integrity`, verified with the keys it publishes at `/-/npm/v1/keys`, where the version carries one |
+   | PyPI | every file's URL, SHA-256, size and upload time | the PEP 691 simple index must list every file with the same SHA-256 |
+   | RubyGems | `sha256` in `CHECKSUMS` | the compact index (`/info/<gem>`) must give the same checksum as the API |
+   | Packagist | the whole package entry (`source`, `dist`, `autoload`, `require`, ...) | |
+   | Go | the `h1:` hashes of the zip and of `go.mod` | the checksum database's record must equal the hash computed from the module zip and `go.mod` the proxy serves |
+
+   A digest the registry did not give, one of the wrong length, or one the second path contradicts refuses
+   the update for that package and says which. The old entry is checked too: a lock whose digest for the old
+   version is not the registry's was not made from that registry, and nothing is derived from it.
+2. **The new version declares the same dependencies as the one it replaces** (and, in the files that record
+   them, the same engines, platforms and binaries). Then the rest of the lock stays what the package manager
+   would write. A version that changes its dependencies needs the package manager's resolver; the refusal
+   names the differences (`dependency dependencies:a changes from ^1 to ^2`).
+3. **Every other package that requires this one still accepts the new version.** The ranges the lock records
+   are used where it records them (`package-lock.json`, `yarn.lock`, `composer.lock`, `Gemfile.lock`,
+   `poetry.lock`); for `Cargo.lock`, `pnpm-lock.yaml`, `uv.lock` and `Pipfile.lock` the registry is asked what
+   each dependent declares. A dependent whose requirement cannot be evaluated, or does not admit the new
+   version, stops the move and is named. At most 200 dependents are checked per package.
+
+What each rewrite does:
+
+* `Cargo.lock`: the version and `checksum` of the block, and the `"name version"` references to it.
+* `package-lock.json`: version, `resolved` (on the host the lock already uses, so a mirror stays a mirror) and
+  `integrity` of every installed copy, the legacy `dependencies` tree, and the requirement the root and the
+  workspace members repeat.
+* `yarn.lock` v1: version, `resolved#sha1` and `integrity` of the entry; the ranges in its header that the new
+  version satisfies stay, the one the manifest replaced is renamed, the entry moves to its sorted place, and
+  an entry already at the new version (which yarn would merge) is refused. **Yarn 2+ (Berry) is refused**: its
+  checksum is of an archive yarn builds itself, which no registry publishes.
+* `pnpm-lock.yaml`: the importers' `specifier` and `version`, the `packages` key and `resolution.integrity`,
+  the `snapshots` key, every dependency map and every peer suffix (`react-dom@18.2.0(react@18.2.0)`) that names
+  the version. lockfileVersion 5 (pnpm 7) is refused.
+* `poetry.lock`: the version and the `files` list (or `[metadata.files]` before Poetry 1.5) in the style of
+  the file; when `pyproject.toml` changed, the `content-hash`, after the same code has been shown to give the
+  hash the lock holds for the *old* file (Poetry 1.x and 2.x algorithms). A source other than PyPI is refused.
+* `uv.lock`: the version, `sdist` and `wheels` (wheels by file name, `upload-time` where the file has it), and
+  the `specifier` the project's own `requires-dist` records when the move changed the requirement.
+* `Pipfile.lock`: the version and the sorted hashes of every file; the `Pipfile` must already admit the new
+  version, because it is not edited and the lock's own `_meta.hash` is of it.
+* `composer.lock`: the package entry is replaced whole, in Composer's layout and key order, keeping the
+  `notification-url` it had; when `composer.json` changed, the `content-hash`, again only after reproducing the
+  old one.
+* `Gemfile.lock`: the version, the `DEPENDENCIES` requirement and the `CHECKSUMS` line; a platform build
+  (`nokogiri (1.15.0-x86_64-linux)`) is refused, because its checksum is another one.
+* `go.sum`: the zip and `go.mod` hash lines of the new version, in `go`'s sort order, and the old zip line
+  dropped (the old `go.mod` line stays, the module graph may still need it).
+
+What was verified is listed in the proposal's `notes` (and its message), one line per check.
+
+The rewriters were also run, outside the test suite, over real lockfiles (this project's neighbours: the
+`npm` CLI, `yarn`, `gin`, `rails`, `symfony/demo`, `poetry`, `pipenv` and a `uv` example) moving every package
+to the version and digests it already has; the result was the same text byte for byte in all but the cases
+the rules above refuse.
 
 A scheduled run is a workflow. `SetConfig` records `.asc/deps.toml` and, when there is a `schedule`,
 `.asc/workflows/deps.toml` (a schedule trigger, a manual trigger, and one command step that runs
@@ -184,8 +250,17 @@ asc deps updates [--rev REV] [--security] [--ignored]
 asc deps propose [--security] [--max-kind K] [--max-groups N] [--dry-run] [ecosystem:name]...
 asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
 asc deps reopen <id>
-asc deps config [--rev REV]
+asc deps config get [--rev REV]
+asc deps config set [--ecosystem E]... [--all-ecosystems] [--schedule CRON | --no-schedule]
+                    [--security-only BOOL] [--severity-threshold S|none] [--max-kind K] [--max-proposals N]
+                    [--grouping G] [--group SPEC]... [--no-groups] [--ignore SPEC]... [--no-ignore] [--dry-run]
 ```
+
+`config set` reads the settings in force from trunk, changes what the flags name and proposes the result as
+`.asc/deps.toml` (and the workflow, when there is a schedule) on an `agent/deps/config-...` ref. A group is
+`NAME=ECOSYSTEM:PATTERN[,PATTERN][:KIND[,KIND]]` (`*` for any ecosystem); an ignore rule is
+`ECOSYSTEM:NAME[:KIND[,KIND]][:until=YYYY-MM-DD][:reason=TEXT]`, where the reason runs to the end of the text.
+`--group` and `--ignore` replace the lists; `--no-groups` and `--no-ignore` empty them.
 
 All take `--remote` (a configured remote or the repository URL) and `--json`. `--token-env NAME` takes the
 credential from the environment variable `NAME` and needs `--remote` to be an https URL; it is for scheduled
@@ -207,3 +282,10 @@ loopback opt-in is on; no loopback, private, link-local or metadata address; no 
 must name a host the egress allowlist admits (by default, the hosts of the configured URLs). A mirror that
 lives on a private address is not reachable for the same reason bring-your-own storage is not: put it behind a
 public name, or import its data with `advisory_file`. Redirects are never followed.
+
+Besides the registries of the table above, a lockfile hash is checked against a second source, each its own
+endpoint (`[deps.registries.crates_index]`, `https://index.crates.io`, and `[deps.registries.go_sumdb]`,
+`https://sum.golang.org`; PyPI's simple index and RubyGems' compact index are on the hosts of `pypi` and
+`rubygems`). `archive_max_bytes` (128 MiB) and `archive_timeout_secs` (120) bound the one download a check
+reads, a Go module zip; a larger module cannot be verified and its `go.sum` is not rewritten. Switching an
+endpoint off (`off = true`) switches off the rewrites that need it, never the check.

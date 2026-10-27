@@ -4,8 +4,8 @@ use std::process::ExitCode;
 
 use asc_rpc::server::wire;
 
-use super::{bad, client, ecosystems, kind_name, remote_with_token};
-use crate::cli::agent::conn::{Conn, clean_text};
+use super::{client, ecosystems, kind_name, remote_with_token};
+use crate::cli::agent::conn::Conn;
 use crate::cli::codeintel::{clean_str, emit_json, lines, with_stdout};
 use crate::cli::common::{Ctx, Result};
 
@@ -21,18 +21,6 @@ pub struct UpdatesArgs {
     /// Also the updates `.asc/deps.toml` tells the server to leave alone.
     #[arg(long)]
     ignored: bool,
-    #[arg(long)]
-    remote: Option<String>,
-    #[arg(long = "token-env")]
-    token_env: Option<String>,
-    #[arg(long)]
-    json: bool,
-}
-
-#[derive(clap::Args, Debug)]
-pub struct ConfigArgs {
-    #[arg(long)]
-    rev: Option<String>,
     #[arg(long)]
     remote: Option<String>,
     #[arg(long = "token-env")]
@@ -126,51 +114,6 @@ pub async fn run(ctx: &Ctx, a: UpdatesArgs) -> Result<ExitCode> {
         } else {
             ExitCode::SUCCESS
         })
-    })
-}
-
-pub async fn config(ctx: &Ctx, a: ConfigArgs) -> Result<ExitCode> {
-    let remote = remote_with_token(a.remote.as_deref(), a.token_env.as_deref(), |k| {
-        std::env::var(k).ok()
-    })?;
-    if let Some(r) = &a.rev
-        && (r.is_empty() || r.len() > 1024)
-    {
-        return Err(bad("--rev is a revision"));
-    }
-    let conn = Conn::open(ctx, remote.as_deref()).await?;
-    let repo = conn.repo_ref();
-    let r = conn
-        .call(false, |s, _| {
-            let m = wire::GetDepsConfigRequest {
-                repo: Some(repo.clone()),
-                rev: a.rev.clone().unwrap_or_default(),
-            };
-            async move {
-                Ok(client(&s)
-                    .get_config(s.wire.request(m, None))
-                    .await?
-                    .into_inner())
-            }
-        })
-        .await?;
-    with_stdout(|out| {
-        if a.json {
-            emit_json(&mut lines(out), "asc.v1.GetDepsConfigResponse", &r)?;
-        } else {
-            writeln!(out, "# source: {}", clean_str(&r.source))?;
-            if !r.error.is_empty() {
-                writeln!(out, "# the file cannot be used: {}", clean_str(&r.error))?;
-            }
-            if !r.text.is_empty() {
-                writeln!(out, "{}", clean_text(&r.text))?;
-            }
-            if !r.workflow.is_empty() {
-                writeln!(out, "# .asc/workflows/deps.toml for this schedule:")?;
-                writeln!(out, "{}", clean_text(&r.workflow))?;
-            }
-        }
-        Ok(ExitCode::SUCCESS)
     })
 }
 

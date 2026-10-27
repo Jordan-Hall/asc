@@ -83,11 +83,14 @@ trusted_proxies = []                 # the exact /32 of your TLS proxy, if any
 # concurrency = 8
 # max_concurrent_scans = 2
 # gate_timeout_secs = 25                 # the landing check's wait for the advisory source
+# archive_max_bytes = "128MiB"           # the largest download read to verify a lockfile hash (a Go module zip)
+# archive_timeout_secs = 120
 # [deps.osv]                             # a self-hosted mirror: url = "https://osv.example.com"; off = true for files only
 # url = "https://api.osv.dev"
 # timeout_secs = 30
 # max_bytes = "16MiB"
-# [deps.registries.npm]                  # also crates_io, pypi, go, maven, nuget, packagist, rubygems, hex, pub
+# [deps.registries.npm]                  # also crates_io, pypi, go, maven, nuget, packagist, rubygems, hex, pub, and the
+#                                        # second sources a lockfile hash is checked against: crates_index, go_sumdb
 # url = "https://registry.npmjs.org"
 # timeout_secs = 20
 # max_bytes = "8MiB"
