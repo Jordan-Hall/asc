@@ -241,8 +241,7 @@ function CloneFields(props: { prefix: string; owner: string; repo: string }): Re
     <div className="space-y-2">
       <CopyField id={`${props.prefix}-url`} label="Clone URL" value={url} />
       <p className="text-xs text-fg-muted">
-        Use it with <code className="font-mono">asc clone</code> or{" "}
-        <code className="font-mono">git clone</code>.
+        Use it with <code className="font-mono">asc clone</code>.
       </p>
     </div>
   );
