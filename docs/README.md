@@ -8,11 +8,11 @@ wins.
 
 | Page | What is in it |
 |---|---|
-| [`GETTING-STARTED.md`](GETTING-STARTED.md) | Install, sign in, clone, the daily loop, plain git against `asc serve`. |
+| [`GETTING-STARTED.md`](GETTING-STARTED.md) | Install, sign in, clone, the daily loop, git compatibility. |
 | [`CLI.md`](CLI.md) | Every command, with an example you can run. |
 | [`CONFIG.md`](CONFIG.md) | Every `asc.*` key and environment variable, with its default and an example. |
-| [`CHEATSHEET.md`](CHEATSHEET.md) | The git command for each asc command, and what differs. |
-| [`ONBOARDING.md`](ONBOARDING.md) | The `git` shim, `asc doctor`, and fixing what it reports. |
+| [`CHEATSHEET.md`](CHEATSHEET.md) | Common tasks and the asc command for each. |
+| [`ONBOARDING.md`](ONBOARDING.md) | `asc doctor`, editor settings, the optional `git` shim, and fixing what `asc doctor` reports. |
 | [`mcp.md`](mcp.md) | `asc mcp`: the tools an agent can call. Generated from the code. |
 | [`api.md`](api.md) | The `asc.v1` RPC services and how to call them with `asc api`. |
 | [`BYOS.md`](BYOS.md) | Keeping objects in a bucket you own. |
@@ -45,7 +45,7 @@ wins.
 | [`PLAN.md`](PLAN.md), [`PLAN-STATUS.md`](PLAN-STATUS.md), [`STATUS.md`](STATUS.md), [`CARRY.md`](CARRY.md) | The implementation plan, which units are done, the honest state, and obligations carried forward. |
 | [`BUILDOUT.md`](BUILDOUT.md) | The contract for finishing the features ASC Hub lists as partial. |
 | [`git-fidelity.md`](git-fidelity.md), [`git-quirks.md`](git-quirks.md), [`git-defects.md`](git-defects.md), [`divergences.md`](divergences.md), [`adapter-gaps.md`](adapter-gaps.md) | How faithful asc is to git, and every place it is not. |
-| [`BENCHMARKS.md`](BENCHMARKS.md) | git against asc. |
+| [`BENCHMARKS.md`](BENCHMARKS.md) | asc compared with git. |
 | [`SCION-TRACEABILITY.md`](SCION-TRACEABILITY.md) | The Scion checklist mapped to the spec. |
 | [`designs/`](designs), [`research/`](research), [`DECISIONS/`](DECISIONS) | Design notes, research and decision records. |
 | [`RENAME.md`](RENAME.md), [`brand/BRAND.md`](brand/BRAND.md) | Naming and brand. |

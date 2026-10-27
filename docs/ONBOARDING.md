@@ -1,7 +1,7 @@
 # asc onboarding
 
-How to install asc, use it as `git`, and fix what `asc doctor` reports. The git to asc command map
-is in `docs/CHEATSHEET.md` (also `asc help git`). SPEC wins where this page disagrees.
+How to install asc, set up your editor, and fix what `asc doctor` reports. Common tasks and their
+commands are in `docs/CHEATSHEET.md`. SPEC wins where this page disagrees.
 
 ## 1. Install
 
@@ -9,13 +9,13 @@ is in `docs/CHEATSHEET.md` (also `asc help git`). SPEC wins where this page disa
   `Client-ProjFS` feature and Defender exclusions for `$ASC_HOME`, and registers the daemon task.
 - Linux: `packaging/linux/install.sh` (shipped with each release as `install.sh`); the daemon runs as a user service. Linux and macOS also install with `scripts/install.sh`; see `docs/RELEASE.md`.
 - Step-by-step setup and sign-in: `docs/GETTING-STARTED.md`.
-- Real git 2.40 or later is a required dependency. asc finds it from `ASC_REAL_GIT`, then
-  `asc.realGit`, then the first other `git` on `PATH`, then (Windows) Git for Windows.
+- The compatibility layer and import need git 2.40 or later installed. asc finds it from
+  `ASC_REAL_GIT`, then `asc.realGit`, then the first other `git` on `PATH`, then (Windows) Git for Windows.
 - Run `asc doctor` after installing.
 
-## 2. The `git` shim and where it must come first
+## 2. Git compatibility: the optional `git` shim
 
-`asc install-shim` puts `git[.exe]` in `<asc dir>/shim` and prints the `PATH` line. Inside an asc
+Only needed for existing tools, scripts and CI that still run `git`. `asc install-shim` puts `git[.exe]` in `<asc dir>/shim` and prints the `PATH` line. Inside an asc
 workspace `git` is asc; anywhere else it is real git, with identical arguments, environment and
 stdio. asc children (hooks, editors) get the right `PATH` without any of this.
 
@@ -26,7 +26,7 @@ stdio. asc children (hooks, editors) get the right `PATH` without any of this.
 | Turborepo and other tools | They run `git` from their own environment. Check with `asc doctor`; its `git@turbo (this environment)` line shows what they will see. |
 | Linux and macOS | Put the shim directory first in `PATH` in your shell profile. |
 
-IDE git integrations are not supported. ASC's VS Code and JetBrains plugins use the asc API
+IDE git panels are replaced: ASC's VS Code and JetBrains plugins use the asc API
 instead.
 
 ## 3. First clone and reclaiming disk
@@ -37,7 +37,7 @@ asc clone https://forge.example/Owner/repo D:\work\repo --reference D:\old\repo\
 asc doctor --report-reclaimable
 ```
 
-`--reference` borrows objects from an existing git directory so the first fetch is small.
+`--reference` borrows objects from an existing clone's directory so the first fetch is small.
 `asc doctor --report-reclaimable` only measures an old `.git`, `worktrees/`, `modules/`, `lfs/`
 and cruft packs. It never deletes: delete them yourself once you trust the new clone.
 
@@ -58,13 +58,13 @@ check them in:
 Local branches and tags are rows on your machine, shared by all workspaces on it, and reach the
 server only through `push`. In a branchless repo (the default) the only shared refs are `master`,
 release branches and tags. Other work is draft changes: new commits upload in the background,
-`git push origin feat` also submits the stack as draft changes and the pushed branch becomes
+`asc push origin feat` also submits the stack as draft changes and the pushed branch becomes
 your own user ref, and `asc hide` hides a draft. Agent branches (`agent/<name>`) expire.
 As in git, a branch checked out in one worktree cannot be checked out in another. Per-repo and
 per-user switches turn the background upload off; local-only mode (`asc init`) works with no
 server.
 
-## 6. Deviations from git you may notice
+## 6. Compatibility notes
 
 - Attributes come from `.ascattributes` if present, else `.gitattributes`; the files are never
   merged. `text`, `text=auto` and `eol=*` normalise CRLF to LF on `add` as git does. `filter=`
@@ -100,4 +100,4 @@ Each line is `ok|info|warn|fail <name>: <detail>`; only `fail` makes the exit co
 | `defender`, `dev-drive` | Information about antivirus exclusions and Dev Drive. Excluding `$ASC_HOME` speeds up work. |
 | `autocrlf`, `gitattributes` | Line-ending or attribute settings git handles and asc does not. See section 6. |
 | `remote`, `store` | The remote or bucket is offline or fails the create-only probe. Check the URL and credentials. |
-| credentials | Lists credential sources by name only (never values). asc uses git's credential helpers. |
+| credentials | Lists credential sources by name only (never values). asc uses the system credential helpers. |
