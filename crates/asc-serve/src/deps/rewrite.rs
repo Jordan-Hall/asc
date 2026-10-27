@@ -399,8 +399,8 @@ fn package_lock(text: &str, pin: &Pin<'_>, extra: &Extra) -> Outcome {
             let Some(entry) = members(text, m.val_start) else {
                 continue;
             };
-            if m.key.is_empty() {
-                // The root repeats the requirements of package.json.
+            if !m.key.contains("node_modules/") {
+                // The root and the workspace members repeat the requirements of their package.json.
                 if let Some(req) = &extra.requirement {
                     for section in ["dependencies", "devDependencies", "optionalDependencies"] {
                         let Some(deps) = find(&entry, section).filter(|d| d.is_obj()) else {
