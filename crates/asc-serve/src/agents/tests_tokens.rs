@@ -51,6 +51,12 @@ async fn make(
     (r.token.unwrap(), r.secret)
 }
 
+/// The branch `name` in the namespace of the token that `secret` is.
+async fn mine(w: &World, secret: &str, name: &str) -> String {
+    let row = w.hub.core.tokens.by_secret(secret).await.unwrap().unwrap();
+    format!("refs/heads/agent/fixer/{}/{name}", row.id)
+}
+
 fn put(path: &str, content: &str) -> wire::FileOp {
     wire::FileOp {
         path: Bytes::copy_from_slice(path.as_bytes()),
@@ -376,7 +382,7 @@ async fn revoking_a_token_takes_effect_on_the_next_call_and_is_idempotent() {
     let e = commit_as(
         &w,
         &secret,
-        "refs/heads/agent/fixer/x",
+        &mine(&w, &secret, "x").await,
         &w.base,
         None,
         &[("src/a.rs", "x")],
@@ -473,7 +479,7 @@ async fn a_token_authorises_its_own_repository_never_admin_and_nothing_once_expi
     );
     assert!(matches!(
         a.authorize(Some(&bearer), "acme/app", Access::Write).await,
-        Err(AuthError::Forbidden)
+        Err(AuthError::Unauthenticated)
     ));
     // Expired: nothing.
     sqlx::query("UPDATE agent_tokens SET expires_at = $2 WHERE id = $1")
@@ -775,7 +781,7 @@ async fn an_agent_writes_its_own_branch_and_never_trunk_or_anyone_elses() {
     let first = commit_as(
         &w,
         &secret,
-        "refs/heads/agent/fixer/fix-1",
+        &mine(&w, &secret, "fix-1").await,
         &w.base,
         None,
         &[("src/a.rs", "pub fn a() {}\n")],
@@ -785,7 +791,7 @@ async fn an_agent_writes_its_own_branch_and_never_trunk_or_anyone_elses() {
     let second = commit_as(
         &w,
         &secret,
-        "refs/heads/agent/fixer/fix-1",
+        &mine(&w, &secret, "fix-1").await,
         &first,
         Some(&first),
         &[("src/b.rs", "pub fn b() {}\n")],
@@ -872,6 +878,61 @@ async fn a_land_is_refused_for_an_agent_and_other_principals_pass_the_gate() {
         .await
         .unwrap_err();
     assert_eq!(code(&e), "AGENT_SCOPE_DENIED", "an unknown run");
+    // The number must be plain ASCII digits that parse: overlong, zero-led, signed and non-ASCII
+    // digits are no run, and are refused rather than waved through.
+    for odd in [
+        "refs/heads/agent/fixer/run-99999999999999999999999",
+        "refs/heads/agent/fixer/run-0001",
+        "refs/heads/agent/fixer/run-0",
+        "refs/heads/agent/fixer/run--1",
+        "refs/heads/agent/fixer/run-+1",
+        "refs/heads/agent/fixer/run-١٢",
+        "refs/heads/agent/fixer/run-１２",
+        "refs/heads/agent/fixer/run-1x",
+        "refs/heads/agent/fixer/run-1/extra",
+    ] {
+        let e = gate
+            .check_refs(&agent_ctx(&p.id), false, &[(odd.to_owned(), false)])
+            .await
+            .unwrap_err();
+        assert_eq!(code(&e), "AGENT_SCOPE_DENIED", "{odd}");
+    }
+    // A real run of this token is its own; the same ref is refused to another token.
+    let new_run = |token_id: &str| super::runs::NewRun {
+        repo: "acme/app".into(),
+        agent: "fixer".into(),
+        title: String::new(),
+        target: "master".into(),
+        base: w.base.clone(),
+        task: "t".into(),
+        paths: vec![],
+        ai_key_id: String::new(),
+        model: "m".into(),
+        limits: super::tokens::Budget::default(),
+        created_by: "7:alice".into(),
+        starter: "alice".into(),
+        owner_id: 7,
+        token_id: token_id.into(),
+        workflow_run_id: 0,
+        workflow_step: String::new(),
+    };
+    let mine = w.hub.core.runs.create(&new_run(&token_id)).await.unwrap();
+    let theirs = w.hub.core.runs.create(&new_run("at_other")).await.unwrap();
+    let own_run = format!("refs/heads/agent/fixer/run-{mine}");
+    assert!(
+        gate.check_refs(&agent_ctx(&p.id), false, &[(own_run, false)])
+            .await
+            .is_ok()
+    );
+    let e = gate
+        .check_refs(
+            &agent_ctx(&p.id),
+            false,
+            &[(format!("refs/heads/agent/fixer/run-{theirs}"), false)],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(code(&e), "AGENT_SCOPE_DENIED", "another token's run");
     // A person is not an agent: the gate lets them through to the rest of the pipeline.
     assert!(
         gate.check_refs(
@@ -926,7 +987,7 @@ async fn the_token_paths_and_the_policy_both_bound_what_an_agent_may_change() {
         commit_as(
             w,
             secret,
-            "refs/heads/agent/fixer/scope",
+            &mine(w, secret, "scope").await,
             &parent,
             tip,
             &files,
@@ -958,13 +1019,13 @@ async fn the_token_paths_and_the_policy_both_bound_what_an_agent_may_change() {
     paths.sort();
     assert_eq!(paths, ["docs/a.md", "docs/b.md"]);
     // Nothing was written by the refused attempts.
-    assert!(w.ref_target("refs/heads/agent/fixer/scope").await.is_none());
+    assert!(w.ref_target(&mine(&w, &secret, "scope").await).await.is_none());
     // Inside both works.
     let tip = commit(&w, &secret, None, vec![("src/ok.rs", "pub fn ok() {}\n")])
         .await
         .unwrap();
     assert!(!tip.is_empty());
-    assert!(w.ref_target("refs/heads/agent/fixer/scope").await.is_some());
+    assert!(w.ref_target(&mine(&w, &secret, "scope").await).await.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -980,7 +1041,7 @@ async fn the_change_budget_of_a_token_counts_every_commit_and_a_refused_one_cost
         0,
     )
     .await;
-    let r = "refs/heads/agent/fixer/budget";
+    let r = &mine(&w, &secret, "budget").await;
     let one = commit_as(&w, &secret, r, &w.base, None, &[("src/1.rs", "1")])
         .await
         .unwrap();
@@ -1011,7 +1072,7 @@ async fn the_change_budget_of_a_token_counts_every_commit_and_a_refused_one_cost
     let e = commit_as(
         &w,
         &secret2,
-        "refs/heads/agent/fixer/s2",
+        &mine(&w, &secret2, "s2").await,
         &w.base,
         None,
         &[("docs/x.md", "x")],
@@ -1034,7 +1095,7 @@ async fn the_change_budget_of_a_token_counts_every_commit_and_a_refused_one_cost
     commit_as(
         &w,
         &secret2,
-        "refs/heads/agent/fixer/s2",
+        &mine(&w, &secret2, "s2").await,
         &w.base,
         None,
         &[("src/x.rs", "x")],
@@ -1096,24 +1157,24 @@ async fn the_per_run_change_cap_of_a_token_and_of_the_policy_bound_one_update() 
     // A token capped at two changes per update refuses a push of three.
     let (_, capped) = make(&w, &[], wire::AgentBudgetLimits::default(), 2).await;
     let top = stack(&w, &capped, 3).await;
-    let e = point(&w, &capped, "refs/heads/agent/fixer/three", &top)
+    let e = point(&w, &capped, &mine(&w, &capped, "three").await, &top)
         .await
         .unwrap_err();
     assert_eq!(code(&e), "BUDGET_EXCEEDED", "{e:?}");
-    assert!(w.ref_target("refs/heads/agent/fixer/three").await.is_none());
+    assert!(w.ref_target(&mine(&w, &capped, "three").await).await.is_none());
     let top = stack(&w, &capped, 2).await;
-    point(&w, &capped, "refs/heads/agent/fixer/two", &top)
+    point(&w, &capped, &mine(&w, &capped, "two").await, &top)
         .await
         .unwrap();
     // The policy caps a run at five changes, whatever the token says.
     let (_, open) = make(&w, &[], wire::AgentBudgetLimits::default(), 0).await;
     let top = stack(&w, &open, 6).await;
-    let e = point(&w, &open, "refs/heads/agent/fixer/six", &top)
+    let e = point(&w, &open, &mine(&w, &open, "six").await, &top)
         .await
         .unwrap_err();
     assert_eq!(code(&e), "BUDGET_EXCEEDED");
     let top = stack(&w, &open, 5).await;
-    point(&w, &open, "refs/heads/agent/fixer/five", &top)
+    point(&w, &open, &mine(&w, &open, "five").await, &top)
         .await
         .unwrap();
 }
@@ -1125,7 +1186,7 @@ async fn an_agent_can_never_land_whatever_it_asks_for() {
     let tip = commit_as(
         &w,
         &secret,
-        "refs/heads/agent/fixer/land-me",
+        &mine(&w, &secret, "land-me").await,
         &w.base,
         None,
         &[("src/l.rs", "l")],

@@ -103,15 +103,6 @@ pub fn is_agent_ref(agent: &AgentPrincipal, name: &str) -> bool {
     name.starts_with("refs/heads/") && crate::refpolicy::agent_ref_shape(agent, name)
 }
 
-/// The run number of `refs/heads/agent/<agent>/run-<n>`.
-fn run_of_ref(agent: &AgentPrincipal, name: &str) -> Option<u64> {
-    name.strip_prefix("refs/heads/agent/")?
-        .strip_prefix(agent.name.as_str())?
-        .strip_prefix("/run-")?
-        .parse()
-        .ok()
-}
-
 #[async_trait]
 impl AgentGate for ServerAgentGate {
     async fn check_refs(
@@ -130,15 +121,21 @@ impl AgentGate for ServerAgentGate {
         }
         let mut bad: Vec<String> = Vec::new();
         for (name, _) in refs {
-            let own = is_agent_ref(&p, name)
-                && match run_of_ref(&p, name) {
-                    // A run ref belongs to the run's own token and to nobody else's.
-                    Some(run) => matches!(
+            let own = match crate::refpolicy::agent_ref_kind(&p, name) {
+                // Inside this token's own namespace.
+                Some(crate::refpolicy::AgentRefKind::Token) if name.starts_with("refs/heads/") => {
+                    true
+                }
+                // A run ref belongs to the run's own token and to nobody else's; a run that does
+                // not exist, or cannot be read, owns nothing.
+                Some(crate::refpolicy::AgentRefKind::Run(run)) if name.starts_with("refs/heads/") => {
+                    matches!(
                         self.core.runs.get(run).await,
                         Ok(Some(r)) if r.token_id == p.token_id
-                    ),
-                    None => true,
-                };
+                    )
+                }
+                _ => false,
+            };
             if !own && bad.len() < MAX_REPORTED {
                 bad.push(name.clone());
             }
