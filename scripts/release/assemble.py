@@ -14,7 +14,7 @@ JetBrains packages already named for the release (asc-vscode-<ver>.vsix, asc-jet
 The output directory then holds, for every target, `asc-<ver>-<target>.zip` (what `asc upgrade` and
 `asc self-update` install) and, for Unix targets, `asc-<ver>-<target>.tar.gz` (what install.sh
 installs); the extension packages; `asc-<ver>.cdx.json` (CycloneDX SBOM); the rendered
-Homebrew, winget (winget-asc.asc*.yaml) and Scoop manifests; `manifest.json`; and `SHA256SUMS`. Signing is a separate
+Homebrew, winget (winget-asc.asc*.yaml), Scoop, nfpm (deb and rpm) and AUR manifests; `manifest.json`; and `SHA256SUMS`. Signing is a separate
 step (sign.sh). Everything is deterministic for one (version, commit, epoch, inputs): archive
 member order, modes, owners and timestamps are fixed, and gzip carries no name or time.
 
@@ -250,6 +250,9 @@ def render_packaging(
         ("packaging/winget/portable/asc.asc.yaml.in", "winget-asc.asc.yaml", "winget"),
         ("packaging/winget/portable/asc.asc.installer.yaml.in", "winget-asc.asc.installer.yaml", "winget"),
         ("packaging/winget/portable/asc.asc.locale.en-GB.yaml.in", "winget-asc.asc.locale.en-GB.yaml", "winget"),
+        ("packaging/linux/nfpm-amd64.yaml.in", "nfpm-amd64.yaml", "nfpm"),
+        ("packaging/linux/nfpm-arm64.yaml.in", "nfpm-arm64.yaml", "nfpm"),
+        ("packaging/aur/PKGBUILD.in", "PKGBUILD", "aur"),
     ]
     rendered = []
     for src, dest_name, kind in plan:
@@ -257,7 +260,7 @@ def render_packaging(
         text = render(template, values, hashes, version)
         dest = out / dest_name
         dest.write_text(text, encoding="utf-8", newline="\n")
-        rendered.append(entry(version, kind, "any", "any", dest.suffix.lstrip("."), dest, out))
+        rendered.append(entry(version, kind, "any", "any", dest.suffix.lstrip(".") or dest.name.lower(), dest, out))
     return rendered
 
 

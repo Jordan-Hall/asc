@@ -105,7 +105,7 @@ class AssembleTest(unittest.TestCase):
         row = next(e for e in doc["files"] if e["file"] == "asc-1.2.3-aarch64-unknown-linux-gnu.tar.gz")
         self.assertEqual((row["os"], row["arch"], row["kind"], row["format"]), ("linux", "aarch64", "cli", "tar.gz"))
         kinds = {e["kind"] for e in doc["files"]}
-        self.assertEqual(kinds, {"cli", "vscode", "jetbrains", "sbom", "homebrew", "scoop", "winget"})
+        self.assertEqual(kinds, {"cli", "vscode", "jetbrains", "sbom", "homebrew", "scoop", "winget", "nfpm", "aur"})
 
     def test_sha256sums_covers_everything_else(self) -> None:
         lines = (self.out / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
@@ -157,6 +157,36 @@ class AssembleTest(unittest.TestCase):
         installer = (self.out / "winget-asc.asc.installer.yaml").read_text(encoding="utf-8")
         self.assertIn("NestedInstallerType: portable", installer)
         self.assertIn("ReleaseDate: \"2023-11-14\"", installer)
+
+    def sums(self) -> dict[str, str]:
+        return {ln.split("  ", 1)[1]: ln.split("  ", 1)[0] for ln in (self.out / "SHA256SUMS").read_text(encoding="utf-8").splitlines()}
+
+    def test_nfpm_configs_are_strict_and_filled_in(self) -> None:
+        sums = self.sums()
+        for name, arch, target in [("nfpm-amd64.yaml", "amd64", "x86_64"), ("nfpm-arm64.yaml", "arm64", "aarch64")]:
+            text = (self.out / name).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"@[A-Z0-9_]+(:[A-Za-z0-9._-]+)?@", text), name)
+            tarball = f"asc-1.2.3-{target}-unknown-linux-gnu.tar.gz"
+            self.assertIn(f"#   archive: https://downloads.example.invalid/asc/1.2.3/{tarball}\n", text)
+            self.assertIn(f"#   sha256:  {sums[tarball]}\n", text)
+            keys = dict(ln.split(": ", 1) for ln in text.splitlines() if re.match(r"^[a-z]+: ", ln))
+            self.assertEqual((keys["name"], keys["arch"], keys["version"]), ("asc", arch, '"1.2.3"'))
+            self.assertEqual(text.count("  - src: "), 3)
+            self.assertIn("dst: /usr/bin/asc", text)
+            self.assertNotIn("\t", text)
+
+    def test_pkgbuild_pins_both_linux_archives(self) -> None:
+        sums = self.sums()
+        text = (self.out / "PKGBUILD").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"@[A-Z0-9_]+(:[A-Za-z0-9._-]+)?@", text))
+        self.assertIn("pkgver=1.2.3\n", text)
+        for target in ("x86_64", "aarch64"):
+            self.assertIn(f"sha256sums_{target}=('{sums[f'asc-1.2.3-{target}-unknown-linux-gnu.tar.gz']}')", text)
+            self.assertIn(f"https://downloads.example.invalid/asc/1.2.3/asc-1.2.3-{target}-unknown-linux-gnu.tar.gz", text)
+        for fn in ("prepare()", "package()"):
+            self.assertIn(fn + " {", text)
+        self.assertEqual(text.count("{"), text.count("}"))
+        self.assertIn("minisign -V -P", text)
 
     def test_render_refuses_unknown_tokens_and_files(self) -> None:
         with self.assertRaises(assemble.ReleaseError):
@@ -340,3 +370,4 @@ class VerifyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
