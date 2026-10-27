@@ -1153,6 +1153,30 @@ async fn cancelling_stops_a_run_in_a_model_call_revokes_its_token_and_removes_it
     assert_eq!(e.code(), Code::InvalidArgument);
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_runs_working_copy_is_in_a_private_directory_of_the_servers_user() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let w = World::new().await;
+    w.key(repo_owner(), "team").await;
+    w.fake.set_default(slow(60));
+    w.start_run("alice-token", "take your time").await.unwrap();
+    until("the model call", || async {
+        w.fake.completions().len() == 1
+    })
+    .await;
+    let work = w.dir.path().join("work");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&work), 0o700, "the base directory");
+    let copies: Vec<_> = std::fs::read_dir(&work)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(mode(&copies[0]), 0o700, "the run's directory");
+    assert_eq!(mode(&copies[0].join("tree")), 0o700, "its tree");
+}
+
 async fn cancel_with_reason(w: &World, id: u64, reason: &str) -> tonic::Status {
     w.svc
         .cancel_run(w.request(

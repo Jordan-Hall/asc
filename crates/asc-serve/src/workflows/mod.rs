@@ -142,7 +142,7 @@ impl WorkflowsHub {
         let work_dir = cfg
             .work_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("asc-workflows"));
+            .unwrap_or_else(|| crate::workdir::fallback("workflows"));
         let permits = Arc::new(Semaphore::new(cfg.max_concurrent_runs as usize));
         Arc::new(Self {
             store: Store::new(pool),

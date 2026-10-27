@@ -140,9 +140,14 @@ impl Workspace {
         let tag: String = raw.iter().map(|b| format!("{b:02x}")).collect();
         let dir = work_dir.join(format!("run-{run_id}-{tag}"));
         let tree = dir.join("tree");
-        tokio::fs::create_dir_all(&tree).await.map_err(|e| {
+        let unavailable = |e: std::io::Error| {
+            tracing::error!(error = %e, "agent working directory");
             Status::unavailable(format!("cannot create the working directory: {}", e.kind()))
-        })?;
+        };
+        // The base must be ours and private; the run's own directories are made 0700 and new.
+        crate::workdir::prepare(work_dir).map_err(unavailable)?;
+        crate::workdir::create_private(&dir).map_err(unavailable)?;
+        crate::workdir::create_private(&tree).map_err(unavailable)?;
         let files = match root {
             Some(r) => view
                 .walk(&entry, r, limits.max_files, limits.max_bytes)
@@ -183,7 +188,11 @@ impl Workspace {
             let Ok(rel) = clean_rel(&f.path) else {
                 continue;
             };
-            let path = self.tree.join(&rel);
+            // No part of the path may be a link, and the file is created, never opened over.
+            let path = self
+                .resolve(&rel)
+                .await
+                .map_err(|_| Status::internal("internal error"))?;
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
@@ -193,15 +202,9 @@ impl Workspace {
                 .read_file(f.id, f.size)
                 .await
                 .map_err(|e| crate::update::internal("workspace: read", &e))?;
-            tokio::fs::write(&path, &data)
+            crate::workdir::write_new(&path, &data, f.exec)
                 .await
                 .map_err(|_| Status::internal("internal error"))?;
-            #[cfg(unix)]
-            if f.exec {
-                use std::os::unix::fs::PermissionsExt as _;
-                let _ =
-                    tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).await;
-            }
         }
         Ok(())
     }

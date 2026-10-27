@@ -141,7 +141,7 @@ impl AgentsHub {
         let work_dir = cfg
             .work_dir
             .clone()
-            .unwrap_or_else(|| std::env::temp_dir().join("asc-agents"));
+            .unwrap_or_else(|| crate::workdir::fallback("agents"));
         let sandbox = sandbox_of(&cfg);
         let permits = Arc::new(Semaphore::new(cfg.max_concurrent_runs as usize));
         let core = Arc::new(Core {
