@@ -2047,3 +2047,66 @@ async fn the_service_will_not_send_a_stored_key_to_a_new_endpoint_and_answers_th
     assert_eq!(e.code(), Code::InvalidArgument);
     assert!(e.message().contains("base_url"), "{}", e.message());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_hubs_claim_decides_who_administers_an_organisations_or_the_instances_keys() {
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+    let f = fx().await;
+    let v = ForwardedVerifier::new(vec![8u8; 32]).unwrap();
+    let authz: Arc<dyn Authorizer> = Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+        f.authorizer.clone(),
+        v.clone(),
+    ));
+    let svc = AiService::new(f.hub.clone(), authz, ServerInfo::default());
+    let now = crate::ai::clock::now();
+    let call = |owner: Option<wire::OwnerRef>, subject: &str, user: &str, role: Role, at: i64| {
+        let mut r = req(wire::ListAiKeysRequest { owner }, "host-token", None);
+        for (k, val) in v.sign(user, role, subject, at) {
+            r.metadata_mut().append(k, val.parse().unwrap());
+        }
+        svc.list_keys(r)
+    };
+    let acme = owner_ref(wire::OwnerKind::Org, "acme");
+    // The organisation's owner, not a member who only writes, and not a claim for another org.
+    assert!(
+        call(acme.clone(), "org:acme", "7:alice", Role::Admin, now)
+            .await
+            .is_ok()
+    );
+    for (subject, role) in [("org:acme", Role::Write), ("org:zed", Role::Admin)] {
+        let e = call(acme.clone(), subject, "8:bob", role, now)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Code::NotFound, "{subject}");
+    }
+    // The instance's keys are the site administrator's.
+    let inst = owner_ref(wire::OwnerKind::Instance, "");
+    assert!(
+        call(inst.clone(), "instance", "1:root", Role::Admin, now)
+            .await
+            .is_ok()
+    );
+    assert!(
+        call(inst.clone(), "org:acme", "7:alice", Role::Admin, now)
+            .await
+            .is_err()
+    );
+    // A person's own keys by the account claim; another person's login is not that account.
+    let alice = owner_ref(wire::OwnerKind::User, "alice");
+    assert!(
+        call(alice.clone(), "user:alice", "7:alice", Role::Write, now)
+            .await
+            .is_ok()
+    );
+    assert!(
+        call(alice.clone(), "user:alice", "8:bob", Role::Write, now)
+            .await
+            .is_err()
+    );
+    // A stale claim is refused rather than read as the service's own power.
+    assert!(
+        call(acme, "org:acme", "7:alice", Role::Admin, now - 600)
+            .await
+            .is_err()
+    );
+}

@@ -33,6 +33,7 @@ fn caller(id: &str) -> Caller {
     Caller {
         principal: Principal { id: id.into() },
         credential: None,
+        forwarded: Default::default(),
     }
 }
 
