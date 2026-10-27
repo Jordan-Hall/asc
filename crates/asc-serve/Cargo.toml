@@ -31,6 +31,7 @@ asc-rpc = { workspace = true }
 asc-git = { workspace = true }
 asc-store = { workspace = true }
 asc-engine = { workspace = true }
+asc-ci = { workspace = true }
 asc-graph = { workspace = true }
 asc-codeintel = { path = "../asc-codeintel" }
 asc-mcp = { workspace = true }
@@ -50,6 +51,8 @@ base64 = { workspace = true }
 regex = { workspace = true }
 gix-attributes = { workspace = true }
 bstr = { workspace = true }
+# Unified diffs of an agent's uncommitted changes (agents/workspace.rs).
+similar = { workspace = true }
 tar = { workspace = true }
 zip = { workspace = true }
 serde = { workspace = true }

@@ -1006,6 +1006,16 @@ pub struct ServeConfig {
     pub audit: crate::audit::AuditConfig,
     /// `[ci_insights]`: retention and the flaky window (docs/BUILDOUT.md section 8).
     pub ci_insights: crate::ci::insights::InsightsConfig,
+    /// `[secrets]`: bounds of the push-time secret scan (docs/BUILDOUT.md section 4).
+    pub secrets: crate::secretscan::Config,
+    /// `[signing]`: the server's signing key and the keys per user (docs/BUILDOUT.md section 5).
+    pub signing: crate::signing::Config,
+    /// `[aikeys]`: bring-your-own AI provider keys (docs/AGENTS.md).
+    pub aikeys: crate::ai::AiKeysConfig,
+    /// `[agents]`: agent runs, tokens, budgets and the command sandbox (docs/AGENTS.md).
+    pub agents: crate::agents::AgentsConfig,
+    /// `[workflows]`: repository workflows (docs/WORKFLOWS.md).
+    pub workflows: crate::workflows::WorkflowsConfig,
     pub composition_grants: Vec<CompositionGrant>,
 }
 
@@ -1039,6 +1049,13 @@ impl Default for ServeConfig {
             vault: crate::vault::VaultConfig::default(),
             netguard: crate::netguard::NetGuardConfig::default(),
             storage: crate::storage::StorageConfig::default(),
+            audit: crate::audit::AuditConfig::default(),
+            ci_insights: crate::ci::insights::InsightsConfig::default(),
+            secrets: crate::secretscan::Config::default(),
+            signing: crate::signing::Config::default(),
+            aikeys: crate::ai::AiKeysConfig::default(),
+            agents: crate::agents::AgentsConfig::default(),
+            workflows: crate::workflows::WorkflowsConfig::default(),
             composition_grants: Vec::new(),
         }
     }
@@ -1049,8 +1066,6 @@ impl ServeConfig {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let read = |source| ConfigError::Read {
             path: path.to_owned(),
-            audit: crate::audit::AuditConfig::default(),
-            ci_insights: crate::ci::insights::InsightsConfig::default(),
             source,
         };
         let file = std::fs::File::open(path).map_err(read)?;
@@ -1171,8 +1186,19 @@ impl ServeConfig {
         self.limits.validate()?;
         self.cloud.validate()?;
         self.web.validate()?;
+        self.secrets.validate().or_else(invalid)?;
+        self.signing.validate().or_else(invalid)?;
+        self.audit
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("audit: {e}")))?;
+        self.ci_insights
+            .validate()
+            .map_err(|e| ConfigError::Invalid(format!("ci_insights: {e}")))?;
         self.netguard.validate().or_else(invalid)?;
         self.storage.validate().or_else(invalid)?;
+        self.aikeys.validate().or_else(invalid)?;
+        self.agents.validate().or_else(invalid)?;
+        self.workflows.validate().or_else(invalid)?;
         self.validate_grants()
     }
 
@@ -1186,12 +1212,6 @@ impl ServeConfig {
 
     fn check_listener(&self, policy: Policy) -> Result<(), ConfigError> {
         let behind_https_proxy = self
-        self.audit
-            .validate()
-            .map_err(|e| ConfigError::Invalid(format!("audit: {e}")))?;
-        self.ci_insights
-            .validate()
-            .map_err(|e| ConfigError::Invalid(format!("ci_insights: {e}")))?;
             .public_url
             .as_deref()
             .is_some_and(|u| classify(u, policy) == Ok(Transport::Https));

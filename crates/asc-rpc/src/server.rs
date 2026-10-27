@@ -465,6 +465,13 @@ handler_group! {
     }
 }
 
+handler_group! {
+    /// `GetPolicy` (docs/BUILDOUT.md section 1): the repository policy as the caller sees it.
+    PolicyHandler {
+        fn get_policy(GetPolicyRequest) -> GetPolicyResponse;
+    }
+}
+
 /// A handler group was registered twice.
 #[derive(Debug, thiserror::Error)]
 #[error("the {0} handler group is already registered")]
@@ -510,6 +517,7 @@ registry! {
     rebase, set_rebase: RebaseHandler;
     insights, set_insights: InsightsHandler;
     watch, set_watch: WatchHandler;
+    policy, set_policy: PolicyHandler;
 }
 
 // ------------------------------------------------------------------------------ service
@@ -735,12 +743,19 @@ repo_impl! {
         }))
     }
 
-    // Policy as code is work in progress (HEAD adds the proto only): answer instead of failing the build.
     async fn get_policy(
         &self,
-        _request: Request<pb::GetPolicyRequest>,
+        request: Request<pb::GetPolicyRequest>,
     ) -> Result<Response<pb::GetPolicyResponse>, Status> {
-        Err(Status::unimplemented("GetPolicy is not served yet"))
+        let (meta, ext, msg) = request.into_parts();
+        let ctx = self
+            .context(&meta, &ext, msg.repo.as_ref(), Access::Read, false)
+            .await?;
+        self.handlers
+            .policy()
+            .get_policy(&ctx, msg)
+            .await
+            .map(Response::new)
     }
 
     type WatchRefsStream = RpcStream<pb::RefEvent>;

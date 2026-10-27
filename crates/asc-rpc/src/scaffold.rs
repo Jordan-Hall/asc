@@ -79,38 +79,6 @@ macro_rules! scaffold {
 }
 
 scaffold! {
-    policy_server::Policy = "asc.v1.Policy" {
-        unary {
-            "GetSource" get_source(GetPolicySourceRequest) -> GetPolicySourceResponse;
-            "Validate" validate(ValidatePolicyRequest) -> ValidatePolicyResponse;
-            "Propose" propose(ProposePolicyRequest) -> ProposePolicyResponse;
-            "Evaluate" evaluate(EvaluatePolicyRequest) -> EvaluatePolicyResponse;
-        }
-        stream {
-        }
-    }
-    secret_scan_server::SecretScan = "asc.v1.SecretScan" {
-        unary {
-            "ListRules" list_rules(ListSecretRulesRequest) -> ListSecretRulesResponse;
-            "Scan" scan(ScanSecretsRequest) -> ScanSecretsResponse;
-            "ListFindings" list_findings(ListSecretFindingsRequest) -> ListSecretFindingsResponse;
-            "UpdateFinding" update_finding(UpdateSecretFindingRequest) -> UpdateSecretFindingResponse;
-        }
-        stream {
-        }
-    }
-    signing_server::Signing = "asc.v1.Signing" {
-        unary {
-            "ListKeys" list_keys(ListSigningKeysRequest) -> ListSigningKeysResponse;
-            "AddKey" add_key(AddSigningKeyRequest) -> AddSigningKeyResponse;
-            "RevokeKey" revoke_key(RevokeSigningKeyRequest) -> RevokeSigningKeyResponse;
-            "SubmitSignature" submit_signature(SubmitSignatureRequest) -> SubmitSignatureResponse;
-            "Verify" verify(VerifySignaturesRequest) -> VerifySignaturesResponse;
-            "GetServerKey" get_server_key(GetServerKeyRequest) -> GetServerKeyResponse;
-        }
-        stream {
-        }
-    }
     merge_queue_server::MergeQueue = "asc.v1.MergeQueue" {
         unary {
             "Enqueue" enqueue(EnqueueRequest) -> EnqueueResponse;
@@ -122,60 +90,6 @@ scaffold! {
         }
         stream {
             "Watch" watch(WatchQueueRequest) -> QueueEvent as WatchStream;
-        }
-    }
-    ai_providers_server::AiProviders = "asc.v1.AiProviders" {
-        unary {
-            "CreateKey" create_key(CreateAiKeyRequest) -> CreateAiKeyResponse;
-            "ListKeys" list_keys(ListAiKeysRequest) -> ListAiKeysResponse;
-            "GetKey" get_key(GetAiKeyRequest) -> GetAiKeyResponse;
-            "UpdateKey" update_key(UpdateAiKeyRequest) -> UpdateAiKeyResponse;
-            "DeleteKey" delete_key(DeleteAiKeyRequest) -> DeleteAiKeyResponse;
-            "TestKey" test_key(TestAiKeyRequest) -> TestAiKeyResponse;
-            "Usage" usage(AiUsageRequest) -> AiUsageResponse;
-            "ListModels" list_models(ListAiModelsRequest) -> ListAiModelsResponse;
-        }
-        stream {
-        }
-    }
-    agents_server::Agents = "asc.v1.Agents" {
-        unary {
-            "CreateRun" create_run(CreateAgentRunRequest) -> CreateAgentRunResponse;
-            "ListRuns" list_runs(ListAgentRunsRequest) -> ListAgentRunsResponse;
-            "GetRun" get_run(GetAgentRunRequest) -> GetAgentRunResponse;
-            "CancelRun" cancel_run(CancelAgentRunRequest) -> CancelAgentRunResponse;
-            "SendInput" send_input(SendAgentInputRequest) -> SendAgentInputResponse;
-        }
-        stream {
-            "WatchRun" watch_run(WatchAgentRunRequest) -> AgentRunEvent as WatchRunStream;
-        }
-    }
-    agent_tokens_server::AgentTokens = "asc.v1.AgentTokens" {
-        unary {
-            "CreateToken" create_token(CreateAgentTokenRequest) -> CreateAgentTokenResponse;
-            "ListTokens" list_tokens(ListAgentTokensRequest) -> ListAgentTokensResponse;
-            "GetToken" get_token(GetAgentTokenRequest) -> GetAgentTokenResponse;
-            "RevokeToken" revoke_token(RevokeAgentTokenRequest) -> RevokeAgentTokenResponse;
-            "SetBudget" set_budget(SetAgentTokenBudgetRequest) -> SetAgentTokenBudgetResponse;
-            "ReportUsage" report_usage(ReportAgentUsageRequest) -> ReportAgentUsageResponse;
-        }
-        stream {
-        }
-    }
-    workflows_server::Workflows = "asc.v1.Workflows" {
-        unary {
-            "ListDefinitions" list_definitions(ListWorkflowDefinitionsRequest) -> ListWorkflowDefinitionsResponse;
-            "GetDefinition" get_definition(GetWorkflowDefinitionRequest) -> GetWorkflowDefinitionResponse;
-            "Validate" validate(ValidateWorkflowRequest) -> ValidateWorkflowResponse;
-            "SetEnabled" set_enabled(SetWorkflowEnabledRequest) -> SetWorkflowEnabledResponse;
-            "Trigger" trigger(TriggerWorkflowRequest) -> TriggerWorkflowResponse;
-            "ListRuns" list_runs(ListWorkflowRunsRequest) -> ListWorkflowRunsResponse;
-            "GetRun" get_run(GetWorkflowRunRequest) -> GetWorkflowRunResponse;
-            "CancelRun" cancel_run(CancelWorkflowRunRequest) -> CancelWorkflowRunResponse;
-            "DecideApproval" decide_approval(DecideWorkflowApprovalRequest) -> DecideWorkflowApprovalResponse;
-        }
-        stream {
-            "WatchRun" watch_run(WatchWorkflowRunRequest) -> WorkflowRunEvent as WatchRunStream;
         }
     }
     cross_search_server::CrossSearch = "asc.v1.CrossSearch" {

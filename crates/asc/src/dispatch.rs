@@ -223,6 +223,8 @@ pub const ASC_ONLY_VERBS: &[&str] = &[
     "sparse",
     "debug",
     "ci",
+    "agent",
+    "workflow",
     "affected",
     "projects",
     "graph",

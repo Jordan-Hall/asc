@@ -27,11 +27,13 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tonic::Status;
 use uuid::Uuid;
 
+use crate::agents::gate::{AgentGate, RefChange};
 use crate::cloud::quota::{self, UserQuota};
 use crate::gc::{ClusterLock, PgClusterLock};
 use crate::graph_sql::SqlGraph;
 use crate::ingest::{IngestError, IngestObserver, Ingestor, NoObserver};
 use crate::land::{self, DisjointOnly, OverlapPolicy};
+use crate::policy::gate::{GateMode, GateRequest, GateUpdate, RefGate};
 use crate::refpolicy::UserRefWriter;
 use crate::registry::{Extensions, Registry, RegistryError, RepoEntry, RepoMode};
 use crate::{refauthz, refpolicy};
@@ -173,6 +175,8 @@ pub struct PipelineHooks {
     push: OnceLock<Arc<dyn PushHooks>>,
     quota: OnceLock<UserQuota>,
     overlap: OnceLock<Arc<dyn OverlapPolicy>>,
+    agent: OnceLock<Arc<dyn AgentGate>>,
+    gate: OnceLock<Arc<dyn RefGate>>,
     gc: GcLock,
     gc_roots: crate::gc::GcRoots,
 }
@@ -211,6 +215,28 @@ impl PipelineHooks {
     /// How a land treats paths the stack shares with the branch (path-disjoint only by default).
     pub fn overlap_policy(&self) -> &dyn OverlapPolicy {
         self.overlap.get().map_or(&DisjointOnly, |p| &**p)
+    }
+
+    /// Installs the gate every ref update passes (repository policy, secret scanning, signatures);
+    /// fails (returning it) when one is set. Without one nothing but the forge's hooks binds an update.
+    pub fn set_gate(&self, g: Arc<dyn RefGate>) -> Result<(), Arc<dyn RefGate>> {
+        self.gate.set(g)
+    }
+
+    /// The installed gate, if any.
+    pub fn gate(&self) -> Option<&dyn RefGate> {
+        self.gate.get().map(|g| &**g)
+    }
+
+    /// Installs the gate that binds agent principals (scope, budget, own branches only); fails
+    /// (returning it) when one is set. Without one an agent token is just a token.
+    pub fn set_agent_gate(&self, g: Arc<dyn AgentGate>) -> Result<(), Arc<dyn AgentGate>> {
+        self.agent.set(g)
+    }
+
+    /// The installed agent gate, if any.
+    pub fn agent_gate(&self) -> Option<&dyn AgentGate> {
+        self.agent.get().map(|g| &**g)
     }
 
     pub fn observer(&self) -> &dyn IngestObserver {
@@ -470,7 +496,28 @@ impl ServerRefs {
             .await
     }
 
+    /// `update_rewriting_via_inner`, with a `push.refused` audit event when the push is
+    /// refused for a reason of authorisation, policy or a hook.
     async fn update_rewriting_via(
+        &self,
+        ctx: &CallCtx,
+        req: wire::UpdateRefsRequest,
+        rewrites: Option<Rewrites<'_>>,
+        via: &'static str,
+    ) -> Result<wire::UpdateRefsResponse, Status> {
+        let refs: Vec<String> = req.updates.iter().map(|u| u.name.clone()).collect();
+        let result = self
+            .update_rewriting_via_inner(ctx, req, rewrites, via)
+            .await;
+        if let Err(status) = &result
+            && let Some(code) = crate::audit::hooks::refusal_code(status)
+        {
+            crate::audit::hooks::record_refused(self.registry.pool(), ctx, &refs, via, &code).await;
+        }
+        result
+    }
+
+    async fn update_rewriting_via_inner(
         &self,
         ctx: &CallCtx,
         req: wire::UpdateRefsRequest,
@@ -494,33 +541,22 @@ impl ServerRefs {
         } else {
             None
         };
+        // An agent writes only its own draft branches and never lands (agents/gate.rs).
+        if let Some(agent) = self.hooks.agent_gate() {
+            let refs: Vec<(String, bool)> = planned
+                .iter()
+                .map(|p| (p.text.clone(), p.new.is_none()))
+                .collect();
+            agent.check_refs(ctx, pushed.is_some(), &refs)?;
+        }
         let hooks = self.hooks.push_hooks();
         if req.hooks == wire::HookMode::SkipPre as i32 && !hooks.may_skip_pre(ctx) {
-    /// `update_rewriting_via_inner`, with a `push.refused` audit event when the push is
-    /// refused for a reason of authorisation, policy or a hook.
             return Err(Status::permission_denied(
                 "hooks cannot be skipped by this caller",
             ));
         }
         if req.push_options.len() > MAX_PUSH_OPTIONS
             || req
-    ) -> Result<wire::UpdateRefsResponse, Status> {
-        let refs: Vec<String> = req.updates.iter().map(|u| u.name.clone()).collect();
-        let result = self.update_rewriting_via_inner(ctx, req, rewrites, via).await;
-        if let Err(status) = &result
-            && let Some(code) = crate::audit::hooks::refusal_code(status)
-        {
-            crate::audit::hooks::record_refused(self.registry.pool(), ctx, &refs, via, &code).await;
-        }
-        result
-    }
-
-    async fn update_rewriting_via_inner(
-        &self,
-        ctx: &CallCtx,
-        req: wire::UpdateRefsRequest,
-        rewrites: Option<Rewrites<'_>>,
-        via: &'static str,
                 .push_options
                 .iter()
                 .any(|o| o.len() > MAX_PUSH_OPTION_LEN)
@@ -653,6 +689,8 @@ impl ServerRefs {
         let mut updates = Vec::with_capacity(planned.len());
         let mut results = Vec::with_capacity(planned.len());
         let mut hook_updates = Vec::with_capacity(planned.len());
+        let mut agent_updates = Vec::with_capacity(planned.len());
+        let mut gate_updates = Vec::with_capacity(planned.len());
         for p in planned {
             let current = self
                 .registry
@@ -689,6 +727,17 @@ impl ServerRefs {
                 new: p.new.as_ref().map(wire::RefTarget::from),
                 user: p.user,
             });
+            gate_updates.push(GateUpdate {
+                name: p.text.clone(),
+                old: current,
+                new: p.new,
+                user: p.user,
+            });
+            agent_updates.push(RefChange {
+                name: p.text.clone(),
+                old: current,
+                new: p.new,
+            });
             if !p.user {
                 hook_updates.push(HookUpdate {
                     name: p.text,
@@ -702,6 +751,19 @@ impl ServerRefs {
                 new: p.new,
                 expires_at: if p.new.is_some() { expires_at } else { None },
             });
+        }
+
+        // The repository policy, secret scanning and signatures, before any hook runs.
+        if let Some(gate) = self.hooks.gate() {
+            gate.check(&GateRequest {
+                ctx,
+                entry: &entry,
+                updates: &gate_updates,
+                mode: GateMode::Push {
+                    force: mode == wire::UpdateMode::Force,
+                },
+            })
+            .await?;
         }
 
         // Steps 6 and 7: hook points.
@@ -771,10 +833,26 @@ impl ServerRefs {
                 .collect(),
         })
         .map_err(|e| internal("outbox", &e))?;
-        match self
+        // An agent's scope and budget (agents/gate.rs). The charge is given back if the commit fails.
+        let agent_charge = match self.hooks.agent_gate() {
+            Some(g) => match g.charge(ctx, &entry, &agent_updates).await {
+                Ok(c) => c,
+                Err(e) => {
+                    if run_hooks {
+                        hooks.abort(&hook_req).await;
+                    }
+                    return Err(e);
+                }
+            },
+            None => None,
+        };
+        let committed = self
             .commit(&entry, &txn, &response, &outbox, writes.as_ref())
-            .await
-        {
+            .await;
+        if let (Some(g), Some(c)) = (self.hooks.agent_gate(), agent_charge) {
+            g.settle(c, committed.is_ok()).await;
+        }
+        match committed {
             Ok(()) => Ok(response),
             Err(e) => {
                 if run_hooks {
@@ -956,6 +1034,11 @@ impl ServerRefs {
         .execute(&mut *tx)
         .await
         .map_err(|e| internal("outbox", &e))?;
+        // The audit events of this update, in the same transaction: a push that cannot be
+        // recorded is not accepted.
+        crate::audit::hooks::append_ref_updates(&mut tx, entry.key.0, entry.name.as_str(), txn)
+            .await
+            .map_err(|e| internal("audit", &e))?;
         tx.commit().await.map_err(|e| internal("commit", &e))
     }
 }
@@ -1029,11 +1112,6 @@ mod tests {
     use asc_store::codec::encode_stored;
     use asc_store::key::ObjKey;
     use asc_store::objects::Objects;
-        // The audit events of this update, in the same transaction: a push that cannot be
-        // recorded is not accepted.
-        crate::audit::hooks::append_ref_updates(&mut tx, entry.key.0, entry.name.as_str(), txn)
-            .await
-            .map_err(|e| internal("audit", &e))?;
 
     use super::*;
     use crate::ingest::testutil::{commit, put_file, registry, repo, sig};
