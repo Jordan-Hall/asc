@@ -737,3 +737,117 @@ async fn a_branch_that_requires_signed_changes_lands_only_signed_ones() {
     let err = f.land(ALICE, c).await.unwrap_err();
     assert_eq!(code(&err), "UNSIGNED_CHANGE");
 }
+
+fn claim_call<T>(
+    m: T,
+    subject: &str,
+    user: &str,
+    role: asc_rpc::forwarded::Role,
+    at: i64,
+) -> Request<T> {
+    let v = asc_rpc::forwarded::ForwardedVerifier::new(vec![5u8; 32]).unwrap();
+    let mut r = call(m, Some("host"), false);
+    for (k, val) in v.sign(user, role, subject, at) {
+        r.metadata_mut().append(k, val.parse().unwrap());
+    }
+    r
+}
+
+#[tokio::test]
+async fn the_hub_signing_keys_page_acts_as_the_person_of_an_account_claim_and_no_more() {
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+    let f = fx_with(None).await;
+    let hub = Arc::new(Signing::new(f.reg.clone(), Config::default(), None));
+    let authz: Arc<dyn asc_rpc::auth::Authorizer> =
+        Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+            tokens(),
+            ForwardedVerifier::new(vec![5u8; 32]).unwrap(),
+        ));
+    let svc = SigningService::new(hub, authz, ServerInfo::default());
+    let now = crate::ai::clock::now();
+    let add = || wire::AddSigningKeyRequest {
+        title: "laptop".into(),
+        public_key: ALICE_PUB.into(),
+        expires_at: 0,
+    };
+    // Without a claim the host service has no user identity, as before.
+    let e = svc
+        .add_key(call(add(), Some("host"), false))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    // A read claim lists and does not write.
+    let read = |at| {
+        claim_call(
+            wire::AddSigningKeyRequest::default(),
+            "user:alice",
+            "7:alice",
+            Role::Read,
+            at,
+        )
+    };
+    let e = svc.add_key(read(now)).await.unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    // A write claim for the account adds the key as that person.
+    let key = svc
+        .add_key(claim_call(add(), "user:alice", "7:alice", Role::Write, now))
+        .await
+        .unwrap()
+        .into_inner()
+        .key
+        .unwrap();
+    let list = |user: &str, subject: &str, role, at| {
+        claim_call(
+            wire::ListSigningKeysRequest::default(),
+            subject,
+            user,
+            role,
+            at,
+        )
+    };
+    let mine = svc
+        .list_keys(list("7:alice", "user:alice", Role::Read, now))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(mine.keys.len(), 1);
+    // Another person's page shows another person's keys: none.
+    let theirs = svc
+        .list_keys(list("8:bob", "user:bob", Role::Write, now))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(theirs.keys.is_empty());
+    // A claim for another account, a stale claim and a forged one change nothing.
+    let e = svc
+        .list_keys(list("8:bob", "user:alice", Role::Write, now))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    let e = svc
+        .list_keys(list("7:alice", "user:alice", Role::Write, now - 600))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    // Bob's write claim cannot revoke Alice's key and cannot tell it exists.
+    let revoke = |user: &str, subject: &str| {
+        claim_call(
+            wire::RevokeSigningKeyRequest {
+                id: key.id.clone(),
+                reason: String::new(),
+            },
+            subject,
+            user,
+            Role::Write,
+            now,
+        )
+    };
+    let e = svc
+        .revoke_key(revoke("8:bob", "user:bob"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+    svc.revoke_key(revoke("7:alice", "user:alice"))
+        .await
+        .unwrap();
+}

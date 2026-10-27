@@ -2278,14 +2278,22 @@ async fn the_host_service_repairs_an_unusable_policy_only_for_a_forwarded_admini
     // A claim rides on the call only after `forwarded_in` verified it; a claim on a call of any
     // other principal is not the host service's and gives nothing.
     let mut other = admin_ctx("pat:dana", "dana-read");
-    other.admin = other.admin.with_forwarded(Some("7:alice".into()));
+    other.admin = other.admin.with_forwarded(Some(asc_rpc::forwarded::Claim {
+        user: "7:alice".into(),
+        role: asc_rpc::forwarded::Role::Admin,
+    }));
     assert_eq!(
         code(&f.land_with(&other, fix).await.unwrap_err()),
         "POLICY_DENIED"
     );
     assert_eq!(f.tip().await, a);
     let mut forwarded = admin_ctx(crate::authz::HOST_SERVICE_PRINCIPAL, "host");
-    forwarded.admin = forwarded.admin.with_forwarded(Some("7:alice".into()));
+    forwarded.admin = forwarded
+        .admin
+        .with_forwarded(Some(asc_rpc::forwarded::Claim {
+            user: "7:alice".into(),
+            role: asc_rpc::forwarded::Role::Admin,
+        }));
     f.land_with(&forwarded, fix).await.unwrap();
     assert_eq!(f.tip().await, fix);
 }
