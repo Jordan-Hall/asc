@@ -628,6 +628,7 @@ impl AgentTokens for TokenService {
         let creator = ctx.principal.id.clone();
         let hub = self.hub.clone();
         let repo = ctx.repo.as_str().to_ascii_lowercase();
+        let made = clock::now();
         let new = NewToken {
             repo: repo.clone(),
             name: msg.name,
@@ -636,7 +637,8 @@ impl AgentTokens for TokenService {
             max_changes_per_run: msg.max_changes_per_run,
             created_by: creator.clone(),
             owner_id: tokens::owner_id_for(&creator),
-            expires_at: clock::now() + i64::try_from(ttl).unwrap_or(i64::MAX),
+            created: made,
+            expires_at: made + i64::try_from(ttl).unwrap_or(i64::MAX),
             limits,
             run_id: 0,
         };

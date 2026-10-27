@@ -106,6 +106,8 @@ impl Authorizer for ForwardedAuthorizer {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
+    use asc_rpc::forwarded::Role;
+
     use super::*;
 
     fn key_file(dir: &Path, bytes: &[u8], mode: u32) -> std::path::PathBuf {
@@ -138,22 +140,20 @@ mod tests {
         .unwrap();
         let v = ForwardedVerifier::new(vec![1u8; 32]).unwrap();
         let mut meta = tonic::metadata::MetadataMap::new();
-        for (k, val) in v.sign("7:alice", "acme/app", now) {
+        for (k, val) in v.sign("7:alice", Role::Admin, "acme/app", now) {
             meta.append(k, val.parse().unwrap());
         }
         let plain: Arc<dyn Authorizer> = Arc::new(asc_rpc::auth::StaticTokens::new());
         // A server with no key takes no claim, whatever the call says.
         assert!(AdminProof::forwarded_in(&*plain, &meta, "acme/app").is_none());
         let keyed = ForwardedAuthorizer::new(plain, v);
-        assert_eq!(
-            AdminProof::forwarded_in(&keyed, &meta, "acme/app").as_deref(),
-            Some("7:alice")
-        );
+        let claim = AdminProof::forwarded_in(&keyed, &meta, "acme/app").unwrap();
+        assert_eq!((claim.user.as_str(), claim.role), ("7:alice", Role::Admin));
         assert!(AdminProof::forwarded_in(&keyed, &meta, "acme/other").is_none());
         // A client that guesses: right shape, wrong key.
         let theirs = ForwardedVerifier::new(vec![2u8; 32]).unwrap();
         let mut forged = tonic::metadata::MetadataMap::new();
-        for (k, val) in theirs.sign("7:alice", "acme/app", now) {
+        for (k, val) in theirs.sign("7:alice", Role::Admin, "acme/app", now) {
             forged.append(k, val.parse().unwrap());
         }
         assert!(AdminProof::forwarded_in(&keyed, &forged, "acme/app").is_none());

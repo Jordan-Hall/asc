@@ -20,7 +20,9 @@ use asc_rpc::auth::{Access, Authorizer, Credential, Principal};
 use async_trait::async_trait;
 
 use super::model::{Owner, OwnerKind};
+use crate::authz::claim::{HostCall, classify};
 use crate::authz::{UserIdentity, is_host_service};
+use asc_rpc::forwarded::Role;
 
 /// An authenticated caller.
 #[derive(Clone, Debug)]
@@ -28,9 +30,28 @@ pub struct Caller {
     pub principal: Principal,
     /// The credential presented, for repository checks that go back to the authorizer.
     pub credential: Option<Credential>,
+    /// The `x-asc-forwarded-*` entries of the call, for a claim from the hub (see
+    /// [`crate::authz::claim`]). Empty when the call carried none.
+    pub forwarded: tonic::metadata::MetadataMap,
 }
 
 impl Caller {
+    /// The forwarded entries of `meta`, and nothing else of it.
+    pub fn forwarded_of(meta: &tonic::metadata::MetadataMap) -> tonic::metadata::MetadataMap {
+        let mut out = tonic::metadata::MetadataMap::new();
+        for k in [
+            asc_rpc::forwarded::USER,
+            asc_rpc::forwarded::ROLE,
+            asc_rpc::forwarded::TS,
+            asc_rpc::forwarded::MAC,
+        ] {
+            for v in meta.get_all(k) {
+                out.append(k, v.clone());
+            }
+        }
+        out
+    }
+
     /// The text recorded as the actor of audit events.
     pub fn actor(&self) -> &str {
         &self.principal.id
@@ -63,9 +84,43 @@ impl DefaultAuthority {
     }
 }
 
+impl DefaultAuthority {
+    /// What the call says about who it is for, on `subject`.
+    fn host_call(&self, caller: &Caller, subject: &str) -> HostCall {
+        classify(
+            &*self.authorizer,
+            &caller.principal.id,
+            &caller.forwarded,
+            subject,
+        )
+    }
+}
+
 #[async_trait]
 impl Authority for DefaultAuthority {
     async fn can_admin_owner(&self, caller: &Caller, owner: &Owner) -> bool {
+        // A call from the hub with a claim is decided by the claim alone: the hub's verdict on
+        // the account (write), the organisation (admin) or the repository (admin).
+        let (subject, needed) = match owner.kind {
+            OwnerKind::User => (
+                format!("user:{}", owner.name.to_ascii_lowercase()),
+                Role::Write,
+            ),
+            OwnerKind::Org => (
+                format!("org:{}", owner.name.to_ascii_lowercase()),
+                Role::Admin,
+            ),
+            OwnerKind::Repo => (owner.name.to_ascii_lowercase(), Role::Admin),
+        };
+        match self.host_call(caller, &subject) {
+            HostCall::Person(c) => {
+                return c.allows(needed)
+                    && (owner.kind != OwnerKind::User
+                        || c.login().eq_ignore_ascii_case(&owner.name));
+            }
+            HostCall::Refused => return false,
+            HostCall::System | HostCall::NotHost => {}
+        }
         if caller.is_host() {
             return true;
         }
@@ -79,6 +134,11 @@ impl Authority for DefaultAuthority {
     }
 
     async fn can_admin_repo(&self, caller: &Caller, repo: &str) -> bool {
+        match self.host_call(caller, &repo.to_ascii_lowercase()) {
+            HostCall::Person(c) => return c.allows(Role::Admin),
+            HostCall::Refused => return false,
+            HostCall::System | HostCall::NotHost => {}
+        }
         if caller.is_host() {
             return true;
         }
@@ -89,7 +149,11 @@ impl Authority for DefaultAuthority {
     }
 
     async fn is_site_admin(&self, caller: &Caller) -> bool {
-        caller.is_host()
+        match self.host_call(caller, "instance") {
+            HostCall::Person(c) => c.allows(Role::Admin),
+            HostCall::Refused => false,
+            HostCall::System | HostCall::NotHost => caller.is_host(),
+        }
     }
 }
 
@@ -178,6 +242,7 @@ mod tests {
         Caller {
             principal: Principal { id: id.into() },
             credential: None,
+            forwarded: Default::default(),
         }
     }
 
@@ -206,5 +271,69 @@ mod tests {
         assert!(a.can_admin_repo(&me, "acme/app").await);
         assert!(!a.can_admin_repo(&me, "acme/other").await);
         assert!(a.is_site_admin(&host).await && !a.is_site_admin(&me).await);
+    }
+
+    fn claim_caller(
+        v: &asc_rpc::forwarded::ForwardedVerifier,
+        user: &str,
+        role: asc_rpc::forwarded::Role,
+        subject: &str,
+        at: i64,
+    ) -> Caller {
+        let mut c = caller(crate::authz::HOST_SERVICE_PRINCIPAL);
+        for (k, val) in v.sign(user, role, subject, at) {
+            c.forwarded.append(k, val.parse().unwrap());
+        }
+        c
+    }
+
+    #[tokio::test]
+    async fn the_hubs_claim_decides_for_the_person_and_never_widens() {
+        use asc_rpc::forwarded::{ForwardedVerifier, Role};
+        let v = ForwardedVerifier::new(vec![4u8; 32]).unwrap();
+        let authz: Arc<dyn Authorizer> =
+            Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+                Arc::new(Repos("acme/app")),
+                v.clone(),
+            ));
+        let a = DefaultAuthority::new(authz);
+        let now = crate::ai::clock::now();
+        let acme = Owner::new(OwnerKind::Org, "acme").unwrap();
+        let alice = Owner::new(OwnerKind::User, "alice").unwrap();
+        let app = Owner::new(OwnerKind::Repo, "acme/app").unwrap();
+        // An organisation owner administers the organisation's targets; a member who only writes
+        // does not, and neither does a claim for another organisation.
+        let owner = claim_caller(&v, "7:alice", Role::Admin, "org:acme", now);
+        assert!(a.can_admin_owner(&owner, &acme).await);
+        let member = claim_caller(&v, "8:bob", Role::Write, "org:acme", now);
+        assert!(!a.can_admin_owner(&member, &acme).await);
+        let elsewhere = claim_caller(&v, "7:alice", Role::Admin, "org:zed", now);
+        assert!(!a.can_admin_owner(&elsewhere, &acme).await);
+        // The account: the person's own, at write; another person's login is not it.
+        let me = claim_caller(&v, "7:alice", Role::Write, "user:alice", now);
+        assert!(a.can_admin_owner(&me, &alice).await);
+        let not_me = claim_caller(&v, "8:bob", Role::Write, "user:alice", now);
+        assert!(!a.can_admin_owner(&not_me, &alice).await);
+        // A repository: the claim for it, at admin.
+        let repo = claim_caller(&v, "7:alice", Role::Admin, "acme/app", now);
+        assert!(a.can_admin_owner(&repo, &app).await && a.can_admin_repo(&repo, "acme/app").await);
+        let reader = claim_caller(&v, "7:alice", Role::Read, "acme/app", now);
+        assert!(!a.can_admin_repo(&reader, "acme/app").await);
+        // The vault is the site administrator's: the instance claim at admin.
+        let root = claim_caller(&v, "1:root", Role::Admin, "instance", now);
+        assert!(a.is_site_admin(&root).await);
+        assert!(
+            !a.is_site_admin(&owner).await,
+            "an org claim is not the instance"
+        );
+        // A stale or forged claim is refused, not read as the service's own breadth.
+        let stale = claim_caller(&v, "1:root", Role::Admin, "instance", now - 600);
+        assert!(!a.is_site_admin(&stale).await && !a.can_admin_owner(&stale, &acme).await);
+        let theirs = ForwardedVerifier::new(vec![9u8; 32]).unwrap();
+        let forged = claim_caller(&theirs, "1:root", Role::Admin, "instance", now);
+        assert!(!a.is_site_admin(&forged).await);
+        // The service credential alone is still system work.
+        let system = caller(crate::authz::HOST_SERVICE_PRINCIPAL);
+        assert!(a.is_site_admin(&system).await && a.can_admin_owner(&system, &acme).await);
     }
 }

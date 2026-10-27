@@ -13,6 +13,7 @@ use asc_core::sshsig::{self, KeyKind, PublicKey};
 use asc_rpc::auth::{Access, AuthInterceptor, Authorizer, Credential};
 use asc_rpc::convert::WireId;
 use asc_rpc::errors::RpcError;
+use asc_rpc::forwarded::Role;
 use asc_rpc::server::{CallCtx, MAX_MESSAGE, ServerInfo, wire};
 use asc_rpc::services::signing_server::{Signing as SigningApi, SigningServer};
 use bytes::Bytes;
@@ -428,14 +429,28 @@ impl SigningService {
         InterceptedService::new(server, AuthInterceptor)
     }
 
-    /// Who is calling a method that names no repository.
-    async fn caller(&self, ext: &TonicExt) -> Result<String, Status> {
-        Ok(self
+    /// Who is calling a method that names no repository. The hub's web pages call with the host
+    /// service's credential and a claim for the account (`user:<login>`, at least `needed`): the
+    /// call then acts as that person, with their rights and no more. Without a claim the host
+    /// service is the host service.
+    async fn caller(
+        &self,
+        ext: &TonicExt,
+        meta: &tonic::metadata::MetadataMap,
+        needed: asc_rpc::forwarded::Role,
+    ) -> Result<String, Status> {
+        let id = self
             .env
             .authorizer
             .authenticate(ext.get::<Credential>())
             .await?
-            .id)
+            .id;
+        Ok(crate::authz::claim::acting_principal(
+            &*self.env.authorizer,
+            &id,
+            meta,
+            needed,
+        ))
     }
 }
 
@@ -445,8 +460,8 @@ impl SigningApi for SigningService {
         &self,
         request: Request<wire::ListSigningKeysRequest>,
     ) -> Result<Response<wire::ListSigningKeysResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let who = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let who = self.caller(&ext, &meta, Role::Read).await?;
         self.hub.list_keys(&who, msg).await.map(Response::new)
     }
 
@@ -454,8 +469,8 @@ impl SigningApi for SigningService {
         &self,
         request: Request<wire::AddSigningKeyRequest>,
     ) -> Result<Response<wire::AddSigningKeyResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let who = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let who = self.caller(&ext, &meta, Role::Write).await?;
         self.hub.add_key(&who, msg).await.map(Response::new)
     }
 
@@ -463,8 +478,8 @@ impl SigningApi for SigningService {
         &self,
         request: Request<wire::RevokeSigningKeyRequest>,
     ) -> Result<Response<wire::RevokeSigningKeyResponse>, Status> {
-        let (_, ext, msg) = request.into_parts();
-        let who = self.caller(&ext).await?;
+        let (meta, ext, msg) = request.into_parts();
+        let who = self.caller(&ext, &meta, Role::Write).await?;
         self.hub.revoke_key(&who, msg).await.map(Response::new)
     }
 
@@ -499,9 +514,9 @@ impl SigningApi for SigningService {
         &self,
         request: Request<wire::GetServerKeyRequest>,
     ) -> Result<Response<wire::GetServerKeyResponse>, Status> {
-        let (_, ext, _) = request.into_parts();
+        let (meta, ext, _) = request.into_parts();
         // Public information, but only for a caller the server can name.
-        self.caller(&ext).await?;
+        self.caller(&ext, &meta, Role::Read).await?;
         Ok(Response::new(self.hub.get_server_key()))
     }
 }

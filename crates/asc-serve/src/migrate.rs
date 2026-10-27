@@ -49,12 +49,34 @@ fn migrator(b: Backend) -> Migrator {
 }
 
 /// Opens a pool for `url`. The caller owns sizing; the server uses a small fixed pool.
+///
+/// A SQLite file is opened in WAL mode with a 30 second busy timeout on every connection: readers
+/// no longer block the writer (or fail with "database is locked" while it commits), and a writer
+/// waits for another writer instead of failing at once. The mode is stored in the file, so every
+/// process that opens it, the CLI included, sees the same one. A memory database is left alone.
 pub async fn connect(url: &str, max_connections: u32) -> Result<AnyPool, sqlx::Error> {
     sqlx::any::install_default_drivers();
-    sqlx::any::AnyPoolOptions::new()
-        .max_connections(max_connections)
-        .connect(url)
-        .await
+    let file_db =
+        url.starts_with("sqlite:") && !url.contains(":memory:") && !url.contains("mode=memory");
+    let mut options = sqlx::any::AnyPoolOptions::new().max_connections(max_connections);
+    // A read-only handle cannot change the mode; it takes what the file has.
+    let read_only = url.contains("mode=ro");
+    if file_db {
+        options = options.after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                sqlx::query("PRAGMA busy_timeout = 30000")
+                    .execute(&mut *conn)
+                    .await?;
+                if !read_only {
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(&mut *conn)
+                        .await?;
+                }
+                Ok(())
+            })
+        });
+    }
+    options.connect(url).await
 }
 
 /// Applies the `refs` migrations, then the server's.
@@ -206,5 +228,65 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("{q}: {e}"));
         }
+    }
+
+    #[tokio::test]
+    async fn a_sqlite_file_is_wal_with_a_busy_timeout_and_readers_never_fail_beside_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}/t.db?mode=rwc", dir.path().display());
+        let pool = connect(&url, 8).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mode, "wal");
+        let timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(timeout, 30_000);
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, n BIGINT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut tasks = Vec::new();
+        for w in 0..4 {
+            let pool = pool.clone();
+            tasks.push(tokio::spawn(async move {
+                for i in 0..100 {
+                    sqlx::query("INSERT INTO t (n) VALUES ($1)")
+                        .bind(i64::from(w * 1000 + i))
+                        .execute(&pool)
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for _ in 0..4 {
+            let pool = pool.clone();
+            tasks.push(tokio::spawn(async move {
+                for _ in 0..200 {
+                    let _: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM t")
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let n: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS BIGINT) FROM t")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 400);
+        // A memory database is not put in WAL mode.
+        let mem = connect("sqlite::memory:", 1).await.unwrap();
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mem)
+            .await
+            .unwrap();
+        assert_eq!(mode, "memory");
     }
 }

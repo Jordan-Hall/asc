@@ -325,6 +325,9 @@ pub struct NewToken {
     pub max_changes_per_run: u32,
     pub created_by: String,
     pub owner_id: i64,
+    /// The time the token is made at, which `expires_at` was counted from; 0 reads the clock. A
+    /// caller that counts a lifetime passes the same reading for both, so the lifetime is exact.
+    pub created: i64,
     pub expires_at: i64,
     pub limits: Budget,
     pub run_id: u64,
@@ -401,7 +404,11 @@ impl TokenStore {
         n: &NewToken,
         secret: &str,
     ) -> Result<Option<TokenRow>, sqlx::Error> {
-        let now = clock::now();
+        let now = if n.created > 0 {
+            n.created
+        } else {
+            clock::now()
+        };
         let live: i64 = sqlx::query_scalar(
             "SELECT CAST(COUNT(*) AS BIGINT) FROM agent_tokens WHERE repo = $1 AND revoked_at = 0 AND expires_at > $2",
         )
