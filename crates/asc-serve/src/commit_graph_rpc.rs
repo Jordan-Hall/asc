@@ -643,7 +643,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(mode: IdMode) -> wire::CommitGraphRequest {
         wire::CommitGraphRequest {

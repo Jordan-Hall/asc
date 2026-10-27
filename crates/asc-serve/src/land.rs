@@ -712,7 +712,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(
         name: &str,

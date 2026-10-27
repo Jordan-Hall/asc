@@ -239,7 +239,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(needle: &str) -> wire::LogRequest {
         wire::LogRequest {

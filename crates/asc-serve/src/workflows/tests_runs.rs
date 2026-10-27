@@ -1367,7 +1367,8 @@ async fn put_secrets(w: &World) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_is_approved() {
-    if super::tests::git_dir().is_none() || super::tests::wcfg().sandbox.restricted_wrapper.is_empty()
+    if super::tests::git_dir().is_none()
+        || super::tests::wcfg().sandbox.restricted_wrapper.is_empty()
     {
         return;
     }
@@ -1384,7 +1385,8 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
     assert_eq!(row.state, RunState::Failed, "{row:?}");
     let step = step_of(&w, runs[0].id, "show").await;
     assert!(
-        step.error.contains("neither landed nor an approved version"),
+        step.error
+            .contains("neither landed nor an approved version"),
         "{}",
         step.error
     );
@@ -1398,18 +1400,19 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
         reviewed_version: 7,
         ..wire::ReviewState::default()
     };
-    sqlx::query(
-        "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)",
-    )
-    .bind(w.entry.ns.as_bytes().to_vec())
-    .bind(change.clone())
-    .bind(prost::Message::encode_to_vec(&state))
-    .execute(&w.pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)")
+        .bind(w.entry.ns.as_bytes().to_vec())
+        .bind(change.clone())
+        .bind(prost::Message::encode_to_vec(&state))
+        .execute(&w.pool)
+        .await
+        .unwrap();
     hub.poll_repo("acme/app").await.unwrap();
     let runs = runs_of(&w, "show").await;
-    let stale = runs.iter().find(|r| r.change == change).expect("a run for b");
+    let stale = runs
+        .iter()
+        .find(|r| r.change == change)
+        .expect("a run for b");
     assert_eq!(finished(&w, stale.id).await.state, RunState::Failed);
 
     // The exact version, approved, runs with its secrets.
@@ -1429,18 +1432,19 @@ async fn secrets_reach_a_step_only_when_its_code_is_landed_or_the_exact_version_
         reviewed_version: u32::try_from(version).unwrap(),
         ..wire::ReviewState::default()
     };
-    sqlx::query(
-        "INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)",
-    )
-    .bind(w.entry.ns.as_bytes().to_vec())
-    .bind(change2.clone())
-    .bind(prost::Message::encode_to_vec(&state))
-    .execute(&w.pool)
-    .await
-    .unwrap();
+    sqlx::query("INSERT INTO review_state (ns, change, state, updated) VALUES ($1, $2, $3, 1)")
+        .bind(w.entry.ns.as_bytes().to_vec())
+        .bind(change2.clone())
+        .bind(prost::Message::encode_to_vec(&state))
+        .execute(&w.pool)
+        .await
+        .unwrap();
     hub.poll_repo("acme/app").await.unwrap();
     let runs = runs_of(&w, "show").await;
-    let good = runs.iter().find(|r| r.change == change2).expect("a run for c");
+    let good = runs
+        .iter()
+        .find(|r| r.change == change2)
+        .expect("a run for c");
     let row = finished(&w, good.id).await;
     assert_eq!(row.state, RunState::Succeeded, "{row:?}");
     let _ = cs;

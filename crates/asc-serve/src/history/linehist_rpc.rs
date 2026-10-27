@@ -235,7 +235,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(start: u32, end: u32) -> wire::LineHistoryRequest {
         wire::LineHistoryRequest {

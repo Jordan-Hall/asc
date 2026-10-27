@@ -647,8 +647,16 @@ async fn a_tree_walk_cut_short_says_the_scan_was_truncated() {
     ));
     s.svc = SecretScanService::new(hub, tokens(), ServerInfo::default());
     let names: Vec<String> = (0..6).map(|i| format!("f{i}.txt")).collect();
-    let files: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b"x
-"[..])).collect();
+    let files: Vec<(&str, &[u8])> = names
+        .iter()
+        .map(|n| {
+            (
+                n.as_str(),
+                &b"x
+"[..],
+            )
+        })
+        .collect();
     let c = commit(&s.f.e, &[], &files).await;
     s.f.set_master(c).await;
     let resp = s
@@ -657,5 +665,8 @@ async fn a_tree_walk_cut_short_says_the_scan_was_truncated() {
         .await
         .unwrap()
         .into_inner();
-    assert!(resp.truncated, "a scan that left files unvisited must say so");
+    assert!(
+        resp.truncated,
+        "a scan that left files unvisited must say so"
+    );
 }

@@ -2600,7 +2600,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn repo_ref(mode: IdMode) -> Option<wire::RepoRef> {
         Some(wire::RepoRef {

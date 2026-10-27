@@ -741,7 +741,8 @@ impl WorkflowsHub {
                 .await
                 .ok()
                 .flatten();
-        let review = state.and_then(|raw| <wire::ReviewState as prost::Message>::decode(raw.as_slice()).ok());
+        let review = state
+            .and_then(|raw| <wire::ReviewState as prost::Message>::decode(raw.as_slice()).ok());
         review.is_some_and(|r| r.approvals >= 1 && r.reviewed_version == version)
     }
 

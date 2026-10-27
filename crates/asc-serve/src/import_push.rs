@@ -263,7 +263,10 @@ impl ImportPush {
                 quarantine,
                 commands,
                 (windows_safe, native),
-                (crate::refpolicy::accounting_owner_of(&ctx.principal).unwrap_or(0), budget),
+                (
+                    crate::refpolicy::accounting_owner_of(&ctx.principal).unwrap_or(0),
+                    budget,
+                ),
             )
             .await?;
 
@@ -1427,7 +1430,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn code(s: &Status) -> String {
         status_rpc_error(s).map_or_else(|| s.code().to_string(), |e| e.code().to_owned())

@@ -172,7 +172,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     fn req(rev: &str) -> wire::RepoConfigRequest {
         wire::RepoConfigRequest {

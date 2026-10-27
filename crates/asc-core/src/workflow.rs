@@ -1135,7 +1135,8 @@ fn valid_host(h: &str) -> bool {
                 && l.len() <= 63
                 && !l.starts_with('-')
                 && !l.ends_with('-')
-                && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
 }
 
@@ -1466,16 +1467,20 @@ egress = [\"registry.example.com\", \"a-b.io\"]
             "egress = [\"X.io\"]",
             "egress = [\"\"]",
         ] {
-            let t = step_with(&format!("kind = \"command\"
+            let t = step_with(&format!(
+                "kind = \"command\"
 command = [\"ls\"]
 {bad}
-"));
+"
+            ));
             assert!(parse(&t).is_err(), "{bad}");
         }
-        let elsewhere = step_with("kind = \"approval\"
+        let elsewhere = step_with(
+            "kind = \"approval\"
 approvers = [\"role:m\"]
 egress = [\"x.io\"]
-");
+",
+        );
         assert!(parse(&elsewhere).is_err());
     }
 

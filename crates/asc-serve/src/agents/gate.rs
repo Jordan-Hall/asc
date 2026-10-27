@@ -128,7 +128,9 @@ impl AgentGate for ServerAgentGate {
                 }
                 // A run ref belongs to the run's own token and to nobody else's; a run that does
                 // not exist, or cannot be read, owns nothing.
-                Some(crate::refpolicy::AgentRefKind::Run(run)) if name.starts_with("refs/heads/") => {
+                Some(crate::refpolicy::AgentRefKind::Run(run))
+                    if name.starts_with("refs/heads/") =>
+                {
                     matches!(
                         self.core.runs.get(run).await,
                         Ok(Some(r)) if r.token_id == p.token_id

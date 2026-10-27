@@ -469,7 +469,7 @@ mod tests {
             client: None,
             admin: Default::default(),
         }
-}
+    }
 
     async fn classify(
         f: &Fx,
