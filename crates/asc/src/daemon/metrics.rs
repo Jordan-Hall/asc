@@ -322,6 +322,16 @@ pub fn rss_bytes() -> Option<u64> {
     imp::rss_bytes()
 }
 
+/// The memory this process owns: its resident set without the file-backed pages of the
+/// executable and its libraries. On Linux that is `RssAnon + RssShmem`; elsewhere the platform
+/// cannot split the figure and it is [`rss_bytes`]. The file-backed part is shared with every
+/// other process that maps the same image and the kernel drops it under pressure, but it grows
+/// with the size of the binary (relocations touch much of a position-independent image), so it
+/// says little about what the daemon allocates.
+pub fn private_rss_bytes() -> Option<u64> {
+    imp::private_rss_bytes()
+}
+
 /// Hands freed heap pages back to the OS, so a drop shows in the resident set. Only glibc keeps
 /// freed memory in per-thread arenas until trimmed; other targets return it on free.
 pub fn release_freed_memory() {
@@ -356,6 +366,19 @@ mod imp {
         let kib: u64 = line.trim().strip_suffix("kB")?.trim().parse().ok()?;
         kib.checked_mul(1024)
     }
+
+    pub fn private_rss_bytes() -> Option<u64> {
+        let text = std::fs::read_to_string("/proc/self/status").ok()?;
+        let kib = |key: &str| -> Option<u64> {
+            let line = text.lines().find_map(|l| l.strip_prefix(key))?;
+            line.trim().strip_suffix("kB")?.trim().parse().ok()
+        };
+        // Kernels before 4.5 have no split: fall back to the whole figure.
+        match (kib("RssAnon:"), kib("RssShmem:")) {
+            (Some(anon), Some(shmem)) => anon.checked_add(shmem)?.checked_mul(1024),
+            _ => rss_bytes(),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -365,6 +388,10 @@ mod imp {
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    pub fn private_rss_bytes() -> Option<u64> {
+        rss_bytes()
+    }
 
     pub fn rss_bytes() -> Option<u64> {
         // SAFETY: `counters` is a plain-data struct that the call fills; `cb` is its size and
@@ -383,6 +410,10 @@ mod imp {
 #[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     pub fn rss_bytes() -> Option<u64> {
+        None
+    }
+
+    pub fn private_rss_bytes() -> Option<u64> {
         None
     }
 }
