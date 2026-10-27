@@ -63,6 +63,22 @@ impl Entry {
     }
 }
 
+/// `s` as the inside of a yarn string (JSON-style escapes).
+fn quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn unquote(s: &str) -> String {
     s.trim().trim_matches('"').to_owned()
 }
@@ -190,9 +206,10 @@ pub fn rewrite(text: &str, c: &LockIn<'_>) -> Outcome {
         .all(|w| joined(&w[0].keys) <= joined(&w[1].keys));
     let target = |e: &Entry| e.package().as_deref() == Some(pin.name);
     let mut moved = Vec::new();
-    for i in 0..entries.len() {
-        if !target(&entries[i]) || entries[i].version().as_deref() != Some(pin.from) {
-            if target(&entries[i]) && entries[i].version().as_deref() == Some(pin.to) {
+    let mut replaced: Vec<(usize, Entry)> = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        if !target(e) || e.version().as_deref() != Some(pin.from) {
+            if target(e) && e.version().as_deref() == Some(pin.to) {
                 return Err(format!(
                     "another entry of yarn.lock already locks {} {}; yarn would merge them",
                     pin.name, pin.to
@@ -200,7 +217,6 @@ pub fn rewrite(text: &str, c: &LockIn<'_>) -> Outcome {
             }
             continue;
         }
-        let e = &entries[i];
         let mut keys: Vec<String> = Vec::new();
         for k in &e.keys {
             let (name, range) = split_key(k).ok_or("a key of yarn.lock is not name@range")?;
@@ -235,7 +251,10 @@ pub fn rewrite(text: &str, c: &LockIn<'_>) -> Outcome {
         keys.sort();
         let body = rewrite_body(e, c)?;
         let text = format!("{}\n{body}", header_of(&keys));
-        entries[i] = Entry { text, keys };
+        replaced.push((i, Entry { text, keys }));
+    }
+    for (i, e) in replaced {
+        entries[i] = e;
         moved.push(i);
     }
     if moved.is_empty() {
@@ -309,9 +328,13 @@ fn rewrite_body(e: &Entry, c: &LockIn<'_>) -> Result<String, String> {
                     c.to.shasum
                         .as_deref()
                         .ok_or("the registry publishes no SHA-1 for the new version")?;
-                out.push_str(&format!("  resolved \"{new}#{sum}\"\n"));
+                out.push_str(&format!(
+                    "  resolved \"{}#{}\"\n",
+                    quoted(&new),
+                    quoted(sum)
+                ));
             } else {
-                out.push_str(&format!("  resolved \"{new}\"\n"));
+                out.push_str(&format!("  resolved \"{}\"\n", quoted(&new)));
             }
         } else if let Some(i) = l.strip_prefix("  integrity ") {
             if !integrity_consistent(
@@ -328,6 +351,9 @@ fn rewrite_body(e: &Entry, c: &LockIn<'_>) -> Result<String, String> {
                 c.to.integrity
                     .as_deref()
                     .ok_or("the registry's integrity is not known")?;
+            if crate::deps::facts::sri(new).is_none() {
+                return Err("the registry's integrity is not shaNNN-base64".into());
+            }
             out.push_str(&format!("  integrity {new}\n"));
         } else {
             out.push_str(l);

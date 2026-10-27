@@ -358,6 +358,9 @@ fn resolution_line(line: &str, c: &LockIn<'_>) -> Result<String, String> {
         c.to.integrity
             .as_deref()
             .ok_or("the registry's integrity is not known")?;
+    if crate::deps::facts::sri(new).is_none() {
+        return Err("the registry's integrity is not shaNNN-base64".into());
+    }
     Ok(format!(
         "{}resolution: {{integrity: {new}}}",
         " ".repeat(indent(line))

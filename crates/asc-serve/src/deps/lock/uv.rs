@@ -5,7 +5,7 @@
 //! lists for it, in uv's order (wheels by file name), and updates the `specifier` the project's own
 //! `requires-dist` metadata records when the move changed the requirement.
 
-use super::{LockIn, Requester, changed};
+use super::{LockIn, Requester, changed, toml_str};
 use crate::deps::facts::PyFile;
 use crate::deps::model::Ecosystem;
 use crate::deps::ranges::admits;
@@ -68,13 +68,15 @@ fn file_host(url: &str) -> &str {
 fn entry(f: &PyFile, with_time: bool, prefix: &str) -> Result<String, String> {
     let mut s = format!(
         "{prefix}{{ url = \"{}\", hash = \"sha256:{}\", size = {}",
-        f.url, f.sha256, f.size
+        toml_str(&f.url),
+        toml_str(&f.sha256),
+        f.size
     );
     if with_time {
         if f.upload_time.is_empty() {
             return Err("PyPI gave no upload time for a file the lock records one for".into());
         }
-        s.push_str(&format!(", upload-time = \"{}\"", f.upload_time));
+        s.push_str(&format!(", upload-time = \"{}\"", toml_str(&f.upload_time)));
     }
     s.push_str(" }");
     Ok(s)

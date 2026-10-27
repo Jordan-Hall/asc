@@ -124,7 +124,13 @@ pub fn rewrite(text: &str, c: &LockIn<'_>) -> Outcome {
                 hashes.dedup();
                 let items: Vec<String> = hashes
                     .iter()
-                    .map(|x| format!("{}\"{x}\"", " ".repeat(key_indent + 4)))
+                    .map(|x| {
+                        format!(
+                            "{}\"{}\"",
+                            " ".repeat(key_indent + 4),
+                            crate::deps::rewrite::json_escape(x)
+                        )
+                    })
                     .collect();
                 edits.push(
                     h.val_start,

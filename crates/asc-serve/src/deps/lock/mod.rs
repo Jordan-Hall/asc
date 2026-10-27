@@ -297,6 +297,7 @@ pub fn rewrite_lock(format: Format, text: &str, c: &LockIn<'_>) -> Outcome {
     if !handles(format) {
         return Err(format!("{} is not rewritten", format.name()));
     }
+    super::safe::check(c.to)?;
     declared_alike(format, c)?;
     check_requesters(format, text, c)?;
     match format {
@@ -314,6 +315,22 @@ pub fn rewrite_lock(format: Format, text: &str, c: &LockIn<'_>) -> Outcome {
     }
 }
 
+/// `s` as the inside of a TOML basic string.
+pub(super) fn toml_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A `Done` for a changed text, `None` for an unchanged one.
 pub(super) fn changed(old: &str, new: String) -> Outcome {
     Ok((old != new).then_some(Done {
@@ -329,3 +346,6 @@ pub fn store_of(items: impl IntoIterator<Item = (FactKey, Facts)>) -> FactStore 
         .map(|(k, f)| (k, Ok(Arc::new(f))))
         .collect()
 }
+
+#[cfg(test)]
+mod tests_inject;
