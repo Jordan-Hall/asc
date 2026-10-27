@@ -13,7 +13,7 @@ address: **https://asc-staging.example.org**.
 
 | `asc-serve.standalone.compose.yml` | The variant that runs on staging today: no Forgejo, token-store auth, SQLite. See "Standalone staging" below. |
 | `forgejo-staging.compose.yml` | ASC Hub (the Forgejo v16 fork) staging, SQLite, own volume. |
-| `asc-hub-allinone.compose.yml` | ASC Hub as ONE service from the all-in-one image (`ghcr.io/<owner>/asc-hub`, hub plus `asc serve` in one container, one volume, SQLite). Needs only `ASC_HUB_IMAGE_TAG`, `ASC_HUB_ROOT_URL`, `ASC_HUB_SSH_DOMAIN`, `ASC_HUB_ADMIN_EMAIL`. Supersedes `asc-hub.compose.yml` (the older multi-container hub), which stays because `crates/asc-serve/tests/config.rs` reads it. |
+| `asc-hub-allinone.compose.yml` | ASC Hub as ONE service from the all-in-one image (`ghcr.io/<owner>/asc-hub`, hub plus `asc serve` in one container, one volume, SQLite). Needs only `ASC_HUB_IMAGE_TAG`, `ASC_HUB_ROOT_URL`, `ASC_HUB_ADMIN_EMAIL`; publishes no SSH port (`ASC_HUB_SSH_ENABLE=true` is an optional opt-in). Supersedes `asc-hub.compose.yml` (the older multi-container hub), which stays because `crates/asc-serve/tests/config.rs` reads it. |
 | `asc-hub.compose.yml` | **ASC Hub, all in one**: the hub and `asc serve` as one Coolify service. See "ASC Hub (all in one)". |
 | `asc-hub.env.example` | Its environment, with a comment each. |
 
@@ -23,7 +23,8 @@ Nothing here runs against the platform until you run it. The image is built else
 ## ASC Hub (all in one)
 
 One Coolify "Docker Compose" service, `asc-hub.compose.yml`, that behaves like Forgejo did: deploy it
-and you have repositories, git over HTTPS and SSH, the web UI, pull requests and Actions, with
+and you have repositories, git over HTTPS (no SSH port: HTTPS through the Coolify proxy is the only
+inbound port), the web UI, pull requests and Actions, with
 `asc serve` running inside as the repository storage backend, already configured. No Garage, no
 Postgres. SQLite holds the hub's database and asc's; asc's objects are files on a volume.
 
@@ -31,18 +32,19 @@ Postgres. SQLite holds the hub's database and asc's; asc's objects are files on 
 |---|---|
 | `hub-init` | One-shot, root, three capabilities: volume ownership, the two secret files, `asc-serve.toml`. Rewrites them on every start. |
 | `asc-migrate` | One-shot `asc serve migrate`. |
-| `hub` | `ghcr.io/jordan-hall/asc-hub`. The only public route (`SERVICE_FQDN_HUB_3000`, HTTPS) and the SSH port. |
+| `hub` | `ghcr.io/jordan-hall/asc-hub`. The only public route (`SERVICE_FQDN_HUB_3000`, HTTPS). No SSH port. |
 | `asc` | `ghcr.io/jordan-hall/asc-serve`. No domain, no published port. Runs in the hub's network namespace. |
 | `hub-admin` | One-shot: creates the first admin once. |
 
 ### Deploy
 
 1. Copy `asc-hub.env.example`, fill the `CHANGE_ME` values (at least `ASC_HUB_IMAGE_TAG`, `ASC_IMAGE_TAG`,
-   `ASC_HUB_ROOT_URL`, `ASC_HUB_SSH_DOMAIN`, `ADMIN_EMAIL`) and put them in the Coolify service's
+   `ASC_HUB_ROOT_URL`, `ADMIN_EMAIL`) and put them in the Coolify service's
    environment. The host needs `docker login ghcr.io` (read:packages) for both private images.
 2. Create a Docker Compose service from `deploy/coolify/asc-hub.compose.yml`. Set the domain of the
    `hub` service to the host in `ASC_HUB_ROOT_URL`. Give `asc` no domain.
-3. Open the SSH port (`ASC_HUB_SSH_PORT`, default 22224) in the host firewall.
+3. Open no port besides HTTPS. Git over SSH is off; it is an opt-in for a host that can open a TCP port
+   (the comment at the `ports` key of the `hub` service lists what to change).
 4. Deploy. Coolify generates `SERVICE_PASSWORD_INTERNALTOKEN` (the secret the hub and asc share) and
    `SERVICE_PASSWORD_WEBHOOKSECRET`; `hub-init` writes them to 0400 files on the `hub-secrets` volume (the hub and asc mount it read-only).
    `asc-serve.toml`, which holds the asc database URL, goes to the separate `asc-runtime` volume that only `asc` and
@@ -61,7 +63,7 @@ Postgres. SQLite holds the hub's database and asc's; asc's objects are files on 
 - **asc's side.** `[auth] provider = "forgejo"`, `[forgejo] url = "http://127.0.0.1:3000"` with the same
   token file, and `repo_root = "/var/lib/gitea/git/repositories"`. asc stays forge-neutral: all of this is
   the generated `asc-serve.toml`.
-- **A `git push` over HTTPS or SSH.** The hub's pre-receive hook calls `ImportGitPush` on asc with the
+- **A `git push` over HTTPS.** The hub's pre-receive hook calls `ImportGitPush` on asc with the
   push quarantine under the repository's `objects/`. asc imports the commits and moves its refs; only
   then does git finish the push. asc therefore reads `hub-repos` (read-only, same path as in the hub,
   same uid 1000: git makes quarantines 0700). It never mounts `hub-data` (`app.ini`, the database).
@@ -85,7 +87,8 @@ curl -fsS http://127.0.0.1:7890/readyz
 ```
 
 Sign in, create a repository, then `git clone`, commit and `git push` over HTTPS (a token as the
-password) and over `ssh://git@hub.example.org:22224/<owner>/<repo>.git`. The push is in asc when
+password), or connect the asc CLI with `asc auth login --host https://hub.example.org --prompt` and
+`asc clone https://hub.example.org/<owner>/<repo>`. The push is in asc when
 `asc` logs an `ImportGitPush` access line and the repository's page shows the commit.
 **This runbook has not been run**: nothing here was tested against a live Coolify.
 
