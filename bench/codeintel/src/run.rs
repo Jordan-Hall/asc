@@ -124,9 +124,10 @@ pub fn argv(tool: Tool, tools: &Tools, q: &Query, repo: &Path, idx: &Path) -> Op
     let mut v: Vec<String> = Vec::new();
     match tool {
         Tool::Asc => {
-            // TODO(I17): confirm the final `asc search` flag names against the CLI of I17.
+            // The flags of `asc search` (crates/asc/src/cli/codeintel/search.rs): -F -E -i -w, then
+            // the pattern after `--`. It prints no colour, so there is no flag to turn it off.
             v.push(s(tools.asc.as_deref()?));
-            v.extend(["search".into(), "--no-color".into()]);
+            v.push("search".into());
             v.extend(flags(q.kind).iter().map(|f| f.to_string()));
             v.extend(["--".into(), q.pattern.clone()]);
         }

@@ -1,5 +1,5 @@
 //! `asc-bench-codeintel`: SPEC 23.9 scenarios and gates. Joins the O05 gate through
-//! `--suite codeintel-quick` (TODO(O05): `asc-bench` forwards `codeintel-*` suites to this binary).
+//! `--suite codeintel-quick`: `asc-bench --suite codeintel-quick|codeintel-full` runs this binary.
 
 use asc_bench_codeintel::run::{self, Tools};
 use asc_bench_codeintel::{Metrics, Row, Workload, gate, parse_queries, release_markdown, table};

@@ -1,5 +1,6 @@
 // Plugin budget gate (SPEC 24.4.10, P44a). `bun bench/plugins/collect.ts --target vscode [--check]
 // [--update] [--build] [--require-host] [--graph]`.
+// `--target jetbrains [--check] [--update]` runs bench/plugins/jetbrains.ts (jar size, bridge RSS, probe report).
 //
 //  - bundle sizes: always measured from plugins/vscode/dist (host min bytes, asc-ui gzip bytes).
 //  - bridge RSS: spawns `asc api --stdio` (ASC_BIN or PATH) idle and reads the process RSS.
@@ -247,12 +248,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   const has = (flag: string): boolean => argv.includes(flag);
   const ti = argv.indexOf("--target");
   const target = ti >= 0 ? argv[ti + 1] : "";
+  if (target === "jetbrains") {
+    const { runJetbrains } = await import("./jetbrains.ts");
+    return runJetbrains([...(has("--check") ? ["--check"] : []), ...(has("--update") ? ["--update-baseline"] : [])]);
+  }
   if (target !== "vscode") {
-    process.stderr.write(
-      target === "jetbrains"
-        ? "jetbrains is P44b\n"
-        : "usage: collect.ts --target vscode [--check] [--update] [--build] [--require-host] [--graph]\n",
-    );
+    process.stderr.write("usage: collect.ts --target vscode|jetbrains [--check] [--update] [--build] [--require-host] [--graph]\n");
     return 2;
   }
   if (has("--build")) {
