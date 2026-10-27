@@ -1,0 +1,327 @@
+name: release
+# Tag v<MAJOR>.<MINOR>.<PATCH> -> the asc command line for five platforms, the VS Code and JetBrains
+# packages, checksums, minisign signatures, a manifest, an SBOM and package-manager manifests, attached to
+# a GitHub release. docs/RELEASE.md says how to verify and mirror a release (publish-to-hub.sh).
+#
+#   linux   x86_64, aarch64   glibc build on Ubuntu 22.04, needs glibc 2.35 or newer (checked by smoke.sh)
+#   macos   x86_64, aarch64   built on an arm64 runner
+#   windows x86_64            static C runtime
+#
+# A workflow_dispatch run is a rehearsal: it builds, assembles, signs (the key is required) and verifies
+# everything and keeps the result as a workflow artifact; it creates no GitHub release.
+#
+# Required repository configuration for a tag release (the run stops in `prepare` without them):
+#   variable ASC_RELEASE_PUBKEY   minisign public key text; compiled into the binary for `asc self-update`
+#   secret   ASC_MINISIGN_KEY     the matching unencrypted secret key
+# Optional: secrets JB_CERTIFICATE_CHAIN, JB_PRIVATE_KEY, JB_PRIVATE_KEY_PASSWORD sign the JetBrains zip.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # minisign 0.12 for linux, checked against this hash before it is unpacked.
+  MINISIGN_URL: https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz
+  MINISIGN_SHA256: 9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      epoch: ${{ steps.meta.outputs.epoch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+      - name: Version, commit time and tag check
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          crate=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="asc"))')
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            ver="${GITHUB_REF_NAME#v}"
+            test "$ver" = "$crate" || { echo "tag $ver != crate version $crate" >&2; exit 1; }
+          else
+            ver="$crate"
+          fi
+          printf '%s' "$ver" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo "bad version: $ver" >&2; exit 1; }
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git log -1 --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Release configuration
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          PUBKEY: ${{ vars.ASC_RELEASE_PUBKEY }}
+          SECKEY: ${{ secrets.ASC_MINISIGN_KEY }}
+        run: |
+          test -n "$PUBKEY" || { echo "the variable ASC_RELEASE_PUBKEY is not set" >&2; exit 1; }
+          test -n "$SECKEY" || { echo "the secret ASC_MINISIGN_KEY is not set" >&2; exit 1; }
+      - name: The commit passed the ci workflow
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          n=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" --status success --json databaseId --jq length)
+          test "$n" -ge 1 || { echo "no successful ci run for $GITHUB_SHA; tag a commit that passed ci" >&2; exit 1; }
+      - name: Release scripts and installer tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release/test/test_release.py
+          bash scripts/release/test/test-release.sh
+          bash scripts/release/test/test-install-sh.sh
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # glibc is the newest glibc symbol version smoke.sh lets a Linux build need (Ubuntu 22.04).
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04, exe: asc, glibc: "2.35" }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04, exe: asc, glibc: "2.35" }
+          - { target: x86_64-apple-darwin, runner: macos-15, exe: asc }
+          - { target: aarch64-apple-darwin, runner: macos-15, exe: asc }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2022, exe: asc.exe }
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # Compiled into the binary: the key `asc self-update` verifies release signatures with.
+      ASC_RELEASE_PUBKEY: ${{ vars.ASC_RELEASE_PUBKEY }}
+      ASC_BUILD_COMMIT: ${{ github.sha }}
+      SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-${{ matrix.target }}
+      - name: Cross toolchain and emulator (linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu qemu-user
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+            echo "OBJDUMP=aarch64-linux-gnu-objdump"
+          } >> "$GITHUB_ENV"
+      - name: Reproducible build flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ASC_RELEASE_PUBKEY" || { echo "the variable ASC_RELEASE_PUBKEY is not set; the binary could not verify updates" >&2; exit 1; }
+          home="${USERPROFILE:-$HOME}"
+          # Build paths never reach the binary; the C runtime is static on Windows.
+          flags="--remap-path-prefix=$GITHUB_WORKSPACE=/build/asc --remap-path-prefix=$home/.cargo=/build/cargo --remap-path-prefix=$home/.rustup=/build/rustup"
+          case "$TARGET" in
+            *-windows-msvc) flags="$flags -C target-feature=+crt-static -C link-arg=/Brepro" ;;
+          esac
+          echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked -p asc --target "$TARGET"
+      - name: Check the executable
+        shell: bash
+        env:
+          ASC_SMOKE_GLIBC_MAX: ${{ matrix.glibc }}
+        run: |
+          set -euo pipefail
+          sh scripts/release/smoke.sh "$TARGET" "target/$TARGET/release/${{ matrix.exe }}" "$VERSION" "$GITHUB_SHA"
+          mkdir -p "dist/$TARGET"
+          cp "target/$TARGET/release/${{ matrix.exe }}" "dist/$TARGET/${{ matrix.exe }}"
+          # Logged so that two builds can be compared by eye.
+          (sha256sum "dist/$TARGET/${{ matrix.exe }}" 2>/dev/null || shasum -a 256 "dist/$TARGET/${{ matrix.exe }}")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  plugins:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GRADLE_OPTS: -Dorg.gradle.daemon=false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - name: VS Code extension
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/extras"
+          bun test
+          # The release version names the package; package.json is not rewritten.
+          bun run package "$VERSION" --no-update-package-json --out "$GITHUB_WORKSPACE/extras/asc-vscode-$VERSION.vsix"
+          bun "$GITHUB_WORKSPACE/plugins/vscode/scripts/release-check.ts" --vsix "$GITHUB_WORKSPACE/extras/asc-vscode-$VERSION.vsix"
+        working-directory: plugins/vscode
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          gradle-version: 8.14.3
+      - name: JetBrains plugin
+        working-directory: plugins/jetbrains
+        env:
+          ORG_GRADLE_PROJECT_pluginVersion: ${{ needs.prepare.outputs.version }}
+          CERTIFICATE_CHAIN: ${{ secrets.JB_CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.JB_PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.JB_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # The checked-in wrapper when there is one, else the Gradle that setup-gradle installed.
+          if [ -x ./gradlew ]; then g=./gradlew; else g=gradle; fi
+          "$g" test buildPlugin
+          if [ -n "$PRIVATE_KEY" ] && [ -n "$CERTIFICATE_CHAIN" ]; then
+            "$g" signPlugin
+            zip=$(ls build/distributions/*-signed.zip)
+          else
+            echo "::warning::the JetBrains zip is not signed (JB_PRIVATE_KEY and JB_CERTIFICATE_CHAIN are not set)"
+            zip=$(ls build/distributions/*.zip | grep -v -- '-signed.zip$' | head -n 1)
+          fi
+          cp "$zip" "$GITHUB_WORKSPACE/extras/asc-jetbrains-$VERSION.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: extras
+          path: extras
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    needs: [prepare, build, plugins]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      EPOCH: ${{ needs.prepare.outputs.epoch }}
+      ASC_RELEASE_PUBKEY: ${{ vars.ASC_RELEASE_PUBKEY }}
+      RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ needs.prepare.outputs.version }}
+      HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: bin-*
+          path: bins
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: extras
+          path: extras
+      - name: minisign
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --output "$RUNNER_TEMP/minisign.tar.gz" "$MINISIGN_URL"
+          echo "$MINISIGN_SHA256  $RUNNER_TEMP/minisign.tar.gz" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/minisign"
+          tar -xzf "$RUNNER_TEMP/minisign.tar.gz" -C "$RUNNER_TEMP/minisign"
+          echo "$RUNNER_TEMP/minisign/minisign-linux/x86_64" >> "$GITHUB_PATH"
+      - name: Assemble
+        run: |
+          set -euo pipefail
+          python3 -I scripts/release/assemble.py \
+            --version "$VERSION" --commit "$GITHUB_SHA" --epoch "$EPOCH" \
+            --bins bins --extras extras --cargo-lock Cargo.lock \
+            --license LICENSE-APACHE --license LICENSE-MIT \
+            --release-url "$RELEASE_URL" --homepage "$HOMEPAGE" \
+            --out release
+          python3 -I scripts/release/verify.py release
+      - name: Sign and verify
+        env:
+          MINISIGN_KEY: ${{ secrets.ASC_MINISIGN_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$MINISIGN_KEY" || { echo "::error::ASC_MINISIGN_KEY is not set; an unsigned release is not published"; exit 1; }
+          test -n "$ASC_RELEASE_PUBKEY" || { echo "::error::ASC_RELEASE_PUBKEY is not set"; exit 1; }
+          umask 077
+          printf '%s\n' "$MINISIGN_KEY" > "$RUNNER_TEMP/minisign.key"
+          MINISIGN_KEY_FILE="$RUNNER_TEMP/minisign.key" sh scripts/release/sign.sh release "$VERSION"
+          python3 -I scripts/release/verify.py release --pubkey "$ASC_RELEASE_PUBKEY"
+      - name: Remove the signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [prepare, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Release notes
+        run: |
+          cat > notes.md <<EOF
+          asc $VERSION, commit \`${GITHUB_SHA::12}\`.
+
+          Download the archive for your platform below. Every file is listed in \`SHA256SUMS\` and signed
+          with minisign (\`<file>.minisig\`); \`manifest.json\` lists the archives for download pages and
+          \`asc-$VERSION.cdx.json\` is the CycloneDX SBOM. The installers (scripts/install.sh and
+          scripts/install.ps1) read a download directory laid out by scripts/release/publish-to-hub.sh.
+          Verifying and mirroring a release: docs/RELEASE.md.
+
+          \`\`\`
+          sha256sum --check --ignore-missing SHA256SUMS
+          minisign -V -P <ASC_RELEASE_PUBKEY> -m SHA256SUMS
+          \`\`\`
+          EOF
+      - name: Create the release
+        run: |
+          set -euo pipefail
+          # A draft is invisible until every file is uploaded; a re-run replaces files in the draft.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=true
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "asc $VERSION" --notes-file notes.md
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber release/*
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
