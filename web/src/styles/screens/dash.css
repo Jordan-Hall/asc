@@ -1,4 +1,4 @@
-:where(.dash) a{color:inherit;text-decoration:none}
+:where(.dash a){color:inherit;text-decoration:none}
 :where(.dash) button{font:inherit;color:inherit}
 :where(.dash .mono){font-family:'JetBrains Mono',ui-monospace,monospace}
 :where(.dash .row:hover){background:var(--c-f1f5f9)}

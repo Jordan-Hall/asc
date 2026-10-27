@@ -11,7 +11,6 @@ const SECTIONS = [
   ["#review", "Review"],
   ["#agents", "Agents"],
   ["#search", "Search"],
-  ["#git", "Git compatible"],
 ] as const;
 
 /** The menu behind the hamburger: the page sections and the way in. */
@@ -113,11 +112,10 @@ export default function LandingMobile() {
               </a>
             </div>
           </section>
-          <section className="mland15">
+          <section className="mland15" tabIndex={0} aria-label="Clone command">
             <div className="mono mland16">
               <span className="mland17">$</span> asc clone https://hub.example.com/acme/payments
             </div>
-            <div className="mono mland18">or git clone https://hub.example.com/acme/payments</div>
           </section>
           <section className="mland19" id="demo">
             <div className="mland20">
@@ -150,7 +148,7 @@ export default function LandingMobile() {
               <b>Intent.</b> Use the retry policy for every outbound call so a flaky provider cannot
               fail a payment. <b>Risk:</b> touches 3 call sites in billing.
             </div>
-            <div className="mland31">
+            <div className="mland31" tabIndex={0} role="region" aria-label="Example diff">
               <div className="ln del">
                 <span className="n">-</span>
                 <span className="c">let res = http.post(url).send().await?;</span>
@@ -167,7 +165,6 @@ export default function LandingMobile() {
           <section className="mland33">
             <div className="mland34">Works with the tools your team already uses</div>
             <div className="mland35">
-              <span className="mono mland36">git</span>
               <span className="mono mland36">VS Code</span>
               <span className="mono mland36">JetBrains</span>
               <span className="mono mland36">MCP</span>
@@ -249,21 +246,15 @@ export default function LandingMobile() {
             </>
           ) : null}
           <section className="mland40">
-            <h3 className="mland41">Git compatible</h3>
+            <h3 className="mland41">Compatibility</h3>
             <div className="mland42">
-              Your clients keep working. Clone, fetch and push with git over HTTPS or SSH today.
-              Move to the <span className="mono">asc</span> command line when you want stacks, undo,
-              and live restack.
-            </div>
-            <div className="mland52">
-              <div className="mono mland53">
-                <span className="mland17">$</span> git push origin HEAD:refs/for/main
-              </div>
+              ASC is the source control system. For existing tools and CI that still speak git, the
+              server offers a git compatibility layer over HTTPS and SSH.
             </div>
           </section>
           <section className="mland54">
             <h2 className="mland55">Ship more, and still understand every line.</h2>
-            <p className="mland56">Import a repository in a minute. Keep your git history.</p>
+            <p className="mland56">Import a repository in a minute. Keep your history.</p>
             <Link to="/signin" className="tap mland57">
               Create account
             </Link>
@@ -271,30 +262,27 @@ export default function LandingMobile() {
           <footer className="mland58">
             <div className="mland59">ASC Hub · Based on Forgejo</div>
             <div className="mland60">
-              <a href="#docs" className="tap mland61">
+              <Link to="/docs" className="tap mland61">
                 Docs
-              </a>
-              <a href="#api" className="tap mland61">
-                API
-              </a>
-              <a href="#status" className="tap mland61">
-                Status
-              </a>
-              <a href="#licenses" className="tap mland61">
+              </Link>
+              <Link to="/install" className="tap mland61">
+                Install
+              </Link>
+              <Link to="/licenses" className="tap mland61">
                 Licenses
-              </a>
-              <a href="#privacy" className="tap mland62">
+              </Link>
+              <Link to="/privacy" className="tap mland62">
                 Privacy
-              </a>
+              </Link>
             </div>
           </footer>
         </main>
         <div className="mland63">
-          <div className="mland64">
+          <section className="mland64" aria-label="Get started">
             <Link to="/signin" className="tap mland13">
               Start free
             </Link>
-          </div>
+          </section>
           <nav className="mland65" aria-label="Primary">
             <Link to="/" className="tap mland66" aria-current="page">
               <span className="mland67">

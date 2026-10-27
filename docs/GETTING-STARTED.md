@@ -1,7 +1,7 @@
 # Getting started with asc
 
-Install asc, sign in to a server, clone, and work in stacks. The git to asc command map is in
-[`CHEATSHEET.md`](CHEATSHEET.md); the `git` shim and `asc doctor` are in [`ONBOARDING.md`](ONBOARDING.md).
+Install asc, sign in to a server, clone, and work in stacks. Common tasks and their commands are in
+[`CHEATSHEET.md`](CHEATSHEET.md); `asc doctor` is in [`ONBOARDING.md`](ONBOARDING.md).
 [`SPEC.md`](SPEC.md) wins where this page disagrees.
 
 ## 1. Install
@@ -18,23 +18,23 @@ Release files are served from a download directory that holds `latest/version` a
 
 Set `ASC_RELEASE_PUBKEY` to the release's minisign public key to make the installers require a signature.
 
-Real git 2.40 or later is required. Then run `asc doctor`; `asc self-update` (or `asc upgrade`) updates an install made by the installers.
-Optionally `asc install-shim` so `git` is asc inside an asc workspace (see ONBOARDING section 2).
+Then run `asc doctor`; `asc self-update` (or `asc upgrade`) updates an install made by the installers.
 
 ## 2. Authenticate
 
-asc has no `login` command. `asc auth status [--json] [<url>]` only reports which source would
-supply a credential for a URL and never prints the secret. Credentials come, in this order,
-from the URL, git's credential helpers, and the `ASC_TOKEN` environment variable (sent only to
-the remote's own origin; see `crates/asc/src/credential.rs`).
+`asc auth login --host <url> --token-stdin` stores a token with the system credential helpers (the token
+is read from standard input, never from an argument), `asc auth logout --host <url>` forgets it, and
+`asc auth status [--json] [<url>]` reports which source would supply a credential for a URL and never
+prints the secret. Credentials come, in this order, from the URL, the credential helpers, and the
+`ASC_TOKEN` environment variable (sent only to the remote's own origin; see
+`crates/asc/src/credential.rs`).
 
 1. Get a token from the server administrator. On an `asc serve` with the token store the
    administrator mints it with `asc serve token create --user <name> --repo '<owner>/*' --expires <duration>`
    (add `--admin` for an admin). The value is printed once.
 2. Give it to asc either way:
    - `export ASC_TOKEN=<token>`, or
-   - store it with git's helper, which asc uses as git does:
-     `printf 'protocol=https\nhost=asc-staging.example.org\nusername=<name>\npassword=<token>\n' | git credential approve`.
+   - store it: `printf '%s' "$TOKEN" | asc auth login --host https://asc-staging.example.org --token-stdin`
 3. Check: `asc auth status https://asc-staging.example.org`.
 
 Never put a token in a URL. asc does not store a credential that came from URL userinfo
@@ -47,7 +47,7 @@ asc clone https://asc-staging.example.org/<owner>/<repo>
 ```
 
 The clone is lazy: file contents download when first read (`--mode plain` writes real files).
-`asc clone <url> <dir> --reference <old .git>` borrows objects from an old clone. The default
+`asc clone <url> <dir> --reference <old clone>` borrows objects from an existing clone. The default
 branch is `master`.
 
 ## 4. The daily loop
@@ -68,16 +68,17 @@ asc undo                         # undo the last operation (asc op log shows the
 
 Commands that exist beyond these are in `asc --help` and the `crates/asc/src/stack/cli/`
 sources (`restack`, `fold`, `split`, `squash`, `reorder`, `reword`, `abandon`, `stack get`, ...).
-Plain `git commit`, `git push origin feat` and friends also work through the shim. In a
-branchless repository (the default) only `master`, release branches and tags are shared refs;
-`git push origin feat` submits the stack as draft changes and `feat` becomes your user ref.
-Needs a server: `asc submit` against a plain git remote exits 128 with an explanation.
+In a branchless repository (the default) only `master`, release branches and tags are shared
+refs; `asc push origin feat` submits the stack as draft changes and `feat` becomes your user ref.
+`asc submit` needs an ASC server and exits 128 with an explanation against anything else.
 
 `asc push --land` (or `-o land`) asks the server to land onto `master` when paths do not conflict.
 
-## 5. Plain git against `asc serve`
+## 5. Git compatibility
 
-`asc serve` speaks git directly, so tools without asc work:
+You do not need git to use ASC. For existing tools and CI that still speak git, `asc serve`
+offers a compatibility layer, and an optional `git` shim (`asc install-shim`, see
+[`ONBOARDING.md`](ONBOARDING.md)). Git 2.40 or later must be installed for the layer and the shim.
 
 - **Smart HTTP (https):** `git clone https://asc-staging.example.org/<owner>/<repo>.git`.
   The server answers 401, then git asks its credential helper (same token as above, as the
@@ -102,6 +103,8 @@ HTTP/3 is used when the server advertises it and falls back to HTTP/2.
 
 ## 7. Where to go next
 
+- Every command, with an example: [`CLI.md`](CLI.md). Every configuration key: [`CONFIG.md`](CONFIG.md).
+  All docs: [`README.md`](README.md).
 - What works today and what does not: [`STATUS.md`](STATUS.md).
 - Run your own server: [`../deploy/README.md`](../deploy/README.md).
 - Something wrong: `asc doctor` and ONBOARDING section 8.
