@@ -19,8 +19,23 @@ use super::model::Ecosystem;
 use super::osv::{Clock, join};
 use super::store;
 
+/// A name that is one path segment: no separator, no `..`, no control character.
 fn segment_ok(s: &str) -> bool {
-    !s.is_empty() && s != "." && s != ".." && s.len() <= 214 && !s.chars().any(char::is_control)
+    !s.is_empty()
+        && s != "."
+        && !s.contains("..")
+        && s.len() <= 214
+        && !s.chars().any(|c| c.is_control() || c == '/' || c == '\\')
+}
+
+/// An npm name: one segment, or `@scope/name`.
+fn npm_name_ok(s: &str) -> bool {
+    match s.strip_prefix('@') {
+        Some(rest) => rest
+            .split_once('/')
+            .is_some_and(|(scope, name)| segment_ok(scope) && segment_ok(name)),
+        None => segment_ok(s),
+    }
 }
 
 pub struct Latest {
@@ -114,7 +129,7 @@ impl Latest {
                 parse_crates(&b).map_err(|e| bad(&e))
             }
             Ecosystem::Npm => {
-                if !segment_ok(name) {
+                if !npm_name_ok(name) {
                     return Err("the package name is not usable".into());
                 }
                 let url = join(&base, &[name])?;
