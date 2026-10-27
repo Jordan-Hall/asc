@@ -1071,10 +1071,19 @@ impl InternalAuthz {
             _ => return Err(Fetch::Unavailable),
         }
         let a: AuthzAnswer = decode(&bytes).map_err(|e| unavailable(&e))?;
-        if !a.allowed || a.user_id == 0 {
+        // The same refusals as the SSH lookup: an Actions task or a deploy key is not a person,
+        // and nobody who is not a real account (a negative or zero id) is one either. A task is
+        // modelled only on a repository decision, where it is bound to its repository and never
+        // kept; here it is never a user.
+        if !a.allowed
+            || a.user_id <= 0
+            || a.is_actions_task
+            || a.task.is_some()
+            || a.deploy_key_id != 0
+        {
             return Err(Fetch::Denied(AuthError::Unauthenticated));
         }
-        let identity = UserIdentity::new(a.user_id, &a.username, a.deploy_key_id)
+        let identity = UserIdentity::new(a.user_id, &a.username, 0)
             .ok_or(Fetch::Denied(AuthError::Unauthenticated))?;
         let mut d = Decision::for_identity(identity, Perm::None);
         d.perm_version = a.perm_version;

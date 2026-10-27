@@ -302,6 +302,9 @@ mod forgejo {
                 if json["owner"].as_str().unwrap_or("").is_empty()
                     && json["repo"].as_str().unwrap_or("").is_empty()
                 {
+                    if let Some(v) = i.authz.get(&(t.clone(), "/".into())) {
+                        return reply(200, v.clone());
+                    }
                     return match i.users.get(&t) {
                         Some((id, name)) if !t.is_empty() => reply(
                             200,
@@ -824,6 +827,116 @@ mod forgejo {
             .await
             .unwrap();
         assert_eq!(calls(), 2, "expired, so asked again");
+    }
+
+    /// The states of an account that the forge refuses to let in, as the forge reports them: a
+    /// definite `allowed: false` (with or without the user's own id).
+    const REFUSED_ACCOUNTS: [(&str, i64); 5] = [
+        ("inactive", 0),
+        ("prohibit_login", 9),
+        ("restricted", 9),
+        ("two_factor_pending", 9),
+        ("blocked", 9),
+    ];
+
+    fn refusal(user_id: i64) -> Value {
+        json!({"allowed": false, "user_id": user_id,
+               "username": if user_id == 0 { "" } else { "bob" }, "perm": "",
+               "deploy_key_id": 0, "is_actions_task": false, "task": null,
+               "branch_rules": {"require_signed": false}})
+    }
+
+    #[tokio::test]
+    async fn every_identity_path_refuses_the_same_account_states() {
+        for (state, user_id) in REFUSED_ACCOUNTS {
+            let (fake, url) = start().await;
+            fake.with(|i| {
+                i.authz
+                    .insert(("pat".into(), "o/r".into()), refusal(user_id));
+                i.authz.insert(("pat".into(), "/".into()), refusal(user_id));
+            });
+            let authz = internal_authz(&url, Vec::new());
+            let bearer = tok("pat");
+            let cred = Credential::bearer(tok("pat"));
+            let token = Credential::token(tok("pat"));
+            for access in [Access::Read, Access::Write] {
+                let a = authz.authorize(Some(&bearer), "o/r", access).await;
+                let b = authz
+                    .authorize_credential(Some(&token), "o/r", access)
+                    .await;
+                let c = authz
+                    .decide(Some(&bearer), "o/r", access)
+                    .await
+                    .map(|d| d.principal.clone());
+                for (path, got) in [("authorize", a), ("authorize_credential", b), ("decide", c)] {
+                    assert!(
+                        got.is_err(),
+                        "{state}: {path} {access:?} let the account in"
+                    );
+                }
+            }
+            assert_eq!(
+                authz.authenticate(Some(&cred)).await.unwrap_err(),
+                AuthError::Unauthenticated,
+                "{state}: authenticate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_actions_task_or_a_deploy_key_is_never_taken_for_a_person_by_authenticate() {
+        let (fake, url) = start().await;
+        let task = json!({"allowed": true, "user_id": -2, "username": "ci-task", "perm": "read",
+                          "deploy_key_id": 0, "is_actions_task": true,
+                          "task": {"run_id": 5, "repo": "o/r", "ref": "refs/heads/m"}});
+        let task_only_in_task_field = json!({"allowed": true, "user_id": 9, "username": "bob",
+                          "perm": "read", "deploy_key_id": 0, "is_actions_task": false,
+                          "task": {"run_id": 5, "repo": "o/r"}});
+        let deploy = json!({"allowed": true, "user_id": 9, "username": "bob", "perm": "read",
+                            "deploy_key_id": 3, "is_actions_task": false});
+        let anonymous = json!({"allowed": true, "user_id": 0, "username": "", "perm": "read"});
+        let negative = json!({"allowed": true, "user_id": -1, "username": "x", "perm": "read"});
+        fake.with(|i| {
+            for (t, v) in [
+                ("task", &task),
+                ("task2", &task_only_in_task_field),
+                ("deploy", &deploy),
+                ("anon", &anonymous),
+                ("neg", &negative),
+            ] {
+                i.authz.insert((t.into(), "/".into()), v.clone());
+            }
+        });
+        let authz = internal_authz(&url, Vec::new());
+        for t in ["task", "task2", "deploy", "anon", "neg"] {
+            let c = Credential::bearer(tok(t));
+            assert_eq!(
+                authz.authenticate(Some(&c)).await.unwrap_err(),
+                AuthError::Unauthenticated,
+                "{t}"
+            );
+        }
+        // A task credential is not kept as anything: it is not in the cache for the next caller.
+        fake.with(|i| {
+            i.authz.insert(
+                ("task".into(), "o/r".into()),
+                json!({"allowed": true, "user_id": -2, "username": "ci", "perm": "read",
+                       "is_actions_task": true,
+                       "task": {"run_id": 5, "repo": "o/r", "ref": "refs/heads/m"}}),
+            );
+        });
+        let before = fake.calls("/api/internal/asc/authz").len();
+        for _ in 0..2 {
+            authz
+                .authorize(Some(&tok("task")), "o/r", Access::Read)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            fake.calls("/api/internal/asc/authz").len(),
+            before + 2,
+            "an Actions task answer is never reused"
+        );
     }
 
     #[tokio::test]
