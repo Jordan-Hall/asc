@@ -37,8 +37,17 @@ out=$(cd "$out" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/asc-pkgs.XXXXXX") || die "cannot make a temporary directory"
 trap 'rm -rf "$work"' EXIT INT TERM
 
-for cfg in "$rel"/nfpm-*.yaml; do
-  [ -f "$cfg" ] || die "no nfpm-*.yaml in $rel"
+# Only the two configs assemble.py renders are used, and each must match SHA256SUMS (which the
+# signature covers) and contain nothing but the expected keys: no scripts, no extra files.
+for name in nfpm-amd64.yaml nfpm-arm64.yaml; do
+  cfg="$rel/$name"
+  [ -f "$cfg" ] || die "missing $cfg"
+  want=$(awk -v f="$name" '$2 == f { print $1 }' "$rel/SHA256SUMS")
+  got=$(sha256sum "$cfg" | cut -d' ' -f1)
+  [ -n "$want" ] && [ "$want" = "$got" ] || die "$name does not match SHA256SUMS"
+  bad=$(grep -v -E '^(#.*|(name|arch|platform|version|section|priority|maintainer|description|homepage|license): .*|contents:|  - src: \./(asc|LICENSE-APACHE\.txt|LICENSE-MIT\.txt)|    dst: /usr/(bin/asc|share/doc/asc/LICENSE-(APACHE|MIT)\.txt)|    file_info:|      mode: 0(755|644))$' "$cfg" || true)
+  [ -z "$bad" ] || die "$name has entries that are not allowed: $bad"
+  [ "$(grep -c '^  - src: ' "$cfg")" -eq 3 ] || die "$name must install exactly three files"
   tarball=$(sed -n 's|^#   archive: .*/\(asc-[^/]*\.tar\.gz\)$|\1|p' "$cfg")
   [ -n "$tarball" ] || die "$cfg names no archive"
   [ -f "$rel/$tarball" ] || die "missing $rel/$tarball"
