@@ -279,10 +279,26 @@ pub(crate) async fn step_of(w: &World, run: u64, step: &str) -> super::store::St
 }
 
 pub(crate) async fn wait_step(w: &World, run: u64, step: &str, state: StepState) {
-    until(&format!("step {step} to be {state:?}"), || async {
-        step_of(w, run, step).await.state == state
-    })
-    .await;
+    let end = Instant::now() + Duration::from_secs(60);
+    loop {
+        let row = step_of(w, run, step).await;
+        if row.state == state {
+            return;
+        }
+        let now =
+            w.wf.as_ref()
+                .unwrap()
+                .store
+                .get_run(run)
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            Instant::now() < end,
+            "gave up waiting for step {step} to be {state:?}: {row:?}; the run is {now:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 // ------------------------------------------------------------------------------ definitions
