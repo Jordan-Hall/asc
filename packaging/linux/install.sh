@@ -37,6 +37,10 @@ case "$ver" in
   ''|*[!0-9.]*|.*|*.|*..*) die "bad version in $base" ;;
 esac
 [ "$(printf '%s' "$ver" | tr -cd . | wc -c)" -eq 2 ] || die "bad version in $base"
+# The signed trusted comment names the file and version the signature was made for; a validly
+# signed older archive renamed to look newer is refused.
+comment=$(sed -n 's/^trusted comment: //p' "$sig" | head -n 1 | tr '	' ' ')
+[ "$comment" = "file:$base version:$ver" ] || die "the signature is for another file or version ($comment), nothing was installed"
 
 dest="$prefix/$ver"
 [ -e "$dest" ] && die "$dest already exists"
