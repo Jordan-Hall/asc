@@ -7,7 +7,10 @@
 //! asc deps propose [--security] [--max-kind patch|minor|major] [--dry-run] [--max-groups N] [PACKAGE]...
 //! asc deps dismiss <id> --reason not-used|tolerable|inaccurate|fix-started [--note TEXT]
 //! asc deps reopen <id>
-//! asc deps config [--rev REV]
+//! asc deps config get [--rev REV]
+//! asc deps config set [--ecosystem E]... [--schedule CRON | --no-schedule] [--security-only BOOL]
+//!                     [--severity-threshold S] [--max-kind K] [--max-proposals N] [--grouping G]
+//!                     [--group SPEC]... [--ignore SPEC]... [--dry-run]
 //! ```
 //!
 //! Every command works against a server (`--remote`, a configured remote or the URL of the repository,
@@ -16,6 +19,7 @@
 //! writes trunk. `--token-env NAME` takes the credential from the environment variable `NAME` (for a
 //! scheduled workflow, whose secrets cannot be called `ASC_*`); a secret is never taken from an argument.
 
+mod config;
 mod findings;
 mod propose;
 mod scan;
@@ -69,8 +73,8 @@ pub enum Sub {
     Dismiss(findings::DismissArgs),
     /// Reopens a dismissed finding.
     Reopen(findings::ReopenArgs),
-    /// Shows the settings (.asc/deps.toml) and the scheduled workflow that goes with them.
-    Config(updates::ConfigArgs),
+    /// Shows (config get) or proposes (config set) the settings in .asc/deps.toml.
+    Config(config::ConfigArgs),
 }
 
 pub const NATIVE: &[NativeSpec] = &[NativeSpec {
@@ -94,6 +98,17 @@ pub const NATIVE: &[NativeSpec] = &[NativeSpec {
         "--dry-run",
         "--reason",
         "--note",
+        "--all-ecosystems",
+        "--schedule",
+        "--no-schedule",
+        "--security-only",
+        "--severity-threshold",
+        "--max-proposals",
+        "--grouping",
+        "--group",
+        "--no-groups",
+        "--ignore",
+        "--no-ignore",
     ],
     placeholders: &[],
 }];
@@ -106,7 +121,7 @@ pub async fn run(ctx: &Ctx, a: Args) -> Result<ExitCode> {
         Sub::Propose(x) => propose::run(ctx, x).await,
         Sub::Dismiss(x) => findings::dismiss(ctx, x).await,
         Sub::Reopen(x) => findings::reopen(ctx, x).await,
-        Sub::Config(x) => updates::config(ctx, x).await,
+        Sub::Config(x) => config::run(ctx, x).await,
     }
 }
 
