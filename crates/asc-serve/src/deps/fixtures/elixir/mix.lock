@@ -1,0 +1,6 @@
+%{
+  "cowboy": {:hex, :cowboy, "2.9.0", "2bc1a3b4a5f3e0e8", [:make, :rebar3], [{:cowlib, "2.11.0", [hex: :cowlib, repo: "hexpm", optional: false]}], "hexpm", "abc"},
+  "cowlib": {:hex, :cowlib, "2.11.0", "0123", [:make, :rebar3], [], "hexpm", "def"},
+  "plug": {:hex, :plug, "1.14.0", "4567", [:mix], [], "hexpm", "ghi"},
+  "my_fork": {:git, "https://github.com/example/my_fork.git", "abcdef", []},
+}

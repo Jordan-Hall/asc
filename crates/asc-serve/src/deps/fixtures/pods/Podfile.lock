@@ -1,0 +1,24 @@
+PODS:
+  - Alamofire (5.6.1)
+  - Firebase/Core (8.0.0):
+    - FirebaseAnalytics (= 8.0.0)
+  - Firebase/Auth (8.0.0)
+  - FirebaseAnalytics (8.0.0)
+  - Local (1.0.0)
+
+DEPENDENCIES:
+  - Alamofire (~> 5.0)
+  - Firebase/Core
+  - Local (from `../Local`)
+
+EXTERNAL SOURCES:
+  Local:
+    :path: "../Local"
+
+SPEC CHECKSUMS:
+  Alamofire: abc
+  Firebase: def
+
+PODFILE CHECKSUM: abc123
+
+COCOAPODS: 1.11.3

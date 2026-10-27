@@ -1,0 +1,25 @@
+{
+  "name": "old",
+  "version": "1.0.0",
+  "lockfileVersion": 1,
+  "requires": true,
+  "dependencies": {
+    "express": {
+      "version": "4.17.1",
+      "requires": {
+        "accepts": "~1.3.7"
+      },
+      "dependencies": {
+        "debug": {
+          "version": "2.6.9"
+        }
+      }
+    },
+    "accepts": {
+      "version": "1.3.7"
+    },
+    "tarball": {
+      "version": "https://example.com/tarball.tgz"
+    }
+  }
+}
