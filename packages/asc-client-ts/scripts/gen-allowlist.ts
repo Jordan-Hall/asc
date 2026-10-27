@@ -5,7 +5,8 @@
 //   2. the Rust bridge schema `argv_schema.rs`: the verbs, flags, positionals and confirmations agree;
 //   3. the fork's `swagger.v1.json` (path in `--swagger` or `ASC_SWAGGER`): every Forgejo pair is a real
 //      operation and every body field is a real property. Without a swagger file the pairs are checked
-//      structurally only and the script says so (TODO(C41b): the fork's swagger is not in this repo).
+//      structurally only and the script says so (the swagger belongs to the hub repository; point
+//      `ASC_SWAGGER` at its `templates/swagger/v1_json.tmpl` for the full check).
 // P48 generates `Allowlist.kt` from the same JSON. The file is never rewritten by this script.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -291,7 +292,7 @@ if (import.meta.main) {
       : undefined;
   if (!swagger) {
     process.stderr.write(
-      "gen-allowlist: no swagger.v1.json (--swagger or ASC_SWAGGER); Forgejo pairs checked structurally only. TODO(C41b)\n",
+      "gen-allowlist: no swagger.v1.json (--swagger or ASC_SWAGGER); Forgejo pairs checked structurally only.\n",
     );
     if (process.argv.includes("--require-swagger")) process.exit(1);
   }
