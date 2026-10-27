@@ -22,6 +22,7 @@ import { file_asc_v1_ciinsights } from "../src/gen/asc/v1/ciinsights_pb";
 import { file_asc_v1_cloud } from "../src/gen/asc/v1/cloud_pb";
 import { file_asc_v1_codeintel } from "../src/gen/asc/v1/codeintel_pb";
 import { file_asc_v1_crosssearch } from "../src/gen/asc/v1/crosssearch_pb";
+import { file_asc_v1_deps } from "../src/gen/asc/v1/deps_pb";
 import { file_asc_v1_inbox } from "../src/gen/asc/v1/inbox_pb";
 import { file_asc_v1_mergequeue } from "../src/gen/asc/v1/mergequeue_pb";
 import { file_asc_v1_policy } from "../src/gen/asc/v1/policy_pb";
@@ -61,6 +62,7 @@ export function protoRpcs(): string[] {
     file_asc_v1_cloud,
     file_asc_v1_codeintel,
     file_asc_v1_crosssearch,
+    file_asc_v1_deps,
     file_asc_v1_inbox,
     file_asc_v1_mergequeue,
     file_asc_v1_policy,

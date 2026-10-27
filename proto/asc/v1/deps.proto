@@ -1,0 +1,273 @@
+syntax = "proto3";
+package asc.v1;
+
+import "asc/v1/options.proto";
+import "asc/v1/repo.proto";
+
+// Dependency scanning and update proposals (docs/DEPENDENCIES.md). The server reads the manifests and lockfiles of a
+// revision, normalises them to (ecosystem, name, version, direct or transitive, path) with the OSV ecosystem names,
+// matches them against an OSV source (api.osv.dev, a self-hosted mirror or an imported advisory file) and looks up the
+// newest version in the public registry of each ecosystem. Nothing here runs code of the repository. The settings of a
+// repository are `.asc/deps.toml` on trunk; the endpoints the server calls are the operator's `[deps]` section, never
+// a repository file. Advertised as Version.features "deps.v1".
+//
+// A lookup that fails never reports clean: the package is counted in `unknown_packages` and the scan says
+// LOOKUP_PARTIAL or LOOKUP_FAILED. The repository policy `[deps] block_severity` refuses a landing that adds a
+// vulnerable dependency at or above that severity with POLICY_DENIED (`paths` lists "<ecosystem> <name> <version>
+// <advisory id>"); when the advisory lookup itself failed it refuses too (fail closed) and says so in the first path.
+service DepsService {
+  rpc Scan(ScanDepsRequest) returns (ScanDepsResponse);                          // repo maintainer; records findings
+  rpc ListFindings(ListDepFindingsRequest) returns (ListDepFindingsResponse);    // repo read; paged
+  rpc ListUpdates(ListDepUpdatesRequest) returns (ListDepUpdatesResponse);       // repo read; calls the registries
+  rpc ProposeUpdate(ProposeDepUpdateRequest) returns (ProposeDepUpdateResponse); // repo maintainer; x-asc-op-id; never trunk
+  rpc SetConfig(SetDepsConfigRequest) returns (SetDepsConfigResponse);           // repo maintainer; x-asc-op-id; never trunk
+  rpc GetConfig(GetDepsConfigRequest) returns (GetDepsConfigResponse);           // repo read
+  rpc Dismiss(DismissDepFindingRequest) returns (DismissDepFindingResponse);     // repo maintainer; x-asc-op-id
+}
+
+enum DepSeverity {
+  DEP_SEVERITY_UNSPECIFIED = 0;   // the advisory states none
+  DEP_SEVERITY_LOW = 1;
+  DEP_SEVERITY_MODERATE = 2;
+  DEP_SEVERITY_HIGH = 3;
+  DEP_SEVERITY_CRITICAL = 4;
+}
+
+enum DepFindingState {
+  DEP_FINDING_STATE_UNSPECIFIED = 0;   // in a request: any state
+  DEP_FINDING_STATE_OPEN = 1;
+  DEP_FINDING_STATE_DISMISSED = 2;
+  DEP_FINDING_STATE_FIXED = 3;         // a later scan no longer found it
+}
+
+enum DepUpdateKind {
+  DEP_UPDATE_KIND_UNSPECIFIED = 0;
+  DEP_UPDATE_KIND_PATCH = 1;
+  DEP_UPDATE_KIND_MINOR = 2;
+  DEP_UPDATE_KIND_MAJOR = 3;
+}
+
+enum DepLookupStatus {
+  DEP_LOOKUP_STATUS_UNSPECIFIED = 0;
+  DEP_LOOKUP_STATUS_COMPLETE = 1;   // every package was matched against the advisory source
+  DEP_LOOKUP_STATUS_PARTIAL = 2;    // some were not: they are `unknown_packages`, not clean
+  DEP_LOOKUP_STATUS_FAILED = 3;     // none were
+}
+
+enum DepDismissReason {
+  DEP_DISMISS_REASON_UNSPECIFIED = 0;
+  DEP_DISMISS_REASON_NOT_USED = 1;          // the vulnerable code is not reachable
+  DEP_DISMISS_REASON_TOLERABLE = 2;         // the risk is accepted
+  DEP_DISMISS_REASON_INACCURATE = 3;        // the advisory does not apply
+  DEP_DISMISS_REASON_FIX_STARTED = 4;       // a fix is in progress
+}
+
+// The result of reading one file.
+message DepFileResult {
+  bytes path = 1 [(asc.v1.json) = JSON_KIND_PATH];
+  string format = 2;           // "Cargo.lock", "package-lock.json", ...
+  string ecosystem = 3;
+  uint32 packages = 4;
+  string error = 5;            // empty when the file was read; otherwise why it was not (never partial)
+  repeated string notes = 6;   // entries left out (a path, git or unresolved-property dependency), at most 20
+  uint32 direct = 7;           // of `packages`, those a manifest of the repository names
+}
+
+message DepAdvisory {
+  string id = 1;               // "GHSA-...", "RUSTSEC-...", "CVE-..."
+  repeated string aliases = 2;
+  string summary = 3;
+  DepSeverity severity = 4;
+  double cvss = 5;             // base score when the advisory states one, else 0
+  repeated string fixed_versions = 6;
+  string url = 7;
+}
+
+message DepFinding {
+  uint64 id = 1;
+  string ecosystem = 2;
+  string name = 3;
+  string version = 4;
+  bool direct = 5;
+  bytes path = 6 [(asc.v1.json) = JSON_KIND_PATH];
+  DepAdvisory advisory = 7;
+  DepFindingState state = 8;
+  string fixed_in = 9;         // the smallest version that fixes it, when the advisory names one
+  int64 first_seen = 10;
+  int64 last_seen = 11;
+  string dismissed_by = 12;
+  int64 dismissed_at = 13;
+  DepDismissReason dismiss_reason = 14;
+  string note = 15;
+}
+
+// Exactly the files and ecosystems named; empty `ecosystems` means every ecosystem of `.asc/deps.toml`, else every one
+// found. `rev` empty means the tip of trunk. At most 2,000 manifest files and 64 MiB of manifest text per call;
+// more is `truncated`.
+message ScanDepsRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  repeated string ecosystems = 3;
+  bool refresh = 4;            // ignore the advisory cache
+}
+
+message ScanDepsResponse {
+  repeated DepFileResult files = 1;
+  uint32 packages = 2;
+  repeated DepFinding findings = 3;     // open findings of this revision; dismissed ones are marked
+  DepLookupStatus lookup = 4;
+  uint32 unknown_packages = 5;          // packages the advisory source could not answer for
+  repeated string lookup_errors = 6;    // at most 20, no URL, no credential
+  bytes scanned = 7 [(asc.v1.json) = JSON_KIND_HEX];   // the changeset that was read
+  bool truncated = 8;
+  string source = 9;                    // "osv", "osv-mirror", "file" or "osv+file"
+}
+
+message ListDepFindingsRequest {
+  RepoRef repo = 1;
+  repeated DepFindingState states = 2;
+  repeated string ecosystems = 3;
+  DepSeverity min_severity = 4;
+  string name = 5;                      // exact package name
+  uint32 limit = 6;                     // 0 means 50, at most 200
+  string page_token = 7;
+}
+message ListDepFindingsResponse {
+  repeated DepFinding findings = 1;
+  string next_page_token = 2;
+  map<string, uint32> counts_by_state = 3;   // key: the enum name without the prefix, lower case ("open")
+  int64 last_scan = 4;
+  bytes last_scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];
+  DepLookupStatus last_lookup = 6;
+}
+
+message DepUpdate {
+  string ecosystem = 1;
+  string name = 2;
+  string current = 3;
+  string latest = 4;
+  DepUpdateKind kind = 5;
+  bool direct = 6;
+  bytes path = 7 [(asc.v1.json) = JSON_KIND_PATH];
+  string target = 8;                    // the version a proposal would pin (the newest within the allowed kind)
+  repeated string fixes = 9;            // advisory ids that `target` fixes
+  string group = 10;
+  bool ignored = 11;
+  string error = 12;                    // why latest/target is unknown
+}
+
+message ListDepUpdatesRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  repeated string ecosystems = 3;
+  bool security_only = 4;               // only updates that fix an open finding
+  bool include_ignored = 5;
+}
+message ListDepUpdatesResponse {
+  repeated DepUpdate updates = 1;
+  uint32 packages = 2;
+  uint32 unknown_packages = 3;          // packages whose registry could not be asked
+  repeated string lookup_errors = 4;
+  bytes scanned = 5 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message DepSelector {
+  string ecosystem = 1;
+  string name = 2;
+}
+
+// Rewrites the pins and records the result as a changeset on `agent/deps/<group>`; trunk is never touched. Empty
+// `selectors` means every update the repository config allows. `max_kind` UNSPECIFIED means the config's. A group is
+// one changeset; `max_groups` (0 means the config's `max_proposals`) bounds how many one call makes. `dry_run` returns the
+// plan and records nothing.
+message ProposeDepUpdateRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+  repeated DepSelector selectors = 3;
+  bool security_only = 4;
+  DepUpdateKind max_kind = 5;
+  uint32 max_groups = 6;
+  bool dry_run = 7;
+}
+message DepProposal {
+  string group = 1;
+  string ref = 2;                       // "refs/heads/agent/deps/<group>"
+  bytes changeset = 3 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes change = 4 [(asc.v1.json) = JSON_KIND_CHANGE];
+  repeated DepUpdate updates = 5;
+  repeated bytes files = 6 [(asc.v1.json) = JSON_KIND_PATH];   // the files the changeset rewrites
+  string message = 7;
+}
+message DepSkipped {
+  string ecosystem = 1;
+  string name = 2;
+  string reason = 3;
+}
+message ProposeDepUpdateResponse {
+  repeated DepProposal proposals = 1;
+  repeated DepSkipped skipped = 2;
+  bytes base = 3 [(asc.v1.json) = JSON_KIND_HEX];
+}
+
+message DepIgnore {
+  string ecosystem = 1;                 // empty: any
+  string name = 2;                      // glob; "*" matches any run of characters
+  repeated DepUpdateKind kinds = 3;     // update kinds not proposed; empty: all
+  repeated string advisories = 4;       // advisory ids not reported
+  string until = 5;                     // "YYYY-MM-DD"; empty: no end
+  string reason = 6;
+}
+message DepGroup {
+  string name = 1;                      // [a-z0-9-]
+  string ecosystem = 2;
+  repeated string patterns = 3;         // package name globs
+  repeated DepUpdateKind kinds = 4;     // empty: any
+}
+message DepsConfig {
+  uint32 version = 1;
+  repeated string ecosystems = 2;      // OSV names; empty: every one found
+  string schedule = 3;                  // five-field cron, UTC; empty: not scheduled
+  bool security_only = 4;
+  DepSeverity severity_threshold = 5;
+  DepUpdateKind max_kind = 6;           // the largest update a proposal makes without being asked
+  uint32 max_proposals = 7;
+  string grouping = 8;                  // "none", "ecosystem", "kind" or "all"
+  repeated DepGroup groups = 9;
+  repeated DepIgnore ignore = 10;
+}
+
+message SetDepsConfigRequest {
+  RepoRef repo = 1;
+  DepsConfig config = 2;
+  bool dry_run = 3;
+}
+message SetDepsConfigResponse {
+  string text = 1;                      // the `.asc/deps.toml` that was (or would be) written
+  string workflow = 2;                  // the `.asc/workflows/deps.toml` that goes with it; empty without a schedule
+  string ref = 3;
+  bytes changeset = 4 [(asc.v1.json) = JSON_KIND_HEX];
+  bytes change = 5 [(asc.v1.json) = JSON_KIND_CHANGE];
+}
+
+message GetDepsConfigRequest {
+  RepoRef repo = 1;
+  string rev = 2;
+}
+message GetDepsConfigResponse {
+  DepsConfig config = 1;
+  string source = 2;                    // "file" or "default"
+  string text = 3;
+  string error = 4;                     // why the file cannot be used; the defaults are in `config`
+  string workflow = 5;                  // the scheduled workflow definition for this config
+  repeated string supported = 6;        // the ecosystems this server reads
+}
+
+message DismissDepFindingRequest {
+  RepoRef repo = 1;
+  uint64 id = 2;
+  DepDismissReason reason = 3;          // UNSPECIFIED reopens
+  string note = 4;                      // at most 1,024 bytes
+}
+message DismissDepFindingResponse {
+  DepFinding finding = 1;
+}
