@@ -833,8 +833,16 @@ async fn an_unusable_policy_refuses_everything_but_its_repair() {
         code(&f.land(ALICE, still).await.unwrap_err()),
         "POLICY_INVALID"
     );
-    // A repair goes through, and the repository works again.
+    // A repair of the policy file alone goes through once it has the approval a reviewed change
+    // needs, and the repository works again.
     let fixed = commit(&f.e, &[a], &[(POLICY_PATH, policy_text("").as_bytes())]).await;
+    assert_eq!(
+        code(&f.land(ALICE, fixed).await.unwrap_err()),
+        "POLICY_DENIED",
+        "an unreviewed repair by a non-administrator is refused"
+    );
+    f.register(fixed, 1, 1, ALICE).await;
+    f.review(1, 1, 0).await;
     f.land(ALICE, fixed).await.unwrap();
     let next = commit(&f.e, &[fixed], &[("y", b"2")]).await;
     f.land(ALICE, next).await.unwrap();
@@ -1975,4 +1983,79 @@ async fn evaluate_decides_writes_runs_and_landing_and_guards_other_principals() 
         .land
         .unwrap();
     assert_eq!((l.approvals, l.signed), (0, false));
+}
+
+#[tokio::test]
+async fn an_update_never_escapes_an_unusable_policy_through_the_policy_it_brings() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")]).await;
+    f.set_master(a).await;
+    // The replacement policy is valid and switches review off, but the update also writes another
+    // file: it is no repair and is judged by nothing it brings.
+    let off = commit(
+        &f.e,
+        &[a],
+        &[
+            (POLICY_PATH, policy_text("").as_bytes()),
+            ("evil", b"1"),
+        ],
+    )
+    .await;
+    f.register(off, 1, 1, ALICE).await;
+    f.review(1, 1, 0).await;
+    let err = f.land(ALICE, off).await.unwrap_err();
+    assert_eq!(code(&err), "POLICY_DENIED");
+    assert!(paths(&err)[0].contains("cannot be used"), "{:?}", paths(&err));
+    assert_eq!(f.tip().await, a);
+    // A force push that rewrites trunk, and a delete of trunk, are refused too.
+    let del = f
+        .gated
+        .update_refs(
+            &ctx(ALICE),
+            wire::UpdateRefsRequest {
+                updates: vec![wire::RefUpdate {
+                    name: "refs/heads/master".into(),
+                    expect: Some(wire::ref_update::Expect::Any(true)),
+                    new: None,
+                    ..wire::RefUpdate::default()
+                }],
+                mode: wire::UpdateMode::Force as i32,
+                ..wire::UpdateRefsRequest::default()
+            },
+        )
+        .await;
+    assert!(del.is_err());
+    // The host service is the administrator of last resort and may repair with any update.
+    f.land(crate::authz::HOST_SERVICE_PRINCIPAL, off)
+        .await
+        .unwrap();
+    assert_eq!(f.tip().await, off);
+}
+
+#[tokio::test]
+async fn a_repository_administrator_may_repair_an_unusable_policy_with_any_update() {
+    let f = fx().await;
+    let a = commit(&f.e, &[], &[(POLICY_PATH, b"this is not toml ["), ("x", b"1")]).await;
+    f.set_master(a).await;
+    let fix = commit(
+        &f.e,
+        &[a],
+        &[(POLICY_PATH, policy_text("").as_bytes()), ("y", b"2")],
+    )
+    .await;
+    assert_eq!(
+        code(&f.land("pat:dana", fix).await.unwrap_err()),
+        "POLICY_DENIED"
+    );
+    sqlx::query(
+        "INSERT INTO auth_tokens (id, kind, principal, digest, created) VALUES ('t1', 'pat', 'pat:dana', x'00', 1)",
+    )
+    .execute(f.reg.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO auth_token_grants (token_id, repo, access) VALUES ('t1', 'o/r', 'admin')")
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    f.land("pat:dana", fix).await.unwrap();
 }

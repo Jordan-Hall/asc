@@ -20,11 +20,11 @@
 //! attestation of a rewritten signed changeset, and findings when `block_on_push` is off.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use asc_core::id::{ChangesetId, RefTarget};
 use asc_core::object::Changeset;
-use asc_core::policy::{Denial, Diagnostic, Policy, SecretsPolicy, Who};
+use asc_core::policy::{Denial, Diagnostic, POLICY_PATH, Policy, SecretsPolicy, Who};
 use asc_engine::graph::LogQuery;
 use asc_rpc::errors::RpcError;
 use asc_rpc::server::{CallCtx, wire};
@@ -43,6 +43,8 @@ use crate::secretscan::{MAX_CHANGESETS, Scanner};
 use crate::signing::rpc::Signing;
 use crate::update::{info, rpc};
 
+/// Approvals an update of an unusable policy needs when its sender is no administrator.
+const REPAIR_APPROVALS: u32 = 1;
 /// Most changesets one update may add before the gate refuses to check it.
 pub const MAX_ADDED: usize = 100_000;
 /// Most paths or locations a refusal lists.
@@ -88,12 +90,49 @@ pub trait RefGate: Send + Sync {
     async fn check(&self, req: &GateRequest<'_>) -> Result<(), Status>;
 }
 
+/// Whether a principal administers a repository. The gate asks only while the policy in force is
+/// unusable, to let an administrator repair the repository.
+#[async_trait]
+pub trait AdminCheck: Send + Sync {
+    async fn is_admin(&self, principal: &str, repo: &str) -> bool;
+}
+
+/// Administrators by the personal-token grants of this server (`auth_token_grants`).
+pub struct GrantAdmins {
+    registry: Arc<Registry>,
+}
+
+#[async_trait]
+impl AdminCheck for GrantAdmins {
+    async fn is_admin(&self, principal: &str, repo: &str) -> bool {
+        let user = principal.strip_prefix("pat:").unwrap_or(principal);
+        let rows: Result<Vec<(String,)>, _> = sqlx::query_as(
+            "SELECT g.repo FROM auth_tokens t JOIN auth_token_grants g ON g.token_id = t.id              WHERE t.kind = 'pat' AND (t.principal = $1 OR t.principal = $2)              AND t.revoked IS NULL AND (t.expires IS NULL OR t.expires > $3)              AND g.access = 'admin' LIMIT 1024",
+        )
+        .bind(format!("pat:{user}"))
+        .bind(user.to_owned())
+        .bind(now())
+        .fetch_all(self.registry.pool())
+        .await;
+        rows.is_ok_and(|rows| {
+            rows.into_iter().any(|(pattern,)| {
+                crate::authz::token_store::Grant {
+                    repo: pattern,
+                    access: asc_rpc::auth::Access::Admin,
+                }
+                .covers(repo)
+            })
+        })
+    }
+}
+
 /// The gate of a server: policy, secret scanning and signatures.
 pub struct ServerGate {
     registry: Arc<Registry>,
     policies: Arc<PolicyStore>,
     scanner: Arc<Scanner>,
     signing: Arc<Signing>,
+    admin: OnceLock<Arc<dyn AdminCheck>>,
 }
 
 /// The first 12 hex characters of a changeset id.
@@ -174,6 +213,12 @@ impl Added {
     }
 }
 
+/// What a landing needs, borrowed.
+struct LandNeed<'a> {
+    approvals: u32,
+    checks: &'a [String],
+}
+
 /// What the review side knows about the change a changeset belongs to.
 struct Facts {
     change: Vec<u8>,
@@ -189,11 +234,28 @@ impl ServerGate {
         scanner: Arc<Scanner>,
         signing: Arc<Signing>,
     ) -> Self {
+        let admin = OnceLock::new();
+        let _ = admin.set(Arc::new(GrantAdmins {
+            registry: registry.clone(),
+        }) as Arc<dyn AdminCheck>);
         Self {
             registry,
             policies,
             scanner,
             signing,
+            admin,
+        }
+    }
+
+    /// Whether the caller may repair a repository whose policy is unusable: the host service, or
+    /// a principal the admin check names. Fails closed.
+    async fn may_repair(&self, ctx: &CallCtx) -> bool {
+        if crate::authz::is_host_service(&ctx.principal.id) {
+            return true;
+        }
+        match self.admin.get() {
+            Some(check) => check.is_admin(&ctx.principal.id, ctx.repo.as_str()).await,
+            None => false,
         }
     }
 
@@ -350,6 +412,9 @@ impl ServerGate {
             if is_trunk && let Some(p) = in_force.policy() {
                 p.check_force().map_err(|d| from_denial(&d, &[]))?;
             }
+            if is_trunk && let Some(d) = in_force.error() {
+                return Err(unusable(d));
+            }
             return Ok(());
         };
         let RefTarget::Changeset(new) = new else {
@@ -373,13 +438,17 @@ impl ServerGate {
                 _ => invalid_policy(d),
             });
         }
+        // Only the policy in force judges an update. While it is unusable nothing is judged by the
+        // policy the update brings (it could switch `[trunk]` and `[signing]` off); the repair
+        // below decides who may move the ref.
+        let mut broken: Option<&Diagnostic> = None;
         let effective: Option<Arc<Policy>> = match &in_force.state {
             State::Valid(p) => Some(p.clone()),
             State::Absent => None,
-            State::Invalid(d) => match new_loaded.as_ref().and_then(|n| n.policy().cloned()) {
-                Some(p) => Some(p),
-                None => return Err(unusable(d)),
-            },
+            State::Invalid(d) => {
+                broken = Some(d);
+                None
+            }
         };
 
         // Rewriting history needs allow_force on trunk.
@@ -391,8 +460,12 @@ impl ServerGate {
                 .is_ancestor(o, new)
                 .await
                 .map_err(|e| internal("gate: ancestry", &e))?;
-            if !fast && let Some(p) = &effective {
-                p.check_force().map_err(|d| from_denial(&d, &[]))?;
+            if !fast {
+                if let Some(p) = &effective {
+                    p.check_force().map_err(|d| from_denial(&d, &[]))?;
+                } else if let Some(d) = broken {
+                    return Err(unusable(d));
+                }
             }
         }
 
@@ -421,6 +494,21 @@ impl ServerGate {
             GateMode::Land { rewrites } => rewrites.iter().map(|(o, n)| (*n, *o)).collect(),
             GateMode::Push { .. } => HashMap::new(),
         };
+
+        // The repair of an unusable policy: an administrator, or an update of trunk that touches
+        // nothing but the policy file and still has the approval a reviewed change needs.
+        if let Some(d) = broken
+            && !self.may_repair(req.ctx).await
+        {
+            let paths = added.paths();
+            let only_policy =
+                !paths.is_empty() && paths.iter().all(|p| p.as_slice() == POLICY_PATH.as_bytes());
+            if !is_trunk || !only_policy {
+                return Err(unusable(d));
+            }
+            self.check_approvals(entry, REPAIR_APPROVALS, &[], &added, &rewrites)
+                .await?;
+        }
 
         if let Some(p) = &effective {
             // Path rules and the agent scope, for the pusher.
@@ -603,6 +691,20 @@ impl ServerGate {
         rewrites: &HashMap<ChangesetId, ChangesetId>,
     ) -> Result<(), Status> {
         let need = policy.land_requirements();
+        self.check_approvals(entry, need.approvals, &need.checks, added, rewrites)
+            .await
+    }
+
+    /// `approvals` and the named `checks` for each changeset that lands.
+    async fn check_approvals(
+        &self,
+        entry: &RepoEntry,
+        approvals: u32,
+        checks: &[String],
+        added: &Added,
+        rewrites: &HashMap<ChangesetId, ChangesetId>,
+    ) -> Result<(), Status> {
+        let need = LandNeed { approvals, checks };
         if need.approvals == 0 && need.checks.is_empty() {
             return Ok(());
         }
@@ -634,7 +736,7 @@ impl ServerGate {
                     ));
                 }
             }
-            for check in &need.checks {
+            for check in need.checks {
                 if !self
                     .check_passed(entry, &f.change, f.version, check)
                     .await?
