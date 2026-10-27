@@ -48,6 +48,15 @@ pub(crate) const GC_LOCK_KEY: i64 = 0x0063_675f_6763;
 /// Ref namespaces that are local to a client and never stored on a server (SPEC §2.7).
 const LOCAL_ONLY: &[&str] = &["refs/remotes/", "refs/stash", "refs/bisect/", "refs/for/"];
 
+mod submit;
+
+/// The error code of a status, for the tests of the child modules.
+#[cfg(test)]
+pub(crate) fn tests_code(s: &Status) -> String {
+    asc_rpc::server::status_rpc_error(s)
+        .map_or_else(|| s.code().to_string(), |e| e.code().to_owned())
+}
+
 // ------------------------------------------------------------------------------ hook points
 
 /// One ref change as the hooks see it.
@@ -532,6 +541,10 @@ impl ServerRefs {
             return Err(Status::unimplemented(
                 "git id mode is not served by UpdateRefs",
             ));
+        }
+        // `refs/for/` updates publish versions of changes; they are never stored (see `submit`).
+        if req.updates.iter().any(|u| u.name.starts_with("refs/for/")) {
+            return self.submit(ctx, req).await;
         }
         let mut planned = plan(&req)?;
         let mode = wire::UpdateMode::try_from(req.mode)
