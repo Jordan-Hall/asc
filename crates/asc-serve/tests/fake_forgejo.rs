@@ -1233,6 +1233,7 @@ mod forgejo {
             principal: Principal { id: id.into() },
             op_id: Some(Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         };
         assert!(hooks.may_skip_pre(&ctx(&p.id)));
         // Rows and logs written before the principal was renamed still name the host service.

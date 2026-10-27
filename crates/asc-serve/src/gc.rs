@@ -1021,6 +1021,7 @@ mod tests {
             principal: asc_rpc::auth::Principal { id: "alice".into() },
             op_id: Some(Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         };
         let push = tokio::spawn(async move {
             a.update_refs(&ctx, push_request("refs/heads/master", lost))

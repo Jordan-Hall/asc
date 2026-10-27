@@ -460,8 +460,9 @@ mod tests {
             principal: asc_rpc::auth::Principal { id: "t".into() },
             op_id: None,
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     const A: &[u8] =
         b"[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\nb = { path = \"../b\" }\n";

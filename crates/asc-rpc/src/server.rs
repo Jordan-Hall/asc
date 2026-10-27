@@ -193,6 +193,9 @@ pub struct CallCtx {
     /// `x-asc-op-id`; always present on mutating calls.
     pub op_id: Option<Uuid>,
     pub client: Option<ClientVersion>,
+    /// Whether the credential of this call holds admin on the repository; asked only by a rule
+    /// that needs it (repairing an unusable policy), never inferred from other credentials.
+    pub admin: crate::auth::AdminProof,
 }
 
 // ------------------------------------------------------------------------------ errors
@@ -614,12 +617,18 @@ impl RepoService {
         if mutating && op_id.is_none() {
             return Err(Status::invalid_argument("mutating calls need x-asc-op-id"));
         }
+        let admin = crate::auth::AdminProof::new(
+            self.authorizer.clone(),
+            ext.get::<Credential>().cloned(),
+            name.as_str(),
+        );
         Ok(CallCtx {
             repo: name,
             id_mode,
             principal,
             op_id,
             client,
+            admin,
         })
     }
 

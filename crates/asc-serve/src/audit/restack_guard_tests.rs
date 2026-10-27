@@ -106,6 +106,7 @@ fn ctx(repo: &str) -> CallCtx {
         },
         op_id: None,
         client: None,
+        admin: Default::default(),
     }
 }
 

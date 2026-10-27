@@ -63,6 +63,7 @@ fn ctx() -> CallCtx {
         principal: Principal { id: "alice".into() },
         op_id: Some(Uuid::new_v4()),
         client: None,
+        admin: Default::default(),
     }
 }
 

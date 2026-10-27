@@ -365,6 +365,7 @@ impl GitSshExec {
                     principal: principal.clone(),
                     op_id: Some(record.op_id),
                     client: None,
+                    admin: Default::default(),
                 };
                 let begun = git_push
                     .begin(ctx, entry.clone(), view.clone())

@@ -771,12 +771,18 @@ impl ChangesService {
             .authorizer
             .authorize_credential(ext.get::<Credential>(), name.as_str(), access)
             .await?;
+        let admin = asc_rpc::auth::AdminProof::new(
+            self.authorizer.clone(),
+            ext.get::<Credential>().cloned(),
+            name.as_str(),
+        );
         Ok(CallCtx {
             repo: name,
             id_mode,
             principal,
             op_id: None,
             client,
+            admin,
         })
     }
 }

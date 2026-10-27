@@ -329,6 +329,7 @@ impl Expirer {
             },
             op_id: Some(Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         };
         // The expiry is the server's own act, so Forgejo's pre-receive has no say in it. Without
         // Forgejo there is no hook to skip and the actor is the worker itself.

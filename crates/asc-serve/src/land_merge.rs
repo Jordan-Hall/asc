@@ -172,8 +172,9 @@ mod tests {
             principal: Principal { id: "alice".into() },
             op_id: Some(Uuid::new_v4()),
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     fn update(
         expect: wire::ref_update::Expect,

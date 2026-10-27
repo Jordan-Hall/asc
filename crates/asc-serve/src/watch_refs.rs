@@ -483,8 +483,9 @@ mod tests {
             principal: Principal { id: who.into() },
             op_id: None,
             client: None,
+            admin: Default::default(),
         }
-    }
+}
 
     struct Fx {
         r: Arc<Registry>,

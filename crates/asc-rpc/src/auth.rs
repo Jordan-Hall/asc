@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -276,6 +277,39 @@ impl fmt::Debug for BearerToken {
 pub struct Principal {
     /// Stable identifier recorded in the ref log.
     pub id: String,
+}
+
+/// The means to ask whether the credential that authorized a call also holds admin on its
+/// repository. It re-authorizes that exact credential for [`Access::Admin`]; nothing is
+/// aggregated across the caller's other credentials. [`AdminProof::default`] holds nothing.
+#[derive(Clone, Default)]
+pub struct AdminProof(Option<(Arc<dyn Authorizer>, Option<Credential>, String)>);
+
+impl AdminProof {
+    pub fn new(
+        authorizer: Arc<dyn Authorizer>,
+        credential: Option<Credential>,
+        repo: &str,
+    ) -> Self {
+        Self(Some((authorizer, credential, repo.to_owned())))
+    }
+
+    /// Whether the credential that made the call is allowed admin on the repository.
+    pub async fn holds(&self) -> bool {
+        match &self.0 {
+            Some((authorizer, credential, repo)) => authorizer
+                .authorize_credential(credential.as_ref(), repo, Access::Admin)
+                .await
+                .is_ok(),
+            None => false,
+        }
+    }
+}
+
+impl fmt::Debug for AdminProof {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AdminProof(..)")
+    }
 }
 
 /// What a call needs on a repository, in increasing order.
