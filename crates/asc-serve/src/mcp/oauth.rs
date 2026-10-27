@@ -447,6 +447,9 @@ async fn fetch_json(raw: &str) -> Result<Vec<u8>, KeyError> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .https_only(true)
+        // The addresses were checked above; a proxy from the environment would be dialled instead
+        // and could be told any address.
+        .no_proxy()
         .timeout(FETCH_TIMEOUT)
         .resolve_to_addrs(&host, &addrs)
         .build()
@@ -836,6 +839,49 @@ pub fn wrap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fetch dials the checked address itself, whatever proxy the environment names. The probe
+    /// runs in a child process so the environment can be set without touching this one.
+    #[test]
+    fn the_jwks_fetch_ignores_a_proxy_in_the_environment() {
+        if std::env::var_os("ASC_PROXY_PROBE").is_some() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let _ = rt.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    fetch_json("https://93.184.216.34/jwks.json"),
+                )
+                .await
+            });
+            return;
+        }
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        proxy.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", proxy.local_addr().unwrap());
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mcp::oauth::tests::the_jwks_fetch_ignores_a_proxy_in_the_environment",
+                "--test-threads=1",
+            ])
+            .env("ASC_PROXY_PROBE", "1")
+            .env("HTTPS_PROXY", &url)
+            .env("https_proxy", &url)
+            .env("ALL_PROXY", &url)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let dialled = proxy.accept();
+        assert!(
+            matches!(&dialled, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "the fetch went to the proxy"
+        );
+    }
 
     #[test]
     fn public_addresses_only() {
