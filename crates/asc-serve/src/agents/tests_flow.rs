@@ -1711,6 +1711,74 @@ async fn a_repository_cannot_queue_without_bound() {
     }
     let e = create(&w, "alice-token", base_msg()).await.unwrap_err();
     assert_eq!(e.code(), Code::ResourceExhausted);
+    // The cap counts the repository whatever case the request spells it in.
+    let queued = w
+        .hub
+        .core
+        .runs
+        .list(
+            "Acme/APP",
+            &[RunState::Queued, RunState::Running, RunState::WaitingInput],
+            "",
+            "",
+            None,
+            super::MAX_ACTIVE_PER_REPO,
+        )
+        .await
+        .unwrap();
+    assert_eq!(queued.len(), super::MAX_ACTIVE_PER_REPO);
+}
+
+fn queued_run(repo: &str, task: &str) -> super::runs::NewRun {
+    super::runs::NewRun {
+        repo: repo.into(),
+        agent: "fixer".into(),
+        title: String::new(),
+        target: "master".into(),
+        base: Vec::new(),
+        task: task.into(),
+        paths: vec![],
+        ai_key_id: "ak_x".into(),
+        model: "model-x".into(),
+        limits: super::tokens::Budget::default(),
+        created_by: "7:alice".into(),
+        starter: "alice".into(),
+        owner_id: 7,
+        token_id: String::new(),
+        workflow_run_id: 0,
+        workflow_step: String::new(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_repository_at_its_cap_does_not_hide_the_queued_runs_of_others() {
+    // A store of its own: no dispatcher is running to take the runs.
+    let pool = crate::migrate::connect("sqlite::memory:", 1).await.unwrap();
+    crate::migrate::migrate(&pool).await.unwrap();
+    let runs = &super::runs::RunStore::new(pool);
+    // One tenant has a run going and 100 more queued, all older than the other tenant's run.
+    let busy = runs
+        .create(&queued_run("big/blocked", "going"))
+        .await
+        .unwrap();
+    assert!(runs.claim(busy).await.unwrap());
+    for i in 0..100 {
+        runs.create(&queued_run("big/blocked", &format!("q{i}")))
+            .await
+            .unwrap();
+    }
+    let other = runs
+        .create(&queued_run("small/other", "mine"))
+        .await
+        .unwrap();
+    // Nothing of the blocked repository is offered at a cap of one; the other tenant's run is.
+    let offered = runs.dispatchable(1, 64).await.unwrap();
+    assert_eq!(offered.iter().map(|r| r.id).collect::<Vec<_>>(), [other]);
+    // With room for two, its two oldest queued runs are offered as well, and no more.
+    let offered = runs.dispatchable(2, 64).await.unwrap();
+    let blocked = offered.iter().filter(|r| r.repo == "big/blocked").count();
+    assert_eq!(blocked, 2, "{offered:?}");
+    assert!(offered.iter().any(|r| r.id == other));
 }
 
 // ------------------------------------------------------------------------------ commands
