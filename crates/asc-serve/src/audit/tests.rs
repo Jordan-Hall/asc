@@ -1167,3 +1167,141 @@ async fn list_filters_and_tokens_arrive_through_the_service() {
         .unwrap_err();
     assert_eq!(bad.code(), tonic::Code::InvalidArgument);
 }
+
+#[tokio::test]
+async fn the_hubs_claim_decides_the_scope_for_the_person_and_nothing_wider() {
+    use asc_rpc::forwarded::{ForwardedVerifier, Role};
+    use tonic::Code::NotFound;
+    use wire::OwnerKind::{Instance, Org, Repo, User};
+    let (_plain, p) = service().await;
+    let registry = Arc::new(Registry::new(p.clone(), "memory:///").unwrap());
+    let audit = Arc::new(Audit::new(registry, AuditConfig::default(), Arc::default()));
+    let auth: Arc<dyn asc_rpc::auth::Authorizer> =
+        Arc::new(crate::authz::forwarded::ForwardedAuthorizer::new(
+            Arc::new(StaticTokens::new().with_token(HOST, "host-service", Access::Admin)),
+            ForwardedVerifier::new(vec![6u8; 32]).unwrap(),
+        ));
+    let svc = AuditService::new(audit, auth, ServerInfo::default());
+    store::record(&p, &push("acme/app", 1)).await.unwrap();
+    let v = ForwardedVerifier::new(vec![6u8; 32]).unwrap();
+    let now = crate::ai::clock::now();
+    let list = |s: Option<wire::OwnerRef>, subject: &str, user: &str, role: Role, at: i64| {
+        let mut r = req(
+            wire::ListAuditRequest {
+                scope: s,
+                ..Default::default()
+            },
+            Some(HOST),
+        );
+        for (k, val) in v.sign(user, role, subject, at) {
+            r.metadata_mut().append(k, val.parse().unwrap());
+        }
+        svc.list(r)
+    };
+    let count = |r: Result<tonic::Response<wire::ListAuditResponse>, tonic::Status>| {
+        r.map(|x| x.into_inner().events.len()).map_err(|e| e.code())
+    };
+    // The repository's administrator reads its log; a writer does not.
+    assert_eq!(
+        count(
+            list(
+                scope(Repo, "acme/app"),
+                "acme/app",
+                "7:alice",
+                Role::Admin,
+                now
+            )
+            .await
+        ),
+        Ok(1)
+    );
+    assert_eq!(
+        count(
+            list(
+                scope(Repo, "acme/app"),
+                "acme/app",
+                "8:bob",
+                Role::Write,
+                now
+            )
+            .await
+        ),
+        Err(NotFound)
+    );
+    // A claim for one repository is no claim for another, nor for the instance.
+    assert_eq!(
+        count(
+            list(
+                scope(Repo, "zed/app"),
+                "acme/app",
+                "7:alice",
+                Role::Admin,
+                now
+            )
+            .await
+        ),
+        Err(NotFound)
+    );
+    assert_eq!(
+        count(list(scope(Instance, ""), "acme/app", "7:alice", Role::Admin, now).await),
+        Err(NotFound)
+    );
+    // The organisation's owner reads the organisation log whatever its size; the site
+    // administrator reads the instance log.
+    assert_eq!(
+        count(list(scope(Org, "acme"), "org:acme", "7:alice", Role::Admin, now).await),
+        Ok(1)
+    );
+    assert_eq!(
+        count(list(scope(Org, "acme"), "org:acme", "7:alice", Role::Read, now).await),
+        Err(NotFound)
+    );
+    assert!(count(list(scope(Instance, ""), "instance", "1:root", Role::Admin, now).await).is_ok());
+    // A person's own scope, by the name in the claim.
+    assert!(
+        count(
+            list(
+                scope(User, "alice"),
+                "user:alice",
+                "7:alice",
+                Role::Write,
+                now
+            )
+            .await
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        count(
+            list(
+                scope(User, "alice"),
+                "user:alice",
+                "8:bob",
+                Role::Write,
+                now
+            )
+            .await
+        ),
+        Err(NotFound)
+    );
+    // A stale claim is refused, not treated as the service's own breadth.
+    assert_eq!(
+        count(
+            list(
+                scope(Instance, ""),
+                "instance",
+                "1:root",
+                Role::Admin,
+                now - 600
+            )
+            .await
+        ),
+        Err(NotFound)
+    );
+    // The service credential alone (system work) still reads.
+    assert!(
+        try_list(&svc, Some(HOST), scope(Instance, ""))
+            .await
+            .is_ok()
+    );
+}
