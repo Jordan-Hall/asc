@@ -87,7 +87,7 @@ function Install(): ReactNode {
           <Code label="Check and update">{`asc doctor
 asc self-update`}</Code>
           <p className="m-0 text-sm">
-            <code>asc doctor</code> checks the install and your git. <code>asc self-update</code>{" "}
+            <code>asc doctor</code> checks the install and your setup. <code>asc self-update</code>{" "}
             updates an install made by these scripts. Next, read{" "}
             <Link to="/docs">the documentation</Link>.
           </p>
@@ -101,8 +101,8 @@ const GUIDES: readonly { file: string; what: string }[] = [
   { file: "docs/GETTING-STARTED.md", what: "Install, authenticate, clone and the daily loop." },
   { file: "docs/CLI.md", what: "Every asc command with an example." },
   { file: "docs/CONFIG.md", what: "Every configuration key, its default and an example." },
-  { file: "docs/CHEATSHEET.md", what: "The git command for each asc command." },
-  { file: "docs/ONBOARDING.md", what: "The git shim, asc doctor and fixing problems." },
+  { file: "docs/CHEATSHEET.md", what: "Common tasks and the asc command for each." },
+  { file: "docs/ONBOARDING.md", what: "Editor settings, asc doctor and fixing problems." },
   { file: "docs/api.md", what: "The RPC services and how clients reach them." },
   { file: "docs/mcp.md", what: "asc mcp for agents." },
   { file: "docs/WEB-UI.md", what: "How this web app is built and what each screen reads." },

@@ -27,9 +27,6 @@ export default function LandingDesktop() {
             <a href="#search" className="navl">
               Search
             </a>
-            <a href="#git" className="navl">
-              Git compatible
-            </a>
             <Link to="/docs" className="navl">
               Docs
             </Link>
@@ -67,8 +64,6 @@ export default function LandingDesktop() {
             <div className="mono land16">
               <span className="land17">$</span>
               <span>asc clone https://hub.example.com/acme/payments</span>
-              <span className="land18">or</span>
-              <span>git clone https://hub.example.com/acme/payments</span>
             </div>
             <div className="land19" id="demo">
               <div className="land20">
@@ -143,7 +138,6 @@ export default function LandingDesktop() {
           <div className="land50">
             <div className="land51">Works with the tools your team already uses</div>
             <div className="land52">
-              <span>git</span>
               <span>VS Code</span>
               <span>JetBrains</span>
               <span>Claude Code</span>
@@ -349,15 +343,12 @@ export default function LandingDesktop() {
               <div className="mono land107">› where do we retry failed payments?</div>
             </div>
             <div className="land104" id="git">
-              <div className="land56">Git compatible</div>
-              <div className="land105">Your clients keep working.</div>
+              <div className="land56">Compatibility</div>
+              <div className="land105">Older tools keep working.</div>
               <p className="land106">
-                Clone, fetch and push with git over HTTPS or SSH today. Move to the asc command line
-                when you want stacks, undo, and live restack.
+                ASC is the source control system. For existing tools and CI that still speak git,
+                the server offers a git compatibility layer over HTTPS and SSH.
               </p>
-              <div className="mono land108">
-                <span className="land17">$</span> git push origin HEAD:refs/for/master
-              </div>
             </div>
           </div>
         </section>
@@ -366,7 +357,7 @@ export default function LandingDesktop() {
             <div className="land111">
               <h2 className="land112">Ship more, and still understand every line.</h2>
               <p className="land113">
-                Import a repository in a minute. Keep your git history. Bring your agents.
+                Import a repository in a minute. Keep your history. Bring your agents.
               </p>
               <div className="land114">
                 <Link to="/signin" className="btn btn-p">

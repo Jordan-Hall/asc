@@ -35,13 +35,13 @@ cd my-project`}</Command>
           </section>
           <section aria-labelledby="new-import">
             <h2 id="new-import" className="mb-2 text-lg font-semibold text-fg-strong">
-              Create it on an asc server from a git repository
+              Create it on an asc server from an existing repository
             </h2>
             <p className="mb-2 text-sm">
               A server administrator runs this on the server. It creates the repository in mirror
               mode and imports the history.
             </p>
-            <Command label="Import a git repository">{`asc serve admin import --repo acme/payments --init --source https://git.example.org/acme/payments.git`}</Command>
+            <Command label="Import an existing repository">{`asc serve admin import --repo acme/payments --init --source https://git.example.org/acme/payments.git`}</Command>
           </section>
           <section aria-labelledby="new-clone">
             <h2 id="new-clone" className="mb-2 text-lg font-semibold text-fg-strong">
