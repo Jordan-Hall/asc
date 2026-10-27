@@ -1141,6 +1141,57 @@ impl Fx {
     }
 }
 
+impl Fx {
+    /// A passing case named like group `group`'s test, on `attempt` (a retry that recovered).
+    async fn passing_case(&self, run: i64, job: i64, seq: i64, group: i64, attempt: i64) {
+        sqlx::query(
+            "INSERT INTO test_cases (ns, run_id, job_id, seq, job_name, name, outcome, attempt, group_id, change, version, head, at) \
+             VALUES ($1, $2, $3, $4, 'unit', $5, 1, $6, 0, $7, 1, $8, 1)",
+        )
+        .bind(self.e.ns.as_bytes().to_vec())
+        .bind(run)
+        .bind(job)
+        .bind(seq)
+        .bind(format!("t{group}"))
+        .bind(attempt)
+        .bind(cid(1).as_bytes().to_vec())
+        .bind(vec![0u8; 32])
+        .execute(self.reg.pool())
+        .await
+        .unwrap();
+    }
+
+    /// A failed test case that belongs to no failure group.
+    async fn ungrouped_case(&self, run: i64, job: i64, seq: i64) {
+        sqlx::query(
+            "INSERT INTO test_cases (ns, run_id, job_id, seq, job_name, name, outcome, attempt, group_id, change, version, head, at) \
+             VALUES ($1, $2, $3, $4, 'unit', 'orphan', 2, 1, 0, $5, 1, $6, 1)",
+        )
+        .bind(self.e.ns.as_bytes().to_vec())
+        .bind(run)
+        .bind(job)
+        .bind(seq)
+        .bind(cid(1).as_bytes().to_vec())
+        .bind(vec![0u8; 32])
+        .execute(self.reg.pool())
+        .await
+        .unwrap();
+    }
+
+    async fn failed_job(&self, run: i64, id: i64, name: &str) {
+        sqlx::query(
+            "INSERT INTO check_jobs (ns, id, run, name, status) VALUES ($1, $2, $3, $4, 4)",
+        )
+        .bind(self.e.ns.as_bytes().to_vec())
+        .bind(id)
+        .bind(run)
+        .bind(name)
+        .execute(self.reg.pool())
+        .await
+        .unwrap();
+    }
+}
+
 async fn quarantine_fixture(policy: &str) -> (Fx, ChangesetId, i64) {
     let f = fx().await;
     let a = commit(
@@ -2237,4 +2288,57 @@ async fn the_host_service_repairs_an_unusable_policy_only_for_a_forwarded_admini
     forwarded.admin = forwarded.admin.with_forwarded(Some("7:alice".into()));
     f.land_with(&forwarded, fix).await.unwrap();
     assert_eq!(f.tip().await, fix);
+}
+
+#[tokio::test]
+async fn only_failures_that_are_not_quarantined_refuse_the_landing() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, false).await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+}
+
+#[tokio::test]
+async fn a_failure_that_recovered_on_a_retry_does_not_block_beside_a_quarantined_one() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, true).await;
+    // A flaky test of the same job failed once, was not quarantined, and passed on the retry.
+    f.failing_case(run, 1, 2, 2, false).await;
+    f.passing_case(run, 1, 3, 2, 2).await;
+    f.land(ALICE, b).await.unwrap();
+}
+
+#[tokio::test]
+async fn failures_that_all_recovered_do_not_explain_a_failed_job() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, false).await;
+    f.passing_case(run, 1, 2, 1, 2).await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+}
+
+#[tokio::test]
+async fn a_second_failed_job_with_no_test_evidence_is_never_explained() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, true).await;
+    // A setup error, crash or timeout: the job failed and reported no test at all.
+    f.failed_job(run, 2, "integration").await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+}
+
+#[tokio::test]
+async fn a_failing_case_outside_every_group_blocks_and_so_does_a_run_with_no_failed_job() {
+    let (f, b, run) = quarantine_fixture(QUARANTINE_ON).await;
+    f.failing_case(run, 1, 1, 1, true).await;
+    f.ungrouped_case(run, 1, 2).await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
+    // The run is marked failed, but no job of it failed: nothing explains it.
+    sqlx::query("DELETE FROM test_cases")
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM check_jobs")
+        .execute(f.reg.pool())
+        .await
+        .unwrap();
+    f.failing_case(run, 1, 1, 1, true).await;
+    assert_eq!(code(&f.land(ALICE, b).await.unwrap_err()), "POLICY_DENIED");
 }
