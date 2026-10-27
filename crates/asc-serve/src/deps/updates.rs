@@ -88,15 +88,12 @@ impl DepsHub {
             .collect();
         names.sort();
         names.dedup();
-        let looked: Vec<(
-            (Ecosystem, String),
-            Result<std::sync::Arc<Versions>, String>,
-        )> = futures::stream::iter(names.into_iter().map(|(e, n)| async move {
+        let looked = futures::stream::iter(names.into_iter().map(|(e, n)| async move {
             let r = self.latest.versions(e, &n, refresh).await;
             ((e, n), r)
         }))
         .buffer_unordered(self.cfg.concurrency.max(1))
-        .collect()
+        .collect::<Vec<_>>()
         .await;
         let registry: HashMap<(Ecosystem, String), Result<std::sync::Arc<Versions>, String>> =
             looked.into_iter().collect();

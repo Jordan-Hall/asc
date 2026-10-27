@@ -1,6 +1,5 @@
 //! `asc deps propose`.
 
-use std::io::Write as _;
 use std::process::ExitCode;
 
 use asc_rpc::server::wire;
@@ -63,7 +62,11 @@ pub(crate) fn max_kind(s: &str) -> Result<i32> {
         "patch" => wire::DepUpdateKind::Patch,
         "minor" => wire::DepUpdateKind::Minor,
         "major" => wire::DepUpdateKind::Major,
-        other => return Err(bad(format!("--max-kind is patch, minor or major, not {other:?}"))),
+        other => {
+            return Err(bad(format!(
+                "--max-kind is patch, minor or major, not {other:?}"
+            )));
+        }
     } as i32)
 }
 
@@ -71,8 +74,17 @@ pub async fn run(ctx: &Ctx, a: ProposeArgs) -> Result<ExitCode> {
     let remote = remote_with_token(a.remote.as_deref(), a.token_env.as_deref(), |k| {
         std::env::var(k).ok()
     })?;
-    let selectors = a.packages.iter().map(|p| selector(p)).collect::<Result<Vec<_>>>()?;
-    let kind = a.max_kind.as_deref().map(max_kind).transpose()?.unwrap_or(0);
+    let selectors = a
+        .packages
+        .iter()
+        .map(|p| selector(p))
+        .collect::<Result<Vec<_>>>()?;
+    let kind = a
+        .max_kind
+        .as_deref()
+        .map(max_kind)
+        .transpose()?
+        .unwrap_or(0);
     let conn = Conn::open(ctx, remote.as_deref()).await?;
     let repo = conn.repo_ref();
     let r = conn
@@ -102,7 +114,11 @@ pub async fn run(ctx: &Ctx, a: ProposeArgs) -> Result<ExitCode> {
                 writeln!(
                     out,
                     "{}\t{}\t{}",
-                    if p.changeset.is_empty() { "plan" } else { "proposed" },
+                    if p.changeset.is_empty() {
+                        "plan"
+                    } else {
+                        "proposed"
+                    },
                     clean_str(&p.r#ref),
                     p.updates.len()
                 )?;
@@ -146,7 +162,10 @@ mod tests {
     #[test]
     fn a_package_is_named_with_its_ecosystem() {
         let s = selector("npm:@scope/pkg").unwrap();
-        assert_eq!((s.ecosystem.as_str(), s.name.as_str()), ("npm", "@scope/pkg"));
+        assert_eq!(
+            (s.ecosystem.as_str(), s.name.as_str()),
+            ("npm", "@scope/pkg")
+        );
         let s = selector("cargo:serde").unwrap();
         assert_eq!((s.ecosystem.as_str(), s.name.as_str()), ("cargo", "serde"));
         let s = selector("maven:org.apache.commons:commons-lang3").unwrap();
@@ -158,7 +177,10 @@ mod tests {
 
     #[test]
     fn the_largest_step_is_patch_minor_or_major() {
-        assert_eq!(max_kind("Minor").unwrap(), wire::DepUpdateKind::Minor as i32);
+        assert_eq!(
+            max_kind("Minor").unwrap(),
+            wire::DepUpdateKind::Minor as i32
+        );
         assert!(max_kind("huge").is_err());
     }
 }

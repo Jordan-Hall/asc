@@ -1,6 +1,5 @@
 //! `asc deps updates | config`.
 
-use std::io::Write as _;
 use std::process::ExitCode;
 
 use asc_rpc::server::wire;
@@ -66,7 +65,10 @@ pub(crate) fn update_line(u: &wire::DepUpdate) -> String {
         line.push_str(&format!("\tfixes {}", clean_str(&u.fixes.join(", "))));
     }
     if !u.unfixed.is_empty() {
-        line.push_str(&format!("\tstill affected by {}", clean_str(&u.unfixed.join(", "))));
+        line.push_str(&format!(
+            "\tstill affected by {}",
+            clean_str(&u.unfixed.join(", "))
+        ));
     }
     if u.ignored {
         line.push_str("\tignored");
@@ -201,7 +203,10 @@ mod tests {
             ..u
         };
         let l = update_line(&blocked);
-        assert!(l.contains("-> -\t(latest ?, major)") && l.ends_with("a major update"), "{l}");
+        assert!(
+            l.contains("-> -\t(latest ?, major)") && l.ends_with("a major update"),
+            "{l}"
+        );
         assert!(l.contains("\tignored"));
     }
 }

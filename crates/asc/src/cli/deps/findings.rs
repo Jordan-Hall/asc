@@ -1,6 +1,5 @@
 //! `asc deps findings | dismiss | reopen`.
 
-use std::io::Write as _;
 use std::process::ExitCode;
 
 use asc_rpc::server::wire;
@@ -71,7 +70,11 @@ pub(crate) fn state_of(name: &str) -> Result<i32> {
         "open" => S::Open,
         "dismissed" => S::Dismissed,
         "fixed" => S::Fixed,
-        other => return Err(bad(format!("unknown state {other:?}; it is open, dismissed or fixed"))),
+        other => {
+            return Err(bad(format!(
+                "unknown state {other:?}; it is open, dismissed or fixed"
+            )));
+        }
     } as i32)
 }
 
@@ -109,8 +112,17 @@ pub async fn list(ctx: &Ctx, a: FindingsArgs) -> Result<ExitCode> {
     let remote = remote_with_token(a.remote.as_deref(), a.token_env.as_deref(), |k| {
         std::env::var(k).ok()
     })?;
-    let states = a.states.iter().map(|s| state_of(s)).collect::<Result<Vec<_>>>()?;
-    let min = a.severity.as_deref().map(severity_of).transpose()?.unwrap_or(0);
+    let states = a
+        .states
+        .iter()
+        .map(|s| state_of(s))
+        .collect::<Result<Vec<_>>>()?;
+    let min = a
+        .severity
+        .as_deref()
+        .map(severity_of)
+        .transpose()?
+        .unwrap_or(0);
     let ecos = ecosystems(&a.ecosystems)?;
     let conn = Conn::open(ctx, remote.as_deref()).await?;
     let repo = conn.repo_ref();
@@ -197,7 +209,16 @@ async fn set(
 
 pub async fn dismiss(ctx: &Ctx, a: DismissArgs) -> Result<ExitCode> {
     let reason = reason_of(&a.reason)?;
-    set(ctx, a.remote, a.token_env, a.id, reason, a.note.unwrap_or_default(), a.json).await
+    set(
+        ctx,
+        a.remote,
+        a.token_env,
+        a.id,
+        reason,
+        a.note.unwrap_or_default(),
+        a.json,
+    )
+    .await
 }
 
 pub async fn reopen(ctx: &Ctx, a: ReopenArgs) -> Result<ExitCode> {
@@ -210,13 +231,28 @@ mod tests {
 
     #[test]
     fn flag_values_become_enum_values_or_a_usage_error() {
-        assert_eq!(state_of("OPEN").unwrap(), wire::DepFindingState::Open as i32);
+        assert_eq!(
+            state_of("OPEN").unwrap(),
+            wire::DepFindingState::Open as i32
+        );
         assert!(state_of("closed").is_err());
-        assert_eq!(severity_of("Medium").unwrap(), wire::DepSeverity::Moderate as i32);
-        assert_eq!(severity_of("critical").unwrap(), wire::DepSeverity::Critical as i32);
+        assert_eq!(
+            severity_of("Medium").unwrap(),
+            wire::DepSeverity::Moderate as i32
+        );
+        assert_eq!(
+            severity_of("critical").unwrap(),
+            wire::DepSeverity::Critical as i32
+        );
         assert!(severity_of("severe").is_err());
-        assert_eq!(reason_of("not_used").unwrap(), wire::DepDismissReason::NotUsed as i32);
-        assert_eq!(reason_of("fix-started").unwrap(), wire::DepDismissReason::FixStarted as i32);
+        assert_eq!(
+            reason_of("not_used").unwrap(),
+            wire::DepDismissReason::NotUsed as i32
+        );
+        assert_eq!(
+            reason_of("fix-started").unwrap(),
+            wire::DepDismissReason::FixStarted as i32
+        );
         assert!(reason_of("because").is_err());
     }
 }
