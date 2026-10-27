@@ -72,7 +72,9 @@ pub fn check(eco: Ecosystem, name: &str) -> Result<(), String> {
         Ecosystem::RubyGems => part(name, 100, "._-", "a gem name"),
         Ecosystem::Hex => part(name, 64, "_", "a Hex name"),
         Ecosystem::Pub => part(name, 64, "_", "a pub name"),
-        Ecosystem::SwiftUrl | Ecosystem::CocoaPods => Err("the ecosystem has no registry API".into()),
+        Ecosystem::SwiftUrl | Ecosystem::CocoaPods => {
+            Err("the ecosystem has no registry API".into())
+        }
     }
 }
 
@@ -123,7 +125,21 @@ mod tests {
                 Ecosystem::Packagist => format!("{n}/{n}"),
                 _ => n.to_owned(),
             };
-            for bad in ["", "é", "日本語", "ab\u{e9}cd", "a\u{0}b", "a b", "a?b", "a#b", "a%2Fb", "..", "a..b", "a\\b", &long] {
+            for bad in [
+                "",
+                "é",
+                "日本語",
+                "ab\u{e9}cd",
+                "a\u{0}b",
+                "a b",
+                "a?b",
+                "a#b",
+                "a%2Fb",
+                "..",
+                "a..b",
+                "a\\b",
+                &long,
+            ] {
                 assert!(check(eco, &wrap(bad)).is_err(), "{eco} accepted {bad:?}");
             }
         }

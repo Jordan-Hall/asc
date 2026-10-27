@@ -227,7 +227,8 @@ impl DepsHub {
             cfg.registries.clone(),
             cfg.latest_ttl_secs,
             clock.clone(),
-        );
+        )
+        .with_archive(cfg.archive_max_bytes.0, cfg.archive_timeout_secs);
         Arc::new(Self {
             view: RepoView::new(registry.clone()),
             permits: Semaphore::new(cfg.max_concurrent_scans),

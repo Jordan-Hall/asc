@@ -72,9 +72,13 @@ impl Default for Endpoint {
 #[serde(deny_unknown_fields, default)]
 pub struct Registries {
     pub crates_io: Endpoint,
+    /// The sparse index of crates.io: the second source of a crate's checksum and its dependencies.
+    pub crates_index: Endpoint,
     pub npm: Endpoint,
     pub pypi: Endpoint,
     pub go: Endpoint,
+    /// The Go checksum database: the second source of the hashes `go.sum` holds.
+    pub go_sumdb: Endpoint,
     pub maven: Endpoint,
     pub nuget: Endpoint,
     pub packagist: Endpoint,
@@ -89,9 +93,11 @@ impl Default for Registries {
         let m = ByteSize::MIB;
         Self {
             crates_io: Endpoint::new("https://crates.io", 20, 8 * m),
+            crates_index: Endpoint::new("https://index.crates.io", 20, 8 * m),
             npm: Endpoint::new("https://registry.npmjs.org", 20, 8 * m),
             pypi: Endpoint::new("https://pypi.org", 15, 8 * m),
             go: Endpoint::new("https://proxy.golang.org", 15, m),
+            go_sumdb: Endpoint::new("https://sum.golang.org", 15, m),
             maven: Endpoint::new("https://repo1.maven.org/maven2", 15, 2 * m),
             nuget: Endpoint::new("https://api.nuget.org", 15, 4 * m),
             packagist: Endpoint::new("https://repo.packagist.org", 15, 8 * m),
@@ -120,12 +126,14 @@ impl Registries {
         })
     }
 
-    fn all(&self) -> [(&'static str, &Endpoint); 10] {
+    fn all(&self) -> [(&'static str, &Endpoint); 12] {
         [
             ("crates_io", &self.crates_io),
+            ("crates_index", &self.crates_index),
             ("npm", &self.npm),
             ("pypi", &self.pypi),
             ("go", &self.go),
+            ("go_sumdb", &self.go_sumdb),
             ("maven", &self.maven),
             ("nuget", &self.nuget),
             ("packagist", &self.packagist),
@@ -154,6 +162,10 @@ pub struct Config {
     /// Hosts the scanner may call, exact or `*.suffix`. Empty: the hosts of the URLs above.
     pub egress_allow: Vec<String>,
     pub registries: Registries,
+    /// Largest download read to verify a hash a lockfile records (a Go module zip), in bytes.
+    pub archive_max_bytes: ByteSize,
+    /// Seconds such a download may take.
+    pub archive_timeout_secs: u64,
     /// Seconds an advisory answer for a package version is reused.
     pub osv_ttl_secs: u64,
     /// Seconds an advisory record is reused.
@@ -183,6 +195,8 @@ impl Default for Config {
             advisory_max_bytes: ByteSize(512 * ByteSize::MIB),
             egress_allow: Vec::new(),
             registries: Registries::default(),
+            archive_max_bytes: ByteSize(128 * ByteSize::MIB),
+            archive_timeout_secs: 120,
             osv_ttl_secs: 6 * 3600,
             vuln_ttl_secs: 24 * 3600,
             latest_ttl_secs: 3600,
@@ -224,9 +238,11 @@ impl Config {
         let r = &mut self.registries;
         let b = &d.registries;
         r.crates_io = r.crates_io.clone().filled(&b.crates_io);
+        r.crates_index = r.crates_index.clone().filled(&b.crates_index);
         r.npm = r.npm.clone().filled(&b.npm);
         r.pypi = r.pypi.clone().filled(&b.pypi);
         r.go = r.go.clone().filled(&b.go);
+        r.go_sumdb = r.go_sumdb.clone().filled(&b.go_sumdb);
         r.maven = r.maven.clone().filled(&b.maven);
         r.nuget = r.nuget.clone().filled(&b.nuget);
         r.packagist = r.packagist.clone().filled(&b.packagist);
@@ -327,6 +343,13 @@ impl Config {
                 return Err(format!("deps.{k} must be 1 to {max}"));
             }
         }
+        if self.archive_max_bytes.0 < ByteSize::MIB || self.archive_max_bytes.0 > 2 * ByteSize::GIB
+        {
+            return Err("deps.archive_max_bytes must be 1MiB to 2GiB".into());
+        }
+        if self.archive_timeout_secs == 0 || self.archive_timeout_secs > 3600 {
+            return Err("deps.archive_timeout_secs must be 1 to 3600".into());
+        }
         if self.max_manifest_files == 0 || self.max_manifest_files > 100_000 {
             return Err("deps.max_manifest_files must be 1 to 100000".into());
         }
@@ -365,6 +388,8 @@ mod tests {
         for h in [
             "api.osv.dev",
             "crates.io",
+            "index.crates.io",
+            "sum.golang.org",
             "registry.npmjs.org",
             "pypi.org",
             "proxy.golang.org",
@@ -385,7 +410,7 @@ mod tests {
     #[test]
     fn a_toml_section_overrides_and_unknown_keys_are_errors() {
         let c: Config = toml::from_str(
-            "osv.url = \"https://osv.mirror.example\"\negress_allow = [\"*.example\", \"crates.io\", \"registry.npmjs.org\", \"pypi.org\", \"proxy.golang.org\", \"repo1.maven.org\", \"api.nuget.org\", \"repo.packagist.org\", \"rubygems.org\", \"hex.pm\", \"pub.dev\"]\n[registries.pub]\noff = true\n[registries.npm]\ntimeout_secs = 5\nmax_bytes = \"1MiB\"\n",
+            "osv.url = \"https://osv.mirror.example\"\negress_allow = [\"*.example\", \"crates.io\", \"index.crates.io\", \"sum.golang.org\", \"registry.npmjs.org\", \"pypi.org\", \"proxy.golang.org\", \"repo1.maven.org\", \"api.nuget.org\", \"repo.packagist.org\", \"rubygems.org\", \"hex.pm\", \"pub.dev\"]\n[registries.pub]\noff = true\n[registries.npm]\ntimeout_secs = 5\nmax_bytes = \"1MiB\"\n",
         )
         .unwrap();
         let c = c.resolved();
