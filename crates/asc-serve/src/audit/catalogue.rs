@@ -110,6 +110,22 @@ pub const CATALOGUE: &[ActionInfo] = &[
         "A merge queue was paused or resumed.",
         &["target", "paused", "reason"],
     ),
+    // Dependency scanning.
+    a(
+        "deps.finding.updated",
+        "The state of a dependency advisory finding changed.",
+        &["finding", "state", "advisory"],
+    ),
+    a(
+        "deps.proposed",
+        "A dependency update was recorded as a change on an agent/deps ref.",
+        &["ref", "change", "updates"],
+    ),
+    a(
+        "deps.config.proposed",
+        "A change to .asc/deps.toml was recorded on an agent/deps ref.",
+        &["ref", "change"],
+    ),
     // Secret scanning and signing.
     a(
         "secret.finding.updated",
