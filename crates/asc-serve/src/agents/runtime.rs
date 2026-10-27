@@ -710,13 +710,8 @@ impl AgentsHub {
                 message.clone(),
             ),
         };
-        if let Err(e) = self.core.runs.finish(id, state, &code, &message).await {
-            tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
-        }
-        let fresh = self.core.runs.get(id).await.ok().flatten().unwrap_or(run);
-        if !fresh.token_id.is_empty() {
-            let _ = self.core.tokens.revoke(&fresh.token_id, "run ended").await;
-        }
+        let mut fresh = self.core.runs.get(id).await.ok().flatten().unwrap_or(run);
+        fresh.state = state;
         if state == RunState::BudgetExceeded {
             self.audit(
                 "agent.budget.exceeded",
@@ -744,6 +739,14 @@ impl AgentsHub {
         }
         self.event(&fresh, EventKind::State, state.name(), "", &[], "")
             .await;
+        // The state row changes after its last event, so a reader that sees a finished run finds
+        // the whole log: the final state event is the last one.
+        if let Err(e) = self.core.runs.finish(id, state, &code, &message).await {
+            tracing::error!(class = %crate::ai::store::class(&e), "agent run not finished");
+        }
+        if !fresh.token_id.is_empty() {
+            let _ = self.core.tokens.revoke(&fresh.token_id, "run ended").await;
+        }
         self.audit(
             "agent.run.finished",
             &fresh.created_by,
