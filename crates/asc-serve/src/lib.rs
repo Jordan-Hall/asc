@@ -390,7 +390,9 @@ pub fn build_routes(ext: &Extensions, authorizer: Arc<dyn Authorizer>, info: Ser
         .merge(git_hosts)
         // tonic's own fallback answers an unknown path with `200` and a gRPC status; the public
         // listener answers a plain 404 instead (`/metrics` lives on the admin listener only).
-        .fallback(|| async { axum::http::StatusCode::NOT_FOUND });
+        .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
+        // An agent credential reaches only what `agent_may_reach` names; new routes are closed to it.
+        .layer(axum::middleware::from_fn(agents::authz::confine));
     Routes::from(router)
 }
 
